@@ -7,7 +7,8 @@ export const TUI_SCREEN_IDS = [
   'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
   'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P20', 'P21', 'P22',
   'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
-  'C12', 'C13', 'C14', 'C15', 'C16', 'C17',
+  'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20',
+  'C21', 'C22', 'C23',
   'S01', 'S02', 'S03', 'S04', 'S05', 'S06', 'S07', 'S08', 'S09',
   'S10', 'S11', 'S12', 'S13', 'S14', 'S15', 'S16', 'S17', 'S18',
   'I01', 'I02', 'I03', 'I04', 'I05', 'I06', 'I07', 'I08', 'I09',
@@ -100,8 +101,8 @@ function reviewScreen(context: RouteScreenContext): TuiScreenId {
     return ({ add: 'S10', update: 'S15', setPrimary: 'S16', remove: 'S18' } as const)[review.sourceAction];
   }
   return review?.operationKind === 'portableInstall' ? 'U06'
-    : review?.operationKind === 'configSave' ? 'C12'
-    : review?.operationKind === 'configReset' ? 'C16'
+    : review?.operationKind === 'configSave' || review?.operationKind === 'configSaveBatch' ? 'C10'
+    : review?.operationKind === 'configReset' ? 'C22'
     : review?.operationKind === 'pluginWrite'
       && (review.pluginAction === 'refreshAndSync' || review.pluginAction === 'reinstall') ? 'P18'
     : review?.operationKind === 'pluginWrite'
@@ -116,7 +117,8 @@ function progressScreen(context: RouteScreenContext): TuiScreenId {
   if (review?.operationKind === 'sourceMutation' || review?.operationKind === 'catalogGeneration'
     || review?.operationKind === 'catalogSourcesRecovery') return 'S11';
   return review?.operationKind === 'portableInstall' ? 'U07'
-    : review?.operationKind === 'configSave' || review?.operationKind === 'configReset' ? 'C13' : 'P08';
+    : review?.operationKind === 'configSave' || review?.operationKind === 'configSaveBatch'
+      || review?.operationKind === 'configReset' ? 'C11' : 'P08';
 }
 
 function resultScreen(context: RouteScreenContext): TuiScreenId {
@@ -138,8 +140,12 @@ function resultScreen(context: RouteScreenContext): TuiScreenId {
     }
   }
   return result?.operationKind === 'portableInstall' ? 'U08'
-    : result?.operationKind === 'configSave' || result?.operationKind === 'configReset'
-      ? result.state === 'succeeded' ? 'C14' : 'C15'
+    : result?.operationKind === 'configSaveBatch'
+      ? result.state === 'succeeded' ? 'C12' : 'C13'
+    : result?.operationKind === 'configSave'
+      ? result.state === 'succeeded' ? 'C12' : 'C13'
+    : result?.operationKind === 'configReset'
+      ? 'C23'
       : result?.state === 'partial' ? 'P10' : 'P09';
 }
 
@@ -205,14 +211,13 @@ export const TUI_ROUTE_DEFINITIONS = {
   } },
   pluginAbout: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P20') },
   pluginTechnical: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P21') },
-  configLayer: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C01') },
-  configFields: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: (route) =>
-    route.layer.scope === 'effective' ? 'C02' : 'C03' },
+  configLayer: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C07') },
+  configFields: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C01') },
   configFieldEditor: { entity: 'plugin', rendererFamily: 'config', keymap: 'menuOrTextInput', normalize: plugin, screenId: (route) =>
-    route.mode === 'choices' ? 'C05' : ({ boolean: 'C06', number: 'C07', string: 'C08', object: 'C09' } as const)[route.editor] },
-  configObjectPropertyEditor: { entity: 'plugin', rendererFamily: 'config', keymap: 'menuOrTextInput', normalize: plugin, screenId: fixed('C10') },
-  configFieldAction: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C04') },
-  configUnavailable: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C17') },
+    route.mode === 'choices' ? 'C03' : ({ boolean: 'C15', number: 'C04', string: 'C06', object: 'C20' } as const)[route.editor] },
+  configObjectPropertyEditor: { entity: 'plugin', rendererFamily: 'config', keymap: 'menuOrTextInput', normalize: plugin, screenId: fixed('C20') },
+  configFieldAction: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C03') },
+  configUnavailable: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C21') },
   sourceList: { entity: 'none', rendererFamily: 'source', keymap: 'menu', normalize: keep, screenId: fixed('S01') },
   sourceDetail: { entity: 'source', rendererFamily: 'source', keymap: 'menu', normalize: source, screenId: fixed('K02') },
   sourceMore: { entity: 'source', rendererFamily: 'source', keymap: 'menu', normalize: source, screenId: fixed('S02') },
@@ -221,7 +226,8 @@ export const TUI_ROUTE_DEFINITIONS = {
     ({ type: 'S04', id: 'S05', location: 'S06', refPolicy: 'S07', ref: 'S08', subdir: 'S09' } as const)[route.step] },
   sourceEdit: { entity: 'source', rendererFamily: 'source', keymap: 'menuOrTextInput', normalize: source, screenId: fixed('S14') },
   sourceSave: { entity: 'none', rendererFamily: 'source', keymap: 'menu', normalize: keep, screenId: fixed('S15') },
-  configSave: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C12') },
+  configSave: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: (route) =>
+    route.view === 'changes' ? 'C10' : 'C09' },
   scriptTimeout: { entity: 'none', rendererFamily: 'operation', keymap: 'menuOrTextInput', normalize: keep, screenId: fixed('P07') },
   sourceRemoveBlocked: { entity: 'source', rendererFamily: 'source', keymap: 'menu', normalize: source, screenId: fixed('S17') },
   issueList: { entity: 'none', rendererFamily: 'issue', keymap: 'menu', normalize: keep, screenId: (_route, { controller }) => {

@@ -33,7 +33,7 @@ import {
   statusTargetSharedNative,
 } from '../commands/status-v6.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
-import type { RebuildCommandResult } from '../commands/rebuild-command.js';
+import type { PreApplyAuthorizationTarget, RebuildCommandResult } from '../commands/rebuild-command.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
 import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
 import type { OperationPlan } from '../commands/operation-plan.js';
@@ -277,6 +277,38 @@ export interface PluginWriteTaskExecutionResult extends RebuildCommandResult {
 
 export type OperationKind = OperationIntent['kind'];
 
+export interface ConfigOperationChange {
+  key: string;
+  title: string;
+  before: string;
+  after: string;
+  children?: Array<{ property: string; before: string; after: string; private?: boolean }>;
+}
+
+export interface ConfigSaveBatchGroup {
+  scope: Scope;
+  updates?: Record<string, unknown>;
+  removeKeys?: string[];
+  sensitiveKeys?: string[];
+  privateKeys?: string[];
+  changes?: ConfigOperationChange[];
+}
+
+export interface ConfigSaveBatchGroupResult {
+  scope: Scope;
+  status: 'succeeded' | 'failed';
+  configSaved: boolean;
+  applyRequested: boolean;
+  applyStatus: 'notRequested' | 'notNeeded' | 'succeeded' | 'failed';
+  errorCode?: string;
+  execution?: unknown;
+}
+
+export interface ConfigSaveBatchExecutionResult {
+  status: 'succeeded' | 'partial' | 'failed';
+  groups: ConfigSaveBatchGroupResult[];
+}
+
 export interface IssueOrigin {
   issueId: string;
   issueKey: string;
@@ -335,26 +367,21 @@ export type OperationIntent =
       removeKeys?: string[];
       sensitiveKeys?: string[];
       privateKeys?: string[];
-      changes?: Array<{
-        key: string;
-        title: string;
-        before: string;
-        after: string;
-        children?: Array<{ property: string; before: string; after: string; private?: boolean }>;
-      }>;
+      changes?: ConfigOperationChange[];
+    }
+  | {
+      kind: 'configSaveBatch';
+      pluginId: string;
+      apply: boolean;
+      scriptTimeoutMs?: number;
+      groups: ConfigSaveBatchGroup[];
     }
   | {
       kind: 'configReset';
       pluginId: string;
       scope: Scope;
       expectedStoreState?: 'invalid';
-      changes?: Array<{
-        key: string;
-        title: string;
-        before: string;
-        after: string;
-        children?: Array<{ property: string; before: string; after: string; private?: boolean }>;
-      }>;
+      changes?: ConfigOperationChange[];
     }
   | {
       kind: 'sourceMutation';
@@ -376,6 +403,18 @@ export type OperationIntent =
   | {
       kind: 'catalogSourcesRecovery';
     };
+
+export interface ConfigOperationEvidence {
+  scope: Scope;
+  schemaIdentity?: string;
+  storeDigest: string;
+  impactState?: 'known' | 'unknown';
+  noEffectiveChange?: true;
+  affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
+  preApplyAuthorization?: PreApplyAuthorizationTarget[];
+  sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[] }>;
+  shareability?: 'verified' | 'unverified';
+}
 
 export interface OperationEvidence {
   catalog: {
@@ -408,16 +447,13 @@ export interface OperationEvidence {
     packageName: '@openai/codex';
     version: string;
   };
-  config?: {
-    scope: Scope;
-    schemaIdentity?: string;
-    storeDigest: string;
-    impactState?: 'known' | 'unknown';
-    noEffectiveChange?: true;
-    affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
-    shareability?: 'verified' | 'unverified';
-    sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[] }>;
-    preApplyAuthorization?: import('../commands/rebuild-command.js').PreApplyAuthorizationTarget[];
+  config?: ConfigOperationEvidence;
+  configBatch?: {
+    groups: Array<{
+      scope: Scope;
+      config: ConfigOperationEvidence;
+      targetFingerprint: string;
+    }>;
   };
   resetTarget?: {
     sourceId: string;
@@ -626,6 +662,14 @@ export interface OperationResultSummary {
   configApplySkippedReason?: 'invalidConfig';
   configScope?: Scope;
   configApplyRetryAvailable?: boolean;
+  configRetryApply?: boolean;
+  configGroups?: Array<{
+    scope: Scope;
+    configSaved: boolean;
+    applyRequested: boolean;
+    applyStatus: ConfigSaveBatchGroupResult['applyStatus'];
+    errorCode?: string;
+  }>;
   resetDisposition?: 'absent' | 'deletedFile' | 'unlinkedSymlink' | 'quarantinedDirectory';
   quarantineBasename?: string;
   changes?: string[];
@@ -1164,16 +1208,25 @@ export function pluginWriteTaskFailedRequestedTargets(
 }
 
 function collectOperationSensitiveValues(intent: OperationIntent): string[] {
-  if (intent.kind !== 'configSave') return [];
-  const sensitiveKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
   const values: string[] = [];
   const visit = (value: unknown): void => {
     if (typeof value === 'string') values.push(value);
     else if (Array.isArray(value)) value.forEach(visit);
     else if (value && typeof value === 'object') Object.values(value as Record<string, unknown>).forEach(visit);
   };
-  for (const [key, value] of Object.entries(intent.updates ?? {})) {
-    if (sensitiveKeys.has(key)) visit(value);
+  const collect = (operation: Pick<ConfigSaveBatchGroup,
+    'updates' | 'sensitiveKeys' | 'privateKeys'>): void => {
+    const sensitiveKeys = new Set([
+      ...(operation.sensitiveKeys ?? []),
+      ...(operation.privateKeys ?? []),
+    ]);
+    for (const [key, value] of Object.entries(operation.updates ?? {})) {
+      if (sensitiveKeys.has(key)) visit(value);
+    }
+  };
+  if (intent.kind === 'configSave') collect(intent);
+  else if (intent.kind === 'configSaveBatch') {
+    for (const group of intent.groups) collect(group);
   }
   return values;
 }
@@ -1281,10 +1334,19 @@ export function operationEvidenceFingerprint(evidence: OperationEvidence): strin
   const config = staleEvidence.config
     ? (({ shareability: _shareability, ...identity }) => identity)(staleEvidence.config)
     : undefined;
+  const configBatch = staleEvidence.configBatch
+    ? {
+        groups: staleEvidence.configBatch.groups.map((group) => ({
+          ...group,
+          config: (({ shareability: _shareability, ...identity }) => identity)(group.config),
+        })),
+      }
+    : undefined;
   return crypto.createHash('sha256')
     .update(JSON.stringify(stableValue({
       ...staleEvidence,
       ...(config ? { config } : {}),
+      ...(configBatch ? { configBatch } : {}),
     })))
     .digest('hex');
 }
@@ -2005,7 +2067,7 @@ export class TuiController {
       this.#router.beginPortableFlow(intent.pluginId);
       return;
     }
-    if (intent.kind === 'configSave' || intent.kind === 'configReset') {
+    if (intent.kind === 'configSave' || intent.kind === 'configSaveBatch' || intent.kind === 'configReset') {
       if (active?.kind === 'configEdit') return;
       const route = this.#router.snapshot.current.route;
       if ((route.name === 'pluginPreview' || route.name === 'pluginDetail')
@@ -2054,7 +2116,7 @@ export class TuiController {
     }
     if (active?.parentFlowId) return this.#normalizeRoute(active.returnTarget);
     if (active && (intent.kind === 'portableInstall'
-      || intent.kind === 'configSave' || intent.kind === 'configReset')) {
+      || intent.kind === 'configSave' || intent.kind === 'configSaveBatch' || intent.kind === 'configReset')) {
       return this.#normalizeRoute(active.returnTarget);
     }
     if (intent.kind === 'pluginWrite') {
@@ -2069,7 +2131,8 @@ export class TuiController {
     }
     if (intent.kind === 'pluginWriteBatch') return { name: 'pluginList', mode: 'installed' };
     if (intent.kind === 'pluginWriteTask') return { name: 'pluginList', mode: 'installed' };
-    if (intent.kind === 'portableInstall' || intent.kind === 'configSave' || intent.kind === 'configReset') {
+    if (intent.kind === 'portableInstall' || intent.kind === 'configSave'
+      || intent.kind === 'configSaveBatch' || intent.kind === 'configReset') {
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
     }
     if (intent.kind === 'sourceMutation' && intent.action === 'update') {
@@ -2550,7 +2613,7 @@ export class TuiController {
     this.#cancelInstallPlacementRequest();
     const current = this.#router.snapshot.current.route;
     if (current.name === 'portableBlocker' && current.code === 'requiredConfigMissing'
-      && route.name === 'configLayer' && route.pluginId === current.pluginId) {
+      && route.name === 'configFields' && route.pluginId === current.pluginId) {
       this.#portableRepreparePluginId = current.pluginId;
     }
     this.#discardPortableDraftForRoute(route);
@@ -2743,7 +2806,8 @@ export class TuiController {
       return;
     }
     if (this.#result?.state === 'succeeded'
-      && (this.#result.operationKind === 'configSave' || this.#result.operationKind === 'configReset')
+      && (this.#result.operationKind === 'configSave' || this.#result.operationKind === 'configSaveBatch'
+        || this.#result.operationKind === 'configReset')
       && this.#result.pluginId
       && this.#router.resetConfigFlow(this.#result.pluginId, target)) {
       this.#result = undefined;
@@ -2769,7 +2833,8 @@ export class TuiController {
       || !('returnRoute' in result) || !result.returnRoute) return;
     const returnRoute = this.#normalizeRoute(result.returnRoute);
     this.#router.back();
-    const kind = result.operationKind === 'configSave' || result.operationKind === 'configReset'
+    const kind = result.operationKind === 'configSave' || result.operationKind === 'configSaveBatch'
+      || result.operationKind === 'configReset'
       ? 'configEdit' as const
       : result.operationKind === 'portableInstall'
         ? 'portableInstall' as const
@@ -3957,7 +4022,8 @@ export class TuiController {
 
   async #logOperationError(error: unknown, code: string, intent: OperationIntent): Promise<void> {
     await this.#logErrorSafe(error, code, {
-      privateConfigOperation: intent.kind === 'configSave' || intent.kind === 'configReset'
+      privateConfigOperation: intent.kind === 'configSave' || intent.kind === 'configSaveBatch'
+        || intent.kind === 'configReset'
         || intent.kind === 'sourceMutation',
     });
   }
@@ -4271,8 +4337,12 @@ export class TuiController {
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         const configCommitted = typeof execution === 'object'
           && execution !== null
-          && (execution as { configWrite?: unknown }).configWrite === 'succeeded';
-        if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
+          && ((execution as { configWrite?: unknown }).configWrite === 'succeeded'
+            || Array.isArray((execution as { groups?: unknown }).groups)
+              && ((execution as ConfigSaveBatchExecutionResult).groups
+                .some((group) => group.configSaved)));
+        if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configSaveBatch'
+          || ticket.intent.kind === 'configReset')
           && configCommitted) {
           const baseSummary = operationResultSummary(ticket.intent, execution);
           const elapsedMs = Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs);
@@ -4444,6 +4514,15 @@ export class TuiController {
           this.#publish();
           return cloneFrozen(result);
         }
+        if (ticket.intent.kind === 'configSaveBatch') {
+          return this.#setBlocked(operationId, 'operationFailed', {
+            intent: ticket.intent,
+            navigation: 'result',
+            returnRoute: ticket.returnRoute,
+            summary,
+            writeMayHaveCompleted: false,
+          });
+        }
         return this.#setBlocked(operationId, 'operationFailed', {
           intent: ticket.intent,
           navigation: 'result',
@@ -4473,7 +4552,8 @@ export class TuiController {
               : ticket.returnRoute,
         )),
       };
-      if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
+      if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configSaveBatch'
+        || ticket.intent.kind === 'configReset')
         && this.#portableRepreparePluginId === ticket.intent.pluginId) {
         this.#operationDiagnostics.delete(operationId);
         this.#portableRepreparePluginId = undefined;
@@ -5130,6 +5210,49 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       })),
     };
   }
+  if (intent.kind === 'configSaveBatch') {
+    const batch = execution as ConfigSaveBatchExecutionResult;
+    const savedCount = batch.groups.filter((group) => group.configSaved).length;
+    const failedCount = batch.groups.filter((group) => group.status === 'failed').length;
+    const retryScopes = batch.groups.filter((group) =>
+      group.configSaved && group.applyStatus === 'failed' && group.errorCode !== 'invalidConfig');
+    const invalidConfig = savedCount === batch.groups.length
+      && batch.groups.some((group) => group.configSaved && group.errorCode === 'invalidConfig')
+      && retryScopes.length === 0;
+    return {
+      code: failedCount > 0
+        ? savedCount > 0 ? 'operationPartial' : 'operationFailed'
+        : 'operationSucceeded',
+      message: invalidConfig
+        ? '设置已保存，但没有应用。当前配置仍无效。'
+        : failedCount > 0
+        ? savedCount > 0
+          ? `已保存 ${savedCount} 个设置层；${failedCount} 个设置层失败。`
+          : '设置没有保存。'
+        : '设置已保存。',
+      pluginId: intent.pluginId,
+      configApplyRetryAvailable: retryScopes.length > 0,
+      ...(invalidConfig ? { configApplySkippedReason: 'invalidConfig' as const } : {}),
+      configApplied: intent.apply
+        ? batch.groups.some((group) => group.applyStatus === 'succeeded')
+        : false,
+      configGroups: batch.groups.map((group) => ({
+        scope: group.scope,
+        configSaved: group.configSaved,
+        applyRequested: group.applyRequested,
+        applyStatus: group.applyStatus,
+        ...(group.errorCode ? { errorCode: safeDiagnosticCode(group.errorCode, 'configWriteFailed') } : {}),
+      })),
+      messages: batch.groups.map((group) => {
+        const label = group.scope === 'project' ? '当前项目' : '个人默认';
+        return group.configSaved
+          ? `${label}已保存${group.errorCode === 'invalidConfig'
+            ? '，但当前配置无效，未应用'
+            : group.applyStatus === 'failed' ? '，但应用失败' : ''}。`
+          : `${label}保存失败。`;
+      }),
+    };
+  }
   if (intent.kind === 'configSave' || intent.kind === 'configReset') {
     const rawApply = typeof execution === 'object' && execution !== null
       && typeof (execution as { apply?: unknown }).apply === 'object'
@@ -5203,6 +5326,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       configScope: intent.scope,
       configApplyRetryAvailable: intent.kind === 'configSave'
         && intent.apply && !invalidConfig && (applyState === 'partial' || applyState === 'unavailable'),
+      ...(intent.kind === 'configSave' && intent.retryApply ? { configRetryApply: true } : {}),
       ...(publicMessages.length > 0 ? { messages: publicMessages } : {}),
       ...(intent.kind === 'configSave'
         ? { configApplied: applyState === 'succeeded' || applyState === 'partial' }

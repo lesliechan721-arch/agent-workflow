@@ -17,8 +17,8 @@
 | --- | --- | --- |
 | 1 | 固定布局、卡片、键盘和焦点基础 | checkpoint `73e6cb11`；两项评审问题已修复并验证 |
 | 2 | 统一插件库、详情、多选、内容和关系 | checkpoint `9b374adb`；统一详情、按需内容和双平台状态已核验 |
-| 3 | 原生及通用安装、维护和结果 | 完成；安装平台、精确目标和结果导航已验证，待 checkpoint |
-| 4 | 值→目标→分组、多目标配置草稿 | 待实施 |
+| 3 | 原生及通用安装、维护和结果 | checkpoint `da0aa01a`；补充测试 `38b1c3b4` |
+| 4 | 值→目标→分组、多目标配置草稿 | 已完成验证，准备 checkpoint；三项独立评审问题已修复 |
 | 5 | 来源检查及完整生命周期、存储和诊断 | 待实施 |
 | 6 | 项目声明提醒及精确同步 | 待实施 |
 | 最终 | 整体测试、真实终端验证、独立评审与修复 | 待实施 |
@@ -51,3 +51,11 @@
 - Portable 只读复查不执行 add；失败组合按 Agent 分组重新准备和执行，不重放成功组合。结果保留 Skill/Agent 组合身份。
 - 独立评审发现阻断返回平台、成功关闭父安装步骤、多 Agent 结果折叠三项中等问题，均已修复并以真实 Ink 路径验证。
 - TypeScript、diff 检查退出 0；controller/session/router 218 项、Console 整文件 353 项、Portable 整文件 70 项、后端 integration 25 项及 runtime 61 项通过。另补无共同 scope 的逐平台精确选择双尺寸 2 项通过。
+
+- 阶段 3 补充：单插件 restore/update 与多位置 uninstall 成功稳定详情 3 项定向通过，另提交 `38b1c3b4`。
+
+## 阶段 4 过程证据
+
+- 候选值留在私有 UI state，目标选择后合并到 scope 草稿；多目标统一 Review，project→user 串行保存，每层分别报告 configSaved/applyStatus。
+- 独立评审发现旧恢复入口空页、单层 retry/reset 清空其他层草稿、后续层 raw store 漂移未拦截三项中等问题。已分别修复并补真实交互/隔离存储测试。
+- 新 UI 合同 5 项通过；后端 4 项及单层回归 5 项通过，TypeScript 与 diff 检查通过。旧配置测试迁移完成。最终 Console 358/358，controller、session-host 与配置组合 224/224 均完整退出 0；`pnpm build`、`git diff --check` 退出 0。全部实施代理已停止写入。

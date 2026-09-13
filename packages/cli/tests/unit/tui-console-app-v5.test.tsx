@@ -90,6 +90,23 @@ const evidence: OperationEvidence = {
 };
 
 function evidenceForIntent(intent: OperationIntent): OperationEvidence {
+  if (intent.kind === 'configSaveBatch') {
+    return {
+      ...evidence,
+      configBatch: {
+        groups: intent.groups.map((group) => ({
+          scope: group.scope,
+          targetFingerprint: `sha256:config-${group.scope}`,
+          config: {
+            scope: group.scope,
+            storeDigest: `sha256:config-store-${group.scope}`,
+            impactState: 'known',
+            affectedTargets: [{ platform: 'codex', scope: group.scope }],
+          },
+        })),
+      },
+    };
+  }
   if (intent.kind === 'configSave') {
     return {
       ...evidence,
@@ -1063,7 +1080,9 @@ async function chooseConfigSave(
 ): Promise<void> {
   expect(value.snapshot.router.current.route.name).toBe('configSave');
   await input(instance, ...(action === 'only' ? ['\u001B[B'] : []), '\r');
-  await nextTurn(3);
+  for (let index = 0; index < 12 && value.snapshot.router.current.route.name === 'reviewPreparing'; index += 1) {
+    await nextTurn();
+  }
   expect(value.snapshot.router.current.route.name).toBe('review');
 }
 
@@ -1071,9 +1090,27 @@ async function openConfigSave(
   instance: ReturnType<typeof render>,
   value: TuiController,
 ): Promise<void> {
+  if (value.snapshot.router.current.route.name === 'configLayer') {
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(3);
+  }
   expect(value.snapshot.router.current.route.name).toBe('configFields');
   await input(instance, 's');
   expect(value.snapshot.router.current.route.name).toBe('configSave');
+}
+
+async function chooseConfigTarget(
+  instance: ReturnType<typeof render>,
+  value: TuiController,
+  scope: 'project' | 'user',
+): Promise<void> {
+  expect(value.snapshot.router.current.route.name).toBe('configLayer');
+  await focusAction(instance, scope === 'project' ? '当前项目' : '个人默认');
+  await input(instance, '\r');
+  await nextTurn(3);
+  expect(value.snapshot.router.current.route).toMatchObject({
+    name: 'configFields', layer: { scope: 'effective' },
+  });
 }
 
 async function chooseSourceSave(
@@ -1089,14 +1126,15 @@ async function chooseSourceSave(
 
 describe('ConsoleAppV4', () => {
   it('keeps the complete reachable screen map free of duplicate identities', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(113);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 113);
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(120);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 120);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
       'G01', 'G02', 'G03', 'G04', 'G05',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
       'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P20', 'P21', 'P22',
       'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
-      'C12', 'C13', 'C14', 'C15', 'C16', 'C17',
+      'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20',
+      'C21', 'C22', 'C23',
       'S01', 'S02', 'S03', 'S04', 'S05', 'S06', 'S07', 'S08', 'S09',
       'S10', 'S11', 'S12', 'S13', 'S14', 'S15', 'S16', 'S17', 'S18',
       'I01', 'I02', 'I03', 'I04', 'I05', 'I06', 'I07', 'I08', 'I09',
@@ -5901,7 +5939,7 @@ describe('ConsoleAppV4', () => {
     expect(exit).toHaveBeenCalledOnce();
   });
 
-  it('uses visible group tabs and opens a focused effective field through layer selection into its editor', async () => {
+  it('uses visible group tabs and edits a focused effective field before selecting its save target', async () => {
     const reached = new Set<ConsoleV4ScreenId>();
     const getConfigPage = vi.fn(async (
       pluginId: string,
@@ -5936,12 +5974,12 @@ describe('ConsoleAppV4', () => {
     await focusAction(instance, '插件设置');
     await input(instance, '\r');
     await nextTurn(3);
-    expect(reached).toContain('C02');
+    expect(reached).toContain('C01');
     const effectiveFrame = instance.lastFrame() ?? '';
-    expect(effectiveFrame).toContain('当前插件设置');
+    expect(effectiveFrame).toContain('先编辑值，再选择保存位置');
     expect(effectiveFrame).toContain('基本设置');
-    expect(effectiveFrame).toContain('来自个人默认');
-    expect(effectiveFrame).toContain('没有任何位置提供值');
+    expect(effectiveFrame).toContain('个人默认');
+    expect(effectiveFrame).toContain('当前有效：未设置');
     expect(effectiveFrame).not.toContain('保存修改');
     expect(effectiveFrame).toContain('快速方案 1');
     expect(effectiveFrame).toContain('› level');
@@ -5958,41 +5996,36 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('› level');
 
     await input(instance, '\r');
-    expect(reached).toContain('C01');
+    expect(reached).toContain('C03');
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configLayer', fieldKey: 'level', groupId: 'basic',
+      name: 'configFieldAction', fieldKey: 'level', layer: { scope: 'effective' },
+    });
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configFieldEditor', fieldKey: 'level', layer: { scope: 'effective' },
+    });
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(3);
+    expect(reached).toContain('C07');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configLayer', fieldKey: 'level',
     });
     const chooserFrame = instance.lastFrame() ?? '';
-    expect(chooserFrame).toContain('修改“level”');
+    expect(chooserFrame).toContain('“level”保存到哪里？');
     expect(chooserFrame).toContain('个人默认');
     expect(chooserFrame).toContain('当前项目');
-    expect(chooserFrame).not.toContain('有效设置');
     const layerRoute = value.snapshot.router.current.route;
     await input(instance, '\t');
     expect(value.snapshot.router.current.route).toEqual(layerRoute);
 
-    await input(instance, '\r');
-    await nextTurn(3);
-    expect(reached).toContain('C04');
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFieldAction', fieldKey: 'level',
-    });
-    await input(instance, '\r');
-    expect(reached).toContain('C05');
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFieldEditor', fieldKey: 'level',
-    });
     await input(instance, '\u001B[B', '\r');
+    await nextTurn(3);
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFieldAction', fieldKey: 'level',
-    });
-    await input(instance, 'b');
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'user' },
+      name: 'configFields', layer: { scope: 'effective' },
     });
     expect(value.snapshot.router.current.context).toMatchObject({ configGroupId: 'basic', focusIndex: 0 });
     expect(instance.lastFrame()).toContain('› level');
-    expect(instance.lastFrame()).toContain('平衡');
+    expect(instance.lastFrame()).toContain('拟保存：个人默认');
   });
 
   it('opens the preview settings action on the effective read-only homepage', async () => {
@@ -6012,7 +6045,7 @@ describe('ConsoleAppV4', () => {
       pluginId: 'official/review-gate',
       layer: { scope: 'effective' },
     });
-    expect(instance.lastFrame()).toContain('当前插件设置');
+    expect(instance.lastFrame()).toContain('先编辑值，再选择保存位置');
     expect(instance.lastFrame()).not.toContain('保存修改');
   });
 
@@ -6104,7 +6137,8 @@ describe('ConsoleAppV4', () => {
     await confirmReview(instance, value);
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
-      updates: { enabled: true },
+      kind: 'configSaveBatch',
+      groups: [expect.objectContaining({ scope: 'user', updates: { enabled: true } })],
     }), expect.objectContaining(evidence));
 
     instance.unmount();
@@ -6221,14 +6255,18 @@ describe('ConsoleAppV4', () => {
     await confirmReview(instance, value);
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
-      updates: {
-        settings: {
-          owner: 'Bob',
-          region: 'west',
-          token: 'SECRET-BYTES',
-          new_key: 'ready',
+      kind: 'configSaveBatch',
+      groups: [expect.objectContaining({
+        scope: 'user',
+        updates: {
+          settings: {
+            owner: 'Bob',
+            region: 'west',
+            token: 'SECRET-BYTES',
+            new_key: 'ready',
+          },
         },
-      },
+      })],
     }), expect.objectContaining(evidence));
   });
 
@@ -6292,9 +6330,13 @@ describe('ConsoleAppV4', () => {
     await confirmReview(instance, value);
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
-      updates: {
-        settings: { owner: 'Service', region: 'west', token: 'preset-secret' },
-      },
+      kind: 'configSaveBatch',
+      groups: [expect.objectContaining({
+        scope: 'user',
+        updates: {
+          settings: { owner: 'Service', region: 'west', token: 'preset-secret' },
+        },
+      })],
     }), expect.objectContaining(evidence));
   });
 
@@ -6352,7 +6394,8 @@ describe('ConsoleAppV4', () => {
     await confirmReview(instance, value);
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
-      updates: { settings: second.value },
+      kind: 'configSaveBatch',
+      groups: [expect.objectContaining({ scope: 'user', updates: { settings: second.value } })],
     }), expect.objectContaining(evidence));
   });
 
@@ -6467,17 +6510,18 @@ describe('ConsoleAppV4', () => {
       name: 'configFieldEditor', fieldKey: 'settings', editor: 'object',
     });
     expect(instance.lastFrame()).toContain('仅开启');
-    await input(instance, '\u001B[B', '\r');
+    await input(instance, '\u001B[B', '\r', '\u001B[B', '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFields', pluginId: page.pluginId,
     });
     await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'only');
-    expect(value.snapshot.activeReview?.operationKind).toBe('configSave');
+    expect(value.snapshot.activeReview?.operationKind).toBe('configSaveBatch');
     await confirmReview(instance, value);
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
-      updates: { settings: { enabled: true } },
+      kind: 'configSaveBatch',
+      groups: [expect.objectContaining({ scope: 'user', updates: { settings: { enabled: true } } })],
     }), expect.objectContaining(evidence));
 
     instance.unmount();
@@ -6678,7 +6722,7 @@ describe('ConsoleAppV4', () => {
     await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'only');
 
-    expect(value.snapshot.activeReview?.operationKind).toBe('configSave');
+    expect(value.snapshot.activeReview?.operationKind).toBe('configSaveBatch');
     expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         title: '个人默认 · 删除 服务设置 中的值',
@@ -6707,7 +6751,7 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.activeReview?.operationKind).toBe('configReset');
     expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        title: '个人默认 · 服务设置',
+        title: '当前项目 · 服务设置',
         description: expect.stringContaining('已设置 · 3 项'),
       }),
     ]));
@@ -6719,7 +6763,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('preset-secret');
   });
 
-  it('returns editor completion or cancellation to the original mutable field and then restores the config origin', async () => {
+  it('returns editor completion or cancellation to the effective field and then restores the config origin', async () => {
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
     });
@@ -6732,8 +6776,6 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     await input(instance, '\r', '\r');
     await nextTurn(3);
-    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFieldAction', fieldKey: 'level' });
-    await input(instance, '\r');
     expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', fieldKey: 'level' });
     await input(instance, 'b');
     expect(value.snapshot.router.current.route).toMatchObject({
@@ -6742,16 +6784,10 @@ describe('ConsoleAppV4', () => {
     await input(instance, 'b');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFields',
-      layer: { scope: 'user' },
+      layer: { scope: 'effective' },
     });
     expect(value.snapshot.router.current.context).toMatchObject({ configGroupId: 'basic', focusIndex: 0 });
 
-    await input(instance, 'b');
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields',
-      layer: { scope: 'effective' },
-    });
-    expect(value.snapshot.router.current.context.focusIndex).toBe(0);
     await input(instance, 'b');
     expect(value.snapshot.router.current.route).toEqual({
       name: 'pluginDetail',
@@ -6775,7 +6811,7 @@ describe('ConsoleAppV4', () => {
       openSettings: [] as string[],
       leaveResult: '\u001B',
     },
-  ])('clears the mounted C14 settings flow for $label and preserves the original Back stack', async ({
+  ])('clears the mounted C12 settings flow for $label and preserves the original Back stack', async ({
     previous,
     origin,
     openSettings,
@@ -6784,9 +6820,11 @@ describe('ConsoleAppV4', () => {
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
       executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded',
-        overallState: 'succeeded',
-        apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+        status: 'succeeded',
+        groups: [{
+          scope: 'user', status: 'succeeded', configSaved: true,
+          applyRequested: false, applyStatus: 'notRequested',
+        }],
       }),
     });
     value.push(previous);
@@ -6805,13 +6843,13 @@ describe('ConsoleAppV4', () => {
       await input(instance, '\r');
     }
     await nextTurn(3);
-    await input(instance, '\r', '\r', '\u001B[B', '\r');
+    await input(instance, '\r', '\r', '\u001B[B', '\r', '\u001B[B', '\r');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
     await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'only');
     await input(instance, '\r');
     await nextTurn(5);
-    expect(screens).toContain('C14');
+    expect(screens).toContain('C12');
 
     if (leaveResult === '\u001B') {
       instance.stdin.write(leaveResult);
@@ -6845,7 +6883,7 @@ describe('ConsoleAppV4', () => {
       onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(4);
 
-    expect(screens).toContain('C03');
+    expect(screens).toContain('C01');
     expect(instance.lastFrame()).toContain('高级设置');
     expect(instance.lastFrame()).not.toContain('字段级高级模型');
     const depth = value.snapshot.router.depth;
@@ -6875,7 +6913,7 @@ describe('ConsoleAppV4', () => {
     expect(frame.split('\n').length).toBeLessThanOrEqual(24);
   });
 
-  it('applies an effective preset to one selected layer, preserves its draft across tabs, and keeps u field-only', async () => {
+  it('applies an effective preset to one selected target and preserves its draft across tabs', async () => {
     const page = configPage();
     page.presets[0]!.privateFieldTitles = ['token'];
     const value = controller({
@@ -6898,33 +6936,29 @@ describe('ConsoleAppV4', () => {
     await nextTurn(5);
 
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'user' },
+      name: 'configFields', layer: { scope: 'effective' },
     });
     expect(value.snapshot.router.current.context).toMatchObject({ configGroupId: 'basic', focusIndex: 0 });
-    expect(instance.lastFrame()).toContain('2 项未保存');
+    expect(instance.lastFrame()).toContain('2 项待保存');
     expect(instance.lastFrame()).toContain('token需手动输入');
     await input(instance, '\u001B[C', '\u001B[C');
     expect(value.snapshot.router.current.context.configGroupId).toBe('@presets');
-    await input(instance, '\r');
+    await input(instance, '\r', '\r');
     expect(value.snapshot.router.current.context.configGroupId).toBe('basic');
-    expect(instance.lastFrame()).toContain('2 项未保存');
+    expect(instance.lastFrame()).toContain('2 项待保存');
     await input(instance, '\u001B[C');
-    expect(instance.lastFrame()).toContain('2 项未保存');
+    expect(instance.lastFrame()).toContain('2 项待保存');
     expect(instance.lastFrame()).toContain('› model');
     await input(instance, '\u001B[D');
-    expect(instance.lastFrame()).toContain('平衡');
-    await input(instance, 'u');
-    expect(instance.lastFrame()).toContain('恢复继承');
-
-    await input(instance, ...Array.from({ length: 7 }, () => '\u001B[B'));
-    expect(instance.lastFrame()).toContain('› 查看保存汇总');
-    await input(instance, 'u');
+    expect(instance.lastFrame()).toContain('拟保存：当前项目');
+    expect(instance.lastFrame()).toContain('保存设置（2）');
+    await input(instance, 's');
+    expect(value.snapshot.router.current.route.name).toBe('configSave');
     expect(instance.lastFrame()).toContain('2 项未保存');
-    await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'only');
   });
 
-  it('does not apply a preset after leaving its mutable layer while the page is loading', async () => {
+  it('does not apply a preset after leaving its target picker while a target page is loading', async () => {
     const page = configPage();
     let resolveUser!: (page: ConfigPageViewModel) => void;
     const userPage = new Promise<ConfigPageViewModel>((resolve) => {
@@ -6944,7 +6978,7 @@ describe('ConsoleAppV4', () => {
 
     await input(instance, '\u001B[C', '\u001B[C', '\r', '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'user' },
+      name: 'configLayer', presetId: 'team',
     });
     await input(instance, 'b');
     await nextTurn(2);
@@ -6952,15 +6986,15 @@ describe('ConsoleAppV4', () => {
       name: 'configFields', layer: { scope: 'effective', projectLayer: 'shared' },
     });
 
-    await input(instance, '\u001B[D', '\u001B[D', '\r', '\r');
+    await input(instance, '\r');
     resolveUser({ ...page, layer: { scope: 'user', projectLayer: 'shared' } });
     await nextTurn(5);
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFieldAction', fieldKey: 'level',
+      name: 'configFieldEditor', fieldKey: 'level',
     });
     await input(instance, 'b');
     expect(instance.lastFrame()).toContain('严格');
-    expect(instance.lastFrame()).not.toContain('项未保存');
+    expect(instance.lastFrame()).not.toContain('项待保存');
   });
 
   it('shows one fallback plugin-settings tab when presentation groups are absent', async () => {
@@ -6998,15 +7032,11 @@ describe('ConsoleAppV4', () => {
       loadStatus: vi.fn().mockResolvedValueOnce(loadResult()).mockResolvedValue(partialReload),
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
       executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded',
-        overallState: 'partial',
-        apply: {
-          state: 'partial',
-          targetResults: [
-            { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
-            { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
-          ],
-        },
+        status: 'partial',
+        groups: [{
+          scope: 'user', status: 'failed', configSaved: true,
+          applyRequested: true, applyStatus: 'failed', errorCode: 'runtimeApplyFailed',
+        }],
       }),
     });
     await partial.load();
@@ -7020,17 +7050,9 @@ describe('ConsoleAppV4', () => {
     await chooseConfigSave(partialInstance, partial, 'apply');
     await confirmReview(partialInstance, partial);
     await nextTurn(4);
-    expect(partialScreens).toContain('C15');
+    expect(partialScreens).toContain('C13');
     expect(partialInstance.lastFrame()).toContain('部分应用失败');
-    expect(partialInstance.lastFrame()).toContain('删除字段或重置设置层');
-    expect(partialInstance.lastFrame()).toContain('选择清理');
-    expect(partialInstance.lastFrame()).toContain('重新安装或同步');
-    await input(partialInstance, '\u001B[B', '\r');
-    expect(partial.snapshot.router.current.route).toMatchObject({
-      name: 'pluginDetail', pluginId: 'team-tools/review-gate',
-    });
-    expect(partial.snapshot.result).toBeUndefined();
-    expect(partial.snapshot.router.depth).toBe(2);
+    expect(partialInstance.lastFrame()).toContain('重试应用');
 
     const resetScreens = new Set<ConsoleV4ScreenId>();
     const reset = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })) });
@@ -7039,7 +7061,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
     await input(resetInstance, ...Array.from({ length: 7 }, () => '\u001B[B'), '\r');
     await nextTurn(3);
-    expect(resetScreens).toContain('C16');
+    expect(resetScreens).toContain('C22');
     expect(resetInstance.lastFrame()).toContain('当前项目');
     expect(resetInstance.lastFrame()).toContain('个人默认保持不变');
 
@@ -7053,7 +7075,7 @@ describe('ConsoleAppV4', () => {
     unavailable.replace({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
     const unavailableInstance = render(<ConsoleAppV4 controller={unavailable} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => unavailableScreens.add(screen)} />);
     await nextTurn(5);
-    expect(unavailableScreens).toContain('C17');
+    expect(unavailableScreens).toContain('C21');
     expect(unavailableInstance.lastFrame()).toContain('插件定义或来源不可用');
     expect(unavailableInstance.lastFrame()).toContain('修复插件来源');
     expect(unavailableInstance.lastFrame()).not.toContain('aw catalog source sync team-tools');
@@ -7363,29 +7385,27 @@ describe('ConsoleAppV4', () => {
     await openReset('project');
   });
 
-  it('does not let an aborted config layer response overwrite the newer layer page', async () => {
+  it('does not let an aborted settings-layer response overwrite the effective page', async () => {
     let resolveUser!: (page: ConfigPageViewModel) => void;
     const userPage = new Promise<ConfigPageViewModel>((resolve) => {
       resolveUser = resolve;
     });
-    const projectPage = configPage();
-    projectPage.groups[0]!.fields[0]!.title = '新项目字段';
+    const effectivePage = configPage();
+    effectivePage.groups[0]!.fields[0]!.effectiveDisplayValue = '当前有效标记';
     const getConfigPage = vi.fn((_pluginId: string, layer: ConfigPageViewModel['layer']) =>
-      layer.scope === 'user' ? userPage : Promise.resolve({ ...projectPage, layer }));
+      layer.scope === 'user' ? userPage : Promise.resolve({ ...effectivePage, layer }));
     const value = controller({ getConfigPage });
-    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'effective', projectLayer: 'shared' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(3);
-    value.replace({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'project', projectLayer: 'shared' } });
     await nextTurn(4);
-    expect(instance.lastFrame()).toContain('新项目字段');
+    expect(instance.lastFrame()).toContain('当前有效标记');
 
     const oldPage = configPage();
-    oldPage.groups[0]!.fields[0]!.title = '过期个人字段';
+    oldPage.groups[0]!.fields[0]!.effectiveDisplayValue = '过期个人标记';
     resolveUser(oldPage);
     await nextTurn(4);
-    expect(instance.lastFrame()).toContain('新项目字段');
-    expect(instance.lastFrame()).not.toContain('过期个人字段');
+    expect(instance.lastFrame()).toContain('当前有效标记');
+    expect(instance.lastFrame()).not.toContain('过期个人标记');
   });
 
   it('keeps the config group and field viewport when config loading enters source recovery', async () => {
@@ -7421,12 +7441,32 @@ describe('ConsoleAppV4', () => {
     const screens = new Set<ConsoleV4ScreenId>();
     const value = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })) });
     value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 80, rows: 24 }}
+      onScreenChange={(screen) => screens.add(screen)}
+      onSessionNavigation={async (navigation, options) => {
+        if (value.hasSessionDraft && !options?.discardDrafts) return 'draftBlocked' as const;
+        if (navigation === 'home') value.goHome(options);
+        return 'completed' as const;
+      }}
+    />);
     await nextTurn(4);
-    await input(instance, '\r', '\r', '\u001B[B', '\r', 'b', 'b');
+    await input(instance, '\r', '\r');
+    await focusAction(instance, '快速');
+    await input(instance, '\r');
+    await nextTurn(3);
+    await focusAction(instance, '个人默认');
+    await input(instance, '\r');
+    await nextTurn(3);
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(value.hasSessionDraft).toBe(true);
+    await input(instance, 'h');
+    await nextTurn(2);
     expect(screens).toContain('G04');
     expect(instance.lastFrame()).toContain('放弃未保存修改？');
     await input(instance, '\u001B[B', '\r');
+    await nextTurn(2);
     expect(value.snapshot.router.current.route).toEqual({ name: 'home' });
   });
 
@@ -7444,6 +7484,8 @@ describe('ConsoleAppV4', () => {
     />);
     await nextTurn(4);
     await input(instance, '\r', '\r', '\u001B[B', '\r');
+    await nextTurn(3);
+    await input(instance, '\u001B[B', '\r');
     await nextTurn(2);
     expect(value.hasSessionDraft).toBe(true);
     const draftRoute = value.snapshot.router.current.route;
@@ -7593,9 +7635,12 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     await input(instance, '\r');
+    await nextTurn(3);
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(2);
     const draftRoute = value.snapshot.router.current.route;
     expect(value.externalDrafts).toEqual([
-      expect.objectContaining({ kind: 'configDraft', owner: `${page.pluginId}\0user` }),
+      expect.objectContaining({ kind: 'configDraft', owner: page.pluginId }),
     ]);
 
     value.push({ name: 'operationHistory' });
@@ -7635,9 +7680,10 @@ describe('ConsoleAppV4', () => {
     const refreshedPage = configPage();
     refreshedPage.groups[0]!.fields = refreshedPage.groups[0]!.fields
       .filter((field) => field.key !== 'level');
-    const getConfigPage = vi.fn()
-      .mockResolvedValueOnce(initialPage)
-      .mockResolvedValueOnce(refreshedPage);
+    let useRefreshedPage = false;
+    const getConfigPage = vi.fn(async (pluginId: string, layer: ConfigPageViewModel['layer']) => ({
+      ...(useRefreshedPage ? refreshedPage : initialPage), pluginId, layer,
+    }));
     const value = controller({ getConfigPage });
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
@@ -7650,6 +7696,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     await input(instance, '\r', '\r', '\u001B[B', '\r');
+    await nextTurn(3);
+    await input(instance, '\u001B[B', '\r');
     expect(value.hasSessionDraft).toBe(true);
 
     const resumeRoute = {
@@ -7665,13 +7713,16 @@ describe('ConsoleAppV4', () => {
       resumeRoute,
     });
     await nextTurn(2);
+    useRefreshedPage = true;
     value.replace(resumeRoute);
     await nextTurn(4);
 
     expect(instance.lastFrame()).toContain('字段已变化');
-    expect(instance.lastFrame()).toContain('放弃已变化字段的草稿');
-    expect(instance.lastFrame()).not.toContain('保存并应用');
+    expect(instance.lastFrame()).toContain('保存设置（1）');
     expect(value.hasSessionDraft).toBe(true);
+    await input(instance, 's');
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(instance.lastFrame()).toContain('字段已变化；失效草稿不会保存');
   });
 
   it('returns a dirty source recovery to its field and blocks a now-unwritable draft', async () => {
@@ -7686,9 +7737,10 @@ describe('ConsoleAppV4', () => {
     refreshedLevel.writable = false;
     refreshedLevel.canSet = false;
     refreshedLevel.canUnset = false;
-    const getConfigPage = vi.fn()
-      .mockResolvedValueOnce(initialPage)
-      .mockResolvedValueOnce(refreshedPage);
+    let useRefreshedPage = false;
+    const getConfigPage = vi.fn(async (pluginId: string, layer: ConfigPageViewModel['layer']) => ({
+      ...(useRefreshedPage ? refreshedPage : initialPage), pluginId, layer,
+    }));
     const captureEvidence = vi.fn(async (intent: OperationIntent) => {
       const prepared = evidenceForIntent(intent);
       return intent.kind === 'catalogGeneration' && prepared.catalogGeneration
@@ -7719,6 +7771,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     await input(instance, '\r', '\r', '\r');
+    await nextTurn(3);
+    await input(instance, '\u001B[B', '\r');
     await nextTurn(2);
     expect(value.hasSessionDraft).toBe(true);
 
@@ -7755,6 +7809,7 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route.name).toBe('result');
     expect(instance.lastFrame()).toContain('放弃未保存修改？');
     expect(value.hasSessionDraft).toBe(true);
+    useRefreshedPage = true;
     await input(instance, '\r', '\u001B[A', '\r');
     await nextTurn(4);
     expect(value.snapshot.router.current.route).toEqual(resumeRoute);
@@ -7766,9 +7821,11 @@ describe('ConsoleAppV4', () => {
     await input(instance, 'b');
     await nextTurn(4);
     expect(instance.lastFrame()).toContain('字段已变化');
-    expect(instance.lastFrame()).toContain('放弃已变化字段的草稿');
     expect(instance.lastFrame()).toContain('字段不存在、不可编辑或不再可删除');
-    expect(instance.lastFrame()).not.toContain('保存并应用');
+    expect(instance.lastFrame()).toContain('保存设置（1）');
+    await input(instance, 's');
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(instance.lastFrame()).toContain('字段已变化；失效草稿不会保存');
   });
 
   it('opens a stored field action but sends an unstored field directly to its cursor editor', async () => {
@@ -7819,33 +7876,33 @@ describe('ConsoleAppV4', () => {
     }];
     const captureEvidence = vi.fn(async (intent: OperationIntent) => evidenceForIntent(intent));
     const value = controller({
-      getConfigPage: vi.fn().mockResolvedValue(page),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
       captureEvidence,
     });
     value.push({
-      name: 'configFields', pluginId: page.pluginId, layer: { scope: 'project' },
+      name: 'configFields', pluginId: page.pluginId, layer: { scope: 'effective' },
     });
     const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(4);
 
-    expect(instance.lastFrame()).toContain('本项目旧值不再使用');
-    expect(instance.lastFrame()).toContain('当前继承个人或插件默认');
-    expect(instance.lastFrame()).toContain('删除旧值');
+    expect(instance.lastFrame()).toContain('共享模式');
+    expect(instance.lastFrame()).toContain('个人默认值');
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFieldAction', fieldKey: legacy.key,
     });
     expect(instance.lastFrame()).not.toContain('修改值');
-    expect(instance.lastFrame()).toContain('删除当前项目中的值');
+    expect(instance.lastFrame()).toContain('恢复继承');
     await input(instance, '\r');
+    await chooseConfigTarget(instance, value, 'project');
     await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'only');
 
     expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'configSave',
-      scope: 'project',
-      updates: {},
-      removeKeys: [legacy.key],
+      kind: 'configSaveBatch',
+      groups: [expect.objectContaining({
+        scope: 'project', updates: {}, removeKeys: [legacy.key],
+      })],
     }), expect.any(AbortSignal));
     expect(instance.lastFrame()).not.toContain('Shared impact 需要显式确认');
     instance.unmount();
@@ -7877,7 +7934,7 @@ describe('ConsoleAppV4', () => {
     expect(frame).not.toContain('u 恢复继承');
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFieldEditor', layer: { scope: 'project' }, fieldKey: 'note',
+      name: 'configFieldEditor', layer: { scope: 'effective' }, fieldKey: 'note',
     });
   });
 
@@ -7888,45 +7945,52 @@ describe('ConsoleAppV4', () => {
     const page = configPage();
     const userOnly = page.groups[0]!.fields[0]!;
     userOnly.title = '共享等待窗口';
-    userOnly.writable = false;
     userOnly.sharedNativeRender = true;
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => {
+        const next = structuredClone(page);
+        const field = next.groups[0]!.fields[0]!;
+        if (layer.scope === 'project') {
+          field.writable = false;
+          field.canSet = false;
+        }
+        return { ...next, pluginId, layer };
+      }),
     });
     value.push({
       name: 'configFields',
       pluginId: page.pluginId,
-      layer: { scope: 'project', projectLayer: 'shared' },
+      layer: { scope: 'effective', projectLayer: 'shared' },
     });
     const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(4);
 
-    const frame = (instance.lastFrame() ?? '').replace(/\s+/gu, '');
-    expect(frame).toContain('个人默认控制被各项目共用的内容');
-    expect(frame).toContain('项目不可改');
-    expect(frame).toContain('影响所有项目');
     await input(instance, '\r');
-    expect(value.snapshot.router.current.route).not.toMatchObject({
-      name: 'configFieldAction',
-      fieldKey: userOnly.key,
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configFieldAction', fieldKey: userOnly.key,
     });
+    await input(instance, '\r');
+    await focusAction(instance, '快速');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route.name).toBe('configLayer');
+    expect(instance.lastFrame()).toContain('个人默认');
+    expect(instance.lastFrame()).not.toContain('› 当前项目');
+    await chooseConfigTarget(instance, value, 'user');
+    expect(instance.lastFrame()).toContain('拟保存：个人默认');
   });
 
   it.each([
-    ['configured enum', 'level', 'configFieldAction'],
-    ['unstored string', 'note', 'configFieldEditor'],
-    ['configured secret', 'token', 'configFieldAction'],
-  ] as const)('routes an effective %s through the selected layer stored state', async (_label, fieldKey, expectedRoute) => {
+    ['configured enum', 'level', 'configFieldAction', 0],
+    ['unstored string', 'note', 'configFieldEditor', 3],
+    ['configured secret', 'token', 'configFieldAction', 6],
+  ] as const)('routes an effective %s through the selected layer stored state', async (_label, fieldKey, expectedRoute, focusIndex) => {
     const page = configPage();
     const value = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })) });
     value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'effective', projectLayer: 'shared' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
-    value.push({ name: 'configLayer', pluginId: page.pluginId, fieldKey, groupId: 'basic' });
-    await nextTurn(2);
-
+    await input(instance, ...Array.from({ length: focusIndex }, () => '\u001B[B'));
     await input(instance, '\r');
-    await nextTurn(4);
 
     expect(value.snapshot.router.current.route).toMatchObject({ name: expectedRoute, fieldKey });
     if (expectedRoute === 'configFieldEditor') expect(instance.lastFrame()).toContain('▌');
@@ -7949,18 +8013,19 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
 
     await input(instance, '\r', '\u001B[B', '\r');
+    await chooseConfigTarget(instance, value, 'project');
     expect(executeIntent).not.toHaveBeenCalled();
-    expect(instance.lastFrame()).toContain('1 项未保存');
+    expect(instance.lastFrame()).toContain('1 项待保存');
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFieldAction', fieldKey: 'level' });
-    expect(instance.lastFrame()).toContain('撤销删除');
+    expect(instance.lastFrame()).toContain('恢复继承…');
     await input(instance, 'b');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
-    expect(instance.lastFrame()).toContain('1 项未保存');
+    expect(instance.lastFrame()).toContain('1 项待保存');
     await openConfigSave(instance, value);
-    expect(instance.lastFrame()).toContain('严格并保留当前项目的完整配置');
-    expect(instance.lastFrame()).toContain('Codex · 当前项目');
-    expect(instance.lastFrame()).toContain('保持不变');
+    expect(instance.lastFrame()).toContain('保存 1 项设置修改？');
+    expect(instance.lastFrame()).toContain('当前项目');
+    expect(instance.lastFrame()).toContain('每层独立提交；失败层保留草稿');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
     expect(instance.lastFrame()).not.toContain('设置修改前唯一结尾');
     await focusAction(instance, '阅读完整设置变化');
@@ -7992,19 +8057,25 @@ describe('ConsoleAppV4', () => {
     const executeIntent = vi.fn();
     const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
       const captured = evidenceForIntent(intent);
-      if (intent.kind !== 'configSave') return captured;
+      if (intent.kind !== 'configSaveBatch') return captured;
       return {
         ...captured,
-        config: {
-          scope: intent.scope,
-          storeDigest: 'sha256:config-store',
-          impactState: 'known',
-          affectedTargets: [
-            { platform: 'codex', scope: 'user' },
-            { platform: 'codex', scope: 'project' },
-            { platform: 'claude', scope: 'user' },
-            { platform: 'claude', scope: 'project' },
-          ],
+        configBatch: {
+          groups: intent.groups.map((group) => ({
+            scope: group.scope,
+            targetFingerprint: `sha256:config-${group.scope}`,
+            config: {
+              scope: group.scope,
+              storeDigest: 'sha256:config-store',
+              impactState: 'known',
+              affectedTargets: [
+                { platform: 'codex', scope: 'user' },
+                { platform: 'codex', scope: 'project' },
+                { platform: 'claude', scope: 'user' },
+                { platform: 'claude', scope: 'project' },
+              ],
+            },
+          })),
         },
       };
     });
@@ -8021,13 +8092,19 @@ describe('ConsoleAppV4', () => {
     const trace: AcceptanceTraceStep[] = [];
     await nextTurn(4);
 
-    await input(instance, 'u', '\u001B[B', 'u', '\u001B[B', 'u');
-    expect(instance.lastFrame()).toContain('3 项未保存');
+    await input(instance, 'u');
+    await chooseConfigTarget(instance, value, 'user');
+    await input(instance, '\u001B[B', '\u001B[B', 'u');
+    await chooseConfigTarget(instance, value, 'user');
+    await input(instance, '\u001B[B', 'u');
+    await chooseConfigTarget(instance, value, 'user');
+    expect(instance.lastFrame()).toContain('3 项待保存');
     await openConfigSave(instance, value);
     await nextTurn(4);
-    expect(instance.lastFrame()).toContain('显示 1/3（另 2 项）');
-    expect(instance.lastFrame()).toContain('显示 1/4（另 3 个）');
+    expect(instance.lastFrame()).toContain('3 项未保存');
+    expect(instance.lastFrame()).toContain('每层独立提交；失败层保留草稿');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
+    await input(instance, '\u001B[A');
     trace.push(acceptanceTraceStep(instance, { columns, rows }, '设置汇总与影响计数', []));
     for (const label of ['保存并生效', '只保存，稍后应用', '阅读完整设置变化', '返回修改']) {
       await focusAction(instance, label);
@@ -8047,7 +8124,7 @@ describe('ConsoleAppV4', () => {
       await input(instance, '\u001B[6~');
     }
     const completeText = pages.join('\n').replace(/\s/gu, '');
-    expect(completeText).toContain('修改项·最后设置字段');
+    expect(completeText).toContain('修改项·所有项目·最后设置字段');
     expect(completeText).toContain('设置最后修改前唯一值');
     expect(completeText).toContain('设置最后修改后唯一值');
     expect(executeIntent).not.toHaveBeenCalled();
@@ -8074,10 +8151,11 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
 
     await input(instance, '\u001B[B', '\r');
+    await chooseConfigTarget(instance, value, 'project');
     await openConfigSave(instance, value);
 
     const frame = instance.lastFrame()!;
-    expect(frame).toContain(`删除 ${fieldKey} 中的值`);
+    expect(frame).toContain(`当前项目 · ${fieldKey}`);
     expect(frame).toContain('已设置 → 恢复继承（已设置 · 个人默认）');
     expect(frame).not.toContain('sk-private');
     expect(frame).not.toContain('/Users/private');
@@ -8102,9 +8180,11 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('Ctrl-U 清空输入');
 
     await input(instance, 'hHqb', '\r');
+    await chooseConfigTarget(instance, value, 'user');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(instance.lastFrame()).toContain('1 项待保存');
+    await openConfigSave(instance, value);
     expect(instance.lastFrame()).toContain('hHqb');
-    expect(instance.lastFrame()).toContain('1 项未保存');
 
     await input(instance, 'b', '\u001B[B', '\r');
     value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
@@ -8116,7 +8196,9 @@ describe('ConsoleAppV4', () => {
       fieldKey: 'level',
       editor: 'enum',
     });
-    await input(instance, '\u001B[B', '\u001B[B', '\r', ...Array.from({ length: 8 }, () => '\u001B[B'));
+    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await chooseConfigTarget(instance, value, 'user');
+    await input(instance, ...Array.from({ length: 8 }, () => '\u001B[B'));
     expect(value.snapshot.activeReview).toBeUndefined();
     value.push({
       name: 'configFieldEditor',
@@ -8179,15 +8261,11 @@ describe('ConsoleAppV4', () => {
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
       executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded',
-        overallState: 'partial',
-        apply: {
-          state: 'partial',
-          targetResults: [
-            { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
-            { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
-          ],
-        },
+        status: 'partial',
+        groups: [{
+          scope: 'user', status: 'failed', configSaved: true,
+          applyRequested: true, applyStatus: 'failed', errorCode: 'runtimeApplyFailed',
+        }],
       }),
     });
     value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
@@ -8201,6 +8279,7 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(4);
     await input(instance, 'DRAFT-KEEP', '\r');
+    await chooseConfigTarget(instance, value, 'user');
     await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'apply');
     await confirmReview(instance, value);
@@ -8208,13 +8287,12 @@ describe('ConsoleAppV4', () => {
 
     expect(value.snapshot.result).toMatchObject({ state: 'partial' });
     expect(value.snapshot.router.current.route.name).toBe('result');
-    expect(instance.lastFrame()).toContain('设置已保存，但插件内容重新应用失败或部分失败');
-    expect(instance.lastFrame()).toContain('已完成');
-    expect(instance.lastFrame()).toContain('失败');
+    expect(instance.lastFrame()).toContain('已保存 1 个设置层；1 个设置层失败。');
+    expect(instance.lastFrame()).toContain('所有项目');
+    expect(instance.lastFrame()).toContain('已保存 · 应用失败');
     expect(instance.lastFrame()).toContain('返回修改');
-    expect(instance.lastFrame()).toContain('选择清理');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
-    expect(screens).toContain('C15');
+    expect(screens).toContain('C13');
     await input(instance, '\r');
     await nextTurn(4);
     expect(value.snapshot.router.current.route.name).toBe('review');
@@ -8225,9 +8303,11 @@ describe('ConsoleAppV4', () => {
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
       executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded',
-        overallState: 'partial',
-        apply: { state: 'unavailable', reason: 'invalidConfig', targetResults: [] },
+        status: 'partial',
+        groups: [{
+          scope: 'user', status: 'failed', configSaved: true,
+          applyRequested: true, applyStatus: 'failed', errorCode: 'invalidConfig',
+        }],
       }),
     });
     value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
@@ -8240,8 +8320,10 @@ describe('ConsoleAppV4', () => {
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
-    await input(instance, 'SAVED', '\r', ...Array.from({ length: 8 }, () => '\u001B[B'), '\r');
-    await nextTurn(3);
+    await input(instance, 'SAVED', '\r');
+    await chooseConfigTarget(instance, value, 'user');
+    await openConfigSave(instance, value);
+    await chooseConfigSave(instance, value, 'apply');
     await confirmReview(instance, value);
     await nextTurn(4);
 
@@ -8711,7 +8793,10 @@ describe('ConsoleAppV4', () => {
     };
     const navigate = vi.fn().mockResolvedValue('draftBlocked');
     const exit = vi.fn();
-    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+    });
     value.push({ name: 'sourceEdit', sourceId: 'official' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }}
       onExit={exit} onSessionNavigation={navigate} />);
@@ -10792,7 +10877,10 @@ describe('ConsoleAppV4', () => {
   it('opens a plugin config issue from detail and enters its correction flow', async () => {
     // Risk: config issues have no target scope and previously fell back to technical details.
     const loaded = loadResult();
-    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+    });
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
@@ -10805,8 +10893,9 @@ describe('ConsoleAppV4', () => {
     });
     expect(instance.lastFrame()).toContain('完成设置');
     await input(instance, '\r');
-    expect(value.snapshot.router.current.route).toEqual({
-      name: 'configLayer', pluginId: 'team-tools/review-gate',
+    await nextTurn(3);
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'effective' },
     });
   });
 

@@ -193,8 +193,22 @@ interface DynamicMenuFocus {
 }
 
 interface ConfigDraftIssue {
+  scope: Scope;
   key: string;
   source: 'update' | 'remove' | 'object';
+}
+
+interface ConfigLayerDraft {
+  updates: Record<string, PluginConfigValue>;
+  removes: string[];
+}
+
+interface ConfigCandidate {
+  pluginId: string;
+  groupId?: string;
+  fieldKey?: string;
+  presetId?: string;
+  mutations: Record<string, { kind: 'set'; value: PluginConfigValue } | { kind: 'unset' }>;
 }
 
 type SourceOperationBlockReason = NonNullable<ReturnType<TuiController['catalogSourceRecoveryBlockReason']>>;
@@ -377,7 +391,7 @@ function supportsScriptTimeout(
     || intent?.kind === 'pluginWriteBatch'
       && (intent.action === 'install' || intent.action === 'sync' || intent.action === 'reinstall')
     || intent?.kind === 'pluginWriteTask'
-    || intent?.kind === 'configSave' && intent.apply;
+    || (intent?.kind === 'configSave' || intent?.kind === 'configSaveBatch') && intent.apply;
 }
 
 function helpRowsForRoute(
@@ -431,7 +445,7 @@ function helpRowsForRoute(
 function configOwnerKey(route: Extract<TuiRoute, {
   name: 'configFields' | 'configFieldEditor' | 'configObjectPropertyEditor' | 'configFieldAction' | 'configSave';
 }>): string {
-  return `${route.pluginId}\0${route.layer.scope}`;
+  return route.pluginId;
 }
 
 function configPageMatches(
@@ -1422,7 +1436,7 @@ export function resolveConsoleV4ScreenId(
 ): ConsoleV4ScreenId {
   if (tooSmall) return 'G05';
   if (overlay === 'help') return 'G03';
-  if (overlay === 'discard') return 'G04';
+  if (overlay === 'discard' || overlay === 'sessionNavigation') return 'G04';
   if (snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)
     && !isOperationHistoryRoute(snapshot.router.current.route)) return 'G01';
   return resolveRouteScreenId(snapshot.router.current.route, {
@@ -1487,11 +1501,8 @@ export function ConsoleAppV4(props: {
   const [configPage, setConfigPage] = useState<ConfigPageViewModel>();
   const [configLayerCounts, setConfigLayerCounts] = useState<Record<string, number>>({});
   const [configLayerPages, setConfigLayerPages] = useState<Partial<Record<Scope, ConfigPageViewModel>>>({});
-  const [configSaveImpact, setConfigSaveImpact] = useState<Awaited<ReturnType<TuiController['previewConfigSaveImpact']>>>();
-  const [configSaveImpactError, setConfigSaveImpactError] = useState(false);
-  const [configSaveImpactAttempt, setConfigSaveImpactAttempt] = useState(0);
-  const [draftUpdates, setDraftUpdates] = useState<Record<string, PluginConfigValue>>({});
-  const [draftRemoves, setDraftRemoves] = useState<string[]>([]);
+  const [configDrafts, setConfigDrafts] = useState<Partial<Record<Scope, ConfigLayerDraft>>>({});
+  const [configCandidate, setConfigCandidate] = useState<ConfigCandidate>();
   const [objectDrafts, setObjectDrafts] = useState<Record<string, PluginConfigObject>>({});
   const [changedObjectDraftKeys, setChangedObjectDraftKeys] = useState<string[]>([]);
   const [objectError, setObjectError] = useState<string>();
@@ -1523,19 +1534,29 @@ export function ConsoleAppV4(props: {
   const [reportSaveResult, setReportSaveResult] = useState<string>();
   const [reportSaveError, setReportSaveError] = useState<string>();
   const [draftOwner, setDraftOwner] = useState<string>();
-  const [pendingPresetId, setPendingPresetId] = useState<string>();
-  const [pendingLayerFieldKey, setPendingLayerFieldKey] = useState<string>();
   const dynamicMenuFocus = useRef<DynamicMenuFocus | undefined>(undefined);
   const pluginListFocusId = useRef<string | undefined>(undefined);
   const dependencyGraphContexts = useRef(new Map<string, DependencyGraphSessionContext>());
   const externalDraftRevision = useRef({ config: 0, source: 0, batch: 0 });
   const previousExternalDraftValues = useRef({
-    draftUpdates, draftRemoves, objectDrafts, changedObjectDraftKeys, sourceDraft, batchDraft,
+    configDrafts, configCandidate, objectDrafts, changedObjectDraftKeys, sourceDraft, batchDraft,
   });
   const externalDraftFlowIds = useRef(new Map<string, string>());
   const exitSent = useRef(false);
   const operationBusy = useRef(false);
   const route = snapshot.router.current.route;
+  const configDraftCount = (['project', 'user'] as const).reduce((count, draftScope) => {
+    const draft = configDrafts[draftScope];
+    return count + Object.keys(draft?.updates ?? {}).length + (draft?.removes.length ?? 0);
+  }, 0);
+  const draftUpdates = {
+    ...(configDrafts.user?.updates ?? {}),
+    ...(configDrafts.project?.updates ?? {}),
+  };
+  const draftRemoves = [...new Set([
+    ...(configDrafts.user?.removes ?? []),
+    ...(configDrafts.project?.removes ?? []),
+  ])];
   const definition = routeDefinition(route);
   const rendererFamily = definition.rendererFamily;
   const routeKey = JSON.stringify(route);
@@ -1610,11 +1631,27 @@ export function ConsoleAppV4(props: {
       || !snapshot.result
       || (snapshot.result.state !== 'succeeded' && snapshot.result.state !== 'partial')
       || !snapshot.result.operationKind) return;
-    if (snapshot.result.operationKind === 'configSave'
+    if (snapshot.result.operationKind === 'configSaveBatch') {
+      const savedScopes = new Set(snapshot.result.summary.configGroups
+        ?.filter((group) => group.configSaved).map((group) => group.scope) ?? []);
+      const nextDrafts = Object.fromEntries(Object.entries(configDrafts)
+        .filter(([draftScope]) => !savedScopes.has(draftScope as Scope)));
+      setConfigDrafts(nextDrafts);
+      setDirty(Object.keys(nextDrafts).length > 0);
+      setConfigCandidate(undefined);
+      setObjectDrafts({});
+      setChangedObjectDraftKeys([]);
+      setObjectError(undefined);
+    } else if (snapshot.result.operationKind === 'configSave'
       || snapshot.result.operationKind === 'configReset') {
-      setDirty(false);
-      setDraftUpdates({});
-      setDraftRemoves([]);
+      const completedScope = snapshot.result.summary.configScope;
+      const preserveAll = snapshot.result.operationKind === 'configSave'
+        && snapshot.result.summary.configRetryApply === true;
+      const nextDrafts = { ...configDrafts };
+      if (!preserveAll && completedScope) delete nextDrafts[completedScope];
+      setConfigDrafts(nextDrafts);
+      setDirty(Object.keys(nextDrafts).length > 0);
+      setConfigCandidate(undefined);
       setObjectDrafts({});
       setChangedObjectDraftKeys([]);
       setObjectError(undefined);
@@ -1622,7 +1659,7 @@ export function ConsoleAppV4(props: {
     if ((snapshot.result.operationKind === 'sourceMutation'
       || snapshot.result.operationKind === 'catalogGeneration') && sourceDraft) {
       setSourceDraft(undefined);
-      setDirty(Object.keys(draftUpdates).length + draftRemoves.length + changedObjectDraftKeys.length > 0);
+      setDirty(configDraftCount + changedObjectDraftKeys.length > 0);
     }
   }, [
     route.name,
@@ -1683,10 +1720,12 @@ export function ConsoleAppV4(props: {
     ? route
     : undefined;
   const configRouteOwner = configRoute ? configOwnerKey(configRoute) : undefined;
+  const configFlowPluginId = configRoute?.pluginId
+    ?? (route.name === 'configLayer' ? route.pluginId : undefined);
   useEffect(() => {
     const previous = previousExternalDraftValues.current;
-    if (previous.draftUpdates !== draftUpdates
-      || previous.draftRemoves !== draftRemoves
+    if (previous.configDrafts !== configDrafts
+      || previous.configCandidate !== configCandidate
       || previous.objectDrafts !== objectDrafts
       || previous.changedObjectDraftKeys !== changedObjectDraftKeys) {
       externalDraftRevision.current.config += 1;
@@ -1694,7 +1733,7 @@ export function ConsoleAppV4(props: {
     if (previous.sourceDraft !== sourceDraft) externalDraftRevision.current.source += 1;
     if (previous.batchDraft !== batchDraft) externalDraftRevision.current.batch += 1;
     previousExternalDraftValues.current = {
-      draftUpdates, draftRemoves, objectDrafts, changedObjectDraftKeys, sourceDraft, batchDraft,
+      configDrafts, configCandidate, objectDrafts, changedObjectDraftKeys, sourceDraft, batchDraft,
     };
     const currentFlowId = snapshot.router.currentFlowId;
     if (currentFlowId && configRouteOwner) {
@@ -1702,7 +1741,7 @@ export function ConsoleAppV4(props: {
     }
     if (currentFlowId && sourceDraft) externalDraftFlowIds.current.set(sourceDraft.owner, currentFlowId);
     const drafts: ExternalDraftState[] = [];
-    if ((dirty || changedObjectDraftKeys.length > 0) && draftOwner) {
+    if ((dirty || configCandidate || changedObjectDraftKeys.length > 0) && draftOwner) {
       const flowId = externalDraftFlowIds.current.get(draftOwner);
       drafts.push({
         kind: 'configDraft', owner: draftOwner, revision: externalDraftRevision.current.config,
@@ -1725,42 +1764,37 @@ export function ConsoleAppV4(props: {
     props.controller.setExternalDraftState(drafts);
   }, [
     props.controller, batchDraft, changedObjectDraftKeys, configRouteOwner, dirty, draftOwner,
-    draftRemoves, draftUpdates, objectDrafts, route.name, snapshot.router.currentFlowId, sourceDraft,
+    configDrafts, configCandidate, objectDrafts, route.name, snapshot.router.currentFlowId, sourceDraft,
   ]);
   useEffect(() => () => props.controller.setExternalDraftState(), [props.controller]);
   const currentConfigPage = configPageMatches(configPage, configRoute) ? configPage : undefined;
   const configDraftIssues = (() => {
-    if (!configRoute || !currentConfigPage) return [];
-    const fields = new Map(currentConfigPage.groups.flatMap((group) => group.fields)
-      .map((field) => [field.key, field]));
     const issues: ConfigDraftIssue[] = [];
-    for (const [key, value] of Object.entries(draftUpdates)) {
-      const field = fields.get(key);
-      if (!field || !configFieldCanSet(field)
-        || validatePluginConfigValue(field.definition, value, key).length > 0) {
-        issues.push({ key, source: 'update' });
+    for (const draftScope of ['project', 'user'] as const) {
+      const draft = configDrafts[draftScope];
+      if (!draft) continue;
+      const page = configLayerPages[draftScope];
+      if (!page) continue;
+      const fields = new Map(page.groups.flatMap((group) => group.fields)
+        .map((field) => [field.key, field]));
+      for (const [key, value] of Object.entries(draft.updates)) {
+        const field = fields.get(key);
+        if (!field || !configFieldCanSet(field)
+          || validatePluginConfigValue(field.definition, value, key).length > 0) {
+          issues.push({ scope: draftScope, key, source: 'update' });
+        }
       }
-    }
-    for (const key of draftRemoves) {
-      const field = fields.get(key);
-      if (!field || !configFieldCanUnset(field)) issues.push({ key, source: 'remove' });
-    }
-    const owner = `${configOwnerKey(configRoute)}\0`;
-    for (const objectKey of changedObjectDraftKeys) {
-      if (!objectKey.startsWith(owner)) continue;
-      const key = objectKey.slice(owner.length);
-      if (issues.some((issue) => issue.key === key)) continue;
-      const field = fields.get(key);
-      const value = objectDrafts[objectKey];
-      if (!field || !configFieldCanSet(field) || field.definition.type !== 'object' || !value
-        || validatePluginConfigValue(field.definition, value, key).length > 0) {
-        issues.push({ key, source: 'object' });
+      for (const key of draft.removes) {
+        const field = fields.get(key);
+        if (!field || !configFieldCanUnset(field)) {
+          issues.push({ scope: draftScope, key, source: 'remove' });
+        }
       }
     }
     return issues;
   })();
   useEffect(() => {
-    if (route.name !== 'configLayer') return;
+    if (!configFlowPluginId) return;
     const abort = new AbortController();
     setConfigLayerPages({});
     const layers = [
@@ -1769,7 +1803,7 @@ export function ConsoleAppV4(props: {
     ];
     void Promise.allSettled(layers.map(async ({ key, layer }) => ({
       key,
-      page: await props.controller.getConfigPage(route.pluginId, layer, abort.signal),
+      page: await props.controller.getConfigPage(configFlowPluginId, layer, abort.signal),
     }))).then((results) => {
       if (abort.signal.aborted) return;
       setConfigLayerCounts(Object.fromEntries(results.flatMap((result) =>
@@ -1778,7 +1812,7 @@ export function ConsoleAppV4(props: {
         result.status === 'fulfilled' ? [[result.value.key, result.value.page]] : [])));
     });
     return () => abort.abort();
-  }, [props.controller, route.name, route.name === 'configLayer' ? route.pluginId : '']);
+  }, [props.controller, configFlowPluginId]);
   useEffect(() => {
     if (!configRoute) return;
     const abort = new AbortController();
@@ -1788,13 +1822,15 @@ export function ConsoleAppV4(props: {
     setConfigPage(undefined);
     if (draftOwner !== owner) {
       setDraftOwner(owner);
-      setDraftUpdates({});
-      setDraftRemoves([]);
-      setObjectDrafts({});
-      setChangedObjectDraftKeys([]);
-      setObjectError(undefined);
-      setDirty(false);
-      setConfigActionError(undefined);
+      if (draftOwner !== undefined) {
+        setConfigDrafts({});
+        setConfigCandidate(undefined);
+        setObjectDrafts({});
+        setChangedObjectDraftKeys([]);
+        setObjectError(undefined);
+        setDirty(false);
+        setConfigActionError(undefined);
+      }
     }
     void props.controller.getConfigPage(expectedPluginId, configRoute.layer, abort.signal)
       .then((page) => {
@@ -2067,13 +2103,18 @@ export function ConsoleAppV4(props: {
     && typeof draftUpdates[activeField.key] === 'object'
     ? draftUpdates[activeField.key] as PluginConfigObject
     : undefined;
+  const activeCandidateMutation = activeField ? configCandidate?.mutations[activeField.key] : undefined;
+  const objectValueFromCandidate = activeCandidateMutation?.kind === 'set'
+    && typeof activeCandidateMutation.value === 'object'
+    ? activeCandidateMutation.value as PluginConfigObject
+    : undefined;
   const objectValueFromField = activeField?.draftValue !== null
     && typeof activeField?.draftValue === 'object'
     && !Array.isArray(activeField.draftValue)
     ? activeField.draftValue as PluginConfigObject
     : undefined;
   const activeObjectDraft = activeObjectKey
-    ? objectDrafts[activeObjectKey] ?? objectValueFromUpdate ?? objectValueFromField ?? {}
+    ? objectDrafts[activeObjectKey] ?? objectValueFromCandidate ?? objectValueFromUpdate ?? objectValueFromField ?? {}
     : undefined;
   const activePropertyDefinition = route.name === 'configObjectPropertyEditor'
     && activeField?.definition.type === 'object' && route.propertyKey !== undefined
@@ -2086,7 +2127,8 @@ export function ConsoleAppV4(props: {
     || activePropertyDefinition?.sensitive === true;
   useEffect(() => {
     if (route.name !== 'configFieldEditor' || !activeField) return;
-    const draft = draftUpdates[activeField.key];
+    const candidate = configCandidate?.mutations[activeField.key];
+    const draft = candidate?.kind === 'set' ? candidate.value : draftUpdates[activeField.key];
     setInputValue(activeField.sensitive
       ? draft === undefined ? '' : String(draft)
       : typeof (draft ?? activeField.draftValue ?? activeField.value) === 'object'
@@ -2097,6 +2139,7 @@ export function ConsoleAppV4(props: {
     route.name,
     route.name === 'configFieldEditor' ? `${route.fieldKey}:${route.mode ?? ''}` : '',
     activeField?.key,
+    configCandidate,
   ]);
   useEffect(() => {
     if (route.name !== 'configObjectPropertyEditor') return;
@@ -2996,42 +3039,35 @@ export function ConsoleAppV4(props: {
   };
   const fieldEditorMode = (field: ConfigFieldViewModel): { mode: 'choices' } | Record<string, never> =>
     (field.choices?.length ?? 0) > 0 ? { mode: 'choices' } : {};
+  const openConfigTarget = (candidate: ConfigCandidate): void => {
+    setConfigCandidate(candidate);
+    go({
+      name: 'configLayer',
+      pluginId: candidate.pluginId,
+      ...(candidate.fieldKey ? { fieldKey: candidate.fieldKey } : {}),
+      ...(candidate.groupId ? { groupId: candidate.groupId } : {}),
+      ...(candidate.presetId ? { presetId: candidate.presetId } : {}),
+    });
+  };
   const updateDraft = (key: string, value: PluginConfigValue): void => {
+    if (!configRoute || !currentConfigPage) return;
     setConfigActionError(undefined);
-    const field = currentConfigPage?.groups.flatMap((group) => group.fields)
-      .find((candidate) => candidate.key === key);
-    const unchanged = field?.configured === true
-      && configValuesEqual(field.draftValue ?? field.value, value);
-    setDraftUpdates((current) => {
-      const next = { ...current };
-      if (unchanged) delete next[key];
-      else next[key] = value;
-      const nextRemoves = draftRemoves.filter((candidate) => candidate !== key);
-      setDraftRemoves(nextRemoves);
-      setDirty(Object.keys(next).length + nextRemoves.length > 0);
-      return next;
+    openConfigTarget({
+      pluginId: configRoute.pluginId,
+      fieldKey: key,
+      groupId: snapshot.router.current.context.configGroupId,
+      mutations: { [key]: { kind: 'set', value } },
     });
   };
   const removeDraft = (key: string): void => {
+    if (!configRoute) return;
     setConfigActionError(undefined);
-    setDraftUpdates((current) => {
-      const next = { ...current };
-      delete next[key];
-      const field = currentConfigPage?.groups.flatMap((group) => group.fields)
-        .find((candidate) => candidate.key === key);
-      const nextRemoves = field?.configured
-        ? [...new Set([...draftRemoves, key])]
-        : draftRemoves.filter((candidate) => candidate !== key);
-      setDraftRemoves(nextRemoves);
-      setDirty(Object.keys(next).length + nextRemoves.length > 0);
-      return next;
+    openConfigTarget({
+      pluginId: configRoute.pluginId,
+      fieldKey: key,
+      groupId: snapshot.router.current.context.configGroupId,
+      mutations: { [key]: { kind: 'unset' } },
     });
-  };
-  const cancelDraftRemoval = (key: string): void => {
-    const nextRemoves = draftRemoves.filter((candidate) => candidate !== key);
-    setDraftRemoves(nextRemoves);
-    setDirty(Object.keys(draftUpdates).length + nextRemoves.length > 0);
-    setConfigActionError(undefined);
   };
   const updateObjectDraft = (value: PluginConfigObject): void => {
     if (!activeObjectKey) return;
@@ -3057,7 +3093,6 @@ export function ConsoleAppV4(props: {
     if (activeObjectKey) {
       setChangedObjectDraftKeys((current) => current.filter((key) => key !== activeObjectKey));
     }
-    back();
   };
   const objectPropertyStage = (
     definition: PluginConfigObjectPropertyField | PluginConfigAdditionalPropertiesField,
@@ -3074,7 +3109,7 @@ export function ConsoleAppV4(props: {
     go({
       name: 'configObjectPropertyEditor',
       pluginId: configRoute!.pluginId,
-      layer: { scope: configRoute!.layer.scope as Scope },
+      layer: { scope: 'effective' },
       fieldKey: activeField.key,
       propertyKey,
       dynamic,
@@ -3109,19 +3144,8 @@ export function ConsoleAppV4(props: {
     if (!preset) return;
     const fields = new Map(page.groups.flatMap((group) => group.fields)
       .map((field) => [field.key, field]));
-    setDraftUpdates((current) => {
-      const next = { ...current };
-      for (const [key, value] of Object.entries(preset.values)) {
-        const field = fields.get(key);
-        if (!field?.writable) continue;
-        if (field?.configured && configValuesEqual(field.draftValue ?? field.value, value)) delete next[key];
-        else next[key] = value;
-      }
-      const nextRemoves = draftRemoves.filter((key) => !Object.hasOwn(preset.values, key));
-      setDraftRemoves(nextRemoves);
-      setDirty(Object.keys(next).length + nextRemoves.length > 0);
-      return next;
-    });
+    const mutations = Object.fromEntries(Object.entries(preset.values).flatMap(([key, value]) =>
+      fields.has(key) ? [[key, { kind: 'set' as const, value }]] : []));
     const target = configFieldTarget(page, Object.keys(preset.values)[0])
       ?? (page.groups[0] ? { groupId: page.groups[0].id, focusIndex: 0 } : undefined);
     if (target) {
@@ -3136,46 +3160,72 @@ export function ConsoleAppV4(props: {
     setConfigActionError((preset.privateFieldTitles?.length ?? 0) > 0
       ? `${preset.privateFieldTitles!.join('、')}需手动输入。`
       : undefined);
+    openConfigTarget({
+      pluginId: page.pluginId,
+      presetId,
+      groupId: target?.groupId,
+      mutations,
+    });
   };
   const openConfigLayerTarget = (
     layer: { scope: Scope },
   ): void => {
     if (route.name !== 'configLayer') return;
-    const definitionPage = configPage ?? configLayerPages.user ?? configLayerPages.project;
-    const field = route.fieldKey && definitionPage
-      ? definitionPage.groups.flatMap((group) => group.fields).find((candidate) => candidate.key === route.fieldKey)
-      : undefined;
-    const fieldTarget = definitionPage ? configFieldTarget(definitionPage, route.fieldKey) : undefined;
-    const preset = route.presetId && definitionPage
-      ? definitionPage.presets.find((candidate) => candidate.id === route.presetId)
-      : undefined;
-    const presetTarget = preset
-      ? configFieldTarget(definitionPage!, Object.keys(preset.values)[0])
-      : undefined;
-    const target = fieldTarget ?? (route.groupId ? { groupId: route.groupId, focusIndex: 0 } : undefined) ?? presetTarget
-      ?? (definitionPage?.groups[0] ? { groupId: definitionPage.groups[0].id, focusIndex: 0 } : undefined);
-    const context = target
-      ? { configGroupId: target.groupId, focusIndex: target.focusIndex, scrollOffset: 0 }
-      : {};
-    props.controller.replace({ name: 'configFields', pluginId: route.pluginId, layer }, context);
-    if (route.presetId) {
-      setPendingPresetId(route.presetId);
-      setFocus(target?.focusIndex ?? 0);
-      setScrollOffset(0);
+    if (!configCandidate || configCandidate.pluginId !== route.pluginId) return;
+    const page = configLayerPages[layer.scope];
+    if (!page) return;
+    const fields = new Map(page.groups.flatMap((group) => group.fields)
+      .map((field) => [field.key, field]));
+    const valid = Object.entries(configCandidate.mutations).every(([key, mutation]) => {
+      const field = fields.get(key);
+      return Boolean(field && (mutation.kind === 'set' ? configFieldCanSet(field) : configFieldCanUnset(field)));
+    });
+    if (!valid) {
+      setConfigActionError('此值不能保存到所选位置。请返回修改值或选择其他位置。');
       return;
     }
-    if (field && route.fieldKey) setPendingLayerFieldKey(route.fieldKey);
+    const previous = configDrafts[layer.scope] ?? { updates: {}, removes: [] };
+    const updates = { ...previous.updates };
+    const removes = new Set(previous.removes);
+    for (const [key, mutation] of Object.entries(configCandidate.mutations)) {
+      const field = fields.get(key)!;
+      if (mutation.kind === 'set') {
+        removes.delete(key);
+        if (field.configured && configValuesEqual(field.draftValue ?? field.value, mutation.value)) {
+          delete updates[key];
+        } else updates[key] = mutation.value;
+      } else {
+        delete updates[key];
+        if (field.configured) removes.add(key);
+        else removes.delete(key);
+      }
+    }
+    const next = { ...configDrafts, [layer.scope]: { updates, removes: [...removes] } };
+    if (Object.keys(updates).length === 0 && removes.size === 0) delete next[layer.scope];
+    setConfigDrafts(next);
+    setDirty(Object.keys(next).length > 0);
+    const target = configCandidate.fieldKey
+      ? configFieldTarget(configPage ?? page, configCandidate.fieldKey)
+      : configCandidate.groupId ? { groupId: configCandidate.groupId, focusIndex: 0 } : undefined;
+    setConfigCandidate(undefined);
+    props.controller.back();
+    props.controller.back();
+    props.controller.replace({ name: 'configFields', pluginId: route.pluginId, layer: { scope: 'effective' } }, target
+      ? { configGroupId: target.groupId, focusIndex: target.focusIndex, scrollOffset: 0 } : undefined);
     setFocus(0);
     setScrollOffset(0);
   };
-  const configChanges = (): NonNullable<Extract<OperationIntent, { kind: 'configSave' }>['changes']> => {
-    const fields = currentConfigPage?.groups.flatMap((group) => group.fields) ?? [];
-    return [...Object.keys(draftUpdates), ...draftRemoves.filter((key) => !Object.hasOwn(draftUpdates, key))]
+  const configChanges = (
+    page: ConfigPageViewModel,
+    draft: ConfigLayerDraft,
+  ): NonNullable<Extract<OperationIntent, { kind: 'configSaveBatch' }>['groups'][number]['changes']> => {
+    const fields = page.groups.flatMap((group) => group.fields);
+    return [...Object.keys(draft.updates), ...draft.removes.filter((key) => !Object.hasOwn(draft.updates, key))]
       .map((key) => {
         const field = fields.find((candidate) => candidate.key === key)!;
         const beforeObject = field?.definition.type === 'object'
           && typeof field.draftValue === 'object' ? field.draftValue : undefined;
-        const updatedValue = draftUpdates[key];
+        const updatedValue = draft.updates[key];
         const afterObject = field?.definition.type === 'object'
           && typeof updatedValue === 'object' ? updatedValue : undefined;
         const childSummary = (property: string, value: PluginConfigScalar | undefined): string => {
@@ -3219,16 +3269,19 @@ export function ConsoleAppV4(props: {
                 };
               })
           : undefined;
-        const children = draftRemoves.includes(key)
+        const children = draft.removes.includes(key)
           ? field.fallbackObjectChanges
           : updatedChildren;
+        const after = draft.removes.includes(key)
+          ? `恢复继承（${field?.fallbackDisplayValue ?? '未设置'} · ${field?.fallbackSourceLabel ?? '未设置'}）`
+          : updatedValue && typeof updatedValue === 'object'
+            ? objectSummary(field, updatedValue)
+            : scalarSummary(field, updatedValue as Exclude<PluginConfigValue, PluginConfigObject>);
         return {
           key,
           title: field?.title ?? key,
           before: field?.displayValue ?? '未设置',
-          after: draftRemoves.includes(key)
-            ? `恢复继承（${field?.fallbackDisplayValue ?? '未设置'} · ${field?.fallbackSourceLabel ?? '未设置'}）`
-            : currentFieldDisplay(field),
+          after,
           ...(children && children.length > 0 ? { children } : {}),
         };
       });
@@ -3236,38 +3289,53 @@ export function ConsoleAppV4(props: {
   const discardInvalidConfigDraftChanges = (): void => {
     if (!configRoute || configDraftIssues.length === 0) return;
     const invalidKeys = new Set(configDraftIssues.map((issue) => issue.key));
-    const nextUpdates = Object.fromEntries(Object.entries(draftUpdates)
-      .filter(([key]) => !invalidKeys.has(key)));
-    const nextRemoves = draftRemoves.filter((key) => !invalidKeys.has(key));
+    const nextDrafts = Object.fromEntries((['project', 'user'] as const).flatMap((scope) => {
+      const draft = configDrafts[scope];
+      if (!draft) return [];
+      const invalidForScope = new Set(configDraftIssues
+        .filter((issue) => issue.scope === scope).map((issue) => issue.key));
+      const updates = Object.fromEntries(Object.entries(draft.updates)
+        .filter(([key]) => !invalidForScope.has(key)));
+      const removes = draft.removes.filter((key) => !invalidForScope.has(key));
+      return Object.keys(updates).length + removes.length > 0 ? [[scope, { updates, removes }]] : [];
+    })) as Partial<Record<Scope, ConfigLayerDraft>>;
     const owner = `${configOwnerKey(configRoute)}\0`;
     const nextChangedObjectKeys = changedObjectDraftKeys.filter((key) => !key.startsWith(owner)
       || !invalidKeys.has(key.slice(owner.length)));
-    setDraftUpdates(nextUpdates);
-    setDraftRemoves(nextRemoves);
+    setConfigDrafts(nextDrafts);
     setObjectDrafts((current) => Object.fromEntries(Object.entries(current)
       .filter(([key]) => !key.startsWith(owner)
         || !invalidKeys.has(key.slice(owner.length)))));
     setChangedObjectDraftKeys(nextChangedObjectKeys);
-    setDirty(Object.keys(nextUpdates).length + nextRemoves.length + nextChangedObjectKeys.length > 0);
+    setDirty(Object.keys(nextDrafts).length + nextChangedObjectKeys.length > 0);
     setObjectError(undefined);
     setConfigActionError(undefined);
   };
   const configSaveIntent = (
     apply: boolean,
-  ): Extract<OperationIntent, { kind: 'configSave' }> | undefined => {
-    if (!configRoute || configRoute.layer.scope === 'effective' || !currentConfigPage || !dirty) return;
-    const fields = currentConfigPage.groups.flatMap((group) => group.fields);
+  ): Extract<OperationIntent, { kind: 'configSaveBatch' }> | undefined => {
+    if (!configRoute || configDraftCount === 0) return;
+    const groups = (['project', 'user'] as const).flatMap((scope) => {
+      const draft = configDrafts[scope];
+      const page = configLayerPages[scope];
+      if (!draft || !page) return [];
+      const fields = page.groups.flatMap((group) => group.fields);
+      return [{
+        scope,
+        updates: draft.updates,
+        removeKeys: draft.removes,
+        sensitiveKeys: fields.filter((field) => field.sensitive).map((field) => field.key),
+        privateKeys: fields.filter((field) => configObjectHasSensitiveChild(field.definition))
+          .map((field) => field.key),
+        changes: configChanges(page, draft),
+      }];
+    });
+    if (groups.length !== Object.keys(configDrafts).length || groups.length === 0) return;
     return {
-      kind: 'configSave',
+      kind: 'configSaveBatch',
       pluginId: configRoute.pluginId,
-      scope: configRoute.layer.scope,
       apply,
-      updates: draftUpdates,
-      removeKeys: draftRemoves,
-      sensitiveKeys: fields.filter((field) => field.sensitive).map((field) => field.key),
-      privateKeys: fields.filter((field) => configObjectHasSensitiveChild(field.definition))
-        .map((field) => field.key),
-      changes: configChanges(),
+      groups,
     };
   };
   const beginConfigSave = async (apply: boolean): Promise<void> => {
@@ -3285,73 +3353,6 @@ export function ConsoleAppV4(props: {
       setConfigActionError('设置值未通过验证。请重新检查修改。');
     }
   };
-  useEffect(() => {
-    if (!pendingLayerFieldKey || route.name !== 'configFields'
-      || route.layer.scope === 'effective' || !currentConfigPage) return;
-    const field = currentConfigPage.groups.flatMap((group) => group.fields)
-      .find((candidate) => candidate.key === pendingLayerFieldKey);
-    setPendingLayerFieldKey(undefined);
-    if (!field || (!configFieldCanSet(field) && !configFieldCanUnset(field))) return;
-    const layer = { scope: route.layer.scope as Scope };
-    props.controller.push(field.configured || !configFieldCanSet(field) ? {
-      name: 'configFieldAction',
-      pluginId: route.pluginId,
-      layer,
-      fieldKey: field.key,
-    } : {
-      name: 'configFieldEditor',
-      pluginId: route.pluginId,
-      layer,
-      fieldKey: field.key,
-      editor: fieldEditor(field),
-      ...fieldEditorMode(field),
-    });
-  }, [pendingLayerFieldKey, route.name, currentConfigPage]);
-  useEffect(() => {
-    if (!pendingLayerFieldKey) return;
-    if (route.name === 'configFields' && route.layer.scope !== 'effective') return;
-    if (route.name === 'configLayer') return;
-    setPendingLayerFieldKey(undefined);
-  }, [pendingLayerFieldKey, route.name]);
-  useEffect(() => {
-    if (!pendingPresetId || route.name !== 'configFields'
-      || route.layer.scope === 'effective' || !currentConfigPage) return;
-    const presetId = pendingPresetId;
-    setPendingPresetId(undefined);
-    applyConfigPreset(currentConfigPage, presetId);
-  }, [pendingPresetId, route.name, currentConfigPage]);
-  useEffect(() => {
-    if (!pendingPresetId) return;
-    if (route.name === 'configFields' && route.layer.scope !== 'effective') return;
-    setPendingPresetId(undefined);
-  }, [pendingPresetId, route.name, route.name === 'configFields' ? route.layer.scope : '']);
-  useEffect(() => {
-    if (route.name !== 'configSave') {
-      setConfigSaveImpact(undefined);
-      setConfigSaveImpactError(false);
-      return;
-    }
-    const intent = configSaveIntent(false);
-    if (!intent) return;
-    const abort = new AbortController();
-    setConfigSaveImpact(undefined);
-    setConfigSaveImpactError(false);
-    void props.controller.previewConfigSaveImpact(intent, abort.signal)
-      .then((impact) => {
-        if (!abort.signal.aborted) setConfigSaveImpact(impact);
-      })
-      .catch(() => {
-        if (!abort.signal.aborted) setConfigSaveImpactError(true);
-      });
-    return () => abort.abort();
-  }, [
-    props.controller,
-    route.name,
-    route.name === 'configSave' ? `${route.pluginId}:${route.layer.scope}` : '',
-    draftRemoves,
-    draftUpdates,
-    configSaveImpactAttempt,
-  ]);
   useEffect(() => {
     if (!operationConfirmation) return;
     if (route.name !== 'review'
@@ -4367,7 +4368,7 @@ export function ConsoleAppV4(props: {
     description = '';
     actions = [
       ...(route.code === 'requiredConfigMissing' ? [{ label: '完成插件设置', run: () => {
-        props.controller.replace({ name: 'configLayer', pluginId: plugin.pluginId });
+        props.controller.replace({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'effective' } });
         setFocus(0);
         setScrollOffset(0);
       } }] : []),
@@ -5136,9 +5137,9 @@ export function ConsoleAppV4(props: {
           run: () => {
             beginConfigFlow(target.pluginId);
             props.controller.replace({
-              name: 'configLayer',
+              name: 'configFields',
               pluginId: target.pluginId,
-              ...(fieldKey ? { fieldKey } : {}),
+              layer: { scope: 'effective' },
             });
           },
         }]];
@@ -5903,67 +5904,46 @@ export function ConsoleAppV4(props: {
     const selectedPreset = route.presetId && configLayerDefinitionPage
       ? configLayerDefinitionPage.presets.find((preset) => preset.id === route.presetId)
       : undefined;
-    title = selectedField ? `修改“${selectedField.title}”`
-      : selectedPreset ? `应用“${selectedPreset.title}”` : `修改 ${plugin.displayName} 设置`;
+    title = selectedField ? `“${selectedField.title}”保存到哪里？`
+      : selectedPreset ? `“${selectedPreset.title}”保存到哪里？` : '这个值保存到哪里？';
     description = selectedField
-      ? `当前：${effectiveFieldDisplay(selectedField)} · ${selectedField.effectiveSourceLabel}。选择保存位置后直接编辑。`
-      : selectedPreset ? '选择保存位置后，方案会应用到该位置的草稿。' : '选择修改保存到哪里。';
-    help = '↑↓ 移动 · Enter 打开 · Esc 返回';
+      ? `${selectedField.sensitive ? '敏感值只能保存到个人设置。' : '选择后回到分组总览；磁盘尚未改变。'}`
+      : selectedPreset ? '选择后回到分组总览；磁盘尚未改变。' : '请返回重新选择值。';
+    if (configActionError) description = configActionError;
+    help = '↑↓ 移动 · Enter 选择 · Esc 返回修改值';
     const canUseLayer = (scope: Scope): boolean => {
       const page = configLayerPages[scope];
-      if (!page) {
-        if (scope === 'user') return true;
-        if (selectedField) return !selectedField.sensitive && !selectedField.sharedNativeRender;
-        if (selectedPreset && configLayerDefinitionPage) {
-          const effectiveFields = configLayerDefinitionPage.groups.flatMap((group) => group.fields);
-          return Object.keys(selectedPreset.values).some((key) => {
-            const field = effectiveFields.find((candidate) => candidate.key === key);
-            return Boolean(field && !field.sensitive && !field.sharedNativeRender);
-          });
-        }
-        return true;
-      }
+      if (!page || !configCandidate) return false;
       const fields = page.groups.flatMap((group) => group.fields);
-      if (route.fieldKey) {
-        const field = fields.find((candidate) => candidate.key === route.fieldKey);
-        return Boolean(field && (configFieldCanSet(field) || configFieldCanUnset(field)));
-      }
-      if (selectedPreset) {
-        return Object.keys(selectedPreset.values).some((key) => {
-          const field = fields.find((candidate) => candidate.key === key);
-          return Boolean(field && configFieldCanSet(field));
-        });
-      }
-      return fields.some((field) => configFieldCanSet(field) || configFieldCanUnset(field));
+      return Object.entries(configCandidate.mutations).every(([key, mutation]) => {
+        const field = fields.find((candidate) => candidate.key === key);
+        return Boolean(field && (mutation.kind === 'set' ? configFieldCanSet(field) : configFieldCanUnset(field)));
+      });
     };
     actions = [
-      ...(canUseLayer('user') ? [{
-        label: '个人默认',
-        description: '影响个人的所有项目；项目设置仍可覆盖',
-        meta: configLayerCounts.user === undefined ? undefined : `${configLayerCounts.user} 个值`,
-        run: () => openConfigLayerTarget({ scope: 'user' }),
-      }] : []),
       ...(canUseLayer('project') ? [{
         label: '当前项目',
         description: '修改仅对当前项目生效；适合随仓库共享的约定',
         meta: configLayerCounts.project === undefined ? undefined : `${configLayerCounts.project} 个值`,
         run: () => openConfigLayerTarget({ scope: 'project' }),
       }] : []),
+      ...(canUseLayer('user') ? [{
+        label: '个人默认',
+        description: '影响个人的所有项目；项目设置仍可覆盖',
+        meta: configLayerCounts.user === undefined ? undefined : `${configLayerCounts.user} 个值`,
+        run: () => openConfigLayerTarget({ scope: 'user' }),
+      }] : []),
     ];
     content = actions.length > 0
       ? <SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} />
       : <StatusCard status="info" title="正在检查可用保存位置" />;
   } else if (route.name === 'configFields' && plugin) {
-    const readonly = route.layer.scope === 'effective';
-    breadcrumb = readonly ? `${plugin.displayName} / 设置` : `${plugin.displayName} / 设置 / ${configLayerLabel(route.layer)}`;
-    title = readonly ? '当前插件设置' : '编辑插件设置';
-    description = readonly
-      ? '查看当前实际生效的值；← → 切换设置分组。'
-      : `保存位置：${configLayerLabel(route.layer)} · ← → 切换设置分组。`;
-    if (!readonly && configActionError) description = configActionError;
-    help = readonly
-      ? '↑↓ 选择配置 · Enter 修改 · ←→ 分组 · Esc 返回'
-      : '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 保存 · u 恢复继承 · Esc 返回';
+    const readonly = false;
+    breadcrumb = `${plugin.displayName} / 设置`;
+    title = '插件设置';
+    description = '先编辑值，再选择保存位置。← → 切换设置分组。';
+    if (configActionError) description = configActionError;
+    help = '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 查看保存汇总 · u 恢复继承 · Esc 返回';
     if (!currentConfigPage) {
       content = <StatusCard status="info" title="正在读取可信设置定义"><ProgressRow title="读取插件设置字段" state="active" /></StatusCard>;
     } else {
@@ -5974,56 +5954,33 @@ export function ConsoleAppV4(props: {
       const activeGroup = activeTab?.kind === 'group'
         ? currentConfigPage.groups.find((group) => group.id === activeTab.id)
         : undefined;
-      const projectSharedNativeFields = route.layer.scope === 'project'
-        ? (activeGroup?.fields ?? []).filter((field) => field.sharedNativeRender && !field.writable)
-        : [];
-      if (projectSharedNativeFields.length > 0) {
-        description += ' 此设置由个人默认控制被各项目共用的内容；当前项目不可改。更改影响所有项目。';
-      }
-      if (projectSharedNativeFields.some(configFieldCanUnset)) {
-        description += ' 本项目旧值不再使用；当前继承个人或插件默认。请删除旧值。';
-      }
-      if (!readonly && configDraftIssues.length > 0) {
+      if (configDraftIssues.length > 0) {
         description += ' 字段已变化；失效草稿不会保存。';
       }
-      const mutableLayer = {
-        scope: route.layer.scope as Scope,
-      };
+      const mutableLayer = { scope: 'effective' as const };
       const tabActions: ActionItem[] = activeTab?.kind === 'presets'
         ? currentConfigPage.presets.map((preset) => ({
             label: preset.title,
             description: (preset.privateFieldTitles?.length ?? 0) > 0
               ? `${preset.description ? `${preset.description} · ` : ''}${preset.privateFieldTitles!.join('、')}需手动输入`
               : preset.description,
-            run: readonly
-              ? () => go({
-                  name: 'configLayer',
-                  pluginId: plugin.pluginId,
-                  presetId: preset.id,
-                })
-              : () => applyConfigPreset(currentConfigPage, preset.id),
+            run: () => applyConfigPreset(currentConfigPage, preset.id),
           }))
         : (activeGroup?.fields ?? []).filter((field) => readonly || configFieldCanSet(field) || configFieldCanUnset(field)).map((field) => ({
             label: field.title,
-            description: field.invalidOverrideIssue
-              ? field.invalidOverrideOwnedByLayer
-                ? `${field.invalidOverrideIssue} 删除后恢复：${field.fallbackDisplayValue ?? '未设置'} · ${field.fallbackSourceLabel ?? '未设置'}`
-                : field.invalidOverrideIssue
-              : readonly
-              ? field.sourceLabel === '未设置' ? '没有任何位置提供值' : `来自${field.sourceLabel}`
-              : !configFieldCanSet(field) && configFieldCanUnset(field)
-                ? '本项目旧值不再使用 · 当前继承个人或插件默认 · 可删除旧值'
-                : `${field.description ? `${field.description} · ` : ''}当前有效：${effectiveFieldDisplay(field)} · ${field.effectiveSourceLabel}`,
-            meta: readonly ? effectiveFieldDisplay(field) : currentFieldDisplay(field),
+            description: field.invalidOverrideIssue ?? `${field.description ? `${field.description} · ` : ''}当前有效：${effectiveFieldDisplay(field)} · ${field.effectiveSourceLabel}`,
+            meta: (() => {
+              const targets = (['project', 'user'] as const).filter((draftScope) =>
+                Object.hasOwn(configDrafts[draftScope]?.updates ?? {}, field.key)
+                || configDrafts[draftScope]?.removes.includes(field.key));
+              return targets.length > 0
+                ? `拟保存：${targets.map((targetScope) => targetScope === 'project' ? '当前项目' : '个人默认').join('、')}`
+                : effectiveFieldDisplay(field);
+            })(),
             configKey: field.key,
-            run: readonly
-              ? () => go({
-                  name: 'configLayer',
-                  pluginId: plugin.pluginId,
-                  fieldKey: field.key,
-                  groupId: activeGroup!.id,
-                })
-              : () => go(field.configured || !configFieldCanSet(field) ? {
+            run: () => go((['project', 'user'] as const).some((draftScope) =>
+              configLayerPages[draftScope]?.groups.flatMap((group) => group.fields)
+                .some((candidate) => candidate.key === field.key && candidate.configured)) ? {
                   name: 'configFieldAction',
                   pluginId: plugin.pluginId,
                   layer: mutableLayer,
@@ -6037,35 +5994,23 @@ export function ConsoleAppV4(props: {
                   ...fieldEditorMode(field),
                 }),
           }));
-      const operationActions: ActionItem[] = readonly ? [] : [
+      const operationActions: ActionItem[] = [
         ...(configDraftIssues.length > 0 ? [{
           label: '放弃已变化字段的草稿',
           description: `${configDraftIssues.length} 项草稿的字段不存在、不可编辑或不再可删除；不会修改已保存设置。`,
           status: 'warning' as const,
           run: discardInvalidConfigDraftChanges,
         }] : []),
-        ...(dirty && configDraftIssues.length === 0 ? [{
-          label: '查看保存汇总',
-          description: '确认变化，再选择只保存或保存并应用',
-          status: 'success' as const,
-          run: () => {
-            setFocus(0);
-            go({ name: 'configSave', pluginId: route.pluginId, layer: route.layer as { scope: Scope } });
-          },
-        }] : []),
-        ...(currentConfigPage.storedCount > 0 ? [{
-          label: route.layer.scope === 'user'
-            ? '清空个人默认…'
-            : '清空当前项目设置…',
-          description: `删除${configLayerLabel(route.layer)}中的全部值并恢复继承；其他设置层保持不变`,
-          status: 'error' as const,
-          run: () => beginReview({
-            kind: 'configReset',
-            pluginId: plugin.pluginId,
-            scope: route.layer.scope as Scope,
-            changes: currentConfigPage.groups.flatMap((group) => group.fields)
-              .filter((field) => field.configured)
-              .map((field) => ({
+        ...(['project', 'user'] as const).flatMap((resetScope) => {
+          const page = configLayerPages[resetScope];
+          if (!page || page.storedCount === 0) return [];
+          return [{
+            label: resetScope === 'user' ? '清空个人默认…' : '清空当前项目设置…',
+            description: `删除${resetScope === 'user' ? '个人默认' : '当前项目'}中的全部值并恢复继承；其他设置层保持不变`,
+            status: 'error' as const,
+            run: () => beginReview({
+              kind: 'configReset', pluginId: plugin.pluginId, scope: resetScope,
+              changes: page.groups.flatMap((group) => group.fields).filter((field) => field.configured).map((field) => ({
                 key: field.key,
                 title: field.title,
                 before: field.displayValue,
@@ -6074,9 +6019,24 @@ export function ConsoleAppV4(props: {
                   ? { children: field.fallbackObjectChanges }
                   : {}),
               })),
-          }),
-        }] : []),
+            }),
+          }];
+        }),
       ];
+      const configSaveAction: ActionItem = {
+        actionId: 'config-save-summary',
+        label: configDraftCount > 0 ? `保存设置（${configDraftCount}）` : '保存设置',
+        description: '确认全部设置层的变化，再选择只保存或保存并应用',
+        status: configDraftCount > 0 ? 'success' : 'muted',
+        disabled: configDraftCount === 0 ? '没有待保存设置'
+          : configDraftIssues.length > 0 ? '请先放弃失效草稿' : undefined,
+        run: () => {
+          setFocus(0);
+          setScrollOffset(0);
+          go({ name: 'configSave', pluginId: route.pluginId, layer: { scope: 'effective' } });
+        },
+      };
+      pinnedActions = [configSaveAction];
       actions = [...tabActions, ...operationActions];
       const effectiveConfigFocus = Math.min(focus, Math.max(0, actions.length - 1));
       const focusedConfigField = effectiveConfigFocus < (activeGroup?.fields.length ?? 0)
@@ -6084,13 +6044,15 @@ export function ConsoleAppV4(props: {
         : undefined;
       if (!readonly) {
         const canUnsetFocused = focusedConfigField
-          ? configFieldCanUnset(focusedConfigField)
-            && (!focusedConfigField.invalidOverrideIssue
-              || focusedConfigField.invalidOverrideOwnedByLayer === true)
+          ? (['project', 'user'] as const).some((scope) =>
+              configLayerPages[scope]?.groups.flatMap((group) => group.fields)
+                .some((field) => field.key === focusedConfigField.key && configFieldCanUnset(field)))
           : false;
-        help = canUnsetFocused
-          ? '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 查看汇总 · u 恢复继承 · Esc 返回'
-          : '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 查看汇总 · Esc 返回';
+        help = focusZone === 'actions'
+          ? 'Enter 查看保存汇总 · Tab 返回设置字段 · s 查看保存汇总 · Esc 返回'
+          : canUnsetFocused
+            ? '↑↓ 移动 · Enter 修改 · ←→ 分组 · Tab 保存栏 · s 查看汇总 · u 恢复继承 · Esc 返回'
+            : '↑↓ 移动 · Enter 修改 · ←→ 分组 · Tab 保存栏 · s 查看汇总 · Esc 返回';
       }
       const fieldFocus = tabActions.length > 0
         ? effectiveConfigFocus < tabActions.length ? effectiveConfigFocus : Math.min(scrollOffset, tabActions.length - 1)
@@ -6098,12 +6060,20 @@ export function ConsoleAppV4(props: {
       const operationRows = operationActions.reduce((rows, action) =>
         rows + (policy.mode === 'compact' || !action.description ? 1 : 2), 0);
       const viewport = actionViewport(tabActions, policy.mode === 'compact', fieldFocus, scrollOffset,
-        pageActionBudget(1 + operationRows + 3 + (configDraftIssues.length > 0 ? 3 : 0)));
+        pageActionBudget(2 + operationRows + 3 + (configDraftIssues.length > 0 ? 3 : 0)));
       const totalFields = currentConfigPage.groups.reduce((count, group) => count + group.fields.length, 0);
       const countLabel = `${totalFields} 项${currentConfigPage.presets.length > 0 ? ` · ${currentConfigPage.presets.length} 个方案` : ''}`;
-      context = readonly ? countLabel
-        : dirty ? `${Object.keys(draftUpdates).length + draftRemoves.length} 项未保存` : countLabel;
+      context = configDraftCount > 0 ? `${configDraftCount} 项待保存` : countLabel;
       content = <Box flexDirection="column">
+        <PinnedActionBar
+          actions={[{
+            id: 'config-save-summary',
+            label: configSaveAction.label,
+            disabled: Boolean(configSaveAction.disabled),
+          }]}
+          active={focusZone === 'actions'}
+          focus={pinnedActionFocus}
+        />
         {!readonly && configDraftIssues.length > 0 ? <Callout
           status="warning"
           title="字段已变化"
@@ -6119,7 +6089,7 @@ export function ConsoleAppV4(props: {
           ? <SectionCard title={activeTab.label} meta={viewport.hiddenBefore > 0 || viewport.hiddenAfter > 0 ? `${viewport.position}/${viewport.total}` : undefined}>
               <SemanticRows
                 actions={tabActions}
-                focus={effectiveConfigFocus}
+                focus={focusZone === 'content' ? effectiveConfigFocus : -1}
                 kind="section"
                 compact={policy.mode === 'compact'}
                 offset={viewport.offset}
@@ -6130,7 +6100,7 @@ export function ConsoleAppV4(props: {
         {operationActions.length > 0
           ? <SemanticRows
               actions={actions}
-              focus={effectiveConfigFocus}
+              focus={focusZone === 'content' ? effectiveConfigFocus : -1}
               kind="action"
               compact={policy.mode === 'compact'}
               offset={tabActions.length}
@@ -6139,8 +6109,16 @@ export function ConsoleAppV4(props: {
           : null}
       </Box>;
     }
-  } else if (route.name === 'configSave' && plugin && currentConfigPage) {
-    const changes = configChanges();
+  } else if (route.name === 'configSave' && plugin) {
+    const draftGroups = (['project', 'user'] as const).flatMap((scope) => {
+      const draft = configDrafts[scope];
+      const page = configLayerPages[scope];
+      return draft && page ? [{ scope, draft, changes: configChanges(page, draft) }] : [];
+    });
+    const changes = draftGroups.flatMap((group) => group.changes.map((change) => ({
+      ...change,
+      title: `${scopeLabel(group.scope)} · ${change.title}`,
+    })));
     if (route.view === 'changes') {
       const lines = changeDetailLines(changes, size.columns - 4);
       const pageRows = responsiveBudget(5, 10);
@@ -6161,56 +6139,25 @@ export function ConsoleAppV4(props: {
         <SemanticRows actions={actions} focus={focus} kind="action" compact />
       </Box>;
     } else {
-    const affectedTargets = configSaveImpact?.affectedTargets ?? [];
-    const hasConsumers = configSaveImpact?.impactState === 'known' && affectedTargets.length > 0;
-    const visibleAffectedTargets = affectedTargets.slice(0, 1);
-    const impactRowCount = 2;
-    const configSummaryLimit = 1;
-    const visibleChanges = changes.slice(0, configSummaryLimit);
-    const targetSummary = affectedTargets
-      .map((target) => `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`)
-      .join('、');
+    const visibleChanges = changes.slice(0, policy.mode === 'compact' ? 0 : 1);
     breadcrumb = `${plugin.displayName} / 设置 / 保存汇总`;
     context = `${changes.length} 项未保存`;
     title = `保存 ${changes.length} 项设置修改？`;
-    description = route.layer.scope === 'project'
-      ? '修改将保存到当前项目。'
-      : '修改将保存为个人默认，并影响个人的所有项目；项目设置仍可覆盖。';
-    actions = configSaveImpactError ? [
+    description = `将按当前项目、个人默认的顺序保存 ${draftGroups.length} 个设置层。每层独立提交。`;
+    actions = [
       {
-        label: '重新检查影响',
-        description: '重新读取当前安装位置；检查成功前不能保存',
-        run: () => setConfigSaveImpactAttempt((value) => value + 1),
-      },
-      { label: '返回修改', run: back },
-    ] : configSaveImpact ? [
-      hasConsumers ? {
         label: '保存并生效',
-        description: `保存设置，并重新应用：${targetSummary}`,
+        description: '保存全部草稿，并重新应用实际使用这些设置的目标',
         status: 'success',
         run: () => beginConfigSave(true),
-      } : configSaveImpact.impactState === 'unknown' ? {
-        label: '仅保存设置（应用范围尚未确认）',
-        description: '保存所选设置层；不扩大到未确认的安装位置',
-        status: 'warning',
-        run: () => beginConfigSave(false),
-      } : {
-        label: '保存设置',
-        description: '当前修改没有需要重新应用的已安装目标',
-        status: 'success',
+      },
+      {
+        label: '只保存，稍后应用',
+        description: '保存全部设置层，不重新应用安装目标',
         run: () => beginConfigSave(false),
       },
-      ...(hasConsumers ? [{
-        label: '只保存，稍后应用',
-        description: '保存所选设置层，不重新应用当前目标',
-        run: () => beginConfigSave(false),
-      }] : configSaveImpact.impactState === 'unknown' ? [{
-        label: '重新检查影响',
-        description: '再次读取当前安装位置和配置消费者',
-        run: () => setConfigSaveImpactAttempt((value) => value + 1),
-      }] : []),
       { label: '返回修改', run: back },
-    ] : [{ label: '返回修改', run: back }];
+    ];
     actions.splice(Math.max(0, actions.length - 1), 0, {
       label: '阅读完整设置变化',
       description: '分页查看每项修改前和修改后的完整值',
@@ -6219,43 +6166,23 @@ export function ConsoleAppV4(props: {
         go({ ...route, view: 'changes' });
       },
     });
-    const configSaveStaticRows = 6 + visibleChanges.length * 2 + impactRowCount;
+    const configSaveStaticRows = 6 + visibleChanges.length * 2 + draftGroups.length;
     const configSaveActionViewport = actionViewport(actions, policy.mode === 'compact', focus,
       scrollOffset, pageActionBudget(configSaveStaticRows));
     const changeSectionTitle = visibleChanges.length < changes.length
       ? `设置变更 · 显示 ${visibleChanges.length}/${changes.length}（另 ${changes.length - visibleChanges.length} 项）`
       : '设置变更';
-    const impactSectionTitle = hasConsumers && visibleAffectedTargets.length < affectedTargets.length
-      ? `应用影响 · 显示 ${visibleAffectedTargets.length}/${affectedTargets.length}（另 ${affectedTargets.length - visibleAffectedTargets.length} 个）`
-      : '应用影响';
-    content = <Box flexDirection="column"><SectionCard title={changeSectionTitle} compact={policy.mode === 'compact'}>
+    content = <Box flexDirection="column">{visibleChanges.length > 0 ? <SectionCard title={changeSectionTitle} compact={policy.mode === 'compact'}>
       {visibleChanges.map((change) => <ReviewChangeRow
-        key={change.key}
-        title={`~ ${draftRemoves.includes(change.key) ? `删除 ${change.title} 中的值` : change.title}`}
+        key={`${change.title}:${change.key}`}
+        title={`~ ${change.title}`}
         value={`${change.before} → ${change.after}`}
         compact
       />)}
-    </SectionCard><SectionCard title={impactSectionTitle} compact={policy.mode === 'compact'}>
-      {!configSaveImpact && !configSaveImpactError
-        ? <ProgressRow title="分析实际配置消费者" state="active" />
-        : hasConsumers
-          ? visibleAffectedTargets.map((target) => <StaticRow
-              key={`${target.platform}:${target.scope}`}
-              title={`${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`}
-              meta="需要重新应用"
-              status="warning"
-              compact
-            />)
-          : <StaticRow
-              title={configSaveImpactError
-                ? '影响检查失败；设置尚未保存'
-                : configSaveImpact?.impactState === 'unknown'
-                  ? '应用范围尚未确认；可以仅保存并稍后重查'
-                : '没有需要重新应用的已安装目标'}
-              status={configSaveImpactError || configSaveImpact?.impactState === 'unknown' ? 'warning' : 'success'}
-              compact
-            />}
-      <StaticRow title="其他设置层保持不变" status="success" compact />
+    </SectionCard> : null}<SectionCard title="保存目标" compact={policy.mode === 'compact'}>
+      {draftGroups.map((group) => <StaticRow key={group.scope}
+        title={scopeLabel(group.scope)} meta={`${group.changes.length} 项修改`} compact />)}
+      <StaticRow title="每层独立提交；失败层保留草稿" status="warning" compact />
     </SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'}
       offset={configSaveActionViewport.offset} limit={configSaveActionViewport.limit} /></Box>;
     }
@@ -6265,11 +6192,13 @@ export function ConsoleAppV4(props: {
     title = activeField.title;
     description = `这个字段在${layer}中已经有值。`;
     help = '↑↓ 移动 · Enter 选择 · Esc 返回';
-    const deleteLabel = route.layer.scope === 'user'
-      ? '删除个人默认中的值'
-      : '删除当前项目中的值';
+    const targetFields = (['project', 'user'] as const).flatMap((scope) =>
+      configLayerPages[scope]?.groups.flatMap((group) => group.fields)
+        .filter((field) => field.key === activeField.key).map((field) => ({ scope, field })) ?? []);
+    const canSet = targetFields.some(({ field }) => configFieldCanSet(field));
+    const canUnset = targetFields.some(({ field }) => configFieldCanUnset(field));
     actions = [
-      ...(configFieldCanSet(activeField) ? [{
+      ...(canSet ? [{
         label: '修改值…',
         run: () => go({
           name: 'configFieldEditor',
@@ -6280,15 +6209,18 @@ export function ConsoleAppV4(props: {
           ...fieldEditorMode(activeField),
         }),
       }] : []),
-      ...(configFieldCanUnset(activeField) && (!activeField.invalidOverrideIssue || activeField.invalidOverrideOwnedByLayer) ? [draftRemoves.includes(activeField.key)
-        ? { label: '撤销删除', run: () => { cancelDraftRemoval(activeField.key); back(); } }
-        : { label: deleteLabel, status: 'error' as const, run: () => { removeDraft(activeField.key); back(); } }] : []),
+      ...(canUnset ? [{
+        label: '恢复继承…',
+        description: '选择要删除覆盖值的位置',
+        status: 'error' as const,
+        run: () => removeDraft(activeField.key),
+      }] : []),
     ];
     content = <Box flexDirection="column"><SectionCard>
       {activeField.invalidOverrideIssue
         ? <StaticRow title="当前覆盖无效" meta={activeField.invalidOverrideIssue} status="warning" />
         : null}
-      {!configFieldCanSet(activeField) && configFieldCanUnset(activeField)
+      {!canSet && canUnset
         ? <StaticRow title="本项目旧值不再使用" meta="当前继承个人或插件默认；删除旧值后保持继承" status="warning" />
         : null}
       <StaticRow title={`${layer}中的值`} meta={currentFieldDisplay(activeField)} />
@@ -6306,7 +6238,9 @@ export function ConsoleAppV4(props: {
         ? '先选择插件提供的方案，也可以继续自定义。'
         : '此字段只允许使用插件提供的方案。';
       help = '↑↓ 移动 · Enter 使用 · Esc 取消';
-      const current = draftUpdates[activeField.key] ?? activeField.draftValue ?? activeField.value;
+      const current = activeCandidateMutation?.kind === 'set'
+        ? activeCandidateMutation.value
+        : draftUpdates[activeField.key] ?? activeField.draftValue ?? activeField.value;
       const booleanCustomValues = activeField.type === 'boolean' && activeField.allowCustom
         ? [true, false].filter((value) =>
             !activeField.choices?.some((preset) => preset.value === value))
@@ -6318,12 +6252,12 @@ export function ConsoleAppV4(props: {
           selected: !activeField.sensitive
             && !configObjectHasSensitiveChild(activeField.definition)
             && configValuesEqual(current, preset.value),
-          run: () => { updateDraft(activeField.key, preset.value); back(); },
+          run: () => updateDraft(activeField.key, preset.value),
         })),
         ...booleanCustomValues.map((value) => ({
           label: value ? '开启' : '关闭',
           selected: !activeField.sensitive && current === value,
-          run: () => { updateDraft(activeField.key, value); back(); },
+          run: () => updateDraft(activeField.key, value),
         })),
         ...(activeField.allowCustom && activeField.type !== 'boolean' ? [{
           label: '自定义…',
@@ -6340,7 +6274,10 @@ export function ConsoleAppV4(props: {
       title = `${activeField.title}？`;
       description = activeField.description ?? '选择开启或关闭。';
       help = '↑↓ 移动 · Enter 使用 · Esc 取消';
-      actions = [{ label: '开启', selected: !activeField.sensitive && (draftUpdates[activeField.key] === true || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === true)), run: () => { updateDraft(activeField.key, true); back(); } }, { label: '关闭', selected: !activeField.sensitive && (draftUpdates[activeField.key] === false || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === false)), run: () => { updateDraft(activeField.key, false); back(); } }];
+      const current = activeCandidateMutation?.kind === 'set'
+        ? activeCandidateMutation.value
+        : draftUpdates[activeField.key] ?? activeField.value;
+      actions = [{ label: '开启', selected: !activeField.sensitive && current === true, run: () => updateDraft(activeField.key, true) }, { label: '关闭', selected: !activeField.sensitive && current === false, run: () => updateDraft(activeField.key, false) }];
       content = <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
     } else if (route.editor === 'object' && activeField.definition.type === 'object' && activeObjectDraft) {
       const objectDefinition = activeField.definition;
@@ -7232,9 +7169,7 @@ export function ConsoleAppV4(props: {
       else if (entry.id === 'reAddSource' && issue.sourceId) beginIssueSourceAdd(issue.sourceId);
       else if (entry.id === 'viewSourceChange' && issue.sourceId) go({ name: 'sourceTechnical', sourceId: issue.sourceId });
       else if (entry.id === 'openConfig' && issue.pluginId) {
-        go(issue.configLayer
-          ? { name: 'configFields', pluginId: issue.pluginId, layer: issue.configLayer }
-          : { name: 'configLayer', pluginId: issue.pluginId });
+        go({ name: 'configFields', pluginId: issue.pluginId, layer: { scope: 'effective' } });
       }
       else if (entry.id === 'viewDependencies' && issue.pluginId) {
         go({ name: 'pluginDependencies', pluginId: issue.pluginId });
@@ -7495,7 +7430,8 @@ export function ConsoleAppV4(props: {
       ? ['插件任务', '正在准备任务影响确认']
       : preparation.operationKind === 'portableInstall'
       ? ['通用 Skills / 安装', '正在准备通用 Skills 安装确认']
-      : preparation.operationKind === 'configSave' || preparation.operationKind === 'configReset'
+      : preparation.operationKind === 'configSave' || preparation.operationKind === 'configSaveBatch'
+        || preparation.operationKind === 'configReset'
         ? ['设置', '正在准备设置确认']
         : preparation.operationKind === 'sourceMutation' || preparation.operationKind === 'catalogGeneration'
           ? ['插件来源', '正在准备来源变更确认']
@@ -7854,13 +7790,15 @@ export function ConsoleAppV4(props: {
     const taskOperation = snapshot.activeReview?.operationKind === 'pluginWriteTask';
     const portableOperation = snapshot.activeReview?.operationKind === 'portableInstall';
     const configOperation = snapshot.activeReview?.operationKind === 'configSave'
+      || snapshot.activeReview?.operationKind === 'configSaveBatch'
       || snapshot.activeReview?.operationKind === 'configReset';
     const sourceOperation = snapshot.activeReview?.operationKind === 'sourceMutation'
       || snapshot.activeReview?.operationKind === 'catalogGeneration'
       || snapshot.activeReview?.operationKind === 'catalogSourcesRecovery';
     const issueOperation = snapshot.activeReview?.originIssue;
     breadcrumb = taskOperation ? '插件任务 / 进度' : portableOperation ? '通用 Skills / 进度' : issueOperation ? '需要处理 / 进度' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
-    const configApply = snapshot.activeReview?.operationKind === 'configSave'
+    const configApply = (snapshot.activeReview?.operationKind === 'configSave'
+      || snapshot.activeReview?.operationKind === 'configSaveBatch')
       && snapshot.activeReview.changes.some((change) => change.group === 'configImpact' && change.kind === 'change');
     const progressAction = snapshot.activeReview?.taskGoal === 'restore' ? '恢复'
       : snapshot.activeReview?.taskGoal === 'update' ? '更新'
@@ -8073,7 +8011,8 @@ export function ConsoleAppV4(props: {
       && result.returnRoute?.name === 'installTargets';
     const portableReturnLabel = portableOriginIsPlatform ? '返回目标平台'
       : portableOriginIsDetail ? '返回插件详情' : '返回插件列表';
-    const configOperation = operationKind === 'configSave' || operationKind === 'configReset'
+    const configOperation = operationKind === 'configSave' || operationKind === 'configSaveBatch'
+      || operationKind === 'configReset'
       ? operationKind : undefined;
     const invalidConfigResult = resultSummary?.configApplySkippedReason === 'invalidConfig';
     const successfulConfigOperation = configOperation !== undefined && !blocked && !partial;
@@ -8177,8 +8116,13 @@ export function ConsoleAppV4(props: {
       && 'pluginId' in result.returnRoute
       ? result.returnRoute.pluginId
       : undefined);
-    const configRetryAvailable = resultSummary?.configApplyRetryAvailable === true
-      && resultSummary.configScope !== undefined && configResultPluginId !== undefined;
+    const configRetryScopes = configResultPluginId === undefined ? []
+      : operationKind === 'configSaveBatch'
+        ? resultSummary?.configGroups?.filter((group) =>
+            group.configSaved && group.applyStatus === 'failed'
+            && group.errorCode !== 'invalidConfig').map((group) => group.scope) ?? []
+        : resultSummary?.configApplyRetryAvailable === true && resultSummary.configScope !== undefined
+          ? [resultSummary.configScope] : [];
     const configOrigin = successfulConfigOperation && pluginId
       ? props.controller.configOrigin(pluginId)
       : undefined;
@@ -8221,7 +8165,7 @@ export function ConsoleAppV4(props: {
     const retryAction = failedPluginId && failedTarget && failedTargetState
       ? selectLifecycleRetryAction({
           operationKind: operationKind === 'catalogSourcesRecovery' || operationKind === 'pluginWriteBatch'
-            || operationKind === 'pluginWriteTask'
+            || operationKind === 'pluginWriteTask' || operationKind === 'configSaveBatch'
             ? undefined : operationKind,
           originalAction: action,
           target: {
@@ -8366,17 +8310,19 @@ export function ConsoleAppV4(props: {
         }, { label: '返回首页', run: () => requestSessionNavigation('home') }]
       : configOperation && partial
       ? [
-          ...(configRetryAvailable ? [{
-            label: '重试应用',
+          ...configRetryScopes.map((scope) => ({
+            label: configRetryScopes.length > 1 ? `重试应用 · ${scopeLabel(scope)}` : '重试应用',
             description: '先重新显示操作汇总，并重新读取当前状态',
             run: () => beginReview({
               kind: 'configSave',
               pluginId: configResultPluginId!,
-              scope: resultSummary!.configScope!,
+              scope,
               apply: true,
               retryApply: true,
+              updates: {},
+              removeKeys: [],
             }),
-          }] : []),
+          })),
           { label: invalidConfigResult ? '返回设置' : '返回修改', description: '重新打开已保存的设置层', run: () => leaveResult() },
           { label: '返回设置删除字段或重置设置层', description: '显式删除顶层字段或整个设置层', run: () => leaveResult() },
           { label: '保留设置并退出', run: () => requestExit({ code: 1, reason: 'partial' }) },
@@ -8535,6 +8481,16 @@ export function ConsoleAppV4(props: {
           : resultSummary?.resetDisposition === 'quarantinedDirectory'
             ? `设置路径是目录；已隔离为 ${resultSummary.quarantineBasename ?? '安全隔离目录'}`
             : undefined;
+    const configGroupRows = resultSummary?.configGroups?.map((group) => {
+      const status = !group.configSaved ? 'error' as const
+        : group.applyStatus === 'failed' ? 'warning' as const : 'success' as const;
+      const outcome = !group.configSaved ? '保存失败'
+        : group.applyStatus === 'failed' ? '已保存 · 应用失败'
+          : group.applyStatus === 'succeeded' ? '已保存 · 已应用'
+            : '已保存';
+      return <ResultRow key={`config:${group.scope}`} title={scopeLabel(group.scope)}
+        description={group.errorCode} meta={outcome} status={status} compact />;
+    }) ?? [];
     const taskRootResults = taskSummary?.rootResults ?? [];
     const blockedTaskTargets = new Map((taskSummary?.blockedTargets ?? []).map((entry) => [
       [entry.target.pluginId, entry.target.platform, entry.target.scope].join('\0'), entry,
@@ -8669,7 +8625,7 @@ export function ConsoleAppV4(props: {
       </ResultCard>
       </>}
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
-    </Box> : <Box flexDirection="column"><ResultCard status={resultStatus} title={blockedDependencyFailure ? '依赖安装没有完成' : blocked ? result.writeMayHaveCompleted ? '结果未确认' : '操作未完成' : sourceOperation ? '来源配置写入已完成' : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成' : resultSummary?.message ?? '状态已变化，请重新确认'}>{resetDispositionText ? <StaticRow title={resetDispositionText} status="success" compact /> : null}{resultTargetOffset > 0 ? <StaticRow title={`↑ 前面还有 ${resultTargetOffset} 个目标`} status="muted" compact /> : null}{visibleResultTargets.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />; })}{hiddenResultTargets > 0 ? <StaticRow title="↓ 后面还有" meta={`${hiddenResultTargets} 个目标`} status="muted" compact /> : null}{partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}{configOperation && partial && !invalidConfigResult ? <Callout status="warning" title="恢复指引" description="如需清理残留，请返回插件详情选择清理；然后选择重新安装或同步。系统不会自动删除现有内容。" /> : null}{resultSummary?.elapsedMs !== undefined ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}{visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={productResultMessage(message)} status="muted" compact />)}</ResultCard><SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} /></Box>;
+    </Box> : <Box flexDirection="column"><ResultCard status={resultStatus} title={blockedDependencyFailure ? '依赖安装没有完成' : blocked ? result.writeMayHaveCompleted ? '结果未确认' : '操作未完成' : sourceOperation ? '来源配置写入已完成' : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成' : resultSummary?.message ?? '状态已变化，请重新确认'}>{resetDispositionText ? <StaticRow title={resetDispositionText} status="success" compact /> : null}{configGroupRows}{resultTargetOffset > 0 ? <StaticRow title={`↑ 前面还有 ${resultTargetOffset} 个目标`} status="muted" compact /> : null}{visibleResultTargets.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />; })}{hiddenResultTargets > 0 ? <StaticRow title="↓ 后面还有" meta={`${hiddenResultTargets} 个目标`} status="muted" compact /> : null}{partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}{configOperation && partial && !invalidConfigResult ? <Callout status="warning" title="恢复指引" description="已保存的设置层不会重写。失败的保存层保留草稿；应用失败时只重试应用。" /> : null}{resultSummary?.elapsedMs !== undefined ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}{visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={productResultMessage(message)} status="muted" compact />)}</ResultCard><SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} /></Box>;
   } else if (route.name === 'pluginContent' && plugin) {
     const overview = props.controller.getPluginContentOverview(plugin.pluginId);
     const contentState = props.controller.getPluginContentState(plugin.pluginId);
@@ -8968,8 +8924,8 @@ export function ConsoleAppV4(props: {
 
   function clearExternalDraftValues(): void {
     setDirty(false);
-    setDraftUpdates({});
-    setDraftRemoves([]);
+    setConfigDrafts({});
+    setConfigCandidate(undefined);
     setObjectDrafts({});
     setChangedObjectDraftKeys([]);
     setObjectError(undefined);
@@ -9168,8 +9124,8 @@ export function ConsoleAppV4(props: {
         else if (overlay === 'discard') {
           setOverlay(undefined);
           setDirty(false);
-          setDraftUpdates({});
-          setDraftRemoves([]);
+          setConfigDrafts({});
+          setConfigCandidate(undefined);
           setObjectDrafts({});
           setChangedObjectDraftKeys([]);
           const discardedSourceDraft = sourceDraft;
@@ -9490,6 +9446,7 @@ export function ConsoleAppV4(props: {
       && (route.editor === 'string' || route.editor === 'number')
       && ((activeField?.choices?.length ?? 0) === 0 || route.mode === 'custom')) {
       if (key.escape) {
+        setConfigCandidate(undefined);
         back();
         return;
       }
@@ -9513,7 +9470,6 @@ export function ConsoleAppV4(props: {
           return;
         }
         updateDraft(activeField.key, candidate);
-        back();
         return;
       }
       if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) setInputValue('');
@@ -9668,6 +9624,10 @@ export function ConsoleAppV4(props: {
       setFocusZone((current) => current === 'content' ? 'actions' : 'content');
       return;
     }
+    if (route.name === 'configFields' && key.tab) {
+      setFocusZone((current) => current === 'content' ? 'actions' : 'content');
+      return;
+    }
     if (route.name === 'pluginList' && input.toLowerCase() === 'm') {
       openBatchSelection();
       return;
@@ -9685,6 +9645,16 @@ export function ConsoleAppV4(props: {
     if (route.name === 'pluginList' && focusZone === 'actions' && key.return) {
       const actionIndex = Math.min(pinnedActionFocus, Math.max(0, pinnedActions.length - 1));
       runAction(pinnedActions[actionIndex]);
+      return;
+    }
+    if (route.name === 'configFields' && focusZone === 'actions'
+      && (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow)) {
+      setPinnedActionFocus((value) => moveFocus(pinnedActions, value,
+        key.upArrow || key.leftArrow ? -1 : 1));
+      return;
+    }
+    if (route.name === 'configFields' && focusZone === 'actions' && key.return) {
+      runAction(pinnedActions[pinnedActionFocus]);
       return;
     }
     if (key.tab && (route.name === 'configLayer'
@@ -9750,10 +9720,19 @@ export function ConsoleAppV4(props: {
       && (route.name === 'configSave' || route.name === 'sourceSave')
       && route.view === 'changes') {
       back();
+    } else if (globalAction === 'back' && route.name === 'configLayer') {
+      back();
     } else if (globalAction === 'back'
-      && (route.name === 'configFieldEditor'
-        || route.name === 'configObjectPropertyEditor'
-        || route.name === 'configFieldAction')) {
+      && route.name === 'configObjectPropertyEditor') {
+      back();
+    } else if (globalAction === 'back'
+      && (route.name === 'configFieldEditor' || route.name === 'configFieldAction')) {
+      setConfigCandidate(undefined);
+      if (activeObjectKey) {
+        setObjectDrafts((current) => Object.fromEntries(Object.entries(current)
+          .filter(([key]) => key !== activeObjectKey)));
+        setChangedObjectDraftKeys((current) => current.filter((key) => key !== activeObjectKey));
+      }
       back();
     } else if (globalAction === 'back' && route.name === 'batchPlacement') {
       if (batchDraft?.showPlacementTargets) {
@@ -9835,16 +9814,16 @@ export function ConsoleAppV4(props: {
       } : draft);
       setFocus(1);
       setScrollOffset(0);
-    } else if (route.name === 'configFields' && route.layer.scope !== 'effective' && input.toLowerCase() === 's') {
-      if (dirty && configDraftIssues.length === 0) {
-        setFocus(0);
-        go({ name: 'configSave', pluginId: route.pluginId, layer: { scope: route.layer.scope as Scope } });
-      }
-    } else if (route.name === 'configFields' && route.layer.scope !== 'effective' && input.toLowerCase() === 'u') {
+    } else if (route.name === 'configFields' && input.toLowerCase() === 's') {
+      runAction(pinnedActions[0]);
+    } else if (route.name === 'configFields' && input.toLowerCase() === 'u') {
       const key = actions[focus]?.configKey;
       const field = currentConfigPage?.groups.flatMap((group) => group.fields)
         .find((candidate) => candidate.key === key);
-      if (field && configFieldCanUnset(field) && (!field.invalidOverrideIssue || field.invalidOverrideOwnedByLayer)) {
+      const canUnset = (['project', 'user'] as const).some((scope) =>
+        configLayerPages[scope]?.groups.flatMap((group) => group.fields)
+          .some((candidate) => candidate.key === key && configFieldCanUnset(candidate)));
+      if (field && canUnset) {
         removeDraft(field.key);
       }
     } else if (route.name === 'configFields' && visibleConfigTabs.length > 1

@@ -39,7 +39,7 @@ function scriptTimeoutChanges(intent: OperationIntent): OperationReviewChange[] 
     && (intent.action === 'install' || intent.action === 'refreshAndSync'
       || intent.action === 'reinstall' || intent.action === 'sync')) {
     configuredTimeoutMs = intent.scriptTimeoutMs;
-  } else if (intent.kind === 'configSave' && intent.apply) {
+  } else if ((intent.kind === 'configSave' || intent.kind === 'configSaveBatch') && intent.apply) {
     configuredTimeoutMs = intent.scriptTimeoutMs;
   } else {
     return [];
@@ -333,6 +333,16 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
         ? '保存所选设置层，并重新应用可见安装。'
         : '只保存所选设置层；当前安装保持不变。',
       primaryLabel: intent.apply ? '保存并应用' : '保存',
+      destructive: false,
+    };
+  }
+  if (intent.kind === 'configSaveBatch') {
+    return {
+      title: '确认保存设置',
+      description: intent.apply
+        ? '按当前项目、个人默认的顺序保存设置，并应用实际受影响的安装位置。'
+        : '按当前项目、个人默认的顺序保存设置。',
+      primaryLabel: intent.apply ? '保存并应用设置' : '保存设置',
       destructive: false,
     };
   }
@@ -730,6 +740,37 @@ function reviewChanges(
       }] : []),
     ];
   }
+  if (intent.kind === 'configSaveBatch') {
+    if (!evidence?.configBatch
+      || evidence.configBatch.groups.length !== intent.groups.length) {
+      throw plannerError('configBatchPrepareFailed', '缺少多层设置 Review 证据。');
+    }
+    return [
+      ...scriptTimeoutChanges(intent),
+      ...intent.groups.flatMap((group) => {
+        const groupEvidence = evidence.configBatch!.groups.find((item) => item.scope === group.scope);
+        if (!groupEvidence) {
+          throw plannerError('configBatchPrepareFailed', '设置层 Review 证据不完整。');
+        }
+        return reviewChanges({
+          kind: 'configSave',
+          pluginId: intent.pluginId,
+          scope: group.scope,
+          apply: intent.apply,
+          ...(group.updates ? { updates: group.updates } : {}),
+          ...(group.removeKeys ? { removeKeys: group.removeKeys } : {}),
+          ...(group.sensitiveKeys ? { sensitiveKeys: group.sensitiveKeys } : {}),
+          ...(group.privateKeys ? { privateKeys: group.privateKeys } : {}),
+          ...(group.changes ? { changes: group.changes } : {}),
+        }, {
+          catalog: evidence.catalog,
+          ...(evidence.source ? { source: evidence.source } : {}),
+          targetFingerprint: groupEvidence.targetFingerprint,
+          config: groupEvidence.config,
+        }, dependencyOverview);
+      }),
+    ];
+  }
   if (intent.kind !== 'configSave') {
     throw plannerError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
   }
@@ -1073,6 +1114,9 @@ function technicalDetails(evidence: OperationEvidence): string[] {
   }
   if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
   if (evidence.config) details.push(`设置层：${evidence.config.scope} · ${short(evidence.config.storeDigest)}`);
+  for (const group of evidence.configBatch?.groups ?? []) {
+    details.push(`设置层：${group.scope} · ${short(group.config.storeDigest)}`);
+  }
   if (evidence.sourceWrite) {
     details.push(`新配置：${short(evidence.sourceWrite.proposedConfigDigest)}`);
     details.push(`引用清单：${short(evidence.sourceWrite.inventoryDigest)} · ${evidence.sourceWrite.referenceCount} 项`);
@@ -1125,12 +1169,20 @@ export function buildOperationReviewProjection(options: {
     : intent.kind === 'pluginWriteTask'
       ? Boolean(taskEvidence?.taskPlan.sources.some((source) =>
           operationPreApplyTargets(taskSourceEvidence(taskEvidence, source)).length > 0))
+    : intent.kind === 'configSaveBatch'
+      ? evidence.configBatch?.groups.some((group) =>
+          (group.config.preApplyAuthorization?.length ?? 0) > 0) === true
     : operationPreApplyTargets(evidence).length > 0
       || (evidence.config?.preApplyAuthorization?.length ?? 0) > 0;
-  const sharedNativeConfigApply = intent.kind === 'configSave'
+  const sharedNativeConfigApply = (intent.kind === 'configSave'
     && intent.apply
     && (evidence.config?.sharedNativeRenderTargets?.length ?? 0) > 0
-    && (evidence.config?.affectedTargets.some((target) => target.platform === 'codex') ?? false);
+    && (evidence.config?.affectedTargets.some((target) => target.platform === 'codex') ?? false))
+    || (intent.kind === 'configSaveBatch'
+      && intent.apply
+      && (evidence.configBatch?.groups.some((group) =>
+        (group.config.sharedNativeRenderTargets?.length ?? 0) > 0
+        && group.config.affectedTargets.some((target) => target.platform === 'codex')) ?? false));
   const requiresConfirmation = sharedNativeConfigApply
     || Boolean(batchEvidence?.groups.some((group) =>
       (group.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))

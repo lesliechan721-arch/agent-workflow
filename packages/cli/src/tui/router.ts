@@ -19,7 +19,7 @@ export type ConfigResumeRoute =
   | {
       name: 'configFieldEditor';
       pluginId: string;
-      layer: { scope: Scope };
+      layer: { scope: Scope | 'effective' };
       fieldKey: string;
       editor: 'boolean' | 'number' | 'string' | 'object';
       mode?: 'choices' | 'custom';
@@ -27,7 +27,7 @@ export type ConfigResumeRoute =
   | {
       name: 'configObjectPropertyEditor';
       pluginId: string;
-      layer: { scope: Scope };
+      layer: { scope: Scope | 'effective' };
       fieldKey: string;
       propertyKey?: string;
       dynamic: boolean;
@@ -36,7 +36,7 @@ export type ConfigResumeRoute =
   | {
       name: 'configFieldAction';
       pluginId: string;
-      layer: { scope: Scope };
+      layer: { scope: Scope | 'effective' };
       fieldKey: string;
     };
 
@@ -113,7 +113,7 @@ export type TuiRoute =
   | {
       name: 'configFieldEditor';
       pluginId: string;
-      layer: { scope: Scope };
+      layer: { scope: Scope | 'effective' };
       fieldKey: string;
       editor: 'boolean' | 'number' | 'string' | 'object';
       mode?: 'choices' | 'custom';
@@ -121,7 +121,7 @@ export type TuiRoute =
   | {
       name: 'configObjectPropertyEditor';
       pluginId: string;
-      layer: { scope: Scope };
+      layer: { scope: Scope | 'effective' };
       fieldKey: string;
       propertyKey?: string;
       dynamic: boolean;
@@ -130,7 +130,7 @@ export type TuiRoute =
   | {
       name: 'configFieldAction';
       pluginId: string;
-      layer: { scope: Scope };
+      layer: { scope: Scope | 'effective' };
       fieldKey: string;
     }
   | {
@@ -151,7 +151,7 @@ export type TuiRoute =
   | { name: 'sourceAdd'; step: 'type' | 'id' | 'location' | 'refPolicy' | 'ref' | 'subdir'; owner: string; returnToDraft?: true }
   | { name: 'sourceEdit'; sourceId: string; owner?: string }
   | { name: 'sourceSave'; owner: string; view?: 'summary' | 'changes' }
-  | { name: 'configSave'; pluginId: string; layer: { scope: Scope }; view?: 'summary' | 'changes' }
+  | { name: 'configSave'; pluginId: string; layer: { scope: Scope | 'effective' }; view?: 'summary' | 'changes' }
   | { name: 'scriptTimeout'; owner: string }
   | { name: 'sourceRemoveBlocked'; sourceId: string }
   | { name: 'issueList' }

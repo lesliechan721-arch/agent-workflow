@@ -87,6 +87,8 @@ import {
   TuiOperationBlockedError,
   type OperationEvidence,
   type OperationIntent,
+  type ConfigSaveBatchExecutionResult,
+  type ConfigSaveBatchGroup,
   type PluginWriteBatchEvidence,
   type PluginWriteBatchExecutionResult,
   type PluginWriteBatchGroupEvidence,
@@ -339,6 +341,42 @@ function configIntentRequestsApply(
     || (intent.removeKeys?.length ?? 0) > 0;
 }
 
+type ConfigSaveIntent = Extract<OperationIntent, { kind: 'configSave' }>;
+type ConfigSaveBatchIntent = Extract<OperationIntent, { kind: 'configSaveBatch' }>;
+
+function configSaveBatchGroupIntent(
+  intent: ConfigSaveBatchIntent,
+  group: ConfigSaveBatchGroup,
+): ConfigSaveIntent {
+  return {
+    kind: 'configSave',
+    pluginId: intent.pluginId,
+    scope: group.scope,
+    apply: intent.apply,
+    ...(intent.scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs: intent.scriptTimeoutMs }),
+    ...(group.updates ? { updates: group.updates } : {}),
+    ...(group.removeKeys ? { removeKeys: group.removeKeys } : {}),
+    ...(group.sensitiveKeys ? { sensitiveKeys: group.sensitiveKeys } : {}),
+    ...(group.privateKeys ? { privateKeys: group.privateKeys } : {}),
+    ...(group.changes ? { changes: group.changes } : {}),
+  };
+}
+
+function assertConfigSaveBatchIntent(intent: ConfigSaveBatchIntent): void {
+  const order: Record<Scope, number> = { project: 0, user: 1 };
+  if (intent.groups.length === 0 || intent.groups.length > 2
+    || new Set(intent.groups.map((group) => group.scope)).size !== intent.groups.length
+    || intent.groups.some((group, index) => index > 0
+      && order[intent.groups[index - 1]!.scope] >= order[group.scope])
+    || intent.groups.some((group) => Object.keys(group.updates ?? {}).length === 0
+      && (group.removeKeys?.length ?? 0) === 0)) {
+    throw new TuiOperationBlockedError(
+      'configBatchInvalid',
+      '设置批次必须包含按当前项目、个人默认排序的唯一非空目标。',
+    );
+  }
+}
+
 type OperationSourceEvidence = NonNullable<OperationEvidence['source']>;
 
 function operationReviewStale(
@@ -370,6 +408,27 @@ function sourceEvidenceForPlugin(
     catalogVersion: source.manifest.catalogVersion,
     channel: source.manifest.channel,
   };
+}
+
+async function configLayerStoreDigest(options: {
+  source: OperationSourceEvidence;
+  pluginName: string;
+  scope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<string> {
+  const store = await readPluginConfigStore({
+    sourceId: options.source.sourceId,
+    sourceIdentity: options.source.sourceIdentity,
+    ...('logicalIdentity' in options.source
+      ? { logicalIdentity: options.source.logicalIdentity }
+      : {}),
+    pluginName: options.pluginName,
+    scope: options.scope,
+    cwd: options.cwd,
+    env: options.env,
+  });
+  return digest({ exists: store.exists, rawDigest: store.rawDigest });
 }
 
 async function inspectConfigShareability(options: {
@@ -447,7 +506,7 @@ function reviewedScriptTimeoutMs(intent: OperationIntent): number | undefined {
       || intent.action === 'reinstall' || intent.action === 'sync')) {
     return parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS);
   }
-  if (intent.kind === 'configSave' && intent.apply) {
+  if ((intent.kind === 'configSave' || intent.kind === 'configSaveBatch') && intent.apply) {
     return parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS);
   }
   return undefined;
@@ -1156,6 +1215,57 @@ export function createTuiControllerDependencies(
     frozenBatchEvidence?: PluginWriteBatchEvidence,
   ): Promise<OperationEvidence> => {
     reviewedScriptTimeoutMs(intent);
+    if (intent.kind === 'configSaveBatch') {
+      assertConfigSaveBatchIntent(intent);
+      const groupEvidence: Array<{
+        scope: Scope;
+        config: NonNullable<OperationEvidence['config']>;
+        targetFingerprint: string;
+      }> = [];
+      let batchBase: OperationEvidence | undefined;
+      let batchCatalogOperation: CatalogOperationContext | undefined;
+      for (const group of intent.groups) {
+        const current = await captureEvidence(
+          configSaveBatchGroupIntent(intent, group),
+          signal,
+          preparation,
+          operationInventory,
+          freshCatalog,
+          reusableCandidate,
+          codexObservationSession,
+        );
+        if (!current.config || !current.source || !current.targetFingerprint) {
+          throw operationReviewStale('设置批次缺少单层证据。');
+        }
+        if (batchBase && (JSON.stringify(batchBase.catalog) !== JSON.stringify(current.catalog)
+          || JSON.stringify(batchBase.source) !== JSON.stringify(current.source))) {
+          throw operationReviewStale('准备设置批次期间 Catalog 或来源发生变化。');
+        }
+        batchBase ??= current;
+        batchCatalogOperation ??= catalogOperationByEvidence.get(current);
+        groupEvidence.push({
+          scope: group.scope,
+          config: {
+            ...current.config,
+            storeDigest: await configLayerStoreDigest({
+              source: current.source,
+              pluginName: parsePluginId(intent.pluginId).pluginName!,
+              scope: group.scope,
+              cwd: context.cwd,
+              env: context.env,
+            }),
+          },
+          targetFingerprint: current.targetFingerprint,
+        });
+      }
+      const evidence: OperationEvidence = {
+        catalog: batchBase!.catalog,
+        source: batchBase!.source,
+        configBatch: { groups: groupEvidence },
+      };
+      if (batchCatalogOperation) catalogOperationByEvidence.set(evidence, batchCatalogOperation);
+      return evidence;
+    }
     if ((intent.kind === 'pluginWrite'
       && (intent.platform === 'codex' || intent.platform === 'both')
       || intent.kind === 'pluginWriteTask'
@@ -2903,6 +3013,13 @@ export function createTuiControllerDependencies(
         }
         return;
       }
+      if (intent.kind === 'configSaveBatch') {
+        assertConfigSaveBatchIntent(intent);
+        for (const group of intent.groups) {
+          await dependencies.validateIntent!(configSaveBatchGroupIntent(intent, group), signal);
+        }
+        return;
+      }
       if (intent.kind === 'configSave') {
         const packageInfo = await readCliPackageInfo();
         await withResolvedCatalogPlugin({
@@ -3862,6 +3979,158 @@ export function createTuiControllerDependencies(
             });
             throwIfWriteReviewStale(result);
             return result;
+          }
+          if (intent.kind === 'configSaveBatch') {
+            assertConfigSaveBatchIntent(intent);
+            const reviewedBatch = expectedEvidence.configBatch;
+            if (!reviewedBatch || !currentEvidence.configBatch || !currentEvidence.source) {
+              throw operationReviewStale('确认信息缺少设置批次证据。');
+            }
+            const approvedApplyTargets = new Set(reviewedBatch.groups.flatMap((group) =>
+              group.config.affectedTargets.map((target) => `${target.platform}\0${target.scope}`)));
+            const approvedPreApplyTargets = reviewedBatch.groups.flatMap((group) =>
+              group.config.preApplyAuthorization ?? []);
+            const results: ConfigSaveBatchExecutionResult['groups'] = [];
+            const packageInfo = await readCliPackageInfo();
+            for (const group of intent.groups) {
+              const groupIntent = configSaveBatchGroupIntent(intent, group);
+              const reviewedGroup = reviewedBatch.groups.find((item) => item.scope === group.scope);
+              if (!reviewedGroup) {
+                throw operationReviewStale('确认信息缺少设置层基线。');
+              }
+              let configSaved = false;
+              const operationRebuildResults: import('../commands/rebuild-operations.js').RebuildResult[] = [];
+              try {
+                const freshEvidence = await captureEvidence(
+                  groupIntent,
+                  undefined,
+                  undefined,
+                  operationInventory,
+                  true,
+                );
+                const freshSource = freshEvidence.source;
+                const freshConfig = freshEvidence.config;
+                if (!freshSource || !freshConfig) {
+                  throw operationReviewStale('设置目标缺少最新证据。');
+                }
+                assertSourceEvidenceMatches(currentEvidence.source, freshSource);
+                const freshLayerStoreDigest = await configLayerStoreDigest({
+                  source: freshSource,
+                  pluginName: parsePluginId(intent.pluginId).pluginName!,
+                  scope: group.scope,
+                  cwd: context.cwd,
+                  env: context.env,
+                });
+                if (freshLayerStoreDigest !== reviewedGroup.config.storeDigest) {
+                  throw operationReviewStale('保存设置期间此设置层的原始内容发生变化。');
+                }
+                if (freshConfig.affectedTargets.some((target) =>
+                  !approvedApplyTargets.has(`${target.platform}\0${target.scope}`))) {
+                  throw operationReviewStale('同批前一层变更扩大了未经确认的应用目标。');
+                }
+                const groupCatalogOperation = catalogOperationByEvidence.get(freshEvidence);
+                if (expectedEvidence.catalog.generationSetDigest
+                  && groupCatalogOperation?.generationSetDigest
+                    !== expectedEvidence.catalog.generationSetDigest) {
+                  throw operationReviewStale('保存设置期间 Active Catalog generation 发生变化。');
+                }
+                const result = await withResolvedCatalogPlugin({
+                  selector: intent.pluginId,
+                  cliVersion: packageInfo.version,
+                  env: context.env,
+                  ...(groupCatalogOperation ? { operationContext: groupCatalogOperation } : {}),
+                  consume: async ({ plugin, source }) => {
+                    assertSourceEvidenceMatches(
+                      freshSource,
+                      sourceEvidenceForPlugin(source, plugin.manifest.name),
+                    );
+                    const applyTargets = intent.apply
+                      ? freshConfig.affectedTargets.map((target) => ({
+                          pluginName: plugin.manifest.name,
+                          platform: target.platform,
+                          scope: target.scope,
+                        }))
+                      : [];
+                    return applyPluginConfigWrite({
+                      plugin,
+                      pluginName: plugin.manifest.name,
+                      scope: group.scope,
+                      cwd: context.cwd,
+                      env: context.env,
+                      nativeCliRunner: context.nativeCliRunner,
+                      rebuildRuntime: {
+                        ...context,
+                        awHomeMutationToken,
+                        operationDiagnosticSink: (entries) => {
+                          operationRebuildResults.push(...structuredClone(entries));
+                        },
+                        ...(reviewedScriptTimeoutMs(intent) === undefined ? {} : {
+                          scriptTimeoutMs: reviewedScriptTimeoutMs(intent),
+                        }),
+                        ...(groupCatalogOperation ? {
+                          catalogOperationContext: groupCatalogOperation,
+                          expectedGenerationSetDigest: expectedEvidence.catalog.generationSetDigest,
+                        } : {}),
+                      },
+                      awHomeMutationToken,
+                      applyTargets,
+                      request: { updates: group.updates, removeKeys: group.removeKeys },
+                      sharedNativeApplyConfirmed: true,
+                      preApplyConfirmed: true,
+                      preApplyAuthorizedTargets: approvedPreApplyTargets,
+                    });
+                  },
+                });
+                configSaved = result.configWrite === 'succeeded';
+                const applyStatus = !intent.apply
+                  ? 'notRequested' as const
+                  : result.apply.state === 'succeeded'
+                    ? 'succeeded' as const
+                    : result.apply.state === 'skipped'
+                      ? 'notNeeded' as const
+                      : 'failed' as const;
+                results.push({
+                  scope: group.scope,
+                  status: applyStatus === 'failed' ? 'failed' : 'succeeded',
+                  configSaved,
+                  applyRequested: intent.apply,
+                  applyStatus,
+                  execution: { ...result, operationRebuildResults },
+                  ...(applyStatus === 'failed' ? {
+                    errorCode: result.apply.state === 'unavailable'
+                      ? result.apply.error?.code ?? result.apply.reason
+                      : result.apply.targetResults.find((target) => target.errorCode)?.errorCode
+                        ?? 'runtimeApplyFailed',
+                  } : {}),
+                });
+              } catch (error) {
+                configSaved = (error as { configWrite?: unknown })?.configWrite === 'succeeded';
+                const errorCode = typeof error === 'object' && error !== null
+                  && 'code' in error && typeof error.code === 'string'
+                  ? error.code
+                  : configSaved ? 'runtimeApplyFailed' : 'configWriteFailed';
+                results.push({
+                  scope: group.scope,
+                  status: 'failed',
+                  configSaved,
+                  applyRequested: intent.apply,
+                  applyStatus: intent.apply ? 'failed' : 'notRequested',
+                  errorCode,
+                  ...(operationRebuildResults.length > 0
+                    ? { execution: { operationRebuildResults } }
+                    : {}),
+                });
+              }
+            }
+            const succeeded = results.filter((result) => result.status === 'succeeded').length;
+            return {
+              status: succeeded === results.length
+                ? 'succeeded'
+                : succeeded > 0 || results.some((result) => result.configSaved)
+                  ? 'partial'
+                  : 'failed',
+              groups: results,
+            } satisfies ConfigSaveBatchExecutionResult;
           }
           if (intent.kind === 'configSave' || intent.kind === 'configReset') {
             const operationRebuildResults: import('../commands/rebuild-operations.js').RebuildResult[] = [];
