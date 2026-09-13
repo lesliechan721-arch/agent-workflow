@@ -5,7 +5,10 @@ import { promisify } from 'node:util';
 import { createRuntimeSkillSnapshot } from '@lesliechan721/agent-skill-eval';
 import fs from 'fs-extra';
 
-import { createRebuildIntegration } from '../src/commands/rebuild-integration.js';
+import {
+  createRebuildIntegration,
+  materializeReviewNativeSkills,
+} from '../src/commands/rebuild-integration.js';
 import { createNoopDebugLogger } from '../src/output/debug-log.js';
 import { createNoopReporter } from '../src/output/reporter.js';
 import {
@@ -19,7 +22,10 @@ import { validateSkillDirectoriesRoot } from '../src/utils/dynamic-skill-tree.js
 export interface AwSkillEvalMaterializationProfile {
   id: string;
   scope: 'project' | 'user';
-  plugins: Array<{ name: string; config: Record<string, unknown> }>;
+  plugins: Array<{
+    name: string;
+    configByScope: Partial<Record<'project' | 'user', Record<string, unknown>>>;
+  }>;
 }
 
 const execFileAsync = promisify(execFile);
@@ -32,6 +38,8 @@ export interface MaterializeAwSkillEvalOptions {
   initializeGitRepository: boolean;
   outputRoot: string;
   workRoot: string;
+  sourceIdentity: string;
+  workspaceIdentity: string;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -141,25 +149,32 @@ async function copyUserMaterializedArtifacts(options: {
 
   const codexHome = options.env.AW_CODEX_HOME!;
   if (await fs.pathExists(codexHome)) {
+    const codexSkillsRoot = path.join(codexHome, 'skills');
+    if (await fs.pathExists(codexSkillsRoot)) {
+      await snapshotRuntimeSkills(codexSkillsRoot, skillsRoot);
+    }
     await fs.copy(codexHome, path.join(materializedRoot, '.codex'), {
       overwrite: true,
       dereference: false,
-      filter: (source) => path.basename(source) !== 'auth.json' && path.basename(source) !== '.credentials.json',
+      filter: (source) => {
+        const relative = path.relative(codexHome, source);
+        return (relative !== 'skills' && !relative.startsWith(`skills${path.sep}`))
+          && path.basename(source) !== 'auth.json'
+          && path.basename(source) !== '.credentials.json';
+      },
     });
   }
   return materializedRoot;
 }
 
-async function materializeStaticCodexSkills(options: {
+async function materializeCodexSkills(options: {
   prepared: PreparedSkillPluginBundle;
   profile: AwSkillEvalMaterializationProfile;
   projectRoot: string;
   env: NodeJS.ProcessEnv;
 }): Promise<void> {
+  const declarations = options.prepared.bundlePlugin.manifest.artifacts?.targets ?? [];
   const sourceRoot = path.join(options.prepared.bundleRoot, 'codex', 'skills');
-  if (!(await fs.pathExists(sourceRoot))) {
-    return;
-  }
   const targetRoot = options.profile.scope === 'project'
     ? path.join(options.projectRoot, '.agents', 'skills')
     : path.join(
@@ -169,7 +184,31 @@ async function materializeStaticCodexSkills(options: {
         'codex',
         'skills',
       );
-  await snapshotRuntimeSkills(sourceRoot, targetRoot);
+  if (await fs.pathExists(sourceRoot)) {
+    await snapshotRuntimeSkills(sourceRoot, targetRoot);
+  }
+  const nativeSkills = declarations
+    .filter((target) =>
+      target.platform === 'codex'
+      && target.target === 'codex.skill'
+      && target.scopes.includes(options.profile.scope)
+      && target.delivery?.mode === 'codex-native'
+      && target.skillKey !== undefined)
+    .map((target) => ({ skill: target.skillKey!, targetId: target.id }));
+  if (nativeSkills.length === 0) return;
+  const outputRoot = path.join(options.env.TMPDIR!, `materialized-${options.prepared.bundlePlugin.manifest.name}`);
+  await materializeReviewNativeSkills({
+    plugin: options.prepared.bundlePlugin,
+    platform: 'codex',
+    scope: options.profile.scope,
+    cwd: options.projectRoot,
+    env: options.env,
+    outputRoot,
+    skills: nativeSkills,
+    allowDisabledNativeSkills: true,
+  });
+  await snapshotRuntimeSkills(path.join(outputRoot, 'skills'), targetRoot);
+  await fs.remove(outputRoot);
 }
 
 async function materializeProfile(options: {
@@ -194,18 +233,25 @@ async function materializeProfile(options: {
     }
     return { installation, prepared };
   });
-  for (const { installation } of installations) {
-    await writePluginConfigStore({
-      pluginName: installation.name,
-      scope: options.profile.scope,
-      cwd: projectRoot,
-      values: installation.config,
-      env,
-    });
+  for (const { installation, prepared } of installations) {
+    for (const scope of ['project', 'user'] as const) {
+      const config = installation.configByScope[scope];
+      if (config === undefined) continue;
+      await writePluginConfigStore({
+        sourceId: prepared.bundlePlugin.sourceId,
+        sourceIdentity: prepared.bundlePlugin.sourceIdentity,
+        logicalIdentity: prepared.bundlePlugin.catalogLogicalIdentity,
+        pluginName: installation.name,
+        scope,
+        cwd: projectRoot,
+        values: config,
+        env,
+      });
+    }
   }
 
   for (const { prepared } of installations) {
-    await materializeStaticCodexSkills({
+    await materializeCodexSkills({
       prepared,
       profile: options.profile,
       projectRoot,
@@ -300,15 +346,21 @@ export async function materializeAwSkillEvalSubject(
           `Eval manifest references repo-local plugin "${pluginName}" but no source was resolved.`,
         );
       }
-      preparedByName.set(
-        pluginName,
-        await prepareSkillPluginBundle({
-          plugin,
-          plugins: options.plugins,
-          workRoot: path.join(options.workRoot, pluginName),
-          env: bundleEnv,
-        }),
-      );
+      const prepared = await prepareSkillPluginBundle({
+        plugin,
+        plugins: options.plugins,
+        workRoot: path.join(options.workRoot, pluginName),
+        env: bundleEnv,
+      });
+      const sourceId = prepared.bundlePlugin.sourceId ?? 'eval-source';
+      prepared.bundlePlugin = {
+        ...prepared.bundlePlugin,
+        sourceId,
+        sourceIdentity: prepared.bundlePlugin.sourceIdentity ?? options.sourceIdentity,
+        catalogLogicalIdentity: prepared.bundlePlugin.catalogLogicalIdentity ?? options.workspaceIdentity,
+        pluginId: prepared.bundlePlugin.pluginId ?? `${sourceId}/${pluginName}`,
+      };
+      preparedByName.set(pluginName, prepared);
     }
 
     const owners = new Map<string, string>();

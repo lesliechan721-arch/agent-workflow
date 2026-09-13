@@ -19,6 +19,7 @@ export interface AwSkillEvalManifestV1Profile {
   id: string
   scope: Scope
   plugins: Array<{ name: string; config: Record<string, unknown> }>
+  configByScope?: Partial<Record<Scope, Array<{ name: string; config: Record<string, unknown> }>>>
 }
 
 export interface AwSkillEvalManifestV1Suite {
@@ -132,7 +133,7 @@ function parseProfiles(value: unknown, ownerPlugin: string): AwSkillEvalManifest
   return Object.entries(profiles).map(([idValue, entry]) => {
     const id = safeId(idValue, 'eval manifest profile id')
     const row = record(entry, `eval manifest.profiles.${id}`)
-    onlyKeys(row, ['scope', 'plugins'], `eval manifest.profiles.${id}`)
+    onlyKeys(row, ['scope', 'plugins', 'configByScope'], `eval manifest.profiles.${id}`)
     if (row.scope !== 'project' && row.scope !== 'user') {
       throw new Error(`eval manifest.profiles.${id}.scope must be project or user.`)
     }
@@ -140,13 +141,38 @@ function parseProfiles(value: unknown, ownerPlugin: string): AwSkillEvalManifest
     if (Object.keys(plugins).length === 0) {
       throw new Error(`eval manifest.profiles.${id}.plugins must not be empty.`)
     }
+    const pluginEntries = Object.entries(plugins).map(([nameValue, config]) => ({
+      name: safeId(nameValue, `eval manifest.profiles.${id}.plugins name`),
+      config: record(config, `eval manifest.profiles.${id}.plugins.${nameValue}`),
+    }))
+    const selectedPluginNames = new Set(pluginEntries.map((plugin) => plugin.name))
+    const configByScope: AwSkillEvalManifestV1Profile['configByScope'] = {}
+    if (row.configByScope !== undefined) {
+      const scoped = record(row.configByScope, `eval manifest.profiles.${id}.configByScope`)
+      onlyKeys(scoped, ['project', 'user'], `eval manifest.profiles.${id}.configByScope`)
+      for (const scope of ['project', 'user'] as const) {
+        if (scoped[scope] === undefined) continue
+        const overrides = record(scoped[scope], `eval manifest.profiles.${id}.configByScope.${scope}`)
+        configByScope[scope] = Object.entries(overrides).map(([nameValue, config]) => {
+          const name = safeId(nameValue, `eval manifest.profiles.${id}.configByScope.${scope} name`)
+          if (!selectedPluginNames.has(name)) {
+            throw new Error(
+              `eval manifest.profiles.${id}.configByScope.${scope} references plugin ${JSON.stringify(name)} `
+              + 'that is not declared in plugins.',
+            )
+          }
+          return {
+            name,
+            config: record(config, `eval manifest.profiles.${id}.configByScope.${scope}.${nameValue}`),
+          }
+        })
+      }
+    }
     const result: AwSkillEvalManifestV1Profile = {
       id,
       scope: row.scope,
-      plugins: Object.entries(plugins).map(([nameValue, config]) => ({
-        name: safeId(nameValue, `eval manifest.profiles.${id}.plugins name`),
-        config: record(config, `eval manifest.profiles.${id}.plugins.${nameValue}`),
-      })),
+      plugins: pluginEntries,
+      configByScope,
     }
     if (!result.plugins.some((plugin) => plugin.name === ownerPlugin)) {
       throw new Error(`eval manifest.profiles.${id} must include owner plugin ${JSON.stringify(ownerPlugin)}.`)
@@ -392,7 +418,11 @@ export function assertNoSensitiveProfileConfig(
   plugins: readonly PluginMeta[],
 ): void {
   const byName = new Map(plugins.map((plugin) => [plugin.manifest.name, plugin]))
-  for (const installation of profile.plugins) {
+  const configs = [
+    ...profile.plugins,
+    ...Object.values(profile.configByScope ?? {}).flatMap((entries) => entries ?? []),
+  ]
+  for (const installation of configs) {
     const plugin = byName.get(installation.name)
     if (!plugin) throw new Error(`Eval profile "${profile.id}" references unknown plugin "${installation.name}".`)
     for (const [key, field] of Object.entries(plugin.manifest.config?.fields ?? {})) {

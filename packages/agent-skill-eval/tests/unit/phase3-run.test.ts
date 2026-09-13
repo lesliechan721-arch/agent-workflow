@@ -163,6 +163,57 @@ async function runReviewFixtureCli(
   }
 }
 
+async function simplificationEvalFixture(): Promise<{
+  root: string
+  cli: string
+}> {
+  const repositoryRoot = path.resolve('../..')
+  const evalRoot = path.join(
+    repositoryRoot,
+    'plugins',
+    'aw-development-toolkit',
+    'skills',
+    'develop-aw',
+    'evals',
+  )
+  const document = JSON.parse(await readFile(
+    path.join(evalRoot, 'simplification-cases.json'),
+    'utf8',
+  )) as { cases: Array<{ id: string; input: { workspaceFiles: Record<string, string> } }> }
+  const evalCase = document.cases.find((entry) => entry.id === 'prepare_isolated_unverified_candidate')
+  if (!evalCase) throw new Error('prepare_isolated_unverified_candidate fixture is missing.')
+  const root = await fs.realpath(await mkdtemp(path.join(os.tmpdir(), 'aw-simplification-eval-fixture-')))
+  roots.push(root)
+  for (const [relativePath, content] of Object.entries(evalCase.input.workspaceFiles)) {
+    const target = path.join(root, relativePath)
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, content)
+  }
+  return {
+    root,
+    cli: path.join(evalRoot, 'simplify-fixtures', 'bin', 'aw.mjs'),
+  }
+}
+
+async function runSimplificationFixtureCli(
+  data: Awaited<ReturnType<typeof simplificationEvalFixture>>,
+  args: string[],
+): Promise<{ code: number; value: Record<string, unknown> }> {
+  try {
+    const result = await execFileAsync(process.execPath, [data.cli, ...args], {
+      cwd: data.root,
+      encoding: 'utf8',
+    })
+    return { code: 0, value: JSON.parse(result.stdout) as Record<string, unknown> }
+  } catch (error) {
+    const failure = error as { code?: number; stdout?: string }
+    return {
+      code: typeof failure.code === 'number' ? failure.code : 1,
+      value: JSON.parse(failure.stdout ?? '{}') as Record<string, unknown>,
+    }
+  }
+}
+
 function processExists(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -1359,6 +1410,70 @@ describe('EvalSpec v1 execution', () => {
     }
     expect(conversationCount).toBeGreaterThan(0)
     expect(caseCount).toBeGreaterThan(0)
+  })
+
+  it('prepares separate simplification finals from complete isolated snapshots', async () => {
+    const data = await simplificationEvalFixture()
+    const productionSkill = path.join(data.root, 'project/plugins/demo-plugin/skills/demo-skill')
+    const productionSkillFile = path.join(productionSkill, 'SKILL.md')
+    const original = await readFile(productionSkillFile, 'utf8')
+    const baselineWorkspace = path.join(data.root, '_simplify/baseline/project')
+    const candidateWorkspace = path.join(data.root, '_simplify/candidate/project')
+    await fs.copy(path.join(data.root, 'project'), baselineWorkspace)
+    await fs.copy(path.join(data.root, 'project'), candidateWorkspace)
+    const candidateSkill = path.join(candidateWorkspace, 'plugins/demo-plugin/skills/demo-skill/SKILL.md')
+    await writeFile(candidateSkill, (await readFile(candidateSkill, 'utf8')).replace(
+      'Use only supplied facts. Use only supplied facts.',
+      'Use only supplied facts.',
+    ))
+
+    const inspect = await runSimplificationFixtureCli(data, [
+      'review', 'inspect', productionSkill, '--view', 'review', '--json',
+    ])
+    expect(inspect.code, JSON.stringify(inspect.value)).toBe(0)
+    expect(inspect.value).toMatchObject({ ok: true, fixture: true, sources: expect.any(Array) })
+
+    const prepared: Array<Record<string, unknown>> = []
+    for (const kind of ['baseline', 'candidate']) {
+      const workspace = path.join(data.root, `_simplify/${kind}/project`)
+      const result = await runSimplificationFixtureCli(data, [
+        'review', 'prepare', path.join(workspace, 'plugins/demo-plugin/skills/demo-skill'),
+        '--workspace-root', workspace,
+        '--platform', 'codex',
+        '--scope', 'project',
+        '--out', path.join(data.root, `_simplify/final/${kind}`),
+        '--json',
+      ])
+      expect(result).toMatchObject({
+        code: 0,
+        value: {
+          ok: true,
+          fixture: true,
+          sourceBindingPath: expect.any(String),
+          skills: [{ profile: { platform: 'codex', scope: 'project' }, state: 'ready' }],
+        },
+      })
+      prepared.push(result.value)
+    }
+
+    expect(await readFile(productionSkillFile, 'utf8')).toBe(original)
+    expect(await readFile(
+      path.join(data.root, '_simplify/final/baseline/skills/demo-skill/SKILL.md'),
+      'utf8',
+    )).toContain('Use only supplied facts. Use only supplied facts.')
+    expect(await readFile(
+      path.join(data.root, '_simplify/final/candidate/skills/demo-skill/SKILL.md'),
+      'utf8',
+    )).not.toContain('Use only supplied facts. Use only supplied facts.')
+    const bindings = await Promise.all(['baseline', 'candidate'].map(async (kind) => JSON.parse(await readFile(
+      path.join(data.root, `_simplify/final/${kind}/aw-source-binding.json`),
+      'utf8',
+    )) as { testDouble: boolean; sourceDigest: string }))
+    expect(bindings.every((binding) => binding.testDouble)).toBe(true)
+    expect(bindings[0]!.sourceDigest).not.toBe(bindings[1]!.sourceDigest)
+    expect(prepared).toHaveLength(2)
+    await expect(runSimplificationFixtureCli(data, ['review', 'publish', '--json']))
+      .resolves.toMatchObject({ code: 64, value: { ok: false, fixture: true } })
   })
 
   it('rejects review fixture choices outside its declared test-double profile', async () => {

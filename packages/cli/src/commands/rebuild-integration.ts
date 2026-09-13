@@ -3780,6 +3780,7 @@ export async function materializeReviewNativeSkills(options: {
   env: NodeJS.ProcessEnv;
   outputRoot: string;
   skills: readonly ReviewNativeSkillSelection[];
+  allowDisabledNativeSkills?: boolean;
   scriptTimeoutMs?: number;
 }): Promise<MaterializedReviewNativeSkills> {
   if (options.skills.length === 0) {
@@ -3805,6 +3806,7 @@ export async function materializeReviewNativeSkills(options: {
     return matches[0]!;
   });
   const selectedNames = options.skills.map((skill) => skill.skill);
+  const disabledNativeSkillNames = new Set<string>();
   if (new Set(selectedNames).size !== selectedNames.length) {
     throw new Error('Review materialization selected the same Skill more than once.');
   }
@@ -3910,8 +3912,15 @@ export async function materializeReviewNativeSkills(options: {
       sensitiveValues: await resolveSensitiveUserConfigValues(options.plugin, options.env),
       verifiedRenderReceipt: staged.receipt,
     });
+    const presentSkillKeys = new Set(staged.presentSkillKeys);
+    if (options.allowDisabledNativeSkills) {
+      for (const target of selectedDeclarations.filter((entry) =>
+        entry.delivery?.mode === 'codex-native' && !presentSkillKeys.has(entry.skillKey!))) {
+        disabledNativeSkillNames.add(target.skillKey!);
+      }
+    }
     for (const target of selectedDeclarations.filter((entry) =>
-      entry.delivery?.mode === 'codex-native')) {
+      entry.delivery?.mode === 'codex-native' && presentSkillKeys.has(entry.skillKey!))) {
       const sourceRoot = path.join(
         payloadRoot,
         ...prepared.skillsRelativeRoot.split('/'),
@@ -3929,6 +3938,7 @@ export async function materializeReviewNativeSkills(options: {
   const skills: Array<{ skill: string; path: string }> = [];
   for (const skill of selectedNames.sort((left, right) => left.localeCompare(right))) {
     const skillRoot = path.join(skillsRoot, skill);
+    if (disabledNativeSkillNames.has(skill)) continue;
     await validateSkillDirectory(skillRoot, `${options.platform}.skill`, {
       requirementsReceiptPolicy: 'allow',
     });

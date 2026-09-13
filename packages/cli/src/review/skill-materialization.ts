@@ -33,12 +33,15 @@ export async function prepareSkillPluginBundle(options: {
       buildMode: 'prepared',
       preparedRuntimeContext: activePrepared.runtimeContext,
     });
+    const manifestPath = path.join(bundleRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath) as PluginMeta['manifest'];
     return {
       bundleRoot,
       bundlePlugin: {
         ...activePrepared.plugin,
         rootDir: bundleRoot,
-        manifestPath: path.join(bundleRoot, '.agents-plugin', 'plugin.json'),
+        manifestPath,
+        manifest,
       },
       cleanup: async () => {
         await activePrepared.cleanup();

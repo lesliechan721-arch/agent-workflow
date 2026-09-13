@@ -490,6 +490,10 @@ export function resolveEvalProfileBindingInput(
 ): EvalProfileBindingInput {
   assertNoSensitiveProfileConfig(profile, plugins)
   const explicitConfig = new Map(profile.plugins.map((entry) => [entry.name, entry.config]))
+  const overrides = new Map(Object.entries(profile.configByScope ?? {}).map(([scope, entries]) => [
+    scope as Scope,
+    new Map(entries?.map((entry) => [entry.name, entry.config]) ?? []),
+  ]))
   const closure = resolvePluginMetaDependencyClosure(
     plugins,
     profile.plugins.map((entry) => entry.name),
@@ -499,17 +503,34 @@ export function resolveEvalProfileBindingInput(
     scope: profile.scope,
     plugins: closure.map((plugin) => ({
       name: plugin.manifest.name,
-      config: explicitConfig.get(plugin.manifest.name) ?? {},
+      configByScope: Object.fromEntries([
+        profile.scope,
+        ...((plugin.manifest.artifacts?.targets ?? []).some((target) =>
+          target.platform === 'codex'
+          && target.target === 'codex.skill'
+          && target.scopes.includes(profile.scope)
+          && target.delivery?.mode === 'codex-native')
+          ? ['user' as const]
+          : []),
+      ].sort().map((scope) => [
+        scope,
+        {
+          ...(explicitConfig.get(plugin.manifest.name) ?? {}),
+          ...(overrides.get(scope)?.get(plugin.manifest.name) ?? {}),
+        },
+      ])),
     })),
   }
   for (const plugin of closure) {
-    const config = explicitConfig.get(plugin.manifest.name) ?? {}
-    for (const [key, field] of Object.entries(plugin.manifest.config?.fields ?? {})) {
-      if (field.required === true && field.default === undefined && !Object.hasOwn(config, key)) {
-        throw new Error(
-          `Eval profile "${profile.id}" is missing required config "${key}" `
-          + `for plugin "${plugin.manifest.name}".`,
-        )
+    const installation = materializationProfile.plugins.find((entry) => entry.name === plugin.manifest.name)!
+    for (const [scope, config] of Object.entries(installation.configByScope)) {
+      for (const [key, field] of Object.entries(plugin.manifest.config?.fields ?? {})) {
+        if (field.required === true && field.default === undefined && !Object.hasOwn(config!, key)) {
+          throw new Error(
+            `Eval profile "${profile.id}" is missing required config "${key}" `
+            + `for plugin "${plugin.manifest.name}" in ${scope} scope.`,
+          )
+        }
       }
     }
   }

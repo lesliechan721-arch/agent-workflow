@@ -324,6 +324,8 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
       initializeGitRepository: selection.suite.kind === 'conversation',
       outputRoot: targetSourceRoot,
       workRoot,
+      sourceIdentity: source.sourceIdentity,
+      workspaceIdentity: source.workspaceIdentity,
       env: options.env,
     })
     const subjectSource = resolveMaterializedSubjectRoot(targetSourceRoot, materialized)

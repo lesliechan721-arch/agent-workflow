@@ -1,5 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -8,6 +9,7 @@ import {
   assertNoSensitiveProfileConfig,
   validateAwSkillEvalManifest,
 } from '../../src/eval/manifest-v1.js'
+import { validatePluginManifest } from '../../src/utils/manifest.js'
 import type { PluginMeta } from '../../src/types.js'
 
 const roots: string[] = []
@@ -66,6 +68,30 @@ afterEach(async () => {
 })
 
 describe('AwSkillEvalManifest v1 reader', () => {
+  it('validates every registered source Eval manifest through the public reader', async () => {
+    const repositoryRoot = fileURLToPath(new URL('../../../../', import.meta.url))
+    const pluginsRoot = path.join(repositoryRoot, 'plugins')
+    const pluginNames = await fs.readdir(pluginsRoot)
+    let validated = 0
+    for (const pluginName of pluginNames) {
+      const rootDir = path.join(pluginsRoot, pluginName)
+      const manifestPath = path.join(rootDir, '.agents-plugin', 'plugin.json')
+      if (!await fs.pathExists(manifestPath)) continue
+      const manifest = validatePluginManifest(rootDir, await fs.readJson(manifestPath))
+      const skillsRoot = path.join(rootDir, 'skills')
+      if (!await fs.pathExists(skillsRoot)) continue
+      for (const skill of await fs.readdir(skillsRoot)) {
+        if (!await fs.pathExists(path.join(skillsRoot, skill, 'evals', 'manifest.json'))) continue
+        await expect(validateAwSkillEvalManifest({
+          plugin: { rootDir, manifestPath, manifest },
+          skill,
+        })).resolves.toMatchObject({ valid: true, errors: [] })
+        validated += 1
+      }
+    }
+    expect(validated).toBeGreaterThan(0)
+  })
+
   it('rejects fixed and dynamic sensitive object children without leaking values', () => {
     const plugin = {
       rootDir: '/fixture',
@@ -201,6 +227,69 @@ describe('AwSkillEvalManifest v1 reader', () => {
       errors: [expect.stringContaining('unused must include owner plugin "fixture-plugin"')],
       manifest: null,
     })
+  })
+
+  it('accepts scoped config overrides only for explicitly selected plugins', async () => {
+    const fixture = await createFixture()
+    const validManifest = manifest()
+    ;(validManifest.profiles as Record<string, Record<string, unknown>>).selected!.configByScope = {
+      user: { 'fixture-plugin': { mode: 'user' } },
+      project: { 'fixture-plugin': { mode: 'project' } },
+    }
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), validManifest)
+    await expect(validateAwSkillEvalManifest({
+      plugin: fixture.plugin,
+      skill: 'owner-skill',
+    })).resolves.toMatchObject({
+      valid: true,
+      manifest: {
+        profiles: [{
+          configByScope: {
+            user: [{ name: 'fixture-plugin', config: { mode: 'user' } }],
+            project: [{ name: 'fixture-plugin', config: { mode: 'project' } }],
+          },
+        }],
+      },
+    })
+
+    ;(validManifest.profiles as Record<string, Record<string, unknown>>).selected!.configByScope = {
+      user: { 'unselected-plugin': {} },
+    }
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), validManifest)
+    await expect(validateAwSkillEvalManifest({
+      plugin: fixture.plugin,
+      skill: 'owner-skill',
+    })).resolves.toMatchObject({
+      valid: false,
+      errors: [expect.stringContaining('is not declared in plugins')],
+    })
+  })
+
+  it('rejects sensitive values in scoped config without leaking them', () => {
+    const sensitiveValue = 'scoped-secret-must-not-leak'
+    const plugin = {
+      rootDir: '/fixture',
+      manifestPath: '/fixture/.agents-plugin/plugin.json',
+      manifest: {
+        name: 'fixture-plugin',
+        config: { fields: { token: { type: 'string', sensitive: true } } },
+      },
+    } as PluginMeta
+    let message = ''
+    try {
+      assertNoSensitiveProfileConfig({
+        id: 'selected',
+        scope: 'project',
+        plugins: [{ name: 'fixture-plugin', config: {} }],
+        configByScope: {
+          user: [{ name: 'fixture-plugin', config: { token: sensitiveValue } }],
+        },
+      }, [plugin])
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    expect(message).toContain('provides a sensitive config field')
+    expect(message).not.toContain(sensitiveValue)
   })
 
   it('does not invent a release requirement for a dynamic Skill', async () => {

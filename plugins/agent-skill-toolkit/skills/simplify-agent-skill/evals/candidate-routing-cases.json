@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "simplify-agent-skill",
+    "participants": [
+      "agent-content",
+      "author-agent-skill"
+    ],
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "通用 Simplifier 应直接处理完整标准 Skill，并沿用调用方已提供的项目适配上下文，不内嵌 AW 命令或递归重启适配器。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "standalone_skill_uses_direct_candidate",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "简化 skill/SKILL.md 中逐字重复的句子。它是独立标准 Agent Skill，没有 AW manifest、provider 或 renderer。你已获准只写 candidate/SKILL.md；不要修改原文件，也不要运行模型 Eval。",
+      "assertions": [
+        "直接从完整可消费 Skill 建立隔离 candidate，只删除逐字重复并保持原文件不变。",
+        "不要求 AW Workspace、manifest、review prepare 或项目适配器，不把通用简化方法绑定到 AW 命令。",
+        "没有模型对照或独立 Audit，只交付未验证 candidate，不声称安全接受。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skill/SKILL.md": "---\nname: summarize\ndescription: Summarize supplied text.\n---\n\n# Summarize\n\nUse supplied text only. Use supplied text only.\nPreserve unknowns.\n"
+        }
+      },
+      "expected": {
+        "output": "交付独立标准 Skill 的未验证隔离 candidate，不引入 AW 构建路径。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "candidate/**"
+        ],
+        "artifacts": [
+          {
+            "path": "candidate/SKILL.md",
+            "exists": true,
+            "contains": [
+              "Use supplied text only.",
+              "Preserve unknowns."
+            ],
+            "notContains": [
+              "Use supplied text only. Use supplied text only."
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "完整独立 Skill 可直接建立候选；强制 AW 适配会增加无效依赖和上下文。",
+        "minimalCounterexample": "若 Skill 来自 AW provider 或 renderer，则调用方必须先提供对应项目适配上下文。",
+        "allowedVariance": "候选目录创建方式可不同，但只允许声明的路径变化，且不得调用 AW 构建路径。"
+      }
+    },
+    {
+      "id": "reuse_supplied_adapter_context",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "上游项目适配器已经建立 candidate/source/SKILL.md，并在 adapter-context.md 给出可写源、冻结 baseline、相同 profile 的 final 重建责任和允许路径。删除 candidate source 的逐字重复并返回给上游；不要重新启动 develop-aw、不要自己准备 AW final、不要改 baseline。",
+      "assertions": [
+        "沿用已有适配上下文，只修改已授权 candidate source，不递归重启项目适配器。",
+        "不在通用 Simplifier 内嵌 AW 命令或自行生成 final/binding；把 final 重建责任返回给现有上游。",
+        "保留 baseline 和 Oracle；当前只交付未验证 source candidate。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "adapter-context.md": "Writable source: candidate/source/SKILL.md\nFrozen baseline: baseline/source/SKILL.md\nProfile: codex/project\nUpstream owns final rebuild and binding.\nAllowed change: candidate/source/SKILL.md only.\n",
+          "baseline/source/SKILL.md": "---\nname: summarize\ndescription: Summarize supplied text.\n---\n\nUse supplied text only. Use supplied text only.\n",
+          "candidate/source/SKILL.md": "---\nname: summarize\ndescription: Summarize supplied text.\n---\n\nUse supplied text only. Use supplied text only.\n"
+        }
+      },
+      "expected": {
+        "output": "返回未验证 source candidate，并要求既有上游按已固定 profile 重建 final。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "candidate/source/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "candidate/source/SKILL.md",
+            "exists": true,
+            "contains": [
+              "Use supplied text only."
+            ],
+            "notContains": [
+              "Use supplied text only. Use supplied text only."
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "递归重启适配器会重复发现、冻结和授权步骤，并可能改变既有 baseline。",
+        "minimalCounterexample": "若上游未提供可写 source 或 final 重建责任，则应停止并请求缺少的适配信息。",
+        "allowedVariance": "可用不同编辑方式；不得改 baseline、生成 AW final 或重新调用项目适配器。"
+      }
+    }
+  ]
+}

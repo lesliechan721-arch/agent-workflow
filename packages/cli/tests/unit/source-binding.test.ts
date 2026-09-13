@@ -12,11 +12,13 @@ import {
 
 import {
   readAwSourceBinding,
+  resolveEvalProfileBindingInput,
   resolveEvalSourceBindingInput,
   validateAwSourceBindingForWorkspace,
   writeAwSourceBinding,
   type AwSourceBindingWorkspaceValidationContext,
 } from '../../src/review/source-binding.js'
+import type { PluginMeta } from '../../src/types.js'
 
 const roots: string[] = []
 const digest = `sha256:${'a'.repeat(64)}`
@@ -37,6 +39,117 @@ afterEach(async () => {
 })
 
 describe('AW source binding', () => {
+  it('binds merged effective config for the profile scope and shared native user scope', () => {
+    const plugin = {
+      rootDir: '/fixture',
+      manifestPath: '/fixture/.agents-plugin/plugin.json',
+      manifest: {
+        name: 'fixture',
+        marketplace: {
+          category: 'test',
+          strict: true,
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+        },
+        config: {
+          fields: {
+            common: { type: 'string', required: true },
+            selected: { type: 'string', required: true },
+            settings: {
+              type: 'object',
+              properties: { first: { type: 'string' }, second: { type: 'string' } },
+              additionalProperties: false,
+            },
+          },
+        },
+        artifacts: {
+          targets: [{
+            id: 'native',
+            platform: 'codex',
+            scopes: ['project', 'user'],
+            target: 'codex.skill',
+            states: ['present'],
+            refreshKeys: ['common'],
+            skillKey: 'native',
+            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          }],
+        },
+      },
+    } as PluginMeta
+    const projectOnlyPlugin = {
+      ...plugin,
+      manifest: {
+        ...plugin.manifest,
+        name: 'project-only',
+        config: { fields: { projectOnly: { type: 'string', required: true } } },
+        artifacts: {
+          targets: [{
+            id: 'direct', platform: 'codex', scopes: ['project', 'user'],
+            target: 'codex.skill', states: ['present'], refreshKeys: ['projectOnly'],
+            skillKey: 'direct', delivery: { mode: 'aw-extension' },
+          }],
+        },
+      },
+    } as PluginMeta
+    const userOnlyNativePlugin = {
+      ...plugin,
+      manifest: {
+        ...plugin.manifest,
+        name: 'user-only-native',
+        config: { fields: { projectValue: { type: 'string', required: true } } },
+        artifacts: {
+          targets: [{
+            id: 'user-native', platform: 'codex', scopes: ['user'],
+            target: 'codex.skill', states: ['present'], refreshKeys: [],
+            skillKey: 'user-native',
+            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          }],
+        },
+      },
+    } as PluginMeta
+    const base = {
+      id: 'selected',
+      scope: 'project' as const,
+      plugins: [{
+        name: 'fixture',
+        config: { common: 'base', selected: 'base', settings: { first: 'base', second: 'base' } },
+      }, { name: 'project-only', config: {} }, { name: 'user-only-native', config: {} }],
+    }
+    const first = resolveEvalProfileBindingInput({
+      ...base,
+      configByScope: {
+        project: [
+          { name: 'fixture', config: { selected: 'project', settings: { first: 'project' } } },
+          { name: 'project-only', config: { projectOnly: 'project' } },
+          { name: 'user-only-native', config: { projectValue: 'project' } },
+        ],
+        user: [{ name: 'fixture', config: { selected: 'user' } }],
+      },
+    }, [plugin, projectOnlyPlugin, userOnlyNativePlugin])
+    expect(first.materializationProfile.plugins).toEqual([
+      {
+        name: 'fixture',
+        configByScope: {
+          project: { common: 'base', selected: 'project', settings: { first: 'project' } },
+          user: { common: 'base', selected: 'user', settings: { first: 'base', second: 'base' } },
+        },
+      },
+      { name: 'project-only', configByScope: { project: { projectOnly: 'project' } } },
+      { name: 'user-only-native', configByScope: { project: { projectValue: 'project' } } },
+    ])
+    const changed = resolveEvalProfileBindingInput({
+      ...base,
+      configByScope: {
+        project: [
+          { name: 'fixture', config: { selected: 'project', settings: { first: 'project' } } },
+          { name: 'project-only', config: { projectOnly: 'project' } },
+          { name: 'user-only-native', config: { projectValue: 'project' } },
+        ],
+        user: [{ name: 'fixture', config: { selected: 'changed-user' } }],
+      },
+    }, [plugin, projectOnlyPlugin, userOnlyNativePlugin])
+    expect(changed.profile.inputDigest).not.toBe(first.profile.inputDigest)
+  })
+
   it('reports a missing legacy receipt as incomplete', async () => {
     const root = await tempRoot()
     await expect(validateAwSourceBindingForWorkspace({
