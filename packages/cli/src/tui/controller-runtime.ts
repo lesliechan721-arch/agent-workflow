@@ -63,7 +63,10 @@ import {
   resolvePluginConfigStorePath,
 } from '../utils/plugin-config.js';
 import { assertProjectSharedConfigPathVisible } from '../utils/project-boundary.js';
-import { readPluginIntentState } from '../utils/plugin-intent-state.js';
+import {
+  calculatePluginIntentDigest,
+  readPluginIntentState,
+} from '../utils/plugin-intent-state.js';
 import {
   applyPluginConfigWrite,
   replayConfigRuntimeWrites,
@@ -126,6 +129,7 @@ import {
 } from '../utils/catalog-source-identity.js';
 import { checkAwCapabilitySupport, readPluginManifest } from '../utils/manifest.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
+import { resolveCanonicalRepoProjectKey } from '../utils/state-paths.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import {
   calculateCatalogGenerationSetDigest,
@@ -594,7 +598,11 @@ async function resolveBatchGroups(
   env: NodeJS.ProcessEnv,
   cwd: string,
   frozenRequestedPluginIds?: readonly string[],
-): Promise<{ requestedPluginIds: string[]; groups: PluginWriteBatchGroup[] }> {
+): Promise<{
+  requestedPluginIds: string[];
+  groups: PluginWriteBatchGroup[];
+  projectIntentDigest?: string;
+}> {
   if (intent.selection.kind === 'selected' || intent.selection.kind === 'targets') {
     return selectedBatchGroups(intent);
   }
@@ -605,6 +613,32 @@ async function resolveBatchGroups(
     );
   }
   const state = await readPluginIntentState({ scope: 'project', cwd, env });
+  const projectIntentDigest = calculatePluginIntentDigest(state);
+  if (intent.selection.kind === 'currentProjectIntentTargets') {
+    if (intent.selection.targets.length === 0
+      || intent.selection.targets.some((target) => target.scope !== 'project')) {
+      throw new TuiOperationBlockedError(
+        'batchTargetInvalid',
+        '当前项目精确同步目标必须是非空 project targets。',
+      );
+    }
+    const exact = selectedBatchGroups({
+      ...intent,
+      selection: { kind: 'targets', targets: intent.selection.targets },
+    });
+    const declaredPlatforms = new Map(state.roots.map((root) => [
+      root.pluginId,
+      new Set(root.platforms),
+    ]));
+    if (intent.selection.targets.some((target) =>
+      !declaredPlatforms.get(target.pluginId)?.has(target.platform))) {
+      throw new TuiOperationBlockedError(
+        'batchTargetInvalid',
+        '当前项目精确同步目标必须属于完整 project intent roots 声明。',
+      );
+    }
+    return { ...exact, projectIntentDigest };
+  }
   const selection = resolveSyncIntentSelection({
     roots: state.roots,
     selectors: frozenRequestedPluginIds ?? [],
@@ -616,6 +650,7 @@ async function resolveBatchGroups(
   }
   return {
     requestedPluginIds: selection.requestedPluginIds,
+    projectIntentDigest,
     groups: selection.groups.map((group) => ({
       groupId: `${group.sourceId}\0${group.platform}\0${intent.scope}`,
       sourceId: group.sourceId,
@@ -1116,8 +1151,15 @@ export function createTuiControllerDependencies(
       }))).flat();
       signal.throwIfAborted();
       const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
+      const [projectRoot, projectIntentState] = await Promise.all([
+        resolveCanonicalRepoProjectKey(context.cwd),
+        readPluginIntentState({ scope: 'project', cwd: context.cwd, env: context.env }),
+      ]);
+      signal.throwIfAborted();
       return {
         cliChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
+        projectRoot,
+        projectIntentRoots: structuredClone(projectIntentState.roots),
         configuredSources: structuredClone(configured.sources),
         payload: result.payload,
         pluginSummaries: result.pluginSummaries,
@@ -2359,6 +2401,9 @@ export function createTuiControllerDependencies(
             ?? digest(groups.map((group) => [group.groupId, group.preview.operationPlan?.planFingerprint])),
         },
         requestedPluginIds: selection.requestedPluginIds,
+        ...(selection.projectIntentDigest
+          ? { projectIntentDigest: selection.projectIntentDigest }
+          : {}),
         groups,
         targetVersions: [...new Map(targetVersions.map((target) => [[
           target.pluginId, target.platform, target.scope,
@@ -3593,6 +3638,12 @@ export function createTuiControllerDependencies(
             );
           } catch (error) {
             const code = error instanceof TuiOperationBlockedError ? error.code : undefined;
+            if (intent.kind === 'pluginWriteBatch'
+              && (intent.selection.kind === 'currentProjectIntentRoots'
+                || intent.selection.kind === 'currentProjectIntentTargets')
+              && error instanceof TuiOperationBlockedError) {
+              throw operationReviewStale('确认后完整项目 Intent 声明发生变化。');
+            }
             if (intent.kind === 'pluginWriteTask'
               && (code === 'taskHasBlockedTargets' || code === 'taskNoExecutableTargets')) {
               throw operationReviewStale(
@@ -3605,6 +3656,12 @@ export function createTuiControllerDependencies(
           if (intent.kind === 'pluginWriteBatch') {
             const expectedBatch = expectedEvidence as PluginWriteBatchEvidence;
             const currentBatch = currentEvidence as PluginWriteBatchEvidence;
+            if ((intent.selection.kind === 'currentProjectIntentRoots'
+              || intent.selection.kind === 'currentProjectIntentTargets')
+              && (!expectedBatch.projectIntentDigest
+                || expectedBatch.projectIntentDigest !== currentBatch.projectIntentDigest)) {
+              throw operationReviewStale('确认后完整项目 Intent 声明发生变化。');
+            }
             const reviewedGroups = expectedBatch.groups.map((group) => ({
               groupId: group.groupId,
               sourceId: group.sourceId,

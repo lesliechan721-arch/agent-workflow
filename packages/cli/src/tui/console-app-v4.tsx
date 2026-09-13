@@ -1485,6 +1485,7 @@ export function ConsoleAppV4(props: {
     options?: { discardDrafts?: boolean; draftConfirmation?: ExternalDraftState[] },
   ) => Promise<SessionNavigationResult>;
   onCancelPendingSessionNavigation?: () => boolean;
+  onClaimProjectIntentReminder?: (projectRoot: string, signature: string) => boolean;
 }): React.JSX.Element {
   const windowSize = useWindowSize();
   const size = props.size ?? windowSize;
@@ -1494,6 +1495,7 @@ export function ConsoleAppV4(props: {
   const [overlayFocus, setOverlayFocus] = useState(0);
   const [operationConfirmation, setOperationConfirmation] = useState<OperationConfirmationOverlay>();
   const [sourceTransportOverlay, setSourceTransportOverlay] = useState<SourceTransportOverlay>();
+  const [projectReminderOpen, setProjectReminderOpen] = useState(false);
   const [discardForExit, setDiscardForExit] = useState(false);
   const [discardForSessionNavigation, setDiscardForSessionNavigation] = useState<SessionNavigation>();
   const [discardDraftConfirmation, setDiscardDraftConfirmation] = useState<ExternalDraftState[]>();
@@ -1630,6 +1632,40 @@ export function ConsoleAppV4(props: {
       if (props.ownsController) props.controller.dispose();
     };
   }, [props.controller, props.ownsController]);
+  useEffect(() => {
+    const reminder = snapshot.projectIntentReminder;
+    if (!props.onClaimProjectIntentReminder
+      || snapshot.phase !== 'ready'
+      || route.name !== 'home'
+      || !reminder
+      || reminder.actionableTargets.length + reminder.blockedTargets.length === 0
+      || overlay
+      || operationConfirmation
+      || sourceTransportOverlay
+      || dirty
+      || props.controller.hasSessionDraft) return;
+    if (props.onClaimProjectIntentReminder(reminder.projectRoot, reminder.signature)) {
+      setOverlayFocus(0);
+      setProjectReminderOpen(true);
+    }
+  }, [
+    props.controller,
+    props.onClaimProjectIntentReminder,
+    snapshot.phase,
+    snapshot.projectIntentReminder?.signature,
+    route.name,
+    overlay,
+    operationConfirmation,
+    sourceTransportOverlay,
+    dirty,
+  ]);
+  useEffect(() => {
+    const reminder = snapshot.projectIntentReminder;
+    if (projectReminderOpen
+      && (!reminder || reminder.actionableTargets.length + reminder.blockedTargets.length === 0)) {
+      setProjectReminderOpen(false);
+    }
+  }, [projectReminderOpen, snapshot.projectIntentReminder]);
   useEffect(() => {
     if (route.name !== 'pluginContent' || snapshot.phase !== 'ready') return;
     void props.controller.loadPluginContent(route.pluginId);
@@ -2615,6 +2651,27 @@ export function ConsoleAppV4(props: {
       scope: 'project',
     });
   };
+  const prepareCurrentProjectTargets = (targets: PluginWriteBatchTarget[]): void => {
+    if (targets.length === 0) {
+      setActionError('当前项目没有已确认可同步的目标。');
+      return;
+    }
+    beginReview({
+      kind: 'pluginWriteBatch',
+      action: 'sync',
+      selection: {
+        kind: 'currentProjectIntentTargets',
+        targets: targets.map((target) => ({
+          pluginId: target.pluginId,
+          platform: target.platform,
+          scope: target.scope,
+        })),
+      },
+      platform: new Set(targets.map((target) => target.platform)).size > 1
+        ? 'both' : targets[0]!.platform,
+      scope: 'project',
+    });
+  };
   const openSelectedPluginTask = (
     goal: PluginWriteTaskGoal,
     pluginIds: string[],
@@ -3435,8 +3492,23 @@ export function ConsoleAppV4(props: {
     </StatusCard>;
   } else if (rendererFamily === 'home' && route.name === 'home') {
     const home = snapshot.viewModel!.home;
+    const projectReminder = snapshot.projectIntentReminder;
+    const projectPendingCount = (projectReminder?.actionableTargets.length ?? 0)
+      + (projectReminder?.blockedTargets.length ?? 0);
     context = '当前项目';
     actions = [
+      ...(projectPendingCount > 0 ? [{
+        label: '项目插件',
+        description: projectReminder!.actionableTargets.length > 0
+          ? `${projectReminder!.actionableTargets.length} 个可同步；`
+            + `${projectReminder!.blockedTargets.length} 个需要先处理`
+          : `${projectReminder!.blockedTargets.length} 个需要先处理`,
+        meta: String(projectPendingCount),
+        status: 'warning' as const,
+        run: () => projectReminder!.actionableTargets.length > 0
+          ? prepareCurrentProjectTargets(projectReminder!.actionableTargets)
+          : prepareCurrentProjectPlugins(),
+      }] : []),
       { label: '插件', description: '浏览、安装和管理所有插件', meta: `${home.installedPlugins} 已安装`, status: home.pluginUpdateCount > 0 ? 'warning' : undefined, run: () => go({ name: 'pluginList', mode: 'browse' }) },
       { label: '需要处理', description: '解决安装、来源或设置问题', meta: String(home.issueCount), status: 'warning', run: () => go({ name: 'issueList' }) },
       {
@@ -3450,6 +3522,20 @@ export function ConsoleAppV4(props: {
       },
     ];
     content = <Box flexDirection="column">
+      {projectPendingCount > 0
+        ? <Callout
+            status="warning"
+            title={`本项目有 ${projectPendingCount} 个插件目标尚未就绪`}
+            description={`${projectReminder!.actionableTargets.length} 个可同步；`
+              + `${projectReminder!.blockedTargets.length} 个需要先处理。`}
+          />
+        : projectReminder && projectReminder.unconfirmedTargets.length > 0
+          ? <Callout
+              status="info"
+              title="部分项目插件状态无法确认"
+              description="没有把未观测状态解释为缺失。请检查来源或工具状态后重新加载。"
+            />
+          : null}
       <StatusCard
         status={home.issueCount > 0 || home.unavailableSourceCount > 0 ? 'warning' : 'success'}
         title="当前状态"
@@ -9287,6 +9373,35 @@ export function ConsoleAppV4(props: {
       }
       return;
     }
+    if (projectReminderOpen) {
+      const closeProjectReminder = (): void => {
+        setProjectReminderOpen(false);
+        setOverlayFocus(0);
+      };
+      if (key.escape || input.toLowerCase() === 'b') {
+        closeProjectReminder();
+      } else if (props.onSessionNavigation && (input === 'h' || input === 'H')) {
+        closeProjectReminder();
+        requestSessionNavigation(input === 'H' ? 'reload' : 'home');
+      } else if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) {
+        setOverlayFocus((value) => {
+          if ((snapshot.projectIntentReminder?.actionableTargets.length ?? 0) > 0) {
+            return moveIndex(3, value, key.upArrow || key.leftArrow ? -1 : 1);
+          }
+          return value === 0 ? 2 : 0;
+        });
+      } else if (key.return) {
+        const reminder = snapshot.projectIntentReminder;
+        closeProjectReminder();
+        if (!reminder || overlayFocus === 0) return;
+        if (overlayFocus === 1 && reminder.actionableTargets.length > 0) {
+          prepareCurrentProjectTargets(reminder.actionableTargets);
+        } else {
+          prepareCurrentProjectPlugins();
+        }
+      }
+      return;
+    }
     if (operationConfirmation) {
       const activeReview = snapshot.activeReview;
       const closeConfirmation = (): void => {
@@ -10309,6 +10424,39 @@ export function ConsoleAppV4(props: {
       {content}
     </ScreenFrame>
   );
+  if (projectReminderOpen && snapshot.projectIntentReminder) {
+    const reminder = snapshot.projectIntentReminder;
+    const pluginCount = new Set([
+      ...reminder.actionableTargets,
+      ...reminder.blockedTargets,
+    ].map((target) => target.pluginId)).size;
+    const reminderActions: ActionItem[] = [
+      { label: '稍后处理', description: '首页会保留项目插件入口' },
+      {
+        label: `查看并同步可处理的 ${reminder.actionableTargets.length} 个`,
+        description: '先显示完整操作汇总和脚本影响，再单独确认',
+        disabled: reminder.actionableTargets.length === 0 ? '当前没有已确认可同步的目标' : undefined,
+      },
+      { label: '查看全部项目插件', description: '包含需要先处理和无法确认的项目目标' },
+    ];
+    return <ScreenFrame
+      title="项目插件恢复提醒"
+      breadcrumb="首页 / 项目插件"
+      context="只读检查"
+      help="↑↓ 移动 · Enter 选择 · Esc 稍后处理"
+      size={size}
+    >
+        <ReviewCard
+          title={`本项目有 ${pluginCount} 个插件尚未就绪`}
+          description={`${reminder.actionableTargets.length} 个可同步；`
+            + `${reminder.blockedTargets.length} 个需要先处理。`}
+        >
+          <StaticRow title="按项目共享设置恢复，个人设置不会被清空。" compact />
+          <StaticRow title="确认同步前可查看脚本和完整影响。" status="warning" compact />
+          <SemanticRows actions={reminderActions} focus={overlayFocus} kind="action" compact />
+        </ReviewCard>
+    </ScreenFrame>;
+  }
   if (operationConfirmation && snapshot.activeReview) {
     const review = snapshot.activeReview;
     const modalWidth = Math.max(40, Math.floor(size.columns * 0.6));

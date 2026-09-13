@@ -142,7 +142,9 @@ function evidenceForIntent(intent: OperationIntent): OperationEvidence {
 }
 
 function batchEvidenceForIntent(intent: Extract<OperationIntent, { kind: 'pluginWriteBatch' }>): PluginWriteBatchEvidence {
-  const targets = intent.selection.kind === 'targets' ? intent.selection.targets : [];
+  const targets = intent.selection.kind === 'targets'
+    || intent.selection.kind === 'currentProjectIntentTargets'
+    ? intent.selection.targets : [];
   const groups = new Map<string, typeof targets>();
   for (const target of targets) {
     const key = [target.pluginId.split('/')[0], target.platform, target.scope].join('\0');
@@ -171,6 +173,9 @@ function batchEvidenceForIntent(intent: Extract<OperationIntent, { kind: 'plugin
         }),
       },
     })),
+    ...(intent.selection.kind === 'currentProjectIntentTargets'
+      ? { projectIntentDigest: 'sha256:project-intent' }
+      : {}),
   };
 }
 
@@ -226,6 +231,90 @@ function target(options: {
     recoveryActions: [...placement.recoveryActions],
     placements: [placement],
   };
+}
+
+function projectIntentTarget(options: {
+  pluginName: string;
+  platform?: 'codex' | 'claude';
+  state: 'ready' | 'needsSync' | 'blocked' | 'unobserved';
+}): StatusV8Target {
+  const value = target({
+    pluginName: options.pluginName,
+    platform: options.platform ?? 'claude',
+    scope: 'project',
+    state: options.state === 'ready' ? 'present' : 'absent',
+  });
+  const current = placement(value, 'project');
+  current.components.push({
+    kind: 'intent',
+    key: 'desired',
+    state: 'desired',
+    metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+  });
+  if (options.state !== 'ready') {
+    current.state = options.state === 'blocked' ? 'blocked' : 'needsSync';
+  }
+  if (options.state === 'blocked') {
+    current.reasons = [{
+      code: 'catalogSourceUnavailable',
+      message: '来源当前不可用。',
+      severity: 'blocking',
+    }];
+  }
+  if (options.state === 'unobserved' && value.platform === 'codex') {
+    value.components.push({
+      kind: 'sharedNative',
+      key: `${options.pluginName}@aw-official`,
+      state: 'unobserved',
+    });
+    current.components.push({
+      kind: 'activation',
+      key: 'project',
+      state: 'unknown',
+      metadata: { evidence: 'unobserved' },
+    });
+    value.reasons = [{
+      code: 'codexSharedNativeUnobserved',
+      message: '未取得兼容 Codex 状态。',
+      severity: 'warning',
+    }];
+  }
+  if (value.platform === 'codex') value.state = current.state;
+  return value;
+}
+
+function projectReminderLoadResult(options: {
+  blocked?: boolean;
+  unobservedOnly?: boolean;
+} = {}): TuiStatusLoadResult {
+  const initial = loadResult();
+  const targets = options.unobservedOnly
+    ? [projectIntentTarget({ pluginName: 'review-gate', platform: 'codex', state: 'unobserved' })]
+    : [
+        projectIntentTarget({ pluginName: 'agent-lab', state: 'needsSync' }),
+        projectIntentTarget({ pluginName: 'review-gate', state: 'ready' }),
+        ...(options.blocked
+          ? [projectIntentTarget({ pluginName: 'source-blocked', state: 'blocked' })]
+          : []),
+      ];
+  initial.projectRoot = '/workspace';
+  initial.projectIntentRoots = targets.map((entry) => ({
+    pluginId: entry.pluginId,
+    platforms: [entry.platform],
+  }));
+  initial.payload.targets = targets;
+  initial.pluginSummaries = targets.map((entry) => ({
+    pluginName: entry.pluginName,
+    pluginId: entry.pluginId,
+    displayName: entry.pluginName,
+    description: '项目插件',
+    version: entry.version,
+    supportedTargets: entry.platform === 'codex'
+      ? { codex: ['project'], claude: [] }
+      : { codex: [], claude: ['project'] },
+    configFieldCount: 0,
+  }));
+  return initial;
 }
 
 function aggregateCodexTargets(targets: StatusV8Target[]): StatusV8Target[] {
@@ -2368,6 +2457,339 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     expect(value.snapshot.router.current.route.name).toBe('pluginWriteTask');
     expect(value.hasSessionDraft).toBe(true);
+  });
+
+  it.each([[80, 24], [60, 18]] as const)(
+    'opens the project reminder with Later focused and keeps the banner at %ix%i',
+    async (columns, rows) => {
+      const loaded = projectReminderLoadResult({ blocked: true });
+      const captureEvidence = vi.fn(async (intent: OperationIntent) =>
+        intent.kind === 'pluginWriteBatch' ? batchEvidenceForIntent(intent) : evidenceForIntent(intent));
+      const value = controller({
+        loadStatus: vi.fn().mockResolvedValue(loaded),
+        captureEvidence,
+      });
+      await value.load();
+      const claim = vi.fn(() => true);
+      const instance = render(<ConsoleAppV4
+        controller={value}
+        size={{ columns, rows }}
+        onClaimProjectIntentReminder={claim}
+      />);
+      await vi.waitFor(() =>
+        expect(instance.lastFrame()).toContain('本项目有 2 个插件尚未就绪'));
+
+      const modal = instance.lastFrame() ?? '';
+      expect(modal).toContain('1 个可同步；1 个需要先处理');
+      expect(modal).toContain('› 稍后处理');
+      expect(Math.max(...modal.split('\n').map(stringWidth))).toBeLessThanOrEqual(columns);
+      expect(modal.split('\n').length).toBeLessThanOrEqual(rows);
+
+      await input(instance, '\r');
+      expect(instance.lastFrame()).toContain('1 个可同步；1 个需要先处理');
+      expect(instance.lastFrame()).not.toContain('稍后处理');
+      expect(captureEvidence).not.toHaveBeenCalled();
+    },
+  );
+
+  it('connects the home reminder through SessionHost to an exact project Review', async () => {
+    const loaded = projectReminderLoadResult({ blocked: true });
+    const captureEvidence = vi.fn(async (intent: OperationIntent) =>
+      intent.kind === 'pluginWriteBatch' ? batchEvidenceForIntent(intent) : evidenceForIntent(intent));
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence,
+    });
+    const host = new SessionHost({
+      createSession: () => ({ controller: value, progressFeed: createRebuildProgressFeed() }),
+    });
+    const instance = render(<SessionConsoleApp host={host} />);
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('› 稍后处理'));
+
+    await input(instance, '\u001B[B', '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'pluginWriteBatch',
+      action: 'sync',
+      scope: 'project',
+      selection: {
+        kind: 'currentProjectIntentTargets',
+        targets: [{
+          pluginId: 'official/agent-lab',
+          platform: 'claude',
+          scope: 'project',
+        }],
+      },
+    }), expect.any(AbortSignal));
+    expect(value.snapshot.activeReview?.batch).toMatchObject({
+      requestedPluginIds: ['official/agent-lab'],
+      executableGroupCount: 1,
+    });
+  });
+
+  it('keeps a partial project result, cancels pending H, and retries with project evidence', async () => {
+    const loaded = projectReminderLoadResult({ blocked: true });
+    const second = projectIntentTarget({ pluginName: 'content-toolkit', state: 'needsSync' });
+    loaded.payload.targets.push(second);
+    loaded.pluginSummaries.push({
+      pluginName: second.pluginName,
+      pluginId: second.pluginId,
+      displayName: second.pluginName,
+      description: '项目插件',
+      version: second.version,
+      supportedTargets: { codex: [], claude: ['project'] },
+      configFieldCount: 0,
+    });
+    loaded.projectIntentRoots!.push({
+      pluginId: second.pluginId,
+      platforms: [second.platform],
+    });
+    const executionPending = deferred<PluginWriteBatchExecutionResult>();
+    const captureEvidence = vi.fn(async (intent: OperationIntent) =>
+      intent.kind === 'pluginWriteBatch' ? batchEvidenceForIntent(intent) : evidenceForIntent(intent));
+    const first = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence,
+      executeIntent: vi.fn(() => executionPending.promise),
+    });
+    const reloaded = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    const createSession = vi.fn()
+      .mockReturnValueOnce({ controller: first, progressFeed: createRebuildProgressFeed() })
+      .mockReturnValueOnce({ controller: reloaded, progressFeed: createRebuildProgressFeed() });
+    const host = new SessionHost({ createSession });
+    const instance = render(<SessionConsoleApp host={host} />);
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('2 个可同步；1 个需要先处理'));
+
+    await input(instance, '\u001B[B', '\r');
+    await vi.waitFor(() => expect(first.snapshot.router.current.route.name).toBe('review'));
+    await input(instance, '\r');
+    if (first.snapshot.router.current.route.name === 'review') {
+      await input(instance, '\u001B[B', '\r');
+    }
+    await vi.waitFor(() => expect(first.hasActiveWrite).toBe(true));
+    await input(instance, 'H');
+    expect(host.snapshot.pendingNavigation).toBe('reload');
+
+    const requestedTargets = [
+      { pluginId: 'official/agent-lab', platform: 'claude' as const, scope: 'project' as const },
+      { pluginId: 'official/content-toolkit', platform: 'claude' as const, scope: 'project' as const },
+    ];
+    const targetResults = requestedTargets.map((target, index) => ({
+      target: {
+        ...target,
+        pluginName: target.pluginId.split('/').at(-1)!,
+        sourceId: 'official',
+      },
+      action: 'sync',
+      state: index === 0 ? 'completed' as const : 'failed' as const,
+      requiredBy: [],
+      ...(index === 0 ? {} : { errorCode: 'preApplyExited' }),
+    }));
+    const groupResult = {
+      platforms: ['claude'],
+      plugins: [],
+      warnings: [],
+      rebuildResults: [],
+      targetResults,
+      overallState: 'partial',
+      receiptTargets: [],
+    } as unknown as PluginWriteBatchExecutionResult['groupResults'][number]['result'];
+    executionPending.resolve({
+      ...groupResult,
+      requestedPluginIds: requestedTargets.map((target) => target.pluginId),
+      groupResults: [{
+        groupId: 'official\0claude\0project',
+        sourceId: 'official',
+        platform: 'claude',
+        scope: 'project',
+        requestedPluginIds: requestedTargets.map((target) => target.pluginId),
+        result: groupResult,
+      }],
+    });
+    await vi.waitFor(() => expect(first.snapshot.result?.state).toBe('partial'));
+
+    expect(host.snapshot.pendingNavigation).toBeUndefined();
+    expect(host.snapshot.epoch).toBe(1);
+    expect(instance.lastFrame()).toContain('仅重试失败目标');
+    await focusAction(instance, '仅重试失败目标');
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(first.snapshot.router.current.route.name).toBe('review'));
+    const retryIntent = captureEvidence.mock.calls.at(-1)?.[0];
+    expect(retryIntent).toMatchObject({
+      kind: 'pluginWriteBatch',
+      selection: {
+        kind: 'currentProjectIntentTargets',
+        targets: [{
+          pluginId: 'official/content-toolkit',
+          platform: 'claude',
+          scope: 'project',
+        }],
+      },
+    });
+
+    await input(instance, 'H');
+    await vi.waitFor(() => expect(host.snapshot.epoch).toBe(2));
+    await vi.waitFor(() => expect(reloaded.snapshot.phase).toBe('ready'));
+    await vi.waitFor(() =>
+      expect(instance.lastFrame()).toContain('2 个可同步；1 个需要先处理'));
+    expect(instance.lastFrame()).not.toContain('稍后处理');
+  });
+
+  it('keeps unobserved project targets out of the missing reminder', async () => {
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(projectReminderLoadResult({ unobservedOnly: true })),
+    });
+    await value.load();
+    const claim = vi.fn(() => true);
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 80, rows: 24 }}
+      onClaimProjectIntentReminder={claim}
+    />);
+    await nextTurn(3);
+
+    expect(instance.lastFrame()).toContain('部分项目插件状态无法确认');
+    expect(instance.lastFrame()).not.toContain('插件尚未就绪');
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it('uses real project roots and treats a confirmed incomplete dependency as actionable', async () => {
+    const dependencyOnly = projectIntentTarget({
+      pluginName: 'content-toolkit',
+      state: 'needsSync',
+    });
+    const root = projectIntentTarget({ pluginName: 'agent-lab', state: 'needsSync' });
+    const rootPlacement = placement(root, 'project');
+    rootPlacement.components = [
+      { kind: 'ownership', key: 'fixture', state: 'present' },
+      {
+        kind: 'intent',
+        key: 'desired',
+        state: 'desired',
+        metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+      },
+      {
+        kind: 'dependency',
+        key: 'official/review-gate',
+        state: 'incomplete',
+      },
+    ];
+    const loaded = projectReminderLoadResult();
+    loaded.payload.targets = [dependencyOnly, root];
+    loaded.projectIntentRoots = [{
+      pluginId: root.pluginId,
+      platforms: [root.platform],
+    }];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+
+    expect(value.snapshot.projectIntentReminder).toMatchObject({
+      actionableTargets: [{
+        pluginId: 'official/agent-lab',
+        platform: 'claude',
+        scope: 'project',
+      }],
+      blockedTargets: [],
+    });
+    expect(value.snapshot.projectIntentReminder?.actionableTargets).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ pluginId: 'official/content-toolkit' }),
+      ]),
+    );
+  });
+
+  it('clears the project reminder after a successful exact sync reload', async () => {
+    const pending = projectReminderLoadResult();
+    const ready = projectReminderLoadResult();
+    ready.payload.targets = ready.payload.targets.map((entry) =>
+      entry.pluginId === 'official/agent-lab'
+        ? projectIntentTarget({ pluginName: 'agent-lab', state: 'ready' })
+        : entry);
+    const loadStatus = vi.fn()
+      .mockResolvedValueOnce(pending)
+      .mockResolvedValueOnce(ready);
+    const captureEvidence = vi.fn(async (intent: OperationIntent) =>
+      intent.kind === 'pluginWriteBatch' ? batchEvidenceForIntent(intent) : evidenceForIntent(intent));
+    const completedTarget = {
+      target: {
+        pluginId: 'official/agent-lab',
+        pluginName: 'agent-lab',
+        sourceId: 'official',
+        platform: 'claude' as const,
+        scope: 'project' as const,
+      },
+      action: 'sync',
+      state: 'completed' as const,
+      requiredBy: [],
+    };
+    const groupResult = {
+      platforms: ['claude'],
+      plugins: [],
+      warnings: [],
+      rebuildResults: [],
+      targetResults: [completedTarget],
+      overallState: 'succeeded',
+      receiptTargets: [],
+    } as unknown as PluginWriteBatchExecutionResult['groupResults'][number]['result'];
+    const value = controller({
+      loadStatus,
+      captureEvidence,
+      executeIntent: vi.fn().mockResolvedValue({
+        ...groupResult,
+        requestedPluginIds: ['official/agent-lab'],
+        groupResults: [{
+          groupId: 'official\0claude\0project',
+          sourceId: 'official',
+          platform: 'claude',
+          scope: 'project',
+          requestedPluginIds: ['official/agent-lab'],
+          result: groupResult,
+        }],
+      }),
+    });
+    await value.load();
+    const review = await value.buildOperationReview({
+      kind: 'pluginWriteBatch',
+      action: 'sync',
+      selection: {
+        kind: 'currentProjectIntentTargets',
+        targets: [{
+          pluginId: 'official/agent-lab',
+          platform: 'claude',
+          scope: 'project',
+        }],
+      },
+      platform: 'claude',
+      scope: 'project',
+    });
+    await expect(value.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'succeeded',
+    });
+    expect(value.snapshot.projectIntentReminder).toMatchObject({
+      actionableTargets: [],
+      blockedTargets: [],
+      unconfirmedTargets: [],
+    });
+  });
+
+  it('does not move focus when the project reminder arrives after leaving home', async () => {
+    const pending = deferred<TuiStatusLoadResult>();
+    const value = controller({ loadStatus: vi.fn(() => pending.promise) });
+    const claim = vi.fn(() => true);
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 80, rows: 24 }}
+      onClaimProjectIntentReminder={claim}
+    />);
+    await nextTurn();
+    value.push({ name: 'pluginList', mode: 'browse' });
+    pending.resolve(projectReminderLoadResult());
+    await vi.waitFor(() => expect(value.snapshot.phase).toBe('ready'));
+
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
+    expect(instance.lastFrame()).toContain('插件');
+    expect(instance.lastFrame()).not.toContain('稍后处理');
+    expect(claim).not.toHaveBeenCalled();
   });
 
   it('opens a Review for a new clone from the saved project roots without adding user targets', async () => {

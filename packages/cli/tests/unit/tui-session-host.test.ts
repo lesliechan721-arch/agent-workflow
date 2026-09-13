@@ -136,6 +136,21 @@ function session(controller: TuiController) {
 }
 
 describe('TUI session host', () => {
+  it('keeps the same project reminder signature claimed across a reload', async () => {
+    const first = fakeController();
+    const second = fakeController();
+    const createSession = vi.fn()
+      .mockReturnValueOnce(session(first))
+      .mockReturnValueOnce(session(second));
+    const host = new SessionHost({ createSession });
+
+    expect(host.claimProjectIntentReminder('/workspace', 'sha256:first')).toBe(true);
+    expect(host.claimProjectIntentReminder('/workspace', 'sha256:first')).toBe(false);
+    await expect(host.requestNavigation('reload')).resolves.toBe('completed');
+    expect(host.claimProjectIntentReminder('/workspace', 'sha256:first')).toBe(false);
+    expect(host.claimProjectIntentReminder('/workspace', 'sha256:changed')).toBe(true);
+  });
+
   it('waits for old reads before replacing the controller and increments the epoch', async () => {
     const wait = deferred<void>();
     const first = fakeController({ wait: wait.promise });

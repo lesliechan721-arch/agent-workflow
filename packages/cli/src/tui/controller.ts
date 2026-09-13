@@ -28,6 +28,7 @@ import type {
 import {
   flattenStatusTargets,
   statusTargetActivation,
+  statusTargetExtensions,
   statusTargetIntent,
   statusTargetOwnershipState,
   statusTargetSharedNative,
@@ -142,6 +143,7 @@ export type BatchPluginWriteAction = typeof PLUGIN_WRITE_BATCH_ACTIONS[number];
 export type PluginWriteBatchSelection =
   | { kind: 'selected'; pluginIds: string[] }
   | { kind: 'targets'; targets: PluginWriteBatchTarget[] }
+  | { kind: 'currentProjectIntentTargets'; targets: PluginWriteBatchTarget[] }
   | { kind: 'currentProjectIntentRoots' };
 
 export interface PluginWriteBatchTarget {
@@ -222,6 +224,7 @@ export interface PluginWriteBatchGroupEvidence {
 export interface PluginWriteBatchEvidence extends OperationEvidence {
   requestedPluginIds: string[];
   groups: PluginWriteBatchGroupEvidence[];
+  projectIntentDigest?: string;
   targetVersions?: Array<PluginWriteBatchTarget & {
     presence: 'new' | 'installed' | 'unknown';
     installedVersion?: string;
@@ -760,6 +763,8 @@ export interface PluginOperationProgressLine {
 }
 
 export interface TuiStatusLoadResult {
+  projectRoot?: string;
+  projectIntentRoots?: Array<{ pluginId: string; platforms: PlatformName[] }>;
   cliChannel?: 'latest' | 'beta';
   payload: StatusV8Payload;
   pluginSummaries: StatusV8PluginSummary[];
@@ -777,6 +782,100 @@ export interface TuiStatusLoadResult {
   }>;
   catalogGenerations?: CatalogSourceGenerationViewModel[];
   sessionGenerationKeys?: Record<string, string>;
+}
+
+export interface ProjectIntentReminderTarget extends PluginWriteBatchTarget {
+  reasonCodes: string[];
+}
+
+export interface ProjectIntentReminder {
+  projectRoot: string;
+  signature: string;
+  actionableTargets: ProjectIntentReminderTarget[];
+  blockedTargets: ProjectIntentReminderTarget[];
+  unconfirmedTargets: PluginWriteBatchTarget[];
+}
+
+function projectReminderTargetKey(target: PluginWriteBatchTarget): string {
+  return [target.pluginId, target.platform, target.scope].join('\0');
+}
+
+export function projectCurrentIntentReminder(status: TuiStatusLoadResult): ProjectIntentReminder | undefined {
+  const actionableTargets: ProjectIntentReminderTarget[] = [];
+  const blockedTargets: ProjectIntentReminderTarget[] = [];
+  const unconfirmedTargets: PluginWriteBatchTarget[] = [];
+  const projectRoots = new Map((status.projectIntentRoots ?? []).map((root) => [
+    root.pluginId,
+    new Set(root.platforms),
+  ]));
+  const projectTargets = flattenStatusTargets(status.payload.targets).filter((target) => {
+    const intent = statusTargetIntent(target);
+    return target.scope === 'project'
+      && projectRoots.get(target.pluginId)?.has(target.platform) === true
+      && intent.scopes.includes('project');
+  });
+  for (const target of projectTargets) {
+    if (target.state === 'ready') continue;
+    const reminderTarget = {
+      pluginId: target.pluginId,
+      platform: target.platform,
+      scope: 'project' as const,
+    };
+    const statusReasons = [
+      ...target.reasons,
+      ...(target.sharedReasons ?? []),
+    ];
+    const reasonCodes = [...new Set(statusReasons.flatMap((reason) => [
+      reason.code,
+      ...(reason.rootIssueCode ? [reason.rootIssueCode] : []),
+    ]))].sort((left, right) => left.localeCompare(right, 'en'));
+    const sharedNative = statusTargetSharedNative(target);
+    const activation = statusTargetActivation(target);
+    const extensions = statusTargetExtensions(target);
+    const ownership = statusTargetOwnershipState(target);
+    const blocking = target.state === 'blocked'
+      || [...target.reasons, ...(target.sharedReasons ?? [])]
+        .some((reason) => reason.severity === 'blocking');
+    const unobserved = ownership === 'error'
+      || (!blocking && (sharedNative?.state === 'unobserved'
+        || activation?.evidence === 'unobserved'
+        || reasonCodes.includes('codexSharedNativeUnobserved')
+        || target.components.some((component) =>
+          component.metadata?.rootIssueCode === 'codexSharedNativeUnobserved')));
+    const confirmedDifference = ownership === 'absent' || ownership === 'partial'
+      || sharedNative?.state === 'missing' || sharedNative?.state === 'replaceable'
+      || extensions?.state === 'missing' || extensions?.state === 'drifted'
+      || activation?.evidence === 'observed' && activation.project === false
+      || target.components.some((component) => component.kind === 'dependency'
+        && (component.state === 'absent' || component.state === 'incomplete'));
+    if (blocking && confirmedDifference) {
+      blockedTargets.push({ ...reminderTarget, reasonCodes });
+    } else if (!unobserved && target.state === 'needsSync' && confirmedDifference) {
+      actionableTargets.push({ ...reminderTarget, reasonCodes });
+    } else {
+      unconfirmedTargets.push(reminderTarget);
+    }
+  }
+  if (projectTargets.length === 0) return undefined;
+  const canonicalActionable = actionableTargets.sort((left, right) =>
+    projectReminderTargetKey(left).localeCompare(projectReminderTargetKey(right), 'en'));
+  const canonicalBlocked = blockedTargets.sort((left, right) =>
+    projectReminderTargetKey(left).localeCompare(projectReminderTargetKey(right), 'en'));
+  const canonicalUnconfirmed = unconfirmedTargets.sort((left, right) =>
+    projectReminderTargetKey(left).localeCompare(projectReminderTargetKey(right), 'en'));
+  const projectRoot = status.projectRoot ?? projectTargets[0]!.cwd;
+  const signature = crypto.createHash('sha256').update(JSON.stringify({
+    projectRoot,
+    actionableTargets: canonicalActionable.map(projectReminderTargetKey),
+    blockedTargets: canonicalBlocked.map(projectReminderTargetKey),
+  })).digest('hex');
+  return {
+    projectRoot,
+    signature: `sha256:${signature}`,
+    actionableTargets: canonicalActionable,
+    blockedTargets: canonicalBlocked,
+    unconfirmedTargets: canonicalUnconfirmed,
+  };
 }
 
 export interface InstallTargetOption {
@@ -909,6 +1008,7 @@ export interface TuiControllerSnapshot {
     description: string;
     operationRecordId?: string;
   };
+  projectIntentReminder?: ProjectIntentReminder;
 }
 
 interface InstallPlacementDraftState extends InstallPlacementDraftViewModel {
@@ -992,10 +1092,14 @@ function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
     return { ...intent, targets: canonicalPluginWriteTaskTargets(intent.targets) };
   }
   if (intent.kind !== 'pluginWriteBatch') return intent;
-  if (intent.selection.kind === 'targets') {
+  if (intent.selection.kind === 'targets'
+    || intent.selection.kind === 'currentProjectIntentTargets') {
     return {
       ...intent,
-      selection: { kind: 'targets', targets: canonicalBatchTargets(intent.selection.targets) },
+      selection: {
+        kind: intent.selection.kind,
+        targets: canonicalBatchTargets(intent.selection.targets),
+      },
     };
   }
   if (intent.selection.kind !== 'selected') return intent;
@@ -1521,6 +1625,7 @@ export class TuiController {
   #portableResultReceipt?: PortableInstallReceipt;
   #portableResultIntent?: Extract<OperationIntent, { kind: 'portableInstall' }>;
   #completionNotice?: TuiControllerSnapshot['completionNotice'];
+  #projectIntentReminder?: ProjectIntentReminder;
   #loadError?: { code: string; message: string };
   #portableDraft?: TuiControllerSnapshot['portableDraft'];
   #recoverablePortableDraft?: TuiControllerSnapshot['portableDraft'];
@@ -1641,6 +1746,9 @@ export class TuiController {
           } }
         : {}),
       ...(this.#completionNotice ? { completionNotice: this.#completionNotice } : {}),
+      ...(this.#projectIntentReminder
+        ? { projectIntentReminder: this.#projectIntentReminder }
+        : {}),
     });
   }
 
@@ -2009,6 +2117,7 @@ export class TuiController {
 
   #project(): void {
     if (!this.#status) return;
+    this.#projectIntentReminder = projectCurrentIntentReminder(this.#status);
     this.#viewModel = buildTuiViewModel({
       status: this.#status.payload,
       pluginSummaries: this.#status.pluginSummaries,
@@ -2197,7 +2306,9 @@ export class TuiController {
       ? {
           ...structuredClone(intent),
           selection: {
-            kind: 'targets',
+            kind: intent.selection.kind === 'currentProjectIntentRoots'
+              || intent.selection.kind === 'currentProjectIntentTargets'
+              ? 'currentProjectIntentTargets' : 'targets',
             targets: structuredClone(result.summary.batch.retryTargets!),
           },
       }
@@ -3841,12 +3952,29 @@ export class TuiController {
       }
     }
     if (intent.kind === 'pluginWriteBatch') {
-      if (intent.selection.kind === 'currentProjectIntentRoots'
+      if ((intent.selection.kind === 'currentProjectIntentRoots'
+        || intent.selection.kind === 'currentProjectIntentTargets')
         && (intent.action !== 'sync' || intent.scope !== 'project')) {
         throw new TuiOperationBlockedError(
           'batchSelectionInvalid',
           '当前项目全部同步只支持 project scope sync。',
         );
+      }
+      if (intent.selection.kind === 'currentProjectIntentTargets') {
+        const targets = intent.selection.targets;
+        const canonical = [...new Map(targets.map((target) => [
+          projectReminderTargetKey(target), target,
+        ])).values()].sort((left, right) => projectReminderTargetKey(left)
+          .localeCompare(projectReminderTargetKey(right), 'en'));
+        if (targets.length === 0
+          || targets.some((target) => target.scope !== 'project')
+          || JSON.stringify(targets) !== JSON.stringify(canonical)) {
+          throw new TuiOperationBlockedError(
+            'batchSelectionInvalid',
+            '当前项目同步目标必须是非空、规范且精确的 project 目标集合。',
+          );
+        }
+        for (const target of targets) sourceIdFromPluginId(target.pluginId);
       }
       if (intent.selection.kind === 'selected') {
         const canonical = canonicalPluginIds(intent.selection.pluginIds);

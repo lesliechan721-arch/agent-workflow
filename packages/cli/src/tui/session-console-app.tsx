@@ -25,6 +25,8 @@ export function SessionConsoleApp(props: {
       pendingSessionNavigationDrafts={session.pendingNavigationDrafts}
       onCancelPendingSessionNavigation={() => props.host.cancelPendingNavigation()}
       onSessionNavigation={(navigation, options) => props.host.requestNavigation(navigation, options)}
+      onClaimProjectIntentReminder={(projectRoot, signature) =>
+        props.host.claimProjectIntentReminder(projectRoot, signature)}
       onExit={props.onExit}
     />
   );
