@@ -93,6 +93,9 @@ function rendererSource(mutateSourcePath?: string): string {
     "    'render.json': JSON.stringify({ requested: context.requestedArtifactIds, scope: context.scope, configScope: context.config.targetScope, config: context.config.values }),",
     '  };',
     "  if (codex) files['agents/openai.yaml'] = 'policy:\\n  allow_implicit_invocation: true\\n';",
+    "  if (id === 'codex-native' && context.config.values.nativeMode === 'disabled') return {",
+    "    id, ...definition, kind: 'skill', state: 'disabled', refreshKeys: ['nativeMode'],",
+    '  };',
     '  return {',
     '    id, ...definition, kind: "skill", state: "present", refreshKeys: [id === "unselected-skill" ? "needed" : id === "codex-native" ? "nativeMode" : "mode"],',
     '    content: { files },',
@@ -143,7 +146,7 @@ async function createDynamicPlugin(root: string): Promise<string> {
           scopes: ['project', 'user'],
           target: 'codex.skill',
           delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
-          states: ['present'],
+          states: ['present', 'disabled'],
           refreshKeys: ['nativeMode'],
           skillKey: 'codex-native',
         },
@@ -275,6 +278,30 @@ afterEach(async () => {
 })
 
 describe('Review preparation', () => {
+  it('keeps selected disabled native Skills as a strict Review failure', async () => {
+    const fixture = await createWorkspace()
+    const pluginRoot = await createDynamicPlugin(fixture.root)
+    const configFile = path.join(fixture.root, 'disabled-native-config.json')
+    await fs.writeJson(configFile, { 'dynamic-review': { nativeMode: 'disabled' } })
+    const output = path.join(fixture.root, '_review-output', 'disabled-native')
+    const result = await prepareReviewTarget({
+      cwd: fixture.root,
+      target: pluginRoot,
+      skills: ['codex-native'],
+      platform: 'codex',
+      scope: 'project',
+      configFile,
+      out: output,
+      env: fixture.env,
+    })
+    expect(result.exitCode).toBe(1)
+    expect(result.receipt).toMatchObject({
+      ok: false,
+      issues: [{ code: 'materializationFailed' }],
+    })
+    await expect(fs.pathExists(output)).resolves.toBe(false)
+  })
+
   it('prepares multiple static Skills with generated and imported runtime files without Eval data', async () => {
     const fixture = await createWorkspace()
     const providerRoot = await writePlugin(fixture.root, manifest('runtime-provider', {

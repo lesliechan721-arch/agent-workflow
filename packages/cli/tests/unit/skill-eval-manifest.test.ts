@@ -203,6 +203,69 @@ describe('AwSkillEvalManifest v1 reader', () => {
     })
   })
 
+  it('accepts scoped config overrides only for explicitly selected plugins', async () => {
+    const fixture = await createFixture()
+    const validManifest = manifest()
+    ;(validManifest.profiles as Record<string, Record<string, unknown>>).selected!.configByScope = {
+      user: { 'fixture-plugin': { mode: 'user' } },
+      project: { 'fixture-plugin': { mode: 'project' } },
+    }
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), validManifest)
+    await expect(validateAwSkillEvalManifest({
+      plugin: fixture.plugin,
+      skill: 'owner-skill',
+    })).resolves.toMatchObject({
+      valid: true,
+      manifest: {
+        profiles: [{
+          configByScope: {
+            user: [{ name: 'fixture-plugin', config: { mode: 'user' } }],
+            project: [{ name: 'fixture-plugin', config: { mode: 'project' } }],
+          },
+        }],
+      },
+    })
+
+    ;(validManifest.profiles as Record<string, Record<string, unknown>>).selected!.configByScope = {
+      user: { 'unselected-plugin': {} },
+    }
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), validManifest)
+    await expect(validateAwSkillEvalManifest({
+      plugin: fixture.plugin,
+      skill: 'owner-skill',
+    })).resolves.toMatchObject({
+      valid: false,
+      errors: [expect.stringContaining('is not declared in plugins')],
+    })
+  })
+
+  it('rejects sensitive values in scoped config without leaking them', () => {
+    const sensitiveValue = 'scoped-secret-must-not-leak'
+    const plugin = {
+      rootDir: '/fixture',
+      manifestPath: '/fixture/.agents-plugin/plugin.json',
+      manifest: {
+        name: 'fixture-plugin',
+        config: { fields: { token: { type: 'string', sensitive: true } } },
+      },
+    } as PluginMeta
+    let message = ''
+    try {
+      assertNoSensitiveProfileConfig({
+        id: 'selected',
+        scope: 'project',
+        plugins: [{ name: 'fixture-plugin', config: {} }],
+        configByScope: {
+          user: [{ name: 'fixture-plugin', config: { token: sensitiveValue } }],
+        },
+      }, [plugin])
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    expect(message).toContain('provides a sensitive config field')
+    expect(message).not.toContain(sensitiveValue)
+  })
+
   it('does not invent a release requirement for a dynamic Skill', async () => {
     const fixture = await createFixture()
     fixture.plugin.manifest.artifacts = {

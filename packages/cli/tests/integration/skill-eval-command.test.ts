@@ -177,6 +177,331 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.remove(root)))
 })
 describe('aw skill eval commands', () => {
+  it('prepares mixed static, dynamic, and shared native Codex content with scoped config', async () => {
+    const fixture = await createWorkspace()
+    const providerInit = capture()
+    expect(await runCli([
+      'plugin', 'init', 'runtime-provider',
+      '--description', 'Runtime provider for Eval materialization tests.',
+      '--skill-name', 'provider-skill',
+      '--skill-description', 'Provide runtime data in Eval materialization tests.',
+      '--skill-short-description', 'Provide deterministic runtime data',
+      '--workspace-root', fixture.root,
+    ], { cwd: fixture.root, env: fixture.env, io: providerInit.io }), `${providerInit.stdout()}${providerInit.stderr()}`).toBe(0)
+    const providerManifestPath = path.join(
+      fixture.root, 'plugins', 'runtime-provider', '.agents-plugin', 'plugin.json',
+    )
+    const providerManifest = await fs.readJson(providerManifestPath)
+    providerManifest.buildConfig = {
+      runtimeExports: [{
+        name: 'runtime-data',
+        source: './shared/runtime-data.json',
+        requires: { aw: { capabilities: [] } },
+      }],
+    }
+    await fs.writeJson(providerManifestPath, providerManifest, { spaces: 2 })
+    await fs.outputJson(
+      path.join(fixture.root, 'plugins', 'runtime-provider', 'shared', 'runtime-data.json'),
+      { runtimeImport: true },
+    )
+    const participantManifestPath = path.join(
+      fixture.root, 'plugins', 'participant-plugin', '.agents-plugin', 'plugin.json',
+    )
+    const participantManifest = await fs.readJson(participantManifestPath)
+    participantManifest.dependencies = ['runtime-provider']
+    participantManifest.buildConfig = {
+      skillRuntimeFiles: [{
+        skill: 'participant-skill',
+        target: 'references/runtime-import.json',
+        import: { plugin: 'runtime-provider', export: 'runtime-data' },
+      }],
+    }
+    await fs.writeJson(participantManifestPath, participantManifest, { spaces: 2 })
+    const manifestPath = path.join(fixture.ownerRoot, '.agents-plugin', 'plugin.json')
+    const pluginManifest = await fs.readJson(manifestPath)
+    pluginManifest.scripts = {
+      artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+    }
+    pluginManifest.config.fields.roleMode = { type: 'string', required: true }
+    pluginManifest.config.fields.nativeMode = { type: 'string', required: true }
+    pluginManifest.config.fields.dynamicEnabled = { type: 'boolean', required: true }
+    pluginManifest.config.fields.nativeEnabled = { type: 'boolean', required: true }
+    pluginManifest.artifacts = {
+      targets: [{
+        id: 'dynamic-skill',
+        platform: 'codex',
+        scopes: ['project', 'user'],
+        target: 'codex.skill',
+        delivery: { mode: 'aw-extension' },
+        states: ['present', 'disabled'],
+        refreshKeys: ['roleMode', 'dynamicEnabled'],
+        skillKey: 'dynamic-skill',
+      }, {
+        id: 'native-skill',
+        platform: 'codex',
+        scopes: ['project', 'user'],
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        projectManagedKind: 'skill',
+        states: ['present', 'disabled'],
+        refreshKeys: ['nativeMode', 'nativeEnabled'],
+        skillKey: 'native-skill',
+      }, {
+        id: 'fixture-role',
+        platform: 'codex',
+        scopes: ['project', 'user'],
+        target: 'codex.agentRole',
+        states: ['present'],
+        refreshKeys: ['roleMode'],
+        roleKey: 'fixture-role',
+        requiresCodexProjectConfig: true,
+      }],
+    }
+    await fs.writeJson(manifestPath, pluginManifest, { spaces: 2 })
+    const rendererLog = path.join(fixture.root, 'renderer-requests.jsonl')
+    await fs.outputFile(path.join(fixture.ownerRoot, 'scripts', 'render.mjs'), [
+      "import fs from 'node:fs';",
+      "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
+      `fs.appendFileSync(${JSON.stringify(rendererLog)}, JSON.stringify(context.requestedArtifactIds) + '\\n');`,
+      'const artifacts = context.requestedArtifactIds.map((id) => {',
+      "  if (id === 'fixture-role') return {",
+      "    id, kind: 'codexRole', platform: 'codex', target: 'codex.agentRole', state: 'present',",
+      "    roleKey: 'fixture-role', refreshKeys: ['roleMode'], content: {",
+      "      registration: { description: 'Eval fixture role.' },",
+      "      roleFile: { name: 'fixture-role', description: 'Eval fixture role.', developer_instructions: 'Fixture.', model: context.config.values.roleMode },",
+      '    },',
+      '  };',
+      "  const skillKey = id === 'native-skill' ? 'native-skill' : 'dynamic-skill';",
+      "  const refreshKeys = id === 'native-skill' ? ['nativeMode', 'nativeEnabled'] : ['roleMode', 'dynamicEnabled'];",
+      "  const selected = id === 'native-skill' ? context.config.values.nativeMode : context.config.values.roleMode;",
+      "  const enabled = id === 'native-skill' ? context.config.values.nativeEnabled : context.config.values.dynamicEnabled;",
+      "  if (!enabled) return { id, kind: 'skill', platform: 'codex', target: 'codex.skill', state: 'disabled', skillKey, refreshKeys };",
+      '  return {',
+      "    id, kind: 'skill', platform: 'codex', target: 'codex.skill', state: 'present', skillKey, refreshKeys,",
+      '    content: { files: {',
+      "      'SKILL.md': `---\\nname: ${skillKey}\\ndescription: ${skillKey} Eval fixture.\\n---\\n\\n# ${skillKey}\\n`,",
+      "      'README.md': `# ${skillKey}\\n`,",
+      "      'agents/openai.yaml': 'policy:\\n  allow_implicit_invocation: true\\n',",
+      "      'render.json': JSON.stringify({ selected, targetScope: context.config.targetScope }),",
+      "      'references/native-tree.json': JSON.stringify({ nativeTree: true }),",
+      '    } },',
+      '  };',
+      '});',
+      'process.stdout.write(JSON.stringify({ version: 2, artifacts }));',
+    ].join('\n'))
+    const selectedCasesPath = path.join(fixture.evalRoot, 'trigger-cases.json')
+    await fs.writeJson(selectedCasesPath, {
+      version: 1,
+      suite: {
+        kind: 'trigger',
+        unitUnderTest: 'owner-skill',
+        participants: ['owner-skill', 'participant-skill', 'dynamic-skill', 'native-skill'],
+      },
+      cases: [{
+        id: 'loads_skill',
+        split: 'validation',
+        tags: [],
+        input: { query: 'Use the owner Skill.', expectedLoad: true },
+      }],
+    }, { spaces: 2 })
+    await fs.writeFile(
+      path.join(fixture.skillRoot, 'SKILL.md'),
+      (await fs.readFile(path.join(fixture.skillRoot, 'SKILL.md'), 'utf8')).replaceAll('TODO', 'Fixture instruction'),
+    )
+    const manifest = {
+      version: 1,
+      defaults: { profile: 'project-scoped' },
+      profiles: {
+        'project-scoped': {
+          scope: 'project',
+          plugins: {
+            'eval-owner': {
+              mode: 'common-mode', roleMode: 'common-role', nativeMode: 'common-native',
+              dynamicEnabled: true, nativeEnabled: true,
+            },
+            'participant-plugin': {},
+          },
+          configByScope: {
+            project: { 'eval-owner': { roleMode: 'project-role' } },
+            user: { 'eval-owner': { nativeMode: 'user-native' } },
+          },
+        },
+        'user-scoped': {
+          scope: 'user',
+          plugins: {
+            'eval-owner': {
+              mode: 'common-mode', roleMode: 'common-role', nativeMode: 'common-native',
+              dynamicEnabled: true, nativeEnabled: true,
+            },
+            'participant-plugin': {},
+          },
+          configByScope: {
+            user: { 'eval-owner': { roleMode: 'user-role', nativeMode: 'user-native' } },
+          },
+        },
+        'optional-disabled': {
+          scope: 'project',
+          plugins: {
+            'eval-owner': {
+              mode: 'common-mode', roleMode: 'common-role', nativeMode: 'common-native',
+              dynamicEnabled: false, nativeEnabled: false,
+            },
+            'participant-plugin': {},
+          },
+        },
+      },
+      suites: [
+        { id: 'trigger-suite', kind: 'trigger', cases: 'trigger-cases.json' },
+        { id: 'optional-suite', kind: 'trigger', cases: 'optional-cases.json' },
+        { id: 'required-native-suite', kind: 'trigger', cases: 'required-native-cases.json' },
+      ],
+    }
+    const optionalCases = {
+      version: 1,
+      suite: {
+        kind: 'trigger',
+        unitUnderTest: 'owner-skill',
+        participants: ['owner-skill', 'participant-skill'],
+      },
+      cases: [{
+        id: 'loads_skill', split: 'validation', tags: [],
+        input: { query: 'Use the owner Skill.', expectedLoad: true },
+      }],
+    }
+    await fs.writeJson(path.join(fixture.evalRoot, 'optional-cases.json'), optionalCases, { spaces: 2 })
+    await fs.writeJson(path.join(fixture.evalRoot, 'required-native-cases.json'), {
+      ...optionalCases,
+      suite: { ...optionalCases.suite, participants: ['owner-skill', 'native-skill'] },
+    }, { spaces: 2 })
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), manifest, { spaces: 2 })
+
+    for (const [profile, roleMode] of [
+      ['project-scoped', 'project-role'],
+      ['user-scoped', 'user-role'],
+    ] as const) {
+      const output = path.join(fixture.outputRoot, profile)
+      const command = capture()
+      expect(await runCli([
+        'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+        '--suite', 'trigger-suite', '--profile', profile,
+        '--workspace-root', fixture.root, '--output', output, '--json',
+      ], { cwd: fixture.root, env: fixture.env, io: command.io }), command.stdout()).toBe(0)
+      const subject = path.join(output, 'workspace', 'subject')
+      await expect(fs.readJson(path.join(
+        subject, '.agents', 'skills', 'native-skill', 'render.json',
+      ))).resolves.toEqual({ selected: 'user-native', targetScope: 'user' })
+      await expect(fs.readJson(path.join(
+        subject, '.agents', 'skills', 'dynamic-skill', 'render.json',
+      ))).resolves.toEqual({ selected: roleMode, targetScope: profile === 'project-scoped' ? 'project' : 'user' })
+      await expect(fs.pathExists(path.join(
+        subject, '.agents', 'skills', 'native-skill', 'references', 'native-tree.json',
+      ))).resolves.toBe(true)
+      await expect(fs.readJson(path.join(
+        subject, '.agents', 'skills', 'participant-skill', 'references', 'runtime-import.json',
+      ))).resolves.toEqual({ runtimeImport: true })
+      await expect(fs.pathExists(path.join(
+        subject, '.agents', 'skills', 'participant-skill', 'SKILL.md',
+      ))).resolves.toBe(true)
+      await expect(fs.readFile(path.join(subject, '.codex', 'agents', 'aw-eval-owner-fixture-role.toml'), 'utf8'))
+        .resolves.toContain(`model = ${JSON.stringify(roleMode)}`)
+      await expect(validateEvalSpecFile(path.join(output, 'spec.json')))
+        .resolves.toMatchObject({ valid: true })
+    }
+
+    await fs.writeFile(rendererLog, '')
+    const optionalOutput = path.join(fixture.outputRoot, 'optional-disabled')
+    const optional = capture()
+    expect(await runCli([
+      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      '--suite', 'optional-suite', '--profile', 'optional-disabled',
+      '--workspace-root', fixture.root, '--output', optionalOutput, '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: optional.io }), optional.stdout()).toBe(0)
+    const optionalSubject = path.join(optionalOutput, 'workspace', 'subject', '.agents', 'skills')
+    await expect(fs.pathExists(path.join(optionalSubject, 'dynamic-skill'))).resolves.toBe(false)
+    await expect(fs.pathExists(path.join(optionalSubject, 'native-skill'))).resolves.toBe(false)
+    const requests = (await fs.readFile(rendererLog, 'utf8')).trim().split('\n')
+      .flatMap((line) => JSON.parse(line) as string[])
+    expect(requests.filter((id) => id === 'dynamic-skill')).toHaveLength(1)
+    expect(requests.filter((id) => id === 'native-skill')).toHaveLength(1)
+
+    const requiredDisabledOutput = path.join(fixture.outputRoot, 'required-native-disabled')
+    const requiredDisabled = capture()
+    expect(await runCli([
+      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      '--suite', 'required-native-suite', '--profile', 'optional-disabled',
+      '--workspace-root', fixture.root, '--output', requiredDisabledOutput, '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: requiredDisabled.io })).toBe(1)
+    await expect(fs.pathExists(requiredDisabledOutput)).resolves.toBe(false)
+
+    pluginManifest.skills = './skills'
+    await fs.writeJson(manifestPath, pluginManifest, { spaces: 2 })
+    const dynamicEvalRoot = path.join(fixture.ownerRoot, 'skills', 'dynamic-skill', 'evals')
+    await fs.outputJson(path.join(dynamicEvalRoot, 'cases.json'), {
+      version: 1,
+      suite: {
+        kind: 'trigger',
+        unitUnderTest: 'dynamic-skill',
+        participants: ['dynamic-skill', 'participant-skill'],
+      },
+      cases: [{
+        id: 'loads_dynamic', split: 'validation', tags: [],
+        input: { query: 'Use the dynamic Skill.', expectedLoad: true },
+      }],
+    }, { spaces: 2 })
+    await fs.outputJson(path.join(dynamicEvalRoot, 'manifest.json'), {
+      version: 1,
+      defaults: { profile: 'user-target' },
+      profiles: {
+        'user-target': {
+          scope: 'user',
+          plugins: {
+            'eval-owner': {
+              mode: 'common-mode', roleMode: 'user-role', nativeMode: 'user-native',
+              dynamicEnabled: true, nativeEnabled: true,
+            },
+            'participant-plugin': {},
+          },
+        },
+      },
+      suites: [{ id: 'dynamic-target', kind: 'trigger', cases: 'cases.json' }],
+    }, { spaces: 2 })
+    const dynamicTargetOutput = path.join(fixture.outputRoot, 'user-dynamic-target')
+    const dynamicTarget = capture()
+    expect(await runCli([
+      'skill', 'eval', 'prepare', 'eval-owner', 'dynamic-skill',
+      '--suite', 'dynamic-target', '--profile', 'user-target',
+      '--workspace-root', fixture.root, '--output', dynamicTargetOutput, '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: dynamicTarget.io }), dynamicTarget.stdout()).toBe(0)
+    await expect(fs.pathExists(path.join(
+      dynamicTargetOutput, 'targets', 'current', 'SKILL.md',
+    ))).resolves.toBe(true)
+    const dynamicSubject = path.join(dynamicTargetOutput, 'workspace', 'subject')
+    await expect(fs.pathExists(path.join(
+      dynamicSubject, '.agents', 'skills', 'dynamic-skill',
+    ))).resolves.toBe(false)
+    await expect(fs.pathExists(path.join(
+      dynamicSubject, '.codex', 'skills', 'dynamic-skill',
+    ))).resolves.toBe(false)
+    await expect(fs.pathExists(path.join(
+      dynamicSubject, '.agents', 'skills', 'participant-skill', 'SKILL.md',
+    ))).resolves.toBe(true)
+
+    await fs.writeFile(
+      path.join(fixture.ownerRoot, 'scripts', 'render.mjs'),
+      "process.stderr.write('fixture renderer failed\\n'); process.exit(7);\n",
+    )
+    const failedOutput = path.join(fixture.outputRoot, 'renderer-failed')
+    const failed = capture()
+    expect(await runCli([
+      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      '--suite', 'trigger-suite', '--profile', 'project-scoped',
+      '--workspace-root', fixture.root, '--output', failedOutput, '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: failed.io })).toBe(1)
+    await expect(fs.pathExists(failedOutput)).resolves.toBe(false)
+    expect((await fs.readdir(fixture.outputRoot)).some((entry) =>
+      entry.includes('.renderer-failed.aw-eval-stage-'))).toBe(false)
+  }, 30_000)
+
   it('prepares the new manifest v1 as a fixed EvalSpec workspace and runs doctor read-only', async () => {
     const fixture = await createWorkspace()
     await fs.outputFile(
