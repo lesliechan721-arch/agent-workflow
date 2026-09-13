@@ -42,6 +42,8 @@ case 使用 `prompt` 和非空可观察 `assertions`。按需使用：
 
 `evals/manifest.json` 使用当前 Manifest v1：profiles 与 suites 绑定 cases、kind、runs、timeout、requiredForRelease 和 releaseSplits。测试被标必需不等于已经运行；不可执行成功路径留在明确集成验收清单，不伪造 passing fixture。
 
+Profile 的 `plugins` 选择参与插件并提供公共配置；需要区分共享 Skill 与项目产物时，使用 profile 层的 `configByScope.user` 和 `configByScope.project`，各自以已声明插件名映射配置覆盖。覆盖按顶层配置键替换，不深度合并；未提供的键继承公共配置。共享 Codex 原生 Skill 从 user 配置渲染，普通产物从 profile 的 scope 渲染。配置来自隔离准备输入，不读取真实用户 store；作用域配置变化后重新核验来源绑定和 Eval 输入。
+
 ## 格式辅助检查
 
 本 Skill 携带 `scripts/validate-eval-cases.mjs`，只检查基线字段子集；运行方式：`node <实际脚本路径> <cases.json> --strict --format json`。它是 AW profile 辅助工具，不是通用格式标准、不证明 Oracle 正确，也不替代官方 parser。项目确定性测试使用当前 `@lesliechan721/agent-skill-eval` 的公开 `parseSelectedCases` 核验格式，不依赖草案交付目录中的工具。

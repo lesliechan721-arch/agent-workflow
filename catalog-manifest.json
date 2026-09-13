@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.14",
+  "catalogVersion": "0.1.0-beta.15",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "23ba0d275ac4159fd3b296e740d93c7562816202"
+    "sourceHead": "c359a9344d4ac5df4c9f37466af3e347d84cf7a1"
   },
   "entries": [
     {
@@ -79,7 +79,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.3",
+      "version": "0.1.0-beta.4",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -92,9 +92,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:8a97974c93d139a9044fbb7854823151b6cb1de0c8a321e3747d6a3d62688a8e",
-      "manifestDigest": "sha256:6f0a0d4fcae0cd655c669d338b4d54cb6059ca7f8c869c14f4cf31e51721d503",
-      "contentDigest": "sha256:5acced1079c9cf20aae54619d36f2a700b66bd9efa58a7b00349f475c0568822"
+      "artifactDigest": "sha256:f94d8d7c33dc9d20d1a00c75c4a42e8c6758ccccd95bbe20b985d2f237e73274",
+      "manifestDigest": "sha256:f162faca038f67d9298ca4ab52758c100d9084cf7c57d54728fd709b99027ce9",
+      "contentDigest": "sha256:ba287113fd1a369141e4059d7a0762e4dda9f315a010bb10141d1dcbb7e5d9b5"
     },
     {
       "name": "ask-me",
@@ -149,7 +149,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.3",
+      "version": "0.1.0-beta.4",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -173,9 +173,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:dd98fdbd6885aa27187555c67bee10cc276d883216458b805b949c116b07f6a9",
-      "manifestDigest": "sha256:751d948c23ef469f115026b39f4fa4e7879e8739894386432fbe5ac5a4e2e9bf",
-      "contentDigest": "sha256:4353804404439bc6a12eedfd135b44a40240ba8a8e03814bc1cfa64c2e6e2180"
+      "artifactDigest": "sha256:997b7d3e185a62b50b864ba03da11d558793acdf50169d8c78f14eaab2109e7d",
+      "manifestDigest": "sha256:0267224bb5e14207b70fb552d2240a287bc956d4f4768ba2cc4fdb3fd603d114",
+      "contentDigest": "sha256:5250eadb56375b4a399282ee0825958758b775ccfb233c314819e8296a65eb66"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -198,7 +198,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.2",
+      "version": "0.1.0-beta.3",
       "dependencies": [
         "agent-skill-toolkit"
       ],
@@ -211,9 +211,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:641bc4366f049661698cfa490d567183d41af2a6a77c4c25b32e67d6d7c6fe04",
-      "manifestDigest": "sha256:1c883f4b2acf074c1114b84e0de562b2f2adca4aa9842f71f18a027adf7f3820",
-      "contentDigest": "sha256:a0c07ba132f3b7765eac8f8efec2efcc8711c7798a85a4ea9e32204e18396fb2"
+      "artifactDigest": "sha256:da216248405b112e8985a53e3e754624c9d513efc789ca31e9818f512721511a",
+      "manifestDigest": "sha256:8096d7526535fe4b78ca1374c1a6b5919aa3a42f21834ddcc2d30c81f385bebb",
+      "contentDigest": "sha256:18cf18c9dd943660af5a74be32b946b980f6416c685b7952fbd997417e8592a1"
     },
     {
       "name": "codex-enhance",
