@@ -11,7 +11,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { prepareReviewTarget } from '../../src/commands/review-preparation.js'
 import { inspectReviewTarget } from '../../src/commands/review-inspection.js'
 import { resolveReviewSelection } from '../../src/review/review-selection.js'
-import { readAwSourceBinding } from '../../src/review/source-binding.js'
+import {
+  createAwSourceBindingWorkspaceValidationContext,
+  readAwSourceBinding,
+  validateAwSourceBindingForWorkspace,
+} from '../../src/review/source-binding.js'
 
 const roots: string[] = []
 
@@ -22,6 +26,25 @@ async function createWorkspace(label = 'aw-review-preparation-'): Promise<{
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), label)))
   roots.push(root)
   await initializeCatalogWorkspace({ workspaceRoot: root })
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: path.join(root, 'state', 'home'),
+    USERPROFILE: path.join(root, 'state', 'home'),
+    AW_HOME: path.join(root, 'state', 'aw-home'),
+    AW_CODEX_HOME: path.join(root, 'state', 'codex-home'),
+    AW_CLAUDE_HOME: path.join(root, 'state', 'claude-home'),
+  }
+  await fs.ensureDir(env.HOME!)
+  return { root, env }
+}
+
+async function copyWorkspace(source: string, label: string): Promise<{
+  root: string
+  env: NodeJS.ProcessEnv
+}> {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), label)))
+  roots.push(root)
+  await fs.copy(source, root, { overwrite: false, errorOnExist: true, dereference: false })
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: path.join(root, 'state', 'home'),
@@ -273,11 +296,208 @@ async function createSharedConfigPlugin(root: string): Promise<string> {
   return pluginRoot
 }
 
+async function createRebuildableDynamicPlugin(root: string): Promise<void> {
+  const providerRoot = await writePlugin(root, manifest('review-provider', {
+    buildConfig: {
+      runtimeExports: [{
+        name: 'registry',
+        source: './registry.json',
+        requires: { aw: { capabilities: [] } },
+      }],
+    },
+  }))
+  await fs.writeJson(path.join(providerRoot, 'registry.json'), {
+    revision: 'working-tree-baseline',
+  })
+  const pluginRoot = await writePlugin(root, manifest('rebuild-consumer', {
+    skills: './skills',
+    marketplace: {
+      category: 'test',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'ON_INSTALL',
+        products: ['CODEX'],
+      },
+    },
+    distributions: { agentSkills: {} },
+    dependencies: ['review-provider'],
+    scripts: {
+      node: { build: { runner: 'node', path: './scripts/build.mjs' } },
+      artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+    },
+    buildConfig: {
+      buildImports: [{
+        plugin: 'review-provider',
+        export: 'registry',
+        env: 'AW_PLUGIN_IMPORT_REGISTRY',
+      }],
+    },
+    artifacts: {
+      targets: [{
+        id: 'rebuilt-skill',
+        distribution: 'agent-skills',
+        scopes: ['project', 'user'],
+        target: 'agent-skills.skill',
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'rebuilt-skill',
+        sourceDirs: ['./dynamic-source'],
+        runtimeImports: [{ name: 'registry', plugin: 'review-provider', export: 'registry' }],
+      }],
+    },
+  }))
+  await writeNativeSkill(pluginRoot, 'native-anchor')
+  await Promise.all([
+    fs.outputFile(
+      path.join(pluginRoot, 'dynamic-source', 'SKILL.md'),
+      '---\nname: rebuilt-skill\ndescription: Long working tree source text for the rebuild fixture.\n---\n\n# Source text that the renderer replaces\n',
+    ),
+    fs.outputFile(
+      path.join(pluginRoot, 'dynamic-source', 'README.md'),
+      '# Rebuilt Skill\n',
+    ),
+    fs.outputFile(path.join(pluginRoot, 'scripts', 'build.mjs'), [
+      "import fs from 'node:fs/promises';",
+      "await fs.mkdir('dynamic-source/references', { recursive: true });",
+      "await fs.copyFile(process.env.AW_PLUGIN_IMPORT_REGISTRY, 'dynamic-source/references/build.json');",
+    ].join('\n')),
+    fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), [
+      "import fs from 'node:fs';",
+      "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
+      "const runtime = context.runtimeImports.find((entry) => entry.artifactId === 'rebuilt-skill' && entry.name === 'registry');",
+      "if (!runtime) throw new Error('missing runtime import');",
+      "const registry = fs.readFileSync(runtime.path, 'utf8');",
+      "process.stdout.write(JSON.stringify({ version: 2, artifacts: [{",
+      "  id: 'rebuilt-skill', distribution: 'agent-skills', target: 'agent-skills.skill', kind: 'skill',",
+      "  state: 'present', refreshKeys: [], skillKey: 'rebuilt-skill',",
+      "  content: { files: {",
+      "    'SKILL.md': '---\\nname: rebuilt-skill\\ndescription: Stable rendered rebuild fixture.\\n---\\n\\n# Rendered\\n',",
+      "    'references/runtime.json': registry,",
+      "  } },",
+      "}] }));",
+    ].join('\n')),
+  ])
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.remove(root)))
 })
 
 describe('Review preparation', () => {
+  it('rebuilds independent baseline and candidate source contexts with provider-bound final output', async () => {
+    const source = await createWorkspace('aw-review-rebuild-source-')
+    await createRebuildableDynamicPlugin(source.root)
+    const baseline = await copyWorkspace(source.root, 'aw-review-rebuild-baseline-')
+    const candidate = await copyWorkspace(source.root, 'aw-review-rebuild-candidate-')
+    const prepare = async (
+      fixture: { root: string; env: NodeJS.ProcessEnv },
+      outputName: string,
+    ) => prepareReviewTarget({
+      cwd: fixture.root,
+      target: path.join(fixture.root, 'plugins', 'rebuild-consumer'),
+      skills: ['rebuilt-skill'],
+      platform: 'agent-skills',
+      scope: 'project',
+      out: path.join(fixture.root, '_review-output', outputName),
+      env: fixture.env,
+    })
+    const validate = async (
+      fixture: { root: string; env: NodeJS.ProcessEnv },
+      bindingPath: string,
+    ) => validateAwSourceBindingForWorkspace({
+      bindingPath,
+      context: await createAwSourceBindingWorkspaceValidationContext(fixture.root),
+      expectedSubject: { plugin: 'rebuild-consumer' },
+      cwd: fixture.root,
+      env: fixture.env,
+    })
+
+    const [baselinePrepared, candidatePrepared] = await Promise.all([
+      prepare(baseline, 'baseline'),
+      prepare(candidate, 'candidate'),
+    ])
+    expect(baselinePrepared.exitCode, JSON.stringify(baselinePrepared.receipt)).toBe(0)
+    expect(candidatePrepared.exitCode, JSON.stringify(candidatePrepared.receipt)).toBe(0)
+    const baselineBindingPath = baselinePrepared.receipt.sourceBindingPath!
+    const candidateBindingPath = candidatePrepared.receipt.sourceBindingPath!
+    const baselineBinding = await readAwSourceBinding(baselineBindingPath)
+    const candidateBinding = await readAwSourceBinding(candidateBindingPath)
+    expect(baselineBinding.source).toEqual(candidateBinding.source)
+    expect(baselineBinding.artifacts[0]!.digest).toBe(candidateBinding.artifacts[0]!.digest)
+    const baselineOutput = path.dirname(baselineBindingPath)
+    const candidateOutput = path.dirname(candidateBindingPath)
+    for (const importedFile of ['build.json', 'runtime.json']) {
+      await expect(fs.readJson(path.join(
+        baselineOutput,
+        'skills',
+        'rebuilt-skill',
+        'references',
+        importedFile,
+      ))).resolves.toEqual({ revision: 'working-tree-baseline' })
+    }
+
+    await fs.writeFile(
+      path.join(candidate.root, 'plugins', 'rebuild-consumer', 'dynamic-source', 'SKILL.md'),
+      '---\nname: rebuilt-skill\ndescription: Short source.\n---\n',
+    )
+    const shortenedPrepared = await prepare(candidate, 'candidate-shortened')
+    expect(shortenedPrepared.exitCode, JSON.stringify(shortenedPrepared.receipt)).toBe(0)
+    const shortenedBindingPath = shortenedPrepared.receipt.sourceBindingPath!
+    const shortenedBinding = await readAwSourceBinding(shortenedBindingPath)
+    expect(shortenedBinding.artifacts[0]!.digest).toBe(candidateBinding.artifacts[0]!.digest)
+    await expect(validate(candidate, shortenedBindingPath)).resolves.toMatchObject({ state: 'verified' })
+    await expect(fs.readFile(path.join(
+      path.dirname(shortenedBindingPath),
+      'skills',
+      'rebuilt-skill',
+      'SKILL.md',
+    ), 'utf8')).resolves.toBe(await fs.readFile(path.join(
+      candidateOutput,
+      'skills',
+      'rebuilt-skill',
+      'SKILL.md',
+    ), 'utf8'))
+
+    await fs.writeJson(
+      path.join(candidate.root, 'plugins', 'review-provider', 'registry.json'),
+      { revision: 'candidate-provider-change' },
+    )
+    const changedPrepared = await prepare(candidate, 'candidate-provider-changed')
+    expect(changedPrepared.exitCode, JSON.stringify(changedPrepared.receipt)).toBe(0)
+    const changedBindingPath = changedPrepared.receipt.sourceBindingPath!
+    const changedBinding = await readAwSourceBinding(changedBindingPath)
+    expect(changedBinding.artifacts[0]!.digest).not.toBe(shortenedBinding.artifacts[0]!.digest)
+    for (const importedFile of ['build.json', 'runtime.json']) {
+      await expect(fs.readJson(path.join(
+        path.dirname(changedBindingPath),
+        'skills',
+        'rebuilt-skill',
+        'references',
+        importedFile,
+      ))).resolves.toEqual({ revision: 'candidate-provider-change' })
+    }
+    await expect(validate(candidate, changedBindingPath)).resolves.toMatchObject({ state: 'verified' })
+    await expect(validate(candidate, shortenedBindingPath)).resolves.toMatchObject({
+      state: 'drifted',
+      issues: expect.arrayContaining([expect.objectContaining({ code: 'sourceBindingSourceDrift' })]),
+    })
+    await expect(validate(baseline, baselineBindingPath)).resolves.toMatchObject({ state: 'verified' })
+    await expect(fs.readJson(path.join(
+      baseline.root,
+      'plugins',
+      'review-provider',
+      'registry.json',
+    ))).resolves.toEqual({ revision: 'working-tree-baseline' })
+    await expect(fs.readJson(path.join(
+      baselineOutput,
+      'skills',
+      'rebuilt-skill',
+      'references',
+      'runtime.json',
+    ))).resolves.toEqual({ revision: 'working-tree-baseline' })
+  })
+
   it('keeps selected disabled native Skills as a strict Review failure', async () => {
     const fixture = await createWorkspace()
     const pluginRoot = await createDynamicPlugin(fixture.root)

@@ -39,6 +39,20 @@
       "releaseSplits": [
         "validation"
       ]
+    },
+    {
+      "id": "simplification",
+      "kind": "conversation",
+      "cases": "simplification-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 600000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }

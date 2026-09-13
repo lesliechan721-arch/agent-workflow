@@ -38,6 +38,20 @@
       "releaseSplits": [
         "validation"
       ]
+    },
+    {
+      "id": "candidate-routing",
+      "kind": "conversation",
+      "cases": "candidate-routing-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 600000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }

@@ -1,5 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -8,6 +9,7 @@ import {
   assertNoSensitiveProfileConfig,
   validateAwSkillEvalManifest,
 } from '../../src/eval/manifest-v1.js'
+import { validatePluginManifest } from '../../src/utils/manifest.js'
 import type { PluginMeta } from '../../src/types.js'
 
 const roots: string[] = []
@@ -66,6 +68,30 @@ afterEach(async () => {
 })
 
 describe('AwSkillEvalManifest v1 reader', () => {
+  it('validates every registered source Eval manifest through the public reader', async () => {
+    const repositoryRoot = fileURLToPath(new URL('../../../../', import.meta.url))
+    const pluginsRoot = path.join(repositoryRoot, 'plugins')
+    const pluginNames = await fs.readdir(pluginsRoot)
+    let validated = 0
+    for (const pluginName of pluginNames) {
+      const rootDir = path.join(pluginsRoot, pluginName)
+      const manifestPath = path.join(rootDir, '.agents-plugin', 'plugin.json')
+      if (!await fs.pathExists(manifestPath)) continue
+      const manifest = validatePluginManifest(rootDir, await fs.readJson(manifestPath))
+      const skillsRoot = path.join(rootDir, 'skills')
+      if (!await fs.pathExists(skillsRoot)) continue
+      for (const skill of await fs.readdir(skillsRoot)) {
+        if (!await fs.pathExists(path.join(skillsRoot, skill, 'evals', 'manifest.json'))) continue
+        await expect(validateAwSkillEvalManifest({
+          plugin: { rootDir, manifestPath, manifest },
+          skill,
+        })).resolves.toMatchObject({ valid: true, errors: [] })
+        validated += 1
+      }
+    }
+    expect(validated).toBeGreaterThan(0)
+  })
+
   it('rejects fixed and dynamic sensitive object children without leaking values', () => {
     const plugin = {
       rootDir: '/fixture',

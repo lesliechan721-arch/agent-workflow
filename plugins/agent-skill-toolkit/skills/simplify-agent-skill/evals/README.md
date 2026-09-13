@@ -19,9 +19,11 @@ Trigger 只检查任意加载；不以不是顶层 owner 禁止合法下游组�
 | `plan_without_eval` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
 | `comparison_evidence_gap` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
 | `unsafe_short_candidate` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
+| `standalone_skill_uses_direct_candidate` | candidate-routing | 独立标准 Skill 的真实候选文件 | NOT_RUN |
+| `reuse_supplied_adapter_context` | candidate-routing | 已提供适配上下文的真实候选 source | NOT_RUN |
 
 ## 运行与审定
 
-先用实际 parser 和独立 Oracle 审核确认用例可执行。源行为有真实文件；CLI deny fixture 只证明拒绝边界，不证明产品成功、安全权限或远端发布。额外模型运行遵守现有预算和授权。
+`candidate-routing` 不属于 release 必需项。先用实际 parser 和独立 Oracle 审核确认用例可执行；结构和文件断言只证明 fixture 合同，未运行模型时两个候选仍是未验证状态。额外模型运行遵守现有预算和授权。
 
 一般格式示例属于测试输入，不要求模型采用 AW 作为所有消费者格式；未知外部事实不由 prompt 自称证明。真实集成责任与未验证项见[迁移记录](../../../../../docs/skill-toolkit-migration.md)。
