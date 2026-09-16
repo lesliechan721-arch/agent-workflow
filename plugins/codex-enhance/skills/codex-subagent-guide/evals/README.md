@@ -22,13 +22,14 @@ aw-skill-eval run /tmp/aw-eval-specs/<spec-dir>/spec.json --audit /tmp/aw-eval-s
 
 ## 触发评估
 
-strict 语料分成 train（12）、validation（7）和不参与 description 调优的 sanity（6）。它检查：
+strict 语料分成 train（12）、validation（10）和不参与 description 调优的 sanity（6）。它检查：
 
-- 已经由用户或临时 workspace 中的真实 `AGENTS.md` 授权委派时，加载 skill 并启动子代理。
+- 用户直接要求委派，或临时 workspace 中的真实 `AGENTS.md`、其它 Skill 安排通用委派时，加载 skill 并启动子代理。
+- 已指定模型、role、推理强度或上下文继承时，保留这些要求并继续加载 skill 补齐未指定项。
 - 只询问是否应该委派、概念文档、安装配置、明确禁止子代理等 near miss，不加载也不启动。
 - 显式调用 skill 或管理已有 agent 时加载 skill，但不额外 spawn。
 
-standard 组合性诊断语料另有 5 条，并把 `codex-subagent-guide` 与 `codex-explore` 同时列为 participant。它使用精确 loaded-skill 集合检查：只授权、不提供代理管理时由 guide 接管；真实的大范围事实探索只由 explore 接管；专用 fixture skill 已完整拥有委派生命周期时，两者都不叠加加载。涉及已存在 agent 的 trigger 用例只验证 Skill 路由，并明确禁止调用不存在的 runtime actor；真实等待由 lifecycle suite 负责。该 suite 会写临时 `.agents/` fixture。
+standard 组合性诊断语料另有 8 条，并把 `codex-subagent-guide` 与 `codex-explore` 同时列为 participant。它使用精确 loaded-skill 集合检查：只授权或只指定模型/上下文、不提供完整代理管理时由 guide 接管；真实的大范围事实探索只由 explore 接管；专用 fixture skill 已完整拥有当前委派生命周期时，两者都不叠加加载。涉及已存在 agent 的 trigger 用例只验证 Skill 路由，并明确禁止调用不存在的 runtime actor；真实等待由 lifecycle suite 负责。该 suite 会写临时 `.agents/` fixture。
 
 每条 query 默认在干净会话运行三次。普通 trigger 以 `0.5` 为分界；trigger-composition 的精确 loaded-skill 路由要求 `1.0`，并禁止同时加载两个 participant。strict suite 的 validation 和 sanity 禁止加载或禁止委派负例使用零容忍，任意一次误触发都失败。`$skill` 记录为宿主显式注入，隐式加载只接受成功读取 `SKILL.md` 的执行事件；spawn 还要求原始 rollout 参数证据。
 
@@ -59,13 +60,13 @@ aw skill eval prepare codex-enhance codex-subagent-guide --suite routing --profi
 
 ## 等待与清理评估
 
-lifecycle case 覆盖正常终态、部分执行后的同交付续接、新交付的最小上下文和当前版本独立重审；独立的 timeout case 验证真实超时。`lifecycle-evals.json` 的正常路径要求模型启动一个 simple 子代理，首次等待不少于 10 分钟，并且只有观察到真实终态结果才完成。`lifecycle-timeout-evals.json` 由用户请求显式指定 1 分钟窗口；子代理必须运行一个 75 秒只读 helper，使首次 wait 确定超时，然后再次等待到真实终态。如果当前 schema 提供清理工具，清理必须在结果已保留之后。grade 只从 `workflow-evidence.json` 读取 collaboration order、wait output/status、terminal result 和 Engine cleanup 确认，不用最终文案或 raw trace 代替工具证据。
+lifecycle case 覆盖正常终态、部分执行后的同交付续接、新交付的最小上下文和当前版本独立重审；独立的 timeout case 验证真实超时。`lifecycle-evals.json` 的正常路径要求模型启动一个 simple 子代理，首次等待不少于 10 分钟，并且只有观察到真实终态结果才完成。`lifecycle-timeout-evals.json` 由用户请求显式指定 1 分钟窗口；子代理必须运行一个 75 秒只读 helper，使首次 wait 确定超时，然后继续处理到真实终态。结果仍未到达时必须再次等待；终态通知已经到达时不补一次无意义的等待。如果当前 schema 提供清理工具，每个清理目标必须唯一对应已启动代理，并且只在该目标自己的结果已保留后清理。grade 只从 `workflow-evidence.json` 读取 collaboration order、wait output/status、terminal result 和 Engine cleanup 确认，不用最终文案或 raw trace 代替工具证据。
 
 ```bash
 aw skill eval prepare codex-enhance codex-subagent-guide --suite lifecycle --profile project-default --runs 1 --output /tmp/aw-eval-specs/codex-subagent-guide-lifecycle --json
 aw skill eval prepare codex-enhance codex-subagent-guide --suite lifecycle-timeout --profile project-default --runs 1 --output /tmp/aw-eval-specs/codex-subagent-guide-lifecycle-timeout --json
 ```
 
-渲染单测验证 Skill 不再依赖等待配置；lifecycle suite 分别验证正常终态路径和真实 timeout 后继续等待路径。确定性 timeline 测试还覆盖缺少 timeout、timeout 后没有再次等待和过早清理的失败情况。罕见乱序、强制取消和不存在的清理工具分支不扩展为复杂模型门禁。
+渲染单测验证 Skill 不再依赖等待配置；lifecycle suite 分别验证正常终态路径和真实 timeout 后继续处理路径。确定性 timeline 测试还覆盖缺少 timeout、timeout 后没有等待或终态、终态通知直接到达、逐目标清理、未知目标和清理其它未完成代理的情况。罕见乱序、强制取消和不存在的清理工具分支不扩展为复杂模型门禁。
 
 续接回归使用真实 helper 先保存一次操作再报告临时服务失败，最终检查原代理续接和 `applied=1`，而非重放 start。该用例覆盖工具执行失败后的有效进度，不证明任意 API 故障或线程损坏均能恢复。独立重审先检查旧版本的一个指定问题，再要求当前完整版本审核；grader 要求读取当前源码并发现旧清单之外的缺陷，同时确认实际使用 Astra/xhigh。新交付检查第二个代理的干净上下文、实际读取和新结果。上述用例的 Oracle 修改后须独立审核；没有运行结果时只构成候选验证资产。

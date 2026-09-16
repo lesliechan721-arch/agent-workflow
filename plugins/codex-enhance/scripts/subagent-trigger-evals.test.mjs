@@ -90,9 +90,13 @@ async function testEvalCorpus() {
     true,
   );
   assert.equal(
-    compositionCases.every((entry) => ['authorization_skill', 'lifecycle_skill', 'explore_route'].includes(
-      entry.input.workspaceFixture,
-    )),
+    compositionCases.every((entry) => [
+      'authorization_skill',
+      'lifecycle_skill',
+      'partial_requirement_skills',
+      'active_lifecycle_skill',
+      'explore_route',
+    ].includes(entry.input.workspaceFixture)),
     true,
   );
   assert.equal(
@@ -106,7 +110,15 @@ async function testEvalCorpus() {
 async function testFixtureVariants() {
   assert.deepEqual(
     [...TRIGGER_WORKSPACE_FIXTURES],
-    ['default', 'project_authorization', 'authorization_skill', 'lifecycle_skill', 'explore_route'],
+    [
+      'default',
+      'project_authorization',
+      'authorization_skill',
+      'lifecycle_skill',
+      'partial_requirement_skills',
+      'active_lifecycle_skill',
+      'explore_route',
+    ],
   );
   for (const fixture of TRIGGER_WORKSPACE_FIXTURES) {
     const root = await mkdtemp(path.join(os.tmpdir(), `subagent-fixture-${fixture}-`));
@@ -132,6 +144,32 @@ async function testFixtureVariants() {
         assert.equal(
           (await readFile(
             path.join(root, '.agents', 'skills', 'delegation-lifecycle-owner', 'SKILL.md'),
+            'utf8',
+          )).length > 0,
+          true,
+        );
+      }
+      if (fixture === 'partial_requirement_skills') {
+        for (const skill of ['delegation-model-requirement', 'delegation-context-requirement']) {
+          assert.equal(
+            (await readFile(
+              path.join(root, '.agents', 'skills', skill, 'SKILL.md'),
+              'utf8',
+            )).length > 0,
+            true,
+          );
+        }
+      }
+      if (fixture === 'active_lifecycle_skill') {
+        assert.equal(
+          (await readFile(
+            path.join(
+              root,
+              '.agents',
+              'skills',
+              'delegation-active-lifecycle-owner',
+              'SKILL.md',
+            ),
             'utf8',
           )).length > 0,
           true,

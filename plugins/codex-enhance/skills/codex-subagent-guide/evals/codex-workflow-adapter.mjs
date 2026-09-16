@@ -225,6 +225,7 @@ function oldCall(call) {
     ordinal: call.ordinal,
     thread_id: call.threadId,
     parent_thread_id: call.parentThreadId,
+    linked_thread_id: call.linkedThreadId,
     call_id: call.callId,
     namespace: call.namespace,
     tool: call.tool,

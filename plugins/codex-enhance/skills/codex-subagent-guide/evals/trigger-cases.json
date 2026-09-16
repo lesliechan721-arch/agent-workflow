@@ -7,7 +7,7 @@
       "optimization": "critical",
       "falseNegativeCost": "high",
       "falsePositiveCost": "critical",
-      "rationale": "漏掉已授权的通用委派会失去稳定 routing；在未授权、只讨论或明确禁止 agent 工具时启动子代理会越过授权边界，因此错误启动不能由多数结果抵消。"
+      "rationale": "漏掉实际的通用委派或管理请求会失去稳定 routing；在只讨论、明确禁止 agent 工具或专用流程已接管时启动子代理会越过任务边界，因此错误启动不能由多数结果抵消。"
     },
     "runtime": {
       "observeSpawnAgent": true,
@@ -182,6 +182,55 @@
       "audit": {
         "rationale": "请求显式调用 guide 或管理已有 agent，但明确不允许新建 agent；应加载 Skill 说明或管理边界，不得 spawn。",
         "minimalCounterexample": "改为已授权且要求为一个新的通用任务实际启动子代理后，应加载 guide 并 spawn。"
+      }
+    },
+    {
+      "id": "validation_direct_delegation",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "query": "用一个子代理审核 changes/review.diff，最后报告缺陷和风险。",
+        "expectedLoad": true,
+        "shouldSpawnAgent": true
+      },
+      "audit": {
+        "rationale": "自然的直接委派请求已经表达实际调度意图，不依赖“已授权”等固定措辞；没有专用 Skill 管理本次委派，因此应加载 guide 并启动代理。",
+        "minimalCounterexample": "如果请求只询问是否值得使用子代理，并明确不要实际调用 agent 工具，则不应加载或启动。"
+      }
+    },
+    {
+      "id": "validation_custom_model_and_context",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "query": "用 gpt-6-astra 子代理审核 changes/review.diff，继承前面两轮讨论，最后报告审核结论。",
+        "expectedLoad": true,
+        "shouldSpawnAgent": true
+      },
+      "audit": {
+        "rationale": "用户指定模型和上下文继承只固定局部参数，不等于提供完整调度与生命周期；guide 应加载并保留这些要求。",
+        "minimalCounterexample": "如果专用 Skill 已完整负责当前委派的 role、spawn、context、waiting、recovery 和 cleanup，则 guide 不应叠加。"
+      }
+    },
+    {
+      "id": "validation_resume_existing_without_spawn",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "input": {
+        "query": "agent_delta 因临时故障返回，但当前交付还没有完成。请按原代理续接要求说明下一步；不要新建代理，也不要调用不存在的 agent。",
+        "expectedLoad": true,
+        "shouldSpawnAgent": false
+      },
+      "audit": {
+        "rationale": "管理和续接已有代理也是 guide 的触发入口；fixture 没有真实 runtime actor，因此只验证 Skill 路由并禁止新建代理。",
+        "minimalCounterexample": "如果请求改为只讨论是否值得委派，且没有已有代理需要管理，则不应加载 guide。"
       }
     },
     {

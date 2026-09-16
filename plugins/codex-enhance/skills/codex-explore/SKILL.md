@@ -20,7 +20,7 @@ metadata:
 ## 委派
 
 Gate 通过即授权启动 Explore 子代理。按以下顺序选择 role：
-1. 如果用户指定任一显式的 `model` 和 `reasoning_effort` 字段 → `codex-explore-custom`。
+1. 用户显式指定 `model` 或 `reasoning_effort` 中的任一字段时，使用 `codex-explore-custom`。
 2. 否则按当前 `agent_type` schema 中 `codex-explore-*` role 的描述选择；无法判断时用 `codex-explore-standard`。
 
 调用前确认目标 role、全部显式字段及其值受当前 schema 支持且可原样传递；否则停止，不调用 `spawn_agent`，不省略、替换或降级。调用拒绝显式字段时同样停止。预设 role 的路由字段只传 `agent_type`；custom 原样透传全部显式字段且不自动选择。

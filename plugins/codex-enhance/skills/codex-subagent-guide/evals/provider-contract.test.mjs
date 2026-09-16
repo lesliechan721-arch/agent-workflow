@@ -202,11 +202,12 @@ test('routing and lifecycle grade normalized evidence and fail closed', async ()
     const input = adapterInput('grade', selected, root);
     const spawn = {
       tool: 'spawn_agent',
+      linkedThreadId: 'child',
       arguments: {
         agent_type: 'codex-subagent-simple', model: undefined,
         message: 'work', task_name: 'work', fork_turns: 'none',
       },
-      output: { task_name: '/root/work' },
+      output: { agent_id: 'child', status: 'running' },
     };
     delete spawn.arguments.model;
     await Promise.all([
@@ -224,9 +225,20 @@ test('routing and lifecycle grade normalized evidence and fail closed', async ()
     const lifecycleInput = adapterInput('grade', lifecycle.cases[0], root);
     await writeFile(lifecycleInput.paths.evidence, JSON.stringify(evidence([
       spawn,
-      { tool: 'wait_agent', arguments: { timeout_ms: 60_000 }, output: { timed_out: true } },
-      { tool: 'wait_agent', arguments: { timeout_ms: 60_000 }, output: { status: { work: { completed: 'done' } } } },
-      { tool: 'agent_message', arguments: null, output: { messageType: 'FINAL_ANSWER', taskName: 'work', payload: 'done' } },
+      {
+        tool: 'wait_agent', linkedThreadId: 'child',
+        arguments: { timeout_ms: 60_000, receiver_thread_ids: ['child'] },
+        output: { timed_out: true, status: { child: 'running' } },
+      },
+      {
+        tool: 'wait_agent', linkedThreadId: 'child',
+        arguments: { timeout_ms: 60_000, receiver_thread_ids: ['child'] },
+        output: { status: { child: { completed: 'done' } } },
+      },
+      {
+        tool: 'agent_message', linkedThreadId: 'child', arguments: null,
+        output: { messageType: 'FINAL_ANSWER', taskName: '/root', payload: 'done' },
+      },
     ])));
     const lifecycleGrade = await invoke('run-lifecycle-evals.mjs', lifecycleInput);
     assert.equal(lifecycleGrade.code, 0, lifecycleGrade.stderr);
