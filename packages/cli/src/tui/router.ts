@@ -7,7 +7,7 @@ export type PortableBlockerCode =
   | 'portableScopeUnavailable'
   | 'portableValidationFailed';
 
-export type PluginInstallFilter = 'all' | 'uninstalled' | 'updateAvailable';
+export type PluginInstallFilter = 'all' | 'installed' | 'uninstalled' | 'updateAvailable' | 'attention';
 export interface ConfigInvalidStoreEvidence {
   scope: Scope;
   code: 'invalidJson' | 'schemaVersionUnsupported' | 'identityMismatch' | 'invalidValues';
@@ -19,7 +19,7 @@ export type ConfigResumeRoute =
   | {
       name: 'configFieldEditor';
       pluginId: string;
-      layer: { scope: Scope };
+      layer: { scope: Scope | 'effective' };
       fieldKey: string;
       editor: 'boolean' | 'number' | 'string' | 'object';
       mode?: 'choices' | 'custom';
@@ -27,7 +27,7 @@ export type ConfigResumeRoute =
   | {
       name: 'configObjectPropertyEditor';
       pluginId: string;
-      layer: { scope: Scope };
+      layer: { scope: Scope | 'effective' };
       fieldKey: string;
       propertyKey?: string;
       dynamic: boolean;
@@ -36,7 +36,7 @@ export type ConfigResumeRoute =
   | {
       name: 'configFieldAction';
       pluginId: string;
-      layer: { scope: Scope };
+      layer: { scope: Scope | 'effective' };
       fieldKey: string;
     };
 
@@ -53,9 +53,12 @@ export type TuiRoute =
       batchOrigin?: { flowId: string; owner: 'batch-write' };
     }
   | { name: 'batchSelection' }
+  | { name: 'batchInstallPlatforms' }
+  | { name: 'batchInstallScope' }
   | { name: 'batchPlacement' }
   | { name: 'pluginPreview'; pluginId: string }
   | { name: 'portableSkillSelect'; pluginId: string }
+  | { name: 'portableSkillSummary'; pluginId: string; skillName: string }
   | { name: 'portableDependencies'; pluginId: string }
   | { name: 'portableAgentMode'; pluginId: string }
   | { name: 'portableAgentInput'; pluginId: string }
@@ -83,6 +86,7 @@ export type TuiRoute =
       pluginId: string;
       view?: 'selection' | 'blocked';
     }
+  | { name: 'uninstallTargets'; pluginId: string }
   | { name: 'dependencyPlacement'; pluginId: string }
   | {
       name: 'dependencyPlacementEditor';
@@ -91,6 +95,7 @@ export type TuiRoute =
       platform: PlatformName;
     }
   | { name: 'pluginDetail'; pluginId: string }
+  | { name: 'pluginContent'; pluginId: string }
   | { name: 'pluginMore'; pluginId: string }
   | { name: 'platform'; pluginId: string; platform: PlatformName }
   | { name: 'pluginAbout'; pluginId: string }
@@ -110,7 +115,7 @@ export type TuiRoute =
   | {
       name: 'configFieldEditor';
       pluginId: string;
-      layer: { scope: Scope };
+      layer: { scope: Scope | 'effective' };
       fieldKey: string;
       editor: 'boolean' | 'number' | 'string' | 'object';
       mode?: 'choices' | 'custom';
@@ -118,7 +123,7 @@ export type TuiRoute =
   | {
       name: 'configObjectPropertyEditor';
       pluginId: string;
-      layer: { scope: Scope };
+      layer: { scope: Scope | 'effective' };
       fieldKey: string;
       propertyKey?: string;
       dynamic: boolean;
@@ -127,7 +132,7 @@ export type TuiRoute =
   | {
       name: 'configFieldAction';
       pluginId: string;
-      layer: { scope: Scope };
+      layer: { scope: Scope | 'effective' };
       fieldKey: string;
     }
   | {
@@ -148,9 +153,11 @@ export type TuiRoute =
   | { name: 'sourceAdd'; step: 'type' | 'id' | 'location' | 'refPolicy' | 'ref' | 'subdir'; owner: string; returnToDraft?: true }
   | { name: 'sourceEdit'; sourceId: string; owner?: string }
   | { name: 'sourceSave'; owner: string; view?: 'summary' | 'changes' }
-  | { name: 'configSave'; pluginId: string; layer: { scope: Scope }; view?: 'summary' | 'changes' }
+  | { name: 'configSave'; pluginId: string; layer: { scope: Scope | 'effective' }; view?: 'summary' | 'changes' }
   | { name: 'scriptTimeout'; owner: string }
   | { name: 'sourceRemoveBlocked'; sourceId: string }
+  | { name: 'catalogStoreOverview' }
+  | { name: 'catalogStoreRules' }
   | { name: 'issueList' }
   | { name: 'issueDetail'; issueId: string }
   | { name: 'operationHistory' }
@@ -186,7 +193,7 @@ export interface TuiRouterSnapshot {
 }
 
 export type TuiFlowKind = 'pluginInstall' | 'pluginMaintenance' | 'configEdit'
-  | 'sourceEdit' | 'sourceRecovery' | 'portableInstall' | 'batchWrite' | 'pluginWriteTask';
+  | 'sourceEdit' | 'sourceRecovery' | 'catalogStore' | 'portableInstall' | 'batchWrite' | 'pluginWriteTask';
 
 export interface TuiFlowScope {
   id: string;
@@ -324,7 +331,7 @@ export class TuiRouter {
     if (origin.route.name !== 'pluginList') {
       throw new Error('Batch flow must start from a plugin list.');
     }
-    return this.beginFlow('batchWrite', { name: 'pluginList', mode: 'installed' }, origin.id);
+    return this.beginFlow('batchWrite', origin.route, origin.id, origin.context);
   }
 
   activeFlow(): TuiFlowScope | undefined {
@@ -485,7 +492,8 @@ export class TuiRouter {
 
   beginPortableFlow(pluginId: string): TuiRoute {
     const currentFrame = this.#stack.at(-1)!;
-    if ((currentFrame.route.name === 'pluginPreview' || currentFrame.route.name === 'pluginDetail')
+    if ((currentFrame.route.name === 'pluginPreview' || currentFrame.route.name === 'pluginDetail'
+      || currentFrame.route.name === 'installTargets')
       && currentFrame.route.pluginId === pluginId) {
       const active = this.activeFlow();
       if (active?.kind !== 'portableInstall') this.beginFlow('portableInstall', currentFrame.route);
@@ -494,7 +502,8 @@ export class TuiRouter {
     const active = this.activeFlow();
     if (active?.kind === 'portableInstall') {
       const frame = this.#stack.find((candidate) => candidate.id === active.originFrameId);
-      if (frame && (frame.route.name === 'pluginPreview' || frame.route.name === 'pluginDetail')
+      if (frame && (frame.route.name === 'pluginPreview' || frame.route.name === 'pluginDetail'
+        || frame.route.name === 'installTargets')
         && frame.route.pluginId === pluginId) {
         return copyFrame(frame).route;
       }
@@ -502,7 +511,8 @@ export class TuiRouter {
     let existingOrigin = -1;
     for (let candidate = this.#stack.length - 1; candidate >= 0; candidate -= 1) {
       const frame = this.#stack[candidate]!;
-      if ((frame.route.name === 'pluginPreview' || frame.route.name === 'pluginDetail')
+      if ((frame.route.name === 'pluginPreview' || frame.route.name === 'pluginDetail'
+        || frame.route.name === 'installTargets')
         && frame.route.pluginId === pluginId) {
         existingOrigin = candidate;
         break;
@@ -510,9 +520,9 @@ export class TuiRouter {
     }
     const index = existingOrigin >= 0 ? existingOrigin : this.#stack.length - 1;
     let route = this.#stack[index]!.route;
-    if ((route.name !== 'pluginPreview' && route.name !== 'pluginDetail')
+    if ((route.name !== 'pluginPreview' && route.name !== 'pluginDetail' && route.name !== 'installTargets')
       || route.pluginId !== pluginId) {
-      this.replace({ name: 'pluginPreview', pluginId });
+      this.replace({ name: 'pluginDetail', pluginId });
       route = this.#stack[index]!.route;
     }
     this.beginFlow('portableInstall', route, this.#stack[index]!.id);
@@ -527,7 +537,7 @@ export class TuiRouter {
         return copyFrame(frame).route;
       }
     }
-    return { name: 'pluginPreview', pluginId };
+    return { name: 'pluginDetail', pluginId };
   }
 
   discardSourceFlow(owner: string, returnRoute: Extract<TuiRoute, { name: 'sourceList' | 'sourceDetail' }>): TuiRouterSnapshot {
@@ -556,11 +566,12 @@ export class TuiRouter {
     const origin = flow?.kind === 'portableInstall'
       ? this.#stack.find((frame) => frame.id === flow.originFrameId)
       : undefined;
-    if (origin && (origin.route.name === 'pluginPreview' || origin.route.name === 'pluginDetail')
+    if (origin && (origin.route.name === 'pluginPreview' || origin.route.name === 'pluginDetail'
+      || origin.route.name === 'installTargets')
       && origin.route.pluginId === pluginId) {
       this.finishFlow();
     } else {
-      this.replace({ name: 'pluginPreview', pluginId });
+      this.replace({ name: 'pluginDetail', pluginId });
     }
     return this.snapshot;
   }

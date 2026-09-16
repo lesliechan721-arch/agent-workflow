@@ -11,7 +11,7 @@ import type {
   PlatformName,
   Scope,
 } from '../types.js';
-import type { PortableReview, PortableInstallReceipt } from '../portable/commands.js';
+import type { PortableReview, PortableInstallReceipt, PortableRetryReview } from '../portable/commands.js';
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
@@ -28,12 +28,13 @@ import type {
 import {
   flattenStatusTargets,
   statusTargetActivation,
+  statusTargetExtensions,
   statusTargetIntent,
   statusTargetOwnershipState,
   statusTargetSharedNative,
 } from '../commands/status-v6.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
-import type { RebuildCommandResult } from '../commands/rebuild-command.js';
+import type { PreApplyAuthorizationTarget, RebuildCommandResult } from '../commands/rebuild-command.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
 import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
 import type { OperationPlan } from '../commands/operation-plan.js';
@@ -61,6 +62,7 @@ import {
   type UserIssueCategory,
   type UserIssueViewModel,
 } from './model.js';
+import type { PluginContentOverview } from './plugin-content.js';
 import { safeDiagnosticCode, sanitizeDiagnosticText } from './diagnostics.js';
 import { projectExecutionDiagnostics, projectThrownOperationDiagnostic } from './diagnostic-projection.js';
 import {
@@ -90,6 +92,8 @@ import {
 } from './catalog-generation.js';
 import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
 import type { CatalogSessionReusableCandidate } from './catalog-sources/types.js';
+import type { CatalogStorePruneResult, CatalogStoreStatusResult } from '../commands/catalog-store.js';
+import type { CatalogStoreTaskEvidence } from './catalog-store-task.js';
 import { CatalogSourcesSession } from './catalog-sources/session.js';
 import {
   catalogSourceAutoCheckOnlyValue,
@@ -139,6 +143,7 @@ export type BatchPluginWriteAction = typeof PLUGIN_WRITE_BATCH_ACTIONS[number];
 export type PluginWriteBatchSelection =
   | { kind: 'selected'; pluginIds: string[] }
   | { kind: 'targets'; targets: PluginWriteBatchTarget[] }
+  | { kind: 'currentProjectIntentTargets'; targets: PluginWriteBatchTarget[] }
   | { kind: 'currentProjectIntentRoots' };
 
 export interface PluginWriteBatchTarget {
@@ -219,6 +224,7 @@ export interface PluginWriteBatchGroupEvidence {
 export interface PluginWriteBatchEvidence extends OperationEvidence {
   requestedPluginIds: string[];
   groups: PluginWriteBatchGroupEvidence[];
+  projectIntentDigest?: string;
   targetVersions?: Array<PluginWriteBatchTarget & {
     presence: 'new' | 'installed' | 'unknown';
     installedVersion?: string;
@@ -276,6 +282,38 @@ export interface PluginWriteTaskExecutionResult extends RebuildCommandResult {
 
 export type OperationKind = OperationIntent['kind'];
 
+export interface ConfigOperationChange {
+  key: string;
+  title: string;
+  before: string;
+  after: string;
+  children?: Array<{ property: string; before: string; after: string; private?: boolean }>;
+}
+
+export interface ConfigSaveBatchGroup {
+  scope: Scope;
+  updates?: Record<string, unknown>;
+  removeKeys?: string[];
+  sensitiveKeys?: string[];
+  privateKeys?: string[];
+  changes?: ConfigOperationChange[];
+}
+
+export interface ConfigSaveBatchGroupResult {
+  scope: Scope;
+  status: 'succeeded' | 'failed';
+  configSaved: boolean;
+  applyRequested: boolean;
+  applyStatus: 'notRequested' | 'notNeeded' | 'succeeded' | 'failed';
+  errorCode?: string;
+  execution?: unknown;
+}
+
+export interface ConfigSaveBatchExecutionResult {
+  status: 'succeeded' | 'partial' | 'failed';
+  groups: ConfigSaveBatchGroupResult[];
+}
+
 export interface IssueOrigin {
   issueId: string;
   issueKey: string;
@@ -318,6 +356,10 @@ export type OperationIntent =
       scope: Scope;
       selectedSkills: string[];
       requestedAgents?: string[];
+      retry?: {
+        receipt: PortableInstallReceipt;
+        review?: PortableRetryReview;
+      };
     }
   | {
       kind: 'configSave';
@@ -330,26 +372,21 @@ export type OperationIntent =
       removeKeys?: string[];
       sensitiveKeys?: string[];
       privateKeys?: string[];
-      changes?: Array<{
-        key: string;
-        title: string;
-        before: string;
-        after: string;
-        children?: Array<{ property: string; before: string; after: string; private?: boolean }>;
-      }>;
+      changes?: ConfigOperationChange[];
+    }
+  | {
+      kind: 'configSaveBatch';
+      pluginId: string;
+      apply: boolean;
+      scriptTimeoutMs?: number;
+      groups: ConfigSaveBatchGroup[];
     }
   | {
       kind: 'configReset';
       pluginId: string;
       scope: Scope;
       expectedStoreState?: 'invalid';
-      changes?: Array<{
-        key: string;
-        title: string;
-        before: string;
-        after: string;
-        children?: Array<{ property: string; before: string; after: string; private?: boolean }>;
-      }>;
+      changes?: ConfigOperationChange[];
     }
   | {
       kind: 'sourceMutation';
@@ -370,7 +407,20 @@ export type OperationIntent =
     }
   | {
       kind: 'catalogSourcesRecovery';
-    };
+    }
+  | { kind: 'catalogStorePrune' };
+
+export interface ConfigOperationEvidence {
+  scope: Scope;
+  schemaIdentity?: string;
+  storeDigest: string;
+  impactState?: 'known' | 'unknown';
+  noEffectiveChange?: true;
+  affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
+  preApplyAuthorization?: PreApplyAuthorizationTarget[];
+  sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[] }>;
+  shareability?: 'verified' | 'unverified';
+}
 
 export interface OperationEvidence {
   catalog: {
@@ -403,16 +453,13 @@ export interface OperationEvidence {
     packageName: '@openai/codex';
     version: string;
   };
-  config?: {
-    scope: Scope;
-    schemaIdentity?: string;
-    storeDigest: string;
-    impactState?: 'known' | 'unknown';
-    noEffectiveChange?: true;
-    affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
-    shareability?: 'verified' | 'unverified';
-    sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[] }>;
-    preApplyAuthorization?: import('../commands/rebuild-command.js').PreApplyAuthorizationTarget[];
+  config?: ConfigOperationEvidence;
+  configBatch?: {
+    groups: Array<{
+      scope: Scope;
+      config: ConfigOperationEvidence;
+      targetFingerprint: string;
+    }>;
   };
   resetTarget?: {
     sourceId: string;
@@ -453,6 +500,7 @@ export interface OperationEvidence {
     setPrimaryAfterActivation?: boolean;
   };
   portable?: PortableReview;
+  catalogStore?: CatalogStoreTaskEvidence;
 }
 
 export interface OperationReviewChange {
@@ -621,6 +669,14 @@ export interface OperationResultSummary {
   configApplySkippedReason?: 'invalidConfig';
   configScope?: Scope;
   configApplyRetryAvailable?: boolean;
+  configRetryApply?: boolean;
+  configGroups?: Array<{
+    scope: Scope;
+    configSaved: boolean;
+    applyRequested: boolean;
+    applyStatus: ConfigSaveBatchGroupResult['applyStatus'];
+    errorCode?: string;
+  }>;
   resetDisposition?: 'absent' | 'deletedFile' | 'unlinkedSymlink' | 'quarantinedDirectory';
   quarantineBasename?: string;
   changes?: string[];
@@ -650,7 +706,9 @@ export interface OperationResultSummary {
     scope: Scope;
     materializationDigest: string;
     skillsCliVersion: string;
+    verified: Array<{ name: string; scope?: string; agents: string[] }>;
     missing: Array<{ skill: string; agent?: string }>;
+    unknown: Array<{ skill: string; agent?: string }>;
     verificationUnknown: boolean;
     recovery?: string;
     failureCode?: string;
@@ -705,6 +763,8 @@ export interface PluginOperationProgressLine {
 }
 
 export interface TuiStatusLoadResult {
+  projectRoot?: string;
+  projectIntentRoots?: Array<{ pluginId: string; platforms: PlatformName[] }>;
   cliChannel?: 'latest' | 'beta';
   payload: StatusV8Payload;
   pluginSummaries: StatusV8PluginSummary[];
@@ -712,6 +772,7 @@ export interface TuiStatusLoadResult {
   sourceDetails?: SourceDetailViewModel[];
   configuredSources?: CatalogSource[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
+  contentOverviews?: Record<string, PluginContentOverview>;
   portablePluginIds?: string[];
   configStoreInventory?: Array<{
     pluginId: string;
@@ -721,6 +782,100 @@ export interface TuiStatusLoadResult {
   }>;
   catalogGenerations?: CatalogSourceGenerationViewModel[];
   sessionGenerationKeys?: Record<string, string>;
+}
+
+export interface ProjectIntentReminderTarget extends PluginWriteBatchTarget {
+  reasonCodes: string[];
+}
+
+export interface ProjectIntentReminder {
+  projectRoot: string;
+  signature: string;
+  actionableTargets: ProjectIntentReminderTarget[];
+  blockedTargets: ProjectIntentReminderTarget[];
+  unconfirmedTargets: PluginWriteBatchTarget[];
+}
+
+function projectReminderTargetKey(target: PluginWriteBatchTarget): string {
+  return [target.pluginId, target.platform, target.scope].join('\0');
+}
+
+export function projectCurrentIntentReminder(status: TuiStatusLoadResult): ProjectIntentReminder | undefined {
+  const actionableTargets: ProjectIntentReminderTarget[] = [];
+  const blockedTargets: ProjectIntentReminderTarget[] = [];
+  const unconfirmedTargets: PluginWriteBatchTarget[] = [];
+  const projectRoots = new Map((status.projectIntentRoots ?? []).map((root) => [
+    root.pluginId,
+    new Set(root.platforms),
+  ]));
+  const projectTargets = flattenStatusTargets(status.payload.targets).filter((target) => {
+    const intent = statusTargetIntent(target);
+    return target.scope === 'project'
+      && projectRoots.get(target.pluginId)?.has(target.platform) === true
+      && intent.scopes.includes('project');
+  });
+  for (const target of projectTargets) {
+    if (target.state === 'ready') continue;
+    const reminderTarget = {
+      pluginId: target.pluginId,
+      platform: target.platform,
+      scope: 'project' as const,
+    };
+    const statusReasons = [
+      ...target.reasons,
+      ...(target.sharedReasons ?? []),
+    ];
+    const reasonCodes = [...new Set(statusReasons.flatMap((reason) => [
+      reason.code,
+      ...(reason.rootIssueCode ? [reason.rootIssueCode] : []),
+    ]))].sort((left, right) => left.localeCompare(right, 'en'));
+    const sharedNative = statusTargetSharedNative(target);
+    const activation = statusTargetActivation(target);
+    const extensions = statusTargetExtensions(target);
+    const ownership = statusTargetOwnershipState(target);
+    const blocking = target.state === 'blocked'
+      || [...target.reasons, ...(target.sharedReasons ?? [])]
+        .some((reason) => reason.severity === 'blocking');
+    const unobserved = ownership === 'error'
+      || (!blocking && (sharedNative?.state === 'unobserved'
+        || activation?.evidence === 'unobserved'
+        || reasonCodes.includes('codexSharedNativeUnobserved')
+        || target.components.some((component) =>
+          component.metadata?.rootIssueCode === 'codexSharedNativeUnobserved')));
+    const confirmedDifference = ownership === 'absent' || ownership === 'partial'
+      || sharedNative?.state === 'missing' || sharedNative?.state === 'replaceable'
+      || extensions?.state === 'missing' || extensions?.state === 'drifted'
+      || activation?.evidence === 'observed' && activation.project === false
+      || target.components.some((component) => component.kind === 'dependency'
+        && (component.state === 'absent' || component.state === 'incomplete'));
+    if (blocking && confirmedDifference) {
+      blockedTargets.push({ ...reminderTarget, reasonCodes });
+    } else if (!unobserved && target.state === 'needsSync' && confirmedDifference) {
+      actionableTargets.push({ ...reminderTarget, reasonCodes });
+    } else {
+      unconfirmedTargets.push(reminderTarget);
+    }
+  }
+  if (projectTargets.length === 0) return undefined;
+  const canonicalActionable = actionableTargets.sort((left, right) =>
+    projectReminderTargetKey(left).localeCompare(projectReminderTargetKey(right), 'en'));
+  const canonicalBlocked = blockedTargets.sort((left, right) =>
+    projectReminderTargetKey(left).localeCompare(projectReminderTargetKey(right), 'en'));
+  const canonicalUnconfirmed = unconfirmedTargets.sort((left, right) =>
+    projectReminderTargetKey(left).localeCompare(projectReminderTargetKey(right), 'en'));
+  const projectRoot = status.projectRoot ?? projectTargets[0]!.cwd;
+  const signature = crypto.createHash('sha256').update(JSON.stringify({
+    projectRoot,
+    actionableTargets: canonicalActionable.map(projectReminderTargetKey),
+    blockedTargets: canonicalBlocked.map(projectReminderTargetKey),
+  })).digest('hex');
+  return {
+    projectRoot,
+    signature: `sha256:${signature}`,
+    actionableTargets: canonicalActionable,
+    blockedTargets: canonicalBlocked,
+    unconfirmedTargets: canonicalUnconfirmed,
+  };
 }
 
 export interface InstallTargetOption {
@@ -750,13 +905,19 @@ export interface TuiControllerDependencies {
     reuseValidatedGenerations?: boolean;
   }) => void;
   loadStatus: (signal: AbortSignal) => Promise<TuiStatusLoadResult>;
+  loadPluginContent?: (pluginId: string, signal: AbortSignal) => Promise<PluginContentOverview>;
   probeCatalogFreshness?: (
     sourceId: string,
     options: { fullValidation: boolean },
     signal: AbortSignal,
   ) => Promise<CatalogGenerationFreshnessResult>;
   inspectSourceRemoval?: (sourceId: string, signal: AbortSignal) => Promise<SourceReferenceSummaryViewModel>;
+  inspectCatalogStore?: (signal: AbortSignal) => Promise<CatalogStoreStatusResult>;
   captureEvidence: (intent: OperationIntent, signal?: AbortSignal) => Promise<OperationEvidence>;
+  recheckPortableInstall?: (
+    receipt: PortableInstallReceipt,
+    signal: AbortSignal,
+  ) => Promise<PortableInstallReceipt>;
   validateIntent?: (intent: OperationIntent, signal: AbortSignal) => Promise<void>;
   prepareReviewEvidence?: (
     intent: OperationIntent,
@@ -841,6 +1002,13 @@ export interface TuiControllerSnapshot {
     scope: Scope;
   };
   installPlacementDraft?: InstallPlacementDraftViewModel;
+  completionNotice?: {
+    pluginId: string;
+    title: string;
+    description: string;
+    operationRecordId?: string;
+  };
+  projectIntentReminder?: ProjectIntentReminder;
 }
 
 interface InstallPlacementDraftState extends InstallPlacementDraftViewModel {
@@ -924,10 +1092,14 @@ function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
     return { ...intent, targets: canonicalPluginWriteTaskTargets(intent.targets) };
   }
   if (intent.kind !== 'pluginWriteBatch') return intent;
-  if (intent.selection.kind === 'targets') {
+  if (intent.selection.kind === 'targets'
+    || intent.selection.kind === 'currentProjectIntentTargets') {
     return {
       ...intent,
-      selection: { kind: 'targets', targets: canonicalBatchTargets(intent.selection.targets) },
+      selection: {
+        kind: intent.selection.kind,
+        targets: canonicalBatchTargets(intent.selection.targets),
+      },
     };
   }
   if (intent.selection.kind !== 'selected') return intent;
@@ -1145,16 +1317,25 @@ export function pluginWriteTaskFailedRequestedTargets(
 }
 
 function collectOperationSensitiveValues(intent: OperationIntent): string[] {
-  if (intent.kind !== 'configSave') return [];
-  const sensitiveKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
   const values: string[] = [];
   const visit = (value: unknown): void => {
     if (typeof value === 'string') values.push(value);
     else if (Array.isArray(value)) value.forEach(visit);
     else if (value && typeof value === 'object') Object.values(value as Record<string, unknown>).forEach(visit);
   };
-  for (const [key, value] of Object.entries(intent.updates ?? {})) {
-    if (sensitiveKeys.has(key)) visit(value);
+  const collect = (operation: Pick<ConfigSaveBatchGroup,
+    'updates' | 'sensitiveKeys' | 'privateKeys'>): void => {
+    const sensitiveKeys = new Set([
+      ...(operation.sensitiveKeys ?? []),
+      ...(operation.privateKeys ?? []),
+    ]);
+    for (const [key, value] of Object.entries(operation.updates ?? {})) {
+      if (sensitiveKeys.has(key)) visit(value);
+    }
+  };
+  if (intent.kind === 'configSave') collect(intent);
+  else if (intent.kind === 'configSaveBatch') {
+    for (const group of intent.groups) collect(group);
   }
   return values;
 }
@@ -1192,6 +1373,14 @@ function cloneFrozen<T>(value: T): T {
 }
 
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
+  if (evidence.catalogStore) {
+    return crypto.createHash('sha256')
+      .update(JSON.stringify(stableValue({
+        catalog: evidence.catalog,
+        authorizedItems: evidence.catalogStore.authorizedItems,
+      })))
+      .digest('hex');
+  }
   if ('taskPlan' in evidence) {
     const task = (evidence as PluginWriteTaskEvidence).taskPlan;
     return crypto.createHash('sha256')
@@ -1262,10 +1451,19 @@ export function operationEvidenceFingerprint(evidence: OperationEvidence): strin
   const config = staleEvidence.config
     ? (({ shareability: _shareability, ...identity }) => identity)(staleEvidence.config)
     : undefined;
+  const configBatch = staleEvidence.configBatch
+    ? {
+        groups: staleEvidence.configBatch.groups.map((group) => ({
+          ...group,
+          config: (({ shareability: _shareability, ...identity }) => identity)(group.config),
+        })),
+      }
+    : undefined;
   return crypto.createHash('sha256')
     .update(JSON.stringify(stableValue({
       ...staleEvidence,
       ...(config ? { config } : {}),
+      ...(configBatch ? { configBatch } : {}),
     })))
     .digest('hex');
 }
@@ -1349,6 +1547,27 @@ function issueCode(error: unknown): string {
   return /^[A-Za-z][A-Za-z0-9]*$/u.test(prefix) ? prefix : 'operationBlocked';
 }
 
+function isPortableInstallReceipt(value: unknown): value is PortableInstallReceipt {
+  return typeof value === 'object' && value !== null
+    && (value as { receiptSchemaVersion?: unknown }).receiptSchemaVersion === 5
+    && (value as { command?: unknown }).command === 'skill:install';
+}
+
+function completedSinglePluginId(
+  intent: OperationIntent,
+  result: OperationExecuteResult,
+): string | undefined {
+  if (result.state !== 'succeeded' || result.summary.warnings?.length) return undefined;
+  if (intent.kind === 'pluginWrite') return intent.originIssue ? undefined : intent.pluginId;
+  const pluginIds = intent.kind === 'pluginWriteBatch'
+    ? result.summary.batch?.requestedPluginIds ?? []
+    : intent.kind === 'pluginWriteTask'
+      ? intent.targets.map((target) => target.pluginId)
+      : [];
+  const unique = [...new Set(pluginIds)];
+  return unique.length === 1 ? unique[0] : undefined;
+}
+
 export function extractPortableError(error: unknown): {
   code: PortableBlockerCode;
   diagnosticCode: string;
@@ -1381,6 +1600,9 @@ export class TuiController {
     promise: Promise<OperationExecuteResult>;
   }>();
   readonly #pendingReads = new Set<Promise<unknown>>();
+  readonly #pluginContent = new Map<string, PluginContentOverview>();
+  readonly #pluginContentInflight = new Map<string, Promise<void>>();
+  #pluginContentEpoch = 0;
   readonly #abort = new AbortController();
   readonly #progressUnsubscribe?: () => void;
   readonly #progressFeed?: RebuildProgressFeed;
@@ -1400,6 +1622,10 @@ export class TuiController {
   #result?: OperationExecuteResult;
   #resultAnchor?: TuiRoute;
   #portableResultSkills?: string[];
+  #portableResultReceipt?: PortableInstallReceipt;
+  #portableResultIntent?: Extract<OperationIntent, { kind: 'portableInstall' }>;
+  #completionNotice?: TuiControllerSnapshot['completionNotice'];
+  #projectIntentReminder?: ProjectIntentReminder;
   #loadError?: { code: string; message: string };
   #portableDraft?: TuiControllerSnapshot['portableDraft'];
   #recoverablePortableDraft?: TuiControllerSnapshot['portableDraft'];
@@ -1518,6 +1744,10 @@ export class TuiController {
               ? { error: this.#installPlacementDraft.error }
               : {}),
           } }
+        : {}),
+      ...(this.#completionNotice ? { completionNotice: this.#completionNotice } : {}),
+      ...(this.#projectIntentReminder
+        ? { projectIntentReminder: this.#projectIntentReminder }
         : {}),
     });
   }
@@ -1666,6 +1896,7 @@ export class TuiController {
     this.#result = undefined;
     this.#resultAnchor = undefined;
     this.#portableResultSkills = undefined;
+    this.#completionNotice = undefined;
     this.#progress = { messages: [] };
     this.#progressTargets = [];
     this.#router.resetToRoot();
@@ -1886,6 +2117,7 @@ export class TuiController {
 
   #project(): void {
     if (!this.#status) return;
+    this.#projectIntentReminder = projectCurrentIntentReminder(this.#status);
     this.#viewModel = buildTuiViewModel({
       status: this.#status.payload,
       pluginSummaries: this.#status.pluginSummaries,
@@ -1895,6 +2127,10 @@ export class TuiController {
       catalogFreshness: this.#catalogFreshness,
       catalogGenerations: this.#catalogGenerations,
       dependencyOverviews: this.#status.dependencyOverviews,
+      contentOverviews: {
+        ...(this.#status.contentOverviews ?? {}),
+        ...Object.fromEntries(this.#pluginContent),
+      },
       portablePluginIds: this.#status.portablePluginIds,
       configStoreInventory: this.#status.configStoreInventory,
     });
@@ -1953,7 +2189,12 @@ export class TuiController {
       this.#router.beginPortableFlow(intent.pluginId);
       return;
     }
-    if (intent.kind === 'configSave' || intent.kind === 'configReset') {
+    if (intent.kind === 'catalogStorePrune') {
+      if (active?.kind === 'catalogStore') return;
+      this.#router.beginFlow('catalogStore', { name: 'catalogStoreOverview' });
+      return;
+    }
+    if (intent.kind === 'configSave' || intent.kind === 'configSaveBatch' || intent.kind === 'configReset') {
       if (active?.kind === 'configEdit') return;
       const route = this.#router.snapshot.current.route;
       if ((route.name === 'pluginPreview' || route.name === 'pluginDetail')
@@ -1985,6 +2226,15 @@ export class TuiController {
 
   #stableResultRoute(intent: OperationIntent, result: OperationExecuteResult): TuiRoute {
     const active = this.#router.activeFlow();
+    if (intent.kind === 'pluginWriteTask' && active?.kind === 'pluginWriteTask'
+      && (active.parentFlowId || active.returnTarget.name === 'pluginWriteTask'
+        && active.returnTarget.goal !== intent.goal)) {
+      return this.#normalizeRoute(active.returnTarget);
+    }
+    const completedPluginId = completedSinglePluginId(intent, result);
+    if (completedPluginId) {
+      return this.#normalizeRoute({ name: 'pluginDetail', pluginId: completedPluginId });
+    }
     if (intent.kind === 'pluginWriteTask'
       && result.state === 'succeeded'
       && 'returnRoute' in result
@@ -1993,18 +2243,29 @@ export class TuiController {
       && result.returnRoute.batchOrigin?.owner === 'batch-write') {
       return { name: 'pluginList', mode: 'installed' };
     }
+    if (intent.kind === 'portableInstall' && result.state === 'succeeded') {
+      return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
+    }
+    if (intent.kind === 'catalogStorePrune') return { name: 'catalogStoreOverview' };
     if (active?.parentFlowId) return this.#normalizeRoute(active.returnTarget);
     if (active && (intent.kind === 'portableInstall'
-      || intent.kind === 'configSave' || intent.kind === 'configReset')) {
+      || intent.kind === 'configSave' || intent.kind === 'configSaveBatch' || intent.kind === 'configReset')) {
       return this.#normalizeRoute(active.returnTarget);
     }
     if (intent.kind === 'pluginWrite') {
       if (intent.originIssue && result.state === 'succeeded') return { name: 'issueList' };
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
     }
+    if (intent.kind === 'pluginWriteBatch' && intent.selection.kind === 'targets') {
+      const pluginIds = [...new Set(intent.selection.targets.map((target) => target.pluginId))];
+      if (pluginIds.length === 1) {
+        return this.#normalizeRoute({ name: 'pluginDetail', pluginId: pluginIds[0]! });
+      }
+    }
     if (intent.kind === 'pluginWriteBatch') return { name: 'pluginList', mode: 'installed' };
     if (intent.kind === 'pluginWriteTask') return { name: 'pluginList', mode: 'installed' };
-    if (intent.kind === 'portableInstall' || intent.kind === 'configSave' || intent.kind === 'configReset') {
+    if (intent.kind === 'portableInstall' || intent.kind === 'configSave'
+      || intent.kind === 'configSaveBatch' || intent.kind === 'configReset') {
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
     }
     if (intent.kind === 'sourceMutation' && intent.action === 'update') {
@@ -2050,7 +2311,9 @@ export class TuiController {
       ? {
           ...structuredClone(intent),
           selection: {
-            kind: 'targets',
+            kind: intent.selection.kind === 'currentProjectIntentRoots'
+              || intent.selection.kind === 'currentProjectIntentTargets'
+              ? 'currentProjectIntentTargets' : 'targets',
             targets: structuredClone(result.summary.batch.retryTargets!),
           },
       }
@@ -2077,13 +2340,44 @@ export class TuiController {
       && result.returnRoute.batchOrigin?.owner === 'batch-write'
       ? result.returnRoute.batchOrigin.flowId
       : undefined;
+    const completedPluginId = completedSinglePluginId(intent, result);
+    if (completedPluginId && target.name === 'pluginDetail') {
+      this.#recordTerminalResult();
+      const action = intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch'
+        ? intent.action : 'sync';
+      this.#completionNotice = {
+        pluginId: completedPluginId,
+        title: intent.kind === 'pluginWriteTask'
+          ? intent.goal === 'update' ? '插件更新完成' : '插件恢复完成'
+          : action === 'uninstall' ? '插件卸载完成'
+          : action === 'install' ? '插件安装完成'
+            : action === 'reinstall' ? '插件重新安装完成'
+              : action === 'refreshAndSync' ? '插件更新完成'
+                : action === 'cleanup' ? '插件清理完成' : '插件同步完成',
+        description: action === 'uninstall'
+          ? '所选实际位置已处理。插件设置保持不变。'
+          : '状态已重新检查。下方详情显示当前实际位置。',
+        ...(result.operationRecordId ? { operationRecordId: result.operationRecordId } : {}),
+      };
+      const finished = this.#router.finishFlow(target);
+      if (!finished) this.#router.replace(target);
+      return;
+    }
+    const portableParentFlowId = result.state === 'succeeded'
+      && intent.kind === 'portableInstall'
+      && this.#router.activeFlow()?.parentFlowId;
     const finished = batchFlowId
       ? this.#router.finishFlowById(batchFlowId, 'batchWrite', target, terminal)
+      : portableParentFlowId
+        ? this.#router.finishFlowById(portableParentFlowId, 'pluginInstall', target, terminal)
       : this.#router.finishFlow(target, terminal);
     if (!finished) this.#router.replace(terminal);
   }
 
   #applyStatus(status: TuiStatusLoadResult): void {
+    this.#pluginContentEpoch += 1;
+    this.#pluginContent.clear();
+    this.#pluginContentInflight.clear();
     this.#status = structuredClone(status);
     this.#statusReadAtMs = this.dependencies.now?.() ?? Date.now();
     if (status.catalogGenerations) {
@@ -2150,6 +2444,9 @@ export class TuiController {
     this.#assertAcceptingActions();
     this.dependencies.beginCatalogSession?.();
     const generation = ++this.#generation;
+    this.#pluginContentEpoch += 1;
+    this.#pluginContent.clear();
+    this.#pluginContentInflight.clear();
     this.#phase = 'loading';
     this.#publish();
     let status: TuiStatusLoadResult;
@@ -2181,7 +2478,7 @@ export class TuiController {
       && this.#router.activeFlow()?.kind !== 'sourceEdit') {
       this.#router.beginFlow('sourceEdit', this.#router.snapshot.current.route);
     }
-    this.#router.push(route, context);
+    this.#router.push(route.name === 'pluginPreview' ? this.#normalizeRoute(route) : route, context);
     this.#publish();
   }
 
@@ -2313,6 +2610,14 @@ export class TuiController {
     this.#publish();
   }
 
+  clearPortableSkills(): void {
+    if (!this.#portableDraft) return;
+    this.#portableDraft.candidates = this.#portableDraft.candidates.map((candidate) => ({ ...candidate, selected: false }));
+    this.#portableDraft.selectedCount = 0;
+    this.#portableDraft.canContinue = false;
+    this.#publish();
+  }
+
   setPortableAgentMode(mode: 'automatic' | 'explicit', requestedAgents: string[] = []): void {
     if (!this.#portableDraft) return;
     this.#portableDraft.agentMode = mode;
@@ -2369,6 +2674,68 @@ export class TuiController {
     return this.startReviewPreparation(intent, this.#router.portableOrigin(intent.pluginId));
   }
 
+  async recheckPortableResult(): Promise<PortableInstallReceipt> {
+    this.#assertAcceptingActions();
+    if (this.#router.snapshot.current.route.name !== 'result'
+      || this.#result?.operationKind !== 'portableInstall'
+      || !this.#portableResultReceipt
+      || !this.#portableResultIntent
+      || !this.dependencies.recheckPortableInstall) {
+      throw new TuiOperationBlockedError('portableRecheckUnavailable', '当前结果不能执行只读复查。');
+    }
+    const checked = await this.#trackRead(this.dependencies.recheckPortableInstall(
+      structuredClone(this.#portableResultReceipt),
+      this.#abort.signal,
+    ));
+    this.#portableResultReceipt = structuredClone(checked);
+    const summary = operationResultSummary(this.#portableResultIntent, checked);
+    const previous = this.#result;
+    this.#result = {
+      state: checked.status === 'succeeded' ? 'succeeded' : 'partial',
+      operationId: previous.operationId,
+      summary: {
+        ...summary,
+        elapsedMs: 'summary' in previous && previous.summary?.elapsedMs !== undefined
+          ? previous.summary.elapsedMs : summary.elapsedMs,
+      },
+      operationKind: 'portableInstall',
+      pluginId: this.#portableResultIntent.pluginId,
+      returnRoute: 'returnRoute' in previous && previous.returnRoute
+        ? structuredClone(previous.returnRoute)
+        : { name: 'pluginDetail', pluginId: this.#portableResultIntent.pluginId },
+    };
+    this.#publish();
+    return cloneFrozen(checked);
+  }
+
+  startPortableRetryReviewPreparation(): ReviewPreparationSnapshot {
+    this.#assertAcceptingActions();
+    const receipt = this.#portableResultReceipt;
+    const original = this.#portableResultIntent;
+    if (this.#router.snapshot.current.route.name !== 'result' || !receipt || !original) {
+      throw new TuiOperationBlockedError('portableRetryUnavailable', '当前结果不能准备精确重试。');
+    }
+    if ((receipt.verification.unknown?.length ?? 0) > 0) {
+      throw new TuiOperationBlockedError('portableRetryNotExact', '结果仍有未知目标。请先只读复查。');
+    }
+    const retryPairs = receipt.verification.missing;
+    if (retryPairs.length === 0 || retryPairs.some((target) => !target.agent)) {
+      throw new TuiOperationBlockedError('portableRetryNotExact', '没有可绑定到 Skill 与 Agent 的精确失败目标。');
+    }
+    const intent: Extract<OperationIntent, { kind: 'portableInstall' }> = {
+      kind: 'portableInstall',
+      pluginId: original.pluginId,
+      scope: original.scope,
+      selectedSkills: [...new Set(retryPairs.map((target) => target.skill))],
+      requestedAgents: [...new Set(retryPairs.flatMap((target) => target.agent ? [target.agent] : []))],
+      retry: { receipt: structuredClone(receipt) },
+    };
+    return this.startReviewPreparation(intent, {
+      name: 'pluginDetail',
+      pluginId: original.pluginId,
+    });
+  }
+
   discardPortableDraft(): void {
     this.#cancelPortableRequest();
     this.#portableDraft = undefined;
@@ -2381,11 +2748,11 @@ export class TuiController {
     this.#cancelInstallPlacementRequest();
     const current = this.#router.snapshot.current.route;
     if (current.name === 'portableBlocker' && current.code === 'requiredConfigMissing'
-      && route.name === 'configLayer' && route.pluginId === current.pluginId) {
+      && route.name === 'configFields' && route.pluginId === current.pluginId) {
       this.#portableRepreparePluginId = current.pluginId;
     }
     this.#discardPortableDraftForRoute(route);
-    this.#router.replace(route, context);
+    this.#router.replace(route.name === 'pluginPreview' ? this.#normalizeRoute(route) : route, context);
     this.#publish();
   }
 
@@ -2562,6 +2929,7 @@ export class TuiController {
       this.#result = undefined;
       this.#resultAnchor = undefined;
       this.#portableResultSkills = undefined;
+      this.#completionNotice = undefined;
       this.#publish();
       return;
     }
@@ -2573,7 +2941,8 @@ export class TuiController {
       return;
     }
     if (this.#result?.state === 'succeeded'
-      && (this.#result.operationKind === 'configSave' || this.#result.operationKind === 'configReset')
+      && (this.#result.operationKind === 'configSave' || this.#result.operationKind === 'configSaveBatch'
+        || this.#result.operationKind === 'configReset')
       && this.#result.pluginId
       && this.#router.resetConfigFlow(this.#result.pluginId, target)) {
       this.#result = undefined;
@@ -2587,6 +2956,7 @@ export class TuiController {
     this.#result = undefined;
     this.#resultAnchor = undefined;
     this.#portableResultSkills = undefined;
+    this.#completionNotice = undefined;
     this.#recoverableInstallPlacementDraft = undefined;
     this.#recoverablePortableDraft = undefined;
     this.#publish();
@@ -2598,7 +2968,8 @@ export class TuiController {
       || !('returnRoute' in result) || !result.returnRoute) return;
     const returnRoute = this.#normalizeRoute(result.returnRoute);
     this.#router.back();
-    const kind = result.operationKind === 'configSave' || result.operationKind === 'configReset'
+    const kind = result.operationKind === 'configSave' || result.operationKind === 'configSaveBatch'
+      || result.operationKind === 'configReset'
       ? 'configEdit' as const
       : result.operationKind === 'portableInstall'
         ? 'portableInstall' as const
@@ -2628,6 +2999,7 @@ export class TuiController {
       || route.name === 'operationReportPreview';
     if (readOnlyHistoryRoute && this.#router.activeFlow()?.kind === 'portableInstall') return;
     const portableRoute = route.name === 'portableSkillSelect'
+      || route.name === 'portableSkillSummary'
       || route.name === 'portableDependencies'
       || route.name === 'portableAgentMode'
       || route.name === 'portableAgentInput'
@@ -2888,19 +3260,70 @@ export class TuiController {
     installFilter?: PluginInstallFilter;
   }): PluginListItemViewModel[] {
     const query = options.query?.trim().toLocaleLowerCase('en');
-    const catalogPluginIds = new Set(this.#status?.pluginSummaries.map((plugin) => plugin.pluginId));
     return cloneFrozen((this.#viewModel?.plugins ?? []).filter((plugin) =>
       (!options.sourceId || plugin.sourceId === options.sourceId)
-      && (options.mode === 'browse' ? catalogPluginIds.has(plugin.pluginId)
-        : hasInstalledPlacement(plugin) || plugin.savedConfigScopes.length > 0)
+      && (options.installFilter !== 'installed'
+        || hasInstalledPlacement(plugin))
       && (options.installFilter !== 'uninstalled' || !hasInstalledPlacement(plugin))
       && (options.installFilter !== 'updateAvailable' || plugin.update?.state === 'available')
+      && (options.installFilter !== 'attention'
+        || plugin.aggregateStatus === 'needsAttention' || plugin.aggregateStatus === 'unavailable'
+        || plugin.primaryAttention !== undefined || plugin.sourceUnavailable === true
+        || plugin.capabilityUnsupported === true)
       && (!query || `${plugin.displayName}\n${plugin.description}\n${plugin.sourceId}`.toLocaleLowerCase('en').includes(query))));
   }
 
   getPluginOverview(pluginId: string): PluginListItemViewModel | undefined {
     const plugin = this.#viewModel?.plugins.find((entry) => entry.pluginId === pluginId);
     return plugin ? cloneFrozen(plugin) : undefined;
+  }
+
+  getPluginContentOverview(pluginId: string): PluginContentOverview | undefined {
+    const overview = this.#viewModel?.contentOverviews[pluginId];
+    return overview ? cloneFrozen(overview) : undefined;
+  }
+
+  getPluginContentState(pluginId: string): 'idle' | 'loading' | 'ready' {
+    if (this.#viewModel?.contentOverviews[pluginId]) return 'ready';
+    return this.#pluginContentInflight.has(pluginId) ? 'loading' : 'idle';
+  }
+
+  loadPluginContent(pluginId: string): Promise<void> {
+    if (this.#viewModel?.contentOverviews[pluginId]) return Promise.resolve();
+    const current = this.#pluginContentInflight.get(pluginId);
+    if (current) return current;
+    const loader = this.dependencies.loadPluginContent;
+    if (!loader) return Promise.resolve();
+    const generation = this.#generation;
+    const contentEpoch = this.#pluginContentEpoch;
+    const promise = this.#trackRead(loader(pluginId, this.#abort.signal))
+      .then((overview) => {
+        if (this.#disposed || generation !== this.#generation
+          || contentEpoch !== this.#pluginContentEpoch) return;
+        this.#pluginContent.set(pluginId, structuredClone(overview));
+        this.#project();
+      })
+      .catch(() => {
+        if (this.#disposed || generation !== this.#generation
+          || contentEpoch !== this.#pluginContentEpoch) return;
+        this.#pluginContent.set(pluginId, {
+          pluginId,
+          pluginVersion: '待确认',
+          catalogVersion: '待确认',
+          evidence: 'unavailable',
+          items: [],
+          notices: ['当前无法安全读取这个插件的内容。'],
+        });
+        this.#project();
+      })
+      .finally(() => {
+        if (this.#pluginContentInflight.get(pluginId) !== promise) return;
+        this.#pluginContentInflight.delete(pluginId);
+        this.#publish();
+      });
+    this.#pluginContentInflight.set(pluginId, promise);
+    this.#publish();
+    return promise;
   }
 
   getPluginSourceIdentity(pluginId: string): string | undefined {
@@ -3192,7 +3615,9 @@ export class TuiController {
   }
 
   startPluginWriteBatchReview(intent: PluginWriteBatchIntent): ReviewPreparationSnapshot {
-    return this.startReviewPreparation(intent, { name: 'batchPlacement' });
+    return this.startReviewPreparation(intent, intent.action === 'install'
+      ? { name: 'batchInstallScope' }
+      : { name: 'batchPlacement' });
   }
 
   startPluginWriteTaskReview(
@@ -3335,6 +3760,16 @@ export class TuiController {
     ));
   }
 
+  async inspectCatalogStore(): Promise<CatalogStoreStatusResult> {
+    this.#assertAcceptingActions();
+    if (!this.dependencies.inspectCatalogStore) {
+      throw new TuiOperationBlockedError('catalogStoreUnavailable', 'Catalog 本地存储检查不可用。');
+    }
+    return cloneFrozen(await this.#trackRead(
+      this.dependencies.inspectCatalogStore(this.#abort.signal),
+    ));
+  }
+
   async getConfigGroups(
     pluginId: string,
     layer: { scope: Scope },
@@ -3438,6 +3873,7 @@ export class TuiController {
 
   startReviewPreparation(intent: OperationIntent, returnRoute?: TuiRoute): ReviewPreparationSnapshot {
     this.#assertAcceptingActions();
+    this.#completionNotice = undefined;
     intent = normalizeOperationIntent(intent);
     if (intent.kind === 'catalogGeneration' && !intent.sourceMutation) {
       const blockReason = this.catalogSourceRecoveryBlockReason(intent);
@@ -3521,12 +3957,29 @@ export class TuiController {
       }
     }
     if (intent.kind === 'pluginWriteBatch') {
-      if (intent.selection.kind === 'currentProjectIntentRoots'
+      if ((intent.selection.kind === 'currentProjectIntentRoots'
+        || intent.selection.kind === 'currentProjectIntentTargets')
         && (intent.action !== 'sync' || intent.scope !== 'project')) {
         throw new TuiOperationBlockedError(
           'batchSelectionInvalid',
           '当前项目全部同步只支持 project scope sync。',
         );
+      }
+      if (intent.selection.kind === 'currentProjectIntentTargets') {
+        const targets = intent.selection.targets;
+        const canonical = [...new Map(targets.map((target) => [
+          projectReminderTargetKey(target), target,
+        ])).values()].sort((left, right) => projectReminderTargetKey(left)
+          .localeCompare(projectReminderTargetKey(right), 'en'));
+        if (targets.length === 0
+          || targets.some((target) => target.scope !== 'project')
+          || JSON.stringify(targets) !== JSON.stringify(canonical)) {
+          throw new TuiOperationBlockedError(
+            'batchSelectionInvalid',
+            '当前项目同步目标必须是非空、规范且精确的 project 目标集合。',
+          );
+        }
+        for (const target of targets) sourceIdFromPluginId(target.pluginId);
       }
       if (intent.selection.kind === 'selected') {
         const canonical = canonicalPluginIds(intent.selection.pluginIds);
@@ -3548,6 +4001,7 @@ export class TuiController {
 
   #reviewPreparationLabel(intent: OperationIntent): string {
     if (intent.kind === 'catalogSourcesRecovery') return 'Catalog 来源配置';
+    if (intent.kind === 'catalogStorePrune') return 'Catalog 本地存储';
     if (intent.kind === 'pluginWriteTask') return `${intent.targets.length} 个安装位置`;
     if (intent.kind === 'pluginWriteBatch') {
       return intent.selection.kind === 'selected'
@@ -3733,7 +4187,8 @@ export class TuiController {
 
   async #logOperationError(error: unknown, code: string, intent: OperationIntent): Promise<void> {
     await this.#logErrorSafe(error, code, {
-      privateConfigOperation: intent.kind === 'configSave' || intent.kind === 'configReset'
+      privateConfigOperation: intent.kind === 'configSave' || intent.kind === 'configSaveBatch'
+        || intent.kind === 'configReset'
         || intent.kind === 'sourceMutation',
     });
   }
@@ -3917,7 +4372,8 @@ export class TuiController {
           : ticket.intent.kind === 'pluginWriteTask'
             ? `${(ticket.evidence as PluginWriteTaskEvidence).taskPlan.executableTargets.length} 个安装位置`
           : 'pluginId' in ticket.intent ? ticket.intent.pluginId
-          : 'sourceId' in ticket.intent ? ticket.intent.sourceId ?? 'Catalog 管理' : 'Catalog 来源配置',
+          : 'sourceId' in ticket.intent ? ticket.intent.sourceId ?? 'Catalog 管理'
+            : ticket.intent.kind === 'catalogStorePrune' ? 'Catalog 本地存储' : 'Catalog 来源配置',
         phase: '验证当前状态',
       },
     };
@@ -3982,6 +4438,10 @@ export class TuiController {
             structuredClone(ticket.intent),
             structuredClone(ticket.evidence),
           );
+      if (ticket.intent.kind === 'portableInstall' && isPortableInstallReceipt(execution)) {
+        this.#portableResultReceipt = structuredClone(execution);
+        this.#portableResultIntent = structuredClone(ticket.intent);
+      }
       const executionProjection = projectExecutionDiagnostics(
         execution,
         `${this.#sessionEpoch}:${operationId}`,
@@ -4043,8 +4503,12 @@ export class TuiController {
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         const configCommitted = typeof execution === 'object'
           && execution !== null
-          && (execution as { configWrite?: unknown }).configWrite === 'succeeded';
-        if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
+          && ((execution as { configWrite?: unknown }).configWrite === 'succeeded'
+            || Array.isArray((execution as { groups?: unknown }).groups)
+              && ((execution as ConfigSaveBatchExecutionResult).groups
+                .some((group) => group.configSaved)));
+        if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configSaveBatch'
+          || ticket.intent.kind === 'configReset')
           && configCommitted) {
           const baseSummary = operationResultSummary(ticket.intent, execution);
           const elapsedMs = Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs);
@@ -4156,6 +4620,7 @@ export class TuiController {
           navigation: 'result',
           returnRoute: ticket.returnRoute,
           ...(ticket.intent.kind === 'pluginWriteBatch' || ticket.intent.kind === 'pluginWriteTask'
+            || ticket.intent.kind === 'pluginWrite' && ticket.intent.action === 'uninstall'
             || dependencyFailure || dependencyStillRequired
             ? { summary: pluginSummary } : {}),
           ...(ticket.intent.kind !== 'pluginWriteBatch' && ticket.intent.kind !== 'pluginWriteTask'
@@ -4216,6 +4681,15 @@ export class TuiController {
           this.#publish();
           return cloneFrozen(result);
         }
+        if (ticket.intent.kind === 'configSaveBatch') {
+          return this.#setBlocked(operationId, 'operationFailed', {
+            intent: ticket.intent,
+            navigation: 'result',
+            returnRoute: ticket.returnRoute,
+            summary,
+            writeMayHaveCompleted: false,
+          });
+        }
         return this.#setBlocked(operationId, 'operationFailed', {
           intent: ticket.intent,
           navigation: 'result',
@@ -4245,8 +4719,14 @@ export class TuiController {
               : ticket.returnRoute,
         )),
       };
-      if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
-        && this.#portableRepreparePluginId === ticket.intent.pluginId) {
+      const configResultNeedsAttention = result.state === 'succeeded' && (result.summary.messages?.some((message) =>
+        message.startsWith('警告：')
+        || message === '提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。') ?? false);
+      if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configSaveBatch'
+        || ticket.intent.kind === 'configReset')
+        && this.#portableRepreparePluginId === ticket.intent.pluginId
+        && result.state === 'succeeded'
+        && !configResultNeedsAttention) {
         this.#operationDiagnostics.delete(operationId);
         this.#portableRepreparePluginId = undefined;
         this.#activeReview = undefined;
@@ -4545,6 +5025,20 @@ export class TuiController {
 }
 
 function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  if (intent.kind === 'catalogStorePrune') {
+    const result = execution as CatalogStorePruneResult;
+    return {
+      code: result.overallState === 'succeeded' ? 'operationSucceeded' : 'operationPartial',
+      message: result.overallState === 'succeeded'
+        ? `Catalog 本地存储清理完成；删除 ${result.deleted.length} 项。`
+        : `Catalog 本地存储部分清理完成；删除 ${result.deleted.length} 项。`,
+      messages: [
+        result.deletedBytes === null ? '已删除大小未知。' : `已删除 ${result.deletedBytes} bytes。`,
+        `保留 ${result.retained.length} 项。`,
+        ...(result.errors.length > 0 ? [`${result.errors.length} 项未能安全删除。`] : []),
+      ],
+    };
+  }
   if (intent.kind === 'catalogSourcesRecovery') {
     const result = execution as { backupPath: string };
     return {
@@ -4599,10 +5093,11 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
   }
   if (intent.kind === 'portableInstall') {
     const receipt = execution as PortableInstallReceipt;
-    const verificationUnknown = receipt.failures.some((failure) =>
-      failure.code === 'portableSkillsCliVerificationFailed'
-      && receipt.verification.records.length === 0
-      && receipt.verification.missing.length === 0);
+    const verificationUnknown = (receipt.verification.unknown?.length ?? 0) > 0
+      || receipt.failures.some((failure) =>
+        failure.code === 'portableSkillsCliVerificationFailed'
+        && receipt.verification.records.length === 0
+        && receipt.verification.missing.length === 0);
     return {
       code: receipt.status === 'succeeded' ? 'operationSucceeded'
         : receipt.status === 'partial' ? 'operationPartial' : 'operationFailed',
@@ -4621,7 +5116,9 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         scope: receipt.scope,
         materializationDigest: receipt.materializationDigest,
         skillsCliVersion: receipt.skillsCliVersion,
+        verified: receipt.verification.records,
         missing: receipt.verification.missing,
+        unknown: receipt.verification.unknown ?? [],
         verificationUnknown,
         ...(receipt.failures[0]?.recovery ? { recovery: receipt.failures[0].recovery } : {}),
         ...(receipt.failures[0]?.code ? { failureCode: receipt.failures[0].code } : {}),
@@ -4899,6 +5396,64 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       })),
     };
   }
+  if (intent.kind === 'configSaveBatch') {
+    const batch = execution as ConfigSaveBatchExecutionResult;
+    const savedCount = batch.groups.filter((group) => group.configSaved).length;
+    const failedCount = batch.groups.filter((group) => group.status === 'failed').length;
+    const retryScopes = batch.groups.filter((group) =>
+      group.configSaved && group.applyStatus === 'failed' && group.errorCode !== 'invalidConfig');
+    const invalidConfig = savedCount === batch.groups.length
+      && batch.groups.some((group) => group.configSaved && group.errorCode === 'invalidConfig')
+      && retryScopes.length === 0;
+    const publicWarnings = [...new Set(batch.groups.flatMap((group) => {
+      if (!group.execution || typeof group.execution !== 'object'
+        || !Array.isArray((group.execution as { warnings?: unknown }).warnings)) return [];
+      return (group.execution as { warnings: unknown[] }).warnings.filter((warning): warning is string =>
+        typeof warning === 'string' && warning.startsWith('projectConfigShareabilityUnverified:'));
+    }))];
+    const otherProjectsMayRequireSync = batch.groups.some((group) =>
+      group.scope === 'user' && group.execution && typeof group.execution === 'object'
+      && (group.execution as { otherProjectsMayRequireSync?: unknown }).otherProjectsMayRequireSync === true);
+    return {
+      code: failedCount > 0
+        ? savedCount > 0 ? 'operationPartial' : 'operationFailed'
+        : 'operationSucceeded',
+      message: invalidConfig
+        ? '设置已保存，但没有应用。当前配置仍无效。'
+        : failedCount > 0
+        ? savedCount > 0
+          ? `已保存 ${savedCount} 个设置层；${failedCount} 个设置层失败。`
+          : '设置没有保存。'
+        : '设置已保存。',
+      pluginId: intent.pluginId,
+      configApplyRetryAvailable: retryScopes.length > 0,
+      ...(invalidConfig ? { configApplySkippedReason: 'invalidConfig' as const } : {}),
+      configApplied: intent.apply
+        ? batch.groups.some((group) => group.applyStatus === 'succeeded')
+        : false,
+      configGroups: batch.groups.map((group) => ({
+        scope: group.scope,
+        configSaved: group.configSaved,
+        applyRequested: group.applyRequested,
+        applyStatus: group.applyStatus,
+        ...(group.errorCode ? { errorCode: safeDiagnosticCode(group.errorCode, 'configWriteFailed') } : {}),
+      })),
+      messages: [
+        ...batch.groups.map((group) => {
+          const label = group.scope === 'project' ? '当前项目' : '个人默认';
+          return group.configSaved
+            ? `${label}已保存${group.errorCode === 'invalidConfig'
+              ? '，但当前配置无效，未应用'
+              : group.applyStatus === 'failed' ? '，但应用失败' : ''}。`
+            : `${label}保存失败。`;
+        }),
+        ...publicWarnings.map((warning) => `警告：${warning}`),
+        ...(otherProjectsMayRequireSync
+          ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。']
+          : []),
+      ],
+    };
+  }
   if (intent.kind === 'configSave' || intent.kind === 'configReset') {
     const rawApply = typeof execution === 'object' && execution !== null
       && typeof (execution as { apply?: unknown }).apply === 'object'
@@ -4972,6 +5527,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       configScope: intent.scope,
       configApplyRetryAvailable: intent.kind === 'configSave'
         && intent.apply && !invalidConfig && (applyState === 'partial' || applyState === 'unavailable'),
+      ...(intent.kind === 'configSave' && intent.retryApply ? { configRetryApply: true } : {}),
       ...(publicMessages.length > 0 ? { messages: publicMessages } : {}),
       ...(intent.kind === 'configSave'
         ? { configApplied: applyState === 'succeeded' || applyState === 'partial' }

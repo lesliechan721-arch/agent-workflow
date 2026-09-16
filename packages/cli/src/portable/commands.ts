@@ -31,7 +31,15 @@ import {
   probeSkillsCli,
   SkillsCliError,
   verifySkills,
+  verifySkillTargets,
   type InstalledSkillRecord,
+  type PortableSkillTarget,
+  type SkillsVerificationResult,
+} from './skills-cli.js';
+
+export {
+  SKILLS_CLI_SUPPORTED_VERSION_LABEL,
+  type PortableSkillTarget,
 } from './skills-cli.js';
 
 export type PortableCommandErrorCode =
@@ -45,6 +53,8 @@ export type PortableCommandErrorCode =
   | 'portableRuntimeImportMissing'
   | 'portableRendererFailed'
   | 'portableInvalidAgentSelection'
+  | 'portableRetryNotExact'
+  | 'portableNoRetryTargets'
   | 'portableOutputConflict'
   | 'confirmationRequired'
   | 'reviewStale';
@@ -107,13 +117,26 @@ export interface PortableInstallReceipt {
   materializationDigest: string;
   verification: {
     records: PublicInstalledSkillRecord[];
-    missing: Array<{ skill: string; agent?: string }>;
+    missing: PortableSkillTarget[];
+    unknown?: PortableSkillTarget[];
   };
+  attemptedTargets?: PortableSkillTarget[];
   warnings: string[];
   failures: Array<{ code: string; message: string; recovery: string }>;
 }
 
 export type PortableInstallProgressStage = 'prepare' | 'add' | 'verify';
+
+export interface PortableRetryTargetGroup {
+  agent: string;
+  skills: string[];
+}
+
+export interface PortableRetryReview extends PortableReview {
+  baseEvidenceDigest: string;
+  retryPairs: PortableSkillTarget[];
+  targetGroups: PortableRetryTargetGroup[];
+}
 
 export interface PortableMaterializeReceipt {
   receiptSchemaVersion: 5;
@@ -376,7 +399,8 @@ function installFailureReceipt(
   review: PortableReview,
   code: string,
   status: 'failed' | 'partial',
-  verification: PortableInstallReceipt['verification'],
+  verification: SkillsVerificationResult,
+  attemptedTargets?: PortableSkillTarget[],
 ): PortableInstallReceipt {
   return {
     receiptSchemaVersion: 5,
@@ -398,7 +422,11 @@ function installFailureReceipt(
     collisions: review.collisions,
     dependencies: review.dependencies,
     materializationDigest: review.materializationDigest,
-    verification: { ...verification, records: publicInstalledRecords(verification.records) },
+    verification: {
+      ...verification,
+      records: publicInstalledRecords(verification.records),
+    },
+    ...(attemptedTargets ? { attemptedTargets } : {}),
     warnings: [],
     failures: [{
       code,
@@ -522,37 +550,29 @@ export async function installPortableSkills(options: {
             throw error;
           }
         }
-        let verification: PortableInstallReceipt['verification'];
-        try {
-          await options.onProgress?.('verify');
-          verification = await verifySkills({
-            skills: current.review.selected.map((entry) => entry.name),
-            ...(agents ? { agents } : {}),
-            global: options.scope === 'user',
-            cwd: executionCwd,
-            env: options.env,
+        await options.onProgress?.('verify');
+        const verification = await verifySkills({
+          skills: current.review.selected.map((entry) => entry.name),
+          ...(agents ? { agents } : {}),
+          global: options.scope === 'user',
+          cwd: executionCwd,
+          env: options.env,
+        });
+        if (verification.unknown.length > 0) {
+          const receipt = installFailureReceipt(
+            current.review,
+            addFailure?.code ?? 'portableSkillsCliVerificationFailed',
+            'partial',
+            verification,
+          );
+          receipt.warnings.push('skills list 验证失败，部分目标的结果无法确认。');
+          if (!addFailure) receipt.failures = [];
+          receipt.failures.push({
+            code: 'portableSkillsCliVerificationFailed',
+            message: 'skills list 验证失败，部分安装结果为 unknown。',
+            recovery: '修复 Skills CLI 后先重新检查结果，再决定是否重试或清理外部安装。',
           });
-        } catch (error) {
-          if (error instanceof SkillsCliError) {
-            const receipt = installFailureReceipt(
-              current.review,
-              addFailure?.code ?? 'portableSkillsCliVerificationFailed',
-              'partial',
-              {
-                records: [],
-                missing: [],
-              },
-            );
-            receipt.warnings.push('skills list 验证失败，无法确认已写入的目标。');
-            if (!addFailure) receipt.failures = [];
-            receipt.failures.push({
-              code: 'portableSkillsCliVerificationFailed',
-              message: 'skills list 验证失败，安装结果为 unknown，无法确认目标是否存在。',
-              recovery: '修复 Skills CLI 后重新运行 aw skill install，并按需使用 skills remove 清理外部安装。',
-            });
-            return receipt;
-          }
-          throw error;
+          return receipt;
         }
         if (addFailure) {
           const expectedCount = current.review.selected.length * (agents?.length ?? 1);
@@ -579,6 +599,293 @@ export async function installPortableSkills(options: {
         };
       } finally {
         await current.materialized.cleanup();
+      }
+    },
+  });
+}
+
+function receiptTargets(receipt: PortableInstallReceipt): PortableSkillTarget[] {
+  if (receipt.attemptedTargets) return receipt.attemptedTargets.map((target) => ({ ...target }));
+  const skills = receipt.selectedSkills.map((candidate) => candidate.name);
+  if (receipt.agentMode === 'explicit') {
+    return receipt.requestedAgents.flatMap((agent) => skills.map((skill) => ({ skill, agent })));
+  }
+  return skills.map((skill) => ({ skill }));
+}
+
+function verificationStatus(
+  targets: readonly PortableSkillTarget[],
+  verification: SkillsVerificationResult,
+): PortableInstallReceipt['status'] {
+  if (verification.unknown.length > 0) return 'partial';
+  if (verification.missing.length === 0) return 'succeeded';
+  return verification.missing.length === targets.length ? 'failed' : 'partial';
+}
+
+function recheckedReceipt(
+  receipt: PortableInstallReceipt,
+  skillsCliVersion: string,
+  verification: SkillsVerificationResult,
+): PortableInstallReceipt {
+  const targets = receiptTargets(receipt);
+  const status = verificationStatus(targets, verification);
+  const unknown = verification.unknown.length > 0;
+  const missing = verification.missing.length > 0;
+  return {
+    ...receipt,
+    ok: status === 'succeeded',
+    status,
+    skillsCliVersion,
+    verification: {
+      ...verification,
+      records: publicInstalledRecords(verification.records),
+    },
+    warnings: unknown ? ['skills list 验证失败，部分目标的结果无法确认。'] : [],
+    failures: unknown ? [{
+      code: 'portableSkillsCliVerificationFailed',
+      message: 'skills list 验证失败，部分安装结果为 unknown。',
+      recovery: '修复 Skills CLI 后先重新检查结果，再决定是否重试或清理外部安装。',
+    }] : missing ? [{
+      code: 'portableSkillsCliVerificationFailed',
+      message: '只读检查确认部分目标缺失。',
+      recovery: '重新准备后只重试明确缺失的 Skill 与 Agent 组合。',
+    }] : [],
+  };
+}
+
+export async function recheckPortableInstall(options: {
+  receipt: PortableInstallReceipt;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}): Promise<PortableInstallReceipt> {
+  assertScope(options.receipt.scope);
+  const executionCwd = options.receipt.scope === 'project'
+    ? resolveAwProjectRoot(options.cwd)
+    : options.cwd;
+  const skillsCli = await probeSkillsCli({
+    cwd: executionCwd,
+    env: options.env,
+    signal: options.signal,
+  });
+  const verification = await verifySkillTargets({
+    targets: receiptTargets(options.receipt),
+    global: options.receipt.scope === 'user',
+    cwd: executionCwd,
+    env: options.env,
+    signal: options.signal,
+  });
+  return recheckedReceipt(options.receipt, skillsCli.version, verification);
+}
+
+function normalizeRetryPairs(receipt: PortableInstallReceipt): PortableSkillTarget[] {
+  if ((receipt.verification.unknown?.length ?? 0) > 0) {
+    throw new PortableCommandError(
+      'portableRetryNotExact',
+      '存在无法确认的目标；必须先只读复查，不能猜测重试目标。',
+    );
+  }
+  if (receipt.verification.missing.length === 0) {
+    throw new PortableCommandError('portableNoRetryTargets', '没有已确认缺失的目标可重试。');
+  }
+  if (receipt.agentMode !== 'explicit') {
+    throw new PortableCommandError(
+      'portableRetryNotExact',
+      '自动 Agent 结果没有精确 Agent 身份；只能先只读复查。',
+    );
+  }
+  const selected = new Set(receipt.selectedSkills.map((candidate) => candidate.name));
+  const agents = new Set(receipt.requestedAgents);
+  const result: PortableSkillTarget[] = [];
+  const seen = new Set<string>();
+  for (const target of receipt.verification.missing) {
+    if (!target.agent || !selected.has(target.skill) || !agents.has(target.agent)) {
+      throw new PortableCommandError(
+        'portableRetryNotExact',
+        '缺失结果不能绑定到原请求中的精确 Skill 与 Agent。',
+      );
+    }
+    const key = `${target.skill}\0${target.agent}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push({ skill: target.skill, agent: target.agent });
+    }
+  }
+  return result;
+}
+
+function retryTargetGroups(pairs: readonly PortableSkillTarget[]): PortableRetryTargetGroup[] {
+  const groups = new Map<string, string[]>();
+  for (const pair of pairs) {
+    if (!pair.agent) {
+      throw new PortableCommandError('portableRetryNotExact', '重试目标缺少精确 Agent。');
+    }
+    const skills = groups.get(pair.agent) ?? [];
+    skills.push(pair.skill);
+    groups.set(pair.agent, skills);
+  }
+  return [...groups].map(([agent, skills]) => ({ agent, skills }));
+}
+
+function createRetryReview(
+  review: PortableReview,
+  retryPairs: PortableSkillTarget[],
+): PortableRetryReview {
+  const targetGroups = retryTargetGroups(retryPairs);
+  const baseEvidenceDigest = review.evidenceDigest;
+  return {
+    ...review,
+    baseEvidenceDigest,
+    retryPairs: retryPairs.map((pair) => ({ ...pair })),
+    targetGroups,
+    evidenceDigest: digest({ baseEvidenceDigest, retryPairs, targetGroups }),
+  };
+}
+
+async function collectRetryEvidence(options: {
+  receipt: PortableInstallReceipt;
+  retryPairs: PortableSkillTarget[];
+  cwd: string;
+  cliVersion: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  catalogOperationContext?: CatalogOperationContext;
+}): Promise<CollectedEvidence & { review: PortableRetryReview }> {
+  const skills = [...new Set(options.retryPairs.map((pair) => pair.skill))];
+  const agents = [...new Set(options.retryPairs.map((pair) => pair.agent!))];
+  const parsedSelector = parsePluginId(options.receipt.plugin.id);
+  const catalogOperationContext = options.catalogOperationContext
+    ?? await resolveCatalogOperationContext({
+      ...(parsedSelector.sourceId ? { sourceIds: [parsedSelector.sourceId] } : {}),
+      env: options.env,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  const collected = await collectEvidence({
+    selector: options.receipt.plugin.id,
+    scope: options.receipt.scope,
+    requestedSkills: skills,
+    agents,
+    cwd: options.cwd,
+    cliVersion: options.cliVersion,
+    env: options.env,
+    signal: options.signal,
+    catalogOperationContext,
+  });
+  return { ...collected, review: createRetryReview(collected.review, options.retryPairs) };
+}
+
+export async function preparePortableRetry(options: {
+  receipt: PortableInstallReceipt;
+  cwd: string;
+  cliVersion: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  catalogOperationContext?: CatalogOperationContext;
+}): Promise<PortableRetryReview> {
+  const checked = await recheckPortableInstall(options);
+  const retryPairs = normalizeRetryPairs(checked);
+  const collected = await collectRetryEvidence({ ...options, receipt: checked, retryPairs });
+  try {
+    return structuredClone(collected.review);
+  } finally {
+    await collected.materialized.cleanup();
+  }
+}
+
+export async function executePortableRetry(options: {
+  receipt: PortableInstallReceipt;
+  review: PortableRetryReview;
+  expectedEvidenceDigest: string;
+  cwd: string;
+  cliVersion: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  onProgress?: (stage: PortableInstallProgressStage) => void | Promise<void>;
+}): Promise<PortableInstallReceipt> {
+  if (options.expectedEvidenceDigest !== options.review.evidenceDigest) {
+    throw new PortableCommandError('reviewStale', 'Portable 重试票据不匹配。');
+  }
+  await options.onProgress?.('prepare');
+  return withAwHomeMutationLock({
+    env: options.env,
+    action: async () => {
+      const checked = await recheckPortableInstall({
+        receipt: options.receipt,
+        cwd: options.cwd,
+        env: options.env,
+        signal: options.signal,
+      });
+      const retryPairs = normalizeRetryPairs(checked);
+      const collected = await collectRetryEvidence({ ...options, receipt: checked, retryPairs });
+      try {
+        if (collected.review.evidenceDigest !== options.expectedEvidenceDigest) {
+          throw new PortableCommandError('reviewStale', '确认后的 Portable 重试证据已变化。');
+        }
+        const executionCwd = checked.scope === 'project'
+          ? resolveAwProjectRoot(options.cwd)
+          : options.cwd;
+        let addFailed = false;
+        await options.onProgress?.('add');
+        for (const group of collected.review.targetGroups) {
+          try {
+            await addSkills({
+              rootDir: collected.materialized.rootDir,
+              skills: group.skills,
+              agents: [group.agent],
+              global: checked.scope === 'user',
+              cwd: executionCwd,
+              env: options.env,
+              signal: options.signal,
+            });
+          } catch (error) {
+            if (error instanceof SkillsCliError && error.code === 'portableSkillsCliInstallFailed') {
+              addFailed = true;
+              continue;
+            }
+            throw error;
+          }
+        }
+        await options.onProgress?.('verify');
+        const verification = await verifySkillTargets({
+          targets: collected.review.retryPairs,
+          global: checked.scope === 'user',
+          cwd: executionCwd,
+          env: options.env,
+          signal: options.signal,
+        });
+        const status = verificationStatus(collected.review.retryPairs, verification);
+        if (!addFailed && status === 'succeeded') {
+          return {
+            ...installFailureReceipt(
+              collected.review,
+              '',
+              'failed',
+              verification,
+              collected.review.retryPairs,
+            ),
+            ok: true,
+            status: 'succeeded',
+            failures: [],
+          };
+        }
+        const receipt = installFailureReceipt(
+          collected.review,
+          addFailed ? 'portableSkillsCliInstallFailed' : 'portableSkillsCliVerificationFailed',
+          status === 'failed' ? 'failed' : 'partial',
+          verification,
+          collected.review.retryPairs,
+        );
+        if (verification.unknown.length > 0) {
+          receipt.warnings.push('skills list 验证失败，部分目标的结果无法确认。');
+          receipt.failures.push({
+            code: 'portableSkillsCliVerificationFailed',
+            message: 'skills list 验证失败，部分重试结果为 unknown。',
+            recovery: '修复 Skills CLI 后先重新检查结果，再决定是否重试。',
+          });
+        }
+        return receipt;
+      } finally {
+        await collected.materialized.cleanup();
       }
     },
   });

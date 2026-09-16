@@ -6,9 +6,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/index.js';
 import {
+  executePortableRetry,
   installPortableSkills,
   preparePortableInstall,
+  preparePortableRetry,
+  recheckPortableInstall,
   setPortableCommandTestHooksForTests,
+  type PortableInstallReceipt,
+  type PortableReview,
 } from '../../src/portable/commands.js';
 import { createCatalogManifestV7, createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import {
@@ -164,6 +169,80 @@ async function installFakeSkills(env: NodeJS.ProcessEnv, root: string, options: 
       ]),
       FAKE_SKILLS_ADD_EXIT: String(options.addExit ?? 0),
     },
+  };
+}
+
+async function installTargetAwareFakeSkills(
+  env: NodeJS.ProcessEnv,
+  root: string,
+  installed: Record<string, string[]>,
+): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
+  const bin = path.join(root, 'target-aware-skills-bin');
+  const executable = path.join(bin, 'skills');
+  const log = path.join(root, 'target-aware-skills-calls.jsonl');
+  const state = path.join(root, 'target-aware-skills-state.json');
+  await fs.ensureDir(bin);
+  await fs.writeJson(state, installed);
+  await fs.writeFile(executable, [
+    '#!/usr/bin/env node',
+    "const fs = require('node:fs');",
+    "const args = process.argv.slice(2);",
+    "fs.appendFileSync(process.env.FAKE_SKILLS_LOG, JSON.stringify({args, cwd: process.cwd()}) + '\\n');",
+    "if (args[0] === '--version') { console.log('1.5.23'); process.exit(0); }",
+    "const state = JSON.parse(fs.readFileSync(process.env.FAKE_SKILLS_STATE, 'utf8'));",
+    "if (args[0] === 'list') {",
+    "  const agentIndex = args.indexOf('--agent');",
+    "  const agents = agentIndex >= 0 ? [args[agentIndex + 1]] : Object.keys(state);",
+    "  const records = agents.flatMap((agent) => (state[agent] || []).map((name) => ({name, agents:[agent], scope:'project'})));",
+    "  console.log(JSON.stringify(records)); process.exit(0);",
+    "}",
+    "if (args[0] === 'add') {",
+    "  const skillIndex = args.indexOf('--skill'); const agentIndex = args.indexOf('--agent');",
+    "  const skills = args.slice(skillIndex + 1, agentIndex); const agents = args.slice(agentIndex + 1, args.indexOf('--yes'));",
+    "  for (const agent of agents) state[agent] = [...new Set([...(state[agent] || []), ...skills])];",
+    "  fs.writeFileSync(process.env.FAKE_SKILLS_STATE, JSON.stringify(state)); process.exit(0);",
+    "}",
+    'process.exit(2);',
+  ].join('\n'));
+  await fs.chmod(executable, 0o755);
+  return {
+    log,
+    env: {
+      ...env,
+      PATH: `${bin}${path.delimiter}${env.PATH ?? ''}`,
+      FAKE_SKILLS_LOG: log,
+      FAKE_SKILLS_STATE: state,
+    },
+  };
+}
+
+function portableReceiptFromReview(
+  review: PortableReview,
+  verification: PortableInstallReceipt['verification'],
+): PortableInstallReceipt {
+  return {
+    receiptSchemaVersion: 5,
+    command: 'skill:install',
+    ok: false,
+    status: 'partial',
+    plugin: {
+      id: review.pluginId,
+      ...(review.sourceId ? { sourceId: review.sourceId } : {}),
+      ...(review.sourceIdentity ? { sourceIdentity: review.sourceIdentity } : {}),
+      ...(review.pluginVersion ? { version: review.pluginVersion } : {}),
+    },
+    scope: review.scope,
+    selectedSkills: review.selected,
+    ...(review.requestedSkills ? { requestedSkills: review.requestedSkills } : {}),
+    agentMode: review.agentMode,
+    requestedAgents: review.requestedAgents,
+    skillsCliVersion: review.skillsCliVersion,
+    collisions: review.collisions,
+    dependencies: review.dependencies,
+    materializationDigest: review.materializationDigest,
+    verification,
+    warnings: [],
+    failures: [],
   };
 }
 
@@ -511,6 +590,119 @@ describe('portable skill public commands', () => {
       }],
     });
     expect(`${io.readStdout()}${io.readStderr()}`).not.toContain('目标缺失');
+  });
+
+  it('rechecks an unknown result with only version and list operations', async () => {
+    const fixture = await configurePortableCatalog();
+    const fake = await installFakeSkills(fixture.env, fixture.cwd, {
+      before: [{ name: 'alpha', agents: ['codex'], scope: 'project' }],
+    });
+    const review = await preparePortableInstall({
+      selector: 'portable',
+      scope: 'project',
+      requestedSkills: ['alpha'],
+      requestedAgents: ['codex'],
+      cwd: fixture.cwd,
+      env: fake.env,
+      cliVersion: '0.1.0',
+    });
+    const receipt = portableReceiptFromReview(review, {
+      records: [],
+      missing: [],
+      unknown: [{ skill: 'alpha', agent: 'codex' }],
+    });
+    await fs.writeFile(fake.log, '');
+
+    const checked = await recheckPortableInstall({ receipt, cwd: fixture.cwd, env: fake.env });
+
+    expect(checked).toMatchObject({
+      ok: true,
+      status: 'succeeded',
+      verification: {
+        records: [{ name: 'alpha', agents: ['codex'], scope: 'project' }],
+        missing: [],
+        unknown: [],
+      },
+    });
+    const calls = (await fs.readFile(fake.log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    expect(calls.map((call) => call.args[0])).toEqual(['--version', 'list']);
+    expect(calls.some((call) => call.args.includes('add'))).toBe(false);
+  });
+
+  it('reprepares and retries only the exact failed skill and agent pairs', async () => {
+    const fixture = await configurePortableCatalog();
+    const fake = await installTargetAwareFakeSkills(fixture.env, fixture.cwd, {
+      codex: [],
+      cursor: ['alpha'],
+    });
+    const originalReview = await preparePortableInstall({
+      selector: 'portable',
+      scope: 'project',
+      requestedAgents: ['codex', 'cursor'],
+      cwd: fixture.cwd,
+      env: fake.env,
+      cliVersion: '0.1.0',
+    });
+    const receipt = portableReceiptFromReview(originalReview, {
+      records: [{ name: 'alpha', agents: ['cursor'], scope: 'project' }],
+      missing: [
+        { skill: 'alpha', agent: 'codex' },
+        { skill: 'beta', agent: 'codex' },
+        { skill: 'beta', agent: 'cursor' },
+      ],
+      unknown: [],
+    });
+    const retry = await preparePortableRetry({
+      receipt,
+      cwd: fixture.cwd,
+      env: fake.env,
+      cliVersion: '0.1.0',
+    });
+    expect(retry.retryPairs).toEqual(receipt.verification.missing);
+    expect(retry.targetGroups).toEqual([
+      { agent: 'codex', skills: ['alpha', 'beta'] },
+      { agent: 'cursor', skills: ['beta'] },
+    ]);
+    await fs.writeFile(fake.log, '');
+
+    const result = await executePortableRetry({
+      receipt,
+      review: retry,
+      expectedEvidenceDigest: retry.evidenceDigest,
+      cwd: fixture.cwd,
+      env: fake.env,
+      cliVersion: '0.1.0',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'succeeded',
+      attemptedTargets: receipt.verification.missing,
+      verification: { missing: [], unknown: [] },
+    });
+    const calls = (await fs.readFile(fake.log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    const addCalls = calls.filter((call) => call.args[0] === 'add').map((call) => call.args);
+    expect(addCalls.map((args) => args.slice(2))).toEqual([
+      ['--skill', 'alpha', 'beta', '--agent', 'codex', '--yes'],
+      ['--skill', 'beta', '--agent', 'cursor', '--yes'],
+    ]);
+  });
+
+  it('blocks exact retry for automatic Agent failures until a read-only recheck succeeds', async () => {
+    const fixture = await configurePortableCatalog();
+    const fake = await installFakeSkills(fixture.env, fixture.cwd, { before: [] });
+    const review = await preparePortableInstall({
+      selector: 'portable', scope: 'project', cwd: fixture.cwd, env: fake.env, cliVersion: '0.1.0',
+    });
+    const receipt = portableReceiptFromReview(review, {
+      records: [], missing: [{ skill: 'alpha' }], unknown: [],
+    });
+
+    await expect(preparePortableRetry({
+      receipt, cwd: fixture.cwd, env: fake.env, cliVersion: '0.1.0',
+    })).rejects.toMatchObject({ code: 'portableRetryNotExact' });
+    const calls = (await fs.readFile(fake.log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    expect(calls.some((call) => call.args[0] === 'add')).toBe(false);
   });
 
   it('prints deduplicated safe recovery guidance for a non-JSON partial install', async () => {

@@ -99,7 +99,15 @@ function portableController(overrides: Partial<TuiControllerDependencies> = {}):
       plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: portable.selected,
       requestedSkills: intent.selectedSkills, agentMode: portable.agentMode, requestedAgents: portable.requestedAgents,
       skillsCliVersion: portable.skillsCliVersion, collisions: portable.collisions, dependencies: portable.dependencies,
-      materializationDigest: portable.materializationDigest, verification: { records: [], missing: [] }, warnings: [], failures: [],
+      materializationDigest: portable.materializationDigest,
+      verification: {
+        records: portable.selected.map((skill) => ({
+          name: skill.name, scope: intent.scope, agents: portable.requestedAgents.length > 0
+            ? portable.requestedAgents : ['codex'],
+        })),
+        missing: [],
+      },
+      warnings: [], failures: [],
     };
   });
   const progress = createRebuildProgressFeed();
@@ -120,17 +128,27 @@ async function send(instance: ReturnType<typeof render>, ...keys: string[]): Pro
   }
 }
 
-async function openPortableFromMore(instance: ReturnType<typeof render>): Promise<void> {
-  for (let index = 0; index < 4 && !instance.lastFrame()?.includes('› 更多操作…'); index += 1) {
+async function openPortableFromInstall(instance: ReturnType<typeof render>): Promise<void> {
+  for (let index = 0; index < 8 && !instance.lastFrame()?.includes('› 安装'); index += 1) {
     await send(instance, '\u001B[B');
   }
-  expect(instance.lastFrame()).toContain('› 更多操作…');
+  expect(instance.lastFrame()).toContain('› 安装');
   await send(instance, '\r');
-  for (let index = 0; index < 12 && !instance.lastFrame()?.includes('› 在其他 Agent 使用'); index += 1) {
+  for (let index = 0; index < 8 && !instance.lastFrame()?.includes('› ◇ 通用 Agent Skills'); index += 1) {
     await send(instance, '\u001B[B');
   }
-  expect(instance.lastFrame()).toContain('› 在其他 Agent 使用');
+  expect(instance.lastFrame()).toContain('› ◇ 通用 Agent Skills');
   await send(instance, '\r');
+}
+
+async function focusPortableAction(
+  instance: ReturnType<typeof render>,
+  label: string,
+): Promise<void> {
+  for (let index = 0; index < 16 && !instance.lastFrame()?.includes(`› ${label}`); index += 1) {
+    await send(instance, '\u001B[B');
+  }
+  expect(instance.lastFrame()).toContain(`› ${label}`);
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -152,7 +170,7 @@ describe('Portable Skills TUI V1', () => {
     });
     const instance = render(<SessionConsoleApp host={host} />);
     await tick(4);
-    expect(instance.lastFrame()).toContain('添加插件');
+    expect(instance.lastFrame()).toContain('插件');
     expect(instance.lastFrame()).toContain('插件来源');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
     first.value.push({ name: 'pluginList', mode: 'browse' });
@@ -453,7 +471,7 @@ describe('Portable Skills TUI V1', () => {
   });
 
   it.each(['blocked', 'partial'] as const)(
-    'clears a %s result before retrying and does not expose it on Back',
+    'returns a %s result to modification without offering an inexact retry',
     async (firstState) => {
       let attempt = 0;
       const executeIntent = vi.fn(async (intent: OperationIntent): Promise<PortableInstallReceipt> => {
@@ -485,13 +503,12 @@ describe('Portable Skills TUI V1', () => {
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
       await tick();
 
-      await send(instance, '\u001B[B', '\r');
-      expect(value.snapshot.router.current.route.name).toBe('review');
-      value.back();
+      expect(instance.lastFrame()).not.toMatch(/› 重试$/mu);
+      await send(instance, '\r');
       expect(value.snapshot.router.current.route).toEqual({
         name: 'portableSkillSelect', pluginId: 'official/toolkit',
       });
-      value.resetPortableFlowToPreview('official/toolkit');
+      value.back();
       expect(value.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/toolkit' });
     },
   );
@@ -509,16 +526,74 @@ describe('Portable Skills TUI V1', () => {
     await tick();
 
     expect(instance.lastFrame()).not.toContain('选择使用位置并确认变化');
-    await openPortableFromMore(instance);
+    await openPortableFromInstall(instance);
     expect(value.snapshot.router.current.route).toEqual({
       name: 'portableSkillSelect', pluginId: 'official/toolkit',
     });
   });
 
+  it('returns a platform-origin Portable blocker to target platforms without losing native choices', async () => {
+    const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
+      if (intent.kind === 'portableInstall') {
+        throw new TuiOperationBlockedError('portableValidationFailed', '候选 Skill 校验失败。');
+      }
+      throw new Error('unexpected intent');
+    });
+    const { value } = portableController({ captureEvidence });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/toolkit' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await tick();
+
+    await focusPortableAction(instance, '安装');
+    await send(instance, '\r', '\r');
+    expect(value.snapshot.installPlacementDraft?.platforms).toEqual(['codex']);
+    await focusPortableAction(instance, '◇ 通用 Agent Skills');
+    await send(instance, '\r');
+    await tick(2);
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'portableBlocker', pluginId: 'official/toolkit', code: 'portableValidationFailed',
+    });
+    expect(instance.lastFrame()).toContain('返回目标平台');
+    await focusPortableAction(instance, '返回目标平台');
+    await send(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'installTargets', pluginId: 'official/toolkit',
+    });
+    expect(value.snapshot.installPlacementDraft?.platforms).toEqual(['codex']);
+    expect(instance.lastFrame()).toContain('◆ Codex');
+  });
+
+  it('leaves a successful platform-origin Portable result at stable detail without old install steps', async () => {
+    const { value } = portableController();
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/toolkit' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await tick();
+
+    await focusPortableAction(instance, '安装');
+    await send(instance, '\r', '\r');
+    await focusPortableAction(instance, '◇ 通用 Agent Skills');
+    await send(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect'));
+    const operation = await value.buildPortableInstallReview();
+    await value.executeOperation(operation.reviewToken);
+    await tick();
+    expect(instance.lastFrame()).toContain('返回目标平台');
+    await focusPortableAction(instance, '返回目标平台');
+    await send(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginDetail', pluginId: 'official/toolkit',
+    });
+    await send(instance, 'b');
+    expect(value.snapshot.router.current.route.name).not.toBe('installTargets');
+    expect(value.snapshot.router.current.route.name).not.toBe('installPlacement');
+  });
+
   it.each([
     {
       label: 'blocked preview flow through Skill selection',
-      origin: { name: 'pluginPreview', pluginId: 'official/toolkit' } as const,
+      origin: { name: 'pluginDetail', pluginId: 'official/toolkit' } as const,
       previous: { name: 'home' } as const,
       resultState: 'blocked' as const,
       modificationTarget: 'portableSkillSelect' as const,
@@ -568,7 +643,7 @@ describe('Portable Skills TUI V1', () => {
     });
     const { value } = portableController({ executeIntent });
     await value.load();
-    if (origin.name === 'pluginDetail') value.push(previous);
+    if (previous.name !== 'home') value.push(previous);
     value.push(origin);
     await value.preparePortableInstall('official/toolkit');
     if (explicitAgents) value.setPortableAgentMode('explicit', ['codex']);
@@ -608,7 +683,7 @@ describe('Portable Skills TUI V1', () => {
     expect(instance.lastFrame()).toContain('确认信息已过期，写入未开始');
     expect(instance.lastFrame()).not.toContain('通用 Skills 已安装');
     expect(instance.lastFrame()).not.toContain('已通过安装验证');
-    for (const label of ['返回修改', '重试', '返回插件详情']) {
+    for (const label of ['返回修改', '返回插件详情']) {
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain(`› ${label}`);
       expect(frame).toContain('↑↓ 移动');
@@ -652,7 +727,7 @@ describe('Portable Skills TUI V1', () => {
     }))).toEqual({ code: 'portableScopeUnavailable', diagnosticCode: 'portableScopeUnavailable' });
   });
 
-  it('keeps Space as the Portable Skill toggle', async () => {
+  it('uses Space to toggle a Portable Skill and Enter to open its content summary', async () => {
     const { value } = portableController();
     await value.load();
     await value.preparePortableInstall('official/toolkit');
@@ -660,9 +735,61 @@ describe('Portable Skills TUI V1', () => {
     await tick();
 
     expect(value.snapshot.portableDraft?.selectedCount).toBe(3);
+    await send(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'portableSkillSummary', pluginId: 'official/toolkit', skillName: 'author-skill',
+    });
+    expect(instance.lastFrame()).toContain('内容摘要');
+    expect(instance.lastFrame()).toContain('Toolkit');
+    expect(instance.lastFrame()).toContain('目录中的静态 Skill');
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(3);
+    await send(instance, 'b');
     await send(instance, ' ');
     expect(value.snapshot.portableDraft?.selectedCount).toBe(2);
     expect(instance.lastFrame()).toContain('◇ author-skill');
+  });
+
+  it.each(['focused continue', 'c shortcut'] as const)(
+    'uses the fixed Continue action and c as the same Portable selection confirmation for %s',
+    async (method) => {
+      const { value } = portableController();
+      await value.load();
+      await value.preparePortableInstall('official/toolkit');
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+      await tick();
+
+      expect(instance.lastFrame()).toContain('全选全部候选');
+      expect(instance.lastFrame()).toContain('只看已选（3）');
+      expect(instance.lastFrame()).toContain('清空选择');
+      if (method === 'focused continue') {
+        await focusPortableAction(instance, '继续');
+        await send(instance, '\r');
+      } else {
+        await send(instance, 'c');
+      }
+      expect(value.snapshot.router.current.route).toEqual({
+        name: 'portableAgentMode', pluginId: 'official/toolkit',
+      });
+    },
+  );
+
+  it('filters selected Portable Skills, clears them, and restores all candidates', async () => {
+    const { value } = portableController();
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await tick();
+
+    await focusPortableAction(instance, '清空选择');
+    await send(instance, '\r');
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(0);
+    await focusPortableAction(instance, '只看已选（0）');
+    await send(instance, '\r');
+    expect(instance.lastFrame()).toContain('没有已选 Skill');
+    await focusPortableAction(instance, '查看全部候选');
+    await send(instance, '\r', 'a');
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(3);
+    expect(instance.lastFrame()).toContain('3 / 3 已选择');
   });
 
   it('advertises only the manifest capability before entry, then selects candidates and executes the reviewed subset', async () => {
@@ -671,14 +798,15 @@ describe('Portable Skills TUI V1', () => {
     value.push({ name: 'pluginPreview', pluginId: 'official/toolkit' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await tick();
-    expect(instance.lastFrame()).toContain('自动使用 1 个所需插件；0 个可复用');
-    expect(instance.lastFrame()).toContain('Codex · Claude Code');
-    expect(instance.lastFrame()).toContain('也可安装通用 Skills');
-    expect(instance.lastFrame()).toContain('安装方式、依赖、通用 Skills、来源和诊断');
+    expect(instance.lastFrame()).toContain('尚未确认使用位置');
+    expect(instance.lastFrame()).toContain('Codex');
+    expect(instance.lastFrame()).toContain('Claude Code');
+    expect(instance.lastFrame()).toContain('更多操作');
+    expect(instance.lastFrame()).toContain('依赖关系');
     expect(instance.lastFrame()).not.toContain('3 个候选');
     expect(capture).not.toHaveBeenCalled();
 
-    await openPortableFromMore(instance);
+    await openPortableFromInstall(instance);
     expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
     expect(instance.lastFrame()).toContain('3 / 3 已选择');
     expect(instance.lastFrame()).toContain('Content');
@@ -753,6 +881,32 @@ describe('Portable Skills TUI V1', () => {
       expect(instance.lastFrame()).toContain('prepare-portable');
       expect(instance.lastFrame()).not.toContain('/private/');
     }
+  });
+
+  it.each([
+    { diagnosticCode: 'portableSensitiveOutput', risk: '生成的 Skill 内容包含敏感配置值或未解析模板。', columns: 60, rows: 18 },
+    { diagnosticCode: 'portableSensitiveOutput', risk: '生成的 Skill 内容包含敏感配置值或未解析模板。', columns: 80, rows: 24 },
+    { diagnosticCode: 'portableRuntimeImportMissing', risk: '所需运行时引用未解析、缺失或无效。', columns: 60, rows: 18 },
+    { diagnosticCode: 'portableRuntimeImportMissing', risk: '所需运行时引用未解析、缺失或无效。', columns: 80, rows: 24 },
+  ] as const)('renders Portable risk $diagnosticCode at $columns x $rows without an install action', async ({ diagnosticCode, risk, columns, rows }) => {
+    const { value } = portableController();
+    await value.load();
+    value.push({
+      name: 'portableBlocker',
+      pluginId: 'official/toolkit',
+      code: 'portableValidationFailed',
+      diagnosticCode,
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+    await tick();
+
+    expect(instance.lastFrame()).toContain(risk);
+    expect(instance.lastFrame()).toContain('没有开始写入，也没有调用 Skills CLI。');
+    expect(instance.lastFrame()).not.toContain('继续安装');
+
+    await send(instance, 'd');
+    expect(instance.lastFrame()).toContain(diagnosticCode);
+    expect(instance.lastFrame()).toContain('prepare-portable');
   });
 
   it('discards the transient draft on non-portable navigation but preserves explicit modification paths', async () => {
@@ -874,7 +1028,7 @@ describe('Portable Skills TUI V1', () => {
     );
     expect(value.snapshot.router.depth).toBe(3);
     value.back();
-    expect(value.snapshot.router.current.route.name).toBe('pluginPreview');
+    expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
     expect(value.snapshot.portableDraft).toBeUndefined();
   });
 
@@ -902,7 +1056,7 @@ describe('Portable Skills TUI V1', () => {
       name: 'portableBlocker', pluginId: 'official/toolkit', code: 'requiredConfigMissing',
       diagnosticCode: 'requiredConfigMissing',
     });
-    value.replace({ name: 'configLayer', pluginId: 'official/toolkit' });
+    value.replace({ name: 'configFields', pluginId: 'official/toolkit', layer: { scope: 'effective' } });
     const operation = await value.buildOperationReview({
       kind: 'configSave', pluginId: 'official/toolkit', scope: 'user', projectLayer: 'shared', apply: true,
       updates: { token: 'private' }, privateKeys: ['token'],
@@ -914,6 +1068,165 @@ describe('Portable Skills TUI V1', () => {
     expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
     expect(value.snapshot.portableDraft?.selectedCount).toBe(3);
     expect(captureEvidence.mock.calls.filter(([intent]) => intent.kind === 'portableInstall')).toHaveLength(2);
+  });
+
+  it('keeps a successful settings result when it includes a safe attention message', async () => {
+    const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
+      if (intent.kind === 'portableInstall') {
+        const portable = review(intent);
+        return { catalog: { configDigest: portable.configDigest, compositeDigest: portable.evidenceDigest }, portable };
+      }
+      if (intent.kind !== 'configSaveBatch') throw new Error('unexpected intent');
+      return {
+        catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:catalog' },
+        configBatch: { groups: intent.groups.map((group) => ({
+          scope: group.scope,
+          targetFingerprint: `sha256:${group.scope}`,
+          config: {
+            scope: group.scope, storeDigest: `sha256:store:${group.scope}`,
+            impactState: 'known', affectedTargets: [],
+          },
+        })) },
+      };
+    });
+    const executeIntent = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      groups: [{
+        scope: 'project' as const, status: 'succeeded' as const, configSaved: true,
+        applyRequested: true, applyStatus: 'succeeded' as const,
+        execution: {
+          configWrite: 'succeeded', apply: { state: 'succeeded', targetResults: [] },
+          warnings: ['projectConfigShareabilityUnverified: Git visibility was not confirmed.'],
+        },
+      }, {
+        scope: 'user' as const, status: 'succeeded' as const, configSaved: true,
+        applyRequested: true, applyStatus: 'succeeded' as const,
+        execution: {
+          configWrite: 'succeeded', apply: { state: 'succeeded', targetResults: [] },
+          otherProjectsMayRequireSync: true,
+        },
+      }],
+    }));
+    const { value } = portableController({ captureEvidence, executeIntent });
+    await value.load();
+    value.push({
+      name: 'portableBlocker', pluginId: 'official/toolkit', code: 'requiredConfigMissing',
+      diagnosticCode: 'requiredConfigMissing',
+    });
+    value.replace({
+      name: 'configFields', pluginId: 'official/toolkit', layer: { scope: 'effective' },
+    });
+    const operation = await value.buildOperationReview({
+      kind: 'configSaveBatch', pluginId: 'official/toolkit', apply: true,
+      groups: [{ scope: 'project', updates: { mode: 'strict' } }, {
+        scope: 'user', updates: { token: 'private' }, privateKeys: ['token'],
+      }],
+    });
+
+    const result = await value.executeOperation(operation.reviewToken);
+
+    expect(result.state).toBe('succeeded');
+    expect(value.snapshot.router.current.route.name).toBe('result');
+    expect(result.summary.messages).toEqual(expect.arrayContaining([
+      '警告：projectConfigShareabilityUnverified: Git visibility was not confirmed.',
+      '提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。',
+    ]));
+    expect(captureEvidence.mock.calls.filter(([intent]) => intent.kind === 'portableInstall')).toHaveLength(0);
+  });
+
+  it('keeps a partial settings result before retrying only the failed layer', async () => {
+    const captured: OperationIntent[] = [];
+    const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
+      captured.push(structuredClone(intent));
+      if (intent.kind === 'portableInstall') {
+        const portable = review(intent);
+        return { catalog: { configDigest: portable.configDigest, compositeDigest: portable.evidenceDigest }, portable };
+      }
+      if (intent.kind === 'configSaveBatch') {
+        return {
+          catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:catalog' },
+          configBatch: { groups: intent.groups.map((group) => ({
+            scope: group.scope,
+            targetFingerprint: `sha256:${group.scope}`,
+            config: {
+              scope: group.scope, storeDigest: `sha256:store:${group.scope}`,
+              impactState: 'known', affectedTargets: [],
+            },
+          })) },
+        };
+      }
+      return {
+        catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:catalog' },
+        config: { scope: intent.scope, storeDigest: 'sha256:store:user' },
+      };
+    });
+    const executeIntent = vi.fn(async (intent: OperationIntent) => intent.kind === 'configSaveBatch'
+      ? {
+          status: 'partial' as const,
+          groups: [{
+            scope: 'project' as const, status: 'failed' as const, configSaved: false,
+            applyRequested: true, applyStatus: 'failed' as const, errorCode: 'configWriteFailed',
+          }, {
+            scope: 'user' as const, status: 'failed' as const, configSaved: true,
+            applyRequested: true, applyStatus: 'failed' as const, errorCode: 'targetApplyFailed',
+            execution: {
+              configWrite: 'succeeded',
+              apply: {
+                state: 'partial',
+                errors: [{ stage: 'apply', code: 'targetApplyFailed' }],
+                targetResults: [],
+              },
+              warnings: ['projectConfigShareabilityUnverified: Git visibility was not confirmed.'],
+              otherProjectsMayRequireSync: true,
+            },
+          }],
+        }
+      : {
+          configWrite: 'succeeded' as const, overallState: 'succeeded' as const,
+          apply: { state: 'succeeded' as const, targetResults: [] },
+        });
+    const { value } = portableController({ captureEvidence, executeIntent });
+    await value.load();
+    value.push({
+      name: 'portableBlocker', pluginId: 'official/toolkit', code: 'requiredConfigMissing',
+      diagnosticCode: 'requiredConfigMissing',
+    });
+    value.replace({
+      name: 'configFields', pluginId: 'official/toolkit', layer: { scope: 'effective' },
+    });
+    const batch = await value.buildOperationReview({
+      kind: 'configSaveBatch', pluginId: 'official/toolkit', apply: true,
+      groups: [{ scope: 'project', updates: { mode: 'strict' } }, {
+        scope: 'user', updates: { token: 'private' }, privateKeys: ['token'],
+      }],
+    });
+
+    const partial = await value.executeOperation(batch.reviewToken);
+
+    expect(partial.state).toBe('partial');
+    expect(value.snapshot.router.current.route.name).toBe('result');
+    expect(partial.summary.messages).toContain(
+      '警告：projectConfigShareabilityUnverified: Git visibility was not confirmed.',
+    );
+    expect(partial.summary.messages).toContain(
+      '提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。',
+    );
+    expect(captured.filter((intent) => intent.kind === 'portableInstall')).toHaveLength(0);
+    const detail = value.getOperationDiagnostic(partial.operationRecordId!);
+    expect(detail?.summary.effects.configCommit).toBe('partial');
+    expect(detail?.diagnostics.map((diagnostic) => diagnostic.code)).toContain('configWriteFailed');
+
+    const retry = await value.buildOperationReview({
+      kind: 'configSave', pluginId: 'official/toolkit', scope: 'project', apply: true,
+      updates: { mode: 'strict' },
+    });
+    const retried = await value.executeOperation(retry.reviewToken);
+
+    expect(retried.state).toBe('succeeded');
+    expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
+    expect(captured.filter((intent) => intent.kind === 'configSave')).toHaveLength(2);
+    expect(captured.filter((intent) => intent.kind === 'configSaveBatch')).toHaveLength(2);
+    expect(captured.filter((intent) => intent.kind === 'portableInstall')).toHaveLength(2);
   });
 
   it('unions scope candidates before selection and re-prepares the selected user scope for Review', async () => {
@@ -1055,9 +1368,9 @@ describe('Portable Skills TUI V1', () => {
     const frame = instance.lastFrame() ?? '';
     expect(frame).toContain('author-skill');
     for (const skill of candidates.map((candidate) => candidate.name)) {
-      expect(frame).toMatch(new RegExp(`${skill}\\s+已安装`, 'u'));
+      expect(frame).toMatch(new RegExp(`${skill}\\s+Agent：codex · 已验证`, 'u'));
     }
-    expect(frame.match(/返回插件预览/gu)).toHaveLength(1);
+    expect(frame.match(/返回插件详情/gu)).toHaveLength(1);
     expect(frame).not.toContain('sha256:materialized');
     expect(frame).not.toContain('1.5.23');
     expect(frame).not.toContain('elapsed');
@@ -1096,7 +1409,9 @@ describe('Portable Skills TUI V1', () => {
         collisions: [], dependencies: portable.dependencies,
         materializationDigest: portable.materializationDigest,
         verification: {
-          records: [{ name: 'result-skill-0', scope: 'project', agents: ['Codex'] }],
+          records: manyCandidates.slice(0, 9).map((skill) => ({
+            name: skill.name, scope: 'project' as const, agents: ['Codex'],
+          })),
           missing: [{ skill: 'result-skill-9' }],
         },
         warnings: [], failures: [{
@@ -1113,8 +1428,8 @@ describe('Portable Skills TUI V1', () => {
     await tick();
 
     const frame = instance.lastFrame() ?? '';
-    expect(frame).toMatch(/result-skill-9\s+未完成 · 缺少目标/u);
-    expect(frame).toMatch(/result-skill-0\s+已安装/u);
+    expect(frame).toMatch(/result-skill-9\s+Agent：无法确认 · 确认缺失/u);
+    expect(frame).toMatch(/result-skill-0\s+Agent：Codex · 已验证/u);
     expect(frame).toContain(`另有 ${size.rows === 18 ? 8 : 4} 个 Skills`);
     expect(frame).toContain('安全恢复');
     expect(frame).toContain('› 返回修改');
@@ -1128,7 +1443,7 @@ describe('Portable Skills TUI V1', () => {
     expect(instance.lastFrame()).toContain('↑ 前面还有');
     for (let page = 0; page < 12; page += 1) await send(instance, '\u001B[5~');
 
-    for (const label of ['重试', '返回插件预览']) {
+    for (const label of ['返回插件详情']) {
       await send(instance, '\u001B[B');
       const actionFrame = instance.lastFrame() ?? '';
       expect(actionFrame).toContain(`› ${label}`);
@@ -1142,13 +1457,16 @@ describe('Portable Skills TUI V1', () => {
     expect(helpFrame).toContain('当前页快捷键');
     expect(helpFrame).toMatch(/d\s+打开技术详情/u);
     expect(helpFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
-    await send(instance, '?', 'd', '\u001B[A', '\u001B[A');
-    for (const [index, label] of ['返回修改', '重试', '返回插件预览'].entries()) {
+    await send(instance, '?', 'd');
+    for (let index = 0; index < 4 && !instance.lastFrame()?.includes('› 返回修改'); index += 1) {
+      await send(instance, '\u001B[A');
+    }
+    for (const [index, label] of ['返回修改', '返回插件详情'].entries()) {
       if (index > 0) await send(instance, '\u001B[B');
       const technicalFrame = instance.lastFrame() ?? '';
       expect(technicalFrame).toContain('技术详情');
       expect(technicalFrame).toContain('failure code');
-      expect(technicalFrame).toMatch(/result-skill-9\s+未完成 · 缺少目标/u);
+      expect(technicalFrame).toMatch(/result-skill-9\s+Agent：无法确认 · 确认缺失/u);
       expect(technicalFrame).toContain('另有 9 个 Skills');
       expect(technicalFrame).toContain('安全恢复');
       expect(technicalFrame).toContain(`› ${label}`);
@@ -1199,10 +1517,10 @@ describe('Portable Skills TUI V1', () => {
     expect(helpFrame).toMatch(/d\s+打开技术详情/u);
     expect(helpFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
     await send(instance, '?', 'd');
-    for (const [index, label] of ['返回修改', '重试', '返回插件预览'].entries()) {
+    for (const [index, label] of ['返回修改', '返回插件详情'].entries()) {
       if (index > 0) await send(instance, '\u001B[B');
       const frame = instance.lastFrame() ?? '';
-      expect(frame).toMatch(/blocked-skill-0\s+结果未知/u);
+      expect(frame).toMatch(/blocked-skill-0\s+Agent：无法确认 · 结果未知/u);
       expect(frame).toContain('另有 9 个 Skills');
       expect(frame).toContain('技术详情');
       expect(frame).toContain('failure code');
@@ -1508,7 +1826,9 @@ describe('Portable Skills TUI V1', () => {
     for (const [index, label] of [
       ...manyCandidates.map((candidate) => `◆ ${candidate.name}`),
       '继续',
-      '查看依赖关系',
+      '全选全部候选',
+      '只看已选（10）',
+      '清空选择',
     ].entries()) {
       if (index > 0) await send(instance, '\u001B[B');
       const frame = instance.lastFrame() ?? '';
@@ -1528,12 +1848,11 @@ describe('Portable Skills TUI V1', () => {
     await send(instance, '?', 'd');
     const technicalFrame = instance.lastFrame() ?? '';
     expect(technicalFrame).toContain('范围变体');
-    expect(technicalFrame).toContain('当前项目：');
     expect(technicalFrame).toContain('所有项目：');
+    if (size.columns === 80) expect(technicalFrame).toContain('当前项目：');
     expect(technicalFrame).toContain('另有 9 个 Skill 的范围变体已折叠');
-    expect(technicalFrame).toContain('› 查看依赖关系');
     expect(technicalFrame).toContain('↑↓ 移动');
-    expect(technicalFrame.match(/›/gu)).toHaveLength(1);
+    expect((technicalFrame.match(/›/gu) ?? []).length).toBeLessThanOrEqual(1);
     expect(technicalFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
   });
 
@@ -1605,7 +1924,7 @@ describe('Portable Skills TUI V1', () => {
     if (statusValue === 'partial') {
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
       await tick();
-      expect(instance.lastFrame()).toMatch(/author-skill\s+未完成 · 缺少目标/u);
+      expect(instance.lastFrame()).toMatch(/author-skill\s+Agent：无法确认 · 确认缺失/u);
       expect(instance.lastFrame()).not.toContain('sha256:materialized');
       expect(instance.lastFrame()).not.toContain('1.5.23');
     }
@@ -1642,5 +1961,185 @@ describe('Portable Skills TUI V1', () => {
     await tick();
     expect(instance.lastFrame()).toContain('结果未知');
     expect(instance.lastFrame()).not.toContain('验证缺项：0');
+  });
+
+  it('rechecks an unknown result without running Skills add again', async () => {
+    const executeIntent = vi.fn(async (intent: OperationIntent): Promise<PortableInstallReceipt> => {
+      if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
+      const portable = review(intent);
+      return {
+        receiptSchemaVersion: 5, command: 'skill:install', ok: false, status: 'partial',
+        plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: portable.selected,
+        requestedSkills: intent.selectedSkills, agentMode: portable.agentMode,
+        requestedAgents: portable.requestedAgents, skillsCliVersion: portable.skillsCliVersion,
+        collisions: [], dependencies: portable.dependencies,
+        materializationDigest: portable.materializationDigest,
+        verification: {
+          records: [], missing: [],
+          unknown: portable.selected.map((skill) => ({ skill: skill.name, agent: 'codex' })),
+        },
+        warnings: [], failures: [{
+          code: 'portableSkillsCliVerificationFailed', message: '无法确认。', recovery: '重新检查。',
+        }],
+      };
+    });
+    const recheckPortableInstall = vi.fn(async (receipt: PortableInstallReceipt): Promise<PortableInstallReceipt> => ({
+      ...receipt,
+      ok: true,
+      status: 'succeeded',
+      verification: {
+        records: receipt.selectedSkills.map((skill) => ({
+          name: skill.name, scope: receipt.scope, agents: ['codex'],
+        })),
+        missing: [],
+        unknown: [],
+      },
+      warnings: [],
+      failures: [],
+    }));
+    const { value } = portableController({ executeIntent, recheckPortableInstall });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/toolkit' });
+    await value.preparePortableInstall('official/toolkit');
+    const operation = await value.buildPortableInstallReview();
+    await value.executeOperation(operation.reviewToken);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await tick();
+
+    expect(instance.lastFrame()).toContain('结果未知');
+    expect(instance.lastFrame()).toContain('› 重新检查结果');
+    expect(instance.lastFrame()).not.toContain('仅重试确认缺失的目标');
+    await send(instance, '\r');
+    await tick(2);
+    expect(recheckPortableInstall).toHaveBeenCalledTimes(1);
+    expect(executeIntent).toHaveBeenCalledTimes(1);
+    expect(value.snapshot.result?.state).toBe('succeeded');
+    expect(instance.lastFrame()).toContain('通用 Skills 已安装');
+  });
+
+  it('shows separate verified and missing Agent rows for one explicitly installed Skill', async () => {
+    const executeIntent = vi.fn(async (intent: OperationIntent): Promise<PortableInstallReceipt> => {
+      if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
+      const portable = review(intent);
+      return {
+        receiptSchemaVersion: 5, command: 'skill:install', ok: false, status: 'partial',
+        plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: portable.selected,
+        requestedSkills: intent.selectedSkills, agentMode: 'explicit', requestedAgents: ['codex', 'cursor'],
+        skillsCliVersion: portable.skillsCliVersion, collisions: [], dependencies: portable.dependencies,
+        materializationDigest: portable.materializationDigest,
+        verification: {
+          records: [{ name: 'review-skill', scope: intent.scope, agents: ['codex'] }],
+          missing: [{ skill: 'review-skill', agent: 'cursor' }], unknown: [],
+        },
+        warnings: [], failures: [{
+          code: 'portableSkillsCliVerificationFailed', message: '一个目标缺失。', recovery: '精确重试。',
+        }],
+      };
+    });
+    const { value } = portableController({ executeIntent });
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    value.togglePortableSkill('author-skill');
+    value.togglePortableSkill('content-skill');
+    value.setPortableAgentMode('explicit', ['codex', 'cursor']);
+    const operation = await value.buildPortableInstallReview();
+    await value.executeOperation(operation.reviewToken);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await tick();
+
+    const frame = instance.lastFrame() ?? '';
+    expect(frame.match(/review-skill/gu)).toHaveLength(2);
+    expect(frame).toMatch(/review-skill\s+Agent：cursor · 确认缺失/u);
+    expect(frame).toMatch(/review-skill\s+Agent：codex · 已验证/u);
+  });
+
+  it('shows an Agent-less automatic unknown as unknown without a success row', async () => {
+    const executeIntent = vi.fn(async (intent: OperationIntent): Promise<PortableInstallReceipt> => {
+      if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
+      const portable = review(intent);
+      return {
+        receiptSchemaVersion: 5, command: 'skill:install', ok: false, status: 'partial',
+        plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: portable.selected,
+        requestedSkills: intent.selectedSkills, agentMode: 'automatic', requestedAgents: [],
+        skillsCliVersion: portable.skillsCliVersion, collisions: [], dependencies: portable.dependencies,
+        materializationDigest: portable.materializationDigest,
+        verification: { records: [], missing: [], unknown: [{ skill: 'review-skill' }] },
+        warnings: [], failures: [{
+          code: 'portableSkillsCliVerificationFailed', message: '目标未知。', recovery: '重新检查。',
+        }],
+      };
+    });
+    const { value } = portableController({ executeIntent });
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    value.togglePortableSkill('author-skill');
+    value.togglePortableSkill('content-skill');
+    const operation = await value.buildPortableInstallReview();
+    await value.executeOperation(operation.reviewToken);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await tick();
+
+    expect(instance.lastFrame()).toMatch(/review-skill\s+Agent：无法确认 · 结果未知/u);
+    expect(instance.lastFrame()).not.toContain('已验证');
+    expect(instance.lastFrame()).not.toContain('通用 Skills 已安装');
+  });
+
+  it('prepares a new Review for only the exact missing Skill and Agent pair', async () => {
+    const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
+      if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
+      const portable = review(intent);
+      const retryPairs = intent.retry?.receipt.verification.missing ?? [];
+      return {
+        catalog: { configDigest: portable.configDigest, compositeDigest: portable.evidenceDigest },
+        portable: intent.retry ? {
+          ...portable,
+          baseEvidenceDigest: 'sha256:base',
+          retryPairs,
+          targetGroups: [{ agent: 'cursor', skills: ['review-skill'] }],
+        } : portable,
+      };
+    });
+    const executeIntent = vi.fn(async (intent: OperationIntent): Promise<PortableInstallReceipt> => {
+      if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
+      const portable = review(intent);
+      return {
+        receiptSchemaVersion: 5, command: 'skill:install', ok: false, status: 'partial',
+        plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: portable.selected,
+        requestedSkills: intent.selectedSkills, agentMode: portable.agentMode,
+        requestedAgents: portable.requestedAgents, skillsCliVersion: portable.skillsCliVersion,
+        collisions: [], dependencies: portable.dependencies,
+        materializationDigest: portable.materializationDigest,
+        verification: {
+          records: [{ name: 'author-skill', scope: intent.scope, agents: ['codex'] }],
+          missing: [{ skill: 'review-skill', agent: 'cursor' }],
+          unknown: [],
+        },
+        warnings: [], failures: [{
+          code: 'portableSkillsCliVerificationFailed', message: '缺少一个目标。', recovery: '精确重试。',
+        }],
+      };
+    });
+    const { value } = portableController({ captureEvidence, executeIntent });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/toolkit' });
+    await value.preparePortableInstall('official/toolkit');
+    value.setPortableAgentMode('explicit', ['codex', 'cursor']);
+    const operation = await value.buildPortableInstallReview();
+    await value.executeOperation(operation.reviewToken);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await tick();
+
+    expect(instance.lastFrame()).toContain('› 仅重试确认缺失的目标');
+    expect(instance.lastFrame()).not.toMatch(/› 重试$/mu);
+    await send(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    expect(captureEvidence).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: 'portableInstall',
+      selectedSkills: ['review-skill'],
+      requestedAgents: ['cursor'],
+      retry: expect.objectContaining({ receipt: expect.any(Object) }),
+    }), expect.any(AbortSignal));
+    expect(instance.lastFrame()).toContain('精确重试 · cursor');
+    expect(instance.lastFrame()).toContain('review-skill');
   });
 });

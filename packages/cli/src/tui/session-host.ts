@@ -47,6 +47,7 @@ export class SessionHost {
   #pendingConsumedDraft?: ExternalDraftState;
   #reloading = false;
   #disposed = false;
+  readonly #presentedProjectReminders = new Map<string, string>();
 
   constructor(options: {
     createSession: () => { controller: TuiController; progressFeed: RebuildProgressFeed };
@@ -82,6 +83,14 @@ export class SessionHost {
     this.#listeners.add(listener);
     listener(this.snapshot);
     return () => this.#listeners.delete(listener);
+  }
+
+  claimProjectIntentReminder(projectRoot: string, signature: string): boolean {
+    if (this.#disposed || this.#presentedProjectReminders.get(projectRoot) === signature) {
+      return false;
+    }
+    this.#presentedProjectReminders.set(projectRoot, signature);
+    return true;
   }
 
   async requestNavigation(
@@ -168,7 +177,11 @@ export class SessionHost {
     this.#controllerUnsubscribe = controller.subscribe((snapshot) => {
       if (this.#disposed || epoch !== this.#epoch || controller !== this.#controller) return;
       const pending = this.#pendingNavigation;
-      if (!pending || snapshot.router.current.route.name !== 'result' || !snapshot.result) return;
+      const completedAtDetail = snapshot.router.current.route.name === 'pluginDetail'
+        && snapshot.completionNotice?.pluginId === snapshot.router.current.route.pluginId
+        && snapshot.completionNotice.operationRecordId === snapshot.result?.operationRecordId;
+      if (!pending || (snapshot.router.current.route.name !== 'result' && !completedAtDetail)
+        || !snapshot.result) return;
       if (controller.hasActiveWrite) return;
       if (snapshot.result.state !== 'succeeded') {
         this.#pendingNavigation = undefined;

@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const MIN_VERSION = [1, 5, 23] as const;
 const MAX_VERSION = [2, 0, 0] as const;
+export const SKILLS_CLI_SUPPORTED_VERSION_LABEL = '>=1.5.23 <2.0.0';
 
 export type SkillsCliErrorCode =
   | 'portableSkillsCliMissing'
@@ -35,6 +36,17 @@ export interface SkillsCliInvocationOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+}
+
+export interface PortableSkillTarget {
+  skill: string;
+  agent?: string;
+}
+
+export interface SkillsVerificationResult {
+  records: InstalledSkillRecord[];
+  missing: PortableSkillTarget[];
+  unknown: PortableSkillTarget[];
 }
 
 function compareVersion(left: readonly number[], right: readonly number[]): number {
@@ -87,7 +99,7 @@ export async function probeSkillsCli(
   if (compareVersion(version, MIN_VERSION) < 0 || compareVersion(version, MAX_VERSION) >= 0) {
     throw new SkillsCliError(
       'portableSkillsCliIncompatible',
-      `skills ${version.join('.')} 不在支持范围 >=1.5.23 <2.0.0。`,
+      `skills ${version.join('.')} 不在支持范围 ${SKILLS_CLI_SUPPORTED_VERSION_LABEL}。`,
     );
   }
   return { version: version.join('.') };
@@ -162,24 +174,42 @@ export async function verifySkills(options: SkillsCliInvocationOptions & {
   skills: string[];
   agents?: string[];
   global: boolean;
-}): Promise<{ records: InstalledSkillRecord[]; missing: Array<{ skill: string; agent?: string }> }> {
-  if (options.agents) {
-    const records: InstalledSkillRecord[] = [];
-    const missing: Array<{ skill: string; agent?: string }> = [];
-    for (const agent of options.agents) {
-      const current = await listInstalledSkills({ ...options, agent });
-      records.push(...current);
-      const names = new Set(current.filter((entry) => entry.agents.length > 0).map((entry) => entry.name));
-      for (const skill of options.skills) {
-        if (!names.has(skill)) missing.push({ skill, agent });
-      }
-    }
-    return { records, missing };
+}): Promise<SkillsVerificationResult> {
+  const targets = options.agents
+    ? options.agents.flatMap((agent) => options.skills.map((skill) => ({ skill, agent })))
+    : options.skills.map((skill) => ({ skill }));
+  return verifySkillTargets({ ...options, targets });
+}
+
+export async function verifySkillTargets(options: SkillsCliInvocationOptions & {
+  targets: PortableSkillTarget[];
+  global: boolean;
+}): Promise<SkillsVerificationResult> {
+  const records: InstalledSkillRecord[] = [];
+  const missing: PortableSkillTarget[] = [];
+  const unknown: PortableSkillTarget[] = [];
+  const groups = new Map<string | undefined, PortableSkillTarget[]>();
+  for (const target of options.targets) {
+    const group = groups.get(target.agent) ?? [];
+    group.push(target);
+    groups.set(target.agent, group);
   }
-  const records = await listInstalledSkills(options);
-  const names = new Set(records.filter((entry) => entry.agents.length > 0).map((entry) => entry.name));
-  return {
-    records,
-    missing: options.skills.filter((skill) => !names.has(skill)).map((skill) => ({ skill })),
-  };
+  for (const [agent, targets] of groups) {
+    let current: InstalledSkillRecord[];
+    try {
+      current = await listInstalledSkills({ ...options, ...(agent ? { agent } : {}) });
+    } catch (error) {
+      if (error instanceof SkillsCliError) {
+        unknown.push(...targets);
+        continue;
+      }
+      throw error;
+    }
+    records.push(...current);
+    const names = new Set(current.filter((entry) => entry.agents.length > 0).map((entry) => entry.name));
+    for (const target of targets) {
+      if (!names.has(target.skill)) missing.push(target);
+    }
+  }
+  return { records, missing, unknown };
 }

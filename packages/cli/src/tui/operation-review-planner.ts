@@ -1,4 +1,5 @@
 import { requestedIntentAction } from '../output/command-receipt.js';
+import type { PortableRetryReview } from '../portable/commands.js';
 import type { PlatformName } from '../types.js';
 import type {
   OperationEvidence,
@@ -38,7 +39,7 @@ function scriptTimeoutChanges(intent: OperationIntent): OperationReviewChange[] 
     && (intent.action === 'install' || intent.action === 'refreshAndSync'
       || intent.action === 'reinstall' || intent.action === 'sync')) {
     configuredTimeoutMs = intent.scriptTimeoutMs;
-  } else if (intent.kind === 'configSave' && intent.apply) {
+  } else if ((intent.kind === 'configSave' || intent.kind === 'configSaveBatch') && intent.apply) {
     configuredTimeoutMs = intent.scriptTimeoutMs;
   } else {
     return [];
@@ -229,6 +230,15 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   primaryLabel: string;
   destructive: boolean;
 } {
+  if (intent.kind === 'catalogStorePrune') {
+    const count = evidence?.catalogStore?.authorizedItems.length ?? 0;
+    return {
+      title: '确认清理 Catalog 本地存储',
+      description: `只删除本次预览确认的 ${count} 个可回收项。`,
+      primaryLabel: `清理 ${count} 个项目`,
+      destructive: true,
+    };
+  }
   if (intent.kind === 'catalogSourcesRecovery') {
     return {
       title: '恢复插件目录来源配置',
@@ -335,6 +345,16 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
       destructive: false,
     };
   }
+  if (intent.kind === 'configSaveBatch') {
+    return {
+      title: '确认保存设置',
+      description: intent.apply
+        ? '按当前项目、个人默认的顺序保存设置，并应用实际受影响的安装位置。'
+        : '按当前项目、个人默认的顺序保存设置。',
+      primaryLabel: intent.apply ? '保存并应用设置' : '保存设置',
+      destructive: false,
+    };
+  }
   if (intent.kind === 'configReset') {
     return {
       title: '重置插件设置',
@@ -404,6 +424,22 @@ function reviewChanges(
   evidence?: OperationEvidence,
   dependencyOverview?: PluginDependencyOverviewViewModel,
 ): OperationReviewChange[] {
+  if (intent.kind === 'catalogStorePrune') {
+    const store = evidence?.catalogStore;
+    if (!store) throw plannerError('catalogStorePrepareFailed', '缺少 Catalog 本地存储预览证据。');
+    const bytes = store.reclaimableBytes === null
+      ? '大小未知'
+      : `${store.reclaimableBytes} bytes`;
+    return [
+      {
+        kind: 'remove',
+        title: `删除 ${store.authorizedItems.length} 个已确认的可回收项`,
+        description: bytes,
+      },
+      { kind: 'keep', title: '保留 Active Catalog、foreign 内容和无法证明安全的项目' },
+      { kind: 'keep', title: '保留预览以后出现的新项目' },
+    ];
+  }
   if (intent.kind === 'catalogSourcesRecovery') {
     return [
       { kind: 'add', title: '备份损坏的 catalog-sources.json' },
@@ -419,6 +455,7 @@ function reviewChanges(
   if (intent.kind === 'portableInstall') {
     const review = evidence?.portable;
     if (!review) throw plannerError('portablePrepareFailed', '缺少通用 Skills Review 证据。');
+    const retry = 'targetGroups' in review ? review as PortableRetryReview : undefined;
     return [
       ...review.selected.map((skill): OperationReviewChange => ({
         kind: 'add',
@@ -428,9 +465,14 @@ function reviewChanges(
         title: skill.name,
         description: `${skill.description} · ${skill.providerDisplayName}${skill.dynamic ? ' · 按设置生成' : ''}`,
       })),
-      { kind: 'change', group: 'portableTarget', title: 'Agent', description: review.agentMode === 'automatic'
-        ? '自动选择检测到的 Agent；未检测到时可能选择全部 Agent'
-        : review.requestedAgents.join('、') },
+      ...(retry ? retry.targetGroups.map((group): OperationReviewChange => ({
+        kind: 'change',
+        group: 'portableTarget',
+        title: `精确重试 · ${group.agent}`,
+        description: group.skills.join('、'),
+      })) : [{ kind: 'change' as const, group: 'portableTarget' as const, title: 'Agent', description: review.agentMode === 'automatic'
+        ? '自动选择检测到的 Agent；实际目标由 Skills CLI 决定，不表示安装到所有 Agent'
+        : review.requestedAgents.join('、') }]),
       { kind: 'change', group: 'portableTarget', title: '范围', description: review.scope === 'project' ? '当前项目' : '所有项目' },
       { kind: review.dependencies.length > 0 ? 'keep' : 'change', group: 'portableInputs', title: '插件依赖', description: review.dependencies.length > 0
         ? `${review.dependencies.length} 个依赖用于生成，不能取消` : '无需插件依赖' },
@@ -721,6 +763,37 @@ function reviewChanges(
         title: '无效状态中的其他当前启用版本记录不会保留',
         description: '其他来源配置和本地目录副本不会删除；可分别重新启用。',
       }] : []),
+    ];
+  }
+  if (intent.kind === 'configSaveBatch') {
+    if (!evidence?.configBatch
+      || evidence.configBatch.groups.length !== intent.groups.length) {
+      throw plannerError('configBatchPrepareFailed', '缺少多层设置 Review 证据。');
+    }
+    return [
+      ...scriptTimeoutChanges(intent),
+      ...intent.groups.flatMap((group) => {
+        const groupEvidence = evidence.configBatch!.groups.find((item) => item.scope === group.scope);
+        if (!groupEvidence) {
+          throw plannerError('configBatchPrepareFailed', '设置层 Review 证据不完整。');
+        }
+        return reviewChanges({
+          kind: 'configSave',
+          pluginId: intent.pluginId,
+          scope: group.scope,
+          apply: intent.apply,
+          ...(group.updates ? { updates: group.updates } : {}),
+          ...(group.removeKeys ? { removeKeys: group.removeKeys } : {}),
+          ...(group.sensitiveKeys ? { sensitiveKeys: group.sensitiveKeys } : {}),
+          ...(group.privateKeys ? { privateKeys: group.privateKeys } : {}),
+          ...(group.changes ? { changes: group.changes } : {}),
+        }, {
+          catalog: evidence.catalog,
+          ...(evidence.source ? { source: evidence.source } : {}),
+          targetFingerprint: groupEvidence.targetFingerprint,
+          config: groupEvidence.config,
+        }, dependencyOverview);
+      }),
     ];
   }
   if (intent.kind !== 'configSave') {
@@ -1066,6 +1139,9 @@ function technicalDetails(evidence: OperationEvidence): string[] {
   }
   if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
   if (evidence.config) details.push(`设置层：${evidence.config.scope} · ${short(evidence.config.storeDigest)}`);
+  for (const group of evidence.configBatch?.groups ?? []) {
+    details.push(`设置层：${group.scope} · ${short(group.config.storeDigest)}`);
+  }
   if (evidence.sourceWrite) {
     details.push(`新配置：${short(evidence.sourceWrite.proposedConfigDigest)}`);
     details.push(`引用清单：${short(evidence.sourceWrite.inventoryDigest)} · ${evidence.sourceWrite.referenceCount} 项`);
@@ -1075,6 +1151,10 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     details.push(`候选版本：${generation.candidate.catalogVersion}`);
     details.push(`候选 commit：${short(generation.candidate.resolvedCommit)}`);
     details.push(`候选 digest：${short(generation.candidate.snapshotDigest)}`);
+  }
+  if (evidence.catalogStore) {
+    details.push(`已授权清理：${evidence.catalogStore.authorizedItems.length} 项`);
+    details.push(`检查结果：${evidence.catalogStore.entries.length} 项`);
   }
   if (evidence.portable) {
     details.push(`Portable 候选：${evidence.portable.selected.length} 个`);
@@ -1118,13 +1198,22 @@ export function buildOperationReviewProjection(options: {
     : intent.kind === 'pluginWriteTask'
       ? Boolean(taskEvidence?.taskPlan.sources.some((source) =>
           operationPreApplyTargets(taskSourceEvidence(taskEvidence, source)).length > 0))
+    : intent.kind === 'configSaveBatch'
+      ? evidence.configBatch?.groups.some((group) =>
+          (group.config.preApplyAuthorization?.length ?? 0) > 0) === true
     : operationPreApplyTargets(evidence).length > 0
       || (evidence.config?.preApplyAuthorization?.length ?? 0) > 0;
-  const sharedNativeConfigApply = intent.kind === 'configSave'
+  const sharedNativeConfigApply = (intent.kind === 'configSave'
     && intent.apply
     && (evidence.config?.sharedNativeRenderTargets?.length ?? 0) > 0
-    && (evidence.config?.affectedTargets.some((target) => target.platform === 'codex') ?? false);
+    && (evidence.config?.affectedTargets.some((target) => target.platform === 'codex') ?? false))
+    || (intent.kind === 'configSaveBatch'
+      && intent.apply
+      && (evidence.configBatch?.groups.some((group) =>
+        (group.config.sharedNativeRenderTargets?.length ?? 0) > 0
+        && group.config.affectedTargets.some((target) => target.platform === 'codex')) ?? false));
   const requiresConfirmation = sharedNativeConfigApply
+    || intent.kind === 'catalogStorePrune'
     || Boolean(batchEvidence?.groups.some((group) =>
       (group.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))
     || Boolean(taskEvidence?.taskPlan.sources.some((source) =>

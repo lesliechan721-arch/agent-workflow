@@ -23,6 +23,18 @@ function entities(overrides: Partial<RouteEntityState> = {}): RouteEntityState {
 }
 
 describe('TUI route registry', () => {
+  it.each([
+    [{ name: 'batchInstallPlatforms' } as const, 'B06'],
+    [{ name: 'batchInstallScope' } as const, 'B07'],
+  ])('registers batch install route %j as screen %s', (route, screenId) => {
+    const definition = routeDefinition(route);
+
+    expect(definition).toMatchObject({
+      entity: 'none', rendererFamily: 'batch', keymap: 'menu',
+    });
+    expect(definition.screenId(route, {} as RouteScreenContext)).toBe(screenId);
+  });
+
   it('defines production routing facts for every route family', () => {
     expect(routeDefinition({ name: 'home' })).toMatchObject({
       entity: 'none', rendererFamily: 'home', keymap: 'menu',
@@ -38,7 +50,7 @@ describe('TUI route registry', () => {
       name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'restore',
     })).toMatchObject({ entity: 'plugin', rendererFamily: 'task', keymap: 'menu' });
     expect(new Set(TUI_SCREEN_IDS).size).toBe(TUI_SCREEN_IDS.length);
-    expect(TUI_SCREEN_IDS).not.toContain('C11');
+    expect(TUI_SCREEN_IDS).toContain('C11');
     expect(routeSupportsCharacterInput({ name: 'pluginList', mode: 'browse' })).toBe(true);
     expect(routeSupportsCharacterInput({ name: 'home' })).toBe(false);
     const screenContext = {} as RouteScreenContext;

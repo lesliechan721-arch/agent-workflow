@@ -30,6 +30,12 @@ interface RunningProbe {
   primary: boolean;
 }
 
+interface TrackedProbe {
+  automatic: boolean;
+  fullValidation: boolean;
+  promise: Promise<void>;
+}
+
 interface ReusableCandidateEntry {
   candidate: CatalogSessionReusableCandidate;
   token: number;
@@ -45,6 +51,7 @@ export class CatalogSourcesSession {
   readonly #reusableCandidates = new Map<string, ReusableCandidateEntry>();
   readonly #lastSuccessful = new Map<string, CatalogSourceFreshnessViewModel>();
   readonly #pending = new Set<Promise<void>>();
+  readonly #tracked = new Map<string, TrackedProbe>();
   #disposed = false;
   #drainScheduled = false;
 
@@ -157,6 +164,10 @@ export class CatalogSourcesSession {
 
   refresh(sourceId: string, fullValidation: boolean): Promise<void> {
     if (this.#disposed || !this.#sources.has(sourceId)) return Promise.resolve();
+    const tracked = this.#tracked.get(sourceId);
+    if (tracked && !tracked.automatic && (tracked.fullValidation || !fullValidation)) {
+      return tracked.promise;
+    }
     this.#removeQueued(sourceId);
     this.#cancel(sourceId);
     return this.#startTracked(sourceId, false, fullValidation);
@@ -208,7 +219,9 @@ export class CatalogSourcesSession {
   #startTracked(sourceId: string, automatic: boolean, fullValidation: boolean): Promise<void> {
     const promise = this.#start(sourceId, automatic, fullValidation).finally(() => {
       this.#pending.delete(promise);
+      if (this.#tracked.get(sourceId)?.promise === promise) this.#tracked.delete(sourceId);
     });
+    this.#tracked.set(sourceId, { automatic, fullValidation, promise });
     this.#pending.add(promise);
     return promise;
   }
@@ -302,6 +315,7 @@ export class CatalogSourcesSession {
   }
 
   #cancel(sourceId: string): void {
+    this.#tracked.delete(sourceId);
     this.#reusableCandidates.delete(sourceId);
     const running = this.#running.get(sourceId);
     if (!running) return;

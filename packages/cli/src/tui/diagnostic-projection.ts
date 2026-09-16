@@ -226,6 +226,36 @@ export function projectExecutionDiagnostics(
       targetEffects,
     };
   }
+  if (operationKind === 'catalogStorePrune') {
+    const errors = Array.isArray(raw.errors) ? raw.errors : [];
+    for (const [index, candidate] of errors.entries()) {
+      const error = candidate && typeof candidate === 'object'
+        ? candidate as Record<string, unknown> : {};
+      diagnostics.push({
+        id: `${idPrefix}:catalog-store:${index}`,
+        code: safeDiagnosticCode(error.code, 'catalogStoreDeleteFailed'),
+        stage: 'catalogStorePrune',
+        safeMessage: typeof error.message === 'string'
+          ? sanitizeDiagnosticText(error.message, [], sensitiveValues)
+          : 'The Catalog store item was retained because deletion was not safe.',
+        causes: [],
+        detailLines: [],
+      });
+    }
+    const deleted = Array.isArray(raw.deleted) ? raw.deleted : [];
+    return {
+      diagnostics,
+      effects: {
+        configCommit: 'notApplicable',
+        awWrite: deleted.length > 0
+          ? errors.length > 0 ? 'partial' : 'completed'
+          : errors.length > 0 ? 'failed' : 'notStarted',
+        preApplyExternalEffect: 'notApplicable',
+        finalVerification: raw.overallState === 'partial' ? 'failed' : 'completed',
+      },
+      targetEffects,
+    };
+  }
   if (operationKind === 'catalogGeneration') {
     const partialReason = raw.partialReason === 'primary' ? 'primary'
       : raw.partialReason === 'activation' ? 'activation' : undefined;
@@ -333,6 +363,58 @@ export function projectExecutionDiagnostics(
           : missing.length > 0 ? 'failed'
             : raw.status === 'failed' ? 'unknown'
               : verification ? 'completed' : 'unknown',
+      },
+      targetEffects,
+    };
+  }
+  if (operationKind === 'configSaveBatch') {
+    const groups = Array.isArray(raw.groups) ? raw.groups : [];
+    const groupFacts: OperationEffectFacts[] = [];
+    for (const [index, candidate] of groups.entries()) {
+      if (!candidate || typeof candidate !== 'object') continue;
+      const group = candidate as Record<string, unknown>;
+      const scope = group.scope === 'project' ? 'project'
+        : group.scope === 'user' ? 'user' : `unknown-${index}`;
+      const execution = group.execution && typeof group.execution === 'object'
+        ? group.execution as Record<string, unknown> : {};
+      const apply = execution.apply && typeof execution.apply === 'object'
+        ? execution.apply
+        : {
+            state: group.configSaved !== true ? 'skipped'
+              : group.applyStatus === 'succeeded' ? 'succeeded'
+              : group.applyStatus === 'failed' ? 'unavailable' : 'skipped',
+          };
+      const projected = projectExecutionDiagnostics({
+        ...execution,
+        configWrite: group.configSaved === true ? 'succeeded' : 'failed',
+        apply,
+      }, `${idPrefix}:config-batch:${scope}:${index}`, sensitiveValues, 'configSave');
+      diagnostics.push(...projected.diagnostics);
+      if (group.status === 'failed'
+        && (group.configSaved !== true || projected.diagnostics.length === 0)) {
+        const saved = group.configSaved === true;
+        diagnostics.push({
+          id: `${idPrefix}:config-batch:${scope}:${index}:${saved ? 'apply' : 'save'}`,
+          code: safeDiagnosticCode(group.errorCode, saved ? 'configApplyFailed' : 'configWriteFailed'),
+          stage: saved ? 'apply' : 'configWrite',
+          safeMessage: saved
+            ? 'The saved config could not be applied for this scope.'
+            : 'The config could not be saved for this scope.',
+          causes: [],
+          detailLines: [],
+        });
+      }
+      groupFacts.push(projected.effects);
+      for (const [key, effects] of projected.targetEffects) {
+        const previous = targetEffects.get(key);
+        targetEffects.set(key, previous ? combineFacts([previous, effects]) : effects);
+      }
+    }
+    return {
+      diagnostics,
+      effects: groupFacts.length > 0 ? combineFacts(groupFacts) : {
+        configCommit: 'notApplicable', awWrite: 'notStarted',
+        preApplyExternalEffect: 'notApplicable', finalVerification: 'notStarted',
       },
       targetEffects,
     };

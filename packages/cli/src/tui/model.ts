@@ -26,6 +26,7 @@ import type {
   StatusTargetRevision,
   TargetRevisionState,
 } from '../commands/status-v6.js';
+import type { PluginContentOverview } from './plugin-content.js';
 import {
   flattenStatusTargets,
   statusTargetActivation,
@@ -420,7 +421,7 @@ export interface SourceDetailViewModel {
   refPolicy?: 'cliChannel' | 'explicit';
   explicitRef?: string;
   subdir?: string;
-  pluginCount: number;
+  pluginCount?: number;
   sourceIdentity: string;
   requestedRef: string;
   resolvedCommit?: string;
@@ -647,6 +648,7 @@ export interface TuiViewModel {
   issues: UserIssueViewModel[];
   home: HomeSummaryViewModel;
   dependencyOverviews: PluginDependencyOverviewViewModel[];
+  contentOverviews: Record<string, PluginContentOverview>;
 }
 
 export interface PortableSkillCandidateViewModel {
@@ -1017,7 +1019,6 @@ function allSupportedPlatformsBlocked(plugin: PluginListItemViewModel): boolean 
 
 function capabilityActions(plugin: PluginListItemViewModel): PluginMenuAction[] {
   return [
-    ...(plugin.portableSkills ? [{ id: 'portableSkills' as const }] : []),
     ...((plugin.dependencySummary?.totalCount ?? 0) > 0 ? [{ id: 'dependencies' as const }] : []),
     ...(plugin.configFieldCount > 0 ? [{ id: 'settings' as const }] : []),
   ];
@@ -1101,7 +1102,6 @@ export function buildPluginDetailActions(plugin: PluginListItemViewModel): Plugi
         : { id: 'platform', platform: placement.platform },
     ]),
     ...((plugin.dependencySummary?.totalCount ?? 0) > 0 ? [{ id: 'dependencies' as const }] : []),
-    ...(plugin.portableSkills ? [{ id: 'portableSkills' as const }] : []),
     ...(plugin.configFieldCount > 0 ? [{ id: 'settings' as const }] : []),
     { id: 'about' },
   ];
@@ -2091,6 +2091,7 @@ export function buildTuiViewModel(options: {
   catalogFreshness?: ReadonlyMap<string, CatalogSourceFreshnessViewModel>;
   catalogGenerations?: ReadonlyMap<string, CatalogSourceGenerationViewModel>;
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
+  contentOverviews?: Record<string, PluginContentOverview>;
   portablePluginIds?: string[];
   configStoreInventory?: Array<{
     pluginId: string;
@@ -2242,18 +2243,24 @@ export function buildTuiViewModel(options: {
     };
   }).sort((left, right) => compareText(left.displayName, right.displayName)
     || compareText(left.sourceId, right.sourceId));
-  const sourceTabs = options.status.catalog.sources.map((source) => ({
-    id: source.id,
-    label: source.id,
-    count: plugins.filter((plugin) => plugin.sourceId === source.id).length,
-    primary: source.primary,
-    state: projectCatalogSourceState(
-      source,
-      options.sourceHealth?.get(source.id),
-      options.catalogFreshness?.get(source.id),
-      options.catalogGenerations?.get(source.id),
-    ),
-  }));
+  const sourceTabs = options.status.catalog.sources.map((source) => {
+    const generation = options.catalogGenerations?.get(source.id);
+    const countKnown = generation
+      ? generation.state === 'ready' || generation.state === undefined && generation.active !== undefined
+      : source.error === undefined;
+    return {
+      id: source.id,
+      label: source.id,
+      ...(countKnown ? { count: plugins.filter((plugin) => plugin.sourceId === source.id).length } : {}),
+      primary: source.primary,
+      state: projectCatalogSourceState(
+        source,
+        options.sourceHealth?.get(source.id),
+        options.catalogFreshness?.get(source.id),
+        generation,
+      ),
+    };
+  });
   const sourceRootIds = new Set([...(options.sourceHealth?.values() ?? [])]
     .filter((health) => health.state === 'unavailable')
     .map((health) => health.sourceId));
@@ -2308,12 +2315,13 @@ export function buildTuiViewModel(options: {
   return {
     plugins: pluginsWithAttention,
     sourceTabs,
-    sourceDetails: (options.sourceDetails ?? []).map((detail) => ({
-      ...detail,
-      pluginCount: pluginsWithAttention.filter((plugin) => plugin.sourceId === detail.id).length,
-    })),
+    sourceDetails: (options.sourceDetails ?? []).map((detail) => {
+      const count = sourceTabs.find((source) => source.id === detail.id)?.count;
+      return { ...detail, ...(count === undefined ? {} : { pluginCount: count }) };
+    }),
     issues,
     dependencyOverviews: options.dependencyOverviews ?? [],
+    contentOverviews: options.contentOverviews ?? {},
     home: {
       availablePlugins: pluginsWithAttention.filter((plugin) => plugin.aggregateStatus === 'available').length,
       installedPlugins: new Set(pluginsWithAttention

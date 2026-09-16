@@ -7,7 +7,8 @@ export const TUI_SCREEN_IDS = [
   'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
   'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P20', 'P21', 'P22',
   'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
-  'C12', 'C13', 'C14', 'C15', 'C16', 'C17',
+  'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20',
+  'C21', 'C22', 'C23',
   'S01', 'S02', 'S03', 'S04', 'S05', 'S06', 'S07', 'S08', 'S09',
   'S10', 'S11', 'S12', 'S13', 'S14', 'S15', 'S16', 'S17', 'S18',
   'I01', 'I02', 'I03', 'I04', 'I05', 'I06', 'I07', 'I08', 'I09',
@@ -17,8 +18,9 @@ export const TUI_SCREEN_IDS = [
   'D18', 'D19', 'D20',
   'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
   'K02',
-  'B01', 'B02',
+  'B01', 'B02', 'B06', 'B07',
   'T01', 'T02', 'T03', 'T04', 'T05',
+  'L01', 'L02', 'L03', 'L04', 'L05', 'L06',
 ] as const;
 
 export type TuiScreenId = typeof TUI_SCREEN_IDS[number];
@@ -66,7 +68,12 @@ const plugin = <Name extends TuiRouteName>(route: NamedRoute<Name>, state: Route
     : { name: 'pluginList', mode: route.name === 'pluginPreview'
       || route.name === 'pluginDependencies' || route.name === 'installPlacement'
       || route.name === 'installTargets' || route.name === 'dependencyPlacement'
+      || route.name === 'uninstallTargets'
       || route.name === 'dependencyPlacementEditor' ? 'browse' : 'installed' };
+const pluginDetail = (route: NamedRoute<'pluginPreview'>, state: RouteEntityState): TuiRoute =>
+  state.hasPlugin(route.pluginId)
+    ? { name: 'pluginDetail', pluginId: route.pluginId }
+    : { name: 'pluginList', mode: 'browse' };
 type SourceRoute = Extract<TuiRoute, { sourceId: string }>;
 const source = (route: SourceRoute, state: RouteEntityState): TuiRoute =>
   state.hasSource(route.sourceId) ? route : { name: 'sourceList' };
@@ -82,6 +89,7 @@ const fixed = <Name extends TuiRouteName>(id: TuiScreenId) =>
 
 function reviewScreen(context: RouteScreenContext): TuiScreenId {
   const review = context.snapshot.activeReview;
+  if (review?.operationKind === 'catalogStorePrune') return 'L03';
   if (review?.operationKind === 'pluginWriteTask') return 'T02';
   if (review?.originIssue) return 'I10';
   const dependencyOperation = review?.operationKind === 'pluginWrite'
@@ -95,8 +103,8 @@ function reviewScreen(context: RouteScreenContext): TuiScreenId {
     return ({ add: 'S10', update: 'S15', setPrimary: 'S16', remove: 'S18' } as const)[review.sourceAction];
   }
   return review?.operationKind === 'portableInstall' ? 'U06'
-    : review?.operationKind === 'configSave' ? 'C12'
-    : review?.operationKind === 'configReset' ? 'C16'
+    : review?.operationKind === 'configSave' || review?.operationKind === 'configSaveBatch' ? 'C10'
+    : review?.operationKind === 'configReset' ? 'C22'
     : review?.operationKind === 'pluginWrite'
       && (review.pluginAction === 'refreshAndSync' || review.pluginAction === 'reinstall') ? 'P18'
     : review?.operationKind === 'pluginWrite'
@@ -105,17 +113,22 @@ function reviewScreen(context: RouteScreenContext): TuiScreenId {
 
 function progressScreen(context: RouteScreenContext): TuiScreenId {
   const review = context.snapshot.activeReview;
+  if (review?.operationKind === 'catalogStorePrune') return 'L05';
   if (review?.operationKind === 'pluginWriteTask') return 'T03';
   if (context.snapshot.progressTargets.length > 0) return 'D06';
   if (review?.originIssue) return 'I11';
   if (review?.operationKind === 'sourceMutation' || review?.operationKind === 'catalogGeneration'
     || review?.operationKind === 'catalogSourcesRecovery') return 'S11';
   return review?.operationKind === 'portableInstall' ? 'U07'
-    : review?.operationKind === 'configSave' || review?.operationKind === 'configReset' ? 'C13' : 'P08';
+    : review?.operationKind === 'configSave' || review?.operationKind === 'configSaveBatch'
+      || review?.operationKind === 'configReset' ? 'C11' : 'P08';
 }
 
 function resultScreen(context: RouteScreenContext): TuiScreenId {
   const result = context.snapshot.result;
+  if (result?.operationKind === 'catalogStorePrune') {
+    return result.state === 'succeeded' ? 'L05' : 'L06';
+  }
   if (result?.operationKind === 'pluginWriteTask') {
     return result.state === 'succeeded' ? 'T04' : 'T05';
   }
@@ -133,8 +146,12 @@ function resultScreen(context: RouteScreenContext): TuiScreenId {
     }
   }
   return result?.operationKind === 'portableInstall' ? 'U08'
-    : result?.operationKind === 'configSave' || result?.operationKind === 'configReset'
-      ? result.state === 'succeeded' ? 'C14' : 'C15'
+    : result?.operationKind === 'configSaveBatch'
+      ? result.state === 'succeeded' ? 'C12' : 'C13'
+    : result?.operationKind === 'configSave'
+      ? result.state === 'succeeded' ? 'C12' : 'C13'
+    : result?.operationKind === 'configReset'
+      ? 'C23'
       : result?.state === 'partial' ? 'P10' : 'P09';
 }
 
@@ -143,17 +160,24 @@ export const TUI_ROUTE_DEFINITIONS = {
   pluginList: { entity: 'source', rendererFamily: 'pluginList', keymap: 'menuOrTextInput', normalize: (route, state) =>
     route.sourceId && !state.hasSource(route.sourceId) ? { name: 'pluginList', mode: route.mode } : route,
   screenId: (route, { controller, searchMode }) => {
-    const items = controller.listPlugins({ mode: route.mode, sourceId: route.sourceId });
+    const items = controller.listPlugins({
+      mode: route.mode,
+      sourceId: route.sourceId,
+      installFilter: route.mode === 'installed' ? 'installed' : 'all',
+    });
     if (route.mode === 'installed' && items.length === 0) return 'P12';
     if (route.sourceId && controller.getSourceOverview(route.sourceId).health?.state === 'unavailable') return 'P03';
     return route.mode === 'installed' ? 'P11' : searchMode ? 'P02' : 'P01';
   } },
   pluginWriteTask: { entity: 'plugin', rendererFamily: 'task', keymap: 'menu', normalize: plugin, screenId: fixed('T01') },
   batchSelection: { entity: 'none', rendererFamily: 'batch', keymap: 'menuOrTextInput', normalize: keep, screenId: fixed('B01') },
+  batchInstallPlatforms: { entity: 'none', rendererFamily: 'batch', keymap: 'menu', normalize: keep, screenId: fixed('B06') },
+  batchInstallScope: { entity: 'none', rendererFamily: 'batch', keymap: 'menu', normalize: keep, screenId: fixed('B07') },
   batchPlacement: { entity: 'none', rendererFamily: 'batch', keymap: 'menu', normalize: keep, screenId: fixed('B02') },
-  pluginPreview: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) =>
+  pluginPreview: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: pluginDetail, screenId: (route, { controller }) =>
     controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D01' : 'P04' },
   portableSkillSelect: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U01') },
+  portableSkillSummary: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U07') },
   portableDependencies: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U02') },
   portableAgentMode: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U03') },
   portableAgentInput: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menuOrTextInput', normalize: plugin, screenId: fixed('U04') },
@@ -177,12 +201,14 @@ export const TUI_ROUTE_DEFINITIONS = {
   installTargets: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) =>
     route.view === 'blocked' ? 'D16'
       : controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D04' : 'P06' },
+  uninstallTargets: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P19') },
   dependencyPlacement: { entity: 'plugin', rendererFamily: 'dependency', keymap: 'menu', normalize: plugin, screenId: fixed('D03') },
   dependencyPlacementEditor: { entity: 'plugin', rendererFamily: 'dependency', keymap: 'menu', normalize: (route, state) =>
     state.hasPlugin(route.pluginId) && state.hasPlugin(route.dependencyPluginId)
       ? route : { name: 'pluginList', mode: 'browse' }, screenId: fixed('D04') },
   pluginDetail: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) =>
     controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D09' : 'P13' },
+  pluginContent: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P04') },
   pluginMore: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P22') },
   platform: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) => {
     const item = controller.getPluginOverview(route.pluginId);
@@ -193,14 +219,13 @@ export const TUI_ROUTE_DEFINITIONS = {
   } },
   pluginAbout: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P20') },
   pluginTechnical: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P21') },
-  configLayer: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C01') },
-  configFields: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: (route) =>
-    route.layer.scope === 'effective' ? 'C02' : 'C03' },
+  configLayer: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C07') },
+  configFields: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C01') },
   configFieldEditor: { entity: 'plugin', rendererFamily: 'config', keymap: 'menuOrTextInput', normalize: plugin, screenId: (route) =>
-    route.mode === 'choices' ? 'C05' : ({ boolean: 'C06', number: 'C07', string: 'C08', object: 'C09' } as const)[route.editor] },
-  configObjectPropertyEditor: { entity: 'plugin', rendererFamily: 'config', keymap: 'menuOrTextInput', normalize: plugin, screenId: fixed('C10') },
-  configFieldAction: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C04') },
-  configUnavailable: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C17') },
+    route.mode === 'choices' ? 'C03' : ({ boolean: 'C15', number: 'C04', string: 'C06', object: 'C20' } as const)[route.editor] },
+  configObjectPropertyEditor: { entity: 'plugin', rendererFamily: 'config', keymap: 'menuOrTextInput', normalize: plugin, screenId: fixed('C20') },
+  configFieldAction: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C03') },
+  configUnavailable: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C21') },
   sourceList: { entity: 'none', rendererFamily: 'source', keymap: 'menu', normalize: keep, screenId: fixed('S01') },
   sourceDetail: { entity: 'source', rendererFamily: 'source', keymap: 'menu', normalize: source, screenId: fixed('K02') },
   sourceMore: { entity: 'source', rendererFamily: 'source', keymap: 'menu', normalize: source, screenId: fixed('S02') },
@@ -209,9 +234,12 @@ export const TUI_ROUTE_DEFINITIONS = {
     ({ type: 'S04', id: 'S05', location: 'S06', refPolicy: 'S07', ref: 'S08', subdir: 'S09' } as const)[route.step] },
   sourceEdit: { entity: 'source', rendererFamily: 'source', keymap: 'menuOrTextInput', normalize: source, screenId: fixed('S14') },
   sourceSave: { entity: 'none', rendererFamily: 'source', keymap: 'menu', normalize: keep, screenId: fixed('S15') },
-  configSave: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C12') },
+  configSave: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: (route) =>
+    route.view === 'changes' ? 'C10' : 'C09' },
   scriptTimeout: { entity: 'none', rendererFamily: 'operation', keymap: 'menuOrTextInput', normalize: keep, screenId: fixed('P07') },
   sourceRemoveBlocked: { entity: 'source', rendererFamily: 'source', keymap: 'menu', normalize: source, screenId: fixed('S17') },
+  catalogStoreOverview: { entity: 'none', rendererFamily: 'source', keymap: 'menu', normalize: keep, screenId: fixed('L01') },
+  catalogStoreRules: { entity: 'none', rendererFamily: 'source', keymap: 'menu', normalize: keep, screenId: fixed('L02') },
   issueList: { entity: 'none', rendererFamily: 'issue', keymap: 'menu', normalize: keep, screenId: (_route, { controller }) => {
     const issues = controller.listUserIssues();
     return issues.length === 0 ? 'I02' : issues.some((entry) => entry.category.startsWith('dependency')) ? 'D13' : 'I01';
