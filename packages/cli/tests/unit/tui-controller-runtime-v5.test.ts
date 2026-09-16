@@ -85,7 +85,10 @@ const runtimeMocks = vi.hoisted(() => ({
 
 vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/commands/status-v6.js')>(),
-  statusCommandV8: runtimeMocks.statusCommandV8,
+  statusCommandV8: async (...args: unknown[]) => ({
+    projectIntentObservation: { state: 'absent' as const },
+    ...await runtimeMocks.statusCommandV8(...args),
+  }),
 }));
 
 vi.mock('../../src/commands/write-commands.js', async (importOriginal) => ({
@@ -1541,6 +1544,8 @@ describe('TUI controller runtime scope conflict validation', () => {
     await fs.writeFile(brokenPath, '{broken');
     const catalogConfig = await readCatalogSourcesConfigSnapshot(isolation.env);
     runtimeMocks.statusCommandV8.mockResolvedValue({
+      projectRoot: await fs.realpath(isolation.layout.fixtureCwd),
+      projectIntentObservation: { state: 'ready', value: projectIntentState },
       payload: {
         schemaVersion: 8,
         catalog: {
@@ -1567,6 +1572,49 @@ describe('TUI controller runtime scope conflict validation', () => {
         { pluginId: 'removed/demo', sourceId: 'removed', pluginName: 'demo', scope: 'user' },
       ],
     });
+  });
+
+  it('keeps the TUI ready and exposes a persistent project issue from typed status evidence', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const catalogConfig = await readCatalogSourcesConfigSnapshot(isolation.env);
+    runtimeMocks.statusCommandV8.mockResolvedValue({
+      payload: {
+        schemaVersion: 8,
+        catalog: {
+          primarySourceId: 'official', configDigest: catalogConfig.digest,
+          compositeDigest: 'sha256:composite', sources: [],
+        },
+        filters: { plugins: [], platform: 'both', cwd: isolation.layout.fixtureCwd },
+        targets: [],
+        errors: [{
+          code: 'pluginIntentStateInvalid',
+          message: 'pluginIntentStateInvalid: project plugin intent state is invalid.',
+        }],
+      },
+      pluginSummaries: [],
+      targetRevisions: [],
+      projectRoot: await fs.realpath(isolation.layout.fixtureCwd),
+      projectIntentObservation: {
+        state: 'invalid',
+        code: 'pluginIntentStateInvalid',
+        message: '插件声明格式无效或路径不安全。',
+      },
+    });
+    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    })));
+
+    await expect(controller.load()).resolves.toBeUndefined();
+
+    expect(controller.snapshot).toMatchObject({
+      phase: 'ready',
+      projectIntentIssue: {
+        state: 'invalid', code: 'pluginIntentStateInvalid',
+      },
+    });
+    expect(controller.snapshot.projectIntentReminder).toBeUndefined();
+    controller.push({ name: 'sourceList' });
+    expect(controller.snapshot.projectIntentIssue).toMatchObject({ state: 'invalid' });
   });
 
   beforeEach(() => {

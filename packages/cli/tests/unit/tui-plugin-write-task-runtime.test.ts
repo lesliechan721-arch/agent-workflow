@@ -33,7 +33,10 @@ const runtimeMocks = vi.hoisted(() => ({
 
 vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/commands/status-v6.js')>(),
-  statusCommandV8: runtimeMocks.statusCommandV8,
+  statusCommandV8: async (...args: unknown[]) => ({
+    projectIntentObservation: { state: 'absent' as const },
+    ...await runtimeMocks.statusCommandV8(...args),
+  }),
 }));
 
 vi.mock('../../src/commands/write-commands.js', async (importOriginal) => ({

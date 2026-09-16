@@ -49,6 +49,13 @@ export interface SkillsVerificationResult {
   unknown: PortableSkillTarget[];
 }
 
+function comparableAgentName(value: string): string {
+  // skills v1.5.23 lists displayName values and an --agent query can still include other Agents.
+  // Source: https://github.com/vercel-labs/skills/blob/v1.5.23/src/list.ts
+  // and https://github.com/vercel-labs/skills/blob/v1.5.23/src/installer.ts
+  return value.trim().toLowerCase().replace(/\s+/gu, '-');
+}
+
 function compareVersion(left: readonly number[], right: readonly number[]): number {
   for (let index = 0; index < 3; index += 1) {
     const difference = (left[index] ?? 0) - (right[index] ?? 0);
@@ -191,7 +198,7 @@ export async function verifySkillTargets(options: SkillsCliInvocationOptions & {
   const groups = new Map<string | undefined, PortableSkillTarget[]>();
   for (const target of options.targets) {
     const group = groups.get(target.agent) ?? [];
-    group.push(target);
+    if (!group.some((entry) => entry.skill === target.skill)) group.push(target);
     groups.set(target.agent, group);
   }
   for (const [agent, targets] of groups) {
@@ -205,10 +212,36 @@ export async function verifySkillTargets(options: SkillsCliInvocationOptions & {
       }
       throw error;
     }
-    records.push(...current);
-    const names = new Set(current.filter((entry) => entry.agents.length > 0).map((entry) => entry.name));
     for (const target of targets) {
-      if (!names.has(target.skill)) missing.push(target);
+      const matches = current.filter((entry) => entry.name === target.skill);
+      if (matches.length === 0) {
+        missing.push(target);
+        continue;
+      }
+      if (agent) {
+        const matchingRecord = matches.find((entry) => entry.agents.some(
+          (observedAgent) => comparableAgentName(observedAgent) === comparableAgentName(agent),
+        ));
+        if (!matchingRecord) {
+          unknown.push(target);
+          continue;
+        }
+        records.push({ ...matchingRecord, agents: [agent] });
+        continue;
+      }
+      const observedAgents: string[] = [];
+      const seenAgents = new Set<string>();
+      for (const observedAgent of matches.flatMap((entry) => entry.agents)) {
+        const key = observedAgent.toLowerCase();
+        if (seenAgents.has(key)) continue;
+        seenAgents.add(key);
+        observedAgents.push(observedAgent);
+      }
+      if (observedAgents.length === 0) {
+        unknown.push(target);
+        continue;
+      }
+      records.push({ ...matches[0]!, agents: observedAgents });
     }
   }
   return { records, missing, unknown };

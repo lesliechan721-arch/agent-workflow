@@ -93,6 +93,8 @@ Portable materializer 使用调用方提供的同 source Catalog plugin set，�
 
 `aw skill install` 先物化和 Review 完整候选，再通过 PATH 中兼容的 `skills >=1.5.23 <2.0.0` 执行 scope-wide 冲突预检、`skills add ... --yes` 和完成后验证。确认后的执行复用单一 `AW_HOME` mutation lock，并重新采集 Catalog、config、物化、版本和冲突证据；外部安装失败或验证缺项不做补偿回滚，receipt 提供重跑或外部 `skills remove` 恢复方式。project scope 在解析的项目根运行，user scope 使用 `--global`。
 
+安装后的完整 Skills CLI inventory 只作为观测输入，不直接成为本次 receipt 结果。显式 Agent 安装只投影所选 Skill 与请求 Agent 的精确组合；Skills CLI 清单返回显示名，绑定时只做大小写和空格到连字符的常规规范化，不猜测特殊别名。同名 Skill 只在其它 Agent 上可见或 Agent 身份无法可靠绑定时保持 unknown。精确重试只投影当前 `attemptedTargets`，不扩张为 Skill 与 Agent 的笛卡尔积。自动 Agent 安装只投影所选 Skill，并只保留 inventory 中可绑定的实际 Agent；无法绑定 Agent 的所选 Skill 保持 unknown。初次验证、只读复查和重试使用同一投影，unknown 不能直接重装。
+
 `aw skill materialize` 在同父目录 staging 中验证所选输出，再替换仅由相同 plugin ID、source identity 和 scope 的 schema 1 marker 证明属于 AW 的目标。foreign、身份不匹配、符号链接或过宽目标都 fail closed；命令不提供 force，也不创建 portable installed state。
 
 TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显示 Portable 能力，不提前运行 renderer 或声明精确候选数和安装 ownership。用户进入安装流后分别物化 project 和 user 的完整依赖闭包，以两者的稳定候选并集选择 Skill 和 Agent，再选择 scope；选择 scope 后按该 scope 重新物化，所选 Skill 在该 scope 不可用时阻止进入 Review。Review 只显示所选 scope 的实际候选、依赖贡献和冲突。执行复用 `aw skill install` 的锁内证据重采集，证据变化时必须回到 Review 重新确认。

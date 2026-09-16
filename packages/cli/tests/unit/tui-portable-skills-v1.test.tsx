@@ -151,6 +151,14 @@ async function focusPortableAction(
   expect(instance.lastFrame()).toContain(`› ${label}`);
 }
 
+async function openPortableTools(instance: ReturnType<typeof render>): Promise<void> {
+  await send(instance, '\t');
+  if (!instance.lastFrame()?.includes('› [选择工具]')) await send(instance, '\u001B[C');
+  expect(instance.lastFrame()).toContain('› [选择工具]');
+  await send(instance, '\r');
+  expect(instance.lastFrame()).toContain('全选当前结果');
+}
+
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
   return { promise: new Promise<T>((settle) => { resolve = settle; }), resolve };
@@ -462,7 +470,8 @@ describe('Portable Skills TUI V1', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await tick();
 
-    await send(instance, '\u001B[B', '\r');
+    await focusPortableAction(instance, '再安装其他 Skills');
+    await send(instance, '\r');
     expect(value.snapshot.router.current.route).toEqual({
       name: 'portableSkillSelect', pluginId: 'official/toolkit',
     });
@@ -684,12 +693,12 @@ describe('Portable Skills TUI V1', () => {
     expect(instance.lastFrame()).not.toContain('通用 Skills 已安装');
     expect(instance.lastFrame()).not.toContain('已通过安装验证');
     for (const label of ['返回修改', '返回插件详情']) {
+      await focusPortableAction(instance, label);
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain(`› ${label}`);
       expect(frame).toContain('↑↓ 移动');
       expect(frame.match(/›/gu)).toHaveLength(1);
       expect(frame.split('\n').length).toBeLessThanOrEqual(18);
-      await send(instance, '\u001B[B');
     }
   });
 
@@ -758,11 +767,9 @@ describe('Portable Skills TUI V1', () => {
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
       await tick();
 
-      expect(instance.lastFrame()).toContain('全选全部候选');
-      expect(instance.lastFrame()).toContain('只看已选（3）');
-      expect(instance.lastFrame()).toContain('清空选择');
       if (method === 'focused continue') {
-        await focusPortableAction(instance, '继续');
+        await send(instance, '\t');
+        expect(instance.lastFrame()).toContain('› [继续（3）]');
         await send(instance, '\r');
       } else {
         await send(instance, 'c');
@@ -780,14 +787,15 @@ describe('Portable Skills TUI V1', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await tick();
 
-    await focusPortableAction(instance, '清空选择');
-    await send(instance, '\r');
+    await openPortableTools(instance);
+    await send(instance, '\u001B[B', '\u001B[B', '\r');
     expect(value.snapshot.portableDraft?.selectedCount).toBe(0);
-    await focusPortableAction(instance, '只看已选（0）');
-    await send(instance, '\r');
+    await openPortableTools(instance);
+    await send(instance, '\u001B[B', '\r');
     expect(instance.lastFrame()).toContain('没有已选 Skill');
-    await focusPortableAction(instance, '查看全部候选');
-    await send(instance, '\r', 'a');
+    await openPortableTools(instance);
+    await send(instance, '\u001B[B', '\r');
+    await send(instance, 'a');
     expect(value.snapshot.portableDraft?.selectedCount).toBe(3);
     expect(instance.lastFrame()).toContain('3 / 3 已选择');
   });
@@ -818,7 +826,7 @@ describe('Portable Skills TUI V1', () => {
     expect(instance.lastFrame()).toContain('至少选择一个 Skill');
     await send(instance, 'a', ' ');
     expect(value.snapshot.portableDraft?.selectedCount).toBe(2);
-    await send(instance, '\u001B[B', '\r', '\r', '\r', '\u001B[B', '\u001B[B', '\r');
+    await send(instance, 'c', '\r', '\u001B[B', '\u001B[B', '\r');
 
     expect(value.snapshot.activeReview?.operationKind).toBe('portableInstall');
     expect(value.snapshot.activeReview?.changes.map((change) => change.title)).toEqual(expect.arrayContaining([
@@ -1367,8 +1375,13 @@ describe('Portable Skills TUI V1', () => {
 
     const frame = instance.lastFrame() ?? '';
     expect(frame).toContain('author-skill');
+    let resultFrames = frame;
+    for (let page = 0; page < candidates.length; page += 1) {
+      await send(instance, 'n');
+      resultFrames += `\n${instance.lastFrame() ?? ''}`;
+    }
     for (const skill of candidates.map((candidate) => candidate.name)) {
-      expect(frame).toMatch(new RegExp(`${skill}\\s+Agent：codex · 已验证`, 'u'));
+      expect(resultFrames).toMatch(new RegExp(`${skill}\\s+已验证 · Agent：codex`, 'u'));
     }
     expect(frame.match(/返回插件详情/gu)).toHaveLength(1);
     expect(frame).not.toContain('sha256:materialized');
@@ -1428,10 +1441,28 @@ describe('Portable Skills TUI V1', () => {
     await tick();
 
     const frame = instance.lastFrame() ?? '';
-    expect(frame).toMatch(/result-skill-9\s+Agent：无法确认 · 确认缺失/u);
-    expect(frame).toMatch(/result-skill-0\s+Agent：Codex · 已验证/u);
-    expect(frame).toContain(`另有 ${size.rows === 18 ? 8 : 4} 个 Skills`);
+    expect(frame).toMatch(/result-skill-9\s+确认缺失 · Agent：无法确认/u);
+    expect(frame).toContain('第 1–1 项，共 10 项');
+    expect(frame).toMatch(/范围\s+当前项目/u);
     expect(frame).toContain('安全恢复');
+    if (size.rows === 18) {
+      await focusPortableAction(instance, 'n 下一页');
+      await send(instance, '\r');
+      const middleFrame = instance.lastFrame() ?? '';
+      expect(middleFrame).toContain('部分 Skills 未确认');
+      expect(middleFrame).toContain('第 2–2 项，共 10 项');
+      expect(middleFrame).toContain('安全恢复');
+      expect(middleFrame).toContain('› n 下一页');
+      instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+      await tick();
+      expect(instance.lastFrame()).toMatch(/result-skill-0\s+已验证 · Agent：Codex/u);
+      expect(instance.lastFrame()).toContain('› n 下一页');
+      instance.rerender(<ConsoleAppV4 controller={value} size={size} />);
+      await tick();
+      expect(instance.lastFrame()).toContain('第 2–2 项，共 10 项');
+      expect(instance.lastFrame()).toContain('› n 下一页');
+    } else await send(instance, 'n');
+    expect(`${frame}\n${instance.lastFrame() ?? ''}`).toMatch(/result-skill-0\s+已验证 · Agent：Codex/u);
     expect(frame).toContain('› 返回修改');
     expect(frame).toContain('↑↓ 移动');
     expect(frame).toContain('d 技术详情');
@@ -1440,11 +1471,11 @@ describe('Portable Skills TUI V1', () => {
 
     for (let page = 0; page < 12; page += 1) await send(instance, '\u001B[6~');
     expect(instance.lastFrame()).toContain('result-skill-8');
-    expect(instance.lastFrame()).toContain('↑ 前面还有');
+    expect(instance.lastFrame()).toContain('第 10–10 项，共 10 项');
     for (let page = 0; page < 12; page += 1) await send(instance, '\u001B[5~');
 
     for (const label of ['返回插件详情']) {
-      await send(instance, '\u001B[B');
+      await focusPortableAction(instance, label);
       const actionFrame = instance.lastFrame() ?? '';
       expect(actionFrame).toContain(`› ${label}`);
       expect(actionFrame).toContain('↑↓ 移动');
@@ -1458,16 +1489,33 @@ describe('Portable Skills TUI V1', () => {
     expect(helpFrame).toMatch(/d\s+打开技术详情/u);
     expect(helpFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
     await send(instance, '?', 'd');
-    for (let index = 0; index < 4 && !instance.lastFrame()?.includes('› 返回修改'); index += 1) {
-      await send(instance, '\u001B[A');
+    if (size.rows === 18) {
+      await focusPortableAction(instance, 'n 下一页');
+      await send(instance, '\r');
+      const technicalMiddle = instance.lastFrame() ?? '';
+      expect(technicalMiddle).toContain('部分 Skills 未确认');
+      expect(technicalMiddle).toContain('第 2–2 项，共 10 项');
+      expect(technicalMiddle).toContain('安全恢复');
+      expect(technicalMiddle).toContain('› n 下一页');
+      instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+      await tick();
+      expect(instance.lastFrame()).toContain('› n 下一页');
+      instance.rerender(<ConsoleAppV4 controller={value} size={size} />);
+      await tick();
+      await send(instance, 'p');
     }
-    for (const [index, label] of ['返回修改', '返回插件详情'].entries()) {
-      if (index > 0) await send(instance, '\u001B[B');
+    for (const label of ['返回修改', '返回插件详情']) {
+      await focusPortableAction(instance, label);
       const technicalFrame = instance.lastFrame() ?? '';
       expect(technicalFrame).toContain('技术详情');
       expect(technicalFrame).toContain('failure code');
-      expect(technicalFrame).toMatch(/result-skill-9\s+Agent：无法确认 · 确认缺失/u);
-      expect(technicalFrame).toContain('另有 9 个 Skills');
+      expect(technicalFrame).toContain('verification missing');
+      expect(technicalFrame).toContain('Skills CLI version');
+      expect(technicalFrame).toContain('materialization digest');
+      expect(technicalFrame).toContain('elapsed');
+      expect(technicalFrame).toMatch(/result-skill-9\s+确认缺失 · Agent：无法确认/u);
+      expect(technicalFrame).toContain('第 1–1 项，共 10 项');
+      expect(technicalFrame).toMatch(/范围\s+当前项目/u);
       expect(technicalFrame).toContain('安全恢复');
       expect(technicalFrame).toContain(`› ${label}`);
       expect(technicalFrame).toContain('↑↓ 移动');
@@ -1517,11 +1565,12 @@ describe('Portable Skills TUI V1', () => {
     expect(helpFrame).toMatch(/d\s+打开技术详情/u);
     expect(helpFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
     await send(instance, '?', 'd');
-    for (const [index, label] of ['返回修改', '返回插件详情'].entries()) {
-      if (index > 0) await send(instance, '\u001B[B');
+    for (const label of ['返回修改', '返回插件详情']) {
+      await focusPortableAction(instance, label);
       const frame = instance.lastFrame() ?? '';
-      expect(frame).toMatch(/blocked-skill-0\s+Agent：无法确认 · 结果未知/u);
-      expect(frame).toContain('另有 9 个 Skills');
+      expect(frame).toMatch(/blocked-skill-0\s+结果未知 · Agent：无法确认/u);
+      expect(frame).toContain('第 1–1 项，共 10 项');
+      expect(frame).toMatch(/范围\s+当前项目/u);
       expect(frame).toContain('技术详情');
       expect(frame).toContain('failure code');
       expect(frame).not.toContain('sha256:blocked');
@@ -1782,11 +1831,10 @@ describe('Portable Skills TUI V1', () => {
   });
 
   it.each([
-    { columns: 60, rows: 18 },
-    { columns: 80, rows: 24 },
-    { columns: 80, rows: 40 },
-  ])('keeps the focused portable Skill and Continue visible at $columns x $rows', async (size) => {
-    const manyCandidates: PortableReview['selected'] = Array.from({ length: 10 }, (_, index) => ({
+    { columns: 60, rows: 18, count: 100 },
+    { columns: 80, rows: 24, count: 200 },
+  ])('moves from a long $columns x $rows Skills list of $count items to its fixed tools with one Tab', async (size) => {
+    const manyCandidates: PortableReview['selected'] = Array.from({ length: size.count }, (_, index) => ({
       name: `portable-skill-${index}`,
       description: `Portable description ${index}`,
       providerPluginId: index < 4 ? 'official/toolkit' : `official/provider-${Math.floor(index / 2)}`,
@@ -1823,37 +1871,19 @@ describe('Portable Skills TUI V1', () => {
     expect(initialFrame.match(/›/gu)).toHaveLength(1);
     expect(initialFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
 
-    for (const [index, label] of [
-      ...manyCandidates.map((candidate) => `◆ ${candidate.name}`),
-      '继续',
-      '全选全部候选',
-      '只看已选（10）',
-      '清空选择',
-    ].entries()) {
-      if (index > 0) await send(instance, '\u001B[B');
-      const frame = instance.lastFrame() ?? '';
-      expect(frame).toContain(`› ${label}`);
-      expect(frame).toContain('↑↓ 移动');
-      expect(frame.match(/›/gu)).toHaveLength(1);
-      expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
-    }
-
-    await send(instance, '?');
-    const helpFrame = instance.lastFrame() ?? '';
-    expect(helpFrame).toContain('当前页快捷键');
-    expect(helpFrame).toContain('Space  切换当前 Skill');
-    expect(helpFrame).toContain('a  全选 Skills');
-    expect(helpFrame).toMatch(/d\s+打开技术详情/u);
-    expect(helpFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
-    await send(instance, '?', 'd');
-    const technicalFrame = instance.lastFrame() ?? '';
-    expect(technicalFrame).toContain('范围变体');
-    expect(technicalFrame).toContain('所有项目：');
-    if (size.columns === 80) expect(technicalFrame).toContain('当前项目：');
-    expect(technicalFrame).toContain('另有 9 个 Skill 的范围变体已折叠');
-    expect(technicalFrame).toContain('↑↓ 移动');
-    expect((technicalFrame.match(/›/gu) ?? []).length).toBeLessThanOrEqual(1);
-    expect(technicalFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
+    await send(instance, ...Array.from({ length: Math.floor(size.count / 2) }, () => '\u001B[B'));
+    await send(instance, '\t');
+    expect(instance.lastFrame()).toContain(`› [继续（${size.count}）]`);
+    await send(instance, '\u001B[D');
+    expect(instance.lastFrame()).toContain('› [选择工具]');
+    await send(instance, '\r');
+    expect(instance.lastFrame()).toContain('› 全选当前结果');
+    expect(instance.lastFrame()).toContain(`只看已选（${size.count}）`);
+    expect(instance.lastFrame()).toContain('清空选择');
+    expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(size.rows);
+    await send(instance, 'b');
+    expect(instance.lastFrame()).toContain('portable-skill-0');
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(size.count);
   });
 
   it('validates explicit Agent IDs and preserves the draft when the terminal is too small', async () => {
@@ -1924,7 +1954,7 @@ describe('Portable Skills TUI V1', () => {
     if (statusValue === 'partial') {
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
       await tick();
-      expect(instance.lastFrame()).toMatch(/author-skill\s+Agent：无法确认 · 确认缺失/u);
+      expect(instance.lastFrame()).toMatch(/author-skill\s+确认缺失 · Agent：无法确认/u);
       expect(instance.lastFrame()).not.toContain('sha256:materialized');
       expect(instance.lastFrame()).not.toContain('1.5.23');
     }
@@ -2047,10 +2077,164 @@ describe('Portable Skills TUI V1', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await tick();
 
-    const frame = instance.lastFrame() ?? '';
-    expect(frame.match(/review-skill/gu)).toHaveLength(2);
-    expect(frame).toMatch(/review-skill\s+Agent：cursor · 确认缺失/u);
-    expect(frame).toMatch(/review-skill\s+Agent：codex · 已验证/u);
+    let frames = instance.lastFrame() ?? '';
+    await send(instance, 'n');
+    frames += `\n${instance.lastFrame() ?? ''}`;
+    expect(frames.match(/review-skill/gu)).toHaveLength(2);
+    expect(frames).toMatch(/review-skill\s+确认缺失 · Agent：cursor/u);
+    expect(frames).toMatch(/review-skill\s+已验证 · Agent：codex/u);
+  });
+
+  it.each([
+    { size: { columns: 60, rows: 18 }, agents: ['agent-a', 'agent-b', 'agent-c'], technical: false },
+    { size: { columns: 80, rows: 24 }, agents: ['agent-a', 'agent-b'], technical: true },
+  ])('reaches every Skill and Agent result row from the shared result pagination at $size.columns x $size.rows', async ({ size, agents, technical }) => {
+    const executeIntent = vi.fn(async (intent: OperationIntent): Promise<PortableInstallReceipt> => {
+      if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
+      const portable = review(intent);
+      const selected = portable.selected.filter((candidate) => candidate.name === 'review-skill');
+      return {
+        receiptSchemaVersion: 5, command: 'skill:install', ok: true, status: 'succeeded',
+        plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: selected,
+        requestedSkills: ['review-skill'], agentMode: 'explicit', requestedAgents: agents,
+        skillsCliVersion: portable.skillsCliVersion, collisions: [], dependencies: portable.dependencies,
+        materializationDigest: portable.materializationDigest,
+        verification: {
+          records: [{ name: 'review-skill', scope: intent.scope, agents }],
+          missing: [], unknown: [],
+        },
+        warnings: [], failures: [],
+      };
+    });
+    const { value } = portableController({ executeIntent });
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    value.togglePortableSkill('author-skill');
+    value.togglePortableSkill('content-skill');
+    value.setPortableAgentMode('explicit', agents);
+    const operation = await value.buildPortableInstallReview();
+    await value.executeOperation(operation.reviewToken);
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await tick();
+    if (technical) await send(instance, 'd');
+
+    let frames = instance.lastFrame() ?? '';
+    expect(frames).toContain('p 上一页');
+    expect(frames).toContain('n 下一页');
+    for (let page = 0; page < agents.length; page += 1) {
+      await send(instance, 'n');
+      frames += `\n${instance.lastFrame() ?? ''}`;
+    }
+    for (const agent of agents) {
+      expect(frames).toMatch(new RegExp(`review-skill\\s+已验证 · Agent：${agent}`, 'u'));
+    }
+    expect(instance.lastFrame()).toContain(`已验证 · Agent：${agents.at(-1)}`);
+    expect(instance.lastFrame()).not.toContain('另有 1 个 Skills');
+    if (!technical) {
+      await send(instance, 'd');
+      expect(instance.lastFrame()).toContain(`已验证 · Agent：${agents.at(-1)}`);
+      expect(instance.lastFrame()).toMatch(/范围\s+当前项目/u);
+      expect(instance.lastFrame()).toContain('verification missing');
+      expect(instance.lastFrame()).toContain('Skills CLI version');
+      expect(instance.lastFrame()).toContain('materialization digest');
+      instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+      await tick();
+      expect(instance.lastFrame()).toContain(`已验证 · Agent：${agents.at(-1)}`);
+    }
+  });
+
+  it.each([
+    { columns: 60, rows: 18 },
+    { columns: 80, rows: 24 },
+  ])('rebuilds complete long result fields from focused detail pages at $columns x $rows', async (size) => {
+    const skills = [
+      'isolating-work-with-git-branches',
+      'isolating-work-with-git-worktrees',
+    ];
+    const selected = skills.map((name, index) => ({
+      ...candidates[0]!, name, description: `Long result ${index}`,
+      filesDigest: `sha256:long-result-${index}`,
+    }));
+    const longAgent = `github-copilot-${'a'.repeat(113)}`;
+    const digest = `sha256:${'d'.repeat(64)}`;
+    const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
+      if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
+      const portable = { ...review(intent), selected };
+      return { catalog: { configDigest: portable.configDigest, compositeDigest: portable.evidenceDigest }, portable };
+    });
+    const executeIntent = vi.fn(async (intent: OperationIntent): Promise<PortableInstallReceipt> => {
+      if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
+      const portable = { ...review(intent), selected };
+      return {
+        receiptSchemaVersion: 5, command: 'skill:install', ok: true, status: 'succeeded',
+        plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: selected,
+        requestedSkills: skills, agentMode: portable.agentMode,
+        requestedAgents: portable.requestedAgents, skillsCliVersion: '1.5.23',
+        collisions: [], dependencies: portable.dependencies, materializationDigest: digest,
+        verification: {
+          records: skills.map((name) => ({ name, scope: intent.scope, agents: [longAgent] })),
+          missing: [], unknown: [],
+        },
+        warnings: [], failures: [],
+      };
+    });
+    const { value } = portableController({ captureEvidence, executeIntent });
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    const operation = await value.buildPortableInstallReview();
+    await value.executeOperation(operation.reviewToken);
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await tick();
+
+    const readDetail = async (): Promise<string[]> => {
+      await focusPortableAction(instance, '查看当前结果完整字段');
+      await send(instance, '\r');
+      const frames: string[] = [];
+      for (let page = 0; page < 20; page += 1) {
+        const frame = instance.lastFrame() ?? '';
+        frames.push(frame);
+        if (frame.includes('已在最后一页')) break;
+        await send(instance, 'n');
+      }
+      return frames;
+    };
+    const rebuild = (frames: readonly string[], label: string): string => {
+      const parts = new Map<number, string>();
+      let total = 0;
+      for (const line of frames.flatMap((frame) => frame.split('\n'))) {
+        const marker = `${label} `;
+        const value = line.trim();
+        if (!value.startsWith(marker)) continue;
+        const match = value.slice(marker.length).match(/^(\d+)\/(\d+) · (.*)$/u);
+        if (!match) continue;
+        parts.set(Number(match[1]), match[3] ?? '');
+        total = Number(match[2]);
+      }
+      return Array.from({ length: total }, (_, index) => parts.get(index + 1) ?? '').join('');
+    };
+
+    expect(instance.lastFrame()).toContain('已验证 · Agent：');
+    let frames = await readDetail();
+    expect(rebuild(frames, 'Skill')).toBe(skills[0]);
+    expect(rebuild(frames, 'Agent')).toBe(longAgent);
+    expect(rebuild(frames, 'materialization digest')).toBe(digest);
+    expect(frames.join('\n')).toContain('状态 · 已验证');
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    await tick();
+    expect(instance.lastFrame()).toContain('› 查看当前结果完整字段');
+    await send(instance, 'n', 'd');
+    expect(instance.lastFrame()).toContain('已验证 · Agent：');
+    frames = await readDetail();
+    expect(rebuild(frames, 'Skill')).toBe(skills[1]);
+    expect(rebuild(frames, 'Agent')).toBe(longAgent);
+    expect(rebuild(frames, 'materialization digest')).toBe(digest);
+    instance.rerender(<ConsoleAppV4 controller={value} size={
+      size.rows === 18 ? { columns: 80, rows: 24 } : { columns: 60, rows: 18 }
+    } />);
+    await tick();
+    expect(instance.lastFrame()).toContain('当前结果完整字段');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(size.rows === 18 ? 24 : 18);
   });
 
   it('shows an Agent-less automatic unknown as unknown without a success row', async () => {
@@ -2079,7 +2263,7 @@ describe('Portable Skills TUI V1', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await tick();
 
-    expect(instance.lastFrame()).toMatch(/review-skill\s+Agent：无法确认 · 结果未知/u);
+    expect(instance.lastFrame()).toMatch(/review-skill\s+结果未知 · Agent：无法确认/u);
     expect(instance.lastFrame()).not.toContain('已验证');
     expect(instance.lastFrame()).not.toContain('通用 Skills 已安装');
   });

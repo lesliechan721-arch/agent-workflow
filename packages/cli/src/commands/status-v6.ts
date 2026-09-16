@@ -70,8 +70,9 @@ import {
 } from '../utils/plugin-config.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
 import {
-  readPluginIntentState,
+  observePluginIntentState,
   type PluginIntentState,
+  type PluginIntentStateObservation,
 } from '../utils/plugin-intent-state.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from './aw-capabilities.js';
 import { createDependencyPlacementPlan } from './dependency-operation-plan.js';
@@ -640,12 +641,13 @@ function inventoryErrorMatchesSelection(options: {
   scopeExplicit: boolean;
   platforms: PlatformName[];
   scopes: Scope[];
-  currentProjectLocationKey: string;
+  currentProjectLocationKey?: string;
 }): boolean {
   const relevance = options.error.relevance;
   if (relevance.global) return true;
   if (relevance.projectLocationKey
-    && relevance.projectLocationKey !== options.currentProjectLocationKey) return false;
+    && (!options.currentProjectLocationKey
+      || relevance.projectLocationKey !== options.currentProjectLocationKey)) return false;
   if (options.platformExplicit && relevance.platform
     && !options.platforms.includes(relevance.platform)) return false;
   if (options.scopeExplicit && relevance.scope
@@ -1165,6 +1167,8 @@ async function statusCommandV8InSession(options: {
   hasErrors: boolean;
   pluginSummaries: StatusV8PluginSummary[];
   targetRevisions: StatusTargetRevision[];
+  projectRoot?: string;
+  projectIntentObservation: PluginIntentStateObservation;
 }> {
   const env = options.env ?? process.env;
   const dependencyPluginCache = new Map<string, Promise<PluginMeta>>();
@@ -1188,21 +1192,25 @@ async function statusCommandV8InSession(options: {
   );
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
   const intentErrors: Array<{ code: string; message: string }> = [];
-  const readIntent = async (scope: Scope): Promise<PluginIntentState> => {
-    try {
-      return await readPluginIntentState({ scope, cwd: options.cwd, env });
-    } catch {
+  const readIntent = async (scope: Scope): Promise<PluginIntentStateObservation> => {
+    const observation = await observePluginIntentState({ scope, cwd: options.cwd, env });
+    if (observation.state === 'invalid' || observation.state === 'unavailable') {
       intentErrors.push({
         code: 'pluginIntentStateInvalid',
         message: `pluginIntentStateInvalid: ${scope} plugin intent state is invalid.`,
       });
-      return emptyIntent();
     }
+    return observation;
   };
-  const [userIntent, projectIntent] = await Promise.all([
+  const [userIntentObservation, initialProjectIntentObservation] = await Promise.all([
     readIntent('user'),
     readIntent('project'),
   ]);
+  const userIntent = userIntentObservation.state === 'ready'
+    ? userIntentObservation.value : emptyIntent();
+  let projectIntentObservation = initialProjectIntentObservation;
+  let projectIntent = projectIntentObservation.state === 'ready'
+    ? projectIntentObservation.value : emptyIntent();
   const codexConfigErrors: Array<{ scope: Scope; code: string; message: string }> = [];
   const readActivationConfig = async (scope: Scope) => {
     try {
@@ -1221,8 +1229,27 @@ async function statusCommandV8InSession(options: {
     readActivationConfig('user'),
     codexScopePathsAlias ? undefined : readActivationConfig('project'),
   ]);
-  const currentProjectKey = await resolveCanonicalRepoProjectKey(options.cwd);
-  const currentProjectLocationKey = createProjectLocationKey(currentProjectKey);
+  let projectRoot: string | undefined;
+  try {
+    projectRoot = await resolveCanonicalRepoProjectKey(options.cwd);
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    projectIntentObservation = {
+      state: 'unavailable',
+      code: 'pluginIntentStateUnavailable',
+      message: '无法确定当前项目位置，不能读取插件声明。',
+    };
+    projectIntent = emptyIntent();
+    if (!intentErrors.some((error) => error.message.includes('project plugin intent'))) {
+      intentErrors.push({
+        code: 'pluginIntentStateInvalid',
+        message: 'pluginIntentStateInvalid: project plugin intent state is unavailable.',
+      });
+    }
+  }
+  const currentProjectKey = projectRoot;
+  const currentProjectLocationKey = currentProjectKey
+    ? createProjectLocationKey(currentProjectKey) : undefined;
   const inventoryErrors: StatusInventoryError[] = [];
   const readInventory = options.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
@@ -3284,6 +3311,8 @@ async function statusCommandV8InSession(options: {
     output: options.json ? JSON.stringify(payload) : renderStatusV8(payload, options.verbose === true),
     hasErrors,
     targetRevisions,
+    ...(projectRoot ? { projectRoot } : {}),
+    projectIntentObservation,
     pluginSummaries: available.map((entry) => {
       const sourceEntries = available.filter((candidate) => candidate.source.id === entry.source.id);
       const byName = new Map(sourceEntries.map((candidate) => [candidate.name, candidate]));

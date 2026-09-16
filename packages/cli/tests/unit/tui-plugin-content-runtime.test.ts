@@ -20,7 +20,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/commands/status-v6.js')>(),
-  statusCommandV8: mocks.statusCommandV8,
+  statusCommandV8: async (...args: unknown[]) => ({
+    projectIntentObservation: { state: 'absent' as const },
+    ...await mocks.statusCommandV8(...args),
+  }),
 }));
 
 vi.mock('../../src/tui/plugin-content.js', async (importOriginal) => ({

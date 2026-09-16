@@ -8,6 +8,7 @@ import {
   addSkills,
   listInstalledSkills,
   probeSkillsCli,
+  verifySkillTargets,
   verifySkills,
 } from '../../src/portable/skills-cli.js';
 import { normalizePortableAgents } from '../../src/portable/commands.js';
@@ -93,28 +94,94 @@ describe('Skills CLI adapter', () => {
     });
   });
 
-  it('rejects invalid list JSON and verifies default and explicit modes from list evidence', async () => {
+  it('rejects invalid list JSON and projects verification onto automatic and explicit targets', async () => {
     const invalid = await fakeSkills({ list: { bad: true } });
     await expect(listInstalledSkills({ ...invalid, global: false }))
       .rejects.toThrow('portableSkillsCliVerificationFailed');
 
     const fake = await fakeSkills({
-      list: [{ name: 'alpha', agents: ['Codex'], scope: 'project', path: '/safe/alpha' }],
+      list: [{ name: 'alpha', agents: ['Codex', 'Claude Code'], scope: 'project', path: '/safe/alpha' }],
     });
     await expect(verifySkills({ ...fake, skills: ['alpha', 'beta'], global: false }))
-      .resolves.toMatchObject({ missing: [{ skill: 'beta' }] });
+      .resolves.toEqual({
+        records: [{
+          name: 'alpha', agents: ['Codex', 'Claude Code'], scope: 'project', path: '/safe/alpha',
+        }],
+        missing: [{ skill: 'beta' }],
+        unknown: [],
+      });
     await expect(verifySkills({
       ...fake,
       skills: ['alpha'],
       agents: ['codex', 'claude-code'],
       global: false,
-    })).resolves.toMatchObject({ missing: [] });
+    })).resolves.toEqual({
+      records: [
+        { name: 'alpha', agents: ['codex'], scope: 'project', path: '/safe/alpha' },
+        { name: 'alpha', agents: ['claude-code'], scope: 'project', path: '/safe/alpha' },
+      ],
+      missing: [],
+      unknown: [],
+    });
     const calls = (await fs.readFile(fake.log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     expect(calls.map((call) => call.args)).toEqual([
       ['list', '--json'],
       ['list', '--agent', 'codex', '--json'],
       ['list', '--agent', 'claude-code', '--json'],
     ]);
+  });
+
+  it('excludes unrelated inventory and preserves non-rectangular exact targets', async () => {
+    const fake = await fakeSkills({
+      list: [
+        { name: 'alpha', agents: ['codex', 'cursor'], scope: 'project' },
+        { name: 'unrelated', agents: ['codex'], scope: 'project' },
+      ],
+    });
+
+    await expect(verifySkillTargets({
+      ...fake,
+      targets: [
+        { skill: 'alpha', agent: 'codex' },
+        { skill: 'alpha', agent: 'claude-code' },
+        { skill: 'beta', agent: 'cursor' },
+      ],
+      global: false,
+    })).resolves.toEqual({
+      records: [{ name: 'alpha', agents: ['codex'], scope: 'project' }],
+      missing: [{ skill: 'beta', agent: 'cursor' }],
+      unknown: [{ skill: 'alpha', agent: 'claude-code' }],
+    });
+  });
+
+  it('deduplicates automatic records by Skill and Agent identity', async () => {
+    const fake = await fakeSkills({
+      list: [
+        { name: 'alpha', agents: ['Codex'], scope: 'project' },
+        { name: 'alpha', agents: ['codex', 'cursor'], scope: 'project' },
+      ],
+    });
+
+    await expect(verifySkills({ ...fake, skills: ['alpha'], global: false })).resolves.toEqual({
+      records: [{ name: 'alpha', agents: ['Codex', 'cursor'], scope: 'project' }],
+      missing: [],
+      unknown: [],
+    });
+  });
+
+  it('keeps automatic results unknown when inventory cannot bind a selected Skill to an Agent', async () => {
+    const fake = await fakeSkills({
+      list: [
+        { name: 'alpha', agents: [], scope: 'project' },
+        { name: 'unrelated', agents: ['codex'], scope: 'project' },
+      ],
+    });
+
+    await expect(verifySkills({ ...fake, skills: ['alpha'], global: false })).resolves.toEqual({
+      records: [],
+      missing: [],
+      unknown: [{ skill: 'alpha' }],
+    });
   });
 
   it('maps a missing executable and add failure to typed blockers without exposing process output', async () => {

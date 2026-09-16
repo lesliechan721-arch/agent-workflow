@@ -365,7 +365,6 @@ describe('dependency graph v7', () => {
     expect(instance.lastFrame()).toContain('当前可用依赖位置 4 个');
     expect(instance.lastFrame()).toContain('当前依赖者 · 当前项目 · Codex');
     expect(instance.lastFrame()).not.toContain('consumer · platform=');
-    await input(instance, 'd');
     const expectedPlacements = [
       ['Codex', 'project', 'current', 'Codex', 'user', 'none'],
       ['Codex', 'user', 'none', 'Codex', 'project', 'current'],
@@ -374,14 +373,25 @@ describe('dependency graph v7', () => {
     ];
     for (const [consumerPlatform, consumerScope, consumerProject,
       dependencyPlatform, dependencyScope, dependencyProject] of expectedPlacements) {
+      const label = `› 当前依赖者 · ${consumerScope === 'project' ? '当前项目' : '所有项目'} · ${consumerPlatform}`;
+      for (let move = 0; move <= expectedPlacements.length && !instance.lastFrame()?.includes(label); move += 1) {
+        await input(instance, '\u001b[B');
+      }
+      expect(instance.lastFrame()).toContain(label);
+      await input(instance, 'd');
       expect(instance.lastFrame()).toContain(`consumer · platform=${consumerPlatform} · scope=${consumerScope}`);
       expect(instance.lastFrame()).toContain(`consumer · project=${consumerProject}`);
       expect(instance.lastFrame()).toContain(`dependency · platform=${dependencyPlatform} · scope=${dependencyScope}`);
       expect(instance.lastFrame()).toContain(`dependency · project=${dependencyProject}`);
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+      await input(instance, 'd');
+    }
+    for (let move = 0; move <= expectedPlacements.length
+      && !instance.lastFrame()?.includes('› 返回节点详情'); move += 1) {
       await input(instance, '\u001b[B');
     }
-    await input(instance, '\u001b[B', '\r');
+    expect(instance.lastFrame()).toContain('› 返回节点详情');
+    await input(instance, '\r');
     expect(controller.route).toMatchObject({
       name: 'pluginDependencyNode', nodePluginId: 'official/consumer',
     });
@@ -423,14 +433,14 @@ describe('dependency graph v7', () => {
         const frame = instance.lastFrame() ?? '';
         pages.push(frame);
         expect(frame.split('\n').length).toBeLessThanOrEqual(18);
-        expect(frame).toContain('PgUp/PgDn 查看当前位置详情');
+        expect(frame).toContain('p/n 查看当前位置详情');
         for (const line of frame.split('\n')) {
           const match = /^\s*(consumer|dependency) · (\S+)\s*$/u.exec(line);
           if (!match || match[2]!.startsWith('platform=') || match[2]!.startsWith('project=')) continue;
           chunks[match[1] as 'consumer' | 'dependency'].push(match[2]!);
         }
         if (!frame.includes('↓ 后面还有')) break;
-        await input(instance, '\u001b[6~');
+        await input(instance, 'n');
       }
       return {
         consumer: chunks.consumer.join(''),
@@ -447,7 +457,7 @@ describe('dependency graph v7', () => {
     expect(first.text).toContain('dependency · platform=Claude Code · scope=user');
     expect(first.text).toContain('dependency · project=none');
 
-    await input(instance, '\u001b[B');
+    await input(instance, 'd', '\u001b[B', 'd');
     const second = await readCurrentReference();
     expect(second.consumer).toBe(consumerId);
     expect(second.dependency).toBe(dependencyId);
