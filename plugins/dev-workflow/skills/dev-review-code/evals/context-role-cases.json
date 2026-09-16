@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-review-code",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按当前角色、真实上下文隔离与结果判定；减少重复委派同时保持质量，不能以少 spawn 或两个标题替代独立判断。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "code-assigned-fidelity-axis",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "role-context"
+      ],
+      "prompt": "你是本轮已分配的需求与设计符合度 reviewer，独立干净上下文。另一 reviewer 负责工程质量。使用 dev-review-code 检查当前单页实现与 spec.md、design/accepted.md 和原型；在两种指定视口观察。本次只交付自己的轴，不承担整体采纳。",
+      "assertions": [
+        "直接执行已分配的设计轴，不重新组织完整双轴审查；可以提示重要跨轴事实但不生成第二份独立判断。",
+        "实际发现桌面左右关系及窄屏顺序偏离，功能仍可用不掩盖设计问题。",
+        "只报告本轴依据、发现和限制；默认不写报告或改变产品。",
+        "浏览器能力不足时说明具体未验证部分，不能自述代替观察。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "design/reference.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>",
+          "design/accepted.md": "# 已确认设计\n接受通知偏好预览 r2。桌面 1200×800 下设置位于左侧、预览位于右侧；窄屏 420×820 下预览先于设置和保存操作出现。音量变化立即更新预览，保存反馈位于操作后。接受关系和交互，未要求像素一致；私有 DOM/CSS 可调整。原型模拟保存，生产持久化由正式需求规定。\n",
+          "spec.md": "# 独立通知偏好示例\n本隔离测试项目交付单页演示：音量范围 0..100，初值 40，变化后实时预览；保存按钮显示本次选择的反馈。本例保存是明确采用的演示行为，不承诺服务器或跨会话持久化。\n\n已接受设计见 design/accepted.md 与 design/reference.html。两种指定视口的公开关系和交互属于验收；内部 DOM、类名和布局技术允许等价变化。当前不增加 API、账号或数据模型。\n",
+          "public/index.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}.layout{display:block}.preview{margin-top:260px}@media(max-width:700px){.layout{display:flex}.preview{order:2}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>"
+        }
+      },
+      "expected": {
+        "output": "本轴返回具体设计偏差和证据，整体汇总交由组织者。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "将上一版视觉检出能力与受委派轴执行连接，避免降成本时丢质量。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "完整双轴协调者需要确认另一独立轴确实存在，而非只检查布局。"
+      }
+    },
+    {
+      "id": "code-assigned-engineering-axis",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "role-context"
+      ],
+      "prompt": "你已受委派为工程质量 reviewer，当前未参与实现或修复，也未读取另一轴结论。加载 dev-review-code 检查 src/check.js、相关调用合同和现有测试，报告本轴。另一上下文负责需求设计。",
+      "assertions": [
+        "当前直接读取实现与必要合同、运行或复现边界检查，不再次派发完整双轴。",
+        "发现等值时刻仍被接受的实际错误，给出正确关闭条件与测试证据。",
+        "不修改代码、测试或 Spec；不以当前单轴结果代替完整 Review。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "requirements.md": "# 已确认需求\n请求在 now >= expiresAt 时由服务端拒绝；now < expiresAt 时保持现有成功行为。所有时间为同一服务器时钟的毫秒时间戳。\n",
+          "spec.md": "# 会话过期 Spec\n采用服务器毫秒时间戳。now >= expiresAt 时拒绝，否则保持成功行为。验证过期前、恰好过期、过期后三个边界。\n",
+          "src/check.js": "export function accepts(now,expiresAt){return now <= expiresAt;}\n",
+          "test/check.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {accepts} from '../src/check.js';\ntest('before',()=>assert.equal(accepts(9,10),true));\ntest('exact boundary',()=>assert.equal(accepts(10,10),false));\ntest('after',()=>assert.equal(accepts(11,10),false));\n"
+        }
+      },
+      "expected": {
+        "output": "工程轴直接查出边界缺陷，实际测试或等价复现支持结果。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "单轴执行者仍需必要产品事实和真实验证；独立不是少读资料。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "当前曾参与该修复时应交回组织者补足隔离，不能自证。"
+      }
+    },
+    {
+      "id": "code-independent-no-second-context",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "role-context"
+      ],
+      "prompt": "使用 dev-review-code 正式审查这个小实现。当前是独立审查会话，工作区提供需求和测试；本次环境不能创建另一个独立上下文。请交付你确实能证明的判断和范围。",
+      "assertions": [
+        "可以直接调查并报告实际边界缺陷，不因缺少第二轴工具就放弃所有审查。",
+        "明确只有当前上下文的判断，两个标题不算两份独立审查；不宣称完整独立双轴已经完成。",
+        "保持只读，不虚构另一个 agent 或替用户修复。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "requirements.md": "# 已确认需求\n请求在 now >= expiresAt 时由服务端拒绝；now < expiresAt 时保持现有成功行为。所有时间为同一服务器时钟的毫秒时间戳。\n",
+          "spec.md": "# 会话过期 Spec\n采用服务器毫秒时间戳。now >= expiresAt 时拒绝，否则保持成功行为。验证过期前、恰好过期、过期后三个边界。\n",
+          "src/check.js": "export function accepts(now,expiresAt){return now <= expiresAt;}\n",
+          "test/check.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {accepts} from '../src/check.js';\ntest('before',()=>assert.equal(accepts(9,10),true));\ntest('exact boundary',()=>assert.equal(accepts(10,10),false));\ntest('after',()=>assert.equal(accepts(11,10),false));\n"
+        }
+      },
+      "expected": {
+        "output": "报告可确定的问题与缺少另一独立判断的限制，不虚构完整通过。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "减少不必要隔离不能把完整双轴标准降为单上下文两段文字。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "两个独立判断已经安排或工具可用时，应补足并汇总完整结果。"
+      }
+    }
+  ]
+}

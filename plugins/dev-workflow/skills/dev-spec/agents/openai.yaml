@@ -1,5 +1,5 @@
 interface:
-  display_name: "开发规格"
+  display_name: dev-spec
   short_description: "将已确认需求、重要实现决定和原型选择整理为可独立实施与验收的规格"
   default_prompt: "使用 $dev-spec 处理当前请求，遵循实际范围、资料和授权。"
 policy:

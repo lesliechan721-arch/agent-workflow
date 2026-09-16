@@ -15,7 +15,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "漏触发会跳过有价值的专业能力，误触发会增加流程和上下文成本。"
+      "rationale": "按任务依据、独立交接和真实结果判断加载价值；同时核对无必要方法时的额外成本。"
     },
     "runtime": {
       "observeSpawnAgent": false,
@@ -31,36 +31,96 @@
       "id": "positive_1",
       "split": "validation",
       "tags": [
-        "representative",
-        "core-positive"
+        "boundary"
       ],
       "input": {
-        "query": "这个小改动已经很明确，直接实现并运行相关测试。",
+        "query": "这个工作项已经明确：依据已批准的分页接口和原型完成当前选择器，读取相关合同，保持已确认搜索与回填语义，运行对应验证。",
         "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "需要从真实外部依据完成有界实施，不只是直接文字替换。",
+        "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
+        "minimalCounterexample": "把输入改成已指定的单处文案替换且无额外合同，默认无需加载。"
       }
     },
     {
       "id": "positive_2",
       "split": "validation",
       "tags": [
-        "representative",
-        "core-positive"
+        "boundary"
       ],
       "input": {
-        "query": "按已确认的邀请过期 Spec 开始实现。",
+        "query": "按已确认邀请过期 Spec 只实现接受邀请入口这一工作项；其他任务由协调者处理，当前过期边界和验收已明确。",
         "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "既有 Spec 中的有界工作项适合受约束实施。",
+        "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
+        "minimalCounterexample": "若整个 Spec 含多个依赖任务并需组织交付，Build 可先接管；Implement 可作为后续辅助。"
       }
     },
     {
       "id": "positive_3",
       "split": "validation",
       "tags": [
-        "representative",
-        "core-positive"
+        "boundary"
       ],
       "input": {
-        "query": "继续 work.md 当前纵向切片，完成后记录实际验证。",
+        "query": "继续 work.md 指向的当前已分配 ticket，相关接口、设计与验收都已确认；只完成该工作项并返回真实验证。",
         "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "明确分配范围与真实资料，避免仅因文件名触发。",
+        "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
+        "minimalCounterexample": "请求只是检查 work 中的进度且不实施时不加载。"
+      }
+    },
+    {
+      "id": "assigned_review_repair",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只修这份 Review 中分配给你的两个相关 blocker，依据关闭条件验证，其余建议由协调者管理。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "有界修复需要区分实质问题与相邻建议。",
+        "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
+        "minimalCounterexample": "只要求阅读报告解释问题时不进入实现。"
+      }
+    },
+    {
+      "id": "mechanical_edit",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把 README 的标题“设置”替换成“团队设置”，只修改这一处文字；新内容已经给定。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "直接机械编辑没有额外实施方法需求。",
+        "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
+        "minimalCounterexample": "用户明确选用 dev-implement，或该文字属于需要调查的公开协议时语义不同。"
+      }
+    },
+    {
+      "id": "explicit_small_use",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-implement 把 README 标题“设置”改成“团队设置”，仅此一处。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "显式选择不受默认自动触发排除，仍可独立完成小任务。",
+        "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
+        "minimalCounterexample": "没有显式选择且仅机械修改时应保留普通执行路径。"
       }
     },
     {
@@ -71,9 +131,9 @@
         "near-miss-negative"
       ],
       "audit": {
-        "rationale": "请求属于相邻但不同的用户意图。",
-        "allowedVariance": "可以加载相邻 Skill，但不应加载本 Skill。",
-        "minimalCounterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+        "rationale": "用户当前要求补足材料默认值，并未进入实施。",
+        "allowedVariance": "当前只读/澄清任务不加载Implement；后续获得独立实现请求时重新判断，不对未来任务作全局禁止。",
+        "minimalCounterexample": "默认值确认后，用户分配一个依据接口合同实现的明确工作项，应加载Implement。"
       },
       "input": {
         "query": "这个需求还有几个关键默认值没说清，先问我。",
@@ -88,9 +148,9 @@
         "near-miss-negative"
       ],
       "audit": {
-        "rationale": "请求属于相邻但不同的用户意图。",
-        "allowedVariance": "可以加载相邻 Skill，但不应加载本 Skill。",
-        "minimalCounterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+        "rationale": "当前结果是规格独立审查，要求只读。",
+        "allowedVariance": "当前只读/澄清任务不加载Implement；后续获得独立实现请求时重新判断，不对未来任务作全局禁止。",
+        "minimalCounterexample": "改为按该Spec实施一个已确认边界的工作项时，应加载Implement。"
       },
       "input": {
         "query": "只读审查这份 Spec 是否能批准。",
@@ -105,9 +165,9 @@
         "near-miss-negative"
       ],
       "audit": {
-        "rationale": "请求属于相邻但不同的用户意图。",
-        "allowedVariance": "可以加载相邻 Skill，但不应加载本 Skill。",
-        "minimalCounterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+        "rationale": "当前只对diff作独立判断，产品修改尚未授权。",
+        "allowedVariance": "当前只读/澄清任务不加载Implement；后续获得独立实现请求时重新判断，不对未来任务作全局禁止。",
+        "minimalCounterexample": "用户确认报告并分配其中有界blocker修复时，应加载Implement。"
       },
       "input": {
         "query": "对当前 diff 做双轴代码审查，不要修改。",

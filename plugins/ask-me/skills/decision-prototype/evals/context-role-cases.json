@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-prototype",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按当前角色、真实上下文隔离与结果判定；减少重复委派同时保持质量，不能以少 spawn 或两个标题替代独立判断。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "prototype-assigned-builder-direct-execution",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "role-context"
+      ],
+      "prompt": "你已经是被分配的 prototype builder。用 decision-prototype 的适用方法完成 brief.md 中的逻辑演示；父协调者负责用户问题与反馈。产物位置和本轮范围在 brief 中。工具可用时也只执行你的当前职责。",
+      "assertions": [
+        "直接按 brief 构建模型和业务语言演示说明，不把相同模型再次委派给下一层 builder。",
+        "实际运行提供的测试，得到 start/finish 与非法动作保持原状态的证据。",
+        "只写分配的 artifact 文件，不修改 decisions.md 或擅自创建接受结论。",
+        "返回可访问产物、查看方式和限制后结束；不把测试通过当用户接受。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\"}\n",
+          "brief.md": "# 逻辑原型 brief\n当前问题：排队任务由 queued 开始，start 后 active，finish 后 done；是否足以让用户观察这一顺序，由协调者稍后取得反馈。\nBuilder 只实现 artifact/model.js 与 artifact/demo.txt；不改 brief、decisions 或 verdict。\nmodel.js 导出 next(state, action)。queued/start->active；active/finish->done；其他组合保持原状态。验证用 node --test test/model.test.js。demo.txt 用业务语言说明操作和状态；一项当前模型足够。\n",
+          "artifact/model.js": "export function next(state,action){return state;}\n",
+          "test/model.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {next} from '../artifact/model.js';\ntest('start',()=>assert.equal(next('queued','start'),'active'));\ntest('finish',()=>assert.equal(next('active','finish'),'done'));\ntest('invalid finish',()=>assert.equal(next('queued','finish'),'queued'));\n",
+          "decisions.md": "# 当前决定\n状态顺序待原型反馈；用户未接受任何候选。\n"
+        }
+      },
+      "expected": {
+        "output": "builder 交付当前原型和真实验证，将用户决策留给协调者。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "artifact/model.js",
+          "artifact/demo.txt"
+        ],
+        "artifacts": [
+          {
+            "path": "artifact/model.js",
+            "exists": true
+          },
+          {
+            "path": "artifact/demo.txt",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "原型方法可由 builder 加载，但同一 Skill 的父级编排不应重复展开。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "直接用户要求完整原型决定流程时，协调者仍需安排反馈并记录用户结论。"
+      }
+    },
+    {
+      "id": "prototype-builder-missing-material-input",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "role-context"
+      ],
+      "prompt": "你是已委派 builder，按 brief.md 完成本轮原型。在当前范围无法判断的产品问题请返回给当前协调者。",
+      "assertions": [
+        "说明哪个材料决定缺失，不自行决定风险策略或为此再委派一个完整原型流程。",
+        "不修改 decisions.md、不创建用户已接受的 verdict，也不伪造实际支付运行结果。",
+        "清楚交回具体缺口而非停在没有原因的无法完成。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "brief.md": "# Brief\n原型需要演示支付失败是否自动重试；用户尚未决定重试次数和是否可能重复扣款。构建范围只限 artifact/；这些选择会改变被演示行为。\n",
+          "decisions.md": "# 决定\n重试与扣款风险待用户确认。\n"
+        }
+      },
+      "expected": {
+        "output": "当前材料缺口交回协调者，不扩展角色或接受范围。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "builder 对未决产品语义的界限与是否拥有 spawn 能力无关。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "brief 已明确规则时，应直接实现并验证，不用缺口理由重新发起完整访谈。"
+      }
+    }
+  ]
+}

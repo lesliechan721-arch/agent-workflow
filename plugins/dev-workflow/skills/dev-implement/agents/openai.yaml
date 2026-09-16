@@ -1,6 +1,6 @@
 interface:
-  display_name: "实现工作项"
-  short_description: "实现当前明确工作项并运行相关验证，保持任务边界并报告未解决问题"
+  display_name: dev-implement
+  short_description: "依据既有规格、设计或委派范围完成工作项与有界修复，提供实际验证"
   default_prompt: "使用 $dev-implement 处理当前请求；按实际授权、输入和已有工件执行。"
 policy:
   allow_implicit_invocation: true

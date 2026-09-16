@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "codex-workflow",
+    "unitUnderTest": "dev-build",
+    "participants": [
+      "dev-breakdown",
+      "dev-implement",
+      "dev-review-code"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按任务依据、独立交接和真实结果判断加载价值；同时核对无必要方法时的额外成本。"
+    }
+  },
+  "cases": [
+    {
+      "id": "generated_ticket_clean_context_delivery",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "spec.md": "# 独立通知偏好示例\n本隔离测试项目交付单页演示：音量范围 0..100，初值 40，变化后实时预览；保存按钮显示本次选择的反馈。本例保存是明确采用的演示行为，不承诺服务器或跨会话持久化。\n\n已接受设计见 design/accepted.md 与 design/reference.html。两种指定视口的公开关系和交互属于验收；内部 DOM、类名和布局技术允许等价变化。当前不增加 API、账号或数据模型。\n",
+          "design/reference.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>",
+          "design/accepted.md": "# 已确认设计\n接受通知偏好预览 r2。桌面 1200×800 下设置位于左侧、预览位于右侧；窄屏 420×820 下预览先于设置和保存操作出现。音量变化立即更新预览，保存反馈位于操作后。接受关系和交互，未要求像素一致；私有 DOM/CSS 可调整。原型模拟保存，生产持久化由正式需求规定。\n",
+          "public/index.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}.layout{display:block}.preview{margin-top:260px}@media(max-width:700px){.layout{display:flex}.preview{order:2}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>",
+          "README.md": "# 独立页面样例\n通过本地静态工具打开 public/index.html，所有资源均为本地自包含。\n"
+        },
+        "task": "按既有需求及原型修正当前独立页面。由 Breakdown 实际生成可派发ticket，再交给新上下文实施者，最后独立审查。所有写入仅限测试工作区。",
+        "phaseContracts": [
+          {
+            "role": "breakdown",
+            "allowedWrites": [
+              "tickets/**"
+            ],
+            "instruction": "读取当前Spec、设计与页面，给出可独立派发的工作项。首个完整页面工作项写入 tickets/view.md，供下一位实施者读取。本次只准备任务。"
+          },
+          {
+            "role": "implementer",
+            "freshContext": true,
+            "allowedWrites": [
+              "public/index.html"
+            ],
+            "instruction": "仅实施 tickets/view.md。依据该任务及其可访问来源完成；父会话不可用。说明实际变更、验证和缺口。"
+          },
+          {
+            "role": "review",
+            "freshContexts": 2,
+            "allowedWrites": [],
+            "instruction": "组织者已经为本轮创建两个干净 reviewer：一位负责需求与设计符合度，另一位负责工程质量。各自加载 dev-review-code 并直接执行所分配轴；返回实际证据、问题与限制，由组织者汇总完整结果。默认报告，不修复。"
+          }
+        ],
+        "handoff": "Engine preserves the actual generated tickets/view.md bytes and its reachable sources, starts a new context with only the assigned task prompt and workspace; no parent transcript or replacement ticket.",
+        "supportingFixturePath": "fixtures/visual; case workspaceFiles are self-contained",
+        "runtimePrerequisites": [
+          "真实隔离上下文与可归因工具证据",
+          "可用本地浏览器",
+          "实现worker可配置为实际目标模型，不伪造较弱模型身份"
+        ]
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "actual-ticket",
+            "description": "Ticket 来自本次Breakdown实际产物，准备阶段不存在该文件，handoff未被人工改写。",
+            "evidenceSource": "before/after tree, attributable author writes and actual worker input"
+          },
+          {
+            "id": "source-reachable",
+            "description": "新worker通过任务和真实可访问资料知道完整关系与验收；缺口如实报告而不是猜父会话。",
+            "evidenceSource": "worker reads + actual generated Ticket"
+          },
+          {
+            "id": "behaviour",
+            "description": "浏览器验证两视口关系及输入更新、保存反馈；实现未越过当前页面范围。",
+            "evidenceSource": "independent post-run browser oracle + diff"
+          },
+          {
+            "id": "review-evidence",
+            "description": "本轮两份真实独立判断覆盖各自轴；已分配 reviewer 直接执行，不各自生成下一组 reviewer。源码或历史记录不能代替实际视觉证据。",
+            "evidenceSource": "Engine agent identities, isolation and reviewer traces"
+          }
+        ]
+      },
+      "assertions": [
+        "实际生成Ticket进入新上下文，不能用预制的优质ticket替换。",
+        "实施与审查结论由结果和独立证据判定，不以文件标题或两个审查段落计成功。",
+        "已接受关系得到实现，私有等价实现允许，越权文件保持原样。",
+        "已分配的两轴 reviewer 复用同一 Skill 方法且直接执行；角色边界不替代原型对照和完整范围核验。"
+      ],
+      "audit": {
+        "rationale": "直接闭合生成任务→真实worker→当前结果审查的未验证连接。",
+        "allowedVariance": "任务命名和实施路径可以等价；tickets/view.md 是本用例真实handoff消费者需要的固定位置，不是生产通用协议。",
+        "minimalCounterexample": "只给人工Ticket或共享父会话不属于这项端到端证据；可单独作为诊断对照，不可替代。"
+      }
+    }
+  ]
+}

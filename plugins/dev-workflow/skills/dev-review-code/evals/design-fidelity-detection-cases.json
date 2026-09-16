@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-review-code",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按任务依据、独立交接和真实结果判断加载价值；同时核对无必要方法时的额外成本。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "review_visual_misaligned",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "请用 dev-review-code 独立审查 public/index.html 是否满足 spec.md 以及已接受设计，并检查当前代码质量。默认对话报告，工作区保持原样；可以在工具临时输出位置保存浏览器证据。",
+      "assertions": [
+        "实际在两种指定视口对照设计与产品，不能只看按钮、源码摘要或截图文件存在。",
+        "发现桌面预览不在设置右侧和窄屏预览顺序错误，说明接受依据、影响与关闭条件。",
+        "区分预览/模拟保存仍正常与视觉关系错误，不发明真实服务器持久化要求。",
+        "两份独立上下文的执行需真实 trace；能力缺失应说明，不能以自述伪装正常路径通过。",
+        "默认对话报告且产品文件保持不变；有证据限制就明确范围。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "design/reference.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>",
+          "design/accepted.md": "# 已确认设计\n接受通知偏好预览 r2。桌面 1200×800 下设置位于左侧、预览位于右侧；窄屏 420×820 下预览先于设置和保存操作出现。音量变化立即更新预览，保存反馈位于操作后。接受关系和交互，未要求像素一致；私有 DOM/CSS 可调整。原型模拟保存，生产持久化由正式需求规定。\n",
+          "spec.md": "# 独立通知偏好示例\n本隔离测试项目交付单页演示：音量范围 0..100，初值 40，变化后实时预览；保存按钮显示本次选择的反馈。本例保存是明确采用的演示行为，不承诺服务器或跨会话持久化。\n\n已接受设计见 design/accepted.md 与 design/reference.html。两种指定视口的公开关系和交互属于验收；内部 DOM、类名和布局技术允许等价变化。当前不增加 API、账号或数据模型。\n",
+          "public/index.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}.layout{display:block}.preview{margin-top:260px}@media(max-width:700px){.layout{display:flex}.preview{order:2}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>"
+        }
+      },
+      "expected": {
+        "output": "发现并解释桌面左右关系和窄屏顺序偏离，报告真实比较证据。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "复现功能正常却偏离已接受设计的真实风险。",
+        "allowedVariance": "名称、DOM/CSS 与措辞可变化；按实际行为、设计关系、写入范围和真实证据判断。",
+        "minimalCounterexample": "实现保持两种接受关系时不应判视觉偏离。"
+      }
+    },
+    {
+      "id": "review_visual_equivalent",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "请用 dev-review-code 独立审查 public/index.html 是否满足 spec.md 以及已接受设计，并检查当前代码质量。默认对话报告，工作区保持原样；可以在工具临时输出位置保存浏览器证据。",
+      "assertions": [
+        "核对桌面右侧预览和窄屏先预览均成立，交互反馈保持。",
+        "不同私有类名、布局技术和等价间距不构成需求偏离；其他实际工程问题仍应报告。",
+        "两份独立上下文的执行需真实 trace；能力缺失应说明，不能以自述伪装正常路径通过。",
+        "默认对话报告且产品文件保持不变；有证据限制就明确范围。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "design/reference.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>",
+          "design/accepted.md": "# 已确认设计\n接受通知偏好预览 r2。桌面 1200×800 下设置位于左侧、预览位于右侧；窄屏 420×820 下预览先于设置和保存操作出现。音量变化立即更新预览，保存反馈位于操作后。接受关系和交互，未要求像素一致；私有 DOM/CSS 可调整。原型模拟保存，生产持久化由正式需求规定。\n",
+          "spec.md": "# 独立通知偏好示例\n本隔离测试项目交付单页演示：音量范围 0..100，初值 40，变化后实时预览；保存按钮显示本次选择的反馈。本例保存是明确采用的演示行为，不承诺服务器或跨会话持久化。\n\n已接受设计见 design/accepted.md 与 design/reference.html。两种指定视口的公开关系和交互属于验收；内部 DOM、类名和布局技术允许等价变化。当前不增加 API、账号或数据模型。\n",
+          "public/index.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.panels{display:flex;align-items:flex-start;gap:24px}.panel{flex:1;min-width:0;padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.panels{display:flex;flex-direction:column}.sample{order:0;align-self:stretch}.editor{order:1;align-self:stretch}}</style><main><h1>通知偏好</h1><div class=\"panels\"><section class=\"editor panel\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"sample panel\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>"
+        }
+      },
+      "expected": {
+        "output": "公开设计关系和交互等价；不因布局技术或私有类名变化误报偏离。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "正反对照防止把私有实现自由误判为视觉合同。",
+        "allowedVariance": "名称、DOM/CSS 与措辞可变化；按实际行为、设计关系、写入范围和真实证据判断。",
+        "minimalCounterexample": "改变窄屏先后或桌面关系即违反已确认设计。"
+      }
+    }
+  ]
+}
