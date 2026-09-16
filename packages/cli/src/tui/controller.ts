@@ -2226,6 +2226,11 @@ export class TuiController {
 
   #stableResultRoute(intent: OperationIntent, result: OperationExecuteResult): TuiRoute {
     const active = this.#router.activeFlow();
+    if (intent.kind === 'pluginWriteTask' && active?.kind === 'pluginWriteTask'
+      && (active.parentFlowId || active.returnTarget.name === 'pluginWriteTask'
+        && active.returnTarget.goal !== intent.goal)) {
+      return this.#normalizeRoute(active.returnTarget);
+    }
     const completedPluginId = completedSinglePluginId(intent, result);
     if (completedPluginId) {
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: completedPluginId });
@@ -4714,9 +4719,14 @@ export class TuiController {
               : ticket.returnRoute,
         )),
       };
+      const configResultNeedsAttention = result.state === 'succeeded' && (result.summary.messages?.some((message) =>
+        message.startsWith('警告：')
+        || message === '提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。') ?? false);
       if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configSaveBatch'
         || ticket.intent.kind === 'configReset')
-        && this.#portableRepreparePluginId === ticket.intent.pluginId) {
+        && this.#portableRepreparePluginId === ticket.intent.pluginId
+        && result.state === 'succeeded'
+        && !configResultNeedsAttention) {
         this.#operationDiagnostics.delete(operationId);
         this.#portableRepreparePluginId = undefined;
         this.#activeReview = undefined;
@@ -5395,6 +5405,15 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
     const invalidConfig = savedCount === batch.groups.length
       && batch.groups.some((group) => group.configSaved && group.errorCode === 'invalidConfig')
       && retryScopes.length === 0;
+    const publicWarnings = [...new Set(batch.groups.flatMap((group) => {
+      if (!group.execution || typeof group.execution !== 'object'
+        || !Array.isArray((group.execution as { warnings?: unknown }).warnings)) return [];
+      return (group.execution as { warnings: unknown[] }).warnings.filter((warning): warning is string =>
+        typeof warning === 'string' && warning.startsWith('projectConfigShareabilityUnverified:'));
+    }))];
+    const otherProjectsMayRequireSync = batch.groups.some((group) =>
+      group.scope === 'user' && group.execution && typeof group.execution === 'object'
+      && (group.execution as { otherProjectsMayRequireSync?: unknown }).otherProjectsMayRequireSync === true);
     return {
       code: failedCount > 0
         ? savedCount > 0 ? 'operationPartial' : 'operationFailed'
@@ -5419,14 +5438,20 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         applyStatus: group.applyStatus,
         ...(group.errorCode ? { errorCode: safeDiagnosticCode(group.errorCode, 'configWriteFailed') } : {}),
       })),
-      messages: batch.groups.map((group) => {
-        const label = group.scope === 'project' ? '当前项目' : '个人默认';
-        return group.configSaved
-          ? `${label}已保存${group.errorCode === 'invalidConfig'
-            ? '，但当前配置无效，未应用'
-            : group.applyStatus === 'failed' ? '，但应用失败' : ''}。`
-          : `${label}保存失败。`;
-      }),
+      messages: [
+        ...batch.groups.map((group) => {
+          const label = group.scope === 'project' ? '当前项目' : '个人默认';
+          return group.configSaved
+            ? `${label}已保存${group.errorCode === 'invalidConfig'
+              ? '，但当前配置无效，未应用'
+              : group.applyStatus === 'failed' ? '，但应用失败' : ''}。`
+            : `${label}保存失败。`;
+        }),
+        ...publicWarnings.map((warning) => `警告：${warning}`),
+        ...(otherProjectsMayRequireSync
+          ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。']
+          : []),
+      ],
     };
   }
   if (intent.kind === 'configSave' || intent.kind === 'configReset') {

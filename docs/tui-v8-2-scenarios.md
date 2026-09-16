@@ -4,16 +4,18 @@
 
 本清单把 v8.2 `page-catalog.csv` 的 156 个 fixture ID 映射到实施的六个阶段。catalog 没有阶段字段；阶段归属是按 [实施记录](tui-v8-2-implementation.md) 的范围和 v8.2 页面族作出的实施映射。每个 ID 只出现一次：阶段 1 有 6 个、阶段 2 有 20 个、阶段 3 有 43 个、阶段 4 有 23 个、阶段 5 有 48 个、阶段 6 有 16 个，总计 156 个。
 
-阶段 1–4 已按当前生产 Ink 测试复核。这里的“行为已验证”只表示测试实际断言的行为；它不等于该 catalog fixture 的完整验收。“双尺寸”只在同一测试明确运行 80×24 和 60×18 时使用。HTML 原型、原型截图、`layout-validation.json` 和 `interaction-validation.json` 只说明设计参照，**不是生产证据**。
+阶段 1–6 已按当前生产测试复核。这里的“行为已验证”只表示测试实际断言的行为；它不等于该 catalog fixture 的完整验收。“双尺寸”只在同一测试明确运行 80×24 和 60×18 时使用。HTML 原型、原型截图、`layout-validation.json` 和 `interaction-validation.json` 只说明设计参照，**不是生产证据**。
 
 执行结果另见[实施记录](tui-v8-2-implementation.md)：阶段 1–4 checkpoint 为 `73e6cb11`、`9b374adb`、`da0aa01a`、`38b1c3b4`、`0585675f`；记录的最终 Console 为 358/358，controller、session-host 和配置组合为 224/224，`pnpm build` 与 `git diff --check` 退出 0。该结果证明相应套件在当时通过，不把任何总数归因到本表的单个 fixture 或 312 份双尺寸证据。
+
+阶段 5 的 Console 定向套件和阶段 6 的组合套件已分别记录为 358 与 447/447、退出 0。最终集成门禁为 499 项集成及 3 项进程生命周期测试，全部通过。首轮旧导航断言已按原安全目的迁移，最终评审发现的 UI 阅读、配置结果与诊断问题已修复并定向验证。完整单元门禁 2,979 通过、2 跳过，真实 PTY 的 80×24 22 帧及 60×18 23 帧均通过，详见实施记录；本表不以总测试数声明 312 项设计状态已逐一验证。
 
 | 标记 | 含义 |
 | --- | --- |
 | `双尺寸` | 当前生产 Ink 测试以 80×24 和 60×18 覆盖所列行为；仍需 catalog fixture 的独立记录。 |
 | `行为` | 当前生产 Ink、控制器或 integration 测试覆盖所列行为，但缺少另一尺寸、完整 fixture，或两者。 |
 | `待补验` | 没有与设计状态直接对应的测试证据；相关实现或其他行为测试不能补足。 |
-| `待验` | 阶段尚未完成，或尚未对其现有证据做本轮场景复核。 |
+| `待验` | 尚未对其现有证据完成本轮场景复核，或等待最终评审回归回填。 |
 | `基线` | 阶段 5–6 表中阶段 1–4 时记录的定位线索，不是对当前生产能力不存在的断言。 |
 
 设计清单来源：`.tmp/agent-workflow-tui-v8-2/page-catalog.csv:2-157`。设计明确说明这 156 项是页面/状态参照，不是 156 个必经用户路径，且每项应有 80×24 与 60×18 的独立参照（`.tmp/agent-workflow-tui-v8-2/design.md:398-425`）。
@@ -138,7 +140,7 @@
 | C14 | 离开未保存草稿 | C9 | 行为：G04 守卫和放弃草稿；待补双尺寸。 |
 | C15 | 布尔字段 / 友好值 | C10 | 行为：布尔 preset 和实际写入；待补双尺寸。 |
 | C16 | 文件字段 / 路径约束 | C11；Core `plugin-config.test.ts` | 合同不适用：现有 Core 明确拒绝文件类型。路径仍按字符串编辑；不声称支持文件专用约束。 |
-| C17 | 目录字段 / 目标可移植性 | Core `plugin-config.test.ts` | 合同不适用：现有 Core 明确拒绝目录/path 类型。暂按保留公开合同处理，已向用户说明。 |
+| C17 | 目录字段 / 目标可移植性 | Core `plugin-config.test.ts` | 合同不适用：现有 Core 明确拒绝目录/path 类型。用户已确认保留公开合同，专用控件不适用。 |
 | C18 | 敏感输入 / 不采集真实值 | C11, C16；`tui-v8-2-config-coverage.test.tsx` | 双尺寸：同 fixture 输入、目标页、Review 及 snapshot 不泄露值；私有写入 intent 保留必要值。 |
 | C19 | 敏感值只有个人保存位置 | C2；`tui-v8-2-config-coverage.test.tsx` | 双尺寸：敏感字段只提供 user 目标。 |
 | C20 | 对象字段 / 组合值 | C12, C19 | 行为：完整对象编辑/Review（80×24）；双尺寸仅覆盖 object 动作可达，待补完整组合值的 60×18。 |
@@ -150,48 +152,48 @@
 
 **分组行为标准。** 来源卡片显示类型、健康、版本和新鲜度，详情区分可用、可检查失败、目录损坏和本地来源。检查只做连接、目录和候选验证，不激活、升级、修复、清理、安装或执行生命周期脚本。编辑支持完整草稿、离线保存、启用失败后重试、原版本恢复、替换确认和移除影响。存储显示保留规则、安全清理预览和结果；诊断和导出只显示安全字段。设计依据：`.tmp/agent-workflow-tui-v8-2/design.md:159-228,278-297,396-425`、`.tmp/agent-workflow-tui-v8-1/design.md:300-374`。
 
-**阶段 1–4 基线。** `E14` 来源列表、详情和生命周期入口：`packages/cli/src/tui/console-app-v4.tsx`；`E15` 来源技术详情：同文件；`E16` 诊断安全边界和定向测试：`packages/cli/src/tui/diagnostics.ts`、`packages/cli/tests/unit/tui-console-app-v5.test.tsx`、`packages/cli/tests/unit/tui-diagnostics.test.tsx`。这些是阶段 5 进入实施前的定位线索，不是对当前生产页或测试不存在的断言；L01–L06 的 `—` 只表示该基线没有捕获引用。
+**来源证据范围。** 阶段 5 的新双尺寸文件是 `packages/cli/tests/unit/tui-stage5-v8-2.test.tsx`；既有来源行为主要在 `packages/cli/tests/unit/tui-console-app-v5.test.tsx`、`tui-controller-v5.test.ts` 和 `tui-controller-runtime-v5.test.ts`。后两类不含 Ink 尺寸，不能填作双尺寸 UI 证据。下表列出实际测试全名；`E14`–`E16` 只保留为阶段 1–4 的历史定位线索。
 
 | 设计 ID | 设计状态 | 可用基础证据 | 状态 |
 | --- | --- | --- | --- |
 | S01 | 来源卡片列表 / 固定操作栏 | `tui-stage5-v8-2.test.tsx` | 双尺寸：长来源列表末项一次 Tab 到固定栏，Enter 检查或查看存储。 |
-| S02 | 详情 / 有更新且当前可用 | E14, E16 | 待验 |
-| S03 | 详情 / 正常无更新 | E14, E16 | 待验 |
+| S02 | 详情 / 有更新且当前可用 | `tui-console-app-v5.test.tsx`：`keeps all source detail actions reachable at %ix%i and opens the focused technical route`；`shows structured candidate capability diagnostics while preserving the old Active` | 行为：前者在 60×18、80×24 验证详情动作和技术页可达；后者在 100×28 验证候选能力异常时旧 Active 保留。待补有更新详情字段的同 fixture 双尺寸。 |
+| S03 | 详情 / 正常无更新 | `tui-console-app-v5.test.tsx`：`keeps all source detail actions reachable at %ix%i and opens the focused technical route`；`renders safe source detail and technical data without raw path, credentials, or failure text` | 行为：动作可达为双尺寸；正常详情和安全技术字段为 80×24。待补完整详情字段的同 fixture 双尺寸。 |
 | S04 | 详情 / 检查失败但旧版本可用 | `tui-stage5-v8-2.test.tsx` | 双尺寸：失败来源数量保持未知；当前健康与检查失败分离另由来源测试覆盖。 |
-| S05 | 详情 / 当前目录损坏 | E14, E16 | 待验 |
-| S06 | 详情 / 本地来源 | E14, E16 | 待验 |
+| S05 | 详情 / 当前目录损坏 | `tui-console-app-v5.test.tsx`：`[source-detail/damaged-default] keeps damaged Active unavailable when its freshness check also fails` | 行为：80×24 区分损坏 Active 与检查失败，且不误报为可用；待补 60×18。 |
+| S06 | 详情 / 本地来源 | — | 待补验：没有直接打开本地来源详情的完整 Ink 场景。 |
 | S07 | 统一检查进度 / 无写入 | `tui-stage5-v8-2.test.tsx` | 双尺寸：按钮和 r 共用检查动作，重复请求合并，检查不执行启用。 |
 | S08 | 检查全部 / 逐来源隔离 | `tui-stage5-v8-2.test.tsx` | 双尺寸：固定栏和 r 共用检查全部；各来源隔离由 controller/source 测试覆盖。 |
-| S09 | 检查后 / 就地显示新版本 | E14, E16 | 待验 |
+| S09 | 检查后 / 就地显示新版本 | `tui-controller-v5.test.ts`：`keeps a healthy Active source available when its background check fails`；`tui-console-app-v5.test.tsx`：`shows structured candidate capability diagnostics while preserving the old Active` | 待补验：已有 controller/Ink 证据只证明检查结果不替换旧 Active；没有“新版本就地显示”的直接双尺寸场景。 |
 | S10 | 检查后 / 保留错误和旧版本 | `tui-stage5-v8-2.test.tsx` | 双尺寸：检查后刷新同一页面；来源失败不误报插件数为零。 |
-| S11 | 完整来源草稿 | E14 | 待验 |
-| S12 | 官方下载方式 / 单字段弹窗 | E14 | 待验 |
-| S13 | 添加来源 / 类型 | E14 | 待验 |
-| S14 | 添加 Git / 来源 ID | E14 | 待验 |
-| S15 | 添加 Git / 地址 | E14 | 待验 |
-| S16 | 版本策略 | E14 | 待验 |
-| S17 | 固定 Git 引用 | E14 | 待验 |
-| S18 | 子目录 / 合法空值 | E14 | 待验 |
-| S19 | 添加 Path / 绝对目录 | E14 | 待验 |
-| S20 | 添加 Path / 路径错误 | E14 | 待验 |
-| S21 | 添加来源确认 | E14 | 待验 |
-| S22 | 编辑确认 / 只保存或启用 | E14 | 待验 |
-| S23 | 离线只保存成功 | E14 | 待验 |
-| S24 | 保存成功 / 启用失败 | E14, E16 | 待验 |
-| S25 | 插件目录更新确认 | E14 | 待验 |
-| S26 | 完整引用与影响 | E14, E15, E16 | 待验 |
-| S27 | 来源执行进度 | E14 | 待验 |
-| S28 | 来源更新成功 | E14 | 待验 |
-| S29 | 优先恢复原版本 | E14 | 待验 |
-| S30 | 原版本不可取得 / 决定替换 | E14 | 待验 |
-| S31 | 更多操作 / 非检查菜单堆叠 | E14 | 待验 |
-| S32 | 设为主来源确认 | E14 | 待验 |
-| S33 | 主来源移除受限 | E14, E15, E16 | 待验 |
-| S34 | 最后来源移除受限 | E14, E15, E16 | 待验 |
-| S35 | 移除来源影响确认 | E14, E15, E16 | 待验 |
-| S36 | 移除结果 / 不删除插件设置 | E14 | 待验 |
-| S37 | 来源技术详情 | E14, E15, E16 | 待验 |
-| S38 | 来源全局配置无法读取 | E14, E16 | 待验 |
+| S11 | 完整来源草稿 | `tui-console-app-v5.test.tsx`：`keeps a multi-field source summary and its complete final change reachable at %ix%i` | 双尺寸：编辑两项来源字段、汇总、完整变化和四个后续动作均可达；逐字段输入另有 80×24 覆盖。 |
+| S12 | 官方下载方式 / 单字段弹窗 | `tui-console-app-v5.test.tsx`：`[source-edit/official/https] reviews an official HTTPS to SSH transport switch before any source write` | 双尺寸：同一测试显式在 80×24 和 60×18 显示下载方式、说明和 Review 前无写入。 |
+| S13 | 添加来源 / 类型 | `tui-console-app-v5.test.tsx`：`reaches S01-S13 through the real Git wizard and treats b as input text` | 行为：60×18 真实 Git 向导经过来源类型；历史 screen ID 只用于测试内部，不等同本表 ID。 |
+| S14 | 添加 Git / 来源 ID | 同上：`reaches S01-S13 through the real Git wizard and treats b as input text` | 行为：60×18 输入来源 ID 并进入地址步骤；待补双尺寸。 |
+| S15 | 添加 Git / 地址 | 同上：`reaches S01-S13 through the real Git wizard and treats b as input text` | 行为：60×18 输入 Git 地址并进入版本策略；待补双尺寸。 |
+| S16 | 版本策略 | 同上：`reaches S01-S13 through the real Git wizard and treats b as input text` | 行为：60×18 选择策略并显示 CLI channel 对应目录；待补双尺寸。 |
+| S17 | 固定 Git 引用 | `tui-console-app-v5.test.tsx`：`cancels a fixed-ref field without changing its parent source draft` | 行为：80×24 取消固定引用不会修改父草稿；待补固定引用输入的双尺寸。 |
+| S18 | 子目录 / 合法空值 | `tui-console-app-v5.test.tsx`：`shows an explicitly cleared Catalog subdirectory as the repository root` | 行为：60×18 清空子目录显示仓库根，完整变化可分页读取；待补 80×24。 |
+| S19 | 添加 Path / 绝对目录 | `tui-console-app-v5.test.tsx`：`saves a changed path source when the private path display has the same basename` | 行为：80×24 保留实际绝对 Path 写入意图，同时显示脱敏路径；待补添加 Path 的双尺寸。 |
+| S20 | 添加 Path / 路径错误 | — | 待补验：没有直接的 Path 输入错误 Ink 场景。 |
+| S21 | 添加来源确认 | `tui-console-app-v5.test.tsx`：`reaches S01-S13 through the real Git wizard and treats b as input text` | 行为：60×18 到达 Review，确认后调用 `catalogGeneration/activate`；待补双尺寸。 |
+| S22 | 编辑确认 / 只保存或启用 | `tui-console-app-v5.test.tsx`：`keeps a multi-field source summary and its complete final change reachable at %ix%i` | 双尺寸：汇总中“保存并启用”“只保存”和完整变化均可聚焦；该 fixture 未执行写入。 |
+| S23 | 离线只保存成功 | `tui-console-app-v5.test.tsx`：`saves a changed path source when the private path display has the same basename` | 待补验：已有 80×24 只到精确 `update` prepare；没有离线只保存 Result 的直接场景。 |
+| S24 | 保存成功 / 启用失败 | `tui-console-app-v5.test.tsx`：`keeps a source draft and reports uncertainty after a sanitized command failure` | 待补验：80×24 覆盖写入未确认和草稿保留，不等于“保存成功、启用失败”的结果合同。 |
+| S25 | 插件目录更新确认 | `tui-controller-runtime-v5.test.ts`：`prepares an Active update without following a newer source and rejects an Active version change` | 行为：后端 Review/evidence 约束已验；没有直接 Ink 更新确认双尺寸。 |
+| S26 | 完整引用与影响 | `tui-console-app-v5.test.tsx`：`opens the damaged Active replacement Review and requires explicit impact confirmation`；`tui-controller-runtime-v5.test.ts`：`uses one source mutation preflight for review validation and evidence` | 行为：80×24 显示替换影响确认，后端保留 preflight 引用证据；待补双尺寸。 |
+| S27 | 来源执行进度 | `tui-console-app-v5.test.tsx`：`renders real feed phase changes and bounded technical messages for source %s` | 行为：60×18 覆盖 add/update 的真实 Progress feed 和安全技术消息；待补 80×24。 |
+| S28 | 来源更新成功 | — | 待补验：没有来源更新成功 Result 的直接 Ink 场景。 |
+| S29 | 优先恢复原版本 | `tui-console-app-v5.test.tsx`：`shows structured candidate capability diagnostics while preserving the old Active` | 待补验：该测试只证明旧 Active 保留；没有原版本恢复计划的直接场景。 |
+| S30 | 原版本不可取得 / 决定替换 | `tui-console-app-v5.test.tsx`：`opens the damaged Active replacement Review and requires explicit impact confirmation` | 行为：80×24 覆盖损坏 Active 的替换 Review 与影响确认；待补“原版本不可取得”决定的直接双尺寸。 |
+| S31 | 更多操作 / 非检查菜单堆叠 | `tui-console-app-v5.test.tsx`：`keeps all source detail actions reachable at %ix%i and opens the focused technical route` | 双尺寸：详情动作及“技术详情”路径可达；待补非检查菜单全部项目的逐项证据。 |
+| S32 | 设为主来源确认 | `tui-console-app-v5.test.tsx`：`reaches edit, primary, and safe removal Review pages through mounted keyboard actions`；`tui-controller-runtime-v5.test.ts`：`passes reviewed primary impact to execution and surfaces lock-time stale` | 行为：80×24 到达主来源 Review；后端重验 impact/stale，待补双尺寸。 |
+| S33 | 主来源移除受限 | `tui-console-app-v5.test.tsx`：`reaches the last blocked source reference at 60x18` | 行为：60×18 阻断引用可达；待补主来源专用限制的直接双尺寸。 |
+| S34 | 最后来源移除受限 | — | 待补验：没有最后来源移除限制的直接场景。 |
+| S35 | 移除来源影响确认 | `tui-console-app-v5.test.tsx`：`opens removal Review without consulting an incomplete reference inventory`；`reaches edit, primary, and safe removal Review pages through mounted keyboard actions` | 行为：80×24 可达安全移除 Review；待补双尺寸和完整影响清单。 |
+| S36 | 移除结果 / 不删除插件设置 | — | 待补验：没有移除 Result 与插件设置保留的同一直接场景。 |
+| S37 | 来源技术详情 | `tui-console-app-v5.test.tsx`：`renders safe source detail and technical data without raw path, credentials, or failure text` | 行为：80×24 技术字段脱敏；基本键分页已加入真实 UI，完整诊断双尺寸测试见 D01–D03；本条独立 fixture 尚未双尺寸执行。 |
+| S38 | 来源全局配置无法读取 | `tui-console-app-v5.test.tsx`：`shows no-Active recovery and redacts every unavailable-source technical field` | 行为：80×24 来源不可用的恢复和技术字段脱敏；待补全局配置读取失败的双尺寸入口。 |
 | L01 | 存储概览 | `tui-stage5-v8-2.test.tsx` | 双尺寸：从真实来源固定栏进入存储概览。 |
 | L02 | 存储保留规则 | `tui-stage5-v8-2.test.tsx` | 双尺寸：可达保留规则并返回预览。 |
 | L03 | 安全清理预览 | `tui-stage5-v8-2.test.tsx` | 双尺寸：实际 prepare 证据进入统一 Review。 |
@@ -201,38 +203,38 @@
 | D01 | 完整安全诊断 / 第一页 | `tui-stage5-v8-2.test.tsx` | 双尺寸：完整诊断所有行可阅读，不依赖特殊翻页键。 |
 | D02 | 完整安全诊断 / 后续页 | `tui-stage5-v8-2.test.tsx` | 双尺寸：后续页与上一页连续覆盖，无遗漏行。 |
 | D03 | 报告预览 | `tui-stage5-v8-2.test.tsx` | 双尺寸：报告预览连续分页；实际导出另由诊断测试覆盖。 |
-| D04 | 报告结果 / 明示模拟 | E16 | 待验 |
+| D04 | 报告结果 / 明示模拟 | `tui-console-app-v5.test.tsx`：`keeps all diagnostics and the oldest of 20 reports after a failed save at 60 × 18` | 行为：60×18 覆盖报告保存路径输入、保存调用、默认报告和私有路径不泄露；待补 80×24。 |
 
 ## 阶段 6：项目提醒与精确同步（16）
 
 **分组行为标准。** 启动只做本地只读扫描。以规范化项目根、项目声明、精确 `pluginId`、平台和 `project` scope 计算待同步目标；未知或读取失败不能当作未安装。提醒不等于写入确认；同步前重新汇总和确认；晚到结果不抢焦点；声明变化使旧确认失效；同步不自动升级来源。设计依据：`.tmp/agent-workflow-tui-v8-2/design.md:230-276,340`。
 
-**阶段 1–4 基线。** `E17` 项目 root 与 `project` scope 的意图选择：`packages/cli/src/tui/controller.ts`；`E18` 当前项目上下文和“按项目清单准备”入口：`packages/cli/src/tui/console-app-v4.tsx`；`E19` 项目意图的定向测试：`packages/cli/tests/unit/tui-console-app-v5.test.tsx`。阶段 6 尚未完成本轮场景复核；下表保留待验状态，不以阶段 1–4 的基线推断当前首页或同步能力不存在。
+**已复核生产测试。** `packages/cli/tests/unit/tui-console-app-v5.test.tsx` 包含首页提醒、SessionHost、Result/retry 和新 clone 的连续链；`tui-session-host.test.ts` 覆盖提醒签名跨 reload 去重；`tui-controller-runtime-v5.test.ts` 覆盖精确声明目标与写前声明漂移。无显式 `size` 的 Console/SessionHost 测试不算双尺寸 Ink 证据。
 
 | 设计 ID | 设计状态 | 可用基础证据 | 状态 |
 | --- | --- | --- | --- |
-| G02 | 启动 / 本地只读检查 | E17, E18 | 待验 |
-| G03 | 首页 / 项目恢复提醒 | E18（入口位置不同） | 待验 |
-| G04 | 首页 / 稍后处理横幅 | — | 待验 |
-| G05 | 启动 / 部分受阻提醒 | E17, E18 | 待验 |
-| G06 | 项目 / 无法确认，不提示安装 | E17 | 待验 |
-| G07 | 当前目录没有项目 | E18 | 待验 |
-| G08 | 项目没有共享插件声明 | E17, E18 | 待验 |
-| T01 | 项目待同步卡片列表 | E17, E18, E19 | 待验 |
-| T02 | 受阻子集 / 不静默跳过 | E17, E19 | 待验 |
-| T03 | 同步前汇总 | E17, E19 | 待验 |
-| T04 | 项目脚本风险确认 | E17, E19 | 待验 |
-| T05 | 同步执行 / 不自动升级来源 | E17, E19 | 待验 |
-| T06 | 同步成功 / 提醒消失 | E17, E19 | 待验 |
-| T07 | 部分成功 / 剩余目标 | E17, E19 | 待验 |
-| T08 | 声明变化 / 确认失效 | E17, E19 | 待验 |
-| T09 | 执行中请求重载 | E17, E19 | 待验 |
+| G02 | 启动 / 本地只读检查 | `tui-console-app-v5.test.tsx`：`opens the project reminder with Later focused and keeps the banner at %ix%i`；`opens a Review for a new clone from the saved project roots without adding user targets` | 行为：前者双尺寸证明“稍后”前不 capture evidence；后者 80×24 从新 clone 的已保存项目根到精确 Review，且 user intent 不变。没有启动不调用所有 preApply/activate/网络的独立 spy。 |
+| G03 | 首页 / 项目恢复提醒 | `tui-console-app-v5.test.tsx`：`opens the project reminder with Later focused and keeps the banner at %ix%i` | 双尺寸：首页弹出提醒，默认焦点为“稍后处理”。 |
+| G04 | 首页 / 稍后处理横幅 | 同上；`tui-session-host.test.ts`：`keeps the same project reminder signature claimed across a reload` | 双尺寸：选择“稍后”后横幅保留；SessionHost 无尺寸测试证明同签名跨 H reload 不重复弹出。 |
+| G05 | 启动 / 部分受阻提醒 | `tui-console-app-v5.test.tsx`：`opens the project reminder with Later focused and keeps the banner at %ix%i` | 双尺寸：显示可同步和需先处理的精确数量；待补阻断原因明细的双尺寸。 |
+| G06 | 项目 / 无法确认，不提示安装 | `tui-console-app-v5.test.tsx`：`keeps unobserved project targets out of the missing reminder` | 行为：80×24 以“无法确认”单独显示，不显示“尚未就绪”且不 claim 提醒；待补 60×18。 |
+| G07 | 当前目录没有项目 | — | 待补验：没有无项目当前目录的直接 Ink fixture。 |
+| G08 | 项目没有共享插件声明 | — | 待补验：没有空项目声明的直接 Ink fixture。 |
+| T01 | 项目待同步卡片列表 | `tui-console-app-v5.test.tsx`：`opens the project reminder with Later focused and keeps the banner at %ix%i`；`connects the home reminder through SessionHost to an exact project Review`；`opens a Review for a new clone from the saved project roots without adding user targets` | 行为：双尺寸覆盖计数和入口；连续链到精确 project target/Review，但没有逐卡内容的双尺寸断言。 |
+| T02 | 受阻子集 / 不静默跳过 | `tui-console-app-v5.test.tsx`：`connects the home reminder through SessionHost to an exact project Review`；`uses real project roots and treats a confirmed incomplete dependency as actionable` | 行为：提醒只授权精确可执行子集；controller projection 排除非真实 project root。阻断原因详情缺双尺寸。 |
+| T03 | 同步前汇总 | `tui-console-app-v5.test.tsx`：`connects the home reminder through SessionHost to an exact project Review`；`opens a Review for a new clone from the saved project roots without adding user targets`；`tui-controller-runtime-v5.test.ts`：`syncs only exact declared project intent targets and rejects undeclared targets` | 行为：精确 `pluginId/platform/project` Review 与后端声明门禁已验；待补完整汇总的双尺寸。 |
+| T04 | 项目脚本风险确认 | — | 待补验：没有项目脚本风险 fixture、风险弹窗和二次确认的直接测试。 |
+| T05 | 同步执行 / 不自动升级来源 | `tui-console-app-v5.test.tsx`：`keeps a partial project result, cancels pending H, and retries with project evidence`；`tui-controller-runtime-v5.test.ts`：`syncs only exact declared project intent targets and rejects undeclared targets` | 行为：执行和 retry 保留精确项目 target；没有“不调用 catalog activate/source upgrade”的独立 spy，也没有 Progress 页双尺寸。 |
+| T06 | 同步成功 / 提醒消失 | `tui-console-app-v5.test.tsx`：`clears the project reminder after a successful exact sync reload` | 行为：成功后 controller reminder projection 清空；待补成功 Result 回首页、横幅消失的连续 Ink 双尺寸。 |
+| T07 | 部分成功 / 剩余目标 | `tui-console-app-v5.test.tsx`：`keeps a partial project result, cancels pending H, and retries with project evidence` | 行为：连续链保留 partial Result，只重试失败的精确项目 target；测试未显式固定尺寸。 |
+| T08 | 声明变化 / 确认失效 | `tui-controller-runtime-v5.test.ts`：`stops exact project intent sync before writes when the complete declaration changes`；`keeps a partial project result, cancels pending H, and retries with project evidence` | 行为：后端覆盖根、删除、平台与 dependency scope 的四类 drift，均 stale 且零写入；连续链证明 retry 不降级普通 target。后端无尺寸。 |
+| T09 | 执行中请求重载 | `tui-console-app-v5.test.tsx`：`keeps a partial project result, cancels pending H, and retries with project evidence` | 行为：执行中 H 仅挂起，partial 后取消挂起而不 reload；测试未显式固定尺寸。 |
 
 ## 80×24 与 60×18 结构验收
 
 每个 ID 必须以相同 fixture 各运行一次 80×24 和 60×18，并记录生产终端输出或测试断言。两种尺寸必须保留相同的信息顺序、关键状态、焦点顺序、返回路径和写入边界；边框、间距和合理换行可以不同。不能把固定操作栏移到长列表末尾，不能截断错误或主操作，不能删除未保存事实（`.tmp/agent-workflow-tui-v8-2/design.md:418-426`）。
 
-以下是设计验收目标，不是完成声明。阶段 1–4 只有表内明确标为“双尺寸”的行为证据；没有按 92 个 catalog ID 分别归档的完整双尺寸记录，也没有“312 项均已验证”的证据。这一事实不要求为每个 ID 机械新增独立测试。
+以下是设计验收目标，不是完成声明。全阶段只有表内明确标为“双尺寸”的行为证据；没有按 156 个 catalog ID 分别归档的完整双尺寸记录，也没有“312 项均已验证”的证据。这一事实不要求为每个 ID 机械新增独立测试。
 
 | 区域 | 80×24 验收目标 | 60×18 验收目标 |
 | --- | --- | --- |
@@ -246,8 +248,16 @@
 
 ## 阶段 1–4 的缺口与最小补验
 
-下列是当前已有**双尺寸行为**证据的设计 ID：`P09`、`B01`、`B02`、`B03`、`B07`、`N03`、`N04`、`N05`、`U13`、`U19`、`U21`、`U25`、`C10`、`C22`。这些测试仍不是按 `page-catalog.csv` fixture ID 保存的验收记录。
+下列是当前已有**双尺寸行为**证据的设计 ID：`P09`、`B01`、`B02`、`B03`、`B07`、`N03`、`N04`、`N05`、`N16`、`U13`、`U15`、`U16`、`U19`、`U21`、`U25`、`C10`、`C11`、`C12`、`C18`、`C19`、`C22`。这些测试仍不是按 `page-catalog.csv` fixture ID 保存的验收记录。
 
-其余阶段 1–4 ID 都至少缺少一个尺寸、或只覆盖了相关行为。优先补验的直接行为缺口是：`P05`、`N16`（缺卸载失败后再提供清理）、`U15`、`U16`、`C11`、`C17`。`U27` 只有 typed validation blocker，不是分发定义不可用的真实入口。其余缺口由各行“待补”说明确定。
+其余阶段 1–4 ID 都至少缺少一个尺寸、或只覆盖了相关行为。优先补验的直接行为缺口是 `P05` 和 `U27`；后者只有 typed validation blocker，不是分发定义不可用的真实入口。`C16`、`C17` 是现有 Core 不接受文件或目录/path 字段的公开合同，不应以新增 TUI 测试伪装为已支持功能。其余缺口由各行“待补”说明确定。
 
 最小可行补验先为上述直接缺口各加一个真实 Ink 场景；这些场景应参数化运行 80×24 和 60×18。随后按组件复用现有双尺寸测试：列表/详情、批量 placement、原生 Progress、Portable blocker/选择/Review/Result、配置保存 Progress/Result 与目录字段。测试记录应列出覆盖的 catalog ID、尺寸、frame 行/列边界、关键状态、焦点路径、返回路径和写入前后状态。只有设计状态的输入或输出不同，才新增专用场景；不要用 HTML 原型、相关测试或总测试通过数填充记录。
+
+## 阶段 5–6 的专用场景证据缺口与补验建议
+
+当前没有直接生产证据的来源状态是 `S20`（Path 输入错误）、`S23`（离线只保存 Result）、`S24`（保存后启用失败）、`S28`（来源更新成功 Result）、`S29`（原版本恢复计划）、`S34`（最后来源移除限制）和 `S36`（移除后插件设置保留）。这表示本表不能确认这些具体合同，不表示生产功能不存在。可按三个参数化组件补验：Path 输入/校验；来源 Result（只保存、启用失败、更新成功、移除）；来源恢复与移除限制。每个组件只需在输入或结果不同处增加分支，并在 80×24、60×18 复用同一测试。
+
+阶段 6 的直接缺口是 `G07`（无项目目录）、`G08`（空项目声明）和 `T04`（项目脚本风险与二次确认）。最小补验是一个项目状态参数化 fixture 覆盖前两项，以及一个带脚本风险的 Review fixture 覆盖 `T04`；其余项目链不需按每个 ID 再造 fixture。现有最强连续链是“首页提醒 → Review → 执行中 H 挂起 → partial Result → 精确失败目标 retry → H reload 后同签名只保留横幅”，但其核心 SessionHost/Result 测试未显式运行两种尺寸。
+
+最终评审的修复已有定向证据：`tui-console-app-v5.test.tsx` 覆盖长内容与风险基本键分页、内容卡、维护固定确认；`tui-portable-skills-v1.test.tsx` 覆盖配置 partial 和带关注消息的成功结果不被自动恢复吞掉；`tui-config-save-batch-diagnostic-projection.test.ts` 覆盖分层写入事实及诊断。依赖完整 ID 与关键 Review 说明保留原断言。两种尺寸的真实生产 CLI 内容页由 `.tmp/tui-v8-2-pty` 记录，不等于全部设计 fixture 的逐页验收。

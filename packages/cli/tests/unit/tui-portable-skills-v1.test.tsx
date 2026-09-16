@@ -1070,6 +1070,165 @@ describe('Portable Skills TUI V1', () => {
     expect(captureEvidence.mock.calls.filter(([intent]) => intent.kind === 'portableInstall')).toHaveLength(2);
   });
 
+  it('keeps a successful settings result when it includes a safe attention message', async () => {
+    const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
+      if (intent.kind === 'portableInstall') {
+        const portable = review(intent);
+        return { catalog: { configDigest: portable.configDigest, compositeDigest: portable.evidenceDigest }, portable };
+      }
+      if (intent.kind !== 'configSaveBatch') throw new Error('unexpected intent');
+      return {
+        catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:catalog' },
+        configBatch: { groups: intent.groups.map((group) => ({
+          scope: group.scope,
+          targetFingerprint: `sha256:${group.scope}`,
+          config: {
+            scope: group.scope, storeDigest: `sha256:store:${group.scope}`,
+            impactState: 'known', affectedTargets: [],
+          },
+        })) },
+      };
+    });
+    const executeIntent = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      groups: [{
+        scope: 'project' as const, status: 'succeeded' as const, configSaved: true,
+        applyRequested: true, applyStatus: 'succeeded' as const,
+        execution: {
+          configWrite: 'succeeded', apply: { state: 'succeeded', targetResults: [] },
+          warnings: ['projectConfigShareabilityUnverified: Git visibility was not confirmed.'],
+        },
+      }, {
+        scope: 'user' as const, status: 'succeeded' as const, configSaved: true,
+        applyRequested: true, applyStatus: 'succeeded' as const,
+        execution: {
+          configWrite: 'succeeded', apply: { state: 'succeeded', targetResults: [] },
+          otherProjectsMayRequireSync: true,
+        },
+      }],
+    }));
+    const { value } = portableController({ captureEvidence, executeIntent });
+    await value.load();
+    value.push({
+      name: 'portableBlocker', pluginId: 'official/toolkit', code: 'requiredConfigMissing',
+      diagnosticCode: 'requiredConfigMissing',
+    });
+    value.replace({
+      name: 'configFields', pluginId: 'official/toolkit', layer: { scope: 'effective' },
+    });
+    const operation = await value.buildOperationReview({
+      kind: 'configSaveBatch', pluginId: 'official/toolkit', apply: true,
+      groups: [{ scope: 'project', updates: { mode: 'strict' } }, {
+        scope: 'user', updates: { token: 'private' }, privateKeys: ['token'],
+      }],
+    });
+
+    const result = await value.executeOperation(operation.reviewToken);
+
+    expect(result.state).toBe('succeeded');
+    expect(value.snapshot.router.current.route.name).toBe('result');
+    expect(result.summary.messages).toEqual(expect.arrayContaining([
+      '警告：projectConfigShareabilityUnverified: Git visibility was not confirmed.',
+      '提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。',
+    ]));
+    expect(captureEvidence.mock.calls.filter(([intent]) => intent.kind === 'portableInstall')).toHaveLength(0);
+  });
+
+  it('keeps a partial settings result before retrying only the failed layer', async () => {
+    const captured: OperationIntent[] = [];
+    const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
+      captured.push(structuredClone(intent));
+      if (intent.kind === 'portableInstall') {
+        const portable = review(intent);
+        return { catalog: { configDigest: portable.configDigest, compositeDigest: portable.evidenceDigest }, portable };
+      }
+      if (intent.kind === 'configSaveBatch') {
+        return {
+          catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:catalog' },
+          configBatch: { groups: intent.groups.map((group) => ({
+            scope: group.scope,
+            targetFingerprint: `sha256:${group.scope}`,
+            config: {
+              scope: group.scope, storeDigest: `sha256:store:${group.scope}`,
+              impactState: 'known', affectedTargets: [],
+            },
+          })) },
+        };
+      }
+      return {
+        catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:catalog' },
+        config: { scope: intent.scope, storeDigest: 'sha256:store:user' },
+      };
+    });
+    const executeIntent = vi.fn(async (intent: OperationIntent) => intent.kind === 'configSaveBatch'
+      ? {
+          status: 'partial' as const,
+          groups: [{
+            scope: 'project' as const, status: 'failed' as const, configSaved: false,
+            applyRequested: true, applyStatus: 'failed' as const, errorCode: 'configWriteFailed',
+          }, {
+            scope: 'user' as const, status: 'failed' as const, configSaved: true,
+            applyRequested: true, applyStatus: 'failed' as const, errorCode: 'targetApplyFailed',
+            execution: {
+              configWrite: 'succeeded',
+              apply: {
+                state: 'partial',
+                errors: [{ stage: 'apply', code: 'targetApplyFailed' }],
+                targetResults: [],
+              },
+              warnings: ['projectConfigShareabilityUnverified: Git visibility was not confirmed.'],
+              otherProjectsMayRequireSync: true,
+            },
+          }],
+        }
+      : {
+          configWrite: 'succeeded' as const, overallState: 'succeeded' as const,
+          apply: { state: 'succeeded' as const, targetResults: [] },
+        });
+    const { value } = portableController({ captureEvidence, executeIntent });
+    await value.load();
+    value.push({
+      name: 'portableBlocker', pluginId: 'official/toolkit', code: 'requiredConfigMissing',
+      diagnosticCode: 'requiredConfigMissing',
+    });
+    value.replace({
+      name: 'configFields', pluginId: 'official/toolkit', layer: { scope: 'effective' },
+    });
+    const batch = await value.buildOperationReview({
+      kind: 'configSaveBatch', pluginId: 'official/toolkit', apply: true,
+      groups: [{ scope: 'project', updates: { mode: 'strict' } }, {
+        scope: 'user', updates: { token: 'private' }, privateKeys: ['token'],
+      }],
+    });
+
+    const partial = await value.executeOperation(batch.reviewToken);
+
+    expect(partial.state).toBe('partial');
+    expect(value.snapshot.router.current.route.name).toBe('result');
+    expect(partial.summary.messages).toContain(
+      '警告：projectConfigShareabilityUnverified: Git visibility was not confirmed.',
+    );
+    expect(partial.summary.messages).toContain(
+      '提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。',
+    );
+    expect(captured.filter((intent) => intent.kind === 'portableInstall')).toHaveLength(0);
+    const detail = value.getOperationDiagnostic(partial.operationRecordId!);
+    expect(detail?.summary.effects.configCommit).toBe('partial');
+    expect(detail?.diagnostics.map((diagnostic) => diagnostic.code)).toContain('configWriteFailed');
+
+    const retry = await value.buildOperationReview({
+      kind: 'configSave', pluginId: 'official/toolkit', scope: 'project', apply: true,
+      updates: { mode: 'strict' },
+    });
+    const retried = await value.executeOperation(retry.reviewToken);
+
+    expect(retried.state).toBe('succeeded');
+    expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
+    expect(captured.filter((intent) => intent.kind === 'configSave')).toHaveLength(2);
+    expect(captured.filter((intent) => intent.kind === 'configSaveBatch')).toHaveLength(2);
+    expect(captured.filter((intent) => intent.kind === 'portableInstall')).toHaveLength(2);
+  });
+
   it('unions scope candidates before selection and re-prepares the selected user scope for Review', async () => {
     const userCandidate = { ...candidates[0]!, name: 'user-only', description: 'User only.' };
     const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {

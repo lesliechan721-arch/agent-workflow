@@ -315,20 +315,37 @@ describe('TUI plugin update evidence', () => {
     });
     const controllerDependencies = dependencies({ captureEvidence });
     const controller = new TuiController(controllerDependencies);
-    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
+    const home = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
     await controller.load();
     await nextTurn();
-    expect(instance.lastFrame()).toContain('1 个插件可更新');
+    expect(home.lastFrame()).toContain('1 个插件可更新');
+    home.unmount();
 
     controller.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn();
+    await nextTurn();
     await nextTurn();
     expect(instance.lastFrame()).toContain('可更新 1.0.0 → 2.0.0');
     expect(instance.lastFrame()).toContain('可更新 1');
     expect(controller.listPlugins({ mode: 'installed', installFilter: 'updateAvailable' }))
       .toHaveLength(1);
-    instance.stdin.write('f');
+    instance.stdin.write('\t');
     await nextTurn();
-    expect(instance.lastFrame()).toContain('[可更新] 1');
+    instance.stdin.write('\u001B[B');
+    await nextTurn();
+    instance.stdin.write('\u001B[B');
+    await nextTurn();
+    instance.stdin.write('\r');
+    await nextTurn();
+    await nextTurn();
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('[未安装 0]'));
+    instance.stdin.write('\u001B[D');
+    await nextTurn();
+    instance.stdin.write('\r');
+    await nextTurn();
+    await nextTurn();
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('[可更新 1]'));
 
     controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
     await nextTurn();

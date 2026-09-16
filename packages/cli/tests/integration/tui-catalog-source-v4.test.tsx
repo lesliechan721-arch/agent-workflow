@@ -80,12 +80,29 @@ async function input(instance: ReturnType<typeof render>, ...values: string[]): 
   }
 }
 
+async function focusAction(
+  instance: ReturnType<typeof render>,
+  label: string,
+  limit = 24,
+): Promise<void> {
+  for (let index = 0; index < limit; index += 1) {
+    const frame = instance.lastFrame();
+    if (frame?.includes(`› ${label}`) || frame?.includes(`› ○ ${label}`)
+      || frame?.includes(`› ● ${label}`)) return;
+    await input(instance, '\u001B[B');
+  }
+  throw new Error(`Action was not reachable: ${label}\n${instance.lastFrame() ?? ''}`);
+}
+
 async function confirmReview(
   instance: ReturnType<typeof render>,
   controller: TuiController,
 ): Promise<void> {
   if (controller.snapshot.activeReview?.requiresConfirmation) {
-    await input(instance, '\r', '\u001B[B', '\r');
+    const label = `我已了解影响，${controller.snapshot.activeReview.primaryLabel}`;
+    await input(instance, '\r');
+    await focusAction(instance, label);
+    await input(instance, '\r');
   } else await input(instance, '\r');
   await waitFor(
     () => controller.snapshot.result !== undefined,
@@ -1152,9 +1169,10 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(frame).toContain('来源设置');
     expect(compactFrame).not.toContain('awcatalogsourcesynclocal');
     expect(frame).not.toContain(isolation.env.AW_HOME!);
-    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await focusAction(instance, '更多操作');
+    await input(instance, '\r');
     expect(controller.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'local' });
-    expect(instance.lastFrame()).toContain('使用待检查版本替换损坏版本…');
+    expect(instance.lastFrame()).toContain('使用待检查版本替换损坏版本');
     controller.push({ name: 'sourceTechnical', sourceId: 'local' });
     await nextTurn(2);
     const technicalFrame = (instance.lastFrame() ?? '').replace(/\s+/gu, '');
@@ -1272,9 +1290,10 @@ describe('TUI v4 real catalog source boundary', () => {
     await nextTurn(2);
     expect(instance.lastFrame()).toContain('恢复来源');
     expect(instance.lastFrame()).toContain('优先取得当前版本并精确修复；不会自动切换版本');
-    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await focusAction(instance, '更多操作');
+    await input(instance, '\r');
     expect(controller.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'local' });
-    expect(instance.lastFrame()).toContain('使用待检查版本替换损坏版本…');
+    expect(instance.lastFrame()).toContain('使用待检查版本替换损坏版本');
     controller.back();
     await nextTurn(2);
 
@@ -1603,10 +1622,13 @@ describe('TUI v4 real catalog source boundary', () => {
     />);
     await waitFor(() => controller.snapshot.phase === 'ready', 'initial TUI status', () => controller.snapshot);
 
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
-    await input(instance, '\u001B[B', '\r', '\u001B[B', '\r');
+    await focusAction(instance, '插件来源');
+    await input(instance, '\r', '\t', '\r');
+    expect(controller.snapshot.router.current.route.name).toBe('sourceAdd');
+    await input(instance, '\u001B[B', '\r');
     await input(instance, 'team', '\r', secondRoot, '\r');
-    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await focusAction(instance, '查看修改汇总');
+    await input(instance, '\r');
     expect(screens).toContain('S15');
     await input(instance, '\r');
     await waitFor(() => controller.snapshot.activeReview !== undefined, 'add Review');
@@ -1790,10 +1812,13 @@ describe('TUI v4 real catalog source boundary', () => {
       onScreenChange={(screen) => screens.add(screen)}
     />);
     await waitFor(() => controller.snapshot.phase === 'ready', 'initial TUI status', () => controller.snapshot);
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
-    await input(instance, '\u001B[B', '\r', '\u001B[B', '\r');
+    await focusAction(instance, '插件来源');
+    await input(instance, '\r', '\t', '\r');
+    expect(controller.snapshot.router.current.route.name).toBe('sourceAdd');
+    await input(instance, '\u001B[B', '\r');
     await input(instance, 'broken', '\r', invalidRoot, '\r');
-    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await focusAction(instance, '查看修改汇总');
+    await input(instance, '\r');
     expect(screens).toContain('S15');
     await input(instance, '\r');
     await waitFor(() => controller.snapshot.reviewPreparation?.state === 'failed', 'invalid source rejection');
@@ -1810,10 +1835,13 @@ describe('TUI v4 real catalog source boundary', () => {
     const isolation = getCurrentSourceTestIsolation();
     const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 60, rows: 18 }} />);
     await waitFor(() => controller.snapshot.phase === 'ready', 'initial TUI status', () => controller.snapshot);
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
-    await input(instance, '\u001B[B', '\r', '\u001B[B', '\r');
+    await focusAction(instance, '插件来源');
+    await input(instance, '\r', '\t', '\r');
+    expect(controller.snapshot.router.current.route.name).toBe('sourceAdd');
+    await input(instance, '\u001B[B', '\r');
     await input(instance, 'requested', '\r', secondRoot, '\r');
-    await input(instance, '\u001B[B', '\u001B[B', '\r', '\r');
+    await focusAction(instance, '查看修改汇总');
+    await input(instance, '\r', '\r');
     await waitFor(() => controller.snapshot.activeReview?.operationKind === 'catalogGeneration', 'add Review');
     const concurrent = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({

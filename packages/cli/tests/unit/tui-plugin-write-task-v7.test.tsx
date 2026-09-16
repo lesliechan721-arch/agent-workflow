@@ -180,7 +180,8 @@ describe('TUI plugin write task', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn();
 
-    await focusAction(instance, '更新 1 个插件…');
+    expect(instance.lastFrame()).toContain('[更新 1 个]');
+    await write(instance, '\t');
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
 
@@ -236,7 +237,8 @@ describe('TUI plugin write task', () => {
     });
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, '\r');
-    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('pluginDetail'));
+    expect(instance.lastFrame()).toContain('插件更新完成');
     expect(value.snapshot.router.currentFlowId).toBeUndefined();
     expect(value.snapshot.result).toMatchObject({
       state: 'succeeded',
@@ -353,7 +355,7 @@ describe('TUI plugin write task', () => {
   );
 
   it.each([[80, 24], [60, 18]] as const)(
-    'uses one task preparation, Review, progress/result chain at %ix%i',
+    'uses one task preparation, Review, progress/detail completion chain at %ix%i',
     async (columns, rows) => {
       const { value, dependencies } = controller();
       await value.load();
@@ -369,17 +371,16 @@ describe('TUI plugin write task', () => {
       expect(Math.max(...(instance.lastFrame() ?? '').split('\n').map(stringWidth))).toBeLessThanOrEqual(columns);
 
       await write(instance, '\r');
-      await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
+      await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('pluginDetail'));
       expect(dependencies.executeIntent).toHaveBeenCalledWith(
         expect.objectContaining({
           kind: 'pluginWriteTask', goal: 'update', targets: [target], executionPolicy: 'all',
         }),
         expect.objectContaining({ taskPlan: expect.any(Object) }),
       );
-      expect(instance.lastFrame()).toContain('插件更新完成');
-      expect(instance.lastFrame()).toContain('所选插件结果');
+      expect(instance.lastFrame()).toContain('状态已重新检查');
       expect(instance.lastFrame()).toContain('Demo');
-      expect(instance.lastFrame()).toContain('Codex · 所有项目');
+      expect(value.snapshot.result).toMatchObject({ state: 'succeeded' });
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
       value.dispose();
     },
@@ -545,7 +546,7 @@ describe('TUI plugin write task', () => {
             },
             choices: [{ id: 'safe', title: '安全', value: 'safe' }],
             displayValue: configured ? '安全' : '未设置', required: true, sensitive: false,
-            writable: layer.scope !== 'effective', dirty: false, inherited: !configured,
+            writable: true, dirty: false, inherited: !configured,
             configured, sourceLabel: configured ? '个人默认' : '未设置',
             effectiveDisplayValue: configured ? '安全' : '未设置',
             effectiveSourceLabel: configured ? '个人默认' : '未设置',
@@ -555,16 +556,33 @@ describe('TUI plugin write task', () => {
         }],
       })),
       captureEvidence: vi.fn(async (intent): Promise<OperationEvidence> => {
-        if (intent.kind === 'configSave') return configEvidence;
+        if (intent.kind === 'configSaveBatch') return {
+          catalog: configEvidence.catalog,
+          source: configEvidence.source,
+          targetFingerprint: configEvidence.targetFingerprint,
+          configBatch: {
+            groups: intent.groups.map((group) => ({
+              scope: group.scope,
+              targetFingerprint: `sha256:config-${group.scope}`,
+              config: {
+                scope: group.scope, storeDigest: `sha256:config-store-${group.scope}`,
+                impactState: 'known', affectedTargets: [{ platform: 'codex', scope: group.scope }],
+              },
+            })),
+          },
+        };
         if (intent.kind === 'pluginWriteTask') return taskEvidence(intent);
         throw new Error('unexpected intent');
       }),
       executeIntent: vi.fn(async (intent) => {
-        if (intent.kind === 'configSave') {
+        if (intent.kind === 'configSaveBatch') {
           configured = true;
           return {
-            configWrite: 'succeeded' as const, overallState: 'succeeded' as const,
-            apply: { state: 'skipped' as const, reason: 'notRequested' as const, targetResults: [] },
+            status: 'succeeded' as const,
+            groups: intent.groups.map((group) => ({
+              scope: group.scope, status: 'succeeded' as const, configSaved: true,
+              applyRequested: intent.apply, applyStatus: 'notRequested' as const,
+            })),
           };
         }
         return preview();
@@ -607,11 +625,14 @@ describe('TUI plugin write task', () => {
 
     expect(instance.lastFrame()).toContain('完成设置：运行模式');
     await write(instance, '\r');
-    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configLayer'));
-    await vi.waitFor(() => expect(instance.lastFrame()).toContain('修改“运行模式”'));
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configFields'));
+    expect(value.snapshot.router.current.route).toMatchObject({ layer: { scope: 'effective' } });
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('运行模式'));
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configFieldEditor'));
     expect(instance.lastFrame()).toContain('安全');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configLayer'));
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configFields'));
     await write(instance, 's');

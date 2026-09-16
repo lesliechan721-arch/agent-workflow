@@ -265,7 +265,10 @@ describe('real ConsoleAppV4 progress chain', () => {
     });
 
     expect(frames).toContain('写入平台插件');
-    expect(frames).toContain('插件添加完成');
+    expect(frames).toContain('插件安装完成');
+    expect(controller.snapshot.router.current.route).toEqual({
+      name: 'pluginDetail', pluginId: 'official/real-progress',
+    });
     expect(live).toBe('present');
     expect(controller.listUserIssues()).toEqual([]);
     await emitCommandNotice(context, { level: 'notice', message: 'reporter restored' });
