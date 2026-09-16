@@ -491,6 +491,59 @@ describe('portable skill public commands', () => {
     }
   });
 
+  it('publishes only the selected Skill and requested Agent in the install receipt', async () => {
+    const fixture = await configurePortableCatalog();
+    const fake = await installFakeSkills(fixture.env, fixture.cwd, {
+      after: [
+        { name: 'alpha', agents: ['cursor', 'other-agent'], scope: 'project' },
+        { name: 'unrelated-deploy', agents: ['cursor'], scope: 'project' },
+      ],
+    });
+    const io = createCapturedCliIo();
+
+    expect(await runCli(
+      [
+        'skill', 'install', 'portable', '--scope', 'project', '--skill', 'alpha',
+        '--agent', 'cursor', '--yes', '--json',
+      ],
+      { cwd: fixture.cwd, env: fake.env, io: io.io },
+    )).toBe(0);
+    expect(JSON.parse(io.readStdout())).toMatchObject({
+      status: 'succeeded',
+      verification: {
+        records: [{ name: 'alpha', agents: ['cursor'], scope: 'project' }],
+        missing: [],
+        unknown: [],
+      },
+    });
+    expect(io.readStdout()).not.toContain('unrelated-deploy');
+    expect(io.readStdout()).not.toContain('other-agent');
+  });
+
+  it('does not confirm an explicit target from the same Skill on another Agent', async () => {
+    const fixture = await configurePortableCatalog();
+    const fake = await installFakeSkills(fixture.env, fixture.cwd, {
+      after: [{ name: 'alpha', agents: ['other-agent'], scope: 'project' }],
+    });
+    const io = createCapturedCliIo();
+
+    expect(await runCli(
+      [
+        'skill', 'install', 'portable', '--scope', 'project', '--skill', 'alpha',
+        '--agent', 'cursor', '--yes', '--json',
+      ],
+      { cwd: fixture.cwd, env: fake.env, io: io.io },
+    )).toBe(1);
+    expect(JSON.parse(io.readStdout())).toMatchObject({
+      status: 'partial',
+      verification: {
+        records: [],
+        missing: [],
+        unknown: [{ skill: 'alpha', agent: 'cursor' }],
+      },
+    });
+  });
+
   it('uses post-failure verification evidence without rollback or private upstream data', async () => {
     const fixture = await configurePortableCatalog();
     const partialRecord = {
@@ -678,7 +731,35 @@ describe('portable skill public commands', () => {
       ok: true,
       status: 'succeeded',
       attemptedTargets: receipt.verification.missing,
-      verification: { missing: [], unknown: [] },
+      verification: {
+        records: [
+          { name: 'alpha', agents: ['codex'] },
+          { name: 'beta', agents: ['codex'] },
+          { name: 'beta', agents: ['cursor'] },
+        ],
+        missing: [],
+        unknown: [],
+      },
+    });
+    expect(result.verification.records).not.toContainEqual({
+      name: 'alpha', agents: ['cursor'], scope: 'project',
+    });
+    const rechecked = await recheckPortableInstall({
+      receipt: result,
+      cwd: fixture.cwd,
+      env: fake.env,
+    });
+    expect(rechecked).toMatchObject({
+      attemptedTargets: receipt.verification.missing,
+      verification: {
+        records: [
+          { name: 'alpha', agents: ['codex'] },
+          { name: 'beta', agents: ['codex'] },
+          { name: 'beta', agents: ['cursor'] },
+        ],
+        missing: [],
+        unknown: [],
+      },
     });
     const calls = (await fs.readFile(fake.log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     const addCalls = calls.filter((call) => call.args[0] === 'add').map((call) => call.args);

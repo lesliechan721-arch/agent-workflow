@@ -1387,14 +1387,14 @@ describe('ConsoleAppV4', () => {
 
     await input(instance, entry === 'shortcut' ? 'd' : '\r');
     const frame = instance.lastFrame() ?? '';
-    expect(frame).toContain('建议 1');
-    expect(frame).toContain('运行 aw status --json，记录公开错误 code。');
-    expect(frame).toContain('备份相关 AW 配置。');
     let allTechnicalPages = frame;
-    for (let page = 0; page < 3; page += 1) {
-      await input(instance, '\u001B[6~');
+    for (let page = 0; page < 8; page += 1) {
+      await input(instance, 'n');
       allTechnicalPages += instance.lastFrame() ?? '';
     }
+    expect(allTechnicalPages).toContain('建议 1');
+    expect(allTechnicalPages).toContain('运行 aw status --json，记录公开错误 code。');
+    expect(allTechnicalPages).toContain('备份相关 AW 配置。');
     expect(allTechnicalPages).toContain('按技术详情使用受支持命令或人工处理。');
     expect(allTechnicalPages).toContain('再次运行状态检查。');
     expect(frame).toContain('› 查看手动处理说明');
@@ -2544,6 +2544,111 @@ describe('ConsoleAppV4', () => {
     },
   );
 
+  it.each([
+    ['q', false],
+    ['\u0003', true],
+  ] as const)('routes %s from a %s project reminder through the safe exit guard', async (key, blockedOnly) => {
+    const loaded = projectReminderLoadResult({ blocked: true });
+    if (blockedOnly) {
+      loaded.payload.targets = loaded.payload.targets.map((target) => target.state === 'needsSync'
+        ? { ...target, state: 'blocked' as const, reasons: [{ code: 'sourceUnavailable', message: 'blocked', severity: 'blocking' as const }] }
+        : target);
+    }
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 60, rows: 18 }}
+      onClaimProjectIntentReminder={() => true}
+    />);
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('项目插件恢复提醒'));
+
+    await input(instance, key);
+    expect(instance.lastFrame()).toContain('退出控制台？');
+    expect(instance.lastFrame()).not.toContain('项目插件恢复提醒');
+    expect(value.dependencies.captureEvidence).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['q', undefined],
+    ['h', 'home'],
+    ['H', 'reload'],
+  ] as const)('keeps %s available from help through the common navigation path', async (key, navigation) => {
+    const value = controller();
+    const onSessionNavigation = vi.fn(async () => 'completed' as const);
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 60, rows: 18 }}
+      onSessionNavigation={onSessionNavigation}
+    />);
+    await nextTurn(2);
+    await input(instance, '?', key);
+    if (navigation) expect(onSessionNavigation).toHaveBeenCalledWith(navigation, expect.any(Object));
+    else expect(instance.lastFrame()).toContain('退出控制台？');
+  });
+
+  it.each([[60, 18], [80, 24]] as const)(
+    'keeps a project declaration issue reachable with healthy home actions at %ix%i',
+    async (columns, rows) => {
+      const loaded = loadResult();
+      loaded.projectIntent = {
+        state: 'invalid', code: 'pluginIntentInvalid', message: '声明格式无效。',
+      };
+      const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+      await value.load();
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+      await nextTurn(2);
+
+      const frame = instance.lastFrame() ?? '';
+      expect(frame).toContain('本项目插件声明无效');
+      expect(frame).toContain('插件');
+      let homeFrames = frame;
+      for (let index = 0; index < 4; index += 1) {
+        await input(instance, '\u001B[B');
+        homeFrames += instance.lastFrame() ?? '';
+      }
+      expect(homeFrames).toContain('插件来源');
+      await input(instance, 'd');
+      expect(instance.lastFrame()).toContain('pluginIntentInvalid');
+      expect(instance.lastFrame()).toContain('声明格式无效');
+      expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
+    },
+  );
+
+  it.each([[60, 18], [80, 24]] as const)(
+    'keeps storage rules user-facing and preserves exact cleanup evidence at %ix%i',
+    async (columns, rows) => {
+      const value = controller();
+      await value.load();
+      value.push({ name: 'catalogStoreRules' });
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+      await nextTurn(2);
+
+      const ordinary = instance.lastFrame() ?? '';
+      expect(ordinary).toContain('始终保留');
+      expect(ordinary).toContain('满足时间和完整验证后可回收');
+      expect(ordinary).toContain('当前使用的目录不会删除');
+      expect(ordinary).toContain('旧版本满足保留期限后才清理');
+      expect(ordinary).toContain('隔离内容至少保留 24 小时');
+      expect(ordinary).toContain('对应正式版本完整可用后才清理');
+      expect(ordinary).toContain('技术详情');
+      expect(ordinary).toContain('返回存储概览');
+      expect(ordinary).not.toContain('AW_HOME 写锁');
+      expect(ordinary).not.toContain('delete claim');
+      await input(instance, 'd');
+      const technical = instance.lastFrame() ?? '';
+      expect(technical).toContain('AW_HOME 写锁内重新检查');
+      expect(technical).toContain('非 Active 项保留 30 天');
+      expect(technical).toContain('staging、replacement、delete claim');
+      expect(technical).toContain('foreign、符号链接、unsafe、损坏或未知项目');
+      expect(technical.split('\n').length).toBeLessThanOrEqual(rows);
+      await input(instance, 'd');
+      const returned = instance.lastFrame() ?? '';
+      expect(returned).toContain('满足时间和完整验证后可回收');
+      expect(returned).toContain('对应正式版本完整可用后才清理');
+    },
+  );
+
   it('connects the home reminder through SessionHost to an exact project Review', async () => {
     const loaded = projectReminderLoadResult({ blocked: true });
     const captureEvidence = vi.fn(async (intent: OperationIntent) =>
@@ -2611,6 +2716,7 @@ describe('ConsoleAppV4', () => {
     const host = new SessionHost({ createSession });
     const instance = render(<SessionConsoleApp host={host} />);
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('2 个可同步；1 个需要先处理'));
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('› 稍后处理'));
 
     await input(instance, '\u001B[B', '\r');
     await vi.waitFor(() => expect(first.snapshot.router.current.route.name).toBe('review'));
@@ -3653,12 +3759,19 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     await nextTurn(4);
 
-    expect(instance.lastFrame()).toContain('Review Gate');
-    expect(instance.lastFrame()).toContain('Review Gate · Codex · 当前项目');
-    expect(instance.lastFrame()).toContain('↓ 后面还有');
+    let resultFrames = instance.lastFrame() ?? '';
+    expect(resultFrames).toContain('Review Gate');
+    expect(resultFrames).toContain('↓ 后面还有');
     await focusAction(instance, 'n 下一页');
     expect(instance.lastFrame()).toContain('› n 下一页');
-    await input(instance, ...Array.from({ length: 110 }, () => '\u001B[6~'));
+    await input(instance, '\r');
+    resultFrames += `\n${instance.lastFrame() ?? ''}`;
+    for (let page = 0; page < 110; page += 1) {
+      await input(instance, 'n');
+      resultFrames += `\n${instance.lastFrame() ?? ''}`;
+    }
+    expect(resultFrames).toContain('Review Gate · Codex · 当前项目');
+    expect(resultFrames).toContain('target-099');
     expect(instance.lastFrame()).toContain('target-099');
     expect(instance.lastFrame()).toContain('↑ 前面还有');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
@@ -4810,7 +4923,6 @@ describe('ConsoleAppV4', () => {
     const frame = instance.lastFrame() ?? '';
     expect(frame).toContain('error-code');
     expect(frame).toContain('componentInspectionFailed');
-    expect(frame).toContain('partial-code');
     expect(frame).toMatch(/后面还有 \d+ 个组件/u);
     expect(frame).toContain('› 返回插件');
     expect(frame.match(/›/gu)).toHaveLength(1);
@@ -4820,10 +4932,11 @@ describe('ConsoleAppV4', () => {
     expect(frame).not.toContain('/private/component');
 
     let componentPages = frame;
-    for (let page = 0; page < componentCount + 2; page += 1) {
-      await input(instance, '\u001B[6~');
+    for (let page = 0; page < componentCount + 8; page += 1) {
+      await input(instance, 'n');
       componentPages += instance.lastFrame() ?? '';
     }
+    expect(componentPages).toContain('partial-code');
     const lastPage = instance.lastFrame() ?? '';
     expect(lastPage).toContain(`ordinary:${componentCount - 3}`);
     for (let index = 0; index < componentCount - 2; index += 1) {
@@ -5180,7 +5293,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('变更：undefined');
     let targetPages = instance.lastFrame() ?? '';
     for (let page = 0; page < 15; page += 1) {
-      await input(instance, '\u001B[6~');
+      await input(instance, 'n');
       targetPages += instance.lastFrame() ?? '';
     }
     expect(instance.lastFrame()).toContain('target-11');
@@ -5276,6 +5389,12 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
     await nextTurn(2);
     expect(instance.lastFrame()).not.toContain('远端 Catalog 检查失败');
+    expect(instance.lastFrame()).toContain('来源可用');
+    expect(instance.lastFrame()).toContain('当前版本 2.4.0');
+    expect(instance.lastFrame()).toContain('版本策略');
+    expect(instance.lastFrame()).toContain('固定版本或 Git 引用');
+    expect(instance.lastFrame()).toContain('影响');
+    expect(instance.lastFrame()).toContain('更新检查');
 
     for (const label of ['检查来源', '查看此来源插件', '来源设置', '移除来源', '更多操作']) {
       await focusAction(instance, label);
@@ -5421,10 +5540,14 @@ describe('ConsoleAppV4', () => {
     expect(productFrame).not.toContain('platform-route-secret');
 
     await input(instance, '\r', 'd');
-    const technicalFrame = instance.lastFrame() ?? '';
-    expect(technicalFrame).toContain('nativeTargetUnreadable');
-    expect(technicalFrame).toContain('read-platform-state');
-    expect(technicalFrame).not.toContain('platform-route-secret');
+    let technicalFrames = instance.lastFrame() ?? '';
+    for (let page = 0; page < 8; page += 1) {
+      await input(instance, 'n');
+      technicalFrames += `\n${instance.lastFrame() ?? ''}`;
+    }
+    expect(technicalFrames).toContain('nativeTargetUnreadable');
+    expect(technicalFrames).toContain('read-platform-state');
+    expect(technicalFrames).not.toContain('platform-route-secret');
   });
 
   it('shows dependency diagnostics without exposing the status message and keeps recovery actions', async () => {
@@ -9767,6 +9890,25 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('token:secret');
   });
 
+  it('pages every healthy source technical field from the rendered diagnostic at 60x18', async () => {
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loadResult()) });
+    await value.load();
+    value.push({ name: 'sourceTechnical', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(3);
+
+    let frames = instance.lastFrame() ?? '';
+    expect(frames).toContain('p 上一页');
+    expect(frames).toContain('n 下一页');
+    for (let page = 0; page < 7; page += 1) {
+      await input(instance, 'n');
+      frames += `\n${instance.lastFrame() ?? ''}`;
+    }
+    expect(frames).toContain('catalogSourceReady');
+    expect(frames).toContain('catalog/stable');
+    expect(frames).toContain('abc123');
+  });
+
   it('shows structured candidate capability diagnostics while preserving the old Active', async () => {
     const missing = ['aw.catalog.future-one.v1', 'aw.catalog.future-two.v1'];
     const value = controller({
@@ -9964,8 +10106,8 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
 
     await input(instance, '\r');
-    expect(instance.lastFrame()).toContain('PgUp/PgDn 查看全部引用');
-    for (let page = 0; page < 25; page += 1) await input(instance, '\u001B[6~');
+    expect(instance.lastFrame()).toContain('p/n 查看全部引用');
+    for (let page = 0; page < 25; page += 1) await input(instance, 'n');
 
     expect(instance.lastFrame()).toContain('ref-19');
     expect(instance.lastFrame()).toContain('↑ 前面还有');
@@ -10011,8 +10153,8 @@ describe('ConsoleAppV4', () => {
     const list = instance.lastFrame() ?? '';
     const officialLine = list.split('\n').find((line) => line.includes('official  主来源'));
     const damagedLine = list.split('\n').find((line) => line.includes('team-tools'));
-    expect(officialLine).toContain('检查失败 · Active 可用');
-    expect(damagedLine).toContain('检查失败 · Active 不可用');
+    expect(officialLine).toContain('检查失败 · 当前版本可用');
+    expect(damagedLine).toContain('检查失败 · 当前版本不可用');
 
     await input(instance, '\u001B[B', '\r');
     const detail = instance.lastFrame() ?? '';
@@ -10022,7 +10164,7 @@ describe('ConsoleAppV4', () => {
     expect(detail).toContain('检查失败');
     expect(detail).toContain('恢复来源');
     expect(detail).not.toContain('仍可浏览和使用');
-    expect(detail).not.toContain('Active 仍可用');
+    expect(detail).not.toContain('当前版本仍可用');
     expect(detail).not.toContain('当前版本继续可用');
   });
 
@@ -12151,6 +12293,122 @@ describe('ConsoleAppV4', () => {
     expect(technicalFrame.match(/›/gu)).toHaveLength(1);
     expect(technicalFrame.split('\n').length).toBeLessThanOrEqual(18);
     expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { columns: 60, rows: 18 },
+    { columns: 80, rows: 24 },
+  ])('pages every removal blocker with focused p/n actions at $columns x $rows', async (size) => {
+    const loaded = dependencyLoadResult({ rootState: 'present' });
+    const overview = loaded.dependencyOverviews?.find((entry) =>
+      entry.pluginId === 'official/skill-toolkit');
+    const template = overview?.dependents[0];
+    if (!overview || !template) throw new Error('missing dependency fixture');
+    overview.dependents = Array.from({ length: 7 }, (_, index) => ({
+      ...structuredClone(template),
+      pluginId: `official/dependent-${index}`,
+      displayName: `Dependent ${index}`,
+      placementReferences: template.placementReferences?.map((reference) => ({
+        ...structuredClone(reference),
+        consumer: { ...reference.consumer, pluginId: `official/dependent-${index}` },
+      })),
+    }));
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({
+      name: 'pluginDependencies', pluginId: 'official/skill-toolkit', view: 'removeBlocked',
+      platform: 'codex', scope: 'user',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await nextTurn(3);
+
+    expect(instance.lastFrame()).toContain('Dependent 0');
+    expect(instance.lastFrame()).toContain('p/n 查看全部被依赖关系');
+    await focusAction(instance, 'n 下一页');
+    expect(instance.lastFrame()).toContain('› n 下一页');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain(size.rows === 18 ? 'Dependent 1' : 'Dependent 3');
+    expect(instance.lastFrame()).toContain('› n 下一页');
+    for (let page = 0; page < 8; page += 1) await input(instance, 'n');
+    expect(instance.lastFrame()).toContain('Dependent 6');
+    await focusAction(instance, 'p 上一页');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('↑ 前面还有');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(size.rows);
+  });
+
+  it.each([
+    { columns: 60, rows: 18 },
+    { columns: 80, rows: 24 },
+  ])('keeps a long selected dependency reference while focused p/n actions page its fields at $columns x $rows', async (size) => {
+    const loaded = dependencyLoadResult({ rootState: 'present' });
+    const overview = loaded.dependencyOverviews?.find((entry) =>
+      entry.pluginId === 'official/agent-lab');
+    const dependency = overview?.dependencies.find((entry) =>
+      entry.pluginId === 'official/skill-toolkit');
+    if (!dependency) throw new Error('missing dependency fixture');
+    const nodeId = `official/selected-reference-${'dependency-'.repeat(16)}tail`;
+    dependency.pluginId = nodeId;
+    const nodeSummary = loaded.pluginSummaries.find((entry) =>
+      entry.pluginId === 'official/skill-toolkit');
+    if (!nodeSummary) throw new Error('missing dependency summary fixture');
+    nodeSummary.pluginId = nodeId;
+    const longReference = {
+      consumer: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project', project: 'current' },
+      dependency: {
+        pluginId: nodeId,
+        platform: 'codex', scope: 'user', project: null,
+      },
+    } as const;
+    const secondReference = {
+      ...longReference,
+      consumer: { ...longReference.consumer, platform: 'claude' as const, scope: 'user' as const },
+      dependency: { ...longReference.dependency, platform: 'claude' as const, scope: 'project' as const },
+    };
+    dependency.placementReferences = [longReference, secondReference];
+    dependency.availablePlacementReferences = [longReference, secondReference];
+    const reverseOverview = loaded.dependencyOverviews?.find((entry) =>
+      entry.pluginId === 'official/skill-toolkit');
+    const dependent = reverseOverview?.dependents.find((entry) =>
+      entry.pluginId === 'official/agent-lab');
+    if (!dependent) throw new Error('missing reverse dependency fixture');
+    if (!reverseOverview) throw new Error('missing reverse overview fixture');
+    reverseOverview.pluginId = nodeId;
+    dependent.placementReferences = [longReference, secondReference];
+    dependent.availablePlacementReferences = [longReference, secondReference];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({
+      name: 'pluginDependencyNode', pluginId: 'official/agent-lab',
+      nodePluginId: nodeId, direction: 'dependencies', view: 'references',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await nextTurn(3);
+    await input(instance, '\u001B[B', 'd');
+
+    expect(instance.lastFrame()).toContain('p/n 查看当前位置详情');
+    await focusAction(instance, 'n 下一页');
+    expect(instance.lastFrame()).toContain('› n 下一页');
+    let detailFrames = instance.lastFrame() ?? '';
+    await input(instance, '\r');
+    const secondPage = instance.lastFrame() ?? '';
+    detailFrames += `\n${secondPage}`;
+    expect(secondPage).toContain('↑ 前面还有');
+    expect(secondPage).toContain('› n 下一页');
+    for (let page = 0; page < 12; page += 1) {
+      await input(instance, 'n');
+      detailFrames += `\n${instance.lastFrame() ?? ''}`;
+    }
+    expect(detailFrames).toContain('selected-reference-');
+    expect(detailFrames).toContain('tail');
+    expect(detailFrames).toContain('platform=Claude Code · scope=user');
+    expect(detailFrames).toContain('dependency · platform=Claude Code · scope=project');
+    await input(instance, '\u001B[A');
+    expect(instance.lastFrame()).toContain('› p 上一页');
+    await input(instance, '\r');
+    for (let page = 0; page < 12; page += 1) await input(instance, 'p');
+    expect(instance.lastFrame()).toContain('consumer · platform=Claude Code · scope=user');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(size.rows);
   });
 
   it('keeps a restricted cleanup outside Review when no exact candidate exists', async () => {

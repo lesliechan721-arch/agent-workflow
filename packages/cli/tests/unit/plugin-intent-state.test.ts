@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   addPluginIntentRoot,
@@ -9,6 +9,7 @@ import {
   canonicalizePluginIntentState,
   createEmptyPluginIntentState,
   mergePluginIntentRootPlatforms,
+  observePluginIntentState,
   parsePluginIntentState,
   readPluginIntentState,
   removePluginIntentRoot,
@@ -19,6 +20,8 @@ import {
   writePluginIntentState,
 } from '../../src/utils/plugin-intent-state.js';
 import { setAtomicConfigBeforeRenameHookForTests } from '../../src/utils/plugin-config.js';
+import { createCliExecutionContext } from '../../src/commands/runtime.js';
+import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
 import { git } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -131,6 +134,81 @@ describe('plugin intent state v2', () => {
     await expect(readPluginIntentState({ scope: 'project', cwd, env: isolation.env }))
       .resolves.toEqual(createEmptyPluginIntentState());
     await expect(fs.pathExists(path.join(cwd, '.agent-workflows'))).resolves.toBe(false);
+  });
+
+  it('distinguishes absent, valid empty, invalid JSON/schema, unsafe path, and unavailable reads', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = await projectFixture('intent-observation');
+    const location = { scope: 'project' as const, cwd, env: isolation.env };
+    const directory = path.join(cwd, '.agent-workflows');
+    const filePath = path.join(directory, 'plugin-intents.json');
+
+    await expect(observePluginIntentState(location)).resolves.toEqual({ state: 'absent' });
+    await writePluginIntentState(location, createEmptyPluginIntentState());
+    await expect(observePluginIntentState(location)).resolves.toEqual({
+      state: 'ready', value: createEmptyPluginIntentState(),
+    });
+
+    await fs.writeFile(filePath, '{broken');
+    await expect(observePluginIntentState(location)).resolves.toMatchObject({ state: 'invalid' });
+    await fs.writeJson(filePath, { ...createEmptyPluginIntentState(), schemaVersion: 1 });
+    await expect(observePluginIntentState(location)).resolves.toMatchObject({ state: 'invalid' });
+
+    await fs.remove(directory);
+    const outside = path.join(isolation.layout.fixtureCwd, 'intent-observation-outside');
+    await fs.ensureDir(outside);
+    await fs.symlink(outside, directory, 'dir');
+    await expect(observePluginIntentState(location)).resolves.toMatchObject({ state: 'invalid' });
+
+    await fs.remove(directory);
+    await fs.ensureDir(directory);
+    await fs.writeJson(filePath, createEmptyPluginIntentState());
+    const unavailable = Object.assign(new Error('injected read failure'), { code: 'EACCES' });
+    const readFile = vi.spyOn(fs, 'readFile').mockRejectedValueOnce(unavailable);
+    try {
+      await expect(observePluginIntentState(location)).resolves.toMatchObject({ state: 'unavailable' });
+    } finally {
+      readFile.mockRestore();
+    }
+
+    const abortError = Object.assign(new Error('cancelled'), { name: 'AbortError' });
+    const abortedRead = vi.spyOn(fs, 'readFile').mockRejectedValueOnce(abortError);
+    try {
+      await expect(observePluginIntentState(location)).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      abortedRead.mockRestore();
+    }
+  });
+
+  it('keeps the production TUI status load available when the project declaration is invalid', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = await projectFixture('intent-status-invalid');
+    await fs.outputFile(path.join(cwd, '.agent-workflows', 'plugin-intents.json'), '{broken');
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd,
+      env: isolation.env,
+      interactive: false,
+      nativeCliRunner: async (invocation) => ({
+        exitCode: 0,
+        stdout: invocation.args.includes('--version')
+          ? 'codex-cli 99.0.0'
+          : JSON.stringify({ installed: [], available: [] }),
+        stderr: '',
+      }),
+    }));
+
+    await expect(dependencies.loadStatus(new AbortController().signal)).resolves.toMatchObject({
+      projectIntent: {
+        state: 'invalid',
+        code: 'pluginIntentStateInvalid',
+      },
+      payload: {
+        schemaVersion: 8,
+        errors: expect.arrayContaining([
+          expect.objectContaining({ code: 'pluginIntentStateInvalid' }),
+        ]),
+      },
+    });
   });
 
   it('writes both scopes atomically and applies the project shared visibility gate', async () => {

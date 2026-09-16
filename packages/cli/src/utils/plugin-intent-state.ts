@@ -42,6 +42,12 @@ export interface PluginIntentStateLocation {
   env?: NodeJS.ProcessEnv;
 }
 
+export type PluginIntentStateObservation =
+  | { state: 'ready'; value: PluginIntentState }
+  | { state: 'absent' }
+  | { state: 'invalid'; code: 'pluginIntentStateInvalid'; message: string }
+  | { state: 'unavailable'; code: 'pluginIntentStateUnavailable'; message: string };
+
 type PluginIntentPathAccess = 'read' | 'write';
 
 function compareText(left: string, right: string): number {
@@ -365,13 +371,13 @@ async function resolveIntentLocation(location: PluginIntentStateLocation): Promi
   };
 }
 
-export async function readPluginIntentState(
+async function readPluginIntentStateObservationUnsafe(
   location: PluginIntentStateLocation,
-): Promise<PluginIntentState> {
+): Promise<Extract<PluginIntentStateObservation, { state: 'ready' | 'absent' }>> {
   resolvePluginIntentStatePath(location, 'read');
   const { allowedRoot, filePath } = await resolveIntentLocation(location);
   if (!await assertReadableIntentPath(allowedRoot, filePath)) {
-    return createEmptyPluginIntentState();
+    return { state: 'absent' };
   }
   let value: unknown;
   try {
@@ -382,7 +388,42 @@ export async function readPluginIntentState(
     }
     throw error;
   }
-  return parsePluginIntentState(value);
+  return { state: 'ready', value: parsePluginIntentState(value) };
+}
+
+function invalidIntentPathError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /(?:symbolic link|regular (?:directory|file)|escapes its allowed root|符号链接|realpath 越界|必须位于 repo 内)/iu
+    .test(error.message);
+}
+
+export async function observePluginIntentState(
+  location: PluginIntentStateLocation,
+): Promise<PluginIntentStateObservation> {
+  try {
+    return await readPluginIntentStateObservationUnsafe(location);
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    const invalid = invalidIntentPathError(error)
+      || error instanceof SyntaxError
+      || error instanceof Error && /^Invalid (?:plugin intent|roots|dependencyScopeOverrides)/u.test(error.message);
+    return invalid ? {
+      state: 'invalid',
+      code: 'pluginIntentStateInvalid',
+      message: '插件声明格式无效或路径不安全。',
+    } : {
+      state: 'unavailable',
+      code: 'pluginIntentStateUnavailable',
+      message: '无法读取插件声明。',
+    };
+  }
+}
+
+export async function readPluginIntentState(
+  location: PluginIntentStateLocation,
+): Promise<PluginIntentState> {
+  const observation = await readPluginIntentStateObservationUnsafe(location);
+  return observation.state === 'ready' ? observation.value : createEmptyPluginIntentState();
 }
 
 export async function writePluginIntentState(

@@ -608,6 +608,7 @@ export type OperationExecuteResult =
       sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
       pluginId?: string;
       originIssue?: IssueOrigin;
+      portableIntent?: PortableResultIntentMetadata;
       returnRoute?: TuiRoute;
       operationRecordId?: string;
       diagnosticIds?: string[];
@@ -621,6 +622,7 @@ export type OperationExecuteResult =
       sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
       pluginId?: string;
       originIssue?: IssueOrigin;
+      portableIntent?: PortableResultIntentMetadata;
       returnRoute?: TuiRoute;
       operationRecordId?: string;
       diagnosticIds?: string[];
@@ -633,6 +635,7 @@ export type OperationExecuteResult =
       sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
       review: OperationReviewModel;
       originIssue?: IssueOrigin;
+      portableIntent?: PortableResultIntentMetadata;
       operationRecordId?: string;
       diagnosticIds?: string[];
       effects?: OperationEffectFacts;
@@ -647,6 +650,7 @@ export type OperationExecuteResult =
       pluginId?: string;
       returnRoute?: TuiRoute;
       originIssue?: IssueOrigin;
+      portableIntent?: PortableResultIntentMetadata;
       writeMayHaveCompleted?: boolean;
       verification?: 'issueStillPresent' | 'verificationFailed';
       summary?: OperationResultSummary;
@@ -654,6 +658,11 @@ export type OperationExecuteResult =
       diagnosticIds?: string[];
       effects?: OperationEffectFacts;
     };
+
+export interface PortableResultIntentMetadata {
+  scope: Scope;
+  agentMode: 'automatic' | 'explicit';
+}
 
 export interface OperationResultSummary {
   code: 'operationSucceeded' | 'operationPartial' | 'operationFailed';
@@ -703,6 +712,7 @@ export interface OperationResultSummary {
     selectedSkills: string[];
     agentMode: 'automatic' | 'explicit';
     requestedAgents: string[];
+    attemptedTargets?: Array<{ skill: string; agent?: string }>;
     scope: Scope;
     materializationDigest: string;
     skillsCliVersion: string;
@@ -764,6 +774,11 @@ export interface PluginOperationProgressLine {
 
 export interface TuiStatusLoadResult {
   projectRoot?: string;
+  projectIntent?:
+    | { state: 'ready'; roots: Array<{ pluginId: string; platforms: PlatformName[] }> }
+    | { state: 'absent' }
+    | { state: 'invalid' | 'unavailable'; code: string; message: string };
+  /** Compatibility input for older injected status fixtures. Production uses projectIntent. */
   projectIntentRoots?: Array<{ pluginId: string; platforms: PlatformName[] }>;
   cliChannel?: 'latest' | 'beta';
   payload: StatusV8Payload;
@@ -801,10 +816,12 @@ function projectReminderTargetKey(target: PluginWriteBatchTarget): string {
 }
 
 export function projectCurrentIntentReminder(status: TuiStatusLoadResult): ProjectIntentReminder | undefined {
+  if (status.projectIntent && status.projectIntent.state !== 'ready') return undefined;
   const actionableTargets: ProjectIntentReminderTarget[] = [];
   const blockedTargets: ProjectIntentReminderTarget[] = [];
   const unconfirmedTargets: PluginWriteBatchTarget[] = [];
-  const projectRoots = new Map((status.projectIntentRoots ?? []).map((root) => [
+  const projectRoots = new Map((status.projectIntent?.state === 'ready'
+    ? status.projectIntent.roots : status.projectIntentRoots ?? []).map((root) => [
     root.pluginId,
     new Set(root.platforms),
   ]));
@@ -1009,6 +1026,11 @@ export interface TuiControllerSnapshot {
     operationRecordId?: string;
   };
   projectIntentReminder?: ProjectIntentReminder;
+  projectIntentIssue?: {
+    state: 'invalid' | 'unavailable';
+    code: string;
+    message: string;
+  };
 }
 
 interface InstallPlacementDraftState extends InstallPlacementDraftViewModel {
@@ -1624,6 +1646,13 @@ export class TuiController {
   #portableResultSkills?: string[];
   #portableResultReceipt?: PortableInstallReceipt;
   #portableResultIntent?: Extract<OperationIntent, { kind: 'portableInstall' }>;
+  #portableResultLifecycle = 0;
+  #portableResultRecheck?: {
+    lifecycle: number;
+    operationId: string;
+    abort: AbortController;
+    promise: Promise<PortableInstallReceipt>;
+  };
   #completionNotice?: TuiControllerSnapshot['completionNotice'];
   #projectIntentReminder?: ProjectIntentReminder;
   #loadError?: { code: string; message: string };
@@ -1749,6 +1778,10 @@ export class TuiController {
       ...(this.#projectIntentReminder
         ? { projectIntentReminder: this.#projectIntentReminder }
         : {}),
+      ...(this.#status?.projectIntent?.state === 'invalid'
+        || this.#status?.projectIntent?.state === 'unavailable'
+        ? { projectIntentIssue: this.#status.projectIntent }
+        : {}),
     });
   }
 
@@ -1846,6 +1879,7 @@ export class TuiController {
 
   beginRetirement(): void {
     this.#retiring = true;
+    this.#invalidatePortableResultRecheck();
   }
 
   async waitForWrites(): Promise<void> {
@@ -1881,6 +1915,7 @@ export class TuiController {
 
   goHome(options: { discardDrafts?: boolean } = {}): boolean {
     if (this.hasSessionDraft && !options.discardDrafts) return false;
+    this.#invalidatePortableResultRecheck();
     this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
     this.#cancelInstallPlacementRequest();
@@ -2281,6 +2316,7 @@ export class TuiController {
   }
 
   #showResult(result: OperationExecuteResult, intent: OperationIntent): void {
+    this.#invalidatePortableResultRecheck();
     const terminal = { name: 'result' as const, operationId: result.operationId };
     const target = this.#stableResultRoute(intent, result);
     this.#resultAnchor = structuredClone(target);
@@ -2470,6 +2506,9 @@ export class TuiController {
   }
 
   push(route: TuiRoute, context?: TuiPageContext): void {
+    if (this.#router.snapshot.current.route.name === 'result') {
+      this.#invalidatePortableResultRecheck();
+    }
     this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
     this.#cancelInstallPlacementRequest();
@@ -2683,29 +2722,88 @@ export class TuiController {
       || !this.dependencies.recheckPortableInstall) {
       throw new TuiOperationBlockedError('portableRecheckUnavailable', '当前结果不能执行只读复查。');
     }
-    const checked = await this.#trackRead(this.dependencies.recheckPortableInstall(
-      structuredClone(this.#portableResultReceipt),
-      this.#abort.signal,
-    ));
-    this.#portableResultReceipt = structuredClone(checked);
-    const summary = operationResultSummary(this.#portableResultIntent, checked);
-    const previous = this.#result;
-    this.#result = {
-      state: checked.status === 'succeeded' ? 'succeeded' : 'partial',
-      operationId: previous.operationId,
-      summary: {
+    const currentResult = this.#result;
+    if (currentResult.state !== 'succeeded' && currentResult.state !== 'partial') {
+      throw new TuiOperationBlockedError('portableRecheckUnavailable', '当前结果不能执行只读复查。');
+    }
+    const previous: Extract<OperationExecuteResult, { state: 'succeeded' | 'partial' }> =
+      structuredClone(currentResult);
+    const originalReceipt = structuredClone(this.#portableResultReceipt);
+    const originalIntent = structuredClone(this.#portableResultIntent);
+    const lifecycle = this.#portableResultLifecycle;
+    if (this.#portableResultRecheck?.lifecycle === lifecycle
+      && this.#portableResultRecheck.operationId === previous.operationId) {
+      return await this.#portableResultRecheck.promise;
+    }
+    const abort = new AbortController();
+    const signal = AbortSignal.any([this.#abort.signal, abort.signal]);
+    const isCurrent = (): boolean => !this.#disposed
+      && !this.#retiring
+      && !signal.aborted
+      && lifecycle === this.#portableResultLifecycle
+      && this.#router.snapshot.current.route.name === 'result'
+      && this.#result?.operationId === previous.operationId
+      && this.#result.operationRecordId === previous.operationRecordId;
+    const promise = (async (): Promise<PortableInstallReceipt> => {
+      let checked: PortableInstallReceipt;
+      try {
+        checked = await this.#trackRead(this.dependencies.recheckPortableInstall!(
+          structuredClone(originalReceipt),
+          signal,
+        ));
+      } catch (error) {
+        if (!isCurrent()) return cloneFrozen(originalReceipt);
+        throw error;
+      }
+      if (!isCurrent()) return cloneFrozen(originalReceipt);
+      this.#portableResultReceipt = structuredClone(checked);
+      const summary = operationResultSummary(originalIntent, checked);
+      const verificationState: OperationEffectFacts['finalVerification'] = summary.portable?.verificationUnknown
+        ? 'unknown' : 'completed';
+      const effects: OperationEffectFacts | undefined = previous.effects
+        ? { ...previous.effects, finalVerification: verificationState }
+        : undefined;
+      const updatedSummary: OperationResultSummary = {
         ...summary,
-        elapsedMs: 'summary' in previous && previous.summary?.elapsedMs !== undefined
-          ? previous.summary.elapsedMs : summary.elapsedMs,
-      },
-      operationKind: 'portableInstall',
-      pluginId: this.#portableResultIntent.pluginId,
-      returnRoute: 'returnRoute' in previous && previous.returnRoute
-        ? structuredClone(previous.returnRoute)
-        : { name: 'pluginDetail', pluginId: this.#portableResultIntent.pluginId },
+        ...(previous.summary.elapsedMs !== undefined
+          ? { elapsedMs: previous.summary.elapsedMs } : {}),
+        ...(previous.summary.diagnosticIds
+          ? { diagnosticIds: structuredClone(previous.summary.diagnosticIds) } : {}),
+        ...(effects ? { effects } : {}),
+      };
+      const updated: Extract<OperationExecuteResult, { state: 'succeeded' | 'partial' }> =
+        checked.status === 'succeeded'
+          ? { ...previous, state: 'succeeded', summary: updatedSummary, ...(effects ? { effects } : {}) }
+          : { ...previous, state: 'partial', summary: updatedSummary, ...(effects ? { effects } : {}) };
+      this.#result = updated;
+      if (updated.operationRecordId) {
+        const record = this.#operationHistory.get(updated.operationRecordId);
+        if (record) {
+          record.summary = {
+            ...record.summary,
+            state: updated.state,
+            code: updated.summary.code,
+            message: updated.summary.message,
+            effects: effects ?? record.summary.effects,
+          };
+          this.#operationHistory.record(record);
+        }
+      }
+      this.#publish();
+      return cloneFrozen(checked);
+    })();
+    this.#portableResultRecheck = {
+      lifecycle,
+      operationId: previous.operationId,
+      abort,
+      promise,
     };
-    this.#publish();
-    return cloneFrozen(checked);
+    void promise.finally(() => {
+      if (this.#portableResultRecheck?.promise === promise) {
+        this.#portableResultRecheck = undefined;
+      }
+    }).catch(() => undefined);
+    return await promise;
   }
 
   startPortableRetryReviewPreparation(): ReviewPreparationSnapshot {
@@ -2743,6 +2841,9 @@ export class TuiController {
   }
 
   replace(route: TuiRoute, context?: TuiPageContext): void {
+    if (this.#router.snapshot.current.route.name === 'result') {
+      this.#invalidatePortableResultRecheck();
+    }
     this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
     this.#cancelInstallPlacementRequest();
@@ -2876,6 +2977,7 @@ export class TuiController {
 
   back(): void {
     const route = this.#router.snapshot.current.route;
+    if (route.name === 'result') this.#invalidatePortableResultRecheck();
     const activeFlow = this.#router.activeFlow();
     this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
@@ -2920,6 +3022,7 @@ export class TuiController {
 
   leaveResult(target?: TuiRoute): void {
     if (this.#router.snapshot.current.route.name !== 'result') return;
+    this.#invalidatePortableResultRecheck();
     if (target?.name === 'home') {
       this.#router.resetToRoot();
       this.#portableDraft = undefined;
@@ -2966,6 +3069,7 @@ export class TuiController {
     const result = this.#result;
     if (this.#router.snapshot.current.route.name !== 'result' || !result
       || !('returnRoute' in result) || !result.returnRoute) return;
+    this.#invalidatePortableResultRecheck();
     const returnRoute = this.#normalizeRoute(result.returnRoute);
     this.#router.back();
     const kind = result.operationKind === 'configSave' || result.operationKind === 'configSaveBatch'
@@ -3022,6 +3126,7 @@ export class TuiController {
     target?: TuiRoute,
     preserveDraft = false,
   ): void {
+    this.#invalidatePortableResultRecheck();
     this.#cancelPortableRequest();
     if (preserveDraft && !this.#portableDraft) {
       this.#portableDraft = this.#recoverablePortableDraft;
@@ -3049,6 +3154,12 @@ export class TuiController {
     this.#portableRequestAbort?.abort();
     this.#portableRequestAbort = undefined;
     this.#portablePending = undefined;
+  }
+
+  #invalidatePortableResultRecheck(): void {
+    this.#portableResultLifecycle += 1;
+    this.#portableResultRecheck?.abort.abort();
+    this.#portableResultRecheck = undefined;
   }
 
   #runPortableRequest<T>(
@@ -3887,6 +3998,7 @@ export class TuiController {
     this.#ensureOperationFlow(intent);
     const inheritedReturnRoute = this.#reviewPreparation?.returnRoute;
     const current = this.#router.snapshot.current.route;
+    if (current.name === 'result') this.#invalidatePortableResultRecheck();
     const navigation = current.name === 'result' || current.name === 'reviewPreparing'
       ? 'replace' : 'push';
     const resolvedReturnRoute = returnRoute
@@ -4998,11 +5110,18 @@ export class TuiController {
     sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
     pluginId?: string;
     originIssue?: IssueOrigin;
+    portableIntent?: PortableResultIntentMetadata;
   } {
     return {
       operationKind: intent.kind,
       ...(intent.kind === 'sourceMutation' ? { sourceAction: intent.action } : {}),
       ...('pluginId' in intent ? { pluginId: intent.pluginId } : {}),
+      ...(intent.kind === 'portableInstall' ? {
+        portableIntent: {
+          scope: intent.scope,
+          agentMode: intent.requestedAgents === undefined ? 'automatic' as const : 'explicit' as const,
+        },
+      } : {}),
       ...(intent.kind === 'pluginWrite' && intent.originIssue
         ? { originIssue: intent.originIssue }
         : {}),
@@ -5012,6 +5131,7 @@ export class TuiController {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#invalidatePortableResultRecheck();
     this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
     this.#cancelInstallPlacementRequest();
@@ -5113,6 +5233,9 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         selectedSkills: receipt.selectedSkills.map((skill) => skill.name),
         agentMode: receipt.agentMode,
         requestedAgents: receipt.requestedAgents,
+        ...(receipt.attemptedTargets
+          ? { attemptedTargets: structuredClone(receipt.attemptedTargets) }
+          : {}),
         scope: receipt.scope,
         materializationDigest: receipt.materializationDigest,
         skillsCliVersion: receipt.skillsCliVersion,

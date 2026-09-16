@@ -31,6 +31,7 @@ import {
 } from '../../src/tui/model.js';
 import { TuiRouter } from '../../src/tui/router.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
+import type { PortableInstallReceipt } from '../../src/portable/commands.js';
 
 function source(
   id: string,
@@ -856,9 +857,219 @@ function deferred<T>(): {
   return { promise, resolve, reject };
 }
 
+function portableReceipt(options: {
+  status?: PortableInstallReceipt['status'];
+  scope?: 'project' | 'user';
+  agentMode?: 'automatic' | 'explicit';
+  records?: PortableInstallReceipt['verification']['records'];
+  missing?: PortableInstallReceipt['verification']['missing'];
+  unknown?: NonNullable<PortableInstallReceipt['verification']['unknown']>;
+} = {}): PortableInstallReceipt {
+  const statusValue = options.status ?? 'partial';
+  const unknown = options.unknown ?? [{ skill: 'review', agent: 'cursor' }];
+  return {
+    receiptSchemaVersion: 5,
+    command: 'skill:install',
+    ok: statusValue === 'succeeded',
+    status: statusValue,
+    plugin: { id: 'official/demo', sourceId: 'official', version: '1.0.0' },
+    scope: options.scope ?? 'user',
+    selectedSkills: [{
+      name: 'review', description: 'Review changes', providerPluginId: 'official/demo',
+      providerDisplayName: 'Demo', relation: 'requested', dynamic: false,
+      filesDigest: 'sha256:skill',
+    }],
+    requestedSkills: ['review'],
+    agentMode: options.agentMode ?? 'explicit',
+    requestedAgents: options.agentMode === 'automatic' ? [] : ['cursor'],
+    skillsCliVersion: '1.0.0',
+    collisions: [],
+    dependencies: [],
+    materializationDigest: 'sha256:materialization',
+    verification: {
+      records: options.records ?? [],
+      missing: options.missing ?? [],
+      ...(unknown.length > 0 ? { unknown } : {}),
+    },
+    warnings: unknown.length > 0 ? ['结果未知。'] : [],
+    failures: unknown.length > 0 ? [{
+      code: 'portableSkillsCliVerificationFailed',
+      message: '结果未知。',
+      recovery: '重新检查。',
+    }] : [],
+  };
+}
+
+function portableEvidence(receipt: PortableInstallReceipt): OperationEvidence {
+  return {
+    ...baseEvidence,
+    portable: {
+      pluginId: receipt.plugin.id,
+      sourceId: receipt.plugin.sourceId,
+      pluginVersion: receipt.plugin.version,
+      scope: receipt.scope,
+      selected: receipt.selectedSkills,
+      requestedSkills: receipt.requestedSkills,
+      agentMode: receipt.agentMode,
+      requestedAgents: receipt.requestedAgents,
+      skillsCliVersion: receipt.skillsCliVersion,
+      collisions: receipt.collisions,
+      dependencies: receipt.dependencies,
+      materializationDigest: receipt.materializationDigest,
+      configDigest: 'sha256:config',
+      evidenceDigest: 'sha256:evidence',
+      generationSetDigest: 'sha256:generation',
+    },
+  };
+}
+
 async function nextTurn(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
 }
+
+describe('Portable result recheck lifecycle', () => {
+  async function resultController(recheck: TuiControllerDependencies['recheckPortableInstall']) {
+    const initial = portableReceipt();
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(portableEvidence(initial)),
+      executeIntent: vi.fn().mockResolvedValue(initial),
+      recheckPortableInstall: recheck,
+    }));
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'portableInstall', pluginId: 'official/demo', scope: 'user',
+      selectedSkills: ['review'], requestedAgents: ['cursor'],
+    });
+    await controller.executeOperation(review.reviewToken);
+    return controller;
+  }
+
+  it.each([
+    ['user', 'automatic'],
+    ['user', 'explicit'],
+    ['project', 'automatic'],
+    ['project', 'explicit'],
+  ] as const)('keeps authorized %s/%s intent metadata on a blocked result without verification facts', async (
+    scope,
+    agentMode,
+  ) => {
+    const fixture = portableReceipt({ scope, agentMode, unknown: [] });
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(portableEvidence(fixture)),
+      executeIntent: vi.fn().mockRejectedValue(new TuiOperationBlockedError(
+        'portableSkillsCliMissing',
+        'Skills CLI is unavailable.',
+      )),
+    }));
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'portableInstall', pluginId: 'official/demo', scope,
+      selectedSkills: ['review'],
+      ...(agentMode === 'explicit' ? { requestedAgents: ['cursor'] } : {}),
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      state: 'blocked',
+      operationKind: 'portableInstall',
+      pluginId: 'official/demo',
+      portableIntent: { scope, agentMode },
+    });
+    expect(result).not.toHaveProperty('summary.portable');
+    expect(result).not.toHaveProperty('verification');
+    expect(controller.snapshot.result?.portableIntent).toEqual({ scope, agentMode });
+  });
+
+  it('single-flights a valid recheck and updates the same result and history identity', async () => {
+    const pending = deferred<PortableInstallReceipt>();
+    const recheck = vi.fn(() => pending.promise);
+    const controller = await resultController(recheck);
+    const before = structuredClone(controller.snapshot.result!);
+    const beforeRecord = controller.getOperationDiagnostic(before.operationRecordId!)!;
+
+    const first = controller.recheckPortableResult();
+    const second = controller.recheckPortableResult();
+    expect(recheck).toHaveBeenCalledTimes(1);
+    pending.resolve(portableReceipt({
+      status: 'succeeded',
+      records: [{ name: 'review', agents: ['cursor'] }],
+      unknown: [],
+    }));
+    await Promise.all([first, second]);
+
+    expect(controller.snapshot.result).toMatchObject({
+      state: 'succeeded',
+      operationId: before.operationId,
+      operationRecordId: before.operationRecordId,
+      effects: {
+        awWrite: before.effects?.awWrite,
+        preApplyExternalEffect: before.effects?.preApplyExternalEffect,
+        finalVerification: 'completed',
+      },
+      summary: {
+        portable: { verified: [{ name: 'review', agents: ['cursor'] }], unknown: [] },
+        diagnosticIds: before.summary?.diagnosticIds,
+      },
+    });
+    expect(controller.listOperationHistory()).toHaveLength(1);
+    expect(controller.getOperationDiagnostic(before.operationRecordId!)).toMatchObject({
+      summary: {
+        recordId: beforeRecord.summary.recordId,
+        operationId: beforeRecord.summary.operationId,
+        createdAtMs: beforeRecord.summary.createdAtMs,
+        state: 'succeeded',
+        effects: { finalVerification: 'completed' },
+      },
+      diagnostics: beforeRecord.diagnostics,
+    });
+  });
+
+  it.each([
+    ['home', (controller: TuiController) => controller.goHome()],
+    ['escape', (controller: TuiController) => controller.leaveResult()],
+    ['leave and re-enter', (controller: TuiController) => {
+      controller.push({ name: 'sourceList' });
+      controller.back();
+    }],
+    ['new operation', (controller: TuiController) => controller.startReviewPreparation({
+      kind: 'pluginWrite', action: 'sync', pluginId: 'official/demo',
+      platform: 'codex', scope: 'user',
+    })],
+    ['retirement', (controller: TuiController) => controller.beginRetirement()],
+    ['dispose', (controller: TuiController) => controller.dispose()],
+  ] as const)('discards a late recheck success after %s', async (_label, leave) => {
+    const pending = deferred<PortableInstallReceipt>();
+    const controller = await resultController(vi.fn(() => pending.promise));
+    const record = structuredClone(controller.listOperationHistory());
+    const checking = controller.recheckPortableResult();
+
+    leave(controller);
+    pending.resolve(portableReceipt({
+      status: 'succeeded', records: [{ name: 'review', agents: ['cursor'] }], unknown: [],
+    }));
+    await expect(checking).resolves.toMatchObject({ status: 'partial' });
+
+    expect(controller.listOperationHistory()).toEqual(record);
+    if (_label !== 'dispose') {
+      expect(controller.snapshot.result?.summary.portable?.verified ?? []).toEqual([]);
+    }
+  });
+
+  it('swallows a late recheck failure after leaving the result', async () => {
+    const pending = deferred<PortableInstallReceipt>();
+    const controller = await resultController(vi.fn(() => pending.promise));
+    const record = structuredClone(controller.listOperationHistory());
+    const checking = controller.recheckPortableResult();
+
+    controller.leaveResult();
+    pending.reject(new Error('late private read failure'));
+
+    await expect(checking).resolves.toMatchObject({ status: 'partial' });
+    expect(controller.listOperationHistory()).toEqual(record);
+    expect(controller.snapshot.result).toBeUndefined();
+  });
+});
 
 describe('TUI v4 router and ViewModel', () => {
   it('normalizes the legacy plugin preview route to the unified detail', async () => {

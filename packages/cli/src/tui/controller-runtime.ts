@@ -129,7 +129,6 @@ import {
 } from '../utils/catalog-source-identity.js';
 import { checkAwCapabilitySupport, readPluginManifest } from '../utils/manifest.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
-import { resolveCanonicalRepoProjectKey } from '../utils/state-paths.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import {
   calculateCatalogGenerationSetDigest,
@@ -1151,15 +1150,24 @@ export function createTuiControllerDependencies(
       }))).flat();
       signal.throwIfAborted();
       const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
-      const [projectRoot, projectIntentState] = await Promise.all([
-        resolveCanonicalRepoProjectKey(context.cwd),
-        readPluginIntentState({ scope: 'project', cwd: context.cwd, env: context.env }),
-      ]);
-      signal.throwIfAborted();
+      const projectIntentObservation = result.projectIntentObservation;
+      const projectIntent = projectIntentObservation.state === 'ready' ? {
+        state: 'ready' as const,
+        roots: structuredClone(projectIntentObservation.value.roots),
+      } : projectIntentObservation.state === 'absent' ? {
+        state: 'absent' as const,
+      } : {
+        state: projectIntentObservation.state,
+        code: projectIntentObservation.code,
+        message: projectIntentObservation.message,
+      };
       return {
         cliChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
-        projectRoot,
-        projectIntentRoots: structuredClone(projectIntentState.roots),
+        ...(result.projectRoot ? { projectRoot: result.projectRoot } : {}),
+        projectIntent,
+        ...(projectIntent.state === 'ready'
+          ? { projectIntentRoots: structuredClone(projectIntent.roots) }
+          : {}),
         configuredSources: structuredClone(configured.sources),
         payload: result.payload,
         pluginSummaries: result.pluginSummaries,

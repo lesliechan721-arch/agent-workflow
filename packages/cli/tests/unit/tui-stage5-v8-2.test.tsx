@@ -522,8 +522,13 @@ describe('TUI v8.2 stage 5', () => {
       await waitForRoute(value, 'catalogStoreRules');
       const rules = frame(instance, size);
       expect(rules).toContain('安全清理规则');
-      expect(rules).toContain('当前 Active Catalog');
-      expect(rules).toContain('foreign、符号链接、unsafe、损坏或未知项目');
+      expect(rules).toContain('当前使用的目录不会删除');
+      expect(rules).toContain('不属于 AW、无法确认安全或仍在使用的内容会保留');
+      await input(instance, 'd');
+      const technicalRules = frame(instance, size);
+      expect(technicalRules).toContain('非 Active 项保留 30 天');
+      expect(technicalRules).toContain('foreign、符号链接、unsafe、损坏或未知项目');
+      await input(instance, 'd');
       await focusAction(instance, '返回存储概览');
       await input(instance, '\r');
       await waitForRoute(value, 'catalogStoreOverview');
