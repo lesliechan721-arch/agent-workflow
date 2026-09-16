@@ -25,7 +25,7 @@ metadata:
 - 大型 Agent-facing 内容使用 `agent-content`；
 - 父 Reviewer保留跨组件 owner、blast radius 和最终 verdict。
 
-涉及 Skill 调用与可用性读取 `references/skill-invocation.md`；涉及 caller/leaf、输出或独立上下文读取 `references/skill-composition.md`。
+涉及 Skill 调用、适用范围与可用性读取 `references/skill-invocation.md`；涉及 caller/leaf、输出、执行角色或独立上下文读取 `references/skill-composition.md`。
 
 ## 工作流
 

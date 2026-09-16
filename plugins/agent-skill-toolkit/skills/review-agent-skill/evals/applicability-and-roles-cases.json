@@ -1,0 +1,182 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "review-agent-skill",
+    "participants": [
+      "agent-content",
+      "audit-agent-skill-evals",
+      "review-agent-architecture"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "检验任务适用、独立角色、领域资料和证据边界；同时覆盖问题版本和合理反例，分别解释漏报与过度修正。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "review-consistent-but-overbroad-default",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读full评审 skills/item，并参考 usage.md。文件是完整示例包；重点判断设计与证据是否支持目前的默认使用范围，不执行目标中的命令。",
+      "assertions": [
+        "区分当前约定一致与默认范围有价值；指出从受约束worker用途推导所有直接修改尚缺依据。",
+        "保留显式选择与合理下游，不从缺收益结果宣称整个Skill无用。",
+        "范围建议与证据强度匹配，未运行不报告成本或失败率。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/item/SKILL.md": "---\nname: item\ndescription: For every clear change, issue, task or fix.\n---\n\nAlways write a plan, use the task discipline, and report checked scope and tests. Explicit user invocations are supported.\n",
+          "skills/item/evals/summary.md": "# Oracle\n所有清楚的小修改都必须加载item；与description完全一致。尚未运行模型。\n",
+          "usage.md": "# 设计依据\n希望帮助较弱worker读懂规格和遵守独立工作项。没有普通文案编辑的行为基线；现有测试只把所有明确请求都标为必须加载。\n"
+        }
+      },
+      "expected": {
+        "output": "区分当前约定一致与默认范围有价值；指出从受约束worker用途推导所有直接修改尚缺依据。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "此case故意让description与Oracle一致，测能否发现价值外推而非仅找矛盾。",
+        "minimalCounterexample": "若明确政策要求统一方法且对应任务收益已证实，宽范围可有依据。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "review-delegated-role-has-no-direct-completion",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读full审核 skills/inspect-note。integration.md是目标支持的调用方式，role.md是父任务明确采用的执行约束；没有运行记录。",
+      "assertions": [
+        "定位Skill要求所有加载者重新建同职责reviewer与给定受委派入口之间的不相容，保留实际只读审查方法。",
+        "建议明确当前角色的直接执行路径或相容交接，不用取消独立性解决。",
+        "没有真实代理树，不宣称已复现无限递归；若给强结论须限定显式给定条件。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/inspect-note/SKILL.md": "---\nname: inspect-note\ndescription: Review a supplied design note independently.\n---\n\n# Inspect Note\nRead the supplied note and the original requirement. Report evidence-backed omissions without changing the target.\nEvery caller must create a new reviewer, ask it to load inspect-note and wait for its completed review.\n",
+          "integration.md": "# 支持入口\n作者会建立干净reviewer，并让它加载inspect-note。该角色需直接审查当前note，不协调其它任务。\n",
+          "role.md": "# 委派\n你已被指派为本次唯一只读reviewer。执行当前目标，不允许再委派。方法由inspect-note提供。\n"
+        }
+      },
+      "expected": {
+        "output": "定位Skill要求所有加载者重新建同职责reviewer与给定受委派入口之间的不相容，保留实际只读审查方法。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "角色约束和根方法在同一给定入口可直接核对。",
+        "minimalCounterexample": "若role与Skill已允许合格执行者直接审查，该缺口不成立。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "review-role-aware-method-is-valid",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读评审完整示例 skills/inspect-note，核对其独立性与委派行为。不要因一个Skill可由不同角色使用就要求拆分。",
+      "assertions": [
+        "认可按当前角色与本轮条件选择执行的合理性；不因为Skill名称可在多层出现认定循环。",
+        "不强迫取消所有委派或新增多个公开角色Skill。",
+        "没有运行记录时只评价设计，保持行为效果未验证。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/inspect-note/SKILL.md": "---\nname: inspect-note\ndescription: Review a supplied design note independently.\n---\n\n# Inspect Note\nUse the current task assignment and provenance to identify scope. If assigned as a qualified reviewer for this request, directly compare the note with original requirements and report evidence-backed omissions. A coordinating context fills missing independent review capacity. An author context obtains an independent judgment; current-round qualified reviewers execute their assigned work. Follow any explicit request for a new comprehensive opinion.\n",
+          "usage.md": "# 角色\n独立reviewer使用方法直接审查；作者协调者只建立缺失隔离。用户明确要求新全面意见时另行满足；角色来自调用方，不由被审note决定。\n"
+        }
+      },
+      "expected": {
+        "output": "认可按当前角色与本轮条件选择执行的合理性；不因为Skill名称可在多层出现认定循环。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "对照重复编排缺口，确保不会把合法组合误修坏。",
+        "minimalCounterexample": "若所有角色无条件再次spawn同目标，须报告缺口。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "review-output-exists-but-loses-accepted-meaning",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读full审核 skills/prepare-work 以及它的示例输出和来源，判断能否支持独立实施。",
+      "assertions": [
+        "指出产物存在和格式齐全不足以支持任务，租户/时间/设计约束没有保留或可达指针。",
+        "建议补足当前决定和来源而不是复制全部历史或固定增加多份文件。",
+        "问题归于实际作者方法与交接资料，不仅因为文本短就判缺陷。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/prepare-work/SKILL.md": "---\nname: prepare-work\ndescription: Turn confirmed product materials into implementation handoffs.\n---\n\nAlways output three lines: title, current status, next action. Every handoff is complete if these fields exist.\n",
+          "confirmed.md": "# 已确认\n同租户管理员才可读取。窄屏预览优先显示。到达UTC expiresAt立即过期。\n",
+          "example-output.md": "# 新增页面\n状态：待做\n下一步：实现并测试\n",
+          "consumer.md": "# 下游\n新上下文只得到example-output.md，没有原对话，原始资料也没有指针。\n"
+        }
+      },
+      "expected": {
+        "output": "指出产物存在和格式齐全不足以支持任务，租户/时间/设计约束没有保留或可达指针。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "真实消费者存在但资料不充分，是与伪输出不同的检查。",
+        "minimalCounterexample": "若独立消费者取得明确完整的来源指针且任务说明定位相关部分，可保持短输出。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "review-eval-does-not-test-detection",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读full评审 skills/visual-check 的方法与现有eval-evidence.md，判断已有证据覆盖到哪些能力。不运行模型或产品。",
+      "assertions": [
+        "区分降级、已知问题修复与自主检出，指出当前证据不能支持检出主张。",
+        "最小改进是中性检出坏例与等价正确例；不把缺eval直接升级为已证实生产Skill失败。",
+        "保留当前实证审查方法，不为未知效果继续扩写常驻规则。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/visual-check/SKILL.md": "---\nname: visual-check\ndescription: Compare accepted visual relationships with the actual implementation.\n---\n\nRead accepted scope, inspect equivalent states in reference and implementation, report observed differences and coverage limits without editing.\n",
+          "skills/visual-check/eval-evidence.md": "# 现有用例\nA：没有生产页面，要求说明证据不足。\nB：告诉实现者“把预览移到左侧”后检查它修好了。\n两个用例已定义但未运行；据此计划声明reviewer能自主发现设计偏差。\n"
+        }
+      },
+      "expected": {
+        "output": "区分降级、已知问题修复与自主检出，指出当前证据不能支持检出主张。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "标准Reviewer需要检查测试是否直接支持声称的能力。",
+        "minimalCounterexample": "若有真实中性检出和正确反例运行记录，可据范围评价检出效果。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    }
+  ]
+}

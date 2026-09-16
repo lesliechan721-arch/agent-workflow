@@ -38,6 +38,20 @@
       "releaseSplits": [
         "validation"
       ]
+    },
+    {
+      "id": "applicability-and-roles",
+      "kind": "conversation",
+      "cases": "applicability-and-roles-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 600000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }
