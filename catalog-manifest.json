@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.17",
+  "catalogVersion": "0.1.0-beta.18",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "0af4544954373cf32441cd57e540d309ef63cfa2"
+    "sourceHead": "a2efbef85c2e708ffda720c82858b6fe404e0b77"
   },
   "entries": [
     {
@@ -44,7 +44,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.2",
+      "version": "0.1.0-beta.3",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -54,9 +54,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:7bcaf8c83e1ed1a04cda62935361132927e6ca0a247edf3608efb204bb6861c1",
-      "manifestDigest": "sha256:d6faf5a6b47bf3c0273a6aefe61af88f59f78eec6f0bc6d4e12ad52999145f67",
-      "contentDigest": "sha256:a2f0d6635698727b22a3be64de8fdafdbc9dd9930c98ff31c2aa9b3c529c9073"
+      "artifactDigest": "sha256:6fdb516c36c3b7a4d7adeb8a974b9d37a5ec0fa9b6cf0d42e267d1e8767d85eb",
+      "manifestDigest": "sha256:4f9ba1f94ca6daf56c1463b21654402db41f4f0d92be5876363e7d91065ef307",
+      "contentDigest": "sha256:409995a3a184a3538f4fe5a734599647f229c21ea42362a5a6f535828e5ec99c"
     },
     {
       "name": "agent-skill-toolkit",
@@ -79,7 +79,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.5",
+      "version": "0.1.0-beta.6",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -92,9 +92,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:6d57698da6eae8ef4762521756c916120e8fa76526cb66c4425f6189f22f5a18",
-      "manifestDigest": "sha256:fa6114fa8edefd4c1abc49fc4f2480be0b2d08f6ea14c4c1b88cbc86a9d5d47a",
-      "contentDigest": "sha256:d4a626de9acc285bf2bbdafad53d4921106d05a82939bee4fe0da4aac2a15c0c"
+      "artifactDigest": "sha256:b98a24d1962f50e0945afc32e736935defa8fd66966af081e4332720e82ec523",
+      "manifestDigest": "sha256:e1b59f92c6bb485aab4d7de1895acb421d6ced681761d53d8663fb9a1968e542",
+      "contentDigest": "sha256:46b6819b633d26e47ecd1a5050be040396a60e341d57ecfe44c713bd6d9192d5"
     },
     {
       "name": "ask-me",
