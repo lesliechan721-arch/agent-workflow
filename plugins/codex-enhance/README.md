@@ -15,7 +15,7 @@ aw install codex-enhance -p codex
 | Skill                                                  | 什么时候使用                                                       |
 | ------------------------------------------------------ | ------------------------------------------------------------------ |
 | [`codex-explore`](skills/codex-explore/)               | 代码、文档、日志或网络资料范围很大，需要隔离只读探索并汇总证据     |
-| [`codex-subagent-guide`](skills/codex-subagent-guide/) | 已经决定使用子代理，需要选择任务角色、模型、上下文、等待和清理策略 |
+| [`codex-subagent-guide`](skills/codex-subagent-guide/) | 需要实际使用通用子代理，且没有专用 Skill 负责该次调度              |
 
 ## `codex-explore`
 
@@ -26,8 +26,8 @@ aw install codex-enhance -p codex
 
 ## `codex-subagent-guide`
 
-该 Skill 不决定是否应该委派，也不授予委派权限。它在授权已经明确后，根据任务难度把任务分为简单、常规、复杂和高难，并应用合适的 role、context
-fork、响应式等待和条件清理策略。
+该 Skill 不决定是否应该委派，也不授予委派权限。在当前任务需要使用子代理、且没有专用 Skill 负责该次调度时，它补齐 role、model、context
+fork、续接、响应式等待和条件清理策略；当前请求或上游工作流已有的有效要求保持不变。
 
 同一交付的补充、指定修复核对或中断恢复可续接原代理，并先核对有效进度。新交付或独立全面重审使用干净代理，不把旧结论当作检查范围上限。
 
