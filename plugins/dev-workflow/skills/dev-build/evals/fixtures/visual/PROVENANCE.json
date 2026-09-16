@@ -1,0 +1,7 @@
+{
+  "source_commit": "f0c1470ace01e95815d0fbb02ae015b0f5346071",
+  "reference_and_misaligned": "Uploaded dev-workflow-review-f0c1470.zip; fixture from dev-implement independent-delivery-behavior-cases.json",
+  "equivalent": "This draft derived a flex layout with different private classes, preserving the same accepted relations.",
+  "accepted_record": "Repository notification-preference fixture r2",
+  "scope": "Isolated demo fixture; this draft spec explicitly covers mock-save feedback, not production persistence. No claim about real template-management implementation."
+}

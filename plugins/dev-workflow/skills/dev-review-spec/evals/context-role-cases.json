@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-review-spec",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按当前角色、真实上下文隔离与结果判定；减少重复委派同时保持质量，不能以少 spawn 或两个标题替代独立判断。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "spec-independent-current-context",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "role-context"
+      ],
+      "prompt": "在新会话中使用 dev-review-spec 审查别人提供的 spec.md，对照 requirements.md。当前未参与起草、未继承作者历史，没有父任务私有状态；默认在这里给出审查结果。工具若允许创建 agent 也由你按角色判断是否需要。",
+      "assertions": [
+        "当前合格的独立上下文直接审查，不仅因加载 Skill 再创建同职责 reviewer。",
+        "指出 now > expiresAt 与 now >= expiresAt 在等值时刻的实质冲突，给出来源和关闭条件。",
+        "源码及规格保持只读；没有 spawn 工具也不应因独立性已满足而错误报告无法审查。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "requirements.md": "# 已确认需求\n请求在 now >= expiresAt 时由服务端拒绝；now < expiresAt 时保持现有成功行为。所有时间为同一服务器时钟的毫秒时间戳。\n",
+          "spec.md": "# 会话过期 Spec\n采用服务器毫秒时间戳。在 now > expiresAt 时拒绝，其他请求接受。验收测试应覆盖恰好等于 expiresAt 的请求。\n"
+        }
+      },
+      "expected": {
+        "output": "在当前上下文发现等值边界冲突并报告，当前独立性成立，无需额外转交。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "文件存在不是独立性依据；本用例给出新审查上下文，要求质量和经济性同时成立。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "当前刚起草这份 Spec 或继承作者完整历史时，应安排独立执行者。"
+      }
+    },
+    {
+      "id": "spec-assigned-current-round-rereviewer",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "role-context"
+      ],
+      "prompt": "你是组织者已经为本轮新建的干净 Spec 全面复审者。当前上下文只得到这次委派和工作区资料。使用 dev-review-spec 复审当前 spec.md；上一轮报告在 prior-review.md，本轮同时修改过 compatibility.md。返回当前完整范围结果。",
+      "assertions": [
+        "读取复审方法后在本轮已经具备的独立上下文执行，不再创建下一层 Spec reviewer。",
+        "核对当前完整 Spec 及兼容来源，不只回答旧 finding 改过没有。",
+        "实际指出当前等值边界冲突，报告已核对范围，保持目标不变。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "requirements.md": "# 已确认需求\n请求在 now >= expiresAt 时由服务端拒绝；now < expiresAt 时保持现有成功行为。所有时间为同一服务器时钟的毫秒时间戳。\n",
+          "spec.md": "# 会话过期 Spec\n采用服务器毫秒时间戳。在 now > expiresAt 时拒绝，其他请求接受。验收测试应覆盖恰好等于 expiresAt 的请求。\n",
+          "prior-review.md": "# 旧 Review\n缺少边界说明。建议仅补齐 expiry 条件。\n",
+          "compatibility.md": "# 已确认兼容条件\n过期前的现有成功响应保持原样。\n"
+        }
+      },
+      "expected": {
+        "output": "本轮已分配 reviewer 直接完成全面复审，发现当前真实边界问题。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "本轮 fresh 条件由已建立的执行者满足，不需要每次加载再次隔离。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "只是旧 reviewer 补证据时，不应宣称取得了新的全面独立重评。"
+      }
+    }
+  ]
+}

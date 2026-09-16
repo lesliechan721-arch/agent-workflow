@@ -71,6 +71,44 @@
       "runs": 1,
       "timeoutMs": 300000,
       "requiredForRelease": false
+    },
+    {
+      "id": "context-role-workflow",
+      "kind": "codex-workflow",
+      "cases": "context-role-workflow.cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 600000,
+      "requiredForRelease": false,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "context-role-workflow.mjs"
+        ],
+        "allowedModels": []
+      }
+    },
+    {
+      "id": "generated-ticket-handoff",
+      "kind": "codex-workflow",
+      "cases": "generated-ticket-handoff.cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 600000,
+      "requiredForRelease": false,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "context-role-workflow.mjs"
+        ],
+        "allowedModels": []
+      }
     }
   ]
 }

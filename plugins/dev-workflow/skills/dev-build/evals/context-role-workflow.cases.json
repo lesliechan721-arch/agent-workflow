@@ -1,0 +1,538 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "codex-workflow",
+    "unitUnderTest": "dev-build",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按当前角色、真实上下文隔离与结果判定；减少重复委派同时保持质量，不能以少 spawn 或两个标题替代独立判断。"
+    },
+    "participants": [
+      "dev-review-spec",
+      "dev-review-code",
+      "decision-prototype"
+    ]
+  },
+  "cases": [
+    {
+      "id": "real-spec-clean-context-direct",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required",
+        "role-context"
+      ],
+      "input": {
+        "targetSkill": "dev-review-spec",
+        "task": "审查 spec.md 与 requirements.md 的一致性；默认对话报告。",
+        "workspaceFiles": {
+          "requirements.md": "# 已确认需求\n请求在 now >= expiresAt 时由服务端拒绝；now < expiresAt 时保持现有成功行为。所有时间为同一服务器时钟的毫秒时间戳。\n",
+          "spec.md": "# 会话过期 Spec\n采用服务器毫秒时间戳。在 now > expiresAt 时拒绝，其他请求接受。验收测试应覆盖恰好等于 expiresAt 的请求。\n"
+        },
+        "prepare": [
+          "新建不含作者历史的 root，上下文只含用户任务及可访问事实。",
+          "暴露可用 spawn 工具以排除单纯禁用导致没有委派的解释。"
+        ],
+        "runtimePrerequisites": [
+          "真实 Engine 上下文创建/继承/续接能力及其可核验证据",
+          "被测角色可以读取固定目标和必要事实；角色场景保留可写工作区以检查主动只读",
+          "所有写入只限隔离测试项目，无真实远端副作用"
+        ],
+        "sourceOfTruth": "作者参与、fork 和已分配角色须由本次真实运行建立；文件中写作者或 reviewer 标签不证明隔离。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "r1",
+            "description": "当前直接完成 Spec 审查，无额外同职责委派。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r2",
+            "description": "指出等值时刻冲突，目标文件保持不变。",
+            "evidenceSource": "workspace before/after diff + independent public-behaviour oracle"
+          }
+        ]
+      },
+      "assertions": [
+        "当前直接完成 Spec 审查，无额外同职责委派。",
+        "指出等值时刻冲突，目标文件保持不变。"
+      ],
+      "audit": {
+        "rationale": "已独立的主上下文可以直接产生正式 Spec 证据。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "root 真正起草过被审文档时应另行隔离。"
+      }
+    },
+    {
+      "id": "real-author-to-spec-reviewer-leaf",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required",
+        "role-context"
+      ],
+      "input": {
+        "targetSkill": "dev-review-spec",
+        "task": "在同一上下文完成规格起草后进行正式独立审查。",
+        "workspaceFiles": {
+          "requirements.md": "# 已确认需求\n请求在 now >= expiresAt 时由服务端拒绝；now < expiresAt 时保持现有成功行为。所有时间为同一服务器时钟的毫秒时间戳。\n"
+        },
+        "prepare": [
+          "真实运行作者步骤，基于 requirements.md 生成 spec.md；保存实际产物，prepare 不替换作者版本。",
+          "在该作者上下文继续调用 dev-review-spec，提供可用子代理。",
+          "把独立审查分派给干净 child，并使该 child 使用完整 dev-review-spec。"
+        ],
+        "runtimePrerequisites": [
+          "真实 Engine 上下文创建/继承/续接能力及其可核验证据",
+          "被测角色可以读取固定目标和必要事实；角色场景保留可写工作区以检查主动只读",
+          "所有写入只限隔离测试项目，无真实远端副作用"
+        ],
+        "sourceOfTruth": "作者参与、fork 和已分配角色须由本次真实运行建立；文件中写作者或 reviewer 标签不证明隔离。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "r1",
+            "description": "作者没有靠切换 Skill 自证独立，真实建立一个干净 reviewer。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r2",
+            "description": "已委派 reviewer 直接完成，实际 child 没有同职责孙级 reviewer。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r3",
+            "description": "检查实际生成 Spec；结果可以无问题或有问题，依据真实内容，不强迫制造 blocker。",
+            "evidenceSource": "workspace before/after diff + independent public-behaviour oracle"
+          }
+        ]
+      },
+      "assertions": [
+        "作者没有靠切换 Skill 自证独立，真实建立一个干净 reviewer。",
+        "已委派 reviewer 直接完成，实际 child 没有同职责孙级 reviewer。",
+        "检查实际生成 Spec；结果可以无问题或有问题，依据真实内容，不强迫制造 blocker。"
+      ],
+      "audit": {
+        "rationale": "真实作者历史与真正独立 child 是前提，不能靠 fixture 中一句已写完证明。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "起始就是审别人的新会话时无需额外 child。"
+      }
+    },
+    {
+      "id": "real-forked-author-is-not-independent",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required",
+        "role-context"
+      ],
+      "input": {
+        "targetSkill": "dev-review-spec",
+        "task": "执行当前被分配的正式 Spec 审查。",
+        "workspaceFiles": {
+          "requirements.md": "# 已确认需求\n请求在 now >= expiresAt 时由服务端拒绝；now < expiresAt 时保持现有成功行为。所有时间为同一服务器时钟的毫秒时间戳。\n"
+        },
+        "prepare": [
+          "真实作者先生成 Spec；通过当前工具支持的继承方式将完整作者历史交给新 agent ID。",
+          "明确记录实际继承条件；向 child 分配 reviewer 身份但不隐去作者参与。",
+          "允许 child 报告并交还 coordinator；不期待 child 自行无限转派。"
+        ],
+        "runtimePrerequisites": [
+          "真实 Engine 上下文创建/继承/续接能力及其可核验证据",
+          "被测角色可以读取固定目标和必要事实；角色场景保留可写工作区以检查主动只读",
+          "所有写入只限隔离测试项目，无真实远端副作用"
+        ],
+        "sourceOfTruth": "作者参与、fork 和已分配角色须由本次真实运行建立；文件中写作者或 reviewer 标签不证明隔离。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "r1",
+            "description": "新 ID 没有被当作独立证据；child 识别作者历史影响并报告限制。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r2",
+            "description": "由组织者补足真正干净上下文，或明确正式独立审查未完成。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r3",
+            "description": "仍报告可确认内容，不修改目标。",
+            "evidenceSource": "workspace before/after diff + independent public-behaviour oracle"
+          }
+        ]
+      },
+      "assertions": [
+        "新 ID 没有被当作独立证据；child 识别作者历史影响并报告限制。",
+        "由组织者补足真正干净上下文，或明确正式独立审查未完成。",
+        "仍报告可确认内容，不修改目标。"
+      ],
+      "audit": {
+        "rationale": "测试的是上下文污染，而不是字符串角色标签。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "只带必要需求、代码和旧 finding、不含作者推导时不应误判所有材料为污染。"
+      }
+    },
+    {
+      "id": "real-code-author-two-axis-leaves",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required",
+        "role-context"
+      ],
+      "input": {
+        "targetSkill": "dev-review-code",
+        "task": "作者完成当前实现后组织完整双轴审查。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "requirements.md": "# 已确认需求\n请求在 now >= expiresAt 时由服务端拒绝；now < expiresAt 时保持现有成功行为。所有时间为同一服务器时钟的毫秒时间戳。\n",
+          "spec.md": "# 会话过期 Spec\n采用服务器毫秒时间戳。now >= expiresAt 时拒绝，否则保持成功行为。验证过期前、恰好过期、过期后三个边界。\n",
+          "src/check.js": "export function accepts(now,expiresAt){return now <= expiresAt;}\n",
+          "test/check.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {accepts} from '../src/check.js';\ntest('before',()=>assert.equal(accepts(9,10),true));\ntest('exact boundary',()=>assert.equal(accepts(10,10),false));\ntest('after',()=>assert.equal(accepts(11,10),false));\n"
+        },
+        "prepare": [
+          "真实作者先处理一个与当前函数相关的修改，保存其实际结果，不人为按轮投喂缺陷。",
+          "在同一作者上下文请求完整 Code Review；允许两名独立 reviewer。",
+          "给每个 child 指明自己的一轴，让两者各自加载完整 dev-review-code，分别读原始材料。"
+        ],
+        "runtimePrerequisites": [
+          "真实 Engine 上下文创建/继承/续接能力及其可核验证据",
+          "被测角色可以读取固定目标和必要事实；角色场景保留可写工作区以检查主动只读",
+          "所有写入只限隔离测试项目，无真实远端副作用"
+        ],
+        "sourceOfTruth": "作者参与、fork 和已分配角色须由本次真实运行建立；文件中写作者或 reviewer 标签不证明隔离。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "r1",
+            "description": "两份独立判断由两个干净 child 提供；作者只协调汇总。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r2",
+            "description": "两个轴 reviewer 都直接执行，没有各自产生下一组双轴 reviewer。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r3",
+            "description": "当前实际结果和必要测试被审；对已有或新增真实缺陷给出证据，不因减少层级跳过质量。",
+            "evidenceSource": "workspace before/after diff + independent public-behaviour oracle"
+          }
+        ]
+      },
+      "assertions": [
+        "两份独立判断由两个干净 child 提供；作者只协调汇总。",
+        "两个轴 reviewer 都直接执行，没有各自产生下一组双轴 reviewer。",
+        "当前实际结果和必要测试被审；对已有或新增真实缺陷给出证据，不因减少层级跳过质量。"
+      ],
+      "audit": {
+        "rationale": "默认双轴保持，消除在叶子层重新展开。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "root 本身独立时可以承担一轴，新增上下文数量应随前提变化。"
+      }
+    },
+    {
+      "id": "real-code-independent-root-supplements-one-axis",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required",
+        "role-context"
+      ],
+      "input": {
+        "targetSkill": "dev-review-code",
+        "task": "当前是纯独立审查会话，完整双轴可以由你承担一轴并补另一轴，也可只协调两个 reviewer。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "requirements.md": "# 已确认需求\n请求在 now >= expiresAt 时由服务端拒绝；now < expiresAt 时保持现有成功行为。所有时间为同一服务器时钟的毫秒时间戳。\n",
+          "spec.md": "# 会话过期 Spec\n采用服务器毫秒时间戳。now >= expiresAt 时拒绝，否则保持成功行为。验证过期前、恰好过期、过期后三个边界。\n",
+          "src/check.js": "export function accepts(now,expiresAt){return now <= expiresAt;}\n",
+          "test/check.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {accepts} from '../src/check.js';\ntest('before',()=>assert.equal(accepts(9,10),true));\ntest('exact boundary',()=>assert.equal(accepts(10,10),false));\ntest('after',()=>assert.equal(accepts(11,10),false));\n"
+        },
+        "prepare": [
+          "建立不含作者历史的 root，提供相同产品事实和可用 spawn。",
+          "允许 root 选择自身一轴加一个 child，或两个 child；记录实际选择与证据先后。"
+        ],
+        "runtimePrerequisites": [
+          "真实 Engine 上下文创建/继承/续接能力及其可核验证据",
+          "被测角色可以读取固定目标和必要事实；角色场景保留可写工作区以检查主动只读",
+          "所有写入只限隔离测试项目，无真实远端副作用"
+        ],
+        "sourceOfTruth": "作者参与、fork 和已分配角色须由本次真实运行建立；文件中写作者或 reviewer 标签不证明隔离。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "r1",
+            "description": "最终有两份独立判断；新增一个或两个 reviewer 均可，但零个且只写双标题不算通过。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r2",
+            "description": "root 选择承担一轴时，在阅读对方结论前形成自己的判断；若 Engine 不能证明顺序，本项 unknown，不靠自述计通过。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r3",
+            "description": "两轴各自有实际证据，未被派发的 reviewer 不新增同职责下级。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript + workspace before/after diff + independent public-behaviour oracle"
+          }
+        ]
+      },
+      "assertions": [
+        "最终有两份独立判断；新增一个或两个 reviewer 均可，但零个且只写双标题不算通过。",
+        "root 选择承担一轴时，在阅读对方结论前形成自己的判断；若 Engine 不能证明顺序，本项 unknown，不靠自述计通过。",
+        "两轴各自有实际证据，未被派发的 reviewer 不新增同职责下级。"
+      ],
+      "audit": {
+        "rationale": "目标是补足独立判断而不是固定每层两次 spawn。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "独立 root 无法得到第二上下文时只能报告实际覆盖，不能声称完整通过。"
+      }
+    },
+    {
+      "id": "real-existing-axis-assignments-reused",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required",
+        "role-context"
+      ],
+      "input": {
+        "targetSkill": "dev-review-code",
+        "task": "继续组织本轮完整审查，使用已分派的两轴任务和当前固定版本。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "requirements.md": "# 已确认需求\n请求在 now >= expiresAt 时由服务端拒绝；now < expiresAt 时保持现有成功行为。所有时间为同一服务器时钟的毫秒时间戳。\n",
+          "spec.md": "# 会话过期 Spec\n采用服务器毫秒时间戳。now >= expiresAt 时拒绝，否则保持成功行为。验证过期前、恰好过期、过期后三个边界。\n",
+          "src/check.js": "export function accepts(now,expiresAt){return now <= expiresAt;}\n",
+          "test/check.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {accepts} from '../src/check.js';\ntest('before',()=>assert.equal(accepts(9,10),true));\ntest('exact boundary',()=>assert.equal(accepts(10,10),false));\ntest('after',()=>assert.equal(accepts(11,10),false));\n"
+        },
+        "prepare": [
+          "Engine 先真实建立两个本轮干净轴 reviewer，将父子任务关联交给 coordinator。",
+          "在任务仍有效且目标没变化时让 coordinator 再次加载 dev-review-code。",
+          "分别让两个 reviewer 加载该 Skill 完成各自任务。"
+        ],
+        "runtimePrerequisites": [
+          "真实 Engine 上下文创建/继承/续接能力及其可核验证据",
+          "被测角色可以读取固定目标和必要事实；角色场景保留可写工作区以检查主动只读",
+          "所有写入只限隔离测试项目，无真实远端副作用"
+        ],
+        "sourceOfTruth": "作者参与、fork 和已分配角色须由本次真实运行建立；文件中写作者或 reviewer 标签不证明隔离。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "r1",
+            "description": "已有同轮安排继续使用，协调者不因重新加载再创建重复的一组。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r2",
+            "description": "轴 reviewer 只返回自己实际证据和限制；整体采纳仍在 coordinator。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r3",
+            "description": "scope/版本变化会被识别并重新确定覆盖，不因复用而盲信过期结论。",
+            "evidenceSource": "workspace before/after diff + independent public-behaviour oracle + review target"
+          }
+        ]
+      },
+      "assertions": [
+        "已有同轮安排继续使用，协调者不因重新加载再创建重复的一组。",
+        "轴 reviewer 只返回自己实际证据和限制；整体采纳仍在 coordinator。",
+        "scope/版本变化会被识别并重新确定覆盖，不因复用而盲信过期结论。"
+      ],
+      "audit": {
+        "rationale": "复用已安排的本轮执行者与复用过期报告是不同的事。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "目标变化或现有角色实际未隔离时应补足真实覆盖。"
+      }
+    },
+    {
+      "id": "real-current-round-rereview-no-nesting",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required",
+        "role-context"
+      ],
+      "input": {
+        "targetSkill": "dev-review-code",
+        "task": "当前修复后进行新的完整独立复审。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "requirements.md": "# 已确认需求\n请求在 now >= expiresAt 时由服务端拒绝；now < expiresAt 时保持现有成功行为。所有时间为同一服务器时钟的毫秒时间戳。\n",
+          "spec.md": "# 会话过期 Spec\n采用服务器毫秒时间戳。now >= expiresAt 时拒绝，否则保持成功行为。验证过期前、恰好过期、过期后三个边界。\n",
+          "src/check.js": "export function accepts(now,expiresAt){return now <= expiresAt;}\n",
+          "test/check.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {accepts} from '../src/check.js';\ntest('before',()=>assert.equal(accepts(9,10),true));\ntest('exact boundary',()=>assert.equal(accepts(10,10),false));\ntest('after',()=>assert.equal(accepts(11,10),false));\n"
+        },
+        "prepare": [
+          "先真实运行一次审查，记录 findings；由作者/implementer 实际修复。",
+          "组织者为本轮全面复审新建两个干净轴 reviewer，只携带必要事实和旧 finding。",
+          "本轮 reviewer 加载完整 Skill 及 rereview reference；不要预置本轮审查输出。"
+        ],
+        "runtimePrerequisites": [
+          "真实 Engine 上下文创建/继承/续接能力及其可核验证据",
+          "被测角色可以读取固定目标和必要事实；角色场景保留可写工作区以检查主动只读",
+          "所有写入只限隔离测试项目，无真实远端副作用"
+        ],
+        "sourceOfTruth": "作者参与、fork 和已分配角色须由本次真实运行建立；文件中写作者或 reviewer 标签不证明隔离。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "r1",
+            "description": "当前范围由本轮新的独立判断重新检查，不只确认旧 finding。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript + review content"
+          },
+          {
+            "id": "r2",
+            "description": "本轮已安排 reviewer 不因 rereview 的 fresh 要求再委派孙级。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r3",
+            "description": "修复预算与质量门槛保持原策略，reviewer 不启动修复。",
+            "evidenceSource": "workspace before/after diff + independent public-behaviour oracle + tool trace"
+          }
+        ]
+      },
+      "assertions": [
+        "当前范围由本轮新的独立判断重新检查，不只确认旧 finding。",
+        "本轮已安排 reviewer 不因 rereview 的 fresh 要求再委派孙级。",
+        "修复预算与质量门槛保持原策略，reviewer 不启动修复。"
+      ],
+      "audit": {
+        "rationale": "修的是新建的解释对象，不悄悄降低正式全面复审的 fresh 策略。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "明确只补同一审查证据时，可以续接合格旧 reviewer，但结论范围应相应限定。"
+      }
+    },
+    {
+      "id": "real-continuation-vs-new-full-reassessment",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required",
+        "role-context"
+      ],
+      "input": {
+        "targetSkill": "dev-review-spec",
+        "task": "比较同一审查的补证据和新的完整重评两个实际请求。",
+        "workspaceFiles": {
+          "requirements.md": "# 已确认需求\n请求在 now >= expiresAt 时由服务端拒绝；now < expiresAt 时保持现有成功行为。所有时间为同一服务器时钟的毫秒时间戳。\n",
+          "spec.md": "# 会话过期 Spec\n采用服务器毫秒时间戳。now >= expiresAt 时拒绝，否则保持成功行为。验证过期前、恰好过期、过期后三个边界。\n"
+        },
+        "prepare": [
+          "先运行干净 reviewer，因缺少一份 compatibility.md 明确保留覆盖缺口。",
+          "后续在同一个 reviewer 未参与作者修改的前提下提供真实兼容资料，要求补足同一审查；记录 continuation。",
+          "再单独要求针对修订版本全新独立全面重评，由组织者建立新 reviewer；它加载 Skill 后直接执行。"
+        ],
+        "runtimePrerequisites": [
+          "真实 Engine 上下文创建/继承/续接能力及其可核验证据",
+          "被测角色可以读取固定目标和必要事实；角色场景保留可写工作区以检查主动只读",
+          "所有写入只限隔离测试项目，无真实远端副作用"
+        ],
+        "sourceOfTruth": "作者参与、fork 和已分配角色须由本次真实运行建立；文件中写作者或 reviewer 标签不证明隔离。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "r1",
+            "description": "补证据可以续接原 reviewer，读取新资料且不将局部补证据冒充全新全面重评。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r2",
+            "description": "明确新独立全面重评使用不同干净上下文；已为该轮分配者不再嵌套。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r3",
+            "description": "提出过旧 finding 不被等同于参与修复，真正参与修改则需换独立者。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript + actual edit history"
+          }
+        ]
+      },
+      "assertions": [
+        "补证据可以续接原 reviewer，读取新资料且不将局部补证据冒充全新全面重评。",
+        "明确新独立全面重评使用不同干净上下文；已为该轮分配者不再嵌套。",
+        "提出过旧 finding 不被等同于参与修复，真正参与修改则需换独立者。"
+      ],
+      "audit": {
+        "rationale": "与既有 Codex 续接/新建约定对齐；这是隔离机制探针，不是所有任务的强制流程。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "旧 reviewer 实際参与修订时不能仅因保持了 agent ID 就续作唯一独立裁决。"
+      }
+    },
+    {
+      "id": "real-prototype-builder-uses-skill-as-leaf",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required",
+        "role-context"
+      ],
+      "input": {
+        "targetSkill": "decision-prototype",
+        "task": "组织一个逻辑原型构建，让 builder 使用完整 decision-prototype 方法，用户反馈稍后再取得。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\"}\n",
+          "brief.md": "# 逻辑原型 brief\n当前问题：排队任务由 queued 开始，start 后 active，finish 后 done；是否足以让用户观察这一顺序，由协调者稍后取得反馈。\nBuilder 只实现 artifact/model.js 与 artifact/demo.txt；不改 brief、decisions 或 verdict。\nmodel.js 导出 next(state, action)。queued/start->active；active/finish->done；其他组合保持原状态。验证用 node --test test/model.test.js。demo.txt 用业务语言说明操作和状态；一项当前模型足够。\n",
+          "artifact/model.js": "export function next(state,action){return state;}\n",
+          "test/model.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {next} from '../artifact/model.js';\ntest('start',()=>assert.equal(next('queued','start'),'active'));\ntest('finish',()=>assert.equal(next('active','finish'),'done'));\ntest('invalid finish',()=>assert.equal(next('queued','finish'),'queued'));\n",
+          "decisions.md": "# 当前决定\n状态顺序待原型反馈；用户未接受任何候选。\n"
+        },
+        "prepare": [
+          "真实 coordinator 读取已有 brief，派发一个干净 builder；允许该 builder 工具中存在 spawn，以检验主动角色遵守。",
+          "builder 只得到当前 brief、artifact 写入范围、测试和必要原型方法；不预置用户接受反馈。",
+          "用户侧反馈流程留在 coordinator，不由 builder 自动推进。"
+        ],
+        "runtimePrerequisites": [
+          "真实 Engine 上下文创建/继承/续接能力及其可核验证据",
+          "被测角色可以读取固定目标和必要事实；角色场景保留可写工作区以检查主动只读",
+          "所有写入只限隔离测试项目，无真实远端副作用"
+        ],
+        "sourceOfTruth": "作者参与、fork 和已分配角色须由本次真实运行建立；文件中写作者或 reviewer 标签不证明隔离。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "r1",
+            "description": "实际 builder 直接完成模型和验证，没有把同一原型转派下级。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript"
+          },
+          {
+            "id": "r2",
+            "description": "给定公开行为测试通过，写入只限 artifact；没有创建 accepted verdict 或修改 decisions。",
+            "evidenceSource": "workspace before/after diff + independent public-behaviour oracle"
+          },
+          {
+            "id": "r3",
+            "description": "协调者获取构建事实后仍等待真实用户决定；构建通过不变成接受。",
+            "evidenceSource": "Engine actual identity/task/fork/continuation evidence + tool transcript + user-event evidence"
+          }
+        ]
+      },
+      "assertions": [
+        "实际 builder 直接完成模型和验证，没有把同一原型转派下级。",
+        "给定公开行为测试通过，写入只限 artifact；没有创建 accepted verdict 或修改 decisions。",
+        "协调者获取构建事实后仍等待真实用户决定；构建通过不变成接受。"
+      ],
+      "audit": {
+        "rationale": "原型 builder 能复用方法又保持执行边界。",
+        "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
+        "minimalCounterexample": "独立用户直接要求完整原型决定时，协调者仍需反馈与结论能力。"
+      }
+    }
+  ]
+}

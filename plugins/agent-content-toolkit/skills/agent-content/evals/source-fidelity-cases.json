@@ -1,0 +1,167 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "agent-content",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "检验任务适用、独立角色、领域资料和证据边界；同时覆盖问题版本和合理反例，分别解释漏报与过度修正。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "retain-domain-decisions-in-short-handoff",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "重组 handoff.md，让新实现者可以直接阅读；只修改该文件，来源以 confirmed.md 为准。减少重复背景，保留足够实施信息。",
+      "assertions": [
+        "保留或明确定位租户、UTC边界、两种空数据语义、已接受窄屏关系和演示排除范围，而不只留下宽泛目标。",
+        "可以压缩重复背景；引用说明实际需要哪些材料，api.json 继续可达。",
+        "只改 handoff.md，不把作者方法指令或本次编辑过程写成产品要求。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "confirmed.md": "# 已确认规则\n用户只能读取同租户记录；UTC 到达 expiresAt 即失效。未配置数据源可自由分析，已配置查询返回空保持原失败语义。界面窄屏预览在设置之前，mock 保存与演示数量不属于生产合同。接口依循 api.json。\n",
+          "api.json": "{\"required\":[\"tenantId\",\"expiresAt\"],\"timeZone\":\"UTC\"}\n",
+          "handoff.md": "# 工作\n做一个好用而清楚的页面。遵循最佳实践。\n背景：团队希望好用、清楚、易读。做好以后更新状态。参考 confirmed.md 和 api.json。\n"
+        }
+      },
+      "expected": {
+        "output": "保留或明确定位租户、UTC边界、两种空数据语义、已接受窄屏关系和演示排除范围，而不只留下宽泛目标。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "handoff.md"
+        ],
+        "artifacts": [
+          {
+            "path": "handoff.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证简化表达仍保留新上下文消费者所需的领域信息。",
+        "minimalCounterexample": "如果请求只是修一处拼写且关键依据已经完整，不必重组全文。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "reported-tests-do-not-prove-design-fidelity",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读评价 result.md 的结论依据。需要区分文件中直接可核对内容与尚需验证的信息。",
+      "assertions": [
+        "指出单元测试摘要不足以支持界面一致性结论，同时不宣称产品页面实际一定错误。",
+        "保留明确已接受的关系和可取得的后续证据需求，不要求像素或文件hash作为唯一证明。",
+        "只评价资料，不补造生产页面或执行记录。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "accepted.md": "# 接受范围\n桌面：设置在左，预览在右；窄屏：预览先于设置。DOM和CSS组织可等价调整。\n",
+          "result.md": "# 交付记录\n单元测试通过100项，所以界面完整符合accepted.md。产品页面、截图和实际命令日志未保存在本资料内。\n"
+        }
+      },
+      "expected": {
+        "output": "指出单元测试摘要不足以支持界面一致性结论，同时不宣称产品页面实际一定错误。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "区分源材料的声明、需要的验证和已经观察事实。",
+        "minimalCounterexample": "实际提供等价条件的产品对照证据时可以给出范围内的符合结论。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "explicit-json-consumer-keeps-contract",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "根据 confirmed.md 更新 output.json 供给定 parser 使用。只改 output.json，不变更格式。",
+      "assertions": [
+        "保留真实消费者的JSON合同，把retentionDays更新为30且scope不变。",
+        "无需把固定格式改成自然语言或创建额外状态文件。",
+        "未运行parser时只说明实际修改，不能宣称消费者集成验证通过。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "confirmed.md": "# 当前决定\n目标文档留存30天。只改变保留天数；用户明确要求JSON交付。\n",
+          "output.json": "{\"retentionDays\":7,\"scope\":\"documents\"}\n",
+          "consumer.py": "import json\ndef load(p):\n    d=json.load(open(p))\n    assert isinstance(d[\"retentionDays\"],int)\n    return d[\"retentionDays\"]\n"
+        }
+      },
+      "expected": {
+        "output": "保留真实消费者的JSON合同，把retentionDays更新为30且scope不变。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "output.json"
+        ],
+        "artifacts": [
+          {
+            "path": "output.json",
+            "exists": true,
+            "json": {
+              "retentionDays": 30,
+              "scope": "documents"
+            }
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "真实消费者与用户格式要求是保留结构的依据。",
+        "minimalCounterexample": "若结构仅供同一会话复述且无格式要求，可评价是否存在必要性。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "small-copy-fix-remains-small",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "仅把 prompt.md 中“返回结过”改为“返回结果”，保持其它内容。",
+      "assertions": [
+        "只修指定文字，保留只读范围与当前格式。",
+        "无需额外设计文件、规则清单或完整评审。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "prompt.md": "# 查询\n只读已命名文件，返回结过。\n"
+        }
+      },
+      "expected": {
+        "output": "只修指定文字，保留只读范围与当前格式。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "prompt.md"
+        ],
+        "artifacts": [
+          {
+            "path": "prompt.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证增强标准仍按变更规模使用。",
+        "minimalCounterexample": "用户请求重建不清楚的任务边界时需要更多分析。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    }
+  ]
+}

@@ -3,21 +3,23 @@
   "suite": {
     "kind": "trigger",
     "unitUnderTest": "dev-build",
-    "policy": {
-      "optimization": "balanced",
-      "falseNegativeCost": "high",
-      "falsePositiveCost": "high",
-      "rationale": "验证真实工作结果和范围边界；避免用固定措辞、测试数量或复杂流程的存在证明质量。"
-    },
     "participants": [
       "dev-implement",
       "dev-review-code",
       "decision-shape"
     ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按任务依据、独立交接和真实结果判断加载价值；同时核对无必要方法时的额外成本。"
+    },
     "runtime": {
       "observeSpawnAgent": false,
       "isolation": "strict",
-      "strictNegativeSplits": [],
+      "strictNegativeSplits": [
+        "validation"
+      ],
       "forbidMultipleSkillLoads": false
     }
   },
@@ -30,16 +32,12 @@
       ],
       "input": {
         "query": "已批准 Spec，请协调多个工作项、集成验证和最终 Review；委派已获准，不要重新对齐需求。",
-        "expected": {
-          "loadedSkills": [
-            "dev-build"
-          ]
-        }
+        "expectedLoad": true
       },
       "audit": {
-        "rationale": "Build 是独立宏能力，不要求先调用 dev-workflow。",
-        "minimalCounterexample": "单项改动直接 dev-implement。",
-        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+        "rationale": "多工作项到独立审查需要协调责任。",
+        "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
+        "minimalCounterexample": "只要求完成一个已分配单元且无需总体接纳时使用实现能力即可。"
       }
     },
     {
@@ -49,17 +47,13 @@
         "boundary"
       ],
       "input": {
-        "query": "改这个明确的小函数并运行测试即可。",
-        "expected": {
-          "loadedSkills": [
-            "dev-implement"
-          ]
-        }
+        "query": "把 README 标题“设置”改成“团队设置”，只有这个已指定替换。",
+        "expectedLoad": false
       },
       "audit": {
-        "rationale": "小项不需要Build宏。",
-        "minimalCounterexample": "用户要求完整协调时才Build。",
-        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+        "rationale": "普通机械编辑不需要 Build 宏；不强制加载 Implement。",
+        "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
+        "minimalCounterexample": "用户同时明确委托整套交付和独立 Review，则可由 Build 接管后直接改动。"
       }
     },
     {
@@ -70,14 +64,28 @@
       ],
       "input": {
         "query": "帮我讨论是否值得使用子代理，不要调度或实施。",
-        "expected": {
-          "loadedSkills": []
-        }
+        "expectedLoad": false
       },
       "audit": {
-        "rationale": "仅讨论不触发执行技能。",
-        "minimalCounterexample": "请求按已批准工作图实际执行时可触发。",
-        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+        "rationale": "仅讨论执行方式，不启动实施闭环。",
+        "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
+        "minimalCounterexample": "用户要求实际组织已批准工作项时应加载。"
+      }
+    },
+    {
+      "id": "explicit_small_delivery",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-build 完成这个小改动并组织实际验证和最终独立 Review；任务无需分解。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "完整交付责任由用户明确交给 Build，内部可直接完成机械修改。",
+        "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
+        "minimalCounterexample": "仅要求改动而没有协调或正式交付需求时无需宏。"
       }
     }
   ]

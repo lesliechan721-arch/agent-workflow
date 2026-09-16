@@ -35,6 +35,84 @@ function hasTerminalResult(call) {
     status && typeof status === 'object' && typeof status.completed === 'string');
 }
 
+function stringValues(...values) {
+  const strings = new Set();
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        if (typeof entry === 'string' && entry.trim() !== '') strings.add(entry.trim());
+      }
+    } else if (typeof value === 'string' && value.trim() !== '') {
+      strings.add(value.trim());
+    }
+  }
+  return strings;
+}
+
+function spawnedTarget(call, index) {
+  return {
+    index,
+    threadIds: stringValues(
+      call?.linked_thread_id,
+      call?.output?.agent_id,
+      call?.output?.agentId,
+    ),
+    names: stringValues(call?.arguments?.task_name, call?.output?.task_name),
+  };
+}
+
+function terminalTargetReferences(call) {
+  if (call?.tool === 'agent_message' && call.output?.message_type === 'FINAL_ANSWER') {
+    return stringValues(call.linked_thread_id);
+  }
+  if (
+    call?.tool !== 'wait_agent' ||
+    !call.output?.status ||
+    typeof call.output.status !== 'object' ||
+    Array.isArray(call.output.status)
+  ) {
+    return new Set();
+  }
+  return stringValues(...Object.entries(call.output.status).flatMap(([target, status]) =>
+    status && typeof status === 'object' && typeof status.completed === 'string'
+      ? [target]
+      : []));
+}
+
+function waitTargetReferences(call) {
+  const statusTargets = call?.output?.status && typeof call.output.status === 'object'
+    && !Array.isArray(call.output.status)
+    ? Object.keys(call.output.status)
+    : [];
+  return stringValues(
+    call?.linked_thread_id,
+    call?.arguments?.receiver_thread_ids,
+    statusTargets,
+  );
+}
+
+function exactTargetMatch(target, reference) {
+  return target.threadIds.has(reference) || target.names.has(reference);
+}
+
+function resolveReferences(references, spawnedTargets, match = exactTargetMatch) {
+  const targets = new Map();
+  const missing = [];
+  const ambiguous = [];
+  for (const reference of references) {
+    const matches = spawnedTargets.filter((target) => match(target, reference));
+    if (matches.length === 0) missing.push(reference);
+    else if (matches.length > 1) ambiguous.push(reference);
+    else targets.set(matches[0].index, matches[0]);
+  }
+  return {
+    targets: [...targets.values()],
+    missing,
+    ambiguous,
+    valid: references.size > 0 && missing.length === 0 && ambiguous.length === 0,
+  };
+}
+
 export function evaluateLifecycleTimeline(calls, expected) {
   const timeline = Array.isArray(calls) ? calls : [];
   const assertions = [];
@@ -48,6 +126,33 @@ export function evaluateLifecycleTimeline(calls, expected) {
   const resultIndexes = timeline.flatMap(
     (call, index) => hasTerminalResult(call) ? [index] : [],
   );
+  const spawnedTargets = spawnIndexes.map((index) => spawnedTarget(timeline[index], index));
+  const terminalTargets = resultIndexes.map((index) => {
+    const resolution = resolveReferences(
+      terminalTargetReferences(timeline[index]),
+      spawnedTargets,
+    );
+    return {
+      index,
+      targets: resolution.valid ? resolution.targets : [],
+    };
+  });
+  const targetFinishedBefore = (target, index) => terminalTargets.some((result) =>
+    result.index < index && result.targets.some((candidate) => candidate.index === target.index));
+  const waitTargets = new Map(waitIndexes.map((index) => {
+    const references = waitTargetReferences(timeline[index]);
+    if (references.size > 0) {
+      return [index, resolveReferences(references, spawnedTargets)];
+    }
+    const pending = spawnedTargets.filter((target) =>
+      target.index < index && !targetFinishedBefore(target, index));
+    return [index, {
+      targets: pending.length === 1 ? pending : [],
+      missing: pending.length === 1 ? [] : ['wait_target'],
+      ambiguous: [],
+      valid: pending.length === 1,
+    }];
+  }));
   const firstSpawn = spawnIndexes[0];
   const firstWait = waitIndexes.find((index) => index > firstSpawn);
   const lastResult = resultIndexes.at(-1);
@@ -73,8 +178,23 @@ export function evaluateLifecycleTimeline(calls, expected) {
   );
   const timedOutWaits = waitIndexes.filter((index) => waitTimedOut(timeline[index]));
   const timeoutObserved = timedOutWaits.length > 0;
-  const timeoutFollowedByWait = timeoutObserved
-    ? timedOutWaits.every((index) => waitIndexes.some((later) => later > index))
+  const timeoutChecks = timedOutWaits.map((index) => {
+    const resolution = waitTargets.get(index);
+    const continued = resolution?.valid === true && resolution.targets.every((target) =>
+      terminalTargets.some((result) =>
+        result.index > index && result.targets.some((candidate) => candidate.index === target.index)) ||
+      waitIndexes.some((later) => later > index && waitTargets.get(later)?.valid === true
+        && waitTargets.get(later).targets.some((candidate) => candidate.index === target.index)));
+    return {
+      index,
+      targetSpawnIndexes: resolution?.targets.map((target) => target.index) ?? [],
+      missing: resolution?.missing ?? ['wait_target'],
+      ambiguous: resolution?.ambiguous ?? [],
+      continued,
+    };
+  });
+  const timeoutFollowedByProgress = timeoutObserved
+    ? timeoutChecks.every((check) => check.continued)
     : expected.require_timeout !== true;
   add(
     'timeout_observed',
@@ -82,21 +202,54 @@ export function evaluateLifecycleTimeline(calls, expected) {
     `required=${expected.require_timeout === true} timed_out=${JSON.stringify(timedOutWaits)}`,
   );
   add(
-    'timeout_followed_by_wait',
-    timeoutFollowedByWait,
-    `required=${expected.require_timeout === true} timed_out=${JSON.stringify(timedOutWaits)} waits=${JSON.stringify(waitIndexes)}`,
+    'timeout_followed_by_progress',
+    timeoutFollowedByProgress,
+    JSON.stringify(timeoutChecks),
   );
   add(
     'terminal_result_observed',
     Number.isInteger(lastResult) && lastResult > firstWait,
     `result=${lastResult ?? 'missing'}`,
   );
+  const cleanupChecks = cleanupIndexes.map((index) => {
+    const call = timeline[index];
+    const threadReferences = stringValues(
+      call?.linked_thread_id,
+      call?.arguments?.receiver_thread_ids,
+    );
+    const nameReferences = stringValues(call?.arguments?.target);
+    const threadResolution = resolveReferences(threadReferences, spawnedTargets);
+    const nameResolution = resolveReferences(nameReferences, spawnedTargets);
+    const targets = new Map([
+      ...threadResolution.targets,
+      ...nameResolution.targets,
+    ].map((target) => [target.index, target]));
+    const missing = [...threadResolution.missing, ...nameResolution.missing];
+    const ambiguous = [...threadResolution.ambiguous, ...nameResolution.ambiguous];
+    const referencesPresent = threadReferences.size > 0 || nameReferences.size > 0;
+    const referenceConflict = threadReferences.size > 0 && nameReferences.size > 0
+      && (threadResolution.targets.length !== nameResolution.targets.length
+        || threadResolution.targets.some((target) =>
+          !nameResolution.targets.some((candidate) => candidate.index === target.index)));
+    const terminalMissing = [...targets.values()].filter((target) =>
+      !targetFinishedBefore(target, index));
+    let reason = 'ok';
+    if (!referencesPresent) reason = 'cleanup_target_missing';
+    else if (missing.length > 0) reason = 'cleanup_target_not_spawned';
+    else if (ambiguous.length > 0 || referenceConflict) reason = 'cleanup_target_ambiguous';
+    else if (terminalMissing.length > 0) reason = 'target_terminal_result_missing';
+    return {
+      index,
+      target: call?.arguments?.target ?? call?.arguments?.receiver_thread_ids ?? null,
+      matchingSpawnIndexes: [...targets.keys()],
+      terminalMissingSpawnIndexes: terminalMissing.map((target) => target.index),
+      reason,
+    };
+  });
   add(
     'cleanup_after_result',
-    cleanupIndexes.every(
-      (index) => Number.isInteger(lastResult) && index > lastResult,
-    ),
-    `cleanup=${JSON.stringify(cleanupIndexes)} result=${lastResult ?? 'missing'}`,
+    cleanupChecks.every((check) => check.reason === 'ok'),
+    JSON.stringify(cleanupChecks),
   );
   return { passed: assertions.every((entry) => entry.passed), assertions };
 }
