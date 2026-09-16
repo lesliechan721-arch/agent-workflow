@@ -38,6 +38,20 @@
       "releaseSplits": [
         "validation"
       ]
+    },
+    {
+      "id": "source-fidelity",
+      "kind": "conversation",
+      "cases": "source-fidelity-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 600000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }

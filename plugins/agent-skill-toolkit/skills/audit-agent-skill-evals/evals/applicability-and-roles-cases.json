@@ -1,0 +1,169 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "audit-agent-skill-evals",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "检验任务适用、独立角色、领域资料和证据边界；同时覆盖问题版本和合理反例，分别解释漏报与过度修正。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "audit-agent-count-needs-role-premise",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读审核 cases.json 的源用例资格与Oracle，不prepare，不运行或签发准入。说明它能支持什么结论。",
+      "assertions": [
+        "指出精确额外spawn断言缺少角色前提；可以补为协调入口用例并增加已合格reviewer对照。",
+        "不一律删除独立性要求，也不将现行约定一致当作所有入口必要性证明。",
+        "保持源审核与真实执行、正式准入分开。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "cases.json": "{\"version\": 1, \"suite\": {\"kind\": \"conversation\", \"unitUnderTest\": \"inspect-note\", \"runtime\": {\"isolation\": \"strict\"}}, \"cases\": [{\"id\": \"sample\", \"split\": \"validation\", \"tags\": [], \"prompt\": \"独立审核给定Spec，不修改。\", \"assertions\": [\"必须创建一个新reviewer，当前上下文绝不可直接审核。\"], \"input\": {\"workspaceFiles\": {\"spec.md\": \"# Spec\\n系统正常工作。\\n\", \"requirement.md\": \"# Requirement\\nexpiresAt到达后拒绝请求，UTC边界。\\n\"}}, \"expected\": {\"workspaceUnchanged\": true}}]}\n",
+          "target.md": "目标能力允许合格受委派reviewer直接审查；作者上下文应取得独立判断。该用例没有构造当前为作者或协调者的前提。\n"
+        }
+      },
+      "expected": {
+        "output": "指出精确额外spawn断言缺少角色前提；可以补为协调入口用例并增加已合格reviewer对照。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "这是Oracle适用前提问题，不是无条件“零spawn最好”。",
+        "minimalCounterexample": "用户明确要求额外独立意见且当前是作者协调者时，要求新建有依据。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "audit-explicit-extra-reviewers-respected",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读审核 cases.json，role-setup.md是此源设计用例明确前提；没有运行trace。",
+      "assertions": [
+        "认可源设计中的两份额外独立意见与明确要求相符，不为减少spawn改成作者自审或一名reviewer。",
+        "数量断言之外仍需要实际结果、只读和输入来源证据；当前不能签执行通过。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "cases.json": "{\"version\": 1, \"suite\": {\"kind\": \"conversation\", \"unitUnderTest\": \"inspect-note\", \"runtime\": {\"isolation\": \"strict\"}}, \"cases\": [{\"id\": \"sample\", \"split\": \"validation\", \"tags\": [], \"prompt\": \"当前是Spec作者协调者，用户明确要求两位新的外部reviewer分别重审两个指定轴。\", \"assertions\": [\"创建两份干净独立review上下文，分别处理指定轴；当前作者不充当其中一轴。\", \"发现边界缺失，保持被审目标不变。\"], \"input\": {\"workspaceFiles\": {\"spec.md\": \"# Spec\\n系统正常工作。\\n\", \"requirement.md\": \"# Requirement\\nexpiresAt到达后拒绝请求，UTC边界。\\n\"}}, \"expected\": {\"workspaceUnchanged\": true}}]}\n",
+          "role-setup.md": "# 准备要求\n真实运行时先在父上下文起草Spec；用户明确要求两个额外独立意见，子代理不继承作者完整历史，只取原始需求和当前目标。此材料仅规定setup，不声称已运行。\n"
+        }
+      },
+      "expected": {
+        "output": "认可源设计中的两份额外独立意见与明确要求相符，不为减少spawn改成作者自审或一名reviewer。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "防重复规则不能改变用户明确的证据结构。",
+        "minimalCounterexample": "没有额外意见要求且当前已独立时，不能通用要求同样spawn数量。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "audit-detection-and-fair-baseline",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "审计 study.md 的效果结论，只做源设计检查，保留需要的对照建议。",
+      "assertions": [
+        "识别悬空调用和必要资料不等的baseline缺陷，不把A失败计为Skill增益。",
+        "识别修复/降级与自主检出不等价；建议中性检出输入和等价正确反例。",
+        "没有结果不宣布哪版有效，也不为测试扩大生产职责。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "study.md": "# A/B设计\nA移除review-helper，但仍让agent首先调用review-helper；A也拿不到B可读的accepted.md。B可正常读该文件。\n检出能力测试是明确告诉agent“桌面顺序错了，请修复”，以及无页面时回答资料不足。计划把通过率当作“自主检出收益”。尚无运行。\n"
+        }
+      },
+      "expected": {
+        "output": "识别悬空调用和必要资料不等的baseline缺陷，不把A失败计为Skill增益。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "公平对照与能力直接验证需同时成立。",
+        "minimalCounterexample": "输入材料、权限、工具相等且中性检出已运行时可以解释范围内增益。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "audit-agent-id-is-not-context-evidence",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读检查 run-summary.md 对独立性的主张；不要从摘要推断未提供的执行事实。",
+      "assertions": [
+        "区分新Agent ID与独立判断证据；继承作者历史需要进一步核对，当前主张超过材料。",
+        "不虚构递归、通过率或具体偏见已发生；给出上下文构造、分工与实际审查所需证据。",
+        "不要求另建独立性证书来替代真实日志。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "run-summary.md": "# 汇总\n父代理刚写完Spec，创建了agent-2并继承完整作者工作历史。唯一观测是agentId不同；没有消息内容、任务分工或审查结果。报告称已证明独立质量审查。\n"
+        }
+      },
+      "expected": {
+        "output": "区分新Agent ID与独立判断证据；继承作者历史需要进一步核对，当前主张超过材料。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "运行身份不是独立审查的充分证据。",
+        "minimalCounterexample": "可核对的干净输入、独立范围及实际结果可支持该任务的独立性。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "audit-real-format-and-good-control-remain-valid",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读审核 plan.md 与 cases.json 的范围；这是写入公开格式的源设计测试，未执行。",
+      "assertions": [
+        "认可用户格式与明确的parser消费用途，以及没有悬空调用的普通基线设计；不把它当作已验证的消费者集成。",
+        "保留未运行状态；不因没有实际收益值拒绝所有设计或取消真实JSON合同。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "plan.md": "# 公平对照\n两组读取相同需求、公开JSON schema和输入，工具、权限、模型相同。无Skill组普通执行，不要求调用已移除能力。用户明确要求最终JSON供parser消费。结果按字段语义和消费者验证，不按是否加载Skill评分。\n",
+          "cases.json": "{\"version\": 1, \"suite\": {\"kind\": \"conversation\", \"unitUnderTest\": \"format-output\"}, \"cases\": [{\"id\": \"format\", \"split\": \"validation\", \"tags\": [], \"prompt\": \"按schema输出供parser消费的JSON。\", \"assertions\": [\"JSON字段语义满足需求，验证器实际结果正确。\"], \"input\": {\"workspaceFiles\": {\"schema.json\": \"{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"enabled\\\"],\\\"properties\\\":{\\\"enabled\\\":{\\\"type\\\":\\\"boolean\\\"}}}\\n\"}}, \"expected\": {\"workspaceUnchanged\": true}}]}\n"
+        }
+      },
+      "expected": {
+        "output": "认可用户格式与明确的parser消费用途，以及没有悬空调用的普通基线设计；不把它当作已验证的消费者集成。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "与伪结构/不公平baseline形成反例，控制误修。",
+        "minimalCounterexample": "只有自带validator而无用途，或基线缺资料时需重新评价。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    }
+  ]
+}

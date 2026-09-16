@@ -1,0 +1,182 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "author-agent-skill",
+    "participants": [
+      "agent-content"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "检验任务适用、独立角色、领域资料和证据边界；同时覆盖问题版本和合理反例，分别解释漏报与过度修正。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "author-scope-by-value-not-input-label",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "修改 skills/implement-item/SKILL.md 的适用描述与必要正文，使其反映 usage.md 的独立用途。保持现有权限和正式用户调用能力，只修改该文件。",
+      "assertions": [
+        "以受约束工作项、资料核对或有界修复界定默认适用面，同时保留用户显式使用及合理下游调用。",
+        "只改已授权文件，保持实际验证与不可逆操作授权边界。",
+        "将泛化收益留为假设，不宣称普通编码绝无收益，也不靠manual-only改变可调用性。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/implement-item/SKILL.md": "---\nname: implement-item\ndescription: Use for any small request, issue, coding task, or review fix.\n---\n\nRead task constraints and linked specification. Implement the assigned scope. Run relevant tests and report evidence. Other workers own their tasks. Irreversible operations require explicit authorization.\n",
+          "usage.md": "# 实际用途\n为新上下文worker提供实现范围和可访问规格，或修复已分配的review问题。显式用户也可直接使用。普通错字/指定文案编辑通常直接处理，目前没有量化收益数据。\n"
+        }
+      },
+      "expected": {
+        "output": "以受约束工作项、资料核对或有界修复界定默认适用面，同时保留用户显式使用及合理下游调用。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/implement-item/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/implement-item/SKILL.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "作者应由结果与方法价值判断边界，而不是issue等载体。",
+        "minimalCounterexample": "若用户明确要求全项目统一使用且有适用依据，需要评价该政策而非直接删入口。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "author-method-and-delegated-entry",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "按 integration.md 修订 inspect-note 的角色适用行为；方法与当前职责保留，修改限该Skill文件。",
+      "assertions": [
+        "让已经合格且受委派的reviewer直接完成方法，不重建同一目标的下一级reviewer。",
+        "作者或继承作者实质历史的上下文仍需满足独立性，材料与旧finding可作为待核验依据。",
+        "不以主/子身份或产物存在代替独立性判断；保留明确新全面重评要求。",
+        "只在现有Skill内作相关修订，未引入新公开worker技能或固定角色输出协议。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/inspect-note/SKILL.md": "---\nname: inspect-note\ndescription: Review a supplied design note independently.\n---\n\n# Inspect Note\nRead the supplied note and the original requirement. Report evidence-backed omissions without changing the target.\nEvery caller must create a new reviewer, ask it to load inspect-note and wait for its completed review.\n",
+          "integration.md": "# 公开使用方式\n用户可在新会话审查他人资料；作者也会委派一个干净reviewer加载inspect-note；父任务已分配它直接只读完成同一目标。两种入口均需正确执行。另有用户明确要求新的全面独立意见，必须遵守。\n"
+        }
+      },
+      "expected": {
+        "output": "让已经合格且受委派的reviewer直接完成方法，不重建同一目标的下一级reviewer。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/inspect-note/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/inspect-note/SKILL.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "源职责同时支持协调入口和已受委派入口，需要两条可完成路径。",
+        "minimalCounterexample": "纯协调Skill且已有独立执行方法时，不必强迫根Skill承担执行者。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "author-coordinator-keeps-coordinator-scope",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "仅修订 skills/coordinator/SKILL.md 的description，使只讨论方案的请求不启动执行。role.md和worker方法已经明确，保留现有正文。",
+      "assertions": [
+        "description聚焦真实执行协调，保留纯协调职责和现有方法分工。",
+        "不会因独立性标准新增一个假想worker分支或改写权限。",
+        "正文保持不变；不执行目标数据检查或启动子代理，可做局部静态核对。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/coordinator/SKILL.md": "---\nname: coordinator\ndescription: Plan, discuss and execute all data checks.\n---\n\nCoordinate distinct authorized dataset checks. Each worker uses the supplied check-row method. Aggregate actual results. Workers do not load coordinator. Dataset isolation and permissions follow the caller.\n",
+          "role.md": "# Worker\n独立运行check-row验证当前数据集，返回事实，不汇总其它数据集。\n"
+        }
+      },
+      "expected": {
+        "output": "description聚焦真实执行协调，保留纯协调职责和现有方法分工。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/coordinator/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/coordinator/SKILL.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "合法协调Skill无需兼任所有角色。",
+        "minimalCounterexample": "若实际要求worker加载同一文件执行，就应核对其执行方法是否相容。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "author-eval-pair-role-preconditions",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "为 skills/inspect-note/evals 新写 role-cases.json，使用 format-example.json 的SelectedCases v1外形。设计只读源资料推理用例，比较协调者缺少隔离与已经受委派reviewer；当前未提供可执行parser，本次只写待验证源草案，不运行模型或签Audit。",
+      "assertions": [
+        "生成可解析JSON且符合示例根形状的v1源草案，角色前提与不同预期明确；说明当前Selected Cases parser尚未验证，不声称已创建真实隔离。",
+        "对已合格reviewer允许直接完成，对作者协调者仍要求独立判断；不把spawn次数作为唯一质量。",
+        "fixture提供实际note与需求，含可核对缺陷和只读断言。",
+        "只写指定用例；不生成passing Audit或模型结果。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/inspect-note/SKILL.md": "---\nname: inspect-note\ndescription: Review a supplied design note independently.\n---\n\n# Inspect Note\nUse the current task assignment and provenance to identify scope. If assigned as a qualified reviewer for this request, directly compare the note with original requirements and report evidence-backed omissions. A coordinating context fills missing independent review capacity. An author context obtains an independent judgment; current-round qualified reviewers execute their assigned work. Follow any explicit request for a new comprehensive opinion.\n",
+          "format-example.json": "{\"version\": 1, \"suite\": {\"kind\": \"conversation\", \"unitUnderTest\": \"inspect-note\", \"runtime\": {\"isolation\": \"strict\"}}, \"cases\": [{\"id\": \"example\", \"split\": \"validation\", \"tags\": [], \"prompt\": \"只读比较给定note和requirement。\", \"assertions\": [\"报告有依据的缺失，目标不变。\"], \"input\": {\"workspaceFiles\": {\"note.md\": \"# Note\\n\", \"requirement.md\": \"# Requirement\\n\"}}, \"expected\": {\"workspaceUnchanged\": true}}]}\n"
+        }
+      },
+      "expected": {
+        "output": "生成可解析JSON且符合示例根形状的v1源草案，角色前提与不同预期明确；说明当前Selected Cases parser尚未验证，不声称已创建真实隔离。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/inspect-note/evals/role-cases.json"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/inspect-note/evals/role-cases.json",
+            "exists": true,
+            "json": {
+              "version": 1,
+              "suite": {
+                "kind": "conversation",
+                "unitUnderTest": "inspect-note"
+              }
+            }
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "作者需把角色条件落实到Oracle和fixture。",
+        "minimalCounterexample": "验证真实独立性时须另用Engine建立历史与上下文，不能只声明身份。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    }
+  ]
+}
