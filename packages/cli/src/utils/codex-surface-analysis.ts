@@ -35,6 +35,7 @@ export interface CodexSurfaceComponent {
   owner: 'codex-native' | 'aw';
   scopes: Scope[];
   dynamic: boolean;
+  refreshKeys?: string[];
   name?: string;
 }
 
@@ -245,6 +246,7 @@ export function analyzeCodexSurface(
         owner: 'codex-native',
         scopes: [...target.scopes],
         dynamic: true,
+        refreshKeys: [...target.refreshKeys],
         name: target.skillKey,
       });
     } else {
@@ -254,6 +256,7 @@ export function analyzeCodexSurface(
         kind,
         scopes: [...target.scopes],
         dynamic: true,
+        refreshKeys: [...target.refreshKeys],
         name: target.skillKey ?? target.roleKey ?? target.id,
       });
     }

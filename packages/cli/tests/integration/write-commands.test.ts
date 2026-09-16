@@ -13156,6 +13156,137 @@ describe('five namespaced write commands', () => {
     expect(registeredVersion).toBe('2.0.0');
   }, 30_000);
 
+  it('refreshes an existing config-backed Codex role through sync and config apply', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-role-refresh-source');
+    await fs.outputFile(path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'render.mjs'), [
+      'import { readFile } from "node:fs/promises";',
+      'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'const effort = context.config.values.effort ?? "medium";',
+      'console.log(JSON.stringify({ version: 2, artifacts: [{',
+      '  id: "helper-role", kind: "codexRole", platform: "codex",',
+      '  target: "codex.agentRole", state: "present", roleKey: "helper",',
+      '  refreshKeys: ["effort"], content: {',
+      '    registration: { description: "Helper role." },',
+      '    roleFile: { name: "helper", description: "Helper role.",',
+      '      developer_instructions: "Help.", model_reasoning_effort: effort }',
+      '  }',
+      '}] }));',
+    ].join('\n'));
+    await Promise.all([
+      fs.outputFile(
+        path.join(sourceRoot, 'plugins', 'demo', 'skills', 'demo-native', 'SKILL.md'),
+        '---\nname: demo-native\ndescription: Native fixture.\n---\n',
+      ),
+      fs.outputFile(
+        path.join(
+          sourceRoot,
+          'plugins',
+          'demo',
+          'skills',
+          'demo-native',
+          'agents',
+          'openai.yaml',
+        ),
+        'policy:\n  allow_implicit_invocation: true\n',
+      ),
+    ]);
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.skills = './skills';
+      manifest.config = {
+        fields: {
+          effort: {
+            type: 'string',
+            default: 'medium',
+            choices: {
+              allowCustom: false,
+              presets: [
+                { id: 'medium', title: 'Medium', value: 'medium' },
+                { id: 'high', title: 'High', value: 'high' },
+                { id: 'xhigh', title: 'Extra high', value: 'xhigh' },
+              ],
+            },
+          },
+        },
+      };
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+      };
+      manifest.artifacts = {
+        targets: [{
+          id: 'helper-role',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.agentRole',
+          states: ['present'],
+          refreshKeys: ['effort'],
+          requiresCodexProjectConfig: true,
+          roleKey: 'helper',
+        }],
+      };
+    });
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const runPublic = async (args: string[]) => {
+      const captured = createCapturedCliIo();
+      const exitCode = await runCli([...args, '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: captured.io,
+        interactive: false,
+        nativeCliRunner: runtime.nativeCliRunner,
+      });
+      return {
+        exitCode,
+        payload: JSON.parse(captured.readStdout()) as Record<string, unknown>,
+      };
+    };
+    const rolePath = path.join(
+      isolation.env.AW_CODEX_HOME!,
+      'agents',
+      'aw-demo-helper.toml',
+    );
+
+    expect(await runPublic([
+      'install', 'team/demo', '--platform', 'codex', '--scope', 'user',
+    ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    await expect(fs.readFile(rolePath, 'utf8'))
+      .resolves.toContain('model_reasoning_effort = "medium"');
+
+    expect(await runPublic([
+      'config', 'set', 'team/demo', 'effort', '--scope', 'user', '--value-json', '"high"',
+    ])).toMatchObject({
+      exitCode: 0,
+      payload: { apply: { state: 'skipped', reason: 'notRequested' } },
+    });
+    await expect(fs.readFile(rolePath, 'utf8'))
+      .resolves.toContain('model_reasoning_effort = "medium"');
+    expect(await runPublic([
+      'sync', 'team/demo', '--platform', 'codex', '--scope', 'user',
+    ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    await expect(fs.readFile(rolePath, 'utf8'))
+      .resolves.toContain('model_reasoning_effort = "high"');
+
+    expect(await runPublic([
+      'config', 'set', 'team/demo', 'effort', '--scope', 'user',
+      '--value-json', '"xhigh"', '--apply',
+    ])).toMatchObject({
+      exitCode: 0,
+      payload: { apply: { state: 'succeeded' } },
+    });
+    await expect(fs.readFile(rolePath, 'utf8'))
+      .resolves.toContain('model_reasoning_effort = "xhigh"');
+  });
+
   it('replays public namespaced config writes and keeps the store when rendering fails', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-replay-source');

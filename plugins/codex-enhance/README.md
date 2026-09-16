@@ -43,7 +43,7 @@ aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-
 
 两个 Skill 的正文固定，共享在同一个 canonical Codex native 插件中。当前项目可以单独启用该插件，但 project profile 只改变当前项目的 Agent role，不改变共享 Skill 的内容。模型和推理强度由各 role 的 profile 控制，不写入共享 Skill 正文。高难档默认使用 `gpt-6-astra / xhigh`；已有显式 profile 仍优先于默认值。
 
-已有可见安装时，只保存个人默认会让现有 native 插件保持不变，并显示为待同步。当前没有可见安装时，只保存设置，不产生 render drift。使用 `--apply --yes` 或之后运行同步，可重新生成 native 插件，同时保留已有的 user 和 project activation。
+已有可见安装时，只保存个人默认会让现有 native 插件和 AW extension 保持不变。当前没有可见安装时，只保存设置，不产生 render drift。使用 `--apply --yes` 或之后运行同步，可重新生成相关输出，同时保留已有的 user 和 project activation。
 
 旧 store 和旧配置 key 不会自动迁移或删除。升级后，按需设置 profile；已删除的等待字段会被忽略，可用 `aw config unset` 单独清理。无效配置层使用显式 config reset 恢复，旧的 AW-owned 输出可通过 cleanup 后重新安装恢复。
 

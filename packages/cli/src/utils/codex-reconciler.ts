@@ -269,9 +269,13 @@ function addExtensionActions(options: {
         );
       }
       const desired = scopes.includes(scope) && component.scopes.includes(scope);
+      const refreshOnSync = options.input.operation === 'sync'
+        && component.dynamic
+        && (component.refreshKeys?.length ?? 0) > 0;
       const shouldWrite = desired && (
         state !== 'present'
         || options.input.operation === 'reinstall'
+        || refreshOnSync
       );
       if (shouldWrite) {
         options.writes.push({
