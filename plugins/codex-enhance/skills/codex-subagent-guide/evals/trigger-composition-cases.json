@@ -59,6 +59,68 @@
       }
     },
     {
+      "id": "partial_model_requirement_uses_guide",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "query": "$delegation-model-requirement 审核 changes/review.diff 并报告缺陷和风险。",
+        "expected": {
+          "loadedSkills": [
+            "codex-subagent-guide"
+          ]
+        },
+        "shouldSpawnAgent": true,
+        "workspaceFixture": "partial_requirement_skills"
+      },
+      "audit": {
+        "rationale": "上游 Skill 只指定模型，没有负责其它调度与生命周期；guide 必须保留模型要求并补齐未指定项。",
+        "minimalCounterexample": "如果上游 Skill 同时完整负责 role、spawn、context、waiting、recovery 和 cleanup，则 guide 不应叠加。"
+      }
+    },
+    {
+      "id": "partial_context_requirement_uses_guide",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "query": "$delegation-context-requirement 读取 src/simple.ts 并报告 retryLimit。",
+        "expected": {
+          "loadedSkills": [
+            "codex-subagent-guide"
+          ]
+        },
+        "shouldSpawnAgent": true,
+        "workspaceFixture": "partial_requirement_skills"
+      },
+      "audit": {
+        "rationale": "上游 Skill 只指定上下文继承，没有负责其它调度与生命周期；guide 必须保留继承要求并补齐未指定项。",
+        "minimalCounterexample": "如果上游 Skill 已完整负责当前委派的全部调度和生命周期，则 guide 不应叠加。"
+      }
+    },
+    {
+      "id": "specialized_owner_executes_without_guide",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "input": {
+        "query": "$delegation-active-lifecycle-owner 实际执行本次委派：读取 src/simple.ts 并报告 retryLimit。",
+        "expected": {
+          "loadedSkills": []
+        },
+        "shouldSpawnAgent": true,
+        "workspaceFixture": "active_lifecycle_skill"
+      },
+      "audit": {
+        "rationale": "专用 Skill 已完整负责当前委派并要求实际执行；guide 和 explore 都不得叠加，但专用流程仍必须启动代理。",
+        "minimalCounterexample": "如果上游 Skill 只给出模型或上下文要求而没有管理完整生命周期，则应加载 guide。"
+      }
+    },
+    {
       "id": "validation_specialized_workflow_owner",
       "split": "validation",
       "tags": [

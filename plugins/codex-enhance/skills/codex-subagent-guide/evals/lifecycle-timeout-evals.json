@@ -21,7 +21,7 @@
         "profiles": [
           "project-default"
         ],
-        "prompt": "$codex-subagent-guide 委派已获准。请启动一个 simple 子代理，让它运行 node scripts/delayed-simple.mjs，并原样报告该命令的 stdout；不要直接读取 src/simple.ts 来替代该命令。当前没有其它本地工作。你必须等待子代理的真实终态结果后再回答；首次等待超时不等于失败，必须继续等待。只有当前 schema 提供清理工具时，才在结果已保留后清理。不要修改文件。 本次任务显式指定每次响应式等待窗口为 1 分钟。"
+        "prompt": "$codex-subagent-guide 委派已获准。请启动一个 simple 子代理，让它运行 node scripts/delayed-simple.mjs，并原样报告该命令的 stdout；不要直接读取 src/simple.ts 来替代该命令。当前没有其它本地工作。你必须等待子代理的真实终态结果后再回答；首次等待超时不等于失败，结果仍未到达时必须继续等待。只有当前 schema 提供清理工具时，才在结果已保留后清理。不要修改文件。 本次任务显式指定每次响应式等待窗口为 1 分钟。"
       },
       "expected": {
         "criteria": {
@@ -31,7 +31,7 @@
         }
       },
       "audit": {
-        "rationale": "首次 60 秒 wait 必须真实超时；父代理不得把 timeout 当作失败，必须再次 wait 到真实终态，清理只能位于结果之后。",
+        "rationale": "首次 60 秒 wait 必须真实超时；父代理不得把 timeout 当作失败。终态未到达时必须再次 wait，终态通知已经到达时可直接处理；清理只能位于该目标的终态之后。",
         "minimalCounterexample": "如果 helper 在 60 秒内完成，则该 case 只能验证正常终态路径，不得要求或声称观察到 timeout。"
       }
     }

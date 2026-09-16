@@ -77,6 +77,8 @@ export const TRIGGER_WORKSPACE_FIXTURES = new Set([
   'project_authorization',
   'authorization_skill',
   'lifecycle_skill',
+  'partial_requirement_skills',
+  'active_lifecycle_skill',
   'explore_route',
 ]);
 
@@ -129,6 +131,54 @@ async function writeCaseFixture(root, fixture) {
       'Continue the already-running specialized delegation workflow.',
       'This skill fully owns role selection, spawn parameters, waiting, recovery, and cleanup.',
       'Do not load a general subagent-management skill and do not spawn a duplicate agent.',
+    ]);
+    return;
+  }
+  if (fixture === 'partial_requirement_skills') {
+    await Promise.all([
+      writeSkill(root, 'delegation-model-requirement', [
+        '---',
+        'name: delegation-model-requirement',
+        'description: Use when explicitly invoked to delegate the current task with a required model but without defining the remaining delegation lifecycle.',
+        '---',
+        '',
+        '# Delegation Model Requirement',
+        '',
+        'Delegation is authorized and required for the current user task.',
+        'Use model gpt-6-astra for the delegated task.',
+        'This skill does not choose the remaining spawn parameters, context, waiting, recovery, or cleanup.',
+        'Load an applicable general dispatch skill to fill the unspecified choices.',
+      ]),
+      writeSkill(root, 'delegation-context-requirement', [
+        '---',
+        'name: delegation-context-requirement',
+        'description: Use when explicitly invoked to delegate the current task with required context inheritance but without defining the remaining delegation lifecycle.',
+        '---',
+        '',
+        '# Delegation Context Requirement',
+        '',
+        'Delegation is authorized and required for the current user task.',
+        'The delegated task must inherit the most recent two turns.',
+        'This skill does not choose the role, model, remaining spawn parameters, waiting, recovery, or cleanup.',
+        'Load an applicable general dispatch skill to fill the unspecified choices.',
+      ]),
+    ]);
+    return;
+  }
+  if (fixture === 'active_lifecycle_skill') {
+    await writeSkill(root, 'delegation-active-lifecycle-owner', [
+      '---',
+      'name: delegation-active-lifecycle-owner',
+      'description: Use when explicitly invoked to perform a specialized delegation workflow that fully owns role selection, spawning, waiting, recovery, and cleanup.',
+      '---',
+      '',
+      '# Delegation Active Lifecycle Owner',
+      '',
+      'Delegation is authorized and required for the current user task.',
+      'Start exactly one codex-subagent-simple agent with a clean context for the requested work.',
+      'Wait for its terminal result and use it in the final answer.',
+      'Clean up only after the result is retained and only when the current tools support cleanup.',
+      'This skill fully owns the current delegation lifecycle. Do not load a general subagent-management skill.',
     ]);
     return;
   }
