@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.16",
+  "catalogVersion": "0.1.0-beta.17",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "cedde34ca13631baa46aa1de3d007cd6828cba22"
+    "sourceHead": "0af4544954373cf32441cd57e540d309ef63cfa2"
   },
   "entries": [
     {
@@ -79,7 +79,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.4",
+      "version": "0.1.0-beta.5",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -92,9 +92,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:f94d8d7c33dc9d20d1a00c75c4a42e8c6758ccccd95bbe20b985d2f237e73274",
-      "manifestDigest": "sha256:f162faca038f67d9298ca4ab52758c100d9084cf7c57d54728fd709b99027ce9",
-      "contentDigest": "sha256:ba287113fd1a369141e4059d7a0762e4dda9f315a010bb10141d1dcbb7e5d9b5"
+      "artifactDigest": "sha256:6d57698da6eae8ef4762521756c916120e8fa76526cb66c4425f6189f22f5a18",
+      "manifestDigest": "sha256:fa6114fa8edefd4c1abc49fc4f2480be0b2d08f6ea14c4c1b88cbc86a9d5d47a",
+      "contentDigest": "sha256:d4a626de9acc285bf2bbdafad53d4921106d05a82939bee4fe0da4aac2a15c0c"
     },
     {
       "name": "ask-me",
@@ -113,7 +113,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.5",
+      "version": "0.1.0-beta.6",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -124,9 +124,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:4262534564fb8d4c2b3a2557845113667df9867c61f94f0aecdc9661fb7a0b10",
-      "manifestDigest": "sha256:15e3bef09d7006286648447d9527cdccf9f3a18b72baefb2418b3ac84be02fab",
-      "contentDigest": "sha256:574ccf70e67852d51e5353bc28fd25e92c3e013c5ed39e2af61d4a39b955067e"
+      "artifactDigest": "sha256:ce765ad6869b6167ef5f6b7b65f32e050971adb63e78041ebb9d867815a285dc",
+      "manifestDigest": "sha256:11dba223355d59a2a1d48d7f32ff2c2709a4333bd48fccbd62a2c4a3218891fb",
+      "contentDigest": "sha256:ec92d29277d7a1b80ce0a802c898ca745639ab1600ead548d4294b8e0823dd91"
     },
     {
       "name": "aw-development-toolkit",
@@ -282,7 +282,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.3",
+      "version": "0.1.0-beta.4",
       "dependencies": [
         "ask-me"
       ],
@@ -294,9 +294,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:e9d78e2b0730a66138cdfd0f07525041059a4613eeec32ebea6e7c3c015b94fb",
-      "manifestDigest": "sha256:fab531cae26b8c3b76e50eaead92322b02c028f6c831a40872d9fd1789f88014",
-      "contentDigest": "sha256:80679aaefdc1a3d8b53555de25e0fa64f24e742109718e53a8c3022b7e71af30"
+      "artifactDigest": "sha256:c0e296d51c0842e359875b87ac94b0a492c917e0a00887a77ff370b191f8a2ec",
+      "manifestDigest": "sha256:b5ae2e45feb75a2d8a61fad01be6c931adebf5c4c7b4866b317f493f96f89f12",
+      "contentDigest": "sha256:fdf5249791ef1fc78488f2f3cf824af94dd1c4e9bb53ebad504a5e9d3c34ffa4"
     },
     {
       "name": "git-toolkit",

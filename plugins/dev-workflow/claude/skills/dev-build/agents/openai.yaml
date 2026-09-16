@@ -1,6 +1,6 @@
 interface:
-  display_name: "实施协调"
-  short_description: "准备可派发任务，协调实施、集成验证、双轴独立审查和授权范围内的修复"
+  display_name: dev-build
+  short_description: "协调多工作项或完整交付，按需组织实施、集成验证和独立审查"
   default_prompt: "使用 $dev-build 处理当前请求，遵循实际范围、资料和授权。"
 policy:
   allow_implicit_invocation: true

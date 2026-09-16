@@ -1,6 +1,6 @@
 {
   "name": "dev-workflow",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "description": "按共识、风险和记录需求组织开发，并以独立工作分解、实现协调及审查完成交付。",
   "interface": {
     "displayName": "Dev Workflow",
