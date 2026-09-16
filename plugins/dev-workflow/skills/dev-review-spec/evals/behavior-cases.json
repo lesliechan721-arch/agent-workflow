@@ -21,9 +21,9 @@
         "representative",
         "independent-spec-review"
       ],
-      "prompt": "正式审查 docs/specs/session-expiry.md，判断是否可以批准。使用独立 reviewer，不要修改文件。",
+      "prompt": "本用例在新的独立审查上下文中开始：当前未参与文档起草或修订，也未继承作者工作历史。正式审查 docs/specs/session-expiry.md，判断是否可以批准。使用独立 reviewer，不要修改文件。",
       "assertions": [
-        "trace 创建一个 fresh 独立 reviewer；当前上下文不直接完成正式审查",
+        "当前合格独立上下文直接完成审查，没有仅因加载 Skill 再转派相同职责；缺少 spawn 工具不妨碍这次 Spec 审查。",
         "报告当前规格的实质问题、版本、来源和覆盖限制，不要求 Assurance 或固定状态词。",
         "在同一轮指出可验证验收缺失，以及文件步骤和模型状态流程属于过度规定",
         "每个 blocker 说明材料影响和可验证关闭条件，偏好性建议与 blocker 分开",
@@ -36,7 +36,7 @@
         }
       },
       "expected": {
-        "output": "由 fresh reviewer 核对当前 Spec，指出可观察验收缺口、无依据的实施步骤和状态流程，并说明材料影响与关闭条件；必要来源或独立审查能力不足时明确覆盖限制。默认对话报告，不修改文件。",
+        "output": "由当前已合格的独立 reviewer 直接核对当前 Spec，指出可观察验收缺口、无依据的实施步骤和状态流程，并说明材料影响与关闭条件；必要来源或独立审查能力不足时明确覆盖限制。默认对话报告，不修改文件。",
         "workspaceUnchanged": true,
         "artifacts": [
           {
@@ -57,9 +57,9 @@
         "representative",
         "spec-rereview"
       ],
-      "prompt": "docs/dev/invite-expiry/spec.md 已根据上一次 blocked Review 修订。重新正式审查完整 Spec，覆盖当前 spec-review.md。不要修改 Spec。",
+      "prompt": "你已被安排为本轮新的全面复审者。本用例在新的独立审查上下文中开始：当前未参与文档起草或修订，也未继承作者工作历史。docs/dev/invite-expiry/spec.md 已根据上一次 blocked Review 修订。重新正式审查完整 Spec，覆盖当前 spec-review.md。不要修改 Spec。",
       "assertions": [
-        "trace 读取 references/rereview.md 并创建新的 fresh reviewer",
+        "当前就是本轮安排的新独立 reviewer；读取 references/rereview.md 后直接完整复审，不再次创建下一级 reviewer。",
         "重新检查决策完整性、可实现性、可验证性和边界纪律",
         "目标是当前完整 Spec，而不只是旧 finding",
         "上一份报告中的文件清单和 SessionStateMachine 偏好不升级为 blocker",
@@ -74,7 +74,7 @@
         }
       },
       "expected": {
-        "output": "由新的 fresh reviewer 重新审查当前完整 Spec，记录旧问题的关闭证据和当前判断。无实质问题且覆盖充分时报告无阻塞；证据或独立审查能力不足时披露限制。按请求保存报告，不把文件清单、额外状态机或更简洁写法升级为 blocker。",
+        "output": "由已安排的本轮独立 reviewer 直接重新审查当前完整 Spec，记录旧问题的关闭证据和当前判断。无实质问题且覆盖充分时报告无阻塞；证据或独立审查能力不足时披露限制。按请求保存报告，不把文件清单、额外状态机或更简洁写法升级为 blocker。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/dev/invite-expiry/spec-review.md"
@@ -94,9 +94,9 @@
         "boundary",
         "spec-rereview-blocker-threshold"
       ],
-      "prompt": "重新正式审查 docs/dev/session-expiry/spec.md。上一轮材料 blocker 已修复；覆盖当前 spec-review.md，不要修改 Spec。",
+      "prompt": "你已被安排为本轮新的全面复审者。本用例在新的独立审查上下文中开始：当前未参与文档起草或修订，也未继承作者工作历史。重新正式审查 docs/dev/session-expiry/spec.md。上一轮材料 blocker 已修复；覆盖当前 spec-review.md，不要修改 Spec。",
       "assertions": [
-        "trace 读取 references/rereview.md 并创建新的 fresh reviewer",
+        "当前就是本轮安排的新独立 reviewer；读取 references/rereview.md 后直接完整复审，不再次创建下一级 reviewer。",
         "旧 blocker 的关闭由当前 Acceptance 证据确认",
         "精确文件清单、SessionStateMachine 或更优写法不作为新 blocker",
         "若提及这些偏好，只能放入非阻塞建议",
@@ -110,7 +110,7 @@
         }
       },
       "expected": {
-        "output": "由新的 fresh reviewer 重新审查当前完整 Spec，记录旧问题的关闭证据和当前判断。无实质问题且覆盖充分时报告无阻塞；证据或独立审查能力不足时披露限制。按请求保存报告，不把文件清单、额外状态机或更简洁写法升级为 blocker。",
+        "output": "由已安排的本轮独立 reviewer 直接重新审查当前完整 Spec，记录旧问题的关闭证据和当前判断。无实质问题且覆盖充分时报告无阻塞；证据或独立审查能力不足时披露限制。按请求保存报告，不把文件清单、额外状态机或更简洁写法升级为 blocker。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/dev/session-expiry/spec-review.md"

@@ -1,6 +1,6 @@
 interface:
-  display_name: "代码审查"
-  short_description: "以两个独立上下文审查需求与设计符合度、工程质量，并报告实际证据"
+  display_name: dev-review-code
+  short_description: "按当前职责执行独立审查，完整审查汇总两轴证据，单轴返回实际范围"
   default_prompt: "使用 $dev-review-code 处理当前请求，遵循实际范围、资料和授权。"
 policy:
   allow_implicit_invocation: true

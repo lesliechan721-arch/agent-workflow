@@ -23,7 +23,7 @@
       ],
       "prompt": "以 Standard 保障正式审查当前邀请接受实现是否符合 docs/specs/invitation-expiry.md，并检查工程质量。不要直接修复文件。",
       "assertions": [
-        "有可用独立审查能力时，两个 fresh reviewer 分别主责需求与设计符合度、工程质量；可并行或顺序执行。",
+        "完整结果由两个合格独立上下文分轴形成。当前若是独立审查上下文，可自行先完成一轴并补另一轴，也可只协调两个 reviewer；已有本轮安排可复用，轴 reviewer 加载本 Skill 后直接执行分配范围。",
         "分别说明两轴的实际问题、当前范围、版本、依据和覆盖限制，不要求固定报告字段或状态词。",
         "Spec fidelity 轴指出接受入口没有过期判断",
         "Engineering quality 轴指出缺少保护过期边界行为的测试",
@@ -41,7 +41,7 @@
         }
       },
       "expected": {
-        "output": "报告过期检查和相关测试缺口，分别说明两轴证据与可验证关闭条件。有独立审查能力时由两个 fresh reviewer 完成；能力不足时披露限制，不宣称正式审查完成。默认对话交付且不修改文件。",
+        "output": "报告过期检查和相关测试缺口，分别说明两轴证据与可验证关闭条件。有独立审查能力时由当前已满足要求的两份独立判断覆盖；能力不足时披露限制，不宣称正式审查完成。默认对话交付且不修改文件。",
         "workspaceUnchanged": true
       }
     },
@@ -54,7 +54,7 @@
       ],
       "prompt": "以 Assured 保障正式审查当前邀请接受实现是否符合 docs/specs/invitation-expiry.md，并检查工程质量。使用两个独立 reviewer，不要直接修复文件。",
       "assertions": [
-        "有可用独立审查能力时，两个 fresh reviewer 分别主责需求与设计符合度、工程质量；可并行或顺序执行。",
+        "完整结果由两个合格独立上下文分轴形成。当前若是独立审查上下文，可自行先完成一轴并补另一轴，也可只协调两个 reviewer；已有本轮安排可复用，轴 reviewer 加载本 Skill 后直接执行分配范围。",
         "分别说明两轴的实际问题、当前范围、版本、依据和覆盖限制，不要求固定报告字段或状态词。",
         "Spec fidelity 轴指出接受入口没有过期判断",
         "Engineering quality 轴指出缺少保护过期边界行为的测试",
@@ -72,7 +72,7 @@
         }
       },
       "expected": {
-        "output": "报告过期检查和相关测试缺口，分别说明两轴证据与可验证关闭条件。有独立审查能力时由两个 fresh reviewer 完成；能力不足时披露限制，不宣称正式审查完成。默认对话交付且不修改文件。",
+        "output": "报告过期检查和相关测试缺口，分别说明两轴证据与可验证关闭条件。有独立审查能力时由当前已满足要求的两份独立判断覆盖；能力不足时披露限制，不宣称正式审查完成。默认对话交付且不修改文件。",
         "workspaceUnchanged": true
       }
     },
@@ -85,7 +85,7 @@
       ],
       "prompt": "以 Standard 保障重新正式审查已修复并通过测试的当前实现，覆盖 docs/dev/invite-expiry/code-review.md。不要修改代码。",
       "assertions": [
-        "有可用独立审查能力时创建两个新的 fresh reviewer，重新检查完整指定范围，并比较旧报告。",
+        "完整结果由两个合格独立上下文分轴形成。当前若是独立审查上下文，可自行先完成一轴并补另一轴，也可只协调两个 reviewer；已有本轮安排可复用，轴 reviewer 加载本 Skill 后直接执行分配范围。本次完整重评使用本轮干净上下文；已为本轮安排者不因加载复审 reference 再新建。",
         "reviewer 重新覆盖 Spec fidelity 与 Engineering quality，而不是只验证旧 finding",
         "ExpiryPolicy 或其它更优抽象偏好不升级为 blocker",
         "报告比较已解决、仍存在和新发现，分别说明两轴当前结论和覆盖限制。",
@@ -126,7 +126,7 @@
       ],
       "prompt": "以 Standard 保障正式审查 skills/session-expiry/SKILL.md 是否符合 docs/specs/session-expiry.md，并检查工程质量。不要修改文件。",
       "assertions": [
-        "有可用独立审查能力时创建两个 fresh reviewer，分别负责需求与设计符合度、工程质量。",
+        "完整结果由两个合格独立上下文分轴形成。当前若是独立审查上下文，可自行先完成一轴并补另一轴，也可只协调两个 reviewer；已有本轮安排可复用，轴 reviewer 加载本 Skill 后直接执行分配范围。",
         "Engineering quality 把被否决方案、Review 过程和过程性否定指令识别为公开 Skill 的材料问题",
         "finding 给出可验证关闭条件：最终 Skill 只正面表达当前 expiresAt 行为和必要约束",
         "不建议增加通用状态框架、完整文案 snapshot 或文件 hash",
@@ -141,7 +141,7 @@
         }
       },
       "expected": {
-        "output": "指出公开 Skill 泄漏被否决方案和 Review 过程的材料影响，给出表达当前 expiresAt 行为的关闭条件；不增加通用框架或全文 hash 检查。有独立审查能力时使用两个 fresh reviewer，否则披露独立覆盖缺口。",
+        "output": "指出公开 Skill 泄漏被否决方案和 Review 过程的材料影响，给出表达当前 expiresAt 行为的关闭条件；不增加通用框架或全文 hash 检查。有独立审查能力时补足两份独立判断，否则披露独立覆盖缺口。",
         "workspaceUnchanged": true
       },
       "audit": {

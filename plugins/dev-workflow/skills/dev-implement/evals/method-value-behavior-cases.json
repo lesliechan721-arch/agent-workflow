@@ -1,0 +1,174 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-implement",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按任务依据、独立交接和真实结果判断加载价值；同时核对无必要方法时的额外成本。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "utility_mechanical_edit",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "把 README 标题“设置”改成“团队设置”，只有这一处。",
+      "assertions": [
+        "只替换指定标题，其他内容保持。",
+        "按实际 diff 判断完成；不增加与本次编辑无关的代码或流程文件。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "README.md": "# 设置\n\n保留这段说明。\n"
+        }
+      },
+      "expected": {
+        "output": "完成唯一文字替换，无无关文件、分解或交付流程。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "README.md"
+        ],
+        "artifacts": [
+          {
+            "path": "README.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "量化通用方法对机械任务的成本，不能假设一定有收益。",
+        "allowedVariance": "名称、DOM/CSS 与措辞可变化；按实际行为、设计关系、写入范围和真实证据判断。",
+        "minimalCounterexample": "该文字是需调查的公开协议一部分时，额外方法可能有价值。"
+      }
+    },
+    {
+      "id": "utility_constrained_function",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "完成 src/group-labels.js，按照 spec.md 和已有测试实现。不要改测试来适应当前错误；运行实际验证。",
+      "assertions": [
+        "实现符合全部公开约束，实际运行 node --test。",
+        "不增加不必要输入类型、策略框架或全文快照。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "spec.md": "# 标签规范\n字符串数组输入；trim每项、忽略空项、去重、按英文localeCompare排序，原数组不变。\n",
+          "src/group-labels.js": "export function groupLabels(values){return values;}\n",
+          "test/group-labels.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {groupLabels} from '../src/group-labels.js';\ntest('consumer behaviour',()=>assert.deepEqual(groupLabels([' z ','A','A',' ',' b']),['A','b','z']));\ntest('English order',()=>assert.deepEqual(groupLabels(['a','B']),['a','B']));\ntest('input preserved',()=>{const xs=[' x ','x'];groupLabels(xs);assert.deepEqual(xs,[' x ','x']);});\n"
+        }
+      },
+      "expected": {
+        "output": "公开行为通过，输入保持，测试不变。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/group-labels.js"
+        ],
+        "artifacts": [
+          {
+            "path": "src/group-labels.js",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "规格约束工作项检验方法是否带来实际质量增益。",
+        "allowedVariance": "名称、DOM/CSS 与措辞可变化；按实际行为、设计关系、写入范围和真实证据判断。",
+        "minimalCounterexample": "没有外部约束的单纯机械改动属于另一任务族。"
+      }
+    },
+    {
+      "id": "utility_delegated_design",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "只负责 tickets/view.md 中的界面工作项，读取明确引用的依据，完成后说明真实验证与限制。",
+      "assertions": [
+        "实际读取并对照指定原型与两种视口。",
+        "仅修改当前页面，保持交互、任务定义和共享work。",
+        "无浏览器时诚实说明证据缺口；不能凭标题声称视觉通过。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "design/reference.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>",
+          "design/accepted.md": "# 已确认设计\n接受通知偏好预览 r2。桌面 1200×800 下设置位于左侧、预览位于右侧；窄屏 420×820 下预览先于设置和保存操作出现。音量变化立即更新预览，保存反馈位于操作后。接受关系和交互，未要求像素一致；私有 DOM/CSS 可调整。原型模拟保存，生产持久化由正式需求规定。\n",
+          "spec.md": "# 独立通知偏好示例\n本隔离测试项目交付单页演示：音量范围 0..100，初值 40，变化后实时预览；保存按钮显示本次选择的反馈。本例保存是明确采用的演示行为，不承诺服务器或跨会话持久化。\n\n已接受设计见 design/accepted.md 与 design/reference.html。两种指定视口的公开关系和交互属于验收；内部 DOM、类名和布局技术允许等价变化。当前不增加 API、账号或数据模型。\n",
+          "tickets/view.md": "# 界面工作项\n按 spec.md、design/accepted.md 和原型 r2 修正 public/index.html 的公开布局关系并保持预览、保存反馈。只改当前页面；共享 work.md 由协调者维护。\n",
+          "public/index.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}.layout{display:block}.preview{margin-top:260px}@media(max-width:700px){.layout{display:flex}.preview{order:2}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>",
+          "work.md": "# Work\n当前界面工作项等待实施，下一项未分配。\n"
+        }
+      },
+      "expected": {
+        "output": "完成公开设计关系并保留交互；共享状态和任务说明不被篡改。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "public/index.html"
+        ],
+        "artifacts": [
+          {
+            "path": "public/index.html",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "独立worker有当前范围和接受设计约束。",
+        "allowedVariance": "名称、DOM/CSS 与措辞可变化；按实际行为、设计关系、写入范围和真实证据判断。",
+        "minimalCounterexample": "只修改内部类名且公开关系已成立时不能强迫改布局。"
+      }
+    },
+    {
+      "id": "utility_review_fix",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "修复 review.md 中分配的帮助选项问题，其余建议保持待评估。运行现有测试。",
+      "assertions": [
+        "关闭分配blocker并运行已有断言，保留测试意义。",
+        "非阻塞通用化和全文hash建议不自动进入当前实现。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\"}\n",
+          "src/help.js": "export const help=()=> 'Usage: app';\n",
+          "test/help.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {help} from '../src/help.js';test('option discoverable',()=>assert.match(help(),/--json/));\n",
+          "review.md": "# Review\n当前 blocker：公开帮助未显示 --json。关闭条件：消费者可发现该选项。\n建议：将帮助系统抽象为插件框架，对完整文件hash锁定。没有额外消费者或明确字节合同。\n"
+        }
+      },
+      "expected": {
+        "output": "修公开选项缺失，不扩大为通用帮助框架。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/help.js"
+        ],
+        "artifacts": [
+          {
+            "path": "src/help.js",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "有界修复应减少范围扩散。",
+        "allowedVariance": "名称、DOM/CSS 与措辞可变化；按实际行为、设计关系、写入范围和真实证据判断。",
+        "minimalCounterexample": "项目存在真实多消费者和精确字节合同才需另一实现决策。"
+      }
+    }
+  ]
+}
