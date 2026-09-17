@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.18",
+  "catalogVersion": "0.1.0-beta.19",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "a2efbef85c2e708ffda720c82858b6fe404e0b77"
+    "sourceHead": "d23323cc5d339a6f9d005d60efbd2dab0e22db4f"
   },
   "entries": [
     {
@@ -244,7 +244,7 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.3",
+      "version": "0.2.0-beta.4",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -255,9 +255,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:2f66a1850797438907a2e3d5ef0d37624494bc668b70ffadeba7dc2c60c08ed6",
-      "manifestDigest": "sha256:69f198ca6cf2d3281f2da86424e13ba76b254721e225355ee2d4499722ba6589",
-      "contentDigest": "sha256:5825a2ce5c76a404a71792a05834b4edaf74353e205832131c8cc89615f586d7"
+      "artifactDigest": "sha256:8d05ba16806e8785125cdd1197caeb504b6e6639fa6cbf3652b993fc810340c2",
+      "manifestDigest": "sha256:7d0d783d8a6f1c47da2162da03f8222507838e32335ee7716fa1d419b5e56946",
+      "contentDigest": "sha256:838dc698afbf10b7a31b45ee2ca4186d12daacfa62bafde4202fe1c4dda99872"
     },
     {
       "name": "dev-workflow",

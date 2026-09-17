@@ -1,6 +1,6 @@
 ---
 name: codex-subagent-guide
-description: 当需要实际启动、续接或管理子代理时使用，包括用户要求委派、当前工作流安排子代理，以及已指定模型、role、推理强度或上下文继承的情形。仅当 codex-explore 等专用技能已完整接管当前委派的调度与生命周期时跳过；只讨论是否委派或解释相关概念时不自动使用。
+description: 当需要启动、续接或管理子代理时使用。本技能提供完整的调度与生命周期策略，包括参数与上下文选择、续接与新建、等待与清理。若系统或用户指令、项目规则或其它技能已为当前委派提供完整的调度与生命周期策略，禁止使用本技能，避免重复调度；只讨论是否委派或解释相关概念时不自动使用。
 compatibility: Requires Codex multi-agent spawn_agent.agent_type and the four bundled roles; wait and cleanup rules apply only when exposed by the current tool schema.
 metadata:
   short-description: 子代理任务分类、参数选择、上下文继承、等待与清理原则
@@ -9,10 +9,9 @@ metadata:
 # Codex Subagent Guide
 
 保留当前请求及上游工作流对该子任务的有效要求，仅为未指定项提供默认策略。
-局部参数约束不排除本 Skill；专用技能已完整负责当前委派时不叠加。
+局部参数约束不排除本 Skill；当前有效指令已提供完整调度策略时不叠加。
 
-本 skill 不授予或判断委派权限；执行范围与权限仍服从上层指令。
-调用方式以当前工具 schema 为准。
+子代理调用方式以当前工具 schema 为准。
 
 ## Spawn 参数
 
