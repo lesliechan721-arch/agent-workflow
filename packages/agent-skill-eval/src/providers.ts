@@ -618,6 +618,11 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
   }
 }
 
+/** Reuse the existing isolated, read-only grader for Engine-owned workflow checks. */
+export function createCodexGrader(dependencies: BuiltinEvalProviderDependencies): CodexEvalTransport['runGrader'] {
+  return defaultTransport(dependencies).runGrader
+}
+
 async function writeEvaluationArtifacts(
   input: BuiltinEvalProviderRunInput,
   evidence: TriggerRunEvidence | AppServerRunEvidence,

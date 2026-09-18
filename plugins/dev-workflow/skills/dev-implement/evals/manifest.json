@@ -78,6 +78,17 @@
       "runs": 1,
       "timeoutMs": 300000,
       "requiredForRelease": false
+    },
+    {
+      "id": "alignment-discovery",
+      "kind": "conversation",
+      "cases": "alignment-discovery-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
     }
   ]
 }

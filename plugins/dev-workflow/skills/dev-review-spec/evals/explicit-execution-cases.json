@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-review-spec",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "主动选择有价值的方法，保持范围、权限和实际质量；没有完整证据的运行不计为完成。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "independent-spec-current-agent-direct",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "当前是未参与起草的新审查会话。使用 dev-review-spec 对照requirements.md审核spec.md，直接交付实际问题与证据。",
+      "assertions": [
+        "当前已独立时直接审查，不仅因需要审查而另建相同职责子代理。",
+        "发现相等边界冲突并说明关闭条件。",
+        "保持只读，不自行进行Spec修订或批准。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "requirements.md": "# 已确认需求\n服务器在 now >= expiresAt 时拒绝请求；此前保持原成功行为。无新的用户角色、配置或持久状态。客户端展示只提示已过期，不改变服务端规则。\n",
+          "spec.md": "# Spec\n请求在 now > expiresAt 时拒绝，其他请求保持原行为。验收覆盖过期前和过期后。\n"
+        }
+      },
+      "expected": {
+        "output": "当前代理直接给出边界冲突证据。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "动作明确不意味着总是spawn。",
+        "allowedVariance": "允许等价表达、文件组织及局部实现；按实际副作用、范围、可观察结果和真实证据判定，不要求重复术语或固定段落。",
+        "minimalCounterexample": "当前带作者推导历史时须由组织者委派独立审查子代理。"
+      }
+    }
+  ]
+}

@@ -67,6 +67,17 @@
       "runs": 1,
       "timeoutMs": 300000,
       "requiredForRelease": false
+    },
+    {
+      "id": "explicit-execution",
+      "kind": "conversation",
+      "cases": "explicit-execution-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
     }
   ]
 }

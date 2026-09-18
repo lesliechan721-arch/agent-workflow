@@ -8,6 +8,8 @@ import {
   CodexEvalAttemptControl,
   EvalAppServerSession,
   extractAppServerThreadId,
+  assertHostReadContainmentAvailable,
+  hostReadContainmentProfile,
   type CodexEvalProcessManagementEvidence,
 } from './codex-eval-app-server.js'
 import {
@@ -27,6 +29,13 @@ import {
   type EvalProviderRunInput,
   type EvalProviderRunResult,
 } from './custom-process.js'
+import { createCodexGrader, parseConversationGraderOutput } from './providers.js'
+import {
+  parseWorkflowEvaluation,
+  normalizeWorkflowChecks,
+  WorkflowEvaluation,
+  type WorkflowEvaluationRequest,
+} from './codex-workflow-evaluation.js'
 
 const MAX_ADAPTER_OUTPUT_BYTES = 4 * 1024 * 1024
 const MAX_REQUEST_TEXT_BYTES = 200_000
@@ -62,6 +71,7 @@ export interface CodexWorkflowRequest {
   model: string | null
   developerInstructions: string
   roles: CodexWorkflowRole[]
+  evaluation?: WorkflowEvaluationRequest
   multiAgent: {
     protocol: 'v1' | 'v2'
     maxDepth: number
@@ -149,6 +159,7 @@ export interface CodexWorkflowEvidence {
   cleanup: {
     isolatedCodexHomeRemoved: true
   }
+  evaluation?: Record<string, unknown>
 }
 
 export interface CodexWorkflowExecutionResult {
@@ -167,6 +178,7 @@ export interface CodexWorkflowTransportInput {
   sourceEnv: NodeJS.ProcessEnv
   timeoutMs: number
   processManagement: CodexEvalProcessManagementEvidence
+  protectedEvalRoots?: readonly string[]
   signal?: AbortSignal
 }
 
@@ -185,6 +197,7 @@ export interface CodexWorkflowExecutorOptions {
   processTree?: ProcessTreeDependencies
   processManagement?: CodexEvalProcessManagementEvidence
   transport?: CodexWorkflowTransport
+  protectedEvalRoots?: readonly string[]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -250,7 +263,7 @@ export async function parseCodexWorkflowRequest(
   exactKeys(
     value,
     ['version', 'prompt', 'sandbox', 'model', 'developerInstructions', 'roles', 'multiAgent'],
-    [],
+    ['evaluation'],
     'workflow prepare stdout',
   )
   if (value.version !== 1) throw new Error('workflow prepare stdout version must be 1.')
@@ -322,6 +335,7 @@ export async function parseCodexWorkflowRequest(
       MAX_REQUEST_TEXT_BYTES,
     ),
     roles,
+    ...(value.evaluation === undefined ? {} : { evaluation: parseWorkflowEvaluation(value.evaluation) }),
     multiAgent: {
       protocol: multiAgent.protocol,
       maxDepth: multiAgent.maxDepth as number,
@@ -1827,6 +1841,8 @@ export async function normalizeCodexWorkflowRollouts(options: {
 }
 
 function sandboxPolicy(request: CodexWorkflowRequest): Record<string, unknown> {
+  // Opt-in evaluations use one outer OS profile; nesting Seatbelt is unreliable.
+  if (request.evaluation) return { type: 'externalSandbox', networkAccess: 'enabled' }
   return request.sandbox === 'read-only'
     ? { type: 'readOnly', networkAccess: true }
     : {
@@ -1858,6 +1874,29 @@ const defaultTransport: CodexWorkflowTransport = {
     let codexHomeRemoved = false
     const startedAt = Date.now()
     const frames: unknown[] = []
+    const judgeUsage: unknown[] = []
+    let judgeNumber = 0
+    const runGrader = input.request.evaluation ? createCodexGrader({
+      sourceEnv: input.sourceEnv,
+      codexRuntime: input.codexRuntime,
+      codexBin: input.codexBin,
+      ...(input.request.model ? { model: input.request.model } : {}),
+      processManagement: input.processManagement,
+    }) : undefined
+    const evaluation = input.request.evaluation ? new WorkflowEvaluation(
+      input.request.evaluation,
+      input.input.workspacePath,
+      async (prompt) => {
+        const outputDir = path.join(input.input.outputDir, 'workflow-judges', String(++judgeNumber))
+        await fs.ensureDir(outputDir)
+        const result = await runGrader!({
+          prompt, outputDir, timeoutMs: control.remaining('workflow semantic check'), signal: control.signal,
+        })
+        if (!result.mechanicalPassed) throw new Error('workflow semantic grader did not complete its read-only checks.')
+        judgeUsage.push(result.usage)
+        return parseConversationGraderOutput(result.output)
+      },
+    ) : undefined
     let removeHandler: (() => void) | undefined
     let removeFailureHandler: (() => void) | undefined
     try {
@@ -1869,6 +1908,17 @@ const defaultTransport: CodexWorkflowTransport = {
         }),
       ])
       const before = await snapshotWorkspace(input.input.workspacePath)
+      let containment: string | undefined
+      if (evaluation) {
+        containment = hostReadContainmentProfile({
+          forbiddenHostRoots: [input.input.fixturesPath, input.input.outputDir],
+          writableRoots: [temporaryRoot.root, input.input.workspacePath],
+          unwritableRoots: input.request.sandbox === 'read-only' ? [input.input.workspacePath] : [],
+        }) + '\n' + [...new Set([input.evalRoot, ...(input.protectedEvalRoots ?? [])])].map((root) =>
+          `(deny file-read* (require-all (subpath ${JSON.stringify(root)}) (require-not (subpath ${JSON.stringify(input.input.workspacePath)}))))`,
+        ).join('\n')
+        await assertHostReadContainmentAvailable(containment)
+      }
       session = new EvalAppServerSession({
         codexBin: input.codexBin,
         cwd: input.input.workspacePath,
@@ -1878,6 +1928,7 @@ const defaultTransport: CodexWorkflowTransport = {
         isolation: 'standard',
         processManagement: input.processManagement,
         configOverrides: workflowConfig(input.request, input.input.workspacePath),
+        ...(containment ? { hostReadContainmentProfile: containment } : {}),
       })
       await session.initialize(control.rpcTimeout('initialize'))
       const threadResult = await session.sendRequest('thread/start', {
@@ -1893,11 +1944,8 @@ const defaultTransport: CodexWorkflowTransport = {
       let turnStatus: string | null = null
       let resolveTurn: (() => void) | undefined
       let rejectTurn: ((error: Error) => void) | undefined
-      const turnDone = new Promise<void>((resolve, reject) => {
-        resolveTurn = resolve
-        rejectTurn = reject
-      })
-      void turnDone.catch(() => undefined)
+      let lastMessageOrdinal = 0
+      let frameQueue = Promise.resolve()
       removeFailureHandler = session.onFailure((error) => rejectTurn?.(error))
       removeHandler = session.onFrame((frame) => {
         const isolatedPaths = [
@@ -1913,63 +1961,108 @@ const defaultTransport: CodexWorkflowTransport = {
         ))
         const method = typeof frame.method === 'string' ? frame.method : ''
         const params = isRecord(frame.params) ? frame.params : {}
-        if (method === 'turn/completed') {
+        // Capture on receipt, before asynchronous semantic matching. All threads count.
+        const ordinal = evaluation && ['item/completed', 'item/tool/requestUserInput', 'turn/completed'].includes(method)
+          ? evaluation.observe(sanitizeTraceValue(frame, input.codexRuntime, isolatedPaths,
+            input.request.multiAgent.protocol === 'v2'), codexWorkflowFrameThreadId(frame)) : 0
+        frameQueue = frameQueue.then(async () => {
+          if (method === 'turn/completed') {
+            if (!codexWorkflowFrameIsForRoot(frame, rootThreadId)) return
+            const turn = isRecord(params.turn) ? params.turn : {}
+            turnStatus = typeof turn.status === 'string' ? turn.status : 'unknown'
+            resolveTurn?.()
+            return
+          }
           if (!codexWorkflowFrameIsForRoot(frame, rootThreadId)) return
-          const turn = isRecord(params.turn) ? params.turn : {}
-          turnStatus = typeof turn.status === 'string' ? turn.status : 'unknown'
-          resolveTurn?.()
-          return
-        }
-        if (!codexWorkflowFrameIsForRoot(frame, rootThreadId)) return
-        if (method === 'item/completed' && isRecord(params.item)) {
-          const item = params.item
-          if (
-            item.type === 'agentMessage'
-            && item.phase === 'final_answer'
-            && typeof item.text === 'string'
-          ) finalMessage = item.text
-        }
-        if (method === 'thread/tokenUsage/updated') usage = params.tokenUsage ?? usage
-        if (method === 'item/tool/requestUserInput') {
-          rejectTurn?.(new Error('codex-workflow root requested interactive user input.'))
-        }
-        if (method === 'error') rejectTurn?.(new Error(`codex-workflow app-server error: ${JSON.stringify(params)}`))
-      })
-      await session.sendRequest('turn/start', {
-        threadId: rootThreadId,
-        input: [{ type: 'text', text: input.request.prompt, text_elements: [] }],
-        cwd: input.input.workspacePath,
-        approvalPolicy: 'never',
-        sandboxPolicy: sandboxPolicy(input.request),
-        ...(input.request.model ? { model: input.request.model } : {}),
-      }, control.rpcTimeout('turn/start'))
-      let abortTurnWait: (() => void) | undefined
-      try {
-        await Promise.race([
-          turnDone,
-          new Promise<never>((_resolve, reject) => {
-            abortTurnWait = (): void => reject(control.stopError('turn wait'))
-            if (control.signal.aborted) abortTurnWait()
-            else control.signal.addEventListener('abort', abortTurnWait, { once: true })
-          }),
-        ])
-      } finally {
-        if (abortTurnWait) control.signal.removeEventListener('abort', abortTurnWait)
-      }
-      control.throwIfStopped('turn wait')
-      if (turnStatus !== 'completed') {
-        throw new Error(`codex-workflow root turn ended with status ${String(turnStatus)}.`)
-      }
-      if (!finalMessage) {
-        const diagnostic = codexWorkflowMissingFinalMessageDiagnostic({
-          frames,
-          rootThreadId,
-          turnStatus,
-          usage,
+          if (method === 'item/completed' && isRecord(params.item)) {
+            const item = params.item
+            if (
+              item.type === 'agentMessage'
+              && item.phase === 'final_answer'
+              && typeof item.text === 'string'
+            ) {
+              finalMessage = item.text
+              lastMessageOrdinal = ordinal
+            }
+          }
+          if (method === 'thread/tokenUsage/updated') usage = params.tokenUsage ?? usage
+          if (method === 'item/tool/requestUserInput') {
+            if (!evaluation) throw new Error('codex-workflow root requested interactive user input.')
+            if ((typeof frame.id !== 'string' && typeof frame.id !== 'number') || !Array.isArray(params.questions)) {
+              throw new Error('workflow user-input request lacks its actual id or questions.')
+            }
+            const reply = await evaluation.reply({ questions: params.questions }, ordinal)
+            const answers = Object.fromEntries(params.questions.filter(isRecord).map((question) => [
+              String(question.id), { answers: [reply && reply.questionId === question.id
+                ? reply.text : 'No user decision is available for this question. Return control without dependent changes.'] },
+            ]))
+            await session!.respond(frame.id, { answers })
+          }
+          if (method === 'error') rejectTurn?.(new Error(`codex-workflow app-server error: ${JSON.stringify(params)}`))
         })
-        throw new Error(
-          `codex-workflow root turn did not produce a final message: ${JSON.stringify(diagnostic)}.`,
-        )
+        return frameQueue
+      })
+      let nextPrompt = input.request.evaluation?.setupPrompt ?? input.request.prompt
+      let setup = input.request.evaluation?.setupPrompt !== undefined
+      while (true) {
+        const turnDone = new Promise<void>((resolve, reject) => {
+          resolveTurn = resolve
+          rejectTurn = reject
+        })
+        void turnDone.catch(() => undefined)
+        finalMessage = null
+        turnStatus = null
+        await session.sendRequest('turn/start', {
+          threadId: rootThreadId,
+          input: [{ type: 'text', text: nextPrompt, text_elements: [] }],
+          cwd: input.input.workspacePath,
+          approvalPolicy: 'never',
+          sandboxPolicy: sandboxPolicy(input.request),
+          ...(input.request.model ? { model: input.request.model } : {}),
+        }, control.rpcTimeout('turn/start'))
+        let abortTurnWait: (() => void) | undefined
+        try {
+          await Promise.race([
+            turnDone,
+            new Promise<never>((_resolve, reject) => {
+              abortTurnWait = (): void => reject(control.stopError('turn wait'))
+              if (control.signal.aborted) abortTurnWait()
+              else control.signal.addEventListener('abort', abortTurnWait, { once: true })
+            }),
+          ])
+        } finally {
+          if (abortTurnWait) control.signal.removeEventListener('abort', abortTurnWait)
+        }
+        await frameQueue
+        control.throwIfStopped('turn wait')
+        if (turnStatus !== 'completed') {
+          throw new Error(`codex-workflow root turn ended with status ${String(turnStatus)}.`)
+        }
+        if (!finalMessage) {
+          const diagnostic = codexWorkflowMissingFinalMessageDiagnostic({
+            frames,
+            rootThreadId,
+            turnStatus,
+            usage,
+          })
+          throw new Error(
+            `codex-workflow root turn did not produce a final message: ${JSON.stringify(diagnostic)}.`,
+          )
+        }
+        if (setup) {
+          setup = false
+          evaluation!.measurementStart = evaluation!.observe({ method: 'evaluation/measurementStart' }, rootThreadId)
+          nextPrompt = input.request.prompt
+          continue
+        }
+        if (evaluation?.hasPendingDecision) {
+          const reply = await evaluation.reply({ text: finalMessage }, lastMessageOrdinal)
+          if (reply) {
+            nextPrompt = reply.text
+            continue
+          }
+        }
+        break
       }
       const isolatedPaths = [
         { path: codexHome, marker: '[codex-home]' },
@@ -2006,13 +2099,23 @@ const defaultTransport: CodexWorkflowTransport = {
           appServerProcessTreeCleanupConfirmed: true,
         },
         usage,
-        finalMessage,
+        finalMessage: finalMessage!,
         workspaceDiff: workspaceDiff(before, after),
         skillLoads: rollout.skillLoads,
         threadGraph: rollout.threadGraph,
         collaborationCalls: rollout.collaborationCalls,
         leafCalls: rollout.leafCalls,
         cleanup: { isolatedCodexHomeRemoved: true },
+      }
+      if (evaluation) {
+        // Subject processes are stopped before final snapshots and independent grading.
+        evidence.evaluation = await evaluation.finish(evidence, rollout.trace)
+        const totals = [usage, ...judgeUsage].map(standardUsage)
+        if (totals.some((value) => value === null)) throw new Error('workflow evaluation lacks required judge usage evidence.')
+        evidence.usage = {
+          inputTokens: totals.reduce((sum, value) => sum + value!.inputTokens, 0),
+          outputTokens: totals.reduce((sum, value) => sum + value!.outputTokens, 0),
+        }
       }
       return {
         evidence: session.scrub(redactCodexEvalValue(evidence, input.codexRuntime)),
@@ -2026,7 +2129,7 @@ const defaultTransport: CodexWorkflowTransport = {
           ...rollout.trace,
         ], input.codexRuntime)),
         modelOutput: redactCodexEvalValue(finalMessage, input.codexRuntime),
-        usage: redactCodexEvalValue(usage, input.codexRuntime),
+        usage: redactCodexEvalValue(evidence.usage, input.codexRuntime),
       }
     } finally {
       removeHandler?.()
@@ -2175,6 +2278,7 @@ export async function executeCodexWorkflowProvider(
         sourceEnv,
         timeoutMs: control.remaining('Codex execution'),
         processManagement,
+        ...(options.protectedEvalRoots ? { protectedEvalRoots: options.protectedEvalRoots } : {}),
         signal: control.signal,
       })
     } catch (error) {
@@ -2216,6 +2320,21 @@ export async function executeCodexWorkflowProvider(
       throw error
     }
     const grade: EvalProviderGrade = parseEvalProviderGrade(gradeValue, 'workflow grade stdout')
+    if (request.evaluation) {
+      const results = sanitized.evidence.evaluation
+      const required = [
+        ...request.evaluation.checks,
+        ...(request.evaluation.interactions.length ? [{ name: 'user-decisions', criterion: 'All required user decisions were delivered.' }] : []),
+      ]
+      const complete = normalizeWorkflowChecks(required, {
+        passed: true, score: null, details: results,
+      }).every((check) => check.verdict === 'pass')
+      if (!complete) {
+        grade.passed = false
+        grade.score = 0
+        grade.details = { ...grade.details, workflowEvidenceSatisfied: false }
+      }
+    }
     const afterGrade = await artifactDigests(paths.outputDir)
     if (JSON.stringify(beforeGrade) !== JSON.stringify(afterGrade)) {
       throw new Error('workflow grade modified Engine-owned attempt artifacts.')

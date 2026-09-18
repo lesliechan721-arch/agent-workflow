@@ -1,6 +1,8 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -18,10 +20,13 @@ import {
   type ProcessTreeDependencies,
 } from '../../src/index.js'
 import { codexWorkflowMissingFinalMessageDiagnostic } from '../../src/codex-workflow.js'
+import * as appServer from '../../src/codex-eval-app-server.js'
+import * as providers from '../../src/providers.js'
 
 const roots: string[] = []
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
@@ -121,11 +126,12 @@ async function adapterFixture(): Promise<{
     '  else process.stdout.write(JSON.stringify({',
     '    version: 1,',
     '    prompt: "Run the workflow.",',
-    '    sandbox: "read-only",',
+    '    sandbox: input.case.writable ? "workspace-write" : "read-only",',
     '    model: "allowed-model",',
     '    developerInstructions: "Follow the workflow contract.",',
     '    roles: [{ name: "explorer", description: "Inspect the workspace.", configFile: ".codex/agents/explorer.toml" }],',
-    '    multiAgent: { protocol: "v2", maxDepth: 2, hideSpawnAgentMetadata: true, exposeSpawnAgentModelOverrides: true }',
+    '    multiAgent: { protocol: "v2", maxDepth: 2, hideSpawnAgentMetadata: true, exposeSpawnAgentModelOverrides: true },',
+    '    ...(input.case.evaluation ? { evaluation: input.case.evaluation } : {})',
     '  }))',
     '} else {',
     '  const evidence = JSON.parse(fs.readFileSync(input.paths.evidence, "utf8"))',
@@ -163,6 +169,143 @@ function execution(secret = 'workflow-runtime-secret') {
 }
 
 describe('codex-workflow provider', () => {
+  it.each(['structured', 'text', 'unrelated', 'setup'] as const)(
+    'runs the Engine-owned %s interaction loop with a deterministic RPC peer and independent matcher seam',
+    async (mode) => {
+      const fixture = await adapterFixture()
+      const hiddenAnswer = 'Export the authorized collection.'
+      const turns: string[] = []
+      const responses: unknown[] = []
+      let codexHome = ''
+      let cleaned = false
+      const evaluation = {
+        artifacts: ['product.txt'],
+        checks: [{ name: 'actual-result', criterion: 'The actual product follows the delivered answer.' }],
+        interactions: [{ id: 'scope', when: 'A genuine question about export collection.', answer: hiddenAnswer, protectedPaths: ['product.txt'] }],
+        ...(mode === 'setup' ? { setupPrompt: 'Create the actual setup precondition.' } : {}),
+      }
+      const grader = vi.fn(async ({ prompt }: { prompt: string }) => ({
+        output: JSON.stringify(prompt.includes('details.questionId')
+          ? { passed: mode !== 'unrelated', score: mode === 'unrelated' ? 0 : 1,
+              details: { questionId: mode === 'structured' ? 'scope-question' : 'text' } }
+          : { passed: true, score: 1, details: { checks: [{ name: 'actual-result', verdict: 'pass', evidence: 'Deterministic test seam, not a real model verdict.' }] } }),
+        usage: { inputTokens: 2, outputTokens: 1 }, mechanicalPassed: true,
+      }))
+      vi.spyOn(providers, 'createCodexGrader').mockReturnValue(grader)
+      // The RPC seam exercises the real Engine loop, file observation, and lifecycle.
+      // It is not native-tool, model, or OS-containment qualification.
+      const admission = vi.spyOn(appServer, 'assertHostReadContainmentAvailable').mockResolvedValue()
+      class Peer {
+        private handlers = new Set<(frame: Record<string, unknown>) => unknown>()
+        private failure: ((error: Error) => void) | undefined
+        constructor(options: { env: NodeJS.ProcessEnv }) { codexHome = options.env.CODEX_HOME! }
+        async initialize() { await writeRollout(codexHome, 'root', [session('root'), developer()]) }
+        onFrame(handler: (frame: Record<string, unknown>) => unknown) { this.handlers.add(handler); return () => this.handlers.delete(handler) }
+        onFailure(handler: (error: Error) => void) { this.failure = handler; return () => { this.failure = undefined } }
+        private emit(frame: Record<string, unknown>) {
+          for (const handler of this.handlers) void Promise.resolve(handler(frame)).catch((error: Error) => this.failure?.(error))
+        }
+        private complete(message: string) {
+          this.emit({ method: 'thread/tokenUsage/updated', params: { threadId: 'root', tokenUsage: { total: { inputTokens: 10, outputTokens: 4 } } } })
+          this.emit({ method: 'item/completed', params: { threadId: 'root', item: { type: 'agentMessage', phase: 'final_answer', text: message } } })
+          this.emit({ method: 'turn/completed', params: { threadId: 'root', turn: { status: 'completed' } } })
+        }
+        private async implement() {
+          await writeFile(path.join(fixture.workspace, 'product.txt'), hiddenAnswer)
+          this.emit({ method: 'item/completed', params: { threadId: 'root', item: { type: 'fileChange', changes: [{ path: path.join(fixture.workspace, 'product.txt'), kind: { type: 'add' } }] } } })
+          this.complete('Implementation complete.')
+        }
+        async sendRequest(method: string, params: { input?: Array<{ text: string }> }) {
+          if (method === 'thread/start') return { thread: { id: 'root' } }
+          if (method !== 'turn/start') throw new Error(`Unexpected RPC: ${method}`)
+          const prompt = params.input![0]!.text
+          turns.push(prompt)
+          if (mode === 'setup' && turns.length === 1) this.complete('Setup complete.')
+          else if (prompt === hiddenAnswer) await this.implement()
+          else if (mode === 'structured') this.emit({
+            method: 'item/tool/requestUserInput', id: 'request-1',
+            params: { threadId: 'root', questions: [{ id: 'scope-question', question: 'Which customer collection?' }] },
+          })
+          else this.complete(mode === 'unrelated' ? 'Work complete, no choice needed.' : 'Which customer collection should be exported?')
+          return {}
+        }
+        async respond(id: string, response: { answers: Record<string, { answers: string[] }> }) {
+          responses.push({ id, response })
+          if (response.answers['scope-question']?.answers[0] === hiddenAnswer) await this.implement()
+          else this.complete('No product decision available.')
+        }
+        async cleanup() { cleaned = true }
+        scrub<T>(value: T): T { return value }
+      }
+      vi.spyOn(appServer, 'EvalAppServerSession').mockImplementation((function (options: { env: NodeJS.ProcessEnv }) {
+        return new Peer(options)
+      }) as never)
+      const result = await executeCodexWorkflowProvider({
+        provider: { type: 'codex-workflow', command: ['node', 'adapter.mjs'], allowedModels: ['allowed-model'] },
+        evalRoot: fixture.root,
+        input: { case: { id: mode, evaluation, writable: true }, variant: 'current', attempt: 1,
+          workspacePath: fixture.workspace, fixturesPath: fixture.fixtures, outputDir: fixture.output, timeoutMs: 5_000 },
+        codexRuntime: runtime(), sourceEnv: { PATH: process.env.PATH },
+        processTree: fixture.processTree,
+      })
+      const actual = JSON.parse(await readFile(path.join(fixture.output, 'workflow-evidence.json'), 'utf8'))
+      if (mode === 'structured' && process.platform === 'darwin') {
+        // Actual OS check of the emitted profile, without any model/native Codex run.
+        const profile = admission.mock.calls[0]![0]
+        const source = [
+          "import fs from 'node:fs'; import assert from 'node:assert/strict';",
+          `assert.equal(fs.readFileSync(${JSON.stringify(path.join(fixture.workspace, 'product.txt'))},'utf8'),${JSON.stringify(hiddenAnswer)});`,
+          `assert.throws(()=>fs.readFileSync(${JSON.stringify(fixture.adapter)}),error=>error.code==='EPERM'||error.code==='EACCES');`,
+          `assert.throws(()=>fs.readFileSync(${JSON.stringify(path.join(fixture.output, 'workflow-evidence.json'))}),error=>error.code==='EPERM'||error.code==='EACCES');`,
+        ].join('\n')
+        await promisify(execFile)('/usr/bin/sandbox-exec', ['-p', profile, process.execPath, '--input-type=module', '-e', source], {
+          cwd: fixture.workspace, env: { PATH: process.env.PATH }, timeout: 5_000,
+        })
+      }
+      expect(cleaned).toBe(true)
+      await expect(readFile(path.join(codexHome, 'config.toml'))).rejects.toThrow()
+      expect(grader).toHaveBeenCalledTimes(2)
+      expect(grader.mock.calls[0]![0].prompt).not.toContain(hiddenAnswer)
+      expect(result.usage).toEqual({ inputTokens: 14, outputTokens: 6 })
+      if (mode === 'unrelated') {
+        expect(turns).toHaveLength(1)
+        expect(actual.evaluation.decisions[0].status).toBe('rejected')
+        expect(result.grade.passed).toBe(false)
+        await expect(readFile(path.join(fixture.workspace, 'product.txt'))).rejects.toThrow()
+      } else {
+        expect(result.grade.passed).toBe(true)
+        expect(actual.evaluation.decisions[0].answer).toBe(hiddenAnswer)
+        expect(actual.evaluation.decisions[0].answerOrdinal).toBeGreaterThan(actual.evaluation.decisions[0].questionOrdinal)
+        expect(await readFile(path.join(fixture.workspace, 'product.txt'), 'utf8')).toBe(hiddenAnswer)
+        expect(turns).toHaveLength(mode === 'structured' ? 1 : mode === 'setup' ? 3 : 2)
+        if (mode === 'structured') expect(responses).toHaveLength(1)
+        if (mode === 'setup') expect(actual.evaluation.measurementStart).toBeGreaterThan(0)
+      }
+    },
+  )
+
+  it('accepts opt-in bounded evaluation without exposing hidden answers in the subject prompt', async () => {
+    const fixture = await adapterFixture()
+    const evaluation = {
+      artifacts: ['src/export.js'],
+      checks: [{ name: 'decision', criterion: 'The actual user choice controls the exported collection.' }],
+      interactions: [{
+        id: 'export-scope',
+        when: 'The coordinator asks which customer collection to export.',
+        answer: 'Export the complete authorized collection.',
+        protectedPaths: ['src/export.js'],
+      }],
+    }
+    const parsed = await parseCodexWorkflowRequest(
+      { ...request(), evaluation }, ['allowed-model'], fixture.workspace,
+    )
+    expect(parsed).toEqual({ ...request(), evaluation })
+    expect(parsed.prompt).not.toContain(evaluation.interactions[0]!.answer)
+    await expect(parseCodexWorkflowRequest({
+      ...request(), evaluation: { ...evaluation, artifacts: ['../answer.json'] },
+    }, ['allowed-model'], fixture.workspace)).rejects.toThrow('relative')
+  })
+
   it('validates a bounded request and rejects model, role path, and unknown-field drift', async () => {
     const fixture = await adapterFixture()
     await expect(parseCodexWorkflowRequest(

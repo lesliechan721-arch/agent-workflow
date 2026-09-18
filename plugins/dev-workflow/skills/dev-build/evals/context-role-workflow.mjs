@@ -5,6 +5,8 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { combineRequiredChecks } from './role-evidence.mjs';
+import { evaluationForCase, semanticChecks, verifyVisualPage } from './workflow-results.mjs';
 
 const execFileAsync = promisify(execFile);
 const INPUT_KEYS = ['attempt', 'case', 'paths', 'phase', 'variant', 'version'];
@@ -76,7 +78,7 @@ function exactKeys(value, expected, label) {
   }
 }
 
-function safeRelativePath(value, label) {
+export function safeRelativePath(value, label) {
   if (
     typeof value !== 'string'
     || value === ''
@@ -190,7 +192,7 @@ function parseCase(selectedCase) {
   return { id, input, workspaceFiles, roles: CASE_ROLES[id] };
 }
 
-async function writeWorkspaceFiles(workspace, files) {
+export async function writeWorkspaceFiles(workspace, files) {
   for (const [relative, content] of Object.entries(files)) {
     const target = path.join(workspace, relative);
     await mkdir(path.dirname(target), { recursive: true });
@@ -235,11 +237,10 @@ function scenarioInstructions(id) {
       '然后分别使用 design-reviewer 和 quality-reviewer，均以 fork_turns="none" 执行双轴审查。等待并汇总。',
     ],
     'real-code-independent-root-supplements-one-axis': [
-      '你是未参与实现的独立 root。为产生可核验的两份独立判断，分别使用 design-reviewer 和 quality-reviewer，均以 fork_turns="none"。',
+      '你是未参与实现的独立 root，当前没有已分配的审查者。按实际条件组织完整审查。',
     ],
     'real-existing-axis-assignments-reused': [
-      '本轮尚未建立其它 reviewer。现在一次性分别使用 design-reviewer 和 quality-reviewer，均以 fork_turns="none"。',
-      '两名 reviewer 已经是本轮分配者；等待现有结果并汇总，不重新安排第二组。',
+      '继续上一轮实际建立的审查任务。先核对真实状态，不能把首次分派当作恢复。',
     ],
     'real-current-round-rereview-no-nesting': [
       '先运行 node --test，修复实际失败，并再次验证。',
@@ -286,6 +287,9 @@ export async function prepareContextRoleWorkflow(input) {
       'Do not call a user-input tool. Keep unsupported evidence explicit.',
     ].join(' '),
     roles,
+    evaluation: evaluationForCase(input.case, evalCase.id === 'real-existing-axis-assignments-reused' ? {
+      setupPrompt: '为下一轮恢复场景实际启动两个干净的轴审查任务，分别负责需求设计和工程质量，范围为当前src/check.js和原始需求。保留实际任务和状态，供下一轮继续。本轮不要伪造ID，不修改产品。',
+    } : {}),
     multiAgent: {
       protocol: 'v2',
       maxDepth: 2,
@@ -355,8 +359,9 @@ function loadedSkill(evidence, threadId, skill) {
 }
 
 function noNestedThreads(evidence, threads) {
-  const ids = new Set(threads.map((thread) => thread.threadId));
-  return evidence.threadGraph.every((thread) => !ids.has(thread.parentThreadId));
+  const assigned = new Map(threads.map((thread) => [thread.threadId, thread.agentRole]));
+  return evidence.threadGraph.every((thread) => !assigned.has(thread.parentThreadId)
+    || thread.agentRole !== assigned.get(thread.parentThreadId));
 }
 
 function patchTargets(call) {
@@ -425,10 +430,6 @@ function assertChangeBoundary(assertions, evidence, allowed) {
   );
 }
 
-function outputText(evidence, modelOutput) {
-  return [modelOutput, ...evidence.collaborationCalls.map((call) => JSON.stringify(call.output ?? ''))].join('\n');
-}
-
 function addRoleLeafAssertions(assertions, evidence, role, skill, expectedCount = 1) {
   const threads = roleThreads(evidence, role);
   add(assertions, `${role}:count`, threads.length === expectedCount, `expected=${expectedCount} actual=${threads.length}`);
@@ -457,32 +458,10 @@ async function nodeTestsPass(workspace) {
   }
 }
 
-function browserEvidencePresent(evidence) {
-  const evidenceText = evidence.collaborationCalls
-    .filter((call) => successfulCall(call))
-    .map((call) => `${call.tool} ${JSON.stringify(call.arguments ?? null)}`)
-    .filter((value) => /(playwright|browser|screenshot)/iu.test(value))
-    .join('\n');
-  return /1200/u.test(evidenceText) && /420/u.test(evidenceText);
-}
-
-function ticketContentSufficient(content) {
-  return [
-    /spec\.md/u,
-    /design\/accepted\.md/u,
-    /design\/reference\.html/u,
-    /public\/index\.html/u,
-    /(1200|桌面)/u,
-    /(420|窄屏)/u,
-    /(验收|验证|test)/iu,
-  ].every((pattern) => pattern.test(content));
-}
-
-async function gradeSpecClean(assertions, evidence, modelOutput) {
+async function gradeSpecClean(assertions, evidence) {
   add(assertions, 'root_skill_load', loadedSkill(evidence, evidence.rootThreadId, 'dev-review-spec'), 'dev-review-spec');
   add(assertions, 'no_delegation', descendants(evidence, evidence.rootThreadId).length === 0, 'expected root-only review');
   assertChangeBoundary(assertions, evidence, []);
-  add(assertions, 'boundary_finding', /(>=|等于|equal|边界)/iu.test(modelOutput), 'expected exact-expiry conflict');
 }
 
 async function gradeAuthorSpec(assertions, evidence) {
@@ -497,10 +476,9 @@ async function gradeAuthorSpec(assertions, evidence) {
   assertChangeBoundary(assertions, evidence, ['spec.md']);
 }
 
-async function gradeForkedAuthor(assertions, evidence, text) {
+async function gradeForkedAuthor(assertions, evidence) {
   const reviewers = roleThreads(evidence, 'spec-reviewer');
   const polluted = reviewers.filter((thread) => inheritedFork(spawnForThread(evidence, thread.threadId)));
-  const clean = reviewers.filter((thread) => cleanFork(spawnForThread(evidence, thread.threadId)));
   add(assertions, 'polluted_reviewer_exists', polluted.length === 1, `actual=${polluted.length}`);
   add(
     assertions,
@@ -509,12 +487,6 @@ async function gradeForkedAuthor(assertions, evidence, text) {
     'dev-review-spec',
   );
   add(assertions, 'reviewers_do_not_nest', noNestedThreads(evidence, reviewers), `reviewers=${reviewers.length}`);
-  add(
-    assertions,
-    'independence_not_claimed',
-    clean.length >= 1 || /(不独立|独立性.*不足|无法.*独立|未完成.*独立)/u.test(text),
-    `clean_reviewers=${clean.length}`,
-  );
   assertChangeBoundary(assertions, evidence, ['spec.md']);
 }
 
@@ -639,8 +611,6 @@ async function gradeTicket(assertions, evidence, workspace) {
     implementThread !== undefined && threadWrites(evidence, implementThread.threadId, 'public/index.html'),
     'public/index.html',
   );
-  const ticket = await readFile(path.join(workspace, 'tickets', 'view.md'), 'utf8').catch(() => '');
-  add(assertions, 'ticket_is_sufficient', ticketContentSufficient(ticket), 'sources, viewports and acceptance');
   const reviewerThreads = [...design, ...quality];
   add(
     assertions,
@@ -648,31 +618,28 @@ async function gradeTicket(assertions, evidence, workspace) {
     reviewerThreads.length === 2 && reviewerThreads.every((thread) => threadReads(evidence, thread.threadId, 'public/index.html')),
     'public/index.html',
   );
-  add(assertions, 'browser_evidence', browserEvidencePresent(evidence), 'successful 1200 and 420 browser/Playwright call');
   assertChangeBoundary(assertions, evidence, ['tickets/view.md', 'public/index.html']);
 }
 
 export async function gradeContextRoleWorkflow(input) {
   const evalCase = parseCase(input.case);
-  const [evidence, modelOutput] = await Promise.all([
-    readEvidence(input.paths.evidence),
-    readFile(input.paths.modelOutput, 'utf8'),
-  ]);
+  const evidence = await readEvidence(input.paths.evidence);
   const assertions = [];
-  const text = outputText(evidence, modelOutput);
+  const requiredChecks = semanticChecks(input.case, evidence);
   if (evalCase.id === 'real-spec-clean-context-direct') {
-    await gradeSpecClean(assertions, evidence, modelOutput);
+    await gradeSpecClean(assertions, evidence);
   } else if (evalCase.id === 'real-author-to-spec-reviewer-leaf') {
     await gradeAuthorSpec(assertions, evidence);
   } else if (evalCase.id === 'real-forked-author-is-not-independent') {
-    await gradeForkedAuthor(assertions, evidence, text);
+    await gradeForkedAuthor(assertions, evidence);
   } else if (evalCase.id === 'real-code-author-two-axis-leaves') {
     await gradeTwoAxis(assertions, evidence, ['src/check.js']);
     add(assertions, 'tests_pass', await nodeTestsPass(input.paths.workspace), 'node --test');
-  } else if (
-    evalCase.id === 'real-code-independent-root-supplements-one-axis'
-    || evalCase.id === 'real-existing-axis-assignments-reused'
-  ) {
+  } else if (evalCase.id === 'real-code-independent-root-supplements-one-axis') {
+    // Both lawful arrangements are checked from real judgments/order by the Engine.
+    // Do not force two children when the independent root supplies one axis.
+    assertChangeBoundary(assertions, evidence, []);
+  } else if (evalCase.id === 'real-existing-axis-assignments-reused') {
     await gradeTwoAxis(assertions, evidence, []);
   } else if (evalCase.id === 'real-current-round-rereview-no-nesting') {
     await gradeRereview(assertions, evidence, input.paths.workspace);
@@ -682,6 +649,7 @@ export async function gradeContextRoleWorkflow(input) {
     await gradePrototype(assertions, evidence, input.paths.workspace);
   } else if (evalCase.id === 'generated_ticket_clean_context_delivery') {
     await gradeTicket(assertions, evidence, input.paths.workspace);
+    requiredChecks.push(await verifyVisualPage(input.paths.workspace));
   }
   add(
     assertions,
@@ -690,14 +658,16 @@ export async function gradeContextRoleWorkflow(input) {
       && evidence.cleanup.isolatedCodexHomeRemoved === true,
     'confirmed=true',
   );
-  const passed = assertions.every((assertion) => assertion.passed === true);
+  const checks = [...assertions.map((assertion) => ({
+    name: assertion.name, verdict: assertion.passed ? 'pass' : 'fail', evidence: assertion.evidence,
+  })), ...requiredChecks];
+  const combined = combineRequiredChecks(checks.map((item) => item.name), checks);
   return {
-    passed,
-    score: passed ? 1 : 0,
+    ...combined,
     details: {
+      ...combined.details,
       caseId: evalCase.id,
       variant: input.variant,
-      complete: true,
       assertions,
     },
   };
