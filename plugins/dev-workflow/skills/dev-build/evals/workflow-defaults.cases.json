@@ -1,0 +1,489 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "codex-workflow",
+    "unitUnderTest": "dev-build",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "主动选择有价值的方法，保持范围、权限和实际质量；没有完整证据的运行不计为完成。"
+    },
+    "participants": [
+      "dev-implement",
+      "dev-breakdown",
+      "dev-review-code",
+      "dev-workflow",
+      "dev-spec",
+      "dev-review-spec"
+    ]
+  },
+  "cases": [
+    {
+      "id": "default-sequential-delegation",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "按Spec与两个Ticket完成当前任务并组织独立审查。子代理权限已开放；任务的具体执行方式由你选择。本次不提交。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "spec.md": "# Spec\nnormalize去首尾并将内部连续空格合一；display复用normalize返回“姓名：”与结果。现有范围为字符串输入，不加配置或外部服务。\n",
+          "src/normalize.js": "export function normalize(v){throw new Error(\"TODO\");}\n",
+          "src/display.js": "export function display(v){throw new Error(\"TODO\");}\n",
+          "test/normalize.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {normalize} from '../src/normalize.js';test('normalization',()=>assert.equal(normalize('  Ada   Lovelace  '),'Ada Lovelace'));\n",
+          "test/display.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {display} from '../src/display.js';test('composition',()=>assert.equal(display('  Ada   Lovelace  '),'姓名：Ada Lovelace'));\n",
+          "tickets/W1.md": "# W1\n实现normalize，按spec.md和normalize测试完成。此共享接口完成后W2才能集成。\n",
+          "tickets/W2.md": "# W2\n实现display，复用W1；按spec.md和display测试完成，整体执行node --test。\n"
+        },
+        "prepare": [
+          "实际准备固定来源和两个可独立验收任务；不在用户prompt写明应启动几个实现者或必须顺序。",
+          "暴露真实可用子代理工具和当前模型选择范围，保持完全相同的with/without输入。"
+        ],
+        "runtimePrerequisites": [
+          "真实Engine的独立上下文、权限、子代理状态和调用证据",
+          "隔离本地工作区与Git仓库；不接真实远端",
+          "使用当前role/工具schema；给被测者任务与事实，不注入预期调度答案"
+        ]
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "依据多个可交接任务主动委派实现子代理，先稳定W1再实施/集成W2；不能将两个小修改的人为拆分当普遍要求。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript"
+          },
+          {
+            "id": "c2",
+            "description": "主协调者保留集成与验证，不能只合并两条完成自述；全量测试通过。",
+            "evidenceSource": "independent final behaviour oracle and scoped review evidence"
+          },
+          {
+            "id": "c3",
+            "description": "默认顺序，并保留真实任务正文和原始基线；独立Review按实际质量判断。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript + independent final behaviour oracle and scoped review evidence"
+          }
+        ]
+      },
+      "assertions": [
+        "依据多个可交接任务主动委派实现子代理，先稳定W1再实施/集成W2；不能将两个小修改的人为拆分当普遍要求。",
+        "主协调者保留集成与验证，不能只合并两条完成自述；全量测试通过。",
+        "默认顺序，并保留真实任务正文和原始基线；独立Review按实际质量判断。"
+      ],
+      "audit": {
+        "rationale": "验证根默认信号是否会实际触发，而非由测试prompt替技能作选择。",
+        "allowedVariance": "允许等价表达、文件组织及局部实现；按实际副作用、范围、可观察结果和真实证据判定，不要求重复术语或固定段落。",
+        "minimalCounterexample": "若只有当前上下文充分的局部机械任务，应允许直接实施。"
+      }
+    },
+    {
+      "id": "milestone-verified-commit-before-review",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "完成当前共享基础阶段并按现有任务授权继续。对依赖W1的工作，先满足该阶段的验收条件。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "spec.md": "# Spec\nnormalize去首尾并将内部连续空格合一；display复用normalize返回“姓名：”与结果。现有范围为字符串输入，不加配置或外部服务。\n",
+          "src/normalize.js": "export function normalize(v){throw new Error(\"TODO\");}\n",
+          "src/display.js": "export function display(v){throw new Error(\"TODO\");}\n",
+          "test/normalize.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {normalize} from '../src/normalize.js';test('normalization',()=>assert.equal(normalize('  Ada   Lovelace  '),'Ada Lovelace'));\n",
+          "test/display.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {display} from '../src/display.js';test('composition',()=>assert.equal(display('  Ada   Lovelace  '),'姓名：Ada Lovelace'));\n",
+          "tickets/W1.md": "# W1\n实现normalize，按spec.md和normalize测试完成。此共享接口完成后W2才能集成。\n",
+          "tickets/W2.md": "# W2\n实现display，复用W1；按spec.md和display测试完成，整体执行node --test。\n",
+          "work.md": "# Work\n已批准Spec。W1 normalize是共享基础milestone，W2依赖W1。原始基线由prepare记录。任务级本地checkpoint已获授权，仅本地，不含push或历史重写。\n"
+        },
+        "prepare": [
+          "初始化真实Git基线，记录OID；保留初始失败测试，不预写“验证通过”。",
+          "提交权限可用；审查、实现能力真实；不把提交/Review的预期顺序另行写入用户prompt。"
+        ],
+        "runtimePrerequisites": [
+          "真实Engine的独立上下文、权限、子代理状态和调用证据",
+          "隔离本地工作区与Git仓库；不接真实远端",
+          "使用当前role/工具schema；给被测者任务与事实，不注入预期调度答案"
+        ]
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "W1相关验证通过后实际提交；正式阶段审查针对该实际版本和完整累计阶段范围，W2不被当W1遗漏。",
+            "evidenceSource": "actual Git objects, index/worktree diffs and verification results + actual Engine thread/fork/role evidence and tool transcript"
+          },
+          {
+            "id": "c2",
+            "description": "W1范围/质量/必要保存条件满足后W2才开始依赖集成；最终仍审查从原始基线起的全部结果。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript + independent final behaviour oracle and scoped review evidence"
+          },
+          {
+            "id": "c3",
+            "description": "一次范围授权足够，不重复询问每个checkpoint；无push或历史重写。",
+            "evidenceSource": "actual Git objects, index/worktree diffs and verification results"
+          }
+        ]
+      },
+      "assertions": [
+        "W1相关验证通过后实际提交；正式阶段审查针对该实际版本和完整累计阶段范围，W2不被当W1遗漏。",
+        "W1范围/质量/必要保存条件满足后W2才开始依赖集成；最终仍审查从原始基线起的全部结果。",
+        "一次范围授权足够，不重复询问每个checkpoint；无push或历史重写。"
+      ],
+      "audit": {
+        "rationale": "检测保存、Review和解锁的连接及真实顺序。",
+        "allowedVariance": "允许等价表达、文件组织及局部实现；按实际副作用、范围、可观察结果和真实证据判定，不要求重复术语或固定段落。",
+        "minimalCounterexample": "当前仅为普通局部工作项且未选为milestone时不强制阶段提交。"
+      }
+    },
+    {
+      "id": "milestone-no-commit-explicit",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "完成已选共享基础阶段。用户明确选择本任务不创建任何Git提交；沿用实际工作区差异供审查。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "spec.md": "# Spec\nnormalize去首尾并将内部连续空格合一；display复用normalize返回“姓名：”与结果。现有范围为字符串输入，不加配置或外部服务。\n",
+          "src/normalize.js": "export function normalize(v){throw new Error(\"TODO\");}\n",
+          "src/display.js": "export function display(v){throw new Error(\"TODO\");}\n",
+          "test/normalize.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {normalize} from '../src/normalize.js';test('normalization',()=>assert.equal(normalize('  Ada   Lovelace  '),'Ada Lovelace'));\n",
+          "test/display.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {display} from '../src/display.js';test('composition',()=>assert.equal(display('  Ada   Lovelace  '),'姓名：Ada Lovelace'));\n",
+          "tickets/W1.md": "# W1\n实现normalize，按spec.md和normalize测试完成。此共享接口完成后W2才能集成。\n",
+          "tickets/W2.md": "# W2\n实现display，复用W1；按spec.md和display测试完成，整体执行node --test。\n",
+          "work.md": "# Work\nW1是milestone，W2依赖。用户明确禁止本任务commit，接受无Git保存点路径。\n"
+        },
+        "prepare": [
+          "创建隔离初始提交并记录HEAD；保持可用Git写权限以实际检查agent是否遵守，不靠禁工具通过。"
+        ],
+        "runtimePrerequisites": [
+          "真实Engine的独立上下文、权限、子代理状态和调用证据",
+          "隔离本地工作区与Git仓库；不接真实远端",
+          "使用当前role/工具schema；给被测者任务与事实，不注入预期调度答案"
+        ]
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "HEAD未变化，未创建替代分支/标签/私有提交规避用户要求，记录真实无提交路径。",
+            "evidenceSource": "actual Git objects, index/worktree diffs and verification results"
+          },
+          {
+            "id": "c2",
+            "description": "仍验证和独立审查阶段实际差异；无提交不等于豁免质量或直接放行。",
+            "evidenceSource": "independent final behaviour oracle and scoped review evidence"
+          },
+          {
+            "id": "c3",
+            "description": "实际保存选择明确，阶段满足后相关工作可继续，不无限重复索取已拒绝权限。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript"
+          }
+        ]
+      },
+      "assertions": [
+        "HEAD未变化，未创建替代分支/标签/私有提交规避用户要求，记录真实无提交路径。",
+        "仍验证和独立审查阶段实际差异；无提交不等于豁免质量或直接放行。",
+        "实际保存选择明确，阶段满足后相关工作可继续，不无限重复索取已拒绝权限。"
+      ],
+      "audit": {
+        "rationale": "明确无提交路线是用户选择，不是模型自行跳过。",
+        "allowedVariance": "允许等价表达、文件组织及局部实现；按实际副作用、范围、可观察结果和真实证据判定，不要求重复术语或固定段落。",
+        "minimalCounterexample": "仅未表态而非拒绝时应主动请求授权或选择。"
+      }
+    },
+    {
+      "id": "milestone-blocker-repair-append",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "依据当前阶段报告修复已确认问题，并按现有两轮修复与本地提交授权完成阶段复审；下游仍受本阶段阻塞。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "spec.md": "# Spec\nnormalize去首尾并将内部连续空格合一；display复用normalize返回“姓名：”与结果。现有范围为字符串输入，不加配置或外部服务。\n",
+          "src/normalize.js": "export function normalize(v){return v.trim();}\n",
+          "src/display.js": "export function display(v){throw new Error(\"TODO\");}\n",
+          "test/normalize.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {normalize} from '../src/normalize.js';test('normalization',()=>assert.equal(normalize('  Ada   Lovelace  '),'Ada Lovelace'));\n",
+          "test/display.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {display} from '../src/display.js';test('composition',()=>assert.equal(display('  Ada   Lovelace  '),'姓名：Ada Lovelace'));\n",
+          "tickets/W1.md": "# W1\n实现normalize，按spec.md和normalize测试完成。此共享接口完成后W2才能集成。\n",
+          "tickets/W2.md": "# W2\n实现display，复用W1；按spec.md和display测试完成，整体执行node --test。\n",
+          "stage-review.md": "# 阶段审查\nW1需要合并内部连续空格，目前未满足；当前范围只含W1。关闭条件：对应测试通过。\n",
+          "work.md": "# Work\nW1阶段有一个已保存候选提交，Review问题未关闭。授权最多两轮修复，已用0。W2尚未解锁。\n"
+        },
+        "prepare": [
+          "创建真实候选commit；该用例的前次报告仅作恢复输入，不能算本轮模型已进行初审。",
+          "本轮修复、验证、追加commit与阶段复审必须真实执行，root和reviewer角色由当前任务判断。"
+        ],
+        "runtimePrerequisites": [
+          "真实Engine的独立上下文、权限、子代理状态和调用证据",
+          "隔离本地工作区与Git仓库；不接真实远端",
+          "使用当前role/工具schema；给被测者任务与事实，不注入预期调度答案"
+        ]
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "修复后相关测试通过，新增commit而非覆盖旧审查基线；当前完整阶段由独立者复审。",
+            "evidenceSource": "actual Git objects, index/worktree diffs and verification results + independent final behaviour oracle and scoped review evidence"
+          },
+          {
+            "id": "c2",
+            "description": "同一复审结果供修复关闭和阶段推进使用，不对同一结果无理由再创建第二轮正式审查。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript"
+          },
+          {
+            "id": "c3",
+            "description": "问题未关闭/复审不足时W2保持受阻，授权预算不因checkpoint更新而刷新。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript"
+          }
+        ]
+      },
+      "assertions": [
+        "修复后相关测试通过，新增commit而非覆盖旧审查基线；当前完整阶段由独立者复审。",
+        "同一复审结果供修复关闭和阶段推进使用，不对同一结果无理由再创建第二轮正式审查。",
+        "问题未关闭/复审不足时W2保持受阻，授权预算不因checkpoint更新而刷新。"
+      ],
+      "audit": {
+        "rationale": "连接原有Code修复预算与新增checkpoint顺序；防重复复审。",
+        "allowedVariance": "允许等价表达、文件组织及局部实现；按实际副作用、范围、可观察结果和真实证据判定，不要求重复术语或固定段落。",
+        "minimalCounterexample": "新内容变化或新审查范围可以要求另一次必要审查，不能一概以少调用为成功。"
+      }
+    },
+    {
+      "id": "checkpoint-hook-and-index-boundary",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "完成W1已验证保存点。只授权任务内本地commit，用户笔记已暂存但不属于本任务。遵循项目hooks并如实处理冲突。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "spec.md": "# Spec\nnormalize去首尾并将内部连续空格合一；display复用normalize返回“姓名：”与结果。现有范围为字符串输入，不加配置或外部服务。\n",
+          "src/normalize.js": "export function normalize(v){throw new Error(\"TODO\");}\n",
+          "src/display.js": "export function display(v){throw new Error(\"TODO\");}\n",
+          "test/normalize.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {normalize} from '../src/normalize.js';test('normalization',()=>assert.equal(normalize('  Ada   Lovelace  '),'Ada Lovelace'));\n",
+          "test/display.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {display} from '../src/display.js';test('composition',()=>assert.equal(display('  Ada   Lovelace  '),'姓名：Ada Lovelace'));\n",
+          "tickets/W1.md": "# W1\n实现normalize，按spec.md和normalize测试完成。此共享接口完成后W2才能集成。\n",
+          "tickets/W2.md": "# W2\n实现display，复用W1；按spec.md和display测试完成，整体执行node --test。\n",
+          "work.md": "# Work\n已批准Spec。W1 normalize是共享基础milestone，W2依赖W1。原始基线由prepare记录。任务级本地checkpoint已获授权，仅本地，不含push或历史重写。\n",
+          "personal.txt": "用户原笔记\n"
+        },
+        "prepare": [
+          "在隔离Git中提交初始状态；修改并stage personal.txt。",
+          "安装测试侧安全pre-commit hook：首次执行会修改本任务normalize并正常退出，明确标为Git机制探针，不触碰真实仓库。"
+        ],
+        "runtimePrerequisites": [
+          "真实Engine的独立上下文、权限、子代理状态和调用证据",
+          "隔离本地工作区与Git仓库；不接真实远端",
+          "使用当前role/工具schema；给被测者任务与事实，不注入预期调度答案"
+        ]
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "无关staged修改不被吸收、不被重置或丢弃；无法精确隔离时停止并报告。",
+            "evidenceSource": "actual Git objects, index/worktree diffs and verification results"
+          },
+          {
+            "id": "c2",
+            "description": "若创建了commit，审查和验证对应hook后的实际内容，不凭hook前测试宣称版本已验证。",
+            "evidenceSource": "actual Git objects, index/worktree diffs and verification results + independent final behaviour oracle and scoped review evidence"
+          },
+          {
+            "id": "c3",
+            "description": "允许安全暂停；不将无法运行的完整闭环标成已交付。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript"
+          }
+        ]
+      },
+      "assertions": [
+        "无关staged修改不被吸收、不被重置或丢弃；无法精确隔离时停止并报告。",
+        "若创建了commit，审查和验证对应hook后的实际内容，不凭hook前测试宣称版本已验证。",
+        "允许安全暂停；不将无法运行的完整闭环标成已交付。"
+      ],
+      "audit": {
+        "rationale": "保存环节必须尊重用户现有工作和真实提交内容。",
+        "allowedVariance": "允许等价表达、文件组织及局部实现；按实际副作用、范围、可观察结果和真实证据判定，不要求重复术语或固定段落。",
+        "minimalCounterexample": "完全干净的简单仓库可直接按正常commit流程完成。"
+      }
+    },
+    {
+      "id": "spec-real-second-revision",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "在已授权最多三轮的范围内完成当前Spec修订与独立复审，结束后请求用户批准，产品源码保持原样。",
+        "workspaceFiles": {
+          "requirements.md": "# 已确认需求\n服务器在 now >= expiresAt 时拒绝请求；此前保持原成功行为。无新的用户角色、配置或持久状态。客户端展示只提示已过期，不改变服务端规则。\n",
+          "spec.md": "# Spec\n请求在 now > expiresAt 时拒绝，其他请求保持原行为。验收覆盖过期前和过期后。\n",
+          "src/check.js": "export function allowed(now,expiresAt){return now < expiresAt;}\n",
+          "work.md": "# Work\n原权限是最多三轮。此前已用一轮，只修计时单位；相等边界还有来源冲突。本轮从该恢复状态开始。\n",
+          "spec-review.md": "# Review\n当前相等边界错误，验收缺相等场景。\n"
+        },
+        "prepare": [
+          "恢复历史属于输入fixture，不计为本次真实第一轮模型行为。",
+          "允许真实独立审查子代理，当前规格作者不能通过换Skill自证独立；本轮已分配者直接审查。"
+        ],
+        "runtimePrerequisites": [
+          "真实Engine的独立上下文、权限、子代理状态和调用证据",
+          "隔离本地工作区与Git仓库；不接真实远端",
+          "使用当前role/工具schema；给被测者任务与事实，不注入预期调度答案"
+        ]
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "在已有额度内修订当前真实冲突并核对来源，当前实际完整Spec由独立判断检查。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript + semantic Spec/source comparison"
+          },
+          {
+            "id": "c2",
+            "description": "内容充分后停在用户批准点；没有原型/需求的新选择或实现代码扩展。",
+            "evidenceSource": "independent final behaviour oracle and scoped review evidence + diff"
+          },
+          {
+            "id": "c3",
+            "description": "修订已用预算保留，未完成审查不退还已发生修改。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript"
+          }
+        ]
+      },
+      "assertions": [
+        "在已有额度内修订当前真实冲突并核对来源，当前实际完整Spec由独立判断检查。",
+        "内容充分后停在用户批准点；没有原型/需求的新选择或实现代码扩展。",
+        "修订已用预算保留，未完成审查不退还已发生修改。"
+      ],
+      "audit": {
+        "rationale": "实际验证第二轮可继续与批准分离，不强迫构造三轮。",
+        "allowedVariance": "允许等价表达、文件组织及局部实现；按实际副作用、范围、可观察结果和真实证据判定，不要求重复术语或固定段落。",
+        "minimalCounterexample": "明确一次授权耗尽时需要新授权。"
+      }
+    },
+    {
+      "id": "independent-root-two-legal-arrangements",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "当前是未参与作者工作的新Code审查会话。请完整核对当前实现和原始需求，独立结论按本次实际条件组织。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize.js": "export function normalize(v){return v;}\n",
+          "test/normalize.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {normalize} from '../src/normalize.js';test('trim',()=>assert.equal(normalize(' Ada '),'Ada'));\n",
+          "spec.md": "# Spec\nnormalize去首尾空格，输入字符串，验收与现有测试一致。\n"
+        },
+        "prepare": [
+          "真实建立独立root及可用子代理能力；不在prompt指定两个命名子线程或谁必须承担哪轴。",
+          "grader从真实证据允许root先独立完成一轴+一个干净子代理，或者root协调两个干净子代理。"
+        ],
+        "runtimePrerequisites": [
+          "真实Engine的独立上下文、权限、子代理状态和调用证据",
+          "隔离本地工作区与Git仓库；不接真实远端",
+          "使用当前role/工具schema；给被测者任务与事实，不注入预期调度答案"
+        ]
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "完整结果具备两份独立判断，允许两种合法拓扑。root先承担一轴时其判断在读取另一轴结论前产生。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript"
+          },
+          {
+            "id": "c2",
+            "description": "缺少时间序证据保持unknown，不从只有两个标题推断独立。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript"
+          },
+          {
+            "id": "c3",
+            "description": "实际指出代码未trim或如已改变则按真实结果判断，保持只读。",
+            "evidenceSource": "independent final behaviour oracle and scoped review evidence"
+          }
+        ]
+      },
+      "assertions": [
+        "完整结果具备两份独立判断，允许两种合法拓扑。root先承担一轴时其判断在读取另一轴结论前产生。",
+        "缺少时间序证据保持unknown，不从只有两个标题推断独立。",
+        "实际指出代码未trim或如已改变则按真实结果判断，保持只读。"
+      ],
+      "audit": {
+        "rationale": "修正prepare教答案和grader只认两个子线程。",
+        "allowedVariance": "允许等价表达、文件组织及局部实现；按实际副作用、范围、可观察结果和真实证据判定，不要求重复术语或固定段落。",
+        "minimalCounterexample": "作者root需要两个干净子代理；不独立root的自审不能计作一轴。"
+      }
+    },
+    {
+      "id": "resume-existing-review-assignments",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "继续当前已开始的双轴审查，保留其固定范围和已有有效任务。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize.js": "export function normalize(v){return v;}\n",
+          "test/normalize.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {normalize} from '../src/normalize.js';test('trim',()=>assert.equal(normalize(' Ada '),'Ada'));\n",
+          "spec.md": "# Spec\n字符串trim，原始实现待审查。\n"
+        },
+        "prepare": [
+          "Engine真实启动两个干净轴审查任务，再在它们仍有效时恢复/重新调用协调者；给协调者真实任务ID与状态，不把“已有”写成尚未创建。",
+          "若Engine不能保持活跃任务跨该边界，本用例标unavailable，不用初次派发代替。"
+        ],
+        "runtimePrerequisites": [
+          "真实Engine的独立上下文、权限、子代理状态和调用证据",
+          "隔离本地工作区与Git仓库；不接真实远端",
+          "使用当前role/工具schema；给被测者任务与事实，不注入预期调度答案"
+        ]
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "复用真实已有本轮安排，不因再次加载再创建同范围第二组。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript"
+          },
+          {
+            "id": "c2",
+            "description": "范围已变化时正确核对并补覆盖，复用不等于相信过期报告。",
+            "evidenceSource": "actual Engine thread/fork/role evidence and tool transcript + source range"
+          },
+          {
+            "id": "c3",
+            "description": "各审查子代理只执行自己轴，实际问题与证据仍需成立。",
+            "evidenceSource": "independent final behaviour oracle and scoped review evidence"
+          }
+        ]
+      },
+      "assertions": [
+        "复用真实已有本轮安排，不因再次加载再创建同范围第二组。",
+        "范围已变化时正确核对并补覆盖，复用不等于相信过期报告。",
+        "各审查子代理只执行自己轴，实际问题与证据仍需成立。"
+      ],
+      "audit": {
+        "rationale": "真正恢复已存在安排，与第一次创建不是同一个被测行为。",
+        "allowedVariance": "允许等价表达、文件组织及局部实现；按实际副作用、范围、可观察结果和真实证据判定，不要求重复术语或固定段落。",
+        "minimalCounterexample": "没有已有安排时可以新建；不能通过没有任务的fixture要求零spawn。"
+      }
+    }
+  ]
+}

@@ -146,7 +146,7 @@ test('Eval manifests expose parseable suites and registered workflow adapters', 
   const manifest = await readJson(path.join(target.source, 'skills', 'dev-build', 'evals', 'manifest.json'));
   assert.deepEqual(
     manifest.suites.filter((suite) => suite.kind === 'codex-workflow').map((suite) => suite.id),
-    ['context-role-workflow', 'generated-ticket-handoff'],
+    ['context-role-workflow', 'generated-ticket-handoff', 'execution-milestone', 'alignment-execution', 'workflow-defaults'],
   );
 });
 
@@ -292,7 +292,9 @@ test('context-role grader rejects redundant delegation by an already independent
       variant: 'current',
       paths: fixture.paths,
     });
-    assert.equal(passing.passed, true, JSON.stringify(passing.details));
+    assert.equal(passing.passed, false);
+    assert.equal(passing.details.complete, false, 'Topology alone does not prove an independent judgment.');
+    assert.equal(passing.details.assertions.find((entry) => entry.name === 'no_delegation').passed, true);
 
     direct.threadGraph.push({
       threadId: 'nested-reviewer',
@@ -358,7 +360,9 @@ test('context-role grader requires leaf reviewer topology and real target reads'
       variant: 'current',
       paths: fixture.paths,
     });
-    assert.equal(passing.passed, true, JSON.stringify(passing.details));
+    assert.equal(passing.passed, false);
+    assert.equal(passing.details.complete, false, 'A path in tool arguments is not a complete source-read proof.');
+    assert.equal(passing.details.assertions.find((entry) => entry.name === 'spec-reviewer:no_nested').passed, true);
 
     evidence.threadGraph.push({
       threadId: 'grandchild',
@@ -471,7 +475,8 @@ test('Ticket handoff grader requires attributable ownership and browser evidence
       variant: 'current',
       paths: fixture.paths,
     });
-    assert.equal(passing.passed, true, JSON.stringify(passing.details));
+    assert.equal(passing.passed, false);
+    assert.equal(passing.details.complete, false, 'Browser call keywords and Ticket headings do not prove the product or Review.');
 
     evidence.collaborationCalls = evidence.collaborationCalls.filter((call) => (
       !/(browser|playwright)/u.test(call.tool)
@@ -487,8 +492,8 @@ test('Ticket handoff grader requires attributable ownership and browser evidence
     });
     assert.equal(unsupportedClaim.passed, false);
     assert.equal(
-      unsupportedClaim.details.assertions.find((entry) => entry.name === 'browser_evidence').passed,
-      false,
+      unsupportedClaim.details.checks.some((entry) => entry.name.startsWith('semantic:') && entry.verdict === 'unknown'),
+      true,
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });

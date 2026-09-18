@@ -609,6 +609,7 @@ export async function runEvalSpec(
                   codexRuntime: runtime,
                   codexBin: builtinProviderDependencies.codexBin,
                   processManagement,
+                  protectedEvalRoots: [specRoot, calculated.paths.outputDir],
                 })
           if (options.signal?.aborted) throw abortError()
           const sanitized = redactValue(providerResult, secrets())

@@ -401,7 +401,7 @@ function seatbeltPath(value: string): string {
   return JSON.stringify(value);
 }
 
-function hostReadContainmentProfile(options: {
+export function hostReadContainmentProfile(options: {
   forbiddenHostRoots: string[];
   writableRoots: string[];
   unwritableRoots: string[];
@@ -420,7 +420,7 @@ function hostReadContainmentProfile(options: {
   ].join('\n');
 }
 
-async function assertHostReadContainmentAvailable(profile: string): Promise<void> {
+export async function assertHostReadContainmentAvailable(profile: string): Promise<void> {
   if (process.platform !== 'darwin') {
     throw new HostReadContainmentError(
       `Codex conversation provider cannot start: OS-enforced host read containment is unavailable on ${process.platform}.`,

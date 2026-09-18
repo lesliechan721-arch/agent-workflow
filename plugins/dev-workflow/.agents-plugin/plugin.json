@@ -31,7 +31,9 @@
   "scripts": {
     "tests": {
       "node": [
-        "./scripts/contract.test.mjs"
+        "./scripts/contract.test.mjs",
+        "./scripts/workflow-evaluation.test.mjs",
+        "./scripts/workflow-role-evidence.test.mjs"
       ]
     }
   }
