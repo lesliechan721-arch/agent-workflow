@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.20",
+  "catalogVersion": "0.1.0-beta.21",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "de60a74cf481eec07067a5b75cf3160a4073acad"
+    "sourceHead": "00cd7e7fed474258173cdd8ec5ac960dd24d84bb"
   },
   "entries": [
     {
@@ -113,7 +113,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.7",
+      "version": "0.1.0-beta.8",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -124,9 +124,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:96b20b1797b58767d55211c23446714019e4fee1675fbdb9d370c516dc66ca91",
-      "manifestDigest": "sha256:c05aa95e3fe0f79f4cfaaabbbdf0c5f4af503239aa1a8aa8d52016583d520938",
-      "contentDigest": "sha256:5fde2f970ae3e74012c90ee627e1d7cd503c951d9936d5d6c9d2432ce2841ea9"
+      "artifactDigest": "sha256:226b380198c1cfb68139aa988e148d01e8d93705907b71e4785abd24f3a9b677",
+      "manifestDigest": "sha256:ece97c5bbc60b6050fdd02d2da7298714c3547d3e0b4ac818b1712408ff18689",
+      "contentDigest": "sha256:aa702cf544d49d585861721c70985fa7c09935004992966338b2c907e2e35b16"
     },
     {
       "name": "aw-development-toolkit",
@@ -282,7 +282,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.5",
+      "version": "0.1.0-beta.6",
       "dependencies": [
         "ask-me"
       ],
@@ -294,9 +294,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:24d625152c5611b85dd42a4d7a4b0133e66ff77417be8b50e824d57a104cbd9f",
-      "manifestDigest": "sha256:c462812601db1ba9075742a100271214be70c63d298b2522f66fb3b6e62c8adb",
-      "contentDigest": "sha256:901c72cc961660157884172f8dcc02905ac90f30bca23c03af878b01267f63d2"
+      "artifactDigest": "sha256:979d58fbdca6155149b6b18b56979146bb289187dbd51913da2fa1184c740bc9",
+      "manifestDigest": "sha256:2eaefd59dfd0f6f39588c863d127546049eafdbd93710c8cc4c9f1e8343f5a45",
+      "contentDigest": "sha256:9c4112c5ed2fd743f6254250c77fbe51761bc47a9dbfc25b6eba8ac2df0f00c9"
     },
     {
       "name": "git-toolkit",
