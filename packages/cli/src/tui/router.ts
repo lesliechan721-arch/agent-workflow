@@ -42,6 +42,7 @@ export type ConfigResumeRoute =
 
 export type TuiRoute =
   | { name: 'home' }
+  | { name: 'projectStatus' }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
   | {
       name: 'pluginWriteTask';
@@ -138,6 +139,7 @@ export type TuiRoute =
   | {
       name: 'configUnavailable';
       pluginId: string;
+      overviewFrameId?: string;
       layer?: { scope: Scope };
       invalidStores?: ConfigInvalidStoreEvidence[];
       diagnosticCode?: string;
@@ -376,6 +378,52 @@ export class TuiRouter {
     return this.snapshot;
   }
 
+  configOverviewFrameId(flowId: string | undefined, pluginId: string): string | undefined {
+    if (flowId) {
+      const flow = this.#flows.get(flowId);
+      if (!flow || flow.kind !== 'configEdit' || !this.#activeFlowDescendsFrom(flowId)) return undefined;
+    } else if (this.#activeFlowId) return undefined;
+    const matches = this.#stack.filter((frame) => frame.route.name === 'configFields'
+      && frame.route.pluginId === pluginId
+      && frame.flowId === flowId);
+    return matches.length === 1 ? matches[0]!.id : undefined;
+  }
+
+  returnToConfigOverview(
+    flowId: string | undefined,
+    overviewFrameId: string | undefined,
+    pluginId: string,
+    context: TuiPageContext = {},
+  ): TuiRouterSnapshot | undefined {
+    const flow = flowId ? this.#flows.get(flowId) : undefined;
+    if (flowId && (!flow || flow.kind !== 'configEdit' || !this.#activeFlowDescendsFrom(flowId))) {
+      return undefined;
+    }
+    if (!flowId && this.#activeFlowId) return undefined;
+    const matchesOverview = (frame: NavigationFrame): boolean => frame.route.name === 'configFields'
+      && frame.route.pluginId === pluginId
+      && frame.flowId === flowId;
+    const frameIndex = overviewFrameId
+      ? this.#stack.findIndex((frame) => frame.id === overviewFrameId && matchesOverview(frame))
+      : -1;
+    const frame = frameIndex >= 0 ? this.#stack[frameIndex] : undefined;
+    if (!frame
+      || frame.route.name !== 'configFields'
+      || frame.route.pluginId !== pluginId
+      || frame.flowId !== flowId) {
+      return undefined;
+    }
+    this.#stack.splice(frameIndex + 1);
+    frame.context = structuredClone({ ...frame.context, ...context });
+    if (flowId) {
+      const descendants = this.#flowDescendants(flowId);
+      descendants.delete(flowId);
+      for (const descendant of descendants) this.#flows.delete(descendant);
+    }
+    this.#activeFlowId = flowId;
+    return this.snapshot;
+  }
+
   #finishFlow(
     flow: TuiFlowScope,
     target?: TuiRoute,
@@ -388,8 +436,45 @@ export class TuiRouter {
       return undefined;
     }
     const descendants = this.#flowDescendants(flow.id);
-    this.#stack.splice(origin + 1);
     const originFrame = this.#stack[origin]!;
+    if (flow.kind === 'sourceRecovery'
+      && flow.parentFlowId
+      && originFrame.route.name === 'configUnavailable'
+      && originFrame.route.overviewFrameId) {
+      const overviewFrameId = originFrame.route.overviewFrameId;
+      const pluginId = originFrame.route.pluginId;
+      const overview = this.#stack.findIndex((frame) => frame.id === overviewFrameId
+        && frame.flowId === flow.parentFlowId
+        && frame.route.name === 'configFields'
+        && frame.route.pluginId === pluginId);
+      if (overview < 0 || overview >= origin) return undefined;
+      const overviewFrame = this.#stack[overview]!;
+      const nextRoute = structuredClone(target ?? flow.returnTarget);
+      this.#stack.splice(overview + 1);
+      if (nextRoute.name === 'configFields'
+        && nextRoute.pluginId === originFrame.route.pluginId) {
+        overviewFrame.route = nextRoute;
+        overviewFrame.context = structuredClone(flow.returnContext ?? overviewFrame.context);
+      } else {
+        this.#stack.push({
+          id: `frame-${this.#nextFrameId++}`,
+          route: nextRoute,
+          context: structuredClone(flow.returnContext ?? {}),
+          flowId: flow.parentFlowId,
+        });
+      }
+      for (const flowId of descendants) this.#flows.delete(flowId);
+      this.#activeFlowId = flow.parentFlowId;
+      if (terminalRoute) {
+        this.#stack.push({
+          id: `frame-${this.#nextFrameId++}`,
+          route: structuredClone(terminalRoute),
+          context: {},
+        });
+      }
+      return this.snapshot;
+    }
+    this.#stack.splice(origin + 1);
     const nextRoute = structuredClone(target ?? flow.returnTarget);
     this.#stack[origin] = {
       id: originFrame.id,

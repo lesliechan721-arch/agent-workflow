@@ -175,6 +175,21 @@ async function openChangedProjectSave(value: TuiController, columns: number, row
 }
 
 describe('TUI config experience v7', () => {
+  it.each([[60, 18], [80, 24]] as const)(
+    'keeps each current config value and its source readable at %ix%i',
+    async (columns, rows) => {
+      const { value } = controller();
+      await value.load();
+      value.push({ name: 'pluginDetail', pluginId });
+      value.beginConfigFlow(pluginId);
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+      await nextTurn(4);
+
+      expect(instance.lastFrame()).toContain('当前生效：团队值（个人默认）');
+      expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
+    },
+  );
+
   it('starts with effective values, edits before choosing an explicit legal destination', async () => {
     const { value } = controller();
     await value.load();
@@ -205,6 +220,48 @@ describe('TUI config experience v7', () => {
       name: 'configFields', layer: { scope: 'effective' },
     });
     expect(instance.lastFrame()).toContain('拟保存：当前项目');
+    expect(instance.lastFrame()).toContain('strict · 拟保存：当前项目');
+  });
+
+  it('returns a preset target to the original config overview in the same flow', async () => {
+    const { value } = controller();
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId });
+    value.beginConfigFlow(pluginId);
+    const flowId = value.snapshot.router.currentFlowId;
+    const overviewFrameId = value.snapshot.router.currentFrameId;
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+
+    await input(instance, '\u001B[C', '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configLayer', presetId: 'declared' });
+    await input(instance, '\r');
+    await nextTurn(3);
+
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(value.snapshot.router.currentFrameId).toBe(overviewFrameId);
+    expect(value.snapshot.router.currentFlowId).toBe(flowId);
+    expect(instance.lastFrame()).toContain('safe · 拟保存：当前项目');
+  });
+
+  it('opens every config group from the pinned basic-key selector', async () => {
+    const { value } = controller();
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId });
+    value.beginConfigFlow(pluginId);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+
+    await input(instance, '\t', '\u001B[B', '\r');
+    expect(instance.lastFrame()).toContain('选择设置分组');
+    expect(instance.lastFrame()).toContain('全部分组和快速方案');
+    expect(instance.lastFrame()).toContain('插件设置');
+    expect(instance.lastFrame()).toContain('快速方案');
+
+    await input(instance, '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(value.snapshot.router.current.context.configGroupId).toBe('@presets');
+    expect(instance.lastFrame()).toContain('插件方案');
   });
 
   it('keeps a user-only field out of the project destination list', async () => {

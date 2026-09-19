@@ -165,7 +165,7 @@ async function focusAction(
 ): Promise<void> {
   for (let index = 0; index < limit; index += 1) {
     const frame = instance.lastFrame();
-    if (frame?.includes(`› ${label}`) || frame?.includes(`› ○ ${label}`)
+    if (frame?.includes(`› ${label}`) || frame?.includes(`› [${label}]`) || frame?.includes(`› ○ ${label}`)
       || frame?.includes(`› ● ${label}`)) return;
     await write(instance, '\u001B[B');
   }

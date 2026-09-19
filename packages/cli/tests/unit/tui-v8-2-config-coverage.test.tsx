@@ -211,6 +211,8 @@ describe('TUI v8.2 config coverage', () => {
       await nextTurn(3);
       expect(value.snapshot.router.current.route.name).toBe('configFields');
       expect(instance.lastFrame()).toContain('拟保存：个人默认');
+      expect(instance.lastFrame()).toContain('将更新 · 拟保存：个人默认');
+      expect(instance.lastFrame()).not.toContain(privateValue);
       await input(instance, 's', '\u001B[B', '\r');
       for (let index = 0; index < 12
         && value.snapshot.router.current.route.name === 'reviewPreparing'; index += 1) {

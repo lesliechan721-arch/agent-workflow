@@ -138,6 +138,26 @@ describe('TUI route registry', () => {
     });
   });
 
+  it('requires an exact unique frame when returning to a config overview', () => {
+    const router = new TuiRouter();
+    router.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    router.beginConfigFlow('official/demo');
+    router.push({ name: 'configFields', pluginId: 'official/demo', layer: { scope: 'effective' } });
+    const flowId = router.snapshot.currentFlowId!;
+    const overviewFrameId = router.snapshot.currentFrameId;
+
+    expect(router.configOverviewFrameId(flowId, 'official/demo')).toBe(overviewFrameId);
+    router.push({ name: 'configFields', pluginId: 'official/demo', layer: { scope: 'user' } });
+    const duplicateDepth = router.snapshot.depth;
+
+    expect(router.configOverviewFrameId(flowId, 'official/demo')).toBeUndefined();
+    expect(router.returnToConfigOverview(flowId, undefined, 'official/demo')).toBeUndefined();
+    expect(router.snapshot.depth).toBe(duplicateDepth);
+    expect(router.returnToConfigOverview(flowId, overviewFrameId, 'official/demo')?.current.route).toEqual({
+      name: 'configFields', pluginId: 'official/demo', layer: { scope: 'effective' },
+    });
+  });
+
   it.each([
     [{ name: 'pluginList', mode: 'installed' } as const,
       { name: 'pluginDetail', pluginId: 'removed' } as const,

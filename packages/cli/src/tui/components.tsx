@@ -233,6 +233,31 @@ export function StatusLabel(props: {
   );
 }
 
+export type StatusBadgeSymbol = '✓' | '○' | '!' | '↑' | '?';
+
+export interface StatusBadgeItem {
+  key: string;
+  label: ReactNode;
+  symbol: StatusBadgeSymbol;
+  status?: TuiStatus;
+}
+
+export function StatusBadge(props: {
+  items?: StatusBadgeItem[];
+  children?: ReactNode;
+}): React.JSX.Element {
+  return (
+    <Box>
+      {props.items?.map((item) => (
+        <Box key={item.key} marginRight={1} flexShrink={0}>
+          <Text color={getTuiStatusColor(item.status ?? 'muted')}>[{item.symbol} {item.label}]</Text>
+        </Box>
+      ))}
+      {props.children}
+    </Box>
+  );
+}
+
 export interface SemanticCardProps {
   children?: ReactNode;
   title?: ReactNode;
@@ -362,6 +387,40 @@ function diagnosticDetailRows(diagnostic: DiagnosticSummaryViewModel): Diagnosti
       value: sanitizeDiagnosticText(check),
     })),
   ];
+}
+
+function displayWidthChunks(value: string, width: number): string[] {
+  const availableWidth = Math.max(1, Math.floor(Number.isFinite(width) ? width : 1));
+  return value.split('\n').flatMap((sourceLine) => {
+    if (sourceLine.length === 0) return [''];
+    const chunks: string[] = [];
+    let chunk = '';
+    let chunkWidth = 0;
+    for (const character of sourceLine) {
+      const characterWidth = stringWidth(character);
+      if (chunk && chunkWidth + characterWidth > availableWidth) {
+        chunks.push(chunk);
+        chunk = '';
+        chunkWidth = 0;
+      }
+      chunk += character;
+      chunkWidth += characterWidth;
+    }
+    if (chunk) chunks.push(chunk);
+    return chunks;
+  });
+}
+
+export function diagnosticDetailLines(
+  diagnostic: DiagnosticSummaryViewModel,
+  width: number,
+): string[] {
+  const lineWidth = Math.max(1, Math.floor(Number.isFinite(width) ? width : 1));
+  return diagnosticDetailRows(diagnostic).flatMap((row) => {
+    const prefix = `${row.label}: `;
+    const valueWidth = Math.max(1, lineWidth - stringWidth(prefix));
+    return displayWidthChunks(row.value, valueWidth).map((chunk) => `${prefix}${chunk}`);
+  });
 }
 
 export function diagnosticDetailRowCount(diagnostic: DiagnosticSummaryViewModel): number {
@@ -509,20 +568,21 @@ export interface PluginListRowProps {
   sourceLabel: ReactNode;
   description: ReactNode;
   attention?: ReactNode;
-  placementSummary: ReactNode;
-  statusLabel: ReactNode;
-  status: TuiStatus;
+  placementSummary?: ReactNode;
+  statusLabel?: ReactNode;
+  status?: TuiStatus;
+  tags?: ReactNode;
   focused?: boolean;
   anchored?: boolean;
 }
 
 export function PluginListRow(props: PluginListRowProps): React.JSX.Element {
-  const color = getTuiStatusColor(props.status);
+  const color = props.status ? getTuiStatusColor(props.status) : tuiTheme.colors.text;
   return (
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor={props.focused ? tuiTheme.colors.accent : color}
+      borderColor={props.focused ? tuiTheme.colors.accent : tuiTheme.colors.border}
       backgroundColor={props.focused ? tuiTheme.colors.selectionBackground : undefined}
       paddingX={1}
     >
@@ -535,15 +595,103 @@ export function PluginListRow(props: PluginListRowProps): React.JSX.Element {
         <Box flexShrink={0} marginLeft={1}>
           <Text color={tuiTheme.colors.muted} wrap="truncate-end">{props.sourceLabel}</Text>
         </Box>
-        <Box flexShrink={0} marginLeft={1}>
-          <Text color={color} wrap="truncate-end">{props.statusLabel}</Text>
-        </Box>
+        {!props.tags && props.statusLabel
+          ? <Box flexShrink={0} marginLeft={1}>
+              <Text color={color} wrap="truncate-end">{props.statusLabel}</Text>
+            </Box>
+          : null}
       </Box>
       <Text color={tuiTheme.colors.muted} wrap="truncate-end">  {props.description}</Text>
       {props.attention
         ? <Text color={tuiTheme.statusColors.warning} wrap="truncate-end">  ! {props.attention}</Text>
         : null}
-      <Text color={tuiTheme.colors.muted} wrap="truncate-end">  {props.placementSummary}</Text>
+      {props.tags ? <Box paddingLeft={2} overflow="hidden">{props.tags}</Box> : null}
+      {props.placementSummary
+        ? <Text color={tuiTheme.colors.muted} wrap="truncate-end">  {props.placementSummary}</Text>
+        : null}
+    </Box>
+  );
+}
+
+export interface ObjectCardRowLayoutOptions {
+  width: number;
+  description: string;
+  meta?: string;
+  hasTags?: boolean;
+  compact?: boolean;
+}
+
+export interface ObjectCardRowLayout {
+  descriptionLines: string[];
+  metaLines: string[];
+  height: number;
+}
+
+export function objectCardRowLayout(options: ObjectCardRowLayoutOptions): ObjectCardRowLayout {
+  const cardWidth = Math.max(1, Math.floor(Number.isFinite(options.width) ? options.width : 1));
+  const horizontalPadding = options.compact ? 0 : 2;
+  const contentWidth = Math.max(1, cardWidth - 2 - horizontalPadding);
+  const descriptionLines = displayWidthChunks(options.description, contentWidth);
+  const metaLines = options.meta === undefined ? [] : displayWidthChunks(options.meta, contentWidth);
+  return {
+    descriptionLines,
+    metaLines,
+    height: 3
+      + descriptionLines.length
+      + metaLines.length
+      + (options.hasTags ? 1 : 0),
+  };
+}
+
+export function ObjectCardRow(props: {
+  width: number;
+  title: ReactNode;
+  description: string;
+  meta?: string;
+  tags?: ReactNode;
+  status?: TuiStatus;
+  focused?: boolean;
+  anchored?: boolean;
+  muted?: boolean;
+  compact?: boolean;
+}): React.JSX.Element {
+  const layout = objectCardRowLayout({
+    width: props.width,
+    description: props.description,
+    meta: props.meta,
+    hasTags: props.tags !== undefined && props.tags !== null,
+    compact: props.compact,
+  });
+  return (
+    <Box
+      width={props.width}
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={props.focused ? tuiTheme.colors.accent : tuiTheme.colors.border}
+      backgroundColor={props.focused
+        ? tuiTheme.colors.selectionBackground
+        : props.muted ? tuiTheme.colors.background : undefined}
+      paddingX={props.compact ? 0 : 1}
+    >
+      <Box height={1} overflow="hidden">
+        <Text bold={props.focused} color={props.muted ? tuiTheme.colors.muted : undefined}>
+          {props.focused ? '›' : props.anchored ? '·' : ' '}{' '}
+        </Text>
+        {props.status && !props.tags
+          ? <Text color={getTuiStatusColor(props.status)}>{statusSymbols[props.status]} </Text>
+          : null}
+        <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
+          <Text bold={props.focused} color={props.muted ? tuiTheme.colors.muted : undefined}
+            wrap="truncate-end">{props.title}</Text>
+        </Box>
+      </Box>
+      {layout.descriptionLines.map((line, index) => (
+        <Text key={`description:${index}`} color={tuiTheme.colors.muted} wrap="truncate-end">{line}</Text>
+      ))}
+      {layout.metaLines.map((line, index) => (
+        <Text key={`meta:${index}`} color={tuiTheme.colors.muted} wrap="truncate-end">{line}</Text>
+      ))}
+      {props.tags ? <Box height={1} overflow="hidden">{props.tags}</Box> : null}
     </Box>
   );
 }

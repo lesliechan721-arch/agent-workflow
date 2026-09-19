@@ -277,6 +277,33 @@ function catalogStoreResult(options: {
 }
 
 describe('TUI v8.2 stage 5', () => {
+  it.each(SIZES)('reads complete source values through basic-key pagination at $columns x $rows', async (size) => {
+    const data = loadResult();
+    const prefix = 'shared-reference-'.repeat(7);
+    data.sourceDetails![0]!.requestedRef = `${prefix}REF-END`;
+    data.sourceDetails![0]!.resolvedCommit = `${prefix}COMMIT-END`;
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(data) });
+    await value.load();
+    value.push({ name: 'sourceTechnical', sourceId: 'official' });
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await nextTurn(3);
+    const pages: string[] = [];
+    await input(instance, '\u001B[B');
+    for (let index = 0; index < 16; index += 1) {
+      pages.push(frame(instance, size));
+      await input(instance, '\r');
+    }
+    const text = pages.join('\n');
+    expect(text).toContain('REF-END');
+    expect(text).toContain('COMMIT-END');
+    expect(text).toContain('requested ref');
+    expect(text).toContain('resolved commit');
+    await input(instance, '\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(value.snapshot.router.current.route.name).toBe('home');
+    instance.unmount();
+  });
+
   it.each(SIZES)('keeps the last source visible and reaches fixed source actions at $columns x $rows', async (size) => {
     const inspectCatalogStore = vi.fn().mockResolvedValue(catalogStoreStatus([]));
     const executeIntent = vi.fn();
@@ -309,6 +336,62 @@ describe('TUI v8.2 stage 5', () => {
     instance.unmount();
   });
 
+  it.each(SIZES)('selects a long plugin source list in a focused dialog at $columns x $rows', async (size) => {
+    const data = longSourceLoadResult();
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(data) });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'browse' }, { query: 'Demo' });
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await nextTurn(3);
+
+    await focusPinnedAction(instance, '来源：全部');
+    await input(instance, '\r');
+    expect(frame(instance, size)).toContain('选择插件来源');
+    expect(frame(instance, size).match(/›/gu)).toHaveLength(1);
+
+    await input(instance, ...Array.from({ length: 10 }, () => '\u001B[B'));
+    const lastSource = frame(instance, size);
+    expect(lastSource).toContain('› ○ source-10');
+    expect(lastSource).toContain('11 / 11');
+    await input(instance, '\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
+    expect(frame(instance, size)).toContain('Demo');
+
+    await input(instance, '\r', ...Array.from({ length: 10 }, () => '\u001B[B'), '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginList', mode: 'browse', sourceId: 'source-10',
+    });
+    expect(frame(instance, size)).toContain('Demo');
+    instance.unmount();
+  });
+
+  it.each(SIZES)('confirms or cancels the complete plugin status dialog at $columns x $rows', async (size) => {
+    const value = controller();
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'browse' }, { query: 'Demo' });
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await nextTurn(3);
+
+    await focusPinnedAction(instance, '筛选：全部');
+    await input(instance, '\r');
+    const dialog = frame(instance, size);
+    for (const label of ['全部', '已安装', '未安装', '可更新', '需处理']) {
+      expect(dialog).toContain(label);
+    }
+    expect(dialog.match(/›/gu)).toHaveLength(1);
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(frame(instance, size)).toContain('筛选：全部');
+    expect(frame(instance, size)).toContain('Demo');
+
+    await input(instance, '\r', '\u001B[B', '\u001B[B', '\r');
+    expect(frame(instance, size)).toContain('筛选：未安装');
+    expect(frame(instance, size)).toContain('Demo');
+    expect(value.snapshot.router.current.context.installFilter).toBe('uninstalled');
+    instance.unmount();
+  });
+
   it('keeps the final direct source-detail actions visible at 60 x 18', async () => {
     const value = controller();
     await value.load();
@@ -331,6 +414,7 @@ describe('TUI v8.2 stage 5', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(3);
 
+    await input(instance, '\u001B[B');
     const current = frame(instance, size);
     expect(current).toContain('broken');
     expect(current).toContain('插件数未知');
@@ -538,6 +622,8 @@ describe('TUI v8.2 stage 5', () => {
       await waitForRoute(value, 'review');
       const review = frame(instance, size);
       expect(review).toContain('确认清理 Catalog 本地存储');
+      expect(review).not.toContain('确认确认');
+      expect(review).not.toContain('Catalog 来源配置');
       expect(review).toContain('只删除本次预览确认的 1 个可回收项');
       expect(review).toContain('删除 1 个已确认的可回收项');
       await confirmReview(instance, value);
@@ -550,4 +636,53 @@ describe('TUI v8.2 stage 5', () => {
       instance.unmount();
     }
   });
+});
+
+
+describe('plugin detail readable summary', () => {
+  it.each(SIZES)('keeps long content, badges and actions readable at $columns x $rows', async (size) => {
+    const data = loadResult();
+    data.pluginSummaries[0]!.description = '用于检查长说明的完整阅读。'.repeat(45) + '摘要完整结尾';
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(data) });
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await nextTurn(3);
+    value.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    await nextTurn(2);
+    const initial = frame(instance, size);
+    expect(initial).toContain('Codex]');
+    expect(initial).toContain('› ');
+    expect(initial).toContain('╰');
+    expect(initial).toContain('帮助');
+    let foundEnd = false;
+    for (let page = 0; page < 30; page += 1) {
+      const current = frame(instance, size);
+      if (current.includes('摘要完整结尾')) { foundEnd = true; break; }
+      await focusAction(instance, 'n 下一页');
+      await input(instance, '\r');
+    }
+    expect(foundEnd).toBe(true);
+    instance.rerender(<ConsoleAppV4 controller={value} size={size.columns === 60
+      ? { columns: 80, rows: 24 } : { columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('Codex]');
+    await input(instance, '\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(value.snapshot.router.current.route.name).toBe('home');
+    value.dispose();
+  });
+});
+
+
+it.each(SIZES)('explains absent project declarations without scheduling writes at $columns x $rows', async (size) => {
+  const data = loadResult();
+  data.projectIntent = { state: 'absent' };
+  const executeIntent = vi.fn();
+  const value = controller({ loadStatus: vi.fn().mockResolvedValue(data), executeIntent });
+  const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+  await nextTurn(3);
+  expect(frame(instance, size)).toContain('当前目录没有共享插件声明；不会自动安装插件');
+  await input(instance, '\r');
+  expect(value.snapshot.router.current.route.name).toBe('pluginList');
+  expect(executeIntent).not.toHaveBeenCalled();
+  value.dispose();
 });

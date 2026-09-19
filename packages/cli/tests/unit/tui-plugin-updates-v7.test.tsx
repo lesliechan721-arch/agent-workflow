@@ -268,7 +268,7 @@ describe('TUI plugin update evidence', () => {
     controller.dispose();
   });
 
-  it('shows the canonical update count, list version difference, detail CTA, and update filter', async () => {
+  it('shows the canonical update count, platform update badge, detail CTA, and update filter', async () => {
     const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
       if (intent.kind !== 'pluginWriteTask') {
         return { catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' } };
@@ -318,7 +318,7 @@ describe('TUI plugin update evidence', () => {
     const home = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
     await controller.load();
     await nextTurn();
-    expect(home.lastFrame()).toContain('1 个插件可更新');
+    expect(home.lastFrame()).toContain('[可更新 1]');
     home.unmount();
 
     controller.push({ name: 'pluginList', mode: 'installed' });
@@ -326,8 +326,8 @@ describe('TUI plugin update evidence', () => {
     await nextTurn();
     await nextTurn();
     await nextTurn();
-    expect(instance.lastFrame()).toContain('可更新 1.0.0 → 2.0.0');
-    expect(instance.lastFrame()).toContain('可更新 1');
+    expect(instance.lastFrame()).toContain('[✓ Codex ↑]');
+    expect(instance.lastFrame()).toContain('更新 1');
     expect(controller.listPlugins({ mode: 'installed', installFilter: 'updateAvailable' }))
       .toHaveLength(1);
     instance.stdin.write('\t');
@@ -338,17 +338,23 @@ describe('TUI plugin update evidence', () => {
     await nextTurn();
     instance.stdin.write('\r');
     await nextTurn();
-    await nextTurn();
-    await vi.waitFor(() => expect(instance.lastFrame()).toContain('[未安装 0]'));
-    instance.stdin.write('\u001B[D');
+    instance.stdin.write('\u001B[B');
     await nextTurn();
     instance.stdin.write('\r');
     await nextTurn();
     await nextTurn();
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('[未安装 0]'));
+    instance.stdin.write('f');
+    await nextTurn();
+    await nextTurn();
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('[可更新 1]'));
 
-    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    instance.stdin.write('\t');
     await nextTurn();
+    instance.stdin.write('\r');
+    await vi.waitFor(() => expect(controller.snapshot.router.current.route).toEqual({
+      name: 'pluginDetail', pluginId: 'official/demo',
+    }));
     expect(instance.lastFrame()).toContain('更新到 2.0.0');
     instance.unmount();
     const detail = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);

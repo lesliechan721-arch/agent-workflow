@@ -233,7 +233,7 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   if (intent.kind === 'catalogStorePrune') {
     const count = evidence?.catalogStore?.authorizedItems.length ?? 0;
     return {
-      title: '确认清理 Catalog 本地存储',
+      title: '清理 Catalog 本地存储',
       description: `只删除本次预览确认的 ${count} 个可回收项。`,
       primaryLabel: `清理 ${count} 个项目`,
       destructive: true,
@@ -1043,10 +1043,27 @@ function batchReviewChanges(
         description: `${group.sourceId} · ${target.target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.target.scope === 'user' ? '所有项目' : '当前项目'}${target.state === 'failed' || target.action === 'skipped' ? ` · 无法执行${target.errorCode ? ` (${target.errorCode})` : ''}` : ''}`,
       };
     });
+    const selectedTargetChanges = group.preview.targetResults.length === 0
+      && (intent.selection.kind === 'targets'
+        || intent.selection.kind === 'currentProjectIntentTargets')
+      ? intent.selection.targets.filter((target) =>
+          target.pluginId.startsWith(`${group.sourceId}/`)
+          && target.platform === group.platform
+          && target.scope === group.scope).map((target): OperationReviewChange => ({
+            kind: intent.action === 'uninstall' || intent.action === 'cleanup' ? 'remove'
+              : intent.action === 'install' ? 'add' : 'change',
+            group: 'requested',
+            pluginId: target.pluginId,
+            relation: 'requested',
+            title: pluginNameFromId(target.pluginId),
+            description: `${group.sourceId} · ${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`,
+          }))
+      : [];
     const effective = intent.action === 'cleanup' || group.preview.dependencyPlan
       ? projected
       : [
           ...targetChanges,
+          ...selectedTargetChanges,
           ...projected.filter((change) => change.group !== 'requested'
             && change.group !== 'dependencies'),
         ];
@@ -1087,8 +1104,19 @@ function batchReviewChanges(
       }] : []),
     ];
   });
+  const projectPreApplyCount = intent.action === 'sync'
+    && intent.selection.kind === 'currentProjectIntentTargets'
+    ? changes.filter((change) => change.title.startsWith('运行 ')
+      && change.title.endsWith(' preApply')).length
+    : 0;
   return [
     ...scriptTimeoutChanges(intent),
+    ...(projectPreApplyCount > 0 ? [{
+      kind: 'warning' as const,
+      group: 'runtime' as const,
+      title: `${projectPreApplyCount} 个当前项目同步目标将运行 preApply`,
+      description: '脚本在同步写入前运行；范围只限本次确认的当前项目位置。',
+    }] : []),
     ...changes,
     { kind: 'keep', group: 'preserved', title: '插件设置保持不变' },
   ];
@@ -1151,6 +1179,40 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     details.push(`候选版本：${generation.candidate.catalogVersion}`);
     details.push(`候选 commit：${short(generation.candidate.resolvedCommit)}`);
     details.push(`候选 digest：${short(generation.candidate.snapshotDigest)}`);
+    const impact = generation.impact;
+    if (impact) {
+      const referenceKey = (reference: typeof impact.references[number]): string => [
+        reference.category,
+        reference.sourceId,
+        reference.pluginId ?? '',
+        reference.platform ?? '',
+        reference.scope ?? '',
+        reference.projectRecord ?? '',
+        reference.marketplaceName ?? '',
+      ].join('\0');
+      const affected = new Set(impact.affectedReferences.map(referenceKey));
+      const categoryLabel = {
+        installation: '安装',
+        config: '设置',
+        lifecycle: '生命周期',
+        marketplace: 'Marketplace',
+      } as const;
+      for (const reference of impact.references) {
+        const location = [
+          reference.platform ? platformLabel(reference.platform) : undefined,
+          reference.scope ? scopeLabel(reference.scope) : undefined,
+          reference.projectRecord === 'current' ? '当前项目'
+            : reference.projectRecord === 'historical' ? '历史项目'
+              : reference.projectRecord === 'unknown' ? '项目未知' : undefined,
+        ].filter((value): value is string => Boolean(value)).join(' · ');
+        details.push([
+          `引用影响：${affected.has(referenceKey(reference)) ? '受影响' : '未受本次变化影响'}`,
+          categoryLabel[reference.category],
+          reference.pluginId ?? reference.marketplaceName ?? reference.sourceId,
+          location || undefined,
+        ].filter((value): value is string => Boolean(value)).join(' · '));
+      }
+    }
   }
   if (evidence.catalogStore) {
     details.push(`已授权清理：${evidence.catalogStore.authorizedItems.length} 项`);
@@ -1203,6 +1265,10 @@ export function buildOperationReviewProjection(options: {
           (group.config.preApplyAuthorization?.length ?? 0) > 0) === true
     : operationPreApplyTargets(evidence).length > 0
       || (evidence.config?.preApplyAuthorization?.length ?? 0) > 0;
+  const projectPreApplyConfirmation = hasPreApply
+    && intent.kind === 'pluginWriteBatch'
+    && intent.action === 'sync'
+    && intent.selection.kind === 'currentProjectIntentTargets';
   const sharedNativeConfigApply = (intent.kind === 'configSave'
     && intent.apply
     && (evidence.config?.sharedNativeRenderTargets?.length ?? 0) > 0
@@ -1212,7 +1278,8 @@ export function buildOperationReviewProjection(options: {
       && (evidence.configBatch?.groups.some((group) =>
         (group.config.sharedNativeRenderTargets?.length ?? 0) > 0
         && group.config.affectedTargets.some((target) => target.platform === 'codex')) ?? false));
-  const requiresConfirmation = sharedNativeConfigApply
+  const requiresConfirmation = projectPreApplyConfirmation
+    || sharedNativeConfigApply
     || intent.kind === 'catalogStorePrune'
     || Boolean(batchEvidence?.groups.some((group) =>
       (group.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))

@@ -808,7 +808,7 @@ export interface ProjectIntentReminder {
   signature: string;
   actionableTargets: ProjectIntentReminderTarget[];
   blockedTargets: ProjectIntentReminderTarget[];
-  unconfirmedTargets: PluginWriteBatchTarget[];
+  unconfirmedTargets: ProjectIntentReminderTarget[];
 }
 
 function projectReminderTargetKey(target: PluginWriteBatchTarget): string {
@@ -819,7 +819,7 @@ export function projectCurrentIntentReminder(status: TuiStatusLoadResult): Proje
   if (status.projectIntent && status.projectIntent.state !== 'ready') return undefined;
   const actionableTargets: ProjectIntentReminderTarget[] = [];
   const blockedTargets: ProjectIntentReminderTarget[] = [];
-  const unconfirmedTargets: PluginWriteBatchTarget[] = [];
+  const unconfirmedTargets: ProjectIntentReminderTarget[] = [];
   const projectRoots = new Map((status.projectIntent?.state === 'ready'
     ? status.projectIntent.roots : status.projectIntentRoots ?? []).map((root) => [
     root.pluginId,
@@ -870,7 +870,7 @@ export function projectCurrentIntentReminder(status: TuiStatusLoadResult): Proje
     } else if (!unobserved && target.state === 'needsSync' && confirmedDifference) {
       actionableTargets.push({ ...reminderTarget, reasonCodes });
     } else {
-      unconfirmedTargets.push(reminderTarget);
+      unconfirmedTargets.push({ ...reminderTarget, reasonCodes });
     }
   }
   if (projectTargets.length === 0) return undefined;
@@ -1026,6 +1026,7 @@ export interface TuiControllerSnapshot {
     operationRecordId?: string;
   };
   projectIntentReminder?: ProjectIntentReminder;
+  projectDeclarationAbsent?: boolean;
   projectIntentIssue?: {
     state: 'invalid' | 'unavailable';
     code: string;
@@ -1778,6 +1779,7 @@ export class TuiController {
       ...(this.#projectIntentReminder
         ? { projectIntentReminder: this.#projectIntentReminder }
         : {}),
+      ...(this.#status?.projectIntent?.state === 'absent' ? { projectDeclarationAbsent: true } : {}),
       ...(this.#status?.projectIntent?.state === 'invalid'
         || this.#status?.projectIntent?.state === 'unavailable'
         ? { projectIntentIssue: this.#status.projectIntent }
@@ -2853,7 +2855,13 @@ export class TuiController {
       this.#portableRepreparePluginId = current.pluginId;
     }
     this.#discardPortableDraftForRoute(route);
-    this.#router.replace(route.name === 'pluginPreview' ? this.#normalizeRoute(route) : route, context);
+    const nextRoute = route.name === 'pluginPreview' ? this.#normalizeRoute(route) : route;
+    const preserveConfigOverview = current.name === 'configFields'
+      && route.name === 'configUnavailable'
+      && route.pluginId === current.pluginId
+      && this.#router.activeFlow()?.kind === 'configEdit';
+    if (preserveConfigOverview) this.#router.push(nextRoute, context);
+    else this.#router.replace(nextRoute, context);
     this.#publish();
   }
 
@@ -2973,6 +2981,28 @@ export class TuiController {
   updatePageContext(context: Partial<TuiPageContext>): void {
     this.#router.updateContext(context);
     this.#publish();
+  }
+
+  returnToConfigOverview(
+    flowId: string | undefined,
+    overviewFrameId: string | undefined,
+    pluginId: string,
+    context?: TuiPageContext,
+  ): boolean {
+    const returned = this.#router.returnToConfigOverview(
+      flowId,
+      overviewFrameId,
+      pluginId,
+      context,
+    );
+    if (!returned) return false;
+    this.#normalizeCurrentRoute();
+    this.#publish();
+    return true;
+  }
+
+  configOverviewFrameId(flowId: string | undefined, pluginId: string): string | undefined {
+    return this.#router.configOverviewFrameId(flowId, pluginId);
   }
 
   back(): void {
@@ -4346,6 +4376,7 @@ export class TuiController {
           ? `${(evidence as PluginWriteBatchEvidence).requestedPluginIds.length} 个插件`
           : intent.kind === 'pluginWriteTask'
             ? `${(evidence as PluginWriteTaskEvidence).taskPlan.requestedTargets.length} 个安装位置`
+            : intent.kind === 'catalogStorePrune' ? 'Catalog 本地存储'
           : 'Catalog 来源配置';
     if ('pluginId' in intent) sourceIdFromPluginId(intent.pluginId);
     const pluginVersion = 'pluginId' in intent

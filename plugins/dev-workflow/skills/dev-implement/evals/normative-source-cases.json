@@ -43,6 +43,12 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "src/model-policy.js"
+        ],
+        "artifacts": [
+          {
+            "path": "src/model-policy.js",
+            "exists": true
+          }
         ]
       },
       "audit": {
