@@ -40,6 +40,12 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/**"
+        ],
+        "artifacts": [
+          {
+            "path": "docs/spec.md",
+            "exists": true
+          }
         ]
       },
       "audit": {
@@ -72,6 +78,12 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "spec.md"
+        ],
+        "artifacts": [
+          {
+            "path": "spec.md",
+            "exists": true
+          }
         ]
       },
       "audit": {

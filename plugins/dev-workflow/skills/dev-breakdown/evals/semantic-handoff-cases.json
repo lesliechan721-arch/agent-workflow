@@ -20,7 +20,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "根据 docs/spec.md 和项目事实准备下一批可派发任务，写入 tickets/。只分解，不实现，不启动子代理。",
+      "prompt": "根据 docs/spec.md 和项目事实准备下一批可派发任务，将任务安排写入 tickets/plan.md，可按需在 tickets/ 增加任务附件。只分解，不实现，不启动子代理。",
       "assertions": [
         "工作项指向具体规范和项目事实，不把附件降为可忽略参考。",
         "allowlist目录缺失与实际请求、保存与生效等关键区别在任务中共置或明确指出读取位置。",
@@ -46,6 +46,12 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "tickets/**"
+        ],
+        "artifacts": [
+          {
+            "path": "tickets/plan.md",
+            "exists": true
+          }
         ]
       },
       "audit": {

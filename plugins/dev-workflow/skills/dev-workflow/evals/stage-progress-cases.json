@@ -82,6 +82,12 @@
         "allowedWorkspaceChanges": [
           "src/name.js",
           "test/**"
+        ],
+        "artifacts": [
+          {
+            "path": "src/name.js",
+            "exists": true
+          }
         ]
       },
       "audit": {
@@ -122,6 +128,12 @@
         "allowedWorkspaceChanges": [
           "tickets/**",
           "work.md"
+        ],
+        "artifacts": [
+          {
+            "path": "work.md",
+            "exists": true
+          }
         ]
       },
       "audit": {

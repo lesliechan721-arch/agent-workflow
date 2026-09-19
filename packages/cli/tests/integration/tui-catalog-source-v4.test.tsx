@@ -1059,6 +1059,8 @@ describe('TUI v4 real catalog source boundary', () => {
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources
       .some((source) => source.id === 'team')).toBe(true);
     expect((await readCatalogGenerationState(isolation.env)).sources.team?.active).toBeUndefined();
+    expect(instance.lastFrame()).toContain('! 来源操作只完成了一部分');
+    expect(instance.lastFrame()).not.toContain('✓ Catalog 已启用');
     expect(instance.lastFrame()).toContain('现在启用 / 重试');
     controller.dispose();
   });
@@ -1694,6 +1696,8 @@ describe('TUI v4 real catalog source boundary', () => {
       kind: 'sourceMutation', action: 'remove', sourceId: 'team',
     });
     await controller.executeOperation(review.reviewToken);
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('已安装插件和插件设置保留');
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources.map((source) => source.id))
       .toEqual(['local']);
     controller.dispose();

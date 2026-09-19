@@ -4209,6 +4209,7 @@ describe('TUI v4 Review safety', () => {
     await controller.load();
     controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
     controller.beginConfigFlow('official/demo');
+    const overviewFrameId = controller.snapshot.router.currentFrameId;
     const resumeRoute = {
       name: 'configFieldEditor' as const,
       pluginId: 'official/demo',
@@ -4219,6 +4220,7 @@ describe('TUI v4 Review safety', () => {
     controller.replace({
       name: 'configUnavailable',
       pluginId: 'official/demo',
+      overviewFrameId,
       layer: { scope: 'user' },
       resumeRoute,
       resumeContext: { configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1 },
@@ -4245,6 +4247,9 @@ describe('TUI v4 Review safety', () => {
       configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1,
     });
     expect(controller.snapshot.router.currentFlowId).toBeDefined();
+    controller.back();
+    expect(controller.snapshot.router.currentFrameId).toBe(overviewFrameId);
+    expect(controller.snapshot.router.current.context).toEqual({});
     expect(loadStatus).toHaveBeenCalledTimes(2);
   });
 
