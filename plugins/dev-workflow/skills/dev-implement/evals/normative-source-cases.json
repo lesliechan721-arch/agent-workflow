@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-implement",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "同时检验决定保真、人审完整、阶段前置和独立交接；不用长度、标题、等级词或加载次数代替质量。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "worker-reads-normative-attachment",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "只完成 ticket.md 分配的模型工作项。读取必要资料，修改当前模块并运行测试；其他工作由协调者负责，不提交。",
+      "assertions": [
+        "实际读取并实施附件区别，不只修目录可见性。",
+        "测试真实通过，测试和source规则不被修改迎合实现。",
+        "未增加不必要框架、其他任务代码或提交。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "ticket.md": "# 模型工作项\n按 docs/spec.md 与明确纳入的 model-rules.md 完成 src/model-policy.js。公开接口见project-facts.md。任务摘要不是完整规则，目录缺失/保存选择/直接请求需按附件核对。\n",
+          "docs/spec.md": "# 模型筛选\n当前工作项规范为 ../model-rules.md；布局无要求，运行时状态在其他任务。\n",
+          "model-rules.md": "# 已确认决定（隔离评测夹具）\n本测试用户已确认以下结果；这不是实际产品的审批记录。\n\n## 模型筛选\nall接受任意非本地模型；regex按可请求id区分大小写匹配；selected按保存的allowlist精确匹配。chatgpt-web/前缀始终本地。目录只展示本次返回且通过筛选的上游id，不能把本地冲突项作为上游；目录没有返回已选择项时不删除保存值，直接请求仍按allowlist判断。\n\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "project-facts.md": "# 当前隔离项目事实\n模块 src/model-policy.js 有两个已有export：chooseRoute(modelId, filter, upstreamAvailable) 返回 local/upstream/deny；visibleModels(localIds, remoteIds, filter) 返回id数组。\nfilter形状：{mode:'all'}、{mode:'regex',pattern:string}或{mode:'selected',models:string[]}。输入已由外层校验；本任务实现路由和目录，不在此重做完整输入校验。localIds均为chatgpt-web前缀；remoteIds可包含冲突项，输出去重且保留本地在前。局部调试可运行node --test。\n模块 src/runtime-state.js 的 applicationState(savedRevision,loadedRevision,activeTasks,restartFailed) 返回applied/pending；参数是已有纯函数接口，不负责实际stop/start。此文件可与模型任务分别交付。\n",
+          "src/model-policy.js": "export function chooseRoute(id,filter,upstreamAvailable){return id.startsWith('chatgpt-web/')?'local':upstreamAvailable?'upstream':'deny';}\nexport function visibleModels(local,remote,filter){return [...new Set([...local,...remote])];}\n",
+          "test/model-policy.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {chooseRoute,visibleModels} from '../src/model-policy.js';\ntest('local namespace retained without upstream',()=>assert.equal(chooseRoute('chatgpt-web/a',{mode:'selected',models:[]},false),'local'));\ntest('unavailable upstream denied',()=>assert.equal(chooseRoute('m',{mode:'all'},false),'deny'));\ntest('all nonlocal may route',()=>assert.equal(chooseRoute('unknown',{mode:'all'},true),'upstream'));\ntest('regex route exact case',()=>{assert.equal(chooseRoute('GPT-x',{mode:'regex',pattern:'^gpt-'},true),'deny');assert.equal(chooseRoute('gpt-x',{mode:'regex',pattern:'^gpt-'},true),'upstream');});\ntest('selected rejects unchosen',()=>assert.equal(chooseRoute('b',{mode:'selected',models:['a']},true),'deny'));\ntest('missing catalog preserves saved selection and request',()=>{const f={mode:'selected',models:['a','absent']};assert.deepEqual(visibleModels(['chatgpt-web/a'],['a','b','chatgpt-web/evil'],f),['chatgpt-web/a','a']);assert.deepEqual(f.models,['a','absent']);assert.equal(chooseRoute('absent',f,true),'upstream');});\ntest('regex catalog and direct request agree',()=>{const f={mode:'regex',pattern:'^m-'};assert.deepEqual(visibleModels(['chatgpt-web/a'],['m-a','other','m-a'],f),['chatgpt-web/a','m-a']);assert.equal(chooseRoute('other',f,true),'deny');});\n"
+        }
+      },
+      "expected": {
+        "output": "完成模型公开行为，保留来源、测试及其他任务范围。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/model-policy.js"
+        ]
+      },
+      "audit": {
+        "rationale": "附件等效约束必须体现在真正结果而非Ticket里有链接。",
+        "allowedVariance": "允许等价表述、主题组织和局部实现；依据真实含义、可访问资料、行为与实际权限判定，不强制内部阶段字段或固定篇幅。",
+        "minimalCounterexample": "附件是非规范参考且与已确认行为不一致时，应查明冲突而非机械复制。"
+      }
+    }
+  ]
+}

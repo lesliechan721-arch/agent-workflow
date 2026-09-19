@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-breakdown",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "同时检验决定保真、人审完整、阶段前置和独立交接；不用长度、标题、等级词或加载次数代替质量。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "tickets-project-authority-not-summary",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "根据 docs/spec.md 和项目事实准备下一批可派发任务，写入 tickets/。只分解，不实现，不启动子代理。",
+      "assertions": [
+        "工作项指向具体规范和项目事实，不把附件降为可忽略参考。",
+        "allowlist目录缺失与实际请求、保存与生效等关键区别在任务中共置或明确指出读取位置。",
+        "保持局部实施自由；不为每条规则独立生成任务，不生成运行状态或提交。",
+        "任务依赖来自真实接口而不是按文档顺序猜测。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "docs/spec.md": "# 当前规范\n模型目录/路由与配置状态属于两个可独立验证结果。精确模型合同在 model-rules.md，配置合同在 state-rules.md。接口见 ../project-facts.md。\n",
+          "docs/model-rules.md": "# 已确认决定（隔离评测夹具）\n本测试用户已确认以下结果；这不是实际产品的审批记录。\n\n## 模型筛选\nall接受任意非本地模型；regex按可请求id区分大小写匹配；selected按保存的allowlist精确匹配。chatgpt-web/前缀始终本地。目录只展示本次返回且通过筛选的上游id，不能把本地冲突项作为上游；目录没有返回已选择项时不删除保存值，直接请求仍按allowlist判断。\n\n\nregex编译与长度校验已由外层提供，当前不要重复设计校验器。\n",
+          "docs/state-rules.md": "# 保存与生效\n只有savedRevision等于loadedRevision时applied，其余pending；当前纯函数不负责实际重启。\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "project-facts.md": "# 当前隔离项目事实\n模块 src/model-policy.js 有两个已有export：chooseRoute(modelId, filter, upstreamAvailable) 返回 local/upstream/deny；visibleModels(localIds, remoteIds, filter) 返回id数组。\nfilter形状：{mode:'all'}、{mode:'regex',pattern:string}或{mode:'selected',models:string[]}。输入已由外层校验；本任务实现路由和目录，不在此重做完整输入校验。localIds均为chatgpt-web前缀；remoteIds可包含冲突项，输出去重且保留本地在前。局部调试可运行node --test。\n模块 src/runtime-state.js 的 applicationState(savedRevision,loadedRevision,activeTasks,restartFailed) 返回applied/pending；参数是已有纯函数接口，不负责实际stop/start。此文件可与模型任务分别交付。\n",
+          "src/model-policy.js": "export function chooseRoute(id,filter,upstreamAvailable){return id.startsWith('chatgpt-web/')?'local':upstreamAvailable?'upstream':'deny';}\nexport function visibleModels(local,remote,filter){return [...new Set([...local,...remote])];}\n",
+          "src/runtime-state.js": "export const applicationState=(savedRevision,loadedRevision,activeTasks,restartFailed)=>savedRevision?'applied':'pending';\n",
+          "test/model-policy.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {chooseRoute,visibleModels} from '../src/model-policy.js';\ntest('local namespace retained without upstream',()=>assert.equal(chooseRoute('chatgpt-web/a',{mode:'selected',models:[]},false),'local'));\ntest('unavailable upstream denied',()=>assert.equal(chooseRoute('m',{mode:'all'},false),'deny'));\ntest('all nonlocal may route',()=>assert.equal(chooseRoute('unknown',{mode:'all'},true),'upstream'));\ntest('regex route exact case',()=>{assert.equal(chooseRoute('GPT-x',{mode:'regex',pattern:'^gpt-'},true),'deny');assert.equal(chooseRoute('gpt-x',{mode:'regex',pattern:'^gpt-'},true),'upstream');});\ntest('selected rejects unchosen',()=>assert.equal(chooseRoute('b',{mode:'selected',models:['a']},true),'deny'));\ntest('missing catalog preserves saved selection and request',()=>{const f={mode:'selected',models:['a','absent']};assert.deepEqual(visibleModels(['chatgpt-web/a'],['a','b','chatgpt-web/evil'],f),['chatgpt-web/a','a']);assert.deepEqual(f.models,['a','absent']);assert.equal(chooseRoute('absent',f,true),'upstream');});\ntest('regex catalog and direct request agree',()=>{const f={mode:'regex',pattern:'^m-'};assert.deepEqual(visibleModels(['chatgpt-web/a'],['m-a','other','m-a'],f),['chatgpt-web/a','m-a']);assert.equal(chooseRoute('other',f,true),'deny');});\n",
+          "test/runtime-state.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {applicationState} from '../src/runtime-state.js';\ntest('saved not loaded',()=>assert.equal(applicationState('new','old',0,false),'pending'));\ntest('active tasks keep pending',()=>assert.equal(applicationState('new','old',2,false),'pending'));\ntest('restart failed keeps pending',()=>assert.equal(applicationState('new','old',0,true),'pending'));\ntest('matching load evidence',()=>assert.equal(applicationState('same','same',0,false),'applied'));\n"
+        }
+      },
+      "expected": {
+        "output": "任务承接两类精确要求，引用可达，当前事实、验收及共享验证责任明确。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "tickets/**"
+        ]
+      },
+      "audit": {
+        "rationale": "任务是相关规范的投影和执行安排，不是下一层口号。",
+        "allowedVariance": "允许等价表述、主题组织和局部实现；依据真实含义、可访问资料、行为与实际权限判定，不强制内部阶段字段或固定篇幅。",
+        "minimalCounterexample": "只有一个自然完整工作项时可以只生成一项，已有合理Ticket可复用。"
+      }
+    },
+    {
+      "id": "single-work-item-remains-single",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "给这一个已确认需求提供实施安排即可：把README标题从“设置”改为“团队设置”，仅此一处，不要写文件或实施。",
+      "assertions": [
+        "保留单项粒度，不因阶段存在就创建Spec、Ticket、Work或提交。",
+        "只给安排，不修改文件。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "README.md": "# 设置\n"
+        }
+      },
+      "expected": {
+        "output": "一个自然工作项和相称核对，没有额外任务树。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "明确阶段不要求每个小任务产生五份文档。",
+        "allowedVariance": "允许等价表述、主题组织和局部实现；依据真实含义、可访问资料、行为与实际权限判定，不强制内部阶段字段或固定篇幅。",
+        "minimalCounterexample": "多个有独立交接价值的结果时需要实际分解。"
+      }
+    }
+  ]
+}

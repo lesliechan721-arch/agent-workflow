@@ -64,7 +64,7 @@
         }
       },
       "audit": {
-        "rationale": "Fast readiness 完成后进入闭环 Build，不强制 Spec。",
+        "rationale": "当前要求和验证已明确，且没有持久交接需求，进入闭环 Build，不强制 Spec。",
         "minimalCounterexample": "未对齐时先澄清。",
         "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
       }

@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-workflow",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "同时检验决定保真、人审完整、阶段前置和独立交接；不用长度、标题、等级词或加载次数代替质量。"
+    },
+    "participants": [
+      "dev-spec",
+      "dev-build",
+      "dev-implement"
+    ],
+    "runtime": {
+      "isolation": "strict",
+      "observeSpawnAgent": false,
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "workflow_full_development",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用开发工作流从需求到交付完成这个功能，已有资料请先恢复。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "用户需要整体阶段组织。",
+        "allowedVariance": "允许等价表述、主题组织和局部实现；依据真实含义、可访问资料、行为与实际权限判定，不强制内部阶段字段或固定篇幅。",
+        "minimalCounterexample": "只要求对某函数作一次解释则无需宏流程。"
+      }
+    },
+    {
+      "id": "workflow_standalone_spec_only",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只使用 dev-spec 组织当前已确认来源为规格，暂不组织实施或完整开发流程。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "专业能力可独立完成，不因阶段主线存在而自动调用宏。",
+        "allowedVariance": "允许等价表述、主题组织和局部实现；依据真实含义、可访问资料、行为与实际权限判定，不强制内部阶段字段或固定篇幅。",
+        "minimalCounterexample": "用户需要从需求推进到交付时应由宏组织。"
+      }
+    },
+    {
+      "id": "workflow_small_explicit",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-workflow 完成这一处已明确小改动及必要核验。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "显式选择仍可采用小任务路径。",
+        "allowedVariance": "允许等价表述、主题组织和局部实现；依据真实含义、可访问资料、行为与实际权限判定，不强制内部阶段字段或固定篇幅。",
+        "minimalCounterexample": "同样机械编辑没有显式宏需求时不必加载宏。"
+      }
+    },
+    {
+      "id": "workflow_direct_mechanical",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "将README第一行改成“团队设置”，仅这个确定的文字替换。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "普通执行路径保留，不自动开启完整阶段。",
+        "allowedVariance": "允许等价表述、主题组织和局部实现；依据真实含义、可访问资料、行为与实际权限判定，不强制内部阶段字段或固定篇幅。",
+        "minimalCounterexample": "用户明确委托完整工作流时可以由宏接管。"
+      }
+    }
+  ]
+}

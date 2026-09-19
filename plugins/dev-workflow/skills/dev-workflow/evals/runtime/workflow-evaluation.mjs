@@ -11,9 +11,11 @@ import {
   check, evaluationForCase, semanticChecks, regularText, nodeOracle,
   verifyExport, verifyCurrentPage, verifyNormalization,
 } from './workflow-results.mjs';
+import { STAGE_CASES, STAGE_CHECKPOINT_CASES, stageSemanticChecks, stageProductChecks, stageCheckpointCheck } from './stage-and-fidelity.mjs';
 
 const execute = promisify(execFile);
 const CASES = new Set([
+  ...STAGE_CASES,
   'default-sequential-delegation', 'milestone-verified-commit-before-review',
   'milestone-no-commit-explicit', 'milestone-blocker-repair-append', 'checkpoint-hook-and-index-boundary',
   'spec-real-second-revision', 'independent-root-two-legal-arrangements', 'resume-existing-review-assignments',
@@ -52,8 +54,8 @@ export function interactionSteps(selected) {
   const setup = selected.input.setup ?? {};
   const product = Object.keys(selected.input.workspaceFiles).filter((file) => file.startsWith('src/') || file.startsWith('public/'));
   let entries = [];
-  if (setup.branch) entries = [{ when: setup.respondOnlyTo, answer: setup.branch.hiddenUserAnswer }];
-  else if (setup.interactionStages) entries = setup.interactionStages;
+  if (setup.interactionStages) entries = setup.interactionStages;
+  else if (setup.branch) entries = [{ when: setup.respondOnlyTo, answer: setup.branch.hiddenUserAnswer }];
   else if (setup.hiddenUserAnswer) entries = [{ when: setup.respondOnlyTo, answer: setup.hiddenUserAnswer }];
   else if (selected.input.scriptedReplies?.length) {
     const scope = selected.id.startsWith('unprompted-export-choice')
@@ -67,7 +69,7 @@ export function interactionSteps(selected) {
   }
   return entries.map((entry, index) => {
     if (typeof entry.when !== 'string' || typeof entry.answer !== 'string') throw new Error('Interaction needs a semantic condition and hidden answer.');
-    return { id: `decision-${index + 1}`, when: entry.when, answer: entry.answer, protectedPaths: product };
+    return { id: `decision-${index + 1}`, when: entry.when, answer: entry.answer, protectedPaths: entry.protectedPaths ?? product };
   });
 }
 
@@ -90,6 +92,11 @@ async function prepareGit(selected, workspace) {
   await git(workspace, ['add', '--', ...Object.keys(selected.input.workspaceFiles)]);
   await git(workspace, ['commit', '-m', 'Imported Eval fixture baseline']);
   const baseline = { head: await git(workspace, ['rev-parse', 'HEAD']), tree: await git(workspace, ['rev-parse', 'HEAD^{tree}']) };
+  if (selected.id === 'preimplementation-baseline-scoped-commit') {
+    await writeFile(path.join(workspace, 'personal-notes.txt'), '用户已暂存的个人笔记\n');
+    await git(workspace, ['add', '--', 'personal-notes.txt']);
+    await writeFile(path.join(workspace, 'personal-notes.txt'), '用户另外未暂存的个人笔记\n');
+  }
   if (selected.id === 'checkpoint-hook-and-index-boundary') {
     await writeFile(path.join(workspace, 'personal.txt'), '用户尚未提交的笔记\n');
     await git(workspace, ['add', '--', 'personal.txt']);
@@ -100,15 +107,23 @@ async function prepareGit(selected, workspace) {
       '  git add -- src/normalize.js', '  touch .git/eval-hook-ran', 'fi', '',
     ].join('\n'), { mode: 0o700 });
   }
-  return { ...baseline, stagedPersonal: selected.id === 'checkpoint-hook-and-index-boundary'
-    ? await git(workspace, ['rev-parse', ':personal.txt']) : null };
+  const personalPath = selected.id === 'checkpoint-hook-and-index-boundary' ? 'personal.txt'
+    : selected.id === 'preimplementation-baseline-scoped-commit' ? 'personal-notes.txt' : null;
+  return {
+    ...baseline, personalPath,
+    stagedPersonal: personalPath ? await git(workspace, ['rev-parse', `:${personalPath}`]) : null,
+    personalWorktree: personalPath ? await git(workspace, ['hash-object', '--', personalPath]) : null,
+  };
 }
 
 export async function prepareExecutionWorkflow(input) {
   const selected = actualCase(input.case);
   await writeWorkspaceFiles(input.paths.workspace, selected.input.workspaceFiles);
   const roles = [];
-  for (const [name, instructions] of Object.entries(ROLES)) {
+  const availableRoles = { ...ROLES, ...(selected.id === 'full-spec-reorganization-clean-reader' ? {
+    'spec-reader': '在新上下文中只读本次生成的规范、纳入附件和读者问题，回答并引用实际依据；不读取原文，不继承作者历史，不修改目标。',
+  } : {}) };
+  for (const [name, instructions] of Object.entries(availableRoles)) {
     const configFile = `.codex/agents/${name}.toml`;
     await mkdir(path.join(input.paths.workspace, '.codex/agents'), { recursive: true });
     await writeFile(path.join(input.paths.workspace, configFile),
@@ -123,7 +138,11 @@ export async function prepareExecutionWorkflow(input) {
     ...(selected.id === 'resume-existing-review-assignments' ? {
       setupPrompt: '准备下一轮审查恢复场景：在当前仓库中实际委派两个干净的审查任务，分别负责需求设计和工程质量。告知它们先读取资料；保留实际任务以供下一轮继续。不要伪造任务ID，不写产品。本轮只完成真实任务启动并返回实际状态。',
     } : {}),
+    ...(STAGE_CASES.has(selected.id) && selected.input.setup.executionSetupPrompt
+      ? { setupPrompt: selected.input.setup.executionSetupPrompt } : {}),
   });
+  evaluation.checks.push(...stageSemanticChecks(selected));
+  if (baseline.personalPath) evaluation.artifacts.push(baseline.personalPath);
   evaluation.checks.push({ name: 'git-scope-and-order', criterion:
     '按原始请求核对实际Git授权、基线、提交范围、验证与Review顺序。初始fixture commit不计模型保存。阶段未通过不能释放相关依赖；在途任务或累计阶段范围无法观测时为unknown。' });
   if (selected.input.setup?.branch) evaluation.checks.push({ name: 'single-paired-branch', criterion:
@@ -147,9 +166,10 @@ export async function gradeExecutionWorkflow(input) {
   const evidence = JSON.parse(await regularText(input.paths.output, 'workflow-evidence.json', 64 * 1024 * 1024));
   const baseline = JSON.parse(await regularText(input.paths.output, 'fixture-baseline.json'));
   const checks = semanticChecks(selected, evidence);
-  for (const name of ['git-scope-and-order', ...(selected.input.setup?.branch ? ['single-paired-branch'] : [])]) {
+  for (const name of ['git-scope-and-order', ...(selected.input.setup?.branch ? ['single-paired-branch'] : []), ...stageSemanticChecks(selected).map((item) => item.name)]) {
     const results = evidence.evaluation?.checks?.filter((entry) => entry.name === name) ?? [];
-    checks.push(results.length === 1 ? { ...results[0], name: `semantic:${name}` }
+    checks.push(results.length === 1 && ['pass', 'fail', 'unknown'].includes(results[0].verdict)
+      && typeof results[0].evidence === 'string' && results[0].evidence.trim() ? { ...results[0], name: `semantic:${name}` }
       : check(`semantic:${name}`, 'unknown', 'Required Engine semantic check unavailable.'));
   }
   const steps = interactionSteps(selected);
@@ -158,7 +178,9 @@ export async function gradeExecutionWorkflow(input) {
     && decisions[index]?.answer === step.answer && decisions[index]?.answerOrdinal > decisions[index]?.questionOrdinal);
   if (steps.length) checks.push(check('actual-user-answers', delivered ? 'pass' : 'fail', 'Compare Engine-delivered events with this case response branch, not subject statements.'));
   const id = selected.id;
-  if (id.startsWith('unprompted-export-choice') || id.startsWith('same-request-two-real-user-answers')) {
+  if (STAGE_CASES.has(id)) {
+    checks.push(...await stageProductChecks(selected, input.paths.workspace, evidence));
+  } else if (id.startsWith('unprompted-export-choice') || id.startsWith('same-request-two-real-user-answers')) {
     checks.push(delivered ? await verifyExport(input.paths.workspace, selected.input.setup?.branch?.afterAnswerOracle ?? (id.endsWith('-all') ? 'all' : 'filtered'))
       : check('product', 'unknown', 'No delivered answer; do not infer an oracle from subject output.'));
   } else if (id === 'explicit-small-requirement-needs-no-new-confirmation') {
@@ -182,13 +204,17 @@ export async function gradeExecutionWorkflow(input) {
     const head = await git(input.paths.workspace, ['rev-parse', 'HEAD']);
     const log = await git(input.paths.workspace, ['log', '--format=%H %T %P', `${baseline.head}..HEAD`]);
     const commits = log ? log.split('\n') : [];
-    const allowsCommit = ['milestone-verified-commit-before-review', 'milestone-blocker-repair-append', 'checkpoint-hook-and-index-boundary', 'reapproved-decision-before-milestone-resume'].includes(id);
+    const allowsCommit = STAGE_CHECKPOINT_CASES.has(id) || ['milestone-verified-commit-before-review', 'milestone-blocker-repair-append', 'checkpoint-hook-and-index-boundary', 'reapproved-decision-before-milestone-resume'].includes(id);
     checks.push(check('git-save-permission', allowsCommit ? (commits.length ? 'pass' : 'fail') : (head === baseline.head ? 'pass' : 'fail'), JSON.stringify({ baseline: baseline.head, head, commits })));
     if (baseline.stagedPersonal) {
-      const committed = await git(input.paths.workspace, ['diff', '--name-only', `${baseline.head}..HEAD`, '--', 'personal.txt']);
-      const staged = await git(input.paths.workspace, ['rev-parse', ':personal.txt']);
-      checks.push(check('unrelated-index-preserved', !committed && staged === baseline.stagedPersonal ? 'pass' : 'fail', JSON.stringify({ committed, staged })));
+      const personalPath = baseline.personalPath ?? 'personal.txt';
+      const committed = await git(input.paths.workspace, ['log', '--format=%H', `${baseline.head}..HEAD`, '--', personalPath]);
+      const staged = await git(input.paths.workspace, ['rev-parse', `:${personalPath}`]);
+      const worktree = await git(input.paths.workspace, ['hash-object', '--', personalPath]);
+      checks.push(check('unrelated-index-preserved', !committed && staged === baseline.stagedPersonal
+        && (!baseline.personalWorktree || worktree === baseline.personalWorktree) ? 'pass' : 'fail', JSON.stringify({ committed, staged, worktree })));
     }
+    if (STAGE_CHECKPOINT_CASES.has(id)) checks.push(await stageCheckpointCheck(selected, input.paths.workspace, baseline, git));
   } catch (error) {
     checks.push(check('git-save-permission', 'unknown', error.message));
   }

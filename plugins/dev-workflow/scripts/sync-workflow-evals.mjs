@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 // Manifest v1 providers must be Eval-local. Keep one authored adapter closure;
 // the workflow Skill receives ordinary copies, not escaping imports or symlinks.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const modules = ['context-role-workflow.mjs', 'role-evidence.mjs', 'workflow-results.mjs', 'workflow-evaluation.mjs', 'browser/browser-oracle.mjs', 'browser/package.json'];
+const modules = ['context-role-workflow.mjs', 'role-evidence.mjs', 'workflow-results.mjs', 'workflow-evaluation.mjs', 'stage-and-fidelity.mjs', 'browser/browser-oracle.mjs', 'browser/package.json'];
 
 export async function syncWorkflowEvals({ write = false, pluginRoot = root } = {}) {
   const destination = path.join(pluginRoot, 'skills/dev-workflow/evals/runtime');

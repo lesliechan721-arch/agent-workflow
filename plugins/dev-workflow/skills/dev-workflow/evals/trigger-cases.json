@@ -47,7 +47,7 @@
         "stage-resume"
       ],
       "input": {
-        "query": "按结构化开发工作流继续这个已有 Spec，先判断当前保障等级和下一阶段。",
+        "query": "按结构化开发工作流继续这个已有 Spec，先核对有效成果、实际风险和下一阶段。",
         "expectedLoad": true
       }
     },

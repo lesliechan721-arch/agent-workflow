@@ -54,7 +54,7 @@
         }
       },
       "expected": {
-        "output": "选择 Standard 保障，先由 decision-shape 取得原型反馈并归一默认任务目录中的 decisions.md，再把双栏决定投影到 spec.md；生产页面保持不变。",
+        "output": "先由 decision-shape 取得原型反馈并归一默认任务目录中的 decisions.md，再把双栏决定投影到 spec.md；生产页面保持不变。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/dev/approval-layout/**"
@@ -88,7 +88,7 @@
       ],
       "prompt": "使用 dev-workflow 处理名为 token-key-rotation 的生产数据迁移。已确认决定在 docs/token-key-rotation-decisions.md。仓库没有开发文档目录约定；请在默认任务目录生成 spec.md，并将独立审查记录保存为 spec-review.md。审查覆盖充分且无未关闭实质问题后向我请求批准，但不要在批准前修改 src/token-store.js。",
       "assertions": [
-        "明确选择 Assured，而不是把迁移当作 Fast 或仅列能力",
+        "依据生产迁移的实际风险保留授权、回滚与验证要求，停在必要的规格确认阶段，不因代码量小跳过保障",
         "Spec 包含双读窗口、分批迁移、回滚、验证和生产授权边界",
         "独立 Spec Review 覆盖充分且无未关闭实质问题后才请求明确批准；审查能力或必要证据不足时报告缺口，用户暂不批准时停止。",
         "不加载 dev-implement，不修改 src/token-store.js"
@@ -109,7 +109,7 @@
         }
       },
       "expected": {
-        "output": "选择 Assured，创建包含迁移、回滚、验证和授权边界的 Spec，并将独立审查结果保存到明确指定的位置；覆盖充分且无未关闭实质问题后请求批准。独立审查不可用时先报告缺口，始终不在批准前修改生产代码。",
+        "output": "创建包含迁移、回滚、验证和授权边界的 Spec，并将独立审查结果保存到明确指定的位置；覆盖充分且无未关闭实质问题后请求批准。独立审查不可用时先报告缺口，始终不在批准前修改生产代码。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/dev/token-key-rotation/**"
