@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-shape",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "同时检验决定保真、人审完整、阶段前置和独立交接；不用长度、标题、等级词或加载次数代替质量。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "shape-keeps-qualified-decisions",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "整理并维护当前Shape到 decisions.md。此前确认记录在 input.md；本次只归一已有内容，范围内没有新的待用户选择。",
+      "assertions": [
+        "512仍为建议且可配置，审计与token限制均保留。",
+        "移动端关系明确，DOM自由不能扩成布局自由。",
+        "不自动实施或修改未指定文件，归一结果不是新的用户选择。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "input.md": "# 当前对话的有效记录（fixture）\n用户：采用可配置上限，512只是建议；删除请求必须保留审计记录但不记录token；布局沿原型r2，移动端预览先于操作。只委托内部模块和DOM组织。用户已确认这一批记录。\n"
+        }
+      },
+      "expected": {
+        "output": "按主题保留精确含义、确认来源、接受范围与委托，不缩成几个功能名。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "decisions.md"
+        ]
+      },
+      "audit": {
+        "rationale": "信息保真应从对齐记录开始，而不只在Spec补救。",
+        "allowedVariance": "允许等价表述、主题组织和局部实现；依据真实含义、可访问资料、行为与实际权限判定，不强制内部阶段字段或固定篇幅。",
+        "minimalCounterexample": "用户未确认或记录有冲突时应先保持未决。"
+      }
+    }
+  ]
+}

@@ -56,9 +56,9 @@
         "fast-readiness"
       ],
       "audit": {
-        "rationale": "只有单上下文完成这一项不满足，因此任务不能进入 Fast；Shape 已完整，Standard 的最早未满足 gate 是 Spec。",
-        "allowedVariance": "只加载 dev-spec，不得直接进入 dev-implement。",
-        "minimalCounterexample": "同一任务若预计一个上下文可完成，则七项 Fast readiness 全部满足，可以进入 dev-implement。"
+        "rationale": "当前决定完整，但多个实施上下文需要可交接规范，最早缺少的必要结果是 Spec。",
+        "allowedVariance": "当前进入规格整理；允许必要辅助能力，但不能跳过交接依据直接实施。",
+        "minimalCounterexample": "同一任务若当前上下文足够且没有正式审阅或持久交接需求，可以直接以一个工作项进入 Build。"
       },
       "input": {
         "query": "使用 dev-workflow 修复用户名末尾空格未去除的问题。结果、范围和非目标已清楚，没有材料未决，不需要体验或实验，改动低风险、可逆且有稳定失败测试；但仓库很大，预计需要多个上下文才能完成。Shape 已完整，当前没有 Spec。",
@@ -83,7 +83,7 @@
         "minimalCounterexample": "如果当前 Code Review 已为 clean，则可以进入 Delivery，不需要再次加载 Review。"
       },
       "input": {
-        "query": "使用 dev-workflow 继续这个 Fast 任务：实现已经完成，可靠验证已经通过，当前还没有 Code Review。",
+        "query": "使用 dev-workflow 继续这个局部任务：实现已经完成，可靠验证已经通过，当前还没有 Code Review。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -100,9 +100,9 @@
         "fast-readiness"
       ],
       "audit": {
-        "rationale": "实现意图不能代替范围、材料决定和验收；最早未满足 gate 是 Shape。",
-        "allowedVariance": "只加载 decision-shape，不直接加载两个叶子或 dev-implement。",
-        "minimalCounterexample": "同一团队权限功能若已明确可观察结果、范围与非目标、材料决定、无需体验证据、低风险可逆边界、可靠验证方式和单上下文规模，则可以进入 dev-implement。"
+        "rationale": "实现意图不能代替范围、材料决定和验收；应先对齐相互关联的决定。",
+        "allowedVariance": "由 decision-shape 组织对齐，允许它按问题使用访谈或原型，但不能直接进入产品实施。",
+        "minimalCounterexample": "同一团队权限功能若行为、范围、材料决定和验证已明确，当前上下文足够且无需持久交接，可进入 Build。"
       },
       "input": {
         "query": "使用 dev-workflow 实现一个新的团队权限功能。当前没有 Shape、Spec 或明确验收。",

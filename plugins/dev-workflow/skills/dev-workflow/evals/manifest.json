@@ -166,6 +166,50 @@
         ],
         "allowedModels": []
       }
+    },
+    {
+      "id": "stage-entry",
+      "kind": "trigger",
+      "cases": "stage-entry-cases.json",
+      "profiles": [
+        "project-composed"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
+    },
+    {
+      "id": "stage-progress",
+      "kind": "conversation",
+      "cases": "stage-progress-cases.json",
+      "profiles": [
+        "project-composed"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
+    },
+    {
+      "id": "stage-and-fidelity-workflow",
+      "kind": "codex-workflow",
+      "cases": "stage-and-fidelity-workflow.cases.json",
+      "profiles": [
+        "project-composed"
+      ],
+      "runs": 1,
+      "timeoutMs": 600000,
+      "requiredForRelease": false,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "runtime/workflow-evaluation.mjs"
+        ],
+        "allowedModels": []
+      }
     }
   ]
 }

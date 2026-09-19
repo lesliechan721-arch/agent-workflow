@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-review-spec",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "同时检验决定保真、人审完整、阶段前置和独立交接；不用长度、标题、等级词或加载次数代替质量。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "review-annex-hidden-material-change",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "当前是独立审查会话，使用 dev-review-spec 检查 spec.md 及其纳入附件，默认回复报告，不修改。",
+      "assertions": [
+        "读取附件；明确90天和外部发送是材料变化，不是自动授权的技术选择。",
+        "不以附件权威高就覆盖原始确认；给出来源、影响和关闭条件。",
+        "默认只读且不自行作风险批准。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "decisions.md": "# 用户实际确认\n审计数据仅保留7天；用户未允许外部发送或长期保存。\n",
+          "spec.md": "# 审计查询\n提供原有审计查询，继续按用户确认保留7天。技术规范见 details.md。\n",
+          "details.md": "# 规范性细节\n所有审计原始记录额外保留90天，并每晚发送给外部服务用于后续分析。\n"
+        }
+      },
+      "expected": {
+        "output": "发现附件新增保留期和外部发送违背共识，不能只看主文无问题。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "独立审查要检查完整规范与人审承诺，不只自洽摘要。",
+        "allowedVariance": "允许等价表述、主题组织和局部实现；依据真实含义、可访问资料、行为与实际权限判定，不强制内部阶段字段或固定篇幅。",
+        "minimalCounterexample": "用户明确同意90天和外部发送且审阅面充分呈现时，可在对应范围接受。"
+      }
+    },
+    {
+      "id": "review-long-necessary-contracts",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "独立审查当前完整规格是否保留用户要求且便于审核。精确字段就是现有公开合同，不要求你选不同架构。",
+      "assertions": [
+        "检查身份和隔离语义、人审风险及自主空间；不以篇幅或技术内容本身作blocker。",
+        "有实际证据缺口可披露，不能声称已执行生产环境验证。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "confirmed.md": "# 当前确认\n请求的类型A与B使用不同认证身份。秘密仅在指定子进程传递；文件可实现不同内部组织。\n",
+          "spec.md": "# 两类请求\n用户采用两类认证且接受对应风险。完整身份和隔离规则见 auth.md。局部模块组织自行选择。\n",
+          "auth.md": "# 身份与隔离规范\nA使用localToken；B使用upstreamToken。B的Authorization为独立Bearer，过滤A的入站身份。凭据仅传递到对应子进程，其他并发请求不受影响。此规范与主文同等有效。\n",
+          "facts.md": "# 已存在公共接口\n消费者在两个独立端点读取localToken与upstreamToken语义。\n"
+        }
+      },
+      "expected": {
+        "output": "按必要语义评审，不能因精确合同或附件存在就要求删细节。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "防止“轻量”修复倒向删除必要技术约束。",
+        "allowedVariance": "允许等价表述、主题组织和局部实现；依据真实含义、可访问资料、行为与实际权限判定，不强制内部阶段字段或固定篇幅。",
+        "minimalCounterexample": "附件引入无消费者/无确认新承诺或与主文冲突时，应报告对应问题。"
+      }
+    },
+    {
+      "id": "review-reorganization-changed-suggestion",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "请独立审查 proposed.md 是否忠实于 confirmed.md，保持只读。",
+      "assertions": [
+        "具体指出约束强度和自主范围变化，而不是仅说表述不同。",
+        "关闭条件保留固定上限要求同时恢复建议和调用者参数边界。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "confirmed.md": "# 确认\n请求长度必须有一个固定上限，建议512；具体值由调用者配置传入。\n",
+          "proposed.md": "# 规范\n任何输入长度超过512必须拒绝，调用者无法调整。\n"
+        }
+      },
+      "expected": {
+        "output": "指出建议升格并删除可配置自由的语义变化。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "同样保留数字也可能改变原决定。",
+        "allowedVariance": "允许等价表述、主题组织和局部实现；依据真实含义、可访问资料、行为与实际权限判定，不强制内部阶段字段或固定篇幅。",
+        "minimalCounterexample": "来源明确规定不可配置512时，proposed可以成立。"
+      }
+    }
+  ]
+}

@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import { prepareExecutionWorkflow, gradeExecutionWorkflow, interactionSteps } from '../skills/dev-build/evals/workflow-evaluation.mjs';
 import { verifyExport, verifyCurrentPage, semanticChecks } from '../skills/dev-build/evals/workflow-results.mjs';
+import { stageCheckpointCheck, stageProductChecks, verifyExportChoice } from '../skills/dev-build/evals/stage-and-fidelity.mjs';
 import { syncWorkflowEvals } from './sync-workflow-evals.mjs';
 
+const execute = promisify(execFile);
 const localRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const target = process.env.AW_PLUGIN_CONTEXT ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8')) : null;
 if (target) { assert.equal(target.event, 'test'); assert.equal(target.plugin.name, 'dev-workflow'); }
@@ -21,6 +25,7 @@ const files = [
   'skills/dev-build/evals/execution-milestone-cases.json',
   'skills/dev-build/evals/alignment-execution-cases.json',
   'skills/dev-workflow/evals/continuous-alignment-cases.json',
+  'skills/dev-workflow/evals/stage-and-fidelity-workflow.cases.json',
 ];
 
 async function fixture() {
@@ -32,6 +37,10 @@ async function fixture() {
   };
   await Promise.all([paths.workspace, paths.fixtures, paths.output].map((file) => mkdir(file, { recursive: true })));
   return { directory, paths };
+}
+
+async function git(workspace, args) {
+  return (await execute('git', args, { cwd: workspace })).stdout.trim();
 }
 
 test('all execution cases prepare real isolated fixtures without running a model or exposing answers', async () => {
@@ -83,6 +92,125 @@ test('export oracle rejects the opposite user answer and verifies the actual imp
   }
 });
 
+test('stage export oracle accepts each delivered choice and rejects the opposite implementation', async () => {
+  const state = await fixture();
+  try {
+    await mkdir(path.join(state.paths.workspace, 'src'));
+    await writeFile(path.join(state.paths.workspace, 'package.json'), '{"type":"module"}');
+    const implementations = {
+      'filtered-csv': `
+        const quote=value=>/[",\\n\\r]/u.test(value)?'"'+value.replaceAll('"','""')+'"':value;
+        export function exportRows({filteredRows}) {
+          return {format:'csv',content:['id,name',...filteredRows.map(({id,name})=>quote(id)+','+quote(name))].join('\\n')};
+        }
+      `,
+      'page-json': `
+        export function exportRows({pageRows}) {
+          return {format:'json',content:JSON.stringify(pageRows)};
+        }
+      `,
+    };
+    for (const [implemented, source] of Object.entries(implementations)) {
+      await writeFile(path.join(state.paths.workspace, 'src/export.js'), source);
+      for (const expected of Object.keys(implementations)) {
+        const result = await verifyExportChoice(state.paths.workspace, expected);
+        assert.equal(result.verdict, expected === implemented ? 'pass' : 'fail', result.evidence);
+      }
+    }
+  } finally {
+    await rm(state.directory, { recursive: true, force: true });
+  }
+});
+
+test('stage product oracle accepts the model-policy contract and rejects bad product or changed source evidence', async () => {
+  const document = await json(path.join(root, 'skills/dev-workflow/evals/stage-and-fidelity-workflow.cases.json'));
+  const selected = document.cases.find((item) => item.id === 'full-source-to-task-clean-worker');
+  const state = await fixture();
+  try {
+    await prepareExecutionWorkflow({ case: selected, paths: state.paths });
+    const bad = await stageProductChecks(selected, state.paths.workspace, { workspaceDiff: { added: [], modified: [], removed: [] } });
+    assert.equal(bad.find((item) => item.name === 'model-policy-and-runtime').verdict, 'fail');
+
+    await writeFile(path.join(state.paths.workspace, 'src/model-policy.js'), `
+      const accepts=(id,filter)=>filter.mode==='all'||(filter.mode==='regex'?new RegExp(filter.pattern).test(id):filter.models.includes(id));
+      export function chooseRoute(id,filter,upstreamAvailable){return id.startsWith('chatgpt-web/')?'local':upstreamAvailable&&accepts(id,filter)?'upstream':'deny';}
+      export function visibleModels(local,remote,filter){return [...new Set([...local,...remote.filter((id)=>!id.startsWith('chatgpt-web/')&&accepts(id,filter))])];}
+    `);
+    await writeFile(path.join(state.paths.workspace, 'src/runtime-state.js'), "export const applicationState=(savedRevision,loadedRevision)=>savedRevision===loadedRevision?'applied':'pending';\n");
+    const good = await stageProductChecks(selected, state.paths.workspace, { workspaceDiff: { added: [], modified: ['src/model-policy.js', 'src/runtime-state.js'], removed: [] } });
+    assert.equal(good.find((item) => item.name === 'model-policy-and-runtime').verdict, 'pass');
+    assert.equal(good.filter((item) => item.name.startsWith('source:')).every((item) => item.verdict === 'pass'), true);
+
+    await writeFile(path.join(state.paths.workspace, 'decisions.md'), '# changed\n');
+    const changedSource = await stageProductChecks(selected, state.paths.workspace, { workspaceDiff: { added: [], modified: ['decisions.md'], removed: [] } });
+    assert.equal(changedSource.find((item) => item.name === 'source:decisions.md').verdict, 'fail');
+  } finally {
+    await rm(state.directory, { recursive: true, force: true });
+  }
+});
+
+test('stage realignment and small-task product checks distinguish accepted outcomes from regressions', async () => {
+  const document = await json(path.join(root, 'skills/dev-workflow/evals/stage-and-fidelity-workflow.cases.json'));
+  const realign = document.cases.find((item) => item.id === 'new-evidence-realign-only-affected-work');
+  const small = document.cases.find((item) => item.id === 'no-commit-and-small-task-path');
+
+  const realignState = await fixture();
+  try {
+    await prepareExecutionWorkflow({ case: realign, paths: realignState.paths });
+    const bad = await stageProductChecks(realign, realignState.paths.workspace, { workspaceDiff: { added: [], modified: [], removed: [] } });
+    assert.equal(bad.find((item) => item.name === 'realigned-export-and-independent-list').verdict, 'fail');
+    await writeFile(path.join(realignState.paths.workspace, 'src/export.js'), 'export async function exportRows(service){const {jobId}=await service.startExport();return {kind:"job",jobId};}\n');
+    await writeFile(path.join(realignState.paths.workspace, 'src/list.js'), 'export const listTitle=()=>"客户记录";\n');
+    const good = await stageProductChecks(realign, realignState.paths.workspace, { workspaceDiff: { added: [], modified: ['src/export.js', 'src/list.js'], removed: [] } });
+    assert.equal(good.find((item) => item.name === 'realigned-export-and-independent-list').verdict, 'pass');
+  } finally {
+    await rm(realignState.directory, { recursive: true, force: true });
+  }
+
+  const smallState = await fixture();
+  try {
+    await prepareExecutionWorkflow({ case: small, paths: smallState.paths });
+    await writeFile(path.join(smallState.paths.workspace, 'README.md'), '# 项目设置\n保留本段。\n');
+    const good = await stageProductChecks(small, smallState.paths.workspace, { workspaceDiff: { added: [], modified: ['README.md'], removed: [] } });
+    assert.equal(good.find((item) => item.name === 'actual-document').verdict, 'pass');
+    assert.equal(good.find((item) => item.name === 'bounded-document-scope').verdict, 'pass');
+    const outOfScope = await stageProductChecks(small, smallState.paths.workspace, { workspaceDiff: { added: ['spec.md'], modified: ['README.md'], removed: [] } });
+    assert.equal(outOfScope.find((item) => item.name === 'bounded-document-scope').verdict, 'fail');
+    await writeFile(path.join(smallState.paths.workspace, 'README.md'), '# 项目设置\n正文被改了。\n');
+    const wrongDocument = await stageProductChecks(small, smallState.paths.workspace, { workspaceDiff: { added: [], modified: ['README.md'], removed: [] } });
+    assert.equal(wrongDocument.find((item) => item.name === 'actual-document').verdict, 'fail');
+  } finally {
+    await rm(smallState.directory, { recursive: true, force: true });
+  }
+});
+
+test('preimplementation checkpoint oracle requires spec and task before product changes', async () => {
+  const document = await json(path.join(root, 'skills/dev-workflow/evals/stage-and-fidelity-workflow.cases.json'));
+  const selected = document.cases.find((item) => item.id === 'preimplementation-baseline-scoped-commit');
+
+  for (const productFirst of [false, true]) {
+    const state = await fixture();
+    try {
+      await prepareExecutionWorkflow({ case: selected, paths: state.paths });
+      const baseline = await json(path.join(state.paths.output, 'fixture-baseline.json'));
+      await mkdir(path.join(state.paths.workspace, 'tickets'), { recursive: true });
+      await writeFile(path.join(state.paths.workspace, 'spec.md'), '# Spec\n');
+      await writeFile(path.join(state.paths.workspace, 'tickets/model-policy.md'), '# Task\n');
+      const added = ['spec.md', 'tickets/model-policy.md'];
+      if (productFirst) {
+        await writeFile(path.join(state.paths.workspace, 'src/model-policy.js'), 'export const changed=true;\n');
+        added.push('src/model-policy.js');
+      }
+      await git(state.paths.workspace, ['add', '--', ...added]);
+      await git(state.paths.workspace, ['commit', '-m', 'Implementation baseline']);
+      const result = await stageCheckpointCheck(selected, state.paths.workspace, baseline, git);
+      assert.equal(result.verdict, productFirst ? 'fail' : 'pass', result.evidence);
+    } finally {
+      await rm(state.directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test('current-page oracle checks real disjoint service inputs, not a fixture-specific constant', async () => {
   const state = await fixture();
   try {
@@ -122,6 +250,5 @@ test('product correctness and model approval labels cannot fill missing user/Rev
 });
 
 test('Eval-local generated closure remains synchronized with the canonical provider', async () => {
-  assert.deepEqual(await syncWorkflowEvals({ pluginRoot: root }), { ok: true, checked: 6, drift: [] });
+  assert.deepEqual(await syncWorkflowEvals({ pluginRoot: root }), { ok: true, checked: 7, drift: [] });
 });
-
