@@ -1,6 +1,6 @@
 interface:
   display_name: dev-build
-  short_description: "协调多工作项或完整交付，按需组织实施、集成验证和独立审查"
+  short_description: "协调实施、集成与独立审查；材料缺口交由当前协调者使用 Shape 对齐"
   default_prompt: "使用 $dev-build 处理当前请求，遵循实际范围、资料和授权。"
 policy:
   allow_implicit_invocation: true

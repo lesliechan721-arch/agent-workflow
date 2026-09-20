@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-build",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "默认对齐入口与真实用户决定同时验证；已有共识复用，短任务不过度展开。"
+    },
+    "participants": [
+      "decision-shape",
+      "dev-workflow",
+      "dev-implement"
+    ],
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "standalone-build-uses-shape",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "使用 dev-build 继续已批准的导出任务。先核查 api-facts.md 对现有同步方案的影响；尚未授权改变用户体验。",
+      "assertions": [
+        "当前Build独立负责用户协作，使用Shape处理完整结果与同步体验的冲突。",
+        "没有答复前不截断数据、不自改异步体验或Spec；可保留问题与依据。",
+        "现有一轮已用预算保持，重新对齐不会产生新配额。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "spec.md": "# 已确认要求\n导出当前筛选的完整记录，原设想为同步下载。\n",
+          "api-facts.md": "# 运行调查\nreadSync最多返回1000条；startExport可生成完整记录后台任务。禁止以截断结果冒充完整导出。\n",
+          "src/export.js": "export const run = service => service.readSync();\n",
+          "work.md": "# Work\n本任务修复上限三轮，已用一轮。导出工作受阻，另一个标题改动与本问题独立。\n"
+        }
+      },
+      "expected": {
+        "output": "解释同步限制与选择，取得用户决定后恢复。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "work.md"
+        ]
+      },
+      "audit": {
+        "rationale": "统一入口覆盖中途对齐，不只开发开始前。",
+        "allowedVariance": "允许同义表达与合理布局；读写与实际答案为证据。当前或外层同一主代理可继续加载方法，不强制新建子代理。",
+        "minimalCounterexample": "内部可分页且体验/成本保持原要求时可自主等价实现。"
+      }
+    },
+    {
+      "id": "delegated-build-returns-to-user-coordinator",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "你是外层工作流已委派的实施协调者，目前不拥有用户交互职责。核查 api-facts.md，返回阻碍导出任务的材料问题和证据；外层协调者负责对齐。",
+      "assertions": [
+        "返回原决定、新事实、用户后果和必要选择，不另起一套用户访谈。",
+        "说明由外层协调者使用Shape，相关产品修改保持暂停。",
+        "真实独立任务可继续的判断不扩大当前调用范围；预算和已有停止点保持。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "spec.md": "# 已确认要求\n导出当前筛选的完整记录，原设想为同步下载。\n",
+          "api-facts.md": "# 运行调查\nreadSync最多返回1000条；startExport可生成完整记录后台任务。禁止以截断结果冒充完整导出。\n",
+          "src/export.js": "export const run = service => service.readSync();\n",
+          "work.md": "# Work\n本任务修复上限三轮，已用一轮。导出工作受阻，另一个标题改动与本问题独立。\n"
+        }
+      },
+      "expected": {
+        "output": "向外层交回材料问题，等待更新后的有效依据。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "单一用户对齐owner防止父子各开一个Shape循环。",
+        "allowedVariance": "允许同义表达与合理布局；读写与实际答案为证据。当前或外层同一主代理可继续加载方法，不强制新建子代理。",
+        "minimalCounterexample": "独立使用Build且无外层用户协调者时应自行加载Shape询问。"
+      }
+    }
+  ]
+}

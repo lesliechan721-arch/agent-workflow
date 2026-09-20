@@ -7,7 +7,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "漏触发会让复杂决策缺少统一塑形；误触发会给单一问题增加不必要流程。"
+      "rationale": "验证受委托对齐、当前共识恢复与直接专业调用边界；短任务和方法单一不否定已委托职责。"
     },
     "runtime": {
       "observeSpawnAgent": false,
@@ -96,6 +96,54 @@
         "minimalCounterexample": "如果用户要求逐轮校准多个决定、按需制作 Prototype 并维护当前 Shape，则应加载 decision-shape。",
         "errorCost": "high",
         "allowedVariance": "直接回答或使用其它评估能力。"
+      }
+    },
+    {
+      "id": "delegated_single_choice",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "当前调用方将导出范围的对齐交给 decision-shape：格式已确认CSV，只剩当前筛选结果还是当前页这一项用户选择，短问答后交回。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "受委托的主题对齐可以一轮完成。",
+        "allowedVariance": "允许等价表达及适用辅助能力；触发不证明实际对齐完成，后续质量另查。",
+        "minimalCounterexample": "只要求解释分页与筛选区别、没有对齐委托时普通回答即可。"
+      }
+    },
+    {
+      "id": "delegated_single_prototype",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "当前主题对齐交给 decision-shape，调查后只剩一个必须操作候选页才能决定的布局问题；保留已确认范围，完成当前对齐。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "主题owner不因只剩一种证据方法而退出。",
+        "allowedVariance": "允许等价表达及适用辅助能力；触发不证明实际对齐完成，后续质量另查。",
+        "minimalCounterexample": "用户直接要求制作一个指定原型时由Prototype独立完成。"
+      }
+    },
+    {
+      "id": "resume_material_change",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 decision-shape 恢复已确认的导出主题。新接口事实可能改变同步下载体验，只对齐受影响选择。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "恢复与重新对齐受影响主题属于Shape职责。",
+        "allowedVariance": "允许等价表达及适用辅助能力；触发不证明实际对齐完成，后续质量另查。",
+        "minimalCounterexample": "更换内部等价函数且没有用户结果变化时无需Shape。"
       }
     }
   ]

@@ -166,6 +166,20 @@
         ],
         "allowedModels": []
       }
+    },
+    {
+      "id": "shape-realignment",
+      "kind": "conversation",
+      "cases": "shape-realignment-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }
