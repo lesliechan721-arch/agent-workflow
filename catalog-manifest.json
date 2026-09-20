@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.22",
+  "catalogVersion": "0.1.0-beta.23",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "87927707f05878b32a8c2b559cec15f70ff20951"
+    "sourceHead": "c975b5a7bb60a1efc5c3f5c0f57c50c3d211ce81"
   },
   "entries": [
     {
@@ -113,7 +113,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.9",
+      "version": "0.1.0-beta.10",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -124,9 +124,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:f421bd25f01d0740a1dbc59e80cfbf6034adc7bb7a9b88d3fbb394ce9c4bdd1c",
-      "manifestDigest": "sha256:ed76695bc739ed5538979c1bd60e7e8a0e1cb51b000d5bcdf7fc96c099c4cadc",
-      "contentDigest": "sha256:500106fa07ad634c0275305b2306a3efdfb11608750b5d1b2ec886f460a72256"
+      "artifactDigest": "sha256:cd0023c3ebd6af592aa3c3c7c7aa44488c5dea6aec9c3aa12c4f3c95662bb85c",
+      "manifestDigest": "sha256:57e8f74c575c3e32205faf24b0af358e0939bb0c9a622dee4d35f7457b8cf169",
+      "contentDigest": "sha256:27051509ddb1f7ac7bbac66203d07e1664ed65913f58cb74c11481eab355af35"
     },
     {
       "name": "aw-development-toolkit",
