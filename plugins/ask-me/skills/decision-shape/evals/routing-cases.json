@@ -29,13 +29,18 @@
         "shape-routing"
       ],
       "input": {
-        "query": "用 decision-shape 继续当前产品方向。现在最上游问题是安全和兼容的取舍，可以通过讨论决定。",
+        "query": "用 decision-shape 继续当前产品方向。安全和兼容的取舍存在多个相互依赖的材料问题，需要逐轮访谈澄清，再归一当前共识。",
         "expected": {
           "loadedSkills": [
             "decision-shape",
             "decision-grill"
           ]
         }
+      },
+      "audit": {
+        "rationale": "逐轮依赖已是明确前提，保留Grill正例。",
+        "allowedVariance": "允许等价表达及适用辅助能力；触发不证明实际对齐完成，后续质量另查。",
+        "minimalCounterexample": "仅一个给出背景即可回答的选择时，Shape可直接询问。"
       }
     },
     {
@@ -195,6 +200,26 @@
         "minimalCounterexample": "若用户要求逐轮校准多个决定并按需取得体验证据，则应加载 decision-shape。",
         "errorCost": "high",
         "allowedVariance": "直接回答或使用范围外的分析能力；不得加载三个 Ask Me Skill。"
+      }
+    },
+    {
+      "id": "delegated_short_question_in_shape",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "用 decision-shape 对齐当前单个选择：只需决定按钮显示“导出”还是“下载”，其他要求已确认；在当前对话询问并记录答案即可。",
+        "expected": {
+          "loadedSkills": [
+            "decision-shape"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "简单受委托对齐不强制完整访谈或原型。",
+        "allowedVariance": "允许等价表达及适用辅助能力；触发不证明实际对齐完成，后续质量另查。",
+        "minimalCounterexample": "需要深入检验相互依赖取舍时使用Grill。"
       }
     }
   ]

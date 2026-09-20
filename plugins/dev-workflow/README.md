@@ -26,7 +26,7 @@ aw install dev-workflow -p both
 | dev-build | 唯一协调实施准备、集成、最终核验和代码修复 |
 | dev-review-code | 独立核对当前范围的需求/设计与工程质量 |
 
-需求对齐使用依赖插件ask-me的访谈、原型和共享理解能力。阶段并不要求每次都加载所有Skill。
+需求对齐使用依赖插件 ask-me 的 `decision-shape`，由它按需澄清、组织访谈或原型；已有充分有效的共识直接复用。阶段并不要求每次都加载所有Skill。
 
 ## 典型用法
 

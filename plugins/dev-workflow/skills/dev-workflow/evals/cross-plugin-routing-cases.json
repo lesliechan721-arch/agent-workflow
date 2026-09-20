@@ -250,13 +250,18 @@
         "review-routing"
       ],
       "input": {
-        "query": "使用 dev-workflow 处理 blocked Code Review；reviewer 发现 Spec 遗漏失败行为。",
+        "query": "使用 dev-workflow 处理 blocked Code Review。reviewer 发现 Spec 漏写失败行为，但用户在原始确认中已经明确“失败保留草稿并显示错误”；当前只是遗漏整理，没有新的材料选择，修订已授权。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
             "dev-spec"
           ]
         }
+      },
+      "audit": {
+        "rationale": "已确认行为遗漏应保真补写Spec，不重新问同一问题。",
+        "allowedVariance": "允许等价表达及适用辅助能力；触发不证明实际对齐完成，后续质量另查。",
+        "minimalCounterexample": "失败后重试/保留/取消从未被确认时必须先Shape。"
       }
     },
     {
@@ -299,6 +304,27 @@
             "dev-review-code"
           ]
         }
+      }
+    },
+    {
+      "id": "route_unknown_failure_behaviour_to_shape",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "query": "使用 dev-workflow 处理 Code Review：Spec 没有约定提交失败后自动重试还是保留草稿，两者有不同副作用；原始请求与用户确认均未决定这件事。",
+        "expected": {
+          "loadedSkills": [
+            "dev-workflow",
+            "decision-shape"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "规范缺口包含新产品决定，不能由Spec作者自定。",
+        "allowedVariance": "允许等价表达及适用辅助能力；触发不证明实际对齐完成，后续质量另查。",
+        "minimalCounterexample": "原确认已经明确失败行为时属于补写规范。"
       }
     }
   ]

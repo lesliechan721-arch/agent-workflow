@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-shape",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "默认对齐入口与真实用户决定同时验证；已有共识复用，短任务不过度展开。"
+    },
+    "participants": [
+      "decision-grill",
+      "decision-prototype"
+    ],
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "delegated-one-choice-one-answer",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "当前调用方委托你用 decision-shape 确认空姓名显示，只有“未填写”和“—”这一材料选择；非空显示和其它范围已明确。当前对话交付，接受答复后交回。",
+      "assertions": [
+        "可以直接提出一题并用真实回答形成当前决定。",
+        "无需完整Grill、原型、文件或新子代理；目标是把这个选择对齐。",
+        "答案已明确且无新问题时及时交付；仅将确认范围解释为显示选择，不自动授权后续修改。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "选择“未填写”，非空行为不变。"
+        ],
+        "workspaceFiles": {
+          "context.md": "# 现状\n空姓名现在空白。两种候选均可实现，成本无实质差异。\n"
+        }
+      },
+      "expected": {
+        "output": "确认空姓名使用“未填写”，其余行为不变。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "Shape由职责而非轮数定义，避免为了统一入口强制层层加载。",
+        "allowedVariance": "允许同义表达与合理布局；读写与实际答案为证据。当前或外层同一主代理可继续加载方法，不强制新建子代理。",
+        "minimalCounterexample": "存在尚未澄清的依赖取舍时可以继续访谈。"
+      }
+    },
+    {
+      "id": "short-decision-preserves-qualified-delegation",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "使用 decision-shape 对齐超时显示。你已查明超时重试可能重复执行；我只愿意委托内部重构，超时后的用户行为仍需要问我。本次不写文件。",
+      "assertions": [
+        "解释超时和是否已生效的区别，提出真实选择并等待回答。",
+        "不能从内部重构授权推出自动重试或风险豁免。",
+        "记录答案的条件、例外和委托边界，事实可调查部分不让用户凭偏好回答。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "超时保留草稿并提示结果未确认，不自动重试；内部组织仍由你决定。"
+        ],
+        "workspaceFiles": {
+          "facts.md": "# 调查事实\n后台任务无幂等键。超时不证明任务没有生效。\n"
+        }
+      },
+      "expected": {
+        "output": "按用户回答确定保留草稿且不自动重试，内部重构自由保持。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "简短对齐也必须保留决定精度及授权边界。",
+        "allowedVariance": "允许同义表达与合理布局；读写与实际答案为证据。当前或外层同一主代理可继续加载方法，不强制新建子代理。",
+        "minimalCounterexample": "已确认幂等重试策略且本次只是内部实现可自主处理。"
+      }
+    }
+  ]
+}

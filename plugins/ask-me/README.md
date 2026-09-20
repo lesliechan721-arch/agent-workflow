@@ -14,11 +14,11 @@ aw install ask-me -p both
 
 | Skill | 什么时候使用 |
 | --- | --- |
-| [`decision-shape`](skills/decision-shape/) | 一个复杂主题需要问答和按需原型共同形成完整共享理解 |
+| [`decision-shape`](skills/decision-shape/) | 建立、恢复或修订一个主题的共享理解；受委托的对齐也可通过一轮澄清完成 |
 | [`decision-grill`](skills/decision-grill/) | 需要通过多轮访谈把一个计划、方案或重要决定想透 |
 | [`decision-prototype`](skills/decision-prototype/) | 一个明确决定必须看到、运行、操作、实验或测量候选结果后才能作出 |
 
-三个 Skill 都可以直接调用。`decision-shape` 是可选宏能力，拥有跨轮次共享决策方向（Decision frame），并把它传给当前叶子 Skill。方向变化时，它只重新打开受影响的决定。两个叶子 Skill 不互相调用，也不依赖 `decision-shape`。
+三个 Skill 都可以直接调用。`decision-shape` 维护当前主题的共享决策方向（Decision frame），按需直接澄清、组织访谈或原型。方向变化时，它只重新打开受影响的决定。两个叶子 Skill 不互相调用，也不依赖 `decision-shape`。
 
 `decision-prototype` 按主要不确定性选择逻辑演示、界面候选或技术实验，再选择反馈方式。Review Shell 负责呈现证据和收集输入。Shape 只吸收当前答案、成立条件、必要风险和证据指针。
 
@@ -38,7 +38,7 @@ aw install ask-me -p both
 
 ## 三个 Skill 怎么选
 
-- “复杂主题需要问答和必要原型共同塑形” → `decision-shape`
+- “建立或恢复这个主题的共识，按需澄清、访谈或制作原型” → `decision-shape`
 - “我需要通过逐轮访谈把一个决定想清楚” → `decision-grill`
 - “只靠说无法判断，我需要看到、操作或测量候选结果” → `decision-prototype`
 
