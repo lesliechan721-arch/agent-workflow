@@ -1,6 +1,6 @@
 interface:
   display_name: decision-shape
-  short_description: "在多轮问答与可体验证据间形成完整且当前有效的共享理解"
-  default_prompt: "使用 $decision-shape 收敛当前主题的材料决定，并按需维护 Shape 记录。"
+  short_description: "承接主题对齐，按需短澄清、访谈或原型，保留有依据的当前决定"
+  default_prompt: "使用 $decision-shape 对齐当前主题，复用有效决定、补足材料缺口，并按实际交接需要记录。"
 policy:
   allow_implicit_invocation: true
