@@ -3138,8 +3138,11 @@ describe('rebuild adapter integration', () => {
         await expect(fs.pathExists(path.join(legacy.root, legacy.skillKey))).resolves.toBe(false);
       }
       expect(target.artifacts.some((artifact) => artifact.target === 'codex.skill')).toBe(false);
-      expect(target.artifacts.filter((artifact) => artifact.target === 'codex.agentRole'))
-        .toHaveLength(8);
+      expect(target.artifacts
+        .filter((artifact) => artifact.target === 'codex.agentRole')
+        .map((artifact) => artifact.roleKey)
+        .sort())
+        .toEqual(['codex-explore', 'codex-subagent']);
       const cacheRoot = path.join(
         isolation.layout.codexHomeDir,
         'plugins',
