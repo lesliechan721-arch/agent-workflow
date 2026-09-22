@@ -1,30 +1,34 @@
 ---
 name: codex-subagent-guide
 description: 当需要启动、续接或管理子代理时使用。本技能提供完整的调度与生命周期策略，包括参数与上下文选择、续接与新建、等待与清理。若系统或用户指令、项目规则或其它技能已为当前委派提供完整的调度与生命周期策略，禁止使用本技能，避免重复调度；只讨论是否委派或解释相关概念时不自动使用。
-compatibility: Requires Codex multi-agent spawn_agent.agent_type and the four bundled roles; wait and cleanup rules apply only when exposed by the current tool schema.
+compatibility: 需要 Codex 的 spawn_agent.agent_type；默认使用 codex-subagent role，动态选型、等待与清理以当前工具 schema 为准。
 metadata:
   short-description: 子代理任务分类、参数选择、上下文继承、等待与清理原则
 ---
 
 # Codex Subagent Guide
 
-保留当前请求及上游工作流对该子任务的有效要求，仅为未指定项提供默认策略。
-局部参数约束不排除本 Skill；当前有效指令已提供完整调度策略时不叠加。
-
-子代理调用方式以当前工具 schema 为准。
+本 Skill 不授予或判断委派权限，只补齐未指定策略；局部参数约束不排除本 Skill，已有完整调度策略时不叠加。
 
 ## Spawn 参数
 
-显式指定 `model`、`reasoning_effort` 或 `agent_type` 时按其作用域作为自定义任务；否则按当前 `agent_type` schema 中 `codex-subagent-*` role 的描述选择足以可靠满足验收的最低档。依据歧义、依赖耦合、验证难度和关键遗漏代价，不按任务名称分类。
+优先使用显式指定的 role（`agent_type`），否则使用 `codex-subagent`。
 
-- preset 的路由字段只传所选 `agent_type`；role 不可用时停止，不改用动态 model override。
-- 自定义任务只传作用于该子任务、schema 公开且目标模型支持的显式字段；不可用或冲突时停止，不猜测、试探或降级。
+按歧义、耦合、验证难度和遗漏代价选择足以满足验收的最低档，不按任务名称分类。下表为选型偏好，用户配置覆盖插件内置值。
+
+<!-- model-profiles -->
+
+模型和推理级别分别按“显式要求 > 表格配置偏好 > 环境默认”选择。
+未指定时使用下一优先级；明确不可用时回退，保留其他可用字段。
+模型与推理级别不兼容时，先回退推理级别。
+按当前工具 schema 传参；采用环境默认时省略对应可选字段。
+未列出某模型不等于不可用。发生回退时简要说明；默认仍不可用时报告失败。
 
 ## 上下文
 
 默认使用干净上下文，按 schema 传 `fork_turns: "none"` 或 `fork_context: false`。`message` 自包含目标、范围、必要事实、约束、成功标准、验证要求和预期输出。
 
-只有明确要求继承，或任务无法通过完整 message 自包含时才继承；不为缩短说明而继承。上下文选择独立于 preset/custom。不能同时满足指定继承范围和路由字段时停止，不省略参数或用更多历史近似。
+只有明确要求继承，或任务无法通过完整 message 自包含时才继承，不为缩短说明而继承。不能同时满足指定继承范围和选型字段时停止，不省略参数或用更多历史近似。
 
 ## 续接与新建
 

@@ -14856,6 +14856,10 @@ describe('five namespaced write commands', () => {
     expect(await runPublic([
       'config', 'set', 'team/codex-enhance', 'standardProfile', '--scope', 'project',
       '--value-json', '{"model":"project-standard","reasoningEffort":"max"}',
+    ])).toMatchObject({ exitCode: 1 });
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'standardProfile', '--scope', 'user',
+      '--value-json', '{"model":"user-standard","reasoningEffort":"max"}',
     ])).toMatchObject({
       exitCode: 0,
       payload: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
@@ -14885,21 +14889,32 @@ describe('five namespaced write commands', () => {
     expect(initialReceipt.targets.map((target) => target.skillKey)).toEqual([
       'codex-explore', 'codex-subagent-guide',
     ]);
-    const projectStore = await readPluginConfigStore({
+    const userStore = await readPluginConfigStore({
       sourceId: 'team', sourceIdentity, logicalIdentity,
-      pluginName: 'codex-enhance', scope: 'project',
+      pluginName: 'codex-enhance', scope: 'user',
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
     });
-    expect(projectStore.values.standardProfile).toEqual({
-      model: 'project-standard', reasoningEffort: 'max',
+    expect(userStore.values.standardProfile).toEqual({
+      model: 'user-standard', reasoningEffort: 'max',
     });
+    const roleBefore = await fs.readFile(path.join(
+      isolation.layout.fixtureCwd, '.codex', 'agents',
+      'aw-codex-enhance-codex-explore.toml',
+    ), 'utf8');
+    expect(roleBefore).not.toMatch(/^model(?:_reasoning_effort)?\s*=/m);
+    expect(initialSkillBytes[0].toString('utf8')).toContain('"user-standard"');
+    expect(initialSkillBytes[1].toString('utf8')).not.toContain('"user-standard"');
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'standardProfile', '--scope', 'user',
+      '--value-json', '{"model":"updated-standard","reasoningEffort":"high"}',
+      '--apply', '--yes',
+    ])).toMatchObject({ exitCode: 0 });
+    await expect(fs.readFile(skillPaths[0], 'utf8')).resolves.toContain('"updated-standard"');
+    await expect(fs.readFile(skillPaths[1])).resolves.toEqual(initialSkillBytes[1]);
     await expect(fs.readFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'agents',
-      'aw-codex-enhance-codex-explore-standard.toml',
-    ), 'utf8')).resolves.toContain('model = "project-standard"');
-    for (const [index, skillPath] of skillPaths.entries()) {
-      await expect(fs.readFile(skillPath)).resolves.toEqual(initialSkillBytes[index]);
-    }
+      'aw-codex-enhance-codex-explore.toml',
+    ), 'utf8')).resolves.toBe(roleBefore);
     const projectOnlyConfig = await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
     ));
@@ -14915,7 +14930,7 @@ describe('five namespaced write commands', () => {
     expect(userInstall, JSON.stringify(userInstall, null, 2))
       .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
     await expect(fs.pathExists(path.join(
-      isolation.env.AW_CODEX_HOME!, 'agents', 'aw-codex-enhance-codex-explore-standard.toml',
+      isolation.env.AW_CODEX_HOME!, 'agents', 'aw-codex-enhance-codex-explore.toml',
     ))).resolves.toBe(true);
     const userUninstall = await runPublic([
       'uninstall', 'team/codex-enhance', '--platform', 'codex', '--scope', 'user',
