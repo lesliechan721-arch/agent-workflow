@@ -4952,11 +4952,11 @@ describe('rebuild adapter integration', () => {
       .resolves.toBe(false);
     await expect(fs.pathExists(path.join(
       codexPaths.agentsDir,
-      'aw-codex-enhance-codex-subagent-simple.toml',
+      'aw-codex-enhance-codex-subagent.toml',
     ))).resolves.toBe(true);
     const codexConfig = await fs.readFile(codexPaths.configTomlPath, 'utf8');
     expect(codexConfig).not.toContain('实施前需求检查');
-    expect(codexConfig).toContain('[agents.codex-subagent-simple]');
+    expect(codexConfig).toContain('[agents.codex-subagent]');
   });
 
   it('does not discover a Codex plugin from a private installed manifest', async () => {

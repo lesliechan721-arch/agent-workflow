@@ -27,34 +27,11 @@ const exploreArtifactSourcePath = existsSync(stagedExploreArtifactSourcePath)
   : fileURLToPath(new URL('../skills/codex-explore/', import.meta.url));
 const ROLE_EXPECTATIONS = [
   {
-    artifactId: 'codex-subagent-simple-role',
-    roleKey: 'codex-subagent-simple',
-    profileKey: 'simpleTaskProfile',
-    model: 'gpt-5.6-luna',
-    reasoningEffort: 'max',
-  },
-  {
-    artifactId: 'codex-subagent-general-role',
-    roleKey: 'codex-subagent-general',
-    profileKey: 'generalTaskProfile',
-    model: 'gpt-5.6-terra',
-    reasoningEffort: 'xhigh',
-  },
-  {
-    artifactId: 'codex-subagent-complex-role',
-    roleKey: 'codex-subagent-complex',
-    profileKey: 'complexTaskProfile',
-    model: 'gpt-5.6-sol',
-    reasoningEffort: 'medium',
-  },
-  {
-    artifactId: 'codex-subagent-advanced-role',
-    roleKey: 'codex-subagent-advanced',
-    profileKey: 'advancedTaskProfile',
-    model: 'gpt-6-astra',
-    reasoningEffort: 'xhigh',
+    artifactId: 'codex-subagent-role',
+    roleKey: 'codex-subagent',
   },
 ];
+const PROFILE_KEYS = ['simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile'];
 
 function createContext(values = {}) {
   return {
@@ -67,10 +44,7 @@ function createContext(values = {}) {
     },
     requestedArtifactIds: [
       'codex-explore-skill',
-      'codex-explore-quick-role',
-      'codex-explore-standard-role',
-      'codex-explore-deep-role',
-      'codex-explore-custom-role',
+      'codex-explore-role',
       'codex-subagent-guide-skill',
       ...ROLE_EXPECTATIONS.map((role) => role.artifactId),
     ],
@@ -96,14 +70,14 @@ function createContext(values = {}) {
 
 function artifactsFrom(plan) {
   assert.equal(plan.version, 2);
-  assert.equal(plan.artifacts.length, 10);
+  assert.equal(plan.artifacts.length, 4);
 
   const skill = plan.artifacts.find((artifact) => artifact.id === 'codex-subagent-guide-skill');
   assert.ok(skill, 'missing skill artifact');
   assert.equal(skill.kind, 'skill');
   assert.equal(skill.target, 'codex.skill');
   assert.equal(skill.skillKey, 'codex-subagent-guide');
-  assert.deepEqual(skill.refreshKeys, []);
+  assert.deepEqual(skill.refreshKeys, PROFILE_KEYS);
   assert.equal(skill.state, 'present');
   assert.equal('skillFile' in skill.content, false);
   assert.equal('openaiYaml' in skill.content, false);
@@ -117,7 +91,7 @@ function artifactsFrom(plan) {
     assert.equal(role.kind, 'codexRole');
     assert.equal(role.target, 'codex.agentRole');
     assert.equal(role.roleKey, expected.roleKey);
-    assert.deepEqual(role.refreshKeys, [expected.profileKey]);
+    assert.deepEqual(role.refreshKeys, []);
     assert.equal(role.state, 'present');
     assert.equal(role.content.roleFile.name, expected.roleKey);
     assert.equal(role.content.registration.description, role.content.roleFile.description);
@@ -136,7 +110,7 @@ function artifactsFrom(plan) {
   };
 }
 
-test('renders four task roles with required metadata and safety invariants', async () => {
+test('renders one model-free task role with required metadata and safety invariants', async () => {
   const { skill, roles } = artifactsFrom(await renderArtifactPlan(createContext()));
   const openaiYaml = await readFile(
     new URL('agents/openai.yaml', pathToFileURL(`${artifactSourcePath}/`)),
@@ -145,8 +119,8 @@ test('renders four task roles with required metadata and safety invariants', asy
 
   for (const expected of ROLE_EXPECTATIONS) {
     const role = roles.get(expected.roleKey);
-    assert.equal(role.content.roleFile.model, expected.model);
-    assert.equal(role.content.roleFile.model_reasoning_effort, expected.reasoningEffort);
+    assert.equal(Object.hasOwn(role.content.roleFile, 'model'), false);
+    assert.equal(Object.hasOwn(role.content.roleFile, 'model_reasoning_effort'), false);
     assert.equal(
       role.content.roleFile.developer_instructions,
       renderSubagentRoleDeveloperInstructions(),
@@ -154,10 +128,7 @@ test('renders four task roles with required metadata and safety invariants', asy
   }
 
   // Static contract exception: rendered instructions must not grant delegation authority; behavior test is not suitable because the prohibition is consumed directly by the model.
-  assert.match(skill.content.skillFile, /本 skill 不授予或判断委派权限/);
-
-  // Static contract exception: unavailable presets must not trigger an unapproved model override; behavior test is not suitable because the renderer only emits model instructions.
-  assert.match(skill.content.skillFile, /role 不可用时停止，不改用动态 model override/);
+  assert.match(skill.content.skillFile, /本 Skill 不授予或判断委派权限/);
 
   // Static contract exception: rendered waiting instructions must prohibit active polling; behavior test is not suitable because no deterministic runner executes model tool choices.
   assert.match(
@@ -171,7 +142,7 @@ test('renders four task roles with required metadata and safety invariants', asy
   assert.match(skill.content.skillFile, /name: codex-subagent-guide/);
   assert.match(
     skill.content.skillFile,
-    /compatibility: Requires Codex multi-agent spawn_agent\.agent_type and the four bundled roles/,
+    /compatibility: .*spawn_agent\.agent_type.*codex-subagent role/,
   );
   assert.match(openaiYaml, /allow_implicit_invocation: true/);
   assert.match(skill.content.skillFile, new RegExp(`short-description: ${SHORT_DESCRIPTION}`));
@@ -189,25 +160,47 @@ test('renders Skills independently of removed wait settings', async () => {
   assert.deepEqual(obsoleteSettings, defaults);
 });
 
-test('renders one complete configured profile without changing the other roles', async () => {
-  const { roles } = artifactsFrom(
-    await renderArtifactPlan(
-      createContext({
-        advancedTaskProfile: {
-          model: 'advanced-specialist',
-          reasoningEffort: 'max',
-        },
-      }),
-    ),
-  );
+test('renders configured model preferences in the Skill without changing either role', async () => {
+  const defaults = await renderArtifactPlan(createContext());
+  const configured = await renderArtifactPlan(createContext({
+    advancedTaskProfile: { model: 'advanced-specialist', reasoningEffort: 'max' },
+  }));
+  const { skill, roles } = artifactsFrom(configured);
+  for (const id of ['codex-explore-role', 'codex-subagent-role', 'codex-explore-skill']) {
+    assert.deepEqual(
+      configured.artifacts.find((artifact) => artifact.id === id),
+      defaults.artifacts.find((artifact) => artifact.id === id),
+    );
+  }
+  const rows = skill.content.skillFile.split('\n').filter((line) => /^\| (simple|general|complex|advanced) \|/.test(line));
+  assert.equal(rows.length, 4);
+  const advanced = rows.find((line) => line.startsWith('| advanced |')).split('|').map((cell) => cell.trim());
+  assert.deepEqual(advanced.slice(3, 5).map((cell) => JSON.parse(cell.slice(1, -1))), [
+    'advanced-specialist', 'max',
+  ]);
+  assert.equal(roles.size, 1);
+  assert.equal(skill.content.skillFile.includes('<!-- model-profiles -->'), false);
+});
 
-  const advanced = roles.get('codex-subagent-advanced');
-  assert.equal(advanced.content.roleFile.model, 'advanced-specialist');
-  assert.equal(advanced.content.roleFile.model_reasoning_effort, 'max');
+test('renders only a requested role without requiring any Skill source or config', async () => {
+  const plan = await renderArtifactPlan({
+    platform: 'codex',
+    requestedArtifactIds: ['codex-subagent-role'],
+  });
+  assert.equal(plan.artifacts.length, 1);
+  assert.deepEqual(plan.artifacts[0].refreshKeys, []);
+  assert.equal(plan.artifacts[0].roleKey, 'codex-subagent');
+});
 
-  const complex = roles.get('codex-subagent-complex');
-  assert.equal(complex.content.roleFile.model, 'gpt-5.6-sol');
-  assert.equal(complex.content.roleFile.model_reasoning_effort, 'medium');
+test('rejects empty, duplicate and unknown artifact requests', async () => {
+  for (const requestedArtifactIds of [[], ['codex-subagent-role', 'codex-subagent-role'], ['unknown']]) {
+    await assert.rejects(
+      renderArtifactPlan(
+        { platform: 'codex', requestedArtifactIds },
+      ),
+      /requestedArtifactIds|Unknown requested artifact/,
+    );
+  }
 });
 
 test('rejects unsupported platforms', async () => {

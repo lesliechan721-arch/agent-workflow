@@ -7,62 +7,56 @@ const CODEX_EXPLORE_SKILL_ID = 'codex-explore-skill';
 const CODEX_EXPLORE_SKILL_KEY = 'codex-explore';
 const CODEX_SUBAGENT_GUIDE_SKILL_ID = 'codex-subagent-guide-skill';
 const CODEX_SUBAGENT_GUIDE_SKILL_KEY = 'codex-subagent-guide';
-const CODEX_EXPLORE_ROLES = [
+const CODEX_EXPLORE_ROLE = {
+  id: 'codex-explore-role',
+  key: 'codex-explore',
+  description: '只读事实调查与证据核验；不做最终判断、建议、修改或再次委派。',
+};
+const CODEX_SUBAGENT_ROLE = {
+  id: 'codex-subagent-role',
+  key: 'codex-subagent',
+  description: '执行父代理委派的有界任务，遵守约束与验收要求，返回结果和验证情况。',
+};
+const EXPLORE_PROFILES = [
   {
-    id: 'codex-explore-quick-role',
-    key: 'codex-explore-quick',
-    description: '适用于问题明确、低歧义的大范围只读检索与证据定位。',
-    profileKey: 'quickProfile',
+    key: 'quickProfile',
+    name: 'quick',
+    description: '明确、低歧义的检索定位',
   },
   {
-    id: 'codex-explore-standard-role',
-    key: 'codex-explore-standard',
-    description: '适用于常规跨文件、跨模块或多来源追踪核对；不确定时选择此档。',
-    profileKey: 'standardProfile',
+    key: 'standardProfile',
+    name: 'standard',
+    description: '常规跨文件或多来源核对；不确定时选此档',
   },
   {
-    id: 'codex-explore-deep-role',
-    key: 'codex-explore-deep',
-    description: '适用于高歧义、强冲突、复杂因果或要求高完整性的深入只读探索。',
-    profileKey: 'deepProfile',
-  },
-  {
-    id: 'codex-explore-custom-role',
-    key: 'codex-explore-custom',
-    description:
-      '仅用于用户显式指定 model 或 reasoning_effort 的只读探索；本 role 不锁定模型参数。',
-  },
-];
-const CODEX_SUBAGENT_ROLES = [
-  {
-    id: 'codex-subagent-simple-role',
-    key: 'codex-subagent-simple',
-    description: '目标明确、依赖局部、方法已知，可直接或机械验证',
-    profileKey: 'simpleTaskProfile',
-  },
-  {
-    id: 'codex-subagent-general-role',
-    key: 'codex-subagent-general',
-    description: '需要局部判断和有限取舍，边界及验收方式清楚',
-    profileKey: 'generalTaskProfile',
-  },
-  {
-    id: 'codex-subagent-complex-role',
-    key: 'codex-subagent-complex',
-    description: '多处耦合、需要排查假设或较长因果链，需要跨边界验证',
-    profileKey: 'complexTaskProfile',
-  },
-  {
-    id: 'codex-subagent-advanced-role',
-    key: 'codex-subagent-advanced',
-    description:
-      '全局或跨领域取舍、高歧义，关键遗漏难以排除或代价很高',
-    profileKey: 'advancedTaskProfile',
+    key: 'deepProfile',
+    name: 'deep',
+    description: '高歧义、强冲突、复杂因果或高完整性要求',
   },
 ];
-const CONFIGURED_ROLES = [...CODEX_EXPLORE_ROLES, ...CODEX_SUBAGENT_ROLES].filter(
-  (role) => role.profileKey,
-);
+const SUBAGENT_PROFILES = [
+  {
+    key: 'simpleTaskProfile',
+    name: 'simple',
+    description: '目标明确、依赖局部，可直接验证',
+  },
+  {
+    key: 'generalTaskProfile',
+    name: 'general',
+    description: '局部判断和有限取舍，边界及验收清楚',
+  },
+  {
+    key: 'complexTaskProfile',
+    name: 'complex',
+    description: '多处耦合、假设排查或跨边界验证',
+  },
+  {
+    key: 'advancedTaskProfile',
+    name: 'advanced',
+    description: '全局取舍、高歧义，关键遗漏代价高',
+  },
+];
+const CONFIGURED_PROFILES = [...EXPLORE_PROFILES, ...SUBAGENT_PROFILES];
 const SUBAGENT_ROLE_DEVELOPER_INSTRUCTIONS =
   '只执行父代理明确委派的任务，包括后续补充或修正；遵守目标、范围、约束和成功标准，不自行扩大范围。续接前核对当前产物与已完成进度，避免重复副作用。完成或无法继续时返回可整合结果，按需附证据、验证、阻塞和未解决项。';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -101,14 +95,9 @@ async function readManifestDefaults() {
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   const schema = isRecord(manifest?.config?.fields) ? manifest.config.fields : {};
 
-  return {
-    roles: Object.fromEntries(
-      CONFIGURED_ROLES.map((role) => [
-        role.key,
-        isRecord(schema[role.profileKey]?.default) ? schema[role.profileKey].default : {},
-      ]),
-    ),
-  };
+  return Object.fromEntries(
+    CONFIGURED_PROFILES.map(({ key }) => [key, schema[key]?.default ?? {}]),
+  );
 }
 
 function resolveConfigValues(context, defaults) {
@@ -120,23 +109,30 @@ function resolveConfigValues(context, defaults) {
   ];
   const values = candidates.find(isRecord) ?? {};
 
-  return {
-    roles: Object.fromEntries(
-      CONFIGURED_ROLES.map((role) => {
-        const roleDefaults = defaults.roles[role.key] ?? {};
-        const profile = isRecord(values[role.profileKey])
-          ? values[role.profileKey]
-          : roleDefaults;
-        return [
-          role.key,
-          {
-            model: profile.model,
-            reasoningEffort: profile.reasoningEffort,
-          },
-        ];
-      }),
-    ),
-  };
+  return Object.fromEntries(
+    CONFIGURED_PROFILES.map(({ key }) => [
+      key,
+      isRecord(values[key]) ? values[key] : defaults[key],
+    ]),
+  );
+}
+
+function renderSkillProfiles(template, profiles, config) {
+  const marker = '<!-- model-profiles -->';
+  if (!template.includes(marker)) throw new Error('Skill is missing its model profile slot.');
+  const rows = profiles.map(({ key, name, description }) => {
+    const { model, reasoningEffort } = config[key];
+    const cells = [model, reasoningEffort].map((value) =>
+      `\`${JSON.stringify(value).replaceAll('|', '\\u007c').replaceAll('`', '\\u0060')}\``,
+    );
+    return `| ${name} | ${description} | ${cells.join(' | ')} |`;
+  });
+  const table = [
+    '| 档位 | 适用范围 | model | reasoning_effort |',
+    '| --- | --- | --- | --- |',
+    ...rows,
+  ].join('\n');
+  return template.replace(marker, () => table);
 }
 
 export function renderExploreRoleDeveloperInstructions() {
@@ -157,7 +153,7 @@ export function renderSubagentRoleDeveloperInstructions() {
   return SUBAGENT_ROLE_DEVELOPER_INSTRUCTIONS;
 }
 
-function renderRoleArtifact(role, developerInstructions, config) {
+function renderRoleArtifact(role, developerInstructions) {
   return {
     id: role.id,
     kind: 'codexRole',
@@ -165,15 +161,13 @@ function renderRoleArtifact(role, developerInstructions, config) {
     target: 'codex.agentRole',
     state: 'present',
     roleKey: role.key,
-    refreshKeys: role.profileKey ? [role.profileKey] : [],
+    refreshKeys: [],
     content: {
       registration: { description: role.description },
       roleFile: {
         name: role.key,
         description: role.description,
         developer_instructions: developerInstructions,
-        ...(config.model ? { model: config.model } : {}),
-        ...(config.reasoningEffort ? { model_reasoning_effort: config.reasoningEffort } : {}),
       },
     },
   };
@@ -225,9 +219,9 @@ export async function renderArtifactPlan(context) {
   }
   const knownArtifactIds = new Set([
     CODEX_EXPLORE_SKILL_ID,
-    ...CODEX_EXPLORE_ROLES.map((role) => role.id),
+    CODEX_EXPLORE_ROLE.id,
     CODEX_SUBAGENT_GUIDE_SKILL_ID,
-    ...CODEX_SUBAGENT_ROLES.map((role) => role.id),
+    CODEX_SUBAGENT_ROLE.id,
   ]);
   for (const id of requestedArtifactIds) {
     if (!knownArtifactIds.has(id)) throw new Error(`Unknown requested artifact ID: ${id}`);
@@ -256,16 +250,15 @@ export async function renderArtifactPlan(context) {
         target: 'codex.skill',
         state: 'present',
         skillKey: CODEX_EXPLORE_SKILL_KEY,
-        refreshKeys: [],
+        refreshKeys: EXPLORE_PROFILES.map(({ key }) => key),
         content: {
           files: {
-            'SKILL.md': exploreSkillTemplate,
+            'SKILL.md': renderSkillProfiles(exploreSkillTemplate, EXPLORE_PROFILES, config),
           },
         },
       }] : []),
-      ...CODEX_EXPLORE_ROLES.filter((role) => requestedArtifactIds.has(role.id)).map((role) =>
-        renderRoleArtifact(role, exploreDeveloperInstructions, config.roles[role.key] ?? {}),
-      ),
+      ...(requestedArtifactIds.has(CODEX_EXPLORE_ROLE.id)
+        ? [renderRoleArtifact(CODEX_EXPLORE_ROLE, exploreDeveloperInstructions)] : []),
       ...(subagentSkillTemplate ? [{
         id: CODEX_SUBAGENT_GUIDE_SKILL_ID,
         kind: 'skill',
@@ -273,16 +266,15 @@ export async function renderArtifactPlan(context) {
         target: 'codex.skill',
         state: 'present',
         skillKey: CODEX_SUBAGENT_GUIDE_SKILL_KEY,
-        refreshKeys: [],
+        refreshKeys: SUBAGENT_PROFILES.map(({ key }) => key),
         content: {
           files: {
-            'SKILL.md': subagentSkillTemplate,
+            'SKILL.md': renderSkillProfiles(subagentSkillTemplate, SUBAGENT_PROFILES, config),
           },
         },
       }] : []),
-      ...CODEX_SUBAGENT_ROLES.filter((role) => requestedArtifactIds.has(role.id)).map((role) =>
-        renderRoleArtifact(role, subagentDeveloperInstructions, config.roles[role.key] ?? {}),
-      ),
+      ...(requestedArtifactIds.has(CODEX_SUBAGENT_ROLE.id)
+        ? [renderRoleArtifact(CODEX_SUBAGENT_ROLE, subagentDeveloperInstructions)] : []),
     ],
   };
 }
