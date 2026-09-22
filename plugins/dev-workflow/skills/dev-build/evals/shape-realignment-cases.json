@@ -45,6 +45,12 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "work.md"
+        ],
+        "artifacts": [
+          {
+            "path": "work.md",
+            "exists": true
+          }
         ]
       },
       "audit": {

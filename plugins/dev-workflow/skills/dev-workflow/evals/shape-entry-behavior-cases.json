@@ -46,6 +46,12 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/dev/**"
+        ],
+        "artifacts": [
+          {
+            "path": "docs/dev/spec.md",
+            "exists": false
+          }
         ]
       },
       "audit": {
@@ -77,6 +83,12 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "README.md"
+        ],
+        "artifacts": [
+          {
+            "path": "README.md",
+            "exists": true
+          }
         ]
       },
       "audit": {
@@ -110,6 +122,12 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/dev/**"
+        ],
+        "artifacts": [
+          {
+            "path": "docs/dev/spec.md",
+            "exists": false
+          }
         ]
       },
       "audit": {
@@ -142,6 +160,12 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "spec.md"
+        ],
+        "artifacts": [
+          {
+            "path": "spec.md",
+            "exists": true
+          }
         ]
       },
       "audit": {
