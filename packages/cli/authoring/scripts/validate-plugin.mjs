@@ -30,7 +30,7 @@ const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 12;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 13;
 let capabilityDiagnostic = null;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
@@ -1962,7 +1962,7 @@ function defaultConfigValues(manifest) {
   const values = {};
   if (!isRecord(schema)) return values;
   for (const [key, field] of Object.entries(schema)) {
-    if (isRecord(field) && Object.prototype.hasOwnProperty.call(field, 'default')) {
+    if (isRecord(field) && field.default !== undefined) {
       values[key] = field.default;
     }
   }
@@ -3881,6 +3881,8 @@ async function validatePluginDir(pluginDir, options) {
   const skillValidationTools = await tryLoadCliSkillValidationTools();
   try {
     const normalizedManifest = await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
+    // Renderer fixtures consume the same compiled config as installed runtime consumers.
+    if (normalizedManifest.config) manifest.config = normalizedManifest.config;
     const requirements = await cliManifestTools.resolvePluginRequirements({
       pluginRoot: pluginDir,
       manifest: normalizedManifest,

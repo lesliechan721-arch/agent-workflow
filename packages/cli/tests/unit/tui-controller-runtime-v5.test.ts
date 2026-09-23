@@ -2464,12 +2464,12 @@ describe('TUI controller runtime scope conflict validation', () => {
     );
     const fields = page.groups.flatMap((group) => group.fields);
     expect(fields.find((field) => field.key === 'mode')).toMatchObject({
-      displayValue: '值无效',
+      displayValue: '需修正',
       invalidOverrideIssue: '字段“Mode”在本层的值无效。请修改或删除此字段。',
       fallbackDisplayValue: 'safe',
     });
     expect(fields.find((field) => field.key === 'token')).toMatchObject({
-      displayValue: '值无效',
+      displayValue: '需修正',
       fallbackDisplayValue: '值无效；保存可成功，但应用会被阻止',
       fallbackSourceLabel: '个人默认',
     });

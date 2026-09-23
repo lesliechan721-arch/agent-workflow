@@ -4,8 +4,11 @@ import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 import { normalizePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 
+import { buildConfigGroups } from '../../src/tui/model.js';
+
 import type { NormalizedPluginManifest } from '../../src/types.js';
 import {
+  createPluginConfigSchemaIdentity,
   patchPluginConfigStore,
   listNamespacedPluginConfigStores,
   readNamespacedPluginConfigStoreIdentity,
@@ -59,6 +62,37 @@ function storeOptions(scope: 'user' | 'project') {
 }
 
 describe('plugin config Store v4', () => {
+  it('reads unchanged Store v4 objects through v3 compiled fields and binds summary metadata to schema evidence', async () => {
+    const user = storeOptions('user');
+    const values = { connection: { 'display-name': 'local', region: 'west' } };
+    await writePluginConfigStore({ ...user, values });
+    const before = await fs.readFile(resolvePluginConfigStorePath(user));
+    const v3Config = normalizePluginConfigDefinition({
+      schemaVersion: 3, definitions: { connection: config.fields.connection },
+      fields: { connection: { $ref: '#/config/definitions/connection' } },
+      presentation: { summaries: { compact: { kind: 'join', parts: [{ path: '/display-name' }, { path: '/region' }], separator: '/', missing: 'unset' } }, fieldViews: { connection: { summary: 'compact' } } },
+    });
+    const v3Manifest = { ...manifest, config: v3Config };
+    const effective = await resolveEffectivePluginConfig({
+      ...user, manifest: v3Manifest, targetScope: 'user',
+    });
+    expect(effective.values).toEqual(values);
+    const read = await resolveConfigRead({ ...user, scope: 'effective', plugin: {
+      sourceId: user.sourceId, sourceIdentity, catalogLogicalIdentity: logicalIdentity,
+      rootDir: user.cwd, manifestPath: path.join(user.cwd, '.agents-plugin/plugin.json'), manifest: v3Manifest,
+    } });
+    const field = buildConfigGroups({ schema: v3Config, read, effectiveRawValues: values })[0]!.fields[0]!;
+    expect(field.displayValue).toBe('local/west');
+    expect(field.summary).toEqual(v3Config.presentation!.summaries!.compact);
+
+    expect(await fs.readFile(resolvePluginConfigStorePath(user))).toEqual(before);
+    expect(JSON.parse(before.toString()).schemaVersion).toBe(4);
+    expect(createPluginConfigSchemaIdentity(v3Manifest)).not.toEqual(createPluginConfigSchemaIdentity(manifest));
+    const changed = structuredClone(v3Manifest);
+    changed.config.presentation!.summaries!.compact!.separator = ' | ';
+    expect(createPluginConfigSchemaIdentity(changed)).not.toEqual(createPluginConfigSchemaIdentity(v3Manifest));
+  });
+
   it('binds user config to transport identity and project config to Catalog logical identity', async () => {
     const user = storeOptions('user');
     const project = storeOptions('project');

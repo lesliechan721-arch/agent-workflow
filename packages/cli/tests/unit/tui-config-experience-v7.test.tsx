@@ -95,6 +95,8 @@ function controller(options: {
   affectedTargets?: NonNullable<OperationEvidence['config']>['affectedTargets'];
   impactState?: 'known' | 'unknown';
   failImpactAttempts?: number;
+  configPage?: typeof page;
+  executeIntent?: TuiControllerDependencies['executeIntent'];
 } = {}): { value: TuiController; captured: OperationIntent[] } {
   const captured: OperationIntent[] = [];
   let configImpactAttempts = 0;
@@ -134,8 +136,8 @@ function controller(options: {
         },
       };
     }),
-    getConfigPage: vi.fn(async (_pluginId, layer) => page(layer)),
-    executeIntent: vi.fn(),
+    getConfigPage: vi.fn(async (_pluginId, layer) => (options.configPage ?? page)(layer)),
+    executeIntent: options.executeIntent ?? vi.fn(),
   };
   return { value: new TuiController(dependencies), captured };
 }
@@ -150,6 +152,10 @@ async function input(instance: ReturnType<typeof render>, ...values: string[]): 
   for (const value of values) {
     instance.stdin.write(value);
     await nextTurn(2);
+    if (value === '\u001b') {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      await nextTurn(2);
+    }
   }
 }
 
@@ -185,7 +191,8 @@ describe('TUI config experience v7', () => {
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
       await nextTurn(4);
 
-      expect(instance.lastFrame()).toContain('当前生效：团队值（个人默认）');
+      expect(instance.lastFrame()).toContain('团队值 · 个人默认');
+      expect((instance.lastFrame() ?? '').match(/团队值/gu)).toHaveLength(1);
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
     },
   );
@@ -244,7 +251,7 @@ describe('TUI config experience v7', () => {
     expect(instance.lastFrame()).toContain('safe · 拟保存：当前项目');
   });
 
-  it('opens every config group from the pinned basic-key selector', async () => {
+  it('switches config groups in place with the basic arrow keys', async () => {
     const { value } = controller();
     await value.load();
     value.push({ name: 'pluginDetail', pluginId });
@@ -252,16 +259,16 @@ describe('TUI config experience v7', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
 
-    await input(instance, '\t', '\u001B[B', '\r');
-    expect(instance.lastFrame()).toContain('选择设置分组');
-    expect(instance.lastFrame()).toContain('全部分组和快速方案');
-    expect(instance.lastFrame()).toContain('插件设置');
-    expect(instance.lastFrame()).toContain('快速方案');
-
-    await input(instance, '\u001B[B', '\r');
+    const frameId = value.snapshot.router.currentFrameId;
+    await input(instance, '\u001B[C');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(value.snapshot.router.currentFrameId).toBe(frameId);
     expect(value.snapshot.router.current.context.configGroupId).toBe('@presets');
     expect(instance.lastFrame()).toContain('插件方案');
+    await input(instance, '\u001B[D');
+    expect(value.snapshot.router.currentFrameId).toBe(frameId);
+    expect(value.snapshot.router.current.context.configGroupId).toBe('main');
+    expect(instance.lastFrame()).toContain('运行模式');
   });
 
   it('keeps a user-only field out of the project destination list', async () => {
@@ -335,4 +342,155 @@ describe('TUI config experience v7', () => {
     });
   });
 
+});
+
+function objectAndFlagPage(layer: ConfigPageViewModel['layer']): ConfigPageViewModel {
+  const profile = { model: 'alpha', effort: 'high', hidden: 7 };
+  const definition: ConfigFieldViewModel['definition'] = {
+    type: 'object', properties: {
+      model: { type: 'string', required: true },
+      effort: { type: 'string', required: true },
+      hidden: { type: 'number' },
+    }, additionalProperties: false,
+  };
+  return { pluginId, layer, storedCount: layer.scope === 'project' ? 1 : 0, presets: [], groups: [{
+    id: 'main', title: '常用', advanced: false, fields: [{
+      ...field('profile', layer.scope), title: '模型配置', type: 'object', definition,
+      configured: layer.scope !== 'user', canUnset: layer.scope === 'project',
+      value: layer.scope === 'user' ? undefined : profile,
+      effectiveValue: profile, draftValue: profile, defaultValue: profile,
+      displayValue: 'model=alpha · effort=high', effectiveDisplayValue: 'model=alpha · effort=high',
+      effectiveSourceLabel: '当前项目',
+    }, {
+      ...field('enabled', layer.scope), title: '启用', type: 'boolean', definition: { type: 'boolean' },
+      configured: false, value: undefined, draftValue: false, effectiveValue: false,
+      effectiveDisplayValue: '关闭', effectiveSourceLabel: '默认值',
+    }],
+  }] };
+}
+
+describe('Config v2 direct editing and complete drafts', () => {
+  it.each([[60, 18], [80, 24]] as const)('edits an existing object and a second field, shows both changes, and retries only failed apply at %ix%i', async (columns, rows) => {
+    const { value, captured } = controller({ configPage: objectAndFlagPage,
+      executeIntent: vi.fn(async (intent: OperationIntent) => intent.kind === 'configSaveBatch' ? {
+        status: 'partial', groups: [
+          { scope: 'project', status: 'failed', configSaved: true, applyRequested: true, applyStatus: 'failed', errorCode: 'configApplyFailed' },
+          { scope: 'user', status: 'failed', configSaved: false, applyRequested: true, applyStatus: 'notRequested', errorCode: 'configWriteFailed' },
+        ],
+      } : { configWrite: 'succeeded', overallState: 'succeeded', apply: { state: 'succeeded', targetResults: [] } }),
+    });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId });
+    value.beginConfigFlow(pluginId);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+    await nextTurn(4);
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', fieldKey: 'profile' });
+    await input(instance, '\r', '\r', '\u0015', 'beta', '\r');
+    await input(instance, '\u001b[B', '\u001b[B', '\u001b[B', '\r');
+    expect(value.snapshot.router.current.route.name).toBe('configLayer');
+    await input(instance, '\r', '\u001b[B', '\r', '\r', '\u001b[B', '\r');
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    await input(instance, 's');
+    const summary = instance.lastFrame() ?? '';
+    expect(summary).toContain('模型配置');
+    expect(summary).toContain('当前项目');
+    expect(summary).toContain('beta');
+    expect(summary).toContain('启用');
+    expect(summary).toContain('个人默认');
+    expect(summary).toContain('开启');
+    expect(summary.split('\n').length).toBeLessThanOrEqual(rows);
+    expect(captured).toHaveLength(0);
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [
+      { scope: 'project', updates: { profile: { model: 'beta', effort: 'high', hidden: 7 } } },
+      { scope: 'user', updates: { enabled: true } },
+    ] });
+    const review = value.snapshot.activeReview!;
+    await value.executeOperation(review.reviewToken);
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('已保存 · 应用失败');
+    expect(instance.lastFrame()).toContain('保存失败');
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(captured.at(-1)).toMatchObject({ kind: 'configSave', scope: 'project', retryApply: true, updates: {}, removeKeys: [] });
+    await value.executeOperation(value.snapshot.activeReview!.reviewToken);
+    await nextTurn(4);
+    expect(value.externalDrafts).toEqual([expect.objectContaining({ kind: 'configDraft', owner: pluginId })]);
+  });
+
+  it.each([[60, 18], [80, 24]] as const)('uses the declared join while retaining complete object changes at %ix%i', async (columns, rows) => {
+    const { value, captured } = controller({ configPage: (layer) => {
+      const result = objectAndFlagPage(layer);
+      result.groups[0]!.fields[0]!.summary = { kind: 'join', parts: [{ path: '/model' }, { path: '/effort' }], separator: '/', missing: '未设置' };
+      return result;
+    } });
+    await value.load(); value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+    await nextTurn(4);
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route.name).toBe('configFieldEditor');
+    await input(instance, '\r', '\r', '\u0015', 'beta', '\r');
+    await input(instance, '\u001b[B', '\u001b[B', '\u001b[B', '\r');
+    expect(value.snapshot.router.current.route.name).toBe('configLayer');
+    expect(instance.lastFrame()).toContain('beta/high');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('beta/high');
+    await input(instance, 's', '\r');
+    await nextTurn(4);
+    expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [expect.objectContaining({
+      updates: { profile: { model: 'beta', effort: 'high', hidden: 7 } },
+      changes: [expect.objectContaining({ after: '{"model":"beta","effort":"high","hidden":7}' })],
+    })] });
+  });
+
+  it('cancels only the current property or object and detects a hidden-property change from complete values', async () => {
+    const { value, captured } = controller({ configPage: objectAndFlagPage });
+    await value.load(); value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, '\u001b[B', '\r', '\r', '\u001b[B', '\r');
+    await input(instance, '\u001b[A', '\r', '\r', '\r', '\u0015', 'cancel-property', '\u001b');
+    expect(value.snapshot.router.current.route.name).toBe('configFieldEditor');
+    expect(instance.lastFrame()).toContain('alpha');
+    expect(instance.lastFrame()).not.toContain('cancel-property');
+    await input(instance, '\r', '\r', '\u0015', 'cancel-object', '\r', '\u001b');
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(instance.lastFrame()).toContain('1 项待保存');
+    await input(instance, '\r', '\u001b[B', '\u001b[B', '\r', '\r', '\u0015', '8', '\r');
+    await input(instance, '\u001b[B', '\r', '\r', 's');
+    expect(instance.lastFrame()).toContain('2 项未保存');
+    await input(instance, '\u001b[B', '\r'); await nextTurn(4);
+    expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [
+      { scope: 'project', updates: { profile: { model: 'alpha', effort: 'high', hidden: 8 } }, changes: [expect.objectContaining({
+        before: '{"model":"alpha","effort":"high","hidden":7}', after: '{"model":"alpha","effort":"high","hidden":8}',
+      })] },
+      { scope: 'user', updates: { enabled: true } },
+    ] });
+  });
+
+  it('keeps the project effective value above a user draft and retains both target diffs', async () => {
+    const { value, captured } = controller({ configPage: (layer) => {
+      const next = page(layer);
+      const mode = next.groups[0]!.fields[0]!;
+      Object.assign(mode, { configured: true, canUnset: true, value: layer.scope === 'user' ? 'old-user' : 'project-live',
+        draftValue: layer.scope === 'user' ? 'old-user' : 'project-live', effectiveValue: 'project-live',
+        effectiveDisplayValue: 'project-live', effectiveSourceLabel: '当前项目' });
+      return next;
+    } });
+    await value.load(); value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, '\r', '\u0015', 'new-user', '\r', '\u001b[B', '\r');
+    expect(instance.lastFrame()).toContain('project-live · 当前项目');
+    expect((instance.lastFrame() ?? '').replace(/\s/gu, '')).toContain('个人默认待修改，当前项目不受此值影响');
+    await input(instance, '\r', '\u0015', 'new-project', '\r', '\r', 's');
+    expect(instance.lastFrame()).toContain('new-project');
+    expect(instance.lastFrame()).toContain('new-user');
+    await input(instance, '\u001b[B', '\r'); await nextTurn(4);
+    expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [
+      { scope: 'project', updates: { mode: 'new-project' } }, { scope: 'user', updates: { mode: 'new-user' } },
+    ] });
+  });
 });

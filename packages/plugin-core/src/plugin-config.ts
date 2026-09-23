@@ -4,6 +4,7 @@ import type {
   PluginConfigAdditionalPropertiesField,
   PluginConfigChoices,
   PluginConfigDefinition,
+  PluginConfigJoinSummary,
   PluginConfigNumberValidation,
   PluginConfigObject,
   PluginConfigObjectField,
@@ -32,6 +33,14 @@ const STRING_FORMATS = new Set<PluginConfigStringFormat>([
   'hostname',
   'email',
 ])
+export const PLUGIN_CONFIG_V3_MAX_DEFINITIONS = 64
+export const PLUGIN_CONFIG_V3_MAX_FIELDS = 256
+/** Count each followed $ref edge, including edges from object properties; inline objects add zero. */
+export const PLUGIN_CONFIG_V3_MAX_REF_DEPTH = 8
+export const PLUGIN_CONFIG_SUMMARY_MAX_PARTS = 4
+export const PLUGIN_CONFIG_SUMMARY_MAX_SEPARATOR_CODE_POINTS = 8
+export const PLUGIN_CONFIG_SUMMARY_MAX_PATH_LENGTH = 128
+export const PLUGIN_CONFIG_SUMMARY_MAX_CODE_POINTS = 256
 const MAX_OBJECT_PROPERTIES = 32
 const MAX_PATTERN_CODE_POINTS = 512
 const MAX_STRING_CODE_POINTS = 4096
@@ -536,7 +545,7 @@ function normalizeScalarField(
   const common = {
     title: optionalText(input.title, `${path}.title`),
     description: optionalText(input.description, `${path}.description`),
-    required: options.allowRequired ? optionalBoolean(input.required, `${path}.required`) : undefined,
+    ...(options.allowRequired ? { required: optionalBoolean(input.required, `${path}.required`) } : {}),
   }
   const defaultValue = options.allowDefault && input.default !== undefined
     ? input.default
@@ -555,8 +564,8 @@ function normalizeScalarField(
     return {
       type,
       ...common,
-      sensitive,
-      default: defaultValue as string | undefined,
+      ...(options.allowSensitive ? { sensitive } : {}),
+      ...(options.allowDefault ? { default: defaultValue as string | undefined } : {}),
       choices: input.choices === undefined
         ? undefined
         : normalizeChoices<string>(input.choices, `${path}.choices`),
@@ -569,7 +578,7 @@ function normalizeScalarField(
     return {
       type,
       ...common,
-      default: defaultValue as number | undefined,
+      ...(options.allowDefault ? { default: defaultValue as number | undefined } : {}),
       choices: input.choices === undefined
         ? undefined
         : normalizeChoices<number>(input.choices, `${path}.choices`),
@@ -581,7 +590,7 @@ function normalizeScalarField(
   return {
     type,
     ...common,
-    default: defaultValue as boolean | undefined,
+    ...(options.allowDefault ? { default: defaultValue as boolean | undefined } : {}),
     choices: input.choices === undefined
       ? undefined
       : normalizeChoices<boolean>(input.choices, `${path}.choices`),
@@ -712,46 +721,172 @@ function normalizeObjectField(value: unknown, path: string): PluginConfigObjectF
   }
 }
 
+/** Decode exactly one local property token, never a traversal path. */
+export function decodePluginConfigSummaryPath(value: string): string {
+  if ([...value].length > PLUGIN_CONFIG_SUMMARY_MAX_PATH_LENGTH || !/^\/(?:[^~/]|~[01])*$/u.test(value)) {
+    throw new Error('Invalid summary path: expected one local JSON Pointer property token (at most 128 characters).')
+  }
+  const property = value.slice(1).replace(/~1/gu, '/').replace(/~0/gu, '~')
+  if (isDangerousConfigKey(property)) throw new Error('Invalid summary path: dangerous config key.')
+  return property
+}
+
+function expandConfigReferences(input: Record<string, unknown>, path: string): Record<string, unknown> {
+  const definitions = input.definitions === undefined ? {} : asObject(input.definitions, `${path}.definitions`)
+  if (Object.keys(definitions).length > PLUGIN_CONFIG_V3_MAX_DEFINITIONS) {
+    throw new Error(`Invalid ${path}.definitions: expected at most ${PLUGIN_CONFIG_V3_MAX_DEFINITIONS} definitions.`)
+  }
+  for (const name of Object.keys(definitions)) {
+    if (!CONFIG_KEY_PATTERN.test(name) || isDangerousConfigKey(name)) {
+      throw new Error(`Invalid ${path}.definitions: invalid definition name "${name}".`)
+    }
+  }
+  const expand = (value: unknown, fieldPath: string, chain: string[], child = false): Record<string, unknown> => {
+    const field = asObject(value, fieldPath)
+    if (Object.hasOwn(field, '$ref')) {
+      assertAllowedKeys(field, fieldPath, ['$ref', 'title', 'description', 'default', 'required'])
+      const ref = nonEmptyString(field.$ref, `${fieldPath}.$ref`)
+      const match = /^#\/config\/definitions\/([A-Za-z][A-Za-z0-9_]*)$/u.exec(ref)
+      const name = match?.[1]
+      if (name === undefined || isDangerousConfigKey(name) || !Object.hasOwn(definitions, name)) {
+        throw new Error(`Invalid ${fieldPath}.$ref: unknown or unsupported local definition reference.`)
+      }
+      if (chain.includes(name)) throw new Error(`Invalid ${fieldPath}.$ref: circular definition reference.`)
+      if (chain.length >= PLUGIN_CONFIG_V3_MAX_REF_DEPTH) {
+        throw new Error(`Invalid ${fieldPath}.$ref: expected at most ${PLUGIN_CONFIG_V3_MAX_REF_DEPTH} reference edges.`)
+      }
+      const result = expand(definitions[name], `${path}.definitions.${name}`, [...chain, name], child)
+      for (const key of ['title', 'description', 'default', 'required']) {
+        if (Object.hasOwn(field, key)) result[key] = field[key]
+      }
+      return result
+    }
+    const result = { ...field }
+    if (child) return result
+    if (field.properties !== undefined) {
+      const properties = asObject(field.properties, `${fieldPath}.properties`)
+      if (Object.keys(properties).length > MAX_OBJECT_PROPERTIES) {
+        throw new Error(`Invalid ${fieldPath}.properties: expected at most ${MAX_OBJECT_PROPERTIES} properties.`)
+      }
+      result.properties = Object.fromEntries(Object.entries(properties).map(([key, child]) =>
+        [key, expand(child, `${fieldPath}.properties.${key}`, chain, true)]))
+    }
+    if (field.additionalProperties !== undefined && field.additionalProperties !== false) {
+      result.additionalProperties = expand(field.additionalProperties, `${fieldPath}.additionalProperties`, chain, true)
+    }
+    return result
+  }
+  // Validate unused definitions too, through the same field/default/choice validator.
+  for (const [name, value] of Object.entries(definitions)) {
+    normalizeConfigField(expand(value, `${path}.definitions.${name}`, []), `${path}.definitions.${name}`)
+  }
+  const fields = asObject(input.fields, `${path}.fields`)
+  if (Object.keys(fields).length > PLUGIN_CONFIG_V3_MAX_FIELDS) {
+    throw new Error(`Invalid ${path}.fields: expected at most ${PLUGIN_CONFIG_V3_MAX_FIELDS} fields.`)
+  }
+  return Object.fromEntries(Object.entries(fields).map(([key, value]) =>
+    [key, expand(value, `${path}.fields.${key}`, [])]))
+}
+
+function normalizeConfigField(rawDefinition: unknown, path: string): PluginConfigSchemaField {
+  const rawField = asObject(rawDefinition, path)
+  const definition = rawField.type === 'object'
+    ? normalizeObjectField(rawField, path)
+    : normalizeScalarField(rawField, path, {
+      allowDefault: true, allowRequired: true, allowSensitive: true,
+    }) as PluginConfigScalarField
+  assertChoices(definition, path)
+  if (definition.default !== undefined) {
+    const issues = validatePluginConfigValue(definition, definition.default, path)
+    if (issues.length > 0) throw new Error(`Invalid ${path}.default: ${formatPluginConfigIssue(issues[0]!)}`)
+  }
+  return definition
+}
+
+function normalizeConfigSummaries(
+  input: Record<string, unknown>, fields: Record<string, PluginConfigSchemaField>, path: string,
+): Pick<NonNullable<PluginConfigDefinition['presentation']>, 'summaries' | 'fieldViews'> {
+  const summaries: Record<string, PluginConfigJoinSummary> = createPropertyMap()
+  for (const [name, raw] of Object.entries(input.summaries === undefined ? {} : asObject(input.summaries, `${path}.summaries`))) {
+    const summaryPath = `${path}.summaries.${name}`
+    if (!CONFIG_KEY_PATTERN.test(name) || isDangerousConfigKey(name)) throw new Error(`Invalid ${summaryPath}: invalid summary name.`)
+    const summary = asObject(raw, summaryPath)
+    assertAllowedKeys(summary, summaryPath, ['kind', 'parts', 'separator', 'missing'])
+    if (summary.kind !== 'join') throw new Error(`Invalid ${summaryPath}.kind: expected join.`)
+    if (!Array.isArray(summary.parts) || summary.parts.length < 1 || summary.parts.length > PLUGIN_CONFIG_SUMMARY_MAX_PARTS) {
+      throw new Error(`Invalid ${summaryPath}.parts: expected 1..${PLUGIN_CONFIG_SUMMARY_MAX_PARTS} parts.`)
+    }
+    if (typeof summary.separator !== 'string' || [...summary.separator].length > PLUGIN_CONFIG_SUMMARY_MAX_SEPARATOR_CODE_POINTS) {
+      throw new Error(`Invalid ${summaryPath}.separator: expected at most 8 Unicode code points.`)
+    }
+    if (typeof summary.missing !== 'string') throw new Error(`Invalid ${summaryPath}.missing: expected a string.`)
+    summaries[name] = {
+      kind: 'join', separator: summary.separator, missing: summary.missing,
+      parts: summary.parts.map((rawPart, index) => {
+        const partPath = `${summaryPath}.parts[${index}]`
+        const part = asObject(rawPart, partPath)
+        assertAllowedKeys(part, partPath, ['path', 'format'])
+        const propertyPath = nonEmptyString(part.path, `${partPath}.path`)
+        try { decodePluginConfigSummaryPath(propertyPath) } catch (error) {
+          throw new Error(`Invalid ${partPath}.path: ${(error as Error).message}`)
+        }
+        if (part.format !== undefined && part.format !== 'raw' && part.format !== 'choiceTitle') {
+          throw new Error(`Invalid ${partPath}.format: expected raw or choiceTitle.`)
+        }
+        return { path: propertyPath, ...(part.format === undefined ? {} : { format: part.format }) }
+      }),
+    }
+  }
+  const fieldViews: Record<string, { summary: string }> = createPropertyMap()
+  for (const [key, raw] of Object.entries(input.fieldViews === undefined ? {} : asObject(input.fieldViews, `${path}.fieldViews`))) {
+    const viewPath = `${path}.fieldViews.${key}`
+    const field = ownProperty(fields, key)
+    if (!field || field.type !== 'object' || !field.properties) throw new Error(`Invalid ${viewPath}: summary requires a declared fixed object field.`)
+    const view = asObject(raw, viewPath)
+    assertAllowedKeys(view, viewPath, ['summary'])
+    const name = nonEmptyString(view.summary, `${viewPath}.summary`)
+    const summary = ownProperty(summaries, name)
+    if (!summary) throw new Error(`Invalid ${viewPath}.summary: unknown summary.`)
+    for (const part of summary.parts) {
+      if (!ownProperty(field.properties, decodePluginConfigSummaryPath(part.path))) {
+        throw new Error(`Invalid ${viewPath}: summary path "${part.path}" must name a declared scalar property.`)
+      }
+    }
+    fieldViews[key] = { summary: name }
+  }
+  return {
+    ...(input.summaries === undefined ? {} : { summaries }),
+    ...(input.fieldViews === undefined ? {} : { fieldViews }),
+  }
+}
+
 export function normalizePluginConfigDefinition(
   value: unknown,
   path = 'config',
 ): PluginConfigDefinition {
   const input = asObject(value, path)
-  assertAllowedKeys(input, path, ['fields', 'presentation'])
-  const fieldsInput = asObject(input.fields, `${path}.fields`)
+  const v3 = input.schemaVersion === 3
+  assertAllowedKeys(input, path, v3 ? ['schemaVersion', 'definitions', 'fields', 'presentation'] : ['fields', 'presentation'])
+  const fieldsInput = v3 ? expandConfigReferences(input, path) : asObject(input.fields, `${path}.fields`)
   const fields = createPropertyMap<PluginConfigSchemaField>()
   for (const [field, rawDefinition] of Object.entries(fieldsInput)) {
     if (!CONFIG_KEY_PATTERN.test(field) || isDangerousConfigKey(field)) {
       throw new Error(`Invalid ${path}.fields: config key "${field}" is not valid.`)
     }
-    const rawField = asObject(rawDefinition, `${path}.fields.${field}`)
-    const definition = rawField.type === 'object'
-      ? normalizeObjectField(rawField, `${path}.fields.${field}`)
-        : normalizeScalarField(rawField, `${path}.fields.${field}`, {
-          allowDefault: true,
-          allowRequired: true,
-          allowSensitive: true,
-        }) as PluginConfigScalarField
-    assertChoices(definition, `${path}.fields.${field}`)
-    if (definition.default !== undefined) {
-      const issues = validatePluginConfigValue(definition, definition.default, field)
-      if (issues.length > 0) {
-        throw new Error(`Invalid ${path}.fields.${field}.default: ${formatPluginConfigIssue(issues[0]!)}`)
-      }
-    }
-    fields[field] = definition
+    fields[field] = normalizeConfigField(rawDefinition, `${path}.fields.${field}`)
   }
 
   let presentation: PluginConfigDefinition['presentation']
   if (input.presentation !== undefined) {
     const presentationInput = asObject(input.presentation, `${path}.presentation`)
-    assertAllowedKeys(presentationInput, `${path}.presentation`, ['groups'])
+    assertAllowedKeys(presentationInput, `${path}.presentation`, v3 ? ['groups', 'summaries', 'fieldViews'] : ['groups'])
     if (presentationInput.groups !== undefined && !Array.isArray(presentationInput.groups)) {
       throw new Error(`Invalid ${path}.presentation.groups: expected an array.`)
     }
     const groupIds = new Set<string>()
     const groupedFields = new Set<string>()
     presentation = {
+      ...(v3 ? normalizeConfigSummaries(presentationInput, fields, `${path}.presentation`) : {}),
       groups: (presentationInput.groups as unknown[] | undefined)?.map((rawGroup, index) => {
         const groupPath = `${path}.presentation.groups[${index}]`
         const group = asObject(rawGroup, groupPath)
@@ -785,5 +920,5 @@ export function normalizePluginConfigDefinition(
       }),
     }
   }
-  return { fields, presentation }
+  return { ...(v3 ? { schemaVersion: 3 as const } : {}), fields, presentation }
 }

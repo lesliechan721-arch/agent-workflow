@@ -5,7 +5,7 @@ import type { TuiRoute } from './router.js';
 export const TUI_SCREEN_IDS = [
   'G01', 'G02', 'G03', 'G04', 'G05', 'G06',
   'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
-  'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P20', 'P21', 'P22',
+  'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P21', 'P22',
   'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
   'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20',
   'C21', 'C22', 'C23',
@@ -16,7 +16,7 @@ export const TUI_SCREEN_IDS = [
   'D01', 'D02', 'D03', 'D04', 'D05', 'D06', 'D07', 'D08', 'D09',
   'D10', 'D11', 'D12', 'D13', 'D14', 'D15', 'D16', 'D17',
   'D18', 'D19', 'D20',
-  'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
+  'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11', 'U22',
   'K02',
   'B01', 'B02', 'B06', 'B07',
   'T01', 'T02', 'T03', 'T04', 'T05',
@@ -182,8 +182,8 @@ export const TUI_ROUTE_DEFINITIONS = {
   batchPlacement: { entity: 'none', rendererFamily: 'batch', keymap: 'menu', normalize: keep, screenId: fixed('B02') },
   pluginPreview: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: pluginDetail, screenId: (route, { controller }) =>
     controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D01' : 'P04' },
+  portablePreparing: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U22') },
   portableSkillSelect: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U01') },
-  portableSkillSummary: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U07') },
   portableDependencies: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U02') },
   portableAgentMode: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U03') },
   portableAgentInput: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menuOrTextInput', normalize: plugin, screenId: fixed('U04') },
@@ -223,7 +223,6 @@ export const TUI_ROUTE_DEFINITIONS = {
     return !placement || placement.state === 'notInstalled' ? 'P15'
       : placement.state === 'installed' && placement.health === 'ready' ? 'P14' : 'P16';
   } },
-  pluginAbout: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P20') },
   pluginTechnical: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P21') },
   configLayer: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C07') },
   configFields: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C01') },

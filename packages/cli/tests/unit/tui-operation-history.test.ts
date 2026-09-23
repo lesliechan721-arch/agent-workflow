@@ -72,6 +72,22 @@ describe('TUI operation history', () => {
     expect(diagnostic.omitted).toMatchObject({ reason: 'limit' });
   });
 
+  it('keeps a complete safe detail line after redaction instead of applying the short-summary limit', () => {
+    const secret = 'private-source-token';
+    const sentinel = 'SAFE-DETAIL-TAIL-SENTINEL';
+    const history = new OperationHistoryStore();
+    history.record(record(1, [
+      `\u001B[31m${'诊断信息'.repeat(90)}${sentinel} Authorization=${secret} /Users/private/catalog\u001B[0m`,
+    ]));
+
+    const line = history.get('1:operation-1')!.diagnostics[0]!.detailLines[0]!;
+    expect(line.length).toBeGreaterThan(240);
+    expect(line).toContain(sentinel);
+    expect(line).not.toContain(secret);
+    expect(line).not.toContain('/Users/private/catalog');
+    expect(line).not.toContain('\u001B');
+  });
+
   it('defensively redacts typed metadata and selects only its explicit fields', () => {
     const secret = 'q7';
     const error = Object.assign(new Error('raw'), {

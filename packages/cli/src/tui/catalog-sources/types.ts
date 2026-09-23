@@ -41,6 +41,7 @@ export interface CatalogSourceFreshnessViewModel {
   missingCapabilities?: string[];
   checkedAt?: string;
   lastSuccessful?: true;
+  operationRecordId?: string;
   candidatePlugins?: Array<{
     name: string;
     version: string;

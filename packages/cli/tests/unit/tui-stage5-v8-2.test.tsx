@@ -189,19 +189,6 @@ async function focusAction(
   throw new Error(`Action was not reachable: ${label}\n${instance.lastFrame() ?? ''}`);
 }
 
-async function focusPinnedAction(
-  instance: ReturnType<typeof render>,
-  label: string,
-  limit = 8,
-): Promise<void> {
-  await input(instance, '\t');
-  for (let index = 0; index < limit; index += 1) {
-    if ((instance.lastFrame() ?? '').includes(`› [${label}]`)) return;
-    await input(instance, '\u001B[C');
-  }
-  throw new Error(`Pinned action was not reachable: ${label}\n${instance.lastFrame() ?? ''}`);
-}
-
 async function waitForRoute(value: TuiController, route: string): Promise<void> {
   for (let index = 0; index < 40; index += 1) {
     if (value.snapshot.router.current.route.name === route) return;
@@ -304,7 +291,7 @@ describe('TUI v8.2 stage 5', () => {
     instance.unmount();
   });
 
-  it.each(SIZES)('keeps the last source visible and reaches fixed source actions at $columns x $rows', async (size) => {
+  it.each(SIZES)('keeps the last source visible and reaches bottom source actions at $columns x $rows', async (size) => {
     const inspectCatalogStore = vi.fn().mockResolvedValue(catalogStoreStatus([]));
     const executeIntent = vi.fn();
     const value = controller({
@@ -321,13 +308,13 @@ describe('TUI v8.2 stage 5', () => {
     await input(instance, ...Array.from({ length: 9 }, () => '\u001B[B'));
     expect(frame(instance, size)).toContain('› source-10');
 
-    await input(instance, '\t', '\u001B[C');
-    expect(frame(instance, size)).toContain('› [检查全部来源]');
+    await input(instance, 'a', '\u001B[B');
+    expect(frame(instance, size)).toContain('› 检查全部来源 [r]');
     await input(instance, '\r');
     expect(recheckAll).toHaveBeenCalledOnce();
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceList' });
 
-    await input(instance, '\u001B[C', '\r');
+    await input(instance, '\u001B[B', '\r');
     await waitForRoute(value, 'catalogStoreOverview');
     await nextTurn(3);
     expect(frame(instance, size)).toContain('存储概览');
@@ -336,7 +323,7 @@ describe('TUI v8.2 stage 5', () => {
     instance.unmount();
   });
 
-  it.each(SIZES)('selects a long plugin source list in a focused dialog at $columns x $rows', async (size) => {
+  it.each(SIZES)('cycles a long plugin source list in place at $columns x $rows', async (size) => {
     const data = longSourceLoadResult();
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(data) });
     await value.load();
@@ -344,51 +331,41 @@ describe('TUI v8.2 stage 5', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(3);
 
-    await focusPinnedAction(instance, '来源：全部');
-    await input(instance, '\r');
-    expect(frame(instance, size)).toContain('选择插件来源');
-    expect(frame(instance, size).match(/›/gu)).toHaveLength(1);
-
-    await input(instance, ...Array.from({ length: 10 }, () => '\u001B[B'));
+    const depth = value.snapshot.router.depth;
+    await input(instance, ...Array.from({ length: 10 }, () => '\u001B[C'));
     const lastSource = frame(instance, size);
-    expect(lastSource).toContain('› ○ source-10');
-    expect(lastSource).toContain('11 / 11');
-    await input(instance, '\u001B');
-    await new Promise((resolve) => setTimeout(resolve, 550));
-    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
-    expect(frame(instance, size)).toContain('Demo');
-
-    await input(instance, '\r', ...Array.from({ length: 10 }, () => '\u001B[B'), '\r');
+    expect(lastSource).toContain('source-10');
     expect(value.snapshot.router.current.route).toEqual({
       name: 'pluginList', mode: 'browse', sourceId: 'source-10',
     });
+    expect(value.snapshot.router.depth).toBe(depth);
+    expect(value.snapshot.router.current.context.query).toBe('Demo');
+    await input(instance, '\u001B[C');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
+    expect(value.snapshot.router.depth).toBe(depth);
     expect(frame(instance, size)).toContain('Demo');
     instance.unmount();
   });
 
-  it.each(SIZES)('confirms or cancels the complete plugin status dialog at $columns x $rows', async (size) => {
+  it.each(SIZES)('cycles all plugin status filters in place at $columns x $rows', async (size) => {
     const value = controller();
     await value.load();
     value.push({ name: 'pluginList', mode: 'browse' }, { query: 'Demo' });
     const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(3);
 
-    await focusPinnedAction(instance, '筛选：全部');
-    await input(instance, '\r');
-    const dialog = frame(instance, size);
-    for (const label of ['全部', '已安装', '未安装', '可更新', '需处理']) {
-      expect(dialog).toContain(label);
+    const depth = value.snapshot.router.depth;
+    for (const [filter, label] of [
+      ['installed', '已安装'], ['uninstalled', '未安装'],
+      ['updateAvailable', '可更新'], ['attention', '需处理'], ['all', '全部'],
+    ]) {
+      await input(instance, 'f');
+      expect(frame(instance, size)).toContain(label);
+      expect(value.snapshot.router.current.context.installFilter).toBe(filter);
+      expect(value.snapshot.router.current.context.query).toBe('Demo');
+      expect(value.snapshot.router.depth).toBe(depth);
+      expect(value.snapshot.router.current.route.name).toBe('pluginList');
     }
-    expect(dialog.match(/›/gu)).toHaveLength(1);
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B');
-    await new Promise((resolve) => setTimeout(resolve, 550));
-    expect(frame(instance, size)).toContain('筛选：全部');
-    expect(frame(instance, size)).toContain('Demo');
-
-    await input(instance, '\r', '\u001B[B', '\u001B[B', '\r');
-    expect(frame(instance, size)).toContain('筛选：未安装');
-    expect(frame(instance, size)).toContain('Demo');
-    expect(value.snapshot.router.current.context.installFilter).toBe('uninstalled');
     instance.unmount();
   });
 
@@ -460,7 +437,7 @@ describe('TUI v8.2 stage 5', () => {
     value.replace({ name: 'sourceList' });
     const list = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(3);
-    await focusPinnedAction(list, '检查全部来源');
+    await focusAction(list, '检查全部来源');
     await input(list, '\r', 'r');
     expect(recheckAll).toHaveBeenCalledTimes(2);
     expect(recheckAll).toHaveBeenCalledWith();
@@ -471,7 +448,12 @@ describe('TUI v8.2 stage 5', () => {
   it.each(SIZES)('keeps diagnostic and report pages readable with p and n at $columns x $rows', async (size) => {
     const value = controller();
     const history = new OperationHistoryStore();
-    const detailLines = Array.from({ length: 18 }, (_, index) => `detail-page-line-${String(index + 1).padStart(2, '0')}`);
+    const tailSentinel = 'SAFE-CJK-TAIL-SENTINEL';
+    const privateToken = 'private-source-token';
+    const detailLines = [
+      ...Array.from({ length: 18 }, (_, index) => `detail-page-line-${String(index + 1).padStart(2, '0')}`),
+      `\u001B[31m${'诊断信息'.repeat(90)} Authorization=${privateToken} /Users/private/catalog ${tailSentinel}\u001B[0m`,
+    ];
     history.record({
       summary: {
         recordId: '1:stage5-pagination', epoch: 1, operationId: 'stage5-pagination', createdAtMs: 1,
@@ -504,7 +486,11 @@ describe('TUI v8.2 stage 5', () => {
       diagnosticFrames.push(frame(instance, size));
     }
     const diagnosticText = diagnosticFrames.join('\n');
-    for (const line of detailLines) expect(diagnosticText).toContain(line);
+    for (const line of detailLines.slice(0, -1)) expect(diagnosticText).toContain(line);
+    expect(diagnosticText.replace(/[\s│]/gu, '')).toContain(tailSentinel);
+    expect(diagnosticText).not.toContain(privateToken);
+    expect(diagnosticText).not.toContain('/Users/private/catalog');
+    expect(diagnosticText).not.toContain('\u001B');
     const lastDiagnostic = diagnosticFrames.at(-1)!;
     await input(instance, 'p');
     expect(frame(instance, size)).not.toBe(lastDiagnostic);
@@ -523,7 +509,11 @@ describe('TUI v8.2 stage 5', () => {
       reportFrames.push(frame(instance, size));
     }
     const reportText = reportFrames.join('\n');
-    for (const line of detailLines) expect(reportText).toContain(line);
+    for (const line of detailLines.slice(0, -1)) expect(reportText).toContain(line);
+    expect(reportText.replace(/[\s│]/gu, '')).toContain(tailSentinel);
+    expect(reportText).not.toContain(privateToken);
+    expect(reportText).not.toContain('/Users/private/catalog');
+    expect(reportText).not.toContain('\u001B');
     const lastReport = reportFrames.at(-1)!;
     await input(instance, 'p');
     expect(frame(instance, size)).not.toBe(lastReport);
@@ -591,7 +581,7 @@ describe('TUI v8.2 stage 5', () => {
       const instance = render(<ConsoleAppV4 controller={value} size={size} />);
       await nextTurn(3);
 
-      await focusPinnedAction(instance, 'Catalog 本地存储');
+      await focusAction(instance, 'Catalog 本地存储');
       await input(instance, '\r');
       await waitForRoute(value, 'catalogStoreOverview');
       await nextTurn(3);
@@ -613,8 +603,8 @@ describe('TUI v8.2 stage 5', () => {
       expect(technicalRules).toContain('非 Active 项保留 30 天');
       expect(technicalRules).toContain('foreign、符号链接、unsafe、损坏或未知项目');
       await input(instance, 'd');
-      await focusAction(instance, '返回存储概览');
-      await input(instance, '\r');
+      await input(instance, '\u001B');
+      await new Promise((resolve) => setTimeout(resolve, 550));
       await waitForRoute(value, 'catalogStoreOverview');
 
       await focusAction(instance, '预览安全清理');
@@ -649,22 +639,29 @@ describe('plugin detail readable summary', () => {
     value.push({ name: 'pluginDetail', pluginId: 'official/demo' });
     await nextTurn(2);
     const initial = frame(instance, size);
-    expect(initial).toContain('Codex]');
+    expect(initial).toContain('版本 · 1.0.0');
+    expect(initial).toContain('来源 · official');
+    expect(initial).toContain('Codex · 尚未安装');
     expect(initial).toContain('› ');
-    expect(initial).toContain('╰');
+    expect(initial).toContain('完整基本信息');
     expect(initial).toContain('帮助');
+    await focusAction(instance, '完整基本信息');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
     let foundEnd = false;
     for (let page = 0; page < 30; page += 1) {
       const current = frame(instance, size);
       if (current.includes('摘要完整结尾')) { foundEnd = true; break; }
-      await focusAction(instance, 'n 下一页');
-      await input(instance, '\r');
+      await input(instance, 'n');
     }
     expect(foundEnd).toBe(true);
+    await input(instance, '\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
     instance.rerender(<ConsoleAppV4 controller={value} size={size.columns === 60
       ? { columns: 80, rows: 24 } : { columns: 60, rows: 18 }} />);
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('Codex]');
+    expect(instance.lastFrame()).toContain('Codex');
     await input(instance, '\u001B');
     await new Promise((resolve) => setTimeout(resolve, 550));
     expect(value.snapshot.router.current.route.name).toBe('home');

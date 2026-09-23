@@ -83,6 +83,11 @@ capabilitySetDigest: string
 }[]
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "config".
+ */
+export type Config = (ConfigV2 | ConfigV3)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configField".
  */
 export type ConfigField = (ConfigStringField | ConfigNumberField | ConfigBooleanField | ConfigObjectField)
@@ -111,6 +116,11 @@ export type ConfigScalarChildField = (ConfigStringChildField | ConfigNumberChild
  * via the `definition` "configScalarDynamicField".
  */
 export type ConfigScalarDynamicField = (ConfigStringDynamicField | ConfigNumberDynamicField | ConfigBooleanDynamicField)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV3Field".
+ */
+export type ConfigV3Field = (ConfigScalarField | ConfigV3FixedObjectField | ConfigV3KeyValueObjectField | ConfigReference)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalarField".
@@ -390,9 +400,9 @@ args?: StringArray
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "config".
+ * via the `definition` "configV2".
  */
-export interface Config {
+export interface ConfigV2 {
 fields: {
 [k: string]: ConfigField
 }
@@ -675,4 +685,147 @@ title?: string
 description?: string
 sensitive?: never
 choices?: ConfigBooleanChoices
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV3".
+ */
+export interface ConfigV3 {
+fields: {
+[k: string]: ConfigV3Field
+}
+presentation?: {
+groups?: {
+id: string
+title: string
+description?: string
+fields: StringArray
+advanced?: boolean
+}[]
+summaries?: {
+[k: string]: ConfigJoinSummary
+}
+fieldViews?: {
+[k: string]: {
+summary: string
+}
+}
+}
+schemaVersion: 3
+definitions?: {
+[k: string]: ConfigV3Field
+}
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV3FixedObjectField".
+ */
+export interface ConfigV3FixedObjectField {
+type: "object"
+title?: string
+description?: string
+default?: {
+[k: string]: ConfigScalar
+}
+required?: boolean
+sensitive?: never
+choices?: ConfigObjectChoices
+properties: {
+[k: string]: (ConfigScalarChildField | ConfigChildReference)
+}
+additionalProperties?: false
+validation?: ConfigObjectValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configChildReference".
+ */
+export interface ConfigChildReference {
+$ref: string
+title?: string
+description?: string
+required?: boolean
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV3KeyValueObjectField".
+ */
+export interface ConfigV3KeyValueObjectField {
+type: "object"
+title?: string
+description?: string
+default?: {
+[k: string]: ConfigScalar
+}
+required?: boolean
+sensitive?: never
+choices?: ConfigObjectChoices
+additionalProperties: (ConfigScalarDynamicField | ConfigDynamicReference)
+validation?: ConfigObjectValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configDynamicReference".
+ */
+export interface ConfigDynamicReference {
+$ref: string
+title?: string
+description?: string
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configReference".
+ */
+export interface ConfigReference {
+$ref: string
+title?: string
+description?: string
+default?: (ConfigScalar | {
+[k: string]: ConfigScalar
+})
+required?: boolean
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configJoinSummary".
+ */
+export interface ConfigJoinSummary {
+kind: "join"
+/**
+ * @minItems 1
+ * @maxItems 4
+ */
+parts: [{
+path: string
+format?: ("raw" | "choiceTitle")
+}]|[{
+path: string
+format?: ("raw" | "choiceTitle")
+}, {
+path: string
+format?: ("raw" | "choiceTitle")
+}]|[{
+path: string
+format?: ("raw" | "choiceTitle")
+}, {
+path: string
+format?: ("raw" | "choiceTitle")
+}, {
+path: string
+format?: ("raw" | "choiceTitle")
+}]|[{
+path: string
+format?: ("raw" | "choiceTitle")
+}, {
+path: string
+format?: ("raw" | "choiceTitle")
+}, {
+path: string
+format?: ("raw" | "choiceTitle")
+}, {
+path: string
+format?: ("raw" | "choiceTitle")
+}]
+separator: string
+missing: string
 }

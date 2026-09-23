@@ -208,10 +208,19 @@ export interface PluginConfigPresentationGroup {
   fields: string[];
   advanced?: boolean;
 }
+export interface PluginConfigJoinSummary {
+  kind: 'join';
+  parts: Array<{ path: string; format?: 'raw' | 'choiceTitle' }>;
+  separator: string;
+  missing: string;
+}
 export interface PluginConfigPresentation {
+  summaries?: Record<string, PluginConfigJoinSummary>;
+  fieldViews?: Record<string, { summary: string }>;
   groups?: PluginConfigPresentationGroup[];
 }
 export interface PluginConfigDefinition {
+  schemaVersion?: 3;
   fields: Record<string, PluginConfigSchemaField>;
   presentation?: PluginConfigPresentation;
 }

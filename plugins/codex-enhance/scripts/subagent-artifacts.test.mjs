@@ -195,7 +195,7 @@ test('renders one complete configured profile without changing the other roles',
       createContext({
         advancedTaskProfile: {
           model: 'advanced-specialist',
-          reasoningEffort: 'max',
+          reasoningEffort: 'ultra',
         },
       }),
     ),
@@ -203,7 +203,7 @@ test('renders one complete configured profile without changing the other roles',
 
   const advanced = roles.get('codex-subagent-advanced');
   assert.equal(advanced.content.roleFile.model, 'advanced-specialist');
-  assert.equal(advanced.content.roleFile.model_reasoning_effort, 'max');
+  assert.equal(advanced.content.roleFile.model_reasoning_effort, 'ultra');
 
   const complex = roles.get('codex-subagent-complex');
   assert.equal(complex.content.roleFile.model, 'gpt-5.6-sol');

@@ -562,6 +562,11 @@ export interface OperationReviewModel {
     blockedTargetCount: number;
     causeCount: number;
   };
+  rootSummary?: Array<{
+    pluginId: string;
+    version?: string;
+    targets: Array<{ platform: PlatformName | 'both'; scope: Scope }>;
+  }>;
 }
 
 export type ReviewPreparationStageId = 'refresh' | 'validate' | 'status' | 'catalog' | 'inventory'
@@ -1702,8 +1707,11 @@ export class TuiController {
         this.#project();
         this.#publish();
       },
-      onError: (error, code) => {
+      onError: (error, code, context) => {
         void this.#logErrorSafe(error, code);
+        return this.#recordStandaloneFailure(code, context.fullValidation
+          ? 'validate-catalog-source'
+          : context.automatic ? 'auto-check-catalog-source' : 'check-catalog-source', error);
       },
       now: this.dependencies.now,
     });
@@ -2264,13 +2272,9 @@ export class TuiController {
   #stableResultRoute(intent: OperationIntent, result: OperationExecuteResult): TuiRoute {
     const active = this.#router.activeFlow();
     if (intent.kind === 'pluginWriteTask' && active?.kind === 'pluginWriteTask'
-      && (active.parentFlowId || active.returnTarget.name === 'pluginWriteTask'
-        && active.returnTarget.goal !== intent.goal)) {
+      && active.returnTarget.name === 'pluginWriteTask'
+      && active.returnTarget.goal !== intent.goal) {
       return this.#normalizeRoute(active.returnTarget);
-    }
-    const completedPluginId = completedSinglePluginId(intent, result);
-    if (completedPluginId) {
-      return this.#normalizeRoute({ name: 'pluginDetail', pluginId: completedPluginId });
     }
     if (intent.kind === 'pluginWriteTask'
       && result.state === 'succeeded'
@@ -2279,6 +2283,14 @@ export class TuiController {
       && result.returnRoute.goal === result.summary.task?.goal
       && result.returnRoute.batchOrigin?.owner === 'batch-write') {
       return { name: 'pluginList', mode: 'installed' };
+    }
+    const completedPluginId = completedSinglePluginId(intent, result);
+    if (completedPluginId) {
+      return this.#normalizeRoute({ name: 'pluginDetail', pluginId: completedPluginId });
+    }
+    if (intent.kind === 'pluginWriteTask' && active?.kind === 'pluginWriteTask'
+      && active.parentFlowId) {
+      return this.#normalizeRoute(active.returnTarget);
     }
     if (intent.kind === 'portableInstall' && result.state === 'succeeded') {
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
@@ -2535,13 +2547,19 @@ export class TuiController {
     if (!this.hasPortableSkills(pluginId)) {
       throw new TuiOperationBlockedError('portableUnsupported', '插件不提供通用 Skills。');
     }
+    const requestKey = `prepare:${pluginId}`;
+    if (this.#portablePending?.key === requestKey) {
+      return this.#portablePending.promise as Promise<PortableSkillSelectionViewModel>;
+    }
     this.#router.beginPortableFlow(pluginId);
+    this.#router[navigation]({ name: 'portablePreparing', pluginId });
+    this.#publish();
     const expectedRoute = this.#router.snapshot.current.route;
-    return this.#runPortableRequest(`prepare:${pluginId}`, async (signal, token) => {
+    return this.#runPortableRequest(requestKey, async (signal, token) => {
       const draft = await this.#buildPortableDraft(pluginId, false, signal);
       this.#assertPortableRequestCurrent(token, expectedRoute);
       this.#portableDraft = draft;
-      this.#router[navigation]({ name: 'portableSkillSelect', pluginId });
+      this.#router.replace({ name: 'portableSkillSelect', pluginId });
       this.#publish();
       return cloneFrozen(draft);
     });
@@ -2553,6 +2571,10 @@ export class TuiController {
     return this.#runPortableRequest(`refresh:${pluginId}`, async (signal, token) => {
       const draft = await this.#buildPortableDraft(pluginId, true, signal);
       this.#assertPortableRequestCurrent(token, expectedRoute);
+      if (this.#activeReview?.operationKind === 'portableInstall') {
+        this.#tickets.delete(this.#activeReview.reviewToken);
+        this.#activeReview = undefined;
+      }
       this.#portableDraft = draft;
       this.#publish();
       return cloneFrozen(draft);
@@ -3016,9 +3038,13 @@ export class TuiController {
       this.#tickets.delete(this.#activeReview.reviewToken);
       this.#activeReview = undefined;
     }
-    this.#router.back();
-    if (activeFlow
+    if (route.name === 'batchSelection' && activeFlow?.kind === 'batchWrite'
       && this.#router.snapshot.currentFrameId === activeFlow.originFrameId) {
+      this.#router.finishFlow();
+    } else this.#router.back();
+    if (activeFlow
+      && this.#router.snapshot.currentFrameId === activeFlow.originFrameId
+      && this.#router.snapshot.currentFlowId !== activeFlow.id) {
       this.#router.abandonFlow(activeFlow.id);
       if (activeFlow.kind === 'pluginInstall') this.#installPlacementDraft = undefined;
       if (activeFlow.kind === 'portableInstall') this.#portableDraft = undefined;
@@ -3132,8 +3158,8 @@ export class TuiController {
       || route.name === 'operationDiagnostic'
       || route.name === 'operationReportPreview';
     if (readOnlyHistoryRoute && this.#router.activeFlow()?.kind === 'portableInstall') return;
-    const portableRoute = route.name === 'portableSkillSelect'
-      || route.name === 'portableSkillSummary'
+    const portableRoute = route.name === 'portablePreparing'
+      || route.name === 'portableSkillSelect'
       || route.name === 'portableDependencies'
       || route.name === 'portableAgentMode'
       || route.name === 'portableAgentInput'
@@ -3347,7 +3373,12 @@ export class TuiController {
           }
         : undefined;
       this.#publish();
-      return draft.targets.some((target) => !target.locked);
+      const editableDependencies = draft.targets.filter((target) => !target.locked);
+      return editableDependencies.some((target) =>
+        draft.targets.some((candidate) =>
+          candidate.pluginId === target.pluginId
+          && candidate.platform !== target.platform
+          && candidate.scope !== target.scope));
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') throw error;
       const code = issueCode(error);
@@ -3718,7 +3749,17 @@ export class TuiController {
 
   recheckCatalogSource(sourceId: string): Promise<void> {
     this.#assertAcceptingActions();
-    return this.#catalogSourcesSession.recheck(sourceId);
+    return this.#catalogSourcesSession.refresh(sourceId, this.#sourceCheckNeedsFullValidation(sourceId));
+  }
+
+  #sourceCheckNeedsFullValidation(sourceId: string): boolean {
+    const generation = this.#catalogGenerations.get(sourceId);
+    const freshness = this.#catalogFreshness.get(sourceId);
+    const activeReady = generation?.state === 'ready';
+    return !activeReady
+      || freshness?.state === 'incompatible'
+      || freshness?.state === 'versionConflict'
+      || freshness?.state === 'rollbackDetected';
   }
 
   async recheckAllCatalogSources(): Promise<void> {
@@ -3730,7 +3771,12 @@ export class TuiController {
     const worker = async (): Promise<void> => {
       while (next < sourceIds.length) {
         const sourceId = sourceIds[next++];
-        if (sourceId) await this.#catalogSourcesSession.recheck(sourceId);
+        if (sourceId) {
+          await this.#catalogSourcesSession.refresh(
+            sourceId,
+            this.#sourceCheckNeedsFullValidation(sourceId),
+          );
+        }
       }
     };
     await Promise.all(Array.from({ length: Math.min(2, sourceIds.length) }, () => worker()));
@@ -3751,7 +3797,7 @@ export class TuiController {
   beginPluginWriteBatch(): void {
     this.#assertAcceptingActions();
     this.#router.beginBatchFlow();
-    this.#router.push({ name: 'batchSelection' });
+    this.#router.replace({ name: 'batchSelection' }, this.#router.snapshot.current.context);
     this.#publish();
   }
 
@@ -4383,6 +4429,39 @@ export class TuiController {
       ? evidence.source?.pluginVersion
         ?? this.#viewModel?.plugins.find((plugin) => plugin.pluginId === intent.pluginId)?.version
       : undefined;
+    const rootSummary = intent.kind === 'pluginWriteTask'
+      ? [...new Set((evidence as PluginWriteTaskEvidence).taskPlan.requestedTargets
+          .map((target) => target.pluginId))].map((rootPluginId) => {
+          const targets = (evidence as PluginWriteTaskEvidence).taskPlan.requestedTargets
+            .filter((target) => target.pluginId === rootPluginId);
+          const versions = [...new Set(targets.flatMap((target) =>
+            target.expectedUpdate?.activeVersion ? [target.expectedUpdate.activeVersion] : []))];
+          return {
+            pluginId: rootPluginId,
+            ...(versions.length === 1 ? { version: versions[0] } : {}),
+            targets: targets.map(({ platform, scope }) => ({ platform, scope })),
+          };
+        })
+      : intent.kind === 'pluginWriteBatch'
+        ? (evidence as PluginWriteBatchEvidence).requestedPluginIds.map((rootPluginId) => {
+            const batchEvidence = evidence as PluginWriteBatchEvidence;
+            const targetVersions = batchEvidence.targetVersions?.filter((target) =>
+              target.pluginId === rootPluginId) ?? [];
+            const versions = [...new Set(targetVersions.flatMap((target) => {
+              const version = intent.action === 'uninstall'
+                ? target.installedVersion
+                : target.availableVersion ?? target.installedVersion;
+              return version ? [version] : [];
+            }))];
+            return {
+              pluginId: rootPluginId,
+              ...(versions.length === 1 ? { version: versions[0] } : {}),
+              targets: batchEvidence.groups.filter((group) =>
+                group.requestedPluginIds.includes(rootPluginId))
+                .map(({ platform, scope }) => ({ platform, scope })),
+            };
+          })
+        : undefined;
     const review: OperationReviewModel = {
       operationId,
       reviewToken,
@@ -4423,6 +4502,7 @@ export class TuiController {
           causeCount: (evidence as PluginWriteTaskEvidence).taskPlan.causes.length,
         },
       } : {}),
+      ...(rootSummary && rootSummary.length > 0 ? { rootSummary } : {}),
       ...(evidence.source && 'catalogVersion' in evidence.source
         && typeof evidence.source.catalogVersion === 'string'
         && evidence.source.snapshotDigest

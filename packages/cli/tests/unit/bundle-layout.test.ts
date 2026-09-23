@@ -7,6 +7,8 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { validatePluginManifest, validatePluginConfigValue } from '@lesliechan721/aw-plugin-core';
+
 import type { PluginStagingRunner } from '../../src/generators/local-plugin.js';
 import { validateBundleLayout } from '../../src/utils/bundle-layout.js';
 import {
@@ -434,6 +436,38 @@ describe('bundle layout validation', () => {
     })).rejects.toThrow(
       'Invalid packages/cli/package.json version: expected a strict SemVer 2.0.0 string.',
     );
+  });
+
+  it('publishes compiled v3 config in bundles and only requirements/digests in Catalog entries', async () => {
+    const repoRoot = await makeTempRepo();
+    const outputRoot = path.join(repoRoot, 'embedded');
+    await updateFixturePluginManifest(repoRoot, (manifest) => {
+      manifest.config = { schemaVersion: 3,
+        definitions: { profile: { type: 'object', properties: { model: { type: 'string', required: true, validation: { minLength: 1 } } } } },
+        fields: { profile: { $ref: '#/config/definitions/profile', default: { model: 'local' } } },
+        presentation: { summaries: { compact: { kind: 'join', parts: [{ path: '/model' }], separator: '/', missing: 'unset' } }, fieldViews: { profile: { summary: 'compact' } } },
+      };
+    });
+    await bundlePlugins({ repoRoot, outputRoot });
+    await validateBundleLayout(outputRoot);
+    const bundlePath = path.join(outputRoot, 'plugins', 'git-commit');
+    const raw = await fs.readJson(path.join(bundlePath, '.agents-plugin', 'plugin.json'));
+    expect(raw.config.schemaVersion).toBe(3);
+    expect(raw.config.definitions).toBeUndefined();
+    expect(raw.config.fields.profile.$ref).toBeUndefined();
+    expect(raw.config.presentation.fieldViews.profile.summary).toBe('compact');
+    const normalized = validatePluginManifest(bundlePath, raw);
+    expect(validatePluginConfigValue(normalized.config!.fields.profile!, { model: '' })).toMatchObject([{ code: 'minLength' }]);
+    const catalog = await fs.readJson(path.join(outputRoot, 'catalog-manifest.json'));
+    const entry = catalog.entries.find((entry: { name: string }) => entry.name === 'git-commit');
+    expect(entry.config).toBeUndefined();
+    expect(entry.requires.aw.capabilities).toEqual(expect.arrayContaining(['aw.plugin-config.v3', 'aw.plugin-config-summary.v1']));
+    const previousEntry = structuredClone(entry);
+    await updateFixturePluginManifest(repoRoot, (manifest) => { manifest.config.presentation.summaries.compact.separator = ' | '; });
+    await bundlePlugins({ repoRoot, outputRoot });
+    const changed = (await fs.readJson(path.join(outputRoot, 'catalog-manifest.json'))).entries.find((entry: { name: string }) => entry.name === 'git-commit');
+    expect(changed.manifestDigest).not.toBe(previousEntry.manifestDigest);
+    expect(changed.contentDigest).not.toBe(previousEntry.contentDigest);
   });
 
   it('allows synthetic external roots with no release version truth files', async () => {

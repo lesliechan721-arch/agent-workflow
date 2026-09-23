@@ -265,7 +265,8 @@ describe('real ConsoleAppV4 progress chain', () => {
     });
 
     expect(frames).toContain('写入平台插件');
-    expect(frames).toContain('插件安装完成');
+    expect(frames).toContain('状态已重新检查');
+    expect(frames).toContain('Codex：所有项目可用');
     expect(controller.snapshot.router.current.route).toEqual({
       name: 'pluginDetail', pluginId: 'official/real-progress',
     });

@@ -30,9 +30,38 @@ aw plugin capabilities --surface manifest --json
 
 其它 surface 以当前 CLI 帮助为准。不要从 development plugin 文档缓存字段表。
 
-## Config v2 合同
+## Config Definition v2 / v3 合同
 
-Manifest 配置只使用 `config.fields` 定义字段，并可用 `config.presentation.groups` 定义字段分组。字段类型只允许 `string`、`number`、`boolean` 和 `object`。配置值只允许标量或一层标量对象；数组、`null` 和嵌套对象无效。旧的 `config.schema`、`enum`、`file`、`directory`、`presentation.fields`、`presentation.presets`、`valueLabels` 和 `recommendedValue` 都无效。
+Manifest 配置使用 `config.fields` 定义字段，并可用 `config.presentation.groups` 定义字段分组。字段类型只允许 `string`、`number`、`boolean` 和 `object`。配置值只允许标量或一层标量对象；数组、`null` 和嵌套对象无效。旧的 `config.schema`、`enum`、`file`、`directory`、`presentation.fields`、`presentation.presets`、`valueLabels` 和 `recommendedValue` 都无效。
+
+未声明 `config.schemaVersion` 的 Config v2 继续兼容。声明 `config.schemaVersion: 3` 后，可使用 `definitions` 和本地 `$ref`：引用只允许 `#/config/definitions/Name`，名称遵守字段安全标识规则，拒绝 `__proto__`、`constructor`、`prototype`。引用处只可覆盖 `title`、`description`、`default`、`required`；覆盖后的 default 按完整字段约束验证。子属性可引用非敏感标量定义，但不能带 default；动态 KV child 也不能带 required。引用不增加对象嵌套能力。
+
+v3 最多 64 个定义、256 个顶层字段、8 次引用跳转。每次跟随 `$ref` 算一层，包括对象属性上的引用；内联对象不计数。例如字段到第一个定义，再经过七个引用到标量，是八层。Core 公开 `PLUGIN_CONFIG_V3_MAX_DEFINITIONS`、`PLUGIN_CONFIG_V3_MAX_FIELDS` 和 `PLUGIN_CONFIG_V3_MAX_REF_DEPTH`。未知引用、循环、未使用的坏定义及超限输入均拒绝；旧 v2 不追溯增加顶层字段上限。编译后删除 definitions 和引用，保留 `schemaVersion: 3` 与 presentation，且再次读取编译结果不改变合同。值校验和 renderer 仍消费展开后的字段。
+
+v3 的 `presentation.summaries.<name>` 只支持 `{ kind: "join", parts: [{ path, format? }], separator, missing }`。`fieldViews.<field>.summary` 选择本地摘要。path 是一个已声明 fixed scalar 属性的 JSON Pointer token，支持 `~0` 和 `~1`，不遍历原型、其他字段或外部资源。`format` 默认为 `raw`；`choiceTitle` 优先使用匹配 preset 的 title，无匹配时显示原标量。可选属性缺失使用 missing；空串、0 和 false 保留明确表示。必填缺失或值无效显示“需修正”。摘要不适用于 KV 或 sensitive 字段。
+
+摘要最多 4 段，separator 最多 8 个 Unicode code point，path 最多 128 个字符，显示摘要最多 256 个 Unicode code point。Core 的 `PLUGIN_CONFIG_SUMMARY_MAX_*` 常量公开这些上限。终端呈现清除 ANSI、OSC、C0/C1 和危险双向控制字符。过长摘要或未选中的属性使 `ValuePresentation.complete` 为 false，完整值仍可读取；dirty、preset 匹配、Review diff 和 hash 不使用摘要。没有摘要声明时，界面显示真实属性值，并保留完整读取入口。
+
+先发布支持 `aw.plugin-config.v3` 和 `aw.plugin-config-summary.v1` 的 reader CLI，再分发使用这些能力的插件。Core 从 v3 标记及摘要 metadata 派生对应能力；编译 bundle 保留要求，Catalog index 只携带 requirements 与 digest，不复制 config。Store v4 继续保存原字段名与 JSON 值，不存 ref、summary 或 preset ID，不做值迁移。展示 metadata 变化仍改变 schema identity、manifest/bundle digest 和 Review 证据。
+
+```json
+{
+  "schemaVersion": 3,
+  "definitions": {
+    "profile": {
+      "type": "object",
+      "properties": { "model": { "type": "string", "required": true } }
+    }
+  },
+  "fields": {
+    "agent": { "$ref": "#/config/definitions/profile", "default": { "model": "local" } }
+  },
+  "presentation": {
+    "summaries": { "model": { "kind": "join", "parts": [{ "path": "/model" }], "separator": "/", "missing": "未设置" } },
+    "fieldViews": { "agent": { "summary": "model" } }
+  }
+}
+```
 
 `string` 可用 `minLength`、`maxLength`、`pattern` 和 `identifier|slug|semver|url|hostname|email` 格式校验。value 与 object key 的 pattern 都使用 RE2-WASM Unicode 语法和非锚定匹配；需要整串匹配时显式写 `^` 和 `$`。pattern 最多 512 个 Unicode code point；声明 pattern 时必须同时声明 `maxLength`，且 `maxLength` 必须在 `0..4096`。RE2 不支持 lookaround、backreference 等回溯语法。RE2 只属于 Core 和 CLI 的配置校验实现，不随标准 config helper 分发。`number` 可用 `integer`、`minimum`、`maximum` 和 `multipleOf`。非敏感 scalar、object 和 object child 字段可声明 `choices: { allowCustom, presets }`。每个 preset 使用稳定 `id`、显示 `title` 和实际 `value`；同一字段最多一个 preset 可设 `recommended: true`，且不能声明语义重复的 value。`allowCustom: false` 时，default 和写入值必须与一个 preset 的实际值相同。object preset 是完整 object value，不是 patch。
 
