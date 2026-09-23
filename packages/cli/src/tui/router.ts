@@ -80,7 +80,7 @@ export type TuiRoute =
       nodePluginId: string;
       direction: 'dependencies' | 'dependents';
       nodePathPluginIds?: string[];
-      view?: 'summary' | 'references' | 'details';
+      view?: 'summary' | 'references';
     }
   | { name: 'installPlacement'; pluginId: string }
   | {

@@ -182,6 +182,23 @@ async function openChangedProjectSave(value: TuiController, columns: number, row
 
 describe('TUI config experience v7', () => {
   it.each([[60, 18], [80, 24]] as const)(
+    'returns from save summary to config editing and preserves the draft at %ix%i',
+    async (columns, rows) => {
+      const { value, captured } = controller();
+      await value.load();
+      const instance = await openChangedProjectSave(value, columns, rows);
+      await input(instance, '\u001b');
+      expect(value.snapshot.router.current.route.name).toBe('configFields');
+      expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
+      await input(instance, 's', '\u001b[B', '\r');
+      await nextTurn(4);
+      expect(captured.at(-1)).toMatchObject({
+        kind: 'configSaveBatch', groups: [{ scope: 'project', updates: { mode: 'teamx' } }],
+      });
+    },
+  );
+
+  it.each([[60, 18], [80, 24]] as const)(
     'keeps each current config value and its source readable at %ix%i',
     async (columns, rows) => {
       const { value } = controller();

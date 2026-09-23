@@ -765,7 +765,7 @@ describe('Portable Skills TUI V1', () => {
       await focusPortableAction(instance, label);
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain(`› ${label}`);
-      expect(frame).toContain('↑↓ 移动');
+      expect(frame).toMatch(/↑↓(?:\s+移动|\/Enter\s+菜单)/u);
       expect(frame.match(/›/gu)).toHaveLength(1);
       expect(frame.split('\n').length).toBeLessThanOrEqual(18);
     }
@@ -1645,7 +1645,7 @@ describe('Portable Skills TUI V1', () => {
     }
     expect(technicalFrame).toContain(size.rows === 18 ? '另有 3 条技术消息' : '另有 1 条技术消息');
     expect(technicalFrame).toContain('d 技术进度');
-    expect(technicalFrame).toContain('? 帮助');
+    expect(technicalFrame).toContain('[y] 复制全文');
     expect(technicalFrame.match(/[✓●○×] /gu)).toHaveLength(4);
     expect(technicalFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
 
@@ -1674,7 +1674,7 @@ describe('Portable Skills TUI V1', () => {
     expect(frame).toContain('author-skill');
     let resultFrames = frame;
     for (let page = 0; page < candidates.length; page += 1) {
-      await send(instance, 'n');
+      await send(instance, '\u001B[C');
       resultFrames += `\n${instance.lastFrame() ?? ''}`;
     }
     for (const skill of candidates.map((candidate) => candidate.name)) {
@@ -1744,27 +1744,26 @@ describe('Portable Skills TUI V1', () => {
     expect(frame).toMatch(/范围\s+当前项目/u);
     expect(frame).toContain('安全恢复');
     if (size.rows === 18) {
-      await focusPortableAction(instance, 'n 下一页');
-      await send(instance, '\r');
+      await send(instance, '\u001B[C');
       const middleFrame = instance.lastFrame() ?? '';
       expect(middleFrame).toContain('部分 Skills 未确认');
       expect(middleFrame).toContain('第 2–2 项，共 10 项');
       expect(middleFrame).toContain('安全恢复');
-      expect(middleFrame).toContain('› n 下一页');
+      expect(middleFrame).toContain('› 返回修改');
       instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
       await tick();
       expect(instance.lastFrame()).toMatch(/result-skill-0\s+已验证 · Agent：Codex/u);
-      expect(instance.lastFrame()).toContain('› n 下一页');
+      expect(instance.lastFrame()).toContain('› 返回修改');
       instance.rerender(<ConsoleAppV4 controller={value} size={size} />);
       await tick();
       expect(instance.lastFrame()).toContain('第 2–2 项，共 10 项');
-      expect(instance.lastFrame()).toContain('› n 下一页');
-    } else await send(instance, 'n');
+      expect(instance.lastFrame()).toContain('› 返回修改');
+    } else await send(instance, '\u001B[C');
     expect(`${frame}\n${instance.lastFrame() ?? ''}`).toMatch(/result-skill-0\s+已验证 · Agent：Codex/u);
     expect(frame).toContain('› 返回修改');
-    expect(frame).toContain('↑↓ 移动');
-    expect(frame).toContain('d 技术详情');
-    expect(frame).toContain('? 帮助');
+    expect(frame).toMatch(/↑↓(?:\s+移动|\/Enter\s+菜单)/u);
+    expect(frame).toMatch(/d\s+技术详情/u);
+    expect(frame).toContain('[y] 复制全文');
     expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
 
     for (let page = 0; page < 12; page += 1) await send(instance, '\u001B[6~');
@@ -1776,7 +1775,7 @@ describe('Portable Skills TUI V1', () => {
       await focusPortableAction(instance, label);
       const actionFrame = instance.lastFrame() ?? '';
       expect(actionFrame).toContain(`› ${label}`);
-      expect(actionFrame).toContain('↑↓ 移动');
+      expect(actionFrame).toMatch(/↑↓(?:\s+移动|\/Enter\s+菜单)/u);
       expect(actionFrame.match(/›/gu)).toHaveLength(1);
       expect(actionFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
     }
@@ -1788,19 +1787,18 @@ describe('Portable Skills TUI V1', () => {
     expect(helpFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
     await send(instance, '?', 'd');
     if (size.rows === 18) {
-      await focusPortableAction(instance, 'n 下一页');
-      await send(instance, '\r');
+      await send(instance, '\u001B[C');
       const technicalMiddle = instance.lastFrame() ?? '';
       expect(technicalMiddle).toContain('部分 Skills 未确认');
       expect(technicalMiddle).toContain('第 2–2 项，共 10 项');
       expect(technicalMiddle).toContain('安全恢复');
-      expect(technicalMiddle).toContain('› n 下一页');
+      expect(technicalMiddle).toContain('› 返回插件详情');
       instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
       await tick();
-      expect(instance.lastFrame()).toContain('› n 下一页');
+      expect(instance.lastFrame()).toContain('› 返回插件详情');
       instance.rerender(<ConsoleAppV4 controller={value} size={size} />);
       await tick();
-      await send(instance, 'p');
+      await send(instance, '\u001B[D');
     }
     for (const label of ['返回修改', '返回插件详情']) {
       await focusPortableAction(instance, label);
@@ -1816,7 +1814,7 @@ describe('Portable Skills TUI V1', () => {
       expect(technicalFrame).toMatch(/范围\s+当前项目/u);
       expect(technicalFrame).toContain('安全恢复');
       expect(technicalFrame).toContain(`› ${label}`);
-      expect(technicalFrame).toContain('↑↓ 移动');
+      expect(technicalFrame).toMatch(/↑↓(?:\s+移动|\/Enter\s+菜单)/u);
       expect(technicalFrame.match(/›/gu)).toHaveLength(1);
       expect(technicalFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
     }
@@ -1851,8 +1849,8 @@ describe('Portable Skills TUI V1', () => {
     await tick();
 
     const initialFrame = instance.lastFrame() ?? '';
-    expect(initialFrame).toContain('d 技术详情');
-    expect(initialFrame).toMatch(/\?\s+帮助/u);
+    expect(initialFrame).toMatch(/d\s+技术详情/u);
+    expect(initialFrame).toContain('[y] 复制全文');
     expect(initialFrame).toContain('› 返回修改');
     expect(initialFrame.match(/›/gu)).toHaveLength(1);
     expect(initialFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
@@ -1873,7 +1871,7 @@ describe('Portable Skills TUI V1', () => {
       expect(frame).toContain('failure code');
       expect(frame).not.toContain('sha256:blocked');
       expect(frame).toContain(`› ${label}`);
-      expect(frame).toContain('↑↓ 移动');
+      expect(frame).toMatch(/↑↓(?:\s+移动|\/Enter\s+菜单)/u);
       expect(frame.match(/›/gu)).toHaveLength(1);
       expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
     }
@@ -1932,7 +1930,7 @@ describe('Portable Skills TUI V1', () => {
 
     const initialFrame = instance.lastFrame() ?? '';
     expect(initialFrame).not.toContain('0 个 Skill');
-    expect(initialFrame).not.toContain('d 技术详情');
+    expect(initialFrame).not.toMatch(/d\s+技术详情/u);
     expect(initialFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
 
     await send(instance, '?');
@@ -1993,8 +1991,8 @@ describe('Portable Skills TUI V1', () => {
       expect(frame).toContain('Catalog 配置：config');
       expect(frame).toMatch(/另有 \d+ 项/u);
       expect(frame).toContain(`› ${label}`);
-      expect(frame).toContain('d 技术详情');
-      expect(frame).toContain('? 帮助');
+      expect(frame).toMatch(/d\s+技术详情/u);
+      expect(frame).toContain('[y] 复制全文');
       expect(frame.match(/›/gu)).toHaveLength(1);
       expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
       for (let page = 0; page < 15; page += 1) await send(instance, '\u001B[5~');
@@ -2158,10 +2156,10 @@ describe('Portable Skills TUI V1', () => {
     let dependencyFrame = dependencyInstance.lastFrame() ?? '';
     expect(dependencyFrame).toContain('Dependency 0');
     expect(dependencyFrame).toContain('› 隐藏技术详情');
-    expect(dependencyFrame).toContain('↑↓ 移动');
+    expect(dependencyFrame).toMatch(/↑↓(?:\s+移动|\/Enter\s+菜单)/u);
     expect(dependencyFrame.match(/›/gu)).toHaveLength(1);
     expect(dependencyFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
-    await send(dependencyInstance, 'n', 'n', 'n', 'n', 'n', 'n', 'n');
+    await send(dependencyInstance, ...Array.from({ length: 7 }, () => '\u001B[C'));
     expect(dependencyInstance.lastFrame()).toContain('Dependency 7');
     dependencyInstance.stdin.write('\u001B');
     await new Promise((resolve) => setTimeout(resolve, 550));
@@ -2213,7 +2211,7 @@ describe('Portable Skills TUI V1', () => {
     await tick();
 
     const initialFrame = instance.lastFrame() ?? '';
-    expect(initialFrame).toContain('d 技术详情');
+    expect(initialFrame).toMatch(/d\s+技术详情/u);
     expect(initialFrame).toMatch(/\?\s+帮助/u);
     expect(initialFrame).toContain('› [x] portable-skill-0');
     expect(initialFrame).toContain('Portable description 0');
@@ -2247,7 +2245,7 @@ describe('Portable Skills TUI V1', () => {
     value.push({ name: 'portableAgentInput', pluginId: 'official/toolkit' });
     const inputInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await tick();
-    expect(inputInstance.lastFrame()).not.toContain('d 技术详情');
+    expect(inputInstance.lastFrame()).not.toMatch(/d\s+技术详情/u);
     await send(inputInstance, '\r');
     expect(inputInstance.lastFrame()).toContain('Agent 选择必须包含 1 到 32 项');
     await send(inputInstance, 'd cursor codex cursor', '\r');
@@ -2443,7 +2441,7 @@ describe('Portable Skills TUI V1', () => {
     await tick();
 
     let frames = instance.lastFrame() ?? '';
-    await send(instance, 'n');
+    await send(instance, '\u001B[C');
     frames += `\n${instance.lastFrame() ?? ''}`;
     expect(frames.match(/review-skill/gu)).toHaveLength(2);
     expect(frames).toMatch(/review-skill\s+确认缺失 · Agent：cursor/u);
@@ -2484,10 +2482,12 @@ describe('Portable Skills TUI V1', () => {
     if (technical) await send(instance, 'd');
 
     let frames = instance.lastFrame() ?? '';
-    expect(frames).toContain('p 上一页');
-    expect(frames).toContain('n 下一页');
+    expect(frames).not.toContain('p 上一页');
+    expect(frames).not.toContain('n 下一页');
+    expect(frames).toContain('←→');
+    expect(frames).toContain('[y] 复制全文');
     for (let page = 0; page < agents.length; page += 1) {
-      await send(instance, 'n');
+      await send(instance, '\u001B[C');
       frames += `\n${instance.lastFrame() ?? ''}`;
     }
     for (const agent of agents) {
@@ -2559,7 +2559,7 @@ describe('Portable Skills TUI V1', () => {
         const frame = instance.lastFrame() ?? '';
         frames.push(frame);
         if (frame.includes('已在最后一页')) break;
-        await send(instance, 'n');
+        await send(instance, '\u001B[C');
       }
       return frames;
     };
@@ -2588,7 +2588,7 @@ describe('Portable Skills TUI V1', () => {
     await new Promise((resolve) => setTimeout(resolve, 550));
     await tick();
     expect(instance.lastFrame()).toContain('› 查看当前结果完整字段');
-    await send(instance, 'n', 'd');
+    await send(instance, '\u001B[C', 'd');
     expect(instance.lastFrame()).toContain('已验证 · Agent：');
     frames = await readDetail();
     expect(rebuild(frames, 'Skill')).toBe(skills[1]);

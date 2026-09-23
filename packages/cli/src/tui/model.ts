@@ -40,6 +40,7 @@ import {
 } from '../commands/status-v6.js';
 import type {
   DependencyAssignmentSource,
+  DependencyPlacementRootInput,
 } from '../commands/dependency-operation-plan.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { DependencyScopeOverride } from '../types.js';
@@ -399,6 +400,7 @@ export interface DependencyPlacementTargetViewModel {
 export interface InstallPlacementDraftViewModel {
   pluginId: string;
   rootScope: Scope;
+  exactRootTargets?: DependencyPlacementRootInput[];
   platforms: PlatformName[];
   dependencyScopeOverrides: DependencyScopeOverride[];
   state: 'selecting' | 'loading' | 'ready' | 'blocked';

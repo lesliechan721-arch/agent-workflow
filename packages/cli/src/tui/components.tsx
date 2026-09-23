@@ -352,6 +352,10 @@ export function diagnosticDetailLines(
   });
 }
 
+export function diagnosticDetailText(diagnostic: DiagnosticSummaryViewModel): string {
+  return diagnosticDetailRows(diagnostic).map((row) => `${row.label}: ${row.value}`).join('\n');
+}
+
 export function diagnosticDetailRowCount(diagnostic: DiagnosticSummaryViewModel): number {
   return diagnosticDetailRows(diagnostic).length;
 }
@@ -491,6 +495,7 @@ export function PluginRow(props: InteractiveRowProps): React.JSX.Element {
 }
 
 export interface PluginListRowProps {
+  width?: number;
   name: ReactNode;
   sourceLabel: ReactNode;
   description: ReactNode;
@@ -503,47 +508,122 @@ export interface PluginListRowProps {
   anchored?: boolean;
 }
 
-export function PluginListRow(props: PluginListRowProps): React.JSX.Element {
-  const color = props.status ? getTuiStatusColor(props.status) : tuiTheme.colors.text;
-  return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={props.focused ? tuiTheme.colors.accent : tuiTheme.colors.border}
-      backgroundColor={props.focused ? tuiTheme.colors.selectionBackground : undefined}
-      paddingX={1}
-    >
-      <Box>
-        <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
-          <Text bold={props.focused} wrap="truncate-end">
-            {props.focused ? '›' : props.anchored ? '·' : ' '} {props.name}
-          </Text>
-        </Box>
-        <Box flexShrink={0} marginLeft={1}>
-          <Text color={tuiTheme.colors.muted} wrap="truncate-end">{props.sourceLabel}</Text>
-        </Box>
-        {!props.tags && props.statusLabel
-          ? <Box flexShrink={0} marginLeft={1}>
-              <Text color={color} wrap="truncate-end">{props.statusLabel}</Text>
-            </Box>
-          : null}
+function ObjectCardFrame(props: {
+  width: number;
+  title: ReactNode;
+  children: ReactNode;
+  focused?: boolean;
+  anchored?: boolean;
+  muted?: boolean;
+  compact?: boolean;
+}): React.JSX.Element {
+  const borderColor = props.focused ? tuiTheme.colors.accent : tuiTheme.colors.border;
+  const backgroundColor = props.focused
+    ? tuiTheme.colors.selectionBackground
+    : props.muted ? tuiTheme.colors.background : undefined;
+  return <Box width={props.width} flexDirection="column" flexShrink={0} backgroundColor={backgroundColor}>
+    <Box height={1} flexShrink={0} overflow="hidden">
+      <Text color={borderColor}>╭─ </Text>
+      <Box maxWidth={Math.max(1, props.width - 6)} flexShrink={0} overflow="hidden"
+        backgroundColor={tuiTheme.colors.background}>
+        <Text bold color={props.focused ? tuiTheme.colors.accent : props.muted ? tuiTheme.colors.muted : tuiTheme.colors.text}
+          wrap="truncate-end">
+          {props.focused ? '› ' : props.anchored ? '· ' : ''}{props.title}
+        </Text>
       </Box>
-      <Text color={tuiTheme.colors.muted} wrap="truncate-end">  {props.description}</Text>
-      {props.attention
-        ? <Text color={tuiTheme.statusColors.warning} wrap="truncate-end">  ! {props.attention}</Text>
-        : null}
-      {props.tags ? <Box paddingLeft={2} overflow="hidden">{props.tags}</Box> : null}
-      {props.placementSummary
-        ? <Text color={tuiTheme.colors.muted} wrap="truncate-end">  {props.placementSummary}</Text>
-        : null}
+      <Text color={borderColor}> </Text>
+      <Box flexGrow={1} flexShrink={1} minWidth={0} height={1} borderStyle="single"
+        borderColor={borderColor} borderTop={false} borderLeft={false} borderRight={false} />
+      <Text color={borderColor}>╮</Text>
     </Box>
+    <Box flexDirection="column" borderStyle="round" borderTop={false}
+      borderColor={borderColor} paddingX={props.compact ? 0 : 1}>
+      {props.children}
+    </Box>
+  </Box>;
+}
+
+function ObjectCardFooter(props: { tags?: ReactNode; sourceLabel?: ReactNode }): React.JSX.Element {
+  return <Box height={1} overflow="hidden" justifyContent="space-between">
+    {props.tags ? <Box flexShrink={0}>{props.tags}</Box> : null}
+    {props.sourceLabel ? <Box minWidth={0} flexGrow={1} flexShrink={1} justifyContent="flex-end">
+      <Text color={tuiTheme.colors.muted} wrap="truncate-end">{props.sourceLabel}</Text>
+    </Box> : null}
+  </Box>;
+}
+
+function cardSummaryLines(description: string, width: number, maxRows?: number): string[] {
+  const lines = description ? wrapDisplayText(description, width) : [];
+  if (maxRows === undefined || lines.length <= maxRows) return lines;
+  const visible = lines.slice(0, Math.max(1, maxRows));
+  const last = visible.length - 1;
+  visible[last] = `${wrapDisplayText(visible[last]!, Math.max(1, width - 1))[0]}…`;
+  return visible;
+}
+
+export function pluginListRowLayout(options: {
+  width: number;
+  description: string;
+  attention?: string;
+  placementSummary?: string;
+  sourceLabel?: ReactNode;
+  hasTags?: boolean;
+  statusLabel?: ReactNode;
+}): {
+  descriptionLines: string[];
+  attentionLines: string[];
+  placementLines: string[];
+  height: number;
+} {
+  const contentWidth = Math.max(1, options.width - 4);
+  const descriptionLines = cardSummaryLines(options.description, contentWidth, 2);
+  const attentionLines = options.attention ? cardSummaryLines(`! ${options.attention}`, contentWidth, 2) : [];
+  const placementLines = options.placementSummary ? wrapDisplayText(options.placementSummary, contentWidth) : [];
+  return {
+    descriptionLines,
+    attentionLines,
+    placementLines,
+    height: 2 + descriptionLines.length + attentionLines.length + placementLines.length
+      + (options.hasTags || options.statusLabel || options.sourceLabel ? 1 : 0),
+  };
+}
+
+export function PluginListRow(props: PluginListRowProps): React.JSX.Element {
+  const windowSize = useWindowSize();
+  const width = props.width ?? windowSize.columns;
+  const color = props.status ? getTuiStatusColor(props.status) : tuiTheme.colors.text;
+  const layout = pluginListRowLayout({
+    ...props,
+    width,
+    description: typeof props.description === 'string' ? props.description : '',
+    attention: typeof props.attention === 'string' ? props.attention : undefined,
+    placementSummary: typeof props.placementSummary === 'string' ? props.placementSummary : undefined,
+    hasTags: Boolean(props.tags),
+  });
+  return (
+    <ObjectCardFrame width={width} title={props.name} focused={props.focused} anchored={props.anchored}>
+      {typeof props.description === 'string'
+        ? layout.descriptionLines.map((line, index) => <Text key={`description:${index}`} color={tuiTheme.colors.muted}>{line}</Text>)
+        : <Text color={tuiTheme.colors.muted}>{props.description}</Text>}
+      {typeof props.attention === 'string'
+        ? layout.attentionLines.map((line, index) => <Text key={`attention:${index}`} color={tuiTheme.statusColors.warning}>{line}</Text>)
+        : props.attention ? <Text color={tuiTheme.statusColors.warning}>! {props.attention}</Text> : null}
+      {typeof props.placementSummary === 'string'
+        ? layout.placementLines.map((line, index) => <Text key={`placement:${index}`} color={tuiTheme.colors.muted}>{line}</Text>)
+        : props.placementSummary ? <Text color={tuiTheme.colors.muted}>{props.placementSummary}</Text> : null}
+      {props.tags || props.statusLabel || props.sourceLabel ? <ObjectCardFooter
+        tags={props.tags ?? (props.statusLabel ? <Text color={color}>{props.statusLabel}</Text> : undefined)}
+        sourceLabel={props.sourceLabel} /> : null}
+    </ObjectCardFrame>
   );
 }
 
 export interface ObjectCardRowLayoutOptions {
   width: number;
   description: string;
+  maxDescriptionRows?: number;
   meta?: string;
+  sourceLabel?: ReactNode;
   hasTags?: boolean;
   compact?: boolean;
 }
@@ -558,15 +638,15 @@ export function objectCardRowLayout(options: ObjectCardRowLayoutOptions): Object
   const cardWidth = Math.max(1, Math.floor(Number.isFinite(options.width) ? options.width : 1));
   const horizontalPadding = options.compact ? 0 : 2;
   const contentWidth = Math.max(1, cardWidth - 2 - horizontalPadding);
-  const descriptionLines = wrapDisplayText(options.description, contentWidth);
-  const metaLines = options.meta === undefined ? [] : wrapDisplayText(options.meta, contentWidth);
+  const descriptionLines = cardSummaryLines(options.description, contentWidth, options.maxDescriptionRows);
+  const metaLines = options.meta ? wrapDisplayText(options.meta, contentWidth) : [];
   return {
     descriptionLines,
     metaLines,
-    height: 3
+    height: 2
       + descriptionLines.length
       + metaLines.length
-      + (options.hasTags ? 1 : 0),
+      + (options.hasTags || options.sourceLabel ? 1 : 0),
   };
 }
 
@@ -574,7 +654,9 @@ export function ObjectCardRow(props: {
   width: number;
   title: ReactNode;
   description: string;
+  maxDescriptionRows?: number;
   meta?: string;
+  sourceLabel?: ReactNode;
   tags?: ReactNode;
   status?: TuiStatus;
   focused?: boolean;
@@ -585,41 +667,26 @@ export function ObjectCardRow(props: {
   const layout = objectCardRowLayout({
     width: props.width,
     description: props.description,
+    maxDescriptionRows: props.maxDescriptionRows,
     meta: props.meta,
-    hasTags: props.tags !== undefined && props.tags !== null,
+    sourceLabel: props.sourceLabel,
+    hasTags: Boolean(props.tags),
     compact: props.compact,
   });
   return (
-    <Box
-      width={props.width}
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={props.focused ? tuiTheme.colors.accent : tuiTheme.colors.border}
-      backgroundColor={props.focused
-        ? tuiTheme.colors.selectionBackground
-        : props.muted ? tuiTheme.colors.background : undefined}
-      paddingX={props.compact ? 0 : 1}
-    >
-      <Box height={1} overflow="hidden">
-        <Text bold={props.focused} color={props.muted ? tuiTheme.colors.muted : undefined}>
-          {props.focused ? '›' : props.anchored ? '·' : ' '}{' '}
-        </Text>
-        {props.status && !props.tags
-          ? <Text color={getTuiStatusColor(props.status)}>{statusSymbols[props.status]} </Text>
-          : null}
-        <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
-          <Text bold={props.focused} color={props.muted ? tuiTheme.colors.muted : undefined}
-            wrap="truncate-end">{props.title}</Text>
-        </Box>
-      </Box>
+    <ObjectCardFrame {...props} title={<Text>
+      {props.status && !props.tags
+        ? <Text color={getTuiStatusColor(props.status)}>{statusSymbols[props.status]} </Text>
+        : null}{props.title}
+    </Text>}>
       {layout.descriptionLines.map((line, index) => (
         <Text key={`description:${index}`} color={tuiTheme.colors.muted} wrap="truncate-end">{line}</Text>
       ))}
       {layout.metaLines.map((line, index) => (
         <Text key={`meta:${index}`} color={tuiTheme.colors.muted} wrap="truncate-end">{line}</Text>
       ))}
-      {props.tags ? <Box height={1} overflow="hidden">{props.tags}</Box> : null}
-    </Box>
+      {props.tags || props.sourceLabel ? <ObjectCardFooter tags={props.tags} sourceLabel={props.sourceLabel} /> : null}
+    </ObjectCardFrame>
   );
 }
 
