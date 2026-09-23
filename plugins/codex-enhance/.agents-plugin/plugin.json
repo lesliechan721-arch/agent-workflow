@@ -113,9 +113,9 @@
       "quickProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "Quick 探索配置",
-        "description": "quick 探索 role 使用的模型与推理强度。",
+        "description": "quick 探索 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-5.6-luna",
+          "model": "gpt-6-luna",
           "reasoningEffort": "medium"
         },
         "required": true
@@ -123,9 +123,9 @@
       "standardProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "Standard 探索配置",
-        "description": "standard 探索 role 使用的模型与推理强度。",
+        "description": "standard 探索 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-5.6-luna",
+          "model": "gpt-6-luna",
           "reasoningEffort": "high"
         },
         "required": true
@@ -133,9 +133,9 @@
       "deepProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "Deep 探索配置",
-        "description": "deep 探索 role 使用的模型与推理强度。",
+        "description": "deep 探索 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-5.6-luna",
+          "model": "gpt-6-luna",
           "reasoningEffort": "xhigh"
         },
         "required": true
@@ -143,9 +143,9 @@
       "simpleTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "简单任务配置",
-        "description": "简单任务 role 使用的模型与推理强度。",
+        "description": "简单任务 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-5.6-luna",
+          "model": "gpt-6-luna",
           "reasoningEffort": "max"
         },
         "required": true
@@ -153,30 +153,30 @@
       "generalTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "常规任务配置",
-        "description": "常规任务 role 使用的模型与推理强度。",
+        "description": "常规任务 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-5.6-terra",
-          "reasoningEffort": "xhigh"
+          "model": "gpt-6-sol",
+          "reasoningEffort": "medium"
         },
         "required": true
       },
       "complexTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "复杂任务配置",
-        "description": "复杂任务 role 使用的模型与推理强度。",
+        "description": "复杂任务 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-5.6-sol",
-          "reasoningEffort": "medium"
+          "model": "gpt-6-sol",
+          "reasoningEffort": "xhigh"
         },
         "required": true
       },
       "advancedTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "高难任务配置",
-        "description": "高难任务 role 使用的模型与推理强度。",
+        "description": "高难任务 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
           "model": "gpt-6-astra",
-          "reasoningEffort": "xhigh"
+          "reasoningEffort": "medium"
         },
         "required": true
       }
@@ -262,68 +262,18 @@
         "states": [
           "present"
         ],
-        "refreshKeys": [],
+        "refreshKeys": [
+          "quickProfile",
+          "standardProfile",
+          "deepProfile"
+        ],
         "skillKey": "codex-explore",
         "sourceDirs": [
           "./skills/codex-explore"
         ]
       },
       {
-        "id": "codex-explore-quick-role",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.agentRole",
-        "projectManagedKind": "agent",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [
-          "quickProfile"
-        ],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "codex-explore-quick"
-      },
-      {
-        "id": "codex-explore-standard-role",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.agentRole",
-        "projectManagedKind": "agent",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [
-          "standardProfile"
-        ],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "codex-explore-standard"
-      },
-      {
-        "id": "codex-explore-deep-role",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.agentRole",
-        "projectManagedKind": "agent",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [
-          "deepProfile"
-        ],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "codex-explore-deep"
-      },
-      {
-        "id": "codex-explore-custom-role",
+        "id": "codex-explore-role",
         "platform": "codex",
         "scopes": [
           "user",
@@ -336,7 +286,7 @@
         ],
         "refreshKeys": [],
         "requiresCodexProjectConfig": true,
-        "roleKey": "codex-explore-custom"
+        "roleKey": "codex-explore"
       },
       {
         "id": "codex-subagent-guide-skill",
@@ -355,14 +305,19 @@
         "states": [
           "present"
         ],
-        "refreshKeys": [],
+        "refreshKeys": [
+          "simpleTaskProfile",
+          "generalTaskProfile",
+          "complexTaskProfile",
+          "advancedTaskProfile"
+        ],
         "skillKey": "codex-subagent-guide",
         "sourceDirs": [
           "./skills/codex-subagent-guide"
         ]
       },
       {
-        "id": "codex-subagent-simple-role",
+        "id": "codex-subagent-role",
         "platform": "codex",
         "scopes": [
           "user",
@@ -373,65 +328,9 @@
         "states": [
           "present"
         ],
-        "refreshKeys": [
-          "simpleTaskProfile"
-        ],
+        "refreshKeys": [],
         "requiresCodexProjectConfig": true,
-        "roleKey": "codex-subagent-simple"
-      },
-      {
-        "id": "codex-subagent-general-role",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.agentRole",
-        "projectManagedKind": "agent",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [
-          "generalTaskProfile"
-        ],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "codex-subagent-general"
-      },
-      {
-        "id": "codex-subagent-complex-role",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.agentRole",
-        "projectManagedKind": "agent",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [
-          "complexTaskProfile"
-        ],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "codex-subagent-complex"
-      },
-      {
-        "id": "codex-subagent-advanced-role",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.agentRole",
-        "projectManagedKind": "agent",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [
-          "advancedTaskProfile"
-        ],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "codex-subagent-advanced"
+        "roleKey": "codex-subagent"
       }
     ]
   }

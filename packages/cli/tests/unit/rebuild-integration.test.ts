@@ -3138,8 +3138,11 @@ describe('rebuild adapter integration', () => {
         await expect(fs.pathExists(path.join(legacy.root, legacy.skillKey))).resolves.toBe(false);
       }
       expect(target.artifacts.some((artifact) => artifact.target === 'codex.skill')).toBe(false);
-      expect(target.artifacts.filter((artifact) => artifact.target === 'codex.agentRole'))
-        .toHaveLength(8);
+      expect(target.artifacts
+        .filter((artifact) => artifact.target === 'codex.agentRole')
+        .map((artifact) => artifact.roleKey)
+        .sort())
+        .toEqual(['codex-explore', 'codex-subagent']);
       const cacheRoot = path.join(
         isolation.layout.codexHomeDir,
         'plugins',
@@ -4952,11 +4955,11 @@ describe('rebuild adapter integration', () => {
       .resolves.toBe(false);
     await expect(fs.pathExists(path.join(
       codexPaths.agentsDir,
-      'aw-codex-enhance-codex-subagent-simple.toml',
+      'aw-codex-enhance-codex-subagent.toml',
     ))).resolves.toBe(true);
     const codexConfig = await fs.readFile(codexPaths.configTomlPath, 'utf8');
     expect(codexConfig).not.toContain('实施前需求检查');
-    expect(codexConfig).toContain('[agents.codex-subagent-simple]');
+    expect(codexConfig).toContain('[agents.codex-subagent]');
   });
 
   it('does not discover a Codex plugin from a private installed manifest', async () => {

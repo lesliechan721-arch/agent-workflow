@@ -30,29 +30,8 @@ const subagentArtifactSourcePath = existsSync(stagedSubagentArtifactSourcePath)
 
 const expectedRoles = [
   {
-    id: 'codex-explore-quick-role',
-    key: 'codex-explore-quick',
-    profileKey: 'quickProfile',
-    model: 'gpt-5.6-luna',
-    effort: 'medium',
-  },
-  {
-    id: 'codex-explore-standard-role',
-    key: 'codex-explore-standard',
-    profileKey: 'standardProfile',
-    model: 'gpt-5.6-luna',
-    effort: 'high',
-  },
-  {
-    id: 'codex-explore-deep-role',
-    key: 'codex-explore-deep',
-    profileKey: 'deepProfile',
-    model: 'gpt-5.6-luna',
-    effort: 'xhigh',
-  },
-  {
-    id: 'codex-explore-custom-role',
-    key: 'codex-explore-custom',
+    id: 'codex-explore-role',
+    key: 'codex-explore',
   },
 ];
 
@@ -75,10 +54,7 @@ function createContext(overrides = {}) {
       'codex-explore-skill',
       ...expectedRoles.map((role) => role.id),
       'codex-subagent-guide-skill',
-      'codex-subagent-simple-role',
-      'codex-subagent-general-role',
-      'codex-subagent-complex-role',
-      'codex-subagent-advanced-role',
+      'codex-subagent-role',
     ],
     artifactSources: [
       {
@@ -134,10 +110,10 @@ function assertRoleArtifact(plan, expected) {
   assert.equal(role.target, 'codex.agentRole');
   assert.equal(role.state, 'present');
   assert.equal(role.roleKey, expected.key);
-  assert.deepEqual(role.refreshKeys, expected.profileKey ? [expected.profileKey] : []);
+  assert.deepEqual(role.refreshKeys, []);
   assert.equal(role.content.roleFile.name, expected.key);
-  assert.equal(role.content.roleFile.model, expected.model);
-  assert.equal(role.content.roleFile.model_reasoning_effort, expected.effort);
+  assert.equal(Object.hasOwn(role.content.roleFile, 'model'), false);
+  assert.equal(Object.hasOwn(role.content.roleFile, 'model_reasoning_effort'), false);
   assert.equal(role.content.registration.description, role.content.roleFile.description);
 
   const instructions = role.content.roleFile.developer_instructions;
@@ -185,29 +161,16 @@ async function testRenderedArtifactsAndSkillContract() {
   const skill = findArtifact(plan, 'codex-explore-skill');
 
   assert.equal(plan.version, 2);
-  assert.equal(plan.artifacts.length, 10);
+  assert.equal(plan.artifacts.length, 4);
   assert.equal(skill.kind, 'skill');
   assert.equal(skill.target, 'codex.skill');
   assert.equal(skill.state, 'present');
   assert.equal(skill.skillKey, 'codex-explore');
-  assert.deepEqual(skill.refreshKeys, []);
+  assert.deepEqual(skill.refreshKeys, exploreConfigKeys);
 
   for (const role of expectedRoles) {
     assertRoleArtifact(plan, role);
   }
-  assert.equal(
-    new Set(
-      expectedRoles.map(
-        (role) => findArtifact(plan, role.id).content.roleFile.developer_instructions,
-      ),
-    ).size,
-    1,
-  );
-
-  const custom = findArtifact(plan, 'codex-explore-custom-role');
-  assert.equal('model' in custom.content.roleFile, false);
-  assert.equal('model_reasoning_effort' in custom.content.roleFile, false);
-
   const text = skill.content.files['SKILL.md'];
   const openaiYaml = await readFile(path.join(artifactSourcePath, 'agents', 'openai.yaml'), 'utf8');
   assert.equal('agents/openai.yaml' in skill.content.files, false);
@@ -216,11 +179,9 @@ async function testRenderedArtifactsAndSkillContract() {
   for (const heading of ['## Gate', '## 委派', '## 不变量', '## 等待与整合']) {
     assert.match(text, new RegExp(heading));
   }
-  // Static contract exception: Skill artifact 缺少权限边界、参数不可表达时 fail-closed 或敏感数据保护规则会允许不安全降级; behavior test is not suitable because 这些规则是模型消费的最终 artifact 安全合同，确定性 runner 无法证明模型行为.
+  // Static contract exception: Skill artifact 缺少权限边界或敏感数据保护规则会允许不安全降级; behavior test is not suitable because 这些规则是模型消费的最终 artifact 安全合同，确定性 runner 无法证明模型行为.
   assert.match(text, /只读默认为行为约束/);
   assert.match(text, /确认父 turn 的有效权限边界对子代理生效时，才承诺权限隔离/);
-  assert.match(text, /全部显式字段及其值受当前 schema 支持且可原样传递/);
-  assert.match(text, /不省略、替换或降级/);
   assert.match(text, /不发送密钥、个人数据、私有代码或用户材料原文/);
   for (const toolName of [
     'close_agent',
@@ -234,7 +195,22 @@ async function testRenderedArtifactsAndSkillContract() {
     assert.equal(text.includes(toolName), false);
   }
   assert.equal(text.includes('{{'), false);
+  assert.equal(text.includes('<!-- model-profiles -->'), false);
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  assert.deepEqual(readProfiles(text), Object.fromEntries(
+    exploreConfigKeys.map((key) => [key.replace('Profile', ''), manifest.config.fields[key].default]),
+  ));
   assert.match(openaiYaml, /allow_implicit_invocation:\s*true/);
+}
+
+function readProfiles(text) {
+  return Object.fromEntries(text.split('\n').filter((line) => /^\| (quick|standard|deep) \|/.test(line)).map((line) => {
+    const cells = line.split('|').map((cell) => cell.trim());
+    return [cells[1], {
+      model: JSON.parse(cells[3].slice(1, -1)),
+      reasoningEffort: JSON.parse(cells[4].slice(1, -1)),
+    }];
+  }));
 }
 
 async function testConfigSourcesAndManifestDefaults() {
@@ -252,27 +228,37 @@ async function testConfigSourcesAndManifestDefaults() {
     }),
   );
   const configuredSkill = findArtifact(configured, 'codex-explore-skill');
-  const configuredStandard = findArtifact(configured, 'codex-explore-standard-role');
-  const configuredQuick = findArtifact(configured, 'codex-explore-quick-role');
-  assert.equal(configuredStandard.content.roleFile.model, 'configured-standard');
-  assert.equal(configuredStandard.content.roleFile.model_reasoning_effort, 'max');
-  assert.equal(configuredQuick.content.roleFile.model, 'gpt-5.6-luna');
-  assert.equal(configuredQuick.content.roleFile.model_reasoning_effort, 'medium');
+  assert.deepEqual(readProfiles(configuredSkill.content.files['SKILL.md']).standard, {
+    model: 'configured-standard', reasoningEffort: 'max',
+  });
 
   const defaults = await runRenderer(
     createContext({
       config: {
         mode: 'artifact-render',
-        targetScope: 'project',
+        targetScope: 'user',
         values: {},
       },
     }),
   );
   const defaultSkill = findArtifact(defaults, 'codex-explore-skill');
-  const defaultStandard = findArtifact(defaults, 'codex-explore-standard-role');
-  assert.equal(configuredSkill.content.files['SKILL.md'], defaultSkill.content.files['SKILL.md']);
-  assert.equal(defaultStandard.content.roleFile.model, 'gpt-5.6-luna');
-  assert.equal(defaultStandard.content.roleFile.model_reasoning_effort, 'high');
+  assert.notEqual(configuredSkill.content.files['SKILL.md'], defaultSkill.content.files['SKILL.md']);
+  assert.deepEqual(
+    readProfiles(configuredSkill.content.files['SKILL.md']).quick,
+    readProfiles(defaultSkill.content.files['SKILL.md']).quick,
+  );
+  for (const id of ['codex-explore-role', 'codex-subagent-role', 'codex-subagent-guide-skill']) {
+    assert.deepEqual(findArtifact(configured, id), findArtifact(defaults, id));
+  }
+
+  const model = 'provider|alias`$&\nsecond-line';
+  const escaped = await runRenderer(createContext({
+    requestedArtifactIds: ['codex-explore-skill'],
+    config: { values: { standardProfile: { model, reasoningEffort: 'high' } } },
+  }));
+  const text = findArtifact(escaped, 'codex-explore-skill').content.files['SKILL.md'];
+  assert.deepEqual(readProfiles(text).standard, { model, reasoningEffort: 'high' });
+  assert.equal(text.includes('<!-- model-profiles -->'), false);
 }
 
 async function testDeliverySpecificRequests() {
@@ -300,18 +286,14 @@ async function testStaticManifestContract() {
   for (const key of exploreConfigKeys) {
     assert.ok(Object.hasOwn(manifest.config.fields, key), `Missing explore config key ${key}`);
   }
-  for (const role of expectedRoles.filter((entry) => entry.profileKey)) {
-    const profile = manifest.config.fields[role.profileKey];
+  for (const key of exploreConfigKeys) {
+    const profile = manifest.config.fields[key];
     // Source reuse is declared by the public manifest; value validation belongs to AW.
     const shape = manifest.config.definitions?.agentProfile ?? profile;
     if (manifest.config.definitions) assert.equal(profile.$ref, '#/config/definitions/agentProfile');
     assert.equal(shape.type, 'object');
     assert.equal(profile.required, true);
     assert.equal(shape.additionalProperties, false);
-    assert.deepEqual(profile.default, {
-      model: role.model,
-      reasoningEffort: role.effort,
-    });
     assert.deepEqual(Object.keys(shape.properties), ['model', 'reasoningEffort']);
     assert.deepEqual(shape.properties.model, {
       type: 'string',
@@ -404,13 +386,13 @@ async function testStaticManifestContract() {
       {
         id: 'codex-explore-skill',
         target: 'codex.skill',
-        refreshKeys: [],
+        refreshKeys: exploreConfigKeys,
         key: 'codex-explore',
       },
       ...expectedRoles.map((role) => ({
         id: role.id,
         target: 'codex.agentRole',
-        refreshKeys: role.profileKey ? [role.profileKey] : [],
+        refreshKeys: [],
         key: role.key,
       })),
     ],

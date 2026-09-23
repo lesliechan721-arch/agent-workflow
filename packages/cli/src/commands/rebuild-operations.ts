@@ -392,6 +392,7 @@ function validateDesiredTarget(target: DesiredTarget): void {
       component.identity.artifactKey,
       component.identity.platform,
       component.identity.scope,
+      component.kind,
     ].join('\0');
     if (identityKeys.has(identityKey)) {
       throw new Error(`Desired target has a duplicate owned component identity: ${component.identity.artifactKey}`);
