@@ -1815,7 +1815,7 @@ describe('TUI v4 router and ViewModel', () => {
     )[0]?.state).toBe('add');
   });
 
-  it('keeps a typed per-platform placement draft and delegates scope legality to the preview plan', async () => {
+  it('keeps a typed placement draft and asks only when editable platforms disagree', async () => {
     const previewDependencyPlacement = vi.fn(async (intent: Extract<import('../../src/tui/controller.js').OperationIntent, { kind: 'pluginWrite' }>): Promise<DependencyOperationPlan> => {
       const platforms = intent.platform === 'both' ? ['codex', 'claude'] as const : [intent.platform];
       const selected = (pluginId: string, platform: 'codex' | 'claude') =>
@@ -1880,7 +1880,7 @@ describe('TUI v4 router and ViewModel', () => {
     controller.beginInstallFlow('official/demo', 'project');
     controller.setInstallPlatforms(['codex', 'claude']);
 
-    await expect(controller.prepareInstallDependencyPlacement()).resolves.toBe(true);
+    await expect(controller.prepareInstallDependencyPlacement()).resolves.toBe(false);
     expect(controller.snapshot.installPlacementDraft?.targets).toEqual(expect.arrayContaining([
       expect.objectContaining({ pluginId: 'official/reused', platform: 'codex', scope: 'user', explanation: '复用健康的所有项目安装' }),
       expect.objectContaining({ pluginId: 'official/toolkit', platform: 'codex', scope: 'project' }),
@@ -1888,6 +1888,7 @@ describe('TUI v4 router and ViewModel', () => {
     ]));
 
     await controller.setDependencyScope('official/toolkit', 'codex', 'user');
+    await expect(controller.prepareInstallDependencyPlacement()).resolves.toBe(true);
     expect(controller.snapshot.installPlacementDraft?.targets).toEqual(expect.arrayContaining([
       expect.objectContaining({
         pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
@@ -2226,7 +2227,7 @@ describe('TUI v4 router and ViewModel', () => {
 
     expect(field).toMatchObject({
       type: 'object',
-      displayValue: '已设置 · 2 项',
+      displayValue: '已设置',
       draftValue: { region: 'west', token: 'secret' },
     });
     expect(field).not.toHaveProperty('matchedPresetId');
@@ -2300,7 +2301,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
     const field = page.groups[0]!.fields[0]!;
 
-    expect(field.fallbackDisplayValue).toBe('已设置 · 2 项');
+    expect(field.fallbackDisplayValue).toBe('已设置');
     expect(field.fallbackDisplayValue).not.toContain('Inherited service');
     expect(field.fallbackObjectChanges).toEqual(expect.arrayContaining([
       { property: 'region', before: 'east', after: 'west' },
@@ -2415,7 +2416,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
     const field = page.groups[0]!.fields[0]!;
 
-    expect(field.displayValue).toBe('已设置 · 1 项');
+    expect(field.displayValue).toBe('已设置');
     expect(field).not.toHaveProperty('matchedPresetId');
     expect(field.displayValue).not.toContain('Primary account');
     expect(field.displayValue).not.toContain('自定义');
@@ -3655,7 +3656,7 @@ describe('TUI Catalog freshness session overlay', () => {
 
     await controller.recheckCatalogSource('team');
     expect(probeCatalogFreshness.mock.calls.map(([sourceId]) => sourceId)).toEqual(['official', 'team']);
-    expect(probeCatalogFreshness.mock.calls.at(-1)?.[1]).toEqual({ fullValidation: false });
+    expect(probeCatalogFreshness.mock.calls.at(-1)?.[1]).toEqual({ fullValidation: true });
     controller.dispose();
   });
 
@@ -3823,6 +3824,57 @@ describe('TUI Catalog freshness session overlay', () => {
     await nextTurn();
     expect(probeCatalogFreshness).not.toHaveBeenCalled();
     expect(controller.getCatalogFreshness('official')?.state).toBe('fixed');
+    controller.dispose();
+  });
+
+  it('selects light or complete manual source checks from the current Active state', async () => {
+    const ready = {
+      payload: status(),
+      pluginSummaries: summaries(['official', 'demo']),
+      sourceDetails: [sourceDetail('official', { autoCheck: false })],
+      catalogGenerations: [{
+        sourceId: 'official', sourceType: 'git' as const, state: 'ready' as const,
+        active: {
+          catalogVersion: '1.0.0', channel: 'latest' as const,
+          requestedRef: 'catalog/latest', resolvedCommit: 'a'.repeat(40),
+          storeKey: 'official-active', digestShort: 'aaaaaaaa',
+        },
+      }],
+    };
+    const damaged = {
+      ...ready,
+      catalogGenerations: [{
+        ...ready.catalogGenerations[0]!, state: 'repairRequired' as const,
+      }],
+    };
+    const unknown = {
+      ...ready,
+      catalogGenerations: [{
+        ...ready.catalogGenerations[0]!, state: undefined,
+      }],
+    };
+    const probeCatalogFreshness = vi.fn(async (sourceId: string) => ({
+      sourceId, state: 'current' as const,
+    }));
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn()
+        .mockResolvedValueOnce(ready)
+        .mockResolvedValueOnce(damaged)
+        .mockResolvedValueOnce(unknown),
+      probeCatalogFreshness,
+    }));
+
+    await controller.load();
+    await controller.recheckCatalogSource('official');
+    expect(probeCatalogFreshness.mock.calls.at(-1)?.[1]).toEqual({ fullValidation: false });
+
+    await controller.reloadCatalog({ sourceId: 'official' });
+    await controller.recheckCatalogSource('official');
+    expect(probeCatalogFreshness.mock.calls.at(-1)?.[1]).toEqual({ fullValidation: true });
+
+    await controller.reloadCatalog({ sourceId: 'official' });
+    await controller.recheckCatalogSource('official');
+    expect(probeCatalogFreshness.mock.calls.at(-1)?.[1]).toEqual({ fullValidation: true });
     controller.dispose();
   });
 
@@ -4073,7 +4125,7 @@ describe('TUI Catalog freshness session overlay', () => {
     await controller.recheckCatalogSource('team');
     expect(probeCatalogFreshness).toHaveBeenCalledTimes(3);
     expect(probeCatalogFreshness.mock.calls.at(-1)?.slice(0, 2)).toEqual([
-      'team', { fullValidation: false },
+      'team', { fullValidation: true },
     ]);
     controller.dispose();
   });

@@ -58,13 +58,14 @@ export type TuiRoute =
   | { name: 'batchInstallScope' }
   | { name: 'batchPlacement' }
   | { name: 'pluginPreview'; pluginId: string }
+  | { name: 'portablePreparing'; pluginId: string }
   | { name: 'portableSkillSelect'; pluginId: string }
-  | { name: 'portableSkillSummary'; pluginId: string; skillName: string }
   | { name: 'portableDependencies'; pluginId: string }
   | { name: 'portableAgentMode'; pluginId: string }
   | { name: 'portableAgentInput'; pluginId: string }
   | { name: 'portableScope'; pluginId: string }
-  | { name: 'portableBlocker'; pluginId: string; code: PortableBlockerCode; diagnosticCode: string }
+  | { name: 'portableBlocker'; pluginId: string; code: PortableBlockerCode; diagnosticCode: string;
+      operationRecordId?: string }
   | {
       name: 'pluginDependencies';
       pluginId: string;
@@ -99,7 +100,6 @@ export type TuiRoute =
   | { name: 'pluginContent'; pluginId: string }
   | { name: 'pluginMore'; pluginId: string }
   | { name: 'platform'; pluginId: string; platform: PlatformName }
-  | { name: 'pluginAbout'; pluginId: string }
   | { name: 'pluginTechnical'; pluginId: string }
   | {
       name: 'configLayer';
@@ -112,6 +112,7 @@ export type TuiRoute =
       name: 'configFields';
       pluginId: string;
       layer: { scope: Scope | 'effective' };
+      view?: 'options' | 'values';
     }
   | {
       name: 'configFieldEditor';

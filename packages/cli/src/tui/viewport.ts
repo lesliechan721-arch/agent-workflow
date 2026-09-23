@@ -1,3 +1,5 @@
+import stringWidth from 'string-width';
+
 export interface RowViewport {
   offset: number;
   limit: number;
@@ -5,6 +7,28 @@ export interface RowViewport {
   hiddenAfter: number;
   position: number;
   total: number;
+}
+
+export function wrapDisplayText(value: string, columns: number): string[] {
+  const width = Math.max(1, Math.floor(Number.isFinite(columns) ? columns : 1));
+  const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  return value.split('\n').flatMap((sourceLine) => {
+    const lines: string[] = [];
+    let line = '';
+    let lineWidth = 0;
+    for (const { segment } of segmenter.segment(sourceLine)) {
+      const segmentWidth = stringWidth(segment);
+      if (line && lineWidth + segmentWidth > width) {
+        lines.push(line);
+        line = '';
+        lineWidth = 0;
+      }
+      line += segment;
+      lineWidth += segmentWidth;
+    }
+    if (line || lines.length === 0) lines.push(line);
+    return lines;
+  });
 }
 
 export function contentRowBudget(options: {

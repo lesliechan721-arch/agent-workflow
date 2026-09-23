@@ -33,9 +33,22 @@ export function InputDisplay(props: {
   value: string;
   columns: number;
   sensitive?: boolean;
+  cursor?: number;
   placeholder?: string;
 }): React.JSX.Element {
   const value = props.sensitive ? '•'.repeat(graphemes(props.value).length) : props.value;
+  if (props.cursor !== undefined && value) {
+    const parts = graphemes(value);
+    const cursor = Math.min(parts.length, Math.max(0, props.cursor));
+    const before = renderInputTail(parts.slice(0, cursor).join(''), props.columns);
+    const remaining = Math.max(0, props.columns - stringWidth(before) - 1);
+    let after = '';
+    for (const part of parts.slice(cursor)) {
+      if (stringWidth(after + part) > remaining) break;
+      after += part;
+    }
+    return <Text>{before}<Text color={tuiTheme.colors.accent}>▌</Text>{after}</Text>;
+  }
   const visible = renderInputTail(value || props.placeholder || '', props.columns);
   return <Text>{visible}<Text color={tuiTheme.colors.accent}>▌</Text></Text>;
 }

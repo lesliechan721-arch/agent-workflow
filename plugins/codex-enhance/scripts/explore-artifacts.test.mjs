@@ -288,19 +288,22 @@ async function testStaticManifestContract() {
   }
   for (const key of exploreConfigKeys) {
     const profile = manifest.config.fields[key];
-    assert.equal(profile.type, 'object');
+    // Source reuse is declared by the public manifest; value validation belongs to AW.
+    const shape = manifest.config.definitions?.agentProfile ?? profile;
+    if (manifest.config.definitions) assert.equal(profile.$ref, '#/config/definitions/agentProfile');
+    assert.equal(shape.type, 'object');
     assert.equal(profile.required, true);
-    assert.equal(profile.additionalProperties, false);
-    assert.deepEqual(Object.keys(profile.properties), ['model', 'reasoningEffort']);
-    assert.deepEqual(profile.properties.model, {
+    assert.equal(shape.additionalProperties, false);
+    assert.deepEqual(Object.keys(shape.properties), ['model', 'reasoningEffort']);
+    assert.deepEqual(shape.properties.model, {
       type: 'string',
       required: true,
       validation: { minLength: 1 },
     });
-    assert.equal(profile.properties.reasoningEffort.type, 'string');
-    assert.equal(profile.properties.reasoningEffort.required, true);
-    assert.equal(profile.properties.reasoningEffort.choices.allowCustom, false);
-    assert.deepEqual(profile.properties.reasoningEffort.choices.presets.map((preset) => preset.value), [
+    assert.equal(shape.properties.reasoningEffort.type, 'string');
+    assert.equal(shape.properties.reasoningEffort.required, true);
+    assert.equal(shape.properties.reasoningEffort.choices.allowCustom, false);
+    assert.deepEqual(shape.properties.reasoningEffort.choices.presets.map((preset) => preset.value), [
       'low',
       'medium',
       'high',
@@ -309,8 +312,8 @@ async function testStaticManifestContract() {
       'ultra',
     ]);
     assert.deepEqual(
-      profile.properties.reasoningEffort.choices.presets,
-      profile.properties.reasoningEffort.choices.presets.map(({ value }) => ({
+      shape.properties.reasoningEffort.choices.presets,
+      shape.properties.reasoningEffort.choices.presets.map(({ value }) => ({
         id: value,
         title: value,
         value,
@@ -327,10 +330,10 @@ async function testStaticManifestContract() {
     'advancedTaskProfile',
   ]) {
     assert.deepEqual(
-      manifest.config.fields[profileKey].properties.reasoningEffort.choices.presets.map(
+      (manifest.config.definitions?.agentProfile ?? manifest.config.fields[profileKey]).properties.reasoningEffort.choices.presets.map(
         (preset) => preset.value,
       ),
-      ['low', 'medium', 'high', 'xhigh', 'max'],
+      ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     );
   }
   assert.deepEqual(

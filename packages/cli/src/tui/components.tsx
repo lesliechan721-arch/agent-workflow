@@ -10,6 +10,7 @@ import {
 } from './diagnostics.js';
 import { resolveTuiSizePolicy, type TuiSizePolicy } from './layout.js';
 import { getTuiStatusColor, tuiTheme, type TuiStatus } from './theme.js';
+import { wrapDisplayText } from './viewport.js';
 
 export interface TuiSize {
   columns: number;
@@ -35,59 +36,6 @@ export function HelpBar(props: {
       <Text color={tuiTheme.colors.muted} wrap={props.compact ? 'wrap' : 'truncate-end'}>
         {props.children}
       </Text>
-    </Box>
-  );
-}
-
-export interface PinnedActionItem {
-  id: string;
-  label: ReactNode;
-  disabled?: boolean;
-}
-
-export function PinnedActionBar(props: {
-  actions: PinnedActionItem[];
-  active: boolean;
-  focus: number;
-  visibleCount?: number;
-}): React.JSX.Element {
-  const focus = Math.min(Math.max(0, props.focus), Math.max(0, props.actions.length - 1));
-  const visibleCount = Math.max(1, props.visibleCount ?? props.actions.length);
-  const offset = Math.min(
-    Math.max(0, props.actions.length - visibleCount),
-    Math.max(0, focus - visibleCount + 1),
-  );
-  const visibleActions = props.actions.slice(offset, offset + visibleCount);
-  return (
-    <Box
-      flexShrink={0}
-      backgroundColor={tuiTheme.colors.panelBackground}
-      paddingX={1}
-      overflow="hidden"
-    >
-      {offset > 0 ? <Text color={tuiTheme.colors.muted}>‹ </Text> : null}
-      {visibleActions.map((action, visibleIndex) => {
-        const index = offset + visibleIndex;
-        const focused = props.active && index === focus && !action.disabled;
-        return (
-          <Box
-            key={action.id}
-            marginRight={1}
-            backgroundColor={focused ? tuiTheme.colors.selectionBackground : undefined}
-          >
-            <Text
-              bold={focused}
-              color={action.disabled ? tuiTheme.colors.muted : focused ? tuiTheme.colors.accent : tuiTheme.colors.text}
-              wrap="truncate-end"
-            >
-              {focused ? '› ' : ''}[{action.label}]
-            </Text>
-          </Box>
-        );
-      })}
-      {offset + visibleActions.length < props.actions.length
-        ? <Text color={tuiTheme.colors.muted}>»</Text>
-        : null}
     </Box>
   );
 }
@@ -359,6 +307,9 @@ const diagnosticContextLabels = {
   field: '字段',
   storeEntry: 'Store 条目',
   compatibility: '兼容版本',
+  sourcePolicy: '版本策略',
+  freshness: '检查时间',
+  candidate: '待检查版本',
 } as const;
 
 interface DiagnosticDetailRow {
@@ -389,28 +340,6 @@ function diagnosticDetailRows(diagnostic: DiagnosticSummaryViewModel): Diagnosti
   ];
 }
 
-function displayWidthChunks(value: string, width: number): string[] {
-  const availableWidth = Math.max(1, Math.floor(Number.isFinite(width) ? width : 1));
-  return value.split('\n').flatMap((sourceLine) => {
-    if (sourceLine.length === 0) return [''];
-    const chunks: string[] = [];
-    let chunk = '';
-    let chunkWidth = 0;
-    for (const character of sourceLine) {
-      const characterWidth = stringWidth(character);
-      if (chunk && chunkWidth + characterWidth > availableWidth) {
-        chunks.push(chunk);
-        chunk = '';
-        chunkWidth = 0;
-      }
-      chunk += character;
-      chunkWidth += characterWidth;
-    }
-    if (chunk) chunks.push(chunk);
-    return chunks;
-  });
-}
-
 export function diagnosticDetailLines(
   diagnostic: DiagnosticSummaryViewModel,
   width: number,
@@ -419,7 +348,7 @@ export function diagnosticDetailLines(
   return diagnosticDetailRows(diagnostic).flatMap((row) => {
     const prefix = `${row.label}: `;
     const valueWidth = Math.max(1, lineWidth - stringWidth(prefix));
-    return displayWidthChunks(row.value, valueWidth).map((chunk) => `${prefix}${chunk}`);
+    return wrapDisplayText(row.value, valueWidth).map((chunk) => `${prefix}${chunk}`);
   });
 }
 
@@ -430,6 +359,7 @@ export function diagnosticDetailRowCount(diagnostic: DiagnosticSummaryViewModel)
 export function DiagnosticSummary(props: {
   diagnostic: DiagnosticSummaryViewModel;
   technical?: boolean;
+  columns?: number;
   compact?: boolean;
   offset?: number;
   limit?: number;
@@ -480,7 +410,7 @@ export function DiagnosticSummary(props: {
   if (!technical) {
     return <Callout status="muted" title="没有可公开的技术字段" compact />;
   }
-  const rows = diagnosticDetailRows(props.diagnostic);
+  const rows = diagnosticDetailLines(props.diagnostic, (props.columns ?? 80) - 6);
   const total = rows.length;
   const offset = Math.min(
     total,
@@ -495,14 +425,11 @@ export function DiagnosticSummary(props: {
   return <Box flexDirection="column">
     <Text color={tuiTheme.colors.muted}>下面的信息已脱敏，可用于排查或提交 issue。</Text>
     <TechnicalDetails label="脱敏诊断" compact>
-      {offset > 0 ? <StaticRow title={`↑ 前面还有 ${offset} 项`} status="muted" compact /> : null}
-      {visibleRows.map((field, index) => <StaticRow
-        key={`${field.label}:${offset + index}`}
-        title={field.label}
-        meta={field.value}
-        compact
-      />)}
-      {after > 0 ? <StaticRow title={`↓ 后面还有 ${after} 项`} status="muted" compact /> : null}
+      {offset > 0 ? <StaticRow title={`↑ 前面还有 ${offset} 行`} status="muted" compact /> : null}
+      {visibleRows.map((line, index) => <Box key={offset + index} paddingX={1}>
+        <Text>{line}</Text>
+      </Box>)}
+      {after > 0 ? <StaticRow title={`↓ 后面还有 ${after} 行`} status="muted" compact /> : null}
     </TechnicalDetails>
   </Box>;
 }
@@ -631,8 +558,8 @@ export function objectCardRowLayout(options: ObjectCardRowLayoutOptions): Object
   const cardWidth = Math.max(1, Math.floor(Number.isFinite(options.width) ? options.width : 1));
   const horizontalPadding = options.compact ? 0 : 2;
   const contentWidth = Math.max(1, cardWidth - 2 - horizontalPadding);
-  const descriptionLines = displayWidthChunks(options.description, contentWidth);
-  const metaLines = options.meta === undefined ? [] : displayWidthChunks(options.meta, contentWidth);
+  const descriptionLines = wrapDisplayText(options.description, contentWidth);
+  const metaLines = options.meta === undefined ? [] : wrapDisplayText(options.meta, contentWidth);
   return {
     descriptionLines,
     metaLines,

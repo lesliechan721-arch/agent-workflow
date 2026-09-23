@@ -386,12 +386,7 @@ describe('dependency graph v7', () => {
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
       await input(instance, 'd');
     }
-    for (let move = 0; move <= expectedPlacements.length
-      && !instance.lastFrame()?.includes('› 返回节点详情'); move += 1) {
-      await input(instance, '\u001b[B');
-    }
-    expect(instance.lastFrame()).toContain('› 返回节点详情');
-    await input(instance, '\r');
+    await input(instance, 'b');
     expect(controller.route).toMatchObject({
       name: 'pluginDependencyNode', nodePluginId: 'official/consumer',
     });
@@ -433,7 +428,7 @@ describe('dependency graph v7', () => {
         const frame = instance.lastFrame() ?? '';
         pages.push(frame);
         expect(frame.split('\n').length).toBeLessThanOrEqual(18);
-        expect(frame).toContain('p/n 查看当前位置详情');
+        expect(frame).toContain('p/n 阅读');
         for (const line of frame.split('\n')) {
           const match = /^\s*(consumer|dependency) · (\S+)\s*$/u.exec(line);
           if (!match || match[2]!.startsWith('platform=') || match[2]!.startsWith('project=')) continue;
@@ -566,14 +561,13 @@ describe('dependency graph v7', () => {
       '› 查看全部位置（1）',
       '› 以此节点查看关系',
       '› 阅读完整说明',
-      '› 返回关系图',
     ];
     for (const [index, expected] of expectedActions.entries()) {
       expect(instance.lastFrame()).toContain(expected);
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
       if (index < expectedActions.length - 1) await input(instance, '\u001b[B');
     }
-    await input(instance, '\u001b[A', '\r');
+    await input(instance, '\r');
     expect(controller.route).toMatchObject({ name: 'pluginDependencyNode', view: 'details' });
     const pages: string[] = [];
     for (let page = 0; page < 20; page += 1) {

@@ -45,7 +45,7 @@
 - live ownership 和实际平台组件是输出清理和 status 的唯一真值；Intent 只选择要取消的 desired root，不是 installed ledger。不得新增安装合同存储、第二套安装状态或持久依赖图。
 - Codex project cleanup 和 uninstall 对当前仓库的 `.agents/skills` 做单层 owner marker 扫描。扫描不依赖当前 Manifest 是否仍声明该 Skill，也不进入嵌套目录或其它项目；删除仍要求 source、plugin、platform 和 scope 的 owner identity 精确匹配。
 - 配置写入、生命周期和平台写入各自保留最小的本地恢复；它们不组成跨第三方系统的事务。
-- Config v2 只允许顶层 string 字段声明 `sensitive: true`，且该字段不得声明 default 或 choices。object、object child、KV additionalProperties child、number 和 boolean 都不得声明 sensitive。sensitive 值只允许写入 user scope；writer 拒绝 project scope，因此 TUI 隐藏 project sensitive 编辑入口不能替代安全边界。`aw config set` 拒绝用 argv `--value-json` 或 `--preset` 提交 sensitive 值；非交互或 JSON 模式必须用 `--value-stdin`，交互 TTY 可用隐藏输入。stdin 按 EOF 读取原始 UTF-8，不 trim。string value 与 object key 共用同一 validation 合同和 RE2-WASM Unicode 实现；声明 pattern 时必须同时声明 `maxLength`，pattern 最多 512 个 Unicode code point，`maxLength` 范围是 `0..4096`。匹配保持非锚定；作者需要整串匹配时必须显式使用 `^` 和 `$`。
+- Config v2 与 Definition v3 只允许顶层 string 字段声明 `sensitive: true`，且该字段不得声明 default 或 choices。object、object child、KV additionalProperties child、number 和 boolean 都不得声明 sensitive。sensitive 值只允许写入 user scope；writer 拒绝 project scope，因此 TUI 隐藏 project sensitive 编辑入口不能替代安全边界。`aw config set` 拒绝用 argv `--value-json` 或 `--preset` 提交 sensitive 值；非交互或 JSON 模式必须用 `--value-stdin`，交互 TTY 可用隐藏输入。stdin 按 EOF 读取原始 UTF-8，不 trim。string value 与 object key 共用同一 validation 合同和 RE2-WASM Unicode 实现；声明 pattern 时必须同时声明 `maxLength`，pattern 最多 512 个 Unicode code point，`maxLength` 范围是 `0..4096`。匹配保持非锚定；作者需要整串匹配时必须显式使用 `^` 和 `$`。
 - `aw-development-toolkit` 不在构建时绑定 CLI registry，也不分发 capability Markdown。已安装 Author 从当前 PATH 查询 `aw plugin capabilities`，因此旧 development plugin 可以使用较新的 CLI 能力合同。
 - `aw plugin remove <name> --workspace-root <root> --yes` 只删除 canonical `plugins/<name>` source root。Workspace 必须位于有有效 HEAD 的 Git worktree 中；目标必须存在于 HEAD，且当前目标 tree 的 inventory、文件 bytes 和 executable mode 必须与 HEAD 精确相同。命令拒绝目标内 tracked、staged、untracked、ignored、符号链接或额外节点，也拒绝仍由其它当前 manifest 依赖的目标。所有检查在删除前完成；缺少 `--yes` 不写入。成功不修改 Catalog version、不 commit、不 build、不 publish。删除 I/O 失败必须给出从已核验 HEAD 恢复目标的 Git 命令；命令不提供 force、backup、ledger 或补偿状态。
 
@@ -154,15 +154,15 @@ TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。普通 `
 
 `ReviewPreparing` 的公共 snapshot 只包含 operation id、kind、subject、当前安全 stage、状态及安全错误字段。原始 `OperationIntent`、config updates、preset、source path 或 URL 只保存在 controller 私有、按 operation id 索引的内存中，并在成功或取消时清理。Config ViewModel 和 controller 公共 snapshot 对 sensitive 顶层字段只投影状态，不包含 value、effective value、draft、default 或 choices 原文。
 
-TUI 保留首页，插件库合并 Catalog、安装目标和仅保留设置的对象，按全部、已安装、未安装、可更新、需要处理筛选。旧预览入口归一到同一插件详情；来源、搜索和批量选择只影响返回上下文。固定操作栏与卡片列表分别持有焦点，按钮与快捷键复用动作。详情直接提供常用管理，依赖页统一展示上下游并保留关系证据差异。内容页只展示指定插件的目录版本组件清单，按需读取、会话内复用，状态重读时失效；启动不扫描全部内容，也不把目录清单视为旧安装内容。
+TUI 保留首页，插件库合并 Catalog、安装目标和仅保留设置的对象，按全部、已安装、未安装、可更新、需要处理筛选。旧预览入口归一到同一插件详情；来源、搜索和批量选择只影响返回上下文。插件行与下方业务动作共用纵向焦点，按钮与快捷键复用动作。详情直接提供常用管理，依赖页统一展示上下游并保留关系证据差异。内容页只展示指定插件的目录版本组件清单，按需读取、会话内复用，状态重读时失效；启动不扫描全部内容，也不把目录清单视为旧安装内容。
 
 首页用规范化项目根、真实 project Intent roots 和 Status 的精确 `pluginId + platform + project scope` 计算项目恢复提醒。已确认缺失或不完整的目标可进入精确同步；来源阻断与无法确认目标分别显示。`unobserved`、读取错误和聚合后的 user root 不能解释为项目缺失，已由可用 user 安装满足并投影为 `ready` 的项目目标也不重复提示。提醒默认选择稍后处理，不授权写入；晚到结果不改变当前路由或焦点。SessionHost 只在本进程按 `projectRoot + pending signature` 去重，H 重建 controller 后保留该决定，不写持久配置。成功重读清除提醒；partial 保留 Result 和失败目标。
 
 提醒同步使用 `currentProjectIntentTargets` 保存明确选择的 project root 平台子集。Review evidence 同时绑定完整 project Intent digest；执行在现有 `AW_HOME` mutation lock 内、任何组写入前重读完整声明。root 新增、删除、平台或 dependency scope override 变化都使 Review stale。前序组可能合法提交 Intent，因此只在批次首次写入前比较原完整声明，后续组继续使用现有 batch-compatible plan 检查。项目批次的失败重试仍使用 `currentProjectIntentTargets`，不能降级为普通 targets。提醒检查和导航不启用来源、不更新插件，也不执行平台写入。
 
-插件安装主链固定为：先选择目标平台，再选择每个目标的合法 scope，只在计划含可配置依赖时编辑 dependency placement，然后进入 `ReviewPreparing` 和 Review。平台页按 Codex、Claude Code、通用 Agent Skills 和“确定所选平台”的顺序显示；Codex 与 Claude Code 可以组合，通用 Agent Skills 进入独立流程，不能与原生目标组合。Enter、固定按钮和 `c` 复用同一个确定动作。所选原生平台没有共同 scope 时，用户必须分别选择每个平台的合法 `(platform, scope)` 目标；不能恢复成一平台一个 scope 的限制。根插件 scope 不在依赖页重复编辑。依赖草稿按 `(pluginId, platform)` 保存 project 或 user 选择，并显示默认 project、健康 user 复用和 fixed-point 提升原因；user 选择必须说明它会影响其它项目或用户环境。返回 Review 前的页面时保留适用草稿；根 scope 或平台集合变化后确定性重算，并删除不再适用的 key。键盘合同继续使用当前焦点、Enter、Esc 和显式确认；原生平台使用 Enter 切换选择，通用 Skills 的长列表使用 Space 勾选并用 Enter 进入摘要。
+插件安装主链固定为：先选择目标平台，再选择每个目标的合法 scope，只在同一可编辑依赖的跨平台使用范围存在实际分歧时要求决定 dependency placement，然后进入 `ReviewPreparing` 和 Review。平台页按 Codex、Claude Code、通用 Agent Skills 和“确定所选平台”的顺序显示；Codex 与 Claude Code 可以组合，通用 Agent Skills 进入独立流程，不能与原生目标组合。原生平台的 Enter 与 Space 都切换勾选；可见继续动作与 `c` 复用同一个确定动作。所选原生平台没有共同 scope 时，用户必须分别选择每个平台的合法 `(platform, scope)` 目标；不能恢复成一平台一个 scope 的限制。根插件 scope 不在依赖页重复编辑。依赖草稿按 `(pluginId, platform)` 保存 project 或 user 选择，并显示默认 project、健康 user 复用和 fixed-point 提升原因；user 选择必须说明它会影响其它项目或用户环境。返回 Review 前的页面时保留适用草稿；根 scope 或平台集合变化后确定性重算，并删除不再适用的 key。键盘合同继续使用当前焦点、Enter、Esc 和显式确认；原生平台与通用 Skills 列表均使用 Enter/Space 切换选择，`c` 才继续。通用 Skills 的行内摘要替代单 Skill 详情路由。首次 Portable 准备先显示只读等待页；Esc 取消请求并恢复原生平台草稿，迟到结果不能推进选择页或建立 Review。
 
-TUI 初始 load 不访问网络，也不等待 freshness 检查。进入 ready 后，每个 session 只为 `autoCheck` 开启的 source 自动检查一次：primary 先开始，其它 source 最多并发两个。关闭 `autoCheck` 的来源只在用户显式检查时 probe。自动检查和“重新检查”使用轻量模式：健康 Git Active 先只解析远端 ref；ref 未变化时不 fetch，固定 commit 标记为 fixed 且不联网；ref 变化时才 fetch 并执行完整 transport validation。来源详情的“完整验证”强制完整 resolve。没有 Active、Active 损坏、repair、replaceDamaged 或 state recovery 也始终完整验证。Path source 在本地完整验证候选。检查结果只进入 session-private overlay，不修改 Status v8、Active、固定的 session Catalog 子集、插件列表或 target revision。远端失败只显示 `checkFailed`，健康 Active 仍可浏览。reload 不重复全量检查；来源详情的检查只处理目标 source。退出会取消所有 probe，session、token 和 source fingerprint 共同拒绝迟到结果。
+TUI 初始 load 不访问网络，也不等待 freshness 检查。进入 ready 后，每个 session 只为 `autoCheck` 开启的 source 自动检查一次：primary 先开始，其它 source 最多并发两个。关闭 `autoCheck` 的来源只在用户显式检查时 probe。自动检查和显式“检查来源”按已验证的 Active 状态选择验证深度：健康 Git Active 先只解析远端 ref；ref 未变化时不 fetch，固定 commit 标记为 fixed 且不联网；ref 变化时才 fetch 并执行完整 transport validation。来源详情只保留一个检查入口，不要求用户选择轻量或完整验证。没有 Active、Active 损坏、repair、replaceDamaged 或 state recovery 也始终完整验证。Path source 在本地完整验证候选。检查结果只进入 session-private overlay，不修改 Status v8、Active、固定的 session Catalog 子集、插件列表或 target revision。远端失败只显示 `checkFailed`，健康 Active 仍可浏览。reload 不重复全量检查；来源详情的检查只处理目标 source。退出会取消所有 probe，session、token 和 source fingerprint 共同拒绝迟到结果。
 
 用户从 `configUnavailable` 明确进入嵌套 source recovery 时，config 草稿保持只读，只允许该恢复流程建立新的来源 Review；其它 Active 切换和 reload 仍受草稿门禁阻止。
 
@@ -251,7 +251,7 @@ Status v8 对已检查的直接依赖继续在所属范围的 `components` 中�
 
 TUI placement 在 ownership health 之外投影 collision blocker，但不能把 foreign-only collision 计为 installed。foreign-only placement 使用 `blocked`；`present` 或 `partial` placement 保留 installed ownership health，并同时保留 collision blocker。每个平台 placement 独立判断：混合平台仍可进入添加并只列可用 target；所有平台都阻断时，Preview 和平台菜单先提供“查看输出冲突”，且不显示添加、升级或重新安装。installed collision 仍提供安全移除入口，删除只处理 AW-owned 内容并保留 foreign 内容。
 
-TUI 插件清单组合当前 Catalog summary、status target 和可识别的 namespaced config v4 store identity。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，只在“我的插件”和问题页保留恢复入口，不出现在“添加插件”清单中。“添加插件”只列出当前 Catalog summary 中的插件；本地残留和已保存设置不代表可供安装。只有设置存储仍存在时，TUI 将条目标为已保存设置且来源不可用，只提供查看和精确 layer reset；它不伪造可安装的 Catalog plugin。普通 `cleanup` Review 说明会在锁内复核当前 Intent 与 live evidence 后取消所选 root Intent，再尽力清理所选目标中 AW-owned 的 live activation 和 extension；它保留 plugin config、`dependencyScopeOverrides`、foreign 内容和 shared native payload，不运行 preApply，也不读取 dependent 图，并显示不含 `--force` 的等价命令。受限高级 force 遵守上述 exact shallow 候选门禁。成功后是否从清单消失只由重新读取的 Intent、Catalog、live ownership 和可识别设置存储决定。
+TUI 插件清单组合当前 Catalog summary、status target 和可识别的 namespaced config v4 store identity。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，在统一插件库和问题页保留恢复入口，但不能作为可新增安装的候选。新增安装只接受当前 Catalog summary 中符合资格的插件；本地残留和已保存设置不代表可供安装。只有设置存储仍存在时，TUI 将条目标为已保存设置且来源不可用，只提供查看和精确 layer reset；它不伪造可安装的 Catalog plugin。普通 `cleanup` Review 说明会在锁内复核当前 Intent 与 live evidence 后取消所选 root Intent，再尽力清理所选目标中 AW-owned 的 live activation 和 extension；它保留 plugin config、`dependencyScopeOverrides`、foreign 内容和 shared native payload，不运行 preApply，也不读取 dependent 图，并显示不含 `--force` 的等价命令。受限高级 force 遵守上述 exact shallow 候选门禁。成功后是否从清单消失只由重新读取的 Intent、Catalog、live ownership 和可识别设置存储决定。
 
 TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | error`、稳定 code 和可读 message。选择顺序为：来源移除、artifact collision、来源不可用、依赖图无效、依赖目标不支持、依赖未就绪或缺失、scope 冲突、必填或无效配置、安装不完整、通用诊断。问题中心按 `sourceRemoved`、`artifactCollision`、`sourceUnavailable`、`dependency`、`scope`、`config`、`installation`、`diagnostic` 稳定分组和排序，并渲染真实分组标题和每组数量。Root Cause 只在 TUI 本地复用公开 `rootIssueId` 和 `rootIssueCode` 聚合，不扩展 Status schema；投影明确记录 root entity、affected targets 和 `direct | consumer` 关系。direct partial 或 error 使用 root code、root plugin entity、platform 和 scope 形成 canonical key，并与同 entity、同 root code 的 dependency evidence 合并。direct root 永远优先；过滤结果没有 direct target 时，从 dependency evidence 稳定合成 root，不能选择任意 consumer。payload target 顺序不影响结果。 问题合并保留各 affected target 的合法恢复动作，并按动作、插件、平台和 scope 去重。desired consumer 使用自身 sync/reinstall 的完整依赖计划；无 desired consumer 保留自身 cleanup，不因依赖提示自动补装或新增 Intent。插件处理建议同时匹配问题主体、root entity 和 affected targets；单个问题直接进入详情，多个问题供用户选择。依赖跳转按插件、平台和 scope 精确匹配，缺少独立依赖问题时保留当前依赖证据和可用恢复动作。
 
@@ -262,6 +262,12 @@ TUI 的 `PluginUpdateProjection` 把 runtime 的 target revision 与当前 sessi
 TUI 依赖关系区分三类数据。Catalog declaration 说明插件声明需要什么；`availablePlacementReferences` 说明本次 Status v8 检查中，声明边、依赖 `ready` 状态和 consumer 当前现场位置可以同时匹配；历史 applied binding 则需要证明某次安装已把该边应用到该位置。历史 binding 尚未实现，因此不会填充 `placementReferences`，也不会把可用关系称为实际调用或已确认安装关系。`availablePlacementReferences` 只是 TUI 内部投影，不新增 Status JSON、I/O、持久记录、锁或现场扫描。图的证据分类不放宽锁内写入与依赖删除保护。
 
 Codex native refresh key 是 user-only。遗留 project override 保留在 store，但不参与 effective value。Status v8 使用非阻断 `configLayerUnsupported` warning 提示用户删除。TUI 禁止在 project 层设置该 key，只允许删除当前 project store 中确实存在的旧值。
+
+Config Definition v3 在顶层 Manifest v3 的 `config` 中用 `schemaVersion: 3` 单独声明。它支持最多 64 个本地 `definitions`、256 个顶层字段和 8 条连续引用边；对象属性中的引用也计入引用链，内联对象不增加引用层数。引用只允许 `#/config/definitions/Name`，覆盖项限于 title、description、default 和 required；未使用的定义也必须有效。编译后不含 definitions 或 `$ref`，保留配置版本和 presentation 元数据，继续使用同一字段和值校验器。旧无版本 Config v2 继续读取，不追加 v3 的字段数量限制；类型仍限于标量或一层标量对象。
+
+`presentation.summaries` 声明 join 摘要，`fieldViews` 将摘要绑定到固定属性对象。每段只读本对象已声明且实际存在的 own scalar property；路径为单个 JSON Pointer token，支持 `~0`/`~1`，不沿原型链或读取外部数据。raw 显示实际标量，choiceTitle 可使用匹配的 choices 标题，缺失属性使用明确占位。最多 4 段，separator 最多 8 个 Unicode code point，path 最多 128 个字符；默认摘要最多 256 个 Unicode code point。摘要省略实际属性或超长时标记不完整，完整安全原值仍可读。摘要不参与值校验、dirty、预设匹配或 whole-object overwrite；敏感与无效状态先于摘要处理，终端控制字符在显示前移除。
+
+Definition v3 通过 `aw.plugin-config.v3` 声明读取要求，配置摘要另需 `aw.plugin-config-summary.v1`。规范化 bundle 保留新合同，Catalog index 只传播 requirements 和既有摘要，不复制配置定义。先提供支持这些能力的 CLI，再分发新插件；旧读取器须明确拒绝不支持的合同。配置 schema identity 覆盖完整定义及呈现元数据，因此元数据改变也使旧 Review 证据失效。Store v4 继续只保存原值，不存引用或摘要，不需要迁移。
 
 配置按 manifest default、user、project 合并。user store 位于 `AW_HOME`，project store 位于项目 `.agent-workflows/plugin-config/`；两者都使用 namespaced schemaVersion 4 envelope，并通过原子替换写入。user binding 严格绑定当前 source identity。project binding 只绑定从已验证 Active 或候选证据明确传入的 Catalog logical identity，不绑定 Git URL、SSH/HTTPS transport、本地 path 或 source identity；因此同一 source ID 和 logical identity 在 transport 改变后仍可共享读取。缺少 logical identity 证据时 project 读写 fail closed，不从 URL 或 path 推导。project 写入在 Review 和现有 AW_HOME mutation lock 内的最终提交前，以项目根相对 path 运行 `git check-ignore -q`：退出码 `0` 以 `projectConfigIgnored` 阻止写入且不改 store，`1`（包括已跟踪文件和有效 `!` 例外）允许写入，其它结果允许写入并产生 `projectConfigShareabilityUnverified` warning。只有已确认 ignore 后才运行 `-v` 读取解释；解释失败不推翻 ignore，且检查不使用 `--no-index`。Config Mutation Receipt v7 与 TUI 的安全 Review/结果投影显示该 warning。reset 不经过 Git visibility 门禁。
 
@@ -277,11 +283,11 @@ user scope 变更命中 `codex-native` target 的 `refreshKeys`，且 `--apply` 
 
 TUI 把结构损坏的 store、Catalog/schema 不可用和字段覆盖无效分开处理。结构损坏页只显示 layer、脱敏 target 摘要和稳定 code，并只允许整层 reset 或返回；qualified plugin ID 和 scope 可直接建立 reset Review，不要求 Catalog 或 schema 可用。Catalog/schema 不可用时不打开字段编辑器；可确定设置层目标时仍可整层 reset。用户可从该页进入嵌套来源恢复；完成后返回原 plugin、layer、group 和 field 锚点，重新读取 schema 并重新校验父草稿。消失或变为无效的字段必须显式显示并阻止保存，直到用户放弃该项草稿；旧 Review ticket、evidence 和确认不能复用，也不能自动提交。字段覆盖无效时继续提供字段修改、unset 和整层 reset，并只把低层脱敏值显示为“删除后恢复”的解释，不把它投影为可运行 effective。配置已提交但 apply 失败的结果页明确保留设置，并可通过新的 Review 重新采集 evidence 后调用现有 runtime replay；`invalidConfig` 结果只返回设置修复，不提供直接 retry apply。reset 结果页显示四种 receipt disposition，quarantine 仍只显示 basename。
 
-控制台的插件设置入口先显示合并后的实际配置和值来源。用户选择修改后，再选择 user 或 project 写入层。编辑器以单个插件和单个写入层拥有草稿，并在字段旁显示当前有效值。对象字段支持逐个编辑子属性，但保存时写入完整对象。配置持久化、Review 和执行只作用于所选写入层。
+控制台设置总览显示实际或拟有效值，来源和待保存状态单独显示。选择新旧字段都直接编辑值，再选择合法的 user 或 project 目标并回到原分组；不同字段或同字段的不同目标可同时保留草稿。对象属性编辑以完整对象候选为单位，保存时整体覆盖，不深合并。个人草稿被项目值覆盖时，主值仍显示项目有效值，并说明个人默认待修改；无效高层值不会自动回退。字段 unset 在编辑器可达，整层 reset 位于设置选项，二者仍经过草稿与 Review。
 
-控制台搜索把 query 与输入焦点分开；退出输入后 query 继续参与来源和安装状态筛选。所有字符输入显示静态光标，并按 grapheme cluster 和终端显示宽度保留输入尾部。当前设置层已有字段值时，字段动作先说明当前值、实际来源和删除后的继承结果；字段删除和整层删除都只进入草稿与 Review。Config Review preparation 复用本次 TUI session 的 Active snapshot、目标 fingerprint、Catalog operation context 和所选 config store digest，不重新运行完整 status 或访问 Catalog remote；需要 apply 时只读解析 dependency preApply 范围，并显示每个脚本 plugin 的身份和目标范围。执行只授权 Review 中以 source identity、platform 和 scope 绑定的脚本范围；空范围不提供通用脚本授权。user 变更可重新应用当前目录中已安装的 user 与 project 目标；project 变更只重新应用当前 project 目标。Review、stale fingerprint 和实际 writer 使用同一目标集合。
+控制台搜索把 query 与输入焦点分开；退出输入后 query 继续参与来源和安装状态筛选。所有字符输入显示静态光标，并按 grapheme cluster 和终端显示宽度保留输入尾部。数字输入在解析前拒绝空白，空字符串按显式 set 保存；对象子属性与普通数字共用解析语义。统一值呈现显示实际属性值，摘要只用于显示；完整对象用于dirty、预设匹配及保存差异。保存汇总保留每个字段、目标和完整安全前后值，窄屏可继续阅读全部变更。Config Review preparation 复用本次 TUI session 的 Active snapshot、目标 fingerprint、Catalog operation context 和所选 config store digest，不重新运行完整 status 或访问 Catalog remote；需要 apply 时只读解析 dependency preApply 范围，并显示每个脚本 plugin 的身份和目标范围。执行只授权 Review 中以 source identity、platform 和 scope 绑定的脚本范围；空范围不提供通用脚本授权。user 变更可重新应用当前目录中已安装的 user 与 project 目标；project 变更只重新应用当前 project 目标。Review、stale fingerprint 和实际 writer 使用同一目标集合。
 
-插件列表的工具行和插件行使用同一行序列完成渲染、焦点恢复、筛选和来源切换。搜索结果保留可聚焦的“选择多个当前结果”工具行。空列表分别说明全局没有安装、当前来源没有安装、query 没有匹配或更新筛选为空，并提供清除 query、查看全部来源或恢复完整筛选的对应动作。
+插件库统一显示目录、安装和仅保留配置的插件，以真实 pluginId 区分来源中的同名对象。`/` 在当前页输入查询，Enter 或 Esc 结束输入并保留查询；`f` 原位循环全部、已安装、未安装、可更新和需要处理五种筛选，非输入态的左右键切换来源。这些操作不增加浏览历史或清除选择。`m` 原位进入多选，Space 勾选、Enter 查看详情，返回后恢复查询、来源、筛选、焦点和选择。空结果仍可原位修改查询及筛选。
 
 Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层仍只有 `cliChannel | explicit`。官方来源的下载方式从两个既定 HTTPS/SSH URL 派生，局部选择只修改 URL 草稿，通过 source mutation Review 提交；不新增持久 transport 字段。来源 ID 为 official 但 URL 为自定义地址时仍保留地址编辑，不静默替换镜像。Catalog logical identity 继续只来自 snapshot 的 Workspace identity，不修改 live owner identity。
 
@@ -301,13 +307,17 @@ TUI 批量写入支持 install、sync、reinstall、uninstall 和普通 cleanup�
 
 每个可执行分组分别绑定其 `operationPlan.planFingerprint`。锁内首次复核按去除全局 Intent digest 的分组计划语义比较；前序分组完成后，后续分组重新预览，只忽略已完成 target 和对应 Intent digest 的预期变化，再把当前完整 fingerprint 交给 typed writer。没有 operation plan 的预览失败分组也进入同一 Review，但标记为不可执行；确认固定保留已审核的失败结果。即使该来源在确认后恢复，也不能重新求值后开始写入，且不能阻止其它已审核分组继续。部分失败后的 retry 只从能恢复精确 `(pluginId, platform, scope)` 的失败 requested target，或失败 dependency 的 `requiredBy` 根计算新的 selected targets；无法细分到精确 target 的失败分组不提供重试。retry 必须重新读取 status、Intent、Catalog 和依赖，建立新的 preparation、evidence、fingerprint 和 Review ticket，不能复用旧计划。
 
-来源列表的“检查全部”是显式只读 freshness 检查，包含关闭自动检查的来源，同时最多检查两个来源。它不下载、启用或切换 Active Catalog。
+来源列表的“检查全部”包含关闭自动检查的来源，同时最多检查两个来源。页面显示正在处理的来源和各自结果，不提供虚构百分比。必要时可获取和验证候选内容，结果保留在 session overlay；检查不启用或切换 Active Catalog。
 
 ### TUI 导航流程
 
 普通消费任务、恢复入口和明确保留的 CLI 范围由 [CLI/TUI 能力覆盖](tui-capability-coverage.md) 记录。新增能力必须同步入口或缺口理由；作者工作流与机器接口分别说明，不以“高级排障”代替覆盖决定。
 
+首页只有插件、需要处理、插件来源三个业务入口；`?` 打开临时帮助层，关闭后恢复原焦点。页面内容与下方业务动作使用同一纵向焦点序列，不需要 Tab 切换区域。普通返回使用 Esc，风险取消和结果恢复仍有明确动作。长列表的 `a` 在当前对象与实际下方动作之间往返，只改变焦点和视口。输入与弹层独占其按键，可见动作与业务快捷键调用同一 handler；后台状态更新不把已聚焦的下方动作强制拉回列表对象。
+
 操作 Review 先从执行计划分别投影用户汇总和技术详情，再独立分页；数据量不改变默认信息边界。技术分组中的共享、删除和脚本风险仍须在用户汇总中说明。完整汇总保留在页面，只有既有 `requiresConfirmation` 要求额外授权时才打开风险确认层，默认选择返回检查。确认层绑定当前 Review ticket，不建立另一套授权；它独占输入，取消保留页面上下文，失效或过期的 ticket 不可执行。风险内容超出空间时可分页阅读，低于最低终端尺寸不接受写入确认。
+
+插件详情只显示一份用途、版本、来源与平台状态，常用动作直接可达；更多操作保留平台维护、来源和技术诊断。普通 About 路由已移除。长用途和平台说明通过当前详情内的完整阅读视图按显示行分页；内容清单使用同页纵向滚动，并区分目录版本与已知安装版本。批量和任务 Review 的插件摘要来自已确认的结构化目标与版本证据，未知版本明确显示未知，不从文案或当前目录版本推断。结果先列插件结论，再列位置和所需插件；独立位置行保留所属插件身份，完整失败节点及精确重试仍可达。
 
 TUI 浏览历史的每一帧有会话内稳定 ID。安装、插件维护、配置、来源恢复和 Portable 安装流程记录自己的 flow ID、父 flow、稳定起点帧和返回目标。Flow 只管理导航归属和内存草稿引用；它不保存执行计划，不替代 Review ticket，也不是持久状态。
 
@@ -338,7 +348,7 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 
 技术层只接受白名单结构字段：安全错误 code、可选 stage、sourceId、requestedRef、resolvedCommit、lastSync 证据，以及有限的 platform、scope、plugin、dependency、field、freshness 或 compatibility context。技术层在显示前再次执行通用凭据脱敏、URL userinfo 和敏感 query 清理、已知 home、cwd、临时目录和来源路径替换，并截断文本。任意 native stderr、未知 `Error.cause`、内部绝对路径、digest、credential 或未证明安全的 status message 不进入诊断 ViewModel；不能证明 cause 安全时省略 cause，只保留 code、stage 和白名单 context。
 
-操作结果诊断在 CLI/runtime 服务边界抽取可信 code、stage、target、exitCode 和已知 cause，再进入 TUI 私有投影；未知异常正文、任意 stderr 和未知 cause 不进入公共 snapshot。结果分别记录配置提交、AW 写入、preApply 外部影响和最终复核，配置提交后的 apply/status 失败仍显示已保存；preApply 开始后失败时，本目标 AW 写入尚未开始，但外部影响只能标为可能存在。SessionHost 持有最多 20 条安全内存记录并跨会话重载复用，记录 ID 绑定 session epoch 和 operation ID；公共 snapshot 只包含小摘要和记录 ID。单次诊断正文最多 256 KiB 或 1000 行，截断必须明确标记。安全报告先预览，再由用户显式保存到本地唯一文件；不自动上传，也不建立持久诊断状态或改变 Receipt、Status JSON schema。
+操作结果诊断在 CLI/runtime 服务边界抽取可信 code、stage、target、exitCode 和已知 cause，再进入 TUI 私有投影；未知异常正文、任意 stderr 和未知 cause 不进入公共 snapshot。结果分别记录配置提交、AW 写入、preApply 外部影响和最终复核，配置提交后的 apply/status 失败仍显示已保存；preApply 开始后失败时，本目标 AW 写入尚未开始，但外部影响只能标为可能存在。SessionHost 持有最多 20 条安全内存记录并跨会话重载复用，记录 ID 绑定 session epoch 和 operation ID；公共 snapshot 只包含小摘要和记录 ID。单次诊断正文最多 256 KiB 或 1000 行，截断必须明确标记。完整正文与短摘要共用脱敏规则，但不先按短摘要的 240 字符限额删除尾部；详情、技术信息和报告按终端显示宽度换行，再按显示行分页，CJK 和长行尾部仍可阅读。安全报告先预览，再由用户显式保存到本地唯一文件；不自动上传，也不建立持久诊断状态或改变 Receipt、Status JSON schema。
 
 ## Platform Boundaries
 

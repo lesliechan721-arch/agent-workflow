@@ -180,8 +180,8 @@ describe('TUI plugin write task', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn();
 
-    expect(instance.lastFrame()).toContain('[更新 1 个]');
-    await write(instance, '\t');
+    expect(instance.lastFrame()).toContain('更新 1 个');
+    await focusAction(instance, '更新 1 个');
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
 
@@ -206,7 +206,7 @@ describe('TUI plugin write task', () => {
       state: 'blocked', code: 'reviewTicketInvalid',
     });
 
-    await focusAction(instance, '查看确认（1）');
+    await focusAction(instance, '继续（1） [c]');
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
 
@@ -220,8 +220,9 @@ describe('TUI plugin write task', () => {
       returnRoute: { name: 'pluginWriteTask', batchOrigin: { owner: 'batch-write' } },
     });
 
-    await focusAction(instance, '完成，返回我的插件');
-    await write(instance, '\r');
+    expect(instance.lastFrame()).not.toContain('完成，返回我的插件');
+    await vi.waitFor(() => expect(value.hasSessionDraft).toBe(false));
+    await write(instance, 'b');
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
     expect(value.snapshot.router.currentFlowId).toBeUndefined();
 
@@ -455,7 +456,7 @@ describe('TUI plugin write task', () => {
     expect(value.snapshot.result?.state === 'partial'
       ? value.snapshot.result.summary.task : undefined).not.toHaveProperty('retryTargets');
     const frame = instance.lastFrame() ?? '';
-    expect(frame).toContain('插件恢复只完成了一部分');
+    expect(frame).toContain('部分完成');
     expect(frame).toContain('1 个目标需要决定');
     expect(frame).toContain('需要选择手动处理方式');
     expect(frame).toContain('返回任务处理 1 个需决定项');
@@ -642,8 +643,9 @@ describe('TUI plugin write task', () => {
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
-    expect(instance.lastFrame()).toContain('返回恢复任务');
-    await write(instance, '\r');
+    await nextTurn();
+    expect(instance.lastFrame()).not.toContain('返回恢复任务');
+    await write(instance, 'b');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, 'b');
     expect(value.snapshot.router.current.route).toMatchObject({
@@ -775,9 +777,10 @@ describe('TUI plugin write task', () => {
     await nextTurn();
 
     await write(instance, 'm');
-    await write(instance, 'a');
+    await write(instance, ' ');
+    expect(instance.lastFrame()).toContain('已选 1');
     await write(instance, 'c');
-    await write(instance, '\u001b[B');
+    await focusAction(instance, '恢复所选中的 1 个插件');
     await write(instance, '\r');
     const outerTask = value.snapshot.router.current.route;
     expect(outerTask).toMatchObject({
@@ -820,7 +823,8 @@ describe('TUI plugin write task', () => {
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
     await vi.waitFor(() => expect(value.hasSessionDraft).toBe(false));
     expect(value.snapshot.router.currentFlowId).toBeUndefined();
-    await write(instance, '\r');
+    expect(instance.lastFrame()).not.toContain('完成，返回我的插件');
+    await write(instance, 'b');
     await nextTurn();
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
     expect(value.hasSessionDraft).toBe(false);
