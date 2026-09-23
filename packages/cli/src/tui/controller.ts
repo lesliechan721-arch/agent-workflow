@@ -204,6 +204,7 @@ export function pluginWriteBatchTargets(
 
 export interface PluginWriteBatchIntent {
   kind: 'pluginWriteBatch';
+  dependencyScopeOverrides?: DependencyScopeOverride[];
   action: BatchPluginWriteAction;
   selection: PluginWriteBatchSelection;
   platform: PlatformName | 'both';
@@ -1015,6 +1016,7 @@ export interface TuiControllerSnapshot {
   activeReview?: OperationReviewModel;
   reviewPreparation?: ReviewPreparationSnapshot;
   result?: OperationExecuteResult;
+  canResumeInstallDraft?: boolean;
   operationHistorySummaries: OperationHistorySummary[];
   portableResultSkills?: string[];
   loadError?: { code: string; message: string };
@@ -1037,10 +1039,6 @@ export interface TuiControllerSnapshot {
     code: string;
     message: string;
   };
-}
-
-interface InstallPlacementDraftState extends InstallPlacementDraftViewModel {
-  plan?: ReconcileOperationPlan;
 }
 
 interface ReviewTicket {
@@ -1668,8 +1666,8 @@ export class TuiController {
   #portableRequestToken = 0;
   #portableRequestAbort?: AbortController;
   #portablePending?: { key: string; promise: Promise<unknown> };
-  #installPlacementDraft?: InstallPlacementDraftState;
-  #recoverableInstallPlacementDraft?: InstallPlacementDraftState;
+  #installPlacementDraft?: InstallPlacementDraftViewModel;
+  #recoverableInstallPlacementDraft?: InstallPlacementDraftViewModel;
   #installPlacementRequestToken = 0;
   #installPlacementRequestAbort?: AbortController;
   #generation = 0;
@@ -1765,6 +1763,7 @@ export class TuiController {
         ? { reviewPreparation: this.#reviewPreparation.snapshot }
         : {}),
       ...(this.#result ? { result: this.#result } : {}),
+      ...(this.#recoverableInstallPlacementDraft ? { canResumeInstallDraft: true } : {}),
       operationHistorySummaries: this.#operationHistory.list(),
       ...(this.#portableResultSkills ? { portableResultSkills: this.#portableResultSkills } : {}),
       ...(this.#loadError ? { loadError: this.#loadError } : {}),
@@ -1773,6 +1772,8 @@ export class TuiController {
         ? { installPlacementDraft: {
             pluginId: this.#installPlacementDraft.pluginId,
             rootScope: this.#installPlacementDraft.rootScope,
+            ...(this.#installPlacementDraft.exactRootTargets
+              ? { exactRootTargets: this.#installPlacementDraft.exactRootTargets } : {}),
             platforms: this.#installPlacementDraft.platforms,
             dependencyScopeOverrides: this.#installPlacementDraft.dependencyScopeOverrides,
             state: this.#installPlacementDraft.state,
@@ -2217,6 +2218,9 @@ export class TuiController {
     }
     if (intent.kind === 'pluginWriteBatch') {
       if (active?.kind === 'batchWrite') return;
+      if (active?.kind === 'pluginInstall' && intent.action === 'install'
+        && intent.selection.kind === 'targets' && this.#installPlacementDraft
+        && intent.selection.targets.every((target) => target.pluginId === this.#installPlacementDraft!.pluginId)) return;
       this.#router.beginFlow('batchWrite', { name: 'pluginList', mode: 'installed' });
       return;
     }
@@ -2337,10 +2341,17 @@ export class TuiController {
     this.#cancelReviewPreparation();
     this.#progress = { messages: [] };
     this.#progressTargets = [];
+    const installDraft = this.#installPlacementDraft;
+    const ownsInstallDraft = installDraft && (intent.kind === 'pluginWrite'
+      && intent.action === 'install' && installDraft.pluginId === intent.pluginId
+      || intent.kind === 'pluginWriteBatch' && intent.action === 'install'
+        && this.#router.activeFlow()?.kind === 'pluginInstall'
+        && intent.selection.kind === 'targets' && installDraft.exactRootTargets
+        && JSON.stringify(canonicalBatchTargets(intent.selection.targets))
+          === JSON.stringify(installDraft.exactRootTargets));
     this.#recoverableInstallPlacementDraft = result.state === 'blocked'
-      && intent.kind === 'pluginWrite' && intent.action === 'install'
-      && this.#installPlacementDraft?.pluginId === intent.pluginId
-      ? structuredClone(this.#installPlacementDraft)
+      && 'returnRoute' in result && result.returnRoute && ownsInstallDraft
+      ? structuredClone(installDraft)
       : undefined;
     this.#installPlacementDraft = undefined;
     this.#recoverablePortableDraft = result.state !== 'succeeded'
@@ -3125,10 +3136,13 @@ export class TuiController {
     const result = this.#result;
     if (this.#router.snapshot.current.route.name !== 'result' || !result
       || !('returnRoute' in result) || !result.returnRoute) return;
+    if (result.operationKind === 'pluginWriteBatch' && !this.#recoverableInstallPlacementDraft) return;
     this.#invalidatePortableResultRecheck();
     const returnRoute = this.#normalizeRoute(result.returnRoute);
     this.#router.back();
-    const kind = result.operationKind === 'configSave' || result.operationKind === 'configSaveBatch'
+    const kind = this.#recoverableInstallPlacementDraft
+      ? 'pluginInstall' as const
+      : result.operationKind === 'configSave' || result.operationKind === 'configSaveBatch'
       || result.operationKind === 'configReset'
       ? 'configEdit' as const
       : result.operationKind === 'portableInstall'
@@ -3138,8 +3152,14 @@ export class TuiController {
           ? 'sourceEdit' as const
           : 'pluginMaintenance' as const;
     this.#router.beginFlow(kind, this.#router.snapshot.current.route);
-    if (result.operationKind === 'pluginWrite') {
+    if (this.#recoverableInstallPlacementDraft) {
       this.#installPlacementDraft = this.#recoverableInstallPlacementDraft;
+      if (this.#installPlacementDraft.exactRootTargets) {
+        this.#installPlacementDraft.state = 'selecting';
+        this.#installPlacementDraft.targets = [];
+        this.#installPlacementDraft.canContinue = false;
+        this.#installPlacementDraft.error = undefined;
+      }
     }
     if (result.operationKind === 'portableInstall') {
       this.#portableDraft = this.#recoverablePortableDraft;
@@ -3271,8 +3291,10 @@ export class TuiController {
     if (!draft) return;
     this.#cancelInstallPlacementRequest();
     draft.rootScope = rootScope;
+    draft.exactRootTargets = undefined;
+    draft.dependencyScopeOverrides = draft.dependencyScopeOverrides.filter((override) =>
+      rootScope !== 'user' || override.scope === 'user');
     draft.platforms = [];
-    draft.plan = undefined;
     draft.targets = [];
     draft.state = 'selecting';
     draft.canContinue = false;
@@ -3286,12 +3308,34 @@ export class TuiController {
     this.#cancelInstallPlacementRequest();
     const selected = [...new Set(platforms)].sort();
     draft.platforms = selected;
+    draft.exactRootTargets = undefined;
     draft.dependencyScopeOverrides = draft.dependencyScopeOverrides.filter((override) =>
       selected.includes(override.platform));
-    draft.plan = undefined;
     draft.targets = [];
     draft.state = 'selecting';
     draft.canContinue = selected.length > 0;
+    draft.error = undefined;
+    this.#publish();
+  }
+
+  setInstallRootTargets(targets: PluginWriteBatchTarget[]): void {
+    const draft = this.#installPlacementDraft;
+    if (!draft) return;
+    const selected = canonicalBatchTargets(structuredClone(targets));
+    if (selected.length === 0 || selected.some((target) => target.pluginId !== draft.pluginId)
+      || new Set(selected.map((target) => target.platform)).size !== selected.length) {
+      throw new TuiOperationBlockedError('installPlacementIncomplete', '请为每个所选平台确定一个根插件位置。');
+    }
+    this.#cancelInstallPlacementRequest();
+    draft.exactRootTargets = selected;
+    draft.rootScope = selected[0]!.scope;
+    draft.platforms = selected.map((target) => target.platform);
+    draft.dependencyScopeOverrides = draft.dependencyScopeOverrides.filter((override) =>
+      selected.some((target) => target.platform === override.platform
+        && (target.scope === 'project' || override.scope === 'user')));
+    draft.targets = [];
+    draft.state = 'selecting';
+    draft.canContinue = true;
     draft.error = undefined;
     this.#publish();
   }
@@ -3302,7 +3346,6 @@ export class TuiController {
     this.#installPlacementRequestAbort?.abort();
     this.#installPlacementRequestAbort = undefined;
     if (cancelled && this.#installPlacementDraft?.state === 'loading') {
-      this.#installPlacementDraft.plan = undefined;
       this.#installPlacementDraft.targets = [];
       this.#installPlacementDraft.state = 'selecting';
       this.#installPlacementDraft.canContinue = false;
@@ -3310,11 +3353,20 @@ export class TuiController {
     }
   }
 
-  #installPlacementIntent(): Extract<OperationIntent, { kind: 'pluginWrite' }> {
+  #installPlacementIntent(): Extract<OperationIntent, { kind: 'pluginWrite' | 'pluginWriteBatch' }> {
     const draft = this.#installPlacementDraft;
     if (!draft || draft.platforms.length === 0) {
       throw new TuiOperationBlockedError('installPlacementIncomplete', '请先明确选择目标平台。');
     }
+    if (draft.exactRootTargets) return {
+      kind: 'pluginWriteBatch',
+      action: 'install',
+      selection: { kind: 'targets', targets: structuredClone(draft.exactRootTargets) },
+      platform: draft.platforms.length === 2 ? 'both' : draft.platforms[0]!,
+      scope: draft.rootScope,
+      ...(draft.dependencyScopeOverrides.length > 0
+        ? { dependencyScopeOverrides: structuredClone(draft.dependencyScopeOverrides) } : {}),
+    };
     return {
       kind: 'pluginWrite',
       action: 'install',
@@ -3351,19 +3403,22 @@ export class TuiController {
           throw new DOMException('Dependency placement preview was cancelled.', 'AbortError');
         }
       };
-      const plan = await this.#trackRead(preview(this.#installPlacementIntent()));
-      throwIfCancelled();
-      if (!plan) {
-        draft.state = 'ready';
-        draft.plan = undefined;
-        draft.targets = [];
-        draft.canContinue = true;
-        this.#publish();
-        return false;
+      const placementIntent = this.#installPlacementIntent();
+      const intents: Array<Extract<OperationIntent, { kind: 'pluginWrite' }>> = placementIntent.kind === 'pluginWrite'
+        ? [placementIntent]
+        : (draft.exactRootTargets ?? []).map((target) => ({
+            kind: 'pluginWrite', action: 'install', ...target,
+            dependencyScopeOverrides: draft.dependencyScopeOverrides.filter((override) =>
+              override.platform === target.platform),
+          }));
+      const plans: ReconcileOperationPlan[] = [];
+      for (const intent of intents) {
+        const plan = await this.#trackRead(preview(intent));
+        throwIfCancelled();
+        if (plan) plans.push(plan);
       }
-      draft.plan = structuredClone(plan);
-      draft.targets = dependencyPlacementTargets(plan);
-      const blocker = plan.targets.find((target) => target.action === 'block');
+      draft.targets = plans.flatMap(dependencyPlacementTargets);
+      const blocker = plans.flatMap((plan) => plan.targets).find((target) => target.action === 'block');
       draft.state = blocker ? 'blocked' : 'ready';
       draft.canContinue = !blocker;
       draft.error = blocker
@@ -3421,7 +3476,7 @@ export class TuiController {
     await this.prepareInstallDependencyPlacement();
   }
 
-  installPlacementIntent(): Extract<OperationIntent, { kind: 'pluginWrite' }> {
+  installPlacementIntent(): Extract<OperationIntent, { kind: 'pluginWrite' | 'pluginWriteBatch' }> {
     return this.#installPlacementIntent();
   }
 

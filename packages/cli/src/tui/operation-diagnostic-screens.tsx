@@ -140,6 +140,12 @@ function operationDiagnosticLines(detail: OperationDiagnosticDetail): DetailLine
   return lines;
 }
 
+export function operationDiagnosticText(detail: OperationDiagnosticDetail): string {
+  return operationDiagnosticLines(detail)
+    .map((line) => `${line.title}${line.meta ? ` · ${line.meta}` : ''}`)
+    .join('\n');
+}
+
 function wrappedDiagnosticLines(detail: OperationDiagnosticDetail, columns: number): DetailLine[] {
   return operationDiagnosticLines(detail).flatMap((line) => {
     const value = `${line.title}${line.meta ? ` · ${line.meta}` : ''}`;

@@ -666,8 +666,14 @@ async function runBatchWriteGroup(options: {
   cwd: string;
   runtime: Parameters<typeof installWriteCommand>[2];
 }): Promise<RebuildCommandResult> {
+  const dependencyScopeOverrides = options.intent.action === 'install'
+    ? options.intent.dependencyScopeOverrides?.filter((override) =>
+        parsePluginId(override.pluginId).sourceId === options.group.sourceId
+        && (options.group.platform === 'both' || override.platform === options.group.platform))
+    : undefined;
   const commandOptions = {
     cwd: options.cwd,
+    ...(dependencyScopeOverrides?.length ? { dependencyScopeOverrides } : {}),
     platform: options.group.platform,
     scope: options.group.scope,
     ...(reviewedScriptTimeoutMs(options.intent) === undefined

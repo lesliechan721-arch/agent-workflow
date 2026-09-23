@@ -275,10 +275,9 @@ describe('TUI v8.2 stage 5', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(3);
     const pages: string[] = [];
-    await input(instance, '\u001B[B');
     for (let index = 0; index < 16; index += 1) {
       pages.push(frame(instance, size));
-      await input(instance, '\r');
+      await input(instance, '\u001B[C');
     }
     const text = pages.join('\n');
     expect(text).toContain('REF-END');
@@ -445,7 +444,7 @@ describe('TUI v8.2 stage 5', () => {
     list.unmount();
   });
 
-  it.each(SIZES)('keeps diagnostic and report pages readable with p and n at $columns x $rows', async (size) => {
+  it.each(SIZES)('keeps diagnostic and report pages readable with arrow keys at $columns x $rows', async (size) => {
     const value = controller();
     const history = new OperationHistoryStore();
     const tailSentinel = 'SAFE-CJK-TAIL-SENTINEL';
@@ -476,13 +475,15 @@ describe('TUI v8.2 stage 5', () => {
     await nextTurn(3);
 
     const firstDiagnostic = frame(instance, size);
-    expect(firstDiagnostic).toContain('p 上一页');
-    expect(firstDiagnostic).toContain('n 下一页');
-    await input(instance, 'p');
+    expect(firstDiagnostic).not.toContain('p 上一页');
+    expect(firstDiagnostic).not.toContain('n 下一页');
+    expect(firstDiagnostic).toContain('←→');
+    expect(firstDiagnostic).toContain('[y] 复制全文');
+    await input(instance, '\u001B[D');
     expect(frame(instance, size)).toBe(firstDiagnostic);
     const diagnosticFrames = [firstDiagnostic];
     for (let index = 0; index < 40; index += 1) {
-      await input(instance, 'n');
+      await input(instance, '\u001B[C');
       diagnosticFrames.push(frame(instance, size));
     }
     const diagnosticText = diagnosticFrames.join('\n');
@@ -492,20 +493,22 @@ describe('TUI v8.2 stage 5', () => {
     expect(diagnosticText).not.toContain('/Users/private/catalog');
     expect(diagnosticText).not.toContain('\u001B');
     const lastDiagnostic = diagnosticFrames.at(-1)!;
-    await input(instance, 'p');
+    await input(instance, '\u001B[D');
     expect(frame(instance, size)).not.toBe(lastDiagnostic);
 
     await focusAction(instance, '预览安全报告');
     await input(instance, '\r');
     await waitForRoute(value, 'operationReportPreview');
     const firstReport = frame(instance, size);
-    expect(firstReport).toContain('p 上一页');
-    expect(firstReport).toContain('n 下一页');
-    await input(instance, 'p');
+    expect(firstReport).not.toContain('p 上一页');
+    expect(firstReport).not.toContain('n 下一页');
+    expect(firstReport).toContain('←→');
+    expect(firstReport).toContain('[y] 复制全文');
+    await input(instance, '\u001B[D');
     expect(frame(instance, size)).toBe(firstReport);
     const reportFrames = [firstReport];
     for (let index = 0; index < 48; index += 1) {
-      await input(instance, 'n');
+      await input(instance, '\u001B[C');
       reportFrames.push(frame(instance, size));
     }
     const reportText = reportFrames.join('\n');
@@ -515,7 +518,7 @@ describe('TUI v8.2 stage 5', () => {
     expect(reportText).not.toContain('/Users/private/catalog');
     expect(reportText).not.toContain('\u001B');
     const lastReport = reportFrames.at(-1)!;
-    await input(instance, 'p');
+    await input(instance, '\u001B[D');
     expect(frame(instance, size)).not.toBe(lastReport);
     instance.unmount();
   });
@@ -639,28 +642,28 @@ describe('plugin detail readable summary', () => {
     value.push({ name: 'pluginDetail', pluginId: 'official/demo' });
     await nextTurn(2);
     const initial = frame(instance, size);
-    expect(initial).toContain('版本 · 1.0.0');
-    expect(initial).toContain('来源 · official');
-    expect(initial).toContain('Codex · 尚未安装');
     expect(initial).toContain('› ');
-    expect(initial).toContain('完整基本信息');
-    expect(initial).toContain('帮助');
-    await focusAction(instance, '完整基本信息');
-    await input(instance, '\r');
+    expect(initial).not.toContain('完整基本信息');
+    expect(initial).toContain('Esc 返回');
+    expect(initial).toContain('[y] 复制全文');
     expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
-    let foundEnd = false;
+    const pages: string[] = [];
     for (let page = 0; page < 30; page += 1) {
       const current = frame(instance, size);
-      if (current.includes('摘要完整结尾')) { foundEnd = true; break; }
-      await input(instance, 'n');
+      pages.push(current);
+      if (!current.includes('↓ 后面还有')) break;
+      await input(instance, '\u001B[C');
     }
-    expect(foundEnd).toBe(true);
-    await input(instance, '\u001B');
-    await new Promise((resolve) => setTimeout(resolve, 550));
+    const allPages = pages.join('\n');
+    expect(allPages.replace(/\s/gu, '')).toContain('摘要完整结尾');
+    expect(allPages).toContain('版本 · 1.0.0');
+    expect(allPages).toContain('来源 · official');
+    expect(allPages).toContain('Codex · 未知 · 尚未确认');
     expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
     instance.rerender(<ConsoleAppV4 controller={value} size={size.columns === 60
       ? { columns: 80, rows: 24 } : { columns: 60, rows: 18 }} />);
     await nextTurn(2);
+    await input(instance, '\u001B[C');
     expect(instance.lastFrame()).toContain('Codex');
     await input(instance, '\u001B');
     await new Promise((resolve) => setTimeout(resolve, 550));

@@ -467,6 +467,73 @@ describe('TUI batch write runtime', () => {
     expect(writes[0]?.[1]).toMatchObject({ platform: 'claude', scope: 'project' });
   });
 
+  it('keeps exact mixed roots and dependency overrides equal in preview and locked execution', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'mixed-roots-source');
+    const otherRoot = path.join(isolation.layout.fixtureCwd, 'unrelated-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'demo', dependencies: ['dependency'] }, { name: 'dependency' },
+    ]);
+    await createCatalogSnapshotFixture(otherRoot, 'other', [], 'other\n');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [
+        { id: 'team', type: 'path', primary: true, path: sourceRoot },
+        { id: 'other', type: 'path', primary: false, path: otherRoot },
+      ] }, expectedDigest: initial.digest, env: isolation.env,
+    });
+    runtimeMocks.installWriteCommand.mockImplementation(async (pluginIds, options) => {
+      const sourceId = pluginIds[0]!.split('/')[0]!;
+      const target = { pluginName: pluginIds[0]!.split('/')[1]!, pluginId: pluginIds[0]!, sourceId,
+        platform: options.platform as 'codex' | 'claude', scope: options.scope as 'project' | 'user' };
+      return {
+        platforms: [target.platform], plugins: pluginIds, warnings: [], rebuildResults: [],
+        targetResults: [{ target, action: 'install', state: 'completed' as const, requiredBy: [] }],
+        overallState: 'succeeded' as const, receiptTargets: [target],
+        operationPlan: createOperationPlan({
+          intentChanges: [], actions: [], warnings: [],
+          changes: [JSON.stringify({ pluginIds, platform: options.platform, scope: options.scope,
+            overrides: options.dependencyScopeOverrides })],
+          evidence: { catalogDigests: [{ sourceId, digest: `sha256:${sourceId}` }],
+            intentDigests: [], configDigests: [], targetOwnerFingerprints: [] },
+        }),
+      };
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWriteBatch' as const, action: 'install' as const,
+      selection: { kind: 'targets' as const, targets: [
+        { pluginId: 'team/demo', platform: 'codex' as const, scope: 'project' as const },
+        { pluginId: 'team/demo', platform: 'claude' as const, scope: 'user' as const },
+        { pluginId: 'other/other', platform: 'codex' as const, scope: 'project' as const },
+      ] }, platform: 'both' as const, scope: 'project' as const,
+      dependencyScopeOverrides: [{ pluginId: 'team/dependency', platform: 'codex' as const, scope: 'user' as const }],
+    };
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    await dependencies.executeIntent(intent, evidence);
+    const calls = runtimeMocks.installWriteCommand.mock.calls;
+    for (const [pluginIds, options] of calls) {
+      const matches = pluginIds[0] === 'team/demo' && options.platform === 'codex';
+      expect(options.dependencyScopeOverrides).toEqual(matches ? intent.dependencyScopeOverrides : undefined);
+      expect(options.scope).toBe(pluginIds[0] === 'team/demo' && options.platform === 'claude' ? 'user' : 'project');
+    }
+    const writes = calls.filter((call) => call[2]?.previewOperationPlan !== true);
+    expect(writes).toHaveLength(3);
+    for (const [pluginIds, options, runtime] of writes) {
+      expect(runtime).toMatchObject({ awHomeMutationToken: expect.anything(), expectedPlanFingerprint: expect.any(String) });
+      expect(calls.filter(([previewIds, previewOptions, previewRuntime]) =>
+        previewIds[0] === pluginIds[0] && previewOptions.platform === options.platform
+        && previewOptions.scope === options.scope && previewRuntime.previewOperationPlan === true).length)
+        .toBeGreaterThanOrEqual(2);
+    }
+    const adjustedIntent = { ...intent, dependencyScopeOverrides: [{ ...intent.dependencyScopeOverrides[0]!, scope: 'project' as const }] };
+    runtimeMocks.installWriteCommand.mockClear();
+    await expect(dependencies.executeIntent(adjustedIntent, evidence)).rejects.toMatchObject({ code: 'operationReviewStale' });
+    expect(runtimeMocks.installWriteCommand.mock.calls.every((call) => call[2]?.previewOperationPlan === true)).toBe(true);
+  });
+
   it('syncs only exact declared project intent targets and rejects undeclared targets', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'batch-project-intent-target-source');

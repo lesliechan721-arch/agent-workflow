@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { StatusV8Payload, StatusV8PluginSummary } from '../../src/commands/status-v6.js';
 import { flattenStatusTargets } from '../../src/commands/status-v6.js';
-import type { DependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
+import { createDependencyPlacementPlan, type DependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
@@ -1929,9 +1929,7 @@ describe('TUI v4 router and ViewModel', () => {
     controller.setInstallRootScope('user');
     controller.setInstallPlatforms(['codex', 'claude']);
     await controller.prepareInstallDependencyPlacement();
-    expect(controller.snapshot.installPlacementDraft?.dependencyScopeOverrides).toContainEqual({
-      pluginId: 'official/toolkit', platform: 'codex', scope: 'project',
-    });
+    expect(controller.snapshot.installPlacementDraft?.dependencyScopeOverrides).toEqual([]);
 
     controller.setInstallRootScope('project');
     controller.setInstallPlatforms(['codex', 'claude']);
@@ -1948,6 +1946,127 @@ describe('TUI v4 router and ViewModel', () => {
     controller.setInstallPlatforms(['claude']);
     await expect(controller.prepareInstallDependencyPlacement()).resolves.toBe(false);
     expect(controller.snapshot.installPlacementDraft?.targets.every((entry) => entry.locked)).toBe(true);
+  });
+
+  it('keeps mixed root scopes while editing and pruning dependency choices', async () => {
+    const previewDependencyPlacement = vi.fn(async (intent: Extract<OperationIntent, { kind: 'pluginWrite' }>): Promise<DependencyOperationPlan> => {
+      const platforms = intent.platform === 'both' ? ['claude', 'codex'] as const : [intent.platform];
+      const placement = createDependencyPlacementPlan({
+        requestedPluginIds: [intent.pluginId],
+        roots: platforms.map((platform) => ({ pluginId: intent.pluginId, platform, scope: intent.scope })),
+        nodes: platforms.flatMap((platform) => [
+          { pluginId: intent.pluginId, pluginName: 'Root', platform, relation: 'requested' as const,
+            depth: 0, allowedScopes: ['project', 'user'] as const },
+          { pluginId: 'official/toolkit', pluginName: 'Toolkit', platform, relation: 'dependency' as const,
+            depth: 1, allowedScopes: ['project', 'user'] as const },
+        ]).map((node) => ({ ...node, allowedScopes: [...node.allowedScopes] })),
+        dependencyEdges: platforms.map((platform) => ({ from: intent.pluginId, to: 'official/toolkit', platform })),
+        scopeOverrides: intent.dependencyScopeOverrides,
+      });
+      return { ...placement, dependencyPlanSchemaVersion: 2, dependencyPlanDigest: 'sha256:mixed', claimRoots: [],
+        targets: placement.targets.map((target, order) => ({ ...target, order, state: 'absent', action: 'install' })) };
+    });
+    const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
+      if (intent.kind !== 'pluginWriteBatch' || intent.selection.kind !== 'targets') return baseEvidence;
+      const groups = await Promise.all(intent.selection.targets.map(async (root) => {
+        const dependencyPlan = await previewDependencyPlacement({
+          kind: 'pluginWrite', action: 'install', ...root,
+          dependencyScopeOverrides: intent.dependencyScopeOverrides?.filter((override) => override.platform === root.platform),
+        });
+        return {
+          groupId: `official:${root.platform}:${root.scope}`, sourceId: 'official', platform: root.platform,
+          scope: root.scope, requestedPluginIds: [root.pluginId], executable: true,
+          preview: { platforms: [root.platform], plugins: [root.pluginId], warnings: [], rebuildResults: [],
+            targetResults: [], overallState: 'succeeded' as const, receiptTargets: [], dependencyPlan,
+            operationPlan: createOperationPlan({ intentChanges: [], actions: [], changes: [], warnings: [],
+              evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] } }),
+          },
+        };
+      }));
+      return { ...baseEvidence, requestedPluginIds: ['official/demo'], groups } as PluginWriteBatchEvidence;
+    });
+    const executeIntent = vi.fn().mockRejectedValue(new Error('writeRejected'));
+    let tokenIndex = 0;
+    const controller = new TuiController(dependencies({ previewDependencyPlacement, captureEvidence,
+      executeIntent, createToken: () => `mixed-${++tokenIndex}` }));
+    await controller.load();
+    controller.beginInstallFlow('official/demo', 'project');
+    const exactRootTargets = [
+      { pluginId: 'official/demo', platform: 'codex' as const, scope: 'project' as const },
+      { pluginId: 'official/demo', platform: 'claude' as const, scope: 'user' as const },
+    ];
+    controller.setInstallRootTargets(exactRootTargets);
+    await expect(controller.prepareInstallDependencyPlacement()).resolves.toBe(true);
+    expect(controller.snapshot.installPlacementDraft?.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'official/toolkit', platform: 'codex', scope: 'project', locked: false }),
+      expect.objectContaining({ pluginId: 'official/toolkit', platform: 'claude', scope: 'user' }),
+    ]));
+    await controller.setDependencyScope('official/toolkit', 'codex', 'user');
+    expect(controller.installPlacementIntent()).toMatchObject({
+      kind: 'pluginWriteBatch', selection: { kind: 'targets', targets: expect.arrayContaining(exactRootTargets) },
+      dependencyScopeOverrides: [{ pluginId: 'official/toolkit', platform: 'codex', scope: 'user' }],
+    });
+    expect(controller.snapshot.installPlacementDraft?.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ platform: 'codex', scope: 'user', affectsOtherProjects: true }),
+    ]));
+    expect(previewDependencyPlacement.mock.calls.filter(([intent]) => intent.platform === 'claude')
+      .every(([intent]) => !intent.dependencyScopeOverrides?.length)).toBe(true);
+    controller.push({ name: 'dependencyPlacement', pluginId: 'official/demo' });
+    const flowId = controller.snapshot.router.currentFlowId;
+    const review = await controller.buildOperationReview(controller.installPlacementIntent());
+    expect(controller.snapshot.router.currentFlowId).toBe(flowId);
+    expect(review.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'official/toolkit', description: expect.stringContaining('所有项目') }),
+      expect.objectContaining({ pluginId: 'official/demo', description: expect.stringContaining('当前项目') }),
+    ]));
+    controller.back();
+    expect(controller.snapshot.router.current.route.name).toBe('dependencyPlacement');
+    expect(controller.snapshot.installPlacementDraft?.exactRootTargets).toEqual(expect.arrayContaining(exactRootTargets));
+    const blockedReview = await controller.buildOperationReview(controller.installPlacementIntent());
+    await expect(controller.executeOperation(blockedReview.reviewToken)).resolves.toMatchObject({ state: 'blocked' });
+    expect(controller.snapshot.installPlacementDraft).toBeUndefined();
+    expect(controller.snapshot.canResumeInstallDraft).toBe(true);
+    controller.resumeResultDraft();
+    expect(controller.snapshot.router.current.route.name).toBe('dependencyPlacement');
+    expect(controller.snapshot.installPlacementDraft).toMatchObject({
+      exactRootTargets: expect.arrayContaining(exactRootTargets),
+      dependencyScopeOverrides: [{ pluginId: 'official/toolkit', platform: 'codex', scope: 'user' }],
+      state: 'selecting', targets: [], canContinue: false,
+    });
+    expect(controller.snapshot.canResumeInstallDraft).toBeUndefined();
+    previewDependencyPlacement.mockClear();
+    await controller.prepareInstallDependencyPlacement();
+    expect(previewDependencyPlacement).toHaveBeenCalledTimes(2);
+    expect(controller.snapshot.installPlacementDraft?.canContinue).toBe(true);
+    const resumedFlowId = controller.snapshot.router.currentFlowId;
+    const resumedReview = await controller.buildOperationReview(controller.installPlacementIntent());
+    expect(controller.snapshot.router.currentFlowId).toBe(resumedFlowId);
+    expect(resumedReview.reviewToken).not.toBe(blockedReview.reviewToken);
+    expect(executeIntent).toHaveBeenCalledTimes(1);
+    controller.back();
+    await controller.setDependencyScope('official/toolkit', 'codex', 'project');
+    controller.setInstallRootTargets(exactRootTargets.map((target) => ({ ...target, scope: 'user' })));
+    await expect(controller.prepareInstallDependencyPlacement()).resolves.toBe(false);
+    expect(controller.snapshot.installPlacementDraft?.dependencyScopeOverrides).toEqual([]);
+    controller.setInstallRootScope('project');
+    controller.setInstallPlatforms(['codex']);
+    await controller.prepareInstallDependencyPlacement();
+    expect(controller.installPlacementIntent()).toMatchObject({ kind: 'pluginWrite', platform: 'codex', scope: 'project' });
+    expect(controller.snapshot.installPlacementDraft).not.toHaveProperty('exactRootTargets');
+    await controller.setDependencyScope('official/toolkit', 'codex', 'user');
+    controller.setInstallPlatforms(['claude']);
+    expect(controller.snapshot.installPlacementDraft?.dependencyScopeOverrides).toEqual([]);
+    controller.setInstallRootTargets(exactRootTargets);
+    controller.push({ name: 'pluginList', mode: 'browse' });
+    controller.beginPluginWriteBatch();
+    const batchReview = await controller.buildOperationReview(controller.installPlacementIntent());
+    await expect(controller.executeOperation(batchReview.reviewToken)).resolves.toMatchObject({ state: 'blocked' });
+    expect(controller.snapshot.canResumeInstallDraft).toBeUndefined();
+    expect(controller.snapshot.installPlacementDraft).toBeUndefined();
+    const batchResultRoute = controller.snapshot.router.current.route;
+    controller.resumeResultDraft();
+    expect(controller.snapshot.router.current.route).toEqual(batchResultRoute);
+    expect(controller.snapshot.installPlacementDraft).toBeUndefined();
   });
 
   it('invalidates a late dependency placement preview when Back cancels it', async () => {

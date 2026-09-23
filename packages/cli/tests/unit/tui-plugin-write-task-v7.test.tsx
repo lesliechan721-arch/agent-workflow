@@ -2,6 +2,9 @@ import { cleanup, render } from 'ink-testing-library';
 import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../src/tui/clipboard.js', () => ({ copyToClipboard: vi.fn() }));
+
+import { copyToClipboard } from '../../src/tui/clipboard.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import type { StatusV8Payload, StatusV8PluginSummary } from '../../src/commands/status-v6.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
@@ -206,7 +209,7 @@ describe('TUI plugin write task', () => {
       state: 'blocked', code: 'reviewTicketInvalid',
     });
 
-    await focusAction(instance, '继续（1） [c]');
+    await focusAction(instance, '查看升级汇总（1） [c]');
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
 
@@ -388,6 +391,7 @@ describe('TUI plugin write task', () => {
   );
 
   it('keeps manual blocked targets out of retry and returns to their task after subset success', async () => {
+    const clipboard = vi.mocked(copyToClipboard).mockReset().mockResolvedValue(undefined);
     const executableTarget = {
       pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const,
     };
@@ -461,6 +465,10 @@ describe('TUI plugin write task', () => {
     expect(frame).toContain('需要选择手动处理方式');
     expect(frame).toContain('返回任务处理 1 个需决定项');
     expect(frame).not.toContain('继续处理剩余');
+    await write(instance, 'y');
+    await vi.waitFor(() => expect(clipboard).toHaveBeenCalledTimes(1));
+    expect(clipboard.mock.calls[0]![0]).toContain('official/demo · Claude Code · 当前项目');
+    expect(clipboard.mock.calls[0]![0]).toContain('需要选择手动处理方式');
     await write(instance, '\r');
     expect(value.snapshot.router.current.route).toEqual({
       ...taskRoute,
@@ -849,6 +857,7 @@ describe('TUI plugin write task', () => {
   });
 
   it('shows one root plugin with separate positions and retries only its failed position', async () => {
+    const clipboard = vi.mocked(copyToClipboard).mockReset().mockResolvedValue(undefined);
     const codexTarget = {
       pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const,
     };
@@ -927,6 +936,17 @@ describe('TUI plugin write task', () => {
     expect(frame).toContain('Claude Code · 当前项目');
     expect(frame.match(/Demo/gu)).toHaveLength(1);
     expect(frame).toContain('继续处理剩余 1 项');
+    await write(instance, 'y');
+    await vi.waitFor(() => expect(clipboard).toHaveBeenCalledTimes(1));
+    expect(clipboard.mock.calls[0]![0]).toContain('official/demo · Claude Code · 当前项目');
+    expect(clipboard.mock.calls[0]![0]).toContain('失败 · writeFailed');
+    const copied = clipboard.mock.calls[0]![0];
+    instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn();
+    await write(instance, '\u001B[C');
+    await write(instance, 'y');
+    await vi.waitFor(() => expect(clipboard).toHaveBeenCalledTimes(2));
+    expect(clipboard.mock.calls[1]![0]).toBe(copied);
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     expect(dependencies.captureEvidence).toHaveBeenLastCalledWith(expect.objectContaining({
