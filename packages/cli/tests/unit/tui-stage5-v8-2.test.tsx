@@ -631,7 +631,7 @@ describe('TUI v8.2 stage 5', () => {
 });
 
 
-describe('plugin detail readable summary', () => {
+describe('plugin detail readable structured facts', () => {
   it.each(SIZES)('keeps long content, badges and actions readable at $columns x $rows', async (size) => {
     const data = loadResult();
     data.pluginSummaries[0]!.description = '用于检查长说明的完整阅读。'.repeat(45) + '摘要完整结尾';
@@ -644,26 +644,30 @@ describe('plugin detail readable summary', () => {
     expect(initial).toContain('› ');
     expect(initial).not.toContain('完整基本信息');
     expect(initial).toContain('Esc 返回');
-    expect(initial).toContain('[y] 复制全文');
+    expect(initial).toContain('PgUp/PgDn 翻信息');
+    expect(initial).not.toContain('复制全文');
     expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
     const pages: string[] = [];
     for (let page = 0; page < 30; page += 1) {
       const current = frame(instance, size);
       pages.push(current);
       if (!current.includes('↓ 后面还有')) break;
-      await input(instance, '\u001B[C');
+      await input(instance, '\u001B[6~');
     }
     const allPages = pages.join('\n');
     expect(allPages.replace(/\s/gu, '')).toContain('摘要完整结尾');
-    expect(allPages).toContain('版本 · 1.0.0');
-    expect(allPages).toContain('来源 · official');
-    expect(allPages).toContain('Codex · 未知 · 尚未确认');
+    expect(allPages).toContain('目录版本 1.0.0');
+    expect(allPages).toContain('[official]');
+    expect(allPages).toContain('使用位置');
+    expect(allPages).toContain('未确认');
     expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
     instance.rerender(<ConsoleAppV4 controller={value} size={size.columns === 60
       ? { columns: 80, rows: 24 } : { columns: 60, rows: 18 }} />);
     await nextTurn(2);
-    await input(instance, '\u001B[C');
-    expect(instance.lastFrame()).toContain('Codex');
+    for (let page = 0; page < 30 && instance.lastFrame()?.includes('↓ 后面还有'); page += 1) {
+      await input(instance, '\u001B[6~');
+    }
+    expect(instance.lastFrame()).toContain('使用位置');
     await input(instance, '\u001B');
     await new Promise((resolve) => setTimeout(resolve, 550));
     expect(value.snapshot.router.current.route.name).toBe('home');

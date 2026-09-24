@@ -993,9 +993,11 @@ describe('Portable Skills TUI V1', () => {
     value.push({ name: 'pluginPreview', pluginId: 'official/toolkit' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await tick();
-    expect(instance.lastFrame()).toContain('[Skills 可选]');
-    expect(instance.lastFrame()).toContain('Codex');
-    expect(instance.lastFrame()).toContain('Claude Code');
+    expect(value.getPluginOverview('official/toolkit')).toMatchObject({
+      portableSkills: true, supportedPlatforms: ['codex', 'claude'],
+    });
+    expect(instance.lastFrame()).toContain('目录版本 1.0.0');
+    expect(instance.lastFrame()).toContain('安装');
     expect(instance.lastFrame()).toContain('更多操作');
     expect(instance.lastFrame()).toContain('依赖关系');
     expect(instance.lastFrame()).not.toContain('3 个候选');
@@ -1641,9 +1643,9 @@ describe('Portable Skills TUI V1', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await tick();
 
-    expect(instance.lastFrame()).toContain('› ● 使用 Skills CLI 默认选择');
+    expect(instance.lastFrame()).toContain('› ● 自动选择可用 Agent');
     await send(instance, '\u001B[B');
-    expect(instance.lastFrame()).toContain('● 使用 Skills CLI 默认选择');
+    expect(instance.lastFrame()).toContain('● 自动选择可用 Agent');
     expect(instance.lastFrame()).toContain('› ○ 指定 Agent');
     expect(value.snapshot.portableDraft?.agentMode).toBe('automatic');
   });
@@ -1921,7 +1923,7 @@ describe('Portable Skills TUI V1', () => {
       const frame = instance.lastFrame() ?? '';
       expect(frame).toMatch(/blocked-skill-0\s+结果未知 · Agent：无法确认/u);
       expect(frame).toContain('第 1–1 项，共 10 项');
-      expect(frame).toMatch(/范围\s+当前项目/u);
+      expect(frame).toMatch(/范围\s+当前项目|第 1–1 项，共 10 项 · 当前项目/u);
       expect(frame).toContain('技术详情');
       expect(frame).toContain('failure code');
       expect(frame).not.toContain('sha256:blocked');
@@ -2211,16 +2213,21 @@ describe('Portable Skills TUI V1', () => {
     value.push({ name: 'portableDependencies', pluginId: 'official/toolkit' });
     const dependencyInstance = render(<ConsoleAppV4 controller={value} size={size} />);
     await tick();
-    expect(dependencyInstance.lastFrame()).toContain('› 返回 Skills 选择');
+    expect(dependencyInstance.lastFrame()).toContain('◆ Toolkit');
+    expect(dependencyInstance.lastFrame()).toContain('Enter 插件详情');
     let dependencyFrame = dependencyInstance.lastFrame() ?? '';
-    for (let index = 0; index < 7; index += 1) {
-      await send(dependencyInstance, '\u001B[C');
-      dependencyFrame += dependencyInstance.lastFrame() ?? '';
+    for (let index = 0; index < 16 && !dependencyFrame.includes('Dependency 7'); index += 1) {
+      await send(dependencyInstance, '\u001B[B');
+      dependencyFrame += `\n${dependencyInstance.lastFrame() ?? ''}`;
     }
     expect(dependencyFrame).toContain('Dependency 0');
     expect(dependencyFrame).toContain('Dependency 7');
+    await send(dependencyInstance, 'p');
     expect(dependencyInstance.lastFrame()).toContain('复制全文');
     expect((dependencyInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(size.rows);
+    dependencyInstance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(value.snapshot.router.current.route.name).toBe('portableDependencies');
     dependencyInstance.stdin.write('\u001B');
     await new Promise((resolve) => setTimeout(resolve, 550));
     expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
@@ -2559,7 +2566,7 @@ describe('Portable Skills TUI V1', () => {
     if (!technical) {
       await send(instance, 'd');
       expect(instance.lastFrame()).toContain(`已验证 · Agent：${agents.at(-1)}`);
-      expect(instance.lastFrame()).toMatch(/范围\s+当前项目/u);
+      expect(instance.lastFrame()).toMatch(/范围\s+当前项目|第 \d+–\d+ 项，共 \d+ 项 · 当前项目/u);
       expect(instance.lastFrame()).toContain('verification missing');
       expect(instance.lastFrame()).toContain('Skills CLI version');
       expect(instance.lastFrame()).toContain('materialization digest');

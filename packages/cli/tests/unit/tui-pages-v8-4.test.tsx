@@ -178,8 +178,11 @@ describe('v8.4 page contracts', () => {
       expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
       const project = frame(instance, size);
       expect(project).toContain('工具一');
-      expect(project).toContain('工具二');
       expect(project.match(/项目长名称/gu)).toHaveLength(1);
+      for (let step = 0; step < 12 && !instance.lastFrame()?.includes('工具二'); step += 1) {
+        await input(instance, '\u001b[B');
+      }
+      expect(frame(instance, size)).toContain('工具二');
       if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `pages-${size.columns}x${size.rows}.json`), { synthetic: true, size, frames: { home, project } }, { spaces: 2 });
       await input(instance, '/');
       await input(instance, '工具二');
@@ -191,7 +194,8 @@ describe('v8.4 page contracts', () => {
       expect(controller.snapshot.router.current.context.query).toBe('工具二');
       await input(instance, '\r');
       expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'missing/工具二' });
-      expect(frame(instance, size)).toContain('来源当前没有此插件');
+      expect(frame(instance, size)).toContain('目录定义当前不可用');
+      expect(frame(instance, size)).toContain('Claude Code [当前项目] [项目声明]');
       await input(instance, '\u001b');
       expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
       expect(controller.snapshot.router.current.context.query).toBe('工具二');
@@ -274,14 +278,17 @@ describe('v8.4 page contracts', () => {
     await tick();
     expect(controller.snapshot.projectInventory?.declaredRoots).toHaveLength(1);
     expect(controller.snapshot.projectInventory?.syncTargets).toEqual([]);
-    expect(instance.lastFrame()).toContain('共用');
+    expect(instance.lastFrame()).toContain('依赖 shared');
+    await input(instance, '\u001b[B');
+    expect(instance.lastFrame()).toContain('共用个人安装');
     expect((instance.lastFrame() ?? '').match(/╭/gu)).toHaveLength(1);
+    const scrolledRoot = instance.lastFrame();
     await input(instance, '\r');
-    let detail = instance.lastFrame() ?? '';
-    for (let index = 0; index < 5; index += 1) { await input(instance, '\u001b[C'); detail += instance.lastFrame(); }
-    expect(detail).toContain('shared');
-    expect(detail).toContain('共用');
-    await input(instance, '\u001b'); await input(instance, 'd');
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/root' });
+    expect(instance.lastFrame()).toContain('依赖关系');
+    await input(instance, '\u001b');
+    expect(instance.lastFrame()).toBe(scrolledRoot);
+    await input(instance, 'd');
     let technical = instance.lastFrame() ?? '';
     for (let index = 0; index < 5; index += 1) { await input(instance, '\u001b[C'); technical += instance.lastFrame(); }
     expect(technical).toContain('official/shared');

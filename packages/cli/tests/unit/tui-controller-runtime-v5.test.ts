@@ -1531,8 +1531,16 @@ describe('TUI controller runtime scope conflict validation', () => {
       direction: 'dependents',
     });
     expect(reverse.rows.map((row) => row.pluginId)).toEqual([
-      'team/dependency', 'team/cross-scope-consumer', 'team/stale-consumer',
+      'team/dependency', 'team/blocked-consumer', 'team/intent-consumer',
+      'team/cross-scope-consumer', 'team/mismatched-source-consumer', 'team/stale-consumer',
     ]);
+    for (const pluginId of ['team/blocked-consumer', 'team/intent-consumer',
+      'team/mismatched-source-consumer']) {
+      expect(reverse.rows.find((row) => row.pluginId === pluginId)).toMatchObject({
+        relationship: 'declared', pathReferences: [],
+        edge: { declared: true, availablePlacementReferences: [] },
+      });
+    }
     expect(reverse.scopeSummary.availableConsumerPluginIds).toEqual([
       'team/cross-scope-consumer', 'team/stale-consumer',
     ]);

@@ -323,8 +323,8 @@ def run_browse(columns: int, rows: int, timeout: float, resize_to: tuple[int, in
         session.send(b"/")
         session.send(b"Review")
         session.send(b"\x1b")
-        session.wait_route("pluginList")
-        session.wait_text("/ 编辑")
+        session.wait_route("pluginList", lambda context: context.get("query") == "Review")
+        session.wait_text("搜索 [/] Review")
         session.wait_text("Review Gate 审查门禁")
         mark("query")
         stage = "filter installed"
@@ -396,6 +396,7 @@ def run_native_install(columns: int, rows: int, timeout: float) -> dict[str, obj
     try:
         session.wait_route("pluginDetail")
         session.wait_text("代理实验室")
+        session.send(b"a")
         session.wait_text("› 安装")
         time.sleep(0.5)
         session.drain()
@@ -465,6 +466,7 @@ def run_source_check(columns: int, rows: int, timeout: float) -> dict[str, objec
         session.wait_route("sourceDetail")
         session.wait_text("team-tools")
         session.wait_text("检查来源")
+        session.wait_text("2.4.0")
         time.sleep(0.5)
         session.drain()
         session.send(b"r")
@@ -487,11 +489,12 @@ def run_source_check(columns: int, rows: int, timeout: float) -> dict[str, objec
             (item for item in latest_controller.get("catalogGenerations", [])
              if item.get("sourceId") == "team-tools"), None,
         ) if isinstance(latest_controller, dict) else None
-        active_rendered = "当前目录版本" in plain or ("当前 2.4." in plain and "来源可" in plain)
+        active_rendered = re.search(r"当前目录[^\r\n]*2\.4\.0", plain) is not None
         failed_rendered = "检查失败" in plain
         state_preserved = (
             isinstance(freshness, dict) and freshness.get("state") == "checkFailed"
             and isinstance(generation, dict) and isinstance(generation.get("active"), dict)
+            and generation["active"].get("catalogVersion") == "2.4.0"
         )
         if not active_rendered or not failed_rendered or not state_preserved:
             raise HarnessFailure(
@@ -584,8 +587,16 @@ def run_config_partial(columns: int, rows: int, timeout: float) -> dict[str, obj
         session.send(b"s")
         session.wait_route("review")
         summary_markers = (
-            "确认保存设置", "当前项目审查Profile", "个人默认启用审查", "开启",
+            "确认保存设置", "当前项目", "审查Profile", "个人默认", "启用审查", "开启",
         )
+        for _ in range(12):
+            session.drain()
+            if all(
+                marker.encode() in compact_plain(bytes(session.output[save_summary_offset:]))
+                for marker in summary_markers
+            ):
+                break
+            session.send(b"\x1b[C")
         session.wait_for(
             lambda _events: all(
                 marker.encode() in compact_plain(bytes(session.output[save_summary_offset:]))
@@ -695,6 +706,10 @@ def run_project_recovery(columns: int, rows: int, timeout: float) -> dict[str, o
         session.send(b"\r")
         session.wait_route("projectStatus")
         session.wait_text("待同步")
+        session.send(b"f")
+        session.wait_route("projectStatus", lambda context: context.get("projectStatusFilter") == "pending")
+        session.send(b"f")
+        session.wait_route("projectStatus", lambda context: context.get("projectStatusFilter") == "blocked")
         session.wait_text("受阻")
 
         stage = "exact subset review"
@@ -755,6 +770,7 @@ def run_project_recovery(columns: int, rows: int, timeout: float) -> dict[str, o
                 "reminderLater", "home", "projectStatus", "review", "result", "review", "pluginDetail",
             ],
             "firstExecution": ["official/agent-lab", "official/content-toolkit"],
+            "syncWhileFiltered": "blocked",
             "preservedBlocked": ["official/source-blocked"],
             "retryExecution": ["official/content-toolkit"],
             "colorSgrObserved": False,
@@ -808,6 +824,7 @@ def run_portable_flow(columns: int, rows: int, timeout: float) -> dict[str, obje
     session = PtySession(columns, rows, timeout, "portable-flow")
     try:
         session.wait_route("pluginDetail")
+        session.send(b"a")
         session.wait_text("› 安装")
         time.sleep(0.5)
         session.drain()

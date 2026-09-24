@@ -369,6 +369,8 @@ describe('TUI plugin write task', () => {
       await nextTurn();
 
       expect(instance.lastFrame()).toContain('更新到 2.0.0');
+      await write(instance, 'a');
+      expect(instance.lastFrame()).toContain('› 更新到 2.0.0');
       await write(instance, '\r');
       await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
       expect(instance.lastFrame()).toContain('确认更新到 2.0.0');
