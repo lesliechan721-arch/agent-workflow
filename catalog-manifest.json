@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.27",
+  "catalogVersion": "0.1.0-beta.28",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "2e603f0016747adc08e631ab77993ef39f61b99e"
+    "sourceHead": "e1a0ad902dd6c684a52ce79baef1b20c9e499787"
   },
   "entries": [
     {
