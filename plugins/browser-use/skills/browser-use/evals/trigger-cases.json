@@ -1,0 +1,277 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "browser-use",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "medium",
+      "rationale": "漏掉预览、浏览和交互会破坏能力定位；误把已有内容分析变为浏览增加无关开销。副作用错误单独验收，不用平均分抵消。"
+    },
+    "runtime": {
+      "isolation": "strict",
+      "observeSpawnAgent": false,
+      "forbidMultipleSkillLoads": false,
+      "strictNegativeSplits": []
+    }
+  },
+  "cases": [
+    {
+      "id": "preview_local",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "打开 http://localhost:3000 给我预览，窗口不要关。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "预览本身就是浏览器任务，不要求调试。",
+        "minimalCounterexample": "改成只解释已提供首页 HTML、不打开浏览器，则不需要加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "preview_online",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "用浏览器打开 https://example.com，我要看实际页面。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "在线网站与本地网站都在范围内。",
+        "minimalCounterexample": "改成只解释网址组成、不要联网，则不需要加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "rendered_content",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "这个网页内容由 JavaScript 加载，请用浏览器读取最终显示的账户配额。网址是 https://app.example.com/account。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "需要渲染后的状态。",
+        "minimalCounterexample": "配额 JSON 已提供且只需提取数字时不需要浏览器。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "fill_without_send",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "在 https://forms.example.com 的网页表单填入测试邮箱 test@example.com，但不要提交。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "表单填写属于浏览器操作。",
+        "minimalCounterexample": "只生成一段填写说明而不操作网页时不需要加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "visual_check",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "在浏览器里打开 http://localhost:3000，检查主按钮是否被遮挡，给我截图。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "需要实际页面与视觉证据。",
+        "minimalCounterexample": "用户已给出截图且只分析截图时无需再打开浏览器。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "browse_search",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "打开在线文档 https://docs.example.com，在站内搜索框查询 connection pooling，读取结果。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "浏览、搜索与渲染内容读取组成同一任务。",
+        "minimalCounterexample": "只用用户给出的搜索结果文本做摘要时无需加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "reuse_session",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "继续浏览器会话 docs 中的页面，进入帮助链接并读取限制说明。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "可复用明确会话，不局限新建或调试。",
+        "minimalCounterexample": "只解释这句话里的会话概念时无需加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "webkit_check",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "用 WebKit 打开 http://localhost:3000 查看这个问题；没有 WebKit 就如实告诉我。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "指定浏览器仍是本技能的可选能力分支。",
+        "minimalCounterexample": "只给出 Playwright 浏览器矩阵的测试代码而不运行时无需加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "diagnose_api",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "在 http://localhost:3000 点击一次测试查询，检查导致页面报错的相关请求，不改代码。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "调试是浏览器技能的一条条件路径。",
+        "minimalCounterexample": "只根据已经提供的请求日志解释 500 时无需加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "given_article",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "仅根据以下文章文本做三句摘要，不联网也不打开浏览器：浏览器缓存保存重复资源……",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "材料已经足够且明确禁止浏览。",
+        "minimalCounterexample": "需要读取网页的动态正文时才加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "given_screenshot",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只分析我提供的截图，指出排版问题，不打开网站。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "图像分析不是自动打开浏览器的理由。",
+        "minimalCounterexample": "要求实际打开同一页面验证问题时加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "source_only",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只修改给定 CSS 中的字号，不运行应用也不打开浏览器。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "明确限定源码修改。",
+        "minimalCounterexample": "修改后还要求浏览器核对效果时可以作为辅助加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "logs_only",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "下面已给出请求和服务器日志，解释为什么返回 500。不要发起新请求。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "现有证据分析不需要浏览器。",
+        "minimalCounterexample": "需要重现请求时加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "write_test_only",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "为这个纯函数写单元测试，不执行，也不操作网页。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "无浏览器操作目标。",
+        "minimalCounterexample": "改为在网页中执行验收时加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "explain_cli",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "解释浏览器 CLI 中 snapshot 和 screenshot 的区别，不运行任何命令。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "概念说明不需要执行技能。",
+        "minimalCounterexample": "要求获取实际页面的两种结果时加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "given_json",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "从这段已提供的 JSON 中提取账户配额：{\"quota\":150}。不要调用工具。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "现成结构化内容即可完成。",
+        "minimalCounterexample": "数字仅存在于动态页面时加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    }
+  ]
+}
