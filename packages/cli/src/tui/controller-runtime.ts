@@ -1258,6 +1258,11 @@ export function createTuiControllerDependencies(
         evidence: 'unavailable',
         items: [],
         notices: ['当前无法安全读取这个插件的目录内容。请检查来源状态后重试。'],
+        coverage: 'unavailable',
+        coverageIssue: {
+          code: 'unreadable',
+          message: '当前无法安全读取这个插件的目录内容。请检查来源状态后重试。',
+        },
       };
     }
   };

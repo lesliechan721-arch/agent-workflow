@@ -107,5 +107,12 @@ describe('TUI on-demand plugin content runtime', () => {
         manifest: expect.objectContaining({ name: 'first' }),
       }),
     }));
+
+    const unavailable = await dependencies.loadPluginContent?.('team/missing', signal);
+    expect(unavailable).toMatchObject({
+      evidence: 'unavailable', coverage: 'unavailable', items: [],
+      coverageIssue: { code: 'unreadable' },
+    });
+    expect(mocks.projectPluginContentOverview).toHaveBeenCalledOnce();
   });
 });

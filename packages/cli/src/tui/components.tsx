@@ -10,6 +10,7 @@ import {
 } from './diagnostics.js';
 import { resolveTuiSizePolicy, type TuiSizePolicy } from './layout.js';
 import { getTuiStatusColor, tuiTheme, type TuiStatus } from './theme.js';
+import { Pager, paginateWrappedRows } from './reader.js';
 import { wrapDisplayText } from './viewport.js';
 
 export interface TuiSize {
@@ -415,25 +416,20 @@ export function DiagnosticSummary(props: {
     return <Callout status="muted" title="没有可公开的技术字段" compact />;
   }
   const rows = diagnosticDetailLines(props.diagnostic, (props.columns ?? 80) - 6);
-  const total = rows.length;
-  const offset = Math.min(
-    total,
-    Math.max(0, Math.floor(Number.isFinite(props.offset) ? props.offset ?? 0 : 0)),
-  );
-  const limit = props.limit === undefined
-    ? total
-    : Math.max(0, Math.floor(Number.isFinite(props.limit) ? props.limit : 0));
-  const visibleRows = rows.slice(offset, offset + limit);
-  const after = total - offset - visibleRows.length;
+  const limit = props.limit ?? Math.max(1, rows.length);
+  const requestedOffset = Math.max(0, Math.floor(Number.isFinite(props.offset) ? props.offset ?? 0 : 0));
+  const page = paginateWrappedRows({ lines: rows, rows: limit,
+    page: Math.floor(requestedOffset / Math.max(1, limit)) + 1 });
 
   return <Box flexDirection="column">
     <Text color={tuiTheme.colors.muted}>下面的信息已脱敏，可用于排查或提交 issue。</Text>
     <TechnicalDetails label="脱敏诊断" compact>
-      {offset > 0 ? <StaticRow title={`↑ 前面还有 ${offset} 行`} status="muted" compact /> : null}
-      {visibleRows.map((line, index) => <Box key={offset + index} paddingX={1}>
+      {page.lines.map((line, index) => <Box key={page.offset + index} paddingX={1}>
         <Text>{line}</Text>
       </Box>)}
-      {after > 0 ? <StaticRow title={`↓ 后面还有 ${after} 行`} status="muted" compact /> : null}
+      {props.limit !== undefined
+        ? <Pager page={page.page} pageCount={page.pageCount} columns={(props.columns ?? 80) - 4} />
+        : null}
     </TechnicalDetails>
   </Box>;
 }
@@ -456,7 +452,7 @@ function FocusRow(props: InteractiveRowProps & { marker?: string }): React.JSX.E
   const description = typeof props.disabled === 'string' ? props.disabled : props.description;
   const color = props.disabled
     ? tuiTheme.colors.muted
-    : props.status ? getTuiStatusColor(props.status) : tuiTheme.colors.text;
+    : tuiTheme.colors.text;
   return (
     <Box
       flexDirection="column"
@@ -469,12 +465,15 @@ function FocusRow(props: InteractiveRowProps & { marker?: string }): React.JSX.E
             {props.focused ? '›' : ' '} {props.marker ? `${props.marker} ` : ''}{props.title}
           </Text>
         </Box>
-        {props.meta
+        {props.status || props.meta
           ? (
               <Box flexShrink={1} overflow="hidden" marginLeft={1}>
-                <Text color={props.disabled ? tuiTheme.colors.muted : color} wrap="truncate-end">
-                  {props.meta}
-                </Text>
+                {props.status ? <Text color={props.disabled ? tuiTheme.colors.muted : getTuiStatusColor(props.status)}
+                  wrap="truncate-end">
+                  {statusSymbols[props.status]}{props.meta ? ` ${props.meta}` : ''}
+                </Text> : null}
+                {props.meta && !props.status ? <Text color={props.disabled ? tuiTheme.colors.muted : tuiTheme.colors.text}
+                  wrap="truncate-end">{props.meta}</Text> : null}
               </Box>
             )
           : null}

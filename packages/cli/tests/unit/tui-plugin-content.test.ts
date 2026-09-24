@@ -52,8 +52,7 @@ describe('TUI plugin content projection', () => {
       fs.outputFile(path.join(root, 'codex', 'skills', 'inspect', 'SKILL.md'), skill('Inspect safely.', 'CODEX-BODY-SECRET')),
       fs.outputFile(path.join(root, 'codex', 'skills', 'deploy', 'SKILL.md'), skill('Deploy summary.', 'COMMAND-BODY-SECRET')),
       fs.outputFile(path.join(root, 'codex', 'skills', 'windows-lines', 'SKILL.md'), skill('Windows summary.', 'WINDOWS-BODY-SECRET').replace(/\n/gu, '\r\n')),
-      fs.outputFile(path.join(root, 'codex', 'skills', 'assets', 'helper.txt'), 'not a skill'),
-      fs.ensureDir(path.join(root, 'codex', 'skills', 'helper')),
+      fs.outputFile(path.join(root, 'codex', 'skills', 'helper.txt'), 'not a skill'),
       fs.outputFile(path.join(root, 'claude', 'skills', 'inspect', 'SKILL.md'), skill('Inspect safely.', 'CLAUDE-BODY-SECRET')),
       fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'), '---\ndescription: Deploy summary.\n---\nCOMMAND-BODY-SECRET\n'),
       fs.outputFile(path.join(root, 'agent-skills', 'skills', 'portable', 'SKILL.md'), skill('Portable check.', 'PORTABLE-BODY-SECRET')),
@@ -79,8 +78,9 @@ describe('TUI plugin content projection', () => {
       pluginVersion: '2.4.0',
       catalogVersion: '9.1.0',
       evidence: 'catalogBundle',
+      coverage: 'complete',
     });
-    expect(overview.items).toEqual([
+    expect(overview.items).toMatchObject([
       {
         id: 'app:dashboard', name: 'dashboard', type: 'app', description: null,
         tools: ['Codex'],
@@ -106,6 +106,7 @@ describe('TUI plugin content projection', () => {
         tools: ['Codex'],
       },
     ]);
+    expect(overview.notices).toEqual([]);
     expect(JSON.stringify(overview)).not.toContain('BODY-SECRET');
   });
 
@@ -128,8 +129,9 @@ describe('TUI plugin content projection', () => {
     });
 
     expect(overview.items).toEqual([]);
+    expect(overview.coverage).toBe('unavailable');
+    expect(overview.coverageIssue?.code).toBe('unsafePath');
     expect(JSON.stringify(overview)).not.toContain('LOCAL-SENSITIVE-TEXT');
-    expect(overview.notices).toContain('此目录版本没有可安全确认的内容清单。');
   });
 
   it('projects structured agents and dynamic targets without prompt or renderer content', async () => {
@@ -163,11 +165,130 @@ describe('TUI plugin content projection', () => {
       }),
     });
 
-    expect(overview.items).toEqual([
+    expect(overview.items).toMatchObject([
       { id: 'agent:reviewer', name: 'reviewer', type: 'agent', description: 'Reviews changes.', tools: ['Codex'] },
       { id: 'artifact:review-role', name: 'review', type: 'role', description: null, tools: ['Codex'] },
       { id: 'artifact:dynamic-skill', name: 'dynamic', type: 'skill', description: 'Dynamic summary.', tools: ['Codex'] },
     ]);
+    expect(overview.coverage).toBe('complete');
+    expect(overview.notices).toEqual([]);
     expect(JSON.stringify(overview)).not.toMatch(/PRIVATE-(?:PROMPT|INSTRUCTION)/u);
+  });
+
+  it('keeps an absent description normal and prefers trusted short metadata', async () => {
+    // Risk: ordinary Role and Skill entries can be counted as failures only because they lack a summary.
+    const root = await fixtureRoot();
+    await fs.ensureDir(path.join(root, 'claude', 'skills'));
+    await fs.outputFile(path.join(root, 'codex', 'skills', 'inspect', 'SKILL.md'),
+      '---\nname: inspect\ndescription: A long fallback sentence. Another sentence.\nmetadata:\n  short-description: Trusted short purpose.\n---\nPRIVATE-BODY\n');
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, { skills: './skills', artifacts: { targets: [
+        {
+          id: 'review-role', platform: 'codex', scopes: ['user'], target: 'codex.agentRole',
+          kind: 'codexRole', states: ['present'], refreshKeys: [], roleKey: 'review',
+        },
+        {
+          id: 'dynamic-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill',
+          kind: 'skill', states: ['present'], refreshKeys: [], skillKey: 'dynamic',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        },
+      ] } }),
+    });
+
+    expect(overview.items).toMatchObject([
+      { id: 'artifact:review-role', name: 'review', description: null, descriptionState: 'absent' },
+      { id: 'artifact:dynamic-skill', name: 'dynamic', description: null, descriptionState: 'absent' },
+      { id: 'skill:inspect', name: 'inspect', description: 'Trusted short purpose.', descriptionState: 'available' },
+    ]);
+    expect(overview.items.every((item) => item.issue === undefined)).toBe(true);
+    expect(overview.notices).toEqual([]);
+  });
+
+  it('keeps a confirmed Skill with invalid metadata and a local issue', async () => {
+    // Risk: a real metadata failure can be hidden as an ordinary missing description.
+    const root = await fixtureRoot();
+    await fs.ensureDir(path.join(root, 'claude', 'skills'));
+    await fs.outputFile(path.join(root, 'codex', 'skills', 'broken', 'SKILL.md'),
+      '---\nname: broken\ndescription: [invalid\n---\nPRIVATE-BODY\n');
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, { skills: './skills' }),
+    });
+
+    expect(overview.items).toMatchObject([{
+      id: 'skill:broken', name: 'broken', description: null,
+      descriptionState: 'issue', issue: { code: 'invalidMetadata' },
+    }]);
+    expect(overview.items[0]?.issue?.message).toContain('检查');
+    expect(overview.coverage).toBe('complete');
+    expect(overview.notices).toEqual([]);
+  });
+
+  it('separates partial coverage from a confirmed empty list', async () => {
+    // Risk: an unreadable declared list can be mistaken for a verified zero count.
+    const root = await fixtureRoot();
+    await fs.outputFile(path.join(root, 'codex', 'skills', 'known', 'SKILL.md'),
+      '---\nname: known\n---\nBODY\n');
+    const partial = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, { skills: './skills' }),
+    });
+    expect(partial.items).toMatchObject([{ name: 'known', descriptionState: 'absent' }]);
+    expect(partial.coverage).toBe('partial');
+    expect(partial.coverageIssue).toMatchObject({ code: 'incompleteList' });
+
+    await fs.ensureDir(path.join(root, 'claude', 'skills'));
+    const complete = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, { skills: './skills' }),
+    });
+    expect(complete.coverage).toBe('complete');
+    expect(complete.notices).toEqual([]);
+
+    await fs.remove(path.join(root, 'codex', 'skills', 'known'));
+    const empty = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, { skills: './skills' }),
+    });
+    expect(empty.items).toEqual([]);
+    expect(empty.coverage).toBe('complete');
+    expect(empty.coverageIssue).toBeUndefined();
+  });
+
+  it('keeps confirmed JSON components when another platform list is unreadable', async () => {
+    // Risk: a failed list parse can erase a confirmed item or create a false total count.
+    const root = await fixtureRoot();
+    await fs.outputJson(path.join(root, 'codex', '.mcp.json'), {
+      mcpServers: { repository: { command: 'PRIVATE-COMMAND' } },
+    });
+    await fs.outputFile(path.join(root, 'claude', '.mcp.json'), '{invalid');
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, { mcpServers: './.mcp.json' }),
+    });
+
+    expect(overview.items).toMatchObject([{
+      id: 'mcpServer:repository', name: 'repository', tools: ['Codex'],
+      description: null, descriptionState: 'absent',
+    }]);
+    expect(overview.coverage).toBe('partial');
+    expect(overview.coverageIssue?.code).toBe('unreadable');
+    expect(JSON.stringify(overview)).not.toContain('PRIVATE-COMMAND');
+  });
+
+  it('reports an unavailable bundle when its root cannot be read', async () => {
+    // Risk: a missing bundle root can reject the page load and lose its safe recovery state.
+    const root = await fixtureRoot();
+    await fs.remove(root);
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, { skills: './skills' }),
+    });
+
+    expect(overview).toMatchObject({
+      evidence: 'unavailable', coverage: 'unavailable', items: [],
+      coverageIssue: { code: 'unreadable' },
+    });
   });
 });

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { open } from 'node:fs/promises';
 import type { Stats } from 'node:fs';
+import { stripVTControlCharacters } from 'node:util';
 
 import fs from 'fs-extra';
 
@@ -20,12 +21,20 @@ export type PluginContentType =
 
 export type PluginContentTool = 'Codex' | 'Claude Code' | 'Agent Skills';
 
+export interface PluginContentIssue {
+  code: 'unsafePath' | 'unreadable' | 'invalidMetadata' | 'incompleteList';
+  message: string;
+}
+
 export interface PluginContentItem {
   id: string;
   name: string;
   type: PluginContentType;
   description: string | null;
   tools: PluginContentTool[];
+  // Optional while existing TUI consumers move to the structured reading state.
+  descriptionState?: 'available' | 'absent' | 'issue';
+  issue?: PluginContentIssue;
 }
 
 export interface PluginContentOverview {
@@ -35,6 +44,8 @@ export interface PluginContentOverview {
   evidence: 'catalogBundle' | 'unavailable';
   items: PluginContentItem[];
   notices: string[];
+  coverage?: 'complete' | 'partial' | 'unavailable';
+  coverageIssue?: PluginContentIssue;
 }
 
 const MAX_FRONTMATTER_BYTES = 16 * 1024;
@@ -73,13 +84,41 @@ async function regularPathWithin(root: string, candidate: string, kind: 'file' |
   return real && within(root, real) ? real : null;
 }
 
+async function unconfirmedPathCode(
+  root: string,
+  candidate: string,
+): Promise<'unsafePath' | 'unreadable' | 'incompleteList'> {
+  const lexical = path.resolve(candidate);
+  if (!within(root, lexical)) return 'unsafePath';
+  let current = root;
+  for (const segment of path.relative(root, lexical).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    let stats: Stats;
+    try {
+      stats = await fs.lstat(current);
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ? 'incompleteList' : 'unreadable';
+    }
+    if (stats.isSymbolicLink() || (!stats.isDirectory() && current !== lexical)) return 'unsafePath';
+  }
+  return 'unsafePath';
+}
+
 async function readFrontmatterDescription(
   root: string,
   skillFile: string,
-): Promise<{ exists: boolean; description: string | null }> {
+): Promise<{ exists: boolean; description: string | null; issue?: PluginContentIssue }> {
   const safeFile = await regularPathWithin(root, skillFile, 'file');
   if (!safeFile) return { exists: false, description: null };
-  const handle = await open(safeFile, 'r');
+  let handle;
+  try {
+    handle = await open(safeFile, 'r');
+  } catch {
+    return { exists: true, description: null, issue: {
+      code: 'unreadable', message: '简介文件无法读取。请检查目录内容后重试。',
+    } };
+  }
   try {
     const chunks: Buffer[] = [];
     let total = 0;
@@ -92,15 +131,45 @@ async function readFrontmatterDescription(
       total += bytesRead;
       frontmatterEnd = Buffer.concat(chunks).toString('utf8').replace(/\r\n/gu, '\n').indexOf('\n---\n', 4);
     }
-    if (frontmatterEnd === -1) return { exists: true, description: null };
+    if (frontmatterEnd === -1) return { exists: true, description: null, issue: {
+      code: 'invalidMetadata', message: '简介元信息无效或超过读取预算。请检查内容文件。',
+    } };
     const normalized = Buffer.concat(chunks).toString('utf8').replace(/\r\n/gu, '\n');
     const header = normalized.slice(0, frontmatterEnd + '\n---\n'.length);
     const parsed = parseSkillFrontmatter(header, 'SKILL.md');
-    const description = parsed.frontmatter?.description;
+    if (parsed.errors.length > 0) return { exists: true, description: null, issue: {
+      code: 'invalidMetadata', message: '简介元信息无法解析。请检查内容文件。',
+    } };
+    const metadata = parsed.frontmatter?.metadata;
+    const short = isRecord(metadata) ? metadata['short-description'] : undefined;
+    if (short !== undefined && (typeof short !== 'string' || !short.trim())) {
+      return { exists: true, description: null, issue: {
+        code: 'invalidMetadata', message: '简短用途元信息无效。请检查内容文件。',
+      } };
+    }
+    const description = typeof short === 'string' && short.trim()
+      ? short : parsed.frontmatter?.description;
+    if (description !== undefined && typeof description !== 'string') {
+      return { exists: true, description: null, issue: {
+        code: 'invalidMetadata', message: '简介元信息类型无效。请检查内容文件。',
+      } };
+    }
+    const safeDescription = typeof description === 'string'
+      ? stripVTControlCharacters(description)
+        .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, ' ')
+        .replace(/\s+/gu, ' ').trim()
+      : '';
+    const sentence = short ? safeDescription
+      : safeDescription.match(/^.*?(?:[。！？]|[.!?](?=\s|$)|$)/u)?.[0] ?? safeDescription;
+    const points = [...sentence];
     return {
       exists: true,
-      description: typeof description === 'string' && description.trim() ? description.trim() : null,
+      description: points.length > 120 ? `${points.slice(0, 119).join('')}…` : sentence || null,
     };
+  } catch {
+    return { exists: true, description: null, issue: {
+      code: 'unreadable', message: '简介文件无法读取。请检查目录内容后重试。',
+    } };
   } finally {
     await handle.close();
   }
@@ -118,6 +187,16 @@ function addItem(
   }
   current.tools = sortTools([...current.tools, ...item.tools]);
   if (current.description === null && item.description !== null) current.description = item.description;
+  if (item.issue) {
+    current.descriptionState = 'issue';
+    current.issue = item.issue;
+  } else if (current.descriptionState !== 'issue' && current.description !== null) {
+    current.descriptionState = 'available';
+  }
+}
+
+function addCoverageIssue(issues: PluginContentIssue[], issue: PluginContentIssue): void {
+  issues.push(issue);
 }
 
 async function addSkillDirectory(options: {
@@ -125,31 +204,61 @@ async function addSkillDirectory(options: {
   relativePath: string;
   tool: PluginContentTool;
   items: Map<string, PluginContentItem>;
-  notices: string[];
+  coverageIssues: PluginContentIssue[];
 }): Promise<void> {
   const directory = await regularPathWithin(options.root, path.join(options.root, options.relativePath), 'directory');
   if (!directory) {
-    options.notices.push(`${options.tool} Skill 清单不可安全读取。`);
+    const code = await unconfirmedPathCode(options.root, path.join(options.root, options.relativePath));
+    addCoverageIssue(options.coverageIssues, {
+      code, message: `${options.tool} Skill 清单无法确认。请检查目录。`,
+    });
     return;
   }
-  const entries = await fs.readdir(directory, { withFileTypes: true });
+  let entries;
+  try {
+    entries = await fs.readdir(directory, { withFileTypes: true });
+  } catch {
+    addCoverageIssue(options.coverageIssues, {
+      code: 'unreadable', message: `${options.tool} Skill 清单无法读取。请检查目录后重试。`,
+    });
+    return;
+  }
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    if (entry.isSymbolicLink()) {
+      addCoverageIssue(options.coverageIssues, {
+        code: 'unsafePath', message: `${options.tool} Skill 清单含不安全路径。请检查目录。`,
+      });
+      continue;
+    }
+    if (!entry.isDirectory()) continue;
     const skillRoot = await regularPathWithin(options.root, path.join(directory, entry.name), 'directory');
-    if (!skillRoot) continue;
+    if (!skillRoot) {
+      const code = await unconfirmedPathCode(options.root, path.join(directory, entry.name));
+      addCoverageIssue(options.coverageIssues, {
+        code, message: `${options.tool} Skill 清单含无法确认的条目。请检查目录。`,
+      });
+      continue;
+    }
     const skill = await readFrontmatterDescription(
       options.root,
       path.join(skillRoot, 'SKILL.md'),
     );
-    if (!skill.exists) continue;
+    if (!skill.exists) {
+      const code = await unconfirmedPathCode(options.root, path.join(skillRoot, 'SKILL.md'));
+      addCoverageIssue(options.coverageIssues, {
+        code, message: `${options.tool} Skill 清单有无法确认的条目。请检查目录。`,
+      });
+      continue;
+    }
     addItem(options.items, {
       id: `skill:${entry.name}`,
       name: entry.name,
       type: 'skill',
       description: skill.description,
       tools: [options.tool],
+      descriptionState: skill.issue ? 'issue' : skill.description ? 'available' : 'absent',
+      ...(skill.issue ? { issue: skill.issue } : {}),
     });
-    if (skill.description === null) options.notices.push(`Skill ${entry.name} 没有安全可读的简短用途。`);
   }
 }
 
@@ -160,25 +269,33 @@ async function addJsonComponents(options: {
   type: 'mcpServer' | 'app';
   tool: PluginContentTool;
   items: Map<string, PluginContentItem>;
-  notices: string[];
+  coverageIssues: PluginContentIssue[];
 }): Promise<void> {
   const file = await regularPathWithin(options.root, path.join(options.root, options.relativePath), 'file');
   if (!file) {
-    options.notices.push(`${options.tool} ${options.type} 清单不可安全读取。`);
+    const code = await unconfirmedPathCode(options.root, path.join(options.root, options.relativePath));
+    addCoverageIssue(options.coverageIssues, {
+      code, message: `${options.tool} ${options.type} 清单无法确认。请检查目录。`,
+    });
     return;
   }
   let value: unknown;
   try {
     value = await fs.readJson(file);
   } catch {
-    options.notices.push(`${options.tool} ${options.type} 清单不可安全读取。`);
+    addCoverageIssue(options.coverageIssues, {
+      code: 'unreadable', message: `${options.tool} ${options.type} 清单无法读取。请检查内容文件。`,
+    });
     return;
   }
   const collection = isRecord(value) ? value[options.property] : undefined;
-  const entries = isRecord(collection) ? Object.keys(collection).sort() : [];
-  if (entries.length === 0) {
-    options.notices.push(`${options.tool} ${options.type} 清单没有可确认的组件名称。`);
+  if (!isRecord(collection)) {
+    addCoverageIssue(options.coverageIssues, {
+      code: 'incompleteList', message: `${options.tool} ${options.type} 清单格式无效。请检查内容文件。`,
+    });
+    return;
   }
+  const entries = Object.keys(collection).sort();
   for (const name of entries) {
     addItem(options.items, {
       id: `${options.type}:${name}`,
@@ -186,6 +303,7 @@ async function addJsonComponents(options: {
       type: options.type,
       description: null,
       tools: [options.tool],
+      descriptionState: 'absent',
     });
   }
 }
@@ -194,7 +312,7 @@ async function addSlashCommands(options: {
   root: string;
   hasCodex: boolean;
   items: Map<string, PluginContentItem>;
-  notices: string[];
+  coverageIssues: PluginContentIssue[];
 }): Promise<void> {
   const directory = await regularPathWithin(
     options.root,
@@ -202,27 +320,58 @@ async function addSlashCommands(options: {
     'directory',
   );
   if (!directory) {
-    options.notices.push('Slash command 清单没有可安全确认的组件名称。');
+    const code = await unconfirmedPathCode(options.root, path.join(options.root, 'claude', 'commands'));
+    addCoverageIssue(options.coverageIssues, {
+      code, message: 'Slash command 清单无法确认。请检查目录。',
+    });
     return;
   }
-  const entries = await fs.readdir(directory, { withFileTypes: true });
+  let entries;
+  try {
+    entries = await fs.readdir(directory, { withFileTypes: true });
+  } catch {
+    addCoverageIssue(options.coverageIssues, {
+      code: 'unreadable', message: 'Slash command 清单无法读取。请检查目录后重试。',
+    });
+    return;
+  }
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (!entry.isFile() || entry.isSymbolicLink() || path.extname(entry.name) !== '.md') continue;
+    if (path.extname(entry.name) !== '.md') continue;
+    if (entry.isSymbolicLink() || !entry.isFile()) {
+      addCoverageIssue(options.coverageIssues, {
+        code: 'unsafePath', message: 'Slash command 清单含无法确认的条目。请检查目录。',
+      });
+      continue;
+    }
+    if (!await regularPathWithin(options.root, path.join(directory, entry.name), 'file')) {
+      addCoverageIssue(options.coverageIssues, {
+        code: 'unsafePath', message: 'Slash command 清单含不安全路径。请检查目录。',
+      });
+      continue;
+    }
     const name = path.basename(entry.name, '.md');
     const tools: PluginContentTool[] = ['Claude Code'];
     const codexSkillFile = path.join(options.root, 'codex', 'skills', name, 'SKILL.md');
     const codexCommand = options.hasCodex
       && await regularPathWithin(options.root, codexSkillFile, 'file');
+    if (options.hasCodex && !codexCommand && await fs.lstat(codexSkillFile).catch(() => undefined)) {
+      addCoverageIssue(options.coverageIssues, {
+        code: 'unsafePath', message: 'Slash command 的 Codex 组件不可安全确认。请检查目录。',
+      });
+    }
     if (codexCommand) tools.unshift('Codex');
     options.items.delete(`skill:${name}`);
+    const skill = codexCommand
+      ? await readFrontmatterDescription(options.root, codexSkillFile)
+      : undefined;
     addItem(options.items, {
       id: `command:${name}`,
       name,
       type: 'command',
-      description: codexCommand
-        ? (await readFrontmatterDescription(options.root, codexSkillFile)).description
-        : null,
+      description: skill?.description ?? null,
       tools,
+      descriptionState: skill?.issue ? 'issue' : skill?.description ? 'available' : 'absent',
+      ...(skill?.issue ? { issue: skill.issue } : {}),
     });
   }
 }
@@ -264,36 +413,66 @@ export async function projectPluginContentOverview(options: {
   catalogVersion: string;
   plugin: PluginMeta;
 }): Promise<PluginContentOverview> {
-  const root = await fs.realpath(options.plugin.rootDir);
+  let root: string;
+  try {
+    root = await fs.realpath(options.plugin.rootDir);
+  } catch {
+    const message = '当前无法安全读取这个插件的目录内容。请检查来源状态后重试。';
+    return {
+      pluginId: options.pluginId,
+      pluginVersion: options.plugin.manifest.version,
+      catalogVersion: options.catalogVersion,
+      evidence: 'unavailable',
+      items: [],
+      notices: [message],
+      coverage: 'unavailable',
+      coverageIssue: { code: 'unreadable', message },
+    };
+  }
   const items = new Map<string, PluginContentItem>();
-  const notices: string[] = [];
+  const coverageIssues: PluginContentIssue[] = [];
   const platforms = await projectedPlatforms(root);
 
+  if (platforms.length === 0 && (options.plugin.manifest.skills
+    || options.plugin.manifest.mcpServers || options.plugin.manifest.apps)) {
+    addCoverageIssue(coverageIssues, {
+      code: 'incompleteList', message: '插件声明了内容，但没有可安全确认的平台清单。请检查目录。',
+    });
+  } else if (options.plugin.manifest.apps && !platforms.includes('Codex')) {
+    addCoverageIssue(coverageIssues, {
+      code: 'incompleteList', message: '插件声明了 App，但没有可安全确认的 Codex 清单。请检查目录。',
+    });
+  }
+
   if (options.plugin.manifest.skills) {
-    await Promise.all([
-      ...(platforms.includes('Codex') ? [addSkillDirectory({
-        root, relativePath: 'codex/skills', tool: 'Codex', items, notices,
-      })] : []),
-      ...(platforms.includes('Claude Code') ? [addSkillDirectory({
-        root, relativePath: 'claude/skills', tool: 'Claude Code', items, notices,
-      })] : []),
-    ]);
+    if (platforms.includes('Codex')) {
+      await addSkillDirectory({
+        root, relativePath: 'codex/skills', tool: 'Codex', items, coverageIssues,
+      });
+    }
+    if (platforms.includes('Claude Code')) {
+      await addSkillDirectory({
+        root, relativePath: 'claude/skills', tool: 'Claude Code', items, coverageIssues,
+      });
+    }
   }
   if (options.plugin.manifest.distributions?.agentSkills?.skills) {
     await addSkillDirectory({
-      root, relativePath: 'agent-skills/skills', tool: 'Agent Skills', items, notices,
+      root, relativePath: 'agent-skills/skills', tool: 'Agent Skills', items, coverageIssues,
     });
   }
   if (options.plugin.manifest.mcpServers) {
-    await Promise.all(platforms.map((tool) => addJsonComponents({
-      root,
-      relativePath: `${tool === 'Codex' ? 'codex' : 'claude'}/${options.plugin.manifest.mcpServers!.replace(/^\.\//u, '')}`,
-      property: 'mcpServers',
-      type: 'mcpServer',
-      tool,
-      items,
-      notices,
-    })));
+    for (const tool of platforms) {
+      await addJsonComponents({
+        root,
+        relativePath: `${tool === 'Codex' ? 'codex' : 'claude'}/${options.plugin.manifest.mcpServers.replace(/^\.\//u, '')}`,
+        property: 'mcpServers',
+        type: 'mcpServer',
+        tool,
+        items,
+        coverageIssues,
+      });
+    }
   }
   if (options.plugin.manifest.apps && platforms.includes('Codex')) {
     await addJsonComponents({
@@ -303,7 +482,7 @@ export async function projectPluginContentOverview(options: {
       type: 'app',
       tool: 'Codex',
       items,
-      notices,
+      coverageIssues,
     });
   }
   if (options.plugin.manifest.slashCommands) {
@@ -311,7 +490,7 @@ export async function projectPluginContentOverview(options: {
       root,
       hasCodex: platforms.includes('Codex'),
       items,
-      notices,
+      coverageIssues,
     });
   }
 
@@ -322,6 +501,7 @@ export async function projectPluginContentOverview(options: {
       type: 'agent',
       description: agent.description.trim() || null,
       tools: toolsForOverrides(platforms, agent.agentOverrides),
+      descriptionState: agent.description.trim() ? 'available' : 'absent',
     });
   }
   for (const instruction of options.plugin.manifest.extensions?.instructions ?? []) {
@@ -331,6 +511,7 @@ export async function projectPluginContentOverview(options: {
       type: 'instruction',
       description: null,
       tools: toolsForOverrides(platforms, instruction.agentOverrides),
+      descriptionState: 'absent',
     });
   }
   for (const permission of options.plugin.manifest.extensions?.permissions ?? []) {
@@ -340,6 +521,7 @@ export async function projectPluginContentOverview(options: {
       type: 'permission',
       description: null,
       tools: toolsForOverrides(platforms, permission.agentOverrides),
+      descriptionState: 'absent',
     });
   }
   for (const hook of options.plugin.manifest.extensions?.hooks ?? []) {
@@ -350,6 +532,7 @@ export async function projectPluginContentOverview(options: {
       type: 'hook',
       description: null,
       tools: toolsForOverrides(platforms, hook.agentOverrides),
+      descriptionState: 'absent',
     });
   }
   for (const [platform, hooks] of Object.entries(options.plugin.manifest.extensions?.nativeHooks ?? {})) {
@@ -362,6 +545,7 @@ export async function projectPluginContentOverview(options: {
         type: 'hook',
         description: null,
         tools: [tool],
+        descriptionState: 'absent',
       });
     }
   }
@@ -372,8 +556,9 @@ export async function projectPluginContentOverview(options: {
     if (!tool || !type) continue;
     const name = target.skillKey ?? target.roleKey ?? target.id;
     let description: string | null = null;
+    let issue: PluginContentIssue | undefined;
     if (type === 'skill' && target.platform) {
-      description = (await readFrontmatterDescription(root, path.join(
+      const skill = await readFrontmatterDescription(root, path.join(
         root,
         '.agents-plugin',
         'artifact-sources',
@@ -381,7 +566,17 @@ export async function projectPluginContentOverview(options: {
         target.id,
         '0',
         'SKILL.md',
-      ))).description;
+      ));
+      description = skill.description;
+      issue = skill.issue;
+      if (!skill.exists) {
+        const code = await unconfirmedPathCode(root, path.join(
+          root, '.agents-plugin', 'artifact-sources', target.platform, target.id, '0', 'SKILL.md',
+        ));
+        if (code !== 'incompleteList') issue = {
+          code, message: '简介文件不可安全读取。请检查内容目录。',
+        };
+      }
     }
     addItem(items, {
       id: `artifact:${target.id}`,
@@ -389,19 +584,24 @@ export async function projectPluginContentOverview(options: {
       type,
       description,
       tools: [tool],
+      descriptionState: issue ? 'issue' : description ? 'available' : 'absent',
+      ...(issue ? { issue } : {}),
     });
-    if (description === null) notices.push(`${type} ${name} 没有安全可读的简短用途。`);
   }
 
   const result = [...items.values()].sort((left, right) =>
     left.type.localeCompare(right.type) || left.name.localeCompare(right.name));
-  if (result.length === 0) notices.push('此目录版本没有可安全确认的内容清单。');
+  const coverage = coverageIssues.length === 0
+    ? 'complete' : result.length > 0 ? 'partial' : 'unavailable';
+  const notices = [...new Set(coverageIssues.map((issue) => issue.message))];
   return {
     pluginId: options.pluginId,
     pluginVersion: options.plugin.manifest.version,
     catalogVersion: options.catalogVersion,
     evidence: 'catalogBundle',
     items: result,
-    notices: [...new Set(notices)],
+    notices,
+    coverage,
+    ...(coverageIssues[0] ? { coverageIssue: coverageIssues[0] } : {}),
   };
 }
