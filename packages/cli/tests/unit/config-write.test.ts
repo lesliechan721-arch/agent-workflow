@@ -329,7 +329,7 @@ describe('config write full reinstall apply', () => {
       };
       const filePath = resolvePluginConfigStorePath(storeOptions);
       await fs.outputFile(filePath, `${JSON.stringify({
-        schemaVersion: 4,
+        schemaVersion: 5,
         sourceId: storeOptions.sourceId,
         binding: { kind: 'source', sourceIdentity },
         pluginName: storeOptions.pluginName,
@@ -400,7 +400,7 @@ describe('config write full reinstall apply', () => {
     };
     const filePath = resolvePluginConfigStorePath(storeOptions);
     await fs.outputJson(filePath, {
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: storeOptions.sourceId,
       binding: { kind: 'source', sourceIdentity },
       pluginName: storeOptions.pluginName,

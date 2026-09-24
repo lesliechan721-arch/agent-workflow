@@ -201,19 +201,17 @@ describe('TUI v8.2 config coverage', () => {
       expect(JSON.stringify(value.snapshot)).not.toContain(privateValue);
 
       await input(instance, '\r');
-      expect(value.snapshot.router.current.route.name).toBe('configLayer');
+      expect(value.snapshot.router.current.route.name).toBe('configFields');
       expect(instance.lastFrame()).toContain('个人默认');
       expect(instance.lastFrame()).not.toContain('› 当前项目');
       expect(instance.lastFrame()).not.toContain(privateValue);
       expect(JSON.stringify(value.snapshot)).not.toContain(privateValue);
 
-      await input(instance, '\r');
       await nextTurn(3);
       expect(value.snapshot.router.current.route.name).toBe('configFields');
-      expect(instance.lastFrame()).toContain('拟保存：个人默认');
-      expect(instance.lastFrame()).toContain('将更新 · 拟保存：个人默认');
+      expect(instance.lastFrame()).toContain('待保存到个人默认');
       expect(instance.lastFrame()).not.toContain(privateValue);
-      await input(instance, 's', '\u001B[B', '\r');
+      await input(instance, 's');
       for (let index = 0; index < 12
         && value.snapshot.router.current.route.name === 'reviewPreparing'; index += 1) {
         await nextTurn();
@@ -221,11 +219,11 @@ describe('TUI v8.2 config coverage', () => {
 
       expect(value.snapshot.router.current.route.name).toBe('review');
       expect(value.snapshot.activeReview?.operationKind).toBe('configSaveBatch');
-      expect(captured.at(-1)).toMatchObject({
+      await vi.waitFor(() => expect(captured.at(-1)).toMatchObject({
         kind: 'configSaveBatch',
         apply: false,
         groups: [{ scope: 'user', updates: { token: privateValue }, sensitiveKeys: ['token'] }],
-      });
+      }));
       expect(instance.lastFrame()).not.toContain(privateValue);
       expect(JSON.stringify(value.snapshot)).not.toContain(privateValue);
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);

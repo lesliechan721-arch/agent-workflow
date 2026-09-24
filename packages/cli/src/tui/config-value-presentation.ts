@@ -6,6 +6,7 @@ import {
   matchPluginConfigPreset,
   PLUGIN_CONFIG_SUMMARY_MAX_CODE_POINTS,
   type PluginConfigJoinSummary,
+  type PluginConfigArray,
   type PluginConfigObject,
   type PluginConfigSchemaField,
   type PluginConfigScalar,
@@ -56,6 +57,7 @@ export function presentConfigValue(options: {
   invalid?: boolean;
   full?: boolean;
   summary?: PluginConfigJoinSummary;
+  itemSummary?: PluginConfigJoinSummary;
 }): ValuePresentation {
   const { definition, value } = options;
   const configured = options.configured ?? value !== undefined;
@@ -67,9 +69,24 @@ export function presentConfigValue(options: {
     return { text: '需修正', state: 'invalid', complete: true };
   }
   if (options.full) return {
-    text: definition.type === 'object' ? safeConfigText(JSON.stringify(value)) : scalarText(value as PluginConfigScalar),
+    text: definition.type === 'object' || definition.type === 'array'
+      ? safeConfigText(JSON.stringify(value)) : scalarText(value as PluginConfigScalar),
     state: 'value', complete: true,
   };
+  if (definition.type === 'array') {
+    const items = value as PluginConfigArray;
+    if (items.length === 0) return boundedValue('空列表');
+    const previews = items.slice(0, 2).map((item) => presentConfigValue({
+      definition: definition.items,
+      value: item,
+      summary: options.itemSummary,
+    }));
+    const text = previews.map((preview) => definition.items.type === 'object'
+      ? preview.text : `[${preview.text}]`).join(' · ')
+      + (items.length > 2 ? ` +${items.length - 2} 项` : '');
+    const result = boundedValue(text);
+    return { ...result, complete: result.complete && items.length <= 2 && previews.every((item) => item.complete) };
+  }
   if (definition.type !== 'object') return boundedValue(scalarText(value as PluginConfigScalar));
 
   const object = value as PluginConfigObject;

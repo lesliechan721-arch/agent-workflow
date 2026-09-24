@@ -457,6 +457,7 @@ export interface ConfigFieldViewModel {
   type: PluginConfigFieldType;
   definition: PluginConfigSchemaField;
   summary?: PluginConfigJoinSummary;
+  itemSummary?: PluginConfigJoinSummary;
   displayValue: string;
   required: boolean;
   sensitive: boolean;
@@ -510,7 +511,14 @@ export interface ConfigPresetViewModel {
   privateFieldTitles?: string[];
 }
 
+export interface ConfigEditEvidence {
+  sourceIdentity: string;
+  schemaIdentity: string;
+  storeDigests: Partial<Record<Scope, string>>;
+}
+
 export interface ConfigPageViewModel {
+  editEvidence?: ConfigEditEvidence;
   pluginId: string;
   layer: { scope: Scope | 'effective' };
   groups: ConfigGroupViewModel[];
@@ -654,6 +662,8 @@ export interface TuiViewModel {
 export interface PortableSkillCandidateViewModel {
   name: string;
   description: string;
+  shortDescription?: string;
+  shortDescriptionSource?: 'metadata' | 'fallback';
   selected: boolean;
   providerPluginId: string;
   providerDisplayName: string;
@@ -2346,6 +2356,7 @@ export function buildTuiViewModel(options: {
 function displayConfigValue(options: {
   field: PluginConfigSchemaField;
   summary?: PluginConfigJoinSummary;
+  itemSummary?: PluginConfigJoinSummary;
   privateValue: boolean;
   inherited: boolean;
   configured: boolean;
@@ -2354,6 +2365,7 @@ function displayConfigValue(options: {
   return presentConfigValue({
     definition: options.field,
     summary: options.summary,
+    itemSummary: options.itemSummary,
     value: options.value,
     configured: options.configured,
     privateValue: options.privateValue,
@@ -2446,8 +2458,11 @@ export function buildConfigGroups(options: {
         && entry.effectiveValue !== null
         && (entry.valueState === 'configured' || entry.valueState === 'default')
       : entry?.storedSourceLayer !== undefined;
-    const summaryName = options.schema.presentation?.fieldViews?.[key]?.summary;
-    const summary = summaryName === undefined ? undefined : options.schema.presentation?.summaries?.[summaryName];
+    const presentation = options.schema.presentation;
+    const fieldView = presentation && 'fieldViews' in presentation ? presentation.fieldViews?.[key] : undefined;
+    const summaries = presentation && 'summaries' in presentation ? presentation.summaries : undefined;
+    const summary = fieldView?.summary ? summaries?.[fieldView.summary] : undefined;
+    const itemSummary = fieldView?.itemSummary ? summaries?.[fieldView.itemSummary] : undefined;
     const privateValue = schema.sensitive === true;
     const choices = schema.choices;
     const selectedValue = effectivePage ? entry?.effectiveValue : entry?.storedValue;
@@ -2513,9 +2528,11 @@ export function buildConfigGroups(options: {
       type: schema.type,
       definition: configEditorDefinition(schema),
       ...(summary ? { summary } : {}),
+      ...(itemSummary ? { itemSummary } : {}),
       displayValue: selectedStoredInvalid ? '需修正' : displayConfigValue({
         field: schema,
         summary,
+        itemSummary,
         privateValue,
         inherited,
         configured,
@@ -2537,6 +2554,7 @@ export function buildConfigGroups(options: {
       effectiveDisplayValue: effectiveEntry?.invalidOverride ? '需修正' : displayConfigValue({
         field: schema,
         summary,
+        itemSummary,
         privateValue,
         inherited: false,
         configured: effectiveConfigured,
@@ -2559,6 +2577,7 @@ export function buildConfigGroups(options: {
           : displayConfigValue({
               field: schema,
               summary,
+              itemSummary,
               privateValue,
               inherited: false,
               configured: fallbackConfigured,

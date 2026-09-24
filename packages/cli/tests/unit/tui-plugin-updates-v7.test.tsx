@@ -318,7 +318,7 @@ describe('TUI plugin update evidence', () => {
     const home = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
     await controller.load();
     await nextTurn();
-    expect(home.lastFrame()).toContain('[可更新 1]');
+    expect(home.lastFrame()).toContain('↑ 1 可更新');
     home.unmount();
 
     controller.push({ name: 'pluginList', mode: 'installed' });
@@ -332,11 +332,8 @@ describe('TUI plugin update evidence', () => {
       .toHaveLength(1);
     instance.stdin.write('f');
     await nextTurn();
-    await vi.waitFor(() => expect(instance.lastFrame()).toContain('[未安装 0]'));
-    instance.stdin.write('f');
-    await nextTurn();
-    await nextTurn();
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('[可更新 1]'));
+
 
     instance.stdin.write('\r');
     await vi.waitFor(() => expect(controller.snapshot.router.current.route).toEqual({

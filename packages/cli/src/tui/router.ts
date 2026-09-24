@@ -7,7 +7,7 @@ export type PortableBlockerCode =
   | 'portableScopeUnavailable'
   | 'portableValidationFailed';
 
-export type PluginInstallFilter = 'all' | 'installed' | 'uninstalled' | 'updateAvailable' | 'attention';
+export type PluginInstallFilter = 'all' | 'installed' | 'uninstalled' | 'updateAvailable' | 'attention' | 'project' | 'user';
 export interface ConfigInvalidStoreEvidence {
   scope: Scope;
   code: 'invalidJson' | 'schemaVersionUnsupported' | 'identityMismatch' | 'invalidValues';
@@ -21,8 +21,9 @@ export type ConfigResumeRoute =
       pluginId: string;
       layer: { scope: Scope | 'effective' };
       fieldKey: string;
-      editor: 'boolean' | 'number' | 'string' | 'object';
+      editor: 'boolean' | 'number' | 'string' | 'object' | 'array';
       mode?: 'choices' | 'custom';
+      arrayItem?: { rowId?: string };
     }
   | {
       name: 'configObjectPropertyEditor';
@@ -32,6 +33,7 @@ export type ConfigResumeRoute =
       propertyKey?: string;
       dynamic: boolean;
       stage: 'key' | 'action' | 'choices' | 'custom';
+      arrayItem?: { rowId?: string };
     }
   | {
       name: 'configFieldAction';
@@ -119,8 +121,9 @@ export type TuiRoute =
       pluginId: string;
       layer: { scope: Scope | 'effective' };
       fieldKey: string;
-      editor: 'boolean' | 'number' | 'string' | 'object';
+      editor: 'boolean' | 'number' | 'string' | 'object' | 'array';
       mode?: 'choices' | 'custom';
+      arrayItem?: { rowId?: string };
     }
   | {
       name: 'configObjectPropertyEditor';
@@ -130,6 +133,7 @@ export type TuiRoute =
       propertyKey?: string;
       dynamic: boolean;
       stage: 'key' | 'action' | 'choices' | 'custom';
+      arrayItem?: { rowId?: string };
     }
   | {
       name: 'configFieldAction';
@@ -179,6 +183,7 @@ export interface TuiPageContext {
   focusedEntityId?: string;
   installFilter?: PluginInstallFilter;
   configGroupId?: string;
+  projectSection?: 'declared' | 'extraInstalled';
   autoPreparedRestore?: boolean;
   autoPreparedUpdate?: boolean;
 }

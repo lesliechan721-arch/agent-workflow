@@ -250,7 +250,7 @@ const controller = new TuiController({
     const status = loadResult();
     if (scenario === 'project-recovery') record({
       type: 'project-status-load',
-      projectIntentRoots: status.projectIntentRoots,
+      projectIntentRoots: status.projectIntent?.roots,
       targets: status.payload.targets.map((target) => ({
         pluginId: target.pluginId,
         platform: target.platform,
@@ -402,6 +402,11 @@ const unsubscribe = controller.subscribe((snapshot) => {
       actionableTargets: snapshot.projectIntentReminder.actionableTargets,
       blockedTargets: snapshot.projectIntentReminder.blockedTargets,
       unconfirmedTargets: snapshot.projectIntentReminder.unconfirmedTargets,
+    } : undefined,
+    projectInventory: snapshot.projectInventory ? {
+      declaredPluginIds: snapshot.projectInventory.declaredRoots.map((root) => root.pluginId),
+      counts: snapshot.projectInventory.counts,
+      syncTargets: snapshot.projectInventory.syncTargets,
     } : undefined,
     portableDraft: snapshot.portableDraft ? {
       selected: snapshot.portableDraft.candidates.filter((candidate) => candidate.selected).map((candidate) => candidate.name),

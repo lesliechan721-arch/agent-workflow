@@ -24,6 +24,7 @@ import {
 const digestPattern = /^sha256:[0-9a-f]{64}$/u
 const safeIdPattern = /^[a-z0-9][a-z0-9-]*$/u
 const safeConfigKeyPattern = /^[A-Za-z][A-Za-z0-9_]*$/u
+const dangerousConfigKeys = new Set(['__proto__', 'constructor', 'prototype'])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -44,13 +45,29 @@ function sameConfigValue(left: PluginConfigValue, right: PluginConfigValue): boo
 function assertConfigValueShape(value: unknown, field: string): PluginConfigValue {
   if (typeof value === 'string' || typeof value === 'boolean') return value
   if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (Array.isArray(value)) {
+    if (Object.keys(value).length !== value.length) {
+      throw new Error(`Review profile config field "${field}" has an invalid array value.`)
+    }
+    const items = value.map((item) => {
+      if (Array.isArray(item)) {
+        throw new Error(`Review profile config field "${field}" has an invalid array value.`)
+      }
+      return assertConfigValueShape(item, field)
+    })
+    const itemType = items[0] !== null && typeof items[0] === 'object' ? 'object' : typeof items[0]
+    if (items.some((item) => (typeof item === 'object' ? 'object' : typeof item) !== itemType)) {
+      throw new Error(`Review profile config field "${field}" has an invalid array value.`)
+    }
+    return items as unknown as PluginConfigValue
+  }
   if (!isRecord(value)) {
     throw new Error(`Review profile config field "${field}" has an invalid value.`)
   }
   const result: Record<string, string | number | boolean> = {}
   for (const [key, child] of Object.entries(value)) {
     if (
-      !safeConfigKeyPattern.test(key)
+      dangerousConfigKeys.has(key)
       || !(
         typeof child === 'string'
         || typeof child === 'boolean'
@@ -162,7 +179,7 @@ export function resolveReviewPluginProfileConfig(options: {
 
   const selectedFields = Object.fromEntries(Object.entries(fields)
     .filter(([key]) => selectedKeys.has(key)))
-  const issues = validatePluginConfigDocument({ fields: selectedFields }, values)
+  const issues = validatePluginConfigDocument({ schemaVersion: 3, fields: selectedFields }, values)
   const missing = issues.find((issue) => issue.code === 'required')
   if (missing) {
     throw new ReviewSelectionError(

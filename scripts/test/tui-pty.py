@@ -582,30 +582,16 @@ def run_config_partial(columns: int, rows: int, timeout: float) -> dict[str, obj
         stage = "save review"
         save_summary_offset = len(session.output)
         session.send(b"s")
-        session.wait_route("configSave")
+        session.wait_route("review")
         summary_markers = (
-            '当前项目·审查Profile·未设置→{"model":"gpt-6-astra","reasoningEffort":"high"}',
-            "所有项目·启用审查·未设置→开启",
+            "确认保存设置", "当前项目审查Profile", "个人默认启用审查", "开启",
         )
         session.wait_for(
             lambda _events: all(
                 marker.encode() in compact_plain(bytes(session.output[save_summary_offset:]))
                 for marker in summary_markers
             ),
-            "two-scope config save summary with before and complete new values",
-        )
-        review_offset = len(session.output)
-        session.send(b"\r")
-        session.wait_route("review")
-        session.wait_for(
-            lambda _events: all(
-                marker.encode() in compact_plain(bytes(session.output[review_offset:]))
-                for marker in (
-                    "设置变更", "当前项目·审查Profile",
-                    "个人默认·启用审查", "开启",
-                )
-            ),
-            "two-field config review",
+            "single two-scope config review with both changed fields",
         )
         confirm_review(session)
 
@@ -671,7 +657,7 @@ def run_config_partial(columns: int, rows: int, timeout: float) -> dict[str, obj
             "inputRouteSequence": [
                 "configFields", "configFieldEditor", "configObjectPropertyEditor",
                 "configObjectPropertyEditor", "configFieldEditor", "configLayer", "configFields",
-                "configFieldEditor", "configLayer", "configFields", "configSave",
+                "configFieldEditor", "configLayer", "configFields",
                 "review", "result", "review", "result",
             ],
             "firstBatch": {
@@ -702,17 +688,14 @@ def run_project_recovery(columns: int, rows: int, timeout: float) -> dict[str, o
         session.wait_text("本项目有 3 个插件尚未就绪")
         session.wait_text("› 稍后处理")
         session.send(b"\r")
-        session.wait_text("3 个位置待处理")
+        session.wait_text("项目插件")
 
-        stage = "need attention entry"
+        stage = "project entry"
         session.send(b"\x1b[B")
         session.send(b"\r")
-        session.wait_route("issueList")
-        session.wait_text("项目插件")
-        session.send(b"\r")
         session.wait_route("projectStatus")
-        session.wait_text("2 个可同步 · 1 个受阻")
-        session.wait_text("保留 1 个受阻位置")
+        session.wait_text("待同步")
+        session.wait_text("受阻")
 
         stage = "exact subset review"
         session.send(b"c")
@@ -757,7 +740,7 @@ def run_project_recovery(columns: int, rows: int, timeout: float) -> dict[str, o
         if executions[1].get("targets") != expected_retry:
             raise HarnessFailure(f"project retry was not limited to the failed target: {executions[1]!r}")
         for marker in (
-            "› 稍后处理", "2 个可同步 · 1 个受阻", "仅重试失败目标", "状态已重新检查",
+            "› 稍后处理", "项目插件", "待同步", "受阻", "仅重试失败目标", "状态已重新检查",
         ):
             if marker not in plain:
                 raise HarnessFailure(f"project recovery PTY output is missing {marker!r}")
@@ -769,7 +752,7 @@ def run_project_recovery(columns: int, rows: int, timeout: float) -> dict[str, o
             "ptyBytes": len(output),
             "fixtureAnchor": ["projectStatusLoad", "home"],
             "inputRouteSequence": [
-                "reminderLater", "home", "issueList", "projectStatus", "review", "result", "review", "pluginDetail",
+                "reminderLater", "home", "projectStatus", "review", "result", "review", "pluginDetail",
             ],
             "firstExecution": ["official/agent-lab", "official/content-toolkit"],
             "preservedBlocked": ["official/source-blocked"],

@@ -50,7 +50,6 @@ import {
   type ConfigGroupViewModel,
   buildTuiViewModel,
   dependencyPlacementTargets,
-  hasInstalledPlacement,
   type InstallPlacementDraftViewModel,
   type PluginListItemViewModel,
   type PluginDependencyOverviewViewModel,
@@ -76,6 +75,12 @@ import {
   type SaveOperationReportResult,
 } from './operation-history.js';
 import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
+import {
+  buildProjectInventory,
+  hasStatusInstallationEvidence,
+  type ProjectInventoryRoot,
+  type ProjectInventoryViewModel,
+} from './project-inventory.js';
 import {
   TuiRouter,
   type ConfigInvalidStoreEvidence,
@@ -292,6 +297,7 @@ export interface ConfigOperationChange {
 }
 
 export interface ConfigSaveBatchGroup {
+  editEvidence?: Record<string, import('./model.js').ConfigEditEvidence>;
   scope: Scope;
   updates?: Record<string, unknown>;
   removeKeys?: string[];
@@ -536,6 +542,10 @@ export interface OperationReviewModel {
     version?: string;
   };
   changes: OperationReviewChange[];
+  configImpact?: {
+    state: 'known' | 'unknown';
+    affectedTargetCount: number;
+  };
   confirmationDetails?: string[];
   technicalDetails?: string[];
   equivalentCommand?: string;
@@ -1033,6 +1043,12 @@ export interface TuiControllerSnapshot {
     operationRecordId?: string;
   };
   projectIntentReminder?: ProjectIntentReminder;
+  projectInventory?: ProjectInventoryViewModel;
+  projectInventoryRefresh: {
+    state: 'idle' | 'checking' | 'error';
+    checkedAtMs?: number;
+    errorCode?: string;
+  };
   projectDeclarationAbsent?: boolean;
   projectIntentIssue?: {
     state: 'invalid' | 'unavailable';
@@ -1659,6 +1675,9 @@ export class TuiController {
   };
   #completionNotice?: TuiControllerSnapshot['completionNotice'];
   #projectIntentReminder?: ProjectIntentReminder;
+  #projectInventory?: ProjectInventoryViewModel;
+  #projectInventoryRefresh: TuiControllerSnapshot['projectInventoryRefresh'] = { state: 'idle' };
+  #projectInventoryRefreshToken = 0;
   #loadError?: { code: string; message: string };
   #portableDraft?: TuiControllerSnapshot['portableDraft'];
   #recoverablePortableDraft?: TuiControllerSnapshot['portableDraft'];
@@ -1788,6 +1807,8 @@ export class TuiController {
       ...(this.#projectIntentReminder
         ? { projectIntentReminder: this.#projectIntentReminder }
         : {}),
+      ...(this.#projectInventory ? { projectInventory: this.#projectInventory } : {}),
+      projectInventoryRefresh: this.#projectInventoryRefresh,
       ...(this.#status?.projectIntent?.state === 'absent' ? { projectDeclarationAbsent: true } : {}),
       ...(this.#status?.projectIntent?.state === 'invalid'
         || this.#status?.projectIntent?.state === 'unavailable'
@@ -2180,6 +2201,15 @@ export class TuiController {
       portablePluginIds: this.#status.portablePluginIds,
       configStoreInventory: this.#status.configStoreInventory,
     });
+    this.#projectInventory = buildProjectInventory({
+      projectRoot: this.#status.projectRoot,
+      projectIntent: this.#status.projectIntent,
+      status: this.#status.payload,
+      pluginSummaries: this.#viewModel.plugins,
+      targetRevisions: this.#status.targetRevisions,
+      dependencyOverviews: this.#status.dependencyOverviews,
+      actionableTargets: this.#projectIntentReminder?.actionableTargets,
+    });
   }
 
   #normalizeRoute(route: TuiRoute): TuiRoute {
@@ -2188,7 +2218,10 @@ export class TuiController {
 
   #routeEntityState(): RouteEntityState {
     return {
-      hasPlugin: (pluginId) => this.#viewModel?.plugins.some((plugin) => plugin.pluginId === pluginId) ?? false,
+      hasPlugin: (pluginId) => this.#viewModel?.plugins.some((plugin) => plugin.pluginId === pluginId)
+        || this.#projectInventory?.declaredRoots.some((root) => root.pluginId === pluginId)
+        || this.#projectInventory?.extraInstalledRoots.some((root) => root.pluginId === pluginId)
+        || false,
       hasSource: (sourceId) => this.#viewModel?.sourceTabs.some((source) => source.id === sourceId) ?? false,
       hasIssue: (issueId) => this.#viewModel?.issues.some((issue) => issue.issueId === issueId) ?? false,
       hasHistoryRecord: (recordId) => this.#operationHistory.get(recordId) !== undefined,
@@ -2505,6 +2538,8 @@ export class TuiController {
     this.#assertAcceptingActions();
     this.dependencies.beginCatalogSession?.();
     const generation = ++this.#generation;
+    this.#projectInventoryRefreshToken += 1;
+    this.#projectInventoryRefresh = { state: 'idle' };
     this.#pluginContentEpoch += 1;
     this.#pluginContent.clear();
     this.#pluginContentInflight.clear();
@@ -2528,6 +2563,48 @@ export class TuiController {
     this.#phase = 'ready';
     this.#loadError = undefined;
     this.#publish();
+  }
+
+  listProjectInventoryRoots(section: 'declared' | 'extraInstalled' = 'declared'): ProjectInventoryRoot[] {
+    return cloneFrozen(section === 'declared'
+      ? this.#projectInventory?.declaredRoots ?? []
+      : this.#projectInventory?.extraInstalledRoots ?? []);
+  }
+
+  getProjectInventoryRoot(pluginId: string): ProjectInventoryRoot | undefined {
+    const root = [...(this.#projectInventory?.declaredRoots ?? []),
+      ...(this.#projectInventory?.extraInstalledRoots ?? [])]
+      .find((entry) => entry.pluginId === pluginId);
+    return root ? cloneFrozen(root) : undefined;
+  }
+
+  async refreshProjectInventory(): Promise<boolean> {
+    this.#assertAcceptingActions();
+    if (!this.#status || this.#phase !== 'ready') return false;
+    const token = ++this.#projectInventoryRefreshToken;
+    const generation = this.#generation;
+    this.#projectInventoryRefresh = { state: 'checking' };
+    this.#publish();
+    try {
+      const status = await this.#trackRead(this.dependencies.loadStatus(this.#abort.signal));
+      if (this.#disposed || generation !== this.#generation
+        || token !== this.#projectInventoryRefreshToken) return false;
+      this.#applyStatus(status);
+      this.#projectInventoryRefresh = {
+        state: 'idle',
+        checkedAtMs: this.#statusReadAtMs,
+      };
+      this.#publish();
+      return true;
+    } catch (error) {
+      if (this.#disposed || generation !== this.#generation
+        || token !== this.#projectInventoryRefreshToken) return false;
+      const code = issueCode(error);
+      await this.#logErrorSafe(error, code);
+      this.#projectInventoryRefresh = { state: 'error', errorCode: code };
+      this.#publish();
+      return false;
+    }
   }
 
   push(route: TuiRoute, context?: TuiPageContext): void {
@@ -3487,11 +3564,39 @@ export class TuiController {
     installFilter?: PluginInstallFilter;
   }): PluginListItemViewModel[] {
     const query = options.query?.trim().toLocaleLowerCase('en');
+    const actualScopes = new Map<string, Set<Scope>>();
+    const statusTargets = flattenStatusTargets(this.#status?.payload.targets ?? []);
+    const targetsByPlugin = new Map<string, StatusScopedTarget[]>();
+    for (const target of statusTargets) {
+      targetsByPlugin.set(target.pluginId, [...(targetsByPlugin.get(target.pluginId) ?? []), target]);
+      const owned = target.platform === 'claude'
+        ? ['present', 'partial'].includes(statusTargetOwnershipState(target))
+        : target.components.some((component) => component.kind === 'ownership'
+          && component.key !== 'native'
+          && !component.key.startsWith('activation-')
+          && !component.key.startsWith('marketplace-')
+          && (component.state === 'present' || component.state === 'partial'));
+      const activation = target.platform === 'codex' ? statusTargetActivation(target) : undefined;
+      if (!owned && !(activation?.evidence === 'observed'
+        && activation[target.scope] === true)
+        && !hasStatusInstallationEvidence(target)) continue;
+      const scopes = actualScopes.get(target.pluginId) ?? new Set<Scope>();
+      scopes.add(target.scope);
+      actualScopes.set(target.pluginId, scopes);
+    }
     return cloneFrozen((this.#viewModel?.plugins ?? []).filter((plugin) =>
       (!options.sourceId || plugin.sourceId === options.sourceId)
       && (options.installFilter !== 'installed'
-        || hasInstalledPlacement(plugin))
-      && (options.installFilter !== 'uninstalled' || !hasInstalledPlacement(plugin))
+        || (actualScopes.get(plugin.pluginId)?.size ?? 0) > 0)
+      && (options.installFilter !== 'uninstalled'
+        || plugin.aggregateStatus === 'available'
+          && (targetsByPlugin.get(plugin.pluginId)?.length ?? 0) > 0
+          && targetsByPlugin.get(plugin.pluginId)!.every((target) => target.state === 'absent')
+          && (actualScopes.get(plugin.pluginId)?.size ?? 0) === 0)
+      && (options.installFilter !== 'project'
+        || actualScopes.get(plugin.pluginId)?.has('project') === true)
+      && (options.installFilter !== 'user'
+        || actualScopes.get(plugin.pluginId)?.has('user') === true)
       && (options.installFilter !== 'updateAvailable' || plugin.update?.state === 'available')
       && (options.installFilter !== 'attention'
         || plugin.aggregateStatus === 'needsAttention' || plugin.aggregateStatus === 'unavailable'
@@ -4458,6 +4563,20 @@ export class TuiController {
     if (intent.kind === 'pluginWriteBatch') assertPluginWriteBatchEvidence(evidence);
     if (intent.kind === 'pluginWriteTask') assertPluginWriteTaskEvidence(intent, evidence);
     if (this.#router.snapshot.current.route.name === 'result') navigation = 'replace';
+    const configEvidence = intent.kind === 'configSave'
+      ? evidence.config ? [evidence.config] : undefined
+      : intent.kind === 'configSaveBatch'
+        ? evidence.configBatch?.groups.map((group) => group.config)
+        : undefined;
+    if ((intent.kind === 'configSave' || intent.kind === 'configSaveBatch')
+      && (!configEvidence || configEvidence.length !== (intent.kind === 'configSave' ? 1 : intent.groups.length))) {
+      throw new TuiOperationBlockedError('configImpactUnavailable', '设置确认缺少完整的应用影响证据。');
+    }
+    const configImpact: OperationReviewModel['configImpact'] = configEvidence ? {
+      state: configEvidence.some((group) => group.impactState !== 'known') ? 'unknown' : 'known',
+      affectedTargetCount: new Set(configEvidence.flatMap((group) => group.affectedTargets
+        .map((target) => `${target.platform}\0${target.scope}`))).size,
+    } : undefined;
     const projection = buildOperationReviewProjection({
       intent,
       evidence,
@@ -4532,6 +4651,7 @@ export class TuiController {
         ? { originIssue: intent.originIssue }
         : {}),
       ...projection,
+      ...(configImpact ? { configImpact } : {}),
       subject: {
         name: 'pluginId' in intent
           ? this.#viewModel?.plugins.find((plugin) => plugin.pluginId === intent.pluginId)?.displayName

@@ -25,7 +25,7 @@
 - 写入范围：packages/plugin-core 的源码、schema、生成类型源产物及该包测试。不得修改 CLI/TUI。
 - 依赖：规范已确认；为 T2/T5 提供受限数组类型、itemSummary、segments 和正式 capability ID。
 - 验收：五种合法类型、拒绝嵌套/混合/引用绕过/敏感集合；资源边界；空值和深等序；schema/能力一致；相关 core unit、type contract 和 generate check。
-- 状态：array_core 子代理已开始只读准备，基线保存后实施。
+- 状态：已完成并交回。正式数组 capability 为 `aw.plugin-config-array.v1`，数组只对 Definition v3 开放；Core 136 项 unit、3 项 dist contract、types 和正式 build 通过。
 
 ### T2：v5-only 存储与 CLI 消费
 
@@ -33,7 +33,7 @@
 - 写入范围：CLI config utils/writer、config 命令及与数组消费直接有关的 CLI 非 TUI 源码和对应测试；跨出范围前协调。
 - 依赖：T1 公共合同稳定。不得修改 TUI、portable materializer 或 Core；文档由协调者统一更新。
 - 验收：实际 CLI set/unset/读取/应用、绑定身份和原子写入；合法 JSON 同质数组；共享项目不兼容在写入前发现；旧版本错误及恢复。
-- 状态：等待 T1。
+- 状态：已完成并交回。公开 CLI namespaced 路径统一 v5；保留无 sourceId 的内部旧 helper。相关配置 136 项、来源清单 48 项、capability 4 项、真实 CLI 数组/旧版本恢复与来源身份更新验证通过。
 
 ### T3：项目完整投影与局部刷新
 
@@ -41,7 +41,7 @@
 - 写入范围：tui/model.ts、controller.ts、controller-runtime.ts；必要新增项目投影模块；项目行为相关测试。不得修改 console-app、components、router 或 Core。
 - 依赖：现有 Status/Intent/安装事实；不依赖数组实现。
 - 验收：健康/异常声明、合法 user 共用、额外 project 安装、来源失效；局部检查不重建会话/运行脚本/写入，保留会话状态；精确同步集合不扩大。
-- 状态：project_inventory 子代理已开始只读准备，基线保存后实施。完成后向 T4 交接 API 和 fixture。
+- 状态：已完成并交回。新增投影 4 项和既有回归 7 项通过；project/user 筛选、unknown 边界和短描述贯通已完成。追加结构化 Review configImpact，新测试 3 项、既有配置 Review 7 项通过。
 
 ### T4：页面、模板和紧凑 Skills
 
@@ -49,7 +49,7 @@
 - 写入范围：console-app-v4.tsx、components.tsx、theme.ts、layout/viewport、router/screen-registry、config-value-presentation 及相关 screens/tests；portable shortDescription 的底层贯通单独协调写入。
 - 依赖：先接纳 T3 的接口；公共视觉改动先在代表页面验证，再推广。整个 console-app 同时只有一个写入 owner。
 - 验收：实际 Ink 交互；80×24/60×18 设计对照；selected-zero；所有阅读按键；不隐藏风险；统一详情/Review/Reader 返回状态；初始选择不改变。
-- 状态：等待 T3；可以提前只读准备设计和测试。
+- 状态：页面源已完成并交给 T5 集成；T4 测试适配和帧记录完成。主页/项目/筛选/Skills/ConfigTile、单 Review 以及两尺寸验证已接入；最终全量回归由 T6 负责。
 
 ### T5：数组编辑器与真实保存集成
 
@@ -57,15 +57,37 @@
 - 写入范围：交接后的 TUI 配置路由、控制器/草稿、值显示、编辑器和相关测试；必须先确认 T3/T4 的重叠写入已结束。
 - 依赖：T1、T2、T4 接口和相关验证完成。
 - 验收：真实 ConsoleApp/Controller 至存储路径，取消不丢草稿，错误索引更新，fixed preset 禁止自定义，v5 与部分成功状态正确。
-- 状态：等待前置。
+- 状态：已完成并交回全部源文件。真实 UI → Controller → Result → v5 文件与首次 Review 前外部修改拒绝均已验证；最终数组/显示/backend/result 28/28，两尺寸实际帧已保存。
 
 ### T6：完整集成、文档、交付审查
 
 - 结果：全部七项范围真实落地；更新架构、作者/消费者说明和 TUI 能力覆盖表；保持原始基线用于完整双轴审查。
 - 写入范围：协调者拥有跨项修复、项目文档和本工作记录。修复需协调当前文件 owner。
 - 验收：相关定向测试后运行 pnpm test:unit、pnpm test:integration、pnpm build 及适用结构/产物检查；git diff --check；真实 TUI/PTY 设计对照。两个独立干净上下文分别审需求设计和工程质量；关闭实质问题后交付。
-- 状态：待集成。
+- 状态：正在完整集成；全量 unit/integration 的首轮结果已生成，修复实际缺陷并适配旧导航测试；正式 build/PTY 和双轴独立 Review 尚未完成。
 
 ## 验证与问题记录
 
 任务正文保留。后续在此附实际文件、命令结果、证据路径、未关闭问题及审查结果；不把原型自测当生产证据。
+
+- `8b9fb794`：已保存规格和任务资料基线。本地提交，无推送。
+- Portable 短描述：materializer 读取 metadata 优先，fallback 首句最多 120 code points，保留来源，清除 ANSI/control。真实 materializer 红绿验证完成，`portable-materializer.test.ts` 8 项通过。
+- 测试环境：沙箱内 wrapper 的进程树清理查询受限；使用已审批的 require_escalated 跑相同隔离测试后清理成功。不绕过 wrapper，不访问真实 homes。
+- Review 修复预算：尚未开始独立审查；后续实质 Review 修复按 dev-build 默认最多三轮，当前已用 0。
+
+- Reader：真实 ConsoleApp 的 6 项定向交互全部通过；80×24、60×18 的左右/Pg 键等价、完整安全复制和失败重试成立。页面轨迹在 `build/reader-traces/`。
+- v5 TUI runtime：有效 fixture 更新后 `tui-controller-runtime-v5.test.ts` 65 项全过。
+
+- `a598d07b`：保存已验证的数组 Core 实现，本地提交，无推送。
+- 来源 TUI integration：48 项中 45 项原样通过；3 项单 Review 导航适配后定向通过。全量 integration 已启动，日志 `build/integration.log`。
+
+- 首轮 `pnpm test:integration`：503 项中 500 通过、3 失败；`plugin:test` 临时 store 改 v5 后该 runner 19/19，损坏配置 fixture 显式 reset 后定向 1/1。后续 process-lifecycle 集成 3/3 通过，日志 `build/integration-lifecycle.log`。
+- 首轮 `pnpm test:unit`：Eval、Core、CLI pure 通过；CLI filesystem 2634 通过、21 失败。失败覆盖旧导航/有效 fixture 和 Review/项目页面真实缺口，逐项修复中，未跳过用例。日志 `build/unit.log`。
+- 项目追加核验：合法共用依赖证明按 pluginId/platform 区分；结构化 unobserved 判 unknown，阻断优先。新旧投影测试 7/7。真实页面补项目共用可见及刷新/详情返回焦点身份。
+- 实际页面帧：`build/page-frames/` 提供 Home、项目、配置、正常及例外 Skills 的两尺寸输出；这些是生产 Ink + synthetic 数据，不代表 native 工具兼容性。
+
+- 首轮 unit 失败已逐项关闭或进入最终验证：multi-source read 31/31；controller 215/215；配置批次结果 5/5；敏感值覆盖 4/4；受阻任务配置返回 1/1；Review 翻页两项及 Reader 保留行为共 8/8。CLI process-lifecycle unit 173/173，通过日志 `build/unit-lifecycle.log`。
+
+- 最终生产源码已停止修改。`pnpm build` 正式构建通过（`build/build-final.log`）；PTY 全部 14 会话通过（`build/pty-final.log`），包含 7 场景与两尺寸，fake native / 隔离 homes，无真实安装。
+- 并行构建和测试出现未修改的 Windows helper 超时及 Catalog publisher 临时 snapshot 缺目录；独立复现已通过，未改产品或降低门限。最终门禁按 build → unit → integration 串行复验；`build/unit-serial.log` 运行中。
+- 即将保存完整实现候选并启动原始基线起的双轴独立 Review。最终 unit/integration/产物门禁仍待完成；不以定向通过代替完整交付。Review 修复预算仍为 0/3。

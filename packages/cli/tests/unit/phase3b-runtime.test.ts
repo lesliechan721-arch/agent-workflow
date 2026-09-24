@@ -770,7 +770,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const storePath = resolvePluginConfigStorePath(options);
     expect(storePath).toBe(path.join(isolation.env.AW_HOME!, 'plugin-config', 'team', 'demo', 'config.json'));
     expect(await fs.readJson(storePath)).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: 'team',
       binding: { kind: 'source', sourceIdentity: SOURCE_IDENTITY },
       pluginName: 'demo',

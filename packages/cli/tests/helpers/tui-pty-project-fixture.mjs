@@ -33,10 +33,13 @@ export function withProjectRecoveryStatus(base) {
   return {
     ...base,
     projectRoot: process.cwd(),
-    projectIntentRoots: targets.map((target) => ({
-      pluginId: target.pluginId,
-      platforms: [target.platform],
-    })),
+    projectIntent: {
+      state: 'ready',
+      roots: targets.map((target) => ({
+        pluginId: target.pluginId,
+        platforms: [target.platform],
+      })),
+    },
     payload: { ...base.payload, targets },
     pluginSummaries: targets.map((target) => ({
       pluginName: target.pluginName,

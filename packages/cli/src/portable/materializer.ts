@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 
 import fs from 'fs-extra';
 
@@ -164,10 +165,26 @@ function treeDigest(tree: DynamicSkillTree): string {
   return stableDigest(Object.entries(tree.files).sort(([left], [right]) => left.localeCompare(right)));
 }
 
-function skillDescription(tree: DynamicSkillTree): string {
+function skillDescriptions(tree: DynamicSkillTree): Pick<PortableSkillCandidate,
+  'description' | 'shortDescription' | 'shortDescriptionSource'> {
   const content = tree.files['SKILL.md']?.toString('utf8') ?? '';
   const frontmatter = parsePortableSkillFrontmatter(content);
-  return typeof frontmatter.description === 'string' ? frontmatter.description : '';
+  const description = typeof frontmatter.description === 'string' ? frontmatter.description : '';
+  const metadata = frontmatter.metadata;
+  const short = typeof metadata === 'object' && metadata !== null && !Array.isArray(metadata)
+    ? (metadata as Record<string, unknown>)['short-description'] : undefined;
+  const fromMetadata = typeof short === 'string' && short.trim().length > 0;
+  const safe = stripVTControlCharacters(fromMetadata ? short : description)
+    .replace(/\s+/gu, ' ')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, '')
+    .trim();
+  const sentence = fromMetadata ? safe : safe.match(/^.*?(?:[。！？]|[.!?](?=\s|$)|$)/u)?.[0] ?? safe;
+  const points = [...sentence];
+  return {
+    description,
+    shortDescription: points.length > 120 ? `${points.slice(0, 119).join('')}…` : sentence,
+    shortDescriptionSource: fromMetadata ? 'metadata' : 'fallback',
+  };
 }
 
 async function copyTreeFiles(files: Record<string, Buffer>, targetRoot: string): Promise<void> {
@@ -648,7 +665,7 @@ export async function materializePortableSkills(
     }
     const candidates = trees.map((candidate): PortableSkillCandidate => ({
       name: candidate.tree.skillKey,
-      description: skillDescription(candidate.tree),
+      ...skillDescriptions(candidate.tree),
       providerPluginId: pluginId(candidate.plugin),
       providerDisplayName: candidate.plugin.manifest.interface?.displayName
         ?? candidate.plugin.manifest.name,

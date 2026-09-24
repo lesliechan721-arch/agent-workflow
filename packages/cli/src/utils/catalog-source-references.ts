@@ -934,7 +934,7 @@ function assertNamespacedConfigEnvelope(
   pluginName: string,
   scope: 'user' | 'project',
 ): asserts value is {
-  schemaVersion: 4;
+  schemaVersion: 5;
   sourceId: string;
   pluginName: string;
   binding:
@@ -943,7 +943,7 @@ function assertNamespacedConfigEnvelope(
   values: Record<string, unknown>;
 } {
   if (!isRecord(value)
-    || value.schemaVersion !== 4
+    || value.schemaVersion !== 5
     || typeof value.sourceId !== 'string'
     || typeof value.pluginName !== 'string'
     || !isRecord(value.binding)
@@ -951,7 +951,7 @@ function assertNamespacedConfigEnvelope(
     || Object.keys(value).some((key) => ![
       'schemaVersion', 'sourceId', 'pluginName', 'binding', 'values',
     ].includes(key))) {
-    throw new Error('Namespaced plugin config is not a valid schema 4 envelope.');
+    throw new Error('Namespaced plugin config is not a valid schema 5 envelope.');
   }
   const binding = value.binding;
   const validBinding = scope === 'user'

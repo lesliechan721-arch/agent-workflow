@@ -346,7 +346,7 @@ describe('TUI v8.2 stage 5', () => {
     instance.unmount();
   });
 
-  it.each(SIZES)('cycles all plugin status filters in place at $columns x $rows', async (size) => {
+  it.each(SIZES)('skips zero-result plugin status filters in place at $columns x $rows', async (size) => {
     const value = controller();
     await value.load();
     value.push({ name: 'pluginList', mode: 'browse' }, { query: 'Demo' });
@@ -355,8 +355,7 @@ describe('TUI v8.2 stage 5', () => {
 
     const depth = value.snapshot.router.depth;
     for (const [filter, label] of [
-      ['installed', '已安装'], ['uninstalled', '未安装'],
-      ['updateAvailable', '可更新'], ['attention', '需处理'], ['all', '全部'],
+      ['all', '全部'],
     ]) {
       await input(instance, 'f');
       expect(frame(instance, size)).toContain(label);
@@ -680,7 +679,7 @@ it.each(SIZES)('explains absent project declarations without scheduling writes a
   const value = controller({ loadStatus: vi.fn().mockResolvedValue(data), executeIntent });
   const instance = render(<ConsoleAppV4 controller={value} size={size} />);
   await nextTurn(3);
-  expect(frame(instance, size)).toContain('当前目录没有共享插件声明；不会自动安装插件');
+  expect(frame(instance, size)).toContain('当前不是项目');
   await input(instance, '\r');
   expect(value.snapshot.router.current.route.name).toBe('pluginList');
   expect(executeIntent).not.toHaveBeenCalled();

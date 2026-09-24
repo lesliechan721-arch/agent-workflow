@@ -1237,7 +1237,9 @@ export async function applyPluginConfigWrite(
           operationDiagnostic?: unknown;
         };
         const code = (error as { code?: unknown }).code;
-        safeError.code = typeof code === 'string' ? code : 'configApplyFailed';
+        safeError.code = typeof code === 'string' ? code
+          : message.startsWith('schemaVersionUnsupported:') ? 'schemaVersionUnsupported'
+            : 'configApplyFailed';
         const configWrite = (error as { configWrite?: unknown }).configWrite;
         if (configWrite === 'succeeded' || configWriteStateForError(error) === 'failed') {
           safeError.configWrite = configWrite === 'succeeded' ? 'succeeded' : 'failed';

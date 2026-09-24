@@ -1,3 +1,5 @@
+import fs from 'fs-extra';
+import path from 'node:path';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -166,6 +168,27 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 describe('Portable Skills TUI V1', () => {
+  it.each([{ columns: 60, rows: 18 }, { columns: 80, rows: 24 }])('keeps normal Skill choices on two rows at $columns x $rows', async (size) => {
+    const { value } = portableController();
+    await value.load(); await value.preparePortableInstall('official/toolkit');
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await tick();
+    const frame = instance.lastFrame() ?? '';
+    const lines = frame.split('\n');
+    const first = lines.findIndex((line) => line.includes('[x] author-skill'));
+    const second = lines.findIndex((line) => line.includes('[x] review-skill'));
+    expect(first).toBeGreaterThan(0);
+    expect(second - first).toBe(2);
+    expect(frame).not.toContain('当前插件');
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(3);
+    await send(instance, ' ');
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(2);
+    await send(instance, '\r');
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(3);
+    expect(lines.length).toBeLessThanOrEqual(size.rows);
+    if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `skills-normal-${size.columns}x${size.rows}.json`), { synthetic: true, size, frame }, { spaces: 2 });
+  });
+
   it('uses h in place and H to remount a fresh controller session', async () => {
     const first = portableController();
     const second = portableController();
@@ -877,7 +900,7 @@ describe('Portable Skills TUI V1', () => {
     expect(blocked).toContain('╭');
     expect(blocked).toContain('╰');
     expect(blocked.match(/›/gu)).toHaveLength(1);
-    expect(blocked.match(/╭/gu)?.length ?? 0).toBeGreaterThan(1);
+    expect(blocked.match(/╭/gu)?.length ?? 0).toBe(1);
     expect(blocked.split('\n').length).toBeLessThanOrEqual(fixture.rows);
     expect(value.snapshot.router.current.route).toEqual({
       name: 'portableSkillSelect', pluginId: 'official/toolkit',
@@ -949,10 +972,10 @@ describe('Portable Skills TUI V1', () => {
     await openPortableFromInstall(instance);
     expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
     expect(instance.lastFrame()).toContain('3 / 3 已选择');
-    expect(instance.lastFrame()).toContain('当前插件');
+    expect(instance.lastFrame()).not.toContain('当前插件');
     await send(instance, '\u001B[B', '\u001B[B');
-    expect(instance.lastFrame()).toContain('Content');
-    expect(instance.lastFrame()).toContain('直接依赖插件');
+    expect(instance.lastFrame()).toContain('content-skill');
+    expect(instance.lastFrame()).not.toContain('直接依赖插件');
     await send(instance, '\u001B[A', '\u001B[A');
 
     await send(instance, ' ', '\u001B[B', ' ', '\u001B[B', ' ');
@@ -1345,7 +1368,7 @@ describe('Portable Skills TUI V1', () => {
       }
       return {
         catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:catalog' },
-        config: { scope: intent.scope, projectLayer: intent.projectLayer, storeDigest: 'sha256:store' },
+        config: { scope: intent.scope, projectLayer: intent.projectLayer, storeDigest: 'sha256:store', impactState: 'known', affectedTargets: [] },
       };
     });
     const executeIntent = vi.fn(async (intent: OperationIntent) => intent.kind === 'configSave'
@@ -1462,7 +1485,7 @@ describe('Portable Skills TUI V1', () => {
       }
       return {
         catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:catalog' },
-        config: { scope: intent.scope, storeDigest: 'sha256:store:user' },
+        config: { scope: intent.scope, storeDigest: 'sha256:store:user', impactState: 'known', affectedTargets: [] },
       };
     });
     const executeIntent = vi.fn(async (intent: OperationIntent) => intent.kind === 'configSaveBatch'
@@ -2150,17 +2173,16 @@ describe('Portable Skills TUI V1', () => {
     value.push({ name: 'portableDependencies', pluginId: 'official/toolkit' });
     const dependencyInstance = render(<ConsoleAppV4 controller={value} size={size} />);
     await tick();
-    await send(dependencyInstance, '\u001B[B');
-    expect(dependencyInstance.lastFrame()).toContain('› 技术详情');
-    await send(dependencyInstance, '\r');
+    expect(dependencyInstance.lastFrame()).toContain('› 返回 Skills 选择');
     let dependencyFrame = dependencyInstance.lastFrame() ?? '';
+    for (let index = 0; index < 7; index += 1) {
+      await send(dependencyInstance, '\u001B[C');
+      dependencyFrame += dependencyInstance.lastFrame() ?? '';
+    }
     expect(dependencyFrame).toContain('Dependency 0');
-    expect(dependencyFrame).toContain('› 隐藏技术详情');
-    expect(dependencyFrame).toMatch(/↑↓(?:\s+移动|\/Enter\s+菜单)/u);
-    expect(dependencyFrame.match(/›/gu)).toHaveLength(1);
-    expect(dependencyFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
-    await send(dependencyInstance, ...Array.from({ length: 7 }, () => '\u001B[C'));
-    expect(dependencyInstance.lastFrame()).toContain('Dependency 7');
+    expect(dependencyFrame).toContain('Dependency 7');
+    expect(dependencyInstance.lastFrame()).toContain('复制全文');
+    expect((dependencyInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(size.rows);
     dependencyInstance.stdin.write('\u001B');
     await new Promise((resolve) => setTimeout(resolve, 550));
     expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
@@ -2211,11 +2233,12 @@ describe('Portable Skills TUI V1', () => {
     await tick();
 
     const initialFrame = instance.lastFrame() ?? '';
+    if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `skills-${size.columns}x${size.rows}.json`), { synthetic: true, size, frame: initialFrame }, { spaces: 2 });
     expect(initialFrame).toMatch(/d\s+技术详情/u);
     expect(initialFrame).toMatch(/\?\s+帮助/u);
     expect(initialFrame).toContain('› [x] portable-skill-0');
     expect(initialFrame).toContain('Portable description 0');
-    expect(initialFrame).toContain('Toolkit · 当前插件');
+    expect(initialFrame).not.toContain('Toolkit · 当前插件');
     expect(initialFrame.match(/›/gu)).toHaveLength(1);
     expect(initialFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
 

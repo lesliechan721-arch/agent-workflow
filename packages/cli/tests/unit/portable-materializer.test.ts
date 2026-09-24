@@ -215,6 +215,38 @@ describe('portable materializer', () => {
     await materialized.cleanup();
   });
 
+  it('projects safe short metadata and bounded description fallbacks for selection rows', async () => {
+    const root = await tempRoot('aw-portable-short-description-');
+    const plugin = await pluginFixture(root, baseManifest('short-description'));
+    const descriptions = [
+      { name: 'metadata', description: 'A detailed description. More information.',
+        short: '\u001b[31m简短说明\u001b[0m\n下一行', expected: '简短说明 下一行', source: 'metadata' },
+      { name: 'fallback', description: '第一句话。后续不进入短行。',
+        expected: '第一句话。', source: 'fallback' },
+      { name: 'bounded', description: '长'.repeat(200),
+        expected: `${'长'.repeat(119)}…`, source: 'fallback' },
+    ];
+    for (const entry of descriptions) {
+      await writeSkill(plugin.rootDir, entry.name);
+      await fs.writeFile(path.join(plugin.rootDir, 'agent-skills', 'skills', entry.name, 'SKILL.md'),
+        `---\nname: ${entry.name}\ndescription: ${JSON.stringify(entry.description)}\n`
+        + (entry.short === undefined ? '' : `metadata:\n  short-description: ${JSON.stringify(entry.short)}\n`)
+        + '---\nBody.\n');
+    }
+    const materialized = await materializePortableSkills({
+      plugins: [plugin], pluginId: plugin.pluginId!, scope: 'project', cwd: root,
+      env: { ...process.env, AW_HOME: path.join(root, 'home') },
+    });
+    for (const entry of descriptions) {
+      expect(materialized.candidates.find((candidate) => candidate.name === entry.name)).toMatchObject({
+        description: entry.description,
+        shortDescription: entry.expected,
+        shortDescriptionSource: entry.source,
+      });
+    }
+    await materialized.cleanup();
+  });
+
   it('merges dynamic sources, static runtime files, and renderer overlay while omitting disabled targets', async () => {
     const root = await tempRoot('aw-portable-dynamic-');
     const manifest: PluginManifestSource = {

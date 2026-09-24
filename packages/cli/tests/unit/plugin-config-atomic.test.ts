@@ -42,7 +42,7 @@ afterEach(async () => {
 });
 
 describe('plugin config atomic writes', () => {
-  it('writes the exact schema 4 namespaced envelope with source binding', async () => {
+  it('writes the exact schema 5 namespaced envelope with source binding', async () => {
     const fixture = await makeFixture();
     const options = {
       sourceId: 'official',
@@ -54,13 +54,56 @@ describe('plugin config atomic writes', () => {
     };
     await writePluginConfigStore({ ...options, values: { enabled: true } });
     await expect(fs.readJson(resolvePluginConfigStorePath(options))).resolves.toEqual({
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: options.sourceId,
       binding: { kind: 'source', sourceIdentity: options.sourceIdentity },
       pluginName: options.pluginName,
       values: { enabled: true },
     });
   });
+
+  it.each(['user', 'project'] as const)(
+    'keeps a v4 %s store unchanged until explicit reset, then writes empty v5',
+    async (scope) => {
+      const fixture = await makeFixture();
+      const options = {
+        sourceId: 'official',
+        sourceIdentity: `sha256:${'a'.repeat(64)}`,
+        logicalIdentity: 'catalog.example/config-tests',
+        pluginName: 'old-config',
+        scope,
+        cwd: fixture.cwd,
+        env: fixture.env,
+      };
+      const filePath = resolvePluginConfigStorePath(options);
+      const oldContent = `${JSON.stringify({
+        schemaVersion: 4,
+        sourceId: options.sourceId,
+        pluginName: options.pluginName,
+        binding: scope === 'user'
+          ? { kind: 'source', sourceIdentity: options.sourceIdentity }
+          : { kind: 'catalog', logicalIdentity: options.logicalIdentity },
+        values: { enabled: true },
+      })}\n`;
+      await fs.outputFile(filePath, oldContent);
+
+      await expect(readPluginConfigStore(options)).resolves.toMatchObject({
+        state: 'invalid', invalidCode: 'schemaVersionUnsupported',
+      });
+      await expect(writePluginConfigStore({ ...options, values: {} }))
+        .rejects.toThrow('schemaVersionUnsupported');
+      await expect(patchPluginConfigStore({ ...options, updates: { enabled: false } }))
+        .rejects.toThrow('schemaVersionUnsupported');
+      await expect(fs.readFile(filePath, 'utf8')).resolves.toBe(oldContent);
+
+      await resetPluginConfigStore(options);
+      await writePluginConfigStore({ ...options, values: {} });
+      await expect(fs.readJson(filePath)).resolves.toMatchObject({
+        schemaVersion: 5,
+        values: {},
+      });
+    },
+  );
 
   it('reads and lists user config without creating config state', async () => {
     const fixture = await makeFixture();
@@ -195,7 +238,7 @@ describe('plugin config atomic writes', () => {
     {
       code: 'identityMismatch',
       content: JSON.stringify({
-        schemaVersion: 4,
+        schemaVersion: 5,
         sourceId: 'other',
         binding: { kind: 'source', sourceIdentity: `sha256:${'f'.repeat(64)}` },
         pluginName: 'invalid-projection',
@@ -205,7 +248,7 @@ describe('plugin config atomic writes', () => {
     {
       code: 'invalidValues',
       content: JSON.stringify({
-        schemaVersion: 4,
+        schemaVersion: 5,
         sourceId: 'official',
         binding: { kind: 'source', sourceIdentity: `sha256:${'f'.repeat(64)}` },
         pluginName: 'invalid-projection',
@@ -249,7 +292,7 @@ describe('plugin config atomic writes', () => {
       exists: true,
       state: 'ready',
       issues: [],
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: 'other',
       binding: { kind: 'source', sourceIdentity: options.sourceIdentity },
       pluginName: options.pluginName,
@@ -424,7 +467,7 @@ describe('plugin config atomic writes', () => {
     const foreignOptions = { ...base, pluginName: 'foreign-store' };
     const foreignPath = resolvePluginConfigStorePath(foreignOptions);
     await fs.outputJson(foreignPath, {
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: 'someone-else',
       binding: { kind: 'source', sourceIdentity: base.sourceIdentity },
       pluginName: foreignOptions.pluginName,
