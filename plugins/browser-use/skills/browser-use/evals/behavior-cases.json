@@ -396,8 +396,7 @@
             "exists": true,
             "contains": [
               "\"operation\":\"snapshot\""
-            ],
-            "notContains": []
+            ]
           },
           {
             "path": ".browser-use-fixture/state.json",
@@ -663,7 +662,6 @@
           {
             "path": ".browser-use-fixture/calls.jsonl",
             "exists": true,
-            "contains": [],
             "notContains": [
               "\"operation\":\"click\"",
               "\"operation\":\"press\""
@@ -713,9 +711,7 @@
         "artifacts": [
           {
             "path": ".browser-use-fixture/calls.jsonl",
-            "exists": true,
-            "contains": [],
-            "notContains": []
+            "exists": true
           },
           {
             "path": ".browser-use-fixture/state.json",
