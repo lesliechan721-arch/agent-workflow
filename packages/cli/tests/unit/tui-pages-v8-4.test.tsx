@@ -27,6 +27,36 @@ function data(): TuiStatusLoadResult {
   };
 }
 
+function projectActionsData(pendingState: 'needsSync' | 'blocked' = 'needsSync'): TuiStatusLoadResult {
+  const loaded = data();
+  loaded.projectIntent = { state: 'ready', roots: [
+    { pluginId: 'official/pending', platforms: ['claude'] },
+    { pluginId: 'official/blocked', platforms: ['claude'] },
+  ] };
+  loaded.pluginSummaries = ['pending', 'blocked'].map((pluginName) => ({
+    pluginId: `official/${pluginName}`, pluginName, displayName: pluginName,
+    description: '项目插件', version: '1.0.0',
+    supportedTargets: { codex: [], claude: ['project'] }, configFieldCount: 0,
+  }));
+  loaded.payload.targets = ['pending', 'blocked'].map((pluginName) => {
+    const state = pluginName === 'pending' ? pendingState : 'blocked';
+    return {
+      pluginId: `official/${pluginName}`, pluginName, sourceId: 'official', sourceIdentity: 'source',
+      platform: 'claude' as const, scope: 'project' as const, cwd: '/tmp/项目长名称', version: '1.0.0',
+      state,
+      components: [
+        { kind: 'intent' as const, key: 'desired', state: 'desired', metadata: {
+          enabled: true, scopes: ['project'], relation: 'root',
+        } },
+        { kind: 'ownership' as const, key: 'fixture', state: 'absent' },
+      ],
+      reasons: state === 'blocked' ? [{ code: 'catalogSourceUnavailable', message: '来源不可用', severity: 'blocking' as const }] : [],
+      recoveryActions: state === 'needsSync' ? [{ command: 'sync' as const, scope: 'project' as const, description: '同步目标' }] : [],
+    };
+  });
+  return loaded;
+}
+
 async function tick(): Promise<void> {
   for (let index = 0; index < 4; index += 1) await new Promise((resolve) => setTimeout(resolve, 15));
 }
@@ -45,6 +75,193 @@ function frame(instance: ReturnType<typeof render>, size: { columns: number; row
 }
 
 describe('v8.4 page contracts', () => {
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'returns to the same project issues action before another Enter at $columns x $rows', async (size) => {
+      const loadStatus = vi.fn().mockResolvedValue(projectActionsData());
+      const captureEvidence = vi.fn();
+      const executeIntent = vi.fn();
+      const controller = new TuiController({ loadStatus, captureEvidence, executeIntent });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      await input(instance, 'a');
+      for (let index = 0; index < 8 && !frame(instance, size).includes('› 查看需要处理'); index += 1) {
+        await input(instance, '\u001b[B');
+      }
+      const before = frame(instance, size);
+      expect(before).toContain('› 查看需要处理');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route.name).toBe('issueList');
+      await input(instance, '\u001b');
+      const returned = frame(instance, size);
+      expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
+      expect(returned).toContain('› 查看需要处理');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route.name).toBe('issueList');
+      expect(captureEvidence).not.toHaveBeenCalled();
+      expect(executeIntent).not.toHaveBeenCalled();
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+        path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `project-return-issues-${size.columns}x${size.rows}.json`),
+        { synthetic: true, size, frames: { before, returned } }, { spaces: 2 });
+    },
+  );
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'keeps the project issues action when sync appears while the issues page is open at $columns x $rows', async (size) => {
+      const loadStatus = vi.fn().mockResolvedValueOnce(projectActionsData('blocked'))
+        .mockResolvedValue(projectActionsData());
+      const captureEvidence = vi.fn();
+      const executeIntent = vi.fn();
+      const controller = new TuiController({ loadStatus, captureEvidence, executeIntent });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      await input(instance, 'a');
+      for (let index = 0; index < 8 && !frame(instance, size).includes('› 查看需要处理'); index += 1) {
+        await input(instance, '\u001b[B');
+      }
+      expect(frame(instance, size)).toContain('› 查看需要处理');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route.name).toBe('issueList');
+      await controller.refreshProjectInventory(); await tick();
+      await input(instance, '\u001b');
+      const returned = frame(instance, size);
+      expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
+      expect(controller.snapshot.projectInventory?.syncTargets).toHaveLength(1);
+      expect(returned).toContain('› 查看需要处理');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route.name).toBe('issueList');
+      expect(captureEvidence).not.toHaveBeenCalled();
+      expect(executeIntent).not.toHaveBeenCalled();
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+        path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `project-return-insert-${size.columns}x${size.rows}.json`),
+        { synthetic: true, size, frames: { returned } }, { spaces: 2 });
+    },
+  );
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'returns to a project root when the issues action vanishes in its child page at $columns x $rows', async (size) => {
+      const after = projectActionsData();
+      after.payload.targets = after.payload.targets.map((target) => ({
+        ...target, state: 'ready' as const,
+        components: target.components.map((component) => component.kind === 'ownership'
+          ? { ...component, state: 'present' as const } : component),
+        reasons: [], recoveryActions: [],
+      }));
+      const loadStatus = vi.fn().mockResolvedValueOnce(projectActionsData()).mockResolvedValue(after);
+      const captureEvidence = vi.fn();
+      const executeIntent = vi.fn();
+      const controller = new TuiController({ loadStatus, captureEvidence, executeIntent });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      await input(instance, 'a');
+      for (let index = 0; index < 8 && !frame(instance, size).includes('› 查看需要处理'); index += 1) {
+        await input(instance, '\u001b[B');
+      }
+      expect(frame(instance, size)).toContain('› 查看需要处理');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route.name).toBe('issueList');
+      await controller.refreshProjectInventory(); await tick();
+      await input(instance, '\u001b');
+      const returned = frame(instance, size);
+      expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
+      expect(returned).not.toContain('查看需要处理');
+      expect(returned).toContain('› blocked');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route).toMatchObject({ name: 'pluginDetail', pluginId: 'official/blocked' });
+      expect(captureEvidence).not.toHaveBeenCalled();
+      expect(executeIntent).not.toHaveBeenCalled();
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+        path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `project-return-issues-vanish-${size.columns}x${size.rows}.json`),
+        { synthetic: true, size, frames: { returned } }, { spaces: 2 });
+    },
+  );
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'returns to recheck when a searched root vanishes but sync remains at $columns x $rows', async (size) => {
+      const before = projectActionsData();
+      const after = projectActionsData();
+      after.projectIntent = { state: 'ready', roots: [{ pluginId: 'official/blocked', platforms: ['claude'] }] };
+      after.payload.targets = after.payload.targets.filter((target) => target.pluginId === 'official/blocked')
+        .map((target) => ({ ...target, state: 'needsSync' as const, reasons: [],
+          recoveryActions: [{ command: 'sync' as const, scope: 'project' as const, description: '同步目标' }] }));
+      const loadStatus = vi.fn().mockResolvedValueOnce(before).mockResolvedValue(after);
+      const captureEvidence = vi.fn();
+      const executeIntent = vi.fn();
+      const controller = new TuiController({ loadStatus, captureEvidence, executeIntent });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      await input(instance, '/'); await input(instance, 'pending'); await input(instance, '\r');
+      expect(frame(instance, size)).toContain('› pending');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route).toMatchObject({ name: 'pluginDetail', pluginId: 'official/pending' });
+      await controller.refreshProjectInventory(); await tick();
+      await input(instance, '\u001b');
+      const returned = frame(instance, size);
+      expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
+      expect(controller.snapshot.router.current.context.query).toBe('pending');
+      expect(controller.snapshot.projectInventory?.syncTargets).toHaveLength(1);
+      expect(returned).toContain('当前条件无匹配');
+      expect(returned).toContain('› 重新检查项目 [r]');
+      await input(instance, '\r');
+      expect(loadStatus).toHaveBeenCalledTimes(3);
+      expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
+      expect(captureEvidence).not.toHaveBeenCalled();
+      expect(executeIntent).not.toHaveBeenCalled();
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+        path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `project-return-vanish-${size.columns}x${size.rows}.json`),
+        { synthetic: true, size, frames: { returned } }, { spaces: 2 });
+    },
+  );
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'returns to the searched project root after its detail page at $columns x $rows', async (size) => {
+      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(projectActionsData()),
+        captureEvidence: vi.fn(), executeIntent: vi.fn() });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      await input(instance, '/'); await input(instance, 'blocked'); await input(instance, '\r');
+      expect(frame(instance, size)).toContain('› blocked');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route).toMatchObject({ name: 'pluginDetail', pluginId: 'official/blocked' });
+      await input(instance, '\u001b');
+      const returned = frame(instance, size);
+      expect(controller.snapshot.router.current.context.query).toBe('blocked');
+      expect(returned).toContain('› blocked');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route).toMatchObject({ name: 'pluginDetail', pluginId: 'official/blocked' });
+    },
+  );
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'returns to the project sync action after Review preparation fails at $columns x $rows', async (size) => {
+      const captureEvidence = vi.fn().mockRejectedValue(new Error('evidence unavailable'));
+      const executeIntent = vi.fn();
+      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(projectActionsData()),
+        captureEvidence, executeIntent });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      await input(instance, 'a');
+      expect(frame(instance, size)).toContain('› 同步全部可处理声明（1） [c]');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route.name).toBe('reviewPreparing');
+      await vi.waitFor(() => expect(controller.snapshot.reviewPreparation?.state).toBe('failed'));
+      await input(instance, '\u001b');
+      const returned = frame(instance, size);
+      expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
+      expect(returned).toContain('› 同步全部可处理声明（1） [c]');
+      expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({ kind: 'pluginWriteBatch' }), expect.any(AbortSignal));
+      expect(executeIntent).not.toHaveBeenCalled();
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+        path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `project-return-review-${size.columns}x${size.rows}.json`),
+        { synthetic: true, size, frames: { returned } }, { spaces: 2 });
+    },
+  );
+
   it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
     'keeps the project recheck action when roots and issue actions appear at $columns x $rows', async (size) => {
       const before = data();

@@ -182,6 +182,7 @@ export interface TuiPageContext {
   query?: string;
   sourceTabId?: string;
   focusedEntityId?: string;
+  focusedActionId?: string;
   installFilter?: PluginInstallFilter;
   configGroupId?: string;
   projectSection?: 'declared' | 'extraInstalled';
