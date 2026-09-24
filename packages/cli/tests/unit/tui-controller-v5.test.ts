@@ -1147,6 +1147,23 @@ describe('TUI v4 router and ViewModel', () => {
     });
   });
 
+  it('projects a safe coverage issue when the plugin content loader rejects', async () => {
+    // Risk: a rejected loader must remain readable through the same typed coverage path as runtime failures.
+    const loadPluginContent = vi.fn().mockRejectedValue(new Error('PRIVATE-CONTENT-FAILURE'));
+    const controller = new TuiController(dependencies({ loadPluginContent }));
+    await controller.load();
+
+    await controller.loadPluginContent('official/demo');
+
+    const overview = controller.getPluginContentOverview('official/demo');
+    expect(controller.getPluginContentState('official/demo')).toBe('ready');
+    expect(overview).toMatchObject({
+      pluginId: 'official/demo', evidence: 'unavailable', coverage: 'unavailable', items: [],
+      coverageIssue: { code: 'unreadable', message: expect.any(String) },
+    });
+    expect(JSON.stringify(overview)).not.toContain('PRIVATE-CONTENT-FAILURE');
+  });
+
   it('invalidates loaded plugin content when status is reloaded', async () => {
     const loadPluginContent = vi.fn().mockResolvedValue({
       pluginId: 'official/demo', pluginVersion: '2.0.0', catalogVersion: '3.0.0',

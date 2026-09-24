@@ -3667,6 +3667,10 @@ export class TuiController {
           pluginVersion: '待确认',
           catalogVersion: '待确认',
           evidence: 'unavailable',
+          coverage: 'unavailable',
+          coverageIssue: {
+            code: 'unreadable', message: '当前无法安全读取这个插件的内容。',
+          },
           items: [],
           notices: ['当前无法安全读取这个插件的内容。'],
         });
