@@ -5,7 +5,11 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type { OperationKind } from './controller.js';
-import { safeDiagnosticCode, sanitizeDiagnosticText } from './diagnostics.js';
+import {
+  safeDiagnosticCode,
+  sanitizeDiagnosticDetailText,
+  sanitizeDiagnosticText,
+} from './diagnostics.js';
 
 export type OperationEffectState =
   | 'notApplicable'
@@ -96,12 +100,13 @@ function boundDiagnostics(
     const kept: string[] = [];
     let omittedLines = 0;
     for (const line of diagnostic.detailLines) {
-      const lineBytes = Buffer.byteLength(`${line}\n`);
+      const safeLine = sanitizeDiagnosticDetailText(line, [], sensitiveValues);
+      const lineBytes = Buffer.byteLength(`${safeLine}\n`);
       if (lines >= MAX_DETAIL_LINES || bytes + lineBytes > MAX_DETAIL_BYTES) {
         omittedLines += 1;
         continue;
       }
-      kept.push(line);
+      kept.push(safeLine);
       lines += 1;
       bytes += lineBytes;
     }
@@ -123,7 +128,7 @@ function boundDiagnostics(
         ...(cause.code ? { code: safeDiagnosticCode(cause.code, 'operationCause') } : {}),
         safeMessage: sanitizeDiagnosticText(cause.safeMessage, [], sensitiveValues),
       })),
-      detailLines: kept.map((line) => sanitizeDiagnosticText(line, [], sensitiveValues)),
+      detailLines: kept,
       ...(omittedLines > 0
         ? { omitted: { reason: 'limit' as const, count: omittedLines } }
         : diagnostic.omitted ? { omitted: structuredClone(diagnostic.omitted) } : {}),

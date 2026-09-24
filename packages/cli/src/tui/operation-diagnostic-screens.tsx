@@ -1,4 +1,4 @@
-import { Box } from 'ink';
+import { Box, Text } from 'ink';
 
 import {
   ResultCard,
@@ -12,12 +12,21 @@ import type {
   OperationHistorySummary,
   OperationReportPreview,
 } from './operation-history.js';
-import type { TuiStatus } from './theme.js';
+import { getTuiStatusColor, type TuiStatus } from './theme.js';
+import { wrapDisplayText } from './viewport.js';
 
 interface DetailLine {
   title: string;
   meta?: string;
   status?: TuiStatus;
+}
+
+function SafeDetailLine(props: { line: string; status?: TuiStatus }): React.JSX.Element {
+  return (
+    <Box paddingX={1}>
+      <Text color={getTuiStatusColor(props.status ?? 'muted')} wrap="wrap">{props.line}</Text>
+    </Box>
+  );
 }
 
 const operationStatePresentation: Record<OperationHistorySummary['state'], {
@@ -77,8 +86,11 @@ export function operationHistoryMeta(summary: OperationHistorySummary): string {
   return summary.operationKind ? `${summary.operationKind} · ${summary.code}` : summary.code;
 }
 
-export function operationDiagnosticLineCount(detail: OperationDiagnosticDetail): number {
-  return operationDiagnosticLines(detail).length;
+export function operationDiagnosticLineCount(
+  detail: OperationDiagnosticDetail,
+  columns: number,
+): number {
+  return wrappedDiagnosticLines(detail, columns).length;
 }
 
 function operationDiagnosticLines(detail: OperationDiagnosticDetail): DetailLine[] {
@@ -128,14 +140,31 @@ function operationDiagnosticLines(detail: OperationDiagnosticDetail): DetailLine
   return lines;
 }
 
+export function operationDiagnosticText(detail: OperationDiagnosticDetail): string {
+  return operationDiagnosticLines(detail)
+    .map((line) => `${line.title}${line.meta ? ` · ${line.meta}` : ''}`)
+    .join('\n');
+}
+
+function wrappedDiagnosticLines(detail: OperationDiagnosticDetail, columns: number): DetailLine[] {
+  return operationDiagnosticLines(detail).flatMap((line) => {
+    const value = `${line.title}${line.meta ? ` · ${line.meta}` : ''}`;
+    return wrapDisplayText(value, Math.max(1, columns - 8)).map((title) => ({
+      title: title || ' ',
+      status: line.status,
+    }));
+  });
+}
+
 export function OperationDiagnosticScreen(props: {
   detail: OperationDiagnosticDetail;
   compact: boolean;
+  columns: number;
   offset: number;
   limit: number;
 }): React.JSX.Element {
   const state = operationHistoryState(props.detail.summary);
-  const lines = operationDiagnosticLines(props.detail);
+  const lines = wrappedDiagnosticLines(props.detail, props.columns);
   const offset = Math.min(Math.max(0, props.offset), Math.max(0, lines.length - 1));
   const visible = lines.slice(offset, offset + Math.max(1, props.limit));
   const hiddenBefore = offset;
@@ -146,12 +175,10 @@ export function OperationDiagnosticScreen(props: {
         : <ResultCard status={state.status} title={props.detail.summary.message} meta={state.label} compact={false} />}
       <TechnicalDetails label="安全技术详情" compact={props.compact}>
         {hiddenBefore > 0 ? <StaticRow title={`↑ 还有 ${hiddenBefore} 行`} status="muted" compact /> : null}
-        {visible.map((line, index) => <StaticRow
-          key={`${offset + index}:${line.title}:${line.meta ?? ''}`}
-          title={line.title}
-          meta={line.meta}
+        {visible.map((line, index) => <SafeDetailLine
+          key={`${offset + index}:${line.title}`}
+          line={line.title}
           status={line.status}
-          compact={props.compact}
         />)}
         {hiddenAfter > 0 ? <StaticRow title={`↓ 还有 ${hiddenAfter} 行`} status="muted" compact /> : null}
       </TechnicalDetails>
@@ -159,8 +186,8 @@ export function OperationDiagnosticScreen(props: {
   );
 }
 
-export function operationReportLineCount(preview: OperationReportPreview): number {
-  return reportLines(preview).length;
+export function operationReportLineCount(preview: OperationReportPreview, columns: number): number {
+  return wrappedReportLines(preview, columns).length;
 }
 
 function reportLines(preview: OperationReportPreview): string[] {
@@ -168,13 +195,19 @@ function reportLines(preview: OperationReportPreview): string[] {
   return lines[0]?.startsWith('# ') ? lines.slice(2) : lines;
 }
 
+function wrappedReportLines(preview: OperationReportPreview, columns: number): string[] {
+  return reportLines(preview).flatMap((line) =>
+    wrapDisplayText(line, Math.max(1, columns - 8)));
+}
+
 export function OperationReportPreviewScreen(props: {
   preview: OperationReportPreview;
   compact: boolean;
+  columns: number;
   offset: number;
   limit: number;
 }): React.JSX.Element {
-  const lines = reportLines(props.preview);
+  const lines = wrappedReportLines(props.preview, props.columns);
   const offset = Math.min(Math.max(0, props.offset), Math.max(0, lines.length - 1));
   const visible = lines.slice(offset, offset + Math.max(1, props.limit));
   const hiddenBefore = offset;
@@ -190,11 +223,10 @@ export function OperationReportPreviewScreen(props: {
       />}
       <TechnicalDetails label="报告内容" compact={props.compact}>
         {hiddenBefore > 0 ? <StaticRow title={`↑ 还有 ${hiddenBefore} 行`} status="muted" compact /> : null}
-        {visible.map((line, index) => <StaticRow
+        {visible.map((line, index) => <SafeDetailLine
           key={`${offset + index}:${line}`}
-          title={line || ' '}
+          line={line || ' '}
           status="muted"
-          compact={props.compact}
         />)}
         {hiddenAfter > 0 ? <StaticRow title={`↓ 还有 ${hiddenAfter} 行`} status="muted" compact /> : null}
       </TechnicalDetails>

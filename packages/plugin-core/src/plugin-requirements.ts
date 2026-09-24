@@ -48,6 +48,14 @@ export function deriveAwCapabilitiesFromManifest(
   if (manifest.skills) capabilities.push('aw.plugin-skills.v1')
   if (manifest.buildConfig) capabilities.push('aw.plugin-build-config.v1')
   if (manifest.config) capabilities.push('aw.plugin-config.v2')
+  if (manifest.config && 'schemaVersion' in manifest.config && manifest.config.schemaVersion === 3) {
+    capabilities.push('aw.plugin-config.v3')
+    const presentation = manifest.config.presentation
+    if (presentation && (('summaries' in presentation && presentation.summaries)
+      || ('fieldViews' in presentation && presentation.fieldViews))) {
+      capabilities.push('aw.plugin-config-summary.v1')
+    }
+  }
   if (manifest.scripts?.preApply) capabilities.push('aw.plugin-pre-apply.v1')
   if ((manifest.artifacts?.targets?.length ?? 0) > 0) capabilities.push('aw.dynamic-artifacts.v2')
   if (manifest.distributions?.agentSkills) capabilities.push('aw.portable-skills.v1')

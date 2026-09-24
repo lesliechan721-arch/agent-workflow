@@ -2,6 +2,8 @@
 
 该 manifest 覆盖 default/non-default、project/user 最终制品和 lifecycle 专用 timeout profile；普通模型用例位于 project-default：
 
+Eval 主代理使用 `gpt-6-luna`：trigger 使用 Eval 引擎默认值，routing 和 lifecycle 在请求及 manifest 白名单中显式指定。子代理模型仍由被测 Skill 和用例要求选择。启用 spawn 观测的 trigger 默认运行 multi-agent V2；routing 的 V1/V2 则由各 case 的 `runtimeProfile` 选择。
+
 ## 准备与运行
 
 `aw skill eval prepare` 每次按 manifest 注册的一个 suite/profile 和可选 case/split 选择生成 `EvalSpec v1`。`--output` 必须指向 Workspace 外尚不存在的新目录。只做 materialization 诊断时只执行 prepare，不启动 provider：
@@ -31,6 +33,10 @@ strict 语料分成 train（12）、validation（10）和不参与 description �
 
 standard 组合性诊断语料另有 8 条，并把 `codex-subagent-guide` 与 `codex-explore` 同时列为 participant。它使用精确 loaded-skill 集合检查：只授权或只指定模型/上下文、不提供完整代理管理时由 guide 接管；真实的大范围事实探索只由 explore 接管；专用 fixture skill 已完整拥有当前委派生命周期时，两者都不叠加加载。涉及已存在 agent 的 trigger 用例只验证 Skill 路由，并明确禁止调用不存在的 runtime actor；真实等待由 lifecycle suite 负责。该 suite 会写临时 `.agents/` fixture。
 
+`trigger-dev-build` 使用 `project-dev-build` profile 物化真实 `dev-workflow`，覆盖明确委派要求下的 Build 与 guide 组合。用户只点名 `dev-build`，给出两个已确认且可独立验收的工作项，并明确要求本轮启动子代理承担首个工作项的只读实施核对，符合 trigger provider 的只读环境。用例检查 Build、guide 均加载且实际启动子代理，允许其它辅助技能；不证明 Build 自主决定委派、加载先后、产品实施或完整生命周期。已有 `trigger-composition` 中的专用生命周期负例继续检查误触发边界。
+
+其中 `real_explore_owner_route` 是真实 `codex-explore` 的排除用例：要求加载 Explore 并实际委派，禁止叠加 guide。它与 `dev_build_partial_dispatch_requires_guide` 分别覆盖完整专用调度和局部工作流调度，可用 `--case` 定向准备这两个 V2 用例。
+
 每条 query 默认在干净会话运行三次。普通 trigger 以 `0.5` 为分界；trigger-composition 的精确 loaded-skill 路由要求 `1.0`，并禁止同时加载两个 participant。strict suite 的 validation 和 sanity 禁止加载或禁止委派负例使用零容忍，任意一次误触发都失败。`$skill` 记录为宿主显式注入，隐式加载只接受成功读取 `SKILL.md` 的执行事件；spawn 还要求原始 rollout 参数证据。
 
 ```bash
@@ -38,6 +44,7 @@ aw skill eval prepare codex-enhance codex-subagent-guide --suite trigger --profi
 aw skill eval prepare codex-enhance codex-subagent-guide --suite trigger --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/codex-subagent-guide-trigger-validation --json
 aw skill eval prepare codex-enhance codex-subagent-guide --suite trigger --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/codex-subagent-guide-trigger-sanity --json
 aw skill eval prepare codex-enhance codex-subagent-guide --suite trigger-composition --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-subagent-guide-trigger-composition --json
+aw skill eval prepare codex-enhance codex-subagent-guide --suite trigger-dev-build --profile project-dev-build --runs 3 --output /tmp/aw-eval-specs/codex-subagent-guide-trigger-dev-build --json
 ```
 
 ## Routing 参数评估

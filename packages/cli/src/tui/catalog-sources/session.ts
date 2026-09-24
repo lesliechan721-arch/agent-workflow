@@ -18,7 +18,11 @@ export interface CatalogSourcesSessionOptions {
     signal: AbortSignal,
   ) => Promise<CatalogGenerationFreshnessResult>;
   onChange: (sourceId: string, freshness: CatalogSourceFreshnessViewModel) => void;
-  onError?: (error: unknown, code: string) => void;
+  onError?: (error: unknown, code: string, context: {
+    sourceId: string;
+    automatic: boolean;
+    fullValidation: boolean;
+  }) => string | undefined;
   parentSignal: AbortSignal;
   now?: () => number;
 }
@@ -282,18 +286,23 @@ export class CatalogSourcesSession {
         const code = catalogSourceErrorCode(error);
         this.#reusableCandidates.delete(sourceId);
         const previous = this.#lastSuccessful.get(sourceId);
+        const operationRecordId = this.options.onError?.(error, code, {
+          sourceId,
+          automatic,
+          fullValidation,
+        });
         this.options.onChange(sourceId, {
           ...(previous ? structuredClone(previous) : {}),
           sourceId,
           state: code === 'awCapabilityUnsupported' ? 'incompatible' : 'checkFailed',
           errorCode: code,
           ...(previous ? { lastSuccessful: true } : {}),
+          ...(operationRecordId ? { operationRecordId } : {}),
           ...(error instanceof CatalogProviderCompatibilityError ? {
             requiredCapabilities: [...error.requiredCapabilities],
             missingCapabilities: [...error.missingCapabilities],
           } : {}),
         });
-        this.options.onError?.(error, code);
       }
     } finally {
       const running = this.#running.get(sourceId);

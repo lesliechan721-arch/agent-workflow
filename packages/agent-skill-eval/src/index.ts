@@ -81,6 +81,7 @@ export type {
 } from './types.js'
 export type {
   ProcessTreeDependencies,
+  ProcessTreeDiagnostic,
   ProcessTreeObservation,
   ProcessTreeTerminationOptions,
 } from './process-tree.js'

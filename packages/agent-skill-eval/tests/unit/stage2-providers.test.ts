@@ -270,20 +270,24 @@ describe('built-in Eval provider registry', () => {
     expect(runConversation).not.toHaveBeenCalled()
   })
 
-  it('selects only the two built-in providers and returns a standard trigger grade', async () => {
+  it.each([false, true])('persists redacted trigger evidence before returning or failing (execution error: %s)', async (executionError) => {
     const paths = await runRoot()
     expect(BUILTIN_EVAL_PROVIDER_IDS).toEqual(['codex-trigger', 'codex-conversation'])
     expect(getBuiltinEvalProvider('codex-trigger').id).toBe('codex-trigger')
     expect(() => getBuiltinEvalProvider('missing')).toThrow('Unknown built-in Eval provider')
     const transport: CodexEvalTransport = {
       runTrigger: vi.fn(async () => ({
-        evidence: triggerEvidence(),
+        evidence: triggerEvidence({
+          execution_error: executionError,
+          event_trace: [{ method: 'test/event', params: { value: 'private-trigger-token' } }],
+          diagnostics: executionError ? ['cleanup failed: private-trigger-token'] : [],
+        }),
         usage: { inputTokens: 7, outputTokens: 2 },
       })),
       runConversation: vi.fn(async () => { throw new Error('not used') }),
       runGrader: vi.fn(async () => { throw new Error('not used') }),
     }
-    const result = await runBuiltinEvalProvider('codex-trigger', input(paths, {
+    const running = runBuiltinEvalProvider('codex-trigger', input(paths, {
       suite: {
         id: 'trigger',
         kind: 'trigger',
@@ -306,8 +310,13 @@ describe('built-in Eval provider registry', () => {
         query: 'Use the Skill.',
         should_load_skill: true,
       },
-    }), { transport })
-    expect(result).toEqual({
+    }), { transport, sourceEnv: { OPENAI_API_KEY: 'private-trigger-token' } })
+    if (executionError) await expect(running).rejects.toMatchObject({
+      name: 'EvalProviderExecutionError',
+      stage: 'evaluation',
+      message: 'codex-trigger execution failed: cleanup failed: [redacted]',
+    })
+    else expect(await running).toEqual({
       usage: { inputTokens: 7, outputTokens: 2 },
       grade: {
         passed: true,
@@ -319,8 +328,12 @@ describe('built-in Eval provider registry', () => {
       },
     })
     expect(transport.runTrigger).toHaveBeenCalledOnce()
-    await expect(readFile(path.join(paths.outputDir, 'provider-evidence.json'), 'utf8'))
-      .resolves.toContain('fixture-skill')
+    const saved = await readFile(path.join(paths.outputDir, 'provider-evidence.json'), 'utf8')
+    expect(saved).toContain('fixture-skill')
+    expect(saved).not.toContain('private-trigger-token')
+    expect(JSON.parse(saved).execution_error).toBe(executionError)
+    expect(JSON.parse(await readFile(path.join(paths.outputDir, 'provider-trace.json'), 'utf8')))
+      .toEqual([{ method: 'test/event', params: { value: '[redacted]' } }])
   })
 
   it('uses one evaluation conversation and one fresh grader conversation', async () => {

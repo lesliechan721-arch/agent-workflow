@@ -1625,7 +1625,9 @@ describe('TUI v4 real catalog source boundary', () => {
     await waitFor(() => controller.snapshot.phase === 'ready', 'initial TUI status', () => controller.snapshot);
 
     await focusAction(instance, '插件来源');
-    await input(instance, '\r', '\t', '\r');
+    await input(instance, '\r', 'a');
+    expect(instance.lastFrame()).toContain('› ＋ 添加来源');
+    await input(instance, '\r');
     expect(controller.snapshot.router.current.route.name).toBe('sourceAdd');
     await input(instance, '\u001B[B', '\r');
     await input(instance, 'team', '\r', secondRoot, '\r');
@@ -1817,7 +1819,7 @@ describe('TUI v4 real catalog source boundary', () => {
     />);
     await waitFor(() => controller.snapshot.phase === 'ready', 'initial TUI status', () => controller.snapshot);
     await focusAction(instance, '插件来源');
-    await input(instance, '\r', '\t', '\r');
+    await input(instance, '\r', 'a', '\r');
     expect(controller.snapshot.router.current.route.name).toBe('sourceAdd');
     await input(instance, '\u001B[B', '\r');
     await input(instance, 'broken', '\r', invalidRoot, '\r');
@@ -1840,7 +1842,7 @@ describe('TUI v4 real catalog source boundary', () => {
     const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 60, rows: 18 }} />);
     await waitFor(() => controller.snapshot.phase === 'ready', 'initial TUI status', () => controller.snapshot);
     await focusAction(instance, '插件来源');
-    await input(instance, '\r', '\t', '\r');
+    await input(instance, '\r', 'a', '\r');
     expect(controller.snapshot.router.current.route.name).toBe('sourceAdd');
     await input(instance, '\u001B[B', '\r');
     await input(instance, 'requested', '\r', secondRoot, '\r');

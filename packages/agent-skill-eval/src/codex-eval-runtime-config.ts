@@ -8,7 +8,7 @@ import { ParseError, parseTOML, type AST } from 'toml-eslint-parser';
 import { CODEX_EVAL_CREDENTIAL_CONFIG_LINES } from './codex-eval-isolation.js';
 import { redactSecrets } from './credentials.js';
 
-export const DEFAULT_CODEX_EVAL_MODEL = 'gpt-5.6-luna';
+export const DEFAULT_CODEX_EVAL_MODEL = 'gpt-6-luna';
 
 const MODEL_CONFIG_KEYS = new Set([
   'model',

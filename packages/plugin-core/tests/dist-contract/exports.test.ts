@@ -9,6 +9,12 @@ import {
 } from '@lesliechan721/aw-plugin-core'
 import {
   computeAwCapabilitySetDigest,
+  assertPluginManifestStructure,
+  normalizePluginConfigDefinition,
+  validatePluginConfigValue,
+  PLUGIN_CONFIG_V3_MAX_DEFINITIONS,
+  PLUGIN_CONFIG_V3_MAX_FIELDS,
+  PLUGIN_CONFIG_V3_MAX_REF_DEPTH,
   getPluginAuthoringCapabilities,
   getPluginAuthoringCapabilitySurface,
   PLUGIN_MANIFEST_SCHEMA_VERSION,
@@ -17,6 +23,16 @@ import {
 const require = createRequire(import.meta.url)
 
 describe('public package exports', () => {
+  it('publishes the v3 reader, schema and budget constants through package exports', () => {
+    const config = { schemaVersion: 3, definitions: { text: { type: 'string', validation: { minLength: 2 } } }, fields: { label: { $ref: '#/config/definitions/text', default: 'valid' } } };
+    const manifest = { schemaVersion: 3, name: 'public-reader', version: '0.1.0', description: 'Public contract', marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } }, config };
+    expect(() => assertPluginManifestStructure(manifest)).not.toThrow();
+    const compiled = normalizePluginConfigDefinition(config);
+    expect(validatePluginConfigValue(compiled.fields.label!, 'x')).toMatchObject([{ code: 'minLength' }]);
+    expect(compiled.schemaVersion).toBe(3);
+    expect([PLUGIN_CONFIG_V3_MAX_DEFINITIONS, PLUGIN_CONFIG_V3_MAX_FIELDS, PLUGIN_CONFIG_V3_MAX_REF_DEPTH]).toEqual([64, 256, 8]);
+    expect(getAwCapabilityRegistry()).toEqual(expect.arrayContaining(['aw.plugin-config.v3', 'aw.plugin-config-summary.v1']));
+  });
   it('exposes the manifest runtime and published v3 schema subpaths', async () => {
     expect(DEFAULT_CATALOG_WORKSPACE_VERSION).toBe('0.1.0')
     expect(getAwCapabilityRegistry()).toContain('aw.self-check.v1')

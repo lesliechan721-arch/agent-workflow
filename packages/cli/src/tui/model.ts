@@ -1,3 +1,5 @@
+import { configObjectHasSensitiveChild, presentConfigValue } from './config-value-presentation.js';
+export { configObjectHasSensitiveChild } from './config-value-presentation.js';
 import {
   matchPluginConfigPreset,
   stablePluginConfigStringify,
@@ -10,6 +12,7 @@ import type {
   PluginConfigPreset,
   PluginConfigScalar,
   PluginConfigSchemaField,
+  PluginConfigJoinSummary,
   PluginConfigSchema,
   PluginConfigValue,
   Scope,
@@ -37,6 +40,7 @@ import {
 } from '../commands/status-v6.js';
 import type {
   DependencyAssignmentSource,
+  DependencyPlacementRootInput,
 } from '../commands/dependency-operation-plan.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { DependencyScopeOverride } from '../types.js';
@@ -396,6 +400,7 @@ export interface DependencyPlacementTargetViewModel {
 export interface InstallPlacementDraftViewModel {
   pluginId: string;
   rootScope: Scope;
+  exactRootTargets?: DependencyPlacementRootInput[];
   platforms: PlatformName[];
   dependencyScopeOverrides: DependencyScopeOverride[];
   state: 'selecting' | 'loading' | 'ready' | 'blocked';
@@ -451,6 +456,7 @@ export interface ConfigFieldViewModel {
   description?: string;
   type: PluginConfigFieldType;
   definition: PluginConfigSchemaField;
+  summary?: PluginConfigJoinSummary;
   displayValue: string;
   required: boolean;
   sensitive: boolean;
@@ -510,12 +516,6 @@ export interface ConfigPageViewModel {
   groups: ConfigGroupViewModel[];
   presets: ConfigPresetViewModel[];
   storedCount: number;
-}
-
-export function configObjectHasSensitiveChild(field: PluginConfigSchemaField): boolean {
-  if (field.type !== 'object') return false;
-  return Object.values(field.properties ?? {}).some((property) => property.sensitive === true)
-    || (field.additionalProperties !== false && field.additionalProperties?.sensitive === true);
 }
 
 export type UserIssueCategory =
@@ -2345,32 +2345,19 @@ export function buildTuiViewModel(options: {
 
 function displayConfigValue(options: {
   field: PluginConfigSchemaField;
+  summary?: PluginConfigJoinSummary;
   privateValue: boolean;
   inherited: boolean;
   configured: boolean;
   value: unknown;
 }): string {
-  if (!options.configured) return options.inherited ? '继承' : '未设置';
-  if (options.privateValue) return '已设置';
-  if (options.field.type === 'object'
-    && typeof options.value === 'object'
-    && options.value !== null
-    && !Array.isArray(options.value)) {
-    const object = options.value as PluginConfigObject;
-    if (configObjectHasSensitiveChild(options.field)) {
-      const count = Object.keys(object).length;
-      return `已设置 · ${count === 0 ? '空对象' : `${count} 项`}`;
-    }
-    const preset = matchPluginConfigPreset(options.field, object);
-    const keys = Object.keys(object).sort((left, right) => left.localeCompare(right, 'en'));
-    const keySummary = keys.length === 0
-      ? '空对象'
-      : `${keys.length} 项${keys.length > 0 ? `（${keys.slice(0, 2).join('、')}${keys.length > 2 ? '…' : ''}）` : ''}`;
-    return preset ? `方案“${preset.title}” · ${keySummary}` : `自定义 · ${keySummary}`;
-  }
-  if (typeof options.value === 'string') return options.value;
-  if (options.value === undefined || options.value === null) return '已设置';
-  return String(options.value);
+  return presentConfigValue({
+    definition: options.field,
+    summary: options.summary,
+    value: options.value,
+    configured: options.configured,
+    privateValue: options.privateValue,
+  }).text;
 }
 
 function configSourceLabel(source: ResolvedConfigRead['fields'][number]['sourceLayer']): string {
@@ -2459,6 +2446,8 @@ export function buildConfigGroups(options: {
         && entry.effectiveValue !== null
         && (entry.valueState === 'configured' || entry.valueState === 'default')
       : entry?.storedSourceLayer !== undefined;
+    const summaryName = options.schema.presentation?.fieldViews?.[key]?.summary;
+    const summary = summaryName === undefined ? undefined : options.schema.presentation?.summaries?.[summaryName];
     const privateValue = schema.sensitive === true;
     const choices = schema.choices;
     const selectedValue = effectivePage ? entry?.effectiveValue : entry?.storedValue;
@@ -2523,8 +2512,10 @@ export function buildConfigGroups(options: {
       ...(schema.description ? { description: schema.description } : {}),
       type: schema.type,
       definition: configEditorDefinition(schema),
-      displayValue: selectedStoredInvalid ? '值无效' : displayConfigValue({
+      ...(summary ? { summary } : {}),
+      displayValue: selectedStoredInvalid ? '需修正' : displayConfigValue({
         field: schema,
+        summary,
         privateValue,
         inherited,
         configured,
@@ -2543,8 +2534,9 @@ export function buildConfigGroups(options: {
       sourceLabel: effectivePage
         ? configSourceLabel(entry?.sourceLayer ?? null)
         : configured ? '本层已设置' : '继承',
-      effectiveDisplayValue: displayConfigValue({
+      effectiveDisplayValue: effectiveEntry?.invalidOverride ? '需修正' : displayConfigValue({
         field: schema,
+        summary,
         privateValue,
         inherited: false,
         configured: effectiveConfigured,
@@ -2566,6 +2558,7 @@ export function buildConfigGroups(options: {
           ? '值无效；保存可成功，但应用会被阻止'
           : displayConfigValue({
               field: schema,
+              summary,
               privateValue,
               inherited: false,
               configured: fallbackConfigured,

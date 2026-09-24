@@ -119,3 +119,25 @@ export const fixedObjectChildWithDefault: PluginConfigObjectPropertyField = {
   // @ts-expect-error Fixed object config children cannot declare defaults.
   default: 'safe',
 }
+
+export const sourceConfigV3: NonNullable<PluginManifestSourceV3['config']> = {
+  schemaVersion: 3,
+  definitions: { scalar: { type: 'string' }, profile: { type: 'object', properties: { model: { $ref: '#/config/definitions/scalar', required: true } } } },
+  fields: { profile: { $ref: '#/config/definitions/profile', default: { model: 'local' } } },
+  presentation: { summaries: { compact: { kind: 'join', parts: [{ path: '/model', format: 'raw' }], separator: '/', missing: 'unset' } }, fieldViews: { profile: { summary: 'compact' } } },
+}
+
+export const sourceRefCannotOverrideType: import('../../src/generated/plugin-manifest-v3.js').ConfigReference = {
+  $ref: '#/config/definitions/scalar',
+  // @ts-expect-error A reference cannot replace its definition type.
+  type: 'number',
+}
+
+export const compiledConfigHasNoRefs: import('../../src/types.js').PluginConfigDefinition = {
+  schemaVersion: 3, fields: {
+    profile: {
+      // @ts-expect-error Runtime fields are compiled; references exist only in source types.
+      $ref: '#/config/definitions/profile',
+    },
+  },
+}

@@ -178,10 +178,11 @@ describe('TUI config save batch result', () => {
     await input(instance, '\r', '\u0015', 'project-value', '\r', '\r');
 
     await input(instance, '\r', '\u0015', 'user-value', '\r', '\u001b[B', '\r');
-    expect(instance.lastFrame()).toContain('当前项目：project-value · 个人默认：user-value');
-    expect(instance.lastFrame()).toContain('[保存设置（2）]');
+    expect(instance.lastFrame()).toContain('待保存到当前项目：project-value');
+    expect(instance.lastFrame()).toContain('待保存到个人默认：user-value');
+    expect(instance.lastFrame()).toContain('保存设置（2）');
 
-    await input(instance, '\t', '\r', '\u001b[B', '\r');
+    await input(instance, 's', '\u001b[B', '\r');
     expect(captured.at(-1)).toMatchObject({
       kind: 'configSaveBatch', apply: false,
       groups: [

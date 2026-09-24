@@ -852,6 +852,10 @@ export class EvalAppServerSession {
     return this.stderrBuffer.replaceAll(this.processTreeId, '[process-tree-id]');
   }
 
+  get processTreeSnapshots() {
+    return this.processTreeMonitor.snapshots ?? [];
+  }
+
   scrub<T>(value: T): T {
     return scrubProcessTreeId(value, this.processTreeId);
   }

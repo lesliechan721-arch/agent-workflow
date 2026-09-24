@@ -115,9 +115,9 @@ describe('TUI diagnostic projection', () => {
     expect(first).toContain('code');
     expect(first).toContain('stage');
     expect(first).toContain('sourceId');
-    expect(first).toContain('↓ 后面还有 8 项');
+    expect(first).toContain('↓ 后面还有 8 行');
     expect(first).not.toContain('建议 3');
-    expect(last).toContain('↑ 前面还有 9 项');
+    expect(last).toContain('↑ 前面还有 9 行');
     expect(last).toContain('建议 2');
     expect(last).toContain('建议 3');
     expect(last).not.toContain('↓ 后面还有');

@@ -35,6 +35,16 @@ describe('TUI route registry', () => {
     expect(definition.screenId(route, {} as RouteScreenContext)).toBe(screenId);
   });
 
+  it('registers Portable preparation as the U22 waiting state', () => {
+    const route = { name: 'portablePreparing', pluginId: 'official/demo' } as const;
+    const definition = routeDefinition(route);
+
+    expect(definition).toMatchObject({
+      entity: 'plugin', rendererFamily: 'portable', keymap: 'menu',
+    });
+    expect(definition.screenId(route, {} as RouteScreenContext)).toBe('U22');
+  });
+
   it('defines production routing facts for every route family', () => {
     expect(routeDefinition({ name: 'home' })).toMatchObject({
       entity: 'none', rendererFamily: 'home', keymap: 'menu',

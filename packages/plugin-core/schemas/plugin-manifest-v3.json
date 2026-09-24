@@ -554,19 +554,148 @@
         { "$ref": "#/$defs/configBooleanField" }, { "$ref": "#/$defs/configObjectField" }
       ]
     },
-    "config": {
-      "type": "object", "additionalProperties": false, "required": ["fields"],
+    "configReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$ref"],
       "properties": {
-        "fields": { "type": "object", "propertyNames": { "not": { "enum": ["__proto__", "constructor", "prototype"] } }, "additionalProperties": { "$ref": "#/$defs/configField" } },
+        "$ref": {"type": "string", "pattern": "^#/config/definitions/[A-Za-z][A-Za-z0-9_]*$"},
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "default": {
+          "oneOf": [
+            {"$ref": "#/$defs/configScalar"},
+            {
+              "type": "object",
+              "maxProperties": 32,
+              "propertyNames": {"not": {"enum": ["__proto__", "constructor", "prototype"]}},
+              "additionalProperties": {"$ref": "#/$defs/configScalar"}
+            }
+          ]
+        },
+        "required": {"type": "boolean"}
+      }
+    },
+    "configChildReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$ref"],
+      "properties": {
+        "$ref": {"type": "string", "pattern": "^#/config/definitions/[A-Za-z][A-Za-z0-9_]*$"},
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "required": {"type": "boolean"}
+      }
+    },
+    "configDynamicReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$ref"],
+      "properties": {"$ref": {"type": "string", "pattern": "^#/config/definitions/[A-Za-z][A-Za-z0-9_]*$"}, "title": {"type": "string"}, "description": {"type": "string"}}
+    },
+    "configV3FixedObjectField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "properties"],
+      "properties": {
+        "type": {"const": "object"},
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "default": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {"not": {"enum": ["__proto__", "constructor", "prototype"]}},
+          "additionalProperties": {"$ref": "#/$defs/configScalar"}
+        },
+        "required": {"type": "boolean"},
+        "sensitive": false,
+        "choices": {"$ref": "#/$defs/configObjectChoices"},
+        "properties": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {"not": {"enum": ["__proto__", "constructor", "prototype"]}},
+          "additionalProperties": {"oneOf": [{"$ref": "#/$defs/configScalarChildField"}, {"$ref": "#/$defs/configChildReference"}]}
+        },
+        "additionalProperties": {"const": false},
+        "validation": {"$ref": "#/$defs/configObjectValidation"}
+      }
+    },
+    "configV3KeyValueObjectField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "additionalProperties"],
+      "properties": {
+        "type": {"const": "object"},
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "default": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {"not": {"enum": ["__proto__", "constructor", "prototype"]}},
+          "additionalProperties": {"$ref": "#/$defs/configScalar"}
+        },
+        "required": {"type": "boolean"},
+        "sensitive": false,
+        "choices": {"$ref": "#/$defs/configObjectChoices"},
+        "additionalProperties": {"oneOf": [{"$ref": "#/$defs/configScalarDynamicField"}, {"$ref": "#/$defs/configDynamicReference"}]},
+        "validation": {"$ref": "#/$defs/configObjectValidation"}
+      }
+    },
+    "configV3Field": {
+      "oneOf": [
+        {"$ref": "#/$defs/configScalarField"},
+        {"$ref": "#/$defs/configV3FixedObjectField"},
+        {"$ref": "#/$defs/configV3KeyValueObjectField"},
+        {"$ref": "#/$defs/configReference"}
+      ]
+    },
+    "configJoinSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "parts", "separator", "missing"],
+      "properties": {
+        "kind": {"const": "join"},
+        "parts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path"],
+            "properties": {"path": {"type": "string", "maxLength": 128, "pattern": "^/(?:[^~/]|~[01])*$"}, "format": {"enum": ["raw", "choiceTitle"]}}
+          }
+        },
+        "separator": {"type": "string", "maxLength": 8},
+        "missing": {"type": "string"}
+      }
+    },
+    "configV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fields"],
+      "properties": {
+        "fields": {
+          "type": "object",
+          "propertyNames": {"not": {"enum": ["__proto__", "constructor", "prototype"]}},
+          "additionalProperties": {"$ref": "#/$defs/configField"}
+        },
         "presentation": {
-          "type": "object", "additionalProperties": false,
+          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "groups": {
-              "type": "array", "items": {
-                "type": "object", "additionalProperties": false, "required": ["id", "title", "fields"],
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "title", "fields"],
                 "properties": {
-                  "id": { "type": "string" }, "title": { "type": "string" }, "description": { "type": "string" },
-                  "fields": { "$ref": "#/$defs/stringArray" }, "advanced": { "type": "boolean" }
+                  "id": {"type": "string"},
+                  "title": {"type": "string"},
+                  "description": {"type": "string"},
+                  "fields": {"$ref": "#/$defs/stringArray"},
+                  "advanced": {"type": "boolean"}
                 }
               }
             }
@@ -574,6 +703,58 @@
         }
       }
     },
+    "configV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "fields"],
+      "properties": {
+        "fields": {
+          "type": "object",
+          "maxProperties": 256,
+          "propertyNames": {"pattern": "^[A-Za-z][A-Za-z0-9_]*$", "not": {"enum": ["__proto__", "constructor", "prototype"]}},
+          "additionalProperties": {"$ref": "#/$defs/configV3Field"}
+        },
+        "presentation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "title", "fields"],
+                "properties": {
+                  "id": {"type": "string"},
+                  "title": {"type": "string"},
+                  "description": {"type": "string"},
+                  "fields": {"$ref": "#/$defs/stringArray"},
+                  "advanced": {"type": "boolean"}
+                }
+              }
+            },
+            "summaries": {
+              "type": "object",
+              "propertyNames": {"pattern": "^[A-Za-z][A-Za-z0-9_]*$", "not": {"enum": ["__proto__", "constructor", "prototype"]}},
+              "additionalProperties": {"$ref": "#/$defs/configJoinSummary"}
+            },
+            "fieldViews": {
+              "type": "object",
+              "propertyNames": {"pattern": "^[A-Za-z][A-Za-z0-9_]*$", "not": {"enum": ["__proto__", "constructor", "prototype"]}},
+              "additionalProperties": {"type": "object", "additionalProperties": false, "required": ["summary"], "properties": {"summary": {"type": "string"}}}
+            }
+          }
+        },
+        "schemaVersion": {"const": 3},
+        "definitions": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {"pattern": "^[A-Za-z][A-Za-z0-9_]*$", "not": {"enum": ["__proto__", "constructor", "prototype"]}},
+          "additionalProperties": {"$ref": "#/$defs/configV3Field"}
+        }
+      }
+    },
+    "config": {"oneOf": [{"$ref": "#/$defs/configV2"}, {"$ref": "#/$defs/configV3"}]},
     "interface": {
       "type": "object",
       "additionalProperties": false,

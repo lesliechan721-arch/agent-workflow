@@ -330,7 +330,7 @@ export async function prepareLifecycle(input) {
     version: 1,
     prompt: evalCase.prompt,
     sandbox: recovery ? 'workspace-write' : 'read-only',
-    model: 'gpt-5.6-luna',
+    model: 'gpt-6-luna',
     developerInstructions: recovery
       ? ROOT_DEVELOPER_INSTRUCTIONS.replace('Do not modify files in this evaluation workspace.',
         'Only the delegated child may run the helper and write results/progress.json; the parent only orchestrates.')

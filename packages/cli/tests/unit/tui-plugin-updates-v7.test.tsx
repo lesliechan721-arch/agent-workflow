@@ -330,18 +330,7 @@ describe('TUI plugin update evidence', () => {
     expect(instance.lastFrame()).toContain('更新 1');
     expect(controller.listPlugins({ mode: 'installed', installFilter: 'updateAvailable' }))
       .toHaveLength(1);
-    instance.stdin.write('\t');
-    await nextTurn();
-    instance.stdin.write('\u001B[B');
-    await nextTurn();
-    instance.stdin.write('\u001B[B');
-    await nextTurn();
-    instance.stdin.write('\r');
-    await nextTurn();
-    instance.stdin.write('\u001B[B');
-    await nextTurn();
-    instance.stdin.write('\r');
-    await nextTurn();
+    instance.stdin.write('f');
     await nextTurn();
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('[未安装 0]'));
     instance.stdin.write('f');
@@ -349,8 +338,6 @@ describe('TUI plugin update evidence', () => {
     await nextTurn();
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('[可更新 1]'));
 
-    instance.stdin.write('\t');
-    await nextTurn();
     instance.stdin.write('\r');
     await vi.waitFor(() => expect(controller.snapshot.router.current.route).toEqual({
       name: 'pluginDetail', pluginId: 'official/demo',

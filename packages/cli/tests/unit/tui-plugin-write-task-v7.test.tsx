@@ -2,6 +2,9 @@ import { cleanup, render } from 'ink-testing-library';
 import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../src/tui/clipboard.js', () => ({ copyToClipboard: vi.fn() }));
+
+import { copyToClipboard } from '../../src/tui/clipboard.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import type { StatusV8Payload, StatusV8PluginSummary } from '../../src/commands/status-v6.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
@@ -180,8 +183,8 @@ describe('TUI plugin write task', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn();
 
-    expect(instance.lastFrame()).toContain('[更新 1 个]');
-    await write(instance, '\t');
+    expect(instance.lastFrame()).toContain('更新 1 个');
+    await focusAction(instance, '更新 1 个');
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
 
@@ -206,7 +209,7 @@ describe('TUI plugin write task', () => {
       state: 'blocked', code: 'reviewTicketInvalid',
     });
 
-    await focusAction(instance, '查看确认（1）');
+    await focusAction(instance, '查看升级汇总（1） [c]');
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
 
@@ -220,8 +223,9 @@ describe('TUI plugin write task', () => {
       returnRoute: { name: 'pluginWriteTask', batchOrigin: { owner: 'batch-write' } },
     });
 
-    await focusAction(instance, '完成，返回我的插件');
-    await write(instance, '\r');
+    expect(instance.lastFrame()).not.toContain('完成，返回我的插件');
+    await vi.waitFor(() => expect(value.hasSessionDraft).toBe(false));
+    await write(instance, 'b');
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
     expect(value.snapshot.router.currentFlowId).toBeUndefined();
 
@@ -387,6 +391,7 @@ describe('TUI plugin write task', () => {
   );
 
   it('keeps manual blocked targets out of retry and returns to their task after subset success', async () => {
+    const clipboard = vi.mocked(copyToClipboard).mockReset().mockResolvedValue(undefined);
     const executableTarget = {
       pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const,
     };
@@ -455,11 +460,15 @@ describe('TUI plugin write task', () => {
     expect(value.snapshot.result?.state === 'partial'
       ? value.snapshot.result.summary.task : undefined).not.toHaveProperty('retryTargets');
     const frame = instance.lastFrame() ?? '';
-    expect(frame).toContain('插件恢复只完成了一部分');
+    expect(frame).toContain('部分完成');
     expect(frame).toContain('1 个目标需要决定');
     expect(frame).toContain('需要选择手动处理方式');
     expect(frame).toContain('返回任务处理 1 个需决定项');
     expect(frame).not.toContain('继续处理剩余');
+    await write(instance, 'y');
+    await vi.waitFor(() => expect(clipboard).toHaveBeenCalledTimes(1));
+    expect(clipboard.mock.calls[0]![0]).toContain('official/demo · Claude Code · 当前项目');
+    expect(clipboard.mock.calls[0]![0]).toContain('需要选择手动处理方式');
     await write(instance, '\r');
     expect(value.snapshot.router.current.route).toEqual({
       ...taskRoute,
@@ -642,8 +651,9 @@ describe('TUI plugin write task', () => {
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
-    expect(instance.lastFrame()).toContain('返回恢复任务');
-    await write(instance, '\r');
+    await nextTurn();
+    expect(instance.lastFrame()).not.toContain('返回恢复任务');
+    await write(instance, 'b');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, 'b');
     expect(value.snapshot.router.current.route).toMatchObject({
@@ -775,9 +785,10 @@ describe('TUI plugin write task', () => {
     await nextTurn();
 
     await write(instance, 'm');
-    await write(instance, 'a');
+    await write(instance, ' ');
+    expect(instance.lastFrame()).toContain('已选 1');
     await write(instance, 'c');
-    await write(instance, '\u001b[B');
+    await focusAction(instance, '恢复所选中的 1 个插件');
     await write(instance, '\r');
     const outerTask = value.snapshot.router.current.route;
     expect(outerTask).toMatchObject({
@@ -820,7 +831,8 @@ describe('TUI plugin write task', () => {
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
     await vi.waitFor(() => expect(value.hasSessionDraft).toBe(false));
     expect(value.snapshot.router.currentFlowId).toBeUndefined();
-    await write(instance, '\r');
+    expect(instance.lastFrame()).not.toContain('完成，返回我的插件');
+    await write(instance, 'b');
     await nextTurn();
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
     expect(value.hasSessionDraft).toBe(false);
@@ -845,6 +857,7 @@ describe('TUI plugin write task', () => {
   });
 
   it('shows one root plugin with separate positions and retries only its failed position', async () => {
+    const clipboard = vi.mocked(copyToClipboard).mockReset().mockResolvedValue(undefined);
     const codexTarget = {
       pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const,
     };
@@ -923,6 +936,17 @@ describe('TUI plugin write task', () => {
     expect(frame).toContain('Claude Code · 当前项目');
     expect(frame.match(/Demo/gu)).toHaveLength(1);
     expect(frame).toContain('继续处理剩余 1 项');
+    await write(instance, 'y');
+    await vi.waitFor(() => expect(clipboard).toHaveBeenCalledTimes(1));
+    expect(clipboard.mock.calls[0]![0]).toContain('official/demo · Claude Code · 当前项目');
+    expect(clipboard.mock.calls[0]![0]).toContain('失败 · writeFailed');
+    const copied = clipboard.mock.calls[0]![0];
+    instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn();
+    await write(instance, '\u001B[C');
+    await write(instance, 'y');
+    await vi.waitFor(() => expect(clipboard).toHaveBeenCalledTimes(2));
+    expect(clipboard.mock.calls[1]![0]).toBe(copied);
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     expect(dependencies.captureEvidence).toHaveBeenLastCalledWith(expect.objectContaining({

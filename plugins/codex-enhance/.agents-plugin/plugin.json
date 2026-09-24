@@ -54,399 +54,131 @@
     }
   },
   "config": {
+    "schemaVersion": 3,
+    "definitions": {
+      "agentProfile": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "fields": {
       "quickProfile": {
-        "type": "object",
+        "$ref": "#/config/definitions/agentProfile",
         "title": "Quick 探索配置",
         "description": "quick 探索 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-5.6-luna",
+          "model": "gpt-6-luna",
           "reasoningEffort": "medium"
         },
-        "required": true,
-        "properties": {
-          "model": {
-            "type": "string",
-            "required": true,
-            "validation": {
-              "minLength": 1
-            }
-          },
-          "reasoningEffort": {
-            "type": "string",
-            "required": true,
-            "choices": {
-              "allowCustom": false,
-              "presets": [
-                {
-                  "id": "low",
-                  "title": "low",
-                  "value": "low"
-                },
-                {
-                  "id": "medium",
-                  "title": "medium",
-                  "value": "medium"
-                },
-                {
-                  "id": "high",
-                  "title": "high",
-                  "value": "high"
-                },
-                {
-                  "id": "xhigh",
-                  "title": "xhigh",
-                  "value": "xhigh"
-                },
-                {
-                  "id": "max",
-                  "title": "max",
-                  "value": "max"
-                },
-                {
-                  "id": "ultra",
-                  "title": "ultra",
-                  "value": "ultra"
-                }
-              ]
-            }
-          }
-        },
-        "additionalProperties": false
+        "required": true
       },
       "standardProfile": {
-        "type": "object",
+        "$ref": "#/config/definitions/agentProfile",
         "title": "Standard 探索配置",
         "description": "standard 探索 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-5.6-luna",
+          "model": "gpt-6-luna",
           "reasoningEffort": "high"
         },
-        "required": true,
-        "properties": {
-          "model": {
-            "type": "string",
-            "required": true,
-            "validation": {
-              "minLength": 1
-            }
-          },
-          "reasoningEffort": {
-            "type": "string",
-            "required": true,
-            "choices": {
-              "allowCustom": false,
-              "presets": [
-                {
-                  "id": "low",
-                  "title": "low",
-                  "value": "low"
-                },
-                {
-                  "id": "medium",
-                  "title": "medium",
-                  "value": "medium"
-                },
-                {
-                  "id": "high",
-                  "title": "high",
-                  "value": "high"
-                },
-                {
-                  "id": "xhigh",
-                  "title": "xhigh",
-                  "value": "xhigh"
-                },
-                {
-                  "id": "max",
-                  "title": "max",
-                  "value": "max"
-                },
-                {
-                  "id": "ultra",
-                  "title": "ultra",
-                  "value": "ultra"
-                }
-              ]
-            }
-          }
-        },
-        "additionalProperties": false
+        "required": true
       },
       "deepProfile": {
-        "type": "object",
+        "$ref": "#/config/definitions/agentProfile",
         "title": "Deep 探索配置",
         "description": "deep 探索 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-5.6-luna",
+          "model": "gpt-6-luna",
           "reasoningEffort": "xhigh"
         },
-        "required": true,
-        "properties": {
-          "model": {
-            "type": "string",
-            "required": true,
-            "validation": {
-              "minLength": 1
-            }
-          },
-          "reasoningEffort": {
-            "type": "string",
-            "required": true,
-            "choices": {
-              "allowCustom": false,
-              "presets": [
-                {
-                  "id": "low",
-                  "title": "low",
-                  "value": "low"
-                },
-                {
-                  "id": "medium",
-                  "title": "medium",
-                  "value": "medium"
-                },
-                {
-                  "id": "high",
-                  "title": "high",
-                  "value": "high"
-                },
-                {
-                  "id": "xhigh",
-                  "title": "xhigh",
-                  "value": "xhigh"
-                },
-                {
-                  "id": "max",
-                  "title": "max",
-                  "value": "max"
-                },
-                {
-                  "id": "ultra",
-                  "title": "ultra",
-                  "value": "ultra"
-                }
-              ]
-            }
-          }
-        },
-        "additionalProperties": false
+        "required": true
       },
       "simpleTaskProfile": {
-        "type": "object",
+        "$ref": "#/config/definitions/agentProfile",
         "title": "简单任务配置",
         "description": "简单任务 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-5.6-luna",
+          "model": "gpt-6-luna",
           "reasoningEffort": "max"
         },
-        "required": true,
-        "properties": {
-          "model": {
-            "type": "string",
-            "required": true,
-            "validation": {
-              "minLength": 1
-            }
-          },
-          "reasoningEffort": {
-            "type": "string",
-            "required": true,
-            "choices": {
-              "allowCustom": false,
-              "presets": [
-                {
-                  "id": "low",
-                  "title": "low",
-                  "value": "low"
-                },
-                {
-                  "id": "medium",
-                  "title": "medium",
-                  "value": "medium"
-                },
-                {
-                  "id": "high",
-                  "title": "high",
-                  "value": "high"
-                },
-                {
-                  "id": "xhigh",
-                  "title": "xhigh",
-                  "value": "xhigh"
-                },
-                {
-                  "id": "max",
-                  "title": "max",
-                  "value": "max"
-                }
-              ]
-            }
-          }
-        },
-        "additionalProperties": false
+        "required": true
       },
       "generalTaskProfile": {
-        "type": "object",
+        "$ref": "#/config/definitions/agentProfile",
         "title": "常规任务配置",
         "description": "常规任务 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-5.6-terra",
-          "reasoningEffort": "xhigh"
+          "model": "gpt-6-sol",
+          "reasoningEffort": "medium"
         },
-        "required": true,
-        "properties": {
-          "model": {
-            "type": "string",
-            "required": true,
-            "validation": {
-              "minLength": 1
-            }
-          },
-          "reasoningEffort": {
-            "type": "string",
-            "required": true,
-            "choices": {
-              "allowCustom": false,
-              "presets": [
-                {
-                  "id": "low",
-                  "title": "low",
-                  "value": "low"
-                },
-                {
-                  "id": "medium",
-                  "title": "medium",
-                  "value": "medium"
-                },
-                {
-                  "id": "high",
-                  "title": "high",
-                  "value": "high"
-                },
-                {
-                  "id": "xhigh",
-                  "title": "xhigh",
-                  "value": "xhigh"
-                },
-                {
-                  "id": "max",
-                  "title": "max",
-                  "value": "max"
-                }
-              ]
-            }
-          }
-        },
-        "additionalProperties": false
+        "required": true
       },
       "complexTaskProfile": {
-        "type": "object",
+        "$ref": "#/config/definitions/agentProfile",
         "title": "复杂任务配置",
         "description": "复杂任务 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-5.6-sol",
-          "reasoningEffort": "medium"
+          "model": "gpt-6-sol",
+          "reasoningEffort": "xhigh"
         },
-        "required": true,
-        "properties": {
-          "model": {
-            "type": "string",
-            "required": true,
-            "validation": {
-              "minLength": 1
-            }
-          },
-          "reasoningEffort": {
-            "type": "string",
-            "required": true,
-            "choices": {
-              "allowCustom": false,
-              "presets": [
-                {
-                  "id": "low",
-                  "title": "low",
-                  "value": "low"
-                },
-                {
-                  "id": "medium",
-                  "title": "medium",
-                  "value": "medium"
-                },
-                {
-                  "id": "high",
-                  "title": "high",
-                  "value": "high"
-                },
-                {
-                  "id": "xhigh",
-                  "title": "xhigh",
-                  "value": "xhigh"
-                },
-                {
-                  "id": "max",
-                  "title": "max",
-                  "value": "max"
-                }
-              ]
-            }
-          }
-        },
-        "additionalProperties": false
+        "required": true
       },
       "advancedTaskProfile": {
-        "type": "object",
+        "$ref": "#/config/definitions/agentProfile",
         "title": "高难任务配置",
         "description": "高难任务 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
           "model": "gpt-6-astra",
-          "reasoningEffort": "xhigh"
+          "reasoningEffort": "medium"
         },
-        "required": true,
-        "properties": {
-          "model": {
-            "type": "string",
-            "required": true,
-            "validation": {
-              "minLength": 1
-            }
-          },
-          "reasoningEffort": {
-            "type": "string",
-            "required": true,
-            "choices": {
-              "allowCustom": false,
-              "presets": [
-                {
-                  "id": "low",
-                  "title": "low",
-                  "value": "low"
-                },
-                {
-                  "id": "medium",
-                  "title": "medium",
-                  "value": "medium"
-                },
-                {
-                  "id": "high",
-                  "title": "high",
-                  "value": "high"
-                },
-                {
-                  "id": "xhigh",
-                  "title": "xhigh",
-                  "value": "xhigh"
-                },
-                {
-                  "id": "max",
-                  "title": "max",
-                  "value": "max"
-                }
-              ]
-            }
-          }
-        },
-        "additionalProperties": false
+        "required": true
       }
     },
     "presentation": {
@@ -470,7 +202,45 @@
             "advancedTaskProfile"
           ]
         }
-      ]
+      ],
+      "summaries": {
+        "modelAndEffort": {
+          "kind": "join",
+          "parts": [
+            {
+              "path": "/model"
+            },
+            {
+              "path": "/reasoningEffort"
+            }
+          ],
+          "separator": "/",
+          "missing": "未设置"
+        }
+      },
+      "fieldViews": {
+        "quickProfile": {
+          "summary": "modelAndEffort"
+        },
+        "standardProfile": {
+          "summary": "modelAndEffort"
+        },
+        "deepProfile": {
+          "summary": "modelAndEffort"
+        },
+        "simpleTaskProfile": {
+          "summary": "modelAndEffort"
+        },
+        "generalTaskProfile": {
+          "summary": "modelAndEffort"
+        },
+        "complexTaskProfile": {
+          "summary": "modelAndEffort"
+        },
+        "advancedTaskProfile": {
+          "summary": "modelAndEffort"
+        }
+      }
     }
   },
   "artifacts": {

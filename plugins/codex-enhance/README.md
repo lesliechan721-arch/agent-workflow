@@ -38,10 +38,12 @@ aw config list codex-enhance -s user
 aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-5.6-terra","reasoningEffort":"high"}'
 ```
 
-配置界面按 `codex-explore` 和 `codex-subagent-guide`
-分组。保留 `quickProfile`、`standardProfile`、`deepProfile`、`simpleTaskProfile`、`generalTaskProfile`、`complexTaskProfile` 和 `advancedTaskProfile` 七个选型偏好。每个 profile 必须一次提供完整的 `model` 与 `reasoningEffort`，不合并单个属性。两个 Skill 的首次响应式等待均为至少 10 分钟，不提供等待配置项；用户明确指定单次窗口时优先遵守，并服从当前工具范围。响应式等待可在结果或用户消息到达时提前返回。
+需要支持 `aw.plugin-config.v3` 和 `aw.plugin-config-summary.v1` 的 AW CLI。升级 CLI 后再使用此插件。配置界面显示 `model/reasoningEffort` 摘要，编辑和差异仍使用完整对象；现有 Store v4 值不变。
 
-两个 Skill 仍共享同一个 canonical Codex native 插件；renderer 将 user scope 的偏好写入各自正文，两个角色只保留行为指令，不固定模型或推理强度。当前项目可以单独启用插件，但这些配置键现在只支持 user scope，不再支持 project profile 覆盖。高难档仍默认使用 `gpt-6-astra / xhigh`。
+配置界面按 `codex-explore` 和 `codex-subagent-guide`
+分组。保留 `quickProfile`、`standardProfile`、`deepProfile`、`simpleTaskProfile`、`generalTaskProfile`、`complexTaskProfile` 和 `advancedTaskProfile` 七个选型偏好。七个 profile 的 `reasoningEffort` 均允许 `low`、`medium`、`high`、`xhigh`、`max` 和 `ultra`。每个 profile 必须一次提供完整的 `model` 与 `reasoningEffort`，不合并单个属性。两个 Skill 的首次响应式等待均为至少 10 分钟，不提供等待配置项；用户明确指定单次窗口时优先遵守，并服从当前工具范围。响应式等待可在结果或用户消息到达时提前返回。
+
+两个 Skill 仍共享同一个 canonical Codex native 插件；renderer 将 user scope 的偏好写入各自正文，两个角色只保留行为指令，不固定模型或推理强度。当前项目可以单独启用插件，但这些配置键现在只支持 user scope，不再支持 project profile 覆盖。高难档仍默认使用 `gpt-6-astra / medium`。
 
 模型和推理级别分别按“显式要求 > 表格配置偏好 > 环境默认”选择，未指定或明确不可用时使用下一优先级；发生回退时说明。表格中的用户配置覆盖插件内置值；环境默认由当前子代理运行环境决定，不保证与父代理相同。
 

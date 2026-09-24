@@ -3817,6 +3817,27 @@ describe('authoring tools', () => {
     }
   });
 
+  it('validate_plugin.mjs supplies compiled v3 fields and inherited defaults to renderer fixtures', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-config-v3-'));
+    tempDirs.push(tempRoot);
+    const { pluginDir, manifestPath } = await writeDynamicArtifactPlugin(tempRoot);
+    const manifest = await fs.readJson(manifestPath);
+    manifest.config = { schemaVersion: 3, definitions: {
+      model: { type: 'string', default: 'gpt-5.4-mini', validation: { minLength: 1 } },
+    }, fields: { enableInstruction: { type: 'boolean', default: true }, explorerModel: { $ref: '#/config/definitions/model' } } };
+    await fs.writeJson(manifestPath, manifest);
+    const rendererPath = path.join(pluginDir, 'scripts', 'render-artifacts.mjs');
+    const renderer = await fs.readFile(rendererPath, 'utf8');
+    await fs.writeFile(rendererPath, [
+      'const context = JSON.parse((await import("node:fs")).readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'const field = context.config.schema.explorerModel;',
+      'if (field.$ref || field.type !== "string" || field.validation.minLength !== 1) throw new Error("config schema was not compiled");',
+      'if (context.config.values.explorerModel !== "gpt-5.4-mini") throw new Error("definition default was lost");',
+      renderer,
+    ].join('\n'));
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS] All checks passed.') });
+  });
+
   it('validate_plugin.mjs omits the renderer config schema when the manifest has none', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-no-config-renderer-'));
     tempDirs.push(tempRoot);
@@ -6141,7 +6162,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v12 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v13 is unavailable'),
     });
   });
 
@@ -6190,7 +6211,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v12 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v13 is unavailable'),
     });
 
     const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
@@ -6203,7 +6224,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v12 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v13 is unavailable'),
     });
   });
 

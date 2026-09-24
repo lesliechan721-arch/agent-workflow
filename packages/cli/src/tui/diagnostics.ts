@@ -18,7 +18,10 @@ export type DiagnosticContextKey =
   | 'dependencyPluginId'
   | 'field'
   | 'storeEntry'
-  | 'compatibility';
+  | 'compatibility'
+  | 'sourcePolicy'
+  | 'freshness'
+  | 'candidate';
 
 export interface DiagnosticTechnicalViewModel {
   code: string;
@@ -70,7 +73,7 @@ export function safeDiagnosticCode(value: unknown, fallback: string): string {
   return typeof value === 'string' && SAFE_CODE.test(value) ? value : fallback;
 }
 
-export function sanitizeDiagnosticText(
+function sanitizeDiagnosticValue(
   value: string,
   sensitiveRoots: readonly string[] = [],
   sensitiveValues: readonly string[] = [],
@@ -106,9 +109,26 @@ export function sanitizeDiagnosticText(
     .replace(/(^|[\s("'=])[A-Za-z]:\\(?:[^\\\s]+\\)+[^\s,;)]*/gu, '$1[private-path]')
     .replace(/\s{2,}/gu, ' ')
     .trim();
+  return output;
+}
+
+export function sanitizeDiagnosticText(
+  value: string,
+  sensitiveRoots: readonly string[] = [],
+  sensitiveValues: readonly string[] = [],
+): string {
+  const output = sanitizeDiagnosticValue(value, sensitiveRoots, sensitiveValues);
   return output.length <= MAX_DIAGNOSTIC_TEXT_LENGTH
     ? output
     : `${output.slice(0, MAX_DIAGNOSTIC_TEXT_LENGTH - 1)}…`;
+}
+
+export function sanitizeDiagnosticDetailText(
+  value: string,
+  sensitiveRoots: readonly string[] = [],
+  sensitiveValues: readonly string[] = [],
+): string {
+  return sanitizeDiagnosticValue(value, sensitiveRoots, sensitiveValues);
 }
 
 export function sanitizeDiagnosticCause(value: string | undefined): string | undefined {
