@@ -2,10 +2,12 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import { cleanup, render } from 'ink-testing-library';
-import { afterEach, describe, expect, it } from 'vitest';
+import stringWidth from 'string-width';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
-import type { OperationIntent, TuiController, TuiControllerSnapshot } from '../../src/tui/controller.js';
+import { TuiController, type OperationEvidence, type OperationIntent, type TuiControllerSnapshot,
+  type TuiStatusLoadResult } from '../../src/tui/controller.js';
 import type { PluginDetailPlacement, PluginDetailSubject } from '../../src/tui/plugin-detail.js';
 import type { PluginListItemViewModel, UserIssueViewModel } from '../../src/tui/model.js';
 import type { TuiPageContext, TuiRoute } from '../../src/tui/router.js';
@@ -40,6 +42,46 @@ function overview(): PluginListItemViewModel {
       { platform, scope: 'user', key: 'user-component', state: 'ready' },
     ], update: { pluginId, state: 'notChecked', targets: [] },
   } as PluginListItemViewModel;
+}
+
+function sourceRecoveryStatus(activated: boolean): TuiStatusLoadResult {
+  return {
+    pluginSummaries: [{ pluginId, pluginName: 'demo', displayName: '示例插件',
+      description: '来源恢复复现', version: '1.0.0',
+      supportedTargets: { codex: [], claude: ['user'] }, configFieldCount: 0 }],
+    payload: {
+      schemaVersion: 8,
+      catalog: { primarySourceId: 'official', configDigest: 'config', compositeDigest: 'catalog',
+        sources: [{ id: 'official', identity: 'identity:official', type: 'path', primary: true,
+          requestedRef: 'local', ...(activated ? { catalogVersion: '1.0.0', freshness: 'active' as const }
+            : { error: 'No Active snapshot', errorCode: 'catalogGenerationUnavailable' }) }] },
+      filters: { plugins: [], platform: 'both', cwd: '/tmp/platform-source-recovery-test' },
+      targets: [{ pluginId, pluginName: 'demo', sourceId: 'official', sourceIdentity: 'identity:official',
+        version: '1.0.0', platform: 'claude', scope: 'user', state: activated ? 'ready' : 'blocked',
+        components: [
+          { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+            enabled: true, scopes: ['user'], relation: 'root',
+          } },
+          { kind: 'ownership', key: 'fixture', state: 'present' },
+        ],
+        reasons: activated ? [] : [{ code: 'catalogSourceUnavailable', message: '来源不可用', severity: 'blocking' }],
+        recoveryActions: activated ? [
+          { command: 'reinstall', scope: 'user', description: '重新安装' },
+          { command: 'uninstall', scope: 'user', description: '移除' },
+        ] : [],
+      }], errors: [],
+    },
+    sourceDetails: [{ id: 'official', type: 'path', primary: true, autoCheck: false,
+      locationSummary: '隔离本地来源', refPolicy: 'explicit', requestedRef: 'local',
+      sourceIdentity: 'identity:official', configDigest: 'config',
+      ...(activated ? { catalogVersion: '1.0.0' } : { errorCode: 'catalogGenerationUnavailable' }) }],
+    configuredSources: [{ id: 'official', type: 'path', primary: true, autoCheck: false,
+      path: '/tmp/isolated-catalog-test' }],
+    catalogGenerations: [{ sourceId: 'official', sourceType: 'path',
+      ...(activated ? { state: 'ready', active: { catalogVersion: '1.0.0', channel: 'latest',
+        requestedRef: 'local', resolvedCommit: 'local', storeKey: 'official-active', digestShort: 'abc' } }
+        : { errorCode: 'catalogGenerationUnavailable' }) }],
+  };
 }
 
 class PlatformControllerStub {
@@ -117,6 +159,13 @@ async function input(instance: ReturnType<typeof render>, ...keys: string[]): Pr
   }
 }
 
+function checkedFrame(instance: ReturnType<typeof render>, size: { columns: number; rows: number }): string {
+  const result = instance.lastFrame() ?? '';
+  expect(result.split('\n').length).toBeLessThanOrEqual(size.rows);
+  expect(result.split('\n').every((line) => stringWidth(line) <= size.columns)).toBe(true);
+  return result;
+}
+
 async function focusAction(instance: ReturnType<typeof render>, label: string): Promise<void> {
   for (let index = 0; index < 12; index += 1) {
     if ((instance.lastFrame() ?? '').includes(`› ${label}`)) return;
@@ -138,6 +187,159 @@ async function writeAcceptanceTrace(
 }
 
 describe('platform maintenance v8', () => {
+  it.each([[80, 24], [60, 18]] as const)(
+    'does not turn source recovery return into uninstall at %ix%i', async (columns, rows) => {
+      let activated = false;
+      const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => ({
+        catalog: { configDigest: 'config', compositeDigest: 'catalog' },
+        catalogGeneration: { action: 'activate', configDigest: 'config', candidate: {
+          sourceConfigFingerprint: 'config', sourceIdentity: 'identity:official',
+          logicalIdentity: 'official', catalogVersion: '1.0.0', channel: 'latest',
+          requestedRef: 'local', resolvedCommit: 'local', manifestDigest: 'manifest',
+          snapshotDigest: 'snapshot',
+        } },
+      }));
+      const executeIntent = vi.fn(async (intent: OperationIntent) => {
+        if (intent.kind === 'catalogGeneration') activated = true;
+        return { overallState: 'succeeded', targetResults: [] };
+      });
+      const controller = new TuiController({ loadStatus: async () => sourceRecoveryStatus(activated),
+        captureEvidence, executeIntent });
+      await controller.load();
+      controller.push({ name: 'platform', pluginId, platform: 'claude' });
+      const size = { columns, rows };
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await input(instance, '', '');
+      await focusAction(instance, '获取或修复来源');
+      const before = checkedFrame(instance, size);
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route).toMatchObject({ name: 'sourceDetail', sourceId: 'official' });
+      await focusAction(instance, '恢复来源');
+      await input(instance, '\r');
+      await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('review'));
+      await input(instance, '\r');
+      await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('result'));
+      expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({ kind: 'catalogGeneration',
+        action: 'activate', sourceId: 'official' }), expect.anything(), expect.anything());
+      await input(instance, '\u001b');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(controller.snapshot.router.current.route.name).toBe('sourceDetail');
+      await input(instance, '\u001b');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(controller.snapshot.router.current.route).toMatchObject({ name: 'platform', pluginId,
+        platform: 'claude' });
+      expect(controller.snapshot.router.current.context.platformSelectedScope).toBe('user');
+      const returned = checkedFrame(instance, size);
+      expect(returned).toContain('› [选定]');
+      await input(instance, '\r');
+      const afterNextEnter = checkedFrame(instance, size);
+      expect(controller.snapshot.router.current.route.name).toBe('platform');
+      expect(captureEvidence.mock.calls).toEqual([[expect.objectContaining({ kind: 'catalogGeneration',
+        action: 'activate', sourceId: 'official' }), expect.anything()]]);
+      expect(executeIntent).toHaveBeenCalledTimes(1);
+      await writeAcceptanceTrace('platform-source-recovery-return', size, { before, returned, afterNextEnter });
+    },
+  );
+
+  it.each([[80, 24], [60, 18]] as const)(
+    'keeps a platform detail action when a new action appears before it at %ix%i', async (columns, rows) => {
+      const controller = new PlatformControllerStub();
+      controller.facts = [placement('user')];
+      controller.plugin.installedPlacements[0] = {
+        platform, state: 'installed', scope: 'user', health: 'ready', actualState: 'ready',
+        revision: { state: 'current', installedVersion: '2.0.0' },
+      };
+      controller.context = { platformSelectionInitialized: true, platformSelectedScope: 'user' };
+      const size = { columns, rows };
+      const instance = render(<ConsoleAppV4 controller={controller as unknown as TuiController} size={size} />);
+      await input(instance, '', '');
+      await focusAction(instance, '查看安装详情');
+      await input(instance, '\r');
+      expect(controller.route).toMatchObject({ name: 'pluginTechnical', pluginId, platform, scope: 'user' });
+      controller.plugin.installedPlacements[0]!.revision = {
+        state: 'upgradeAvailable', installedVersion: '2.0.0', availableVersion: '3.0.0',
+      };
+      controller.plugin.update = { pluginId, state: 'upgradeAvailable', sourceIdentity: 'identity:official',
+        generationKey: 'gen', targets: [{ platform, scope: 'user', installedVersion: '2.0.0',
+          availableVersion: '3.0.0' }] };
+      controller.publish();
+      await input(instance, '\u001b');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const returned = checkedFrame(instance, size);
+      expect(controller.route.name).toBe('platform');
+      expect(returned).toContain('› 查看安装详情');
+      expect(returned).toContain('更新到 3.0.0');
+      expect(returned.indexOf('更新到 3.0.0')).toBeLessThan(returned.indexOf('› 查看安装详情'));
+      await input(instance, '\r');
+      expect(controller.route).toMatchObject({ name: 'pluginTechnical', pluginId, platform, scope: 'user' });
+      expect(controller.intents).toHaveLength(0);
+      await writeAcceptanceTrace('platform-detail-action-insert', size, { returned });
+    },
+  );
+
+  it.each([[80, 24], [60, 18]] as const)(
+    'does not select a different scope after the selected one vanishes in a child page at %ix%i', async (columns, rows) => {
+      const controller = new PlatformControllerStub();
+      const size = { columns, rows };
+      const instance = render(<ConsoleAppV4 controller={controller as unknown as TuiController} size={size} />);
+      await input(instance, '', '', '\u001b[B', '\r');
+      expect(controller.context.platformSelectedScope).toBe('user');
+      await focusAction(instance, '查看安装详情');
+      await input(instance, '\r');
+      expect(controller.route.name).toBe('pluginTechnical');
+      controller.facts = [placement('project')];
+      controller.plugin.installedPlacements[0] = {
+        platform, state: 'installed', scope: 'project', health: 'ready',
+        revision: { state: 'current', installedVersion: '1.0.0' }, actualState: 'ready',
+      };
+      controller.publish();
+      await input(instance, '\u001b');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const returned = checkedFrame(instance, size);
+      expect(controller.route.name).toBe('platform');
+      expect(controller.context.platformSelectionInitialized).toBe(true);
+      expect(controller.context.platformSelectedScope).toBeUndefined();
+      expect(returned).toContain('已选位置不再存在');
+      expect(returned).toContain('› [选择]');
+      await input(instance, '\r');
+      expect(controller.route.name).toBe('platform');
+      expect(controller.context.platformSelectedScope).toBe('project');
+      expect(controller.intents).toHaveLength(0);
+      await writeAcceptanceTrace('platform-child-scope-vanish', size, { returned });
+    },
+  );
+
+  it.each([[80, 24], [60, 18]] as const)(
+    'returns to the same platform write action after Review preparation fails at %ix%i', async (columns, rows) => {
+      const captureEvidence = vi.fn().mockRejectedValue(new Error('evidence unavailable'));
+      const executeIntent = vi.fn();
+      const controller = new TuiController({ loadStatus: async () => sourceRecoveryStatus(true),
+        captureEvidence, executeIntent });
+      await controller.load();
+      controller.push({ name: 'platform', pluginId, platform: 'claude' });
+      const size = { columns, rows };
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await input(instance, '', '');
+      await focusAction(instance, '重新安装所有项目位置');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route.name).toBe('reviewPreparing');
+      await vi.waitFor(() => expect(controller.snapshot.reviewPreparation?.state).toBe('failed'));
+      await input(instance, '\u001b');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const returned = checkedFrame(instance, size);
+      expect(controller.snapshot.router.current.route.name).toBe('platform');
+      expect(returned).toContain('› 重新安装所有项目位置');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route.name).toBe('reviewPreparing');
+      await vi.waitFor(() => expect(captureEvidence).toHaveBeenCalledTimes(2));
+      expect(captureEvidence.mock.calls.every(([intent]) => intent.kind === 'pluginWrite'
+        && intent.action === 'reinstall' && intent.pluginId === pluginId
+        && intent.platform === 'claude' && intent.scope === 'user')).toBe(true);
+      expect(executeIntent).not.toHaveBeenCalled();
+      await writeAcceptanceTrace('platform-review-return', size, { returned });
+    },
+  );
+
   it('shows one platform entry with both exact scope facts', async () => {
     const controller = new PlatformControllerStub();
     controller.route = { name: 'pluginMore', pluginId };

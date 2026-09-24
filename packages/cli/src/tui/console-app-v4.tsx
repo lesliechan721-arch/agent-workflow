@@ -2578,7 +2578,7 @@ export function ConsoleAppV4(props: {
 
   const go = (next: TuiRoute): void => {
     props.controller.updatePageContext({
-      focusIndex: route.name === 'projectStatus' ? effectiveFocus : focus,
+      focusIndex: route.name === 'projectStatus' || route.name === 'platform' ? effectiveFocus : focus,
       scrollOffset,
       entityLineOffset: entityCardNavigation ? batchTargetOffset : undefined,
       query,
@@ -2591,7 +2591,8 @@ export function ConsoleAppV4(props: {
         : route.name === 'projectStatus' ? actions[effectiveFocus]?.pluginId
           : route.name === 'sourceList' ? actions[focus]?.actionId?.replace(/^source:/u, '')
             : route.name === 'portableSkillSelect' ? actions[focus]?.actionId : undefined,
-      ...(route.name === 'projectStatus' ? { focusedActionId: actions[effectiveFocus]?.actionId } : {}),
+      ...(route.name === 'projectStatus' || route.name === 'platform'
+        ? { focusedActionId: actions[effectiveFocus]?.actionId } : {}),
     });
     props.controller.push(next);
     if (route.name === 'pluginContent') setContentReader(undefined);
@@ -2662,6 +2663,11 @@ export function ConsoleAppV4(props: {
       dynamicMenuFocus.current = {
         routeKey: JSON.stringify(restoredFrame.route), actionIds: '', focusedActionId: actionId,
       };
+    } else if (restoredFrame.route.name === 'platform') {
+      dynamicMenuFocus.current = {
+        routeKey: JSON.stringify(restoredFrame.route), actionIds: '',
+        focusedActionId: restored.focusedActionId,
+      };
     } else if (restoredFrame.route.name === 'pluginContent') {
       const overview = props.controller.getPluginContentOverview(restoredFrame.route.pluginId);
       const items = (overview?.items ?? []).filter((item) =>
@@ -2694,10 +2700,11 @@ export function ConsoleAppV4(props: {
       itemCount = candidates.length + 2;
       restoredFocus = entityIndex >= 0 ? entityIndex : Math.min(restoredFocus, Math.max(0, itemCount - 1));
     }
-    let restoredScroll = restoredFrame.route.name === 'projectStatus'
+    const dynamicMenuRoute = restoredFrame.route.name === 'projectStatus' || restoredFrame.route.name === 'platform';
+    let restoredScroll = dynamicMenuRoute
       ? restored.scrollOffset ?? 0
       : Math.min(restored.scrollOffset ?? 0, Math.max(0, (itemCount ?? 1) - 1));
-    if (restoredFrame.route.name !== 'projectStatus') {
+    if (!dynamicMenuRoute) {
       if (restoredFocus < restoredScroll) restoredScroll = restoredFocus;
       else if (restoredFocus >= restoredScroll + 4) restoredScroll = Math.max(0, restoredFocus - 3);
     }
@@ -2778,12 +2785,13 @@ export function ConsoleAppV4(props: {
       ? snapshot.result.returnRoute
       : undefined);
     props.controller.updatePageContext({
-      focusIndex: route.name === 'projectStatus' ? effectiveFocus : focus,
+      focusIndex: route.name === 'projectStatus' || route.name === 'platform' ? effectiveFocus : focus,
       scrollOffset,
       query,
       installFilter,
       sourceTabId: route.name === 'pluginList' ? route.sourceId ?? 'all' : undefined,
-      ...(route.name === 'projectStatus' ? { focusedActionId: actions[effectiveFocus]?.actionId } : {}),
+      ...(route.name === 'projectStatus' || route.name === 'platform'
+        ? { focusedActionId: actions[effectiveFocus]?.actionId } : {}),
     });
     props.controller.startReviewPreparation(intent, underlyingResultRoute);
     setFocus(0);
@@ -10098,7 +10106,6 @@ export function ConsoleAppV4(props: {
     }
     if (effectiveFocus !== focus) {
       setFocus(effectiveFocus);
-      if (route.name !== 'projectStatus') setScrollOffset(0);
     }
     dynamicMenuFocus.current = {
       routeKey,
