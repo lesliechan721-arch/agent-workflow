@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "codex-enhance",
-  "version": "0.2.0-beta.6",
+  "version": "0.2.0-beta.7",
   "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
   "marketplace": {
     "category": "workflow",
@@ -39,6 +39,7 @@
     }
   },
   "config": {
+    "schemaVersion": 3,
     "fields": {
       "quickProfile": {
         "type": "object",
@@ -264,6 +265,11 @@
                   "id": "max",
                   "title": "max",
                   "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
                 }
               ]
             }
@@ -318,6 +324,11 @@
                   "id": "max",
                   "title": "max",
                   "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
                 }
               ]
             }
@@ -372,6 +383,11 @@
                   "id": "max",
                   "title": "max",
                   "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
                 }
               ]
             }
@@ -426,6 +442,11 @@
                   "id": "max",
                   "title": "max",
                   "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
                 }
               ]
             }
@@ -435,6 +456,44 @@
       }
     },
     "presentation": {
+      "summaries": {
+        "modelAndEffort": {
+          "kind": "join",
+          "separator": "/",
+          "missing": "未设置",
+          "parts": [
+            {
+              "path": "/model"
+            },
+            {
+              "path": "/reasoningEffort"
+            }
+          ]
+        }
+      },
+      "fieldViews": {
+        "quickProfile": {
+          "summary": "modelAndEffort"
+        },
+        "standardProfile": {
+          "summary": "modelAndEffort"
+        },
+        "deepProfile": {
+          "summary": "modelAndEffort"
+        },
+        "simpleTaskProfile": {
+          "summary": "modelAndEffort"
+        },
+        "generalTaskProfile": {
+          "summary": "modelAndEffort"
+        },
+        "complexTaskProfile": {
+          "summary": "modelAndEffort"
+        },
+        "advancedTaskProfile": {
+          "summary": "modelAndEffort"
+        }
+      },
       "groups": [
         {
           "id": "codex-explore",
@@ -557,7 +616,9 @@
     "aw": {
       "capabilities": [
         "aw.dynamic-artifacts.v2",
+        "aw.plugin-config-summary.v1",
         "aw.plugin-config.v2",
+        "aw.plugin-config.v3",
         "aw.plugin-manifest.v3"
       ]
     }

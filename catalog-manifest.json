@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.26",
+  "catalogVersion": "0.1.0-beta.27",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "f2f4485f22bf0708664bd1cc58e8e005b11c9f17"
+    "sourceHead": "2e603f0016747adc08e631ab77993ef39f61b99e"
   },
   "entries": [
     {
@@ -244,20 +244,22 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.6",
+      "version": "0.2.0-beta.7",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
             "aw.dynamic-artifacts.v2",
+            "aw.plugin-config-summary.v1",
             "aw.plugin-config.v2",
+            "aw.plugin-config.v3",
             "aw.plugin-manifest.v3"
           ]
         }
       },
-      "artifactDigest": "sha256:d9abd01402881912bbd6706573f5903897f4af27087caf24bf3f34ef36aaa59b",
-      "manifestDigest": "sha256:405896ee9ae37071733b3315d4ad7be35bad2003510dbd3c6dd50606b2f5388c",
-      "contentDigest": "sha256:febb6693ad6e8fe4b5400a6c3a2b05e440440f5881df4ea7b45e0f6fb078db1b"
+      "artifactDigest": "sha256:c1af7133b4f8a7003d3072a4aa318b77747b189f003be799fb0fc4172729192a",
+      "manifestDigest": "sha256:9386c9f701b92b12a74a3d9eec3a363a072fa1937abc574723c34c7215c93226",
+      "contentDigest": "sha256:09b54c97d97f045407f04642393f7557dd59a86d14ebad92a03a8819fad828c8"
     },
     {
       "name": "dev-workflow",
