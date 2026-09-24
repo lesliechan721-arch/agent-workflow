@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import type { OperationIntent, TuiController, TuiControllerSnapshot } from '../../src/tui/controller.js';
 import type { PluginDetailPlacement, PluginDetailSubject } from '../../src/tui/plugin-detail.js';
-import type { PluginListItemViewModel } from '../../src/tui/model.js';
+import type { PluginListItemViewModel, UserIssueViewModel } from '../../src/tui/model.js';
 import type { TuiPageContext, TuiRoute } from '../../src/tui/router.js';
 
 afterEach(() => cleanup());
@@ -49,6 +49,9 @@ class PlatformControllerStub {
   context: TuiPageContext = {};
   previous: Array<{ route: TuiRoute; context: TuiPageContext }> = [];
   intents: OperationIntent[] = [];
+  issues: UserIssueViewModel[] = [];
+  forceChecks = 0;
+  forceTargets: Array<{ pluginId: string; platform: string; scope: string }> = [];
   listeners = new Set<(snapshot: TuiControllerSnapshot) => void>();
 
   get snapshot(): TuiControllerSnapshot {
@@ -75,7 +78,7 @@ class PlatformControllerStub {
   }
   getPlatformPlacement() { return this.plugin.installedPlacements[0]; }
   getBlockingDependents() { return []; }
-  listUserIssues() { return []; }
+  listUserIssues() { return this.issues; }
   listPluginWriteTaskCandidates() { return []; }
   listPluginDependencyOverviews() { return []; }
   listSources() { return []; }
@@ -85,6 +88,13 @@ class PlatformControllerStub {
     this.publish();
   }
   startReviewPreparation(intent: OperationIntent): void { this.intents.push(intent); }
+  async getForceCleanupCandidate(candidatePluginId: string, candidatePlatform: string,
+    candidateScope: string) {
+    this.forceChecks += 1;
+    this.forceTargets.push({ pluginId: candidatePluginId, platform: candidatePlatform,
+      scope: candidateScope });
+    return undefined;
+  }
   push(route: TuiRoute): void {
     this.previous.push({ route: this.route, context: this.context });
     this.route = route;
@@ -291,6 +301,76 @@ describe('platform maintenance v8', () => {
     expect(instance.lastFrame()).toContain('使用位置');
     expect(instance.lastFrame()).toContain('0 个');
     expect(instance.lastFrame()).toContain('输出位置已有冲突内容');
+    expect(controller.intents).toHaveLength(0);
+  });
+
+  it.each([[80, 24], [60, 18]] as const)(
+    'keeps the actual cleanup action focused across issue changes at %ix%i',
+    async (columns, rows) => {
+      const controller = new PlatformControllerStub();
+      controller.context = { platformSelectionInitialized: true, platformSelectedScope: 'project' };
+      controller.plugin.sourceUnavailable = true;
+      controller.plugin.aggregateStatus = 'unavailable';
+      controller.plugin.installedPlacements = [{
+        platform, state: 'installed', scope: 'project', health: 'incomplete',
+        actualState: 'orphaned', revision: { state: 'notChecked' }, recovery: [],
+      }];
+      controller.facts = [{ ...placement('project'), declared: false,
+        statusState: 'orphaned' }];
+      const cleanupIssue: UserIssueViewModel = {
+        issueId: 'target:official/demo:codex:project', category: 'sourceUnavailable',
+        group: 'sourceUnavailable', title: '来源不可用', explanation: '当前来源不可用',
+        impact: [], entity: { kind: 'plugin', id: pluginId }, pluginId, platform,
+        scope: 'project', actions: [{ id: 'cleanup', label: '清理', pluginId,
+          platform, scope: 'project', writeAction: 'cleanup' }], technicalDetails: [],
+        diagnostic: { severity: 'warning', title: '来源不可用',
+          userMessage: '当前来源不可用', impact: [], nextStep: '检查来源' },
+      };
+      const instance = render(<ConsoleAppV4 controller={controller as unknown as TuiController}
+        size={{ columns, rows }} />);
+      await input(instance, '', '');
+      await focusAction(instance, '检查受限清理');
+      controller.issues = [cleanupIssue];
+      controller.publish();
+      await input(instance, '', '');
+      expect(instance.lastFrame()).toContain('› 检查受限清理');
+      await input(instance, '\r');
+      expect(controller.forceChecks).toBe(1);
+      expect(controller.forceTargets).toEqual([{ pluginId, platform, scope: 'project' }]);
+      expect(controller.intents).toHaveLength(0);
+
+      await focusAction(instance, '清理当前项目中的遗留内容');
+      await input(instance, '\r');
+      expect(controller.intents).toEqual([expect.objectContaining({
+        kind: 'pluginWrite', action: 'cleanup', pluginId, platform, scope: 'project',
+        originIssue: expect.objectContaining({ issueId: cleanupIssue.issueId,
+          actionId: 'cleanup' }),
+      })]);
+      expect(controller.forceChecks).toBe(1);
+      await focusAction(instance, '清理当前项目中的遗留内容');
+      controller.issues = [];
+      controller.publish();
+      await input(instance, '', '');
+      expect(instance.lastFrame()).toContain('› [选定]');
+      await input(instance, '\r');
+      expect(controller.context.platformSelectedScope).toBe('project');
+      expect(controller.forceChecks).toBe(1);
+      expect(controller.intents).toHaveLength(1);
+    },
+  );
+
+  it('returns to the selected card when an unobserved position hides a write action', async () => {
+    const controller = new PlatformControllerStub();
+    controller.context = { platformSelectionInitialized: true, platformSelectedScope: 'project' };
+    const instance = render(<ConsoleAppV4 controller={controller as unknown as TuiController}
+      size={{ columns: 60, rows: 18 }} />);
+    await input(instance, '', '');
+    await focusAction(instance, '从当前项目移除');
+    controller.facts[0] = placement('project', 'unknown');
+    controller.publish();
+    await input(instance, '', '');
+    expect(instance.lastFrame()).toContain('› [选定]');
+    await input(instance, '\r');
     expect(controller.intents).toHaveLength(0);
   });
 });

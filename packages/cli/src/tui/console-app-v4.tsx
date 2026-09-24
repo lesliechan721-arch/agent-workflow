@@ -2433,22 +2433,9 @@ export function ConsoleAppV4(props: {
         ? buildPlatformActions(plugin, route.platform).filter((action) =>
           action.id === 'addScope' || !('scope' in action) || action.scope === platformSelectedScope)
         : undefined;
-  const dynamicActionIds = dynamicMenu && route.name === 'platform'
-    ? [...platformFacts.map((entry) => `placement:${entry.platform}:${entry.scope}`),
-      ...dynamicMenu.map(pluginMenuActionId)] : undefined;
-  const dynamicActionSignature = dynamicActionIds?.join('\0');
-  const previousDynamicFocus = dynamicMenuFocus.current;
-  const retainedDynamicFocus = dynamicActionIds
-    && previousDynamicFocus?.routeKey === routeKey
-    && previousDynamicFocus.actionIds !== dynamicActionSignature
-    && previousDynamicFocus.focusedActionId !== undefined
-    ? dynamicActionIds.indexOf(previousDynamicFocus.focusedActionId)
-    : -1;
-  const effectiveFocus = dynamicActionIds
-    && previousDynamicFocus?.routeKey === routeKey
-    && previousDynamicFocus.actionIds !== dynamicActionSignature
-    ? retainedDynamicFocus >= 0 ? retainedDynamicFocus : 0
-    : focus;
+  let dynamicActionIds: string[] | undefined;
+  let dynamicActionSignature: string | undefined;
+  let effectiveFocus = focus;
   const pageActionBudget = (staticRows = 0): number => contentRowBudget({
     terminalRows: size.rows,
     description: Boolean(actionError ?? description),
@@ -6315,6 +6302,17 @@ export function ConsoleAppV4(props: {
       },
     }));
     actions = [...factActions, ...platformActions()];
+    dynamicActionIds = actions.map((action) => action.actionId!);
+    dynamicActionSignature = dynamicActionIds.join('\0');
+    const previousDynamicFocus = dynamicMenuFocus.current;
+    if (previousDynamicFocus?.routeKey === routeKey
+      && previousDynamicFocus.actionIds !== dynamicActionSignature) {
+      const retained = previousDynamicFocus.focusedActionId
+        ? dynamicActionIds.indexOf(previousDynamicFocus.focusedActionId) : -1;
+      const selectedCard = platformSelectedScope
+        ? dynamicActionIds.indexOf(`placement:${route.platform}:${platformSelectedScope}`) : -1;
+      effectiveFocus = retained >= 0 ? retained : Math.max(0, selectedCard);
+    }
     const cardWidth = size.columns - 2;
     const rowHeights = actions.map((action, index) => index < platformFacts.length
       ? entityPlacementRowHeight({ ...platformFacts[index]!, shared:
