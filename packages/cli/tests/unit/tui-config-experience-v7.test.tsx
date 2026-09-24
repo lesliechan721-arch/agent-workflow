@@ -412,16 +412,25 @@ describe('Config v2 direct editing and complete drafts', () => {
     await input(instance, '\r', '\u001b[B', '\r', '\r', '\u001b[B', '\r');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
     await input(instance, 's');
-    const summary = instance.lastFrame() ?? '';
+    const firstPage = instance.lastFrame() ?? '';
+    const pages = [firstPage];
+    for (let index = 0; index < 10; index++) {
+      await input(instance, '\u001b[6~');
+      const page = instance.lastFrame() ?? '';
+      if (page === pages.at(-1)) break;
+      pages.push(page);
+    }
+    const summary = pages.join('\n');
     expect(summary).toContain('模型配置');
     expect(summary).toContain('当前项目');
     expect(summary).toContain('beta');
     expect(summary).toContain('启用');
     expect(summary).toContain('个人默认');
     expect(summary).toContain('开启');
-    expect(summary.split('\n').length).toBeLessThanOrEqual(rows);
+    for (const page of pages) expect(page.split('\n').length).toBeLessThanOrEqual(rows);
     expect(value.snapshot.router.current.route.name).toBe('review');
-    await input(instance, '\u001b[C', '\u001b[D');
+    for (let index = 1; index < pages.length; index++) await input(instance, '\u001b[5~');
+    expect(instance.lastFrame()).toBe(firstPage);
     await nextTurn(4);
     expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [
       { scope: 'project', updates: { profile: { model: 'beta', effort: 'high', hidden: 7 } } },

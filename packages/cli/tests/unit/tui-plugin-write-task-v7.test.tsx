@@ -240,6 +240,7 @@ describe('TUI plugin write task', () => {
       recommendedPluginIds: ['official/demo'],
     });
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain(`› ${value.snapshot.activeReview!.primaryLabel}`));
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('pluginDetail'));
     expect(instance.lastFrame()).toContain('插件更新完成');
