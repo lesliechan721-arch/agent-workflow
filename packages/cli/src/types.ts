@@ -453,6 +453,8 @@ export type PortablePluginRelation = 'requested' | 'direct' | 'transitive';
 export interface PortableSkillCandidate {
   name: string;
   description: string;
+  shortDescription?: string;
+  shortDescriptionSource?: 'metadata' | 'fallback';
   providerPluginId: PluginId;
   providerDisplayName: string;
   relation: PortablePluginRelation;

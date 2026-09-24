@@ -116,7 +116,7 @@ export function ScreenFrame(props: {
           : null}
       </Box>
       <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>
-        <Text bold color={tuiTheme.colors.text}>{props.title}</Text>
+        {props.title ? <Text bold color={tuiTheme.colors.text}>{props.title}</Text> : null}
         {props.description
           ? <Text color={tuiTheme.colors.muted}>{props.description}</Text>
           : null}
@@ -541,6 +541,42 @@ function ObjectCardFrame(props: {
       {props.children}
     </Box>
   </Box>;
+}
+
+export function KeyCap(props: { children: ReactNode }): React.JSX.Element {
+  return <Text bold color={tuiTheme.roles.keycap} backgroundColor={tuiTheme.colors.borderStrong}>[{props.children}]</Text>;
+}
+
+export function HomeNavTile(props: {
+  width: number;
+  title: string;
+  focused: boolean;
+  children: ReactNode;
+}): React.JSX.Element {
+  return <ObjectCardFrame {...props} compact>{props.children}</ObjectCardFrame>;
+}
+
+export interface ConfigTileProps {
+  width: number;
+  title: string;
+  value: string;
+  source: string;
+  pending?: string;
+  invalid?: boolean;
+  focused?: boolean;
+}
+
+export function configTileHeight(props: Pick<ConfigTileProps, 'width' | 'value' | 'pending'>): number {
+  return 2 + cardSummaryLines(props.value, Math.max(1, props.width - 2), 2).length + (props.pending ? 1 : 0);
+}
+
+export function ConfigTile(props: ConfigTileProps): React.JSX.Element {
+  return <ObjectCardFrame width={props.width} focused={props.focused} compact
+    title={<Text>{props.title}{props.source ? <Text color={tuiTheme.roles.secondary}> [{props.source}]</Text> : null}</Text>}>
+    {cardSummaryLines(props.invalid ? '需修正' : props.value, Math.max(1, props.width - 2), 2).map((line, index) =>
+      <Text key={index} bold color={props.invalid ? tuiTheme.roles.error : tuiTheme.roles.primaryValue}>{line}</Text>)}
+    {props.pending ? <Text color={tuiTheme.roles.change} wrap="truncate-end">● {props.pending}</Text> : null}
+  </ObjectCardFrame>;
 }
 
 function ObjectCardFooter(props: { tags?: ReactNode; sourceLabel?: ReactNode }): React.JSX.Element {

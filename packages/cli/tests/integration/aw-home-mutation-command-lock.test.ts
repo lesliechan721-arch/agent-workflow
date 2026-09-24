@@ -229,7 +229,7 @@ describe('public AW_HOME mutation command lock', () => {
       'demo',
       'config.json',
     ))).resolves.toEqual({
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: 'team',
       binding: { kind: 'source', sourceIdentity: oldIdentity },
       pluginName: 'demo',

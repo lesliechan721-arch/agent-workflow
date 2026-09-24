@@ -11,6 +11,7 @@ describe('config value JSON helpers', () => {
     ['object', '{"enabled":true}', { enabled: true }],
     ['number', '42', 42],
     ['boolean', 'false', false],
+    ['array', '[false,0,""]', [false, 0, '']],
   ])('parses a JSON %s value', (_name, raw, expected) => {
     expect(parseConfigValue(raw, true)).toEqual(expected);
   });

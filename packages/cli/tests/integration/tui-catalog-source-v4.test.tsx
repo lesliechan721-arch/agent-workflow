@@ -1633,9 +1633,11 @@ describe('TUI v4 real catalog source boundary', () => {
     await input(instance, 'team', '\r', secondRoot, '\r');
     await focusAction(instance, '查看修改汇总');
     await input(instance, '\r');
-    expect(screens).toContain('S15');
+    await waitFor(() => controller.snapshot.activeReview?.operationKind === 'sourceMutation', 'save-only Review');
+    expect(screens).not.toContain('S15');
+    await focusAction(instance, '改为保存并启用');
     await input(instance, '\r');
-    await waitFor(() => controller.snapshot.activeReview !== undefined, 'add Review');
+    await waitFor(() => controller.snapshot.activeReview?.operationKind === 'catalogGeneration', 'add Review');
     await nextTurn(2);
     expect(controller.snapshot.activeReview).toMatchObject({
       operationKind: 'catalogGeneration',
@@ -1668,7 +1670,7 @@ describe('TUI v4 real catalog source boundary', () => {
       env: isolation.env,
     });
     await fs.outputJson(path.join(isolation.env.AW_HOME!, 'plugin-config', 'team', 'two', 'config.json'), {
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: 'team',
       pluginName: 'two',
       binding: { kind: 'source', sourceIdentity: `sha256:${'3'.repeat(64)}` },
@@ -1825,7 +1827,9 @@ describe('TUI v4 real catalog source boundary', () => {
     await input(instance, 'broken', '\r', invalidRoot, '\r');
     await focusAction(instance, '查看修改汇总');
     await input(instance, '\r');
-    expect(screens).toContain('S15');
+    await waitFor(() => controller.snapshot.activeReview?.operationKind === 'sourceMutation', 'save-only Review');
+    expect(screens).not.toContain('S15');
+    await focusAction(instance, '改为保存并启用');
     await input(instance, '\r');
     await waitFor(() => controller.snapshot.reviewPreparation?.state === 'failed', 'invalid source rejection');
     expect(controller.snapshot.activeReview).toBeUndefined();
@@ -1847,7 +1851,10 @@ describe('TUI v4 real catalog source boundary', () => {
     await input(instance, '\u001B[B', '\r');
     await input(instance, 'requested', '\r', secondRoot, '\r');
     await focusAction(instance, '查看修改汇总');
-    await input(instance, '\r', '\r');
+    await input(instance, '\r');
+    await waitFor(() => controller.snapshot.activeReview?.operationKind === 'sourceMutation', 'save-only Review');
+    await focusAction(instance, '改为保存并启用');
+    await input(instance, '\r');
     await waitFor(() => controller.snapshot.activeReview?.operationKind === 'catalogGeneration', 'add Review');
     const concurrent = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({

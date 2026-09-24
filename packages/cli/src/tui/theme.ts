@@ -14,6 +14,18 @@ export const tuiTheme = {
     danger: '#ff7b72',
     info: '#79c0ff',
   },
+  roles: {
+    primaryValue: '#e6edf3',
+    label: '#e6edf3',
+    secondary: '#8b96a5',
+    focus: '#59d8cc',
+    change: '#79c0ff',
+    success: '#7ee787',
+    warning: '#f2cc60',
+    error: '#ff7b72',
+    unknown: '#8b96a5',
+    keycap: '#e6edf3',
+  },
   statusColors: {
     success: '#7ee787',
     warning: '#f2cc60',

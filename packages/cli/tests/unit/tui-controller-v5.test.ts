@@ -802,13 +802,26 @@ const baseEvidence: OperationEvidence = {
   targetFingerprint: 'sha256:target',
 };
 
+function defaultConfigEvidence(scope: 'user' | 'project'): OperationEvidence {
+  return {
+    ...baseEvidence,
+    config: {
+      scope,
+      storeDigest: 'sha256:store',
+      impactState: 'known',
+      affectedTargets: [],
+    },
+  };
+}
+
 function dependencies(overrides: Partial<TuiControllerDependencies> = {}): TuiControllerDependencies {
   return {
     loadStatus: vi.fn().mockResolvedValue({
       payload: status(),
       pluginSummaries: summaries(['official', 'demo']),
     }),
-    captureEvidence: vi.fn().mockResolvedValue(baseEvidence),
+    captureEvidence: vi.fn(async (intent: OperationIntent) => intent.kind === 'configSave'
+      ? defaultConfigEvidence(intent.scope) : baseEvidence),
     executeIntent: vi.fn().mockResolvedValue({ ok: true }),
     createToken: vi.fn()
       .mockReturnValueOnce('operation-1')
@@ -6795,7 +6808,7 @@ describe('TUI v4 Review safety', () => {
     expect(Object.isFrozen(snapshot.viewModel?.plugins)).toBe(true);
     expect(controller.dependencies.executeIntent).toHaveBeenCalledWith(
       expect.objectContaining({ updates: { mode: 'safe' } }),
-      baseEvidence,
+      defaultConfigEvidence('user'),
     );
   });
 

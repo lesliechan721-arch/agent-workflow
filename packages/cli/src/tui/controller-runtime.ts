@@ -1312,6 +1312,22 @@ export function createTuiControllerDependencies(
           || JSON.stringify(batchBase.source) !== JSON.stringify(current.source))) {
           throw operationReviewStale('准备设置批次期间 Catalog 或来源发生变化。');
         }
+        for (const expected of Object.values(group.editEvidence ?? {})) {
+          if (expected.sourceIdentity !== current.source.sourceIdentity
+            || expected.schemaIdentity !== current.config.schemaIdentity) {
+            throw operationReviewStale('编辑期间插件来源或设置定义已变化，请重新打开列表。');
+          }
+          for (const scope of ['user', 'project'] as const) {
+            if (expected.storeDigests[scope] === undefined) continue;
+            const currentDigest = await configLayerStoreDigest({
+              source: current.source, pluginName: parsePluginId(intent.pluginId).pluginName!,
+              scope, cwd: context.cwd, env: context.env,
+            });
+            if (expected.storeDigests[scope] !== currentDigest) {
+              throw operationReviewStale('编辑期间设置已被外部修改，请重新打开列表。');
+            }
+          }
+        }
         batchBase ??= current;
         batchCatalogOperation ??= catalogOperationByEvidence.get(current);
         groupEvidence.push({
@@ -3195,7 +3211,7 @@ export function createTuiControllerDependencies(
         ...(sessionContextForPlugin(pluginId)
           ? { operationContext: sessionContextForPlugin(pluginId)! }
           : {}),
-        consume: async ({ plugin }) => {
+        consume: async ({ plugin, source }) => {
           if (!plugin.manifest.config) {
             throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
           }
@@ -3247,7 +3263,7 @@ export function createTuiControllerDependencies(
           const layerStore = layer.scope === 'effective'
             ? undefined
             : layer.scope === 'user' ? userStore : projectStore;
-          return buildConfigPage({
+          const page = buildConfigPage({
             pluginId,
             schema: plugin.manifest.config,
             read,
@@ -3266,6 +3282,14 @@ export function createTuiControllerDependencies(
                   : []),
             ),
           });
+          return { ...page, editEvidence: {
+            sourceIdentity: source.sourceIdentity,
+            schemaIdentity: source.manifestDigest,
+            storeDigests: {
+              user: digest({ exists: userStore.exists, rawDigest: userStore.rawDigest }),
+              ...(projectStore ? { project: digest({ exists: projectStore.exists, rawDigest: projectStore.rawDigest }) } : {}),
+            },
+          } };
         },
       });
     },

@@ -61,8 +61,8 @@ function storeOptions(scope: 'user' | 'project') {
   };
 }
 
-describe('plugin config Store v4', () => {
-  it('reads unchanged Store v4 objects through v3 compiled fields and binds summary metadata to schema evidence', async () => {
+describe('plugin config Store v5', () => {
+  it('reads unchanged Store v5 objects through v3 compiled fields and binds summary metadata to schema evidence', async () => {
     const user = storeOptions('user');
     const values = { connection: { 'display-name': 'local', region: 'west' } };
     await writePluginConfigStore({ ...user, values });
@@ -86,7 +86,7 @@ describe('plugin config Store v4', () => {
     expect(field.summary).toEqual(v3Config.presentation!.summaries!.compact);
 
     expect(await fs.readFile(resolvePluginConfigStorePath(user))).toEqual(before);
-    expect(JSON.parse(before.toString()).schemaVersion).toBe(4);
+    expect(JSON.parse(before.toString()).schemaVersion).toBe(5);
     expect(createPluginConfigSchemaIdentity(v3Manifest)).not.toEqual(createPluginConfigSchemaIdentity(manifest));
     const changed = structuredClone(v3Manifest);
     changed.config.presentation!.summaries!.compact!.separator = ' | ';
@@ -159,7 +159,7 @@ describe('plugin config Store v4', () => {
     }
   });
 
-  it('rejects extra v4 envelope fields in runtime and inventory readers', async () => {
+  it('rejects extra v5 envelope fields in runtime and inventory readers', async () => {
     const user = storeOptions('user');
     await writePluginConfigStore({ ...user, values: { labels: { mode: 'strict' } } });
     const filePath = resolvePluginConfigStorePath(user);
@@ -375,7 +375,7 @@ describe('plugin config Store v4', () => {
     const user = storeOptions('user');
     const filePath = resolvePluginConfigStorePath(user);
     await fs.outputJson(filePath, {
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: user.sourceId,
       binding: { kind: 'source', sourceIdentity },
       pluginName: manifest.name,
@@ -550,7 +550,7 @@ describe('plugin config Store v4', () => {
   it('validates fixed and key-value objects without mixing their schemas', async () => {
     const user = storeOptions('user');
     await fs.outputJson(resolvePluginConfigStorePath(user), {
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: user.sourceId,
       binding: { kind: 'source', sourceIdentity },
       pluginName: manifest.name,
@@ -569,7 +569,7 @@ describe('plugin config Store v4', () => {
     });
 
     await fs.outputJson(resolvePluginConfigStorePath(user), {
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: user.sourceId,
       binding: { kind: 'source', sourceIdentity },
       pluginName: manifest.name,
@@ -601,7 +601,7 @@ describe('plugin config Store v4', () => {
       values: { connection: { region: 'user', token: 'user-secret' } },
     });
     await fs.outputJson(resolvePluginConfigStorePath(project), {
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: project.sourceId,
       binding: { kind: 'catalog', logicalIdentity },
       pluginName: manifest.name,
@@ -640,7 +640,7 @@ describe('plugin config Store v4', () => {
   it('treats a dangerous dynamic object key as a recoverable field error', async () => {
     const user = storeOptions('user');
     await fs.outputFile(resolvePluginConfigStorePath(user), JSON.stringify({
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: user.sourceId,
       binding: { kind: 'source', sourceIdentity },
       pluginName: manifest.name,
@@ -666,7 +666,7 @@ describe('plugin config Store v4', () => {
     const user = storeOptions('user');
     const filePath = resolvePluginConfigStorePath(user);
     await fs.outputJson(filePath, {
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: user.sourceId,
       binding: { kind: 'source', sourceIdentity },
       pluginName: manifest.name,

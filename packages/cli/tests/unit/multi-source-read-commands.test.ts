@@ -20,7 +20,7 @@ import {
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
-import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import { resolvePluginConfigStorePath, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function fixturePath(name: string): string {
@@ -643,13 +643,15 @@ describe('multi-source read commands', () => {
       fields: [expect.objectContaining({ key: 'mode', effectiveValue: '[redacted]' })],
     });
 
-    await writePluginConfigStore({
+    // Construct mismatched bytes directly: the public writer must reject replacing a bound store.
+    await fs.outputJson(resolvePluginConfigStorePath({
+      sourceId: source.id, pluginName: 'demo', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }), {
+      schemaVersion: 5,
       sourceId: source.id,
-      sourceIdentity: `sha256:${'f'.repeat(64)}`,
       pluginName: 'demo',
-      scope: 'user',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
+      binding: { kind: 'source', sourceIdentity: `sha256:${'f'.repeat(64)}` },
       values: { mode: 'mismatch' },
     });
     const userMismatch = createCapturedCliIo();
@@ -661,14 +663,14 @@ describe('multi-source read commands', () => {
     })).toBe(1);
     expect(userMismatch.readStderr()).toContain('identityMismatch');
 
-    await writePluginConfigStore({
+    await fs.outputJson(resolvePluginConfigStorePath({
+      sourceId: source.id, pluginName: 'demo', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }), {
+      schemaVersion: 5,
       sourceId: source.id,
-      sourceIdentity,
-      logicalIdentity: 'catalog.example/other',
       pluginName: 'demo',
-      scope: 'project',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
+      binding: { kind: 'catalog', logicalIdentity: 'catalog.example/other' },
       values: { mode: 'mismatch' },
     });
     const projectMismatch = createCapturedCliIo();

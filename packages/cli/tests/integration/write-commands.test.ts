@@ -67,6 +67,7 @@ import {
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
   readPluginConfigStore,
+  resetPluginConfigStore,
   resolvePluginConfigStorePath,
   setAtomicConfigBeforeRenameHookForTests,
   writePluginConfigStore,
@@ -1332,6 +1333,13 @@ describe('five namespaced write commands', () => {
       targetResults: [expect.objectContaining({ errorCode: 'stateInventoryFailed' })],
     });
 
+    await resetPluginConfigStore({
+      sourceId: source.id,
+      pluginName: 'target-scoped',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
     await writePluginConfigStore({
       sourceId: source.id,
       sourceIdentity,
@@ -13285,6 +13293,99 @@ describe('five namespaced write commands', () => {
     });
     await expect(fs.readFile(rolePath, 'utf8'))
       .resolves.toContain('model_reasoning_effort = "xhigh"');
+  });
+
+  it('sets and unsets whole arrays, rejects v4 bytes, and recreates v5 after reset', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'array-config-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.config = {
+        schemaVersion: 3,
+        fields: {
+          labels: { type: 'array', items: { type: 'string' } },
+          counts: { type: 'array', items: { type: 'number' } },
+          flags: { type: 'array', items: { type: 'boolean' } },
+        },
+      };
+    });
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const run = async (args: string[]) => {
+      const output = createCapturedCliIo();
+      const exitCode = await runCli([...args, '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: output.io,
+        interactive: false,
+      });
+      return { exitCode, payload: JSON.parse(output.readStdout()) as Record<string, unknown> };
+    };
+    const userPath = resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'demo', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    const projectPath = resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'demo', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+
+    expect(await run(['config', 'set', 'team/demo', 'labels', '--scope', 'user',
+      '--value-json', '["user",""]'])).toMatchObject({
+      exitCode: 0, payload: { configWrite: 'succeeded' },
+    });
+    expect(await run(['config', 'set', 'team/demo', 'counts', '--scope', 'user',
+      '--value-json', '[0,2]'])).toMatchObject({ exitCode: 0 });
+    expect(await run(['config', 'set', 'team/demo', 'flags', '--scope', 'user',
+      '--value-json', '[false,true]'])).toMatchObject({ exitCode: 0 });
+    expect(await fs.readJson(userPath)).toMatchObject({
+      schemaVersion: 5,
+      values: { labels: ['user', ''], counts: [0, 2], flags: [false, true] },
+    });
+    expect(await run(['config', 'set', 'team/demo', 'labels', '--scope', 'project',
+      '--value-json', '[]'])).toMatchObject({
+      exitCode: 0, payload: { configWrite: 'succeeded' },
+    });
+    expect(await fs.readJson(projectPath)).toMatchObject({ schemaVersion: 5, values: { labels: [] } });
+    expect(await run(['config', 'get', 'team/demo', 'labels'])).toMatchObject({
+      exitCode: 0,
+      payload: { fields: [expect.objectContaining({ effectiveValue: [], sourceLayer: 'project' })] },
+    });
+    expect(await run(['config', 'unset', 'team/demo', 'labels', '--scope', 'project'])).toMatchObject({
+      exitCode: 0, payload: { configWrite: 'succeeded' },
+    });
+    expect(await run(['config', 'get', 'team/demo', 'labels'])).toMatchObject({
+      exitCode: 0,
+      payload: { fields: [expect.objectContaining({ effectiveValue: ['user', ''], sourceLayer: 'user' })] },
+    });
+
+    const validBytes = await fs.readFile(userPath, 'utf8');
+    expect(await run(['config', 'set', 'team/demo', 'labels', '--scope', 'user',
+      '--value-json', '["mixed",0]'])).toMatchObject({ exitCode: 1 });
+    expect(await fs.readFile(userPath, 'utf8')).toBe(validBytes);
+
+    const stored = await fs.readJson(userPath) as Record<string, unknown>;
+    const oldBytes = `${JSON.stringify({ ...stored, schemaVersion: 4 })}\n`;
+    await fs.writeFile(userPath, oldBytes);
+    expect(await run(['config', 'set', 'team/demo', 'labels', '--scope', 'user',
+      '--value-json', '["changed"]'])).toMatchObject({
+      exitCode: 1,
+      payload: { errors: [expect.objectContaining({ code: 'schemaVersionUnsupported' })] },
+    });
+    expect(await fs.readFile(userPath, 'utf8')).toBe(oldBytes);
+    expect(await run(['config', 'reset', 'team/demo', '--scope', 'user', '--yes']))
+      .toMatchObject({ exitCode: 0 });
+    expect(await run(['config', 'set', 'team/demo', 'labels', '--scope', 'user',
+      '--value-json', '["changed"]'])).toMatchObject({ exitCode: 0 });
+    expect(await fs.readJson(userPath)).toMatchObject({
+      schemaVersion: 5, values: { labels: ['changed'] },
+    });
   });
 
   it('replays public namespaced config writes and keeps the store when rendering fails', async () => {

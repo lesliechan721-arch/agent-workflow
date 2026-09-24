@@ -240,6 +240,7 @@ describe('TUI plugin write task', () => {
       recommendedPluginIds: ['official/demo'],
     });
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain(`› ${value.snapshot.activeReview!.primaryLabel}`));
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('pluginDetail'));
     expect(instance.lastFrame()).toContain('插件更新完成');
@@ -645,8 +646,8 @@ describe('TUI plugin write task', () => {
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configFields'));
     await write(instance, 's');
-    expect(value.snapshot.router.current.route.name).toBe('configSave');
-    await write(instance, '\u001b[B');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await focusAction(instance, '改为只保存，稍后应用');
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, '\r');

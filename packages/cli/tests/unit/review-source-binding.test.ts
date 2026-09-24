@@ -9,6 +9,7 @@ import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { resolveReviewSelection } from '../../src/review/review-selection.js'
+import { normalizeReviewProfileConfig } from '../../src/review/review-profile.js'
 import {
   createAwSourceBindingWorkspaceValidationContext,
   readAwSourceBinding,
@@ -49,6 +50,18 @@ afterEach(async () => {
 })
 
 describe('Review source binding', () => {
+  it('keeps complete array overrides with stable object order and rejects nested items', () => {
+    expect(normalizeReviewProfileConfig({ demo: {
+      models: [{ weight: 1, 'model-name': 'one' }, { weight: 2, 'model-name': 'two' }],
+      labels: [],
+    } })).toEqual({ demo: {
+      labels: [],
+      models: [{ 'model-name': 'one', weight: 1 }, { 'model-name': 'two', weight: 2 }],
+    } })
+    expect(() => normalizeReviewProfileConfig({ demo: { labels: [['nested']] } })).toThrow('invalid array')
+    expect(() => normalizeReviewProfileConfig({ demo: { labels: ['one', 2] } })).toThrow('invalid array')
+  })
+
   it('writes, parses, and verifies a current Review Skill binding', async () => {
     const workspaceRoot = await tempRoot('aw-review-binding-workspace-')
     const outputRoot = await tempRoot('aw-review-binding-output-')

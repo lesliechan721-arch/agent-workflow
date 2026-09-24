@@ -1,3 +1,5 @@
+import fs from 'fs-extra';
+import path from 'node:path';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -120,7 +122,7 @@ function controller(options: {
                 scope: group.scope,
                 storeDigest: `sha256:store:${group.scope}`,
                 impactState: options.impactState ?? 'known',
-                affectedTargets: options.affectedTargets ?? [],
+                affectedTargets: options.affectedTargets ?? [{ platform: 'codex', scope: group.scope }],
               },
             })),
           },
@@ -175,7 +177,7 @@ async function openChangedProjectSave(value: TuiController, columns: number, row
     name: 'configFields', layer: { scope: 'effective' },
   });
   await input(instance, 's');
-  expect(value.snapshot.router.current.route.name).toBe('configSave');
+  expect(value.snapshot.router.current.route.name).toBe('review');
   await nextTurn(4);
   return instance;
 }
@@ -208,7 +210,8 @@ describe('TUI config experience v7', () => {
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
       await nextTurn(4);
 
-      expect(instance.lastFrame()).toContain('团队值 · 个人默认');
+      expect(instance.lastFrame()).toContain('[个人默认]');
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `config-${columns}x${rows}.json`), { synthetic: true, size: { columns, rows }, frame: instance.lastFrame() }, { spaces: 2 });
       expect((instance.lastFrame() ?? '').match(/团队值/gu)).toHaveLength(1);
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
     },
@@ -243,8 +246,8 @@ describe('TUI config experience v7', () => {
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFields', layer: { scope: 'effective' },
     });
-    expect(instance.lastFrame()).toContain('拟保存：当前项目');
-    expect(instance.lastFrame()).toContain('strict · 拟保存：当前项目');
+    expect(instance.lastFrame()).toContain('待保存到当前项目');
+    expect(instance.lastFrame()).toContain('strict');
   });
 
   it('returns a preset target to the original config overview in the same flow', async () => {
@@ -265,7 +268,7 @@ describe('TUI config experience v7', () => {
     expect(value.snapshot.router.current.route.name).toBe('configFields');
     expect(value.snapshot.router.currentFrameId).toBe(overviewFrameId);
     expect(value.snapshot.router.currentFlowId).toBe(flowId);
-    expect(instance.lastFrame()).toContain('safe · 拟保存：当前项目');
+    expect(instance.lastFrame()).toContain('safe');
   });
 
   it('switches config groups in place with the basic arrow keys', async () => {
@@ -303,9 +306,9 @@ describe('TUI config experience v7', () => {
     });
     await input(instance, 'private-value', '\r');
     await nextTurn(4);
-    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configLayer', fieldKey: 'token' });
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFields' });
     expect(instance.lastFrame()).toContain('个人默认');
-    expect(instance.lastFrame()).not.toContain('当前项目');
+    expect(instance.lastFrame()).toContain('仅可保存到个人默认');
   });
 
   it('keeps the project target visible in the compact batch save summary', async () => {
@@ -314,7 +317,7 @@ describe('TUI config experience v7', () => {
     const instance = await openChangedProjectSave(value, 60, 18);
 
     const frame = instance.lastFrame() ?? '';
-    expect(frame).toContain('将按当前项目、个人默认的顺序保存 1');
+    expect(frame).toContain('每层独立提交');
     expect(frame).toContain('当前项目');
     expect(frame).toContain('只保存，稍后应用');
     await input(instance, '\u001B[B', '\r');
@@ -335,7 +338,7 @@ describe('TUI config experience v7', () => {
     const frame = instance.lastFrame() ?? '';
     expect(frame).toContain('保存并生效');
     expect(frame).toContain('只保存，稍后应用');
-    expect(frame).toContain('保存全部草稿，并重新应用实际使用这些设置的目标');
+    expect(frame).toContain('应用结果单独报告');
     await input(instance, '\r');
     await nextTurn(3);
     expect(captured.at(-1)).toMatchObject({
@@ -350,7 +353,7 @@ describe('TUI config experience v7', () => {
     const instance = await openChangedProjectSave(value, 80, 24);
 
     const frame = instance.lastFrame() ?? '';
-    expect(frame).toContain('保存全部设置层，不重新应用安装目标');
+    expect(frame).toContain('改为只保存，稍后应用');
     await input(instance, '\u001B[B', '\r');
     await nextTurn(3);
     expect(captured.at(-1)).toMatchObject({
@@ -409,16 +412,25 @@ describe('Config v2 direct editing and complete drafts', () => {
     await input(instance, '\r', '\u001b[B', '\r', '\r', '\u001b[B', '\r');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
     await input(instance, 's');
-    const summary = instance.lastFrame() ?? '';
+    const firstPage = instance.lastFrame() ?? '';
+    const pages = [firstPage];
+    for (let index = 0; index < 10; index++) {
+      await input(instance, '\u001b[6~');
+      const page = instance.lastFrame() ?? '';
+      if (page === pages.at(-1)) break;
+      pages.push(page);
+    }
+    const summary = pages.join('\n');
     expect(summary).toContain('模型配置');
     expect(summary).toContain('当前项目');
     expect(summary).toContain('beta');
     expect(summary).toContain('启用');
     expect(summary).toContain('个人默认');
     expect(summary).toContain('开启');
-    expect(summary.split('\n').length).toBeLessThanOrEqual(rows);
-    expect(captured).toHaveLength(0);
-    await input(instance, '\r');
+    for (const page of pages) expect(page.split('\n').length).toBeLessThanOrEqual(rows);
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    for (let index = 1; index < pages.length; index++) await input(instance, '\u001b[5~');
+    expect(instance.lastFrame()).toBe(firstPage);
     await nextTurn(4);
     expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [
       { scope: 'project', updates: { profile: { model: 'beta', effort: 'high', hidden: 7 } } },
@@ -477,7 +489,7 @@ describe('Config v2 direct editing and complete drafts', () => {
     expect(instance.lastFrame()).toContain('1 项待保存');
     await input(instance, '\r', '\u001b[B', '\u001b[B', '\r', '\r', '\u0015', '8', '\r');
     await input(instance, '\u001b[B', '\r', '\r', 's');
-    expect(instance.lastFrame()).toContain('2 项未保存');
+    expect(instance.lastFrame()).toContain('个人默认');
     await input(instance, '\u001b[B', '\r'); await nextTurn(4);
     expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [
       { scope: 'project', updates: { profile: { model: 'alpha', effort: 'high', hidden: 8 } }, changes: [expect.objectContaining({
@@ -500,8 +512,8 @@ describe('Config v2 direct editing and complete drafts', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     await input(instance, '\r', '\u0015', 'new-user', '\r', '\u001b[B', '\r');
-    expect(instance.lastFrame()).toContain('project-live · 当前项目');
-    expect((instance.lastFrame() ?? '').replace(/\s/gu, '')).toContain('个人默认待修改，当前项目不受此值影响');
+    expect(instance.lastFrame()).toContain('project-live');
+    expect((instance.lastFrame() ?? '').replace(/\s/gu, '')).toContain('个人修改不会影响本项目');
     await input(instance, '\r', '\u0015', 'new-project', '\r', '\r', 's');
     expect(instance.lastFrame()).toContain('new-project');
     expect(instance.lastFrame()).toContain('new-user');

@@ -227,7 +227,7 @@ export const TUI_ROUTE_DEFINITIONS = {
   configLayer: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C07') },
   configFields: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C01') },
   configFieldEditor: { entity: 'plugin', rendererFamily: 'config', keymap: 'menuOrTextInput', normalize: plugin, screenId: (route) =>
-    route.mode === 'choices' ? 'C03' : ({ boolean: 'C15', number: 'C04', string: 'C06', object: 'C20' } as const)[route.editor] },
+    route.mode === 'choices' ? 'C03' : ({ boolean: 'C15', number: 'C04', string: 'C06', object: 'C20', array: 'C20' } as const)[route.editor] },
   configObjectPropertyEditor: { entity: 'plugin', rendererFamily: 'config', keymap: 'menuOrTextInput', normalize: plugin, screenId: fixed('C20') },
   configFieldAction: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C03') },
   configUnavailable: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C21') },

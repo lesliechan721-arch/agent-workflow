@@ -120,12 +120,22 @@ export type ConfigScalarDynamicField = (ConfigStringDynamicField | ConfigNumberD
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configV3Field".
  */
-export type ConfigV3Field = (ConfigScalarField | ConfigV3FixedObjectField | ConfigV3KeyValueObjectField | ConfigReference)
+export type ConfigV3Field = (ConfigScalarField | ConfigV3FixedObjectField | ConfigV3KeyValueObjectField | ConfigArrayField | ConfigReference)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalarField".
  */
 export type ConfigScalarField = (ConfigStringField | ConfigNumberField | ConfigBooleanField)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configArrayValue".
+ */
+export type ConfigArrayValue = (string[] | number[] | boolean[] | ConfigArrayObjectValue[])
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configArrayItem".
+ */
+export type ConfigArrayItem = (ConfigScalarDynamicField | ConfigArrayFixedObjectItem | ConfigArrayKeyValueObjectItem | ConfigArrayItemReference)
 
 export interface PluginManifestSourceV3 {
 schemaVersion: 3
@@ -706,9 +716,11 @@ summaries?: {
 [k: string]: ConfigJoinSummary
 }
 fieldViews?: {
-[k: string]: {
+[k: string]: ({
 summary: string
-}
+} | {
+itemSummary: string
+})
 }
 }
 schemaVersion: 3
@@ -774,13 +786,101 @@ description?: string
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configArrayField".
+ */
+export interface ConfigArrayField {
+type: "array"
+title?: string
+description?: string
+default?: ConfigArrayValue
+required?: boolean
+sensitive?: never
+items: ConfigArrayItem
+choices?: ConfigArrayChoices
+validation?: ConfigArrayValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configArrayObjectValue".
+ */
+export interface ConfigArrayObjectValue {
+[k: string]: ConfigScalar
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configArrayFixedObjectItem".
+ */
+export interface ConfigArrayFixedObjectItem {
+type: "object"
+title?: string
+description?: string
+sensitive?: never
+choices?: ConfigObjectChoices
+properties: {
+[k: string]: (ConfigScalarChildField | ConfigChildReference)
+}
+additionalProperties?: false
+validation?: ConfigObjectValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configArrayKeyValueObjectItem".
+ */
+export interface ConfigArrayKeyValueObjectItem {
+type: "object"
+title?: string
+description?: string
+sensitive?: never
+choices?: ConfigObjectChoices
+additionalProperties: (ConfigScalarDynamicField | ConfigDynamicReference)
+validation?: ConfigObjectValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configArrayItemReference".
+ */
+export interface ConfigArrayItemReference {
+$ref: string
+title?: string
+description?: string
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configArrayChoices".
+ */
+export interface ConfigArrayChoices {
+allowCustom: boolean
+presets: ConfigArrayPreset[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configArrayPreset".
+ */
+export interface ConfigArrayPreset {
+id: string
+title: string
+description?: string
+value: ConfigArrayValue
+recommended?: true
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configArrayValidation".
+ */
+export interface ConfigArrayValidation {
+minItems?: number
+maxItems?: number
+uniqueItems?: boolean
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configReference".
  */
 export interface ConfigReference {
 $ref: string
 title?: string
 description?: string
-default?: (ConfigScalar | {
+default?: (ConfigScalar | ConfigArrayValue | {
 [k: string]: ConfigScalar
 })
 required?: boolean
@@ -791,41 +891,10 @@ required?: boolean
  */
 export interface ConfigJoinSummary {
 kind: "join"
-/**
- * @minItems 1
- * @maxItems 4
- */
-parts: [{
+parts: {
 path: string
 format?: ("raw" | "choiceTitle")
-}]|[{
-path: string
-format?: ("raw" | "choiceTitle")
-}, {
-path: string
-format?: ("raw" | "choiceTitle")
-}]|[{
-path: string
-format?: ("raw" | "choiceTitle")
-}, {
-path: string
-format?: ("raw" | "choiceTitle")
-}, {
-path: string
-format?: ("raw" | "choiceTitle")
-}]|[{
-path: string
-format?: ("raw" | "choiceTitle")
-}, {
-path: string
-format?: ("raw" | "choiceTitle")
-}, {
-path: string
-format?: ("raw" | "choiceTitle")
-}, {
-path: string
-format?: ("raw" | "choiceTitle")
-}]
+}[]
 separator: string
 missing: string
 }

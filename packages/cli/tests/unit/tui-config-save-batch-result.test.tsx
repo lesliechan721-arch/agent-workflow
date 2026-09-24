@@ -48,7 +48,7 @@ function evidence(intent: OperationIntent): OperationEvidence {
         targetFingerprint: `sha256:${group.scope}`,
         config: {
           scope: group.scope, storeDigest: `sha256:store:${group.scope}`,
-          impactState: 'known', affectedTargets: [],
+          impactState: 'known', affectedTargets: [{ platform: 'codex', scope: group.scope }],
         },
       })) },
     };
@@ -57,7 +57,8 @@ function evidence(intent: OperationIntent): OperationEvidence {
     catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
     config: {
       scope: intent.kind === 'configSave' ? intent.scope : 'user',
-      storeDigest: 'sha256:store:user', impactState: 'known', affectedTargets: [],
+      storeDigest: 'sha256:store:user', impactState: 'known',
+      affectedTargets: [{ platform: 'codex', scope: intent.kind === 'configSave' ? intent.scope : 'user' }],
     },
   };
 }
@@ -178,8 +179,8 @@ describe('TUI config save batch result', () => {
     await input(instance, '\r', '\u0015', 'project-value', '\r', '\r');
 
     await input(instance, '\r', '\u0015', 'user-value', '\r', '\u001b[B', '\r');
-    expect(instance.lastFrame()).toContain('待保存到当前项目：project-value');
-    expect(instance.lastFrame()).toContain('待保存到个人默认：user-value');
+    expect(instance.lastFrame()).toContain('project-value');
+    expect(instance.lastFrame()).toContain('待保存到当前项目、个人默认');
     expect(instance.lastFrame()).toContain('保存设置（2）');
 
     await input(instance, 's', '\u001b[B', '\r');
@@ -226,8 +227,8 @@ describe('TUI config save batch result', () => {
 
     await input(instance, '\r', '\u0015', 'project-value', '\r', '\r');
     await input(instance, '\r', '\u0015', 'user-value', '\r', '\u001b[B', '\r');
-    await input(instance, 's', '\r');
-    await nextTurn(5);
+    await input(instance, 's');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     const batchReview = value.snapshot.activeReview;
     expect(batchReview?.operationKind).toBe('configSaveBatch');
     await value.executeOperation(batchReview!.reviewToken);

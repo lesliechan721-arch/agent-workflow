@@ -302,7 +302,7 @@ describe('Catalog source impact inspection', () => {
   it('keeps user and current-project config references as separate projections', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const envelope = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: 'team',
       pluginName: 'demo',
       values: {},

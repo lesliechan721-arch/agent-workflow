@@ -2030,7 +2030,7 @@ describe('TUI controller runtime scope conflict validation', () => {
 
     const storePath = path.join(isolation.layout.awHomeDir, 'plugin-config', 'team', 'demo', 'config.json');
     const envelope = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: 'team',
       binding: { kind: 'source', sourceIdentity: evidence.source.sourceIdentity },
       pluginName: 'demo',
@@ -2418,7 +2418,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     }));
     expect(JSON.stringify(resetProjection.changes)).not.toContain('当前安装保持不变');
     await fs.writeJson(storePath, {
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: 'team',
       binding: { kind: 'source', sourceIdentity: invalidUserAvailability.sourceIdentity },
       pluginName: 'demo',
@@ -2511,7 +2511,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     )).sourceIdentity!;
     const logicalIdentity = await readCatalogSnapshotLogicalIdentity(sourceRoot);
     const envelope = (scope: 'user' | 'project', values: Record<string, unknown>) => ({
-      schemaVersion: 4,
+      schemaVersion: 5,
       sourceId: 'team',
       binding: scope === 'user'
         ? { kind: 'source', sourceIdentity: identity }

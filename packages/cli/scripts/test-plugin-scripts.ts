@@ -425,7 +425,7 @@ async function writeTestContext(options: {
     await Promise.all(Object.entries(configStores).map(([scope, storePath]) => fs.outputJson(
       storePath,
       {
-        schemaVersion: 4,
+        schemaVersion: 5,
         sourceId,
         pluginName: options.manifest.name,
         binding: scope === 'user'

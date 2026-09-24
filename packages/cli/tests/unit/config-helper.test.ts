@@ -48,20 +48,23 @@ describe('standard aw-config helper', () => {
             type: 'string',
             validation: { pattern: '^strict$', maxLength: 16 },
           },
+          steps: { type: 'array', items: { type: 'string' } },
         },
         values: {
           token: 'top-level-secret',
           mode: 'trusted-context-value',
+          steps: ['', 'run'],
           unknown: 'ignored',
         },
-        sources: { token: 'user', mode: 'project', unknown: 'project' },
+        sources: { token: 'user', mode: 'project', steps: 'project', unknown: 'project' },
         issues: [],
       },
     }, async ({ cwd, env }) => {
-      const [json, token, mode] = await Promise.all([
+      const [json, token, mode, steps] = await Promise.all([
         execFileAsync(process.execPath, [helperPath, 'json'], { cwd, env }),
         execFileAsync(process.execPath, [helperPath, 'get', 'token'], { cwd, env }),
         execFileAsync(process.execPath, [helperPath, 'get', 'mode'], { cwd, env }),
+        execFileAsync(process.execPath, [helperPath, 'get', 'steps'], { cwd, env }),
       ]);
 
       expect(json.stdout).not.toContain('top-level-secret');
@@ -69,13 +72,14 @@ describe('standard aw-config helper', () => {
         pluginName: 'fixture-plugin',
         pluginId: 'fixture-source/fixture-plugin',
         scope: 'effective',
-        values: { token: '[redacted]', mode: 'trusted-context-value' },
-        sources: { token: 'user', mode: 'project' },
+        values: { token: '[redacted]', mode: 'trusted-context-value', steps: ['', 'run'] },
+        sources: { token: 'user', mode: 'project', steps: 'project' },
         paths: { configStores: {} },
       });
       expect(JSON.parse(json.stdout).values).not.toHaveProperty('unknown');
       expect(token.stdout).toBe('[redacted]\n');
       expect(mode.stdout).toBe('trusted-context-value\n');
+      expect(steps.stdout).toBe('["","run"]\n');
     });
   });
 

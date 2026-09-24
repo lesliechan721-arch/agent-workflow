@@ -90,8 +90,8 @@ export interface PluginConfigStore {
   issues: string[];
 }
 
-export interface PluginConfigEnvelopeV4 {
-  schemaVersion: 4;
+export interface PluginConfigEnvelopeV5 {
+  schemaVersion: 5;
   sourceId: string;
   pluginName: string;
   binding:
@@ -103,7 +103,7 @@ export interface PluginConfigEnvelopeV4 {
 function readPluginConfigBinding(
   value: unknown,
   scope: Scope,
-): PluginConfigEnvelopeV4['binding'] | null {
+): PluginConfigEnvelopeV5['binding'] | null {
   if (!isRecord(value)) return null;
   if (scope === 'user') {
     return value.kind === 'source'
@@ -121,7 +121,7 @@ function readPluginConfigBinding(
     : null;
 }
 
-const PLUGIN_CONFIG_ENVELOPE_V4_KEYS = new Set([
+const PLUGIN_CONFIG_ENVELOPE_V5_KEYS = new Set([
   'schemaVersion',
   'sourceId',
   'pluginName',
@@ -129,22 +129,22 @@ const PLUGIN_CONFIG_ENVELOPE_V4_KEYS = new Set([
   'values',
 ]);
 
-function readPluginConfigEnvelopeV4(
+function readPluginConfigEnvelopeV5(
   value: unknown,
   scope: Scope,
-): PluginConfigEnvelopeV4 | null {
+): PluginConfigEnvelopeV5 | null {
   if (!isRecord(value)
-    || value.schemaVersion !== 4
+    || value.schemaVersion !== 5
     || typeof value.sourceId !== 'string'
     || typeof value.pluginName !== 'string'
     || !isRecord(value.values)
-    || Object.keys(value).some((key) => !PLUGIN_CONFIG_ENVELOPE_V4_KEYS.has(key))) {
+    || Object.keys(value).some((key) => !PLUGIN_CONFIG_ENVELOPE_V5_KEYS.has(key))) {
     return null;
   }
   const binding = readPluginConfigBinding(value.binding, scope);
   if (!binding) return null;
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     sourceId: value.sourceId,
     pluginName: value.pluginName,
     binding,
@@ -300,7 +300,7 @@ export interface RequiredPluginConfigPreflightResult {
 
 export interface PluginConfigFormFieldModel {
   key: string;
-  type: Exclude<PluginConfigSchemaField['type'], 'object'>;
+  type: Exclude<PluginConfigSchemaField['type'], 'object' | 'array'>;
   label: string;
   description?: string;
   required: boolean;
@@ -557,8 +557,8 @@ function formatValue(value: unknown): string {
   if (typeof value === 'number' || typeof value === 'boolean') {
     return stablePluginConfigStringify(value);
   }
-  if (isRecord(value)) {
-    return stablePluginConfigStringify(value as Record<string, string | number | boolean>);
+  if (isRecord(value) || Array.isArray(value)) {
+    return stablePluginConfigStringify(value as PluginConfigValue);
   }
   return JSON.stringify(value);
 }
@@ -692,14 +692,27 @@ export function resolvePluginConfigStoreTargets(options: {
   }];
 }
 
-function isPluginConfigValue(value: unknown): value is PluginConfigValue {
+function isPluginConfigScalar(value: unknown): value is string | number | boolean {
   if (typeof value === 'string' || typeof value === 'boolean') return true;
-  if (typeof value === 'number') return Number.isFinite(value);
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isPluginConfigObject(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  return Object.values(value).every((child) =>
-    typeof child === 'string'
-    || typeof child === 'boolean'
-    || (typeof child === 'number' && Number.isFinite(child)));
+  return Object.values(value).every(isPluginConfigScalar);
+}
+
+function isPluginConfigValue(value: unknown): value is PluginConfigValue {
+  if (isPluginConfigScalar(value)) return true;
+  if (Array.isArray(value)) {
+    if (Object.keys(value).length !== value.length) return false;
+    const first = value[0];
+    const elementType = isRecord(first) ? 'object' : typeof first;
+    return value.every((item, index) => Object.hasOwn(value, index)
+      && (isRecord(item) ? 'object' : typeof item) === elementType
+      && (isPluginConfigScalar(item) || isPluginConfigObject(item)));
+  }
+  return isPluginConfigObject(value);
 }
 
 function invalidStore(
@@ -809,20 +822,20 @@ async function readNamespacedStoreFile(options: {
   const parsed = await parseStoreJson(options.filePath);
   if (parsed.state === 'invalidJson') return parsed.store;
   const raw = parsed.value;
-  if (!isRecord(raw) || raw.schemaVersion !== 4) {
+  if (!isRecord(raw) || raw.schemaVersion !== 5) {
     return invalidStore(
       options.filePath,
       'schemaVersionUnsupported',
-      'Only plugin config store schemaVersion 4 is supported.',
+      'Only plugin config store schemaVersion 5 is supported.',
       parsed.rawDigest,
     );
   }
-  const envelope = readPluginConfigEnvelopeV4(raw, options.scope);
+  const envelope = readPluginConfigEnvelopeV5(raw, options.scope);
   if (!envelope) {
     return invalidStore(
       options.filePath,
       'schemaVersionUnsupported',
-      'The plugin config store schemaVersion 4 envelope is invalid.',
+      'The plugin config store schemaVersion 5 envelope is invalid.',
       parsed.rawDigest,
     );
   }
@@ -872,15 +885,15 @@ function namespacedConfigContent(options: {
 }): string {
   const values = canonicalizePluginConfigValues(options.values);
   if (!options.sourceId) return `${JSON.stringify(values, null, 2)}\n`;
-  const binding: PluginConfigEnvelopeV4['binding'] = options.scope === 'user'
+  const binding: PluginConfigEnvelopeV5['binding'] = options.scope === 'user'
     ? options.sourceIdentity
       ? { kind: 'source', sourceIdentity: options.sourceIdentity }
       : (() => { throw new Error('sourceChanged: user plugin config requires a source identity.'); })()
     : options.logicalIdentity
       ? { kind: 'catalog', logicalIdentity: options.logicalIdentity }
       : (() => { throw new Error('catalogUnavailable: project plugin config requires verified Catalog logical identity evidence.'); })();
-  const envelope: PluginConfigEnvelopeV4 = {
-    schemaVersion: 4,
+  const envelope: PluginConfigEnvelopeV5 = {
+    schemaVersion: 5,
     sourceId: options.sourceId,
     pluginName: options.pluginName,
     binding,
@@ -965,7 +978,7 @@ export async function readNamespacedPluginConfigStoreIdentity(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<{
-  binding: PluginConfigEnvelopeV4['binding'];
+  binding: PluginConfigEnvelopeV5['binding'];
   store: PluginConfigStore;
 } | null> {
   const filePath = resolvePluginConfigStorePath({
@@ -977,7 +990,7 @@ export async function readNamespacedPluginConfigStoreIdentity(options: {
   if (parsed.state === 'invalidJson') {
     throw new Error(`${parsed.store.invalidCode}: invalid namespaced plugin config store.`);
   }
-  const envelope = readPluginConfigEnvelopeV4(parsed.value, options.scope);
+  const envelope = readPluginConfigEnvelopeV5(parsed.value, options.scope);
   if (!envelope
     || envelope.sourceId !== options.sourceId
     || envelope.pluginName !== options.pluginName) {
@@ -1041,7 +1054,7 @@ export async function listPluginConfigStorePluginNames(options: {
 
 export interface NamespacedPluginConfigStoreInventoryEntry {
   sourceId: string;
-  binding: PluginConfigEnvelopeV4['binding'];
+  binding: PluginConfigEnvelopeV5['binding'];
   pluginName: string;
   pluginId: string;
   values: Record<string, PluginConfigValue>;
@@ -1152,7 +1165,7 @@ export async function listNamespacedPluginConfigStores(options: {
       if (parsed.state === 'invalidJson') {
         throw new Error(`${parsed.store.invalidCode}: invalid namespaced plugin config store "${filePath}".`);
       }
-      const envelope = readPluginConfigEnvelopeV4(parsed.value, options.scope);
+      const envelope = readPluginConfigEnvelopeV5(parsed.value, options.scope);
       if (!envelope
         || envelope.sourceId !== sourceId
         || envelope.pluginName !== pluginName) {
@@ -1195,8 +1208,19 @@ export async function writePluginConfigStore(options: {
     filePath,
     allowedRoot,
     action: async () => {
-      if (Object.keys(validated.values).length === 0) {
+      if (!options.sourceId && Object.keys(validated.values).length === 0) {
         return atomicRemoveConfigFile({ filePath, allowedRoot });
+      }
+      if (options.sourceId && await lstatIfExists(filePath)) {
+        const current = await readNamespacedStoreFile({
+          filePath,
+          sourceId: options.sourceId,
+          scope: options.scope,
+          sourceIdentity: options.sourceIdentity,
+          logicalIdentity: options.logicalIdentity,
+          pluginName: options.pluginName,
+        });
+        assertReadyPluginConfigStore(current);
       }
       if (options.scope === 'project') {
         const visibility = await assertProjectSharedConfigPathVisible({
@@ -1754,7 +1778,7 @@ export async function resolveEffectivePluginConfigFromStores(options: {
     const plainEntries = getStoreEntries(store.values);
     const source = sourceForStoreLayer(scope);
     const dangerousIssues = new Map(validatePluginConfigDocument(
-      { fields: schema },
+      { schemaVersion: 3, fields: schema },
       plainEntries,
     ).filter((issue) => issue.code === 'dangerousKey')
       .map((issue) => [issue.path.field, issue] as const));
@@ -2477,7 +2501,7 @@ export function createPluginConfigSchemaIdentity(
 }
 
 function cliConfigPromptEnumValues(
-  field: Exclude<PluginConfigSchemaField, { type: 'object' }>,
+  field: Exclude<PluginConfigSchemaField, { type: 'object' | 'array' }>,
 ): Array<string | number | boolean> | undefined {
   if (!field.choices) return undefined;
   const values: Array<string | number | boolean> = field.choices.presets
@@ -2496,7 +2520,7 @@ function cliConfigPromptEnumValues(
 export function toCliConfigPromptSchema(schema: PluginConfigSchema['fields']): CliConfigPromptSchema {
   const promptSchema: CliConfigPromptSchema = {};
   for (const [key, field] of Object.entries(schema)) {
-    if (field.type === 'object') continue;
+    if (field.type === 'object' || field.type === 'array') continue;
     promptSchema[key] = {
       type: field.type,
       label: field.title ?? key,
@@ -2530,7 +2554,7 @@ export function createPluginConfigFormModel(options: {
       .map((issue) => issue.key),
   )];
   const fields: PluginConfigFormFieldModel[] = Object.entries(schema).flatMap(([key, field]) => {
-    if (field.type === 'object') return [];
+    if (field.type === 'object' || field.type === 'array') return [];
     return [{
       key,
       type: field.type,
