@@ -36,6 +36,7 @@ const EXPECTED_PLUGIN_PLATFORMS = {
   'agent-skill-toolkit': ['claude', 'codex'],
   'ask-me': ['claude', 'codex'],
   'aw-development-toolkit': ['claude', 'codex'],
+  'browser-use': ['claude', 'codex'],
   'codex-enhance': ['codex'],
   'dev-workflow': ['claude', 'codex'],
   'git-toolkit': ['claude', 'codex'],
@@ -406,6 +407,7 @@ describe('build smoke', () => {
       'ask-me',
       'aw-development-toolkit',
       'aw-skill-eval-runner',
+      'browser-use',
       'dev-workflow',
       'git-toolkit',
     ]);
@@ -415,6 +417,7 @@ describe('build smoke', () => {
       'ask-me',
       'aw-development-toolkit',
       'aw-skill-eval-runner',
+      'browser-use',
       'codex-enhance',
       'dev-workflow',
       'git-toolkit',

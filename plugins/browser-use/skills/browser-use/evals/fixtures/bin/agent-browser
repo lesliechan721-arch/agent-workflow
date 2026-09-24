@@ -1,0 +1,3 @@
+#!/bin/sh
+# Eval-only launcher. No real browser, network, or user configuration is accessed.
+exec node "$(dirname "$0")/agent-browser.cjs" "$@"

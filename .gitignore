@@ -13,3 +13,4 @@ packages/cli/plugins-dist
 .worktrees
 .tmp/
 .aw/
+.browser-use/
