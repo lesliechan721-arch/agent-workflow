@@ -81,7 +81,7 @@ describe('TUI plugin content projection', () => {
       pluginVersion: '2.4.0',
       catalogVersion: '9.1.0',
       evidence: 'catalogBundle',
-      coverage: 'complete',
+      coverage: 'partial',
     });
     expect(overview.items).toMatchObject([
       {
@@ -105,11 +105,11 @@ describe('TUI plugin content projection', () => {
         tools: ['Agent Skills'],
       },
       {
-        id: 'skill:windows-lines', name: 'windows-lines', type: 'skill', description: 'Windows summary.',
+        id: 'skill:windows-lines', name: 'windows-lines', type: 'skill', description: null,
         tools: ['Codex'],
       },
     ]);
-    expect(overview.notices).toEqual([]);
+    expect(overview.coverageIssue?.message).toContain('不能区分普通 Skill 与 Slash command');
     expect(JSON.stringify(overview)).not.toContain('BODY-SECRET');
   });
 
@@ -123,6 +123,7 @@ describe('TUI plugin content projection', () => {
       '---\nname: escaped\ndescription: LOCAL-SENSITIVE-TEXT\n---\nBody.\n',
     );
     await fs.ensureDir(path.join(root, 'codex', 'skills'));
+    await fs.ensureDir(path.join(root, 'claude', 'skills'));
     await fs.symlink(outside, path.join(root, 'codex', 'skills', 'escaped'));
 
     const overview = await projectPluginContentOverview({
@@ -217,7 +218,8 @@ describe('TUI plugin content projection', () => {
         descriptionState: 'issue', issue: { code: 'unsafePath' } },
     ]);
     expect(overview.items).toHaveLength(2);
-    expect(overview.coverage).toBe('complete');
+    expect(overview.coverage).toBe('partial');
+    expect(overview.coverageIssue?.code).toBe('unsafePath');
     expect(JSON.stringify(overview)).not.toContain('LOCAL-SENSITIVE-TEXT');
     expect(JSON.stringify(overview)).not.toContain(outside);
   });
@@ -377,6 +379,167 @@ describe('TUI plugin content projection', () => {
       expect(JSON.stringify(overview)).not.toContain('PRIVATE-MARKER');
       expect(JSON.stringify(overview)).not.toContain('Run `git status`');
     }
+  });
+
+  it('keeps the surviving command platform when a real dual-platform output is missing or unsafe', async () => {
+    // Risk: intact platform markers can hide a missing per-command output and claim a complete list.
+    const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      '..', 'fixtures', 'codex-project-repo-managed', 'plugins', 'slashCommands-only');
+    for (const [platform, damage] of [
+      ['codex', 'file'], ['codex', 'directory'], ['codex', 'unsafe'],
+      ['claude', 'file'], ['claude', 'directory'], ['claude', 'unsafe'],
+    ] as const) {
+      const output = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-tui-command-output-'));
+      roots.push(output);
+      const source = await readPluginManifest(sourceRoot);
+      source.manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+      const bundleRoot = path.join(output, 'bundle');
+      await bundleLocalPlugin(source, bundleRoot);
+      const bundle = await readPluginManifest(bundleRoot, { mode: 'bundle' });
+      const commandFile = platform === 'codex'
+        ? path.join(bundleRoot, 'codex', 'skills', 'review', 'SKILL.md')
+        : path.join(bundleRoot, 'claude', 'commands', 'review.md');
+      const damagedPath = damage === 'directory' ? path.dirname(commandFile) : commandFile;
+      await fs.remove(damagedPath);
+      if (damage === 'unsafe') {
+        const outside = path.join(output, 'PRIVATE-COMMAND-FILE');
+        await fs.writeFile(outside, 'PRIVATE-COMMAND-TEXT');
+        await fs.symlink(outside, damagedPath);
+      }
+      const overview = await projectPluginContentOverview({
+        pluginId: 'official/slash-commands-only', catalogVersion: '9.1.0', plugin: bundle,
+      });
+
+      expect(overview.items).toContainEqual(expect.objectContaining({
+        id: 'command:review', name: 'review', type: 'command',
+        tools: platform === 'codex' ? ['Claude Code'] : ['Codex'],
+      }));
+      expect(overview.coverage).toBe('partial');
+      expect(overview.coverageIssue?.code).toBe(damage === 'unsafe' ? 'unsafePath' : 'incompleteList');
+      expect(JSON.stringify(overview)).not.toContain('PRIVATE-COMMAND-TEXT');
+      expect(JSON.stringify(overview)).not.toContain('PRIVATE-COMMAND-FILE');
+      expect(JSON.stringify(overview)).not.toContain('Run `git status`');
+      expect(JSON.stringify(overview)).not.toContain('Use $review');
+    }
+  });
+
+  it('keeps mixed native and Agent Skills evidence when a real command output is damaged', async () => {
+    // Risk: an orphan Codex directory may be a Skill, while a same-name Agent Skill is independent.
+    const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      '..', 'fixtures', 'codex-project-repo-managed', 'plugins', 'slashCommands-only');
+    for (const damage of ['claudeMissing', 'codexUnsafe', 'fileRulesClaudeMissing'] as const) {
+      const output = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-tui-command-mixed-output-'));
+      roots.push(output);
+      const sourceDir = path.join(output, 'source');
+      await fs.copy(sourceRoot, sourceDir);
+      const manifestPath = path.join(sourceDir, '.agents-plugin', 'plugin.json');
+      const manifest = await fs.readJson(manifestPath);
+      if (damage === 'fileRulesClaudeMissing') {
+        manifest.buildConfig.fileRules = { codex: { include: ['skills/**'], exclude: [] } };
+      } else {
+        manifest.skills = './skills';
+      }
+      manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
+      manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+      await fs.writeJson(manifestPath, manifest);
+      await Promise.all([
+        fs.outputFile(path.join(sourceDir, 'agent-skills', 'skills', 'review', 'SKILL.md'),
+          '---\nname: review\ndescription: Portable review summary.\n---\nPRIVATE-PORTABLE-BODY\n'),
+        fs.outputFile(path.join(sourceDir, 'agent-skills', 'skills', 'review', 'README.md'),
+          'Portable review Skill.\n'),
+      ]);
+      if (damage !== 'fileRulesClaudeMissing') {
+        await fs.outputFile(path.join(sourceDir, 'skills', 'ordinary', 'SKILL.md'),
+          '---\nname: ordinary\ndescription: Ordinary Skill summary.\n---\nPRIVATE-SKILL-BODY\n');
+      }
+      const bundleRoot = path.join(output, 'bundle');
+      await bundleLocalPlugin(await readPluginManifest(sourceDir), bundleRoot);
+      const bundle = await readPluginManifest(bundleRoot, { mode: 'bundle' });
+      const healthy = await projectPluginContentOverview({
+        pluginId: 'official/slash-commands-only', catalogVersion: '9.1.0', plugin: bundle,
+      });
+      expect(healthy.coverage).toBe('complete');
+      if (damage !== 'fileRulesClaudeMissing') {
+        expect(healthy.items).toContainEqual(expect.objectContaining({
+          id: 'skill:ordinary', type: 'skill', tools: ['Codex', 'Claude Code'],
+          description: 'Ordinary Skill summary.', descriptionState: 'available',
+        }));
+      }
+      if (damage !== 'codexUnsafe') {
+        await fs.remove(path.join(bundleRoot, 'claude', 'commands', 'review.md'));
+      } else {
+        const file = path.join(bundleRoot, 'codex', 'skills', 'review', 'SKILL.md');
+        const outside = path.join(output, 'private-target');
+        await fs.writeFile(outside, 'PRIVATE-LINK-TEXT');
+        await fs.remove(file);
+        await fs.symlink(outside, file);
+      }
+      const overview = await projectPluginContentOverview({
+        pluginId: 'official/slash-commands-only', catalogVersion: '9.1.0', plugin: bundle,
+      });
+
+      if (damage !== 'fileRulesClaudeMissing') {
+        expect(overview.items).toContainEqual(expect.objectContaining({
+          id: 'skill:ordinary', name: 'ordinary', type: 'skill',
+          tools: ['Codex', 'Claude Code'],
+          description: 'Ordinary Skill summary.',
+        }));
+      }
+      expect(overview.items).toContainEqual(expect.objectContaining({
+        id: 'skill:review', name: 'review', type: 'skill',
+        tools: ['Codex', 'Agent Skills'],
+        description: 'Portable review summary.',
+      }));
+      if (damage === 'codexUnsafe') {
+        expect(overview.items).toContainEqual(expect.objectContaining({
+          id: 'command:review', type: 'command', tools: ['Claude Code'],
+        }));
+        expect(overview.items.find((item) => item.id === 'skill:review')?.issue?.code).toBe('unsafePath');
+      } else {
+        expect(overview.items.some((item) => item.id === 'command:review')).toBe(false);
+      }
+      expect(overview.coverage).toBe('partial');
+      expect(overview.coverageIssue).toBeDefined();
+      expect(JSON.stringify(overview)).not.toMatch(/PRIVATE-(?:SKILL-BODY|PORTABLE-BODY|LINK-TEXT)/u);
+      expect(JSON.stringify(overview)).not.toContain('Run `git status`');
+      expect(JSON.stringify(overview)).not.toContain('Use $review');
+    }
+  });
+
+  it('does not use an unsafe Claude Skill file to confirm a mixed Codex Skill identity', async () => {
+    const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      '..', 'fixtures', 'codex-project-repo-managed', 'plugins', 'slashCommands-only');
+    const output = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-tui-command-unsafe-skill-'));
+    roots.push(output);
+    const sourceDir = path.join(output, 'source');
+    await fs.copy(sourceRoot, sourceDir);
+    const manifestPath = path.join(sourceDir, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.skills = './skills';
+    manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+    await fs.writeJson(manifestPath, manifest);
+    await fs.outputFile(path.join(sourceDir, 'skills', 'ordinary', 'SKILL.md'),
+      '---\nname: ordinary\ndescription: Ordinary Skill summary.\n---\nPRIVATE-SKILL-BODY\n');
+    const bundleRoot = path.join(output, 'bundle');
+    await bundleLocalPlugin(await readPluginManifest(sourceDir), bundleRoot);
+    const bundle = await readPluginManifest(bundleRoot, { mode: 'bundle' });
+    const claudeSkill = path.join(bundleRoot, 'claude', 'skills', 'ordinary', 'SKILL.md');
+    const outside = path.join(output, 'private-skill');
+    await fs.writeFile(outside, 'PRIVATE-LINK-TEXT');
+    await fs.remove(claudeSkill);
+    await fs.symlink(outside, claudeSkill);
+
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/slash-commands-only', catalogVersion: '9.1.0', plugin: bundle,
+    });
+    expect(overview.items.find((item) => item.id === 'skill:ordinary')).toMatchObject({
+      id: 'skill:ordinary', type: 'skill', tools: ['Codex', 'Claude Code'],
+      description: null, descriptionState: 'issue', issue: { code: 'unsafePath' },
+    });
+    expect(overview.coverage).toBe('partial');
+    expect(overview.coverageIssue?.message).toContain('不能区分普通 Skill 与 Slash command');
+    expect(JSON.stringify(overview)).not.toContain('PRIVATE-LINK-TEXT');
+    expect(JSON.stringify(overview)).not.toContain('PRIVATE-SKILL-BODY');
   });
 
   it('reads only safe bounded Codex command short descriptions from real bundle metadata', async () => {

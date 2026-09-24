@@ -284,6 +284,7 @@ async function addSkillDirectory(options: {
   coverageIssues: PluginContentIssue[];
   type?: 'skill' | 'command';
   readDescription?: boolean;
+  checkClaudeCommand?: boolean;
 }): Promise<void> {
   const directory = await regularPathWithin(options.root, path.join(options.root, options.relativePath), 'directory');
   if (!directory) {
@@ -321,7 +322,13 @@ async function addSkillDirectory(options: {
     if (options.tool === 'Codex'
       && options.items.get(`command:${entry.name}`)?.tools.includes('Codex')) continue;
     const skillFile = path.join(skillRoot, 'SKILL.md');
-    const skill = options.readDescription === false
+    const hasClaudeCommand = options.items.has(`command:${entry.name}`);
+    const hasClaudeSkill = options.checkClaudeCommand
+      && options.items.get(`skill:${entry.name}`)?.tools.includes('Claude Code')
+      && await regularPathWithin(options.root,
+        path.join(options.root, 'claude', 'skills', entry.name, 'SKILL.md'), 'file');
+    const uncertainSource = options.checkClaudeCommand && !hasClaudeCommand && !hasClaudeSkill;
+    const skill = options.readDescription === false || (uncertainSource && options.type !== 'command')
       ? { exists: Boolean(await regularPathWithin(options.root, skillFile, 'file')), description: null }
       : await readFrontmatterDescription(options.root, skillFile);
     let issue = skill.issue;
@@ -335,7 +342,16 @@ async function addSkillDirectory(options: {
       }
       issue = { code, message: 'Skill 元信息文件不可安全读取。请检查内容目录后重试。' };
     }
-    const type = options.type ?? 'skill';
+    const type = options.type === 'command' && issue?.code === 'unsafePath'
+      ? 'skill' : options.type ?? 'skill';
+    if (uncertainSource) {
+      addCoverageIssue(options.coverageIssues, {
+        code: 'incompleteList',
+        message: options.type === 'command'
+          ? 'Slash command 的 Claude Code 组件无法确认。请检查内容目录。'
+          : 'Codex 内容名称已确认，但缺少可安全确认的 Claude Code 对应项，不能区分普通 Skill 与 Slash command。请检查内容目录。',
+      });
+    }
     const command = type === 'command' && skill.exists
       ? await readCodexCommandDescription(options.root, skillRoot) : undefined;
     issue ??= command?.issue;
@@ -444,6 +460,12 @@ async function addSlashCommands(options: {
     const codexSkillFile = path.join(options.root, 'codex', 'skills', name, 'SKILL.md');
     const codexCommand = options.hasCodex
       && await regularPathWithin(options.root, codexSkillFile, 'file');
+    if (options.hasCodex && !codexCommand) {
+      const code = await unconfirmedPathCode(options.root, codexSkillFile);
+      addCoverageIssue(options.coverageIssues, {
+        code, message: 'Slash command 的 Codex 组件无法安全确认。请检查内容目录。',
+      });
+    }
     if (options.hasCodex && !codexCommand && await fs.lstat(codexSkillFile).catch(() => undefined)) {
       if (await regularPathWithin(options.root, path.dirname(codexSkillFile), 'directory')) {
         addItem(options.items, {
@@ -454,10 +476,6 @@ async function addSlashCommands(options: {
           tools: ['Codex'],
           descriptionState: 'issue',
           issue: { code: 'unsafePath', message: 'Skill 元信息文件不可安全读取。请检查内容目录后重试。' },
-        });
-      } else {
-        addCoverageIssue(options.coverageIssues, {
-          code: 'unsafePath', message: 'Slash command 的 Codex 组件不可安全确认。请检查目录。',
         });
       }
     }
@@ -548,10 +566,11 @@ export async function projectPluginContentOverview(options: {
   }
   const codexOnlyCommands = Boolean(options.plugin.manifest.slashCommands)
     && platforms.includes('Codex') && !platforms.includes('Claude Code');
-  const mixedCodexSkills = codexOnlyCommands
+  const mixedCodexSkills = Boolean(options.plugin.manifest.slashCommands)
+    && platforms.includes('Codex')
     && Boolean(options.plugin.manifest.skills || options.plugin.manifest.buildConfig?.fileRules?.codex);
 
-  if (mixedCodexSkills) {
+  if (mixedCodexSkills && codexOnlyCommands) {
     addCoverageIssue(coverageIssues, {
       code: 'incompleteList',
       message: 'Codex 内容名称已确认，但当前目录不能安全区分普通 Skill 与 Slash command。请查看来源定义。',
@@ -568,15 +587,17 @@ export async function projectPluginContentOverview(options: {
   }
 
   if (options.plugin.manifest.skills) {
-    if (platforms.includes('Codex')) {
-      await addSkillDirectory({
-        root, relativePath: 'codex/skills', tool: 'Codex', items, coverageIssues,
-        ...(mixedCodexSkills ? { readDescription: false } : {}),
-      });
-    }
     if (platforms.includes('Claude Code')) {
       await addSkillDirectory({
         root, relativePath: 'claude/skills', tool: 'Claude Code', items, coverageIssues,
+      });
+    }
+    if (platforms.includes('Codex')) {
+      await addSkillDirectory({
+        root, relativePath: 'codex/skills', tool: 'Codex', items, coverageIssues,
+        ...(codexOnlyCommands ? { readDescription: false } : {}),
+        checkClaudeCommand: Boolean(options.plugin.manifest.slashCommands)
+          && platforms.includes('Claude Code'),
       });
     }
   }
@@ -585,6 +606,15 @@ export async function projectPluginContentOverview(options: {
       root, relativePath: 'codex/skills', tool: 'Codex', items, coverageIssues,
       type: mixedCodexSkills ? 'skill' : 'command',
       readDescription: false,
+    });
+  }
+  if (options.plugin.manifest.slashCommands && platforms.includes('Codex')
+    && platforms.includes('Claude Code') && !options.plugin.manifest.skills) {
+    await addSkillDirectory({
+      root, relativePath: 'codex/skills', tool: 'Codex', items, coverageIssues,
+      type: mixedCodexSkills ? 'skill' : 'command',
+      readDescription: false,
+      checkClaudeCommand: true,
     });
   }
   if (options.plugin.manifest.distributions?.agentSkills?.skills) {
