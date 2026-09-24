@@ -115,6 +115,28 @@
       }
     },
     {
+      "name": "browser-use",
+      "source": "./plugins/browser-use",
+      "description": "以精简的浏览器技能完成网页预览、浏览、交互、截图和按需调试。",
+      "interface": {
+        "displayName": "Browser Use",
+        "shortDescription": "轻量网页预览、浏览、交互与检查",
+        "capabilities": [
+          "Skills"
+        ]
+      },
+      "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CODEX",
+          "CLAUDE"
+        ]
+      }
+    },
+    {
       "name": "dev-workflow",
       "source": "./plugins/dev-workflow",
       "description": "按共识、风险和记录需求组织开发，并以独立工作分解、实现协调及审查完成交付。",

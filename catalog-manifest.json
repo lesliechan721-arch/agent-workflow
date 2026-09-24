@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.28",
+  "catalogVersion": "0.1.0-beta.29",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "e1a0ad902dd6c684a52ce79baef1b20c9e499787"
+    "sourceHead": "0d806ea851a88a36cc0f6d72271fc0a8f2dc08c8"
   },
   "entries": [
     {
@@ -214,6 +214,42 @@
       "artifactDigest": "sha256:da216248405b112e8985a53e3e754624c9d513efc789ca31e9818f512721511a",
       "manifestDigest": "sha256:8096d7526535fe4b78ca1374c1a6b5919aa3a42f21834ddcc2d30c81f385bebb",
       "contentDigest": "sha256:18cf18c9dd943660af5a74be32b946b980f6416c685b7952fbd997417e8592a1"
+    },
+    {
+      "name": "browser-use",
+      "source": "./plugins/browser-use",
+      "description": "以精简的浏览器技能完成网页预览、浏览、交互、截图和按需调试。",
+      "interface": {
+        "displayName": "Browser Use",
+        "shortDescription": "轻量网页预览、浏览、交互与检查",
+        "capabilities": [
+          "Skills"
+        ]
+      },
+      "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CODEX",
+          "CLAUDE"
+        ]
+      },
+      "version": "0.1.0-beta.1",
+      "dependencies": [],
+      "requires": {
+        "aw": {
+          "capabilities": [
+            "aw.plugin-manifest.v3",
+            "aw.plugin-pre-apply.v1",
+            "aw.plugin-skills.v1"
+          ]
+        }
+      },
+      "artifactDigest": "sha256:704d4ff585fe81ffd4b6228bb3c21bb47a0ff6f5b78be3654eafa564f47d2cda",
+      "manifestDigest": "sha256:828720f29a90f06cda517773b7f39d9a1ddd1902ccc6ee66e220e3b45501a97f",
+      "contentDigest": "sha256:bc16fbe210752ea68dfb04a25d4765e7bdc732c7ffaa1dfe289c2d8971d8081b"
     },
     {
       "name": "codex-enhance",

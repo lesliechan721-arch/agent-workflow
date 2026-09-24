@@ -1,0 +1,13 @@
+{
+  "name": "browser-use",
+  "version": "0.1.0-beta.1",
+  "description": "以精简的浏览器技能完成网页预览、浏览、交互、截图和按需调试。",
+  "interface": {
+    "displayName": "Browser Use",
+    "shortDescription": "轻量网页预览、浏览、交互与检查",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "skills": "./claude/skills"
+}
