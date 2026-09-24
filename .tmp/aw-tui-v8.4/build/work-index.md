@@ -64,7 +64,7 @@
 - 结果：全部七项范围真实落地；更新架构、作者/消费者说明和 TUI 能力覆盖表；保持原始基线用于完整双轴审查。
 - 写入范围：协调者拥有跨项修复、项目文档和本工作记录。修复需协调当前文件 owner。
 - 验收：相关定向测试后运行 pnpm test:unit、pnpm test:integration、pnpm build 及适用结构/产物检查；git diff --check；真实 TUI/PTY 设计对照。两个独立干净上下文分别审需求设计和工程质量；关闭实质问题后交付。
-- 状态：正在完整集成；全量 unit/integration 的首轮结果已生成，修复实际缺陷并适配旧导航测试；正式 build/PTY 和双轴独立 Review 尚未完成。
+- 状态：正在完整集成；正式 build 和全部 14 个 PTY 会话已通过；串行全量回归及双轴独立 Review 进行中。
 
 ## 验证与问题记录
 
@@ -91,3 +91,11 @@
 - 最终生产源码已停止修改。`pnpm build` 正式构建通过（`build/build-final.log`）；PTY 全部 14 会话通过（`build/pty-final.log`），包含 7 场景与两尺寸，fake native / 隔离 homes，无真实安装。
 - 并行构建和测试出现未修改的 Windows helper 超时及 Catalog publisher 临时 snapshot 缺目录；独立复现已通过，未改产品或降低门限。最终门禁按 build → unit → integration 串行复验；`build/unit-serial.log` 运行中。
 - 即将保存完整实现候选并启动原始基线起的双轴独立 Review。最终 unit/integration/产物门禁仍待完成；不以定向通过代替完整交付。Review 修复预算仍为 0/3。
+
+- `a961974f`：完整实现候选本地 checkpoint，无推送。两个干净上下文分别按原始基线至该候选进行需求／设计与工程质量审查。
+- 串行 unit：Eval 与 Core 通过；CLI filesystem 2664 通过、1 失败。失败为对象保存 Review 未显示子字段差异，已进入修复，保留原断言并核对全文复制。尚未通过最终门禁。串行 integration 在此之后启动，日志 `build/integration-serial.log`。
+- 工程轴独立确认上述对象子字段差异及全文复制遗漏；已开始同一有界修复。共享 Review 修复预算当前为 1/3，完整复审待修复验证和 checkpoint 后进行。
+- 需求轴另确认数组对象 Editor 使用终端全宽，未扣正文 padding，导致值和边框裁剪；同轮修复正确正文宽度，并核验两尺寸长值。
+- 串行 `pnpm test:integration` 完成，503 项 integration + 3 项 process-lifecycle 全部通过，退出 0；日志 `build/integration-serial.log`。Catalog publisher 无需代码或测试修改。
+- 第 1 轮修复：Review 展开既有安全 children，屏幕与复制共用文档；数组对象 Editor 使用正确正文宽度。对象及 Reader 定向 9/9、数组对象两尺寸长值 2/2 通过；后者精确核对 ASCII/中文原文无裁字。日志 `build/review-object-fix.log`、`build/review-array-long-value.log`，实际帧已刷新。
+- 修复后正式 `pnpm build` 通过，日志 `build/build-reviewed.log`。初审报告为 `build/review-design.md` 与 `build/review-engineering.md`，两报告问题共 2 项，完整复审在修复 checkpoint 后进行。

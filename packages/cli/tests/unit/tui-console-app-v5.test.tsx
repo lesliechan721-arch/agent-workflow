@@ -7903,6 +7903,7 @@ describe('ConsoleAppV4', () => {
   });
 
   it('edits a mixed fixed and dynamic object from the effective seed and reviews one full top-level update', async () => {
+    const clipboard = vi.mocked(copyToClipboard).mockReset().mockResolvedValue(undefined);
     const page = objectConfigPage();
     const executeIntent = vi.fn().mockResolvedValue({
       configWrite: 'succeeded',
@@ -7979,7 +7980,38 @@ describe('ConsoleAppV4', () => {
     ]));
     expect(instance.lastFrame()).toContain('确认保存设置');
     expect(instance.lastFrame()).toContain('3 个子');
+    expect(instance.lastFrame()).toContain('owner · Alice → Bob');
+    expect(instance.lastFrame()).toContain('legacy · old → 未设置');
+    expect(instance.lastFrame()).toContain('new_key · 未设置 → ready');
     expect(instance.lastFrame()).not.toContain('SECRET-BYTES');
+    await input(instance, 'y');
+    await vi.waitFor(() => expect(clipboard).toHaveBeenCalledTimes(1));
+    const copied = clipboard.mock.calls[0]![0];
+    expect(copied).toContain('owner · Alice → Bob');
+    expect(copied).toContain('legacy · old → 未设置');
+    expect(copied).toContain('new_key · 未设置 → ready');
+    expect(copied).not.toContain('SECRET-BYTES');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(24);
+    instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }}
+      onSessionNavigation={onSessionNavigation} />);
+    await nextTurn(3);
+    const compactPages: string[] = [];
+    for (let pageIndex = 0; pageIndex < 10; pageIndex++) {
+      const frame = instance.lastFrame() ?? '';
+      expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+      expect(Math.max(...frame.split('\n').map(stringWidth))).toBeLessThanOrEqual(60);
+      compactPages.push(frame);
+      if (pageIndex > 0 && frame === compactPages.at(-2)) break;
+      await input(instance, '\u001b[6~');
+    }
+    const compactDocument = compactPages.join('\n');
+    for (const change of ['owner · Alice → Bob', 'legacy · old → 未设置', 'new_key · 未设置 → ready']) {
+      expect(compactDocument).toContain(change);
+    }
+    expect(compactDocument).not.toContain('SECRET-BYTES');
+    await input(instance, 'y');
+    await vi.waitFor(() => expect(clipboard).toHaveBeenCalledTimes(2));
+    expect(clipboard.mock.calls[1]![0]).toBe(copied);
     await confirmReview(instance, value);
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({

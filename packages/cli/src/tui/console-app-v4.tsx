@@ -7069,7 +7069,7 @@ export function ConsoleAppV4(props: {
           action.configTile = { value: action.meta ?? '未设置', source: '' };
         }
         content = <SequenceRows actions={actions} itemCount={propertyActions.length}
-          focus={focus} scrollOffset={scrollOffset} columns={size.columns}
+          focus={focus} scrollOffset={scrollOffset} columns={size.columns - 2}
           rowBudget={pageActionBudget(2)} compact />;
       }
     } else {
@@ -8826,8 +8826,10 @@ export function ConsoleAppV4(props: {
       status={widenedDependencyCount > 0 ? 'warning' : 'success'} compact /></> : null}{review.requiresConfirmation ? <StaticRow title={review.operationKind === 'catalogStorePrune' ? '! 需要确认删除本次预览的可回收项目' : projectPreApplyConfirmation ? '! 需要确认当前项目同步脚本' : '! 需要确认会影响其他项目的内容'} meta={review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}{portableReview ? null : <SemanticRows actions={actions} focus={operationConfirmation ? -1 : focus} kind="action" compact offset={reviewActionViewport.offset} limit={reviewActionViewport.limit} />}{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={`${batchTargetOffset + index}:${detail}`} title={detail} meta={catalogReferenceDetailOffset >= 0 && batchTargetOffset + index >= catalogReferenceDetailOffset ? undefined : index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
     if (pendingReviewIntent?.kind === 'configSaveBatch' || sourceDraft && (pendingReviewIntent?.kind === 'sourceMutation' || pendingReviewIntent?.kind === 'catalogGeneration') && pendingReviewIntent.sourceId === sourceDraft.sourceId) {
       const changesText = pendingReviewIntent.kind === 'configSaveBatch' ? pendingReviewIntent.groups.map((group) =>
-        `${configLayerLabel({ scope: group.scope })}\n${(group.changes ?? []).map((change) =>
-          `${change.title} · ${change.before ?? '未设置'} → ${change.after}`).join('\n')}`).join('\n') : changeDetailText(sourceDraftChanges(sourceDraft!));
+        `${configLayerLabel({ scope: group.scope })}\n${(group.changes ?? []).flatMap((change) => [
+          `${change.title} · ${change.before ?? '未设置'} → ${change.after}${change.children?.length ? ` · ${change.children.length} 个子属性变化` : ''}`,
+          ...(change.children ?? []).map((child) => `${child.property} · ${child.before} → ${child.after}`),
+        ]).join('\n')}`).join('\n') : changeDetailText(sourceDraftChanges(sourceDraft!));
       const impact = review.changes.filter((change) => change.group !== 'configChanges')
         .map((change) => `${reviewSymbol(change)} ${change.title}${change.description ? ` · ${change.description}` : ''}`);
       readingText = pendingReviewIntent.kind === 'configSaveBatch'

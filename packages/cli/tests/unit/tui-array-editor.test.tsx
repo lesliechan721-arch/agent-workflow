@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'fs-extra';
 import { cleanup, render } from 'ink-testing-library';
+import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
@@ -156,8 +157,24 @@ describe('array editor with real config runtime', () => {
     const { ui, controller, record } = await setup('pipeline', size);
     expect(ui.lastFrame()).toContain('fast/high');
     await keys(ui, '\r');
+    const longValue = `${'model-'.repeat(Math.floor(size.columns / 6))}中文属性完整末尾`;
+    await keys(ui, '\r', '\r', '\u0015', longValue, '\r');
+    const lines = ui.lastFrame()!.split('\n');
+    expect(lines.length).toBeLessThanOrEqual(size.rows);
+    expect(lines.filter((line) => line.trimStart().startsWith('╭'))).toHaveLength(2);
+    for (const line of lines) {
+      expect(stringWidth(line)).toBeLessThanOrEqual(size.columns);
+      const trimmed = line.trim();
+      if (trimmed.startsWith('╭')) expect(trimmed.endsWith('╮')).toBe(true);
+      if (trimmed.startsWith('│')) expect(trimmed.endsWith('│')).toBe(true);
+      if (trimmed.startsWith('╰')) expect(trimmed.endsWith('╯')).toBe(true);
+    }
+    const firstCardEnd = lines.findIndex((line) => line.trimStart().startsWith('╰'));
+    const valueLines = lines.slice(0, firstCardEnd).filter((line) => line.trimStart().startsWith('│'));
+    expect(valueLines).toHaveLength(2);
+    expect(valueLines.map((line) => line.trim().slice(1, -1).trim()).join('')).toBe(longValue);
     await record('object-item');
-    await keys(ui, '\r', '\r', '\u0015', 'changed', '\r', esc);
+    await keys(ui, esc);
     expect(controller.snapshot.router.current.route).toMatchObject({ editor: 'array' });
     expect(ui.lastFrame()).toContain('fast/high');
     expect(ui.lastFrame()).toContain('review/low');
