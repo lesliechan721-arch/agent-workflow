@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "codex-subagent-guide",
+    "participants": [
+      "dev-build"
+    ],
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "真实开发工作流在执行中引出委派时，应加载通用调度技能；工作项协调和局部恢复规则不能被误判为完整生命周期策略。"
+    },
+    "runtime": {
+      "observeSpawnAgent": true,
+      "isolation": "standard",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false,
+      "fixture": "trigger-fixture.mjs"
+    }
+  },
+  "cases": [
+    {
+      "id": "dev_build_partial_dispatch_requires_guide",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-build。以下需求和分工已确认：工作项 A 将 src/simple.ts 的 retryLimit 从 3 改为 5，验收为导出值等于 5；工作项 B 让 src/general.ts 的 formatResult 对 null 和 undefined 返回空字符串，其它输入保持 String(value)，按这些输入分别验收。两个工作项可以独立验收。现在推进实施交接：本轮启动一个子代理，派发工作项 A 的只读实施核对，由子代理确认现状、修改位置和验收方法后回报，你负责接纳核对结果。产品写入留待下一轮。本轮不修改文件、不提交 Git，不需要另建 Spec 或任务文件。",
+        "expected": {
+          "loadedSkills": [
+            "dev-build",
+            "codex-subagent-guide"
+          ]
+        },
+        "shouldSpawnAgent": true
+      },
+      "audit": {
+        "rationale": "profile 物化真实 dev-build 及其参考资料，fixture 提供两个已知代码入口。用户用普通文字要求使用 Build，不使用会被 grader 直接记为已加载的 $skill 标记，加载证据须来自实际读取。用户明确要求本轮启动子代理并派发 A 的只读核对，实际委派是必需结果，且未点名 guide 或要求加载调度技能。Build 规定串并行、验收和部分恢复，但未完整规定参数、上下文、等待与清理，因此仍需 guide。该用例检查明确委派要求下的技能组合，不证明 Build 会自主决定委派；只读交接与 trigger provider 的只读环境一致。",
+        "minimalCounterexample": "保持任务不变，将用户要求改为本轮只由当前代理核对首个工作项、明确禁止启动或管理子代理，则仍加载 dev-build，但不应隐式加载 guide 或启动代理。",
+        "allowedVariance": "只检查 dev-build 与 guide 的加载及实际 spawn，不限制其它辅助技能、具体模型或 role，也不推断加载与 spawn 的先后顺序、工作项完成、集成审查或生命周期正确性；这些不属于本触发用例的证据范围。"
+      }
+    }
+  ]
+}

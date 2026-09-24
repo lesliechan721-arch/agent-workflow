@@ -17,7 +17,7 @@ import {
   type CodexEvalRuntimeConfig,
 } from '../../src/index.js'
 import { createDirectChildProcessMonitor } from '../../src/index.js'
-import { CodexEvalAttemptControl } from '../../src/codex-eval-app-server.js'
+import { CodexEvalAttemptControl, EvalAppServerSession } from '../../src/codex-eval-app-server.js'
 
 describe('Codex provider app-server process boundary', () => {
   it('keeps the attempt budget separate from the 30 second RPC cap', () => {
@@ -125,18 +125,29 @@ describe('Codex provider app-server process boundary', () => {
     await expect(monitor.terminate()).resolves.toEqual([])
   })
 
-  it('uses shared POSIX cleanup for a tagged app-server tree', async () => {
+  it.each([
+    { label: 'same process group', childPgid: 100, failure: undefined },
+    { label: 'separate child process group', childPgid: 101, failure: undefined },
+    { label: 'temporary marker loss', childPgid: 101, failure: 'lost its process marker', missingPid: 101, reason: 'known-process-marker-missing' },
+    { label: 'root marker loss', childPgid: 101, failure: 'lost its process marker', missingPid: 100, reason: 'known-process-marker-missing' },
+    { label: 'unmarked initial group member', childPgid: 101, failure: 'lost its process marker', missingPid: 102, reason: 'initial-group-marker-missing' },
+    { label: 'temporary inspection failure', childPgid: 101, failure: 'POSIX process marker lookup failed' },
+  ])('cleans a tagged app-server tree with $label', async ({ childPgid, failure, missingPid, reason }) => {
+    vi.useFakeTimers()
     const marker = 'tree-id'
     const processes = new Map([
       [100, { ppid: 1, pgid: 100, state: 'S', startTime: 'root-start', marked: true }],
-      [101, { ppid: 100, pgid: 100, state: 'S', startTime: 'child-start', marked: true }],
+      [101, { ppid: 100, pgid: childPgid, state: 'S', startTime: 'child-start', marked: true }],
       [200, { ppid: 1, pgid: 200, state: 'S', startTime: 'foreign-start', marked: false }],
     ])
+    let inspectionFailed = false
     const signals: Array<[number, string]> = []
     const monitor = createPosixProcessTreeMonitor(100, {
       treeId: marker,
       execFile: (_command, args, _options, callback) => callback(
-        null,
+        inspectionFailed && args.some((arg) => arg.includes('command='))
+          ? new Error('inspection unavailable')
+          : null,
         args.some((arg) => arg.includes('command='))
           ? [...processes]
               .map(([pid, entry]) => [
@@ -146,6 +157,7 @@ describe('Codex provider app-server process boundary', () => {
                 entry.state,
                 entry.startTime,
                 'node',
+                '--token=private-command API_KEY=private-environment',
                 ...(entry.marked ? [`AW_CODEX_EVAL_PROCESS_TREE_ID=${marker}`] : []),
               ].join(' '))
               .join('\n')
@@ -174,17 +186,71 @@ describe('Codex provider app-server process boundary', () => {
       },
     })
 
-    await expect(monitor.terminate()).resolves.toEqual([])
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      // A transient runtime failure must remain visible even after inspection recovers.
+      if (missingPid === 102) {
+        processes.set(102, { ppid: 1, pgid: 100, state: 'S', startTime: 'new-start', marked: false })
+      } else if (missingPid) processes.get(missingPid)!.marked = false
+      inspectionFailed = failure === 'POSIX process marker lookup failed'
+      await vi.advanceTimersByTimeAsync(1_000)
+      if (missingPid) processes.get(missingPid)!.marked = true
+      inspectionFailed = false
 
-    expect(signals).toContainEqual([-100, 'SIGTERM'])
-    expect(signals).toContainEqual([-100, 'SIGKILL'])
-    expect(processes.has(100)).toBe(false)
-    expect(processes.has(101)).toBe(false)
-    expect(processes.has(200)).toBe(true)
+      const termination = monitor.terminate()
+      await vi.runAllTimersAsync()
+      const diagnostics = await termination
+      expect(diagnostics).toEqual(failure ? [expect.stringContaining(failure)] : [])
+      if (failure) {
+        expect(monitor.snapshots).toHaveLength(2)
+        expect(monitor.snapshots?.[0]).toMatchObject({
+          stage: 'observation',
+          reason: reason ?? 'marker-lookup-failed',
+          rootPid: 100,
+          affectedPids: missingPid ? [missingPid] : [],
+          markerLookupSucceeded: Boolean(missingPid),
+        })
+        if (missingPid) expect(monitor.snapshots?.[0]?.processes).toContainEqual(
+          expect.objectContaining({ pid: missingPid, present: true, markerMatches: false, state: 'S' }),
+        )
+        expect(monitor.snapshots?.[1]).toMatchObject({
+          stage: 'termination-verification',
+          processes: expect.arrayContaining([
+            expect.objectContaining({ pid: 100, present: false }),
+            expect.objectContaining({ pid: 101, present: false }),
+          ]),
+        })
+        const saved = JSON.stringify(monitor.snapshots)
+        for (const secret of [marker, 'private-command', 'private-environment', 'foreign-start']) {
+          expect(saved).not.toContain(secret)
+        }
+      } else expect(monitor.snapshots).toEqual([])
+
+      expect(signals).toContainEqual([-100, 'SIGTERM'])
+      expect(signals).toContainEqual([-100, 'SIGKILL'])
+      expect(signals).toContainEqual([101, 'SIGKILL'])
+      expect(signals.some(([pid]) => pid === 200 || pid === -200 || pid === -101)).toBe(false)
+      expect(processes.has(100)).toBe(false)
+      expect(processes.has(101)).toBe(false)
+      expect(processes.has(200)).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it('times out a delayed initialize before turn/start', async () => {
+  it.each([
+    { label: 'delayed initialize', delay: 1_000, cleanupFailure: false },
+    { label: 'delayed initialize with cleanup failure', delay: 1_000, cleanupFailure: true },
+    { label: 'completed turn with cleanup failure', delay: 0, cleanupFailure: true },
+  ])('preserves evidence for $label', async ({ delay, cleanupFailure }) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-delayed-initialize-'))
+    const cleanup = EvalAppServerSession.prototype.cleanup
+    const cleanupSpy = cleanupFailure
+      ? vi.spyOn(EvalAppServerSession.prototype, 'cleanup').mockImplementation(async function () {
+          await cleanup.call(this)
+          throw new Error('synthetic cleanup failure')
+        })
+      : undefined
     try {
       const subjectRoot = path.join(root, 'subject')
       const fixtureRoot = path.join(root, 'fixtures')
@@ -216,7 +282,13 @@ describe('Codex provider app-server process boundary', () => {
         "    buffer = buffer.slice(newline + 1)",
         `    fs.appendFileSync(${JSON.stringify(requestLog)}, String(frame.method) + '\\n')`,
         "    if (frame.method === 'initialize') {",
-        "      setTimeout(() => process.stdout.write(JSON.stringify({ id: frame.id, result: {} }) + '\\n'), 1000)",
+        "      process.stdout.write(JSON.stringify({ method: 'test/observed', params: {} }) + '\\n')",
+        `      setTimeout(() => process.stdout.write(JSON.stringify({ id: frame.id, result: {} }) + '\\n'), ${delay})`,
+        "    } else if (frame.method === 'thread/start') {",
+        "      process.stdout.write(JSON.stringify({ id: frame.id, result: { thread: { id: 'thread-1' } } }) + '\\n')",
+        "    } else if (frame.method === 'turn/start') {",
+        "      process.stdout.write(JSON.stringify({ id: frame.id, result: {} }) + '\\n')",
+        "      process.stdout.write(JSON.stringify({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { status: 'completed' } } }) + '\\n')",
         "    }",
         "    newline = buffer.indexOf('\\n')",
         "  }",
@@ -279,10 +351,13 @@ describe('Codex provider app-server process boundary', () => {
         timeoutMs: 1_000,
       })
 
-      expect(evidence).toMatchObject({ termination: 'timeout', execution_error: true })
+      expect(evidence).toMatchObject({ termination: delay ? 'timeout' : 'completed', execution_error: true })
+      expect(evidence.event_trace).toContainEqual({ method: 'test/observed', params: {} })
+      if (cleanupFailure) expect(evidence.diagnostics).toContain('Trigger eval app-server cleanup failed: synthetic cleanup failure')
       const requests = await vi.waitFor(() => fs.readFile(requestLog, 'utf8'))
       expect(requests).toContain('initialize')
-      expect(requests).not.toContain('turn/start')
+      if (delay) expect(requests).not.toContain('turn/start')
+      else expect(requests).toContain('turn/start')
       const launch = JSON.parse(await fs.readFile(launchLog, 'utf8')) as {
         args: string[]
         gitConfigNoSystem?: string
@@ -300,6 +375,7 @@ describe('Codex provider app-server process boundary', () => {
         'shell_environment_policy.set.GIT_OPTIONAL_LOCKS="0"',
       ]))
     } finally {
+      cleanupSpy?.mockRestore()
       await fs.remove(root)
     }
   })

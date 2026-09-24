@@ -4,6 +4,7 @@ import {
   observeProcessTree,
   terminateProcessTree as terminateSharedProcessTree,
   type ProcessTreeDependencies,
+  type ProcessTreeDiagnostic,
 } from './process-tree.js';
 
 const execFileAsync = promisify(execFile);
@@ -42,6 +43,7 @@ interface PosixProcessTreeDependencies {
 }
 
 export interface ChildProcessTreeMonitor {
+  readonly snapshots?: ProcessTreeDiagnostic[];
   terminate(): Promise<string[]>;
 }
 
@@ -710,7 +712,8 @@ export function createPosixProcessTreeMonitor(
     const processTreeDependencies = {
       platform: process.platform,
       markerEnvironmentVariable: CODEX_EVAL_PROCESS_TREE_ID_ENV,
-      enforceCooperativeProcessGroup: dependencies.treeId !== undefined,
+      // Native Codex tool hosts can create their own process groups.
+      enforceProcessMarker: dependencies.treeId !== undefined,
       ...(dependencies.execFile ? { execFile: dependencies.execFile } : {}),
       ...(dependencies.kill
         ? {
@@ -727,6 +730,7 @@ export function createPosixProcessTreeMonitor(
     );
     let terminationPromise: Promise<string[]> | undefined;
     return {
+      get snapshots() { return observation.diagnostics; },
       terminate: () => {
         terminationPromise ??= terminateSharedProcessTree(
           rootPid,

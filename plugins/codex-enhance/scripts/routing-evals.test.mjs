@@ -36,7 +36,7 @@ async function testProviderManifestComposition() {
     assert.ok(provider && typeof provider === 'object');
     assert.equal(provider.type, 'codex-workflow');
     assert.deepEqual(provider.command, commands.get(suite.id));
-    assert.deepEqual(provider.allowedModels, ['gpt-5.6-luna']);
+    assert.deepEqual(provider.allowedModels, ['gpt-6-luna']);
     for (const field of ['id', 'entry', 'assets', 'credentialEnvironment', 'capabilities', 'describe']) {
       assert.equal(Object.hasOwn(provider, field), false);
     }

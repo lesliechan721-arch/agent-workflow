@@ -166,7 +166,7 @@ test('all Subagent Guide commands prepare bounded requests without starting Code
       const result = await invoke(suite.provider.command[1], adapterInput('prepare', document.cases[0], root), env);
       assert.equal(result.code, 0, result.stderr);
       const request = JSON.parse(result.stdout);
-      assert.equal(request.model, 'gpt-5.6-luna');
+      assert.equal(request.model, 'gpt-6-luna');
       assert.equal(request.roles.every((role) => !path.isAbsolute(role.configFile)), true);
       assert.deepEqual(request.multiAgent, {
         protocol: suite.id === 'routing' && document.cases[0].input.runtimeProfile === 'v1' ? 'v1' : 'v2',
@@ -182,6 +182,7 @@ test('all Subagent Guide commands prepare bounded requests without starting Code
       adapterInput('prepare', v2, root),
       env,
     )).stdout);
+    assert.equal(v2Request.model, 'gpt-6-luna');
     assert.match(v2Request.prompt, /固定单行最终确认 `ROUTING_SPAWNED`/u);
     await assert.rejects(readFile(marker));
   } finally {

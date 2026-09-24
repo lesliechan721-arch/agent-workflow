@@ -235,7 +235,7 @@ export async function prepareRouting(input) {
     version: 1,
     prompt: runCase.query,
     sandbox: 'read-only',
-    model: 'gpt-5.6-luna',
+    model: 'gpt-6-luna',
     developerInstructions: ROOT_DEVELOPER_INSTRUCTIONS,
     roles: await workflowRoles(input.paths.workspace, runCase.omit_roles),
     multiAgent: workflowProfile(profile),

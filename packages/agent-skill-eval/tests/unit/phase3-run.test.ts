@@ -970,7 +970,7 @@ describe('EvalSpec v1 execution', () => {
         suite: expect.objectContaining({ fixtureModule: 'fixtures/setup.mjs' }),
       }),
     }), expect.objectContaining({
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       codexRuntime: expect.objectContaining({ inherited: false, modelProvider: 'openai' }),
       processManagement: expect.objectContaining({ mode: 'unmanaged-confirmed' }),
     }))

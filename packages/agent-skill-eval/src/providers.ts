@@ -665,17 +665,17 @@ async function runTriggerProvider(
     typedInput.case.suite,
   )
   const summary = summarizeTriggerCase(typedInput.case.suite, evalCase, [result.evidence])
+  try {
+    await writeEvaluationArtifacts(checkedInput, result.evidence, result.evidence.final_message ?? '')
+  } catch (error) {
+    throw new EvalProviderExecutionError('codex-trigger', 'output', (error as Error).message)
+  }
   if (result.evidence.execution_error) {
     throw new EvalProviderExecutionError(
       'codex-trigger',
       'evaluation',
       `codex-trigger execution failed: ${result.evidence.diagnostics.join('; ')}`,
     )
-  }
-  try {
-    await writeEvaluationArtifacts(checkedInput, result.evidence, result.evidence.final_message ?? '')
-  } catch (error) {
-    throw new EvalProviderExecutionError('codex-trigger', 'output', (error as Error).message)
   }
   return {
     usage: standardUsage(result.usage),

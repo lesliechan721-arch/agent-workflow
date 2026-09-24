@@ -25,6 +25,7 @@ import {
   type AwSkillEvalTriggerSuiteCaseContract,
 } from './codex-eval-cases.js';
 import { applyCodexEvalGitIsolation } from './codex-eval-isolation.js';
+import type { ProcessTreeDiagnostic } from './process-tree.js';
 
 async function createTriggerTemporaryRoot(
   workRoot?: string,
@@ -111,6 +112,7 @@ export interface TriggerRunEvidence {
   duration_ms: number;
   usage: unknown;
   event_trace: unknown[];
+  process_tree_snapshots?: ProcessTreeDiagnostic[];
   diagnostics: string[];
 }
 
@@ -556,6 +558,8 @@ async function runTriggerOnce(options: {
   let removeHandler: (() => void) | undefined;
   let removeFailureHandler: (() => void) | undefined;
   let removeAbortHandler: (() => void) | undefined;
+  let evidence: TriggerRunEvidence;
+  let cleanupFailed = false;
   try {
     await fs.copy(options.subjectRoot, workspaceRoot, { dereference: false });
     await isolateTriggerWorkspaceRules(
@@ -799,7 +803,6 @@ async function runTriggerOnce(options: {
     removeHandler = undefined;
     removeFailureHandler();
     removeFailureHandler = undefined;
-    let cleanupFailed = false;
     try {
       await session.cleanup();
     } catch (error) {
@@ -843,7 +846,7 @@ async function runTriggerOnce(options: {
       (!expectedStop && termination === 'completed' && turnStatus !== 'completed') ||
       !fixtureUnchanged ||
       cleanupFailed;
-    return session.scrub({
+    evidence = {
       loaded: observed.loaded,
       first_loaded_skill: allLoadedSkills[0] ?? null,
       all_loaded_skills: allLoadedSkills,
@@ -866,9 +869,10 @@ async function runTriggerOnce(options: {
       usage,
       event_trace: eventTrace,
       diagnostics,
-    });
+    };
   } catch (error) {
-    const evidence: TriggerRunEvidence = {
+    diagnostics.push(error instanceof Error ? error.stack ?? error.message : String(error));
+    evidence = {
       loaded: false,
       first_loaded_skill: null,
       all_loaded_skills: [],
@@ -889,9 +893,8 @@ async function runTriggerOnce(options: {
       duration_ms: Date.now() - startedAt,
       usage,
       event_trace: eventTrace,
-      diagnostics: [error instanceof Error ? error.stack ?? error.message : String(error)],
+      diagnostics,
     };
-    return session ? session.scrub(evidence) : evidence;
   } finally {
     removeHandler?.();
     removeFailureHandler?.();
@@ -899,17 +902,29 @@ async function runTriggerOnce(options: {
     try {
       await session?.cleanup();
     } catch (error) {
-      throw new Error(
+      if (!cleanupFailed) diagnostics.push(
         `Trigger eval app-server cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
       );
+      cleanupFailed = true;
     } finally {
       try {
         await temporaryRoot.cleanup();
+      } catch (error) {
+        cleanupFailed = true;
+        diagnostics.push(`Trigger eval workspace cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         control.dispose();
       }
     }
   }
+  evidence.execution_error ||= cleanupFailed;
+  evidence.duration_ms = Date.now() - startedAt;
+  if (session) {
+    if (session.processTreeSnapshots.length > 0) evidence.process_tree_snapshots = session.processTreeSnapshots;
+    if (session.stderr.trim()) evidence.stderr = session.stderr.trim();
+    return session.scrub(evidence);
+  }
+  return evidence;
 }
 
 export async function runCodexTriggerProviderCase(options: {

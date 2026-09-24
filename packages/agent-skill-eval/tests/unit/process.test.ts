@@ -739,6 +739,157 @@ describe('shared provider process behavior', () => {
   })
 
   it.each([
+    { outcome: 'exited', known: false },
+    { outcome: 'exited', known: true },
+    { outcome: 'zombie', known: false },
+    { outcome: 'marked', known: false },
+    { outcome: 'reused', known: true },
+    { outcome: 'unmarked', known: false, failure: 'lost its process marker' },
+    { outcome: 'unreadable', known: false, failure: 'process marker could not be read' },
+    { outcome: 'scan-error', known: false, failure: 'marker lookup failed' },
+    { outcome: 'exited', known: false, duringCleanup: true },
+    { outcome: 'unreadable', known: false, duringCleanup: true, failure: 'process marker could not be read' },
+  ])('confirms unreadable ps data: $outcome (known=$known, cleanup=$duringCleanup)', async ({ outcome, known, failure, duringCleanup }) => {
+    vi.useFakeTimers()
+    const marker = 'marker-value'
+    const processes = new Map([
+      [100, { ppid: 1, pgid: 100, state: 'S', startTime: 'root-start', command: `node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}` }],
+      [200, { ppid: 1, pgid: 200, state: 'R', startTime: 'foreign-start', command: '(foreign)' }],
+    ])
+    const child = { ppid: 100, pgid: 100, state: 'R', startTime: 'child-start', command: `git ${PROVIDER_PROCESS_MARKER_ENV}=${marker}` }
+    if (known) processes.set(101, { ...child })
+    let phase: 'normal' | 'unreadable' | 'confirmation' = 'normal'
+    let confirmed = false
+    const signals: number[] = []
+    const dependencies = {
+      platform: 'darwin' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceProcessMarker: true,
+      execFile: (
+        _command: string,
+        args: string[],
+        _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => {
+        const markerScan = args.some((arg) => arg.includes('command='))
+        if (markerScan && phase === 'unreadable') {
+          processes.set(101, { ...child, command: '(git)' })
+          phase = 'confirmation'
+        } else if (markerScan && phase === 'confirmation') {
+          confirmed = true
+          if (outcome === 'scan-error') {
+            callback(new Error('synthetic ps failure'), '')
+            return
+          }
+          if (outcome === 'exited') processes.delete(101)
+          if (outcome === 'zombie') processes.set(101, { ...child, state: 'Z', command: '<defunct>' })
+          if (outcome === 'marked') processes.set(101, { ...child })
+          if (outcome === 'unmarked') processes.set(101, { ...child, command: 'git PATH=/usr/bin' })
+          if (outcome === 'reused') processes.set(101, {
+            ppid: 1, pgid: 200, state: 'S', startTime: 'replacement-start', command: '(unrelated)',
+          })
+        }
+        callback(null, [...processes].map(([pid, entry]) =>
+          `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}${markerScan ? ` ${entry.command}` : ''}`,
+        ).join('\n'))
+      },
+      kill: (pid: number, signal: string): void => {
+        signals.push(pid)
+        if (signal !== 'SIGKILL') return
+        for (const [candidate, entry] of processes) {
+          if (candidate === pid || pid < 0 && entry.pgid === -pid) processes.delete(candidate)
+        }
+      },
+    }
+    const observation = observeProcessTree(100, marker, dependencies)
+    const onFailure = vi.fn()
+    observation.onFailure(onFailure)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      phase = 'unreadable'
+      if (!duringCleanup) {
+        await vi.advanceTimersByTimeAsync(1_000)
+        expect(confirmed).toBe(true)
+        if (failure) expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining(failure) }))
+        else expect(onFailure).not.toHaveBeenCalled()
+        // Inspection recovery must not erase a previously confirmed failure.
+        phase = 'normal'
+        if (failure) processes.set(101, { ...child })
+      }
+      const termination = terminateProcessTree(100, () => undefined, dependencies, {
+        observation, requireConfirmedCleanup: true,
+      }).then(() => null, (error: Error) => error)
+      await vi.runAllTimersAsync()
+      const error = await termination
+      expect(confirmed).toBe(true)
+      if (failure) expect(error?.message).toContain(failure)
+      else expect(error).toBeNull()
+      if (outcome === 'unreadable') expect(observation.diagnostics[0]?.processes).toContainEqual(
+        expect.objectContaining({ pid: 101, markerMatches: null }),
+      )
+      expect(signals).not.toContain(200)
+      expect(signals).not.toContain(-200)
+      if (outcome === 'reused') {
+        expect(signals).not.toContain(101)
+        expect(processes.get(101)?.startTime).toBe('replacement-start')
+      }
+      expect(processes.has(200)).toBe(true)
+    } finally {
+      observation.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('confirms unreadable data for each observer sharing an initial scan', async () => {
+    vi.useFakeTimers()
+    let markerScans = 0
+    const processes = new Map([[100, 'marker-a'], [200, 'marker-b']])
+    const dependencies = {
+      platform: 'darwin' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      execFile: (
+        _command: string,
+        args: string[],
+        _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => {
+        const markerScan = args.some((arg) => arg.includes('command='))
+        if (markerScan) markerScans += 1
+        const output = [...processes].map(([pid, marker]) => {
+          const command = pid === 200 && markerScans === 1
+            ? '(node)'
+            : `node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
+          return `${pid} 1 ${pid} S start-${pid}${markerScan ? ` ${command}` : ''}`
+        }).join('\n')
+        // Both independent observations join the same pending initial scan.
+        Promise.resolve().then(() => callback(null, output))
+      },
+      kill: (pid: number, signal: string): void => {
+        if (signal === 'SIGKILL') processes.delete(Math.abs(pid))
+      },
+    }
+    const first = observeProcessTree(100, 'marker-a', dependencies)
+    const second = observeProcessTree(200, 'marker-b', dependencies)
+    const onFailure = vi.fn()
+    first.onFailure(onFailure)
+    second.onFailure(onFailure)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onFailure).not.toHaveBeenCalled()
+      const termination = Promise.all([first, second].map((observation) => terminateProcessTree(
+        observation.pid, () => undefined, dependencies, { observation, requireConfirmedCleanup: true },
+      ))).then(() => null, (error: Error) => error)
+      await vi.runAllTimersAsync()
+      expect(await termination).toBeNull()
+      expect(processes.size).toBe(0)
+    } finally {
+      first.dispose()
+      second.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
     ['before the first observation', 0],
     ['after it was observed', 1],
   ])('latches marker loss %s and cleans the known process identities', async (_label, markedRounds) => {
