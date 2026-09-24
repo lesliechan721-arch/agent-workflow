@@ -46,6 +46,220 @@ function frame(instance: ReturnType<typeof render>, size: { columns: number; row
 
 describe('v8.4 page contracts', () => {
   it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'keeps the project recheck action when roots and issue actions appear at $columns x $rows', async (size) => {
+      const before = data();
+      before.projectIntent = { state: 'absent' };
+      const after = data();
+      const loadStatus = vi.fn().mockResolvedValueOnce(before).mockResolvedValue(after);
+      const controller = new TuiController({ loadStatus, captureEvidence: vi.fn(), executeIntent: vi.fn() });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      expect(frame(instance, size)).toContain('› 重新检查项目 [r]');
+      await input(instance, '\r');
+      expect(loadStatus).toHaveBeenCalledTimes(2);
+      const inserted = frame(instance, size);
+      expect(inserted).toContain('[项目声明 2]');
+      expect(controller.snapshot.projectInventory?.declaredRoots).toHaveLength(2);
+      expect(inserted).toContain('› 重新检查项目 [r]');
+      await input(instance, '\r');
+      expect(loadStatus).toHaveBeenCalledTimes(3);
+      expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+        path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `project-action-insert-${size.columns}x${size.rows}.json`),
+        { synthetic: true, size, frames: { inserted } }, { spaces: 2 });
+    },
+  );
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'marks retained project facts after a failed check and clears the mark on success at $columns x $rows', async (size) => {
+      const loaded = data();
+      const loadStatus = vi.fn().mockResolvedValueOnce(loaded)
+        .mockRejectedValueOnce(new Error('project status read failed'))
+        .mockResolvedValue(loaded);
+      const controller = new TuiController({ loadStatus, captureEvidence: vi.fn(), executeIntent: vi.fn() });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      await input(instance, '/');
+      await input(instance, '工具二');
+      await input(instance, '\r');
+      const before = frame(instance, size);
+      expect(before).toContain('工具二');
+      await input(instance, 'r');
+      expect(controller.snapshot.projectInventoryRefresh.state).toBe('error');
+      const failed = frame(instance, size);
+      expect(failed).toContain('工具二');
+      expect(failed).toContain('上次检查结果');
+      expect(controller.snapshot.router.current.context.query).toBe('工具二');
+      await input(instance, '\u001b');
+      const home = frame(instance, size);
+      expect(home).toContain('上次检查结果');
+      await input(instance, '\u001b[B');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
+      await input(instance, 'r');
+      expect(controller.snapshot.projectInventoryRefresh.state).toBe('idle');
+      const recovered = frame(instance, size);
+      expect(recovered).not.toContain('上次检查结果');
+      await input(instance, '\u001b');
+      expect(frame(instance, size)).not.toContain('上次检查结果');
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+        path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `project-stale-${size.columns}x${size.rows}.json`),
+        { synthetic: true, size, frames: { before, failed, home, recovered } }, { spaces: 2 });
+    },
+  );
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'keeps a searched project root focused through failure and successful retry at $columns x $rows', async (size) => {
+      const loaded = data();
+      const loadStatus = vi.fn().mockResolvedValueOnce(loaded)
+        .mockRejectedValueOnce(new Error('temporary read failure')).mockResolvedValue(loaded);
+      const controller = new TuiController({ loadStatus, captureEvidence: vi.fn(), executeIntent: vi.fn() });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      await input(instance, '/'); await input(instance, '工具二'); await input(instance, '\r');
+      expect(frame(instance, size)).toContain('› 工具二');
+      await input(instance, 'r');
+      expect(controller.snapshot.projectInventoryRefresh.state).toBe('error');
+      expect(frame(instance, size)).toContain('› 工具二');
+      await input(instance, 'r');
+      expect(controller.snapshot.projectInventoryRefresh.state).toBe('idle');
+      const recovered = frame(instance, size);
+      expect(recovered).toContain('› 工具二');
+      expect(recovered).toContain('[/] 工具二');
+      expect(recovered).not.toContain('上次检查结果');
+      expect(controller.snapshot.router.current.context.query).toBe('工具二');
+      expect(controller.snapshot.projectInventory?.declaredRoots).toHaveLength(2);
+    },
+  );
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'falls back to a safe project action when the focused error action disappears at $columns x $rows', async (size) => {
+      const before = data();
+      const after = data();
+      after.projectIntent = { state: 'absent' };
+      const loadStatus = vi.fn().mockResolvedValueOnce(before).mockResolvedValue(after);
+      const controller = new TuiController({ loadStatus, captureEvidence: vi.fn(), executeIntent: vi.fn() });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      await input(instance, 'a');
+      expect(frame(instance, size)).toContain('› 错误详情');
+      await input(instance, 'r');
+      expect(loadStatus).toHaveBeenCalledTimes(2);
+      const afterRefresh = frame(instance, size);
+      expect(afterRefresh).toContain('› 重新检查项目 [r]');
+      expect(afterRefresh).not.toContain('错误详情');
+      await input(instance, '\r');
+      expect(loadStatus).toHaveBeenCalledTimes(3);
+      expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
+    },
+  );
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'does not turn a vanished project error action into the remaining sync action at $columns x $rows', async (size) => {
+      const before = data();
+      before.projectIntent = { state: 'ready', roots: [
+        { pluginId: 'official/pending', platforms: ['claude'] },
+        { pluginId: 'official/blocked', platforms: ['claude'] },
+      ] };
+      const target = (pluginName: string, state: 'needsSync' | 'blocked' | 'ready') => ({
+        pluginId: `official/${pluginName}`, pluginName, sourceId: 'official', sourceIdentity: 'source',
+        platform: 'claude' as const, scope: 'project' as const, cwd: '/tmp/项目长名称', version: '1.0.0',
+        state, components: [
+          { kind: 'intent' as const, key: 'desired', state: 'desired', metadata: {
+            enabled: true, scopes: ['project'], relation: 'root',
+          } },
+          { kind: 'ownership' as const, key: 'fixture', state: state === 'ready' ? 'present' : 'absent' },
+        ],
+        reasons: state === 'blocked' ? [{ code: 'catalogSourceUnavailable', message: '来源不可用', severity: 'blocking' as const }] : [],
+        recoveryActions: state === 'needsSync' ? [{ command: 'sync' as const, scope: 'project' as const, description: '同步目标' }] : [],
+      });
+      before.payload.targets = [target('pending', 'needsSync'), target('blocked', 'blocked')];
+      const after = structuredClone(before);
+      after.payload.targets = [target('pending', 'needsSync'), target('blocked', 'ready')];
+      const loadStatus = vi.fn().mockResolvedValueOnce(before).mockResolvedValue(after);
+      const captureEvidence = vi.fn();
+      const executeIntent = vi.fn();
+      const controller = new TuiController({ loadStatus, captureEvidence, executeIntent });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      await input(instance, '/'); await input(instance, 'no-match'); await input(instance, '\r');
+      await input(instance, 'a');
+      expect(frame(instance, size)).toContain('› 同步全部可处理声明（1） [c]');
+      for (let index = 0; index < 8 && !frame(instance, size).includes('› 错误详情'); index += 1) {
+        await input(instance, '\u001b[B');
+      }
+      expect(frame(instance, size)).toContain('› 错误详情');
+      await input(instance, 'r');
+      expect(loadStatus).toHaveBeenCalledTimes(2);
+      const afterRefresh = frame(instance, size);
+      expect(afterRefresh).toContain('› 重新检查项目 [r]');
+      expect(afterRefresh).toContain('同步全部可处理声明（1）');
+      await input(instance, '\r');
+      expect(loadStatus).toHaveBeenCalledTimes(3);
+      expect(captureEvidence).not.toHaveBeenCalled();
+      expect(executeIntent).not.toHaveBeenCalled();
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+        path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `project-safe-fallback-${size.columns}x${size.rows}.json`),
+        { synthetic: true, size, frames: { afterRefresh } }, { spaces: 2 });
+    },
+  );
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'keeps project recheck safe across technical details and refresh at $columns x $rows', async (size) => {
+      const before = data();
+      const after = data();
+      after.projectIntent = { state: 'absent' };
+      const loadStatus = vi.fn().mockResolvedValueOnce(before).mockResolvedValue(after);
+      const controller = new TuiController({ loadStatus, captureEvidence: vi.fn(), executeIntent: vi.fn() });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      await input(instance, 'a');
+      await input(instance, '\r');
+      expect(frame(instance, size)).toContain('项目状态安全详情');
+      expect(frame(instance, size)).toContain('› 重新检查项目 [r]');
+      await input(instance, 'r');
+      expect(loadStatus).toHaveBeenCalledTimes(2);
+      expect(frame(instance, size)).toContain('› 重新检查项目 [r]');
+      await input(instance, 'd');
+      expect(frame(instance, size)).toContain('› 重新检查项目 [r]');
+      await input(instance, '\r');
+      expect(loadStatus).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it.each([
+    { columns: 80, rows: 24, declaration: 'absent' as const },
+    { columns: 60, rows: 18, declaration: 'absent' as const },
+    { columns: 80, rows: 24, declaration: 'notProject' as const },
+    { columns: 60, rows: 18, declaration: 'notProject' as const },
+  ])('keeps a failed project check visible over an old $declaration result at $columns x $rows', async ({ columns, rows, declaration }) => {
+    const loaded = data();
+    loaded.projectIntent = { state: 'absent' };
+    if (declaration === 'notProject') delete loaded.projectRoot;
+    const controller = new TuiController({
+      loadStatus: vi.fn().mockResolvedValueOnce(loaded).mockRejectedValueOnce(new Error('read failed')),
+      captureEvidence: vi.fn(), executeIntent: vi.fn(),
+    });
+    await controller.load(); controller.push({ name: 'projectStatus' });
+    const size = { columns, rows };
+    const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+    await tick();
+    await input(instance, 'r');
+    expect(controller.snapshot.projectInventoryRefresh.state).toBe('error');
+    expect(frame(instance, size)).toContain('上次检查结果');
+    await input(instance, '\u001b');
+    const home = frame(instance, size);
+    expect(home).toContain('上次检查结果');
+    expect(home).toContain(declaration === 'absent' ? '未配置项目插件' : '当前不是项目');
+  });
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
     'keeps project section, status, search, and root focus on one page at $columns x $rows', async (size) => {
       const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(data()),
         captureEvidence: vi.fn(), executeIntent: vi.fn() });

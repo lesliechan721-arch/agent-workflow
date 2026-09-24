@@ -2621,6 +2621,13 @@ export function ConsoleAppV4(props: {
     if (portableResultDetailOpen) setFocus(portableResultDetailReturnFocus.current);
     setPortableResultDetailOpen(false);
     setPortableResultDetailOffset(0);
+    if (route.name === 'projectStatus' && dynamicActionIds && dynamicActionSignature !== undefined) {
+      const recheck = actions.findIndex((action) => action.actionId === 'project-recheck');
+      dynamicMenuFocus.current = { routeKey, actionIds: dynamicActionSignature,
+        focusedActionId: 'project-recheck' };
+      setFocus(Math.max(0, recheck));
+      setScrollOffset(0);
+    }
     setShowTechnical((value) => !value);
     if (!(route.name === 'result' && snapshot.result
       && 'operationKind' in snapshot.result
@@ -3980,13 +3987,15 @@ export function ConsoleAppV4(props: {
       : [inventory.counts.blocked ? `! ${inventory.counts.blocked} 受阻` : '',
           inventory.counts.pending ? `↻ ${inventory.counts.pending} 待同步` : '',
           inventory.counts.unknown ? `? ${inventory.counts.unknown} 未确认` : ''].filter(Boolean).join(' · ') || '✓ 全部就绪';
+    const visibleProjectState = snapshot.projectInventoryRefresh.state === 'error'
+      ? `! 项目检查失败，显示上次检查结果 · ${projectState}` : projectState;
     const sourceState = [home.catalogUpdateCount ? `↑ ${home.catalogUpdateCount} 有更新` : '',
       home.catalogRecoveryCount ? `! ${home.catalogRecoveryCount} 检查失败` : '',
       home.unavailableSourceCount ? `! ${home.unavailableSourceCount} 不可用` : '',
       home.catalogCheckingCount ? `${home.catalogCheckingCount} 检查中` : ''].filter(Boolean).join(' · ') || '✓ 当前可用';
     actions = [
       { label: '插件', description: pluginState, run: () => go({ name: 'pluginList', mode: 'browse' }) },
-      { label: '项目插件', description: projectState, run: () => go({ name: 'projectStatus' }) },
+      { label: '项目插件', description: visibleProjectState, run: () => go({ name: 'projectStatus' }) },
       { label: '插件来源', description: sourceState, run: () => go({ name: 'sourceList' }) },
     ];
     content = <Box flexDirection="column">{actions.map((action, index) => <Box key={action.label} marginBottom={1}>
@@ -4014,22 +4023,27 @@ export function ConsoleAppV4(props: {
         filter === 'all' || filter === statusFilter || statusCounts[filter] > 0);
       const next = available[(available.indexOf(statusFilter) + 1) % available.length]!;
       props.controller.updatePageContext({ projectStatusFilter: next });
+      dynamicMenuFocus.current = undefined;
+      actionJumpAnchor.current = undefined;
       setFocus(0);
       setScrollOffset(0);
     };
     moveProjectSection = () => {
       const next = section === 'declared' ? 'extraInstalled' : 'declared';
       props.controller.updatePageContext({ projectSection: next });
+      dynamicMenuFocus.current = undefined;
+      actionJumpAnchor.current = undefined;
       setFocus(0);
       setScrollOffset(0);
     };
     breadcrumb = '项目插件';
     title = showTechnical ? '项目状态安全详情' : inventory?.projectName ?? '项目插件';
     context = undefined;
-    description = inventory?.declarationState === 'notProject' ? '当前不是项目；没有项目同步目标。'
+    description = snapshot.projectInventoryRefresh.state === 'error'
+      ? '项目检查失败；以下显示上次检查结果。可重新检查。'
+      : inventory?.declarationState === 'notProject' ? '当前不是项目；没有项目同步目标。'
       : inventory?.declarationState === 'absent' ? '未配置项目插件。'
-        : snapshot.projectInventoryRefresh.state === 'error' ? '项目检查失败；可重新检查。'
-          : inventory?.declarationState === 'invalid' || inventory?.declarationState === 'unavailable' ? '项目声明需要检查。' : undefined;
+        : inventory?.declarationState === 'invalid' || inventory?.declarationState === 'unavailable' ? '项目声明需要检查。' : undefined;
     actions = roots.map((root) => ({
       actionId: `project-root:${root.pluginId}`, pluginId: root.pluginId,
       label: root.displayName,
@@ -4060,7 +4074,7 @@ export function ConsoleAppV4(props: {
           run: () => go(issue
             ? { name: 'issueDetail', issueId: issue.issueId } : { name: 'issueList' }) }];
       })(),
-      ...(!showTechnical && (inventory?.counts.blocked || inventory?.counts.unknown || snapshot.projectIntentIssue) ? [{ actionId: 'project-error-details', label: '错误详情', run: () => { setShowTechnical(true); setBatchTargetOffset(0); } }] : []),
+      ...(!showTechnical && (inventory?.counts.blocked || inventory?.counts.unknown || snapshot.projectIntentIssue) ? [{ actionId: 'project-error-details', label: '错误详情', run: toggleTechnical }] : []),
       { actionId: 'project-recheck', label: snapshot.projectInventoryRefresh.state === 'checking' ? '正在检查项目' : '重新检查项目 [r]',
         disabled: snapshot.projectInventoryRefresh.state === 'checking' ? '检查中' : undefined,
         run: async () => { await props.controller.refreshProjectInventory(); } },
@@ -4072,12 +4086,22 @@ export function ConsoleAppV4(props: {
         ...target.reasonCodes.map((code) => `原因 · ${safeDiagnosticCode(code, 'projectTargetUnknown')}`)])])].filter(Boolean).join('\n');
     const itemCount = showTechnical ? 0 : actions.length;
     actions = [...(showTechnical ? [] : actions), ...bottomActions];
+    dynamicActionIds = actions.map((action) => action.actionId!);
+    dynamicActionSignature = dynamicActionIds.join('\0');
+    const previousProjectFocus = dynamicMenuFocus.current;
+    if (previousProjectFocus?.routeKey === routeKey
+      && previousProjectFocus.actionIds !== dynamicActionSignature) {
+      const retained = previousProjectFocus.focusedActionId
+        ? dynamicActionIds.indexOf(previousProjectFocus.focusedActionId) : -1;
+      effectiveFocus = retained >= 0 ? retained
+        : itemCount > 0 ? 0 : dynamicActionIds.indexOf('project-recheck');
+    }
     help = '↑↓ 移动 · Enter 查看 · Esc 返回';
     if (showTechnical) {
       readingText = technicalText;
       content = <Box flexDirection="column">
         {readingPage(technicalText, size.columns - 2, Math.max(1, pageActionBudget(4) - 1))}
-        <SemanticRows actions={actions} focus={focus} kind="action" compact /></Box>;
+        <SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact /></Box>;
     } else {
       const cardWidth = size.columns - 2;
       const lineLimit = Math.max(1, Math.min(3, pageActionBudget(3) - 4));
@@ -4088,8 +4112,8 @@ export function ConsoleAppV4(props: {
         && Boolean(searchedRoots.length > 0 || query || statusFilter !== 'all');
       const projectViewport = rowViewport({
         rowHeights: [...cardLayouts.map((card, index) => entityCardWindowHeight(card,
-          index === focus ? batchTargetOffset : 0, lineLimit)), ...bottomActions.map(() => 1)],
-        focus, requestedOffset: scrollOffset,
+          index === effectiveFocus ? batchTargetOffset : 0, lineLimit)), ...bottomActions.map(() => 1)],
+        focus: effectiveFocus, requestedOffset: scrollOffset,
         rowBudget: pageActionBudget(3 + Number(emptyHint)),
       });
       content = <Box flexDirection="column">
@@ -4108,10 +4132,10 @@ export function ConsoleAppV4(props: {
         .map((action, visibleIndex) => {
           const index = projectViewport.offset + visibleIndex;
           if (index >= itemCount) return <SemanticRows key={action.actionId} actions={actions}
-            focus={searchFocus ? -1 : focus} kind="action" compact offset={index} limit={1} />;
+            focus={searchFocus ? -1 : effectiveFocus} kind="action" compact offset={index} limit={1} />;
           return <ProjectRootCard key={action.actionId} root={roots[index]!}
-            subject={cardSubjects[index]!} width={cardWidth} focused={!searchFocus && focus === index}
-            lineOffset={focus === index ? batchTargetOffset : 0} lineLimit={lineLimit} />;
+            subject={cardSubjects[index]!} width={cardWidth} focused={!searchFocus && effectiveFocus === index}
+            lineOffset={effectiveFocus === index ? batchTargetOffset : 0} lineLimit={lineLimit} />;
         })}</ContentViewport>
     </Box>;
     }
@@ -9965,7 +9989,7 @@ export function ConsoleAppV4(props: {
     else if (actions[focus]?.role === 'navigation') setFocus(moveFocus(actions, focus, 1));
   }, [routeKey, focus, actions.length, actions.map((action) => action.role ?? '').join(',')]);
 
-  const listCandidates = route.name === 'pluginList' || route.name === 'projectStatus'
+  const listCandidates = route.name === 'pluginList'
     || route.name === 'batchSelection' && batchDraft?.stage === 'select'
     ? actions.filter((action) => action.pluginId !== undefined) : [];
   const listCandidateSignature = listCandidates.map((action) => action.pluginId).join('\0');
@@ -10002,7 +10026,7 @@ export function ConsoleAppV4(props: {
     batchDraft?.showSelectionTools, listCandidateSignature, focus, scrollOffset]);
 
   useEffect(() => {
-    if (route.name !== 'pluginList' && route.name !== 'projectStatus' && !(route.name === 'batchSelection' && batchDraft?.stage === 'select')) {
+    if (route.name !== 'pluginList' && !(route.name === 'batchSelection' && batchDraft?.stage === 'select')) {
       listFocusAnchor.current = undefined;
       return;
     }
@@ -10076,7 +10100,7 @@ export function ConsoleAppV4(props: {
       actionIds: dynamicActionSignature,
       focusedActionId: dynamicActionIds[effectiveFocus],
     };
-  }, [dynamicActionSignature, routeKey]);
+  }, [dynamicActionSignature, routeKey, focus]);
 
   const runAction = (action: ActionItem | undefined): void => {
     if (!action || action.disabled || action.role === 'navigation') return;
@@ -10970,6 +10994,10 @@ export function ConsoleAppV4(props: {
       if (route.name !== 'batchSelection') {
         setQuery(nextQuery);
         props.controller.updatePageContext({ query: nextQuery });
+        if (route.name === 'projectStatus') {
+          dynamicMenuFocus.current = undefined;
+          actionJumpAnchor.current = undefined;
+        }
       } else {
         setBatchDraft((draft) => draft ? { ...draft, query: nextQuery, showSelected: false } : draft);
       }
@@ -11009,10 +11037,19 @@ export function ConsoleAppV4(props: {
         if (anchor?.routeKey === routeKey && focus >= firstAction) {
           const entityIndex = anchor.entityId
             ? actions.findIndex((action) => action.pluginId === anchor.entityId) : -1;
-          setFocus(entityIndex >= 0 ? entityIndex : Math.min(anchor.index, Math.max(0, firstAction - 1)));
+          const next = entityIndex >= 0 ? entityIndex : Math.min(anchor.index, Math.max(0, firstAction - 1));
+          if (route.name === 'projectStatus' && dynamicActionIds && dynamicActionSignature) {
+            dynamicMenuFocus.current = { routeKey, actionIds: dynamicActionSignature,
+              focusedActionId: dynamicActionIds[next] };
+          }
+          setFocus(next);
           actionJumpAnchor.current = undefined;
         } else {
           actionJumpAnchor.current = { routeKey, index: focus, entityId: actions[focus]?.pluginId };
+          if (route.name === 'projectStatus' && dynamicActionIds && dynamicActionSignature) {
+            dynamicMenuFocus.current = { routeKey, actionIds: dynamicActionSignature,
+              focusedActionId: dynamicActionIds[firstAction] };
+          }
           setFocus(firstAction);
         }
         setScrollOffset(0);
