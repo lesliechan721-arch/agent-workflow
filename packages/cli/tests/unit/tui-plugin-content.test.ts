@@ -134,6 +134,113 @@ describe('TUI plugin content projection', () => {
     expect(JSON.stringify(overview)).not.toContain('LOCAL-SENSITIVE-TEXT');
   });
 
+  it('keeps independent same-name Skill tools when a command has a Codex projection', async () => {
+    // Risk: a command can delete a confirmed Agent Skills or Claude Skill entry with the same name.
+    const root = await fixtureRoot();
+    await Promise.all([
+      fs.outputFile(path.join(root, 'codex', 'skills', 'deploy', 'SKILL.md'),
+        '---\nname: deploy\ndescription: Codex command summary.\n---\nCOMMAND-BODY-SECRET\n'),
+      fs.ensureDir(path.join(root, 'claude', 'skills')),
+      fs.outputFile(path.join(root, 'agent-skills', 'skills', 'deploy', 'SKILL.md'),
+        '---\nname: deploy\ndescription: Independent portable Skill.\n---\nPORTABLE-BODY-SECRET\n'),
+      fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'), 'Command source.\n'),
+    ]);
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, {
+        skills: './skills', slashCommands: './commands',
+        distributions: { agentSkills: { skills: './agent-skills/skills' } },
+      }),
+    });
+
+    expect(overview.items).toMatchObject([
+      { id: 'command:deploy', type: 'command', name: 'deploy',
+        tools: ['Codex', 'Claude Code'], description: 'Codex command summary.' },
+      { id: 'skill:deploy', type: 'skill', name: 'deploy',
+        tools: ['Agent Skills'], description: 'Independent portable Skill.',
+        descriptionState: 'available' },
+    ]);
+    expect(overview.items).toHaveLength(2);
+    expect(overview.coverage).toBe('complete');
+    expect(JSON.stringify(overview)).not.toContain('BODY-SECRET');
+
+    // A read projection must keep an independently confirmed Claude Skill if one is present.
+    await fs.outputFile(path.join(root, 'claude', 'skills', 'deploy', 'SKILL.md'),
+      '---\nname: deploy\ndescription: Independent Claude Skill.\n---\nCLAUDE-BODY-SECRET\n');
+    const withClaudeSkill = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, {
+        skills: './skills', slashCommands: './commands',
+        distributions: { agentSkills: { skills: './agent-skills/skills' } },
+      }),
+    });
+    expect(withClaudeSkill.items).toMatchObject([
+      { type: 'command', name: 'deploy', tools: ['Codex', 'Claude Code'] },
+      { type: 'skill', name: 'deploy', tools: ['Claude Code', 'Agent Skills'],
+        description: 'Independent Claude Skill.', descriptionState: 'available' },
+    ]);
+  });
+
+  it('keeps an unsafe Codex Skill issue beside its same-name command', async () => {
+    // Risk: command projection can erase a named unsafe Skill issue or read its symlink target.
+    const root = await fixtureRoot();
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-tui-content-outside-'));
+    roots.push(outside);
+    await fs.outputFile(path.join(outside, 'private.md'), 'LOCAL-SENSITIVE-TEXT');
+    await Promise.all([
+      fs.ensureDir(path.join(root, 'codex', 'skills', 'deploy')),
+      fs.ensureDir(path.join(root, 'claude', 'skills')),
+      fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'), 'Command source.\n'),
+      fs.outputFile(path.join(root, 'agent-skills', 'skills', 'deploy', 'SKILL.md'),
+        '---\nname: deploy\ndescription: Portable Skill.\n---\nPORTABLE-BODY-SECRET\n'),
+    ]);
+    await fs.symlink(path.join(outside, 'private.md'),
+      path.join(root, 'codex', 'skills', 'deploy', 'SKILL.md'));
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, {
+        skills: './skills', slashCommands: './commands',
+        distributions: { agentSkills: { skills: './agent-skills/skills' } },
+      }),
+    });
+
+    expect(overview.items).toMatchObject([
+      { id: 'command:deploy', type: 'command', name: 'deploy',
+        tools: ['Claude Code'], descriptionState: 'absent' },
+      { id: 'skill:deploy', type: 'skill', name: 'deploy',
+        tools: ['Codex', 'Agent Skills'], description: 'Portable Skill.',
+        descriptionState: 'issue', issue: { code: 'unsafePath' } },
+    ]);
+    expect(overview.items).toHaveLength(2);
+    expect(overview.coverage).toBe('complete');
+    expect(JSON.stringify(overview)).not.toContain('LOCAL-SENSITIVE-TEXT');
+    expect(JSON.stringify(overview)).not.toContain(outside);
+  });
+
+  it('keeps a confirmed command metadata issue on one command item', async () => {
+    // Risk: a malformed but regular Codex command Skill can be counted twice after projection.
+    const root = await fixtureRoot();
+    await Promise.all([
+      fs.outputFile(path.join(root, 'codex', 'skills', 'deploy', 'SKILL.md'),
+        '---\nname: deploy\ndescription: [invalid\n---\nPRIVATE-BODY\n'),
+      fs.ensureDir(path.join(root, 'claude', 'skills')),
+      fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'), 'Command source.\n'),
+    ]);
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, { skills: './skills', slashCommands: './commands' }),
+    });
+
+    expect(overview.items).toMatchObject([{
+      id: 'command:deploy', type: 'command', name: 'deploy',
+      tools: ['Codex', 'Claude Code'], descriptionState: 'issue',
+      issue: { code: 'invalidMetadata' },
+    }]);
+    expect(overview.items).toHaveLength(1);
+    expect(overview.coverage).toBe('complete');
+    expect(JSON.stringify(overview)).not.toContain('PRIVATE-BODY');
+  });
+
   it('projects structured agents and dynamic targets without prompt or renderer content', async () => {
     const root = await fixtureRoot();
     await fs.outputFile(

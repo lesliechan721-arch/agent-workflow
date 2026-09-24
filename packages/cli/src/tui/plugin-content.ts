@@ -258,6 +258,8 @@ async function addSkillDirectory(options: {
       }
       issue = { code, message: 'Skill 元信息文件不可安全读取。请检查内容目录后重试。' };
     }
+    if (options.tool === 'Codex'
+      && options.items.get(`command:${entry.name}`)?.tools.includes('Codex')) continue;
     addItem(options.items, {
       id: `skill:${entry.name}`,
       name: entry.name,
@@ -363,15 +365,26 @@ async function addSlashCommands(options: {
     const codexCommand = options.hasCodex
       && await regularPathWithin(options.root, codexSkillFile, 'file');
     if (options.hasCodex && !codexCommand && await fs.lstat(codexSkillFile).catch(() => undefined)) {
-      addCoverageIssue(options.coverageIssues, {
-        code: 'unsafePath', message: 'Slash command 的 Codex 组件不可安全确认。请检查目录。',
-      });
+      if (await regularPathWithin(options.root, path.dirname(codexSkillFile), 'directory')) {
+        addItem(options.items, {
+          id: `skill:${name}`,
+          name,
+          type: 'skill',
+          description: null,
+          tools: ['Codex'],
+          descriptionState: 'issue',
+          issue: { code: 'unsafePath', message: 'Skill 元信息文件不可安全读取。请检查内容目录后重试。' },
+        });
+      } else {
+        addCoverageIssue(options.coverageIssues, {
+          code: 'unsafePath', message: 'Slash command 的 Codex 组件不可安全确认。请检查目录。',
+        });
+      }
     }
-    if (codexCommand) tools.unshift('Codex');
-    options.items.delete(`skill:${name}`);
     const skill = codexCommand
       ? await readFrontmatterDescription(options.root, codexSkillFile)
       : undefined;
+    if (codexCommand) tools.unshift('Codex');
     addItem(options.items, {
       id: `command:${name}`,
       name,
@@ -452,6 +465,15 @@ export async function projectPluginContentOverview(options: {
     });
   }
 
+  if (options.plugin.manifest.slashCommands) {
+    await addSlashCommands({
+      root,
+      hasCodex: platforms.includes('Codex'),
+      items,
+      coverageIssues,
+    });
+  }
+
   if (options.plugin.manifest.skills) {
     if (platforms.includes('Codex')) {
       await addSkillDirectory({
@@ -493,15 +515,6 @@ export async function projectPluginContentOverview(options: {
       coverageIssues,
     });
   }
-  if (options.plugin.manifest.slashCommands) {
-    await addSlashCommands({
-      root,
-      hasCodex: platforms.includes('Codex'),
-      items,
-      coverageIssues,
-    });
-  }
-
   for (const agent of options.plugin.manifest.extensions?.agents ?? []) {
     addItem(items, {
       id: `agent:${agent.name}`,
