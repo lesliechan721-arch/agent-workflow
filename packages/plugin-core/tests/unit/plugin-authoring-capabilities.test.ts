@@ -39,14 +39,14 @@ describe('plugin authoring capability structure registry', () => {
     expect(getPluginAuthoringAcceptedValues('manifest', 'marketplace.policy.authentication'))
       .toEqual(schema.$defs.marketplace.properties.policy.properties.authentication.enum)
     expect(getPluginAuthoringAcceptedValues('config', 'config.fields.<key>.type'))
-      .toEqual(schema.$defs.configField.oneOf.map((entry: { $ref: string }) => {
+      .toEqual([...schema.$defs.configField.oneOf.map((entry: { $ref: string }) => {
         const definition = entry.$ref.split('/').at(-1)!
         const resolved = definition === 'configObjectField'
           ? schema.$defs.configFixedObjectField
           : schema.$defs[definition]
         return (resolved.properties ?? schema.$defs[resolved.oneOf[0].$ref.split('/').at(-1)!].properties)
           .type.const
-      }))
+      }), schema.$defs.configArrayField.properties.type.const])
     expect(getPluginAuthoringAcceptedValues('config', 'config.fields.<key>.validation.format'))
       .toEqual(schema.$defs.configStringValidation.properties.format.enum)
     expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.skillRuntimeFiles[].platforms'))

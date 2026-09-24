@@ -1,4 +1,5 @@
 import type {
+  PluginConfigArrayField,
   PluginConfigObjectField,
   PluginConfigObjectPropertyField,
   PluginConfigScalarField,
@@ -9,6 +10,29 @@ import type { PluginManifestSourceV3 } from '../../src/index.js'
 type GeneratedConfigFields = NonNullable<PluginManifestSourceV3['config']>['fields']
 type GeneratedConfigField = NonNullable<GeneratedConfigFields[string]>
 type GeneratedFixedObjectField = Extract<GeneratedConfigField, { properties: object }>
+type GeneratedArrayField = Extract<GeneratedConfigField, { type: 'array' }>
+
+export const generatedArrayField: GeneratedArrayField = {
+  type: 'array', items: { type: 'string' }, default: [],
+}
+
+export const generatedArrayRejectsMixedDefault: GeneratedArrayField = {
+  type: 'array', items: { type: 'string' },
+  // @ts-expect-error Array defaults must be homogeneous.
+  default: ['text', 1],
+}
+
+export const arrayItemRejectsSensitive: PluginConfigArrayField = {
+  type: 'array',
+  // @ts-expect-error Array items cannot be sensitive.
+  items: { type: 'string', sensitive: true },
+}
+
+export const arrayItemRejectsNestedArray: PluginConfigArrayField = {
+  type: 'array',
+  // @ts-expect-error Array items cannot be arrays.
+  items: { type: 'array', items: { type: 'string' } },
+}
 
 export const generatedFieldsRejectUndefined: GeneratedConfigFields = {
   // @ts-expect-error Config field dictionary values cannot be undefined.

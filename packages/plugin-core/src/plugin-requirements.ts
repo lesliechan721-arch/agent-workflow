@@ -2,6 +2,7 @@ import path from 'node:path'
 
 import fs from 'fs-extra'
 
+import { normalizePluginConfigDefinition } from './plugin-config.js'
 import {
   computeAwCapabilitySetDigest,
   normalizeAwCapabilities,
@@ -50,6 +51,9 @@ export function deriveAwCapabilitiesFromManifest(
   if (manifest.config) capabilities.push('aw.plugin-config.v2')
   if (manifest.config && 'schemaVersion' in manifest.config && manifest.config.schemaVersion === 3) {
     capabilities.push('aw.plugin-config.v3')
+    if (Object.values(normalizePluginConfigDefinition(manifest.config).fields).some((field) => field.type === 'array')) {
+      capabilities.push('aw.plugin-config-array.v1')
+    }
     const presentation = manifest.config.presentation
     if (presentation && (('summaries' in presentation && presentation.summaries)
       || ('fieldViews' in presentation && presentation.fieldViews))) {

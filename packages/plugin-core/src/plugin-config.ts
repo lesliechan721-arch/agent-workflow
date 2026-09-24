@@ -2,6 +2,10 @@ import { RE2 } from 're2-wasm'
 
 import type {
   PluginConfigAdditionalPropertiesField,
+  PluginConfigArray,
+  PluginConfigArrayField,
+  PluginConfigArrayItemField,
+  PluginConfigArrayValidation,
   PluginConfigChoices,
   PluginConfigDefinition,
   PluginConfigJoinSummary,
@@ -9,6 +13,7 @@ import type {
   PluginConfigObject,
   PluginConfigObjectField,
   PluginConfigObjectPropertyField,
+  PluginConfigPresentation,
   PluginConfigPreset,
   PluginConfigScalar,
   PluginConfigScalarField,
@@ -41,6 +46,8 @@ export const PLUGIN_CONFIG_SUMMARY_MAX_PARTS = 4
 export const PLUGIN_CONFIG_SUMMARY_MAX_SEPARATOR_CODE_POINTS = 8
 export const PLUGIN_CONFIG_SUMMARY_MAX_PATH_LENGTH = 128
 export const PLUGIN_CONFIG_SUMMARY_MAX_CODE_POINTS = 256
+export const PLUGIN_CONFIG_ARRAY_MAX_ITEMS = 128
+export const PLUGIN_CONFIG_ARRAY_MAX_BYTES = 262144
 const MAX_OBJECT_PROPERTIES = 32
 const MAX_PATTERN_CODE_POINTS = 512
 const MAX_STRING_CODE_POINTS = 4096
@@ -195,6 +202,33 @@ function createIssue(
     message,
     recoverable: true,
   }
+}
+
+function withArrayPath(issue: PluginConfigValidationIssue, index: number): PluginConfigValidationIssue {
+  return {
+    ...issue,
+    path: {
+      ...issue.path,
+      segments: [issue.path.field, index, ...(issue.path.property === undefined ? [] : [issue.path.property])],
+    },
+  }
+}
+
+function isSafeJsonRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) return false
+  return Reflect.ownKeys(value).every((key) =>
+    typeof key === 'string' && Object.hasOwn(Object.getOwnPropertyDescriptor(value, key) ?? {}, 'value'))
+}
+
+function isDenseDataArray(value: unknown[]): boolean {
+  if (Object.getPrototypeOf(value) !== Array.prototype) return false
+  if (Reflect.ownKeys(value).length !== value.length + 1) return false
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(Object.getOwnPropertyDescriptor(value, String(index)) ?? {}, 'value')) return false
+  }
+  return true
 }
 
 function stringFormatMatches(value: string, format: PluginConfigStringFormat): boolean {
@@ -352,6 +386,59 @@ function validateObjectField(
   return issues
 }
 
+function validateArrayField(
+  fieldDefinition: PluginConfigArrayField,
+  value: unknown,
+  field: string,
+  checkChoices = true,
+): PluginConfigValidationIssue[] {
+  if (!Array.isArray(value)) {
+    return [{ ...createIssue('type', field, 'Expected a dense array of JSON values.'), path: { field, segments: [field] } }]
+  }
+  if (value.length > PLUGIN_CONFIG_ARRAY_MAX_ITEMS) {
+    return [{ ...createIssue('maxItems', field, `Expected at most ${PLUGIN_CONFIG_ARRAY_MAX_ITEMS} items.`),
+      path: { field, segments: [field] } }]
+  }
+  if (!isDenseDataArray(value)) {
+    return [{ ...createIssue('type', field, 'Expected a dense array of JSON values.'), path: { field, segments: [field] } }]
+  }
+  const issues: PluginConfigValidationIssue[] = []
+  const count = value.length
+  const min = fieldDefinition.validation?.minItems
+  const max = fieldDefinition.validation?.maxItems ?? PLUGIN_CONFIG_ARRAY_MAX_ITEMS
+  if (count < (min ?? 0)) issues.push(createIssue('minItems', field, `Expected at least ${min} items.`))
+  if (count > max) issues.push(createIssue('maxItems', field, `Expected at most ${max} items.`))
+  const seen = new Set<string>()
+  for (const [index, item] of value.entries()) {
+    const itemIssues = fieldDefinition.items.type === 'object'
+      ? isSafeJsonRecord(item)
+        ? validateObjectField(fieldDefinition.items as PluginConfigObjectField, item, field)
+        : [createIssue('type', field, 'Expected a JSON object.')]
+      : validateScalarField(fieldDefinition.items, item, field)
+    issues.push(...itemIssues.map((issue) => withArrayPath(issue, index)))
+    if (fieldDefinition.validation?.uniqueItems === true && itemIssues.length === 0) {
+      const key = stablePluginConfigStringify(item as PluginConfigValue)
+      if (seen.has(key)) {
+        issues.push(withArrayPath(createIssue('uniqueItems', field, 'Expected unique items.'), index))
+      }
+      seen.add(key)
+    }
+  }
+  if (issues.length === 0) {
+    const bytes = Buffer.byteLength(stablePluginConfigStringify(value as PluginConfigArray), 'utf8')
+    if (bytes > PLUGIN_CONFIG_ARRAY_MAX_BYTES) {
+      issues.push(createIssue('maxBytes', field, `Expected at most ${PLUGIN_CONFIG_ARRAY_MAX_BYTES} UTF-8 JSON bytes.`))
+    }
+  }
+  if (checkChoices && issues.length === 0 && fieldDefinition.choices?.allowCustom === false
+    && matchPluginConfigPreset(fieldDefinition, value as PluginConfigArray) === undefined) {
+    issues.push(createIssue('choice', field, 'Expected a declared preset value.'))
+  }
+  return issues.map((issue) => issue.path.segments === undefined
+    ? { ...issue, path: { ...issue.path, segments: [field] } }
+    : issue)
+}
+
 function resolveValueArguments(
   first: PluginConfigSchemaField | string,
   second: unknown,
@@ -389,7 +476,9 @@ export function validatePluginConfigValue(
   const resolved = resolveValueArguments(first, second, third)
   return resolved.definition.type === 'object'
     ? validateObjectField(resolved.definition, resolved.value, resolved.field)
-    : validateScalarField(resolved.definition, resolved.value, resolved.field)
+    : resolved.definition.type === 'array'
+      ? validateArrayField(resolved.definition, resolved.value, resolved.field)
+      : validateScalarField(resolved.definition, resolved.value, resolved.field)
 }
 
 export function validatePluginConfigDocument(
@@ -424,6 +513,7 @@ export function validatePluginConfigDocument(
 
 export function canonicalizePluginConfigValue(value: PluginConfigValue): PluginConfigValue {
   if (typeof value !== 'object') return value
+  if (Array.isArray(value)) return value.map((item) => canonicalizePluginConfigValue(item)) as PluginConfigArray
   return Object.fromEntries(
     Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0),
   )
@@ -456,7 +546,9 @@ export function validatePluginConfigPreset(
 ): PluginConfigValidationIssue[] {
   return definition.type === 'object'
     ? validateObjectField(definition, preset.value, field, false)
-    : validateScalarField(definition, preset.value, field, undefined, false)
+    : definition.type === 'array'
+      ? validateArrayField(definition, preset.value, field, false)
+      : validateScalarField(definition, preset.value, field, undefined, false)
 }
 
 export type RedactedPluginConfigValue = PluginConfigValue | '[redacted]' | Record<string, PluginConfigScalar | '[redacted]'>
@@ -470,7 +562,9 @@ export function redactPluginConfigValue(
 }
 
 export function formatPluginConfigIssue(issue: PluginConfigValidationIssue): string {
-  const path = issue.path.property === undefined
+  const path = issue.path.segments !== undefined
+    ? issue.path.segments.map((segment, index) => typeof segment === 'number' ? `[${segment}]` : index === 0 ? segment : `.${segment}`).join('')
+    : issue.path.property === undefined
     ? issue.path.field
     : `${issue.path.field}.${issue.path.property}`
   return `${path}: ${issue.message}`
@@ -721,6 +815,62 @@ function normalizeObjectField(value: unknown, path: string): PluginConfigObjectF
   }
 }
 
+function normalizeArrayField(value: unknown, path: string): PluginConfigArrayField {
+  const input = asObject(value, path)
+  assertAllowedKeys(input, path, ['type', 'title', 'description', 'default', 'required', 'items', 'choices', 'validation'])
+  const itemPath = `${path}.items`
+  const item = asObject(input.items, itemPath)
+  for (const forbidden of ['default', 'required', 'sensitive']) {
+    if (Object.hasOwn(item, forbidden)) {
+      throw new Error(`Invalid ${itemPath}.${forbidden}: array items cannot declare ${forbidden}.`)
+    }
+  }
+  let items: PluginConfigArrayItemField
+  if (item.type === 'object') {
+    const { default: _default, required: _required, ...objectItem } = normalizeObjectField(item, itemPath)
+    items = objectItem as PluginConfigArrayItemField
+  } else {
+    items = normalizeScalarField(item, itemPath, {
+      allowDefault: false, allowRequired: false, allowSensitive: false,
+    }) as PluginConfigArrayItemField
+  }
+  assertChoices(items as PluginConfigSchemaField, itemPath)
+  let validation: PluginConfigArrayValidation | undefined
+  if (input.validation !== undefined) {
+    const rawValidation = asObject(input.validation, `${path}.validation`)
+    assertAllowedKeys(rawValidation, `${path}.validation`, ['minItems', 'maxItems', 'uniqueItems'])
+    const minItems = rawValidation.minItems === undefined
+      ? undefined
+      : nonNegativeInteger(rawValidation.minItems, `${path}.validation.minItems`)
+    const maxItems = rawValidation.maxItems === undefined
+      ? undefined
+      : nonNegativeInteger(rawValidation.maxItems, `${path}.validation.maxItems`)
+    if (maxItems !== undefined && maxItems > PLUGIN_CONFIG_ARRAY_MAX_ITEMS) {
+      throw new Error(`Invalid ${path}.validation.maxItems: expected at most ${PLUGIN_CONFIG_ARRAY_MAX_ITEMS}.`)
+    }
+    if (minItems !== undefined && minItems > (maxItems ?? PLUGIN_CONFIG_ARRAY_MAX_ITEMS)) {
+      throw new Error(`Invalid ${path}.validation.minItems: must not exceed effective maxItems.`)
+    }
+    validation = {
+      minItems,
+      maxItems,
+      uniqueItems: optionalBoolean(rawValidation.uniqueItems, `${path}.validation.uniqueItems`),
+    }
+  }
+  return {
+    type: 'array',
+    title: optionalText(input.title, `${path}.title`),
+    description: optionalText(input.description, `${path}.description`),
+    default: input.default as PluginConfigArray | undefined,
+    required: optionalBoolean(input.required, `${path}.required`),
+    items,
+    choices: input.choices === undefined
+      ? undefined
+      : normalizeChoices<PluginConfigArray>(input.choices, `${path}.choices`),
+    validation,
+  }
+}
+
 /** Decode exactly one local property token, never a traversal path. */
 export function decodePluginConfigSummaryPath(value: string): string {
   if ([...value].length > PLUGIN_CONFIG_SUMMARY_MAX_PATH_LENGTH || !/^\/(?:[^~/]|~[01])*$/u.test(value)) {
@@ -763,6 +913,9 @@ function expandConfigReferences(input: Record<string, unknown>, path: string): R
     }
     const result = { ...field }
     if (child) return result
+    if (field.type === 'array' && field.items !== undefined) {
+      result.items = expand(field.items, `${fieldPath}.items`, chain)
+    }
     if (field.properties !== undefined) {
       const properties = asObject(field.properties, `${fieldPath}.properties`)
       if (Object.keys(properties).length > MAX_OBJECT_PROPERTIES) {
@@ -778,7 +931,7 @@ function expandConfigReferences(input: Record<string, unknown>, path: string): R
   }
   // Validate unused definitions too, through the same field/default/choice validator.
   for (const [name, value] of Object.entries(definitions)) {
-    normalizeConfigField(expand(value, `${path}.definitions.${name}`, []), `${path}.definitions.${name}`)
+    normalizeConfigField(expand(value, `${path}.definitions.${name}`, []), `${path}.definitions.${name}`, true)
   }
   const fields = asObject(input.fields, `${path}.fields`)
   if (Object.keys(fields).length > PLUGIN_CONFIG_V3_MAX_FIELDS) {
@@ -788,10 +941,12 @@ function expandConfigReferences(input: Record<string, unknown>, path: string): R
     [key, expand(value, `${path}.fields.${key}`, [])]))
 }
 
-function normalizeConfigField(rawDefinition: unknown, path: string): PluginConfigSchemaField {
+function normalizeConfigField(rawDefinition: unknown, path: string, allowArray: boolean): PluginConfigSchemaField {
   const rawField = asObject(rawDefinition, path)
   const definition = rawField.type === 'object'
     ? normalizeObjectField(rawField, path)
+    : rawField.type === 'array' && allowArray
+      ? normalizeArrayField(rawField, path)
     : normalizeScalarField(rawField, path, {
       allowDefault: true, allowRequired: true, allowSensitive: true,
     }) as PluginConfigScalarField
@@ -805,7 +960,7 @@ function normalizeConfigField(rawDefinition: unknown, path: string): PluginConfi
 
 function normalizeConfigSummaries(
   input: Record<string, unknown>, fields: Record<string, PluginConfigSchemaField>, path: string,
-): Pick<NonNullable<PluginConfigDefinition['presentation']>, 'summaries' | 'fieldViews'> {
+): Pick<PluginConfigPresentation, 'summaries' | 'fieldViews'> {
   const summaries: Record<string, PluginConfigJoinSummary> = createPropertyMap()
   for (const [name, raw] of Object.entries(input.summaries === undefined ? {} : asObject(input.summaries, `${path}.summaries`))) {
     const summaryPath = `${path}.summaries.${name}`
@@ -837,22 +992,31 @@ function normalizeConfigSummaries(
       }),
     }
   }
-  const fieldViews: Record<string, { summary: string }> = createPropertyMap()
+  const fieldViews: Record<string, { summary: string; itemSummary?: never } | { itemSummary: string; summary?: never }> = createPropertyMap()
   for (const [key, raw] of Object.entries(input.fieldViews === undefined ? {} : asObject(input.fieldViews, `${path}.fieldViews`))) {
     const viewPath = `${path}.fieldViews.${key}`
     const field = ownProperty(fields, key)
-    if (!field || field.type !== 'object' || !field.properties) throw new Error(`Invalid ${viewPath}: summary requires a declared fixed object field.`)
     const view = asObject(raw, viewPath)
-    assertAllowedKeys(view, viewPath, ['summary'])
-    const name = nonEmptyString(view.summary, `${viewPath}.summary`)
+    assertAllowedKeys(view, viewPath, ['summary', 'itemSummary'])
+    const itemSummary = Object.hasOwn(view, 'itemSummary')
+    if (itemSummary === Object.hasOwn(view, 'summary')) {
+      throw new Error(`Invalid ${viewPath}: expected exactly one summary reference.`)
+    }
+    const objectField = itemSummary
+      ? field?.type === 'array' && field.items.type === 'object' ? field.items : undefined
+      : field?.type === 'object' ? field : undefined
+    if (!objectField?.properties) {
+      throw new Error(`Invalid ${viewPath}: summary requires a declared fixed object${itemSummary ? ' array item' : ' field'}.`)
+    }
+    const name = nonEmptyString(itemSummary ? view.itemSummary : view.summary, `${viewPath}.${itemSummary ? 'itemSummary' : 'summary'}`)
     const summary = ownProperty(summaries, name)
-    if (!summary) throw new Error(`Invalid ${viewPath}.summary: unknown summary.`)
+    if (!summary) throw new Error(`Invalid ${viewPath}.${itemSummary ? 'itemSummary' : 'summary'}: unknown summary.`)
     for (const part of summary.parts) {
-      if (!ownProperty(field.properties, decodePluginConfigSummaryPath(part.path))) {
+      if (!ownProperty(objectField.properties, decodePluginConfigSummaryPath(part.path))) {
         throw new Error(`Invalid ${viewPath}: summary path "${part.path}" must name a declared scalar property.`)
       }
     }
-    fieldViews[key] = { summary: name }
+    fieldViews[key] = itemSummary ? { itemSummary: name } : { summary: name }
   }
   return {
     ...(input.summaries === undefined ? {} : { summaries }),
@@ -873,7 +1037,7 @@ export function normalizePluginConfigDefinition(
     if (!CONFIG_KEY_PATTERN.test(field) || isDangerousConfigKey(field)) {
       throw new Error(`Invalid ${path}.fields: config key "${field}" is not valid.`)
     }
-    fields[field] = normalizeConfigField(rawDefinition, `${path}.fields.${field}`)
+    fields[field] = normalizeConfigField(rawDefinition, `${path}.fields.${field}`, v3)
   }
 
   let presentation: PluginConfigDefinition['presentation']
@@ -920,5 +1084,5 @@ export function normalizePluginConfigDefinition(
       }),
     }
   }
-  return { ...(v3 ? { schemaVersion: 3 as const } : {}), fields, presentation }
+  return { ...(v3 ? { schemaVersion: 3 as const } : {}), fields, presentation } as PluginConfigDefinition
 }

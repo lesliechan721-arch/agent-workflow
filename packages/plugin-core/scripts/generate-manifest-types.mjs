@@ -9,7 +9,11 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const schemaPath = path.join(packageRoot, 'schemas', 'plugin-manifest-v3.json')
 const outputPath = path.join(packageRoot, 'src', 'generated', 'plugin-manifest-v3.ts')
 const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'))
-const generated = (await compile(schema, 'PluginManifestSourceV3', {
+// Runtime validation keeps the 1..4 join limit; the public TypeScript contract uses an array.
+const typeSchema = structuredClone(schema)
+delete typeSchema.$defs.configJoinSummary.properties.parts.minItems
+delete typeSchema.$defs.configJoinSummary.properties.parts.maxItems
+const generated = (await compile(typeSchema, 'PluginManifestSourceV3', {
   bannerComment: '/* This file is generated. Run `pnpm generate` in packages/plugin-core to update it. */',
   declareExternallyReferenced: true,
   enableConstEnums: false,

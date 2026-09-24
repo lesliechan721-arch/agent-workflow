@@ -97,8 +97,9 @@ export interface PluginScriptsConfig {
 
 export type PluginConfigScalar = string | number | boolean;
 export type PluginConfigObject = Record<string, PluginConfigScalar>;
-export type PluginConfigValue = PluginConfigScalar | PluginConfigObject;
-export type PluginConfigFieldType = 'string' | 'number' | 'boolean' | 'object';
+export type PluginConfigArray = string[] | number[] | boolean[] | PluginConfigObject[];
+export type PluginConfigValue = PluginConfigScalar | PluginConfigObject | PluginConfigArray;
+export type PluginConfigFieldType = 'string' | 'number' | 'boolean' | 'object' | 'array';
 export type PluginConfigStringFormat =
   | 'identifier'
   | 'slug'
@@ -133,6 +134,11 @@ export interface PluginConfigObjectValidation {
   minProperties?: number;
   maxProperties?: number;
   key?: PluginConfigStringValidation;
+}
+export interface PluginConfigArrayValidation {
+  minItems?: number;
+  maxItems?: number;
+  uniqueItems?: boolean;
 }
 export interface PluginConfigFieldBase<Value extends PluginConfigValue> {
   title?: string;
@@ -200,7 +206,17 @@ export interface PluginConfigKeyValueObjectField extends PluginConfigObjectField
 export type PluginConfigObjectField =
   | PluginConfigFixedObjectField
   | PluginConfigKeyValueObjectField;
-export type PluginConfigSchemaField = PluginConfigScalarField | PluginConfigObjectField;
+export type PluginConfigArrayItemField = DistributiveOmit<
+  PluginConfigNonSensitiveScalarField | PluginConfigObjectField,
+  'default' | 'required' | 'sensitive'
+> & { default?: never; required?: never; sensitive?: never };
+export interface PluginConfigArrayField extends PluginConfigFieldBase<PluginConfigArray> {
+  type: 'array';
+  items: PluginConfigArrayItemField;
+  choices?: PluginConfigChoices<PluginConfigArray>;
+  validation?: PluginConfigArrayValidation;
+}
+export type PluginConfigSchemaField = PluginConfigScalarField | PluginConfigObjectField | PluginConfigArrayField;
 export interface PluginConfigPresentationGroup {
   id: string;
   title: string;
@@ -216,18 +232,24 @@ export interface PluginConfigJoinSummary {
 }
 export interface PluginConfigPresentation {
   summaries?: Record<string, PluginConfigJoinSummary>;
-  fieldViews?: Record<string, { summary: string }>;
+  fieldViews?: Record<string, { summary: string; itemSummary?: never } | { itemSummary: string; summary?: never }>;
   groups?: PluginConfigPresentationGroup[];
 }
-export interface PluginConfigDefinition {
-  schemaVersion?: 3;
-  fields: Record<string, PluginConfigSchemaField>;
-  presentation?: PluginConfigPresentation;
-}
+export type PluginConfigDefinition =
+  | {
+      schemaVersion?: never;
+      fields: Record<string, PluginConfigScalarField | PluginConfigObjectField>;
+      presentation?: Pick<PluginConfigPresentation, 'groups'>;
+    }
+  | {
+      schemaVersion: 3;
+      fields: Record<string, PluginConfigSchemaField>;
+      presentation?: PluginConfigPresentation;
+    };
 export type PluginConfigSchema = PluginConfigDefinition;
 export interface PluginConfigValidationIssue {
   code: string;
-  path: { field: string; property?: string };
+  path: { field: string; property?: string; segments?: Array<string | number> };
   message: string;
   recoverable: true;
 }

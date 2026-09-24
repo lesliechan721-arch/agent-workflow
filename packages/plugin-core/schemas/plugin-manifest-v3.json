@@ -356,6 +356,14 @@
         "key": { "$ref": "#/$defs/configStringValidation" }
       }
     },
+    "configArrayValidation": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "minItems": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "maxItems": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "uniqueItems": { "type": "boolean" }
+      }
+    },
     "configStringPreset": {
       "type": "object", "additionalProperties": false, "required": ["id", "title", "value"],
       "properties": {
@@ -420,6 +428,35 @@
     },
     "configScalar": {
       "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }]
+    },
+    "configArrayObjectValue": {
+      "type": "object", "maxProperties": 32,
+      "propertyNames": { "not": { "enum": ["__proto__", "constructor", "prototype"] } },
+      "additionalProperties": { "$ref": "#/$defs/configScalar" }
+    },
+    "configArrayValue": {
+      "anyOf": [
+        { "type": "array", "maxItems": 128, "items": { "type": "string" } },
+        { "type": "array", "maxItems": 128, "items": { "type": "number" } },
+        { "type": "array", "maxItems": 128, "items": { "type": "boolean" } },
+        { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/configArrayObjectValue" } }
+      ]
+    },
+    "configArrayPreset": {
+      "type": "object", "additionalProperties": false, "required": ["id", "title", "value"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 }, "value": { "$ref": "#/$defs/configArrayValue" },
+        "recommended": { "const": true }
+      }
+    },
+    "configArrayChoices": {
+      "type": "object", "additionalProperties": false, "required": ["allowCustom", "presets"],
+      "not": { "properties": { "allowCustom": { "const": false }, "presets": { "type": "array", "maxItems": 0 } }, "required": ["allowCustom", "presets"] },
+      "properties": {
+        "allowCustom": { "type": "boolean" },
+        "presets": { "type": "array", "items": { "$ref": "#/$defs/configArrayPreset" } }
+      }
     },
     "configStringField": {
       "oneOf": [
@@ -565,6 +602,7 @@
         "default": {
           "oneOf": [
             {"$ref": "#/$defs/configScalar"},
+            {"$ref": "#/$defs/configArrayValue"},
             {
               "type": "object",
               "maxProperties": 32,
@@ -641,11 +679,62 @@
         "validation": {"$ref": "#/$defs/configObjectValidation"}
       }
     },
+    "configArrayFixedObjectItem": {
+      "type": "object", "additionalProperties": false, "required": ["type", "properties"],
+      "properties": {
+        "type": {"const": "object"}, "title": {"type": "string"}, "description": {"type": "string"},
+        "sensitive": false,
+        "choices": {"$ref": "#/$defs/configObjectChoices"},
+        "properties": {
+          "type": "object", "maxProperties": 32,
+          "propertyNames": {"not": {"enum": ["__proto__", "constructor", "prototype"]}},
+          "additionalProperties": {"oneOf": [{"$ref": "#/$defs/configScalarChildField"}, {"$ref": "#/$defs/configChildReference"}]}
+        },
+        "additionalProperties": {"const": false},
+        "validation": {"$ref": "#/$defs/configObjectValidation"}
+      }
+    },
+    "configArrayKeyValueObjectItem": {
+      "type": "object", "additionalProperties": false, "required": ["type", "additionalProperties"],
+      "properties": {
+        "type": {"const": "object"}, "title": {"type": "string"}, "description": {"type": "string"},
+        "sensitive": false,
+        "choices": {"$ref": "#/$defs/configObjectChoices"},
+        "additionalProperties": {"oneOf": [{"$ref": "#/$defs/configScalarDynamicField"}, {"$ref": "#/$defs/configDynamicReference"}]},
+        "validation": {"$ref": "#/$defs/configObjectValidation"}
+      }
+    },
+    "configArrayItemReference": {
+      "type": "object", "additionalProperties": false, "required": ["$ref"],
+      "properties": {
+        "$ref": {"type": "string", "pattern": "^#/config/definitions/[A-Za-z][A-Za-z0-9_]*$"},
+        "title": {"type": "string"}, "description": {"type": "string"}
+      }
+    },
+    "configArrayItem": {
+      "oneOf": [
+        {"$ref": "#/$defs/configScalarDynamicField"},
+        {"$ref": "#/$defs/configArrayFixedObjectItem"},
+        {"$ref": "#/$defs/configArrayKeyValueObjectItem"},
+        {"$ref": "#/$defs/configArrayItemReference"}
+      ]
+    },
+    "configArrayField": {
+      "type": "object", "additionalProperties": false, "required": ["type", "items"],
+      "properties": {
+        "type": {"const": "array"}, "title": {"type": "string"}, "description": {"type": "string"},
+        "default": {"$ref": "#/$defs/configArrayValue"}, "required": {"type": "boolean"}, "sensitive": false,
+        "items": {"$ref": "#/$defs/configArrayItem"},
+        "choices": {"$ref": "#/$defs/configArrayChoices"},
+        "validation": {"$ref": "#/$defs/configArrayValidation"}
+      }
+    },
     "configV3Field": {
       "oneOf": [
         {"$ref": "#/$defs/configScalarField"},
         {"$ref": "#/$defs/configV3FixedObjectField"},
         {"$ref": "#/$defs/configV3KeyValueObjectField"},
+        {"$ref": "#/$defs/configArrayField"},
         {"$ref": "#/$defs/configReference"}
       ]
     },
@@ -741,7 +830,12 @@
             "fieldViews": {
               "type": "object",
               "propertyNames": {"pattern": "^[A-Za-z][A-Za-z0-9_]*$", "not": {"enum": ["__proto__", "constructor", "prototype"]}},
-              "additionalProperties": {"type": "object", "additionalProperties": false, "required": ["summary"], "properties": {"summary": {"type": "string"}}}
+              "additionalProperties": {
+                "oneOf": [
+                  {"type": "object", "additionalProperties": false, "required": ["summary"], "properties": {"summary": {"type": "string"}}},
+                  {"type": "object", "additionalProperties": false, "required": ["itemSummary"], "properties": {"itemSummary": {"type": "string"}}}
+                ]
+              }
             }
           }
         },

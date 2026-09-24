@@ -15,6 +15,8 @@ import {
   PLUGIN_CONFIG_V3_MAX_DEFINITIONS,
   PLUGIN_CONFIG_V3_MAX_FIELDS,
   PLUGIN_CONFIG_V3_MAX_REF_DEPTH,
+  PLUGIN_CONFIG_ARRAY_MAX_ITEMS,
+  PLUGIN_CONFIG_ARRAY_MAX_BYTES,
   getPluginAuthoringCapabilities,
   getPluginAuthoringCapabilitySurface,
   PLUGIN_MANIFEST_SCHEMA_VERSION,
@@ -48,5 +50,21 @@ describe('public package exports', () => {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
       title: 'PluginManifestSourceV3',
     })
+  })
+  it('ships array validation, schema and capability through the public package', async () => {
+    const config = { schemaVersion: 3, fields: { labels: {
+      type: 'array', items: { type: 'string', validation: { minLength: 1 } },
+      default: [], validation: { maxItems: 2, uniqueItems: true },
+    } } }
+    const manifest = { schemaVersion: 3, name: 'array-reader', version: '0.1.0', description: 'Array contract',
+      marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      config }
+    expect(() => assertPluginManifestStructure(manifest)).not.toThrow()
+    const compiled = normalizePluginConfigDefinition(config)
+    expect(validatePluginConfigValue(compiled.fields.labels!, ['ok', ''])).toMatchObject([
+      { code: 'minLength', path: { segments: ['value', 1] } },
+    ])
+    expect([PLUGIN_CONFIG_ARRAY_MAX_ITEMS, PLUGIN_CONFIG_ARRAY_MAX_BYTES]).toEqual([128, 262144])
+    expect(getAwCapabilityRegistry()).toContain('aw.plugin-config-array.v1')
   })
 })
