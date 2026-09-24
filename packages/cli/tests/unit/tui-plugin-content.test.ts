@@ -1,11 +1,14 @@
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { PluginMeta } from '../../src/types.js';
+import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { projectPluginContentOverview } from '../../src/tui/plugin-content.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
 
 const roots: string[] = [];
 
@@ -50,7 +53,7 @@ describe('TUI plugin content projection', () => {
       `---\nname: inspect\ndescription: ${description}\n---\n${body}\n`;
     await Promise.all([
       fs.outputFile(path.join(root, 'codex', 'skills', 'inspect', 'SKILL.md'), skill('Inspect safely.', 'CODEX-BODY-SECRET')),
-      fs.outputFile(path.join(root, 'codex', 'skills', 'deploy', 'SKILL.md'), skill('Deploy summary.', 'COMMAND-BODY-SECRET')),
+      fs.outputFile(path.join(root, 'codex', 'skills', 'deploy', 'SKILL.md'), '# COMMAND-BODY-SECRET\n'),
       fs.outputFile(path.join(root, 'codex', 'skills', 'windows-lines', 'SKILL.md'), skill('Windows summary.', 'WINDOWS-BODY-SECRET').replace(/\n/gu, '\r\n')),
       fs.outputFile(path.join(root, 'codex', 'skills', 'helper.txt'), 'not a skill'),
       fs.outputFile(path.join(root, 'claude', 'skills', 'inspect', 'SKILL.md'), skill('Inspect safely.', 'CLAUDE-BODY-SECRET')),
@@ -139,11 +142,12 @@ describe('TUI plugin content projection', () => {
     const root = await fixtureRoot();
     await Promise.all([
       fs.outputFile(path.join(root, 'codex', 'skills', 'deploy', 'SKILL.md'),
-        '---\nname: deploy\ndescription: Codex command summary.\n---\nCOMMAND-BODY-SECRET\n'),
+        '# COMMAND-BODY-SECRET\n'),
       fs.ensureDir(path.join(root, 'claude', 'skills')),
       fs.outputFile(path.join(root, 'agent-skills', 'skills', 'deploy', 'SKILL.md'),
         '---\nname: deploy\ndescription: Independent portable Skill.\n---\nPORTABLE-BODY-SECRET\n'),
-      fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'), 'Command source.\n'),
+      fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'),
+        '---\ndescription: Claude command summary.\n---\nCOMMAND-BODY-SECRET\n'),
     ]);
     const overview = await projectPluginContentOverview({
       pluginId: 'official/demo', catalogVersion: '9.1.0',
@@ -155,7 +159,7 @@ describe('TUI plugin content projection', () => {
 
     expect(overview.items).toMatchObject([
       { id: 'command:deploy', type: 'command', name: 'deploy',
-        tools: ['Codex', 'Claude Code'], description: 'Codex command summary.' },
+        tools: ['Codex', 'Claude Code'], description: 'Claude command summary.' },
       { id: 'skill:deploy', type: 'skill', name: 'deploy',
         tools: ['Agent Skills'], description: 'Independent portable Skill.',
         descriptionState: 'available' },
@@ -190,7 +194,8 @@ describe('TUI plugin content projection', () => {
     await Promise.all([
       fs.ensureDir(path.join(root, 'codex', 'skills', 'deploy')),
       fs.ensureDir(path.join(root, 'claude', 'skills')),
-      fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'), 'Command source.\n'),
+      fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'),
+        '---\ndescription: Claude command summary.\n---\nCOMMAND-BODY-SECRET\n'),
       fs.outputFile(path.join(root, 'agent-skills', 'skills', 'deploy', 'SKILL.md'),
         '---\nname: deploy\ndescription: Portable Skill.\n---\nPORTABLE-BODY-SECRET\n'),
     ]);
@@ -206,7 +211,7 @@ describe('TUI plugin content projection', () => {
 
     expect(overview.items).toMatchObject([
       { id: 'command:deploy', type: 'command', name: 'deploy',
-        tools: ['Claude Code'], descriptionState: 'absent' },
+        tools: ['Claude Code'], descriptionState: 'available' },
       { id: 'skill:deploy', type: 'skill', name: 'deploy',
         tools: ['Codex', 'Agent Skills'], description: 'Portable Skill.',
         descriptionState: 'issue', issue: { code: 'unsafePath' } },
@@ -218,13 +223,14 @@ describe('TUI plugin content projection', () => {
   });
 
   it('keeps a confirmed command metadata issue on one command item', async () => {
-    // Risk: a malformed but regular Codex command Skill can be counted twice after projection.
+    // Risk: malformed Claude command metadata can be hidden by its Codex body.
     const root = await fixtureRoot();
     await Promise.all([
       fs.outputFile(path.join(root, 'codex', 'skills', 'deploy', 'SKILL.md'),
-        '---\nname: deploy\ndescription: [invalid\n---\nPRIVATE-BODY\n'),
+        '# PRIVATE-BODY\n'),
       fs.ensureDir(path.join(root, 'claude', 'skills')),
-      fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'), 'Command source.\n'),
+      fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'),
+        '---\ndescription: [invalid\n---\nCOMMAND-BODY-SECRET\n'),
     ]);
     const overview = await projectPluginContentOverview({
       pluginId: 'official/demo', catalogVersion: '9.1.0',
@@ -239,6 +245,108 @@ describe('TUI plugin content projection', () => {
     expect(overview.items).toHaveLength(1);
     expect(overview.coverage).toBe('complete');
     expect(JSON.stringify(overview)).not.toContain('PRIVATE-BODY');
+  });
+
+  it('projects real Claude-only, Codex-only, dual, and mixed slash command bundles', async () => {
+    // Risk: real Codex commands have no Claude directory and their SKILL.md is body-only.
+    const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      '..', 'fixtures', 'codex-project-repo-managed', 'plugins', 'slashCommands-only');
+    for (const [scenario, products, expectedTools] of [
+      ['claude', ['CLAUDE'], ['Claude Code']],
+      ['codex', ['CODEX'], ['Codex']],
+      ['dual', ['CLAUDE', 'CODEX'], ['Codex', 'Claude Code']],
+    ] as const) {
+      const output = await fs.mkdtemp(path.join(os.tmpdir(), `aw-tui-command-${scenario}-`));
+      roots.push(output);
+      const source = await readPluginManifest(sourceRoot);
+      source.manifest.marketplace.policy.products = [...products];
+      const bundleRoot = path.join(output, 'bundle');
+      await bundleLocalPlugin(source, bundleRoot);
+      const bundle = await readPluginManifest(bundleRoot, { mode: 'bundle' });
+      const overview = await projectPluginContentOverview({
+        pluginId: 'official/slash-commands-only', catalogVersion: '9.1.0', plugin: bundle,
+      });
+
+      expect(overview.items).toMatchObject([{
+        id: 'command:review', name: 'review', type: 'command', tools: expectedTools,
+        descriptionState: scenario === 'codex' ? 'absent' : 'available',
+      }]);
+      expect(overview.items).toHaveLength(1);
+      expect(overview.items[0]?.issue).toBeUndefined();
+      expect(overview.coverage).toBe('complete');
+      expect(overview.notices).toEqual([]);
+      expect(JSON.stringify(overview)).not.toContain('Run `git status`');
+    }
+
+    const markerOutput = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-tui-command-body-marker-'));
+    roots.push(markerOutput);
+    const markerSource = path.join(markerOutput, 'source');
+    await fs.copy(sourceRoot, markerSource);
+    const markerManifestPath = path.join(markerSource, '.agents-plugin', 'plugin.json');
+    const markerManifest = await fs.readJson(markerManifestPath);
+    markerManifest.marketplace.policy.products = ['CODEX'];
+    await fs.writeJson(markerManifestPath, markerManifest);
+    const commandSource = path.join(markerSource, 'slash-commands', 'review.md');
+    const commandText = await fs.readFile(commandSource, 'utf8');
+    await fs.writeFile(commandSource, commandText.replace('\n---\n\n# Review', '\n---\n---\n# Review'));
+    const markerBundleRoot = path.join(markerOutput, 'bundle');
+    await bundleLocalPlugin(await readPluginManifest(markerSource), markerBundleRoot);
+    expect(await fs.readFile(path.join(markerBundleRoot, 'codex', 'skills', 'review', 'SKILL.md'), 'utf8'))
+      .toMatch(/^---\n/u);
+    const markerOverview = await projectPluginContentOverview({
+      pluginId: 'official/slash-commands-only', catalogVersion: '9.1.0',
+      plugin: await readPluginManifest(markerBundleRoot, { mode: 'bundle' }),
+    });
+    expect(markerOverview.items).toMatchObject([{
+      name: 'review', type: 'command', tools: ['Codex'], descriptionState: 'absent',
+    }]);
+    expect(markerOverview.items[0]?.issue).toBeUndefined();
+    expect(markerOverview.coverage).toBe('complete');
+
+    const output = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-tui-command-mixed-'));
+    roots.push(output);
+    const sourceDir = path.join(output, 'source');
+    await fs.copy(sourceRoot, sourceDir);
+    const manifestPath = path.join(sourceDir, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.skills = './skills';
+    manifest.marketplace.policy.products = ['CODEX'];
+    await fs.writeJson(manifestPath, manifest);
+    await fs.outputFile(path.join(sourceDir, 'skills', 'ordinary', 'SKILL.md'),
+      '---\nname: ordinary\ndescription: Ordinary Skill summary.\n---\nPRIVATE-SKILL-BODY\n');
+    const source = await readPluginManifest(sourceDir);
+    const bundleRoot = path.join(output, 'bundle');
+    await bundleLocalPlugin(source, bundleRoot);
+    const bundle = await readPluginManifest(bundleRoot, { mode: 'bundle' });
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/slash-commands-only', catalogVersion: '9.1.0', plugin: bundle,
+    });
+
+    expect(overview.items).toMatchObject([
+      { name: 'ordinary', type: 'skill', tools: ['Codex'], descriptionState: 'absent' },
+      { name: 'review', type: 'skill', tools: ['Codex'], descriptionState: 'absent' },
+    ]);
+    expect(overview.items).toHaveLength(2);
+    expect(overview.items.every((item) => item.issue === undefined)).toBe(true);
+    expect(overview.coverage).toBe('partial');
+    expect(overview.coverageIssue?.code).toBe('incompleteList');
+    expect(overview.coverageIssue?.message).toContain('不能安全区分普通 Skill 与 Slash command');
+    expect(JSON.stringify(overview)).not.toContain('PRIVATE-SKILL-BODY');
+    expect(JSON.stringify(overview)).not.toContain('Run `git status`');
+  });
+
+  it('does not call a declared command list empty when platform manifests are missing', async () => {
+    // Risk: damaged platform markers can turn an unreadable command list into a false zero count.
+    const root = await fixtureRoot();
+    await fs.remove(path.join(root, '.codex-plugin'));
+    await fs.remove(path.join(root, '.claude-plugin'));
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, { slashCommands: './slash-commands' }),
+    });
+    expect(overview.items).toEqual([]);
+    expect(overview.coverage).toBe('unavailable');
+    expect(overview.coverageIssue?.code).toBe('incompleteList');
   });
 
   it('projects structured agents and dynamic targets without prompt or renderer content', async () => {
