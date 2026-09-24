@@ -123,19 +123,25 @@ async function readFrontmatterDescription(
     const chunks: Buffer[] = [];
     let total = 0;
     let frontmatterEnd = -1;
+    let reachedEof = false;
     while (total < MAX_FRONTMATTER_BYTES && frontmatterEnd === -1) {
       const buffer = Buffer.alloc(Math.min(512, MAX_FRONTMATTER_BYTES - total));
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, total);
-      if (bytesRead === 0) break;
+      if (bytesRead === 0) {
+        reachedEof = true;
+        break;
+      }
       chunks.push(buffer.subarray(0, bytesRead));
       total += bytesRead;
       frontmatterEnd = Buffer.concat(chunks).toString('utf8').replace(/\r\n/gu, '\n').indexOf('\n---\n', 4);
     }
-    if (frontmatterEnd === -1) return { exists: true, description: null, issue: {
+    const normalized = Buffer.concat(chunks).toString('utf8').replace(/\r\n/gu, '\n');
+    const closingAtEnd = frontmatterEnd === -1 && normalized.endsWith('\n---')
+      && (reachedEof || (await handle.stat()).size === total);
+    if (frontmatterEnd === -1 && !closingAtEnd) return { exists: true, description: null, issue: {
       code: 'invalidMetadata', message: '简介元信息无效或超过读取预算。请检查内容文件。',
     } };
-    const normalized = Buffer.concat(chunks).toString('utf8').replace(/\r\n/gu, '\n');
-    const header = normalized.slice(0, frontmatterEnd + '\n---\n'.length);
+    const header = closingAtEnd ? normalized : normalized.slice(0, frontmatterEnd + '\n---\n'.length);
     const parsed = parseSkillFrontmatter(header, 'SKILL.md');
     if (parsed.errors.length > 0) return { exists: true, description: null, issue: {
       code: 'invalidMetadata', message: '简介元信息无法解析。请检查内容文件。',
@@ -239,16 +245,18 @@ async function addSkillDirectory(options: {
       });
       continue;
     }
-    const skill = await readFrontmatterDescription(
-      options.root,
-      path.join(skillRoot, 'SKILL.md'),
-    );
+    const skillFile = path.join(skillRoot, 'SKILL.md');
+    const skill = await readFrontmatterDescription(options.root, skillFile);
+    let issue = skill.issue;
     if (!skill.exists) {
-      const code = await unconfirmedPathCode(options.root, path.join(skillRoot, 'SKILL.md'));
-      addCoverageIssue(options.coverageIssues, {
-        code, message: `${options.tool} Skill 清单有无法确认的条目。请检查目录。`,
-      });
-      continue;
+      const code = await unconfirmedPathCode(options.root, skillFile);
+      if (code === 'incompleteList') {
+        addCoverageIssue(options.coverageIssues, {
+          code, message: `${options.tool} Skill 清单有无法确认的条目。请检查目录。`,
+        });
+        continue;
+      }
+      issue = { code, message: 'Skill 元信息文件不可安全读取。请检查内容目录后重试。' };
     }
     addItem(options.items, {
       id: `skill:${entry.name}`,
@@ -256,8 +264,8 @@ async function addSkillDirectory(options: {
       type: 'skill',
       description: skill.description,
       tools: [options.tool],
-      descriptionState: skill.issue ? 'issue' : skill.description ? 'available' : 'absent',
-      ...(skill.issue ? { issue: skill.issue } : {}),
+      descriptionState: issue ? 'issue' : skill.description ? 'available' : 'absent',
+      ...(issue ? { issue } : {}),
     });
   }
 }

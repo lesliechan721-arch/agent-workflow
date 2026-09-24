@@ -225,6 +225,87 @@ describe('TUI plugin content projection', () => {
     expect(overview.notices).toEqual([]);
   });
 
+  it('accepts frontmatter closed at end of file with or without a description', async () => {
+    // Risk: a valid EOF delimiter can turn trusted metadata or a normal empty summary into an issue.
+    const root = await fixtureRoot();
+    await fs.ensureDir(path.join(root, 'claude', 'skills'));
+    await Promise.all([
+      fs.outputFile(path.join(root, 'codex', 'skills', 'described', 'SKILL.md'),
+        '---\nname: described\ndescription: Inspect safely.\n---'),
+      fs.outputFile(path.join(root, 'codex', 'skills', 'unnamed-purpose', 'SKILL.md'),
+        '---\nname: unnamed-purpose\n---'),
+    ]);
+
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, { skills: './skills' }),
+    });
+
+    expect(overview.items).toMatchObject([
+      { name: 'described', description: 'Inspect safely.', descriptionState: 'available' },
+      { name: 'unnamed-purpose', description: null, descriptionState: 'absent' },
+    ]);
+    expect(overview.items.every((item) => item.issue === undefined)).toBe(true);
+    expect(overview.coverage).toBe('complete');
+    expect(overview.notices).toEqual([]);
+  });
+
+  it('keeps named Skills when their metadata file is unsafe', async () => {
+    // Risk: a known item can disappear when its SKILL.md is a symlink or non-regular node.
+    const root = await fixtureRoot();
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-tui-content-outside-'));
+    roots.push(outside);
+    await fs.outputFile(path.join(outside, 'private.md'), 'LOCAL-SENSITIVE-TEXT');
+    await fs.ensureDir(path.join(root, 'claude', 'skills'));
+    await Promise.all([
+      fs.ensureDir(path.join(root, 'codex', 'skills', 'linked')),
+      fs.ensureDir(path.join(root, 'codex', 'skills', 'not-a-file', 'SKILL.md')),
+    ]);
+    await fs.symlink(path.join(outside, 'private.md'),
+      path.join(root, 'codex', 'skills', 'linked', 'SKILL.md'));
+
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, { skills: './skills' }),
+    });
+
+    expect(overview.items).toMatchObject([
+      { name: 'linked', type: 'skill', tools: ['Codex'], description: null,
+        descriptionState: 'issue', issue: { code: 'unsafePath' } },
+      { name: 'not-a-file', type: 'skill', tools: ['Codex'], description: null,
+        descriptionState: 'issue', issue: { code: 'unsafePath' } },
+    ]);
+    expect(overview.coverage).toBe('complete');
+    expect(overview.notices).toEqual([]);
+    expect(JSON.stringify(overview)).not.toContain('LOCAL-SENSITIVE-TEXT');
+    expect(JSON.stringify(overview)).not.toContain(outside);
+  });
+
+  it('does not treat a read-block delimiter as EOF and does not name an empty directory', async () => {
+    // Risk: an apparent delimiter at a 512-byte boundary can hide trailing invalid metadata.
+    const root = await fixtureRoot();
+    await fs.ensureDir(path.join(root, 'claude', 'skills'));
+    const prefix = '---\nname: boundary\ndescription: Visible\n';
+    const firstBlock = `${prefix}${'#'.repeat(512 - prefix.length - 4)}\n---`;
+    await fs.outputFile(path.join(root, 'codex', 'skills', 'boundary', 'SKILL.md'),
+      `${firstBlock}X\n---\n`);
+    await fs.ensureDir(path.join(root, 'codex', 'skills', 'empty'));
+
+    const overview = await projectPluginContentOverview({
+      pluginId: 'official/demo', catalogVersion: '9.1.0',
+      plugin: plugin(root, { skills: './skills' }),
+    });
+
+    expect(Buffer.byteLength(firstBlock)).toBe(512);
+    expect(overview.items).toMatchObject([{
+      name: 'boundary', description: null, descriptionState: 'issue',
+      issue: { code: 'invalidMetadata' },
+    }]);
+    expect(overview.items.some((item) => item.name === 'empty')).toBe(false);
+    expect(overview.coverage).toBe('partial');
+    expect(overview.coverageIssue?.code).toBe('incompleteList');
+  });
+
   it('separates partial coverage from a confirmed empty list', async () => {
     // Risk: an unreadable declared list can be mistaken for a verified zero count.
     const root = await fixtureRoot();
