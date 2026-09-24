@@ -4,9 +4,11 @@ import type { Stats } from 'node:fs';
 import { stripVTControlCharacters } from 'node:util';
 
 import fs from 'fs-extra';
+import YAML from 'yaml';
 
 import type { PluginMeta } from '../types.js';
 import { parseSkillFrontmatter } from '../utils/skill-validation.js';
+import { resolveSupportedPlatforms } from '../utils/platform-support.js';
 
 export type PluginContentType =
   | 'skill'
@@ -50,6 +52,16 @@ export interface PluginContentOverview {
 
 const MAX_FRONTMATTER_BYTES = 16 * 1024;
 const TOOL_ORDER: PluginContentTool[] = ['Codex', 'Claude Code', 'Agent Skills'];
+
+function safeSummary(description: string, short: boolean): string | null {
+  const safeDescription = stripVTControlCharacters(description)
+    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, ' ')
+    .replace(/\s+/gu, ' ').trim();
+  const sentence = short ? safeDescription
+    : safeDescription.match(/^.*?(?:[。！？]|[.!?](?=\s|$)|$)/u)?.[0] ?? safeDescription;
+  const points = [...sentence];
+  return points.length > 120 ? `${points.slice(0, 119).join('')}…` : sentence || null;
+}
 
 function sortTools(tools: PluginContentTool[]): PluginContentTool[] {
   return [...new Set(tools)].sort((left, right) => TOOL_ORDER.indexOf(left) - TOOL_ORDER.indexOf(right));
@@ -160,21 +172,80 @@ async function readFrontmatterDescription(
         code: 'invalidMetadata', message: '简介元信息类型无效。请检查内容文件。',
       } };
     }
-    const safeDescription = typeof description === 'string'
-      ? stripVTControlCharacters(description)
-        .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, ' ')
-        .replace(/\s+/gu, ' ').trim()
-      : '';
-    const sentence = short ? safeDescription
-      : safeDescription.match(/^.*?(?:[。！？]|[.!?](?=\s|$)|$)/u)?.[0] ?? safeDescription;
-    const points = [...sentence];
     return {
       exists: true,
-      description: points.length > 120 ? `${points.slice(0, 119).join('')}…` : sentence || null,
+      description: typeof description === 'string' ? safeSummary(description, Boolean(short)) : null,
     };
   } catch {
     return { exists: true, description: null, issue: {
       code: 'unreadable', message: '简介文件无法读取。请检查目录内容后重试。',
+    } };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readCodexCommandDescription(
+  root: string,
+  skillRoot: string,
+): Promise<{ description: string | null; issue?: PluginContentIssue }> {
+  const metadataFile = path.join(skillRoot, 'agents', 'openai.yaml');
+  const safeFile = await regularPathWithin(root, metadataFile, 'file');
+  if (!safeFile) {
+    const code = await unconfirmedPathCode(root, metadataFile);
+    return { description: null, issue: {
+      code, message: 'Slash command 简介文件不可安全确认。请检查内容目录。',
+    } };
+  }
+  let handle;
+  try {
+    handle = await open(safeFile, 'r');
+  } catch {
+    return { description: null, issue: {
+      code: 'unreadable', message: 'Slash command 简介文件无法读取。请检查内容目录。',
+    } };
+  }
+  try {
+    const size = (await handle.stat()).size;
+    if (size > MAX_FRONTMATTER_BYTES) return { description: null, issue: {
+      code: 'invalidMetadata', message: 'Slash command 简介元信息超过读取预算。请检查内容文件。',
+    } };
+    const buffer = Buffer.alloc(size);
+    let total = 0;
+    while (total < size) {
+      const { bytesRead } = await handle.read(buffer, total, size - total, total);
+      if (bytesRead === 0) return { description: null, issue: {
+        code: 'unreadable', message: 'Slash command 简介文件无法完整读取。请检查内容目录。',
+      } };
+      total += bytesRead;
+    }
+    let metadata: unknown;
+    try {
+      const document = YAML.parseDocument(buffer.toString('utf8'), { prettyErrors: false });
+      if (document.errors.length > 0) throw new Error('Invalid YAML');
+      metadata = document.toJS({ maxAliasCount: 0 });
+    } catch {
+      return { description: null, issue: {
+        code: 'invalidMetadata', message: 'Slash command 简介元信息无法解析。请检查内容文件。',
+      } };
+    }
+    if (!isRecord(metadata) || (metadata.interface !== undefined && !isRecord(metadata.interface))) {
+      return { description: null, issue: {
+        code: 'invalidMetadata', message: 'Slash command 简介元信息无效。请检查内容文件。',
+      } };
+    }
+    const short = isRecord(metadata.interface) ? metadata.interface.short_description : undefined;
+    if (short === undefined) return { description: null };
+    if (typeof short !== 'string' || !short.trim()) return { description: null, issue: {
+      code: 'invalidMetadata', message: 'Slash command 简短用途元信息无效。请检查内容文件。',
+    } };
+    const description = safeSummary(short, true);
+    return description ? { description } : { description: null, issue: {
+      code: 'invalidMetadata', message: 'Slash command 简短用途元信息无效。请检查内容文件。',
+    } };
+  } catch {
+    return { description: null, issue: {
+      code: 'unreadable', message: 'Slash command 简介文件无法读取。请检查内容目录。',
     } };
   } finally {
     await handle.close();
@@ -265,13 +336,17 @@ async function addSkillDirectory(options: {
       issue = { code, message: 'Skill 元信息文件不可安全读取。请检查内容目录后重试。' };
     }
     const type = options.type ?? 'skill';
+    const command = type === 'command' && skill.exists
+      ? await readCodexCommandDescription(options.root, skillRoot) : undefined;
+    issue ??= command?.issue;
+    const description = command?.description ?? skill.description;
     addItem(options.items, {
       id: `${type}:${entry.name}`,
       name: entry.name,
       type,
-      description: skill.description,
+      description,
       tools: [options.tool],
-      descriptionState: issue ? 'issue' : skill.description ? 'available' : 'absent',
+      descriptionState: issue ? 'issue' : description ? 'available' : 'absent',
       ...(issue ? { issue } : {}),
     });
   }
@@ -387,15 +462,19 @@ async function addSlashCommands(options: {
       }
     }
     const command = await readFrontmatterDescription(options.root, path.join(directory, entry.name));
+    const codexDescription = codexCommand
+      ? await readCodexCommandDescription(options.root, path.dirname(codexSkillFile)) : undefined;
+    const description = codexDescription?.description ?? command.description;
+    const issue = codexDescription?.issue ?? command.issue;
     if (codexCommand) tools.unshift('Codex');
     addItem(options.items, {
       id: `command:${name}`,
       name,
       type: 'command',
-      description: command.description,
+      description,
       tools,
-      descriptionState: command.issue ? 'issue' : command.description ? 'available' : 'absent',
-      ...(command.issue ? { issue: command.issue } : {}),
+      descriptionState: issue ? 'issue' : description ? 'available' : 'absent',
+      ...(issue ? { issue } : {}),
     });
   }
 }
@@ -456,22 +535,22 @@ export async function projectPluginContentOverview(options: {
   const items = new Map<string, PluginContentItem>();
   const coverageIssues: PluginContentIssue[] = [];
   const platforms = await projectedPlatforms(root);
+  const supportedPlatforms = resolveSupportedPlatforms(options.plugin.manifest);
+  for (const [platform, tool] of [
+    ['codex', 'Codex'], ['claude', 'Claude Code'],
+  ] as const) {
+    if (!supportedPlatforms.has(platform) || platforms.includes(tool)) continue;
+    const marker = path.join(root, `.${platform}-plugin`, 'plugin.json');
+    const code = await unconfirmedPathCode(root, marker);
+    addCoverageIssue(coverageIssues, {
+      code, message: `${tool} 平台清单无法安全确认。请检查目录。`,
+    });
+  }
   const codexOnlyCommands = Boolean(options.plugin.manifest.slashCommands)
     && platforms.includes('Codex') && !platforms.includes('Claude Code');
   const mixedCodexSkills = codexOnlyCommands
     && Boolean(options.plugin.manifest.skills || options.plugin.manifest.buildConfig?.fileRules?.codex);
 
-  if (platforms.length === 0 && (options.plugin.manifest.skills
-    || options.plugin.manifest.slashCommands
-    || options.plugin.manifest.mcpServers || options.plugin.manifest.apps)) {
-    addCoverageIssue(coverageIssues, {
-      code: 'incompleteList', message: '插件声明了内容，但没有可安全确认的平台清单。请检查目录。',
-    });
-  } else if (options.plugin.manifest.apps && !platforms.includes('Codex')) {
-    addCoverageIssue(coverageIssues, {
-      code: 'incompleteList', message: '插件声明了 App，但没有可安全确认的 Codex 清单。请检查目录。',
-    });
-  }
   if (mixedCodexSkills) {
     addCoverageIssue(coverageIssues, {
       code: 'incompleteList',

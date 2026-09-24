@@ -205,13 +205,14 @@ export function buildPluginDetailSubject(options: {
     .map((fact) => toRelation(fact, fact.from));
   const overview = options.dependencyOverviews?.find((item) => item.pluginId === pluginId);
   const source = options.status.catalog.sources.find((item) => item.id === sourceId);
+  const definitionAvailable = summary !== undefined && source !== undefined && !source.error;
   return {
     pluginId,
     sourceId,
     displayName,
     ...(summary?.description ? { description: summary.description } : {}),
     ...(summary?.version ? { catalogVersion: summary.version } : {}),
-    definitionAvailable: summary !== undefined && source?.error === undefined,
+    definitionAvailable,
     savedConfigScopes: plugin?.savedConfigScopes ?? [],
     ...(plugin ? { plugin } : {}),
     placements: [...placements.values()].sort((left, right) =>
@@ -219,7 +220,7 @@ export function buildPluginDetailSubject(options: {
     relations: {
       outgoing,
       incoming,
-      checkState: overview && source && !source.error
+      checkState: overview && definitionAvailable
         && !overview.blockers.some((blocker) => blocker.code === 'dependencyGraphInvalid')
         ? 'checked' : 'unknown',
       hasKnownRelations: outgoing.length > 0 || incoming.length > 0,

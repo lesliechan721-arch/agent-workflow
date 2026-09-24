@@ -228,6 +228,8 @@ describe('TUI plugin content projection', () => {
     await Promise.all([
       fs.outputFile(path.join(root, 'codex', 'skills', 'deploy', 'SKILL.md'),
         '# PRIVATE-BODY\n'),
+      fs.outputFile(path.join(root, 'codex', 'skills', 'deploy', 'agents', 'openai.yaml'),
+        'interface:\n  short_description: Deploy changes after review.\n'),
       fs.ensureDir(path.join(root, 'claude', 'skills')),
       fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'),
         '---\ndescription: [invalid\n---\nCOMMAND-BODY-SECRET\n'),
@@ -269,7 +271,9 @@ describe('TUI plugin content projection', () => {
 
       expect(overview.items).toMatchObject([{
         id: 'command:review', name: 'review', type: 'command', tools: expectedTools,
-        descriptionState: scenario === 'codex' ? 'absent' : 'available',
+        description: scenario === 'claude'
+          ? 'Review the current change set with Claude Code tools.' : 'Review repository changes',
+        descriptionState: 'available',
       }]);
       expect(overview.items).toHaveLength(1);
       expect(overview.items[0]?.issue).toBeUndefined();
@@ -298,7 +302,8 @@ describe('TUI plugin content projection', () => {
       plugin: await readPluginManifest(markerBundleRoot, { mode: 'bundle' }),
     });
     expect(markerOverview.items).toMatchObject([{
-      name: 'review', type: 'command', tools: ['Codex'], descriptionState: 'absent',
+      name: 'review', type: 'command', tools: ['Codex'],
+      description: 'Review repository changes', descriptionState: 'available',
     }]);
     expect(markerOverview.items[0]?.issue).toBeUndefined();
     expect(markerOverview.coverage).toBe('complete');
@@ -333,6 +338,117 @@ describe('TUI plugin content projection', () => {
     expect(overview.coverageIssue?.message).toContain('不能安全区分普通 Skill 与 Slash command');
     expect(JSON.stringify(overview)).not.toContain('PRIVATE-SKILL-BODY');
     expect(JSON.stringify(overview)).not.toContain('Run `git status`');
+  });
+
+  it('marks a missing or unsafe platform marker partial in real dual-platform bundles', async () => {
+    // Risk: one readable platform can hide that another declared platform was not confirmed.
+    const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      '..', 'fixtures', 'codex-project-repo-managed', 'plugins', 'slashCommands-only');
+    for (const [missing, unsafe] of [
+      ['codex', false], ['claude', false], ['codex', true], ['claude', true],
+    ] as const) {
+      const output = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-tui-command-marker-'));
+      roots.push(output);
+      const source = await readPluginManifest(sourceRoot);
+      source.manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+      const bundleRoot = path.join(output, 'bundle');
+      await bundleLocalPlugin(source, bundleRoot);
+      const bundle = await readPluginManifest(bundleRoot, { mode: 'bundle' });
+      const marker = path.join(bundleRoot, `.${missing}-plugin`);
+      await fs.remove(marker);
+      if (unsafe) {
+        const outside = path.join(output, 'outside-marker');
+        await fs.outputJson(path.join(outside, 'plugin.json'), { name: 'PRIVATE-MARKER' });
+        await fs.symlink(outside, marker);
+      }
+      const overview = await projectPluginContentOverview({
+        pluginId: 'official/slash-commands-only', catalogVersion: '9.1.0',
+        plugin: bundle,
+      });
+
+      expect(overview.items).toMatchObject([{
+        id: 'command:review', type: 'command', name: 'review',
+        tools: missing === 'codex' ? ['Claude Code'] : ['Codex'],
+      }]);
+      expect(overview.items).toHaveLength(1);
+      expect(overview.coverage).toBe('partial');
+      expect(overview.coverageIssue?.code).toBe(unsafe ? 'unsafePath' : 'incompleteList');
+      expect(overview.coverageIssue?.message).toContain(missing === 'codex' ? 'Codex' : 'Claude Code');
+      expect(JSON.stringify(overview)).not.toContain('PRIVATE-MARKER');
+      expect(JSON.stringify(overview)).not.toContain('Run `git status`');
+    }
+  });
+
+  it('reads only safe bounded Codex command short descriptions from real bundle metadata', async () => {
+    // Risk: reading generated YAML can expose its prompt, follow a link, or hide metadata damage.
+    const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      '..', 'fixtures', 'codex-project-repo-managed', 'plugins', 'slashCommands-only');
+    const output = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-tui-command-metadata-'));
+    roots.push(output);
+    const source = await readPluginManifest(sourceRoot);
+    source.manifest.marketplace.policy.products = ['CODEX'];
+    const bundleRoot = path.join(output, 'bundle');
+    await bundleLocalPlugin(source, bundleRoot);
+    const bundle = await readPluginManifest(bundleRoot, { mode: 'bundle' });
+    const metadataFile = path.join(bundleRoot, 'codex', 'skills', 'review', 'agents', 'openai.yaml');
+    const original = await fs.readFile(metadataFile, 'utf8');
+    const project = () => projectPluginContentOverview({
+      pluginId: 'official/slash-commands-only', catalogVersion: '9.1.0', plugin: bundle,
+    });
+
+    await fs.writeFile(metadataFile, original.replace('Use $review to inspect the current change set.',
+      'PRIVATE-DEFAULT-PROMPT'));
+    const valid = await project();
+    expect(valid.items).toMatchObject([{
+      id: 'command:review', description: 'Review repository changes', descriptionState: 'available',
+    }]);
+    expect(JSON.stringify(valid)).not.toContain('PRIVATE-DEFAULT-PROMPT');
+    expect(JSON.stringify(valid)).not.toContain('Run `git status`');
+
+    await fs.writeFile(metadataFile, original.replace(/^  short_description:.*\n/mu, ''));
+    const absent = await project();
+    expect(absent.items[0]).toMatchObject({
+      description: null, descriptionState: 'absent',
+    });
+    expect(absent.items[0]?.issue).toBeUndefined();
+
+    await fs.writeFile(metadataFile, 'interface:\n  short_description: 42\n');
+    const invalidField = await project();
+    expect(invalidField.items[0]).toMatchObject({
+      description: null, descriptionState: 'issue', issue: { code: 'invalidMetadata' },
+    });
+
+    await fs.writeFile(metadataFile, 'interface:\n  short_description: [invalid\nPRIVATE-YAML-TEXT\n');
+    const invalid = await project();
+    expect(invalid.items).toMatchObject([{
+      id: 'command:review', description: null, descriptionState: 'issue',
+      issue: { code: 'invalidMetadata' },
+    }]);
+    expect(invalid.coverage).toBe('complete');
+    expect(JSON.stringify(invalid)).not.toContain('PRIVATE-YAML-TEXT');
+
+    await fs.writeFile(metadataFile, `${original}${'#'.repeat(16 * 1024)}`);
+    const oversized = await project();
+    expect(oversized.items[0]).toMatchObject({
+      descriptionState: 'issue', issue: { code: 'invalidMetadata' },
+    });
+
+    const outside = path.join(output, 'private-openai.yaml');
+    await fs.writeFile(outside, 'interface:\n  short_description: PRIVATE-LINK-TEXT\n');
+    await fs.remove(metadataFile);
+    await fs.symlink(outside, metadataFile);
+    const linked = await project();
+    expect(linked.items[0]).toMatchObject({
+      description: null, descriptionState: 'issue', issue: { code: 'unsafePath' },
+    });
+    expect(JSON.stringify(linked)).not.toContain('PRIVATE-LINK-TEXT');
+    expect(JSON.stringify(linked)).not.toContain(outside);
+
+    await fs.remove(metadataFile);
+    const missing = await project();
+    expect(missing.items[0]).toMatchObject({
+      description: null, descriptionState: 'issue', issue: { code: 'incompleteList' },
+    });
   });
 
   it('does not call a declared command list empty when platform manifests are missing', async () => {

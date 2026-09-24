@@ -210,6 +210,55 @@ describe('unified plugin detail subject', () => {
       definitionAvailable: false, relations: { checkState: 'unknown', hasKnownRelations: false } });
   });
 
+  it('does not treat an empty overview for a removed catalog definition as a complete relation check', () => {
+    const pluginId = 'official/removed';
+    const currentTarget = {
+      pluginId, pluginName: 'removed', sourceId: 'official', sourceIdentity: 'source',
+      platform: 'claude' as const, scope: 'project' as const, cwd: '/tmp/project',
+      state: 'needsSync' as const, components: [], reasons: [], recoveryActions: [],
+    };
+    const removed: TuiStatusLoadResult = {
+      payload: payload([currentTarget]), pluginSummaries: [],
+      dependencyOverviews: [overview(pluginId)],
+    };
+    expect(subject(removed, pluginId)).toMatchObject({
+      pluginId, definitionAvailable: false,
+      relations: { outgoing: [], incoming: [], checkState: 'unknown', hasKnownRelations: false },
+    });
+
+    const defined: TuiStatusLoadResult = {
+      ...removed,
+      pluginSummaries: [{ pluginId, pluginName: 'removed', description: '', version: '1.0.0' }],
+    };
+    expect(subject(defined, pluginId)?.relations).toMatchObject({
+      outgoing: [], incoming: [], checkState: 'checked', hasKnownRelations: false,
+    });
+  });
+
+  it('retains known incoming references when the referenced plugin definition is missing', () => {
+    const pluginId = 'official/removed';
+    const removed = overview(pluginId);
+    removed.dependents.push({
+      pluginId: 'official/consumer', displayName: 'Consumer', relation: 'dependent', depth: 1,
+      requiredBy: [], placements: [], aggregateStatus: 'ready',
+      placementReferences: [{
+        consumer: { pluginId: 'official/consumer', platform: 'codex', scope: 'project', project: 'current' },
+        dependency: { pluginId, platform: 'codex', scope: 'project', project: 'current' },
+      }],
+    });
+    const status: TuiStatusLoadResult = {
+      payload: payload(), pluginSummaries: [], dependencyOverviews: [removed],
+    };
+    expect(subject(status, pluginId)).toMatchObject({
+      pluginId, definitionAvailable: false,
+      relations: {
+        outgoing: [], checkState: 'unknown', hasKnownRelations: true,
+        incoming: [{ pluginId: 'official/consumer', displayName: 'Consumer',
+          declared: true, verified: false }],
+      },
+    });
+  });
+
   it('preserves a relation-only route on refresh and returns to the list when all evidence disappears', async () => {
     const graph = overview('official/consumer');
     graph.dependents.push({ pluginId: 'other/reference', displayName: 'Reference',
