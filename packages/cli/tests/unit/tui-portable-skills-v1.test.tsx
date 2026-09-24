@@ -8,6 +8,7 @@ import { SKILLS_CLI_SUPPORTED_VERSION_LABEL } from '../../src/portable/skills-cl
 import type { StatusV8Payload, StatusV8PluginSummary } from '../../src/commands/status-v6.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
+import { wrapDisplayText } from '../../src/tui/viewport.js';
 import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
 import { SessionHost } from '../../src/tui/session-host.js';
 import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
@@ -955,6 +956,37 @@ describe('Portable Skills TUI V1', () => {
     expect(instance.lastFrame()).toContain('3 / 3 已选择');
   });
 
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'searches Skill names and short descriptions on the same page at $columns x $rows', async (size) => {
+      const { value, capture } = portableController();
+      await value.load();
+      await value.preparePortableInstall('official/toolkit');
+      const capturesBeforeSearch = capture.mock.calls.length;
+      const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+      await tick();
+      const initial = instance.lastFrame() ?? '';
+      await send(instance, '/', 'f', 'q', '?');
+      expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
+      expect(value.snapshot.router.current.context.query).toBe('fq?');
+      expect(capture).toHaveBeenCalledTimes(capturesBeforeSearch);
+      await send(instance, '\u0015', '评审内容', '\r');
+      const searched = instance.lastFrame() ?? '';
+      expect(searched).toContain('content-skill');
+      expect(searched).toContain('隐藏已选 2');
+      expect(searched).not.toContain('› [✓] author-skill');
+      await send(instance, 'c');
+      expect(value.snapshot.router.current.route.name).toBe('portableAgentMode');
+      await send(instance, '\u001b');
+      await new Promise((resolve) => setTimeout(resolve, 550));
+      expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
+      expect(value.snapshot.router.current.context.query).toBe('评审内容');
+      expect(instance.lastFrame()).toContain('content-skill');
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+        path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `query-skills-${size.columns}x${size.rows}.json`),
+        { synthetic: true, size, frames: { initial, searched } }, { spaces: 2 });
+    },
+  );
+
   it('advertises only the manifest capability before entry, then selects candidates and executes the reviewed subset', async () => {
     const { value, capture } = portableController();
     await value.load();
@@ -1834,7 +1866,7 @@ describe('Portable Skills TUI V1', () => {
       expect(technicalFrame).toContain('elapsed');
       expect(technicalFrame).toMatch(/result-skill-9\s+确认缺失 · Agent：无法确认/u);
       expect(technicalFrame).toContain('第 1–1 项，共 10 项');
-      expect(technicalFrame).toMatch(/范围\s+当前项目/u);
+      expect(technicalFrame).toContain('当前项目');
       expect(technicalFrame).toContain('安全恢复');
       expect(technicalFrame).toContain(`› ${label}`);
       expect(technicalFrame).toMatch(/↑↓(?:\s+移动|\/Enter\s+菜单)/u);
@@ -2001,17 +2033,23 @@ describe('Portable Skills TUI V1', () => {
 
     await send(instance, 'd');
     for (const [index, label] of [value.snapshot.activeReview!.primaryLabel, '返回修改'].entries()) {
-      if (index > 0) await send(instance, '\u001B[B');
+      if (index > 0) {
+        await send(instance, ...Array.from({ length: 30 }, () => '\u001B[5~'));
+        await send(instance, '\u001B[B');
+      }
       const frame = instance.lastFrame() ?? '';
       let allPages = frame;
-      for (let page = 0; page < 15; page += 1) {
+      for (let page = 0; page < 50; page += 1) {
+        const pager = (instance.lastFrame() ?? '').match(/← 上一页\s+(\d+) \/ (\d+)/u);
+        expect(pager).toBeTruthy();
+        if (pager?.[1] === pager?.[2]) break;
         await send(instance, '\u001B[6~');
         allPages += instance.lastFrame() ?? '';
       }
       expect(allPages).toContain('同名覆盖');
       expect(allPages).toContain('安装目标 · ~ Agent');
       expect(allPages).toContain('安装目标 · ~ 范围');
-      expect(frame).toContain('Catalog 配置：config');
+      expect(allPages).toContain('Catalog 配置：config');
       expect(frame).toMatch(/另有 \d+ 项/u);
       expect(frame).toContain(`› ${label}`);
       expect(frame).toMatch(/d\s+技术详情/u);
@@ -2543,7 +2581,7 @@ describe('Portable Skills TUI V1', () => {
       ...candidates[0]!, name, description: `Long result ${index}`,
       filesDigest: `sha256:long-result-${index}`,
     }));
-    const longAgent = `github-copilot-${'a'.repeat(113)}`;
+    const longAgent = `github-copilot-${Array.from({ length: 18 }, (_, index) => `agent${index}-`).join('')}`;
     const digest = `sha256:${'d'.repeat(64)}`;
     const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
       if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
@@ -2581,32 +2619,28 @@ describe('Portable Skills TUI V1', () => {
       for (let page = 0; page < 20; page += 1) {
         const frame = instance.lastFrame() ?? '';
         frames.push(frame);
-        if (frame.includes('已在最后一页')) break;
+        const pager = frame.match(/← 上一页\s+(\d+) \/ (\d+)/u);
+        expect(pager).toBeTruthy();
+        if (pager?.[1] === pager?.[2]) break;
         await send(instance, '\u001B[C');
       }
       return frames;
     };
-    const rebuild = (frames: readonly string[], label: string): string => {
-      const parts = new Map<number, string>();
-      let total = 0;
-      for (const line of frames.flatMap((frame) => frame.split('\n'))) {
-        const marker = `${label} `;
-        const value = line.trim();
-        if (!value.startsWith(marker)) continue;
-        const match = value.slice(marker.length).match(/^(\d+)\/(\d+) · (.*)$/u);
-        if (!match) continue;
-        parts.set(Number(match[1]), match[3] ?? '');
-        total = Number(match[2]);
+    const expectCompleteField = (frames: readonly string[], label: string, value: string): void => {
+      for (const line of wrapDisplayText(`${label} · ${value}`, size.columns - 2).filter(Boolean)) {
+        expect(frames.some((frame) => frame.includes(line))).toBe(true);
       }
-      return Array.from({ length: total }, (_, index) => parts.get(index + 1) ?? '').join('');
     };
 
     expect(instance.lastFrame()).toContain('已验证 · Agent：');
     let frames = await readDetail();
-    expect(rebuild(frames, 'Skill')).toBe(skills[0]);
-    expect(rebuild(frames, 'Agent')).toBe(longAgent);
-    expect(rebuild(frames, 'materialization digest')).toBe(digest);
+    expectCompleteField(frames, 'Skill', skills[0]!);
+    expectCompleteField(frames, 'Agent', longAgent);
+    expectCompleteField(frames, 'materialization digest', digest);
     expect(frames.join('\n')).toContain('状态 · 已验证');
+    if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+      path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `reader-portable-detail-${size.columns}x${size.rows}.json`),
+      { synthetic: true, size, frames: { first: frames[0], last: frames.at(-1) } }, { spaces: 2 });
     instance.stdin.write('\u001B');
     await new Promise((resolve) => setTimeout(resolve, 550));
     await tick();
@@ -2614,9 +2648,9 @@ describe('Portable Skills TUI V1', () => {
     await send(instance, '\u001B[C', 'd');
     expect(instance.lastFrame()).toContain('已验证 · Agent：');
     frames = await readDetail();
-    expect(rebuild(frames, 'Skill')).toBe(skills[1]);
-    expect(rebuild(frames, 'Agent')).toBe(longAgent);
-    expect(rebuild(frames, 'materialization digest')).toBe(digest);
+    expectCompleteField(frames, 'Skill', skills[1]!);
+    expectCompleteField(frames, 'Agent', longAgent);
+    expectCompleteField(frames, 'materialization digest', digest);
     instance.rerender(<ConsoleAppV4 controller={value} size={
       size.rows === 18 ? { columns: 80, rows: 24 } : { columns: 60, rows: 18 }
     } />);

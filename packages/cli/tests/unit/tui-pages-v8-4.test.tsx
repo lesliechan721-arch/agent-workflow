@@ -46,6 +46,120 @@ function frame(instance: ReturnType<typeof render>, size: { columns: number; row
 
 describe('v8.4 page contracts', () => {
   it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'keeps project section, status, search, and root focus on one page at $columns x $rows', async (size) => {
+      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(data()),
+        captureEvidence: vi.fn(), executeIntent: vi.fn() });
+      await controller.load(); controller.push({ name: 'projectStatus' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      const initial = frame(instance, size);
+      expect(initial).toContain('[项目声明');
+      expect(initial).toContain('[全部 2]');
+      await input(instance, 'f');
+      const filtered = frame(instance, size);
+      expect(filtered).toContain('[受阻 2]');
+      expect(controller.snapshot.router.current.context.projectSection).toBeUndefined();
+      expect(controller.snapshot.router.current.context.projectStatusFilter).toBe('blocked');
+      await input(instance, '/');
+      await input(instance, 'fmcshrHq?');
+      expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
+      expect(controller.snapshot.router.current.context.query).toBe('fmcshrHq?');
+      expect(controller.snapshot.router.current.context.projectStatusFilter).toBe('blocked');
+      await input(instance, '\u001b[D');
+      expect(controller.snapshot.router.current.context.projectSection).toBeUndefined();
+      await input(instance, '\r');
+      const zero = frame(instance, size);
+      expect(zero).toContain('当前条件无匹配');
+      expect(zero).toContain('[受阻 0]');
+      await input(instance, '\u001b[C');
+      expect(controller.snapshot.router.current.context.projectSection).toBe('extraInstalled');
+      await input(instance, '\u001b');
+      expect(controller.snapshot.router.current.route.name).toBe('home');
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+        path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `query-project-${size.columns}x${size.rows}.json`),
+        { synthetic: true, size, frames: { initial, filtered, zero } }, { spaces: 2 });
+      instance.unmount();
+    },
+  );
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'searches source identity and address without routing or triggering shortcuts at $columns x $rows', async (size) => {
+      const loaded = data();
+      loaded.payload.catalog.sources = [
+        { id: 'official', identity: 'one', type: 'git', primary: true, requestedRef: 'main' },
+        { id: 'team', identity: 'two', type: 'path', primary: false, requestedRef: 'local' },
+      ];
+      loaded.configuredSources = [
+        { id: 'official', type: 'git', primary: true, url: 'https://example.com/official-catalog', refPolicy: { type: 'explicit', ref: 'main' } },
+        { id: 'team', type: 'path', primary: false, path: '/tmp/catalog-team' },
+      ];
+      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
+        captureEvidence: vi.fn(), executeIntent: vi.fn() });
+      await controller.load(); controller.push({ name: 'sourceList' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      const initial = frame(instance, size);
+      expect(initial).toContain('类型');
+      await input(instance, '/');
+      await input(instance, 'catalog-team');
+      await input(instance, '\r');
+      const searched = frame(instance, size);
+      expect(searched).toContain('team');
+      expect(searched).not.toContain('› official');
+      expect(controller.snapshot.router.current.context.query).toBe('catalog-team');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team' });
+      await input(instance, '\u001b');
+      expect(controller.snapshot.router.current.route.name).toBe('sourceList');
+      expect(controller.snapshot.router.current.context.query).toBe('catalog-team');
+      await input(instance, '\u001b[C');
+      expect(controller.snapshot.router.current.context.sourceTypeTab).toBe('git');
+      const zero = frame(instance, size);
+      expect(zero).toContain('当前条件无匹配');
+      expect(controller.snapshot.router.current.route.name).toBe('sourceList');
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+        path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `query-source-${size.columns}x${size.rows}.json`),
+        { synthetic: true, size, frames: { initial, searched, zero } }, { spaces: 2 });
+      instance.unmount();
+    },
+  );
+
+  it('keeps hidden batch selections while search changes and restores the selected list', async () => {
+    const loaded = data();
+    loaded.projectIntent = { state: 'absent' };
+    loaded.payload.catalog.sources = [{ id: 'official', identity: 'one', type: 'path', primary: true, requestedRef: 'local' }];
+    loaded.pluginSummaries = ['First', 'Second'].map((name) => ({
+      pluginId: `official/${name.toLowerCase()}`, pluginName: name.toLowerCase(),
+      displayName: name, description: `${name} purpose`, version: '1.0.0',
+      supportedTargets: { claude: ['user' as const], codex: [] }, configFieldCount: 0,
+    }));
+    loaded.payload.targets = ['first', 'second'].map((name) => ({
+      pluginId: `official/${name}`, pluginName: name, sourceId: 'official', sourceIdentity: 'one',
+      platform: 'claude' as const, scope: 'user' as const, cwd: '/tmp/项目长名称', version: '1.0.0',
+      state: 'absent' as const, components: [], reasons: [], recoveryActions: [],
+    }));
+    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence: vi.fn(), executeIntent: vi.fn() });
+    await controller.load(); controller.push({ name: 'pluginList', mode: 'browse' });
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
+    await tick();
+    await input(instance, 'm');
+    expect(controller.snapshot.router.current.route.name).toBe('batchSelection');
+    await input(instance, ' ');
+    expect(instance.lastFrame()).toContain('已选 1');
+    await input(instance, '/'); await input(instance, 'Second'); await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('隐藏已选 1');
+    expect(instance.lastFrame()).toContain('Second');
+    expect(instance.lastFrame()).not.toContain('› [✓] First');
+    await input(instance, '\r');
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/second' });
+    await input(instance, '\u001b');
+    expect(controller.snapshot.router.current.route.name).toBe('batchSelection');
+    expect(instance.lastFrame()).toContain('隐藏已选 1');
+    instance.unmount();
+  });
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
     'keeps three domain cards and unresolved project roots reachable at $columns x $rows', async (size) => {
       const loadStatus = vi.fn().mockImplementation(async () => data());
       const executeIntent = vi.fn();

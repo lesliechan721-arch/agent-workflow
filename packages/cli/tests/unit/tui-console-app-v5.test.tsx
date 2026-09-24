@@ -47,6 +47,8 @@ import {
 } from '../../src/tui/controller.js';
 import type { ConfigPageViewModel, PluginDependencyOverviewViewModel } from '../../src/tui/model.js';
 import { OperationHistoryStore } from '../../src/tui/operation-history.js';
+import { operationDiagnosticText } from '../../src/tui/operation-diagnostic-screens.js';
+import { readerPage } from '../../src/tui/reader.js';
 import { copyToClipboard } from '../../src/tui/clipboard.js';
 import { buildDependencyGraphProjection } from '../../src/tui/dependency-graph.js';
 import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
@@ -6062,6 +6064,22 @@ describe('ConsoleAppV4', () => {
       await nextTurn(2);
       const frame = instance.lastFrame() ?? '';
       visibleCounts.push(frame.match(/result-target-\d+/gu)?.length ?? 0);
+      if (size.rows <= 24) {
+        const firstPage = frame.match(/← 上一页\s+(\d+) \/ (\d+)/u);
+        expect(firstPage?.[1]).toBe('1');
+        expect(Number(firstPage?.[2])).toBe(Math.ceil(12 / visibleCounts.at(-1)!));
+        let last = frame;
+        for (let page = 1; page < Number(firstPage?.[2]); page += 1) {
+          await input(instance, '\u001B[C');
+          last = instance.lastFrame() ?? '';
+        }
+        expect(last).toContain(`result-target-12`);
+        expect(last).toContain(`${firstPage?.[2]} / ${firstPage?.[2]}`);
+        await writeAcceptanceTrace(`reader/result-targets-${size.columns}x${size.rows}`, [
+          { label: '第一页', size, inputs: [], frame },
+          { label: '末页', size, inputs: ['ArrowRight'], frame: last },
+        ]);
+      }
       await input(instance, '\u001B[B');
       expect(instance.lastFrame()).not.toContain('返回首页');
       expect(instance.lastFrame()).toContain('[y] 复制全文');
@@ -9437,6 +9455,10 @@ describe('ConsoleAppV4', () => {
     expect(saved).toMatch(/↑↓(?: 移动 · Enter 选择|\/Enter 菜单)/u);
     expect(saved).not.toContain('/private/tmp/report.md');
     expect(saved.split('\n').length).toBeLessThanOrEqual(rows);
+    await writeAcceptanceTrace(`reader/report-save-feedback-${columns}x${rows}`, [
+      { label: '保存失败', size: { columns, rows }, inputs: ['Enter'], frame: failed },
+      { label: '保存成功', size: { columns, rows }, inputs: ['Enter'], frame: saved },
+    ]);
 
     for (const label of ['选择本地保存位置', '保存到临时目录']) {
       await focusAction(instance, label);
@@ -10485,7 +10507,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     expect(instance.lastFrame()).toContain('~ 个人默认 · 变更 1');
     expect(instance.lastFrame()).not.toContain('› ~ 个人默认 · 变更 1');
-    expect(instance.lastFrame()).toMatch(/后面还有 \d+ 项/u);
+    expect(instance.lastFrame()).toContain('1 / 11');
     expect(instance.lastFrame()).toContain('› 保存并应用');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
     await input(instance, '\r');
@@ -10523,14 +10545,17 @@ describe('ConsoleAppV4', () => {
     const trace: AcceptanceTraceStep[] = [];
     await nextTurn(2);
     const frame = instance.lastFrame() ?? '';
-    expect(frame).toMatch(/后面还有 \d+ 项/u);
+    expect(frame).toContain('1 / 31');
     expect(frame).toContain(`› ${review.primaryLabel}`);
     expect(frame).toMatch(/↑↓(?:\s+移动|\/Enter\s+菜单)/u);
     expect(frame.match(/›/gu)).toHaveLength(1);
     expect(snapshot.activeReview.requiresConfirmation).toBe(true);
     trace.push(acceptanceTraceStep(instance, compactSize, '操作汇总核心风险', []));
     let reviewFrames = frame;
-    for (let index = 0; index < 50 && (instance.lastFrame() ?? '').includes('↓ 后面还有'); index += 1) {
+    for (let index = 0; index < 50; index += 1) {
+      const page = (instance.lastFrame() ?? '').match(/← 上一页\s+(\d+) \/ (\d+)/u);
+      expect(page).toBeTruthy();
+      if (page?.[1] === page?.[2]) break;
       await input(instance, '\u001B[C');
       reviewFrames += `\n${instance.lastFrame() ?? ''}`;
     }
@@ -10542,7 +10567,10 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('独立授权');
     let riskFrames = instance.lastFrame() ?? '';
-    for (let index = 0; index < 50 && (instance.lastFrame() ?? '').includes('↓ 后面还有'); index += 1) {
+    for (let index = 0; index < 50; index += 1) {
+      const page = (instance.lastFrame() ?? '').match(/← 上一页\s+(\d+) \/ (\d+)/u);
+      expect(page).toBeTruthy();
+      if (page?.[1] === page?.[2]) break;
       await input(instance, '\u001B[C');
       expect(executeIntent).not.toHaveBeenCalled();
       riskFrames += `\n${instance.lastFrame() ?? ''}`;
@@ -10553,6 +10581,55 @@ describe('ConsoleAppV4', () => {
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
     trace.push(acceptanceTraceStep(instance, compactSize, '风险说明完整结尾', ['Enter', 'ArrowRight']));
     await writeAcceptanceTrace('review/user-fields/paged-technical', trace);
+  });
+
+  it.each([[60, 18], [80, 24]] as const)('pages unequal technical Review collections at %ix%i', async (columns, rows) => {
+    const value = controller();
+    await value.load();
+    await value.buildOperationReview({
+      kind: 'configSave', pluginId: 'official/agent-lab', scope: 'user',
+      projectLayer: 'shared', apply: false, updates: { enabled: true },
+      changes: [{ key: 'enabled', title: '设置', before: '关闭', after: '开启' }],
+    });
+    const snapshot = structuredClone(value.snapshot);
+    if (!snapshot.activeReview) throw new Error('expected active review');
+    snapshot.activeReview.changes = Array.from({ length: 18 }, (_, index) => ({
+      kind: 'change' as const, title: `技术变更 ${index + 1}`, description: '已确认',
+    }));
+    snapshot.activeReview.technicalDetails = ['唯一技术字段'];
+    Object.defineProperty(value, 'snapshot', { configurable: true, get: () => snapshot });
+    const size = { columns, rows };
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await nextTurn(2);
+    await input(instance, 'd');
+    const frames: string[] = [];
+    for (let index = 0; index < 30; index += 1) {
+      const current = acceptanceTraceStep(instance, size, `技术页 ${index}`, []);
+      frames.push(current.frame);
+      const page = current.frame.match(/← 上一页\s+(\d+) \/ (\d+)/u);
+      expect(page).toBeTruthy();
+      if (page?.[1] === page?.[2]) break;
+      await input(instance, '\u001B[C');
+    }
+    expect(frames.length).toBeGreaterThan(1);
+    expect(frames.join('\n')).toContain('技术变更 18');
+    expect(frames.at(-1)).toContain('唯一技术字段');
+    expect(frames.filter((frame) => frame.includes('唯一技术字段'))).toHaveLength(1);
+    for (const rendered of [frames[0]!, frames.at(-1)!]) {
+      const pager = rendered.split('\n').find((line) => line.includes('← 上一页'))!;
+      expect(pager).toMatch(/下一页 →\s+│$/u);
+    }
+    const lastLines = frames.at(-1)!.split('\n');
+    expect(lastLines.findIndex((line) => line.includes('唯一技术字段'))).toBeLessThan(
+      lastLines.findIndex((line) => line.includes('← 上一页')),
+    );
+    expect(lastLines.findIndex((line) => line.includes('← 上一页'))).toBeLessThan(
+      lastLines.findIndex((line) => line.includes('› 保存')),
+    );
+    await writeAcceptanceTrace(`reader/review-technical-${columns}x${rows}`, [
+      { label: '第一页', size, inputs: ['d'], frame: frames[0]! },
+      { label: '末页', size, inputs: ['ArrowRight'], frame: frames.at(-1)! },
+    ]);
   });
 
   it.each(['cleanup', 'uninstall'] as const)('does not offer script timeout for %s Review', async (action) => {
@@ -11370,7 +11447,7 @@ describe('ConsoleAppV4', () => {
     for (let page = 0; page < 25; page += 1) await input(instance, '\u001B[C');
 
     expect(instance.lastFrame()).toContain('ref-19');
-    expect(instance.lastFrame()).toContain('↑ 前面还有');
+    expect(instance.lastFrame()).toContain('20 / 20');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
   });
 
@@ -14538,8 +14615,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('部分目标没有完成。');
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('安全技术详情');
-    expect(instance.lastFrame()).toContain('↓ 还有');
-    await input(instance, '\u001B[6~', '\u001B[6~', '\u001B[6~');
+    expect(instance.lastFrame()).toContain('1 / 13');
     expect(instance.lastFrame()).toContain('official/target-0');
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('State: partial');
@@ -14600,7 +14676,9 @@ describe('ConsoleAppV4', () => {
       expect(frame).not.toContain('/private/fixture');
       expect(frame).not.toMatch(/RAW_CAUSE_SECRET|RAW_CHECK_SECRET|Error:|git stderr|fatal:/u);
       for (const match of frame.matchAll(/requested ref: ([^\n]+)/gu)) chunks.add(match[1]!.replace(/\s*│$/u, '').trim());
-      if (!frame.includes('↓ 后面还有')) break;
+      const page = frame.match(/← 上一页\s+(\d+) \/ (\d+)/u);
+      expect(page).toBeTruthy();
+      if (page?.[1] === page?.[2]) break;
       await input(instance, '\u001B[6~');
     }
     await writeAcceptanceTrace(`review-repair/issue-${columns}x${rows}`, trace);
@@ -14631,14 +14709,17 @@ describe('ConsoleAppV4', () => {
       const frame = instance.lastFrame() ?? '';
       trace.push(acceptanceTraceStep(instance, { columns, rows }, `page ${index}`, []));
       for (const match of frame.matchAll(/code: ([^\n]+)/gu)) chunks.add(match[1]!.replace(/\s*│$/u, '').trim());
-      if (!frame.includes('↓ 后面还有')) break;
+      const page = frame.match(/← 上一页\s+(\d+) \/ (\d+)/u);
+      expect(page).toBeTruthy();
+      if (page?.[1] === page?.[2]) break;
       await input(instance, '\u001B[6~');
     }
     expect([...chunks].join('')).toBe(diagnosticCode);
-    expect(instance.lastFrame()).toContain(name === 'portableBlocker'
-      ? '修复后运行“重新检查”。' : '重新检查来源后再次打开设置。');
     await input(instance, ...Array.from({ length: 20 }, () => '\u001B[5~'));
     expect(instance.lastFrame()).toBe(first);
+    await input(instance, 'd');
+    expect(instance.lastFrame()).toContain(name === 'portableBlocker'
+      ? '修复来源内容或修改选择，然后重新检查。' : '查看技术详情，确认字段定义不可用的原因。');
     await writeAcceptanceTrace(`review-repair/${name}-${columns}x${rows}`, trace);
   });
 
@@ -14702,27 +14783,35 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
     await nextTurn(3);
     const first = instance.lastFrame();
-    expect(first).toContain(`1–${columns === 60 ? 3 : name === 'operationReportPreview' ? 4 : 6} /`);
+    expect(first).toContain('1 /');
     expect((first ?? '').split('\n').length).toBeLessThanOrEqual(rows);
     const trace: AcceptanceTraceStep[] = [];
-    const visibleLines = new Set<string>();
+    const expectedText = name === 'operationDiagnostic'
+      ? operationDiagnosticText(value.getOperationDiagnostic(recordId)!)
+      : value.previewOperationReport(recordId)!.content;
+    const pageRows = name === 'operationDiagnostic'
+      ? columns === 60 ? 9 : 12
+      : columns === 60 ? 8 : 9;
+    const visibleLines: string[] = [];
     for (let index = 0; index < 50; index += 1) {
       const frame = instance.lastFrame() ?? '';
       trace.push(acceptanceTraceStep(instance, { columns, rows }, `page ${index}`, []));
-      const detailCard = frame.split(/│\s*─ (?:安全技术详情|报告内容)/u)[1]?.split('╰')[0] ?? '';
-      for (const line of detailCard.split('\n').slice(1)) {
-        const value = line.replace(/^\s*│\s?|\s*│\s*$/gu, '').trim();
-        if (value && !/^[↑↓]/u.test(value)) visibleLines.add(value);
-      }
-      if (!frame.includes('↓ 还有')) break;
+      const page = frame.match(/← 上一页\s+(\d+) \/ (\d+)\s+下一页 →/u);
+      expect(page).toBeTruthy();
+      const projection = readerPage({ text: expectedText, columns: columns - 2, rows: pageRows, page: index + 1 });
+      expect(page?.[1]).toBe(String(projection.page));
+      expect(page?.[2]).toBe(String(projection.pageCount));
+      for (const line of projection.lines.filter(Boolean)) expect(frame).toContain(line);
+      visibleLines.push(...projection.lines);
+      if (page?.[1] === page?.[2]) break;
       await input(instance, '\u001B[6~');
     }
-    expect(instance.lastFrame()).not.toContain('↓ 还有');
+    const joined = visibleLines.join('').replace(/\s/gu, '');
     if (name === 'operationDiagnostic') {
-      for (const line of detailLines) expect([...visibleLines].join('')).toContain(line);
+      for (const line of detailLines) expect(joined).toContain(line);
     } else {
       for (const line of value.previewOperationReport(recordId)!.content.split('\n').slice(2).filter(Boolean)) {
-        expect([...visibleLines].join('').replace(/\s/gu, '')).toContain(line.replace(/\s/gu, ''));
+        expect(joined).toContain(line.replace(/\s/gu, ''));
       }
     }
     await input(instance, ...Array.from({ length: 50 }, () => '\u001B[5~'));

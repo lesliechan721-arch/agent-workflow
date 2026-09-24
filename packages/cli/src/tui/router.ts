@@ -184,6 +184,8 @@ export interface TuiPageContext {
   installFilter?: PluginInstallFilter;
   configGroupId?: string;
   projectSection?: 'declared' | 'extraInstalled';
+  projectStatusFilter?: 'all' | 'pending' | 'blocked' | 'unknown' | 'ready';
+  sourceTypeTab?: 'all' | 'git' | 'path';
   autoPreparedRestore?: boolean;
   autoPreparedUpdate?: boolean;
 }
