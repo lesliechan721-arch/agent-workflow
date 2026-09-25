@@ -3,11 +3,12 @@
   "kind": "aw-plugin-requirements",
   "plugin": {
     "name": "dev-workflow",
-    "version": "0.1.0-beta.7"
+    "version": "0.1.0-beta.8"
   },
   "requiredCapabilities": [
+    "aw.plugin-build-config.v1",
     "aw.plugin-manifest.v3",
     "aw.plugin-skills.v1"
   ],
-  "digest": "sha256:202e2b36fc772c123693e52df24fbdc78a96c16c147471bf614ff78a8724bf18"
+  "digest": "sha256:9afcf0c4e8b82cc002182996a7850b68c5a94ee7c6b42f7052506a5dfcb2499c"
 }

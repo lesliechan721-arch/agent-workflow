@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.29",
+  "catalogVersion": "0.1.0-beta.30",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "0d806ea851a88a36cc0f6d72271fc0a8f2dc08c8"
+    "sourceHead": "78ce22d06eac0c5948c6f38fd8559692abbf7215"
   },
   "entries": [
     {
@@ -95,38 +95,6 @@
       "artifactDigest": "sha256:b98a24d1962f50e0945afc32e736935defa8fd66966af081e4332720e82ec523",
       "manifestDigest": "sha256:e1b59f92c6bb485aab4d7de1895acb421d6ced681761d53d8663fb9a1968e542",
       "contentDigest": "sha256:46b6819b633d26e47ecd1a5050be040396a60e341d57ecfe44c713bd6d9192d5"
-    },
-    {
-      "name": "ask-me",
-      "source": "./plugins/ask-me",
-      "description": "通过独立决策访谈、可体验原型或可选 Shape 工作流形成准确共享理解。",
-      "interface": {
-        "displayName": "Ask Me",
-        "shortDescription": "通过问答、原型或完整 Shape 塑造重要决定",
-        "capabilities": [
-          "Skills"
-        ]
-      },
-      "category": "workflow",
-      "strict": true,
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "version": "0.1.0-beta.11",
-      "dependencies": [],
-      "requires": {
-        "aw": {
-          "capabilities": [
-            "aw.plugin-manifest.v3",
-            "aw.plugin-skills.v1",
-            "aw.portable-skills.v1"
-          ]
-        }
-      },
-      "artifactDigest": "sha256:d5fd9815fcc257a16999b5b65ccba09894b66287c794981f9efc133a6ffcf05f",
-      "manifestDigest": "sha256:bf573e4ac002faa7048805702e36c69dcb3bf925e166449bda7dbe8ee41f4910",
-      "contentDigest": "sha256:406ba0acf2f94741a40fb685d485c3a8548ccf258f3469370672c83b03d8d51a"
     },
     {
       "name": "aw-development-toolkit",
@@ -298,12 +266,44 @@
       "contentDigest": "sha256:09b54c97d97f045407f04642393f7557dd59a86d14ebad92a03a8819fad828c8"
     },
     {
+      "name": "decision-kit",
+      "source": "./plugins/decision-kit",
+      "description": "主题对齐、可体验决策与项目领域知识维护；按需组合，保留真实确认与清楚的独立职责。",
+      "interface": {
+        "displayName": "Decision Kit",
+        "shortDescription": "对齐重要选择，验证原型，维护领域语言与决定",
+        "capabilities": [
+          "Skills"
+        ]
+      },
+      "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "version": "0.1.0-beta.1",
+      "dependencies": [],
+      "requires": {
+        "aw": {
+          "capabilities": [
+            "aw.plugin-manifest.v3",
+            "aw.plugin-skills.v1",
+            "aw.portable-skills.v1"
+          ]
+        }
+      },
+      "artifactDigest": "sha256:625259599833aae882da3a11a4546a6fabf647c9491a7cb9f8a7dbd454f31b86",
+      "manifestDigest": "sha256:c3bdec72c351c8ac4b336cdf478f77f2a75b344a6d36297280a3dd432fec8fcd",
+      "contentDigest": "sha256:e9cbbe9ad3e4f138be8b94a8c8ce82325bfdc004a7c73cc3b2d6f2dd90eec62a"
+    },
+    {
       "name": "dev-workflow",
       "source": "./plugins/dev-workflow",
-      "description": "按共识、风险和记录需求组织开发，并以独立工作分解、实现协调及审查完成交付。",
+      "description": "从需求设计到实现交付的可组合工作流，项目规范与本地过程资料分工清楚。",
       "interface": {
         "displayName": "Dev Workflow",
-        "shortDescription": "轻量对齐，按需分解与协调实施，独立审查后交付",
+        "shortDescription": "先设计或完整交付；本地恢复、独立审查和有界修复",
         "capabilities": [
           "Skills"
         ]
@@ -320,21 +320,22 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.7",
+      "version": "0.1.0-beta.8",
       "dependencies": [
-        "ask-me"
+        "decision-kit"
       ],
       "requires": {
         "aw": {
           "capabilities": [
+            "aw.plugin-build-config.v1",
             "aw.plugin-manifest.v3",
             "aw.plugin-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:eebb87d88e591215d964719f431db4b9d07244c27fece228485ff511857a5380",
-      "manifestDigest": "sha256:26eee42db02d97ee541f5b0a5144af8ecf8641c72f89c77a7c3818d62189469c",
-      "contentDigest": "sha256:d6b29eb84b3596f78d135ee0d4a2caa05ef5dca13800dc43fb19d814a2a786b0"
+      "artifactDigest": "sha256:ab6984c850f8e71d9f300cbf42f117853e940fd710544502822c54874a720309",
+      "manifestDigest": "sha256:25314723886eddc8e2af5eb5c58c04929d6810e2bb3bbd164aff1ff4332cc95a",
+      "contentDigest": "sha256:94b4b8f1c29a88c08183f6c0455abd2c486dc08487b19590d9888b6e4e0b647a"
     },
     {
       "name": "git-toolkit",

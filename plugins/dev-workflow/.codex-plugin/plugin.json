@@ -1,10 +1,10 @@
 {
   "name": "dev-workflow",
-  "version": "0.1.0-beta.7",
-  "description": "按共识、风险和记录需求组织开发，并以独立工作分解、实现协调及审查完成交付。",
+  "version": "0.1.0-beta.8",
+  "description": "从需求设计到实现交付的可组合工作流，项目规范与本地过程资料分工清楚。",
   "interface": {
     "displayName": "Dev Workflow",
-    "shortDescription": "轻量对齐，按需分解与协调实施，独立审查后交付",
+    "shortDescription": "先设计或完整交付；本地恢复、独立审查和有界修复",
     "capabilities": [
       "Skills"
     ]

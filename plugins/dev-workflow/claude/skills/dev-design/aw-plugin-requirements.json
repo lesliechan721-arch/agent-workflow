@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "kind": "aw-plugin-requirements",
+  "plugin": {
+    "name": "dev-workflow",
+    "version": "0.1.0-beta.8"
+  },
+  "requiredCapabilities": [
+    "aw.plugin-build-config.v1",
+    "aw.plugin-manifest.v3",
+    "aw.plugin-skills.v1"
+  ],
+  "digest": "sha256:9afcf0c4e8b82cc002182996a7850b68c5a94ee7c6b42f7052506a5dfcb2499c"
+}
