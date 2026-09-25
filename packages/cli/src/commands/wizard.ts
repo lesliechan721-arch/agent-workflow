@@ -63,7 +63,11 @@ export interface CommandWizardRequest<T> {
     candidate: CommandWizardPluginCandidate,
     selection: CommandWizardSelection,
   ) => { selectable: boolean; reason?: string };
-  execute: (selection: CommandWizardSelection) => Promise<T>;
+  reviewDetails?: (selection: CommandWizardSelection) => Promise<{
+    lines: string[];
+    expectedPlanFingerprint?: string;
+  }>;
+  execute: (selection: CommandWizardSelection, expectedPlanFingerprint?: string) => Promise<T>;
 }
 
 export interface CommandWizardResult<T> {
@@ -107,9 +111,11 @@ export async function runCommandWizard<T>(
   };
   const safeRequest: CommandWizardRequest<T> = {
     ...request,
-    execute: async (selection) => {
+    execute: async (selection, expectedPlanFingerprint) => {
       try {
-        const value = await request.execute(selection);
+        const value = expectedPlanFingerprint
+          ? await request.execute(selection, expectedPlanFingerprint)
+          : await request.execute(selection);
         if (request.resultState?.(value) === 'failed') diagnostic = value;
         return value;
       } catch (error) {

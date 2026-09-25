@@ -62,13 +62,19 @@ import {
   inspectCodexPluginRegistrationLive,
   inspectCodexSharedNativeLive,
   inspectNativeMarketplaceRegistrations,
+  removeCodexPluginActivation,
+  removeNamespacedMarketplacePluginProjection,
   postcheckCodexReconcileActivations,
   type CodexPluginRegistrationLiveInspection,
   type PreparedRebuildTarget,
   type RebuildExecutionContext,
   type RebuildIntegration,
 } from './rebuild-integration.js';
-import { getNamespacedMarketplaceName } from '../utils/local-marketplace.js';
+import {
+  assertSafeNamespacedMarketplacePluginRoot,
+  getNamespacedMarketplaceName,
+  readStrictNamespacedMarketplaceRoot,
+} from '../utils/local-marketplace.js';
 import type { AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import {
   formatPluginId,
@@ -95,7 +101,13 @@ import {
   type CatalogSourceReferenceInventory,
 } from '../utils/catalog-source-references.js';
 import { sanitizeCatalogSourceErrorMessage } from '../utils/catalog-public-error.js';
-import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
+import {
+  inspectPluginConfigResetTarget,
+  readNamespacedPluginConfigStoreIdentity,
+  resetPluginConfigStore,
+  resolvePluginConfigStorePath,
+  resolveEffectivePluginConfig,
+} from '../utils/plugin-config.js';
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import {
   inspectOwnedComponents,
@@ -104,7 +116,7 @@ import {
   SKILL_OWNER_MARKER,
   type OwnedComponent,
 } from '../utils/ownership.js';
-import { resolveActiveCatalogPluginShallow } from '../utils/catalog-generation-resolver.js';
+import { resolveActiveCatalogGeneration, resolveActiveCatalogPluginShallow } from '../utils/catalog-generation-resolver.js';
 import {
   canonicalizePathThroughExistingAncestorSync,
   codexProjectConfigAliasesUserHome,
@@ -291,6 +303,7 @@ export interface RebuildCommandResult {
   operationPlan?: OperationPlan;
   codexManagerPreview?: CodexManagerPreview;
   offlineCleanupPlans?: OfflineCleanupTargetEvidence[];
+  removedPluginCleanupIds?: string[];
   preApplyAuthorization?: PreApplyAuthorizationTarget[];
 }
 
@@ -755,6 +768,18 @@ function toTargetResult(result: RebuildResult): ReceiptTargetResult {
   };
 }
 
+function toRemovedCleanupTargetResult(result: RebuildResult): ReceiptTargetResult {
+  const target = toTargetResult(result);
+  if (result.status === 'succeeded' || !result.target.pluginId) return target;
+  return {
+    ...target,
+    recoveryActions: [
+      `repair the reported ownership, native CLI, or config path evidence, then run aw cleanup ${result.target.pluginId} --platform both --scope user --yes`,
+      'use cleanup --force only for exclusively owned damaged output, then retry ordinary cleanup',
+    ],
+  };
+}
+
 async function assertClaudeVersion(options: {
   platforms: PlatformName[];
   cwd: string;
@@ -1070,6 +1095,9 @@ function mergeRebuildCommandResults(results: RebuildCommandResult[]): RebuildCom
       : {}),
     ...(results.some((result) => result.offlineCleanupPlans !== undefined)
       ? { offlineCleanupPlans: results.flatMap((result) => result.offlineCleanupPlans ?? []) }
+      : {}),
+    ...(results.some((result) => result.removedPluginCleanupIds !== undefined)
+      ? { removedPluginCleanupIds: [...new Set(results.flatMap((result) => result.removedPluginCleanupIds ?? []))] }
       : {}),
   };
 }
@@ -1610,6 +1638,7 @@ async function cleanupOfflineOwnedComponents(options: {
   nativeCliRunner?: NativeCliRunner;
   codexManager?: RebuildExecutionContext['codexManager'];
   executeCleanupOperation?: typeof executeRebuildOperation;
+  removedPluginWhole?: boolean;
 }): Promise<RebuildCommandResult> {
   const results: RebuildResult[] = [];
   const warnings: string[] = [];
@@ -1637,7 +1666,7 @@ async function cleanupOfflineOwnedComponents(options: {
         && candidate.sourceIdentity === target.sourceIdentity
         && candidate.platform === target.platform
         && candidate.scope === target.scope);
-      const activationAction = target.platform === 'codex'
+      const activationAction = target.platform === 'codex' && !options.removedPluginWhole
         ? evidence?.plan.actions.find((action) =>
             action.action === 'removeNativeRegistration'
             && action.activationScope === target.scope)
@@ -1670,6 +1699,7 @@ async function cleanupOfflineOwnedComponents(options: {
           channel: 'beta',
         },
         includeNativeCleanupCandidate: target.nativeRegistration === true,
+        ...(options.removedPluginWhole ? { removedPluginWhole: true } : {}),
         ...(activationAction
           ? {
               codexActivationCleanup: [{
@@ -2138,6 +2168,818 @@ async function mergeForceCleanupPlans(
   };
 }
 
+type RemovedPluginCleanupTarget = {
+  pluginId: string;
+  pluginName: string;
+  sourceId: string;
+  sourceIdentity: string;
+  logicalIdentity: string;
+  snapshotDigest: string;
+  marketplaceRoot: string;
+  marketplaceName?: string;
+  nativeOwnershipVerified: boolean;
+  projectionOwnershipVerified: boolean;
+  claudeNativeCleanupBlocked: boolean;
+  nativeState: 'installed' | 'absent' | 'unknown' | 'unbound';
+  nativeObservationFingerprint: string;
+  marketplaceEvidenceFingerprint: string;
+  projectionFingerprint: string;
+  projectionPresent: boolean;
+  activationScopes: Array<{ scope: Scope; enabled: boolean | undefined }>;
+  configTargets: Array<{
+    scope: Scope;
+    kind: Awaited<ReturnType<typeof inspectPluginConfigResetTarget>>['kind'];
+    fingerprint: string;
+  }>;
+  evidence: OfflineCleanupTargetEvidence[];
+  blockers: string[];
+};
+
+function removedCleanupDigest(value: unknown): string {
+  return `sha256:${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+}
+
+async function removedProjectionTreeFingerprint(root: string): Promise<string> {
+  const visit = async (location: string): Promise<unknown> => {
+    const stats = await fs.lstat(location).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!stats) return null;
+    if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile())) {
+      return { kind: 'unsafe', mode: stats.mode, size: stats.size, mtimeMs: stats.mtimeMs };
+    }
+    if (stats.isFile()) {
+      return { kind: 'file', digest: `sha256:${crypto.createHash('sha256').update(await fs.readFile(location)).digest('hex')}` };
+    }
+    const entries = await fs.readdir(location);
+    return { kind: 'directory', entries: await Promise.all(entries.sort().map(async (name) =>
+      [name, await visit(path.join(location, name))])) };
+  };
+  return removedCleanupDigest(await visit(root));
+}
+
+function removeRemovedPluginIntent(
+  state: PluginIntentState,
+  pluginIds: ReadonlySet<string>,
+): PluginIntentState {
+  return canonicalizePluginIntentState({
+    ...state,
+    roots: state.roots.filter((root) => !pluginIds.has(root.pluginId)),
+    dependencyScopeOverrides: state.dependencyScopeOverrides.filter((override) =>
+      !pluginIds.has(override.pluginId)),
+  });
+}
+
+async function inspectRemovedPluginConfig(options: {
+  sourceId: string;
+  sourceIdentity: string;
+  logicalIdentity: string;
+  pluginName: string;
+  scope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<{
+  kind: Awaited<ReturnType<typeof inspectPluginConfigResetTarget>>['kind'];
+  fingerprint: string;
+  conflict?: string;
+}> {
+  const inspection = await inspectPluginConfigResetTarget(options);
+  if (inspection.kind !== 'regularFile') return inspection;
+  try {
+    const identity = await readNamespacedPluginConfigStoreIdentity(options);
+    if (identity && (options.scope === 'user'
+      ? identity.binding.kind !== 'source'
+        || identity.binding.sourceIdentity !== options.sourceIdentity
+      : identity.binding.kind !== 'catalog'
+        || identity.binding.logicalIdentity !== options.logicalIdentity)) {
+      return { ...inspection, conflict: 'removedPluginConfigIdentityConflict: saved config binding differs from the Active source.' };
+    }
+  } catch {
+    const filePath = resolvePluginConfigStorePath(options);
+    const raw = await fs.readJson(filePath).catch(() => null) as Record<string, unknown> | null;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const binding = raw.binding as Record<string, unknown> | undefined;
+      if ((typeof raw.sourceId === 'string' && raw.sourceId !== options.sourceId)
+        || (typeof raw.pluginName === 'string' && raw.pluginName !== options.pluginName)
+        || (binding?.kind === 'source' && options.scope !== 'user')
+        || (binding?.kind === 'catalog' && options.scope !== 'project')
+        || (binding?.kind === 'source' && options.scope === 'user'
+          && typeof binding.sourceIdentity === 'string'
+          && binding.sourceIdentity !== options.sourceIdentity)
+        || (binding?.kind === 'catalog' && options.scope === 'project'
+          && typeof binding.logicalIdentity === 'string'
+          && binding.logicalIdentity !== options.logicalIdentity)) {
+        return { ...inspection, conflict: 'removedPluginConfigIdentityConflict: saved config identifies another source or plugin.' };
+      }
+    }
+  }
+  return inspection;
+}
+
+async function inspectRemovedPluginCleanup(options: {
+  pluginId: string;
+  inventory: CatalogSourceReferenceInventory;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  nativeCliRunner: NativeCliRunner;
+  codexManager?: CodexManager;
+}): Promise<RemovedPluginCleanupTarget | null> {
+  const parsed = parsePluginId(options.pluginId);
+  if (!parsed.sourceId) return null;
+  let generation: Awaited<ReturnType<typeof resolveActiveCatalogGeneration>>;
+  try {
+    generation = await resolveActiveCatalogGeneration({ sourceId: parsed.sourceId, env: options.env });
+  } catch {
+    return null;
+  }
+  if (generation.manifest.entries.some((entry) => entry.name === parsed.pluginName)) return null;
+  const pluginId = formatPluginId(parsed);
+  const blockers: string[] = [];
+  const marketplaceRoot = path.join(resolveAwHome(options.env), 'marketplaces', parsed.sourceId);
+  const relevant = options.inventory.references.filter((reference) =>
+    reference.sourceId === parsed.sourceId && reference.pluginName === parsed.pluginName);
+  const ownershipConflict = relevant.some((reference) => reference.sourceIdentity !== undefined
+    && reference.sourceIdentity !== generation.sourceIdentity);
+  if (ownershipConflict) {
+    blockers.push('removedPluginOwnershipConflict: live source identity differs from Active. Repair ownership evidence, then retry cleanup.');
+  }
+  let root: Awaited<ReturnType<typeof readStrictNamespacedMarketplaceRoot>> = null;
+  try {
+    root = await readStrictNamespacedMarketplaceRoot({
+      rootDir: marketplaceRoot,
+      sourceId: parsed.sourceId,
+      sourceIdentity: generation.sourceIdentity,
+    });
+    if (root?.config.logicalIdentity && root.config.logicalIdentity !== generation.logicalIdentity) {
+      blockers.push('removedPluginMarketplaceIdentityConflict: marketplace logical identity differs from Active.');
+    }
+  } catch (error) {
+    blockers.push(`removedPluginMarketplaceEvidenceUnavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const registeredNames = canonicalMarketplaceRegistrationNames(options.inventory.references, parsed.sourceId);
+  const marketplaceName = root?.config.marketplaceName
+    ?? (registeredNames.length === 1 ? registeredNames[0] : undefined);
+  let registrationReadFailed = false;
+  const registration = root ? await inspectNativeMarketplaceRegistrations({
+    marketplaceName: root.config.marketplaceName,
+    marketplaceRoot,
+    cwd: options.cwd,
+    env: options.env,
+  }).catch((error) => {
+    registrationReadFailed = true;
+    blockers.push(`removedPluginMarketplaceRegistrationUnknown: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }) : null;
+  const projectionOwnershipVerified = Boolean(root
+    && !ownershipConflict
+    && (!root.config.logicalIdentity || root.config.logicalIdentity === generation.logicalIdentity));
+  const nativeOwnershipVerified = projectionOwnershipVerified
+    && registration?.codex === 'canonical';
+  let claudeNativeCleanupBlocked = registrationReadFailed;
+  if (registration?.claude === 'foreign') {
+    blockers.push('removedPluginClaudeOwnershipConflict: Claude marketplace registration is foreign.');
+    claudeNativeCleanupBlocked = true;
+  }
+  if (registration?.claude !== 'canonical' && relevant.some((reference) =>
+    reference.platform === 'claude' && reference.kind === 'namespacedMarketplace')) {
+    blockers.push('removedPluginClaudeOwnershipUnavailable: Claude native evidence exists without a canonical marketplace registration.');
+    claudeNativeCleanupBlocked = true;
+  }
+  const activationScopes: RemovedPluginCleanupTarget['activationScopes'] = [];
+  if (marketplaceName) {
+    const inspectedPaths = new Set<string>();
+    for (const scope of ['user', 'project'] as const) {
+      const configPath = resolveCodexPaths(options.cwd, scope, options.env).configTomlPath;
+      if (inspectedPaths.has(path.resolve(configPath))) continue;
+      inspectedPaths.add(path.resolve(configPath));
+      try {
+        const config = await readCodexConfigFile(configPath);
+        if (Object.hasOwn(config.snapshot.plugins, `${parsed.pluginName}@${marketplaceName}`)) {
+          activationScopes.push({
+            scope,
+            enabled: config.snapshot.plugins[`${parsed.pluginName}@${marketplaceName}`]?.enabled,
+          });
+        }
+      } catch (error) {
+        blockers.push(`removedPluginActivationReadFailed: ${scope}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+  let nativeState: RemovedPluginCleanupTarget['nativeState'] = 'unbound';
+  let nativeObservationFingerprint = removedCleanupDigest('unbound');
+  if (root) {
+    if (registration?.codex === 'foreign') {
+      blockers.push('removedPluginNativeOwnershipConflict: Codex marketplace registration is foreign.');
+    } else {
+      const observed = await inspectCodexPluginRegistrationLive({
+        pluginId: `${parsed.pluginName}@${marketplaceName}`,
+        cwd: options.cwd,
+        env: options.env,
+        nativeCliRunner: options.nativeCliRunner,
+        manager: options.codexManager,
+        scope: 'both',
+      });
+      nativeState = observed.observation.state === 'observed'
+        ? observed.observation.value === 'installed' ? 'installed' : 'absent'
+        : 'unknown';
+      nativeObservationFingerprint = removedCleanupDigest(observed.observation);
+      if (nativeState === 'unknown') {
+        blockers.push('removedPluginNativeObservationUnknown: official Codex list did not confirm installed or absent. Retry cleanup with a compatible Codex CLI.');
+      }
+      if (registration?.codex !== 'canonical'
+        && (nativeState === 'installed' || activationScopes.length > 0)) {
+        blockers.push('removedPluginNativeOwnershipUnavailable: native or activation evidence exists but canonical marketplace registration is missing.');
+      }
+    }
+  } else if (options.inventory.references.some((reference) =>
+    reference.pluginName === parsed.pluginName
+    && reference.platform === 'codex'
+    && reference.marketplaceName)) {
+    blockers.push('removedPluginNativeOwnershipUnavailable: native evidence remains without a valid AW marketplace root.');
+  }
+  const configTargets: RemovedPluginCleanupTarget['configTargets'] = [];
+  for (const scope of ['user', 'project'] as const) {
+    try {
+      const inspected = await inspectRemovedPluginConfig({
+        sourceId: parsed.sourceId,
+        sourceIdentity: generation.sourceIdentity,
+        logicalIdentity: generation.logicalIdentity,
+        pluginName: parsed.pluginName,
+        scope,
+        cwd: options.cwd,
+        env: options.env,
+      });
+      configTargets.push({ scope, kind: inspected.kind, fingerprint: inspected.fingerprint });
+      if (inspected.conflict) blockers.push(`${scope}: ${inspected.conflict}`);
+      if (inspected.kind === 'directory' || inspected.kind === 'special') {
+        blockers.push(`removedPluginConfigTargetUnsupported: ${scope} saved config is a ${inspected.kind}. Repair the node or run explicit config reset, then retry cleanup.`);
+      }
+    } catch (error) {
+      blockers.push(`removedPluginConfigTargetUnsafe: ${scope}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const projectionRoot = path.join(marketplaceRoot, 'plugins', parsed.pluginName);
+  let projectionPathSafe = true;
+  if (root) {
+    try {
+      await assertSafeNamespacedMarketplacePluginRoot(marketplaceRoot, parsed.pluginName);
+    } catch (error) {
+      projectionPathSafe = false;
+      blockers.push(`removedPluginMarketplaceProjectionUnsafe: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const projectionStats = root && projectionPathSafe ? await fs.lstat(projectionRoot).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }) : null;
+  const projectionPresent = Boolean(root && (projectionStats
+    || [root.agentsManifest, root.claudeManifest].some((manifest) =>
+      manifest && Array.isArray(manifest.plugins) && manifest.plugins.some((entry) =>
+        entry !== null && typeof entry === 'object'
+        && (entry as { name?: unknown }).name === parsed.pluginName))));
+  const projectionFingerprint = removedCleanupDigest({
+    tree: root && projectionPathSafe ? await removedProjectionTreeFingerprint(projectionRoot) : 'unsafe',
+    agentsEntries: root && Array.isArray(root.agentsManifest.plugins)
+      ? root.agentsManifest.plugins.filter((entry) => entry !== null && typeof entry === 'object'
+        && (entry as { name?: unknown }).name === parsed.pluginName)
+      : null,
+    claudeEntries: root?.claudeManifest && Array.isArray(root.claudeManifest.plugins)
+      ? root.claudeManifest.plugins.filter((entry) => entry !== null && typeof entry === 'object'
+        && (entry as { name?: unknown }).name === parsed.pluginName)
+      : null,
+  });
+  const marketplaceEvidenceFingerprint = removedCleanupDigest({
+    config: root?.config ?? null,
+    registration,
+    marketplaceName,
+  });
+  const evidence: OfflineCleanupTargetEvidence[] = [];
+  for (const platform of ['codex', 'claude'] as const) {
+    for (const scope of ['user', 'project'] as const) {
+      const base = offlineCleanupEvidenceFromInventory({
+        reason: 'bundleUnavailable',
+        pluginId,
+        pluginName: parsed.pluginName,
+        sourceId: parsed.sourceId,
+        sourceIdentity: generation.sourceIdentity,
+        platform,
+        scope,
+        inventory: options.inventory,
+      }) ?? intentOnlyOfflineCleanupEvidence({
+        pluginId,
+        pluginName: parsed.pluginName,
+        sourceId: parsed.sourceId,
+        sourceIdentity: generation.sourceIdentity,
+        platform,
+        scope,
+      });
+      const actions = base.plan.actions.flatMap((action) => {
+        if (platform === 'codex' && action.action === 'removeNativeRegistration') return [];
+        if (platform === 'claude' && action.action === 'removeNativeRegistration') {
+          return root && projectionOwnershipVerified && !claudeNativeCleanupBlocked
+            && registration?.claude === 'canonical'
+            && marketplaceName && action.kind === 'namespacedMarketplace'
+            ? [{ ...action, target: `${parsed.pluginName}@${marketplaceName}` }]
+            : [];
+        }
+        return [action];
+      });
+      if (platform === 'codex' && scope === 'user' && nativeState === 'installed'
+        && marketplaceName && nativeOwnershipVerified && projectionPathSafe) {
+        actions.push({
+          action: 'removeNativeRegistration',
+          kind: 'namespacedMarketplace',
+          target: `${parsed.pluginName}@${marketplaceName}`,
+          marketplaceName,
+        });
+      }
+      const safeActions = ownershipConflict ? [] : actions;
+      const enrichedActions = await Promise.all(safeActions.map(async (action) => action.action === 'removeOwnedOutput'
+        ? { ...action, pathEvidence: await removedProjectionTreeFingerprint(action.target.split('#', 1)[0]!) }
+        : action));
+      const plan = { ...base.plan, actions: enrichedActions };
+      evidence.push({ ...base, plan, planDigest: removedCleanupDigest(plan), targetFingerprint: removedCleanupDigest(plan) });
+    }
+  }
+  return {
+    pluginId,
+    pluginName: parsed.pluginName,
+    sourceId: parsed.sourceId,
+    sourceIdentity: generation.sourceIdentity,
+    logicalIdentity: generation.logicalIdentity,
+    snapshotDigest: generation.snapshotDigest,
+    marketplaceRoot,
+    ...(marketplaceName ? { marketplaceName } : {}),
+    nativeOwnershipVerified: nativeOwnershipVerified && projectionPathSafe,
+    projectionOwnershipVerified: projectionOwnershipVerified && projectionPathSafe,
+    claudeNativeCleanupBlocked,
+    nativeState,
+    nativeObservationFingerprint,
+    marketplaceEvidenceFingerprint,
+    projectionFingerprint,
+    projectionPresent,
+    activationScopes,
+    configTargets,
+    evidence,
+    blockers,
+  };
+}
+
+function createRemovedPluginCleanupOperationPlan(options: {
+  targets: readonly RemovedPluginCleanupTarget[];
+  intents: Record<Scope, { before: PluginIntentState; after: PluginIntentState }>;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): OperationPlan {
+  const actions: OperationAction[] = [];
+  const changes: string[] = [];
+  for (const target of options.targets) {
+    for (const scope of ['user', 'project'] as const) {
+      const before = options.intents[scope].before;
+      const after = options.intents[scope].after;
+      if (calculatePluginIntentDigest(before) !== calculatePluginIntentDigest(after)
+        && (before.roots.some((root) => root.pluginId === target.pluginId)
+          || before.dependencyScopeOverrides.some((override) => override.pluginId === target.pluginId))) {
+        changes.push(`${target.pluginId}:${scope}:removeIntentAndOverrides`);
+      }
+    }
+    for (const evidence of target.evidence) {
+      for (const action of evidence.plan.actions) {
+        actions.push(action.action === 'removeNativeRegistration'
+          ? {
+              kind: 'removeNativeRegistration',
+              pluginId: target.pluginId,
+              platform: evidence.platform,
+              scope: evidence.scope,
+              registration: action.target,
+            }
+          : {
+              kind: 'removeOwnedArtifact',
+              pluginId: target.pluginId,
+              platform: evidence.platform,
+              scope: evidence.scope,
+              path: action.target,
+              ownerFingerprint: evidence.targetFingerprint,
+            });
+        changes.push(`${target.pluginId}:${evidence.platform}:${evidence.scope}:${action.action}:${action.target}`);
+      }
+    }
+    for (const config of target.configTargets.filter((entry) => entry.kind !== 'absent')) {
+      if (config.kind === 'directory' || config.kind === 'special'
+        || target.blockers.some((blocker) => blocker.startsWith(`${config.scope}: removedPluginConfigIdentityConflict`))) {
+        continue;
+      }
+      actions.push({
+        kind: 'removePluginConfig',
+        pluginId: target.pluginId,
+        platform: 'codex',
+        scope: config.scope,
+        path: resolvePluginConfigStorePath({
+          sourceId: target.sourceId,
+          pluginName: target.pluginName,
+          scope: config.scope,
+          cwd: options.cwd,
+          env: options.env,
+        }),
+        fingerprint: config.fingerprint,
+      });
+      changes.push(`${target.pluginId}:${config.scope}:removeSavedConfig:${config.kind}:${config.fingerprint}`);
+    }
+    for (const activation of target.activationScopes) {
+      changes.push(`${target.pluginId}:codex:${activation.scope}:activationEvidence:${activation.enabled}`);
+      if (!target.nativeOwnershipVerified || target.nativeState === 'unknown') continue;
+      actions.push({
+        kind: 'removeActivation',
+        pluginId: target.pluginId,
+        platform: 'codex',
+        scope: activation.scope,
+        registration: `${target.pluginName}@${target.marketplaceName}`,
+      });
+      changes.push(`${target.pluginId}:codex:${activation.scope}:removeActivation`);
+    }
+    changes.push(`${target.pluginId}:projectionEvidence:${target.projectionFingerprint}`);
+    if (target.projectionPresent && target.projectionOwnershipVerified
+      && target.nativeState !== 'unknown'
+      && (target.nativeOwnershipVerified || target.activationScopes.length === 0)) {
+      actions.push({
+        kind: 'removeMarketplaceProjection',
+        pluginId: target.pluginId,
+        platform: 'codex',
+        scope: 'user',
+        marketplaceRoot: target.marketplaceRoot,
+      });
+      changes.push(`${target.pluginId}:removeMarketplaceProjection`);
+    }
+    changes.push(`${target.pluginId}:nativeObservation:${target.nativeState}:${target.nativeObservationFingerprint}:${target.marketplaceEvidenceFingerprint}`);
+  }
+  const warnings = options.targets.flatMap((target) => [
+    `removedPluginCleanupScope: ${target.pluginId} 清理范围为 Codex 和 Claude 的用户及当前项目，包含两处保存设置。`,
+    `removedPluginCleanupSharedNativeImpact: ${target.pluginId} 的 Codex 共享原生包卸载后，其他项目可能无法继续使用；其他项目的本地记录不会修改。`,
+    ...target.blockers,
+  ]);
+  return createOperationPlan({
+    intentChanges: (['user', 'project'] as const).flatMap((scope) => {
+      const beforeDigest = calculatePluginIntentDigest(options.intents[scope].before);
+      const afterDigest = calculatePluginIntentDigest(options.intents[scope].after);
+      return beforeDigest === afterDigest ? [] : [{ scope, beforeDigest, afterDigest }];
+    }),
+    actions,
+    changes,
+    warnings,
+    evidence: {
+      catalogDigests: options.targets.map((target) => ({
+        sourceId: target.sourceId,
+        digest: removedCleanupDigest({
+          sourceIdentity: target.sourceIdentity,
+          logicalIdentity: target.logicalIdentity,
+          snapshotDigest: target.snapshotDigest,
+        }),
+      })),
+      intentDigests: (['user', 'project'] as const).map((scope) => ({
+        scope,
+        digest: calculatePluginIntentDigest(options.intents[scope].before),
+      })),
+      configDigests: options.targets.flatMap((target) => target.configTargets.map((config) => ({
+        pluginId: target.pluginId,
+        scope: config.scope,
+        digest: config.fingerprint,
+      }))),
+      targetOwnerFingerprints: options.targets.flatMap((target) => target.evidence.map((evidence) => ({
+        pluginId: target.pluginId,
+        platform: evidence.platform,
+        scope: evidence.scope,
+        fingerprint: evidence.targetFingerprint,
+      }))),
+    },
+  });
+}
+
+function combineCleanupOperationPlans(plans: readonly OperationPlan[]): OperationPlan {
+  return createOperationPlan({
+    intentChanges: plans.flatMap((plan) => plan.intentChanges),
+    actions: plans.flatMap((plan) => plan.actions),
+    changes: plans.flatMap((plan) => plan.changes),
+    warnings: plans.flatMap((plan) => plan.warnings),
+    evidence: {
+      catalogDigests: plans.flatMap((plan) => plan.evidence.catalogDigests),
+      intentDigests: plans.flatMap((plan) => plan.evidence.intentDigests),
+      configDigests: plans.flatMap((plan) => plan.evidence.configDigests),
+      targetOwnerFingerprints: plans.flatMap((plan) => plan.evidence.targetOwnerFingerprints),
+    },
+  });
+}
+
+async function unavailableRemovedCleanupWarnings(options: {
+  pluginIds: readonly string[];
+  inventory: CatalogSourceReferenceInventory;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<string[]> {
+  const warnings: string[] = [];
+  for (const pluginId of options.pluginIds) {
+    const parsed = parsePluginId(pluginId);
+    if (!parsed.sourceId) continue;
+    try {
+      await resolveActiveCatalogGeneration({ sourceId: parsed.sourceId, env: options.env });
+      continue;
+    } catch {
+      // Only a healthy Active generation can prove that a plugin entry was deleted.
+    }
+    let hasConfig = false;
+    for (const scope of ['user', 'project'] as const) {
+      try {
+        hasConfig ||= (await inspectPluginConfigResetTarget({
+          sourceId: parsed.sourceId,
+          pluginName: parsed.pluginName,
+          scope,
+          cwd: options.cwd,
+          env: options.env,
+        })).exists;
+      } catch {
+        hasConfig = true;
+      }
+    }
+    if (!hasConfig && !options.inventory.references.some((reference) =>
+      reference.sourceId === parsed.sourceId && reference.pluginName === parsed.pluginName)) {
+      continue;
+    }
+    warnings.push(`removedPluginCleanupNotPerformed: ${pluginId} has no healthy local Active source, so whole-plugin cleanup was not performed and saved settings may remain. Restore the source, run aw catalog source sync ${parsed.sourceId}, then retry ordinary cleanup.`);
+  }
+  return warnings;
+}
+
+async function executeRemovedPluginCleanup(options: {
+  targets: readonly RemovedPluginCleanupTarget[];
+  intents: Record<Scope, { before: PluginIntentState; after: PluginIntentState }>;
+  inventory: CatalogSourceReferenceInventory;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  runtime?: RebuildCommandRuntime;
+  readInventory: typeof inventoryCatalogSourceReferences;
+  operationPlan: OperationPlan;
+}): Promise<RebuildCommandResult> {
+  const results: RebuildResult[] = [];
+  const warnings = [...options.operationPlan.warnings];
+  const targetIdentity = (target: RemovedPluginCleanupTarget, scope: Scope = 'user'): RebuildTargetIdentity => ({
+    pluginId: target.pluginId,
+    pluginName: target.pluginName,
+    sourceId: target.sourceId,
+    sourceIdentity: target.sourceIdentity,
+    pluginVersion: '0.0.0',
+    platform: 'codex',
+    scope,
+    cwd: options.cwd,
+  });
+  let intentChanged = false;
+  for (const scope of ['user', 'project'] as const) {
+    if (calculatePluginIntentDigest(options.intents[scope].before)
+      === calculatePluginIntentDigest(options.intents[scope].after)) continue;
+    try {
+      await (options.runtime?.writePluginIntentState ?? writePluginIntentState)({
+        scope, cwd: options.cwd, env: options.env,
+      }, options.intents[scope].after);
+      intentChanged = true;
+      for (const target of options.targets) {
+        if (!options.intents[scope].before.roots.some((root) => root.pluginId === target.pluginId)
+          && !options.intents[scope].before.dependencyScopeOverrides.some((override) =>
+            override.pluginId === target.pluginId)) continue;
+        const result = cleanupIntentResult({
+          pluginId: target.pluginId,
+          pluginName: target.pluginName,
+          sourceId: target.sourceId,
+          sourceIdentity: target.sourceIdentity,
+          platform: 'codex',
+          scope,
+        });
+        result.removed.push(`pluginIntent:${scope}`);
+        results.push(result);
+      }
+    } catch (error) {
+      const message = `removedPluginIntentWriteFailed: ${scope}: ${error instanceof Error ? error.message : String(error)}. Retry cleanup.`;
+      results.push(...options.targets.map((target) => failedResult('cleanup', targetIdentity(target, scope), message)));
+      return {
+        platforms: ['codex', 'claude'],
+        plugins: [],
+        warnings: [...warnings, message],
+        rebuildResults: results,
+        targetResults: results.map(toRemovedCleanupTargetResult),
+        overallState: intentChanged ? 'partial' : 'failed',
+        receiptTargets: results.map((result) => result.target),
+        removedPluginCleanupIds: options.targets.map((target) => target.pluginId),
+        operationPlan: options.operationPlan,
+      };
+    }
+  }
+  let codexManager = options.runtime?.codexManager;
+  if (!codexManager && options.targets.some((target) => target.nativeState === 'installed')) {
+    try {
+      if (options.runtime?.codexManagerResolver) {
+        codexManager = await options.runtime.codexManagerResolver({
+          cwd: options.cwd,
+          env: options.env,
+          runner: options.runtime.nativeCliRunner ?? getDefaultNativeCliRunner(),
+          authorizer: options.runtime.managedCodexAuthorizer,
+          operationRequirement: getCodexOperationRequirement('project'),
+        });
+      } else {
+        const consumer = await (options.runtime?.codexOperationConsumerResolver
+          ?? resolveCodexOperationConsumer)({
+          cwd: options.cwd,
+          env: options.env,
+          runner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
+          authorizer: options.runtime?.managedCodexAuthorizer,
+          operationRequirement: getCodexOperationRequirement('project'),
+          requiresNativeMaterialization: true,
+        });
+        if (consumer.support !== 'observed') {
+          throw new Error('Codex native removal requires an observed official CLI consumer.');
+        }
+        codexManager = consumer.manager;
+      }
+    } catch (error) {
+      warnings.push(`removedPluginCodexManagerUnavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const ownedTargets = options.targets.flatMap((target) => target.evidence
+    .filter((entry) => entry.plan.actions.length > 0)
+    .map((entry): LiveCleanupTarget => ({
+      pluginId: target.pluginId,
+      pluginName: target.pluginName,
+      sourceId: target.sourceId,
+      sourceIdentity: target.sourceIdentity,
+      platform: entry.platform,
+      scope: entry.scope,
+      ...(target.marketplaceName ? { marketplaceName: target.marketplaceName } : {}),
+      nativeRegistration: entry.plan.actions.some((action) =>
+        action.action === 'removeNativeRegistration'),
+    })));
+  if (ownedTargets.length > 0) {
+    const owned = await cleanupOfflineOwnedComponents({
+      targets: ownedTargets,
+      evidence: options.targets.flatMap((target) => target.evidence),
+      inventoryErrors: options.inventory.errors.filter((error) => !error.kind.startsWith('config')),
+      cwd: options.cwd,
+      env: options.env,
+      nativeCliRunner: options.runtime?.nativeCliRunner,
+      ...(codexManager ? { codexManager } : {}),
+      executeCleanupOperation: options.runtime?.executeCleanupOperation,
+      removeObsoleteInstallationContracts: async () => undefined,
+      removedPluginWhole: true,
+    });
+    results.push(...owned.rebuildResults);
+    warnings.push(...owned.warnings);
+  }
+  for (const target of options.targets) {
+    for (const config of target.configTargets.filter((entry) => entry.kind !== 'absent')) {
+      if (config.kind === 'directory' || config.kind === 'special'
+        || target.blockers.some((blocker) => blocker.startsWith(`${config.scope}: removedPluginConfigIdentityConflict`))) {
+        continue;
+      }
+      try {
+        const receipt = await resetPluginConfigStore({
+          sourceId: target.sourceId,
+          sourceIdentity: target.sourceIdentity,
+          pluginName: target.pluginName,
+          scope: config.scope,
+          cwd: options.cwd,
+          env: options.env,
+        });
+        const result = cleanupIntentResult({
+          pluginId: target.pluginId,
+          pluginName: target.pluginName,
+          sourceId: target.sourceId,
+          sourceIdentity: target.sourceIdentity,
+          platform: 'codex',
+          scope: config.scope,
+        });
+        if (receipt.deleted) result.removed.push(`${config.scope}/plugin-config/${target.sourceId}/${target.pluginName}`);
+        results.push(result);
+      } catch (error) {
+        results.push(failedResult(
+          'cleanup', targetIdentity(target, config.scope),
+          `removedPluginConfigResetFailed: ${error instanceof Error ? error.message : String(error)}. Retry cleanup.`,
+          'cleanup.owned',
+        ));
+      }
+    }
+    let nativeAbsent = target.nativeState === 'absent';
+    if (target.marketplaceName && target.nativeState !== 'unbound') {
+      try {
+        const observed = await inspectCodexPluginRegistrationLive({
+          pluginId: `${target.pluginName}@${target.marketplaceName}`,
+          cwd: options.cwd,
+          env: options.env,
+          nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
+          ...(codexManager ? { manager: codexManager } : {}),
+          scope: 'both',
+        });
+        nativeAbsent = observed.observation.state === 'observed'
+          && observed.observation.value === 'absent';
+      } catch {
+        nativeAbsent = false;
+      }
+    }
+    if (!nativeAbsent && (target.nativeState === 'installed' || target.nativeState === 'unknown')) {
+      results.push(failedResult('cleanup', targetIdentity(target),
+        'removedPluginNativeResidual: official Codex list did not confirm absent. Retry ordinary cleanup.',
+        'cleanup.owned'));
+    }
+    if (nativeAbsent && target.marketplaceName && target.nativeOwnershipVerified) {
+      for (const activation of target.activationScopes) {
+        try {
+          await removeCodexPluginActivation({
+            configPath: resolveCodexPaths(options.cwd, activation.scope, options.env).configTomlPath,
+            codexPluginId: `${target.pluginName}@${target.marketplaceName}`,
+          });
+          const result = cleanupIntentResult({
+            pluginId: target.pluginId,
+            pluginName: target.pluginName,
+            sourceId: target.sourceId,
+            sourceIdentity: target.sourceIdentity,
+            platform: 'codex',
+            scope: activation.scope,
+          });
+          result.removed.push(`codexActivation:${activation.scope}`);
+          results.push(result);
+        } catch (error) {
+          results.push(failedResult('cleanup', targetIdentity(target, activation.scope),
+            `removedPluginActivationFailed: ${error instanceof Error ? error.message : String(error)}`,
+            'cleanup.owned'));
+        }
+      }
+    }
+    const claudeNativeFailed = results.some((result) => result.target.pluginId === target.pluginId
+      && result.target.platform === 'claude' && result.status === 'failed');
+    if (target.projectionPresent && target.projectionOwnershipVerified
+      && nativeAbsent && !claudeNativeFailed && !target.claudeNativeCleanupBlocked
+      && (target.nativeOwnershipVerified || target.activationScopes.length === 0)) {
+      try {
+        await removeNamespacedMarketplacePluginProjection({
+          rootDir: target.marketplaceRoot,
+          sourceId: target.sourceId,
+          sourceIdentity: target.sourceIdentity,
+          pluginName: target.pluginName,
+          env: options.env,
+        });
+        const result = cleanupIntentResult({
+          pluginId: target.pluginId,
+          pluginName: target.pluginName,
+          sourceId: target.sourceId,
+          sourceIdentity: target.sourceIdentity,
+          platform: 'codex',
+          scope: 'user',
+        });
+        result.removed.push('marketplaceProjection');
+        results.push(result);
+      } catch (error) {
+        results.push(failedResult('cleanup', targetIdentity(target),
+          `removedPluginMarketplaceProjectionFailed: ${error instanceof Error ? error.message : String(error)}`,
+          'cleanup.owned'));
+      }
+    }
+    for (const blocker of target.blockers) {
+      results.push(failedResult('cleanup', targetIdentity(target), blocker));
+    }
+  }
+  const afterInventory = await options.readInventory({ cwd: options.cwd, env: options.env });
+  for (const target of options.targets) {
+    const after = await inspectRemovedPluginCleanup({
+      pluginId: target.pluginId,
+      inventory: afterInventory,
+      cwd: options.cwd,
+      env: options.env,
+      nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
+      ...(codexManager ? { codexManager } : {}),
+    });
+    if (after && (after.configTargets.some((config) => config.kind !== 'absent')
+      || after.activationScopes.length > 0
+      || after.projectionPresent
+      || after.nativeState === 'installed'
+      || after.nativeState === 'unknown'
+      || after.evidence.some((entry) => entry.plan.actions.length > 0)
+      || after.blockers.length > 0)) {
+      results.push(failedResult('cleanup', targetIdentity(target),
+        'removedPluginCleanupResidual: some exact targets remain. Retry ordinary cleanup or repair the reported evidence.',
+        'cleanup.owned'));
+    }
+  }
+  const hasFailure = results.some((result) => result.status === 'failed');
+  const hasSuccess = intentChanged || results.some((result) => result.status === 'succeeded'
+    && result.removed.length > 0);
+  return {
+    platforms: ['codex', 'claude'],
+    plugins: hasFailure ? [] : options.targets.map((target) => target.pluginName),
+    warnings: [...new Set(warnings)],
+    rebuildResults: results,
+    targetResults: results.map(toRemovedCleanupTargetResult),
+    overallState: hasFailure ? hasSuccess ? 'partial' : 'failed' : 'succeeded',
+    receiptTargets: results.map((result) => result.target),
+    removedPluginCleanupIds: options.targets.map((target) => target.pluginId),
+    operationPlan: options.operationPlan,
+  };
+}
+
 async function runRebuildCommandInSession(
   options: RebuildCommandInvocation,
 ): Promise<RebuildCommandResult> {
@@ -2304,6 +3146,7 @@ async function runRebuildCommandInSession(
     requestedPluginNames = [...identities];
   }
   let cleanupTargets: LiveCleanupTarget[] = [];
+  let cleanupUnavailableWarnings: string[] = [];
   let cleanupIntentAfter: PluginIntentState | undefined;
   let cleanupSelectionErrors: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>['errors'] = [];
   if (options.command === 'cleanup') {
@@ -2378,6 +3221,126 @@ async function runRebuildCommandInSession(
     return mergeRebuildCommandResults([]);
   }
   if (options.command === 'cleanup') {
+    if (!cleanupForce) {
+      const exactIds = [...new Set(requestedPluginNames.flatMap((selector) => {
+        const parsed = parsePluginId(selector);
+        return parsed.sourceId ? [formatPluginId(parsed)] : [];
+      }))];
+      const projectSkills = await selectedProjectCodexSkillReferences({
+        cwd: options.commandOptions.cwd,
+      });
+      const fullInventory = {
+        ...cleanupInventory!,
+        references: [...new Map([...cleanupInventory!.references, ...projectSkills].map((reference) => [[
+          reference.kind,
+          reference.location,
+          reference.sourceId ?? '',
+          reference.pluginName ?? '',
+          reference.platform ?? '',
+          reference.scope ?? '',
+        ].join('\0'), reference])).values()],
+      };
+      const removed = (await Promise.all(exactIds.map((pluginId) => inspectRemovedPluginCleanup({
+        pluginId,
+        inventory: fullInventory,
+        cwd: options.commandOptions.cwd,
+        env: runtimeEnv,
+        nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
+        codexManager: options.runtime?.codexManager,
+      })))).filter((target): target is RemovedPluginCleanupTarget => target !== null);
+      cleanupUnavailableWarnings = await unavailableRemovedCleanupWarnings({
+        pluginIds: exactIds.filter((pluginId) => !removed.some((target) => target.pluginId === pluginId)),
+        inventory: fullInventory,
+        cwd: options.commandOptions.cwd,
+        env: runtimeEnv,
+      });
+      if (removed.length > 0) {
+        const removedIds = new Set(removed.map((target) => target.pluginId));
+        const intents = {
+          user: {
+            before: await readPluginIntentState({
+              scope: 'user', cwd: options.commandOptions.cwd, env: runtimeEnv,
+            }),
+            after: createEmptyPluginIntentState(),
+          },
+          project: {
+            before: await readPluginIntentState({
+              scope: 'project', cwd: options.commandOptions.cwd, env: runtimeEnv,
+            }),
+            after: createEmptyPluginIntentState(),
+          },
+        } satisfies Record<Scope, { before: PluginIntentState; after: PluginIntentState }>;
+        intents.user.after = removeRemovedPluginIntent(intents.user.before, removedIds);
+        intents.project.after = removeRemovedPluginIntent(intents.project.before, removedIds);
+        const removedPlan = createRemovedPluginCleanupOperationPlan({
+          targets: removed,
+          intents,
+          cwd: options.commandOptions.cwd,
+          env: runtimeEnv,
+        });
+        const remaining = exactIds.filter((pluginId) => !removedIds.has(pluginId));
+        const normalOptions: RebuildCommandInvocation = {
+          ...options,
+          all: false,
+          pluginNames: remaining,
+          runtime: {
+            ...options.runtime,
+            expectedPlanFingerprint: undefined,
+            expectedOfflineCleanupEvidence: undefined,
+          },
+        };
+        const normalPreview = remaining.length > 0
+          ? await runRebuildCommandInSession({
+              ...normalOptions,
+              runtime: { ...normalOptions.runtime, previewOperationPlan: true },
+            })
+          : undefined;
+        const operationPlan = normalPreview?.operationPlan
+          ? combineCleanupOperationPlans([removedPlan, normalPreview.operationPlan])
+          : removedPlan;
+        if (options.runtime?.expectedPlanFingerprint) {
+          assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
+        }
+        if (options.runtime?.previewOperationPlan) {
+          const preview = normalPreview ?? mergeRebuildCommandResults([]);
+          preview.removedPluginCleanupIds = [...removedIds];
+          preview.operationPlan = operationPlan;
+          preview.warnings = [...new Set([...preview.warnings, ...removedPlan.warnings])];
+          return preview;
+        }
+        if ((options.commandOptions as CleanupCommandOptions).yes !== true
+          && !(options.runtime?.preApplyConfirmed === true
+            && options.runtime.expectedPlanFingerprint !== undefined)) {
+          throw new Error('removedPluginCleanupAuthorizationRequired: deleted-plugin cleanup covers Codex and Claude in user and current-project scopes, removes saved settings and the shared Codex native package, and may affect other projects. Use --yes or accept the full Review.');
+        }
+        const removedResult = await executeRemovedPluginCleanup({
+          targets: removed,
+          intents,
+          inventory: fullInventory,
+          cwd: options.commandOptions.cwd,
+          env: runtimeEnv,
+          runtime: options.runtime,
+          readInventory,
+          operationPlan: removedPlan,
+        });
+        const normalResult = remaining.length > 0
+          ? await runRebuildCommandInSession(normalOptions)
+          : undefined;
+        const combined = normalResult
+          ? mergeRebuildCommandResults([removedResult, normalResult])
+          : removedResult;
+        combined.operationPlan = operationPlan;
+        combined.removedPluginCleanupIds = [...removedIds];
+        combined.warnings = [...new Set([...combined.warnings, ...operationPlan.warnings])];
+        combined.overallState = [removedResult, normalResult].filter(Boolean).every((result) =>
+          result?.overallState === 'succeeded')
+          ? 'succeeded'
+          : [removedResult, normalResult].filter(Boolean).some((result) =>
+            result?.overallState === 'succeeded' || result?.overallState === 'partial')
+            ? 'partial' : 'failed';
+        return combined;
+      }
+    }
     if (!cleanupForce
       && cleanupTargets.length === 0
       && cleanupSelectionErrors.length === 0
@@ -2387,11 +3350,12 @@ async function runRebuildCommandInSession(
         scope: options.commandOptions.scope,
         before: cleanupIntentBefore!,
         after: cleanupIntentAfter!,
-      }, cleanupInventoryWarnings(cleanupInventory!, []));
+      }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings]);
       if (options.runtime?.expectedPlanFingerprint) {
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
       result.operationPlan = operationPlan;
+      result.warnings.push(...cleanupUnavailableWarnings);
       return result;
     }
     if (cleanupForce) {
@@ -2616,7 +3580,7 @@ async function runRebuildCommandInSession(
         scope: options.commandOptions.scope,
         before: cleanupIntentBefore!,
         after: cleanupIntentAfter!,
-      }, cleanupInventoryWarnings(cleanupInventory!, []));
+      }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings]);
       if (options.runtime?.expectedPlanFingerprint) {
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
@@ -2628,6 +3592,7 @@ async function runRebuildCommandInSession(
         `stateInventoryResidual: ${error.kind}: ${error.message}`));
       result.warnings.push(...legacyLiveTargets.map((target) =>
         `legacyStateUnsupported: legacy live runtime state exists for ${target.pluginName}:${target.platform}/${target.scope}.`));
+      result.warnings.push(...cleanupUnavailableWarnings);
       if (malformedSelectedConfigPreserved) {
         result.warnings.push(MALFORMED_CONFIG_PRESERVED_WARNING);
       }
@@ -2659,7 +3624,7 @@ async function runRebuildCommandInSession(
       scope: options.commandOptions.scope,
       before: cleanupIntentBefore!,
       after: cleanupIntentAfter!,
-    }, cleanupInventoryWarnings(cleanupInventory!, cleanupTargets));
+    }, [...cleanupInventoryWarnings(cleanupInventory!, cleanupTargets), ...cleanupUnavailableWarnings]);
     if (options.runtime?.expectedPlanFingerprint) {
       assertOperationPlanFingerprint(
         options.runtime.expectedPlanFingerprint,
@@ -2730,6 +3695,7 @@ async function runRebuildCommandInSession(
     if (malformedSelectedConfigPreserved) {
       cleanupResult.warnings.push(MALFORMED_CONFIG_PRESERVED_WARNING);
     }
+    cleanupResult.warnings.push(...cleanupUnavailableWarnings);
     return cleanupResult;
   }
   try {

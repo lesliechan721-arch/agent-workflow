@@ -22,6 +22,7 @@ import {
   TuiConfigInvalidStoreError,
   TuiController,
   type OperationEvidence,
+  type PluginWriteBatchEvidence,
   type PluginWriteBatchExecutionResult,
 } from '../../src/tui/controller.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
@@ -862,6 +863,86 @@ describe('TUI batch write runtime', () => {
     );
     expect(runtimeMocks.cleanupWriteCommand.mock.calls[6]?.[2]).toEqual(
       expect.objectContaining({ expectedPlanFingerprint: continuedSecondPlan.planFingerprint }),
+    );
+  });
+
+  it('cleans a deleted plugin once across positions and continues a normal target in the batch', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const plan = (pluginId: string, intentDigest: string, removed = false) =>
+      createOperationPlan({
+        intentChanges: removed
+          ? (['user', 'project'] as const).map((scope) => ({
+              scope, beforeDigest: 'sha256:before', afterDigest: 'sha256:after',
+            }))
+          : [{ scope: 'user', beforeDigest: intentDigest, afterDigest: 'sha256:after-normal' }],
+        actions: [],
+        changes: [`${pluginId}:codex:user:removeIntent`],
+        warnings: [],
+        evidence: {
+          catalogDigests: [],
+          intentDigests: removed
+            ? (['user', 'project'] as const).map((scope) => ({ scope, digest: 'sha256:before' }))
+            : [{ scope: 'user' as const, digest: intentDigest }],
+          configDigests: [], targetOwnerFingerprints: [],
+        },
+      });
+    const removedPlan = plan('first/alpha', 'sha256:before', true);
+    const normalPlan = plan('second/beta', 'sha256:before');
+    const updatedNormalPlan = plan('second/beta', 'sha256:after');
+    const result = (pluginId: string, operationPlan: ReturnType<typeof createOperationPlan>,
+      removed = false): RebuildCommandResult => ({
+      platforms: ['codex'], plugins: [pluginId.split('/')[1]!], warnings: [], rebuildResults: [],
+      targetResults: [{
+        target: { pluginName: pluginId.split('/')[1]!, pluginId,
+          sourceId: pluginId.split('/')[0]!, platform: 'codex', scope: 'user', },
+        action: 'cleanup', state: 'completed', requiredBy: [],
+      }],
+      overallState: 'succeeded', receiptTargets: [], operationPlan,
+      ...(removed ? { removedPluginCleanupIds: [pluginId] } : {}),
+    });
+    runtimeMocks.cleanupWriteCommand
+      .mockResolvedValueOnce(result('first/alpha', removedPlan, true))
+      .mockResolvedValueOnce(result('second/beta', normalPlan))
+      .mockResolvedValueOnce(result('first/alpha', removedPlan, true))
+      .mockResolvedValueOnce(result('second/beta', normalPlan))
+      .mockResolvedValueOnce(result('first/alpha', removedPlan, true))
+      .mockResolvedValueOnce(result('second/beta', updatedNormalPlan))
+      .mockResolvedValueOnce(result('second/beta', updatedNormalPlan));
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWriteBatch' as const, action: 'cleanup' as const,
+      selection: { kind: 'targets' as const, targets: [
+        { pluginId: 'first/alpha', platform: 'claude' as const, scope: 'project' as const },
+        { pluginId: 'first/alpha', platform: 'codex' as const, scope: 'user' as const },
+        { pluginId: 'second/beta', platform: 'codex' as const, scope: 'user' as const },
+      ] },
+      platform: 'codex' as const, scope: 'user' as const,
+    };
+
+    const evidence = await dependencies.captureEvidence(
+      intent, new AbortController().signal,
+    ) as PluginWriteBatchEvidence;
+    expect(evidence.groups.map((group) => group.requestedPluginIds)).toEqual([
+      ['first/alpha'], ['second/beta'],
+    ]);
+    const review = buildOperationReviewProjection({ intent, evidence });
+    expect(review.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'first/alpha', title: '删除已保存的插件设置' }),
+      expect.objectContaining({ pluginId: 'second/beta' }),
+    ]));
+    const execution = await dependencies.executeIntent(
+      intent, evidence,
+    ) as PluginWriteBatchExecutionResult;
+    expect(execution.groupResults.map((group) => group.result.overallState))
+      .toEqual(['succeeded', 'succeeded']);
+    expect(runtimeMocks.cleanupWriteCommand.mock.calls.map((call) => call[0])).toEqual([
+      ['first/alpha'], ['second/beta'], ['first/alpha'], ['second/beta'],
+      ['first/alpha'], ['second/beta'], ['second/beta'],
+    ]);
+    expect(runtimeMocks.cleanupWriteCommand.mock.calls.at(-1)?.[2]).toEqual(
+      expect.objectContaining({ expectedPlanFingerprint: updatedNormalPlan.planFingerprint }),
     );
   });
 

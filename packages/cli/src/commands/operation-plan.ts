@@ -87,6 +87,28 @@ export type OperationAction =
       ownerFingerprint: string;
     }
   | {
+      kind: 'removePluginConfig';
+      pluginId: string;
+      platform: PlatformName;
+      scope: Scope;
+      path: string;
+      fingerprint: string;
+    }
+  | {
+      kind: 'removeActivation';
+      pluginId: string;
+      platform: 'codex';
+      scope: Scope;
+      registration: string;
+    }
+  | {
+      kind: 'removeMarketplaceProjection';
+      pluginId: string;
+      platform: PlatformName;
+      scope: Scope;
+      marketplaceRoot: string;
+    }
+  | {
       kind: 'runPreApply';
       pluginId: string;
       platform: PlatformName;

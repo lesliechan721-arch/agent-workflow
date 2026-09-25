@@ -159,6 +159,8 @@ export interface PluginListItemViewModel {
   sourceUnavailable?: boolean;
   savedConfigScopes: Scope[];
   configOnly?: true;
+  catalogEntryMissing?: true;
+  removedPluginCleanupRequired?: true;
   dependencySummary?: PluginDependencySummaryViewModel;
   technicalComponents: Array<{
     platform: PlatformName;
@@ -2124,18 +2126,26 @@ export function buildTuiViewModel(options: {
     scopes.add(store.scope);
     configScopesByPlugin.set(store.pluginId, scopes);
   }
+  const retainedStatusIds = new Set([...targetsByPlugin].flatMap(([pluginId, targets]) =>
+    targets.some((target) => target.state !== 'absent'
+      || statusTargetIntent(target).enabled
+      || target.reasons.length > 0)
+      ? [pluginId] : []));
   const pluginIds = new Set([
     ...summaryById.keys(),
-    ...targetsByPlugin.keys(),
+    ...retainedStatusIds,
     ...configScopesByPlugin.keys(),
   ]);
   const plugins = [...pluginIds].map((pluginId): PluginListItemViewModel => {
     const summary = summaryById.get(pluginId);
-    const targets = targetsByPlugin.get(pluginId) ?? [];
+    const targets = summary || retainedStatusIds.has(pluginId)
+      ? targetsByPlugin.get(pluginId) ?? [] : [];
     const sourceId = targets[0]?.sourceId ?? pluginId.slice(0, pluginId.indexOf('/'));
     const savedConfigScopes = [...(configScopesByPlugin.get(pluginId) ?? [])]
       .sort((left, right) => (left === 'user' ? 0 : 1) - (right === 'user' ? 0 : 1));
     const configOnly = summary === undefined && targets.length === 0 && savedConfigScopes.length > 0;
+    const removedPluginCleanupRequired = targets.some((target) =>
+      target.reasons.some((reason) => reason.code === 'removedPluginCleanupRequired'));
     const placements = (['codex', 'claude'] as const).flatMap((platform) => {
       const platformTargets = targets.filter((target) => target.platform === platform);
       const aggregateConflict = platform === 'codex' && options.status.targets.some((target) =>
@@ -2211,6 +2221,8 @@ export function buildTuiViewModel(options: {
       ...(sourceUnavailable ? { sourceUnavailable: true } : {}),
       savedConfigScopes,
       ...(configOnly ? { configOnly: true } : {}),
+      ...(summary === undefined ? { catalogEntryMissing: true } : {}),
+      ...(removedPluginCleanupRequired ? { removedPluginCleanupRequired: true } : {}),
       ...(dependencyById.get(pluginId)
         ? { dependencySummary: dependencyById.get(pluginId)!.summary }
         : summary && (summary.dependencyTotalCount ?? 0) > 0

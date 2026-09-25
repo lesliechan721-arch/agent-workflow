@@ -2295,11 +2295,15 @@ export function createTuiControllerDependencies(
       signal?.throwIfAborted();
       if (intent.action === 'cleanup') {
         const groups: PluginWriteBatchGroupEvidence[] = [];
+        const reviewedRemovedPlugins = new Set<string>();
         for (const group of selection.groups) {
           signal?.throwIfAborted();
+          const requestedPluginIds = group.requestedPluginIds.filter((pluginId) =>
+            !reviewedRemovedPlugins.has(pluginId));
+          if (requestedPluginIds.length === 0) continue;
           const preview = await runBatchWriteGroup({
             intent,
-            group,
+            group: { ...group, requestedPluginIds },
             cwd: context.cwd,
             runtime: {
               ...context,
@@ -2312,7 +2316,11 @@ export function createTuiControllerDependencies(
               } : {}),
             },
           });
-          groups.push({ ...group, preview, executable: preview.operationPlan !== undefined });
+          for (const pluginId of preview.removedPluginCleanupIds ?? []) {
+            reviewedRemovedPlugins.add(pluginId);
+          }
+          groups.push({ ...group, requestedPluginIds, preview,
+            executable: preview.operationPlan !== undefined });
         }
         await preparation?.reporter.emit('evidence');
         signal?.throwIfAborted();
@@ -2480,6 +2488,9 @@ export function createTuiControllerDependencies(
         },
         operationPlan: preview.operationPlan,
         offlineCleanupPlans,
+        ...(preview.removedPluginCleanupIds
+          ? { removedPluginCleanupIds: preview.removedPluginCleanupIds }
+          : {}),
         ...(offlineCleanupPlans.length === 1
           ? { offlineCleanup: offlineCleanupPlans[0] }
           : {}),

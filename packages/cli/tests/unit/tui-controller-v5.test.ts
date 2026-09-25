@@ -185,6 +185,49 @@ describe('TUI plugin write batches', () => {
     ]);
   });
 
+  it('offers cleanup for a deleted plugin with no positive ownership component', () => {
+    const residual = target({
+      pluginName: 'removed', platform: 'codex', scope: 'project', state: 'blocked',
+    });
+    residual.placements[0]!.components = [
+      { kind: 'ownership', key: 'native', state: 'absent' },
+    ];
+    residual.placements[0]!.reasons = [{
+      code: 'removedPluginCleanupRequired', message: 'Removed from Active Catalog.',
+      severity: 'blocking',
+    }];
+    expect(pluginWriteBatchTargets('cleanup', ['official/removed'],
+      flattenStatusTargets([residual]))).toEqual([
+        { pluginId: 'official/removed', platform: 'codex', scope: 'project' },
+      ]);
+  });
+
+  it('does not offer installation for a residual target without a Catalog entry', async () => {
+    const residual = target({
+      pluginName: 'removed', platform: 'codex', scope: 'user', state: 'blocked',
+    });
+    residual.placements[0]!.reasons = [{
+      code: 'removedPluginCleanupRequired', message: 'Removed from Active Catalog.',
+      severity: 'blocking',
+    }];
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({ targets: [residual] }), pluginSummaries: [],
+      }),
+    }));
+    await controller.load();
+    expect(controller.getPluginOverview('official/removed')).toMatchObject({
+      catalogEntryMissing: true, removedPluginCleanupRequired: true,
+    });
+    expect(controller.listInstallTargets('official/removed', 'user')).toEqual([
+      { platform: 'codex', compatible: false, disabled: '来源中没有可信插件定义' },
+    ]);
+    expect(controller.pluginHasInstallableTarget('official/removed')).toBe(false);
+    expect(controller.listPluginWriteBatchTargets('cleanup', ['official/removed'])).toEqual([
+      { pluginId: 'official/removed', platform: 'codex', scope: 'user' },
+    ]);
+  });
+
   function failedBatchResult(
     targetResults: Array<Record<string, unknown>>,
   ): PluginWriteBatchExecutionResult {
@@ -1164,8 +1207,11 @@ describe('TUI v4 router and ViewModel', () => {
   });
 
   it('includes recognizable saved settings without claiming the plugin is installable', () => {
+    const payload = status({ targets: [target({
+      sourceId: 'removed', pluginName: 'demo', scope: 'user', state: 'absent',
+    })] });
     const view = buildTuiViewModel({
-      status: status(),
+      status: payload,
       pluginSummaries: [],
       configStoreInventory: [{
         pluginId: 'removed/demo', sourceId: 'removed', pluginName: 'demo', scope: 'user',
@@ -1182,7 +1228,7 @@ describe('TUI v4 router and ViewModel', () => {
     })]);
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue({
-        payload: status(), pluginSummaries: [], configStoreInventory: [{
+        payload, pluginSummaries: [], configStoreInventory: [{
           pluginId: 'removed/demo', sourceId: 'removed', pluginName: 'demo', scope: 'user',
         }],
       }),
@@ -1194,6 +1240,9 @@ describe('TUI v4 router and ViewModel', () => {
       expect(controller.listPlugins({ mode: 'browse', installFilter: 'attention' }))
         .toHaveLength(1);
       expect(controller.listInstallTargets('removed/demo', 'user')).toEqual([]);
+      expect(controller.listPluginWriteBatchTargets('cleanup', ['removed/demo'])).toEqual([
+        { pluginId: 'removed/demo', platform: 'codex', scope: 'user' },
+      ]);
       expect(buildPluginDetailActions(controller.getPluginOverview('removed/demo')!)
         .map((action) => action.id)).toEqual(['settings', 'sourceProblem', 'about']);
       controller.push({ name: 'pluginDetail', pluginId: 'removed/demo' });
@@ -4711,6 +4760,27 @@ describe('TUI v4 Review safety', () => {
     ]));
     expect(JSON.stringify(review)).not.toContain('/workspace/.codex/owners/demo.json');
     expect(JSON.stringify(review)).not.toContain('inventoryUnreadable');
+  });
+
+  it('shows the full deleted-plugin cleanup scope before approval', () => {
+    const review = buildOperationReviewProjection({
+      intent: {
+        kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/demo',
+        platform: 'codex', scope: 'user',
+      },
+      evidence: { ...baseEvidence, removedPluginCleanupIds: ['official/demo'] },
+    });
+    expect(review.title).toBe('整体清理已删除插件');
+    expect(review.requiresConfirmation).toBe(true);
+    expect(review.equivalentCommand).toContain('--yes');
+    expect(review.changes.filter((change) => change.kind === 'remove'
+      && (change.title.includes('Codex') || change.title.includes('Claude Code'))))
+      .toHaveLength(4);
+    expect(review.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: '删除已保存的插件设置' }),
+      expect.objectContaining({ title: '移除 Codex 共享原生安装会影响其他项目' }),
+    ]));
+    expect(review.changes.some((change) => change.title.includes('插件设置保持不变'))).toBe(false);
   });
 
   it('keeps an Intent-only cleanup valid when there are no removable outputs', async () => {

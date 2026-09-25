@@ -121,6 +121,7 @@ import {
 } from '../utils/plugin-config.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import {
+  assertSafeNamespacedMarketplacePluginRoot,
   getNamespacedMarketplaceName,
   MarketplaceRootValidationError,
   projectMarketplaceManifestForPlatform,
@@ -231,6 +232,7 @@ export interface RebuildIntegration {
     readOnlyInspectionPlan?: boolean;
     readOnlyShallowInspectionPlan?: boolean;
     includeNativeCleanupCandidate?: boolean;
+    removedPluginWhole?: boolean;
     codexActivationCleanup?: Array<{
       codexPluginId: string;
       scope: Scope;
@@ -2815,6 +2817,101 @@ export async function inspectCodexPluginRegistrationLive(options: {
     };
   } finally {
     await ownedSession?.dispose();
+  }
+}
+
+export async function removeCodexPluginActivation(options: {
+  configPath: string;
+  codexPluginId: string;
+}): Promise<void> {
+  await applyConditionalCodexConfigTransactionFile(options.configPath, (snapshot) =>
+    Object.hasOwn(snapshot.plugins, options.codexPluginId)
+      ? { removePluginActivations: [options.codexPluginId] }
+      : null);
+}
+
+export async function removeNamespacedMarketplacePluginProjection(options: {
+  rootDir: string;
+  sourceId: string;
+  sourceIdentity: string;
+  pluginName: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  if (!await isSafeCodexMarketplaceRoot({
+    awHome: resolveAwHome(options.env),
+    sourceId: options.sourceId,
+    marketplaceRoot: options.rootDir,
+  })) {
+    throw new Error('marketplaceProjectionUnsafe: marketplace root is outside the canonical AW source path.');
+  }
+  const root = await readStrictNamespacedMarketplaceRoot({
+    rootDir: options.rootDir,
+    sourceId: options.sourceId,
+    sourceIdentity: options.sourceIdentity,
+  });
+  if (!root) return;
+  const pluginRoot = await assertSafeNamespacedMarketplacePluginRoot(
+    options.rootDir, options.pluginName,
+  );
+  const pluginStats = await fs.lstat(pluginRoot).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (pluginStats && (!pluginStats.isDirectory() || pluginStats.isSymbolicLink())) {
+    throw new Error('marketplaceProjectionUnsafe: plugin projection is not a regular directory.');
+  }
+  const manifests = [
+    { value: root.agentsManifest, path: path.join(options.rootDir, '.agents', 'plugins', 'marketplace.json') },
+    ...(root.claudeManifest
+      ? [{ value: root.claudeManifest, path: path.join(options.rootDir, '.claude-plugin', 'marketplace.json') }]
+      : []),
+  ];
+  const hasEntry = manifests.some(({ value }) => Array.isArray(value.plugins)
+    && value.plugins.some((entry) => entry !== null && typeof entry === 'object'
+      && (entry as { name?: unknown }).name === options.pluginName));
+  let hasIdentityManifest = false;
+  if (pluginStats) {
+    for (const manifestName of ['.agents-plugin/plugin.json', '.codex-plugin/plugin.json']) {
+      const manifestPath = path.join(pluginRoot, manifestName);
+      const manifest = await fs.readJson(manifestPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      }) as { name?: unknown } | null;
+      if (manifest && manifest.name !== options.pluginName) {
+        throw new Error('marketplaceProjectionIdentityMismatch: plugin projection has a foreign name.');
+      }
+      hasIdentityManifest ||= manifest?.name === options.pluginName;
+    }
+    if (!hasEntry && !hasIdentityManifest) {
+      throw new Error('marketplaceProjectionIdentityUnavailable: plugin directory has no matching marketplace entry or plugin manifest.');
+    }
+  }
+  if (pluginStats) {
+    const inspectTree = async (directory: string): Promise<void> => {
+      for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+        if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) {
+          throw new Error('marketplaceProjectionUnsafe: plugin projection contains an unsafe node.');
+        }
+        if (entry.isDirectory()) await inspectTree(path.join(directory, entry.name));
+      }
+    };
+    await inspectTree(pluginRoot);
+    await fs.remove(pluginRoot);
+  }
+  for (const manifest of manifests) {
+    if (!Array.isArray(manifest.value.plugins)) {
+      throw new Error('marketplaceProjectionInvalid: marketplace plugins are not an array.');
+    }
+    const plugins = manifest.value.plugins.filter((entry) => entry === null
+      || typeof entry !== 'object'
+      || (entry as { name?: unknown }).name !== options.pluginName);
+    if (plugins.length !== manifest.value.plugins.length) {
+      await atomicReplaceConfigFile({
+        filePath: manifest.path,
+        allowedRoot: options.rootDir,
+        content: `${JSON.stringify({ ...manifest.value, plugins }, null, 2)}\n`,
+      });
+    }
   }
 }
 
@@ -5442,7 +5539,8 @@ export function createRebuildIntegration(options: {
       const nativeCleanupCandidate = input.platform === 'claude'
         ? input.includeNativeCleanupCandidate !== false
         : input.platform === 'codex'
-          && nativeRequired
+          && (nativeRequired || (input.removedPluginWhole === true
+            && input.includeNativeCleanupCandidate === true))
           && (input.command === 'cleanup' || input.command === 'uninstall');
       const nativePlugin = (nativeDesired || nativeCleanupCandidate)
         ? [{

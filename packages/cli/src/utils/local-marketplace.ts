@@ -53,6 +53,37 @@ export function getLocalMarketplacePluginRoot(rootDir: string, pluginName: strin
   return path.join(rootDir, 'plugins', pluginName);
 }
 
+export async function assertSafeNamespacedMarketplacePluginRoot(
+  rootDir: string,
+  pluginName: string,
+): Promise<string> {
+  const pluginsRoot = path.join(rootDir, 'plugins');
+  const pluginRoot = getLocalMarketplacePluginRoot(rootDir, pluginName);
+  const pluginsStats = await lstatMarketplacePath(pluginsRoot);
+  if (pluginsStats && (!pluginsStats.isDirectory() || pluginsStats.isSymbolicLink())) {
+    throw new MarketplaceRootValidationError(
+      pluginsRoot, 'marketplace plugins ancestor must be a regular directory.', 'unsafe',
+    );
+  }
+  const pluginStats = pluginsStats ? await lstatMarketplacePath(pluginRoot) : null;
+  if (pluginStats && (!pluginStats.isDirectory() || pluginStats.isSymbolicLink())) {
+    throw new MarketplaceRootValidationError(
+      pluginRoot, 'marketplace plugin projection must be a regular directory.', 'unsafe',
+    );
+  }
+  const physicalRoot = await fs.realpath(rootDir);
+  for (const candidate of [pluginsStats ? pluginsRoot : null, pluginStats ? pluginRoot : null]) {
+    if (!candidate) continue;
+    const relative = path.relative(physicalRoot, await fs.realpath(candidate));
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new MarketplaceRootValidationError(
+        candidate, 'marketplace plugin path escapes its physical root.', 'unsafe',
+      );
+    }
+  }
+  return pluginRoot;
+}
+
 export function getLocalMarketplaceCodexSkillsRoot(rootDir: string, pluginName: string): string {
   return path.join(getLocalMarketplacePluginRoot(rootDir, pluginName), 'codex', 'skills');
 }

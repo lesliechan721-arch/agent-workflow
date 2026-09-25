@@ -134,6 +134,13 @@ describe('CLI entry v5', () => {
     }
   });
 
+  it('publishes explicit authorization for deleted-plugin cleanup', async () => {
+    const output = capture();
+    expect(await runCli(['cleanup', '--help'], { io: output.io })).toBe(0);
+    expect(output.stdout()).toContain('--yes');
+    expect(output.stdout()).toContain('Codex, Claude Code, user and current project');
+  });
+
   it('asks once at the first interactive managed Codex acquisition', async () => {
     const confirm = vi.fn().mockResolvedValue({ cancelled: false, value: true });
     const authorizer = createManagedCodexAuthorizer(
