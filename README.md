@@ -46,7 +46,7 @@ aw
 `aw` 会打开交互式插件管理界面。也可以直接使用命令：
 
 ```bash
-aw install ask-me -p both
+aw install decision-kit -p both
 aw install dev-workflow -p both
 aw install git-toolkit -p both
 aw status
@@ -64,8 +64,8 @@ aw status
 
 | 插件 | 适合什么场景 | 平台 |
 | --- | --- | --- |
-| [`ask-me`](plugins/ask-me/) | 澄清关键歧义、逐轮推演重要决定，或用可体验原型帮助用户作出决定 | Codex / Claude Code |
-| [`dev-workflow`](plugins/dev-workflow/) | 用 Spec、实现切片和双轴 Review 组织中大型开发任务，并按需组合 `ask-me` | Codex / Claude Code |
+| [`decision-kit`](plugins/decision-kit/) | 澄清关键歧义、逐轮推演重要决定，制作决策原型，并维护项目领域词汇与重要决定 | Codex / Claude Code |
+| [`dev-workflow`](plugins/dev-workflow/) | 独立完成设计或组织完整开发交付，组合 `decision-kit`、项目规范、实施与双轴 Review | Codex / Claude Code |
 | [`git-toolkit`](plugins/git-toolkit/) | 创建精确本地提交、隔离 worktree，或协调 merge 双方意图 | Codex / Claude Code |
 | [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中执行大范围只读探索，并更稳妥地编排通用子代理 | Codex |
 
@@ -86,7 +86,7 @@ aw status
 给团队邀请增加有效期。先帮我确认哪些行为必须由我决定。
 ```
 
-`ask-me` 会先调查现有代码和约定，只询问会明显改变结果、范围或验收的问题。
+`decision-kit` 会先调查现有代码和约定，只询问会明显改变结果、范围或验收的问题。
 
 ### 用原型帮助作出决定
 
@@ -102,7 +102,7 @@ aw status
 /dev 为团队邀请增加 7 天有效期。这个任务需要跨会话继续。
 ```
 
-`dev-workflow` 会选择当前最小能力：必要时组合 `ask-me` 补充决定或制作决策原型，再形成轻量 Spec、实施并执行双轴 Review。明确的小任务仍然走快速实现路径。
+`dev-workflow` 会选择当前最小能力：设计由 `dev-design` 协调，实施与核验由 `dev-build` 协调，必要时组合 `decision-kit` 补充决定或制作原型。只需要设计时可直接请求 `dev-design`，不自动开始实施；明确的小任务仍然走快速实现路径。项目规范按主题维护，过程资料默认仅保存在本地 `.dev-workflows/`。
 
 ### 创建一个只包含本次改动的提交
 
@@ -168,10 +168,10 @@ aw status git --verbose
 
 # 只读取得当前 Workspace 或单插件的 Review 证据
 aw review inspect . --json
-aw review inspect ./plugins/ask-me --json
+aw review inspect ./plugins/decision-kit --json
 
 # 项目级安装
-aw install ask-me -p codex -s project
+aw install decision-kit -p codex -s project
 
 # 先导出并检查一个声明了 Portable 能力的合成本地 Catalog 插件
 aw skill materialize <source>/<plugin> --scope project --out ./.aw-review/<plugin>

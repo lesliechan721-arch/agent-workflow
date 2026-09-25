@@ -34,7 +34,7 @@ const EXPECTED_PLUGIN_PLATFORMS = {
   'agent-content-toolkit': ['claude', 'codex'],
   'aw-skill-eval-runner': ['claude', 'codex'],
   'agent-skill-toolkit': ['claude', 'codex'],
-  'ask-me': ['claude', 'codex'],
+  'decision-kit': ['claude', 'codex'],
   'aw-development-toolkit': ['claude', 'codex'],
   'browser-use': ['claude', 'codex'],
   'codex-enhance': ['codex'],
@@ -296,7 +296,7 @@ describe('build smoke', () => {
       fs.pathExists(path.join(outputRoot, 'plugins', 'git-toolkit', '.codex-plugin', 'plugin.json')),
     ).resolves.toBe(true);
     await expect(
-      fs.pathExists(path.join(outputRoot, 'plugins', 'ask-me', '.claude-plugin', 'plugin.json')),
+      fs.pathExists(path.join(outputRoot, 'plugins', 'decision-kit', '.claude-plugin', 'plugin.json')),
     ).resolves.toBe(true);
     await expect(
       fs.readJson(path.join(outputRoot, 'plugins', 'git-toolkit', '.agents-plugin', 'plugin.json')),
@@ -304,7 +304,7 @@ describe('build smoke', () => {
       name: 'git-toolkit',
     });
     await expect(
-      fs.readJson(path.join(outputRoot, 'plugins', 'ask-me', '.agents-plugin', 'plugin.json')),
+      fs.readJson(path.join(outputRoot, 'plugins', 'decision-kit', '.agents-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
       marketplace: {
         category: 'workflow',
@@ -339,10 +339,15 @@ describe('build smoke', () => {
       }
     }
     for (const [pluginName, skillName] of [
-      ['ask-me', 'decision-grill'],
+      ['decision-kit', 'decision-grill'],
+      ['decision-kit', 'project-context'],
+      ['dev-workflow', 'dev-design'],
       ['git-toolkit', 'git-commit'],
     ]) {
       for (const platform of ['claude', 'codex']) {
+        await expect(fs.pathExists(path.join(
+          outputRoot, 'plugins', pluginName, platform, 'skills', skillName, 'SKILL.md',
+        ))).resolves.toBe(true);
         for (const authorDirectory of ['evals', 'reports']) {
           await expect(fs.pathExists(path.join(
             outputRoot,
@@ -404,21 +409,21 @@ describe('build smoke', () => {
     expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'agent-content-toolkit',
       'agent-skill-toolkit',
-      'ask-me',
       'aw-development-toolkit',
       'aw-skill-eval-runner',
       'browser-use',
+      'decision-kit',
       'dev-workflow',
       'git-toolkit',
     ]);
     expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'agent-content-toolkit',
       'agent-skill-toolkit',
-      'ask-me',
       'aw-development-toolkit',
       'aw-skill-eval-runner',
       'browser-use',
       'codex-enhance',
+      'decision-kit',
       'dev-workflow',
       'git-toolkit',
     ]);
@@ -447,8 +452,8 @@ describe('build smoke', () => {
       interface: claudeMarketplace.interface,
       plugins: expect.arrayContaining([
         expect.objectContaining({
-          name: 'ask-me',
-          source: './plugins/ask-me',
+          name: 'decision-kit',
+          source: './plugins/decision-kit',
           policy: expect.objectContaining({
             authentication: 'ON_INSTALL',
           }),
@@ -464,15 +469,15 @@ describe('build smoke', () => {
     });
     expect(claudeMarketplace.plugins).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        name: 'ask-me',
-        source: './plugins/ask-me',
+        name: 'decision-kit',
+        source: './plugins/decision-kit',
         policy: expect.objectContaining({
           authentication: 'ON_INSTALL',
         }),
       }),
     ]));
     await expect(
-      fs.pathExists(path.join(outputRoot, 'plugins', 'ask-me', 'codex', 'skills', 'ask-me')),
+      fs.pathExists(path.join(outputRoot, 'plugins', 'decision-kit', 'codex', 'skills', 'decision-kit')),
     ).resolves.toBe(false);
     await Promise.all([
       path.join(

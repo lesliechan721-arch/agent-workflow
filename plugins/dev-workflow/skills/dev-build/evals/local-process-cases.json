@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-build",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "衡量有依据的设计、长期知识和本地过程分工，同时保留既定范围、真实确认及独立证据。"
+    },
+    "participants": [
+      "dev-implement",
+      "dev-review-code"
+    ],
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "build-default-no-milestone-commit",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用dev-build完成当前已确认的记录选择任务，沿用目标规范。用户当前确认：只导出当前租户内已选择的记录；空选择返回空结果，输入不修改。CSV序列化属于后续任务，当前只实现记录选择函数。用户只允许本地设计和实现，不授权提交或推送。\n",
+      "assertions": [
+        "完成公开行为，运行实际测试，保持目标规范。",
+        "过程只存本地，不为准备/milestone要求提交授权或写入Git；必要阶段及最终审查仍执行或报告缺口。",
+        "没有push或自动commit，也不把规范改为返回全部来迁就代码。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "docs/domain.md": "# 领域词汇\n## 租户\n数据隔离主体。\n## 登录账号\n用于登录的个人身份，一个账号可以加入多个租户。\n",
+          "docs/design/export.md": "# 导出记录规范\n只返回当前tenantId且id在selectedIds中的记录。空selectedIds返回空数组；输出顺序沿输入，输入及其记录不被修改。当前接口输入为记录数组、tenantId字符串与id数组。\n大小写敏感，id精确比较。当前只实现记录选择函数，CSV或后台队列不属于这个范围。内部组织自由。\n",
+          "src/export.js": "export function exportRows(rows, tenantId, selectedIds) { return rows; }\n",
+          "test/export.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {exportRows} from '../src/export.js';\nconst rows=[{id:'a',tenantId:'t1',name:'Ada'},{id:'b',tenantId:'t2',name:'Grace'},{id:'c',tenantId:'t1',name:'Lin'}];\ntest('same tenant filtered result',()=>assert.deepEqual(exportRows(rows,'t1',['a','b']).map(x=>x.id),['a']));\ntest('empty choice stays empty',()=>assert.deepEqual(exportRows(rows,'t1',[]),[]));\ntest('input stays unchanged',()=>{const before=JSON.stringify(rows);exportRows(rows,'t1',['a']);assert.equal(JSON.stringify(rows),before);});\n",
+          ".gitignore": "/.dev-workflows/\n",
+          ".dev-workflows/export/task.md": "# 当前任务\n用户当前确认：只导出当前租户内已选择的记录；空选择返回空结果，输入不修改。CSV序列化属于后续任务，当前只实现记录选择函数。用户只允许本地设计和实现，不授权提交或推送。\n规范在docs/design/export.md；接口选择待实现，代码目前返回全部记录。\n"
+        }
+      },
+      "expected": {
+        "output": "按同一目标实施和核验，不以commit作为默认前置。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/export.js",
+          "test/**",
+          ".dev-workflows/**"
+        ]
+      },
+      "audit": {
+        "rationale": "保存策略改变不减少实际质量条件。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "用户明确授权有价值的本地checkpoint时可按其具体范围执行。"
+      }
+    },
+    {
+      "id": "cancel-only-owned-target",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "用户取消当前设计。只处理本任务的未完成目标变更，保留已有其他工作，说明清理结果。",
+      "assertions": [
+        "仅基于明确所有权处理目标变更，保留无关notes和before记录。",
+        "不通过全工作区reset/clean处理取消，也不直接删除task后留下取消目标。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "docs/design/export.md": "# 待实施目标\n当前改为异步任务，此变更仅来自已取消的本次设计。\n",
+          "docs/design/export.before.md": "# 现有目标\n同步导出当前筛选结果。\n",
+          "notes-user.md": "用户自己的无关笔记，必须保留。\n",
+          ".dev-workflows/export/task.md": "# 范围\n只改了docs/design/export.md；before文件为用户本次提供的准确原内容，其他文件不属本任务。\n"
+        }
+      },
+      "expected": {
+        "output": "取消目标不遗留成有效合同，原有用户工作保留。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/design/export.md",
+          ".dev-workflows/export/task.md"
+        ]
+      },
+      "audit": {
+        "rationale": "规范提前写入必须有正确取消收尾。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "多个任务混改而归属不明时先确认，不猜测还原范围。"
+      }
+    }
+  ]
+}

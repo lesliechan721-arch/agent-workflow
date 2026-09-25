@@ -16,7 +16,9 @@
       "dev-breakdown",
       "dev-implement",
       "dev-review-code",
-      "decision-shape"
+      "decision-shape",
+      "dev-design",
+      "project-context"
     ]
   },
   "cases": [
@@ -28,7 +30,7 @@
         "runtime-required"
       ],
       "input": {
-        "task": "完成当前已确认纯函数需求并交付，按开发阶段组织；允许本地文档和代码checkpoint以及真实子代理。 本任务需要跨上下文交接：规范入口使用 spec.md，首批任务使用 tickets/model-policy.md 和 tickets/runtime-state.md；附件按需放 topics/models.md 或 topics/runtime.md，索引使用 work.md。实施者只接收本次实际生成的任务及可达来源，不继承父会话。",
+        "task": "完成当前已确认纯函数需求并交付，按开发阶段组织；允许本地文档和代码checkpoint以及真实子代理。 本任务需要跨上下文交接：规范入口使用 spec.md，首批任务使用 .dev-workflows/model-policy/tickets/model-policy.md 和 .dev-workflows/model-policy/tickets/runtime-state.md；附件按需放 topics/models.md 或 topics/runtime.md，索引使用 .dev-workflows/model-policy/work.md。实施者只接收本次实际生成的任务及可达来源，不继承父会话。",
         "workspaceFiles": {
           "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
           "decisions.md": "# 已确认决定（隔离评测夹具）\n本测试用户已确认以下结果；这不是实际产品的审批记录。\n\n## 模型筛选\nall接受任意非本地模型；regex按可请求id区分大小写匹配；selected按保存的allowlist精确匹配。chatgpt-web/前缀始终本地。目录只展示本次返回且通过筛选的上游id，不能把本地冲突项作为上游；目录没有返回已选择项时不删除保存值，直接请求仍按allowlist判断。\n\n## 隔离与生命周期\n本任务只有纯函数，不发网络请求。保存配置意图与加载生效是不同状态：loadedRevision与savedRevision一致才applied，不一致均pending；有活动任务或重启失败不会改变savedRevision。\n\n## 约束与自由\nregex必须有长度上限，建议512；最终数值在独立调用者明确给出的maxLength参数中确定，本fixture不把建议固定为常量。函数名和参数是当前项目已存在的消费者合同，局部函数组织和测试实现自由。\n",
@@ -36,7 +38,8 @@
           "src/model-policy.js": "export function chooseRoute(id,filter,upstreamAvailable){return id.startsWith('chatgpt-web/')?'local':upstreamAvailable?'upstream':'deny';}\nexport function visibleModels(local,remote,filter){return [...new Set([...local,...remote])];}\n",
           "src/runtime-state.js": "export const applicationState=(savedRevision,loadedRevision,activeTasks,restartFailed)=>savedRevision?'applied':'pending';\n",
           "test/model-policy.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {chooseRoute,visibleModels} from '../src/model-policy.js';\ntest('local namespace retained without upstream',()=>assert.equal(chooseRoute('chatgpt-web/a',{mode:'selected',models:[]},false),'local'));\ntest('unavailable upstream denied',()=>assert.equal(chooseRoute('m',{mode:'all'},false),'deny'));\ntest('all nonlocal may route',()=>assert.equal(chooseRoute('unknown',{mode:'all'},true),'upstream'));\ntest('regex route exact case',()=>{assert.equal(chooseRoute('GPT-x',{mode:'regex',pattern:'^gpt-'},true),'deny');assert.equal(chooseRoute('gpt-x',{mode:'regex',pattern:'^gpt-'},true),'upstream');});\ntest('selected rejects unchosen',()=>assert.equal(chooseRoute('b',{mode:'selected',models:['a']},true),'deny'));\ntest('missing catalog preserves saved selection and request',()=>{const f={mode:'selected',models:['a','absent']};assert.deepEqual(visibleModels(['chatgpt-web/a'],['a','b','chatgpt-web/evil'],f),['chatgpt-web/a','a']);assert.deepEqual(f.models,['a','absent']);assert.equal(chooseRoute('absent',f,true),'upstream');});\ntest('regex catalog and direct request agree',()=>{const f={mode:'regex',pattern:'^m-'};assert.deepEqual(visibleModels(['chatgpt-web/a'],['m-a','other','m-a'],f),['chatgpt-web/a','m-a']);assert.equal(chooseRoute('other',f,true),'deny');});\n",
-          "test/runtime-state.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {applicationState} from '../src/runtime-state.js';\ntest('saved not loaded',()=>assert.equal(applicationState('new','old',0,false),'pending'));\ntest('active tasks keep pending',()=>assert.equal(applicationState('new','old',2,false),'pending'));\ntest('restart failed keeps pending',()=>assert.equal(applicationState('new','old',0,true),'pending'));\ntest('matching load evidence',()=>assert.equal(applicationState('same','same',0,false),'applied'));\n"
+          "test/runtime-state.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {applicationState} from '../src/runtime-state.js';\ntest('saved not loaded',()=>assert.equal(applicationState('new','old',0,false),'pending'));\ntest('active tasks keep pending',()=>assert.equal(applicationState('new','old',2,false),'pending'));\ntest('restart failed keeps pending',()=>assert.equal(applicationState('new','old',0,true),'pending'));\ntest('matching load evidence',()=>assert.equal(applicationState('same','same',0,false),'applied'));\n",
+          ".gitignore": "/.dev-workflows/\n"
         },
         "setup": {
           "kind": "real-stage-chain",
@@ -66,7 +69,7 @@
           },
           {
             "id": "C2",
-            "description": "第一个实施保存点覆盖当前规范、适用附件/设计来源与实际首批任务；副作用授权按范围。",
+            "description": "实施前能读取当前规范、适用附件和实际首批本地任务；不要求先创建commit，过程文件不进入Git。",
             "evidenceSource": "真实Git HEAD/tree、路径与index比较 + Engine实际用户事件、上下文/角色与工具轨迹"
           },
           {
@@ -84,11 +87,11 @@
           "spec.md",
           "topics/models.md",
           "topics/runtime.md",
-          "tickets/model-policy.md",
-          "tickets/runtime-state.md",
-          "work.md",
-          "spec-review.md",
-          "code-review.md",
+          ".dev-workflows/model-policy/tickets/model-policy.md",
+          ".dev-workflows/model-policy/tickets/runtime-state.md",
+          ".dev-workflows/model-policy/work.md",
+          ".dev-workflows/model-policy/spec-review.md",
+          ".dev-workflows/model-policy/code-review.md",
           "src/model-policy.js",
           "src/runtime-state.js",
           "test/model-policy.test.js",
@@ -97,7 +100,7 @@
       },
       "assertions": [
         "从原始决定生成当前Spec、完成所需独立审查并取得真实本轮批准后才正式实施。",
-        "第一个实施保存点覆盖当前规范、适用附件/设计来源与实际首批任务；副作用授权按范围。",
+        "实施前能读取当前规范、适用附件和实际首批本地任务；不要求先创建commit，过程文件不进入Git。",
         "实际生成Ticket而非人工模板进入新worker；模型筛选与保存/生效结果由独立测试通过。",
         "最终两份独立判断覆盖完整原始范围，无重复父级Review或叶子重派。"
       ],
@@ -395,7 +398,7 @@
         "runtime-required"
       ],
       "input": {
-        "task": "使用工作流准备并实施已确认的纯函数任务。允许本任务文档与代码的本地提交，不允许push或历史重写；保留工作区已有无关修改。 本任务需要跨上下文交接：规范入口使用 spec.md，首批任务使用 tickets/model-policy.md 和 tickets/runtime-state.md；附件按需放 topics/models.md 或 topics/runtime.md，索引使用 work.md。实施者只接收本次实际生成的任务及可达来源，不继承父会话。",
+        "task": "使用工作流准备并实施已确认的纯函数任务。允许本任务文档与代码的本地提交，不允许push或历史重写；保留工作区已有无关修改。 本任务需要跨上下文交接：规范入口使用 spec.md，首批任务使用 .dev-workflows/model-policy/tickets/model-policy.md 和 .dev-workflows/model-policy/tickets/runtime-state.md；附件按需放 topics/models.md 或 topics/runtime.md，索引使用 .dev-workflows/model-policy/work.md。实施者只接收本次实际生成的任务及可达来源，不继承父会话。 本次明确要求在首次产品修改前，将当前批准的项目规范及适用附件保存为一个本地commit；首批任务、进度和Review仅保存在忽略的本地目录，不提交。",
         "workspaceFiles": {
           "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
           "decisions.md": "# 已确认决定（隔离评测夹具）\n本测试用户已确认以下结果；这不是实际产品的审批记录。\n\n## 模型筛选\nall接受任意非本地模型；regex按可请求id区分大小写匹配；selected按保存的allowlist精确匹配。chatgpt-web/前缀始终本地。目录只展示本次返回且通过筛选的上游id，不能把本地冲突项作为上游；目录没有返回已选择项时不删除保存值，直接请求仍按allowlist判断。\n\n## 隔离与生命周期\n本任务只有纯函数，不发网络请求。保存配置意图与加载生效是不同状态：loadedRevision与savedRevision一致才applied，不一致均pending；有活动任务或重启失败不会改变savedRevision。\n\n## 约束与自由\nregex必须有长度上限，建议512；最终数值在独立调用者明确给出的maxLength参数中确定，本fixture不把建议固定为常量。函数名和参数是当前项目已存在的消费者合同，局部函数组织和测试实现自由。\n",
@@ -403,7 +406,8 @@
           "src/model-policy.js": "export function chooseRoute(id,filter,upstreamAvailable){return id.startsWith('chatgpt-web/')?'local':upstreamAvailable?'upstream':'deny';}\nexport function visibleModels(local,remote,filter){return [...new Set([...local,...remote])];}\n",
           "src/runtime-state.js": "export const applicationState=(savedRevision,loadedRevision,activeTasks,restartFailed)=>savedRevision?'applied':'pending';\n",
           "test/model-policy.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {chooseRoute,visibleModels} from '../src/model-policy.js';\ntest('local namespace retained without upstream',()=>assert.equal(chooseRoute('chatgpt-web/a',{mode:'selected',models:[]},false),'local'));\ntest('unavailable upstream denied',()=>assert.equal(chooseRoute('m',{mode:'all'},false),'deny'));\ntest('all nonlocal may route',()=>assert.equal(chooseRoute('unknown',{mode:'all'},true),'upstream'));\ntest('regex route exact case',()=>{assert.equal(chooseRoute('GPT-x',{mode:'regex',pattern:'^gpt-'},true),'deny');assert.equal(chooseRoute('gpt-x',{mode:'regex',pattern:'^gpt-'},true),'upstream');});\ntest('selected rejects unchosen',()=>assert.equal(chooseRoute('b',{mode:'selected',models:['a']},true),'deny'));\ntest('missing catalog preserves saved selection and request',()=>{const f={mode:'selected',models:['a','absent']};assert.deepEqual(visibleModels(['chatgpt-web/a'],['a','b','chatgpt-web/evil'],f),['chatgpt-web/a','a']);assert.deepEqual(f.models,['a','absent']);assert.equal(chooseRoute('absent',f,true),'upstream');});\ntest('regex catalog and direct request agree',()=>{const f={mode:'regex',pattern:'^m-'};assert.deepEqual(visibleModels(['chatgpt-web/a'],['m-a','other','m-a'],f),['chatgpt-web/a','m-a']);assert.equal(chooseRoute('other',f,true),'deny');});\n",
-          "test/runtime-state.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {applicationState} from '../src/runtime-state.js';\ntest('saved not loaded',()=>assert.equal(applicationState('new','old',0,false),'pending'));\ntest('active tasks keep pending',()=>assert.equal(applicationState('new','old',2,false),'pending'));\ntest('restart failed keeps pending',()=>assert.equal(applicationState('new','old',0,true),'pending'));\ntest('matching load evidence',()=>assert.equal(applicationState('same','same',0,false),'applied'));\n"
+          "test/runtime-state.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {applicationState} from '../src/runtime-state.js';\ntest('saved not loaded',()=>assert.equal(applicationState('new','old',0,false),'pending'));\ntest('active tasks keep pending',()=>assert.equal(applicationState('new','old',2,false),'pending'));\ntest('restart failed keeps pending',()=>assert.equal(applicationState('new','old',0,true),'pending'));\ntest('matching load evidence',()=>assert.equal(applicationState('same','same',0,false),'applied'));\n",
+          ".gitignore": "/.dev-workflows/\n"
         },
         "setup": {
           "kind": "real-git",
@@ -431,7 +435,7 @@
         "criteria": [
           {
             "id": "C1",
-            "description": "在首次产品改动前实际保存当前批准资料与首批可派发任务，已有等价基线可复用。",
+            "description": "遵守本次明确要求，在首次产品改动前实际提交当前批准的项目规范及适用附件；首批任务可读但不进入索引或提交。",
             "evidenceSource": "真实Git HEAD/tree、路径与index比较 + Engine实际用户事件、上下文/角色与工具轨迹"
           },
           {
@@ -441,7 +445,7 @@
           },
           {
             "id": "C3",
-            "description": "milestone仍执行验证、授权保存、独立审查，最终累计范围不被资料commit重置。",
+            "description": "milestone继续执行验证和独立审查；后续保存点可选，原始累计审查范围不被资料commit重置。",
             "evidenceSource": "真实Git HEAD/tree、路径与index比较 + Engine实际用户事件、上下文/角色与工具轨迹"
           }
         ],
@@ -449,11 +453,11 @@
           "spec.md",
           "topics/models.md",
           "topics/runtime.md",
-          "tickets/model-policy.md",
-          "tickets/runtime-state.md",
-          "work.md",
-          "spec-review.md",
-          "code-review.md",
+          ".dev-workflows/model-policy/tickets/model-policy.md",
+          ".dev-workflows/model-policy/tickets/runtime-state.md",
+          ".dev-workflows/model-policy/work.md",
+          ".dev-workflows/model-policy/spec-review.md",
+          ".dev-workflows/model-policy/code-review.md",
           "src/model-policy.js",
           "src/runtime-state.js",
           "test/model-policy.test.js",
@@ -461,9 +465,9 @@
         ]
       },
       "assertions": [
-        "在首次产品改动前实际保存当前批准资料与首批可派发任务，已有等价基线可复用。",
+        "遵守本次明确要求，在首次产品改动前实际提交当前批准的项目规范及适用附件；首批任务可读但不进入索引或提交。",
         "无关已暂存内容保持用户原状态，不被包含；文档基线不意味着代码或Review已通过。",
-        "milestone仍执行验证、授权保存、独立审查，最终累计范围不被资料commit重置。"
+        "milestone继续执行验证和独立审查；后续保存点可选，原始累计审查范围不被资料commit重置。"
       ],
       "audit": {
         "rationale": "实施前文档保存与代码milestone分别承担实际恢复价值。",

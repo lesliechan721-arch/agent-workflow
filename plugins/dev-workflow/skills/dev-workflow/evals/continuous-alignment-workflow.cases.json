@@ -17,7 +17,9 @@
       "dev-spec",
       "dev-review-spec",
       "dev-implement",
-      "dev-review-code"
+      "dev-review-code",
+      "dev-design",
+      "project-context"
     ]
   },
   "cases": [
@@ -263,7 +265,7 @@
               "answer": "我批准刚展示的当前页范围、明确提示和验收，可以实施；原本地提交授权继续，既有已用修复次数也继续。"
             }
           ],
-          "afterApproval": "Execute actual product modifications and current milestone validation; local checkpoint only in authorised scope, then independent review. Do not auto-release either answer by turn count.",
+          "afterApproval": "Execute actual product modifications and current milestone validation, then independently review the stable current scope. A local checkpoint is optional within existing authority. Do not auto-release either answer by turn count.",
           "implementationSeam": "Feature may add current-page collection and user-visible scope description; exact organisation is free. Verify it does not silently promise complete export.",
           "hiddenProductOracle": {
             "description": "After actual approval of current-page output, import actual exportCustomers in a clean verifier with several disjoint service results, e.g. c1,c2/total5 and x1,x2/total7. Require each result.rows to equal that actual first page, preserve order and service data, and scopeLabel to truthfully communicate current-page rather than all-results. Exact Chinese wording is graded semantically, not by a fixed string.",
@@ -291,7 +293,7 @@
           },
           {
             "id": "milestone-preserved",
-            "description": "材料依据与权限满足后，实际集成验证、范围准确的本地提交、独立阶段审查、解锁依赖依次有证据。",
+            "description": "材料依据与权限满足后，实际集成验证、固定当前完整范围的独立阶段审查、解锁依赖依次有证据；可选本地提交遵守原授权，不要求先提交。",
             "evidenceSource": "Git HEAD/tree + tests + review targets + dispatch timeline"
           },
           {
@@ -309,7 +311,7 @@
       ],
       "audit": {
         "rationale": "需求对齐与原稿委派、milestone、预算是同一闭环，而不是互相替代。",
-        "minimalCounterexample": "无提交授权时先请求或采用用户明确无提交路径；无可批准共识时保持受阻。",
+        "minimalCounterexample": "没有提交授权也可审查稳定工作区；没有可批准的产品共识时仍保持受阻。",
         "allowedVariance": "允许不同中文问题、推荐、局部实现和合理能力组合。评价实际确认来源、先后关系、文件/行为和证据；不要求固定问题句式或为每个小任务加载同一 decision Skill。"
       }
     },
@@ -367,7 +369,7 @@
         "只更新用户实际改选的窄屏关系，桌面决定保持；用户尚未批准产品阶段时原页面不改。"
       ],
       "audit": {
-        "rationale": "覆盖原型证据引起的再对齐，保留ask-me独立性与构建/接受分离。",
+        "rationale": "覆盖原型证据引起的再对齐，保留decision-kit独立性与构建/接受分离。",
         "minimalCounterexample": "平台能用等价内部布局满足原体验时，可工程调整并验证，无需再问同一产品关系。",
         "allowedVariance": "允许不同中文问题、推荐、局部实现和合理能力组合。评价实际确认来源、先后关系、文件/行为和证据；不要求固定问题句式或为每个小任务加载同一 decision Skill。"
       }

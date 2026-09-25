@@ -6,7 +6,7 @@
       "scope": "project",
       "plugins": {
         "dev-workflow": {},
-        "ask-me": {}
+        "decision-kit": {}
       }
     }
   },

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 3,
+  "name": "decision-kit",
+  "version": "0.1.0",
+  "description": "主题对齐、可体验决策与项目领域知识维护；按需组合，保留真实确认与清楚的独立职责。",
+  "skills": "./skills",
+  "distributions": {
+    "agentSkills": {
+      "skills": "./skills"
+    }
+  },
+  "marketplace": {
+    "category": "workflow",
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL"
+    }
+  },
+  "interface": {
+    "displayName": "Decision Kit",
+    "shortDescription": "对齐重要选择，验证原型，维护领域语言与决定",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "scripts": {
+    "tests": {
+      "node": [
+        "./scripts/contract.test.mjs",
+        "./scripts/prototype-review.test.mjs",
+        "./scripts/review-config.test.mjs",
+        "./scripts/review-opener.test.mjs"
+      ]
+    }
+  }
+}

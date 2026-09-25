@@ -15,7 +15,9 @@
       "decision-prototype",
       "dev-spec",
       "dev-review-spec",
-      "dev-build"
+      "dev-build",
+      "dev-design",
+      "project-context"
     ]
   },
   "cases": [

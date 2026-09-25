@@ -12,7 +12,9 @@
       "decision-grill",
       "decision-prototype",
       "dev-build",
-      "dev-breakdown"
+      "dev-breakdown",
+      "dev-design",
+      "project-context"
     ],
     "policy": {
       "optimization": "precision-first",
@@ -34,8 +36,8 @@
       ],
       "prompt": "使用 dev-workflow 处理名为 approval-layout 的任务。仓库没有开发文档目录约定，我也不指定路径。先做一个可点击原型让我比较单栏和双栏；我反馈后，把稳定结论整理成轻量 Spec。不要修改 src/approval-page.ts，也不要进入生产实现。本任务需要跨会话维护当前 Shape。",
       "assertions": [
-        "trace 先由 dev-workflow 进入 decision-shape，再由 Shape 内部使用 decision-prototype；用户反馈并归一 Shape 后才进入 dev-spec",
-        "首次转交前确定 docs/dev/approval-layout/ 并向 Prototype 提供本任务下的具体目标位置；原型、Shape 和 Spec 沿用该任务位置，原型内部构建方法仍由 Prototype 决定。",
+        "trace 先由 dev-workflow 进入 dev-design，再由 Design 使用 decision-shape 和按需 decision-prototype；用户反馈并归一当前决定后才进入 dev-spec。",
+        "过程资料采用本地 .dev-workflows/approval-layout/，向 Prototype 提供该主题下的具体位置；Spec 维护在项目设计位置，必要接受设计可长期读取，不复制另一份任务规范。",
         "Spec 保留用户确认的设计关系、接受范围与允许变化，并提供可访问的原型依据和实现自由；不要求固定标题。",
         "不加载 dev-implement，不修改 src/approval-page.ts，也不把原型升级为生产实现"
       ],
@@ -54,21 +56,24 @@
         }
       },
       "expected": {
-        "output": "先由 decision-shape 取得原型反馈并归一默认任务目录中的 decisions.md，再把双栏决定投影到 spec.md；生产页面保持不变。",
+        "output": "Design 取得真实原型反馈，在本地 task.md 保留确认与未决，将完整双栏行为维护到项目规范；生产页面不变，规范不以临时目录为唯一设计依据。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
-          "docs/dev/approval-layout/**"
+          ".gitignore",
+          ".dev-workflows/approval-layout/**",
+          "docs/design/approval-layout.md",
+          "docs/design/approval-layout/**"
         ],
         "artifacts": [
           {
-            "path": "docs/dev/approval-layout/decisions.md",
+            "path": ".dev-workflows/approval-layout/task.md",
             "exists": true,
             "contains": [
               "双栏"
             ]
           },
           {
-            "path": "docs/dev/approval-layout/spec.md",
+            "path": "docs/design/approval-layout.md",
             "exists": true,
             "contains": [
               "双栏",
@@ -86,7 +91,7 @@
         "representative",
         "assured-approval-gate"
       ],
-      "prompt": "使用 dev-workflow 处理名为 token-key-rotation 的生产数据迁移。已确认决定在 docs/token-key-rotation-decisions.md。仓库没有开发文档目录约定；请在默认任务目录生成 spec.md，并将独立审查记录保存为 spec-review.md。审查覆盖充分且无未关闭实质问题后向我请求批准，但不要在批准前修改 src/token-store.js。",
+      "prompt": "使用 dev-workflow 处理名为 token-key-rotation 的生产数据迁移。已确认决定在 docs/token-key-rotation-decisions.md。仓库没有开发文档目录约定；请在项目设计位置维护当前规范，并将独立审查记录保存到默认本地任务目录的 spec-review.md。审查覆盖充分且无未关闭实质问题后向我请求批准，但不要在批准前修改 src/token-store.js。",
       "assertions": [
         "依据生产迁移的实际风险保留授权、回滚与验证要求，停在必要的规格确认阶段，不因代码量小跳过保障",
         "Spec 包含双读窗口、分批迁移、回滚、验证和生产授权边界",
@@ -112,11 +117,13 @@
         "output": "创建包含迁移、回滚、验证和授权边界的 Spec，并将独立审查结果保存到明确指定的位置；覆盖充分且无未关闭实质问题后请求批准。独立审查不可用时先报告缺口，始终不在批准前修改生产代码。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
-          "docs/dev/token-key-rotation/**"
+          ".gitignore",
+          ".dev-workflows/token-key-rotation/**",
+          "docs/design/token-key-rotation.md"
         ],
         "artifacts": [
           {
-            "path": "docs/dev/token-key-rotation/spec.md",
+            "path": "docs/design/token-key-rotation.md",
             "exists": true,
             "contains": [
               "14 天",
@@ -127,7 +134,7 @@
             ]
           },
           {
-            "path": "docs/dev/token-key-rotation/spec-review.md",
+            "path": ".dev-workflows/token-key-rotation/spec-review.md",
             "exists": true
           }
         ]
@@ -200,7 +207,7 @@
         "scriptedReplies": []
       },
       "expected": {
-        "output": "说明当前最早未满足的是 Spec gate、接下来使用 dev-spec、判断依据，以及本次不需要用户参与。",
+        "output": "说明当前缺少正式项目规范，下一步由 dev-design 使用 dev-spec 形成规范并组织审查与批准；本次只说明路由，不修改文件。",
         "workspaceUnchanged": true
       },
       "audit": {

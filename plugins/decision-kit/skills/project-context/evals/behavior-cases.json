@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "project-context",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "衡量有依据的设计、长期知识和本地过程分工，同时保留既定范围、真实确认及独立证据。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "reuse-existing-domain-files",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "把 confirmed.md 中已经确定的词义归位到 docs/domain.md；这是项目已有词汇入口。本次只维护相关词义。",
+      "assertions": [
+        "复用既有词汇表，保留账号/租户关系。",
+        "不新建另一份CONTEXT或ADR来重复普通定义，不把输入陈述当实现运行证据。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "confirmed.md": "用户确认：account在界面中统一叫登录账号，不是租户；账号可以属于多个租户。\n",
+          "docs/domain.md": "# 领域词汇\n## 租户\n数据隔离主体。\n## 登录账号\n用于登录的个人身份，一个账号可以加入多个租户。\n"
+        }
+      },
+      "expected": {
+        "output": "原位维护领域定义，完整关系保持。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/domain.md"
+        ]
+      },
+      "audit": {
+        "rationale": "固定职责但不强制路径。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "没有等价位置且确有术语内容时可以创建CONTEXT。"
+      }
+    },
+    {
+      "id": "project-knowledge-respects-scope",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "根据 confirmed.md 将确需长期解释的安全决定写入 docs/adr/，保留明确范围。",
+      "assertions": [
+        "不把本机开发例外泛化到生产或API key。",
+        "保存必要理由和适用环境，不增加整体开发状态或未证实合规承诺。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "confirmed.md": "用户确认：仅本机开发环境允许日志保留非敏感调试标识；任何API key都不能写日志。这不是生产环境豁免。因开发需要精确复现且未来容易误用，记录该边界。\n"
+        }
+      },
+      "expected": {
+        "output": "范围限定与重要安全条件保持。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/adr/**"
+        ]
+      },
+      "audit": {
+        "rationale": "任务局部例外不能升为永久全局许可。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "确有用户明确扩大范围仍需相应安全和项目限制核对。"
+      }
+    },
+    {
+      "id": "knowledge-readonly",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "仅评价当前词汇中的歧义，今天不要写文件。",
+      "assertions": [
+        "说明具体概念冲突和需确认内容。",
+        "不修改任何文件，不自行选择最终产品词义。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "CONTEXT.md": "# 领域词汇\nAccount指客户或登录人，也可能是租户。\n"
+        }
+      },
+      "expected": {
+        "output": "只读分析与下一材料问题。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "写作能力不自动扩大请求权限。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "用户确认概念并请求修改时才写入。"
+      }
+    }
+  ]
+}
