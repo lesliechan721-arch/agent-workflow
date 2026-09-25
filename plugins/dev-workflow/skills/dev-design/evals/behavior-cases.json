@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-design",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "衡量有依据的设计、长期知识和本地过程分工，同时保留既定范围、真实确认及独立证据。"
+    },
+    "participants": [
+      "decision-shape",
+      "project-context",
+      "dev-spec",
+      "dev-review-spec"
+    ],
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "design-only-updates-project-target",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用 dev-design。用户当前确认：只导出当前租户内已选择的记录；空选择返回空结果，输入不修改。CSV序列化属于后续任务，当前只实现记录选择函数。本次仅授权设计及相应项目文档修改，产品实施、提交与推送不在本次范围。\n项目规范在docs/design/export.md，领域词义已清楚；先修订该规范和必要设计，今天不实现。",
+      "assertions": [
+        "原位修订项目规范，覆盖租户、选择、空值与不修改输入。",
+        "目标已改但源码保持原样；没有声称功能已实现。",
+        "必要审查有实际独立证据或明确限制；确认设计后在设计边界结束。",
+        "本地如需要记录仅进入.dev-workflows，不再建一份任务Spec或永久decisions副本。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "当前展示的记录选择范围和规范准确。只确认设计，本次仍不实施。"
+        ],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "docs/domain.md": "# 领域词汇\n## 租户\n数据隔离主体。\n## 登录账号\n用于登录的个人身份，一个账号可以加入多个租户。\n",
+          "docs/design/export.md": "# 导出\n旧行为：返回全部记录；本次目标待按实际用户请求修改。\n",
+          "src/export.js": "export function exportRows(rows, tenantId, selectedIds) { return rows; }\n",
+          ".gitignore": "/.dev-workflows/\n"
+        }
+      },
+      "expected": {
+        "output": "完成或如实交代受限的设计交付，不实施或提交。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/design/export.md",
+          ".dev-workflows/**"
+        ]
+      },
+      "audit": {
+        "rationale": "设计是独立终点，用户批准不自动等于实施。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "完整Workflow已有实施授权时可由外层接续Build。"
+      }
+    },
+    {
+      "id": "open-material-before-writing",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用dev-design设计到期处理，形成项目规范；过期是自动补发还是拒绝请求，我尚未决定。",
+      "assertions": [
+        "使用Shape取得决定或明确保持待定，不自行写成硬合同。",
+        "未得到答复前允许调查/明确假设的原型，但不把提案写成已确认产品要求。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "直接拒绝；用户可以另外点击重新邀请。"
+        ],
+        "workspaceFiles": {
+          "docs/design/invitations.md": "# 邀请\n到期行为尚未决定。\n",
+          ".gitignore": "/.dev-workflows/\n"
+        }
+      },
+      "expected": {
+        "output": "对齐未决行为，完成依据来自实际答复。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/design/invitations.md",
+          ".dev-workflows/**"
+        ]
+      },
+      "audit": {
+        "rationale": "唯一入口仍保留材料对齐必要性。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "用户原始请求完整明确时直接复用。"
+      }
+    },
+    {
+      "id": "design-reuses-domain-not-duplicate",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用dev-design整理已有充分确认的导出设计。docs/domain.md和docs/design/export.md已是维护位置，当前不需要新词或ADR。用户当前确认：只导出当前租户内已选择的记录；空选择返回空结果，输入不修改。CSV序列化属于后续任务，当前只实现记录选择函数。本次仅授权设计及相应项目文档修改，产品实施、提交与推送不在本次范围。\n",
+      "assertions": [
+        "复用已确认领域和规范，不因组合含project-context就强制调用并生成新文件。",
+        "只按当前设计范围核对和呈现；本次不更改生产源码，不把本地确认记录复制成永久decisions.md。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "docs/domain.md": "# 领域词汇\n## 租户\n数据隔离主体。\n## 登录账号\n用于登录的个人身份，一个账号可以加入多个租户。\n",
+          "docs/design/export.md": "# 导出记录规范\n只返回当前tenantId且id在selectedIds中的记录。空selectedIds返回空数组；输出顺序沿输入，输入及其记录不被修改。当前接口输入为记录数组、tenantId字符串与id数组。\n大小写敏感，id精确比较。当前只实现记录选择函数，CSV或后台队列不属于这个范围。内部组织自由。\n",
+          "src/export.js": "export function exportRows(rows, tenantId, selectedIds) { return rows; }\n",
+          "test/export.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {exportRows} from '../src/export.js';\nconst rows=[{id:'a',tenantId:'t1',name:'Ada'},{id:'b',tenantId:'t2',name:'Grace'},{id:'c',tenantId:'t1',name:'Lin'}];\ntest('same tenant filtered result',()=>assert.deepEqual(exportRows(rows,'t1',['a','b']).map(x=>x.id),['a']));\ntest('empty choice stays empty',()=>assert.deepEqual(exportRows(rows,'t1',[]),[]));\ntest('input stays unchanged',()=>{const before=JSON.stringify(rows);exportRows(rows,'t1',['a']);assert.equal(JSON.stringify(rows),before);});\n",
+          ".gitignore": "/.dev-workflows/\n",
+          ".dev-workflows/export/task.md": "# 当前任务\n用户当前确认：只导出当前租户内已选择的记录；空选择返回空结果，输入不修改。CSV序列化属于后续任务，当前只实现记录选择函数。本次仅授权设计及相应项目文档修改，产品实施、提交与推送不在本次范围。\n规范在docs/design/export.md；接口选择待实现，代码目前返回全部记录。\n"
+        }
+      },
+      "expected": {
+        "output": "已有结果直接复用，按实际覆盖结束设计。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/design/export.md",
+          ".dev-workflows/**"
+        ]
+      },
+      "audit": {
+        "rationale": "组合方法按真实需要调用，新增入口不是文件工厂。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "出现重要多义领域词或长期取舍时才维护对应知识。"
+      }
+    }
+  ]
+}

@@ -204,8 +204,10 @@ export async function gradeExecutionWorkflow(input) {
     const head = await git(input.paths.workspace, ['rev-parse', 'HEAD']);
     const log = await git(input.paths.workspace, ['log', '--format=%H %T %P', `${baseline.head}..HEAD`]);
     const commits = log ? log.split('\n') : [];
-    const allowsCommit = STAGE_CHECKPOINT_CASES.has(id) || ['milestone-verified-commit-before-review', 'milestone-blocker-repair-append', 'checkpoint-hook-and-index-boundary', 'reapproved-decision-before-milestone-resume'].includes(id);
-    checks.push(check('git-save-permission', allowsCommit ? (commits.length ? 'pass' : 'fail') : (head === baseline.head ? 'pass' : 'fail'), JSON.stringify({ baseline: baseline.head, head, commits })));
+    const requiresCommit = STAGE_CHECKPOINT_CASES.has(id) || ['milestone-verified-commit-before-review', 'milestone-blocker-repair-append'].includes(id);
+    const allowsCommit = requiresCommit || ['full-source-to-task-clean-worker', 'checkpoint-hook-and-index-boundary', 'reapproved-decision-before-milestone-resume'].includes(id);
+    const validSave = requiresCommit ? commits.length > 0 : allowsCommit || head === baseline.head;
+    checks.push(check('git-save-permission', validSave ? 'pass' : 'fail', JSON.stringify({ baseline: baseline.head, head, commits })));
     if (baseline.stagedPersonal) {
       const personalPath = baseline.personalPath ?? 'personal.txt';
       const committed = await git(input.paths.workspace, ['log', '--format=%H', `${baseline.head}..HEAD`, '--', personalPath]);

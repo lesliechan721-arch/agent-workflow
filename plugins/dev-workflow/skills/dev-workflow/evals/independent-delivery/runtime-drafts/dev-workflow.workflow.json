@@ -131,7 +131,7 @@
         "prompt": "使用开发工作流为通知音量偏好准备可交接的方案。界面关系需要先看可点击候选；我没有给资料路径，仓库也没有任务目录约定。请自行组织，先做原型并取得反馈，再整理规格与待实施任务；本轮不开始生产实现，不提交。需要我决定时停下来问。",
         "workspaceFiles": {},
         "setup": {
-          "environment": "isolated empty writable project; install dev-workflow and ask-me including the existing prototype runtime; no hidden task root or scaffold supplied by evaluator",
+          "environment": "isolated empty writable project; install dev-workflow and decision-kit including the existing prototype runtime; no hidden task root or scaffold supplied by evaluator",
           "interaction": "evaluator supplies clearly labelled simulated user choice on the actual current prototype revision, then answers Spec confirmation only for observed current contents; no fabricated feedback receipt",
           "scope": "one theme; output root and prototype child path selected by the coordinator, not by this fixture; session/runtime files remain runtime-owned",
           "trace": "capture first chosen output location/handoff and first artifact write; absence of ordering evidence is unknown, not inferred from final directory layout"

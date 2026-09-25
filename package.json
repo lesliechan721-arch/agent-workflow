@@ -28,7 +28,7 @@
     "test:smoke:publish:release": "pnpm --filter @lesliechan721/aw test:smoke:publish:release",
     "test:smoke:bootstrap:catalog": "pnpm --filter @lesliechan721/aw test:smoke:bootstrap:catalog",
     "test:smoke:fetch": "pnpm --filter @lesliechan721/aw test:smoke:fetch",
-    "test:smoke:ask-me-browser": "pnpm --filter @lesliechan721/aw test:smoke:ask-me-browser",
+    "test:smoke:decision-kit-browser": "pnpm --filter @lesliechan721/aw test:smoke:decision-kit-browser",
     "qualification:codex-project-native": "node scripts/qualification/codex-project-native.mjs",
     "test:qualification:codex-project-native:harness": "node --test scripts/qualification/codex-project-native.test.mjs",
     "qualification:codex-native-performance": "node scripts/qualification/codex-native-performance.mjs",

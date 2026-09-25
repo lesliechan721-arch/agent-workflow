@@ -686,11 +686,11 @@ describe('rebuild adapter integration', () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
     });
     const catalog = { rootDir: catalogRoot, source: 'local' } as CatalogResolution;
     await prewarmActiveMarketplace(catalog.rootDir, isolation.layout.awHomeDir);
-    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), {
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), {
       mode: 'bundle',
     });
     const configPath = path.join(isolation.layout.codexHomeDir, 'config.toml');
@@ -1550,9 +1550,9 @@ describe('rebuild adapter integration', () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
     });
-    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
     const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
     const integration = createRebuildIntegration({
       context: createCommandExecutionContext({
@@ -1563,7 +1563,7 @@ describe('rebuild adapter integration', () => {
     const target = await integration.buildTarget({
       sourceId: 'team',
       sourceIdentity: `sha256:${'1'.repeat(64)}`,
-      pluginId: 'team/ask-me',
+      pluginId: 'team/decision-kit',
       marketplaceName: 'aw-team',
       marketplaceRoot,
       plugin,
@@ -1577,7 +1577,7 @@ describe('rebuild adapter integration', () => {
     expect(target.ownedComponents.some((component) => component.kind === 'skill-directory'))
       .toBe(false);
     expect(target.ownedComponents).toContainEqual(expect.objectContaining({
-      kind: 'native-plugin', pluginId: 'ask-me@aw-team',
+      kind: 'native-plugin', pluginId: 'decision-kit@aw-team',
     }));
   });
 
@@ -1585,9 +1585,9 @@ describe('rebuild adapter integration', () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
     });
-    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
     const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
     await fs.ensureDir(isolation.layout.awHomeDir);
     let installed = false;
@@ -1599,7 +1599,7 @@ describe('rebuild adapter integration', () => {
           exitCode: 0,
           stdout: JSON.stringify({
             installed: installed ? [{
-              pluginId: 'ask-me@aw-team', installed: true, enabled: true,
+              pluginId: 'decision-kit@aw-team', installed: true, enabled: true,
             }] : [],
             available: [],
           }),
@@ -1636,7 +1636,7 @@ describe('rebuild adapter integration', () => {
     const target = await integration.buildTarget({
       sourceId: 'team',
       sourceIdentity: `sha256:${'1'.repeat(64)}`,
-      pluginId: 'team/ask-me',
+      pluginId: 'team/decision-kit',
       marketplaceName: 'aw-team',
       marketplaceRoot,
       plugin,
@@ -1649,7 +1649,7 @@ describe('rebuild adapter integration', () => {
 
     try {
       await expect(integration.driver.writeNative(target)).rejects.toThrow('projection observed');
-      await expect(observationSession.inspectPlugin({ pluginId: 'ask-me@aw-team' }))
+      await expect(observationSession.inspectPlugin({ pluginId: 'decision-kit@aw-team' }))
         .resolves.toMatchObject({ observation: { state: 'observed', value: 'installed' } });
       expect(listCalls).toBe(3);
       await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(true);
@@ -1667,9 +1667,9 @@ describe('rebuild adapter integration', () => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
       });
-      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), {
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), {
         mode: 'bundle',
       });
       const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
@@ -1697,7 +1697,7 @@ describe('rebuild adapter integration', () => {
       const target = await integration.buildTarget({
         sourceId: 'team',
         sourceIdentity: TEST_SOURCE_IDENTITY,
-        pluginId: 'team/ask-me',
+        pluginId: 'team/decision-kit',
         marketplaceName: 'aw-team',
         marketplaceRoot,
         plugin,
@@ -1736,9 +1736,9 @@ describe('rebuild adapter integration', () => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
       });
-      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
       const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
       const sourceIdentity = `sha256:${'1'.repeat(64)}`;
       const sentinelPath = path.join(marketplaceRoot, 'plugins', 'retained', 'sentinel.txt');
@@ -1767,7 +1767,7 @@ describe('rebuild adapter integration', () => {
       const target = await integration.buildTarget({
         sourceId: 'team',
         sourceIdentity,
-        pluginId: 'team/ask-me',
+        pluginId: 'team/decision-kit',
         marketplaceName: 'aw-team',
         marketplaceRoot,
         plugin,
@@ -1799,9 +1799,9 @@ describe('rebuild adapter integration', () => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
       });
-      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
       const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
       const sourceIdentity = `sha256:${'1'.repeat(64)}`;
       await fs.copy(catalogRoot, marketplaceRoot);
@@ -1839,7 +1839,7 @@ describe('rebuild adapter integration', () => {
       const target = await integration.buildTarget({
         sourceId: 'team',
         sourceIdentity,
-        pluginId: 'team/ask-me',
+        pluginId: 'team/decision-kit',
         marketplaceName: 'aw-team',
         marketplaceRoot,
         plugin,
@@ -1862,9 +1862,9 @@ describe('rebuild adapter integration', () => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
       });
-      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
       const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
       const sourceIdentity = `sha256:${'2'.repeat(64)}`;
       await fs.copy(catalogRoot, marketplaceRoot);
@@ -1902,7 +1902,7 @@ describe('rebuild adapter integration', () => {
       const target = await integration.buildTarget({
         sourceId: 'team',
         sourceIdentity,
-        pluginId: 'team/ask-me',
+        pluginId: 'team/decision-kit',
         marketplaceName: 'aw-team',
         marketplaceRoot,
         plugin,
@@ -1948,9 +1948,9 @@ describe('rebuild adapter integration', () => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
       });
-      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
       const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
       const marketplaceParent = path.dirname(marketplaceRoot);
       const sourceIdentity = `sha256:${'1'.repeat(64)}`;
@@ -1974,10 +1974,10 @@ describe('rebuild adapter integration', () => {
       const sentinelPath = path.join(marketplaceRoot, 'generation.txt');
       await fs.outputFile(sentinelPath, 'old-generation\n');
       const platformManifest = await fs.readJson(
-        path.join(marketplaceRoot, 'plugins', 'ask-me', '.codex-plugin', 'plugin.json'),
+        path.join(marketplaceRoot, 'plugins', 'decision-kit', '.codex-plugin', 'plugin.json'),
       ) as { skills: string };
       const skillsRoot = path.resolve(
-        path.join(marketplaceRoot, 'plugins', 'ask-me'),
+        path.join(marketplaceRoot, 'plugins', 'decision-kit'),
         platformManifest.skills,
       );
       const skillKey = (await fs.readdir(skillsRoot))[0]!;
@@ -1990,8 +1990,8 @@ describe('rebuild adapter integration', () => {
           owner: 'agent-workflows',
           sourceId: 'team',
           sourceIdentity,
-          pluginId: 'team/ask-me',
-          plugin: 'ask-me',
+          pluginId: 'team/decision-kit',
+          plugin: 'decision-kit',
           artifactKey: skillKey,
           platform: 'codex',
           scope: 'user',
@@ -2015,7 +2015,7 @@ describe('rebuild adapter integration', () => {
       const target = await integration.buildTarget({
         sourceId: 'team',
         sourceIdentity,
-        pluginId: 'team/ask-me',
+        pluginId: 'team/decision-kit',
         marketplaceName: 'aw-team',
         marketplaceRoot,
         plugin,
@@ -2027,7 +2027,7 @@ describe('rebuild adapter integration', () => {
       });
       const unreadableRoot = directoryKind === 'plugins'
         ? path.join(marketplaceRoot, 'plugins')
-        : path.join(marketplaceRoot, 'plugins', 'ask-me', 'codex', 'skills');
+        : path.join(marketplaceRoot, 'plugins', 'decision-kit', 'codex', 'skills');
       const realReaddir = fs.readdir.bind(fs);
       const readdir = vi.spyOn(fs, 'readdir').mockImplementation((async (location, options) => {
         if (path.resolve(String(location)) === path.resolve(unreadableRoot)) {
@@ -2057,7 +2057,7 @@ describe('rebuild adapter integration', () => {
       await expect(readSkillOwnerMarker({
         skillRoot: overlayRoot,
         allowedRoot: skillsRoot,
-      })).resolves.toMatchObject({ sourceId: 'team', pluginId: 'team/ask-me' });
+      })).resolves.toMatchObject({ sourceId: 'team', pluginId: 'team/decision-kit' });
       expect((await fs.readdir(marketplaceParent)).filter((entry) => entry.startsWith('.team-'))).toEqual([]);
       expect((await fs.readdir(marketplaceParent)).filter((entry) => entry.startsWith('team.backup-'))).toEqual([]);
     },
@@ -3693,9 +3693,9 @@ describe('rebuild adapter integration', () => {
       const cwd = await fs.realpath(isolation.layout.fixtureCwd);
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
       });
-      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), {
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), {
         mode: 'bundle',
       });
       const calls: string[] = [];
@@ -4207,7 +4207,7 @@ describe('rebuild adapter integration', () => {
       pluginRoots: [
         path.join(repositoryRoot, 'plugins', 'codex-enhance'),
         path.join(repositoryRoot, 'plugins', 'git-toolkit'),
-        path.join(repositoryRoot, 'plugins', 'ask-me'),
+        path.join(repositoryRoot, 'plugins', 'decision-kit'),
       ],
     });
     const pluginA = await readPluginManifest(path.join(catalogRoot, 'plugins', 'codex-enhance'), {
@@ -4216,7 +4216,7 @@ describe('rebuild adapter integration', () => {
     const pluginB = await readPluginManifest(path.join(catalogRoot, 'plugins', 'git-toolkit'), {
       mode: 'bundle',
     });
-    const pluginC = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), {
+    const pluginC = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), {
       mode: 'bundle',
     });
     await fs.outputJson(path.join(catalogRoot, '.aw-generated.json'), {
@@ -4343,15 +4343,15 @@ describe('rebuild adapter integration', () => {
         const sourceDescriptor = { source: 'directory', path: marketplaceRoot };
         await fs.outputJson(claudePaths.settingsPath, {
           extraKnownMarketplaces: { 'aw-team': { source: sourceDescriptor } },
-          enabledPlugins: { 'ask-me@aw-team': true },
+          enabledPlugins: { 'decision-kit@aw-team': true },
         });
         await fs.outputJson(claudePaths.knownMarketplacesPath, {
           'aw-team': { source: sourceDescriptor, installLocation: marketplaceRoot },
         });
         await fs.outputJson(claudePaths.installedPluginsPath, {
           plugins: {
-            'ask-me@aw-team': [{
-              name: 'ask-me', marketplace: 'aw-team', scope: 'user',
+            'decision-kit@aw-team': [{
+              name: 'decision-kit', marketplace: 'aw-team', scope: 'user',
               version: pluginC.manifest.version,
             }],
           },
@@ -4889,7 +4889,7 @@ describe('rebuild adapter integration', () => {
 
   it('closes representative Codex project writes for three first-party plugins', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const firstPartyNames = ['git-toolkit', 'ask-me', 'codex-enhance'];
+    const firstPartyNames = ['git-toolkit', 'decision-kit', 'codex-enhance'];
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
       pluginRoots: firstPartyNames.map((name) => path.join(repositoryRoot, 'plugins', name)),
@@ -5662,9 +5662,9 @@ describe('rebuild adapter integration', () => {
     const cwd = isolation.layout.fixtureCwd;
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
     });
-    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), {
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), {
       mode: 'bundle',
     });
     const paths = resolveClaudePaths(cwd, 'user', isolation.env);
@@ -5788,9 +5788,9 @@ describe('rebuild adapter integration', () => {
     const cwd = isolation.layout.fixtureCwd;
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
     });
-    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
     const paths = resolveClaudePaths(cwd, 'user', isolation.env);
     await fs.outputFile(paths.installedPluginsPath, '{bad');
     const noCalls: string[] = [];

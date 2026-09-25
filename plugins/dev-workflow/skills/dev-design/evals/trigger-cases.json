@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-design",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "衡量有依据的设计、长期知识和本地过程分工，同时保留既定范围、真实确认及独立证据。"
+    },
+    "participants": [
+      "decision-shape",
+      "dev-build",
+      "dev-spec"
+    ],
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "design_stop",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "先帮我把批量导出需求、页面和接口设计清楚，形成可交接规格，这次暂不实施。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "完整设计是独立常用用户意图。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "已有充分设计且只要代码实现时用Build或Implement。"
+      }
+    },
+    {
+      "id": "full_workflow_design_phase",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "当前开发流程已委托你负责设计阶段：先对齐这项功能再形成当前项目规范。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "上层可调用这个薄设计入口。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "只问一个一般技术知识问题时不需要整个设计。"
+      }
+    },
+    {
+      "id": "already_ready_task",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "按这个已批准且边界完整的Ticket实现一个函数并验证。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "没有设计缺口的有界实施无需先加载Design。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "发现材料行为或风险需要变更时回到设计。"
+      }
+    },
+    {
+      "id": "direct_interview",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只用逐轮访谈帮我想清这个方案，今天不维护项目文档也不写完整规格。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "直接Grill仍然独立。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "要求形成并维护可交接设计才是Design入口。"
+      }
+    }
+  ]
+}

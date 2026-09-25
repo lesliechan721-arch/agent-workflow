@@ -18,7 +18,9 @@
       "dev-review-code",
       "decision-shape",
       "decision-grill",
-      "decision-prototype"
+      "decision-prototype",
+      "dev-design",
+      "project-context"
     ],
     "runtime": {
       "observeSpawnAgent": false,
@@ -38,7 +40,8 @@
         "query": "使用 dev-workflow。只是内部姓名空值显示，我尚未选“未填写”还是“—”；先向我问这个问题，不要改代码，也不需要完整访谈。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow"
+            "dev-workflow",
+            "dev-design"
           ]
         }
       },
@@ -80,7 +83,7 @@
         "expected": {
           "loadedSkills": [
             "dev-workflow",
-            "decision-shape"
+            "dev-design"
           ]
         }
       },
@@ -207,7 +210,7 @@
         }
       },
       "audit": {
-        "rationale": "一次有界访谈遵守当前 ask-me 的原子入口，不强制进入 Shape。",
+        "rationale": "一次有界访谈遵守当前 decision-kit 的原子入口，不强制进入 Shape。",
         "minimalCounterexample": "多个相互依赖的决定需要持续塑形时进入 decision-shape。",
         "allowedVariance": "只判断当前能力选择，不据此推断真实访谈或原型执行成功。"
       }

@@ -18,7 +18,9 @@
       "dev-build",
       "dev-breakdown",
       "dev-implement",
-      "dev-review-code"
+      "dev-review-code",
+      "dev-design",
+      "project-context"
     ],
     "runtime": {
       "isolation": "strict"

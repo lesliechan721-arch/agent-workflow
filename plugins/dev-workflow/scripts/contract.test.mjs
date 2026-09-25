@@ -12,8 +12,9 @@ import {
 } from '../skills/dev-build/evals/context-role-workflow.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const skills = ['dev-workflow', 'dev-spec', 'dev-review-spec', 'dev-build', 'dev-breakdown', 'dev-implement', 'dev-review-code'];
-const decisionSkills = ['decision-shape', 'decision-grill', 'decision-prototype'];
+const skills = ['dev-workflow', 'dev-design', 'dev-spec', 'dev-review-spec', 'dev-build', 'dev-breakdown', 'dev-implement', 'dev-review-code'];
+const decisionSkills = ['decision-shape', 'decision-grill', 'decision-prototype', 'project-context'];
+const localWorkspaceSkills = ['dev-workflow', 'dev-design', 'dev-build'];
 const allParticipants = new Set([...skills, ...decisionSkills]);
 const read = (file) => readFile(file, 'utf8');
 const readJson = async (file) => JSON.parse(await read(file));
@@ -76,18 +77,26 @@ function assertCaseDocument(document) {
 
 const target = await context();
 
-test('manifest exposes local Skills and declares the ask-me dependency', async () => {
+test('manifest exposes local Skills and declares the decision-kit dependency', async () => {
   const manifest = await readJson(path.join(target.source, '.agents-plugin', 'plugin.json'));
   assert.equal(manifest.name, 'dev-workflow');
-  assert.deepEqual(manifest.dependencies, ['ask-me']);
+  assert.deepEqual(manifest.dependencies, ['decision-kit']);
   assert.equal(manifest.skills, './skills');
   assert.deepEqual(manifest.interface.capabilities, ['Skills']);
-  for (const key of ['slashCommands', 'buildConfig', 'extensions', 'config', 'artifacts', 'lifecycle']) {
+  for (const key of ['slashCommands', 'extensions', 'config', 'artifacts', 'lifecycle']) {
     assert.equal(key in manifest, false);
   }
+  assert.deepEqual(manifest.buildConfig, {
+    skillRuntimeFiles: localWorkspaceSkills.map((skill) => ({
+      skill,
+      target: 'references/local-workspace.md',
+      source: './references/local-workspace.md',
+    })),
+  });
+  await access(path.join(target.source, 'references', 'local-workspace.md'));
 });
 
-test('source exposes seven directly usable Skills', async () => {
+test('source exposes eight directly usable Skills', async () => {
   assert.deepEqual((await readdir(path.join(target.source, 'skills'))).sort(), [...skills].sort());
   for (const name of skills) {
     const skillRoot = path.join(target.source, 'skills', name);
@@ -531,7 +540,7 @@ test('workflow routing Eval includes Build and decision candidates', async () =>
     'route_shape_evidence_branch_stays_in_shape',
   ]) {
     const entry = cases.find((candidate) => candidate.id === id);
-    assert.deepEqual(entry.input.expected.loadedSkills, ['dev-workflow', 'decision-shape']);
+    assert.deepEqual(entry.input.expected.loadedSkills, ['dev-workflow', 'dev-design']);
   }
   assert.deepEqual(
     cases.find((entry) => entry.id === 'route_fast_verified_to_code_review').input.expected.loadedSkills,
@@ -555,8 +564,23 @@ test('runtime keeps all Skill roots and conditional references', async () => {
   for (const name of skills) {
     assertSkill(await read(path.join(skillsRoot, name, 'SKILL.md')), name);
   }
-  await read(path.join(skillsRoot, 'dev-workflow', 'references', 'review-repair.md'));
-  await read(path.join(skillsRoot, 'dev-workflow', 'references', 'task-artifacts.md'));
+  await read(path.join(skillsRoot, 'dev-design', 'references', 'review-repair.md'));
+  for (const reference of ['review-repair.md', 'task-artifacts.md']) {
+    await assert.rejects(
+      read(path.join(skillsRoot, 'dev-workflow', 'references', reference)),
+      { code: 'ENOENT' },
+    );
+  }
+  if (target.platform) {
+    const localWorkspace = await read(path.join(target.source, 'references', 'local-workspace.md'));
+    for (const name of localWorkspaceSkills) {
+      assert.equal(
+        await read(path.join(skillsRoot, name, 'references', 'local-workspace.md')),
+        localWorkspace,
+        `${name} must receive the canonical shared reference`,
+      );
+    }
+  }
   await read(path.join(skillsRoot, 'dev-review-spec', 'references', 'rereview.md'));
   await read(path.join(skillsRoot, 'dev-review-code', 'references', 'rereview.md'));
   await read(path.join(skillsRoot, 'dev-review-code', 'references', 'design-fidelity.md'));

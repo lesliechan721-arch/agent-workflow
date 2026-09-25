@@ -15,7 +15,9 @@
       "dev-implement",
       "dev-review-code",
       "decision-grill",
-      "decision-prototype"
+      "decision-prototype",
+      "dev-design",
+      "project-context"
     ],
     "runtime": {
       "isolation": "strict"

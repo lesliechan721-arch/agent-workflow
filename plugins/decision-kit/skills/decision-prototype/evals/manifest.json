@@ -1,0 +1,176 @@
+{
+  "version": 1,
+  "defaults": {},
+  "profiles": {
+    "project-default": {
+      "scope": "project",
+      "plugins": {
+        "decision-kit": {}
+      }
+    },
+    "user-default": {
+      "scope": "user",
+      "plugins": {
+        "decision-kit": {}
+      }
+    }
+  },
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "cases": "trigger-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
+      "releaseSplits": [
+        "validation"
+      ]
+    },
+    {
+      "id": "router",
+      "kind": "trigger",
+      "cases": "decision-kit-prototype-routing-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 10,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
+      "releaseSplits": [
+        "validation",
+        "sanity"
+      ]
+    },
+    {
+      "id": "behavior",
+      "kind": "conversation",
+      "cases": "decision-prototype-release-evals.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": true,
+      "releaseSplits": [
+        "validation"
+      ]
+    },
+    {
+      "id": "builder-workflow",
+      "kind": "codex-workflow",
+      "cases": "prototype-builder-workflow-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 600000,
+      "requiredForRelease": true,
+      "releaseSplits": [
+        "validation"
+      ],
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "prototype-builder-workflow.mjs"
+        ],
+        "allowedModels": [
+          "gpt-5.6-luna"
+        ]
+      }
+    },
+    {
+      "id": "feedback",
+      "kind": "conversation",
+      "cases": "prototype-feedback-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": true,
+      "releaseSplits": [
+        "validation"
+      ]
+    },
+    {
+      "id": "review-lifecycle",
+      "kind": "conversation",
+      "cases": "prototype-review-lifecycle-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": true,
+      "releaseSplits": [
+        "validation"
+      ]
+    },
+    {
+      "id": "prototype-method",
+      "kind": "conversation",
+      "cases": "prototype-method-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
+    },
+    {
+      "id": "opening-policy",
+      "kind": "conversation",
+      "cases": "prototype-opening-policy-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
+    },
+    {
+      "id": "independent-delivery-trigger",
+      "kind": "trigger",
+      "cases": "independent-delivery-trigger-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 180000,
+      "requiredForRelease": false
+    },
+    {
+      "id": "independent-delivery-behavior",
+      "kind": "conversation",
+      "cases": "independent-delivery-behavior-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
+    },
+    {
+      "id": "context-role-behavior",
+      "kind": "conversation",
+      "cases": "context-role-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
+    }
+  ]
+}
