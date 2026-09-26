@@ -122,12 +122,35 @@ describe('v8.4 page contracts', () => {
     expect(frame(instance, size)).toBe(before);
   });
 
+  it('shows all plugin facts when the remaining space fits its only action', async () => {
+    const loaded = data();
+    const pluginId = `source${'x'.repeat(60)}/demo`;
+    loaded.projectIntent = { state: 'ready', roots: [
+      { pluginId, platforms: ['claude', 'codex'] },
+    ] };
+    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence: vi.fn(), executeIntent: vi.fn() });
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId });
+    const size = { columns: 60, rows: 18 };
+    const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+    await tick();
+    const initial = frame(instance, size);
+    expect(initial).toContain('Claude Code');
+    expect(initial).toContain('Codex');
+    expect(initial).toContain('› 重新检查项目');
+    expect(initial).not.toContain('上一页');
+    expect(initial).not.toContain('翻信息');
+    await input(instance, '\u001b[C');
+    expect(frame(instance, size)).toBe(initial);
+  });
+
   it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
     'pages readonly plugin information without moving action focus at $columns x $rows', async (size) => {
       const loaded = data();
       loaded.projectIntent = { state: 'ready', roots: [] };
       loaded.pluginSummaries = [{ pluginId: 'official/demo', pluginName: 'demo', displayName: 'Demo',
-        description: Array.from({ length: 24 }, (_, index) => `用途行 ${index + 1}`).join('\n'),
+        description: Array.from({ length: 96 }, (_, index) => `用途行 ${index + 1}`).join('\n'),
         version: '1.0.0', supportedTargets: { claude: ['project'], codex: [] }, configFieldCount: 0 }];
       const executeIntent = vi.fn();
       const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
@@ -148,7 +171,7 @@ describe('v8.4 page contracts', () => {
         expect(current.split('\n').find((line) => line.includes('› '))?.trim()).toBe(focusedAction);
         seen += current;
       }
-      expect(seen).toContain('用途行 24');
+      expect(seen).toContain('用途行 96');
       expect(seen).toContain('目录版本 1.0.0');
       await input(instance, '\u001b[D');
       expect(frame(instance, size)).not.toContain('› Demo');

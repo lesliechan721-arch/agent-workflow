@@ -632,6 +632,24 @@ describe('TUI v8.2 stage 5', () => {
 
 
 describe('plugin detail readable structured facts', () => {
+  it.each(SIZES)('shows all short facts without paging at $columns x $rows', async (size) => {
+    const value = controller();
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await nextTurn(3);
+    value.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    await nextTurn(2);
+    const initial = frame(instance, size);
+    expect(initial).toContain('Fixture plugin');
+    expect(initial).toContain('目录版本 1.0.0');
+    expect(initial).toContain('使用位置');
+    expect(initial).toContain('更多操作');
+    expect(initial).not.toContain('上一页');
+    expect(initial).not.toContain('翻信息');
+    await input(instance, '\u001B[C');
+    expect(frame(instance, size)).toBe(initial);
+    value.dispose();
+  });
+
   it.each(SIZES)('keeps long content, badges and actions readable at $columns x $rows', async (size) => {
     const data = loadResult();
     data.pluginSummaries[0]!.description = '用于检查长说明的完整阅读。'.repeat(45) + '摘要完整结尾';
@@ -672,6 +690,16 @@ describe('plugin detail readable structured facts', () => {
       await input(instance, '\u001B[C');
     }
     expect(instance.lastFrame()).toContain('使用位置');
+    const expandedSize = { columns: 120, rows: 100 };
+    instance.rerender(<ConsoleAppV4 controller={value} size={expandedSize} />);
+    await nextTurn(2);
+    const expanded = frame(instance, expandedSize);
+    expect(expanded).toContain('用于检查长说明的完整阅读');
+    expect(expanded.replace(/\s/gu, '')).toContain('摘要完整结尾');
+    expect(expanded).toContain('使用位置');
+    expect(expanded).toContain('更多操作');
+    expect(expanded).not.toContain('上一页');
+    expect(expanded).not.toContain('翻信息');
     await input(instance, '\u001B');
     await new Promise((resolve) => setTimeout(resolve, 550));
     expect(value.snapshot.router.current.route.name).toBe('home');

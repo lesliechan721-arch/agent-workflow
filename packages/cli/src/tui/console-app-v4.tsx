@@ -2413,11 +2413,15 @@ export function ConsoleAppV4(props: {
   ): React.JSX.Element => {
     const cardWidth = size.columns - 2;
     const card = pluginDetailCardLayout(subject, cardWidth);
-    const lineLimit = Math.max(1, pageActionBudget(completionLines.length) - 6);
-    const pageCount = Math.max(1, Math.ceil(card.factRows / lineLimit));
-    const page = Math.min(pageCount, Math.floor(batchTargetOffset / lineLimit) + 1);
-    const lineOffset = (page - 1) * lineLimit;
-    readerNavigation = { page, pageCount, move: (direction) => {
+    const availableRows = pageActionBudget(completionLines.length);
+    // Compact actions use one row each; paging adds one row inside the card.
+    const actionRows = Math.min(3, actions.filter((action) => action.role !== 'navigation').length);
+    const needsPaging = card.fullHeight > availableRows - actionRows;
+    const lineLimit = needsPaging ? Math.max(1, availableRows - actionRows - 3) : undefined;
+    const pageCount = lineLimit ? Math.max(1, Math.ceil(card.factRows / lineLimit)) : 1;
+    const page = lineLimit ? Math.min(pageCount, Math.floor(batchTargetOffset / lineLimit) + 1) : 1;
+    const lineOffset = lineLimit ? (page - 1) * lineLimit : 0;
+    if (lineLimit) readerNavigation = { page, pageCount, move: (direction) => {
       setBatchTargetOffset((Math.min(pageCount, Math.max(1, page + direction)) - 1) * lineLimit);
     } };
     const cardHeight = entityCardWindowHeight(card, lineOffset, lineLimit);
@@ -2425,8 +2429,12 @@ export function ConsoleAppV4(props: {
       pageActionBudget(completionLines.length) - cardHeight);
     const viewport = actionViewport(actions, true, focus, scrollOffset,
       currentActionViewportLineBudget);
-    help = `${actions.length > 0 ? '↑↓ 选择动作 · ' : ''}←→ 翻信息`
-      + `${actions[focus]?.run && !actions[focus]?.disabled ? ' · Enter 选择' : ''} · Esc 返回`;
+    help = [
+      ...(actions.length > 0 ? ['↑↓ 选择动作'] : []),
+      ...(needsPaging ? ['←→ 翻信息'] : []),
+      ...(actions[focus]?.run && !actions[focus]?.disabled ? ['Enter 选择'] : []),
+      'Esc 返回',
+    ].join(' · ');
     return <Box flexDirection="column">
       {completionLines.map((line, index) => <Text key={`completion:${index}`}
         color={tuiTheme.statusColors.success}>{line}</Text>)}
