@@ -1,6 +1,6 @@
 interface:
   display_name: decision-shape
-  short_description: "承接主题对齐，按需短澄清、访谈或原型，保留有依据的当前决定"
-  default_prompt: "使用 $decision-shape 对齐当前主题，复用有效决定、补足材料缺口，并按实际交接需要记录。"
+  short_description: "组织当前主题的材料问答与可体验证据，整合有确认依据的决定"
+  default_prompt: "使用 $decision-shape 组织当前主题对齐，按缺口采用 Grill 或 Prototype，并保留真实确认与边界。"
 policy:
   allow_implicit_invocation: true
