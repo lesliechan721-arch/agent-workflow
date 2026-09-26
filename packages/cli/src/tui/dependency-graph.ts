@@ -264,15 +264,16 @@ function graphFacts(overviews: readonly PluginDependencyOverviewViewModel[]): Gr
   for (const overview of overviews) {
     addNode(nodes, overview.pluginId);
     for (const item of overview.dependencies) addItem(item);
-    for (const item of overview.dependents) addItem(item);
+    for (const item of overview.dependents) {
+      addItem(item);
+      addEdge(item.pluginId, overview.pluginId, true);
+    }
   }
   const forward = new Map<string, EdgeRecord[]>();
   const reverse = new Map<string, EdgeRecord[]>();
   for (const edge of edges.values()) {
     forward.set(edge.fromPluginId, [...(forward.get(edge.fromPluginId) ?? []), edge]);
-    if (edge.availablePlacementReferences.length > 0) {
-      reverse.set(edge.toPluginId, [...(reverse.get(edge.toPluginId) ?? []), edge]);
-    }
+    reverse.set(edge.toPluginId, [...(reverse.get(edge.toPluginId) ?? []), edge]);
   }
   for (const adjacency of forward.values()) {
     adjacency.sort((left, right) => comparePluginIds(left.toPluginId, right.toPluginId, nodes));
@@ -486,7 +487,7 @@ export function buildDependencyGraphProjection(
         state: 'invalid',
         blockers,
         invalidBlockers: invalid,
-        message: '依赖声明无效，不能显示为正常关系树。',
+        message: '依赖声明无效；以下只显示已知关系，不表示可以写入。',
       }
     : !overview
       ? {
@@ -495,7 +496,7 @@ export function buildDependencyGraphProjection(
           invalidBlockers: [],
           message: direction === 'dependencies'
             ? '没有可用的依赖清单。'
-            : '没有完整依赖清单；只显示已观察到的使用者。',
+            : '没有完整依赖清单；只显示已知使用者。',
         }
       : { state: 'ready', blockers, invalidBlockers: [] };
   const defaults = defaultExpansion(options.rootPluginId, direction, facts);
@@ -509,7 +510,6 @@ export function buildDependencyGraphProjection(
   }
   const rows: DependencyGraphRow[] = [];
   const visibleRows = new Map<string, string>();
-  const mayRenderTree = !hasInvalidGraph || direction === 'dependents';
   const append = (input: {
     pluginId: string;
     parentRowId?: string;
@@ -521,14 +521,14 @@ export function buildDependencyGraphProjection(
     lastChild: boolean;
   }): void => {
     const sharedWithRowId = visibleRows.get(input.pluginId);
-    const children = descendants(input.pluginId, direction, facts).flatMap((child) => {
+    const children = descendants(input.pluginId, direction, facts).map((child) => {
       const paths = extendPlacementPaths(
         input.pathReferences,
         child.edge,
         direction,
         input.depth === 0,
       );
-      return direction === 'dependents' && paths.length === 0 ? [] : [{ ...child, paths }];
+      return { ...child, paths };
     });
     const rowId = input.parentRowId
       ? `${input.parentRowId}>${input.pluginId}`
@@ -587,16 +587,14 @@ export function buildDependencyGraphProjection(
       });
     }
   };
-  if (mayRenderTree) {
-    append({
-      pluginId: options.rootPluginId,
-      depth: 0,
-      pathPluginIds: [options.rootPluginId],
-      pathReferences: [],
-      ancestorHasNextSibling: [],
-      lastChild: true,
-    });
-  }
+  append({
+    pluginId: options.rootPluginId,
+    depth: 0,
+    pathPluginIds: [options.rootPluginId],
+    pathReferences: [],
+    ancestorHasNextSibling: [],
+    lastChild: true,
+  });
   const requestedFocus = options.focusPluginId ?? options.rootPluginId;
   const focusRow = rows.find((row) => row.pluginId === requestedFocus) ?? rows[0];
   if (focusRow) focusRow.focused = true;

@@ -50,6 +50,9 @@
           "src/export.js",
           "test/**",
           ".dev-workflows/**"
+        ],
+        "artifacts": [
+          { "path": "src/export.js", "exists": true }
         ]
       },
       "audit": {
@@ -85,6 +88,9 @@
         "allowedWorkspaceChanges": [
           "docs/design/export.md",
           ".dev-workflows/export/task.md"
+        ],
+        "artifacts": [
+          { "path": "docs/design/export.md", "exists": true }
         ]
       },
       "audit": {

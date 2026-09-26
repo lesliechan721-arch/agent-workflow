@@ -10,6 +10,7 @@ import {
 } from './diagnostics.js';
 import { resolveTuiSizePolicy, type TuiSizePolicy } from './layout.js';
 import { getTuiStatusColor, tuiTheme, type TuiStatus } from './theme.js';
+import { Pager, paginateWrappedRows } from './reader.js';
 import { wrapDisplayText } from './viewport.js';
 
 export interface TuiSize {
@@ -70,6 +71,7 @@ export function ScreenFrame(props: {
   description?: string;
   breadcrumb?: string;
   context?: string;
+  headerHint?: { key: string; label: string };
   help: ReactNode;
   children: ReactNode;
   size?: TuiSize;
@@ -82,8 +84,9 @@ export function ScreenFrame(props: {
     return <SizeHint policy={policy} />;
   }
   const headerWidth = policy.columns - 2;
+  const hintWidth = props.headerHint ? 11 : 0;
   const contextWidth = props.context
-    ? Math.min(stringWidth(props.context), headerWidth - 13)
+    ? Math.min(stringWidth(props.context), headerWidth - 13 - hintWidth)
     : 0;
 
   return (
@@ -104,7 +107,7 @@ export function ScreenFrame(props: {
         borderRight={false}
         paddingX={1}
       >
-        <Box width={headerWidth - (contextWidth ? contextWidth + 1 : 0)} flexShrink={0}>
+        <Box width={headerWidth - (contextWidth ? contextWidth + 1 : 0) - hintWidth} flexShrink={0}>
           <Text bold color={tuiTheme.colors.accent} wrap="truncate-end">
             AW{props.breadcrumb ? ` / ${props.breadcrumb}` : ''}
           </Text>
@@ -114,6 +117,10 @@ export function ScreenFrame(props: {
               <Text color={tuiTheme.colors.muted} wrap="truncate-end">{props.context}</Text>
             </Box>
           : null}
+        {props.headerHint ? <Box width={hintWidth} flexShrink={0}>
+          <KeyCap>{props.headerHint.key}</KeyCap>
+          <Text color={tuiTheme.colors.muted}> {props.headerHint.label}</Text>
+        </Box> : null}
       </Box>
       <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>
         {props.title ? <Text bold color={tuiTheme.colors.text}>{props.title}</Text> : null}
@@ -415,25 +422,20 @@ export function DiagnosticSummary(props: {
     return <Callout status="muted" title="没有可公开的技术字段" compact />;
   }
   const rows = diagnosticDetailLines(props.diagnostic, (props.columns ?? 80) - 6);
-  const total = rows.length;
-  const offset = Math.min(
-    total,
-    Math.max(0, Math.floor(Number.isFinite(props.offset) ? props.offset ?? 0 : 0)),
-  );
-  const limit = props.limit === undefined
-    ? total
-    : Math.max(0, Math.floor(Number.isFinite(props.limit) ? props.limit : 0));
-  const visibleRows = rows.slice(offset, offset + limit);
-  const after = total - offset - visibleRows.length;
+  const limit = props.limit ?? Math.max(1, rows.length);
+  const requestedOffset = Math.max(0, Math.floor(Number.isFinite(props.offset) ? props.offset ?? 0 : 0));
+  const page = paginateWrappedRows({ lines: rows, rows: limit,
+    page: Math.floor(requestedOffset / Math.max(1, limit)) + 1 });
 
   return <Box flexDirection="column">
     <Text color={tuiTheme.colors.muted}>下面的信息已脱敏，可用于排查或提交 issue。</Text>
     <TechnicalDetails label="脱敏诊断" compact>
-      {offset > 0 ? <StaticRow title={`↑ 前面还有 ${offset} 行`} status="muted" compact /> : null}
-      {visibleRows.map((line, index) => <Box key={offset + index} paddingX={1}>
+      {page.lines.map((line, index) => <Box key={page.offset + index} paddingX={1}>
         <Text>{line}</Text>
       </Box>)}
-      {after > 0 ? <StaticRow title={`↓ 后面还有 ${after} 行`} status="muted" compact /> : null}
+      {props.limit !== undefined
+        ? <Pager page={page.page} pageCount={page.pageCount} columns={(props.columns ?? 80) - 4} />
+        : null}
     </TechnicalDetails>
   </Box>;
 }
@@ -445,6 +447,7 @@ export interface InteractiveRowProps {
   focused?: boolean;
   disabled?: boolean | string;
   status?: TuiStatus;
+  keyHint?: string;
   compact?: boolean;
 }
 
@@ -452,14 +455,16 @@ export interface SelectableRowProps extends InteractiveRowProps {
   selected: boolean;
 }
 
-function FocusRow(props: InteractiveRowProps & { marker?: string }): React.JSX.Element {
+function FocusRow(props: InteractiveRowProps & { marker?: string; action?: boolean }): React.JSX.Element {
   const description = typeof props.disabled === 'string' ? props.disabled : props.description;
   const color = props.disabled
     ? tuiTheme.colors.muted
-    : props.status ? getTuiStatusColor(props.status) : tuiTheme.colors.text;
+    : props.action && props.status && ['info', 'warning', 'error'].includes(props.status)
+      ? getTuiStatusColor(props.status) : tuiTheme.colors.text;
   return (
     <Box
       flexDirection="column"
+      width="100%"
       backgroundColor={props.focused ? tuiTheme.colors.selectionBackground : undefined}
       paddingX={1}
     >
@@ -469,12 +474,16 @@ function FocusRow(props: InteractiveRowProps & { marker?: string }): React.JSX.E
             {props.focused ? '›' : ' '} {props.marker ? `${props.marker} ` : ''}{props.title}
           </Text>
         </Box>
-        {props.meta
+        {props.meta || props.keyHint
           ? (
               <Box flexShrink={1} overflow="hidden" marginLeft={1}>
-                <Text color={props.disabled ? tuiTheme.colors.muted : color} wrap="truncate-end">
-                  {props.meta}
-                </Text>
+                {props.meta && props.status ? <Text color={props.disabled ? tuiTheme.colors.muted : getTuiStatusColor(props.status)}
+                  wrap="truncate-end">
+                  {statusSymbols[props.status]} {props.meta}
+                </Text> : null}
+                {props.meta && !props.status ? <Text color={props.disabled ? tuiTheme.colors.muted : tuiTheme.colors.text}
+                  wrap="truncate-end">{props.meta}</Text> : null}
+                {props.keyHint ? <Box flexShrink={0} marginLeft={props.meta ? 1 : 0}><KeyCap>{props.keyHint}</KeyCap></Box> : null}
               </Box>
             )
           : null}
@@ -487,7 +496,7 @@ function FocusRow(props: InteractiveRowProps & { marker?: string }): React.JSX.E
 }
 
 export function TaskRow(props: InteractiveRowProps): React.JSX.Element {
-  return <FocusRow {...props} />;
+  return <FocusRow {...props} action />;
 }
 
 export function PluginRow(props: InteractiveRowProps): React.JSX.Element {
@@ -508,9 +517,10 @@ export interface PluginListRowProps {
   anchored?: boolean;
 }
 
-function ObjectCardFrame(props: {
+export function ObjectCardFrame(props: {
   width: number;
   title: ReactNode;
+  headerMeta?: string;
   children: ReactNode;
   focused?: boolean;
   anchored?: boolean;
@@ -524,7 +534,7 @@ function ObjectCardFrame(props: {
   return <Box width={props.width} flexDirection="column" flexShrink={0} backgroundColor={backgroundColor}>
     <Box height={1} flexShrink={0} overflow="hidden">
       <Text color={borderColor}>╭─ </Text>
-      <Box maxWidth={Math.max(1, props.width - 6)} flexShrink={0} overflow="hidden"
+      <Box maxWidth={Math.max(1, props.width - 6 - (props.headerMeta ? stringWidth(props.headerMeta) + 3 : 0))} flexShrink={0} overflow="hidden"
         backgroundColor={tuiTheme.colors.background}>
         <Text bold color={props.focused ? tuiTheme.colors.accent : props.muted ? tuiTheme.colors.muted : tuiTheme.colors.text}
           wrap="truncate-end">
@@ -534,6 +544,7 @@ function ObjectCardFrame(props: {
       <Text color={borderColor}> </Text>
       <Box flexGrow={1} flexShrink={1} minWidth={0} height={1} borderStyle="single"
         borderColor={borderColor} borderTop={false} borderLeft={false} borderRight={false} />
+      {props.headerMeta ? <Text color={tuiTheme.colors.muted}>[{props.headerMeta}] </Text> : null}
       <Text color={borderColor}>╮</Text>
     </Box>
     <Box flexDirection="column" borderStyle="round" borderTop={false}
@@ -564,18 +575,46 @@ export interface ConfigTileProps {
   pending?: string;
   invalid?: boolean;
   focused?: boolean;
+  description?: string;
+  issue?: string;
+  bodyRows?: number;
+  page?: number;
 }
 
-export function configTileHeight(props: Pick<ConfigTileProps, 'width' | 'value' | 'pending'>): number {
-  return 2 + cardSummaryLines(props.value, Math.max(1, props.width - 2), 2).length + (props.pending ? 1 : 0);
+function configTileLines(props: Omit<ConfigTileProps, 'title' | 'source'>) {
+  const width = Math.max(1, props.width - 2);
+  return [
+    ...cardSummaryLines(props.invalid ? '需修正' : props.value, width, 2).map((text) => ({
+      text, color: props.invalid ? tuiTheme.roles.error : tuiTheme.roles.primaryValue, bold: true,
+    })),
+    ...(props.issue ? (props.focused ? wrapDisplayText(props.issue, width)
+      : cardSummaryLines(props.issue, width, 1)).map((text) => ({ text, color: tuiTheme.roles.error })) : []),
+    ...(props.description ? (props.focused ? wrapDisplayText(props.description, width)
+      : cardSummaryLines(props.description, width, 2)).map((text) => ({ text, color: tuiTheme.roles.secondary })) : []),
+    ...(props.pending ? wrapDisplayText(`● ${props.pending}`, width)
+      .map((text) => ({ text, color: tuiTheme.roles.change })) : []),
+  ];
+}
+
+export function configTileHeight(props: Omit<ConfigTileProps, 'title' | 'source'>): number {
+  const count = configTileLines(props).length;
+  const limit = Math.max(1, props.bodyRows ?? count);
+  return 2 + Math.min(count, limit) + Number(count > limit);
 }
 
 export function ConfigTile(props: ConfigTileProps): React.JSX.Element {
+  const lines = configTileLines(props);
+  const page = paginateWrappedRows({ lines: lines.map((line) => line.text),
+    rows: props.bodyRows ?? lines.length, page: props.page });
   return <ObjectCardFrame width={props.width} focused={props.focused} compact
-    title={<Text>{props.title}{props.source ? <Text color={tuiTheme.roles.secondary}> [{props.source}]</Text> : null}</Text>}>
-    {cardSummaryLines(props.invalid ? '需修正' : props.value, Math.max(1, props.width - 2), 2).map((line, index) =>
-      <Text key={index} bold color={props.invalid ? tuiTheme.roles.error : tuiTheme.roles.primaryValue}>{line}</Text>)}
-    {props.pending ? <Text color={tuiTheme.roles.change} wrap="truncate-end">● {props.pending}</Text> : null}
+    title={props.title} headerMeta={props.source}>
+    {lines.slice(page.offset, page.offset + page.lines.length).map((line, index) =>
+      <Text key={page.offset + index} bold={'bold' in line && line.bold} color={line.color}>{line.text}</Text>)}
+    {page.pageCount > 1 ? <Box justifyContent="space-between" height={1}>
+      <Text color={page.hasPrevious ? tuiTheme.roles.secondary : tuiTheme.colors.muted}>PgUp</Text>
+      <Text color={tuiTheme.colors.muted}>{page.page} / {page.pageCount}</Text>
+      <Text color={page.hasNext ? tuiTheme.roles.secondary : tuiTheme.colors.muted}>PgDn</Text>
+    </Box> : null}
   </ObjectCardFrame>;
 }
 
@@ -739,7 +778,7 @@ export function ChoiceRow(props: SelectableRowProps): React.JSX.Element {
 }
 
 export function ActionRow(props: InteractiveRowProps): React.JSX.Element {
-  return <FocusRow {...props} />;
+  return <FocusRow {...props} action />;
 }
 
 export interface StaticRowProps {

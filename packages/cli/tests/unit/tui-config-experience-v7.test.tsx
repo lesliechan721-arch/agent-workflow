@@ -184,6 +184,67 @@ async function openChangedProjectSave(value: TuiController, columns: number, row
 
 describe('TUI config experience v7', () => {
   it.each([[60, 18], [80, 24]] as const)(
+    'reads every line of an oversized description inside its focused card at %ix%i', async (columns, rows) => {
+      const { value } = controller({ configPage: (layer) => {
+        const result = page(layer);
+        result.presets = [];
+        result.groups[0]!.fields[0]!.description = Array.from({ length: 20 }, (_, index) => `完整说明第 ${index + 1} 行`).join('\n');
+        return result;
+      } });
+      await value.load(); value.push({ name: 'configFields', pluginId, layer: { scope: 'effective' } });
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+      await nextTurn(6);
+      let seen = instance.lastFrame() ?? '';
+      expect(seen).toContain('PgUp/PgDn 卡片全文');
+      for (let index = 0; index < 12; index += 1) {
+        await input(instance, '\u001b[6~');
+        const current = instance.lastFrame() ?? '';
+        expect(current.split('\n').length).toBeLessThanOrEqual(rows);
+        expect(current).toContain('› 运行模式');
+        seen += current;
+      }
+      for (let index = 1; index <= 20; index += 1) expect(seen).toContain(`完整说明第 ${index} 行`);
+      await input(instance, '?');
+      expect(instance.lastFrame()).toContain('PgUp/PgDn 卡片全文');
+      expect(instance.lastFrame()).not.toContain('←→ 分组');
+      await input(instance, '\u001b');
+      await input(instance, '\u001b[B');
+      expect(instance.lastFrame()).toContain('› 访问令牌');
+      expect(instance.lastFrame()).not.toContain('PgUp/PgDn 卡片全文');
+    },
+  );
+
+  it.each([[60, 18], [80, 24]] as const)(
+    'keeps descriptions inside their config cards and expands only the focused field at %ix%i',
+    async (columns, rows) => {
+      const { value } = controller({ configPage: (layer) => {
+        const result = page(layer);
+        result.presets = [];
+        result.groups[0]!.fields.forEach((entry, index) => {
+          entry.description = `${index}-说明第一行\n${index}-说明第二行\n${index}-说明全文末尾`;
+        });
+        return result;
+      } });
+      await value.load(); value.push({ name: 'configFields', pluginId, layer: { scope: 'effective' } });
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+      await nextTurn(6);
+      const first = instance.lastFrame() ?? '';
+      expect(first).toContain('0-说明全文末尾');
+      const lines = first.split('\n');
+      const titleLine = lines.findIndex((line) => line.includes('运行模式') && line.includes('╭'));
+      const endLine = lines.findIndex((line, index) => index > titleLine && line.includes('╰'));
+      expect(lines.slice(titleLine, endLine).join('\n')).toContain('0-说明全文末尾');
+      expect(first).not.toContain('1-说明全文末尾');
+      expect(lines.length).toBeLessThanOrEqual(rows);
+      await input(instance, '\u001b[B');
+      const second = instance.lastFrame() ?? '';
+      expect(second).toContain('1-说明全文末尾');
+      expect(second).not.toContain('0-说明全文末尾');
+      expect(second.split('\n').length).toBeLessThanOrEqual(rows);
+    },
+  );
+
+  it.each([[60, 18], [80, 24]] as const)(
     'returns from save summary to config editing and preserves the draft at %ix%i',
     async (columns, rows) => {
       const { value, captured } = controller();

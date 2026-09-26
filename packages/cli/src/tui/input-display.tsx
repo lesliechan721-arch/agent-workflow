@@ -37,6 +37,15 @@ export function InputDisplay(props: {
   placeholder?: string;
 }): React.JSX.Element {
   const value = props.sensitive ? '•'.repeat(graphemes(props.value).length) : props.value;
+  if (!value) {
+    let placeholder = '';
+    for (const part of graphemes(props.placeholder ?? '')) {
+      if (part.includes('\n') || stringWidth(placeholder + part) > Math.max(0, props.columns - 1)) break;
+      placeholder += part;
+    }
+    return <Text><Text color={tuiTheme.colors.accent}>▌</Text>
+      <Text color={tuiTheme.colors.muted}>{placeholder}</Text></Text>;
+  }
   if (props.cursor !== undefined && value) {
     const parts = graphemes(value);
     const cursor = Math.min(parts.length, Math.max(0, props.cursor));
@@ -49,6 +58,6 @@ export function InputDisplay(props: {
     }
     return <Text>{before}<Text color={tuiTheme.colors.accent}>▌</Text>{after}</Text>;
   }
-  const visible = renderInputTail(value || props.placeholder || '', props.columns);
+  const visible = renderInputTail(value, props.columns);
   return <Text>{visible}<Text color={tuiTheme.colors.accent}>▌</Text></Text>;
 }

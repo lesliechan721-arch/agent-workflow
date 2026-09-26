@@ -52,6 +52,9 @@
         "allowedWorkspaceChanges": [
           "docs/design/export.md",
           ".dev-workflows/**"
+        ],
+        "artifacts": [
+          { "path": "docs/design/export.md", "exists": true }
         ]
       },
       "audit": {
@@ -87,6 +90,9 @@
         "allowedWorkspaceChanges": [
           "docs/design/invitations.md",
           ".dev-workflows/**"
+        ],
+        "artifacts": [
+          { "path": "docs/design/invitations.md", "exists": true }
         ]
       },
       "audit": {
@@ -125,6 +131,9 @@
         "allowedWorkspaceChanges": [
           "docs/design/export.md",
           ".dev-workflows/**"
+        ],
+        "artifacts": [
+          { "path": "docs/design/export.md", "exists": true }
         ]
       },
       "audit": {

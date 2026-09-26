@@ -62,6 +62,7 @@ import {
   type UserIssueViewModel,
 } from './model.js';
 import type { PluginContentOverview } from './plugin-content.js';
+import { buildPluginDetailSubject, type PluginDetailSubject } from './plugin-detail.js';
 import { safeDiagnosticCode, sanitizeDiagnosticText } from './diagnostics.js';
 import { projectExecutionDiagnostics, projectThrownOperationDiagnostic } from './diagnostic-projection.js';
 import {
@@ -2217,7 +2218,16 @@ export class TuiController {
   }
 
   #normalizeRoute(route: TuiRoute): TuiRoute {
-    return normalizeTuiRoute(route, this.#routeEntityState());
+    const state = this.#routeEntityState();
+    if (route.name === 'pluginDetail' || route.name === 'pluginPreview'
+      || route.name === 'pluginDependencies' && route.view !== 'removeBlocked'
+      || route.name === 'pluginDependencyNode') {
+      return normalizeTuiRoute(route, {
+        ...state,
+        hasPlugin: (pluginId) => this.getPluginDetailSubject(pluginId) !== undefined,
+      });
+    }
+    return normalizeTuiRoute(route, state);
   }
 
   #routeEntityState(): RouteEntityState {
@@ -3614,6 +3624,20 @@ export class TuiController {
     return plugin ? cloneFrozen(plugin) : undefined;
   }
 
+  getPluginDetailSubject(pluginId: string): PluginDetailSubject | undefined {
+    if (!this.#status || !this.#viewModel) return undefined;
+    const subject = buildPluginDetailSubject({
+      pluginId,
+      status: this.#status.payload,
+      pluginSummaries: this.#status.pluginSummaries,
+      targetRevisions: this.#status.targetRevisions,
+      plugins: this.#viewModel.plugins,
+      projectInventory: this.#projectInventory,
+      dependencyOverviews: this.#status.dependencyOverviews,
+    });
+    return subject ? cloneFrozen(subject) : undefined;
+  }
+
   getPluginContentOverview(pluginId: string): PluginContentOverview | undefined {
     const overview = this.#viewModel?.contentOverviews[pluginId];
     return overview ? cloneFrozen(overview) : undefined;
@@ -3647,6 +3671,10 @@ export class TuiController {
           pluginVersion: '待确认',
           catalogVersion: '待确认',
           evidence: 'unavailable',
+          coverage: 'unavailable',
+          coverageIssue: {
+            code: 'unreadable', message: '当前无法安全读取这个插件的内容。',
+          },
           items: [],
           notices: ['当前无法安全读取这个插件的内容。'],
         });

@@ -8,6 +8,7 @@ import { SKILLS_CLI_SUPPORTED_VERSION_LABEL } from '../../src/portable/skills-cl
 import type { StatusV8Payload, StatusV8PluginSummary } from '../../src/commands/status-v6.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
+import { wrapDisplayText } from '../../src/tui/viewport.js';
 import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
 import { SessionHost } from '../../src/tui/session-host.js';
 import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
@@ -857,7 +858,7 @@ describe('Portable Skills TUI V1', () => {
 
       if (method === 'focused continue') {
         await send(instance, 'a');
-        expect(instance.lastFrame()).toContain('› 继续（3） [c]');
+        expect(instance.lastFrame()).toMatch(/› 继续（3） +\[c\]/u);
         await send(instance, '\r');
       } else {
         await send(instance, 'c');
@@ -884,7 +885,7 @@ describe('Portable Skills TUI V1', () => {
 
     if (fixture.method === 'focused continue') {
       await send(instance, 'a');
-      expect(instance.lastFrame()).toContain('› 继续（0） [c]');
+      expect(instance.lastFrame()).toMatch(/› 继续（0） +\[c\]/u);
       await send(instance, '\r');
     } else {
       expect(instance.lastFrame()).toContain('› [ ] author-skill');
@@ -928,8 +929,8 @@ describe('Portable Skills TUI V1', () => {
     expect(value.snapshot.router.current.route).toEqual({
       name: 'portableSkillSelect', pluginId: 'official/toolkit',
     });
-    expect(instance.lastFrame()).toContain(fixture.method === 'focused continue'
-      ? '› 继续（0） [c]' : '› [ ] author-skill');
+    expect(instance.lastFrame()).toMatch(fixture.method === 'focused continue'
+      ? /› 继续（0） +\[c\]/u : /› \[ \] author-skill/u);
     expect(capture).not.toHaveBeenCalled();
     expect(executeOperation).not.toHaveBeenCalled();
   });
@@ -955,15 +956,48 @@ describe('Portable Skills TUI V1', () => {
     expect(instance.lastFrame()).toContain('3 / 3 已选择');
   });
 
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'searches Skill names and short descriptions on the same page at $columns x $rows', async (size) => {
+      const { value, capture } = portableController();
+      await value.load();
+      await value.preparePortableInstall('official/toolkit');
+      const capturesBeforeSearch = capture.mock.calls.length;
+      const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+      await tick();
+      const initial = instance.lastFrame() ?? '';
+      await send(instance, '/', 'f', 'q', '?');
+      expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
+      expect(value.snapshot.router.current.context.query).toBe('fq?');
+      expect(capture).toHaveBeenCalledTimes(capturesBeforeSearch);
+      await send(instance, '\u0015', '评审内容', '\r');
+      const searched = instance.lastFrame() ?? '';
+      expect(searched).toContain('content-skill');
+      expect(searched).toContain('隐藏已选 2');
+      expect(searched).not.toContain('› [✓] author-skill');
+      await send(instance, 'c');
+      expect(value.snapshot.router.current.route.name).toBe('portableAgentMode');
+      await send(instance, '\u001b');
+      await new Promise((resolve) => setTimeout(resolve, 550));
+      expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
+      expect(value.snapshot.router.current.context.query).toBe('评审内容');
+      expect(instance.lastFrame()).toContain('content-skill');
+      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+        path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `query-skills-${size.columns}x${size.rows}.json`),
+        { synthetic: true, size, frames: { initial, searched } }, { spaces: 2 });
+    },
+  );
+
   it('advertises only the manifest capability before entry, then selects candidates and executes the reviewed subset', async () => {
     const { value, capture } = portableController();
     await value.load();
     value.push({ name: 'pluginPreview', pluginId: 'official/toolkit' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await tick();
-    expect(instance.lastFrame()).toContain('[Skills 可选]');
-    expect(instance.lastFrame()).toContain('Codex');
-    expect(instance.lastFrame()).toContain('Claude Code');
+    expect(value.getPluginOverview('official/toolkit')).toMatchObject({
+      portableSkills: true, supportedPlatforms: ['codex', 'claude'],
+    });
+    expect(instance.lastFrame()).toContain('目录版本 1.0.0');
+    expect(instance.lastFrame()).toContain('安装');
     expect(instance.lastFrame()).toContain('更多操作');
     expect(instance.lastFrame()).toContain('依赖关系');
     expect(instance.lastFrame()).not.toContain('3 个候选');
@@ -1609,9 +1643,9 @@ describe('Portable Skills TUI V1', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await tick();
 
-    expect(instance.lastFrame()).toContain('› ● 使用 Skills CLI 默认选择');
+    expect(instance.lastFrame()).toContain('› ● 自动选择可用 Agent');
     await send(instance, '\u001B[B');
-    expect(instance.lastFrame()).toContain('● 使用 Skills CLI 默认选择');
+    expect(instance.lastFrame()).toContain('● 自动选择可用 Agent');
     expect(instance.lastFrame()).toContain('› ○ 指定 Agent');
     expect(value.snapshot.portableDraft?.agentMode).toBe('automatic');
   });
@@ -1667,7 +1701,7 @@ describe('Portable Skills TUI V1', () => {
       expect(technicalFrame).toContain(title);
     }
     expect(technicalFrame).toContain(size.rows === 18 ? '另有 3 条技术消息' : '另有 1 条技术消息');
-    expect(technicalFrame).toContain('d 技术进度');
+    expect(technicalFrame).toContain('d 返回摘要');
     expect(technicalFrame).toContain('[y] 复制全文');
     expect(technicalFrame.match(/[✓●○×] /gu)).toHaveLength(4);
     expect(technicalFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
@@ -1806,7 +1840,7 @@ describe('Portable Skills TUI V1', () => {
     await send(instance, '?');
     const helpFrame = instance.lastFrame() ?? '';
     expect(helpFrame).toContain('当前页快捷键');
-    expect(helpFrame).toMatch(/d\s+打开技术详情/u);
+    expect(helpFrame).toMatch(/d\s+技术详情/u);
     expect(helpFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
     await send(instance, '?', 'd');
     if (size.rows === 18) {
@@ -1826,7 +1860,7 @@ describe('Portable Skills TUI V1', () => {
     for (const label of ['返回修改', '返回插件详情']) {
       await focusPortableAction(instance, label);
       const technicalFrame = instance.lastFrame() ?? '';
-      expect(technicalFrame).toContain('技术详情');
+      expect(technicalFrame).toContain('d 返回摘要');
       expect(technicalFrame).toContain('failure code');
       expect(technicalFrame).toContain('verification missing');
       expect(technicalFrame).toContain('Skills CLI version');
@@ -1834,7 +1868,7 @@ describe('Portable Skills TUI V1', () => {
       expect(technicalFrame).toContain('elapsed');
       expect(technicalFrame).toMatch(/result-skill-9\s+确认缺失 · Agent：无法确认/u);
       expect(technicalFrame).toContain('第 1–1 项，共 10 项');
-      expect(technicalFrame).toMatch(/范围\s+当前项目/u);
+      expect(technicalFrame).toContain('当前项目');
       expect(technicalFrame).toContain('安全恢复');
       expect(technicalFrame).toContain(`› ${label}`);
       expect(technicalFrame).toMatch(/↑↓(?:\s+移动|\/Enter\s+菜单)/u);
@@ -1881,7 +1915,7 @@ describe('Portable Skills TUI V1', () => {
     await send(instance, '?');
     const helpFrame = instance.lastFrame() ?? '';
     expect(helpFrame).toContain('当前页快捷键');
-    expect(helpFrame).toMatch(/d\s+打开技术详情/u);
+    expect(helpFrame).toMatch(/d\s+技术详情/u);
     expect(helpFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
     await send(instance, '?', 'd');
     for (const label of ['返回修改', '返回插件详情']) {
@@ -1889,8 +1923,8 @@ describe('Portable Skills TUI V1', () => {
       const frame = instance.lastFrame() ?? '';
       expect(frame).toMatch(/blocked-skill-0\s+结果未知 · Agent：无法确认/u);
       expect(frame).toContain('第 1–1 项，共 10 项');
-      expect(frame).toMatch(/范围\s+当前项目/u);
-      expect(frame).toContain('技术详情');
+      expect(frame).toMatch(/范围\s+当前项目|第 1–1 项，共 10 项 · 当前项目/u);
+      expect(frame).toContain('d 返回摘要');
       expect(frame).toContain('failure code');
       expect(frame).not.toContain('sha256:blocked');
       expect(frame).toContain(`› ${label}`);
@@ -1959,7 +1993,7 @@ describe('Portable Skills TUI V1', () => {
     await send(instance, '?');
     const helpFrame = instance.lastFrame() ?? '';
     expect(helpFrame).toContain('当前页快捷键');
-    expect(helpFrame).not.toMatch(/d\s+打开技术详情/u);
+    expect(helpFrame).not.toMatch(/d\s+技术详情/u);
     await send(instance, '?');
     expect(instance.lastFrame()).toBe(initialFrame);
 
@@ -2001,20 +2035,26 @@ describe('Portable Skills TUI V1', () => {
 
     await send(instance, 'd');
     for (const [index, label] of [value.snapshot.activeReview!.primaryLabel, '返回修改'].entries()) {
-      if (index > 0) await send(instance, '\u001B[B');
+      if (index > 0) {
+        await send(instance, ...Array.from({ length: 30 }, () => '\u001B[5~'));
+        await send(instance, '\u001B[B');
+      }
       const frame = instance.lastFrame() ?? '';
       let allPages = frame;
-      for (let page = 0; page < 15; page += 1) {
+      for (let page = 0; page < 50; page += 1) {
+        const pager = (instance.lastFrame() ?? '').match(/← 上一页\s+(\d+) \/ (\d+)/u);
+        expect(pager).toBeTruthy();
+        if (pager?.[1] === pager?.[2]) break;
         await send(instance, '\u001B[6~');
         allPages += instance.lastFrame() ?? '';
       }
       expect(allPages).toContain('同名覆盖');
       expect(allPages).toContain('安装目标 · ~ Agent');
       expect(allPages).toContain('安装目标 · ~ 范围');
-      expect(frame).toContain('Catalog 配置：config');
+      expect(allPages).toContain('Catalog 配置：config');
       expect(frame).toMatch(/另有 \d+ 项/u);
       expect(frame).toContain(`› ${label}`);
-      expect(frame).toMatch(/d\s+技术详情/u);
+      expect(frame).toMatch(/d\s+返回摘要/u);
       expect(frame).toContain('[y] 复制全文');
       expect(frame.match(/›/gu)).toHaveLength(1);
       expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
@@ -2173,16 +2213,21 @@ describe('Portable Skills TUI V1', () => {
     value.push({ name: 'portableDependencies', pluginId: 'official/toolkit' });
     const dependencyInstance = render(<ConsoleAppV4 controller={value} size={size} />);
     await tick();
-    expect(dependencyInstance.lastFrame()).toContain('› 返回 Skills 选择');
+    expect(dependencyInstance.lastFrame()).toContain('◆ Toolkit');
+    expect(dependencyInstance.lastFrame()).toContain('Enter 插件详情');
     let dependencyFrame = dependencyInstance.lastFrame() ?? '';
-    for (let index = 0; index < 7; index += 1) {
-      await send(dependencyInstance, '\u001B[C');
-      dependencyFrame += dependencyInstance.lastFrame() ?? '';
+    for (let index = 0; index < 16 && !dependencyFrame.includes('Dependency 7'); index += 1) {
+      await send(dependencyInstance, '\u001B[B');
+      dependencyFrame += `\n${dependencyInstance.lastFrame() ?? ''}`;
     }
     expect(dependencyFrame).toContain('Dependency 0');
     expect(dependencyFrame).toContain('Dependency 7');
+    await send(dependencyInstance, 'p');
     expect(dependencyInstance.lastFrame()).toContain('复制全文');
     expect((dependencyInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(size.rows);
+    dependencyInstance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(value.snapshot.router.current.route.name).toBe('portableDependencies');
     dependencyInstance.stdin.write('\u001B');
     await new Promise((resolve) => setTimeout(resolve, 550));
     expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
@@ -2244,7 +2289,7 @@ describe('Portable Skills TUI V1', () => {
 
     await send(instance, ...Array.from({ length: Math.floor(size.count / 2) }, () => '\u001B[B'));
     await send(instance, 'a');
-    expect(instance.lastFrame()).toContain(`› 继续（${size.count}） [c]`);
+    expect(instance.lastFrame()).toMatch(new RegExp(String.raw`› 继续（${size.count}） +\[c\]`, 'u'));
     await send(instance, 'a');
     expect(instance.lastFrame()).toContain(`› [x] portable-skill-${Math.floor(size.count / 2)}`);
     await send(instance, 'a');
@@ -2521,7 +2566,7 @@ describe('Portable Skills TUI V1', () => {
     if (!technical) {
       await send(instance, 'd');
       expect(instance.lastFrame()).toContain(`已验证 · Agent：${agents.at(-1)}`);
-      expect(instance.lastFrame()).toMatch(/范围\s+当前项目/u);
+      expect(instance.lastFrame()).toMatch(/范围\s+当前项目|第 \d+–\d+ 项，共 \d+ 项 · 当前项目/u);
       expect(instance.lastFrame()).toContain('verification missing');
       expect(instance.lastFrame()).toContain('Skills CLI version');
       expect(instance.lastFrame()).toContain('materialization digest');
@@ -2543,7 +2588,7 @@ describe('Portable Skills TUI V1', () => {
       ...candidates[0]!, name, description: `Long result ${index}`,
       filesDigest: `sha256:long-result-${index}`,
     }));
-    const longAgent = `github-copilot-${'a'.repeat(113)}`;
+    const longAgent = `github-copilot-${Array.from({ length: 18 }, (_, index) => `agent${index}-`).join('')}`;
     const digest = `sha256:${'d'.repeat(64)}`;
     const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
       if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
@@ -2581,32 +2626,28 @@ describe('Portable Skills TUI V1', () => {
       for (let page = 0; page < 20; page += 1) {
         const frame = instance.lastFrame() ?? '';
         frames.push(frame);
-        if (frame.includes('已在最后一页')) break;
+        const pager = frame.match(/← 上一页\s+(\d+) \/ (\d+)/u);
+        expect(pager).toBeTruthy();
+        if (pager?.[1] === pager?.[2]) break;
         await send(instance, '\u001B[C');
       }
       return frames;
     };
-    const rebuild = (frames: readonly string[], label: string): string => {
-      const parts = new Map<number, string>();
-      let total = 0;
-      for (const line of frames.flatMap((frame) => frame.split('\n'))) {
-        const marker = `${label} `;
-        const value = line.trim();
-        if (!value.startsWith(marker)) continue;
-        const match = value.slice(marker.length).match(/^(\d+)\/(\d+) · (.*)$/u);
-        if (!match) continue;
-        parts.set(Number(match[1]), match[3] ?? '');
-        total = Number(match[2]);
+    const expectCompleteField = (frames: readonly string[], label: string, value: string): void => {
+      for (const line of wrapDisplayText(`${label} · ${value}`, size.columns - 2).filter(Boolean)) {
+        expect(frames.some((frame) => frame.includes(line))).toBe(true);
       }
-      return Array.from({ length: total }, (_, index) => parts.get(index + 1) ?? '').join('');
     };
 
     expect(instance.lastFrame()).toContain('已验证 · Agent：');
     let frames = await readDetail();
-    expect(rebuild(frames, 'Skill')).toBe(skills[0]);
-    expect(rebuild(frames, 'Agent')).toBe(longAgent);
-    expect(rebuild(frames, 'materialization digest')).toBe(digest);
+    expectCompleteField(frames, 'Skill', skills[0]!);
+    expectCompleteField(frames, 'Agent', longAgent);
+    expectCompleteField(frames, 'materialization digest', digest);
     expect(frames.join('\n')).toContain('状态 · 已验证');
+    if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
+      path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `reader-portable-detail-${size.columns}x${size.rows}.json`),
+      { synthetic: true, size, frames: { first: frames[0], last: frames.at(-1) } }, { spaces: 2 });
     instance.stdin.write('\u001B');
     await new Promise((resolve) => setTimeout(resolve, 550));
     await tick();
@@ -2614,9 +2655,9 @@ describe('Portable Skills TUI V1', () => {
     await send(instance, '\u001B[C', 'd');
     expect(instance.lastFrame()).toContain('已验证 · Agent：');
     frames = await readDetail();
-    expect(rebuild(frames, 'Skill')).toBe(skills[1]);
-    expect(rebuild(frames, 'Agent')).toBe(longAgent);
-    expect(rebuild(frames, 'materialization digest')).toBe(digest);
+    expectCompleteField(frames, 'Skill', skills[1]!);
+    expectCompleteField(frames, 'Agent', longAgent);
+    expectCompleteField(frames, 'materialization digest', digest);
     instance.rerender(<ConsoleAppV4 controller={value} size={
       size.rows === 18 ? { columns: 80, rows: 24 } : { columns: 60, rows: 18 }
     } />);

@@ -1,4 +1,5 @@
 import type { PlatformName, Scope } from '../types.js';
+import type { PluginContentType } from './plugin-content.js';
 
 export type PortableBlockerCode =
   | 'requiredConfigMissing'
@@ -102,7 +103,7 @@ export type TuiRoute =
   | { name: 'pluginContent'; pluginId: string }
   | { name: 'pluginMore'; pluginId: string }
   | { name: 'platform'; pluginId: string; platform: PlatformName }
-  | { name: 'pluginTechnical'; pluginId: string }
+  | { name: 'pluginTechnical'; pluginId: string; platform?: PlatformName; scope?: Scope }
   | {
       name: 'configLayer';
       pluginId: string;
@@ -181,9 +182,16 @@ export interface TuiPageContext {
   query?: string;
   sourceTabId?: string;
   focusedEntityId?: string;
+  focusedActionId?: string;
   installFilter?: PluginInstallFilter;
   configGroupId?: string;
   projectSection?: 'declared' | 'extraInstalled';
+  projectStatusFilter?: 'all' | 'pending' | 'blocked' | 'unknown' | 'ready';
+  sourceTypeTab?: 'all' | 'git' | 'path';
+  contentTypeTab?: 'all' | PluginContentType;
+  platformSelectedScope?: Scope;
+  platformSelectionInitialized?: boolean;
+  entityLineOffset?: number;
   autoPreparedRestore?: boolean;
   autoPreparedUpdate?: boolean;
 }

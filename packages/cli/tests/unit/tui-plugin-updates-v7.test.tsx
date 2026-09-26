@@ -343,6 +343,9 @@ describe('TUI plugin update evidence', () => {
     instance.unmount();
     const detail = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
     await nextTurn();
+    detail.stdin.write('a');
+    await nextTurn();
+    expect(detail.lastFrame()).toContain('› 更新到 2.0.0');
     detail.stdin.write('\r');
     await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('review'));
     expect(controller.snapshot.activeReview).toMatchObject({

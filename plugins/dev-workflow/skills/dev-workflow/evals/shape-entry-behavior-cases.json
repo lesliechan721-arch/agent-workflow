@@ -48,7 +48,8 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           ".gitignore",
-          ".dev-workflows/**"
+          ".dev-workflows/**",
+          "docs/design/export.md"
         ],
         "artifacts": [
           {
@@ -125,7 +126,8 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           ".gitignore",
-          ".dev-workflows/**"
+          ".dev-workflows/**",
+          "docs/design/export.md"
         ],
         "artifacts": [
           {

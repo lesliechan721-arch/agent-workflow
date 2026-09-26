@@ -38,6 +38,9 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/domain.md"
+        ],
+        "artifacts": [
+          { "path": "docs/domain.md", "exists": true }
         ]
       },
       "audit": {
@@ -53,7 +56,7 @@
         "regression",
         "boundary"
       ],
-      "prompt": "根据 confirmed.md 将确需长期解释的安全决定写入 docs/adr/，保留明确范围。",
+      "prompt": "根据 confirmed.md 将确需长期解释的安全决定写入 docs/adr/security-logging.md，保留明确范围。",
       "assertions": [
         "不把本机开发例外泛化到生产或API key。",
         "保存必要理由和适用环境，不增加整体开发状态或未证实合规承诺。"
@@ -69,6 +72,9 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/adr/**"
+        ],
+        "artifacts": [
+          { "path": "docs/adr/security-logging.md", "exists": true }
         ]
       },
       "audit": {

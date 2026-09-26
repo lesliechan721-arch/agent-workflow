@@ -43,6 +43,9 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/design/export.md"
+        ],
+        "artifacts": [
+          { "path": "docs/design/export.md", "exists": true }
         ]
       },
       "audit": {
@@ -76,6 +79,9 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/design/**"
+        ],
+        "artifacts": [
+          { "path": "docs/design/flow.md", "exists": true }
         ]
       },
       "audit": {

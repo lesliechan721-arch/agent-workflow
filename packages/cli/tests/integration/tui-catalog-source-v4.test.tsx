@@ -255,6 +255,7 @@ describe('TUI v4 real catalog source boundary', () => {
 
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
+    await input(instance, 'a');
     expect(instance.lastFrame()).toContain('当前目录版本与 AW 不兼容');
     expect(instance.lastFrame()).toContain('缺少 1 项功能支持');
     expect(instance.lastFrame()).toContain('查看不兼容详情');
@@ -767,6 +768,7 @@ describe('TUI v4 real catalog source boundary', () => {
     );
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
+    await input(instance, 'a');
 
     expect(instance.lastFrame()).toContain('本地内容有变化');
     expect(instance.lastFrame()).toContain('应用本地内容变化');
@@ -993,6 +995,7 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(controller.getCatalogGeneration('team')).toMatchObject({ state: 'activationRequired' });
     controller.push({ name: 'sourceDetail', sourceId: 'team' });
     await nextTurn(2);
+    await input(instance, 'a');
     expect(instance.lastFrame()).toContain('获取并启用');
 
     await input(instance, '\r');
@@ -1082,6 +1085,7 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(controller.getCatalogGeneration('local')).toMatchObject({ state: 'configMismatch' });
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
+    await input(instance, 'a');
     expect(instance.lastFrame()).toContain('验证并切换');
 
     await input(instance, '\r');
@@ -1159,6 +1163,7 @@ describe('TUI v4 real catalog source boundary', () => {
     await waitFor(() => controller.snapshot.phase === 'ready', 'damaged Active status', () => controller.snapshot);
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
+    await input(instance, 'a');
 
     expect(controller.getCatalogGeneration('local')).toMatchObject({
       errorCode: 'catalogGenerationMetadataInvalid',
@@ -1169,6 +1174,7 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(frame).toContain('恢复来源');
     expect(frame).toContain('优先取得当前版本并精确修复；不会自动切换版本');
     expect(frame).toContain('来源设置');
+    expect(frame).toMatch(/当前目录\s+未确认/u);
     expect(compactFrame).not.toContain('awcatalogsourcesynclocal');
     expect(frame).not.toContain(isolation.env.AW_HOME!);
     await focusAction(instance, '更多操作');
@@ -1199,6 +1205,7 @@ describe('TUI v4 real catalog source boundary', () => {
     await waitFor(() => controller.snapshot.phase === 'ready', 'damaged TUI status');
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
+    await input(instance, 'a');
 
     await input(instance, '\r');
     await waitFor(() => controller.snapshot.activeReview?.operationKind === 'catalogGeneration', 'repair Review');
@@ -1243,6 +1250,7 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(controller.getCatalogGeneration('local')).toMatchObject({ state: 'stateInvalid' });
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
+    await input(instance, 'a');
     expect(instance.lastFrame()).toContain('恢复来源');
     expect(instance.lastFrame()).toContain('取得并验证可用目录后再启用');
 
@@ -1290,15 +1298,16 @@ describe('TUI v4 real catalog source boundary', () => {
     });
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
+    await input(instance, 'a');
     expect(instance.lastFrame()).toContain('恢复来源');
     expect(instance.lastFrame()).toContain('优先取得当前版本并精确修复；不会自动切换版本');
     await focusAction(instance, '更多操作');
     await input(instance, '\r');
     expect(controller.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'local' });
     expect(instance.lastFrame()).toContain('使用待检查版本替换损坏版本');
-    controller.back();
-    await nextTurn(2);
-
+    await input(instance, '\u001B');
+    await waitFor(() => controller.snapshot.router.current.route.name === 'sourceDetail', 'return to source detail');
+    await focusAction(instance, '恢复来源');
     await input(instance, '\r');
     await waitFor(() => controller.snapshot.activeReview?.operationKind === 'catalogGeneration', 'combined repair Review');
     expect(controller.snapshot.activeReview?.primaryLabel).toBe('重新下载并修复');
@@ -1365,6 +1374,7 @@ describe('TUI v4 real catalog source boundary', () => {
     });
     controller.push({ name: 'sourceDetail', sourceId: 'git-local' });
     await nextTurn(2);
+    await input(instance, 'a');
     expect(instance.lastFrame()).toContain('恢复来源');
     expect(instance.lastFrame()).toContain('优先取得当前版本并精确修复；不会自动切换版本');
     expect(instance.lastFrame()).toContain('来源设置');
@@ -1420,6 +1430,7 @@ describe('TUI v4 real catalog source boundary', () => {
     );
     controller.push({ name: 'sourceDetail', sourceId: 'git-local' });
     await nextTurn(2);
+    await input(instance, 'a');
 
     expect(instance.lastFrame()).toContain('恢复来源');
     expect(instance.lastFrame()).toContain('优先取得当前版本并精确修复；不会自动切换版本');
@@ -1478,6 +1489,7 @@ describe('TUI v4 real catalog source boundary', () => {
     );
     controller.push({ name: 'sourceDetail', sourceId: 'git-local' });
     await nextTurn(2);
+    await input(instance, 'a');
     expect(instance.lastFrame()).not.toContain('使用当前候选替换损坏的 Active');
 
     await input(instance, '\r');
@@ -1531,6 +1543,7 @@ describe('TUI v4 real catalog source boundary', () => {
     await waitFor(() => controller.snapshot.phase === 'ready', 'fully damaged mismatched Active');
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
+    await input(instance, 'a');
     await input(instance, '\r');
     await waitFor(
       () => controller.snapshot.reviewPreparation?.state === 'failed',
