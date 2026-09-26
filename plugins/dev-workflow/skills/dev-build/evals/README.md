@@ -2,7 +2,7 @@
 
 此目录保存评测资产，不进入 Skill 运行时。普通 trigger/conversation suite 已在各 Skill 的 manifest 中注册。角色上下文与 Ticket 交接 suite 使用 `context-role-workflow.mjs` 接入当前 codex-workflow Engine，先设为非发布阻断；原有 suite 的发布政策保持不变。
 
-原草案的 52 条用例均保留：14 条 trigger/routing、20 条 conversation、18 条运行时草案。适配当前 ask-me 后，另补充有界访谈和独立原型两条路由边界。完整用例分布在 dev-workflow、dev-build、dev-breakdown 和 dev-implement 的 evals 目录。
+原草案的 52 条用例均保留：14 条 trigger/routing、20 条 conversation、18 条运行时草案。适配当前 decision-kit 后，另补充有界访谈和独立原型两条路由边界。完整用例分布在 dev-workflow、dev-build、dev-breakdown 和 dev-implement 的 evals 目录。
 
 ## 运行时草案
 

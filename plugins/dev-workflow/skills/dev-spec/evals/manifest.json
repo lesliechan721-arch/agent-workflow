@@ -67,6 +67,17 @@
       "runs": 1,
       "timeoutMs": 300000,
       "requiredForRelease": false
+    },
+    {
+      "id": "in-place-spec",
+      "kind": "conversation",
+      "cases": "in-place-spec-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
     }
   ]
 }

@@ -11956,6 +11956,24 @@ describe('ConsoleAppV4', () => {
     expect(plain.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/review-gate' });
   });
 
+  it('keeps cleanup available without catalog-only actions for a removed plugin with known relations', async () => {
+    const loaded = dependencyLoadResult({ rootState: 'error',
+      rootErrorCode: 'removedPluginCleanupRequired' });
+    loaded.pluginSummaries = loaded.pluginSummaries.filter((summary) =>
+      summary.pluginId !== 'official/agent-lab');
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    await focusAction(instance, '清理已删除插件');
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).not.toContain('内容详情');
+    expect(frame).not.toContain('在同一关系图中查看使用者和所需插件');
+    expect(frame).not.toContain('安装到其他位置');
+  });
+
   it('keeps readonly dependency information and direct action focus visible on D01 at 60x18', async () => {
     const loaded = dependencyLoadResult();
     loaded.portablePluginIds = ['official/agent-lab'];

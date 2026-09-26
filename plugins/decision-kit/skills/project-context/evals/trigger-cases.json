@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "project-context",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "衡量有依据的设计、长期知识和本地过程分工，同时保留既定范围、真实确认及独立证据。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "domain_language_maintenance",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "项目里的 account 同时指租户和登录账号。基于现有资料帮我澄清共享词汇并维护词汇表。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "领域概念维护是独立结果。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "只是读取已有account定义用于编码，不一定需要加载维护能力。"
+      }
+    },
+    {
+      "id": "important_decision_record",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "将已经确认的密钥隔离取舍维护到项目已有决定目录，保留它的边界和原因。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "长期重要决定归位。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "用户仅要求说明一份ADR含义时可直接回答。"
+      }
+    },
+    {
+      "id": "ordinary_doc_edit",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把 README 中“安装”标题改成“快速开始”。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "机械文案不需要领域模型方法。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "标题变更背后涉及概念重定义且要维护词汇时不同。"
+      }
+    },
+    {
+      "id": "spec_author_not_domain_maintainer",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把这些已经确认且术语清楚的要求写成完整接口规格；只做这一份规范。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "完整行为规格属于dev-spec，而非所有文档都属领域维护。",
+        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
+        "minimalCounterexample": "需要同时澄清一个多义项目词时可辅助使用。"
+      }
+    }
+  ]
+}

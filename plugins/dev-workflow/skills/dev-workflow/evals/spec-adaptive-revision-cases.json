@@ -10,6 +10,8 @@
       "rationale": "主动选择有价值的方法，保持范围、权限和实际质量；没有完整证据的运行不计为完成。"
     },
     "participants": [
+      "dev-design",
+      "decision-shape",
       "dev-spec",
       "dev-review-spec"
     ],
@@ -43,7 +45,12 @@
       },
       "expected": {
         "output": "明确修复已有来源冲突；复审真实充分后请求批准，能力不足时保留未完成。",
-        "artifacts": [{ "path": "spec.md", "exists": true }],
+        "artifacts": [
+          {
+            "path": "spec.md",
+            "exists": true
+          }
+        ],
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "spec.md",

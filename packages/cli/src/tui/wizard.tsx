@@ -217,6 +217,11 @@ export function CommandWizard<T>(props: {
   const [page, setPage] = useState<Page>(() => nextPage(props.request));
   const [startedAt, setStartedAt] = useState(0);
   const [executionResult, setExecutionResult] = useState<WizardExecutionState<T>>();
+  const [reviewDetails, setReviewDetails] = useState<{
+    state: 'loading' | 'ready' | 'error';
+    lines: string[];
+    expectedPlanFingerprint?: string;
+  }>({ state: props.request.reviewDetails ? 'loading' : 'ready', lines: [] });
   const [progress, setProgress] = useState<RebuildProgressSnapshot>(
     () => props.progress?.get() ?? { messages: [] },
   );
@@ -232,6 +237,20 @@ export function CommandWizard<T>(props: {
     setProgress(snapshot);
     setMessageOffset(Math.max(0, snapshot.messages.length - 8));
   }), [props.progress]);
+
+  useEffect(() => {
+    if (page !== 'confirm' || !props.request.reviewDetails) return;
+    let active = true;
+    setReviewDetails({ state: 'loading', lines: [] });
+    void props.request.reviewDetails(selection).then((details) => {
+      if (active) setReviewDetails({ state: 'ready', ...details });
+    }).catch(() => {
+      if (active) setReviewDetails({
+        state: 'error', lines: ['无法安全建立本次清理预览。请检查状态后重试。'],
+      });
+    });
+    return () => { active = false; };
+  }, [page, props.request, selection]);
 
   useInput((input, key) => {
     if (!inputActive) {
@@ -306,7 +325,9 @@ export function CommandWizard<T>(props: {
     setStartedAt(Date.now());
     setPage('busy');
     try {
-      const value = await props.request.execute(finalSelection);
+      const value = reviewDetails.expectedPlanFingerprint
+        ? await props.request.execute(finalSelection, reviewDetails.expectedPlanFingerprint)
+        : await props.request.execute(finalSelection);
       const failed = props.request.resultState?.(value) === 'failed';
       const result: WizardExecutionState<T> = {
         selection: finalSelection,
@@ -510,17 +531,23 @@ export function CommandWizard<T>(props: {
       {props.request.destructive
         ? <Text color={tuiTheme.statusColors.warning}>此操作会删除已有内容。</Text>
         : null}
-      <ConfirmView
+      {reviewDetails.state === 'loading'
+        ? <Text color={tuiTheme.colors.muted}>正在核验清理范围…</Text>
+        : reviewDetails.lines.map((line) => (
+          <Text key={line} color={reviewDetails.state === 'error'
+            ? tuiTheme.statusColors.error : tuiTheme.statusColors.warning} wrap="truncate-end">{line}</Text>
+        ))}
+      {reviewDetails.state !== 'loading' ? <ConfirmView
         message="执行以上命令？"
-        defaultValue={true}
+        defaultValue={reviewDetails.state === 'ready'}
         onComplete={(result) => {
-          if (result.action !== 'select' || result.value !== true) {
+          if (reviewDetails.state !== 'ready' || result.action !== 'select' || result.value !== true) {
             cancel();
             return;
           }
           void execute();
         }}
-      />
+      /> : null}
     </PromptFrame>
   );
 }

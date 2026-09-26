@@ -19,7 +19,9 @@ import {
   inventoryCatalogSourceReferences,
   inventoryLegacyOwnerReferences,
   type CatalogSourceInventoryError,
+  type CatalogSourceReference,
 } from '../utils/catalog-source-references.js';
+import { readStrictNamespacedMarketplaceRoot } from '../utils/local-marketplace.js';
 import { readCatalogSourcesConfigSnapshot, resolveCatalogSourceRef } from '../utils/catalog-sources.js';
 import {
   formatPluginId,
@@ -890,6 +892,12 @@ export function statusRecovery(options: {
   conflictRoots?: Partial<Record<Scope, string[]>>;
   errorCodes?: string[];
 }): StatusV8RecoveryAction[] {
+  if (options.errorCodes?.includes('removedPluginCleanupRequired')) {
+    return [{
+      command: 'cleanup',
+      description: '整体清理已删除插件在两个平台、用户与当前项目中的安装、设置和遗留记录。',
+    }];
+  }
   if (options.errorCodes?.some((code) =>
     code === 'codexProjectPluginVersionTooLow'
     || code === 'codexProjectPluginUnsupported'
@@ -2435,6 +2443,74 @@ async function statusCommandV8InSession(options: {
   const available = catalog.sources.flatMap((source) => 'plugins' in source
     ? source.plugins.map((plugin) => ({ ...plugin, source }))
     : []);
+  const removedProjectionReferences: CatalogSourceReference[] = [];
+  for (const source of catalog.sources) {
+    if (!('plugins' in source)) continue;
+    const marketplaceRoot = path.join(resolveAwHome(env), 'marketplaces', source.id);
+    try {
+      const root = await readStrictNamespacedMarketplaceRoot({
+        rootDir: marketplaceRoot, sourceId: source.id, sourceIdentity: source.identity,
+      });
+      if (!root) continue;
+      const currentNames = new Set(source.plugins.map((plugin) => plugin.name));
+      const candidates = new Map<string, Set<PlatformName>>();
+      const add = (name: unknown, platform: PlatformName) => {
+        if (typeof name !== 'string' || currentNames.has(name)) return;
+        try {
+          if (parsePluginId(name).sourceId !== undefined) return;
+        } catch { return; }
+        const supported = candidates.get(name) ?? new Set<PlatformName>();
+        supported.add(platform);
+        candidates.set(name, supported);
+      };
+      for (const [platform, manifest] of [
+        ['codex', root.agentsManifest], ['claude', root.claudeManifest],
+      ] as const) {
+        if (!Array.isArray(manifest?.plugins)) continue;
+        for (const plugin of manifest.plugins) {
+          if (plugin && typeof plugin === 'object') add(plugin.name, platform);
+        }
+      }
+      const pluginsRoot = path.join(root.rootDir, 'plugins');
+      const pluginsStats = await fs.promises.lstat(pluginsRoot).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      if (pluginsStats && (!pluginsStats.isDirectory() || pluginsStats.isSymbolicLink())) {
+        throw new Error('marketplaceRootInvalid: plugin projection directory is unsafe.');
+      }
+      if (pluginsStats) {
+        for (const entry of await fs.promises.readdir(pluginsRoot, { withFileTypes: true })) {
+          if (!candidates.has(entry.name)) add(entry.name, 'codex');
+        }
+      }
+      const registration = userCodexConfig?.snapshot.marketplaces[root.config.marketplaceName];
+      if (platforms.includes('codex')
+        && registration?.sourceType === 'local'
+        && !registration.sourcePointsToManifest
+        && path.resolve(registration.source ?? '') === path.resolve(root.rootDir)
+        && (await inspectCodexSystemConsumer(options.scope === 'project' ? 'project' : 'user')).state === 'compatible') {
+        const observed = await options.codexObservationSession.snapshot(
+          root.config.marketplaceName, options.scope === 'user' ? 'user' : 'both',
+        );
+        const suffix = `@${root.config.marketplaceName}`;
+        for (const pluginId of [...(observed.exact?.keys() ?? []), ...(observed.neutral?.keys() ?? [])]) {
+          if (pluginId.endsWith(suffix)) add(pluginId.slice(0, -suffix.length), 'codex');
+        }
+      }
+      for (const [pluginName, supported] of candidates) {
+        for (const platform of supported) removedProjectionReferences.push({
+          kind: 'namespacedMarketplace', location: path.join(root.rootDir, 'config.json'),
+          sourceId: source.id, sourceIdentity: source.identity,
+          marketplaceName: root.config.marketplaceName, pluginName, platform, scope: 'user',
+        });
+      }
+    } catch (error) {
+      const projected = projectStateInventoryError(error, env, options.cwd);
+      selectedInventoryErrors.push({ ...projected, relevance: { sourceId: source.id, global: false } });
+    }
+  }
+  const statusReferences = [...ownerInventory.references, ...removedProjectionReferences];
   const desiredTargetStates = calculateDesiredTargetStates({
     userIntent,
     projectIntent,
@@ -2479,7 +2555,7 @@ async function statusCommandV8InSession(options: {
             scopes,
             currentProjectLocationKey,
           }));
-        const selectorHasLiveOrIntent = ownerInventory.references.some((reference) =>
+        const selectorHasLiveOrIntent = statusReferences.some((reference) =>
           (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
           && reference.pluginName === selector.parsed.pluginName
           && reference.sourceId !== undefined
@@ -2695,7 +2771,7 @@ async function statusCommandV8InSession(options: {
     formatPluginId({ sourceId: entry.source.id, pluginName: entry.name })));
   const resolvedSourceIds = new Set(catalog.sources.flatMap((source) =>
     'plugins' in source ? [source.id] : []));
-  const unavailableBundleReferences = ownerInventory.references.filter((reference) =>
+  const unavailableBundleReferences = statusReferences.filter((reference) =>
     (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
     && reference.sourceId
     && configured.has(reference.sourceId)
@@ -2706,15 +2782,7 @@ async function statusCommandV8InSession(options: {
       sourceId: reference.sourceId,
       pluginName: reference.pluginName,
     })));
-  const isDisabledCodexReference = (reference: typeof unavailableBundleReferences[number]): boolean => {
-    if (reference.kind !== 'namespacedMarketplace' || reference.platform !== 'codex'
-      || !reference.pluginName || !reference.marketplaceName) return false;
-    const config = reference.scope === 'user' ? userCodexConfig : projectCodexConfig;
-    return config?.snapshot.plugins[`${reference.pluginName}@${reference.marketplaceName}`]?.enabled === false;
-  };
-  unavailableBundleReferences.sort((left, right) =>
-    Number(isDisabledCodexReference(right)) - Number(isDisabledCodexReference(left)));
-  const unavailableBundleTargets = [...new Map(unavailableBundleReferences.flatMap((reference) => {
+  const unavailableBundleTargets = [...new Map((await Promise.all(unavailableBundleReferences.map(async (reference) => {
     if (!reference.sourceId || !reference.pluginName
       || (reference.platform !== 'codex' && reference.platform !== 'claude')
       || (reference.scope !== 'user' && reference.scope !== 'project')) return [];
@@ -2722,10 +2790,10 @@ async function statusCommandV8InSession(options: {
     if (requested.length > 0 && !plannedSelectors.some((selector) =>
       selector.parsed.pluginName === reference.pluginName
       && (selector.parsed.sourceId === undefined || selector.parsed.sourceId === reference.sourceId))) return [];
-    const disabled = isDisabledCodexReference(reference)
-      && ![userIntent, projectIntent].some((intent) => intent.roots.some((root) =>
-        root.pluginId === pluginId && root.platforms.includes('codex')))
-      && (desiredTargetStates.get(desiredTargetKey(pluginId, 'codex'))?.scopes.length ?? 0) === 0;
+    const registration = reference.platform === 'codex' && reference.marketplaceName
+      ? await inspectCodexRegistration(`${reference.pluginName}@${reference.marketplaceName}`, reference.scope)
+      : undefined;
+    const nativeUnknown = registration && registration.observation.state !== 'observed';
     const target: StatusV8TargetDraft = {
       pluginName: reference.pluginName,
       sourceId: reference.sourceId,
@@ -2734,15 +2802,25 @@ async function statusCommandV8InSession(options: {
       platform: reference.platform,
       scope: reference.scope,
       cwd: path.resolve(options.cwd),
-      state: disabled ? 'absent' : 'error',
-      components: [],
-      errors: disabled ? [] : [finalizeTargetError({
+      state: 'error',
+      components: registration ? [{
+        key: 'native',
+        state: registration.observation.state !== 'observed' ? 'error'
+          : registration.observation.value === 'installed' ? 'present' : 'absent',
+      }] : [],
+      errors: [finalizeTargetError({
         code: 'bundleUnavailable',
         message: `bundleUnavailable: ${pluginId} has live state but is not present in the current source snapshot.`,
-      }, 'error')],
+      }, 'error'), finalizeTargetError({
+        code: 'removedPluginCleanupRequired',
+        message: `removedPluginCleanupRequired: ${pluginId} was removed from the current Catalog and has remaining local state.`,
+      }, 'error'), ...(nativeUnknown ? [finalizeTargetError({
+        code: 'codexNativeObservationFailed',
+        message: 'codexNativeObservationFailed: the remaining native installation could not be observed.',
+      }, 'error')] : [])],
     };
     return [[`${pluginId}\0${reference.platform}\0${reference.scope}`, target] as const];
-  })).values()];
+  }))).flat()).values()];
   targets.push(...unavailableBundleTargets);
   const targetKeys = new Set(targets.map((target) =>
     `${target.pluginId}\0${target.platform}\0${target.scope}`));

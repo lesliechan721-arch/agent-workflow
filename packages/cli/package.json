@@ -34,7 +34,7 @@
     "test:smoke:publish:release": "node ../../scripts/test/run-vitest.mjs run --config vitest.smoke.config.ts tests/smoke/release-publish-entry-smoke.test.ts",
     "test:smoke:bootstrap:catalog": "node ../../scripts/test/run-vitest.mjs run --config vitest.smoke.config.ts tests/smoke/catalog-bootstrap-smoke.test.ts",
     "test:smoke:fetch": "pnpm run test:smoke:publish:catalog",
-    "test:smoke:ask-me-browser": "node ../../scripts/test/run-vitest.mjs run --config vitest.smoke.config.ts tests/smoke/ask-me-prototype-review-browser.test.ts",
+    "test:smoke:decision-kit-browser": "node ../../scripts/test/run-vitest.mjs run --config vitest.smoke.config.ts tests/smoke/decision-kit-prototype-review-browser.test.ts",
     "plugin:test": "tsc -p tsconfig.json && node dist/scripts/test-plugin-scripts.js",
     "test:smoke:plugin-scripts": "node ../../scripts/test/run-vitest.mjs run --config vitest.smoke.config.ts tests/smoke/plugin-scripts-staging-smoke.test.ts",
     "prepack": "pnpm --dir ../.. build:ensure",

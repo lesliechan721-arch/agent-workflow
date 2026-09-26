@@ -78,6 +78,9 @@ export function mergeWriteCommandResults(
     ...(results.some((result) => result.offlineCleanupPlans !== undefined)
       ? { offlineCleanupPlans: results.flatMap((result) => result.offlineCleanupPlans ?? []) }
       : {}),
+    ...(results.some((result) => result.removedPluginCleanupIds !== undefined)
+      ? { removedPluginCleanupIds: [...new Set(results.flatMap((result) => result.removedPluginCleanupIds ?? []))] }
+      : {}),
   };
 }
 

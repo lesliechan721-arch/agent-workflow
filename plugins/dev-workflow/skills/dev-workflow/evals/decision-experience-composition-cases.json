@@ -6,7 +6,9 @@
     "participants": [
       "decision-shape",
       "decision-grill",
-      "decision-prototype"
+      "decision-prototype",
+      "dev-design",
+      "project-context"
     ],
     "policy": {
       "optimization": "balanced",

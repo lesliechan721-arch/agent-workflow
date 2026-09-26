@@ -312,6 +312,78 @@ function createCodexNativeTestRuntime(
   };
 }
 
+async function createClaudeNativeTestRuntime(
+  isolation: { env: NodeJS.ProcessEnv; layout: { fixtureCwd: string } },
+) {
+  const cwd = isolation.layout.fixtureCwd;
+  const projectRoot = await fs.realpath(cwd);
+  const claudeHome = isolation.env.AW_CLAUDE_HOME!;
+  const installedPath = path.join(claudeHome, 'plugins', 'installed_plugins.json');
+  const knownPath = path.join(claudeHome, 'plugins', 'known_marketplaces.json');
+  const marketplaceRoots = new Map<string, string>();
+  const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
+    if (invocation.command !== 'claude') {
+      return { exitCode: 0, stdout: invocation.args.includes('--version')
+        ? 'codex-cli 0.200.0' : '{"installed":[],"available":[]}', stderr: '' };
+    }
+    const args = invocation.args;
+    if (args[0] !== 'plugin') return { exitCode: 0, stdout: '2.1.88 (Claude Code)', stderr: '' };
+    const scopeIndex = args.indexOf('--scope');
+    const scope = scopeIndex === -1 ? 'user' : args[scopeIndex + 1]!;
+    const settingsPath = scope === 'project'
+      ? path.join(cwd, '.claude', 'settings.json')
+      : path.join(claudeHome, 'settings.json');
+    const settings = await fs.readJson(settingsPath).catch(() => ({})) as Record<string, unknown>;
+    if (args[1] === 'marketplace' && args[2] === 'add') {
+      const marketplaceRoot = args[3]!;
+      const config = await fs.readJson(path.join(marketplaceRoot, 'config.json')) as {
+        marketplaceName: string;
+      };
+      marketplaceRoots.set(config.marketplaceName, marketplaceRoot);
+      await fs.outputJson(settingsPath, {
+        ...settings,
+        extraKnownMarketplaces: {
+          ...((settings.extraKnownMarketplaces ?? {}) as Record<string, unknown>),
+          [config.marketplaceName]: { source: { source: 'directory', path: marketplaceRoot } },
+        },
+      });
+      const known = await fs.readJson(knownPath).catch(() => ({})) as Record<string, unknown>;
+      await fs.outputJson(knownPath, {
+        ...known,
+        [config.marketplaceName]: {
+          source: { source: 'directory', path: marketplaceRoot }, installLocation: marketplaceRoot,
+        },
+      });
+    }
+    if (args[1] === 'install' || args[1] === 'uninstall') {
+      const pluginId = args[2]!;
+      const enabled = { ...((settings.enabledPlugins ?? {}) as Record<string, unknown>) };
+      if (args[1] === 'install') enabled[pluginId] = true;
+      else delete enabled[pluginId];
+      await fs.outputJson(settingsPath, { ...settings, enabledPlugins: enabled });
+      const installed = await fs.readJson(installedPath).catch(() => ({ plugins: {} })) as {
+        plugins?: Record<string, Array<Record<string, unknown>>>;
+      };
+      const plugins = { ...(installed.plugins ?? {}) };
+      const records = [...(plugins[pluginId] ?? [])].filter((record) =>
+        record.scope !== scope || (scope === 'project' && record.projectPath !== projectRoot));
+      if (args[1] === 'install') {
+        records.push({
+          name: pluginId.slice(0, pluginId.lastIndexOf('@')),
+          scope,
+          ...(scope === 'project' ? { projectPath: projectRoot } : {}),
+          version: '1.0.0',
+        });
+      }
+      if (records.length > 0) plugins[pluginId] = records;
+      else delete plugins[pluginId];
+      await fs.outputJson(installedPath, { plugins });
+    }
+    return { exitCode: 0, stdout: '2.1.88 (Claude Code)', stderr: '' };
+  });
+  return { runtime: { env: isolation.env, nativeCliRunner }, nativeCliRunner, installedPath, claudeHome, projectRoot };
+}
+
 async function writeStatusSystemCodexPackage(
   root: string,
   version: string,
@@ -8494,7 +8566,7 @@ describe('five namespaced write commands', () => {
     ]);
   }, 30_000);
 
-  it('clears removed native plugin errors after cleanup disables its shared user activation', async () => {
+  it('removes a deleted native plugin and its shared user activation', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-native-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
@@ -8523,17 +8595,761 @@ describe('five namespaced write commands', () => {
     expect(before.payload.targets).toEqual([expect.objectContaining({
       state: 'blocked', reasons: expect.arrayContaining([expect.objectContaining({ code: 'bundleUnavailable' })]),
     })]);
-    await expect(cleanupWriteCommand(['official/demo'], options, runtime))
+    await expect(cleanupWriteCommand(['official/demo'], { ...options, yes: true }, runtime))
       .resolves.toMatchObject({ overallState: 'succeeded' });
     const config = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
-    expect(config.snapshot.plugins['demo@aw']?.enabled).toBe(false);
+    expect(config.snapshot.plugins['demo@aw']).toBeUndefined();
     const after = await statusCommandV8({
       ...options, plugins: ['demo'], env: isolation.env,
     });
-    expect(after.hasErrors).toBe(false);
-    expect(after.payload.errors).toEqual([]);
-    expect(after.payload.targets).toEqual([expect.objectContaining({ state: 'absent', reasons: [] })]);
+    expect(after.payload.errors).toEqual([expect.objectContaining({ code: 'pluginNotFound' })]);
+    expect(after.payload.targets).toEqual([]);
+    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: runtime.nativeCliRunner,
+      interactive: false,
+    })));
+    await controller.load();
+    expect(controller.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId))
+      .not.toContain('official/demo');
+    expect(controller.listPlugins({ mode: 'browse', installFilter: 'uninstalled' })
+      .map((plugin) => plugin.pluginId)).not.toContain('official/demo');
+    controller.dispose();
   });
+
+  it('reviews both scopes and deletes only the removed plugin settings and Intent', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-whole-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'official', type: 'path', primary: true, path: sourceRoot,
+      }] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const cwd = isolation.layout.fixtureCwd;
+    await expect(installWriteCommand(['official/demo'], {
+      cwd, platform: 'codex', scope: 'user',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'official', env: isolation.env });
+    for (const scope of ['user', 'project'] as const) {
+      await writePluginConfigStore({
+        sourceId: 'official', sourceIdentity: active.sourceIdentity,
+        logicalIdentity: active.logicalIdentity, pluginName: 'demo', scope,
+        cwd, env: isolation.env, values: { secret: scope },
+      });
+    }
+    await writePluginConfigStore({
+      sourceId: 'official', sourceIdentity: active.sourceIdentity,
+      pluginName: 'other', scope: 'user', cwd, env: isolation.env,
+      values: { retained: true },
+    });
+    for (const scope of ['user', 'project'] as const) {
+      const location = { scope, cwd, env: isolation.env };
+      await writePluginIntentState(location, {
+        schemaVersion: 2, kind: 'aw-plugin-intents',
+        roots: [
+          { pluginId: 'official/demo', platforms: ['codex', 'claude'] },
+          { pluginId: 'official/other', platforms: ['codex'] },
+        ],
+        dependencyScopeOverrides: [
+          { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+          { pluginId: 'official/other', platform: 'codex', scope: 'user' },
+        ],
+      });
+    }
+    const projectConfigPath = path.join(cwd, '.codex', 'config.toml');
+    await applyCodexConfigTransactionFile(projectConfigPath, {
+      upsertPluginActivations: { 'demo@aw': false },
+    });
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({
+      sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    const selected = { cwd, platform: 'claude' as const, scope: 'project' as const };
+    const preview = await cleanupWriteCommand(['official/demo'], selected, {
+      ...runtime, previewOperationPlan: true,
+    });
+    expect(preview.removedPluginCleanupIds).toEqual(['official/demo']);
+    expect(preview.operationPlan?.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'removeNativeRegistration', platform: 'codex', scope: 'user' }),
+      expect.objectContaining({ kind: 'removePluginConfig', scope: 'user' }),
+      expect.objectContaining({ kind: 'removePluginConfig', scope: 'project' }),
+      expect.objectContaining({ kind: 'removeActivation', scope: 'project' }),
+      expect.objectContaining({ kind: 'removeMarketplaceProjection' }),
+    ]));
+    expect(preview.operationPlan?.intentChanges.map((change) => change.scope).sort())
+      .toEqual(['project', 'user']);
+    const unauthorized = await cleanupWriteCommand(['official/demo'], selected, runtime);
+    expect(unauthorized.targetResults[0]?.errorCode).toBe('removedPluginCleanupAuthorizationRequired');
+    expect((await readPluginIntentState({ scope: 'project', cwd, env: isolation.env })).roots)
+      .toContainEqual({ pluginId: 'official/demo', platforms: ['claude', 'codex'] });
+    await applyCodexConfigTransactionFile(projectConfigPath, {
+      upsertPluginActivations: { 'demo@aw': true },
+    });
+    const stale = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, {
+      ...runtime, expectedPlanFingerprint: preview.operationPlan!.planFingerprint,
+    });
+    expect(stale.targetResults[0]?.errorCode).toBe('operationPlanStale');
+    expect((await readPluginIntentState({ scope: 'project', cwd, env: isolation.env })).roots)
+      .toContainEqual({ pluginId: 'official/demo', platforms: ['claude', 'codex'] });
+    const refreshed = await cleanupWriteCommand(['official/demo'], selected, {
+      ...runtime, previewOperationPlan: true,
+    });
+    const cleaned = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, {
+      ...runtime, expectedPlanFingerprint: refreshed.operationPlan!.planFingerprint,
+    });
+    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
+    expect(cleaned.removedPluginCleanupIds).toEqual(['official/demo']);
+    for (const scope of ['user', 'project'] as const) {
+      const state = await readPluginIntentState({ scope, cwd, env: isolation.env });
+      expect(state.roots).toEqual([{ pluginId: 'official/other', platforms: ['codex'] }]);
+      expect(state.dependencyScopeOverrides).toEqual([{
+        pluginId: 'official/other', platform: 'codex', scope: 'user',
+      }]);
+      expect(await fs.pathExists(resolvePluginConfigStorePath({
+        sourceId: 'official', pluginName: 'demo', scope, cwd, env: isolation.env,
+      }))).toBe(false);
+    }
+    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins['demo@aw'])
+      .toBeUndefined();
+    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
+      .snapshot.plugins['demo@aw']).toBeUndefined();
+    expect(runtime.installed.has('demo@aw')).toBe(false);
+    expect(await fs.pathExists(path.join(isolation.env.AW_HOME!, 'marketplaces', 'official', 'plugins', 'demo')))
+      .toBe(false);
+    expect((await readPluginConfigStore({
+      sourceId: 'official', sourceIdentity: active.sourceIdentity, pluginName: 'other',
+      scope: 'user', cwd, env: isolation.env,
+    })).values).toEqual({ retained: true });
+    const repeated = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, runtime);
+    expect(repeated.overallState).toBe('succeeded');
+  });
+
+  it('retains activation and marketplace evidence when official native removal fails, then retries', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-native-retry-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'official', type: 'path', primary: true, path: sourceRoot,
+      }] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const selected = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
+    await expect(installWriteCommand(['official/demo'], selected, runtime))
+      .resolves.toMatchObject({ overallState: 'succeeded' });
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({
+      sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    const workingRunner = runtime.nativeCliRunner.getMockImplementation()!;
+    runtime.nativeCliRunner.mockImplementation(async (invocation) =>
+      invocation.args.includes('remove') && invocation.args.includes('demo@aw')
+        ? { exitCode: 1, stdout: '', stderr: 'simulated failure' }
+        : workingRunner(invocation));
+    const failed = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, runtime);
+    expect(failed.overallState).toBe('partial');
+    expect(failed.targetResults.some((target) => target.state === 'failed'
+      && target.recoveryActions?.some((action) => action.includes(
+        'aw cleanup official/demo --platform both --scope user --yes'))))
+      .toBe(true);
+    expect(runtime.installed.has('demo@aw')).toBe(true);
+    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
+      .snapshot.plugins['demo@aw']?.enabled).toBe(true);
+    expect(await fs.pathExists(path.join(isolation.env.AW_HOME!, 'marketplaces', 'official', 'plugins', 'demo')))
+      .toBe(true);
+    runtime.nativeCliRunner.mockImplementation(workingRunner);
+    const recovered = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, runtime);
+    expect(recovered.overallState, JSON.stringify(recovered.rebuildResults)).toBe('succeeded');
+    expect(runtime.installed.has('demo@aw')).toBe(false);
+    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
+      .snapshot.plugins['demo@aw']).toBeUndefined();
+  });
+
+  it('keeps an active bare selector in the requested scope during mixed removed-plugin cleanup', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-mixed-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'official', type: 'path', primary: true, path: sourceRoot,
+      }] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const cwd = isolation.layout.fixtureCwd;
+    const user = { cwd, platform: 'codex' as const, scope: 'user' as const };
+    for (const pluginId of ['official/demo', 'official/other']) {
+      await expect(installWriteCommand([pluginId], user, runtime))
+        .resolves.toMatchObject({ overallState: 'succeeded' });
+    }
+    const projectConfigPath = path.join(cwd, '.codex', 'config.toml');
+    await applyCodexConfigTransactionFile(projectConfigPath, {
+      upsertPluginActivations: { 'demo@aw': false, 'other@aw': false },
+    });
+    await writePluginIntentState({ scope: 'project', cwd, env: isolation.env }, {
+      schemaVersion: 2, kind: 'aw-plugin-intents',
+      roots: [
+        { pluginId: 'official/demo', platforms: ['codex'] },
+        { pluginId: 'official/other', platforms: ['codex'] },
+      ],
+      dependencyScopeOverrides: [],
+    });
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({
+      sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    const selectors = ['official/demo', 'other'];
+    const preview = await cleanupWriteCommand(selectors, user, {
+      ...runtime, previewOperationPlan: true,
+    });
+    expect(preview.removedPluginCleanupIds).toEqual(['official/demo']);
+    expect(preview.operationPlan?.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'removeActivation', scope: 'project' }),
+    ]));
+    const cleaned = await cleanupWriteCommand(selectors, { ...user, yes: true }, {
+      ...runtime, expectedPlanFingerprint: preview.operationPlan!.planFingerprint,
+    });
+    expect(cleaned.overallState, JSON.stringify(cleaned.targetResults)).toBe('succeeded');
+    expect(cleaned.removedPluginCleanupIds).toEqual(['official/demo']);
+    expect(cleaned.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ target: expect.objectContaining({ pluginId: 'official/other', scope: 'user', platform: 'codex' }) }),
+    ]));
+    expect((await readPluginIntentState({ scope: 'project', cwd, env: isolation.env })).roots)
+      .toEqual([{ pluginId: 'official/other', platforms: ['codex'] }]);
+    const projectConfig = await readCodexConfigFile(projectConfigPath);
+    expect(projectConfig.snapshot.plugins['demo@aw']).toBeUndefined();
+    expect(projectConfig.snapshot.plugins['other@aw']?.enabled).toBe(false);
+    expect(runtime.installed.has('other@aw')).toBe(true);
+    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
+      .snapshot.plugins['other@aw']?.enabled).toBe(false);
+  });
+
+  it('retains activation and projection after successful native remove with unknown postcheck, then retries', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-native-unknown-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'official', type: 'path', primary: true, path: sourceRoot,
+      }] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const selected = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
+    await expect(installWriteCommand(['official/demo'], selected, runtime))
+      .resolves.toMatchObject({ overallState: 'succeeded' });
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({
+      sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    const workingRunner = runtime.nativeCliRunner.getMockImplementation()!;
+    let removed = false;
+    runtime.nativeCliRunner.mockImplementation(async (invocation) => {
+      const args = invocation.args;
+      if (args.includes('remove') && args.includes('demo@aw')) {
+        runtime.installed.delete('demo@aw');
+        removed = true;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      if (removed && args.includes('list') && args.includes('--json')) {
+        return { exitCode: 1, stdout: '', stderr: 'simulated postcheck unavailable' };
+      }
+      return workingRunner(invocation);
+    });
+    const failed = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, runtime);
+    expect(failed.overallState).toBe('partial');
+    expect(removed).toBe(true);
+    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
+      .snapshot.plugins['demo@aw']?.enabled).toBe(true);
+    const projection = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official', 'plugins', 'demo');
+    expect(await fs.pathExists(projection)).toBe(true);
+    runtime.nativeCliRunner.mockImplementation(workingRunner);
+    const recovered = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, runtime);
+    expect(recovered.overallState, JSON.stringify(recovered.rebuildResults)).toBe('succeeded');
+    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
+      .snapshot.plugins['demo@aw']).toBeUndefined();
+    expect(await fs.pathExists(projection)).toBe(false);
+  });
+
+  it('uninstalls a removed Claude plugin in both scopes and retains another plugin from the source', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-claude-source');
+    const definitions = ['demo', 'other'].map((name) => ({
+      name,
+      configureManifest: (manifest: PluginMeta['manifest']) => {
+        manifest.marketplace.policy.products = ['CLAUDE'];
+      },
+    }));
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'official', type: 'path', primary: true, path: sourceRoot,
+      }] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const cwd = isolation.layout.fixtureCwd;
+    const { runtime, nativeCliRunner, installedPath, claudeHome, projectRoot }
+      = await createClaudeNativeTestRuntime(isolation);
+    for (const [pluginId, scope] of [
+      ['official/demo', 'user'], ['official/demo', 'project'], ['official/other', 'user'],
+    ] as const) {
+      const installed = await installWriteCommand([pluginId], { cwd, platform: 'claude', scope }, runtime);
+      expect(installed.overallState, JSON.stringify(installed.targetResults)).toBe('succeeded');
+    }
+    const before = await fs.readJson(installedPath) as { plugins: Record<string, unknown[]> };
+    expect(before.plugins['demo@aw']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: 'user' }),
+      expect.objectContaining({ scope: 'project', projectPath: projectRoot }),
+    ]));
+    await createNativeDependencyCatalog(sourceRoot, [definitions[1]!]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({
+      sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    const cleaned = await cleanupWriteCommand(['official/demo'], {
+      cwd, platform: 'claude', scope: 'project', yes: true,
+    }, runtime);
+    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
+    const uninstallScopes = nativeCliRunner.mock.calls.filter(([invocation]) =>
+      invocation.command === 'claude' && invocation.args[0] === 'plugin'
+      && invocation.args[1] === 'uninstall' && invocation.args[2] === 'demo@aw')
+      .map(([invocation]) => invocation.args[invocation.args.indexOf('--scope') + 1]);
+    expect(uninstallScopes.sort()).toEqual(['project', 'user']);
+    const after = await fs.readJson(installedPath) as { plugins: Record<string, unknown[]> };
+    expect(after.plugins['demo@aw']).toBeUndefined();
+    expect(after.plugins['other@aw']).toEqual([expect.objectContaining({ scope: 'user' })]);
+    expect((await fs.readJson(path.join(claudeHome, 'settings.json'))).enabledPlugins)
+      .toMatchObject({ 'other@aw': true });
+    expect(await fs.pathExists(path.join(isolation.env.AW_HOME!, 'marketplaces', 'official', 'plugins', 'other')))
+      .toBe(true);
+  });
+
+  it.each([
+    ['canonical with bare record', 'canonical', 'succeeded'],
+    ['foreign registration with bare record', 'foreign', 'partial'],
+    ['unreadable marketplace registration', 'unknown', 'partial'],
+  ] as const)('keeps Claude native ownership safe for %s', async (_label, mode, expectedState) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, `removed-claude-${mode}-source`);
+    const definitions = ['demo', 'other'].map((name) => ({
+      name,
+      configureManifest: (manifest: PluginMeta['manifest']) => {
+        manifest.marketplace.policy.products = ['CLAUDE'];
+      },
+    }));
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'official', type: 'path', primary: true, path: sourceRoot,
+      }] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const cwd = isolation.layout.fixtureCwd;
+    const { runtime, nativeCliRunner, installedPath, claudeHome } = await createClaudeNativeTestRuntime(isolation);
+    for (const pluginId of ['official/demo', 'official/other']) {
+      const installed = await installWriteCommand([pluginId], {
+        cwd, platform: 'claude', scope: 'user',
+      }, runtime);
+      expect(installed.overallState, JSON.stringify(installed.targetResults)).toBe('succeeded');
+    }
+    if (mode !== 'unknown') {
+      const installed = await fs.readJson(installedPath) as {
+        plugins: Record<string, Array<Record<string, unknown>>>;
+      };
+      installed.plugins.demo = [{ name: 'demo', scope: 'user', version: '1.0.0' }];
+      await fs.outputJson(installedPath, installed);
+    }
+    const settingsPath = path.join(claudeHome, 'settings.json');
+    if (mode === 'foreign') {
+      const settings = await fs.readJson(settingsPath) as Record<string, unknown>;
+      const extraKnownMarketplaces = settings.extraKnownMarketplaces as Record<string, unknown>;
+      extraKnownMarketplaces.aw = {
+        source: { source: 'directory', path: path.join(cwd, 'foreign-marketplace') },
+      };
+      await fs.outputJson(settingsPath, settings);
+    }
+    if (mode === 'unknown') {
+      await fs.outputFile(path.join(claudeHome, 'plugins', 'known_marketplaces.json'), '{bad json');
+    }
+    await createNativeDependencyCatalog(sourceRoot, [definitions[1]!]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({
+      sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    nativeCliRunner.mockClear();
+    const cleaned = await cleanupWriteCommand(['official/demo'], {
+      cwd, platform: 'claude', scope: 'user', yes: true,
+    }, runtime);
+    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe(expectedState);
+    const uninstalls = nativeCliRunner.mock.calls.filter(([invocation]) =>
+      invocation.command === 'claude' && invocation.args[0] === 'plugin'
+      && invocation.args[1] === 'uninstall' && invocation.args[2] === 'demo@aw');
+    expect(uninstalls).toHaveLength(mode === 'canonical' ? 1 : 0);
+    const records = (await fs.readJson(installedPath)).plugins as Record<string, unknown[]>;
+    if (mode !== 'unknown') {
+      expect(records.demo).toEqual([expect.objectContaining({ name: 'demo' })]);
+    }
+    expect(records['demo@aw'] === undefined).toBe(mode === 'canonical');
+    expect(records['other@aw']).toEqual([expect.objectContaining({ name: 'other' })]);
+    const projection = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official', 'plugins', 'demo');
+    expect(await fs.pathExists(projection)).toBe(mode !== 'canonical');
+    if (mode === 'foreign') {
+      expect(cleaned.warnings.join(' ')).toContain('removedPluginClaudeOwnershipConflict');
+    }
+    if (mode === 'unknown') {
+      expect(cleaned.warnings.join(' ')).toContain('removedPluginMarketplaceRegistrationUnknown');
+    }
+  });
+
+  it('preserves project activation when the canonical native registration is missing', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-unbound-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'official', type: 'path', primary: true, path: sourceRoot,
+      }] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const cwd = isolation.layout.fixtureCwd;
+    await expect(installWriteCommand(['official/demo'], {
+      cwd, platform: 'codex', scope: 'user',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    runtime.installed.delete('demo@aw');
+    const userConfigPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+    await fs.outputFile(userConfigPath,
+      removeCodexMarketplace(await fs.readFile(userConfigPath, 'utf8'), 'aw'));
+    await applyCodexConfigTransactionFile(userConfigPath, {
+      removePluginActivations: ['demo@aw'],
+    });
+    const projectConfigPath = path.join(cwd, '.codex', 'config.toml');
+    await applyCodexConfigTransactionFile(projectConfigPath, {
+      upsertPluginActivations: { 'demo@aw': false },
+    });
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({
+      sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    const result = await cleanupWriteCommand(['official/demo'], {
+      cwd, platform: 'codex', scope: 'project', yes: true,
+    }, runtime);
+    expect(result.overallState).toBe('partial');
+    expect(result.warnings.join(' ')).toContain('removedPluginNativeOwnershipUnavailable');
+    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins['demo@aw']?.enabled)
+      .toBe(false);
+    expect(await fs.pathExists(path.join(isolation.env.AW_HOME!, 'marketplaces', 'official', 'plugins', 'demo')))
+      .toBe(true);
+  });
+
+  it('keeps marketplace manifest ownership when projection directory removal fails, then retries', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-projection-retry-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'official', type: 'path', primary: true, path: sourceRoot,
+      }] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const cwd = isolation.layout.fixtureCwd;
+    await expect(installWriteCommand(['official/demo'], {
+      cwd, platform: 'codex', scope: 'user',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const projection = path.join(marketplaceRoot, 'plugins', 'demo');
+    await fs.remove(path.join(projection, '.agents-plugin'));
+    await fs.remove(path.join(projection, '.codex-plugin'));
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({
+      sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    const removeOriginal = fs.remove.bind(fs);
+    let failProjection = true;
+    const remove = vi.spyOn(fs, 'remove').mockImplementation(async (candidate) => {
+      if (failProjection && path.resolve(String(candidate)) === path.resolve(projection)) {
+        failProjection = false;
+        throw new Error('simulated projection delete failure');
+      }
+      return removeOriginal(candidate);
+    });
+    const options = { cwd, platform: 'codex' as const, scope: 'user' as const, yes: true };
+    try {
+      const failed = await cleanupWriteCommand(['official/demo'], options, runtime);
+      expect(failed.overallState).toBe('partial');
+      expect(await fs.pathExists(projection)).toBe(true);
+      const manifest = await fs.readJson(path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json')) as {
+        plugins: Array<{ name: string }>;
+      };
+      expect(manifest.plugins.map((plugin) => plugin.name)).toContain('demo');
+    } finally {
+      remove.mockRestore();
+    }
+    const recovered = await cleanupWriteCommand(['official/demo'], options, runtime);
+    expect(recovered.overallState, JSON.stringify(recovered.rebuildResults)).toBe('succeeded');
+    expect(await fs.pathExists(projection)).toBe(false);
+  });
+
+  it('preserves a foreign tree behind a symlinked marketplace plugins ancestor', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-symlinked-projection-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'official', type: 'path', primary: true, path: sourceRoot,
+      }] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const cwd = isolation.layout.fixtureCwd;
+    await expect(installWriteCommand(['official/demo'], {
+      cwd, platform: 'codex', scope: 'user',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const pluginsRoot = path.join(marketplaceRoot, 'plugins');
+    const foreignRoot = path.join(cwd, 'foreign-marketplace-plugins');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({
+      sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    await fs.move(pluginsRoot, foreignRoot);
+    await fs.symlink(foreignRoot, pluginsRoot, 'dir');
+    const foreignFile = path.join(foreignRoot, 'demo', 'preserve.txt');
+    await fs.outputFile(foreignFile, 'foreign content\n');
+    const result = await cleanupWriteCommand(['official/demo'], {
+      cwd, platform: 'codex', scope: 'user', yes: true,
+    }, runtime);
+    expect(result.overallState).toBe('partial');
+    expect(result.warnings.join(' ')).toContain('removedPluginMarketplaceProjectionUnsafe');
+    expect(await fs.readFile(foreignFile, 'utf8')).toBe('foreign content\n');
+    expect(runtime.installed.has('demo@aw')).toBe(true);
+  });
+
+  it('cleans a removed config-only plugin with damaged JSON without a native marketplace', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-config-only-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'team', type: 'path', primary: true, path: sourceRoot,
+      }] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const cwd = isolation.layout.fixtureCwd;
+    const userPath = resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'demo', scope: 'user', cwd, env: isolation.env,
+    });
+    await fs.outputFile(userPath, '{broken-json');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    const options = { cwd, platform: 'claude' as const, scope: 'project' as const };
+    const preview = await cleanupWriteCommand(['team/demo'], options, {
+      env: isolation.env, previewOperationPlan: true,
+    });
+    expect(preview.removedPluginCleanupIds).toEqual(['team/demo']);
+    expect(preview.operationPlan?.actions).toContainEqual(expect.objectContaining({
+      kind: 'removePluginConfig', pluginId: 'team/demo', scope: 'user',
+    }));
+    const removed = await cleanupWriteCommand(['team/demo'], { ...options, yes: true }, {
+      env: isolation.env, expectedPlanFingerprint: preview.operationPlan!.planFingerprint,
+    });
+    expect(removed.overallState, JSON.stringify(removed.rebuildResults)).toBe('succeeded');
+    expect(await fs.pathExists(userPath)).toBe(false);
+    expect(await fs.pathExists(path.join(isolation.env.AW_HOME!, 'marketplaces', 'team')))
+      .toBe(false);
+  });
+
+  it('reports a committed user Intent when project Intent write fails and retries the remainder', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-intent-retry-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'team', type: 'path', primary: true, path: sourceRoot,
+      }] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const cwd = isolation.layout.fixtureCwd;
+    const configPath = resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'demo', scope: 'user', cwd, env: isolation.env,
+    });
+    await fs.outputFile(configPath, '{broken-json');
+    for (const scope of ['user', 'project'] as const) {
+      await writePluginIntentState({ scope, cwd, env: isolation.env }, {
+        schemaVersion: 2, kind: 'aw-plugin-intents',
+        roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
+        dependencyScopeOverrides: [],
+      });
+    }
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    const options = { cwd, platform: 'claude' as const, scope: 'project' as const, yes: true };
+    const first = await cleanupWriteCommand(['team/demo'], options, {
+      env: isolation.env,
+      writePluginIntentState: async (location, state) => {
+        if (location.scope === 'project') throw new Error('simulated project Intent write failure');
+        await writePluginIntentState(location, state);
+      },
+    });
+    expect(first.overallState).toBe('partial');
+    expect(first.rebuildResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        status: 'succeeded', target: expect.objectContaining({ scope: 'user' }),
+        removed: ['pluginIntent:user'],
+      }),
+      expect.objectContaining({
+        status: 'failed', target: expect.objectContaining({ scope: 'project' }),
+      }),
+    ]));
+    expect((await readPluginIntentState({ scope: 'user', cwd, env: isolation.env })).roots).toEqual([]);
+    expect((await readPluginIntentState({ scope: 'project', cwd, env: isolation.env })).roots)
+      .toEqual([{ pluginId: 'team/demo', platforms: ['codex'] }]);
+    expect(await fs.pathExists(configPath)).toBe(true);
+    const recovered = await cleanupWriteCommand(['team/demo'], options, { env: isolation.env });
+    expect(recovered.overallState).toBe('succeeded');
+    expect(await fs.pathExists(configPath)).toBe(false);
+  });
+
+  it('reports that whole cleanup was skipped for config-only state when Active is unavailable', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'unavailable-config-only-source');
+    const remainingRoot = path.join(isolation.layout.fixtureCwd, 'unavailable-config-only-remaining');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }]);
+    await createDependencyCatalogSnapshotFixture(remainingRoot, [{ name: 'other' }]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'team', type: 'path', primary: true, path: sourceRoot,
+      }] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: isolation.env });
+    const cwd = isolation.layout.fixtureCwd;
+    await writePluginConfigStore({
+      sourceId: 'team', sourceIdentity: active.sourceIdentity,
+      pluginName: 'demo', scope: 'user', cwd, env: isolation.env,
+      values: { retained: true },
+    });
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{
+        id: 'remaining', type: 'path', primary: true, path: remainingRoot,
+      }] },
+      expectedDigest: configured.digest,
+      env: isolation.env,
+    });
+    const result = await cleanupWriteCommand(['team/demo'], {
+      cwd, platform: 'claude', scope: 'project',
+    }, { env: isolation.env });
+    expect(result.warnings.join(' ')).toContain('removedPluginCleanupNotPerformed');
+    expect(result.operationPlan?.warnings.join(' ')).toContain('removedPluginCleanupNotPerformed');
+    expect((await readPluginConfigStore({
+      sourceId: 'team', sourceIdentity: active.sourceIdentity,
+      pluginName: 'demo', scope: 'user', cwd, env: isolation.env,
+    })).values).toEqual({ retained: true });
+  });
+
+  it.each(['directory', 'binding', 'binding-user-catalog', 'binding-project-source', 'symlink'] as const)(
+    'keeps the exact config reset boundary for a deleted plugin (%s)',
+    async (mode) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(isolation.layout.fixtureCwd, `removed-config-${mode}-source`);
+      await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+      const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+      await replaceCatalogSourcesConfig({
+        config: { schemaVersion: 2, sources: [{
+          id: 'team', type: 'path', primary: true, path: sourceRoot,
+        }] },
+        expectedDigest: initial.digest,
+        env: isolation.env,
+      });
+      const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: isolation.env });
+      const cwd = isolation.layout.fixtureCwd;
+      const scope = mode === 'directory' || mode === 'binding-project-source' ? 'project' : 'user';
+      const configPath = resolvePluginConfigStorePath({
+        sourceId: 'team', pluginName: 'demo', scope, cwd, env: isolation.env,
+      });
+      const external = path.join(cwd, 'config-link-target.json');
+      if (mode === 'directory') {
+        await fs.ensureDir(configPath);
+      } else if (mode.startsWith('binding')) {
+        await fs.outputJson(configPath, {
+          schemaVersion: 5, sourceId: 'team', pluginName: 'demo',
+          binding: mode === 'binding-user-catalog'
+            ? { kind: 'catalog', logicalIdentity: active.logicalIdentity }
+            : mode === 'binding-project-source'
+              ? { kind: 'source', sourceIdentity: active.sourceIdentity }
+              : { kind: 'source', sourceIdentity: `sha256:${'0'.repeat(64)}` },
+          values: { retained: true },
+        });
+      } else {
+        await fs.outputFile(external, 'retained\n');
+        await fs.ensureDir(path.dirname(configPath));
+        await fs.symlink(external, configPath, 'file');
+      }
+      await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'other' }]);
+      await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+      await syncCatalogSourceGeneration({
+        sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+      });
+      const result = await cleanupWriteCommand(['team/demo'], {
+        cwd, platform: 'claude', scope: 'project', yes: true,
+      }, { env: isolation.env });
+      if (mode === 'symlink') {
+        expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+        expect(await fs.pathExists(configPath)).toBe(false);
+        expect(await fs.readFile(external, 'utf8')).toBe('retained\n');
+      } else {
+        expect(result.overallState).toBe('failed');
+        expect(await fs.pathExists(configPath)).toBe(true);
+        expect(result.warnings.join(' ')).toContain(mode === 'directory'
+          ? 'removedPluginConfigTargetUnsupported'
+          : 'removedPluginConfigIdentityConflict');
+      }
+    },
+  );
 
   it.each([
     { mode: 'owned-normal', force: false, intentOnly: false },
@@ -8689,7 +9505,7 @@ describe('five namespaced write commands', () => {
       await expect(readPluginConfigStore({
         sourceId: 'team', sourceIdentity, pluginName: 'demo', scope: 'user',
         cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      })).resolves.toMatchObject({ values: { retained: true } });
+      })).resolves.toMatchObject({ values: force ? { retained: true } : {} });
       await expect(fs.pathExists(ownedSkill)).resolves.toBe(false);
       await expect(fs.readFile(foreignSkill, 'utf8')).resolves.toBe('foreign\n');
       await expect(readCodexConfigFile(sharedConfig)).resolves.toMatchObject({
@@ -9273,9 +10089,10 @@ describe('five namespaced write commands', () => {
     });
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
-    expect(result.warnings).toEqual([
+    expect(result.warnings).toEqual(expect.arrayContaining([
       'obsoleteContractsCleanupFailed: Obsolete installation contracts could not be removed.',
-    ]);
+      expect.stringContaining('removedPluginCleanupNotPerformed: team/demo'),
+    ]));
     expect(JSON.stringify(result)).not.toContain('private cleanup failure');
     expect(JSON.stringify(result.warnings)).not.toContain(isolation.env.AW_HOME);
   });

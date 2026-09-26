@@ -2864,9 +2864,12 @@ export function ConsoleAppV4(props: {
       && props.controller.listPluginWriteBatchTargets(
         'uninstall', [candidate.plugin.pluginId],
       ).length === 0
+      && props.controller.listPluginWriteBatchTargets(
+        'cleanup', [candidate.plugin.pluginId],
+      ).length === 0
       && !batchTaskPluginIds.has(candidate.plugin.pluginId)
       ? '没有可用于批量处理的实际目标'
-    : draft.action === 'install' && candidate.plugin.configOnly
+    : draft.action === 'install' && candidate.plugin.catalogEntryMissing
     ? '来源中没有可信插件定义'
     : draft.action === 'install' && candidate.plugin.sourceUnavailable
       ? '插件来源不可用'
@@ -6024,7 +6027,7 @@ export function ConsoleAppV4(props: {
         ? { name: 'installTargets', pluginId: plugin.pluginId }
         : { name: 'installTargets', pluginId: plugin.pluginId, view: 'blocked' });
     };
-    const installAction: ActionItem | undefined = !plugin.configOnly ? {
+    const installAction: ActionItem | undefined = !plugin.catalogEntryMissing ? {
       actionId: 'install',
       label: installed ? '安装到其他位置' : '安装',
       description: plugin.sourceUnavailable
@@ -6040,7 +6043,8 @@ export function ConsoleAppV4(props: {
         : { run: beginInstall }),
     } : undefined;
     const contentOverview = props.controller.getPluginContentOverview(plugin.pluginId);
-    const contentAction: ActionItem | undefined = !plugin.configOnly && detailSubject.definitionAvailable ? {
+    const contentAction: ActionItem | undefined = !plugin.catalogEntryMissing
+      && detailSubject.definitionAvailable ? {
       actionId: 'content',
       label: '内容详情',
       description: contentOverview
@@ -6049,7 +6053,8 @@ export function ConsoleAppV4(props: {
       run: () => go({ name: 'pluginContent', pluginId: plugin.pluginId }),
     } : undefined;
     const dependencyOverviewForDetail = dependencyOverview(plugin);
-    const dependencyAction: ActionItem | undefined = detailSubject.relations.hasKnownRelations ? {
+    const dependencyAction: ActionItem | undefined = !plugin.catalogEntryMissing
+      && detailSubject.relations.hasKnownRelations ? {
           actionId: 'dependencies',
           label: '依赖关系',
           description: dependencyOverviewForDetail
@@ -6078,6 +6083,23 @@ export function ConsoleAppV4(props: {
         go({ name: 'uninstallTargets', pluginId: plugin.pluginId });
       },
     } : undefined;
+    const cleanupAction: ActionItem | undefined = plugin.configOnly
+      || plugin.removedPluginCleanupRequired ? {
+      actionId: 'cleanup',
+      label: plugin.removedPluginCleanupRequired ? '清理已删除插件' : '检查并清理插件残留',
+      description: plugin.removedPluginCleanupRequired
+        ? '预览两个平台、用户与当前项目中的残留和保存设置，再确认实际清理范围'
+        : '先核验当前来源和现场，再显示可清理内容与实际范围',
+      status: 'error',
+      run: () => {
+        const target = props.controller.listPluginWriteBatchTargets('cleanup', [plugin.pluginId])[0];
+        beginReview({
+          kind: 'pluginWrite', action: 'cleanup', pluginId: plugin.pluginId,
+          platform: target?.platform ?? 'codex',
+          scope: target?.scope ?? plugin.savedConfigScopes[0] ?? 'user',
+        });
+      },
+    } : undefined;
     actions = dedupeActions([
       ...(exceptionalAction ? [{ ...exceptionalAction, actionId: 'exceptional' }] : []),
       ...(restoreAction ? [{ ...restoreAction, actionId: 'restore' }] : []),
@@ -6087,6 +6109,7 @@ export function ConsoleAppV4(props: {
       ...(contentAction ? [contentAction] : []),
       ...(dependencyAction ? [dependencyAction] : []),
       ...(uninstallAction ? [uninstallAction] : []),
+      ...(cleanupAction ? [cleanupAction] : []),
       {
         actionId: 'more',
         label: '更多操作',

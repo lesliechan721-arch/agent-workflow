@@ -46,7 +46,7 @@ aw
 `aw` 会打开交互式插件管理界面。也可以直接使用命令：
 
 ```bash
-aw install ask-me -p both
+aw install decision-kit -p both
 aw install dev-workflow -p both
 aw install git-toolkit -p both
 aw status
@@ -64,8 +64,8 @@ aw status
 
 | 插件 | 适合什么场景 | 平台 |
 | --- | --- | --- |
-| [`ask-me`](plugins/ask-me/) | 澄清关键歧义、逐轮推演重要决定，或用可体验原型帮助用户作出决定 | Codex / Claude Code |
-| [`dev-workflow`](plugins/dev-workflow/) | 用 Spec、实现切片和双轴 Review 组织中大型开发任务，并按需组合 `ask-me` | Codex / Claude Code |
+| [`decision-kit`](plugins/decision-kit/) | 澄清关键歧义、逐轮推演重要决定，制作决策原型，并维护项目领域词汇与重要决定 | Codex / Claude Code |
+| [`dev-workflow`](plugins/dev-workflow/) | 独立完成设计或组织完整开发交付，组合 `decision-kit`、项目规范、实施与双轴 Review | Codex / Claude Code |
 | [`git-toolkit`](plugins/git-toolkit/) | 创建精确本地提交、隔离 worktree，或协调 merge 双方意图 | Codex / Claude Code |
 | [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中执行大范围只读探索，并更稳妥地编排通用子代理 | Codex |
 
@@ -86,7 +86,7 @@ aw status
 给团队邀请增加有效期。先帮我确认哪些行为必须由我决定。
 ```
 
-`ask-me` 会先调查现有代码和约定，只询问会明显改变结果、范围或验收的问题。
+`decision-kit` 会先调查现有代码和约定，只询问会明显改变结果、范围或验收的问题。
 
 ### 用原型帮助作出决定
 
@@ -102,7 +102,7 @@ aw status
 /dev 为团队邀请增加 7 天有效期。这个任务需要跨会话继续。
 ```
 
-`dev-workflow` 会选择当前最小能力：必要时组合 `ask-me` 补充决定或制作决策原型，再形成轻量 Spec、实施并执行双轴 Review。明确的小任务仍然走快速实现路径。
+`dev-workflow` 会选择当前最小能力：设计由 `dev-design` 协调，实施与核验由 `dev-build` 协调，必要时组合 `decision-kit` 补充决定或制作原型。只需要设计时可直接请求 `dev-design`，不自动开始实施；明确的小任务仍然走快速实现路径。项目规范按主题维护，过程资料默认仅保存在本地 `.dev-workflows/`。
 
 ### 创建一个只包含本次改动的提交
 
@@ -158,6 +158,9 @@ aw install git-toolkit -p both
 aw sync official/git-toolkit -p both -s user --refresh
 aw uninstall git-toolkit -p both
 
+# 已从健康 Active Catalog 删除的插件：确认整体清理安装、设置和记录
+aw cleanup <source>/<plugin> --platform both --scope user --yes
+
 # 按已有 Codex desired intent 修复实际状态
 aw sync official/git-toolkit -p codex -s project
 aw sync --all -p codex -s project
@@ -168,10 +171,10 @@ aw status git --verbose
 
 # 只读取得当前 Workspace 或单插件的 Review 证据
 aw review inspect . --json
-aw review inspect ./plugins/ask-me --json
+aw review inspect ./plugins/decision-kit --json
 
 # 项目级安装
-aw install ask-me -p codex -s project
+aw install decision-kit -p codex -s project
 
 # 先导出并检查一个声明了 Portable 能力的合成本地 Catalog 插件
 aw skill materialize <source>/<plugin> --scope project --out ./.aw-review/<plugin>
@@ -184,13 +187,15 @@ aw cleanup git -p codex -s project
 aw reinstall git -p codex -s user
 ```
 
-`cleanup` 和 `cleanup --force` 在现有 `AW_HOME` mutation lock 内先原子取消所选 source/plugin、platform 和 scope 的 root intent，再尽力清理输出。Intent 写入失败时不会删除输出；未发现输出本身不是 inventory 失败，输出不存在、无法发现或无法安全删除时不回滚已取消的 Intent。只有 Intent 被取消也可成功；无法安全删除的输出返回 partial。两者保留其它 root intent、插件配置、`dependencyScopeOverrides`、foreign 内容和 shared/native payload。`uninstall` 和 `reinstall` 也不会删除 AW 保存的插件配置；配置只由 `aw config reset` 删除。
+普通 `cleanup` 会读取本地 Active，识别已从 Catalog 删除的插件。确认后，整体清理 Codex、Claude、用户与当前项目的安装、激活、AW 设置、意图和插件专属投影；显式 platform/scope 也不缩小这个整体范围。TTY 展示范围后确认，JSON 和非交互模式须传 `--yes`。共享原生包会移除，其他项目可能因此无法继续使用，但 AW 不扫描或改写其他项目。原生卸载或其他删除失败会报告未完成，并保留重试入口。详情见[清理设计](docs/design/removed-plugin-cleanup.md)。
+
+未确认删除的插件及 `cleanup --force` 沿用离线恢复：在现有 `AW_HOME` mutation lock 内先原子取消所选 source/plugin、platform 和 scope 的 root intent，再尽力清理输出。Intent 写入失败时不会删除输出；未发现输出本身不是 inventory 失败，输出不存在、无法发现或无法安全删除时不回滚已取消的 Intent。只有 Intent 被取消也可成功；无法安全删除的输出返回 partial。两者保留其它 root intent、插件配置、`dependencyScopeOverrides`、foreign 内容和 shared/native payload。`uninstall` 和 `reinstall` 也不会删除 AW 保存的插件配置；这些操作保留的配置可由 `aw config reset` 删除。
 
 `aw review inspect` 读取源码、已有 snapshot 和显式提供的物化来源 receipt，不执行被审插件代码。缺少当前物化产物时仍返回源码事实和证据缺口；该命令不作质量评价或发布决定。Eval prepare 和 Skill materialize 返回的 `sourceBindingPath` 可通过 `--materialization <receipt>` 交给检查命令，旧产物缺少该证据时重新准备即可。
 
 project 配置按 Catalog logical identity 共享，不绑定 Git URL、SSH/HTTPS transport 或本地 path。若 Git 无法验证配置路径可提交，命令仍写入并返回 `projectConfigShareabilityUnverified`；若路径明确被 ignore，则以 `projectConfigIgnored` 停止且不修改配置。`aw config reset` 不受该检查阻止。
 
-普通 install、reinstall、uninstall、status、config、TUI 初始 load 和 Portable 操作只读取本地 Active Catalog snapshot。显式 `sync --refresh` 和 TUI“刷新并同步”会先刷新相关来源，再基于新的 Active 建立 Review；刷新失败、候选影响未知或需要确认且旧 Active 可用时，会输出 warning 并继续使用旧 Active。没有 Active 时，CLI 提示 `aw catalog source sync <id>`。Active store 损坏时，Git source 先按 Active 的精确 commit 修复旧 store key；CLI 修复后继续检查当前候选，TUI 修复成功后停止并重新显示当前更新。精确旧版本无法取得，或 Path 当前内容不是旧 key 时，CLI 只接受 `aw catalog source sync <id> --replace-damaged --yes`，TUI 使用独立的“使用当前候选替换损坏的 Active” Review。`catalog-sources.json` 损坏时，TUI 可经 Review 备份原文件并恢复官方默认来源；它不删除 Catalog state 或 store。TUI 初始页面不等待网络；进入 ready 后，每个 session 只对开启自动检查的来源检查一次 freshness，并优先检查主来源。关闭后只能在来源详情手动检查。自动检查和“重新检查”先轻量检查健康 Git Active 的远端 ref；commit 未变时不 fetch，固定 commit 不联网；“完整验证”强制完整 resolve。没有 Active、Active 损坏和恢复动作仍完整验证，Path source 也完整验证本地候选。检查只更新当前 TUI 的提示，不修改 Status v8 或 Active，也不会自动激活候选。完整背景 candidate 只可在绑定相同 session token、source config fingerprint 和 Active store key 时复用于普通 Review preparation；Execute 仍重新 resolve。候选缺少当前 AW capability 时显示 missing IDs，旧 Active 保持可用，普通 update 不出现。网络检查失败时，旧 Active 保持可用，用户仍可浏览。Git 完整 resolve 默认 timeout 是 180000 ms；ref probe 最多 30000 ms；`AW_CATALOG_REMOTE_TIMEOUT_MS` 接受 `0` 或 `100..300000`，其中 `0` 表示无 deadline。Catalog 更新在影响现有引用或影响未知时需要 `--yes` 或 TUI 明确确认；成功切换 Active 后，已安装插件不会自动升级，TUI 只重新计算可用的插件升级。普通 `cleanup` 不读取 Active，只凭 live ownership 或离线 evidence 清理 AW-owned 输出；`cleanup --force` 可把当前 Active 中所选 plugin bundle 的 shallow evidence 作为可选补充。source、Active 或 Catalog store 缺失或损坏不能永久阻止 Intent 取消，或阻止已有充分 live evidence 的清理；两者仍保留 foreign、shared 和 native payload，且不能猜测输出路径。CLI 的 `catalog source add` 和 `update` 只改 config；`add --primary` 在主来源切换有引用或 inventory 不完整时需要 `--yes`，移除有引用或引用清单不完整的 source 也需要 `--yes`。TUI add/update 先汇总完整草稿，再明确选择只保存配置或保存并启用已确认候选。`sync --check` fetch 并验证但不写 store 或 Active，并在 JSON receipt 中返回脱敏的影响证据；普通 sync 原子写 store 后切换 Active，失败时保留原 Active。Git 普通更新只接受更高版本；同版本不同 digest 和版本回退会停止。明确修改 URL、path、subdir 或 ref 后的 sync 可经确认切换。Path source 允许内容变化。
+普通 install、reinstall、uninstall、status、config、TUI 初始 load 和 Portable 操作只读取本地 Active Catalog snapshot。显式 `sync --refresh` 和 TUI“刷新并同步”会先刷新相关来源，再基于新的 Active 建立 Review；刷新失败、候选影响未知或需要确认且旧 Active 可用时，会输出 warning 并继续使用旧 Active。没有 Active 时，CLI 提示 `aw catalog source sync <id>`。Active store 损坏时，Git source 先按 Active 的精确 commit 修复旧 store key；CLI 修复后继续检查当前候选，TUI 修复成功后停止并重新显示当前更新。精确旧版本无法取得，或 Path 当前内容不是旧 key 时，CLI 只接受 `aw catalog source sync <id> --replace-damaged --yes`，TUI 使用独立的“使用当前候选替换损坏的 Active” Review。`catalog-sources.json` 损坏时，TUI 可经 Review 备份原文件并恢复官方默认来源；它不删除 Catalog state 或 store。TUI 初始页面不等待网络；进入 ready 后，每个 session 只对开启自动检查的来源检查一次 freshness，并优先检查主来源。关闭后只能在来源详情手动检查。自动检查和“重新检查”先轻量检查健康 Git Active 的远端 ref；commit 未变时不 fetch，固定 commit 不联网；“完整验证”强制完整 resolve。没有 Active、Active 损坏和恢复动作仍完整验证，Path source 也完整验证本地候选。检查只更新当前 TUI 的提示，不修改 Status v8 或 Active，也不会自动激活候选。完整背景 candidate 只可在绑定相同 session token、source config fingerprint 和 Active store key 时复用于普通 Review preparation；Execute 仍重新 resolve。候选缺少当前 AW capability 时显示 missing IDs，旧 Active 保持可用，普通 update 不出现。网络检查失败时，旧 Active 保持可用，用户仍可浏览。Git 完整 resolve 默认 timeout 是 180000 ms；ref probe 最多 30000 ms；`AW_CATALOG_REMOTE_TIMEOUT_MS` 接受 `0` 或 `100..300000`，其中 `0` 表示无 deadline。Catalog 更新在影响现有引用或影响未知时需要 `--yes` 或 TUI 明确确认；成功切换 Active 后，已安装插件不会自动升级，TUI 只重新计算可用的插件升级。普通 `cleanup` 的已删除插件分类只读本地 Active；来源或 Active 不可用时，仍凭 live ownership 或离线 evidence 清理 AW-owned 输出，不扩大到整体清理；`cleanup --force` 可把当前 Active 中所选 plugin bundle 的 shallow evidence 作为可选补充。source、Active 或 Catalog store 缺失或损坏不能永久阻止 Intent 取消，或阻止已有充分 live evidence 的清理；两者仍保留 foreign、shared 和 native payload，且不能猜测输出路径。CLI 的 `catalog source add` 和 `update` 只改 config；`add --primary` 在主来源切换有引用或 inventory 不完整时需要 `--yes`，移除有引用或引用清单不完整的 source 也需要 `--yes`。TUI add/update 先汇总完整草稿，再明确选择只保存配置或保存并启用已确认候选。`sync --check` fetch 并验证但不写 store 或 Active，并在 JSON receipt 中返回脱敏的影响证据；普通 sync 原子写 store 后切换 Active，失败时保留原 Active。Git 普通更新只接受更高版本；同版本不同 digest 和版本回退会停止。明确修改 URL、path、subdir 或 ref 后的 sync 可经确认切换。Path source 允许内容变化。
 
 `aw catalog store status [--json]` 只读检查 immutable store。`aw catalog store prune` 默认是 dry-run；只有 `--yes` 才删除，且 `--dry-run` 与 `--yes` 互斥。只有仍在 source config 中的 source 所引用的 Active pointer 受保护；已删除 source 的 pointer 是 orphan，并按普通 inactive entry 的 30 天 retention 处理。若同一 store key 也被其它已配置 source 的 Active 使用，则 active 优先且继续受保护。健康的非 Active 正式 entry 只有超过 30 天才可回收；`.staging-*` 和 `.replacement-*` 超过 24 小时才可回收；`.quarantine-*` 还要求对应正式 entry 存在并通过完整验证。损坏、未知、unsafe、符号链接和 foreign node 都保留。实际 prune 在 AW_HOME mutation lock 内重新读取 state 和 store；state 损坏时零删除。单项删除失败不阻止其它安全项，并返回 partial receipt。这里没有自动 GC；误删的弱 snapshot 通过 source sync 重建，受保护的 Active、foreign 内容和无法证明安全的 residue 不由 prune 删除。
 
@@ -219,7 +224,7 @@ AW 把 desired intent 保存为严格的 schema 2 JSON：user scope 位于 `<AW_
 
 Project root 的依赖可以使用默认 project placement，或在 install 时用可重复的 `--dependency-scope source/plugin[#platform]=user|project` 覆盖；`#platform` 可以是 `#codex` 或 `#claude`，省略时同时覆盖两个平台。User root 的依赖固定为 user scope，不能降到 project scope。
 
-cleanup 只取消明确选择 root 的相应平台；它不删除 `dependencyScopeOverrides`，也不阻止另一个 root 在之后将同一插件再次作为 dependency 安装。内部“所有目标”选择只合并当前 scope/platform 的 Intent 与 live ownership。
+未进入已删除插件整体清理的 cleanup 只取消明确选择 root 的相应平台；它不删除 `dependencyScopeOverrides`，也不阻止另一个 root 在之后将同一插件再次作为 dependency 安装。内部“所有目标”选择只合并当前 scope/platform 的 Intent 与 live ownership。
 
 支持 `--all` 的命令中，插件 selector 与 `--all` 互斥；TTY 中两者都省略时会显示多选。JSON 或非交互模式必须提供至少一个 selector 或 `--all`。新 clone 在 Catalog Active snapshot 可用后，可运行 `aw sync --all -p both -s project` 恢复当前 project intent 的所有目标。
 

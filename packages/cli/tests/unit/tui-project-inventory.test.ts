@@ -284,8 +284,12 @@ describe('project inventory', () => {
     const absent = claudeTarget('absent', 'project', 'absent');
     const unknown = claudeTarget('unknown', 'project', 'needsSync', { desired: true });
     unknown.components = [{ kind: 'ownership', key: 'skill', state: 'error' }];
+    const loaded = loadResult([project, user, absent, unknown]);
+    loaded.pluginSummaries = [{
+      pluginId: 'official/absent', pluginName: 'absent', description: 'Available in Catalog',
+    }];
     const controller = new TuiController({
-      loadStatus: vi.fn().mockResolvedValue(loadResult([project, user, absent, unknown])),
+      loadStatus: vi.fn().mockResolvedValue(loaded),
       captureEvidence: vi.fn(), executeIntent: vi.fn(),
     });
     await controller.load();

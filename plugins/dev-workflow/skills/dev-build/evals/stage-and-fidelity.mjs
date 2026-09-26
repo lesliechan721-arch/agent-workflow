@@ -8,7 +8,7 @@ export const STAGE_CASES = new Set([
 ]);
 
 export const STAGE_CHECKPOINT_CASES = new Set([
-  'full-source-to-task-clean-worker', 'preimplementation-baseline-scoped-commit',
+  'preimplementation-baseline-scoped-commit',
 ]);
 
 export function stageSemanticChecks(selected) {
@@ -111,7 +111,7 @@ export async function stageProductChecks(selected, workspace, evidence) {
       checks.push(check(`source:${file}`, 'fail', error.message));
     }
   }
-  if (STAGE_CHECKPOINT_CASES.has(selected.id)) checks.push(await verifyModelPolicy(workspace));
+  if (STAGE_CHECKPOINT_CASES.has(selected.id) || selected.id === 'full-source-to-task-clean-worker') checks.push(await verifyModelPolicy(workspace));
   else if (selected.id.startsWith('user-answer-changes-downstream-result')) {
     checks.push(await verifyExportChoice(workspace, selected.input.setup.branch.afterAnswerOracle));
   } else if (selected.id === 'new-evidence-realign-only-affected-work') {
@@ -142,10 +142,11 @@ export async function stageCheckpointCheck(selected, workspace, baseline, git) {
   const first = commits[0];
   const files = (await git(workspace, ['ls-tree', '-r', '--name-only', first])).split('\n');
   const productChanges = await git(workspace, ['diff', '--name-only', baseline.head, first, '--', 'src', 'public']);
-  const hasTicket = ['tickets/model-policy.md', 'tickets/runtime-state.md'].some((file) => files.includes(file));
-  const valid = files.includes('spec.md') && hasTicket && !productChanges;
+  const trackedProcess = await git(workspace, ['ls-files', '--', '.dev-workflows']);
+  const committedProcess = await git(workspace, ['log', '--format=', '--name-only', `${baseline.head}..HEAD`, '--', '.dev-workflows']);
+  const valid = files.includes('spec.md') && !productChanges && !trackedProcess && !committedProcess;
   return check('preimplementation-baseline', valid ? 'pass' : 'fail', JSON.stringify({
-    first, files, productChanges,
+    first, files, productChanges, trackedProcess, committedProcess,
     limit: 'Git verifies saved contents; approval, first write order and task usability require the separate Engine checks.',
   }));
 }

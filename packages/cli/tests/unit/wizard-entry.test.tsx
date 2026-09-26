@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { runCli } from '../../src/index.js';
 import { toWizardCandidates } from '../../src/commands/wizard.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { createOperationPlan } from '../../src/commands/operation-plan.js';
 
 const mocks = vi.hoisted(() => ({
   installWriteCommand: vi.fn(),
@@ -21,6 +22,65 @@ vi.mock('../../src/commands/write-commands.js', async () => ({
 }));
 
 describe('write command runtime entry', () => {
+  it('shows and binds the full cleanup range before an interactive write', async () => {
+    const plan = createOperationPlan({
+      intentChanges: [], actions: [], changes: [], warnings: [],
+      evidence: { catalogDigests: [], intentDigests: [], configDigests: [],
+        targetOwnerFingerprints: [] },
+    });
+    const receipt = {
+      platforms: ['codex', 'claude'], plugins: ['demo'], warnings: [],
+      rebuildResults: [], targetResults: [], overallState: 'succeeded', receiptTargets: [],
+      removedPluginCleanupIds: ['official/demo'], operationPlan: plan,
+    };
+    const prompt = { confirm: vi.fn().mockResolvedValue({ cancelled: false, value: true }) };
+    mocks.cleanupWriteCommand.mockResolvedValueOnce(receipt).mockResolvedValueOnce(receipt);
+    const captured = createCapturedCliIo();
+    const exitCode = await runCli(['cleanup', 'official/demo', '-p', 'codex', '-s', 'user'], {
+      env: {}, interactive: true, io: captured.io, prompt,
+      stdin: { isTTY: true } as NodeJS.ReadableStream,
+      stdout: { isTTY: true }, promptOutputSink: { isTTY: true, write: () => undefined },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(prompt.confirm).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('Codex、Claude Code 的用户与当前项目位置'),
+      defaultValue: false,
+    }));
+    expect(mocks.cleanupWriteCommand.mock.calls[0]?.[2]).toMatchObject({
+      previewOperationPlan: true,
+    });
+    expect(mocks.cleanupWriteCommand.mock.calls[1]?.[1]).toMatchObject({ yes: true });
+    expect(mocks.cleanupWriteCommand.mock.calls[1]?.[2]).toMatchObject({
+      expectedPlanFingerprint: plan.planFingerprint,
+    });
+    mocks.cleanupWriteCommand.mockClear();
+  });
+
+  it('does not start deleted-plugin cleanup when the interactive review is declined', async () => {
+    const captured = createCapturedCliIo();
+    mocks.cleanupWriteCommand.mockResolvedValueOnce({
+      platforms: ['codex', 'claude'], plugins: [], warnings: [], rebuildResults: [],
+      targetResults: [], overallState: 'succeeded', receiptTargets: [],
+      removedPluginCleanupIds: ['official/demo'],
+      operationPlan: createOperationPlan({
+        intentChanges: [], actions: [], changes: [], warnings: [],
+        evidence: { catalogDigests: [], intentDigests: [], configDigests: [],
+          targetOwnerFingerprints: [] },
+      }),
+    });
+    const prompt = { confirm: vi.fn().mockResolvedValue({ cancelled: false, value: false }) };
+    expect(await runCli(['cleanup', 'official/demo', '-p', 'codex', '-s', 'user'], {
+      env: {}, interactive: true, io: captured.io, prompt,
+      stdin: { isTTY: true } as NodeJS.ReadableStream,
+      stdout: { isTTY: true }, promptOutputSink: { isTTY: true, write: () => undefined },
+    })).toBe(0);
+    expect(mocks.cleanupWriteCommand).toHaveBeenCalledOnce();
+    expect(mocks.cleanupWriteCommand.mock.calls[0]?.[2]).toMatchObject({
+      previewOperationPlan: true,
+    });
+    mocks.cleanupWriteCommand.mockClear();
+  });
   it('uses the Status v6 plugin summary for namespaced config candidates', () => {
     expect(toWizardCandidates([{
       pluginName: 'team/demo',

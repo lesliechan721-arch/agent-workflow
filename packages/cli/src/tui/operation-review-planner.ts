@@ -104,7 +104,9 @@ function removesOfflineCleanupIntent(
 
 function offlineCleanupReviewChanges(evidence: OperationEvidence): OperationReviewChange[] {
   const operationPlan = evidence.operationPlan;
-  return offlineCleanupPlans(evidence).flatMap((target): OperationReviewChange[] => {
+  const removed = new Set(evidence.removedPluginCleanupIds ?? []);
+  const plans = offlineCleanupPlans(evidence).filter((target) => !removed.has(target.pluginId));
+  return plans.flatMap((target): OperationReviewChange[] => {
     const targetDescription = `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`;
     const removesIntent = operationPlan !== undefined && removesOfflineCleanupIntent(operationPlan, target);
     const actions = target.plan.actions.length;
@@ -147,7 +149,8 @@ function offlineCleanupReviewChanges(evidence: OperationEvidence): OperationRevi
 }
 
 function offlineCleanupPreservedChanges(evidence: OperationEvidence): OperationReviewChange[] {
-  const plans = offlineCleanupPlans(evidence);
+  const removed = new Set(evidence.removedPluginCleanupIds ?? []);
+  const plans = offlineCleanupPlans(evidence).filter((target) => !removed.has(target.pluginId));
   if (plans.length === 0) return [];
   const warnings = evidence.operationPlan?.warnings ?? [];
   return [
@@ -168,6 +171,32 @@ function offlineCleanupPreservedChanges(evidence: OperationEvidence): OperationR
       title: '其他根插件仍可按自己的设置使用或安装此依赖',
     },
   ];
+}
+
+function removedPluginCleanupReviewChanges(evidence: OperationEvidence): OperationReviewChange[] {
+  return (evidence.removedPluginCleanupIds ?? []).flatMap((pluginId): OperationReviewChange[] => [
+    {
+      kind: 'remove', group: 'requested', pluginId, relation: 'requested',
+      title: `${pluginNameFromId(pluginId)} · 已从当前目录删除`,
+      description: '整体清理 Codex、Claude Code 的用户与当前项目位置；即使初始选择只有一个平台或范围。',
+    },
+    ...(['codex', 'claude'] as const).flatMap((platform): OperationReviewChange[] =>
+      (['user', 'project'] as const).map((scope) => ({
+        kind: 'remove', group: 'requested', pluginId, relation: 'requested',
+        title: `${platformLabel(platform)} · ${scopeLabel(scope)}`,
+        description: '清理安装、激活、使用意图及可验证的专属输出。',
+      }))),
+    {
+      kind: 'remove', group: 'requested', pluginId, relation: 'requested',
+      title: '删除已保存的插件设置',
+      description: '删除用户与当前项目的插件设置记录；不读取已删除的配置 schema。',
+    },
+    {
+      kind: 'warning', group: 'requested', pluginId, relation: 'requested',
+      title: '移除 Codex 共享原生安装会影响其他项目',
+      description: '其他项目可能无法继续使用此插件；不会扫描或改写它们的本地记录。',
+    },
+  ]);
 }
 
 function sourceMutationReviewChanges(
@@ -286,6 +315,14 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     };
   }
   if (intent.kind === 'pluginWrite') {
+    if (intent.action === 'cleanup' && (evidence?.removedPluginCleanupIds?.length ?? 0) > 0) {
+      return {
+        title: '整体清理已删除插件',
+        description: '清理两个平台的用户与当前项目位置、保存设置及共享原生安装。',
+        primaryLabel: '确认整体清理',
+        destructive: true,
+      };
+    }
     if (intent.originIssue) {
       if (intent.action === 'cleanup') {
         return {
@@ -567,9 +604,10 @@ function reviewChanges(
     }
     if (intent.action === 'cleanup' && evidence) {
       const cleanupChanges = offlineCleanupReviewChanges(evidence);
-      if (cleanupChanges.length > 0) {
+      if (cleanupChanges.length > 0 || (evidence.removedPluginCleanupIds?.length ?? 0) > 0) {
         const changes: OperationReviewChange[] = [
           ...cleanupChanges,
+          ...removedPluginCleanupReviewChanges(evidence),
           ...offlineCleanupPreservedChanges(evidence),
         ];
         if (intent.force === true) changes.push({
@@ -917,6 +955,9 @@ function batchGroupEvidence(
     catalog: evidence.catalog,
     ...(group.preview.offlineCleanupPlans
       ? { offlineCleanupPlans: group.preview.offlineCleanupPlans }
+      : {}),
+    ...(group.preview.removedPluginCleanupIds
+      ? { removedPluginCleanupIds: group.preview.removedPluginCleanupIds }
       : {}),
     ...(group.preview.dependencyPlan ? { dependencyPlan: group.preview.dependencyPlan } : {}),
     ...(group.preview.codexReconcilePlans ? { codexReconcilePlans: group.preview.codexReconcilePlans } : {}),
@@ -1286,6 +1327,9 @@ export function buildOperationReviewProjection(options: {
     || Boolean(taskEvidence?.taskPlan.sources.some((source) =>
       (source.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))
     || (evidence.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)
+    || (evidence.removedPluginCleanupIds?.length ?? 0) > 0
+    || Boolean(batchEvidence?.groups.some((group) =>
+      (group.preview.removedPluginCleanupIds?.length ?? 0) > 0))
     || Boolean(evidence.sourceWrite
       && (!evidence.sourceWrite.inventoryComplete || evidence.sourceWrite.referenceCount > 0))
     || Boolean(evidence.catalogGeneration?.impact

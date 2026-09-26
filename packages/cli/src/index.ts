@@ -761,6 +761,7 @@ export function buildEquivalentWriteCommandTokens(
     ...(rawOptions.allowManagedCodexInstall === true
       ? ['--allow-managed-codex-install']
       : []),
+    ...(command === 'cleanup' ? ['--yes'] : []),
     ...(command === 'install'
       ? (rawOptions.dependencyScope ?? []).flatMap((value) => ['--dependency-scope', value])
       : []),
@@ -1130,6 +1131,7 @@ async function executeWriteCommand(
   rawOptions: RawWriteWizardOptions,
   context: CliExecutionContext,
   directCli = false,
+  expectedPlanFingerprint?: string,
 ): Promise<RebuildCommandResult> {
   const raw = { cwd: context.cwd, ...rawOptions };
   const commandOptions = normalizeWriteRequest(() => command === 'install'
@@ -1148,6 +1150,7 @@ async function executeWriteCommand(
     ...context,
     directCli,
     preApplyConfirmed: rawOptions.yes === true,
+    ...(expectedPlanFingerprint ? { expectedPlanFingerprint } : {}),
     ...(managedCodexAuthorizer ? { managedCodexAuthorizer } : {}),
   };
   switch (command) {
@@ -1181,6 +1184,29 @@ async function runWriteCommandAction(
   };
   void validationOptions;
   if (!missing) {
+    if (command === 'cleanup' && rawOptions.force !== true && rawOptions.yes !== true
+      && isWizardAvailable(context, rawOptions) && context.prompt.confirm) {
+      const preview = await cleanupCommand(pluginNames, normalizeCleanupCommandOptions({
+        cwd: context.cwd,
+        ...rawOptions,
+      }), { ...context, previewOperationPlan: true });
+      if ((preview.removedPluginCleanupIds?.length ?? 0) > 0) {
+        if (!preview.operationPlan) {
+          throw new WriteCommandRequestError('cleanupPlanUnavailable: 无法建立可信的整体清理预览。');
+        }
+        const response = await context.prompt.confirm({
+          message: `清理已删除插件 ${preview.removedPluginCleanupIds!.join('、')}：将处理 Codex、Claude Code 的用户与当前项目位置，删除保存设置、安装意图、专属输出和共享原生安装。其他项目可能因此无法继续使用该插件；其本地记录不会修改。即使指定了 --platform 或 --scope，本次仍覆盖上述全部位置。继续？`,
+          defaultValue: false,
+        });
+        if (response.cancelled || response.value !== true) return { cancelled: true };
+        return {
+          cancelled: false,
+          result: await executeWriteCommand(command, pluginNames, {
+            ...rawOptions, yes: true,
+          }, context, true, preview.operationPlan.planFingerprint),
+        };
+      }
+    }
     return {
       cancelled: false,
       result: await executeWriteCommand(command, pluginNames, rawOptions, context, true),
@@ -1235,11 +1261,36 @@ async function runWriteCommandAction(
     isPluginSelectable: (candidate, selection) =>
       writeCandidateEligibility(command, candidate, selection),
     resultState: overallResultState,
-    execute: (selection) => executeWriteCommand(command, selection.plugins, {
+    ...(command === 'cleanup' ? {
+      reviewDetails: async (selection: CommandWizardSelection) => {
+        const preview = await cleanupCommand(selection.plugins, normalizeCleanupCommandOptions({
+          cwd: context.cwd,
+          ...rawOptions,
+          platform: selection.platform,
+          scope: selection.scope,
+        }), { ...context, previewOperationPlan: true });
+        if ((preview.removedPluginCleanupIds?.length ?? 0) === 0) return { lines: [] };
+        if (!preview.operationPlan) {
+          throw new WriteCommandRequestError('cleanupPlanUnavailable: 无法建立可信的整体清理预览。');
+        }
+        return {
+          lines: [
+            `已删除插件：${preview.removedPluginCleanupIds!.join('、')}`,
+            '实际清理范围：Codex、Claude Code；用户与当前项目。',
+            '将删除保存设置、安装意图、专属输出和共享原生安装。',
+            '其他项目可能失去此插件；其本地记录不会修改。',
+            '当前 --platform / --scope 选择不会限制整体清理范围。',
+          ],
+          expectedPlanFingerprint: preview.operationPlan.planFingerprint,
+        };
+      },
+    } : {}),
+    execute: (selection, expectedPlanFingerprint) => executeWriteCommand(command, selection.plugins, {
       ...rawOptions,
       platform: selection.platform,
       scope: selection.scope,
-    }, context),
+      ...(command === 'cleanup' ? { yes: true } : {}),
+    }, context, false, expectedPlanFingerprint),
   });
   if (result.cancelled) return { cancelled: true };
   return { cancelled: false, result: result.value! };
@@ -3390,7 +3441,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('-j, --json', 'print cleanup result as JSON', false)
-    .option('--force', 'use exact shallow evidence for exclusively owned damaged output; preserve foreign and shared content', false)
+    .option('--force', 'use exact shallow evidence for exclusively owned damaged output; preserve foreign/shared content; no deleted-plugin-wide cleanup', false)
+    .option('-y, --yes', 'authorize cleanup of a deleted plugin across Codex, Claude Code, user and current project, including saved settings and shared native install', false)
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)

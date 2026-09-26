@@ -15,7 +15,9 @@
       "decision-prototype",
       "dev-spec",
       "dev-build",
-      "dev-review-code"
+      "dev-review-code",
+      "dev-design",
+      "project-context"
     ],
     "runtime": {
       "isolation": "strict"
@@ -45,11 +47,13 @@
         "output": "说明需要用户决定的范围和格式，等待答复。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
-          "docs/dev/**"
+          ".gitignore",
+          ".dev-workflows/**",
+          "docs/design/export.md"
         ],
         "artifacts": [
           {
-            "path": "docs/dev/spec.md",
+            "path": "docs/design/export.md",
             "exists": false
           }
         ]
@@ -121,11 +125,13 @@
         "output": "现有草案缺确认，完成对齐后才能作为规范。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
-          "docs/dev/**"
+          ".gitignore",
+          ".dev-workflows/**",
+          "docs/design/export.md"
         ],
         "artifacts": [
           {
-            "path": "docs/dev/spec.md",
+            "path": "docs/design/export.md",
             "exists": false
           }
         ]

@@ -180,7 +180,10 @@ export function pluginWriteBatchTargets(
     const activation = statusTargetActivation(target);
     const hasManagedOutput = ownership !== 'absent';
     const hasCleanupEvidence = ownership === 'present' || ownership === 'partial'
-      || intent.relation === 'managed';
+      || intent.relation === 'managed'
+      || target.reasons.some((reason) => reason.code === 'removedPluginCleanupRequired')
+      || (target.platform === 'codex' && activation?.evidence === 'observed'
+        && (activation.user !== undefined || activation.project !== undefined));
     if (action === 'sync' || action === 'reinstall') {
       intent.scopes.forEach((scope) => add(target, scope));
       if (hasManagedOutput) add(target, target.scope);
@@ -197,8 +200,8 @@ export function pluginWriteBatchTargets(
     } else if (hasCleanupEvidence) {
       add(target, target.scope);
       if (target.platform === 'codex') {
-        if (activation?.user === true) add(target, 'user');
-        if (activation?.project === true) add(target, 'project');
+        if (activation?.user !== undefined) add(target, 'user');
+        if (activation?.project !== undefined) add(target, 'project');
       }
     }
   }
@@ -452,6 +455,7 @@ export interface OperationEvidence {
   targetFingerprint?: string;
   offlineCleanup?: OfflineCleanupTargetEvidence;
   offlineCleanupPlans?: OfflineCleanupTargetEvidence[];
+  removedPluginCleanupIds?: string[];
   dependencyPlan?: ReconcileOperationPlan;
   codexReconcilePlans?: CodexReconcilePlan[];
   operationPlan?: OperationPlan;
@@ -3703,11 +3707,23 @@ export class TuiController {
     action: Exclude<BatchPluginWriteAction, 'install'>,
     pluginIds: readonly string[],
   ): PluginWriteBatchTarget[] {
-    return cloneFrozen(pluginWriteBatchTargets(
+    const targets = pluginWriteBatchTargets(
       action,
       pluginIds,
       flattenStatusTargets(this.#status?.payload.targets ?? []),
-    ));
+    );
+    if (action === 'cleanup') {
+      for (const plugin of this.#viewModel?.plugins ?? []) {
+        if (!pluginIds.includes(plugin.pluginId) || !plugin.configOnly
+          || targets.some((target) => target.pluginId === plugin.pluginId)) continue;
+        targets.push({
+          pluginId: plugin.pluginId,
+          platform: 'codex',
+          scope: plugin.savedConfigScopes[0] ?? 'user',
+        });
+      }
+    }
+    return cloneFrozen(targets);
   }
 
   listPluginInstallBatchTargets(
@@ -3731,13 +3747,13 @@ export class TuiController {
               && activation[scope] === true);
         });
         const exactOwnership = exactTarget ? statusTargetOwnershipState(exactTarget) : 'absent';
+        if (plugin?.catalogEntryMissing) {
+          return { ...target, state: 'blocked', reason: '来源中没有可信插件定义' };
+        }
         if (alreadyConfigured || exactOwnership === 'present' || exactOwnership === 'partial') {
           return { ...target, state: 'existing' };
         }
         if (!plugin) return { ...target, state: 'blocked', reason: '插件已不在当前状态中' };
-        if (plugin.configOnly) {
-          return { ...target, state: 'blocked', reason: '来源中没有可信插件定义' };
-        }
         if (plugin.sourceUnavailable) {
           return { ...target, state: 'blocked', reason: '插件来源不可用' };
         }
@@ -3831,6 +3847,11 @@ export class TuiController {
   listInstallTargets(pluginId: string, scope: Scope): InstallTargetOption[] {
     const plugin = this.#viewModel?.plugins.find((entry) => entry.pluginId === pluginId);
     if (!plugin) return [];
+    if (plugin.catalogEntryMissing) {
+      return plugin.supportedPlatforms.map((platform) => ({
+        platform, compatible: false, disabled: '来源中没有可信插件定义',
+      }));
+    }
     if (plugin.aggregateStatus === 'unavailable') {
       return plugin.supportedPlatforms.map((platform) => ({
         platform,

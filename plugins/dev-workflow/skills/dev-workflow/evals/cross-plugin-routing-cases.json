@@ -12,7 +12,9 @@
       "decision-grill",
       "decision-prototype",
       "dev-build",
-      "dev-breakdown"
+      "dev-breakdown",
+      "dev-design",
+      "project-context"
     ],
     "policy": {
       "optimization": "balanced",
@@ -65,7 +67,7 @@
         "expected": {
           "loadedSkills": [
             "dev-workflow",
-            "dev-spec"
+            "dev-design"
           ]
         }
       }
@@ -109,7 +111,7 @@
         "expected": {
           "loadedSkills": [
             "dev-workflow",
-            "decision-shape"
+            "dev-design"
           ]
         }
       }
@@ -126,7 +128,7 @@
         "expected": {
           "loadedSkills": [
             "dev-workflow",
-            "decision-shape"
+            "dev-design"
           ]
         }
       }
@@ -143,7 +145,7 @@
         "expected": {
           "loadedSkills": [
             "dev-workflow",
-            "decision-shape"
+            "dev-design"
           ]
         }
       }
@@ -160,7 +162,7 @@
         "expected": {
           "loadedSkills": [
             "dev-workflow",
-            "dev-spec"
+            "dev-design"
           ]
         }
       }
@@ -197,7 +199,7 @@
         "expected": {
           "loadedSkills": [
             "dev-workflow",
-            "dev-review-spec"
+            "dev-design"
           ]
         }
       }
@@ -254,7 +256,7 @@
         "expected": {
           "loadedSkills": [
             "dev-workflow",
-            "dev-spec"
+            "dev-design"
           ]
         }
       },
@@ -317,7 +319,7 @@
         "expected": {
           "loadedSkills": [
             "dev-workflow",
-            "decision-shape"
+            "dev-design"
           ]
         }
       },

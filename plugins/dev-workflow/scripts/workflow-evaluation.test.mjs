@@ -184,27 +184,69 @@ test('stage realignment and small-task product checks distinguish accepted outco
   }
 });
 
-test('preimplementation checkpoint oracle requires spec and task before product changes', async () => {
+test('preimplementation checkpoint oracle saves project spec but excludes local process files', async () => {
   const document = await json(path.join(root, 'skills/dev-workflow/evals/stage-and-fidelity-workflow.cases.json'));
   const selected = document.cases.find((item) => item.id === 'preimplementation-baseline-scoped-commit');
 
-  for (const productFirst of [false, true]) {
+  for (const variant of ['project-only', 'product-first', 'process-committed', 'process-staged']) {
     const state = await fixture();
     try {
       await prepareExecutionWorkflow({ case: selected, paths: state.paths });
       const baseline = await json(path.join(state.paths.output, 'fixture-baseline.json'));
-      await mkdir(path.join(state.paths.workspace, 'tickets'), { recursive: true });
+      const ticket = '.dev-workflows/model-policy/tickets/model-policy.md';
+      await mkdir(path.dirname(path.join(state.paths.workspace, ticket)), { recursive: true });
       await writeFile(path.join(state.paths.workspace, 'spec.md'), '# Spec\n');
-      await writeFile(path.join(state.paths.workspace, 'tickets/model-policy.md'), '# Task\n');
-      const added = ['spec.md', 'tickets/model-policy.md'];
-      if (productFirst) {
+      await writeFile(path.join(state.paths.workspace, ticket), '# Task\n');
+      const added = ['spec.md'];
+      if (variant === 'product-first') {
         await writeFile(path.join(state.paths.workspace, 'src/model-policy.js'), 'export const changed=true;\n');
         added.push('src/model-policy.js');
       }
       await git(state.paths.workspace, ['add', '--', ...added]);
-      await git(state.paths.workspace, ['commit', '-m', 'Implementation baseline']);
+      if (variant === 'process-committed') {
+        await git(state.paths.workspace, ['add', '--force', '--', ticket]);
+        added.push(ticket);
+      }
+      await git(state.paths.workspace, ['commit', '-m', 'Implementation baseline', '--', ...added]);
+      if (variant === 'process-staged') await git(state.paths.workspace, ['add', '--force', '--', ticket]);
       const result = await stageCheckpointCheck(selected, state.paths.workspace, baseline, git);
-      assert.equal(result.verdict, productFirst ? 'fail' : 'pass', result.evidence);
+      assert.equal(result.verdict, variant === 'project-only' ? 'pass' : 'fail', result.evidence);
+      assert.equal(await readFile(path.join(state.paths.workspace, ticket), 'utf8'), '# Task\n');
+    } finally {
+      await rm(state.directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test('commit permission does not require an optional checkpoint and still rejects unauthorized commits', async () => {
+  const stage = await json(path.join(root, 'skills/dev-workflow/evals/stage-and-fidelity-workflow.cases.json'));
+  const defaults = await json(path.join(root, 'skills/dev-build/evals/workflow-defaults.cases.json'));
+  const cases = [
+    stage.cases.find((item) => item.id === 'full-source-to-task-clean-worker'),
+    defaults.cases.find((item) => item.id === 'milestone-no-commit-explicit'),
+  ];
+  for (const selected of cases) {
+    const state = await fixture();
+    try {
+      await prepareExecutionWorkflow({ case: selected, paths: state.paths });
+      await writeFile(state.paths.evidence, JSON.stringify({
+        version: 1,
+        rootThreadId: 'root',
+        workspaceDiff: { added: [], modified: [], removed: [] },
+        termination: { appServerProcessTreeCleanupConfirmed: true },
+        cleanup: { isolatedCodexHomeRemoved: true },
+      }));
+      for (const committed of [false, true]) {
+        if (committed) {
+          await writeFile(path.join(state.paths.workspace, 'spec.md'), '# Current project spec\n');
+          await git(state.paths.workspace, ['add', '--', 'spec.md']);
+          await git(state.paths.workspace, ['commit', '-m', 'Project checkpoint']);
+        }
+        const result = await gradeExecutionWorkflow({ case: selected, paths: state.paths });
+        const permission = result.details.checks.find((item) => item.name === 'git-save-permission');
+        assert.equal(permission.verdict, committed && selected.id === 'milestone-no-commit-explicit' ? 'fail' : 'pass');
+        assert.equal(result.passed, false, 'Git evidence must not replace independent product and review evidence.');
+      }
     } finally {
       await rm(state.directory, { recursive: true, force: true });
     }

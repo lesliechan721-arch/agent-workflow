@@ -676,6 +676,68 @@ describe('status v8 current behavior', () => {
     expect(both.output).toContain('actual use: user+project');
   });
 
+  it.each(['disabled', 'native-only', 'projection-only', 'unobserved'] as const)(
+    'keeps removed plugin %s residue visible and cleanable',
+    async (residue) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const cwd = isolation.layout.fixtureCwd;
+      const sourceRoot = path.join(cwd, `removed-${residue}`);
+      await createCatalogSnapshotFixture(sourceRoot, 'other');
+      const { env, sourceIdentity } = await configurePathSource(sourceRoot);
+      await writeCodexNativeResidue({ cwd, env, version: '1.0.0', userEnabled: false, sourceIdentity });
+      if (residue !== 'disabled') {
+        await applyCodexConfigTransactionFile(resolveCodexPaths(cwd, 'user', env).configTomlPath, {
+          removePluginActivations: ['demo@aw-local'],
+        });
+      }
+      if (residue === 'projection-only' || residue === 'unobserved') {
+        await fs.ensureDir(path.join(resolveAwHome(env), 'marketplaces', 'local', 'plugins', 'demo'));
+      }
+      const binRoot = await writeSystemCodexPackage({
+        root: path.join(cwd, 'removed-status-codex'), version: '0.151.0',
+      });
+      const nativeRunner = withCodexVersion(vi.fn(async () => ({
+        exitCode: residue === 'unobserved' ? 1 : 0,
+        stdout: JSON.stringify({
+          installed: residue === 'native-only'
+            ? [{ pluginId: 'demo@aw-local', installed: true, enabled: false, version: '1.0.0' }]
+            : [],
+          available: [],
+        }),
+        stderr: '',
+      })));
+      const result = await statusCommandV8({
+        cwd, env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'user',
+        plugins: ['local/demo'], nativeCliRunner: nativeRunner, json: true,
+      });
+      expect(result.payload.errors).toEqual([]);
+      expect(result.payload.targets).toEqual([expect.objectContaining({
+        pluginId: 'local/demo', state: 'blocked',
+        reasons: expect.arrayContaining([expect.objectContaining({ code: 'removedPluginCleanupRequired' })]),
+        recoveryActions: [expect.objectContaining({ command: 'cleanup' })],
+      })]);
+      if (residue === 'unobserved') {
+        expect(result.payload.targets[0]!.reasons).toEqual(expect.arrayContaining([
+          expect.objectContaining({ code: 'codexNativeObservationFailed' }),
+        ]));
+      }
+    },
+  );
+
+  it('does not expose a removed plugin solely because private native cache remains', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const sourceRoot = path.join(cwd, 'removed-private-cache');
+    await createCatalogSnapshotFixture(sourceRoot, 'other');
+    const { env, sourceIdentity } = await configurePathSource(sourceRoot);
+    await writeCodexNativeResidue({ cwd, env, version: '1.0.0', userEnabled: false, sourceIdentity });
+    await applyCodexConfigTransactionFile(resolveCodexPaths(cwd, 'user', env).configTomlPath, {
+      removePluginActivations: ['demo@aw-local'],
+    });
+    const result = await statusCommandV8({ cwd, env, platform: 'codex', scope: 'user', json: true });
+    expect(result.payload.targets.map((target) => target.pluginId)).not.toContain('local/demo');
+  });
+
   it('propagates transitive dependency readiness through a filtered root query', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'transitive-native-status-source');
