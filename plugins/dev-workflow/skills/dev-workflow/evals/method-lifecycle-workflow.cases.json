@@ -1,0 +1,340 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "codex-workflow",
+    "unitUnderTest": "dev-workflow",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以实际用户答案、需求保真、文档生命周期及结果判定；方法加载只说明路由，不单独证明对齐完成。"
+    },
+    "participants": [
+      "dev-design",
+      "decision-shape",
+      "decision-grill",
+      "decision-prototype",
+      "project-context",
+      "dev-spec",
+      "dev-review-spec",
+      "dev-breakdown",
+      "dev-build",
+      "dev-implement",
+      "dev-review-code"
+    ]
+  },
+  "cases": [
+    {
+      "id": "shape-grill-before-material-answer",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "使用dev-design设计记录导出（任务名export），先把需求对齐到可实施，今天不实现。",
+        "workspaceFiles": {
+          "facts.md": "可选择当前选中、当前筛选或全部记录；空选择和租户范围尚未决定，各方案可实现。\n",
+          ".gitignore": "/.dev-workflows/\n"
+        },
+        "prepare": [
+          "用户原始任务不透露全部正确答案；模型真正提问后才交付选择：当前租户的选中项，空选择返回空结果。",
+          "观察当前Shape采用Grill方法，允许同一主上下文，不要求子代理。",
+          "记录所生成真实Spec及其确认，准备器不代写。"
+        ],
+        "prerequisites": [
+          "真实工具调用、用户事件、Skill加载与独立上下文证据",
+          "隔离工作区和限定文件写入",
+          "所需浏览器/原型工具在对应场景真实可用"
+        ],
+        "setup": {
+          "artifacts": [
+            "facts.md",
+            ".gitignore",
+            ".dev-workflows/export/spec.md",
+            ".dev-workflows/export/task.md",
+            ".dev-workflows/export/spec-review.md"
+          ],
+          "interactions": [
+            {
+              "id": "export-choice",
+              "when": "实际询问导出的记录范围，且说明当前租户隔离和空选择的后果；仅提到Skill、宣告完成或询问无关问题不成立。",
+              "answer": "选择当前租户内的已选记录；空选择返回空结果。",
+              "protectedPaths": []
+            },
+            {
+              "id": "design-confirmation",
+              "when": "已取得导出选择，实际生成完整Spec并完成必要独立审查，正在请求确认当前设计；问题展示的内容须保留本次选择。",
+              "answer": "确认当前完整设计。本次到设计结束，不开始实现。",
+              "protectedPaths": []
+            }
+          ]
+        }
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "Grill方法实际参与材料問答，且实际回答先于确认规范写入；不是只提到Skill名称。",
+            "evidenceSource": "Engine真实消息/Skill加载/子任务与用户输入时序；不接受自述或伪造trace"
+          },
+          {
+            "id": "c2",
+            "description": "最终Spec采用用户选择，含租户、空选择与必要范围；没有自动实施或永久design副本。",
+            "evidenceSource": "真实文件diff与独立内容核对"
+          }
+        ]
+      },
+      "assertions": [
+        "Grill方法实际参与材料問答，且实际回答先于确认规范写入；不是只提到Skill名称。",
+        "最终Spec采用用户选择，含租户、空选择与必要范围；没有自动实施或永久design副本。"
+      ],
+      "audit": {
+        "rationale": "一起验证方法所有权、用户决定和结果，不只数调用。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "输入已完整确认时应复用共识，不能机械重复访谈。"
+      }
+    },
+    {
+      "id": "generated-local-spec-to-clean-context",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "使用dev-design设计记录选择功能。用户当前确认：返回当前tenantId中id精确命中selectedIds的记录，顺序沿输入；空选择返回空数组；不修改输入数组或记录。id大小写敏感。CSV序列化、后台任务及跨租户导出不属于当前范围。内部组织可自主决定。当前任务名selection；这一轮只完成设计、完整本地Spec和必要独立审查，向用户核对当前版本后停止，不实现。",
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows;}\n",
+          "README.md": "# 记录选择示例\n用于隔离测试的最小项目，生产接口未在这里定义。\n"
+        },
+        "prepare": [
+          "设计代理真实生成本地Spec并经必要独立审查，当前测试用户确认它呈现的版本，再通过另一条用户答案单独授权实施。两次交互均使用正常问答轮次，支持文本或requestUserInput提问。",
+          "开始一个新实施上下文，给出新的实施请求和实际本地任务/Spec位置及项目文件，不提供设计者私有历史。",
+          "Breakdown按需要产生实际Ticket，worker消费真实产物；不能用fixture里的好Ticket替换。",
+          "最终行为oracle使用原始用户要求检查隔离、选择、空值、大小写、顺序与不修改输入。"
+        ],
+        "prerequisites": [
+          "真实工具调用、用户事件、Skill加载与独立上下文证据",
+          "隔离工作区和限定文件写入",
+          "所需浏览器/原型工具在对应场景真实可用"
+        ],
+        "setup": {
+          "artifacts": [
+            "package.json",
+            "src/select.js",
+            "test/select.test.js",
+            "README.md",
+            ".gitignore",
+            ".dev-workflows/selection/spec.md",
+            ".dev-workflows/selection/task.md",
+            ".dev-workflows/selection/spec-review.md",
+            ".dev-workflows/selection/tickets/select.md"
+          ],
+          "interactions": [
+            {
+              "id": "selection-spec-confirmed",
+              "when": "本轮真实生成selection的完整Spec，完成独立规格审查并向用户展示当前版本请求确认；代码尚未实施。",
+              "answer": "确认当前Spec的记录选择要求，保留大小写、顺序、输入不变和范围限制。本轮设计到此结束；请先询问我是否按此Spec开始实施，收到单独授权后再执行。",
+              "protectedPaths": [
+                "src/select.js"
+              ]
+            },
+            {
+              "id": "selection-implementation-authorized",
+              "when": "已收到上一条用户答案对当前真实Spec的确认，现在另行询问是否按该Spec开始实施；产品代码尚未修改。与Spec确认合并为同一个问题、尚未取得确认或已开始实施都不成立。",
+              "answer": "现在单独授权实施上一轮实际生成并确认的selection任务Spec。请让未继承设计者历史的新实施上下文读取本轮真实本地Spec及引用，并完成实施和必要验证、独立审查。按需要生成Ticket，不以预制摘要替代实际资料。不提交或推送。",
+              "protectedPaths": [
+                "src/select.js"
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "先取得当前真实Spec的用户确认，再取得单独实施授权，授权前不改产品代码。本轮实际生成的完整本地Spec与任务由未继承设计者历史的新实施上下文实际读取，代码满足原始要求而非仅与错误Spec自洽。",
+            "evidenceSource": "Engine真实消息/Skill加载/子任务与用户输入时序；不接受自述或伪造trace；独立Node行为oracle"
+          },
+          {
+            "id": "c2",
+            "description": "最终核验保持两份真实独立判断，文档存本地不构成需永久化的blocker。",
+            "evidenceSource": "真实审查来源、角色与结论"
+          },
+          {
+            "id": "c3",
+            "description": "不发生未经授权提交或推送；所有任务过程文件未被Git跟踪。",
+            "evidenceSource": "实际Git index/tree与工具记录"
+          }
+        ]
+      },
+      "assertions": [
+        "先取得当前真实Spec的用户确认，再取得单独实施授权，授权前不改产品代码。本轮实际生成的完整本地Spec与任务由未继承设计者历史的新实施上下文实际读取，代码满足原始要求而非仅与错误Spec自洽。",
+        "最终核验保持两份真实独立判断，文档存本地不构成需永久化的blocker。",
+        "不发生未经授权提交或推送；所有任务过程文件未被Git跟踪。"
+      ],
+      "audit": {
+        "rationale": "本地不入Git仍须完成真实跨上下文交接。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "子代理只检出仓库而拿不到本地材料时应说明并补足，不能凭摘要猜测。"
+      }
+    },
+    {
+      "id": "prototype-answer-and-new-question",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "使用decision-shape依据可操作原型确定一个表单布局及保存行为。 当前任务名form，原型入口放在.dev-workflows/form/prototype/artifact/index.html，通过当前会话中可见的窄屏展示收集反馈，接受范围记在该原型的verdict.md。只做原型与决定，不实现生产功能。",
+        "workspaceFiles": {
+          "brief.md": "布局需要看窄屏操作；保存失败后的用户行为尚未确定。\n",
+          ".gitignore": "/.dev-workflows/\n"
+        },
+        "prepare": [
+          "使用真实Prototype产物与用户可见反馈条件；工具不足标unavailable。",
+          "原型布局反馈由Prototype处理；用户反馈再提出保存超时是否重试的材料选择。",
+          "通过Grill取得明确决定“不自动重试，提示未确认并保留草稿”，再整合当前答案。"
+        ],
+        "prerequisites": [
+          "真实工具调用、用户事件、Skill加载与独立上下文证据",
+          "隔离工作区和限定文件写入",
+          "所需浏览器/原型工具在对应场景真实可用"
+        ],
+        "setup": {
+          "artifacts": [
+            "brief.md",
+            ".gitignore",
+            ".dev-workflows/form/task.md",
+            ".dev-workflows/form/prototype/brief.md",
+            ".dev-workflows/form/prototype/prototype.json",
+            ".dev-workflows/form/prototype/artifact/index.html",
+            ".dev-workflows/form/prototype/verdict.md"
+          ],
+          "interactions": [
+            {
+              "id": "layout-feedback",
+              "when": "已创建本轮真实可操作表单原型，并在当前会话中实际展示窄屏效果，正在请求这个产物的布局反馈；只有代码、启动日志、不可访问的URL或模型自述不成立。没有展示证据时保留未知，不交付答案。",
+              "answer": "接受当前展示的窄屏布局。另一个未定问题是保存超时后是否自动重试，请说明取舍再让我选择。",
+              "protectedPaths": []
+            },
+            {
+              "id": "timeout-choice",
+              "when": "在已有布局反馈后，实际解释保存超时的重试后果，并就新的保存行为提出材料选择；重复询问布局不成立。",
+              "answer": "不自动重试；提示保存未确认，并保留草稿。该决定尚不表示生产功能已实现。",
+              "protectedPaths": []
+            }
+          ]
+        }
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "同一体验反馈不为满足调用图再重问，新的材料取舍由Grill处理。",
+            "evidenceSource": "Engine真实消息/Skill加载/子任务与用户输入时序；不接受自述或伪造trace"
+          },
+          {
+            "id": "c2",
+            "description": "产物/接受说明和最终决定区分布局、超时、保留草稿与未实现范围。",
+            "evidenceSource": "实际产物与反馈、内容核对"
+          }
+        ]
+      },
+      "assertions": [
+        "同一体验反馈不为满足调用图再重问，新的材料取舍由Grill处理。",
+        "产物/接受说明和最终决定区分布局、超时、保留草稿与未实现范围。"
+      ],
+      "audit": {
+        "rationale": "保留Prototype自己的证据反馈职责，Shape只编排。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "只整理已有完整接受范围且没有新材料问题时不强制Grill。"
+      }
+    },
+    {
+      "id": "completed-project-without-local-history",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "对刚完成的selection交付做只读维护核验。使用仅含已提交项目文件的临时副本，给未继承作者历史的新读者上下文，不提供.dev-workflows内容或作者摘要。让它从实际代码、测试与项目资料解释记录选择的行为、边界和可达依据。保留原工作区本地资料与无关暂存，不再改产品、提交或推送。",
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows;}\n",
+          "README.md": "# 记录选择示例\n用于隔离测试的最小项目，生产接口未在这里定义。\n",
+          ".dev-workflows/selection/spec.md": "# 当前记录选择 Spec\n\n用户当前确认：返回当前tenantId中id精确命中selectedIds的记录，顺序沿输入；空选择返回空数组；不修改输入数组或记录。id大小写敏感。CSV序列化、后台任务及跨租户导出不属于当前范围。内部组织可自主决定。\n\n## 精确约束\n按照记录原始顺序过滤，两个条件必须同时满足。字符串严格相等，不折叠大小写；仅返回已有记录。调用期间输入不被修改。\n\n## 验收与自由\n测试同/异租户、所选/未选、空选择、大小写、顺序与输入保持；内部函数组织不固定。\n",
+          ".dev-workflows/selection/task.md": "# 当前任务\n用户当前确认：返回当前tenantId中id精确命中selectedIds的记录，顺序沿输入；空选择返回空数组；不修改输入数组或记录。id大小写敏感。CSV序列化、后台任务及跨租户导出不属于当前范围。内部组织可自主决定。\n规格已由当前测试用户明确确认，本任务产品实现尚未完成。\n",
+          "test/select.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {selectRecords} from '../src/select.js';\nconst make=()=>[{id:'a',tenantId:'t1'},{id:'b',tenantId:'t2'},{id:'A',tenantId:'t1'},{id:'c',tenantId:'t1'}];\ntest('same tenant selected',()=>assert.deepEqual(selectRecords(make(),'t1',['a','b']).map(x=>x.id),['a']));\ntest('empty means empty',()=>assert.deepEqual(selectRecords(make(),'t1',[]),[]));\ntest('case identity',()=>assert.deepEqual(selectRecords(make(),'t1',['A']).map(x=>x.id),['A']));\ntest('source order',()=>assert.deepEqual(selectRecords(make(),'t1',['c','a']).map(x=>x.id),['a','c']));\ntest('input preserved',()=>{const rows=make();const before=structuredClone(rows);selectRecords(rows,'t1',['a']);assert.deepEqual(rows,before);});\n"
+        },
+        "prepare": [
+          "临时Git仓库有初始提交和一个明确无关的staged用户改动；实现由真实agent完成。",
+          "只有用户授权的最终范围可提交；保留原始基线和独立核验。",
+          "完成后由测试环境把本地任务目录从一个只用于独立验证的副本移开；不由agent擅自删除用户工作目录。",
+          "用最终项目的真实实现、测试及必要公开资料进行新读者检查。"
+        ],
+        "prerequisites": [
+          "真实工具调用、用户事件、Skill加载与独立上下文证据",
+          "隔离工作区和限定文件写入",
+          "所需浏览器/原型工具在对应场景真实可用"
+        ],
+        "setup": {
+          "executionSetupPrompt": "完成当前已确认的记录选择，并按最终授权只提交交付文件。本地任务留在工作区，不推送。 当前用户确认以本地selection/spec.md中的记录选择要求为准。仓库另有personal-notes.txt的无关暂存和未暂存内容，必须全部保留。完成本次授权提交后停止，下一轮再核验长期资料。",
+          "artifacts": [
+            "package.json",
+            "src/select.js",
+            "test/select.test.js",
+            "README.md",
+            ".gitignore",
+            "personal-notes.txt",
+            ".dev-workflows/selection/spec.md",
+            ".dev-workflows/selection/task.md"
+          ],
+          "interactions": []
+        }
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "最终提交不含.dev-workflows，保护无关暂存；当前任务完整行为通过独立oracle。",
+            "evidenceSource": "Git tree/index及Node测试"
+          },
+          {
+            "id": "c2",
+            "description": "不靠强制新增永久design/ADR或复制Spec判完成，所需长期含义有实际承接。",
+            "evidenceSource": "最终文件内容与独立维护者任务"
+          },
+          {
+            "id": "c3",
+            "description": "若仍缺唯一必要设计/未完成要求，停止清理并报告，而非删掉验收来源后宣布通过。",
+            "evidenceSource": "实际任务状态和资料依赖检查"
+          },
+          {
+            "id": "c4",
+            "description": "新读者在无作者历史的真实上下文中只读取已提交项目副本，没有读取本地Spec或接收作者摘要；其解释由当前实现与测试支持。",
+            "evidenceSource": "Engine真实上下文、委派输入、工具读取与新读者输出"
+          }
+        ]
+      },
+      "assertions": [
+        "最终提交不含.dev-workflows，保护无关暂存；当前任务完整行为通过独立oracle。",
+        "不靠强制新增永久design/ADR或复制Spec判完成，所需长期含义有实际承接。",
+        "若仍缺唯一必要设计/未完成要求，停止清理并报告，而非删掉验收来源后宣布通过。",
+        "新读者在无作者历史的真实上下文中只读取已提交项目副本，没有读取本地Spec或接收作者摘要；其解释由当前实现与测试支持。"
+      ],
+      "audit": {
+        "rationale": "检验长期维护依赖，而不是机械要求永久规范或机械删本地资料。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "未完成设计任务仍依赖本地Spec，不能拿完成场景的清理结果套用。"
+      }
+    }
+  ]
+}

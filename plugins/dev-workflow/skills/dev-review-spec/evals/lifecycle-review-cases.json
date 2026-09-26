@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-review-spec",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以实际用户答案、需求保真、文档生命周期及结果判定；方法加载只说明路由，不单独证明对齐完成。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "active-local-spec-is-valid-authority",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "当前是未参与起草的独立审查会话。使用dev-review-spec审核.dev-workflows/selection/spec.md是否足够支持本次实现，代码还没开始。用户当前原始要求如下：用户当前确认：返回当前tenantId中id精确命中selectedIds的记录，顺序沿输入；空选择返回空数组；不修改输入数组或记录。id大小写敏感。CSV序列化、后台任务及跨租户导出不属于当前范围。内部组织可自主决定。",
+      "assertions": [
+        "核对本地完整规格与原始要求，允许当前任务引用本地材料。",
+        "不因尚未实现、未提交或没有docs/design而报告规格必须永久化；仍检查真实遗漏与引用可达。",
+        "只读报告，当前独立上下文可直接执行，不重复建立同职责审查。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows;}\n",
+          "README.md": "# 记录选择示例\n用于隔离测试的最小项目，生产接口未在这里定义。\n",
+          ".dev-workflows/selection/spec.md": "# 当前记录选择 Spec\n\n用户当前确认：返回当前tenantId中id精确命中selectedIds的记录，顺序沿输入；空选择返回空数组；不修改输入数组或记录。id大小写敏感。CSV序列化、后台任务及跨租户导出不属于当前范围。内部组织可自主决定。\n\n## 精确约束\n按照记录原始顺序过滤，两个条件必须同时满足。字符串严格相等，不折叠大小写；仅返回已有记录。调用期间输入不被修改。\n\n## 验收与自由\n测试同/异租户、所选/未选、空选择、大小写、顺序与输入保持；内部函数组织不固定。\n",
+          ".dev-workflows/selection/task.md": "# 当前任务\n用户当前确认：返回当前tenantId中id精确命中selectedIds的记录，顺序沿输入；空选择返回空数组；不修改输入数组或记录。id大小写敏感。CSV序列化、后台任务及跨租户导出不属于当前范围。内部组织可自主决定。\n规格已由当前测试用户明确确认，本任务产品实现尚未完成。\n",
+          "test/select.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {selectRecords} from '../src/select.js';\nconst make=()=>[{id:'a',tenantId:'t1'},{id:'b',tenantId:'t2'},{id:'A',tenantId:'t1'},{id:'c',tenantId:'t1'}];\ntest('same tenant selected',()=>assert.deepEqual(selectRecords(make(),'t1',['a','b']).map(x=>x.id),['a']));\ntest('empty means empty',()=>assert.deepEqual(selectRecords(make(),'t1',[]),[]));\ntest('case identity',()=>assert.deepEqual(selectRecords(make(),'t1',['A']).map(x=>x.id),['A']));\ntest('source order',()=>assert.deepEqual(selectRecords(make(),'t1',['c','a']).map(x=>x.id),['a','c']));\ntest('input preserved',()=>{const rows=make();const before=structuredClone(rows);selectRecords(rows,'t1',['a']);assert.deepEqual(rows,before);});\n"
+        }
+      },
+      "expected": {
+        "output": "给出任务范围的实际内容判断与限制，位置本身不是缺陷。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "活动Spec生命周期与最终项目文档不同。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "规范缺租户隔离、唯一引用不可达或用户决定冲突时应报告实质缺陷。"
+      }
+    },
+    {
+      "id": "final-doc-local-only-required-meaning",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用dev-review-spec审查拟长期维护的docs/api.md。本任务之后会删除本地资料；本轮只审查资料保留，不评价代码实现。",
+      "assertions": [
+        "识别最终公共资料将失去唯一必要定义的缺口，说明丢失的条件和后果。",
+        "建议保留足够的当前合同/理由或可靠可达依据，不要求搬运整份任务历史。",
+        "不删本地文件，不擅自声明代码已经实现该承诺。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "docs/api.md": "# API合同\n错误重试策略完全依照[唯一决策](../.dev-workflows/x/retry.md)。本页无其他定义。\n",
+          ".dev-workflows/x/retry.md": "# 已确认重试决定\n用户要求具有副作用的请求超时后不自动重试；只有拿到幂等键且验证服务端承诺后才可重试。\n"
+        }
+      },
+      "expected": {
+        "output": "报告特定长期依据缺口，而非把所有本地Spec当成错误。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "收尾仍需保护不可丢失的真实知识。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "关键重试合同已完整由适用API说明及测试承载且本地只是过程记录时不强制保留全文。"
+      }
+    }
+  ]
+}

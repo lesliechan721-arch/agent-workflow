@@ -1,6 +1,6 @@
 interface:
   display_name: "需求与设计"
-  short_description: "对齐需求并维护可交接的项目设计，独立请求在实施前结束"
+  short_description: "对齐需求并维护可交接的完整任务规格，独立请求在实施前结束"
   default_prompt: "使用 $dev-design 处理当前请求，遵循实际范围、已有资料和授权。"
 policy:
   allow_implicit_invocation: true

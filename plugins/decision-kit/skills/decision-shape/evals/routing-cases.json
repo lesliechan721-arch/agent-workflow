@@ -40,7 +40,7 @@
       "audit": {
         "rationale": "逐轮依赖已是明确前提，保留Grill正例。",
         "allowedVariance": "允许等价表达及适用辅助能力；触发不证明实际对齐完成，后续质量另查。",
-        "minimalCounterexample": "仅一个给出背景即可回答的选择时，Shape可直接询问。"
+        "minimalCounterexample": "已有完整有效回答且没有新材料问题时直接复用，不再安排问答。"
       }
     },
     {
@@ -212,14 +212,15 @@
         "query": "用 decision-shape 对齐当前单个选择：只需决定按钮显示“导出”还是“下载”，其他要求已确认；在当前对话询问并记录答案即可。",
         "expected": {
           "loadedSkills": [
-            "decision-shape"
+            "decision-shape",
+            "decision-grill"
           ]
         }
       },
       "audit": {
-        "rationale": "简单受委托对齐不强制完整访谈或原型。",
+        "rationale": "受委托的单个材料选择也采用Grill方法，答案充分时可一轮结束。",
         "allowedVariance": "允许等价表达及适用辅助能力；触发不证明实际对齐完成，后续质量另查。",
-        "minimalCounterexample": "需要深入检验相互依赖取舍时使用Grill。"
+        "minimalCounterexample": "按钮文字已明确确认时复用原答案，不强制重问。"
       }
     }
   ]

@@ -151,7 +151,7 @@
       },
       "audit": {
         "rationale": "显式决策访谈意图覆盖实施语境。",
-        "minimalCounterexample": "若只说明导出范围未定并要求实现，没有逐轮推演意图，则不应加载 decision-grill。",
+        "minimalCounterexample": "导出范围、权限和格式已有完整确认且没有新材料问题时不加载。",
         "errorCost": "high",
         "allowedVariance": "可以先查事实，但必须加载 decision-grill 而不是只做局部澄清。"
       }
@@ -346,15 +346,15 @@
       ],
       "input": {
         "query": "实现导出功能，但导出全部还是当前筛选结果还没定。",
-        "expectedLoad": false,
+        "expectedLoad": true,
         "workspaceFixture": "neutral_export_repo",
         "useProjectRules": false
       },
       "audit": {
-        "rationale": "这是具体实施需求的关键歧义，不是逐轮决策访谈；单 Skill trigger suite 只要求 decision-grill 不加载。",
-        "minimalCounterexample": "若用户要求围绕范围、权限和格式逐轮压力测试并形成共享方案，则应加载 decision-grill。",
+        "rationale": "导出全部或当前筛选是用户尚未决定的材料选择；Grill不要求多轮访谈才适用。",
+        "minimalCounterexample": "用户已经明确导出当前筛选结果且其它要求完整时可直接实施。",
         "errorCost": "high",
-        "allowedVariance": "可以直接询问或通过其它可用机制处理，但不能加载 decision-grill；跨 Skill 选择由 router suite 验证。"
+        "allowedVariance": "先查明实际代码与后果，再采用Grill取得当前选择；可一问完成，不要求新建子代理。"
       }
     },
     {

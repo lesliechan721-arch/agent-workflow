@@ -14,6 +14,14 @@
         "dev-workflow": {},
         "decision-kit": {}
       }
+    },
+    "project-lifecycle": {
+      "scope": "project",
+      "plugins": {
+        "dev-workflow": {},
+        "decision-kit": {},
+        "browser-use": {}
+      }
     }
   },
   "suites": [
@@ -224,6 +232,25 @@
       "releaseSplits": [
         "validation"
       ]
+    },
+    {
+      "id": "method-lifecycle-workflow",
+      "kind": "codex-workflow",
+      "cases": "method-lifecycle-workflow.cases.json",
+      "profiles": [
+        "project-lifecycle"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000,
+      "requiredForRelease": false,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "method-lifecycle-workflow.mjs"
+        ],
+        "allowedModels": []
+      }
     }
   ]
 }
