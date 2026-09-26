@@ -308,7 +308,7 @@ describe('TUI v8.2 stage 5', () => {
     expect(frame(instance, size)).toContain('› source-10');
 
     await input(instance, 'a', '\u001B[B');
-    expect(frame(instance, size)).toContain('› 检查全部来源 [r]');
+    expect(frame(instance, size)).toMatch(/› 检查全部来源 +\[r\]/u);
     await input(instance, '\r');
     expect(recheckAll).toHaveBeenCalledOnce();
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceList' });
@@ -644,15 +644,17 @@ describe('plugin detail readable structured facts', () => {
     expect(initial).toContain('› ');
     expect(initial).not.toContain('完整基本信息');
     expect(initial).toContain('Esc 返回');
-    expect(initial).toContain('PgUp/PgDn 翻信息');
+    expect(initial).toContain('←→ 翻信息');
+    expect(initial).not.toContain('› Demo');
     expect(initial).not.toContain('复制全文');
     expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
     const pages: string[] = [];
     for (let page = 0; page < 30; page += 1) {
       const current = frame(instance, size);
       pages.push(current);
-      if (!current.includes('↓ 后面还有')) break;
-      await input(instance, '\u001B[6~');
+      const pageNumbers = current.match(/(\d+) \/ (\d+)/u);
+      if (pageNumbers?.[1] === pageNumbers?.[2]) break;
+      await input(instance, '\u001B[C');
     }
     const allPages = pages.join('\n');
     expect(allPages.replace(/\s/gu, '')).toContain('摘要完整结尾');
@@ -664,8 +666,10 @@ describe('plugin detail readable structured facts', () => {
     instance.rerender(<ConsoleAppV4 controller={value} size={size.columns === 60
       ? { columns: 80, rows: 24 } : { columns: 60, rows: 18 }} />);
     await nextTurn(2);
-    for (let page = 0; page < 30 && instance.lastFrame()?.includes('↓ 后面还有'); page += 1) {
-      await input(instance, '\u001B[6~');
+    for (let page = 0; page < 30; page += 1) {
+      const pageNumbers = instance.lastFrame()?.match(/(\d+) \/ (\d+)/u);
+      if (pageNumbers?.[1] === pageNumbers?.[2]) break;
+      await input(instance, '\u001B[C');
     }
     expect(instance.lastFrame()).toContain('使用位置');
     await input(instance, '\u001B');

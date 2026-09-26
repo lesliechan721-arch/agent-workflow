@@ -858,7 +858,7 @@ describe('Portable Skills TUI V1', () => {
 
       if (method === 'focused continue') {
         await send(instance, 'a');
-        expect(instance.lastFrame()).toContain('› 继续（3） [c]');
+        expect(instance.lastFrame()).toMatch(/› 继续（3） +\[c\]/u);
         await send(instance, '\r');
       } else {
         await send(instance, 'c');
@@ -885,7 +885,7 @@ describe('Portable Skills TUI V1', () => {
 
     if (fixture.method === 'focused continue') {
       await send(instance, 'a');
-      expect(instance.lastFrame()).toContain('› 继续（0） [c]');
+      expect(instance.lastFrame()).toMatch(/› 继续（0） +\[c\]/u);
       await send(instance, '\r');
     } else {
       expect(instance.lastFrame()).toContain('› [ ] author-skill');
@@ -929,8 +929,8 @@ describe('Portable Skills TUI V1', () => {
     expect(value.snapshot.router.current.route).toEqual({
       name: 'portableSkillSelect', pluginId: 'official/toolkit',
     });
-    expect(instance.lastFrame()).toContain(fixture.method === 'focused continue'
-      ? '› 继续（0） [c]' : '› [ ] author-skill');
+    expect(instance.lastFrame()).toMatch(fixture.method === 'focused continue'
+      ? /› 继续（0） +\[c\]/u : /› \[ \] author-skill/u);
     expect(capture).not.toHaveBeenCalled();
     expect(executeOperation).not.toHaveBeenCalled();
   });
@@ -1701,7 +1701,7 @@ describe('Portable Skills TUI V1', () => {
       expect(technicalFrame).toContain(title);
     }
     expect(technicalFrame).toContain(size.rows === 18 ? '另有 3 条技术消息' : '另有 1 条技术消息');
-    expect(technicalFrame).toContain('d 技术进度');
+    expect(technicalFrame).toContain('d 返回摘要');
     expect(technicalFrame).toContain('[y] 复制全文');
     expect(technicalFrame.match(/[✓●○×] /gu)).toHaveLength(4);
     expect(technicalFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
@@ -1840,7 +1840,7 @@ describe('Portable Skills TUI V1', () => {
     await send(instance, '?');
     const helpFrame = instance.lastFrame() ?? '';
     expect(helpFrame).toContain('当前页快捷键');
-    expect(helpFrame).toMatch(/d\s+打开技术详情/u);
+    expect(helpFrame).toMatch(/d\s+技术详情/u);
     expect(helpFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
     await send(instance, '?', 'd');
     if (size.rows === 18) {
@@ -1860,7 +1860,7 @@ describe('Portable Skills TUI V1', () => {
     for (const label of ['返回修改', '返回插件详情']) {
       await focusPortableAction(instance, label);
       const technicalFrame = instance.lastFrame() ?? '';
-      expect(technicalFrame).toContain('技术详情');
+      expect(technicalFrame).toContain('d 返回摘要');
       expect(technicalFrame).toContain('failure code');
       expect(technicalFrame).toContain('verification missing');
       expect(technicalFrame).toContain('Skills CLI version');
@@ -1915,7 +1915,7 @@ describe('Portable Skills TUI V1', () => {
     await send(instance, '?');
     const helpFrame = instance.lastFrame() ?? '';
     expect(helpFrame).toContain('当前页快捷键');
-    expect(helpFrame).toMatch(/d\s+打开技术详情/u);
+    expect(helpFrame).toMatch(/d\s+技术详情/u);
     expect(helpFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
     await send(instance, '?', 'd');
     for (const label of ['返回修改', '返回插件详情']) {
@@ -1924,7 +1924,7 @@ describe('Portable Skills TUI V1', () => {
       expect(frame).toMatch(/blocked-skill-0\s+结果未知 · Agent：无法确认/u);
       expect(frame).toContain('第 1–1 项，共 10 项');
       expect(frame).toMatch(/范围\s+当前项目|第 1–1 项，共 10 项 · 当前项目/u);
-      expect(frame).toContain('技术详情');
+      expect(frame).toContain('d 返回摘要');
       expect(frame).toContain('failure code');
       expect(frame).not.toContain('sha256:blocked');
       expect(frame).toContain(`› ${label}`);
@@ -1993,7 +1993,7 @@ describe('Portable Skills TUI V1', () => {
     await send(instance, '?');
     const helpFrame = instance.lastFrame() ?? '';
     expect(helpFrame).toContain('当前页快捷键');
-    expect(helpFrame).not.toMatch(/d\s+打开技术详情/u);
+    expect(helpFrame).not.toMatch(/d\s+技术详情/u);
     await send(instance, '?');
     expect(instance.lastFrame()).toBe(initialFrame);
 
@@ -2054,7 +2054,7 @@ describe('Portable Skills TUI V1', () => {
       expect(allPages).toContain('Catalog 配置：config');
       expect(frame).toMatch(/另有 \d+ 项/u);
       expect(frame).toContain(`› ${label}`);
-      expect(frame).toMatch(/d\s+技术详情/u);
+      expect(frame).toMatch(/d\s+返回摘要/u);
       expect(frame).toContain('[y] 复制全文');
       expect(frame.match(/›/gu)).toHaveLength(1);
       expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
@@ -2289,7 +2289,7 @@ describe('Portable Skills TUI V1', () => {
 
     await send(instance, ...Array.from({ length: Math.floor(size.count / 2) }, () => '\u001B[B'));
     await send(instance, 'a');
-    expect(instance.lastFrame()).toContain(`› 继续（${size.count}） [c]`);
+    expect(instance.lastFrame()).toMatch(new RegExp(String.raw`› 继续（${size.count}） +\[c\]`, 'u'));
     await send(instance, 'a');
     expect(instance.lastFrame()).toContain(`› [x] portable-skill-${Math.floor(size.count / 2)}`);
     await send(instance, 'a');

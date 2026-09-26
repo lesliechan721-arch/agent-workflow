@@ -144,15 +144,18 @@ describe('dependency graph view v8', () => {
       </ScreenFrame>;
       const instance = render(frame(first.focusRowId));
       const renderedLines = (instance.lastFrame() ?? '').split('\n');
-      const consumerIndex = renderedLines.findIndex((line) => line.includes('消费者') && line.includes('┐'));
+      const consumerIndex = renderedLines.findIndex((line) => line.includes('消费者') && line.includes('┄┄▷ 当前'));
       const rootLine = renderedLines.find((line) => line.includes('◆ root'))!;
       expect(consumerIndex).toBeGreaterThanOrEqual(0);
       const displayColumn = (line: string, marker: string): number =>
         stringWidth(line.slice(0, line.indexOf(marker)));
-      const junctionColumn = displayColumn(renderedLines[consumerIndex]!, '┐');
+      const rootColumn = displayColumn(rootLine, '◆');
+      expect(rootColumn).toBeLessThanOrEqual(4);
       expect(renderedLines[consumerIndex + 1]).toContain('│');
-      expect(displayColumn(renderedLines[consumerIndex + 1]!, '│')).toBe(junctionColumn);
-      expect(displayColumn(rootLine, '◆')).toBe(junctionColumn);
+      expect(displayColumn(renderedLines[consumerIndex + 1]!, '│')).toBe(rootColumn);
+      expect(renderedLines.findIndex((line) => line.includes('◆ root'))).toBeGreaterThan(consumerIndex);
+      const dependencyLine = renderedLines.find((line) => line.includes('━━▶ ready'));
+      if (dependencyLine) expect(displayColumn(dependencyLine, dependencyLine.includes('├') ? '├' : '└')).toBe(rootColumn);
       expect(first.rows[0]?.section).toBe('使用它的插件 → 当前插件');
       expect(first.rows.find((row) => row.node.branch === 'root')?.beforeLines)
         .toEqual(expect.arrayContaining([expect.stringContaining('▼ 需要')]));

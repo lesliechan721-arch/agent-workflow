@@ -76,6 +76,93 @@ function frame(instance: ReturnType<typeof render>, size: { columns: number; row
 
 describe('v8.4 page contracts', () => {
   it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'keeps help readable without changing the underlying list or its focus at $columns x $rows', async (size) => {
+      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(projectActionsData()),
+        captureEvidence: vi.fn(), executeIntent: vi.fn() });
+      await controller.load(); controller.push({ name: 'pluginList', mode: 'browse' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size}
+        onSessionNavigation={vi.fn().mockResolvedValue('completed')} />);
+      await tick();
+      await input(instance, '\u001b[B');
+      const before = frame(instance, size);
+      await input(instance, '?');
+      let help = frame(instance, size);
+      expect(help).toContain('当前页快捷键');
+      for (let index = 0; index < 4; index += 1) {
+        await input(instance, '\u001b[C');
+        help += frame(instance, size);
+      }
+      expect(help).toContain('/ 搜索');
+      expect(help).toContain('f 筛选');
+      expect(help).toContain('m 多选');
+      expect(help).toContain('o 查看操作记录');
+      await input(instance, '\u001b');
+      expect(frame(instance, size)).toBe(before);
+    },
+  );
+
+  it('advertises source information paging only while that information owns focus', async () => {
+    const loaded = data();
+    loaded.configuredSources = [{ id: 'official', type: 'path', primary: true, path: '/catalog', autoCheck: true }];
+    loaded.payload.catalog.sources = [{ id: 'official', identity: 'source', type: 'path', primary: true,
+      requestedRef: 'path', freshness: 'active' }];
+    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence: vi.fn(), executeIntent: vi.fn() });
+    await controller.load(); controller.push({ name: 'sourceDetail', sourceId: 'official' });
+    const size = { columns: 60, rows: 18 };
+    const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+    await tick();
+    expect(frame(instance, size)).toContain('PgUp/PgDn 翻信息');
+    await input(instance, 'a');
+    const before = frame(instance, size);
+    expect(before).not.toContain('PgUp/PgDn 翻信息');
+    await input(instance, '?');
+    expect(frame(instance, size)).not.toContain('PgUp/PgDn 翻信息');
+    await input(instance, '\u001b');
+    expect(frame(instance, size)).toBe(before);
+  });
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'pages readonly plugin information without moving action focus at $columns x $rows', async (size) => {
+      const loaded = data();
+      loaded.projectIntent = { state: 'ready', roots: [] };
+      loaded.pluginSummaries = [{ pluginId: 'official/demo', pluginName: 'demo', displayName: 'Demo',
+        description: Array.from({ length: 24 }, (_, index) => `用途行 ${index + 1}`).join('\n'),
+        version: '1.0.0', supportedTargets: { claude: ['project'], codex: [] }, configFieldCount: 0 }];
+      const executeIntent = vi.fn();
+      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
+        captureEvidence: vi.fn(), executeIntent });
+      await controller.load(); controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+      const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+      await tick();
+      const first = frame(instance, size);
+      expect(first.split('\n').find((line) => line.includes('╭'))).toContain('Demo');
+      expect(first).not.toContain('› Demo');
+      const focusedAction = first.split('\n').find((line) => line.includes('› '))?.trim();
+      expect(focusedAction).toBeTruthy();
+      expect(first).toContain('1 /');
+      let seen = first;
+      for (let index = 0; index < 30; index += 1) {
+        await input(instance, '\u001b[C');
+        const current = frame(instance, size);
+        expect(current.split('\n').find((line) => line.includes('› '))?.trim()).toBe(focusedAction);
+        seen += current;
+      }
+      expect(seen).toContain('用途行 24');
+      expect(seen).toContain('目录版本 1.0.0');
+      await input(instance, '\u001b[D');
+      expect(frame(instance, size)).not.toContain('› Demo');
+      for (let index = 0; index < 8 && !frame(instance, size).includes('› 更多操作'); index += 1) {
+        await input(instance, '\u001b[B');
+      }
+      expect(frame(instance, size)).toContain('› 更多操作');
+      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route.name).toBe('pluginMore');
+      expect(executeIntent).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
     'returns to the same project issues action before another Enter at $columns x $rows', async (size) => {
       const loadStatus = vi.fn().mockResolvedValue(projectActionsData());
       const captureEvidence = vi.fn();
@@ -204,7 +291,7 @@ describe('v8.4 page contracts', () => {
       expect(controller.snapshot.router.current.context.query).toBe('pending');
       expect(controller.snapshot.projectInventory?.syncTargets).toHaveLength(1);
       expect(returned).toContain('当前条件无匹配');
-      expect(returned).toContain('› 重新检查项目 [r]');
+      expect(returned).toMatch(/› 重新检查项目 +\[r\]/u);
       await input(instance, '\r');
       expect(loadStatus).toHaveBeenCalledTimes(3);
       expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
@@ -246,14 +333,14 @@ describe('v8.4 page contracts', () => {
       const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
       await tick();
       await input(instance, 'a');
-      expect(frame(instance, size)).toContain('› 同步全部可处理声明（1） [c]');
+      expect(frame(instance, size)).toMatch(/› 同步全部可处理声明（1） +\[c\]/u);
       await input(instance, '\r');
       expect(controller.snapshot.router.current.route.name).toBe('reviewPreparing');
       await vi.waitFor(() => expect(controller.snapshot.reviewPreparation?.state).toBe('failed'));
       await input(instance, '\u001b');
       const returned = frame(instance, size);
       expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
-      expect(returned).toContain('› 同步全部可处理声明（1） [c]');
+      expect(returned).toMatch(/› 同步全部可处理声明（1） +\[c\]/u);
       expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({ kind: 'pluginWriteBatch' }), expect.any(AbortSignal));
       expect(executeIntent).not.toHaveBeenCalled();
       if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(
@@ -272,13 +359,13 @@ describe('v8.4 page contracts', () => {
       await controller.load(); controller.push({ name: 'projectStatus' });
       const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
       await tick();
-      expect(frame(instance, size)).toContain('› 重新检查项目 [r]');
+      expect(frame(instance, size)).toMatch(/› 重新检查项目 +\[r\]/u);
       await input(instance, '\r');
       expect(loadStatus).toHaveBeenCalledTimes(2);
       const inserted = frame(instance, size);
       expect(inserted).toContain('[项目声明 2]');
       expect(controller.snapshot.projectInventory?.declaredRoots).toHaveLength(2);
-      expect(inserted).toContain('› 重新检查项目 [r]');
+      expect(inserted).toMatch(/› 重新检查项目 +\[r\]/u);
       await input(instance, '\r');
       expect(loadStatus).toHaveBeenCalledTimes(3);
       expect(controller.snapshot.router.current.route.name).toBe('projectStatus');
@@ -345,7 +432,7 @@ describe('v8.4 page contracts', () => {
       expect(controller.snapshot.projectInventoryRefresh.state).toBe('idle');
       const recovered = frame(instance, size);
       expect(recovered).toContain('› 工具二');
-      expect(recovered).toContain('[/] 工具二');
+      expect(recovered).toMatch(/搜索 工具二 +\[\/\]/u);
       expect(recovered).not.toContain('上次检查结果');
       expect(controller.snapshot.router.current.context.query).toBe('工具二');
       expect(controller.snapshot.projectInventory?.declaredRoots).toHaveLength(2);
@@ -367,7 +454,7 @@ describe('v8.4 page contracts', () => {
       await input(instance, 'r');
       expect(loadStatus).toHaveBeenCalledTimes(2);
       const afterRefresh = frame(instance, size);
-      expect(afterRefresh).toContain('› 重新检查项目 [r]');
+      expect(afterRefresh).toMatch(/› 重新检查项目 +\[r\]/u);
       expect(afterRefresh).not.toContain('错误详情');
       await input(instance, '\r');
       expect(loadStatus).toHaveBeenCalledTimes(3);
@@ -406,7 +493,7 @@ describe('v8.4 page contracts', () => {
       await tick();
       await input(instance, '/'); await input(instance, 'no-match'); await input(instance, '\r');
       await input(instance, 'a');
-      expect(frame(instance, size)).toContain('› 同步全部可处理声明（1） [c]');
+      expect(frame(instance, size)).toMatch(/› 同步全部可处理声明（1） +\[c\]/u);
       for (let index = 0; index < 8 && !frame(instance, size).includes('› 错误详情'); index += 1) {
         await input(instance, '\u001b[B');
       }
@@ -414,7 +501,7 @@ describe('v8.4 page contracts', () => {
       await input(instance, 'r');
       expect(loadStatus).toHaveBeenCalledTimes(2);
       const afterRefresh = frame(instance, size);
-      expect(afterRefresh).toContain('› 重新检查项目 [r]');
+      expect(afterRefresh).toMatch(/› 重新检查项目 +\[r\]/u);
       expect(afterRefresh).toContain('同步全部可处理声明（1）');
       await input(instance, '\r');
       expect(loadStatus).toHaveBeenCalledTimes(3);
@@ -439,12 +526,12 @@ describe('v8.4 page contracts', () => {
       await input(instance, 'a');
       await input(instance, '\r');
       expect(frame(instance, size)).toContain('项目状态安全详情');
-      expect(frame(instance, size)).toContain('› 重新检查项目 [r]');
+      expect(frame(instance, size)).toMatch(/› 重新检查项目 +\[r\]/u);
       await input(instance, 'r');
       expect(loadStatus).toHaveBeenCalledTimes(2);
-      expect(frame(instance, size)).toContain('› 重新检查项目 [r]');
+      expect(frame(instance, size)).toMatch(/› 重新检查项目 +\[r\]/u);
       await input(instance, 'd');
-      expect(frame(instance, size)).toContain('› 重新检查项目 [r]');
+      expect(frame(instance, size)).toMatch(/› 重新检查项目 +\[r\]/u);
       await input(instance, '\r');
       expect(loadStatus).toHaveBeenCalledTimes(3);
     },

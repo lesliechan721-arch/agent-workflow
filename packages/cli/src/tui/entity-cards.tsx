@@ -2,7 +2,9 @@ import { Box, Text } from 'ink';
 import type { ReactNode } from 'react';
 import stringWidth from 'string-width';
 
+import { ObjectCardFrame } from './components.js';
 import { platformLabel, scopeLabel } from './glossary.js';
+import { Pager } from './reader.js';
 import type { PluginDetailPlacement, PluginDetailSubject } from './plugin-detail.js';
 import type { ProjectInventoryRoot, ProjectInventoryState,
   ProjectInventoryTarget } from './project-inventory.js';
@@ -15,11 +17,12 @@ interface CardLine { cells: CardCell[] }
 type CardSection = { key: string; offset: number; height: number };
 
 export interface EntityCardLayout {
-  /** Full height includes both borders, one identity line, and all fact lines. */
+  /** Full rendered height includes the fixed header, fact lines, and bottom border. */
   fullHeight: number;
-  /** Top border plus the fixed identity line. */
+  /** Fixed header rows; identity may be embedded in the top border. */
   headerHeight: number;
   factRows: number;
+  horizontalPaging?: boolean;
   /** Each offset and height is measured in rendered fact lines. */
   sections: CardSection[];
 }
@@ -78,7 +81,7 @@ const projectStates: Record<ProjectInventoryState, { label: string; status: TuiS
 };
 
 export type EntityPlacementFact = Pick<PluginDetailPlacement, 'platform' | 'scope' | 'observation'
-  | 'statusState' | 'projectState' | 'declared' | 'actual' | 'installedVersion'>
+  | 'statusState' | 'projectState' | 'declared' | 'actual' | 'installedVersion' | 'expectedVersion'>
   & { shared: boolean };
 
 function placementHealth(fact: EntityPlacementFact) {
@@ -205,7 +208,8 @@ function layout(lines: CardLine[], sections: CardSection[]): EntityCardLayout {
 
 export function pluginDetailCardLayout(subject: PluginDetailSubject, width: number): EntityCardLayout {
   const { lines, sections } = pluginFacts(subject, width);
-  return layout(lines, sections);
+  return { headerHeight: 1, factRows: lines.length, fullHeight: lines.length + 2,
+    horizontalPaging: true, sections };
 }
 
 export function projectRootCardLayout(
@@ -241,15 +245,21 @@ export function EntityIdentityCard(props: {
 
 /** A single placement uses the same fields, colors, and wrapping as detail and project cards. */
 export function EntityPlacementRow(props: { placement: EntityPlacementFact; width: number }): React.JSX.Element {
+  return <FactRows lines={placementRows(props.placement, props.width)} />;
+}
+
+function placementRows(placement: EntityPlacementFact, width: number): CardLine[] {
   const lines: CardLine[] = [];
-  addFields(lines, [], 'placement', props.width, placementFields(props.placement));
-  return <FactRows lines={lines} />;
+  addFields(lines, [], 'placement', width, placementFields(placement));
+  if (placement.declared && placement.expectedVersion) {
+    addFields(lines, [], 'expectedVersion', width,
+      [muted('声明期望版本'), plain(placement.expectedVersion)]);
+  }
+  return lines;
 }
 
 export function entityPlacementRowHeight(placement: EntityPlacementFact, width: number): number {
-  const lines: CardLine[] = [];
-  addFields(lines, [], 'placement', width, placementFields(placement));
-  return lines.length;
+  return placementRows(placement, width).length;
 }
 
 function cardWindow(lines: CardLine[], offset: number, limit: number | undefined) {
@@ -265,40 +275,52 @@ export function entityCardWindowHeight(
   const start = Math.min(Math.max(0, Math.floor(lineOffset)), Math.max(0, card.factRows - 1));
   const visible = Math.min(card.factRows - start,
     lineLimit === undefined ? card.factRows : Math.max(1, Math.floor(lineLimit)));
-  return card.headerHeight + visible + 1
-    + Number(start > 0) + Number(start + visible < card.factRows);
+  return card.headerHeight + visible + 1 + (card.horizontalPaging
+    ? Number(lineLimit !== undefined)
+    : Number(start > 0) + Number(start + visible < card.factRows));
 }
 
-function FactRows(props: { lines: CardLine[]; offset?: number; limit?: number }): React.JSX.Element {
+function FactRows(props: {
+  lines: CardLine[]; offset?: number; limit?: number; horizontalPaging?: boolean; columns?: number;
+}): React.JSX.Element {
   const window = cardWindow(props.lines, props.offset ?? 0, props.limit);
   return <>
-    {window.before ? <Text color={tuiTheme.colors.muted}>↑ 前面还有信息</Text> : null}
+    {!props.horizontalPaging && window.before ? <Text color={tuiTheme.colors.muted}>↑ 前面还有信息</Text> : null}
     {window.shown.map((line, index) => <Text key={`${props.offset ?? 0}:${index}`}>
       {line.cells.map((cell, cellIndex) => <Text key={cellIndex}
         color={cell.role === 'status' ? tuiTheme.statusColors[cell.status ?? 'muted']
           : cell.role === 'muted' ? tuiTheme.colors.muted : tuiTheme.colors.text}
         bold={cell.role === 'platform'}>
-        {cellIndex > 0 ? ' ' : ''}{cell.text}
+        {cell.role === 'status' && props.columns
+          ? ' '.repeat(Math.max(Number(cellIndex > 0), props.columns
+              - line.cells.reduce((sum, entry) => sum + stringWidth(entry.text), 0)
+              - Math.max(0, line.cells.length - 2)))
+          : cellIndex > 0 ? ' ' : ''}{cell.text}
       </Text>)}
     </Text>)}
-    {window.after ? <Text color={tuiTheme.colors.muted}>↓ 后面还有信息</Text> : null}
+    {!props.horizontalPaging && window.after ? <Text color={tuiTheme.colors.muted}>↓ 后面还有信息</Text> : null}
+    {props.horizontalPaging && props.limit !== undefined ? <Pager
+      page={Math.floor((props.offset ?? 0) / Math.max(1, props.limit)) + 1}
+      pageCount={Math.max(1, Math.ceil(props.lines.length / Math.max(1, props.limit)))}
+      columns={props.columns} /> : null}
   </>;
 }
 
 export function PluginDetailCard(props: {
   subject: PluginDetailSubject;
   width: number;
-  focused?: boolean;
   /** Fact-line offset; excludes the identity line and borders. */
   lineOffset?: number;
   /** Fact-line count; excludes the identity line, borders, and overflow cues. */
   lineLimit?: number;
 }): React.JSX.Element {
   const { lines } = pluginFacts(props.subject, props.width);
-  return <EntityIdentityCard width={props.width} title={props.subject.displayName}
-    sourceId={props.subject.sourceId} focused={props.focused}>
-    <FactRows lines={lines} offset={props.lineOffset} limit={props.lineLimit} />
-  </EntityIdentityCard>;
+  const sizes = identityWidths(props.subject.sourceId, props.width);
+  return <ObjectCardFrame width={props.width} title={preview(props.subject.displayName, sizes.titleWidth)}
+    headerMeta={preview(props.subject.sourceId, Math.max(1, sizes.sourceWidth - 2))}>
+    <FactRows lines={lines} offset={props.lineOffset} limit={props.lineLimit}
+      horizontalPaging columns={innerWidth(props.width)} />
+  </ObjectCardFrame>;
 }
 
 export function ProjectRootCard(props: {

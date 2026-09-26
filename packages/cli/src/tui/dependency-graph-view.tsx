@@ -16,7 +16,6 @@ export interface DependencyGraphViewRow {
   edgeTarget?: string;
   label: string;
   padding: string;
-  junction?: string;
   reference?: string;
   hidden?: string;
   health: string;
@@ -58,8 +57,6 @@ function nodeHealth(row: UnifiedDependencyGraphRow): string {
 function graphLine(
   row: UnifiedDependencyGraphRow,
   columns: number,
-  junctionColumn: number,
-  directIncomingIndex: number,
   parentLabel?: string,
   rootPluginId?: string,
 ): Omit<DependencyGraphViewRow, 'id' | 'node' | 'section' | 'beforeLines'> {
@@ -75,27 +72,22 @@ function graphLine(
   const hidden = row.hiddenDescendantCount > 0 ? ` [+${row.hiddenDescendantCount}]` : undefined;
   const health = row.branch === 'root' ? `当前 · ${nodeHealth(row)}` : nodeHealth(row);
   const healthWidth = stringWidth(` [${health}]`);
-  const leftIndent = row.branch === 'dependents' ? '' : ' '.repeat(junctionColumn - 2);
-  const edgeTarget = row.branch === 'dependents' && row.depth > 1 && parentLabel
-    ? ` ${fit(parentLabel, 4)}` : undefined;
-  const labelWidth = row.branch === 'dependents'
-    ? Math.max(1, junctionColumn - 2 - stringWidth(tree) - stringWidth(edge ?? '')
-      - stringWidth(edgeTarget ?? ''))
-    : Math.max(1, columns - 2 - stringWidth(leftIndent) - stringWidth(tree)
-      - (row.branch === 'dependencies' ? stringWidth(edge ?? '') + 1 : 0)
-      - stringWidth(reference ?? '') - stringWidth(hidden ?? '') - healthWidth);
+  // Incoming arrows name their target; they no longer reserve a second horizontal column.
+  const edgeTarget = row.branch === 'dependents'
+    ? ` ${row.depth > 1 && parentLabel ? fit(parentLabel, 12) : '当前'}` : undefined;
+  const edgeWidth = edge ? stringWidth(edge) + 1 : 0;
+  const labelWidth = Math.max(1, columns - 2 - stringWidth(tree) - edgeWidth
+    - stringWidth(edgeTarget ?? '') - stringWidth(reference ?? '')
+    - stringWidth(hidden ?? '') - healthWidth);
   const label = fit(isRootReference ? '↩当前' : row.label, labelWidth);
-  const padding = row.branch === 'dependents'
-    ? ' '.repeat(Math.max(0, labelWidth - stringWidth(label))) : '';
+  const padding = ' '.repeat(Math.max(0, labelWidth - stringWidth(label)));
   return {
-    tree: `${leftIndent}${tree}`,
+    tree,
     ...(edge ? { edge } : {}),
     edgeVerified,
     ...(edgeTarget ? { edgeTarget } : {}),
     label,
     padding,
-    ...(row.branch === 'dependents'
-      ? { junction: row.depth > 1 ? '│' : directIncomingIndex === 0 ? '┐' : '┤' } : {}),
     ...(reference ? { reference } : {}),
     ...(hidden ? { hidden } : {}),
     health,
@@ -125,9 +117,7 @@ export function projectDependencyGraphView(
   ];
   const incomingCount = ordered.filter((row) => row.branch === 'dependents').length;
   const outgoingCount = ordered.filter((row) => row.branch === 'dependencies').length;
-  const junctionColumn = Math.min(30, Math.max(18, Math.floor(options.columns * 0.45)));
   const labels = new Map(projection.rows.map((row) => [`${row.branch}:${row.id}`, row.label]));
-  let directIncomingCount = 0;
   const rows = ordered.map((node, index): DependencyGraphViewRow => ({
     id: dependencyGraphViewRowId(node),
     node,
@@ -135,12 +125,11 @@ export function projectDependencyGraphView(
       ? { section: '使用它的插件 → 当前插件' }
       : index === 0 && node.branch === 'root' ? { section: '当前插件' } : {}),
     beforeLines: node.branch === 'root' && incomingCount > 0
-      ? [`${' '.repeat(junctionColumn)}│`, `${' '.repeat(junctionColumn)}▼ 需要`]
+      ? ['  │', '  ▼ 需要']
       : node.branch === 'dependencies' && ordered[index - 1]?.branch === 'root' && outgoingCount > 0
-        ? [`${' '.repeat(junctionColumn)}│`, `${' '.repeat(junctionColumn)}▼ 需要`]
+        ? ['  │', '  ▼ 需要']
         : [],
-    ...graphLine(node, Math.max(12, options.columns), junctionColumn,
-      node.branch === 'dependents' && node.depth === 1 ? directIncomingCount++ : directIncomingCount,
+    ...graphLine(node, Math.max(12, options.columns),
       node.parentRowId ? labels.get(`${node.branch}:${node.parentRowId}`) : undefined,
       projection.root.pluginId),
   }));
@@ -188,12 +177,12 @@ export function DependencyGraphView(props: {
         <Text color={tuiTheme.colors.text} bold={row.node.branch === 'root'}>{row.label}</Text>
         {row.node.branch === 'dependents' && row.edge
           ? <Text color={row.edgeVerified ? tuiTheme.colors.accent : tuiTheme.colors.muted}>
-              {row.padding}{row.edge}{row.edgeTarget}{row.junction}
+              {' '}{row.edge}{row.edgeTarget}
             </Text>
           : null}
         {row.reference ? <Text color={tuiTheme.colors.muted}>{row.reference}</Text> : null}
         {row.hidden ? <Text color={tuiTheme.colors.muted}>{row.hidden}</Text> : null}
-        <Text color={nodeHealthColor(row.node)}> [{row.health}]</Text>
+        <Text color={nodeHealthColor(row.node)}>{row.padding} [{row.health}]</Text>
       </Text>
     </Box>)}
   </Box>;

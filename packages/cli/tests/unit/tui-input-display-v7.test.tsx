@@ -9,6 +9,16 @@ import {
 } from '../../src/tui/input-display.js';
 
 describe('TUI input display', () => {
+  it('places an empty input cursor before the placeholder and keeps actual cursor editing independent', () => {
+    const view = render(<InputDisplay value="" placeholder="名称或来源" cursor={0} columns={11} />);
+    expect(view.lastFrame()).toBe('▌名称或来源');
+    const editing = render(<InputDisplay value="中文" placeholder="名称或来源" cursor={1} columns={10} />);
+    expect(editing.lastFrame()).toBe('中▌文');
+    const narrow = render(<InputDisplay value="" placeholder="名称或来源的长提示" columns={7} />);
+    expect(narrow.lastFrame()).toMatch(/^▌名称/u);
+    expect(stringWidth(narrow.lastFrame()!)).toBeLessThanOrEqual(7);
+  });
+
   it('keeps a static cursor visible and clips a long CJK value by terminal width', () => {
     expect(renderInputTail('前部中文abcdef', 9)).toBe('…abcdef');
     const view = render(<InputDisplay value="前部中文abcdef" columns={10} />);

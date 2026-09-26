@@ -230,7 +230,7 @@ describe('platform maintenance v8', () => {
         platform: 'claude' });
       expect(controller.snapshot.router.current.context.platformSelectedScope).toBe('user');
       const returned = checkedFrame(instance, size);
-      expect(returned).toContain('› [选定]');
+      expect(returned).toMatch(/╭─ › (?:当前项目|所有项目) \[选定\]/u);
       await input(instance, '\r');
       const afterNextEnter = checkedFrame(instance, size);
       expect(controller.snapshot.router.current.route.name).toBe('platform');
@@ -300,7 +300,7 @@ describe('platform maintenance v8', () => {
       expect(controller.context.platformSelectionInitialized).toBe(true);
       expect(controller.context.platformSelectedScope).toBeUndefined();
       expect(returned).toContain('已选位置不再存在');
-      expect(returned).toContain('› [选择]');
+      expect(returned).toMatch(/╭─ › (?:当前项目|所有项目) \[选择\]/u);
       await input(instance, '\r');
       expect(controller.route.name).toBe('platform');
       expect(controller.context.platformSelectedScope).toBe('project');
@@ -340,16 +340,28 @@ describe('platform maintenance v8', () => {
     },
   );
 
-  it('shows one platform entry with both exact scope facts', async () => {
+  it.each([[80, 24], [60, 18]] as const)('shows one platform card with both exact scope facts at %ix%i', async (columns, rows) => {
     const controller = new PlatformControllerStub();
+    controller.facts[0]!.expectedVersion = '1.5.0';
     controller.route = { name: 'pluginMore', pluginId };
     const instance = render(<ConsoleAppV4 controller={controller as unknown as TuiController}
-      size={{ columns: 80, rows: 24 }} />);
+      size={{ columns, rows }} />);
     await input(instance, '', '');
-    const frame = instance.lastFrame() ?? '';
+    const frame = checkedFrame(instance, { columns, rows });
     expect(frame.match(/Codex 平台维护/gu)).toHaveLength(1);
+    expect(frame).toContain('╭─ › Codex 平台维护');
     expect(frame).toContain('当前项目');
     expect(frame).toContain('所有项目');
+    expect(frame).toContain('1.0.0');
+    expect(frame).toContain('2.0.0');
+    expect(frame).toContain('声明期望版本 1.5.0');
+    expect(frame.match(/╰/gu)).toHaveLength(1);
+    await input(instance, '\r');
+    expect(controller.route).toEqual({ name: 'platform', pluginId, platform });
+    expect(controller.context.platformSelectedScope).toBeUndefined();
+    expect(controller.intents).toHaveLength(0);
+    await writeAcceptanceTrace('more-platform-card', { columns, rows }, { more: frame,
+      maintenance: checkedFrame(instance, { columns, rows }) });
   });
 
   it.each([[80, 24], [60, 18]] as const)(
@@ -360,6 +372,8 @@ describe('platform maintenance v8', () => {
         size={{ columns, rows }} />);
       await input(instance, '', '');
       const initiallyUnselected = instance.lastFrame() ?? '';
+      expect(initiallyUnselected.match(/╭─/gu)).toHaveLength(2);
+      expect(initiallyUnselected.match(/╰/gu)).toHaveLength(2);
       expect(controller.context.platformSelectedScope).toBeUndefined();
       expect(instance.lastFrame()).toContain('1.0.0');
       expect(instance.lastFrame()).toContain('2.0.0');
@@ -553,7 +567,7 @@ describe('platform maintenance v8', () => {
       controller.issues = [];
       controller.publish();
       await input(instance, '', '');
-      expect(instance.lastFrame()).toContain('› [选定]');
+      expect(instance.lastFrame()).toMatch(/╭─ › (?:当前项目|所有项目) \[选定\]/u);
       await input(instance, '\r');
       expect(controller.context.platformSelectedScope).toBe('project');
       expect(controller.forceChecks).toBe(1);
@@ -571,7 +585,7 @@ describe('platform maintenance v8', () => {
     controller.facts[0] = placement('project', 'unknown');
     controller.publish();
     await input(instance, '', '');
-    expect(instance.lastFrame()).toContain('› [选定]');
+    expect(instance.lastFrame()).toMatch(/╭─ › (?:当前项目|所有项目) \[选定\]/u);
     await input(instance, '\r');
     expect(controller.intents).toHaveLength(0);
   });

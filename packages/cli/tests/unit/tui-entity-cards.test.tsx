@@ -37,14 +37,20 @@ describe('entity cards in the real Ink renderer', () => {
       declared: true, actual: false,
       sharedWithCurrentProject: false, reasonCodes: [],
     }] });
-    const instance = render(<PluginDetailCard subject={data} width={width} focused />);
+    const instance = render(<PluginDetailCard subject={data} width={width} />);
     const frame = instance.lastFrame() ?? '';
     assertWidth(frame, width);
     expect(frame).toContain('流程助手');
     expect(frame).toContain('[team]');
     expect(frame).toContain('目录版本 2.0.0');
-    expect(frame).toContain('Codex [所有项目] 安装版本 1.5.0 [✓ 可用]');
-    expect(frame).toContain('Codex [当前项目] [项目声明] 安装版本 未确认 [? 未确认]');
+    expect(frame.replace(/ +/gu, ' ')).toContain('Codex [所有项目] 安装版本 1.5.0 [✓ 可用]');
+    expect(frame.replace(/ +/gu, ' ')).toContain('Codex [当前项目] [项目声明] 安装版本 未确认 [? 未确认]');
+    expect(frame.split('\n')[0]).toContain('流程助手');
+    expect(frame.split('\n')[0]).toContain('[team]');
+    expect(frame).not.toContain('› 流程助手');
+    const placement = frame.split('\n').find((line) => line.includes('1.5.0'))!;
+    expect(stringWidth(placement.slice(0, placement.indexOf('[✓ 可用]'))))
+      .toBe(width - stringWidth('[✓ 可用]') - 2);
     expect(frame).not.toContain('声明期望版本');
     expect(frame.split('\n')).toHaveLength(pluginDetailCardLayout(data, width).fullHeight);
   });
@@ -64,8 +70,11 @@ describe('entity cards in the real Ink renderer', () => {
     assertWidth(frame, width);
     expect(frame).toContain('[! 目录定义当前不可用]');
     expect(frame).toContain('已保存设置 所有项目');
-    expect(frame).toContain('Codex [当前项目] [项目声明] [○ 未安装]');
+    expect(frame.replace(/ +/gu, ' ')).toContain('Codex [当前项目] [项目声明] [○ 未安装]');
     expect(frame.replace(/[│\s]/gu, '')).toContain('ClaudeCode[当前项目][项目声明]安装版本未确认[?未确认]');
+    const unknown = frame.split('\n').find((line) => line.includes('[? 未确认]'))!;
+    expect(stringWidth(unknown.slice(0, unknown.indexOf('[? 未确认]'))))
+      .toBe(width - stringWidth('[? 未确认]') - 2);
     expect(frame).not.toContain('安装版本 2.0.0');
   });
 
@@ -84,12 +93,14 @@ describe('entity cards in the real Ink renderer', () => {
       expect(frame.split('\n')).toHaveLength(entityCardWindowHeight(layout, offset, 2));
     }
     expect(visited).toContain('目录版本 2.0.0');
-    expect(visited).toContain('使用位置 [? 未确认]');
+    expect(visited.replace(/ +/gu, ' ')).toContain('使用位置 [? 未确认]');
     expect(visited).toContain('名称末尾标记');
     expect(visited.replace(/\s|[│╭╮╰╯─]/gu, '')).toContain('来源末尾标记');
     expect(visited).toContain('简介末尾标记');
-    expect(visited).toContain('后面还有信息');
-    expect(visited).toContain('前面还有信息');
+    expect(visited).toContain('← 上一页');
+    expect(visited).toContain('下一页 →');
+    const pages = Math.ceil(layout.factRows / 2);
+    expect(visited).toContain(`${pages} / ${pages}`);
     expect(layout.sections.at(-1)?.offset).toBeLessThan(layout.factRows);
   });
 
@@ -124,8 +135,8 @@ describe('entity cards in the real Ink renderer', () => {
     expect(frame).toContain('Codex [当前项目] [项目声明] 安装版本 未确认 [! 受阻]');
     expect(frame).toContain('Claude Code [当前项目] 安装版本 1.0.0 [↻ 待同步]');
     const detailFrame = render(<PluginDetailCard subject={data} width={width} />).lastFrame() ?? '';
-    expect(detailFrame).toContain('Codex [当前项目] [项目声明] 安装版本 未确认 [! 受阻]');
-    expect(detailFrame).toContain('Claude Code [当前项目] 安装版本 1.0.0 [↻ 待同步]');
+    expect(detailFrame.replace(/ +/gu, ' ')).toContain('Codex [当前项目] [项目声明] 安装版本 未确认 [! 受阻]');
+    expect(detailFrame.replace(/ +/gu, ' ')).toContain('Claude Code [当前项目] 安装版本 1.0.0 [↻ 待同步]');
     expect(frame).toContain('依赖 共用依赖');
     expect(frame).toContain('共用依赖');
     expect(frame).toContain('共用个人安装');
@@ -166,7 +177,7 @@ describe('entity cards in the real Ink renderer', () => {
       const placement = frame.split('\n').find((line) => line.includes('Codex')) ?? '';
       const platformColor = placement.match(/\u001b\[38;2;([\d;]+)mCodex/u)?.[1];
       const scopeColor = placement.match(/\u001b\[38;2;([\d;]+)m \[当前项目\]/u)?.[1];
-      const statusColor = placement.match(/\u001b\[38;2;([\d;]+)m \[! 受阻\]/u)?.[1];
+      const statusColor = placement.match(/\u001b\[38;2;([\d;]+)m +\[! 受阻\]/u)?.[1];
       expect(platformColor).toBeDefined();
       expect(scopeColor).toBeDefined();
       expect(statusColor).toBeDefined();
