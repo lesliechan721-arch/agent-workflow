@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-shape",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以实际用户答案、需求保真、文档生命周期及结果判定；方法加载只说明路由，不单独证明对齐完成。"
+    },
+    "participants": [
+      "decision-grill",
+      "decision-prototype"
+    ],
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "shape-asks-through-grill-for-hidden-condition",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用decision-shape对齐列表导出，看看还有哪些需要决定的地方。",
+      "assertions": [
+        "采用Grill方法检查会改变导出结果的范围与空选择语义，Shape只协调和整合。",
+        "实际答案进入当前决定；没有答复前不创建已确认产品规范或实施。",
+        "若用户第一条回答已经明确两项条件，可直接归纳结束而不凑多轮。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "只导出我选中的行；没有选择就导出零条。其他范围不在本次需求内。"
+        ],
+        "workspaceFiles": {
+          "facts.md": "# 当前事实（合成场景）\n导出范围有三种可能：当前已选择行、当前筛选结果、整个数据集。空选择也可能解释为零条或全部。所有技术方案均可实现，用户尚未选择。\n"
+        }
+      },
+      "expected": {
+        "output": "确认按用户答复只导出所选行，空选择为零条。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "看似一个范围问题可能隐藏依赖条件，需要一致问答方法。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "原始请求已明确所选行与空选择结果时不重新提问。"
+      }
+    },
+    {
+      "id": "shape-reuses-complete-prototype-answer",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用decision-shape整理当前结论：我刚确认了原型r2的两列布局、窄屏先预览以及保存不自动重试。本次只整理这些决定，没有新问题，也不写文件。",
+      "assertions": [
+        "复用用户实际给定的完整答复，保留布局、状态和失败行为条件。",
+        "没有材料缺口时不机械再调用Grill或Prototype，不自行实施。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "prototype-acceptance.md": "# 用户当前输入的接受范围\nr2：桌面设置在左、预览在右；窄屏预览在前。请求超时仅提示未确认结果，不自动重试。\n"
+        }
+      },
+      "expected": {
+        "output": "返回完整当前决定及其来源，结束。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "统一方法不等于每次整理都必须再取得相同答案。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "汇总新推导出后台重试时必须先通过问答核对，不能冒称已经确认。"
+      }
+    }
+  ]
+}

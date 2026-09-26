@@ -8,7 +8,7 @@ aw install dev-workflow -p both
 
 ```text
 使用 dev-design 先完成需求与设计，暂不实施。
-使用 dev-build 按当前已确认项目规范完成实现和验证。
+使用 dev-build 按当前已确认任务Spec及适用合同完成实现和验证。
 使用 dev-workflow 从需求对齐推进到完整交付。
 ```
 
@@ -16,14 +16,14 @@ aw install dev-workflow -p both
 | --- | --- |
 | dev-workflow | 完整阶段与用户检查点 |
 | dev-design | 主题对齐、项目知识、规格与必要独立审查，结束于设计 |
-| dev-spec | 原位组织项目完整行为/设计规范 |
+| dev-spec | 形成当前完整任务规格，按用途维护公共合同 |
 | dev-review-spec | 对本次规范范围作独立判断 |
 | dev-breakdown | 形成可独立实施的当前任务 |
 | dev-build | 准备、集成、milestone与完整交付闭环 |
 | dev-implement | 受约束工作项及实际验证 |
 | dev-review-code | 两份独立判断，或执行已分配的一个轴 |
 
-依赖decision-kit。项目规范在设计时直接维护，术语/重要决定按需归位；与当前代码的差距是尚待完成的工作，不再定义另一套任务规范。过程资料仅本地 `.dev-workflows/<task>/` 保存。小任务复用当前请求，无需创建空文档。
+依赖decision-kit。Shape协调Grill材料问答与Prototype可体验证据；简单问答可以一轮完成。完整任务规格及过程资料默认仅本地 `.dev-workflows/<task>/` 保存，已确认要求保持精度。长期按需维护词汇、重要决定、受影响公开合同和确有消费者的设计；小任务复用当前请求，无需创建空文档。
 
 milestone仍需要相称验证和独立审查，不普遍要求commit。适用授权下可创建有回退价值的本地checkpoint，最终按授权提交一致的项目资料/代码/测试；过程文件不进Git，未完成默认不推送。修复预算、旧授权和停止点保持。
 

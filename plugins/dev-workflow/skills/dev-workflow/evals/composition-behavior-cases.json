@@ -37,7 +37,7 @@
       "prompt": "使用 dev-workflow 处理名为 approval-layout 的任务。仓库没有开发文档目录约定，我也不指定路径。先做一个可点击原型让我比较单栏和双栏；我反馈后，把稳定结论整理成轻量 Spec。不要修改 src/approval-page.ts，也不要进入生产实现。本任务需要跨会话维护当前 Shape。",
       "assertions": [
         "trace 先由 dev-workflow 进入 dev-design，再由 Design 使用 decision-shape 和按需 decision-prototype；用户反馈并归一当前决定后才进入 dev-spec。",
-        "过程资料采用本地 .dev-workflows/approval-layout/，向 Prototype 提供该主题下的具体位置；Spec 维护在项目设计位置，必要接受设计可长期读取，不复制另一份任务规范。",
+        "过程资料与完整Spec采用本地 .dev-workflows/approval-layout/，向Prototype提供该主题下的具体位置；活动Spec的必要原型与接受范围保持可达，不强制创建永久完整设计。",
         "Spec 保留用户确认的设计关系、接受范围与允许变化，并提供可访问的原型依据和实现自由；不要求固定标题。",
         "不加载 dev-implement，不修改 src/approval-page.ts，也不把原型升级为生产实现"
       ],
@@ -56,13 +56,11 @@
         }
       },
       "expected": {
-        "output": "Design 取得真实原型反馈，在本地 task.md 保留确认与未决，将完整双栏行为维护到项目规范；生产页面不变，规范不以临时目录为唯一设计依据。",
+        "output": "Design取得真实原型反馈，在本地task.md保留确认与未决，将完整双栏行为写入本地Spec；生产页面不变，必要原型保留供后续实施。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           ".gitignore",
-          ".dev-workflows/approval-layout/**",
-          "docs/design/approval-layout.md",
-          "docs/design/approval-layout/**"
+          ".dev-workflows/approval-layout/**"
         ],
         "artifacts": [
           {
@@ -73,7 +71,7 @@
             ]
           },
           {
-            "path": "docs/design/approval-layout.md",
+            "path": ".dev-workflows/approval-layout/spec.md",
             "exists": true,
             "contains": [
               "双栏",

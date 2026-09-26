@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "project-context",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以实际用户答案、需求保真、文档生命周期及结果判定；方法加载只说明路由，不单独证明对齐完成。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "context-no-compulsory-design-companion",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用project-context维护已有领域词汇：用户确认“本地密钥”用于访问本服务，“上游密钥”用于请求第三方。只更新CONTEXT.md，相关实现和测试已在项目中；本次不需要新的行为规范。",
+      "assertions": [
+        "记录两个领域概念与区别，在已有位置完成。",
+        "不因为缺少完整design文档或ADR就新建它们；不擅自增加密钥存储策略。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "CONTEXT.md": "# 领域词汇\n",
+          "src/auth.js": "// 本合成项目分别注入localKey与upstreamKey\n"
+        }
+      },
+      "expected": {
+        "output": "准确维护领域词义，不扩大为完整规格管理。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "CONTEXT.md"
+        ]
+      },
+      "audit": {
+        "rationale": "知识能力独立有价值，长期记录不依赖另造全量行为文档。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "用户明确提出非显然长期安全取舍时可另外记录必要ADR。"
+      }
+    }
+  ]
+}

@@ -33,7 +33,8 @@
       "node": [
         "./scripts/contract.test.mjs",
         "./scripts/workflow-evaluation.test.mjs",
-        "./scripts/workflow-role-evidence.test.mjs"
+        "./scripts/workflow-role-evidence.test.mjs",
+        "./scripts/method-lifecycle-workflow.test.mjs"
       ]
     }
   },
