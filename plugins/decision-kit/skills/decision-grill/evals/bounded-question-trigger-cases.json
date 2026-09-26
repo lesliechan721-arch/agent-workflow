@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "decision-grill",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以实际用户答案、需求保真、文档生命周期及结果判定；方法加载只说明路由，不单独证明对齐完成。"
+    },
+    "participants": [
+      "decision-shape",
+      "decision-prototype"
+    ],
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "grill_one_material_choice",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用decision-grill确认空姓名显示，当前只需在“未填写”和“—”中选择，其他行为已有依据。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "明确选择方法且确有材料选择，一题也适用。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "用户只要解释破折号含义而不作选择时直接解释。"
+      }
+    },
+    {
+      "id": "grill_delegated_question",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "当前Shape把一个材料选择交给你：确认导出空选择时应返回空结果还是全部结果。采用decision-grill的方法。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "受委派的材料问答不以轮数为门槛。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "已经取得当前同一问题的明确答复则复用，不再发起同一问答。"
+      }
+    },
+    {
+      "id": "explanation_not_interview",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只解释什么是ADR，用两段文字即可；本次不需要选择或访谈。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "普通概念解释不是产品决策问答。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "请求围绕一个真实架构取舍问答时需相应方法。"
+      }
+    },
+    {
+      "id": "prototype_feedback_not_grill",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用decision-prototype让我比较已经准备好的两个布局；现在只收集页面位置反馈。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "体验证据反馈由Prototype完成，不要求为了形式再问一次。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "反馈引出未决定的数据删除或权限行为时，新的材料问答适用Grill。"
+      }
+    }
+  ]
+}

@@ -41,14 +41,16 @@
         "expected": {
           "loadedSkills": [
             "dev-workflow",
-            "dev-design"
+            "dev-design",
+            "decision-shape",
+            "decision-grill"
           ]
         }
       },
       "audit": {
-        "rationale": "局部一个问题可在当前交互澄清，不能跳实现或强迫Shape宏。",
-        "minimalCounterexample": "若涉及多项依赖决定应进入 decision-shape。",
-        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+        "rationale": "单个材料选择由Design进入Shape，再使用Grill提问；允许在当前上下文一题结束，不启动实施。",
+        "minimalCounterexample": "选择已确认且没有新材料问题时复用共识，不重复访谈。",
+        "allowedVariance": "核对到实际提问时的完整Skill加载集合；不要求子代理或完整多轮访谈，也不据此证明对齐成功。"
       }
     },
     {

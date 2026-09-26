@@ -1,6 +1,6 @@
 interface:
   display_name: decision-grill
-  short_description: "通过有上下文的逐轮访谈，把重要决定想透并形成共享理解"
-  default_prompt: "使用 $decision-grill 围绕当前计划、决策或想法逐轮访谈我，直到我们形成共享理解。"
+  short_description: "通过有依据的问答检查重要前提与后果，按实际缺口形成决定"
+  default_prompt: "使用 $decision-grill 对齐当前材料选择，检查必要条件与后果，依据我的实际回答形成决定。"
 policy:
   allow_implicit_invocation: true

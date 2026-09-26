@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-design",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以实际用户答案、需求保真、文档生命周期及结果判定；方法加载只说明路由，不单独证明对齐完成。"
+    },
+    "participants": [
+      "decision-shape",
+      "project-context",
+      "dev-spec",
+      "dev-review-spec"
+    ],
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "new-task-full-local-spec",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用dev-design，只做可实施设计。本次已确认：用户当前确认：返回当前tenantId中id精确命中selectedIds的记录，顺序沿输入；空选择返回空数组；不修改输入数组或记录。id大小写敏感。CSV序列化、后台任务及跨租户导出不属于当前范围。内部组织可自主决定。 需要稍后交给另一上下文；默认文档位置即可。本次不实施、不提交。",
+      "assertions": [
+        "默认完整目标写入.dev-workflows下的任务Spec，不因新功能而创建docs/design、CONTEXT或ADR。",
+        "所有决定、例外和实施自由完整，不以本地存放为理由缩成一句摘要。",
+        "必要独立审查实际完成或报告具体缺口；确认设计后停止，无产品或Git副作用。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "展示的当前规格范围准确，本次仍只确认设计。"
+        ],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows;}\n",
+          "README.md": "# 记录选择示例\n用于隔离测试的最小项目，生产接口未在这里定义。\n"
+        }
+      },
+      "expected": {
+        "output": "交付完整本地规格与恢复入口，产品源码保持不变。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/**"
+        ]
+      },
+      "audit": {
+        "rationale": "普通新需求以本地完整Spec支持多上下文，而非默认永久化。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "用户明确要更新已有公共API合同时应原位维护其相关内容。"
+      }
+    },
+    {
+      "id": "explicit-existing-public-contract",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用dev-design，明确更新docs/api/selection.md为下面已确认行为，并保留它作为长期公共合同。用户当前确认：返回当前tenantId中id精确命中selectedIds的记录，顺序沿输入；空选择返回空数组；不修改输入数组或记录。id大小写敏感。CSV序列化、后台任务及跨租户导出不属于当前范围。内部组织可自主决定。 本次只设计。",
+      "assertions": [
+        "按明确请求原位更新现有合同；默认本地策略不阻止合理公共资料维护。",
+        "不再生成竞争的完整公共定义；本地可按恢复需要记录确认。",
+        "不实施、不提交，不因文件修改宣称功能已经支持。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "同意当前合同变更，本次不启动实施。"
+        ],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows;}\n",
+          "README.md": "# 记录选择示例\n用于隔离测试的最小项目，生产接口未在这里定义。\n",
+          "docs/api/selection.md": "# 记录选择\n旧版本返回全部记录。\n"
+        }
+      },
+      "expected": {
+        "output": "现有公共合同按当前用户要求完整更新，交付真实状态。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/api/selection.md",
+          ".dev-workflows/**"
+        ]
+      },
+      "audit": {
+        "rationale": "取消强制长期design不等于禁止真实公共规范。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "没有长期消费者或用户要求时，完整任务规格默认本地。"
+      }
+    },
+    {
+      "id": "task-only-scope-not-permanent-policy",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "只对齐并记录本次范围：这次只接一个上游；未来是否多上游尚未决定。保存本地任务说明即可，不实施。",
+      "assertions": [
+        "本次单上游范围按任务记录，不改成永久架构禁令。",
+        "不为这个单次非目标强制新增ADR或design规范；后续未决仍未决。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows;}\n",
+          "README.md": "# 记录选择示例\n用于隔离测试的最小项目，生产接口未在这里定义。\n"
+        }
+      },
+      "expected": {
+        "output": "仅保存当前任务边界与开放内容。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/**"
+        ]
+      },
+      "audit": {
+        "rationale": "文档生命周期同时约束决定适用范围，避免任务目标变成永久政策。",
+        "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
+        "minimalCounterexample": "用户明确长期禁止多上游并说明原因时可由知识能力保留该决定。"
+      }
+    }
+  ]
+}
