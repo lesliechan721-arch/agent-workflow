@@ -25,6 +25,7 @@ describe('CLI entry v5', () => {
       'uninstall',
       'cleanup',
       'sync',
+      'project',
       'status',
       'config',
       'plugin',
@@ -46,52 +47,24 @@ describe('CLI entry v5', () => {
     expect(await runCli([
       'sync', 'official/demo', '--all', '--platform', 'codex', '--scope', 'project', '--json',
     ], { interactive: false, io: conflict.io })).toBe(1);
-    expect(JSON.parse(conflict.stdout())).toEqual({
-      ok: false,
+    expect(JSON.parse(conflict.stdout())).toMatchObject({
+      schemaVersion: 1,
+      kind: 'aw-project-recovery',
       command: 'sync',
-      receiptSchemaVersion: 6,
-      overallState: 'failed',
-      changes: [],
-      targetResults: [{
-        target: {
-          pluginName: 'demo',
-          pluginId: 'official/demo',
-          sourceId: 'official',
-          platform: 'codex',
-          scope: 'project',
-        },
-        action: 'sync',
-        state: 'failed',
-        message: 'syncSelectorConflict: Plugin selectors and --all are mutually exclusive.',
-        errorCode: 'syncSelectorConflict',
-        relation: 'requested',
-        requiredBy: [],
-        changes: [],
-        recoveryActions: ['run sync', 'run reinstall', 'run cleanup for AW-owned residue'],
-        cleanupAttempted: false,
-        actions: [],
-        removed: [],
-        absent: [],
-        residual: [],
-        quarantined: [],
-        failures: [],
-      }],
-      warnings: [],
-      recoveryActions: ['run sync', 'run reinstall', 'run cleanup for AW-owned residue'],
-      errors: [{
-        code: 'syncSelectorConflict',
-        message: 'syncSelectorConflict: Plugin selectors and --all are mutually exclusive.',
-      }],
+      ok: false,
+      blockers: [{ code: 'syncSelectorConflict' }],
     });
 
-    const missing = capture();
+    const empty = capture();
     expect(await runCli([
       'sync', '--platform', 'codex', '--scope', 'project', '--json',
-    ], { interactive: false, io: missing.io })).toBe(1);
-    expect(JSON.parse(missing.stdout())).toMatchObject({
-      ok: false,
+    ], { interactive: false, io: empty.io })).toBe(0);
+    expect(JSON.parse(empty.stdout())).toMatchObject({
+      schemaVersion: 1,
+      kind: 'aw-project-recovery',
+      ok: true,
       command: 'sync',
-      errors: [{ code: 'syncSelectionRequired' }],
+      requestedRoots: [],
     });
   });
 

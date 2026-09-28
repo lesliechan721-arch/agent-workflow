@@ -1,3 +1,7 @@
+import { selectProjectAgents } from '../project/project-preferences.js';
+import { readProjectDemand, projectDemandNativeProjection, type ProjectDemand } from '../project/project-demand.js';
+import { projectStatusFromObservations, type ReadProjectStatusOptions, type ProjectNativeObservation } from '../project/project-status.js';
+import type { ProjectStatusV1 } from '../project/project-types.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -163,6 +167,19 @@ export function statusTargetPlacements(target: StatusV8Target): StatusScopedTarg
 
 export function flattenStatusTargets(targets: readonly StatusV8Target[]): StatusScopedTarget[] {
   return targets.flatMap(statusTargetPlacements);
+}
+
+/** Existing output evidence is required before config apply can refresh a target. */
+export function statusTargetHasLiveConfigConsumer(target: StatusScopedTarget): boolean {
+  return target.components.some((component) =>
+    component.kind === 'ownership'
+    && (target.platform !== 'codex' || (component.key !== 'native'
+      && !component.key.startsWith('activation-') && !component.key.startsWith('marketplace-')))
+    && ['present', 'partial'].includes(component.state))
+    || (target.sharedComponents?.some((component) =>
+      component.kind === 'sharedNative' && ['usable', 'replaceable'].includes(component.state)) === true
+      && target.components.some((component) => component.kind === 'activation'
+        && component.key === target.scope && component.state === 'enabled'));
 }
 
 export type StatusV8State =
@@ -445,6 +462,7 @@ export function statusTargetExtensions(
 
 export interface StatusV8Payload {
   schemaVersion: 8;
+  projectRecovery?: ProjectStatusV1;
   catalog: {
     primarySourceId: string;
     configDigest: string;
@@ -1167,6 +1185,9 @@ async function statusCommandV8InSession(options: {
   json?: boolean;
   verbose?: boolean;
   catalogOperationContext?: CatalogOperationContext;
+  projectDemand?: ProjectDemand;
+  projectSelection?: Pick<ReadProjectStatusOptions, 'target' | 'targets' | 'platform'>;
+  includeProjectRecovery?: boolean;
   inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
   codexObservationSession: Awaited<ReturnType<typeof createCodexNativeObservationSession>>;
 }): Promise<{
@@ -1199,9 +1220,34 @@ async function statusCommandV8InSession(options: {
     'packages/cli/package.json version',
   );
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
+  const demand = options.projectDemand ?? await readProjectDemand({
+    cwd: options.cwd, env, catalogOperationContext: options.catalogOperationContext,
+  });
+  let projectObservationPlatforms: PlatformName[] = [];
+  try {
+    projectObservationPlatforms = selectProjectAgents({
+      preferences: demand.preferences, ...options.projectSelection,
+    }).agents.flatMap((agent): PlatformName[] => agent === 'codex' ? ['codex']
+      : agent === 'claude-code' ? ['claude'] : []);
+  } catch { /* The project status projection reports invalid preferences or selection. */ }
+
   const intentErrors: Array<{ code: string; message: string }> = [];
   const readIntent = async (scope: Scope): Promise<PluginIntentStateObservation> => {
-    const observation = await observePluginIntentState({ scope, cwd: options.cwd, env });
+    let observation: PluginIntentStateObservation;
+    if (scope === 'project') {
+      try {
+        const protective = projectDemandNativeProjection(demand);
+        // A protective execution view includes every supported Native platform. Status
+        // demand is limited to selected Agents; live residue is observed separately.
+        const value = { ...protective, roots: protective.roots.flatMap((root) => {
+          const platforms = root.platforms.filter((platform) => projectObservationPlatforms.includes(platform));
+          return platforms.length ? [{ ...root, platforms }] : [];
+        }) };
+        observation = demand.intent.state === 'absent' ? { state: 'absent' } : { state: 'ready', value };
+      } catch {
+        observation = { state: 'invalid', code: 'pluginIntentStateInvalid', message: '项目声明或偏好无效。' };
+      }
+    } else observation = await observePluginIntentState({ scope, cwd: options.cwd, env });
     if (observation.state === 'invalid' || observation.state === 'unavailable') {
       intentErrors.push({
         code: 'pluginIntentStateInvalid',
@@ -1397,6 +1443,7 @@ async function statusCommandV8InSession(options: {
   const requested = options.plugins ?? [];
   const platforms = selectedPlatforms(options.platform);
   const scopes = selectedScopes(options.scope);
+
   const selectorErrors: Array<{ code: string; message: string }> = [];
   const parsedSelectors: PlannedStatusSelector[] = [];
   const plannedSelectors: PlannedStatusSelector[] = [];
@@ -1450,9 +1497,13 @@ async function statusCommandV8InSession(options: {
     scopes,
     currentProjectLocationKey,
   }));
-  const plannedSourceIds = requested.length === 0
+  const selectorSourceIds = requested.length === 0
     ? undefined
     : planPluginSelectorSourceIds(plannedSelectors.map((selector) => selector.parsed));
+  const plannedSourceIds = selectorSourceIds === undefined ? undefined : [...new Set([
+    ...selectorSourceIds,
+    ...(demand.roots ?? []).map((root) => root.sourceId).filter((id) => configured.has(id)),
+  ])];
   const selectedConfiguredSources = plannedSourceIds === undefined
     ? snapshot.config.sources
     : plannedSourceIds.map((sourceId) => configured.get(sourceId)!);
@@ -2075,7 +2126,10 @@ async function statusCommandV8InSession(options: {
                       dependencyInspectionCache.set(inspectionCacheKey, inspection);
                       return inspection;
                     }
-                    if (directDependencies.length > 0
+                    // Inspect dependencies for returned live placements and selected project Agents.
+                    const dependencyObservationRequested = platforms.includes(platform) && scopes.includes(scope)
+                      || scope === 'project' && projectObservationPlatforms.includes(platform);
+                    if (dependencyObservationRequested && directDependencies.length > 0
                       && (desiredInScope
                         || actualCodexActivation
                         || hasScopedExtensionResidue
@@ -3356,8 +3410,62 @@ async function statusCommandV8InSession(options: {
       pluginName: entry.name,
       ...issue,
     })));
+  const nativeObservations: ProjectNativeObservation[] = available.flatMap((entry) =>
+    (['codex', 'claude'] as const).map((platform): ProjectNativeObservation => {
+      const observed = entry.states[platform]?.project;
+      const blockers = (observed?.errors ?? []).map((error) => ({
+        code: error.code, message: `${error.code}: 项目 Native 目标尚未满足。`,
+      }));
+      const nativeInventoryErrors = inventoryErrors.filter((error) => inventoryErrorMatchesSelection({
+        error,
+        selectors: [{ raw: `${entry.source.id}/${entry.name}`, parsed: {
+          sourceId: entry.source.id, pluginName: entry.name,
+        } }],
+        platformExplicit: true, scopeExplicit: true, platforms: [platform], scopes: ['project'],
+        currentProjectLocationKey,
+      }));
+      blockers.push(...nativeInventoryErrors.map((error) => ({
+        code: error.code, message: `${error.code}: 无法读取项目 Native 现场。`,
+      })));
+      if (platform === 'codex' && codexConfigErrors.some((error) => error.scope === 'project' || error.scope === 'user')) {
+        blockers.push({ code: 'nativeStateUnreadable', message: '无法读取 Codex 激活配置。' });
+      }
+      if (entry.configDiagnostic) blockers.push({ code: 'configReadFailed', message: '无法读取插件配置。' });
+      if (entry.configIssues?.some((issue) => issue.scope === 'project')) {
+        blockers.push({ code: 'configInvalid', message: '项目配置需要处理。' });
+      }
+      if (observed?.state === 'error' && !blockers.some((error) =>
+        /Unsupported$|collision|conflict|foreign/iu.test(error.code))) {
+        blockers.push({ code: 'nativeObservationFailed', message: '无法完成项目 Native 现场观察。' });
+      }
+      let content: ProjectNativeObservation['content'] = !observed ? 'unknown'
+        : observed.state === 'absent' ? 'absent'
+          : observed.state === 'present' ? 'satisfied'
+            : observed.state === 'partial' ? 'drifted' : 'unknown';
+      if (blockers.some((blocker) => /collision|conflict|foreign/iu.test(blocker.code))) content = 'conflict';
+      if (platform === 'codex' && entry.codex?.nativeKinds.length) {
+        const shared = entry.codex.sharedNative;
+        if (shared?.state === 'missing') content = 'absent';
+        else if (shared?.state === 'replaceable') content = 'drifted';
+        else if (shared?.state === 'blocked') content = shared.reason === 'foreign' ? 'conflict' : 'unknown';
+        else if (!shared || shared.state === 'unobserved') content = 'unknown';
+        if (content === 'satisfied' && entry.codex.activation.effective !== true) content = 'absent';
+      }
+      return {
+        pluginId: `${entry.source.id}/${entry.name}`, platform, content, blockers,
+        ...(platform === 'codex' && entry.codex?.activation.evidence === 'assumed'
+          ? { assumedActivation: true } : {}),
+      };
+    }));
+  const projectRecovery = demand.intent.state !== 'absent' || options.includeProjectRecovery
+    ? await projectStatusFromObservations({
+        cwd: options.cwd, env, cliVersion, demand, nativeObservations,
+        ...options.projectSelection,
+      }) : undefined;
+  if (projectRecovery) errors.push(...projectRecovery.errors);
   const payload: StatusV8Payload = {
     schemaVersion: 8,
+    ...(projectRecovery ? { projectRecovery } : {}),
     catalog: {
       primarySourceId: catalog.primarySourceId,
       configDigest: catalog.configDigest,
@@ -3447,6 +3555,9 @@ export async function statusCommandV8(options: {
   json?: boolean;
   verbose?: boolean;
   catalogOperationContext?: CatalogOperationContext;
+  projectDemand?: ProjectDemand;
+  projectSelection?: Pick<ReadProjectStatusOptions, 'target' | 'targets' | 'platform'>;
+  includeProjectRecovery?: boolean;
   inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
   codexObservationSession?: CodexNativeObservationSession;
 }): ReturnType<typeof statusCommandV8InSession> {

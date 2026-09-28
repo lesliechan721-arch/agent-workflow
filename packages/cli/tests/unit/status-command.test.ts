@@ -1,3 +1,8 @@
+import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
+import * as rebuildIntegration from '../../src/commands/rebuild-integration.js';
+import { runCli } from '../../src/index.js';
+import { writeProjectPreferences } from '../../src/project/project-preferences.js';
+import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -25,7 +30,6 @@ import { applyCodexConfigTransactionFile } from '../../src/utils/codex-config.js
 import {
   createEmptyPluginIntentState,
   resolvePluginIntentStatePath,
-  writePluginIntentState,
 } from '../../src/utils/plugin-intent-state.js';
 import { resolveAwHome, resolveClaudePaths, resolveCodexPaths } from '../../src/utils/paths.js';
 import { getCodexHome } from '../../src/utils/state-paths.js';
@@ -165,6 +169,129 @@ async function writeSystemCodexPackage(options: {
 }
 
 describe('status v8 current behavior', () => {
+  // Test Value Gate: platform-free project roots must not invent demand for unselected Agents.
+  it.each([
+    { agents: [], savedAgents: [] },
+    { agents: ['codex'], savedAgents: ['codex'] },
+    { agents: ['claude-code'], savedAgents: ['claude-code'] },
+    { agents: ['codex'], savedAgents: ['claude-code'], targets: ['codex'] },
+  ])('limits v3 dependency demand to selected Agents $agents with saved $savedAgents', async ({ agents, savedAgents, targets }) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'selected-demand-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'base' }, { name: 'middle', dependencies: ['base'] },
+      { name: 'top', dependencies: ['middle'] },
+    ]);
+    const { env, logicalIdentity, sourceIdentity } = await configurePathSource(sourceRoot);
+    const cwd = path.join(isolation.layout.fixtureCwd, 'selected-demand-project');
+    await fs.ensureDir(path.join(cwd, '.git'));
+    await fs.outputJson(path.join(cwd, '.agent-workflows', 'plugin-intents.json'), {
+      schemaVersion: 3, kind: 'aw-plugin-intents', sources: { local: { logicalIdentity } },
+      roots: [{ pluginId: 'local/top' }],
+    });
+    await writeProjectPreferences({ cwd, env }, {
+      schemaVersion: 1, kind: 'aw-project-preferences', agents: savedAgents, dependencyScopeOverrides: [],
+    });
+    if (agents.includes('codex')) {
+      await fs.copy(path.join(sourceRoot, 'plugins'), path.join(resolveAwHome(env), 'marketplaces', 'local', 'plugins'));
+      await writeCodexNativeResidue({ cwd, env, sourceIdentity, version: '1.0.0',
+        userEnabled: false, pluginName: 'top' });
+      await applyCodexConfigTransactionFile(resolveCodexPaths(cwd, 'project', env).configTomlPath,
+        { upsertPluginActivations: { 'top@aw-local': true } });
+    }
+    const result = await statusCommandV8({ cwd, env, ...(targets ? { projectSelection: { targets } } : {}) });
+    for (const target of result.payload.targets) {
+      const selected = agents.includes(target.platform === 'claude' ? 'claude-code' : 'codex');
+      if (!selected) {
+        expect(target.reasons.filter((reason) => reason.code.startsWith('dependency'))).toEqual([]);
+        expect(statusTargetIntent(target).enabled).toBe(false);
+        expect(target.state).toBe('absent');
+      }
+    }
+    expect(result.payload.projectRecovery?.selection.agents).toEqual(agents);
+    expect(result.payload.projectRecovery?.inventory?.map((root) => root.pluginId)).toEqual(['local/top']);
+  });
+
+  // Test Value Gate: an observation failure must fail public project status without leaking raw errors.
+  it('returns one failed project-status JSON for a Native read error and succeeds for ordinary missing output', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-status-read-error-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo');
+    const { env, logicalIdentity } = await configurePathSource(sourceRoot);
+    const cwd = path.join(isolation.layout.fixtureCwd, 'native-status-read-error-project');
+    await fs.ensureDir(path.join(cwd, '.git'));
+    await fs.outputJson(path.join(cwd, '.agent-workflows', 'plugin-intents.json'), {
+      schemaVersion: 3, kind: 'aw-plugin-intents', sources: { local: { logicalIdentity } },
+      roots: [{ pluginId: 'local/demo' }],
+    });
+    await writeProjectPreferences({ cwd, env }, {
+      schemaVersion: 1, kind: 'aw-project-preferences', agents: ['claude-code'], dependencyScopeOverrides: [],
+    });
+    const invoke = async () => {
+      const captured = createCapturedCliIo();
+      const exit = await runCli(['project', 'status', '--json'], {
+        cwd, env, interactive: false, io: captured.io,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: '2.1.88 (Claude Code)', stderr: '' }),
+      });
+      const stdout = captured.readStdout();
+      return { exit, stdout, payload: JSON.parse(stdout), stderr: captured.readStderr() };
+    };
+    const inspect = vi.spyOn(rebuildIntegration, 'inspectRebuildTarget')
+      .mockRejectedValue(new Error('nativeStateUnreadable: secret-native-state-detail'));
+    try {
+      const failed = await invoke();
+      expect(failed.exit).toBe(1);
+      expect(failed.payload).toMatchObject({
+        schemaVersion: 1, kind: 'aw-project-status', ok: false, allSatisfied: null,
+        errors: expect.arrayContaining([expect.objectContaining({ code: 'nativeStateUnreadable' })]),
+      });
+      expect(failed.stdout).not.toContain('secret-native-state-detail');
+      expect(failed.stderr).toBe('');
+    } finally {
+      inspect.mockRestore();
+    }
+    const missing = await invoke();
+    expect(missing.exit).toBe(0);
+    expect(missing.payload).toMatchObject({
+      ok: true, errors: [], allSatisfied: false,
+      inventory: [{ targetResults: [{ content: 'absent', observation: 'missing' }] }],
+    });
+    expect(missing.stderr).toBe('');
+  });
+
+  // Test Value Gate: Native filters must not hide project demand or cause status writes.
+  it('includes complete v3 recovery inventory with Native filters and preserves filesystem bytes', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'v3-status-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo');
+    const { env, logicalIdentity } = await configurePathSource(sourceRoot);
+    const cwd = path.join(isolation.layout.fixtureCwd, 'v3-status-project');
+    await fs.ensureDir(path.join(cwd, '.git'));
+    await fs.outputJson(path.join(cwd, '.agent-workflows', 'plugin-intents.json'), {
+      schemaVersion: 3, kind: 'aw-plugin-intents',
+      sources: { local: { logicalIdentity } }, roots: [{ pluginId: 'local/demo' }],
+    });
+    const before = await filesystemSnapshot(cwd);
+    const status = await statusCommandV8({ cwd, env, platform: 'codex', scope: 'user', json: true });
+    expect(status.payload.projectRecovery).toMatchObject({
+      schemaVersion: 1, ok: true, intent: { state: 'valid' },
+      selection: { agents: [], origin: 'none' }, allSatisfied: null, errors: [],
+      inventory: [{ pluginId: 'local/demo', sourceState: 'ready', targetResults: [],
+        blockers: [{ code: 'localTargetsRequired', message: expect.any(String) }] }],
+    });
+    expect(JSON.parse(status.output).projectRecovery).toEqual(status.payload.projectRecovery);
+    expect(await filesystemSnapshot(cwd)).toEqual(before);
+    const intentPath = path.join(cwd, '.agent-workflows', 'plugin-intents.json');
+    const intent = await fs.readJson(intentPath);
+    intent.sources.local.logicalIdentity = 'another-logical-identity';
+    await fs.writeJson(intentPath, intent);
+    const mismatched = await statusCommandV8({ cwd, env });
+    expect(mismatched.payload.projectRecovery?.inventory?.[0]).toMatchObject({
+      pluginId: 'local/demo', sourceState: 'identity-mismatch',
+      blockers: expect.arrayContaining([expect.objectContaining({ code: 'sourceIdentityMismatch' })]),
+    });
+  });
+
   it('publishes a non-blocking warning for an ignored native project config override', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-config-warning-source');
@@ -249,7 +376,7 @@ describe('status v8 current behavior', () => {
         },
       ]);
       const { env } = await configurePathSource(sourceRoot);
-      await writePluginIntentState({
+      await writeIntentFixture({
         scope: 'project', cwd: isolation.layout.fixtureCwd, env,
       }, {
         ...createEmptyPluginIntentState(),
@@ -395,7 +522,7 @@ describe('status v8 current behavior', () => {
     });
     const { env } = await configurePathSource(sourceRoot);
     for (const scope of ['user', 'project'] as const) {
-      await writePluginIntentState({ scope, cwd: isolation.layout.fixtureCwd, env }, {
+      await writeIntentFixture({ scope, cwd: isolation.layout.fixtureCwd, env }, {
         ...createEmptyPluginIntentState(),
         roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
       });
@@ -445,7 +572,7 @@ describe('status v8 current behavior', () => {
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
     for (const scope of ['user', 'project'] as const) {
-      await writePluginIntentState({ scope, cwd: isolation.layout.fixtureCwd, env }, {
+      await writeIntentFixture({ scope, cwd: isolation.layout.fixtureCwd, env }, {
         ...createEmptyPluginIntentState(),
         roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
       });
@@ -779,7 +906,7 @@ describe('status v8 current behavior', () => {
         'root@aw-local': true, 'middle@aw-local': true, 'leaf@aw-local': false,
       } },
     );
-    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/root', platforms: ['codex'] }],
     });
@@ -829,7 +956,7 @@ describe('status v8 current behavior', () => {
     });
     expect(listRunner).toHaveBeenCalledTimes(2);
 
-    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env },
+    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env },
       createEmptyPluginIntentState());
     listRunner.mockClear();
     const manual = await read();
@@ -856,7 +983,7 @@ describe('status v8 current behavior', () => {
       { name: 'root', dependencies: ['middle'] },
     ]);
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/root', platforms: ['codex'] }],
     });
@@ -962,7 +1089,7 @@ describe('status v8 current behavior', () => {
     });
     const { env } = await configurePathSource(sourceRoot);
     for (const scope of ['user', 'project'] as const) {
-      await writePluginIntentState({ scope, cwd: isolation.layout.fixtureCwd, env }, {
+      await writeIntentFixture({ scope, cwd: isolation.layout.fixtureCwd, env }, {
         ...createEmptyPluginIntentState(),
         roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
       });
@@ -992,13 +1119,13 @@ describe('status v8 current behavior', () => {
       { name: 'user-root', dependencies: ['leaf'] },
     ]);
     const { env } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env,
     }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/user-root', platforms: ['codex'] }],
     });
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env,
     }, {
       ...createEmptyPluginIntentState(),
@@ -1036,7 +1163,7 @@ describe('status v8 current behavior', () => {
       { name: 'root', dependencies: ['leaf'] },
     ]);
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/root', platforms: ['codex'] }],
     });
@@ -1100,7 +1227,7 @@ describe('status v8 current behavior', () => {
       { name: 'root', dependencies: ['leaf'] },
     ]);
     const { env } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/root', platforms: ['codex'] }],
     });
@@ -1154,7 +1281,7 @@ describe('status v8 current behavior', () => {
         },
       ]);
       const { env, sourceIdentity } = await configurePathSource(sourceRoot);
-      await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+      await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
         ...createEmptyPluginIntentState(),
         roots: [{ pluginId: 'local/root', platforms: ['codex'] }],
       });
@@ -1233,7 +1360,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'unresolved-source');
     await createCatalogSnapshotFixture(sourceRoot);
     const { env } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'gone/demo', platforms: ['codex'] }],
     });
@@ -1263,7 +1390,7 @@ describe('status v8 current behavior', () => {
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       managed: { codexPluginIds: ['demo@aw-second'] },
     });
@@ -1344,7 +1471,7 @@ describe('status v8 current behavior', () => {
 
   it('keeps desired intent structured when the Catalog has no active generation', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, {
       ...createEmptyPluginIntentState(),
@@ -1385,7 +1512,7 @@ describe('status v8 current behavior', () => {
       manifest.version = '2.0.0';
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
       managed: { codexPluginIds: ['demo@aw-local'] },
@@ -1761,7 +1888,7 @@ describe('status v8 current behavior', () => {
       manifest.apps = './.app.json';
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
@@ -1824,7 +1951,7 @@ describe('status v8 current behavior', () => {
       };
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
@@ -1886,7 +2013,7 @@ describe('status v8 current behavior', () => {
       manifest.apps = './.app.json';
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
@@ -2009,7 +2136,7 @@ describe('status v8 current behavior', () => {
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
@@ -2064,7 +2191,7 @@ describe('status v8 current behavior', () => {
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
@@ -2123,7 +2250,7 @@ describe('status v8 current behavior', () => {
     await fs.outputFile(path.join(binRoot, 'codex'), '#!/bin/sh\nexit 0\n');
     await fs.chmod(path.join(binRoot, 'codex'), 0o755);
     const env = { ...configured.env, PATH: binRoot, AW_CODEX_HOME: path.join(cwd, '.codex') };
-    await writePluginIntentState({ scope: 'user', cwd, env }, {
+    await writeIntentFixture({ scope: 'user', cwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
@@ -2190,7 +2317,7 @@ describe('status v8 current behavior', () => {
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);
-    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
       ...createEmptyPluginIntentState(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });

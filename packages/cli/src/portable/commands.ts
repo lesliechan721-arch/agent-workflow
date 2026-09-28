@@ -1002,6 +1002,8 @@ export async function materializePortableSkillsToDirectory(options: {
   cwd: string;
   cliVersion: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  catalogOperationContext?: CatalogOperationContext;
 }): Promise<PortableMaterializeReceipt> {
   assertScope(options.scope);
   const scope = options.scope;
@@ -1014,7 +1016,7 @@ export async function materializePortableSkillsToDirectory(options: {
   await assertSafeOutputPath(target, options);
   const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
   const parsedSelector = parsePluginId(options.selector);
-  const catalogOperationContext = await resolveCatalogOperationContext({
+  const catalogOperationContext = options.catalogOperationContext ?? await resolveCatalogOperationContext({
     ...(parsedSelector.sourceId ? { sourceIds: [parsedSelector.sourceId] } : {}),
     env: options.env,
   });

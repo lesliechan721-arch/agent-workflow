@@ -26,6 +26,7 @@ import {
 } from './rebuild-command.js';
 import { createOperationPlan } from './operation-plan.js';
 import type { ReconcileOperationPlan } from './reconcile-operation-plan.js';
+import { createRemovedProjectRequirements } from '../project/removed-requirements.js';
 
 type WriteCommand = 'install' | 'sync' | 'reinstall' | 'uninstall' | 'cleanup';
 
@@ -56,6 +57,12 @@ export function mergeWriteCommandResults(
       : results.some((result) => result.overallState === 'succeeded'
         || result.overallState === 'partial') ? 'partial' : 'failed',
     receiptTargets: results.flatMap((result) => result.receiptTargets),
+    ...(results.some((result) => result.portableCleanupResidues !== undefined)
+      ? { portableCleanupResidues: results.flatMap((result) => result.portableCleanupResidues ?? []) }
+      : {}),
+    ...(results.some((result) => result.nativeFootprints !== undefined)
+      ? { nativeFootprints: results.flatMap((result) => result.nativeFootprints ?? []) }
+      : {}),
     ...(dependencyPlan ? { dependencyPlan } : {}),
     ...(results.some((result) => result.codexReconcilePlans !== undefined)
       ? { codexReconcilePlans: results.flatMap((result) => result.codexReconcilePlans ?? []) }
@@ -239,12 +246,18 @@ async function runPublicWriteCommand(options: {
     && !options.runtime.managedCodexAuthorizer
     ? { ...options.runtime, managedCodexAuthorizer: async () => true }
     : options.runtime;
+  const cleanupRuntime = (active: RebuildCommandRuntime): RebuildCommandRuntime =>
+    options.command === 'cleanup' && !active.removedProjectRequirements
+      ? { ...active, removedProjectRequirements: createRemovedProjectRequirements({
+          cwd: options.commandOptions.cwd, env: active.env, token: active.awHomeMutationToken,
+        }) }
+      : active;
   const execution = runtime.previewOperationPlan === true
     ? runRebuildCommand({
         command: options.command,
         pluginNames: options.pluginNames,
         commandOptions: options.commandOptions,
-        runtime,
+        runtime: cleanupRuntime(runtime),
         ...(options.all === undefined ? {} : { all: options.all }),
       })
     : (async () => {
@@ -255,7 +268,7 @@ async function runPublicWriteCommand(options: {
             command: options.command,
             pluginNames: options.pluginNames,
             commandOptions: options.commandOptions,
-            runtime: { ...runtime, awHomeMutationToken: token },
+            runtime: cleanupRuntime({ ...runtime, awHomeMutationToken: token }),
             ...(options.all === undefined ? {} : { all: options.all }),
           }),
         });

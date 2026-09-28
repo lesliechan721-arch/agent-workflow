@@ -15,6 +15,8 @@
 
 “删除”与“不可用”不同。来源读取失败、来源被移除、Active 缺失或损坏，都不能单独证明插件已从 Catalog 删除。
 
+2026-09-26，用户在统一项目恢复设计中再次确认保留此例外。Project v3 的普通本地清理保留共享需求和配置；已删除插件的整体清理经扩大范围确认后可以删除目标 Project v3 root、无引用的 source binding、User v2 root、该插件本机依赖覆盖与两处设置。Agent 选择保留。此授权不等于跨 provider 自动清扫；可观察 Portable 残留若不能安全处理，必须作为未完成项报告，不能据 Native 清理成功宣称全部清理完成。
+
 ## 识别与入口
 
 普通 `cleanup` 先按现有来源解析取得精确 `source/plugin` 身份。只有当前 Active snapshot 通过现有读取和验证合同、且插件 entry 确实不存在，才把该精确来源下的插件分类为已删除；每个待删除对象还必须分别满足下述归属证据，不能要求所有记录都拥有 sourceIdentity 字段。不得把 `bundleUnavailable` 错误码、TUI 摘要缺失或插件目录读取失败直接当作删除证据。
@@ -47,8 +49,9 @@ CLI 与 TUI 共用同一分类结果和清理实现：
 | Codex 激活配置 | 原生安装确认 absent 后，移除用户与当前项目的精确插件激活条目，包括 `enabled=false`；保留配置文件内的其他插件与用户字段 |
 | Claude 原生安装 | 通过现有 adapter 清理用户与当前项目的精确 namespaced 安装；保留其他项目与未绑定 bare-key 安装 |
 | AW 输出 | 按 source identity、plugin、platform、scope 的精确 ownership 清理用户和当前项目的专属 Skill、规则、角色等；不重放历史脚本 |
+| Project Portable 输出 | 仅报告可观察残留及精确恢复指引；未经验证的 provider 删除能力不得当作已完成，结果保留 partial |
 | AW 插件设置 | 删除该来源、该插件的 user 和当前 project config store，不依赖已删除 manifest/schema；复用现有 schema-independent reset 的路径边界和文件删除能力；异常目录/特殊节点保留并报告，见失败规则 |
-| 安装意图 | 从 user 和当前 project Intent 移除目标插件在两个平台的 root，以及以该插件为键的 dependency scope override；不删除其他插件的 root 或 override |
+| 安装意图 | 从 User v2 移除目标插件在两个平台的 root 和依赖覆盖；从当前 Project v3 移除该插件的无平台 root 与无引用 source binding，并清除本机偏好中属于该插件的依赖覆盖；保留 Agent 选择和其它插件需求 |
 | AW marketplace 投影 | 删除精确归属该插件的生成目录及 marketplace 中的条目；其他插件内容、动态 native projection、来源配置和共享 marketplace 根保持有效，不删除整个共享根 |
 | Catalog store | 不改写 immutable snapshot，不删除整个 source/store；历史 snapshot 的空间回收继续由现有 store prune 负责 |
 | 平台私有缓存 | 由官方卸载命令管理；AW 不猜测、递归删除 Codex/Claude 私有缓存路径，不承诺官方卸载后所有内部字节均消失 |

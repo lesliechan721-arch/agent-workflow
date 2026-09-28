@@ -1,3 +1,4 @@
+import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import path from 'node:path';
 import fs from 'fs-extra';
 import { createElement } from 'react';
@@ -48,7 +49,6 @@ import {
 import {
   createEmptyPluginIntentState,
   upsertPluginIntentRoot,
-  writePluginIntentState,
 } from '../../src/utils/plugin-intent-state.js';
 
 const OFFLINE_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
@@ -557,7 +557,7 @@ describe('TUI batch write runtime', () => {
     intentState = upsertPluginIntentRoot(intentState, {
       pluginId: 'team/second', platforms: ['codex'],
     });
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, intentState);
     runtimeMocks.installWriteCommand.mockImplementation(async (pluginIds, options) => {
@@ -612,7 +612,7 @@ describe('TUI batch write runtime', () => {
       ...intent,
       selection: {
         kind: 'currentProjectIntentTargets',
-        targets: [{ pluginId: 'team/second', platform: 'claude', scope: 'project' }],
+        targets: [{ pluginId: 'team/undeclared', platform: 'claude', scope: 'project' }],
       },
     }, new AbortController().signal)).rejects.toMatchObject({ code: 'batchTargetInvalid' });
   });
@@ -675,12 +675,12 @@ describe('TUI batch write runtime', () => {
     ];
 
     for (const changedState of changedStates) {
-      await writePluginIntentState({
+      await writeIntentFixture({
         scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
       }, baseState);
       const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
       runtimeMocks.installWriteCommand.mockClear();
-      await writePluginIntentState({
+      await writeIntentFixture({
         scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
       }, changedState);
 
@@ -1103,7 +1103,7 @@ describe('TUI batch write runtime', () => {
   it('retries only the failed actual platform after a project-all sync', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'batch-project-all-retry');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }]);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
@@ -1116,7 +1116,7 @@ describe('TUI batch write runtime', () => {
     const intentState = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
       pluginId: 'team/demo', platforms: ['codex', 'claude'],
     });
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, intentState);
     runtimeMocks.installWriteCommand.mockImplementation(async (pluginIds, options) => {
@@ -1157,7 +1157,7 @@ describe('TUI batch write runtime', () => {
     const initialResult = await dependencies.executeIntent(
       initialIntent, initialEvidence,
     ) as PluginWriteBatchExecutionResult;
-    expect(initialResult.groupResults.map((group) => group.platform)).toEqual(['claude', 'codex']);
+    expect(initialResult.groupResults.map((group) => group.platform).sort()).toEqual(['claude', 'codex']);
     const retryTargets = pluginWriteBatchFailedRequestedTargets(initialResult);
     expect(retryTargets).toEqual([
       { pluginId: 'team/demo', platform: 'claude', scope: 'project' },
@@ -1187,8 +1187,8 @@ describe('TUI batch write runtime', () => {
     const firstRoot = path.join(isolation.layout.fixtureCwd, 'batch-first-source');
     const secondRoot = path.join(isolation.layout.fixtureCwd, 'batch-second-source');
     await Promise.all([
-      createCatalogSnapshotFixture(firstRoot, 'alpha', [], 'alpha\n'),
-      createCatalogSnapshotFixture(secondRoot, 'beta', [], 'beta\n'),
+      createDependencyCatalogSnapshotFixture(firstRoot, [{ name: 'alpha' }]),
+      createDependencyCatalogSnapshotFixture(secondRoot, [{ name: 'beta' }]),
     ]);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -1208,7 +1208,7 @@ describe('TUI batch write runtime', () => {
     intentState = upsertPluginIntentRoot(intentState, {
       pluginId: 'second/beta', platforms: ['codex'],
     });
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, intentState);
     let secondSourceRecovered = false;
@@ -1675,10 +1675,10 @@ describe('TUI controller runtime scope conflict validation', () => {
       }],
     };
     await Promise.all([
-      writePluginIntentState({
+      writeIntentFixture({
         scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
       }, userIntentState),
-      writePluginIntentState({
+      writeIntentFixture({
         scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
       }, projectIntentState),
     ]);

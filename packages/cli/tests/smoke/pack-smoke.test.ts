@@ -740,6 +740,17 @@ describe('pack smoke', () => {
       stdout: expect.stringMatching(/init[\s\S]*version[\s\S]*build[\s\S]*validate[\s\S]*publish/u),
       stderr: '',
     });
+    const capabilities = await execFileAsync(awBin, ['self', 'describe', '--json'], {
+      cwd: tempRoot, env: externalAuthoringEnv,
+    });
+    expect(JSON.parse(capabilities.stdout).capabilities).toContain('aw.project-recovery.v1');
+    for (const projectCommand of [
+      ['project', '--help'], ['project', 'status', '--help'], ['project', 'targets', 'set', '--help'],
+    ]) {
+      await expect(execFileAsync(awBin, projectCommand, {
+        cwd: tempRoot, env: externalAuthoringEnv,
+      })).resolves.toMatchObject({ stderr: '' });
+    }
 
     const standaloneWorkspace = path.join(tempRoot, 'standalone-workspace');
     registerSmokeWritableRoot(standaloneWorkspace, 'packed CLI standalone author workspace');
@@ -805,15 +816,18 @@ describe('pack smoke', () => {
       maxBuffer: 10 * 1024 * 1024,
     });
     expect(JSON.parse(projectInstallBeforeTrust.stdout)).toMatchObject({
+      schemaVersion: 1,
+      kind: 'aw-project-recovery',
       ok: true,
       command: 'install',
-      overallState: 'succeeded',
+      intent: { state: 'valid', roots: [`${developmentSourceId}/packed-build`] },
+      selection: { agents: ['codex'], origin: 'argument' },
+      declarationChanged: true,
       targetResults: expect.arrayContaining([expect.objectContaining({
-        target: expect.objectContaining({
-          pluginId: `${developmentSourceId}/packed-build`,
-          platform: 'codex',
-          scope: 'project',
-        }),
+        pluginId: `${developmentSourceId}/packed-build`,
+        agent: 'codex',
+        delivery: { kind: 'native', platform: 'codex' },
+        observation: 'verified',
       })]),
     });
     const projectConfigBeforeTrust = await fs.readFile(
@@ -835,19 +849,21 @@ describe('pack smoke', () => {
       throw new Error(`Packed project install failed. stdout=${failure.stdout ?? ''} stderr=${failure.stderr ?? ''}`);
     });
     expect(JSON.parse(externalInstall.stdout)).toMatchObject({
+      schemaVersion: 1,
+      kind: 'aw-project-recovery',
       ok: true,
       command: 'install',
-      overallState: 'succeeded',
+      intent: { state: 'valid', roots: [`${developmentSourceId}/packed-build`] },
+      selection: { agents: expect.arrayContaining(['codex', 'claude-code']), origin: 'argument' },
+      declarationChanged: false,
       targetResults: expect.arrayContaining([
         expect.objectContaining({
-          target: expect.objectContaining({
-            pluginId: `${developmentSourceId}/packed-build`, platform: 'codex', scope: 'project',
-          }),
+          pluginId: `${developmentSourceId}/packed-build`, agent: 'codex',
+          delivery: { kind: 'native', platform: 'codex' }, observation: 'verified',
         }),
         expect.objectContaining({
-          target: expect.objectContaining({
-            pluginId: `${developmentSourceId}/packed-build`, platform: 'claude', scope: 'project',
-          }),
+          pluginId: `${developmentSourceId}/packed-build`, agent: 'claude-code',
+          delivery: { kind: 'native', platform: 'claude' }, observation: 'verified',
         }),
       ]),
     });

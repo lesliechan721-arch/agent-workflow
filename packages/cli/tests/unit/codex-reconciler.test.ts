@@ -9,9 +9,6 @@ import {
 } from '../../src/utils/codex-reconciler.js';
 import type { CodexSharedNativeInspection } from '../../src/utils/codex-shared-native.js';
 import type { CodexSurfaceAnalysis } from '../../src/utils/codex-surface-analysis.js';
-import {
-  createEmptyPluginIntentState,
-} from '../../src/utils/plugin-intent-state.js';
 
 const DIGEST = `sha256:${'a'.repeat(64)}`;
 
@@ -85,14 +82,44 @@ function input(
     operation,
     scope: catalogTarget.resolvedScope,
     cwd: '/repo',
-    intentBefore: createEmptyPluginIntentState(),
-    intentAfter: createEmptyPluginIntentState(),
     catalogClosure: [catalogTarget],
     liveEvidence: [evidence],
   };
 }
 
 describe('Codex desired-state reconciliation planner', () => {
+  it('preserves user activation during selected project execution', () => {
+    const plan = createCodexReconcilePlan(input('sync', target({
+      resolvedScope: 'project', desiredScopes: ['project'], executionScopes: ['project'],
+    }), live({ state: 'usable', version: '1.0.0' }, {
+      activations: { user: true, project: true },
+    })));
+    expect(plan.activationActions.user[0]).toMatchObject({ action: 'none', desired: true });
+    expect(plan.activationActions.project[0]).toMatchObject({ action: 'none', desired: true });
+    expect(plan.postcheck.plugins[0]?.expectedUserEnabled).toBe(true);
+  });
+
+  it('preserves unselected project activation during user execution', () => {
+    const plan = createCodexReconcilePlan(input('uninstall', target({
+      resolvedScope: 'user', desiredScopes: ['project'], executionScopes: ['user'],
+    }), live({ state: 'usable', version: '1.0.0' }, {
+      activations: { user: true, project: true },
+    })));
+    expect(plan.activationActions.user[0]?.action).toBe('disable');
+    expect(plan.activationActions.project[0]?.action).toBe('none');
+    expect(plan.sharedNativeActions[0]?.action).toBe('none');
+  });
+
+  it('does not remove extensions outside selected execution scopes', () => {
+    const plan = createCodexReconcilePlan(input('uninstall', target({
+      surface: surface('extension'), resolvedScope: 'project', desiredScopes: [],
+      executionScopes: ['project'],
+    }), live({ state: 'unobserved' }, {
+      extensions: [{ componentKey: 'extensions.instructions:guide', scope: 'user', state: 'present' }],
+    })));
+    expect(plan.extensionRemovals).toEqual([]);
+  });
+
   it.each([
     ['absent', { state: 'missing' }, 'install'],
     ['outdated', {

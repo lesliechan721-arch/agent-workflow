@@ -1,3 +1,4 @@
+import { writeIntentFixture, readIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -65,12 +66,12 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
   createEmptyPluginIntentState,
-  readPluginIntentState,
   upsertPluginIntentRoot,
-  writePluginIntentState,
 } from '../../src/utils/plugin-intent-state.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { addProjectRequirements } from '../../src/project/project-commands.js';
+import { setProjectAgents } from '../../src/project/project-preferences.js';
 
 afterEach(() => cleanup());
 
@@ -3544,12 +3545,11 @@ describe('ConsoleAppV4', () => {
     await syncCatalogSourceGeneration({
       sourceId: 'team-tools', cliVersion: '1.0.0', env: isolation.env,
     });
-    await writePluginIntentState({
-      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-      pluginId: 'team-tools/review-gate', platforms: ['codex'],
-    }));
-    const userIntentBefore = await readPluginIntentState({
+    const projectLocation = { cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    expect((await addProjectRequirements({ ...projectLocation,
+      selectors: ['team-tools/review-gate'] })).errors).toEqual([]);
+    await setProjectAgents(projectLocation, ['codex']);
+    const userIntentBefore = await readIntentFixture({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     });
     const systemRoot = path.join(isolation.layout.fixtureCwd, 'system-codex');
@@ -3590,33 +3590,13 @@ describe('ConsoleAppV4', () => {
 
     value.push({ name: 'projectStatus' });
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('同步全部可处理声明（1）');
+    expect(instance.lastFrame()).toContain('同步全部项目需求（1）');
     await input(instance, 'c');
-    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
-    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        pluginId: 'team-tools/review-gate',
-        description: expect.stringContaining('新增当前项目安装'),
-      }),
-    ]));
-    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'pluginWriteBatch', action: 'sync', scope: 'project', platform: 'codex',
-      selection: { kind: 'currentProjectIntentTargets', targets: [{
-        pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'project',
-      }] },
-    }), expect.any(AbortSignal));
-    await expect(captureEvidence.mock.results[0]!.value).resolves.toMatchObject({
-      groups: [{
-        platform: 'codex', scope: 'project', executable: true,
-        preview: { overallState: 'succeeded', targetResults: [] },
-      }],
-      targetVersions: [{
-        pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'project',
-        presence: 'new', availableVersion: '1.0.0',
-      }],
-    });
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('项目恢复 Review'));
+    expect(instance.lastFrame()).toContain('team-tools/review-gate');
+    expect(captureEvidence).not.toHaveBeenCalled();
     expect(nativeCliRunner).toHaveBeenCalled();
-    expect(await readPluginIntentState({
+    expect(await readIntentFixture({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env,
     })).toEqual(userIntentBefore);
   });
@@ -11617,7 +11597,6 @@ describe('ConsoleAppV4', () => {
     expect(detail).not.toContain('当前版本仍可用');
     expect(detail).not.toContain('当前版本继续可用');
   });
-
 
   it('reaches the last dependency relation at 60x18', async () => {
     const loaded = dependencyLoadResult();

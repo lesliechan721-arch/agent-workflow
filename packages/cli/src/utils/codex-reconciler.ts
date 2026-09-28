@@ -4,7 +4,6 @@ import type {
   CodexSurfaceAnalysis,
   CodexSurfaceComponent,
 } from './codex-surface-analysis.js';
-import type { PluginIntentState } from './plugin-intent-state.js';
 import type { CodexOperationRequirement, Scope } from '../types.js';
 
 export type CodexReconcileOperation =
@@ -32,6 +31,8 @@ export interface CodexReconcilerCatalogTarget {
   relation: 'requested' | 'dependency';
   resolvedScope: Scope;
   desiredScopes?: Scope[];
+  /** Physical scopes authorized for this execution; other live scopes are preserved. */
+  executionScopes?: Scope[];
   intentScopes?: Scope[];
   surface: CodexSurfaceAnalysis;
 }
@@ -58,10 +59,6 @@ export interface CodexReconcilerInput {
   scope: Scope;
   cwd: string;
   operation: CodexReconcileOperation;
-  intentBefore: PluginIntentState;
-  intentAfter: PluginIntentState;
-  relatedIntentBefore?: PluginIntentState;
-  relatedIntentAfter?: PluginIntentState;
   catalogClosure: CodexReconcilerCatalogTarget[];
   liveEvidence: CodexReconcilerLiveEvidence[];
   activationSupport?: 'observed' | 'assumed';
@@ -261,6 +258,7 @@ function addExtensionActions(options: {
   }
   for (const component of awComponents) {
     for (const scope of ['user', 'project'] as const) {
+      if (options.target.executionScopes && !options.target.executionScopes.includes(scope)) continue;
       const state = liveExtensionState(options.evidence, component.key, scope);
       if (state === 'foreign') {
         throw new CodexReconcilePlanError(
@@ -376,13 +374,21 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
   for (const target of sortedTargets) {
     const evidence = evidenceFor(target, evidenceById);
     const scopes = desiredScopes(target);
+    if (target.executionScopes) {
+      for (const scope of ['user', 'project'] as const) {
+        if (target.executionScopes.includes(scope)) continue;
+        const index = scopes.indexOf(scope);
+        if (index !== -1) scopes.splice(index, 1);
+        if (evidence.activations[scope] === true) scopes.push(scope);
+      }
+    }
     const hasNative = target.surface.nativeKinds.length > 0;
     const userDesired = hasNative && scopes.includes('user');
     const projectDesired = hasNative && scopes.includes('project');
     const nativeDesiredSomewhere = userDesired || projectDesired;
     projectContractRequired ||= projectDesired;
 
-    const action = nativeAction({ operation: input.operation, target, evidence });
+    const action = nativeAction({ operation: input.operation, target: { ...target, desiredScopes: scopes }, evidence });
     if (hasNative || action !== 'none') {
       sharedNativeActions.push({
         pluginId: target.pluginId,
@@ -420,6 +426,12 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
       }),
       desired: projectDesired,
     };
+    if (target.executionScopes && !target.executionScopes.includes('user')
+      && evidence.activations.user !== undefined) {
+      userAction.action = evidence.activations.user === false
+        && action !== 'none' && action !== 'reuse' ? 'disable' : 'none';
+    }
+    if (target.executionScopes && !target.executionScopes.includes('project')) projectAction.action = 'none';
     userActions.push(userAction);
     projectActions.push(projectAction);
     addExtensionActions({

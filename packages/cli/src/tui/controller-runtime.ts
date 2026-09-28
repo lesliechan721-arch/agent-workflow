@@ -1,3 +1,7 @@
+import { readProjectDemand, projectDemandNativeProjection } from '../project/project-demand.js';
+import { selectProjectAgents } from '../project/project-preferences.js';
+import { statusTargetHasLiveConfigConsumer } from '../commands/status-v6.js';
+import type { ProjectStatusV1 } from '../project/project-types.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 
@@ -63,10 +67,8 @@ import {
   resolvePluginConfigStorePath,
 } from '../utils/plugin-config.js';
 import { assertProjectSharedConfigPathVisible } from '../utils/project-boundary.js';
-import {
-  calculatePluginIntentDigest,
-  readPluginIntentState,
-} from '../utils/plugin-intent-state.js';
+import { prepareProjectRecovery, executeProjectRecovery, type ProjectRecoveryPlan } from '../project/recovery.js';
+import { prepareProjectTargetsPlan, executeProjectTargetsPlan } from './project-flow.js';
 import {
   applyPluginConfigWrite,
   replayConfigRuntimeWrites,
@@ -300,12 +302,15 @@ export function configAffectedStatusTargets(
   targets: StatusV8Target[],
   pluginId: string,
   configScope: 'user' | 'project',
+  projectRecovery?: ProjectStatusV1,
 ): StatusScopedTarget[] {
   const affected = new Map<string, StatusScopedTarget>();
   for (const target of flattenStatusTargets(targets)) {
     const intent = statusTargetIntent(target);
-    if (target.pluginId !== pluginId || !intent.enabled) continue;
-    for (const scope of intent.scopes) {
+    if (target.pluginId !== pluginId) continue;
+    const projectV3 = projectRecovery?.intent.state === 'valid';
+    if (projectV3 ? !statusTargetHasLiveConfigConsumer(target) : !intent.enabled) continue;
+    for (const scope of projectV3 ? [target.scope] : intent.scopes) {
       if (configScope === 'project' && scope !== 'project') continue;
       affected.set(`${target.platform}\0${scope}`, { ...target, scope });
     }
@@ -611,8 +616,17 @@ async function resolveBatchGroups(
       '当前项目全部操作只支持 project scope sync。',
     );
   }
-  const state = await readPluginIntentState({ scope: 'project', cwd, env });
-  const projectIntentDigest = calculatePluginIntentDigest(state);
+  const demand = await readProjectDemand({ cwd, env });
+  const protective = projectDemandNativeProjection(demand);
+  const agents = selectProjectAgents({ preferences: demand.preferences }).agents;
+  const state = { ...protective, roots: protective.roots.flatMap((root) => {
+    const platforms = root.platforms.filter((platform) => agents.includes(platform === 'claude' ? 'claude-code' : 'codex'));
+    return platforms.length ? [{ ...root, platforms }] : [];
+  }) };
+  const projectIntentDigest = `sha256:${crypto.createHash('sha256').update(JSON.stringify({
+    intent: 'digest' in demand.intent ? demand.intent.digest : demand.intent.state,
+    preferences: 'rawDigest' in demand.preferences ? demand.preferences.rawDigest : demand.preferences.state,
+  })).digest('hex')}`;
   if (intent.selection.kind === 'currentProjectIntentTargets') {
     if (intent.selection.targets.length === 0
       || intent.selection.targets.some((target) => target.scope !== 'project')) {
@@ -1157,7 +1171,7 @@ export function createTuiControllerDependencies(
       signal.throwIfAborted();
       const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
       const projectIntentObservation = result.projectIntentObservation;
-      const projectIntent = projectIntentObservation.state === 'ready' ? {
+      const projectIntent = result.payload.projectRecovery?.intent.state === 'valid' ? undefined : projectIntentObservation.state === 'ready' ? {
         state: 'ready' as const,
         roots: structuredClone(projectIntentObservation.value.roots),
       } : projectIntentObservation.state === 'absent' ? {
@@ -1170,8 +1184,8 @@ export function createTuiControllerDependencies(
       return {
         cliChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
         ...(result.projectRoot ? { projectRoot: result.projectRoot } : {}),
-        projectIntent,
-        ...(projectIntent.state === 'ready'
+        ...(projectIntent ? { projectIntent } : {}),
+        ...(projectIntent?.state === 'ready'
           ? { projectIntentRoots: structuredClone(projectIntent.roots) }
           : {}),
         configuredSources: structuredClone(configured.sources),
@@ -1408,6 +1422,7 @@ export function createTuiControllerDependencies(
             sessionStatusResult.payload.targets,
             intent.pluginId,
             intent.scope,
+            sessionStatusResult.payload.projectRecovery,
           )
         : [];
       const relevantRevisions = (sessionStatusResult?.targetRevisions ?? []).filter((revision) =>
@@ -2585,6 +2600,7 @@ export function createTuiControllerDependencies(
         sessionStatusResult.payload.targets,
         intent.pluginId,
         intent.scope,
+        sessionStatusResult.payload.projectRecovery,
       );
       const preparedCatalogOperation = catalogOperation;
       const selected = await withResolvedCatalogPlugin({
@@ -2733,7 +2749,7 @@ export function createTuiControllerDependencies(
     let operationPlan: OperationEvidence['operationPlan'];
     await preparation?.reporter.emit('catalog');
     const configVisibleTargets = intent.kind === 'configSave'
-      ? configAffectedStatusTargets(status.payload.targets, intent.pluginId, intent.scope)
+      ? configAffectedStatusTargets(status.payload.targets, intent.pluginId, intent.scope, status.payload.projectRecovery)
       : [];
     const selected = await withResolvedCatalogPlugin({
           selector: intent.pluginId,
@@ -3006,6 +3022,40 @@ export function createTuiControllerDependencies(
       }
     },
     loadStatus,
+    async prepareProjectTask(request, signal) {
+      signal.throwIfAborted();
+      if (request.kind === 'targets') {
+        return prepareProjectTargetsPlan({ cwd: context.cwd, env: context.env },
+          request.action, request.agents);
+      }
+      const packageInfo = await readCliPackageInfo();
+      signal.throwIfAborted();
+      const plan = await prepareProjectRecovery(request.command ?? 'sync', request.selectors, {
+        cwd: context.cwd, env: context.env, cliVersion: packageInfo.version,
+        all: request.selectors.length === 0,
+        ...(request.targets ? { targets: request.targets } : {}),
+        ...(request.force ? { force: true } : {}),
+        ...(request.refresh ? { refresh: true } : {}),
+        ...(request.scriptTimeoutMs !== undefined ? { scriptTimeoutMs: request.scriptTimeoutMs } : {}),
+        ...(request.dependencyScopeOverrides?.length
+          ? { dependencyScopeOverrides: request.dependencyScopeOverrides } : {}),
+        ...(request.exactTargets ? {
+          exactTargets: request.exactTargets,
+          ...(!request.targets ? { targets: [...new Set(request.exactTargets.map((target) => target.agent))] } : {}),
+        } : {}),
+      }, context);
+      signal.throwIfAborted();
+      return { kind: 'recovery', plan };
+    },
+    async executeProjectTask(plan) {
+      if (plan.kind === 'targets') {
+        const result = await executeProjectTargetsPlan({ cwd: context.cwd, env: context.env }, plan);
+        return { kind: 'targets', ...result };
+      }
+      const receipt = await executeProjectRecovery(plan.plan as ProjectRecoveryPlan,
+        { yes: true, runtime: context });
+      return { kind: 'recovery', receipt };
+    },
     loadPluginContent,
     async probeCatalogFreshness(sourceId, freshnessOptions, signal) {
       signal.throwIfAborted();

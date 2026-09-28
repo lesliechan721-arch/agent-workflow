@@ -287,6 +287,28 @@ afterEach(async () => {
 });
 
 describe('config write full reinstall apply', () => {
+  // Test Value Gate: config apply cannot install a newly declared v3 project root.
+  it('does not install an absent v3 dynamic target when config is saved', async () => {
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
+    mocks.visible.add('codex:project');
+    mocks.states.set('codex:project', 'absent');
+    const original = mocks.status.getMockImplementation()!;
+    mocks.status.mockImplementation(async (options) => {
+      const status = await original(options);
+      return { ...status, payload: { ...status.payload,
+        projectRecovery: { intent: { state: 'valid' } },
+      } };
+    });
+    const reinstall = createReinstallMock();
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin, scope: 'project', cwd: fixture.cwd, env: fixture.env,
+      request: { updates: { mode: 'fast' } }, reinstallCommandImpl: reinstall,
+    });
+    expect(receipt.configWrite).toBe('succeeded');
+    expect(receipt.apply).toMatchObject({ state: 'skipped', reason: 'noVisibleTarget' });
+    expect(reinstall).not.toHaveBeenCalled();
+  });
+
   it('keeps closed boolean choices in the legacy prompt enum projection', () => {
     expect(toCliConfigPromptSchema({
       enabled: {

@@ -7,6 +7,7 @@ vi.mock('../../src/tui/clipboard.js', () => ({ copyToClipboard: vi.fn() }));
 import { copyToClipboard } from '../../src/tui/clipboard.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import type { StatusV8Payload, StatusV8PluginSummary } from '../../src/commands/status-v6.js';
+import type { ProjectRecoveryReceiptV1 } from '../../src/project/project-types.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import type { ConfigPageViewModel, UserIssueViewModel } from '../../src/tui/model.js';
 import {
@@ -176,6 +177,63 @@ async function focusAction(
 }
 
 describe('TUI plugin write task', () => {
+  it('continues a mixed v3 task from user Result through a fresh project Review', async () => {
+    const loadedV3 = loaded();
+    loadedV3.projectRoot = '/workspace';
+    loadedV3.payload.projectRecovery = {
+      schemaVersion: 1, kind: 'aw-project-status', ok: true,
+      intent: { state: 'valid', digest: 'sha256:project' },
+      selection: { agents: ['claude-code'], origin: 'preference', preferences: 'valid' },
+      inventory: [{ pluginId: 'official/demo', source: 'official', sourceState: 'ready',
+        blockers: [], targetResults: [] }], allSatisfied: null, errors: [],
+    };
+    const receipt: ProjectRecoveryReceiptV1 = {
+      schemaVersion: 1, kind: 'aw-project-recovery', command: 'sync', ok: true,
+      intent: { state: 'valid', roots: ['official/demo'] }, requestedRoots: ['official/demo'],
+      selection: { agents: ['claude-code'], origin: 'explicit' }, blockers: [],
+      targetResults: [{ pluginId: 'official/demo', agent: 'claude-code',
+        delivery: { kind: 'native', platform: 'claude' }, execution: 'not-run',
+        observation: 'missing', blockers: [], requiredBy: ['official/demo'] }],
+      remainingTargets: [], recoveryActions: [], declarationChanged: false,
+      preferencesChanged: false, outputsMayHaveChanged: false,
+    };
+    const base = controller();
+    const prepareProjectTask = vi.fn().mockResolvedValue({ kind: 'recovery',
+      plan: { receipt, changes: [], warnings: [] } });
+    const value = new TuiController({ ...base.dependencies,
+      loadStatus: vi.fn().mockResolvedValue(loadedV3), prepareProjectTask,
+      executeProjectTask: vi.fn() });
+    const userTarget = { pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const };
+    const projectTarget = { pluginId: 'official/demo', platform: 'claude' as const, scope: 'project' as const };
+    await value.load();
+    vi.spyOn(value, 'listPluginWriteTaskCandidates').mockReturnValue([
+      { target: userTarget, displayName: 'Demo', sourceId: 'official', eligible: true,
+        recommendedMethod: 'sync', issueIds: [] },
+      { target: projectTarget, displayName: 'Demo', sourceId: 'official', eligible: true,
+        recommendedMethod: 'sync', issueIds: [] },
+    ]);
+    value.push({ name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'restore',
+      targetKeys: ['official/demo\0codex\0user', 'official/demo\0claude\0project'] });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn();
+    expect(instance.lastFrame()).toContain('先处理所有项目 1 个位置');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    expect(instance.lastFrame()).toContain('完整请求 2 个位置');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
+    expect(instance.lastFrame()).toContain('当前项目的 1 个位置尚未处理');
+    await focusAction(instance, '继续处理当前项目 1 个位置');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(prepareProjectTask).toHaveBeenCalledOnce());
+    expect(prepareProjectTask).toHaveBeenCalledWith({ kind: 'recovery', command: 'sync',
+      selectors: ['official/demo'], targets: ['claude-code'],
+      exactTargets: [{ pluginId: 'official/demo', agent: 'claude-code' }],
+    }, expect.any(AbortSignal));
+    expect(instance.lastFrame()).toContain('完整任务请求：2 个位置');
+    value.dispose();
+  });
+
   it('prepares a complete recommended update Review and reissues it after adjusting the frozen selection', async () => {
     const { value, dependencies } = controller();
     await value.load();

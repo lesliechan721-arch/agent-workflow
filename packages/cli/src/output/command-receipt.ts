@@ -1,3 +1,4 @@
+import type { PortableCleanupResidue } from '../commands/rebuild-command.js';
 import type { InitCommandResult } from '../commands/init.js';
 import type { OperationPlan } from '../commands/operation-plan.js';
 import type { RebuildResult } from '../commands/rebuild-operations.js';
@@ -32,6 +33,7 @@ export interface CliCommandResult {
   operationPlan?: OperationPlan;
   targetResults?: ReceiptTargetResult[];
   codexReconcilePlans?: CodexReconcilePlan[];
+  portableCleanupResidues?: PortableCleanupResidue[];
 }
 
 export interface RebuildReceiptTargetResult extends ReceiptTargetResult {
@@ -262,7 +264,8 @@ function receiptTargetResult(
     ?? (message && (targetResult.state === 'failed' || targetResult.action === 'skipped')
       ? rebuildErrorCode(message)
       : undefined);
-  const planChanges = plannedTargetChanges(target, result.operationPlan).filter((change) =>
+  const planChanges = (targetResult.action === 'keep'
+    ? [] : plannedTargetChanges(target, result.operationPlan)).filter((change) =>
     targetResult.action !== 'cleanup'
     || targetResult.state === 'completed'
     || change.endsWith(':removeIntent'));
@@ -326,6 +329,29 @@ function overallState(
   return successfulRequested || fallback === 'partial' ? 'partial' : 'failed';
 }
 
+export function portableCleanupMessages(residues: readonly PortableCleanupResidue[]): {
+  warnings: string[];
+  recoveryActions: string[];
+} {
+  return {
+    warnings: residues.flatMap((residue) => [
+      ...(residue.state === 'present'
+        ? [`portableOutputRemains: ${residue.pluginId} 的 Portable 输出仍存在，本次清理不删除它们。`] : []),
+      ...(residue.state === 'unknown' || residue.blockers.length > 0
+        ? [`portableObservationFailed: ${residue.pluginId} 的部分 Portable 关联或输出无法确认。`] : []),
+    ]),
+    recoveryActions: unique(residues.flatMap((residue) => [
+      ...residue.targets.map((target) => `${residue.pluginId}：请检查并备份项目目录 ${target.projectPath}；确认归属后可自行移开。`
+        + (target.agent === 'codex' || target.agent === 'cursor'
+          ? '该目录可能同时被 Codex 和 Cursor 读取；移开前请确认对两者的影响。' : `该目录供 ${target.agent} 使用。`)
+        + 'AW 不自动删除此 Portable 目录；处理后重新检查项目状态。'),
+      ...(residue.state === 'unknown' || residue.blockers.length > 0
+        ? [`${residue.pluginId}：请检查当前项目的 Portable provider 关联及输出；尚有内容无法确认。AW 不自动删除 Portable 输出。`]
+        : []),
+    ])),
+  };
+}
+
 export function buildRebuildReceiptJson(
   command: RebuildReceiptJson['command'],
   result: CliCommandResult,
@@ -341,11 +367,20 @@ export function buildRebuildReceiptJson(
     : []);
   const targetResults = sourceTargetResults(command, result, errors)
     .map((target) => receiptTargetResult(target, result));
-  const state = overallState(targetResults, result.overallState);
+  const nativeState = overallState(targetResults, result.overallState);
+  const residues = result.portableCleanupResidues ?? [];
+  const state = residues.length > 0 && nativeState === 'succeeded' ? 'partial' : nativeState;
   const changes = command === 'cleanup' && state !== 'succeeded'
     ? unique(targetResults.flatMap((target) => target.changes))
-    : result.operationPlan?.changes ?? unique(targetResults.flatMap((target) => target.changes));
-  const recoveryActions = unique(targetResults.flatMap((target) => target.recoveryActions));
+    : result.operationPlan?.changes.filter((change) => !targetResults.some((target) =>
+        target.action === 'keep' && target.target.pluginId
+        && change.startsWith(`${target.target.pluginId}:${target.target.platform}:${target.target.scope}:`)))
+      ?? unique(targetResults.flatMap((target) => target.changes));
+  const portableMessages = portableCleanupMessages(residues);
+  const recoveryActions = unique([
+    ...targetResults.flatMap((target) => target.recoveryActions),
+    ...portableMessages.recoveryActions,
+  ]);
   if (state !== 'succeeded' && targetResults.length === 0) {
     recoveryActions.push(...earlyFailureRecovery(command, errors[0]?.code));
   }
@@ -364,6 +399,7 @@ export function buildRebuildReceiptJson(
     targetResults,
     warnings: unique([
       ...result.warnings,
+      ...portableMessages.warnings,
       ...(result.operationPlan?.warnings ?? []),
     ]),
     recoveryActions: unique(recoveryActions),

@@ -1,3 +1,4 @@
+import { writeIntentFixture, readIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const catalogMocks = vi.hoisted(() => ({ refresh: vi.fn() }));
@@ -27,9 +28,7 @@ import { syncWriteCommand } from '../../src/commands/write-commands.js';
 import { buildRebuildReceiptJson } from '../../src/output/command-receipt.js';
 import {
   createEmptyPluginIntentState,
-  readPluginIntentState,
   upsertPluginIntentRoot,
-  writePluginIntentState,
 } from '../../src/utils/plugin-intent-state.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -98,7 +97,7 @@ describe('public Codex sync command', () => {
         scope: 'user',
       }],
     };
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'project',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -139,7 +138,7 @@ describe('public Codex sync command', () => {
       pluginId: 'official/demo',
       platforms: ['codex'],
     });
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'project',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -159,7 +158,7 @@ describe('public Codex sync command', () => {
       expect.objectContaining({ platform: 'codex', scope: 'project' }),
       expect.objectContaining({ directCli: true }),
     );
-    await expect(readPluginIntentState({
+    await expect(readIntentFixture({
       scope: 'project',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -174,7 +173,7 @@ describe('public Codex sync command', () => {
     intent = upsertPluginIntentRoot(intent, {
       pluginId: 'second/other', platforms: ['codex'],
     });
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, intent);
     catalogMocks.refresh.mockRejectedValueOnce(new Error('offline'));
@@ -207,7 +206,7 @@ describe('public Codex sync command', () => {
     intent = upsertPluginIntentRoot(intent, {
       pluginId: 'second/other', platforms: ['codex'],
     });
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, intent);
     mockedReconcile.mockRejectedValueOnce(new Error('catalogSourceActiveMissing: first'))
@@ -249,15 +248,15 @@ describe('public Codex sync command', () => {
     intent = upsertPluginIntentRoot(intent, {
       pluginId: 'team/dual', platforms: ['codex', 'claude'],
     });
-    await writePluginIntentState({
-      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    await writeIntentFixture({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, intent);
 
     await syncCommand([], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       platform: 'both',
-      scope: 'project',
+      scope: 'user',
       all: true,
       refresh: true,
       cliVersion: '1.0.0',
@@ -280,8 +279,8 @@ describe('public Codex sync command', () => {
     intent = upsertPluginIntentRoot(intent, {
       pluginId: 'second/root', platforms: ['claude'],
     });
-    await writePluginIntentState({
-      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    await writeIntentFixture({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, intent);
     mockedReconcile.mockImplementation(async (selectors, options) => {
       const rootId = selectors[0]!;
@@ -383,7 +382,7 @@ describe('public Codex sync command', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       platform: 'both',
-      scope: 'project',
+      scope: 'user',
       all: true,
       interactive: false,
     });

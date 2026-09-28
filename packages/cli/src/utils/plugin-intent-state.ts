@@ -9,10 +9,6 @@ import {
   atomicReplaceConfigFile,
   resolveAwProjectRoot,
 } from './plugin-config.js';
-import {
-  assertCanonicalProjectManagedRoots,
-  assertProjectSharedConfigPathVisible,
-} from './project-boundary.js';
 import { resolveAwHome } from './state-paths.js';
 import {
   assertTestReadablePath,
@@ -353,21 +349,12 @@ async function resolveIntentLocation(location: PluginIntentStateLocation): Promi
   allowedRoot: string;
   filePath: string;
 }> {
-  if (location.scope === 'user') {
-    const allowedRoot = resolveAwHome(location.env);
-    return {
-      allowedRoot,
-      filePath: resolvePluginIntentStatePath(location),
-    };
+  if (location.scope !== 'user') {
+    throw new Error('Invalid plugin intent scope: Project declarations require schemaVersion 3.');
   }
-  const allowedRoot = await assertCanonicalProjectManagedRoots({
-    cwd: location.cwd,
-    rootNames: [],
-    managedPaths: ['.agent-workflows'],
-  });
   return {
-    allowedRoot,
-    filePath: path.join(allowedRoot, '.agent-workflows', 'plugin-intents.json'),
+    allowedRoot: resolveAwHome(location.env),
+    filePath: resolvePluginIntentStatePath(location),
   };
 }
 
@@ -430,10 +417,7 @@ export async function writePluginIntentState(
   location: PluginIntentStateLocation,
   state: PluginIntentState,
 ): Promise<PluginIntentState> {
-  const requestedPath = resolvePluginIntentStatePath(location, 'write');
-  if (location.scope === 'project') {
-    await assertProjectSharedConfigPathVisible({ cwd: location.cwd, targetPath: requestedPath });
-  }
+  resolvePluginIntentStatePath(location, 'write');
   const { allowedRoot, filePath } = await resolveIntentLocation(location);
   const canonical = canonicalizePluginIntentState(state);
   await atomicReplaceConfigFile({

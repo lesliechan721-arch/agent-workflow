@@ -1,3 +1,5 @@
+import { statusTargetHasLiveConfigConsumer } from '../commands/status-v6.js';
+import { readProjectDemand, projectDemandNativeProjection } from '../project/project-demand.js';
 import type {
   PreApplyAuthorizationTarget,
   RebuildCommandRuntime,
@@ -266,9 +268,11 @@ async function discoverVisibleTargets(options: {
   });
   for (const statusTarget of flattenStatusTargets(status.payload.targets)) {
     const intent = statusTargetIntent(statusTarget);
-    if ((statusTarget.pluginId !== selector && statusTarget.pluginName !== options.pluginName)
-      || !intent.enabled) continue;
-    for (const scope of intent.scopes) {
+    if (statusTarget.pluginId !== selector && statusTarget.pluginName !== options.pluginName) continue;
+    // A declaration alone is not a consumer. Config apply cannot install it.
+    const projectV3 = status.payload.projectRecovery?.intent.state === 'valid';
+    if (projectV3 ? !statusTargetHasLiveConfigConsumer(statusTarget) : !intent.enabled) continue;
+    for (const scope of projectV3 ? [statusTarget.scope] : intent.scopes) {
       if (options.scope === 'project' && scope !== 'project') continue;
       targets.push(await createCandidateTarget({
         pluginName: options.pluginName,
@@ -306,6 +310,8 @@ async function reinstallVisibleTargets(options: {
         rebuildRuntime: options.rebuildRuntime,
       })
     : { targets: dedupeTargets(options.applyTargets), failures: [] });
+  const projectDemand = discovered.targets.some((target) => target.scope === 'project')
+    ? await readProjectDemand({ cwd: options.cwd, env: options.env }) : undefined;
   const targetResults: InternalConfigApplyTargetResult[] = [...discovered.failures];
   let runtimeFailed = discovered.failures.length > 0;
   let invalidTargets = 0;
@@ -446,6 +452,12 @@ async function reinstallVisibleTargets(options: {
           ...options.rebuildRuntime,
           env: options.env,
           nativeCliRunner,
+          ...(target.scope === 'project' && projectDemand?.intent.state === 'valid' ? {
+            projectExecution: {
+              requirements: projectDemandNativeProjection(projectDemand),
+              selectedTargets: [{ pluginId: selector, platform: target.platform, scope: 'project' as const }],
+            },
+          } : {}),
           preApplyConfirmed: options.preApplyConfirmed === true,
           preApplyExecutionCache,
           ...(debugLogger ? {

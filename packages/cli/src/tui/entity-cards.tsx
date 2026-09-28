@@ -179,6 +179,40 @@ function projectFacts(root: ProjectInventoryRoot, subject: PluginDetailSubject, 
   addFields(lines, sections, 'overall', width,
     [muted('总体状态'), statusCell(root.state === 'ready' ? '就绪' : overall.label,
       overall.status, overall.symbol)]);
+  if (root.agentResults) {
+    addFields(lines, sections, 'demand', width,
+      [muted('项目需求'), plain(root.pluginId)]);
+    if (root.sourceState && root.sourceState !== 'ready') {
+      addFields(lines, sections, 'sourceState', width,
+        [muted('来源'), statusCell(root.sourceState, 'warning', '!')]);
+    }
+    for (const blocker of root.blockers ?? []) {
+      addFields(lines, sections, `blocker:${blocker.code}`, width,
+        [statusCell(blocker.code, 'warning', '!')]);
+    }
+    for (const target of root.agentResults) {
+      const delivery = target.delivery?.kind === 'native'
+        ? `Native ${platformLabel(target.delivery.platform)}`
+        : target.delivery?.kind === 'agent-skills' ? '通用 Skills' : '无适用交付';
+      const state: ProjectInventoryState = target.blockers.length > 0 ? 'blocked'
+        : target.observation === 'verified' ? 'ready'
+          : target.observation === 'missing' || target.content === 'drifted' ? 'pending' : 'unknown';
+      const health = projectStates[state];
+      addFields(lines, sections, `agent:${target.agent}`, width,
+        [{ text: target.agent, role: 'platform' }, plain(delivery),
+          statusCell(health.label, health.status, health.symbol)]);
+      for (const blocker of target.blockers) {
+        addFields(lines, sections, `agent:${target.agent}:${blocker.code}`, width,
+          [muted('原因'), plain(blocker.code)]);
+      }
+    }
+    if (root.agentResults.length === 0) {
+      addFields(lines, sections, 'agents', width,
+        [muted('本机 Agent'), root.blockers?.some((blocker) => blocker.code === 'localTargetsRequired')
+          ? statusCell('未选择', 'warning', '!') : statusCell('目标未确认', 'muted', '?')]);
+    }
+    return { lines, sections };
+  }
   for (const target of root.targets) {
     const detail = subject.placements.find((placement) =>
       placement.platform === target.platform && placement.scope === target.scope);

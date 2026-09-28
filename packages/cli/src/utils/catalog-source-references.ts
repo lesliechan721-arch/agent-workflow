@@ -1,3 +1,4 @@
+import { readProjectReferencedPluginIds } from '../project/project-demand.js';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
 
@@ -1194,7 +1195,11 @@ export async function inventoryCatalogSourceReferences(options: {
   for (const scope of ['user', 'project'] as const) {
     const location = resolvePluginIntentStatePath({ scope, cwd: options.cwd, env });
     const state = await inventoryRead({
-      operation: () => readPluginIntentState({ scope, cwd: options.cwd, env }),
+      operation: async () => {
+        if (scope === 'user') return readPluginIntentState({ scope, cwd: options.cwd, env });
+        const ids = await readProjectReferencedPluginIds({ cwd: options.cwd, env });
+        return { roots: ids.map((pluginId) => ({ pluginId })), dependencyScopeOverrides: [] };
+      },
       absent: null,
       errors,
       location,

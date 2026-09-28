@@ -36,6 +36,7 @@ export interface SkillsCliInvocationOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export interface PortableSkillTarget {
@@ -74,6 +75,7 @@ async function invokeSkills(
       env: options.env,
       encoding: 'utf8',
       maxBuffer: 1024 * 1024,
+      ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
       ...(options.signal ? { signal: options.signal } : {}),
     });
     return { stdout: result.stdout, stderr: result.stderr };
@@ -110,6 +112,17 @@ export async function probeSkillsCli(
     );
   }
   return { version: version.join('.') };
+}
+
+/** Project recovery has a narrower, independently qualified provider contract. */
+export async function probeProjectRecoverySkillsCli(
+  options: SkillsCliInvocationOptions,
+): Promise<{ version: string }> {
+  const result = await probeSkillsCli({ ...options, timeoutMs: options.timeoutMs ?? 15_000 });
+  if (result.version !== '1.5.23') {
+    throw new SkillsCliError('portableSkillsCliIncompatible', '项目恢复需要精确 skills 1.5.23。');
+  }
+  return result;
 }
 
 function parseInstalledSkills(value: unknown): InstalledSkillRecord[] {
@@ -164,10 +177,11 @@ export async function addSkills(options: SkillsCliInvocationOptions & {
   skills: string[];
   agents?: string[];
   global: boolean;
+  copy?: boolean;
 }): Promise<void> {
   const args = ['add', options.rootDir, '--skill', ...options.skills,
     ...(options.agents ? ['--agent', ...options.agents] : []),
-    ...(options.global ? ['--global'] : []), '--yes'];
+    ...(options.global ? ['--global'] : []), ...(options.copy ? ['--copy'] : []), '--yes'];
   try {
     await invokeSkills(args, options);
   } catch (error) {

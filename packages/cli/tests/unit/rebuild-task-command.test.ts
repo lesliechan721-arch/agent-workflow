@@ -18,6 +18,8 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { addProjectRequirements } from '../../src/project/project-commands.js';
+import { readNativeIntentProjection } from '../../src/project/project-demand.js';
 import { readPluginIntentState } from '../../src/utils/plugin-intent-state.js';
 import {
   applyCodexConfigTransactionFile,
@@ -501,8 +503,11 @@ describe('rebuild task command', () => {
 
   it('keeps ordinary install, sync, and reinstall intent state', async () => {
     const { cwd, env } = await configureTaskCatalog();
+    await addProjectRequirements({ cwd, env, selectors: ['team/alpha'] });
+    const requirements = await readNativeIntentProjection({ cwd, env });
     const runtime = {
       env,
+      projectExecution: { requirements, selectedTargets: [{ pluginId: 'team/alpha', platform: 'codex' as const, scope: 'project' as const }] },
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
     };
     await installWriteCommand(['team/alpha'], {
@@ -515,14 +520,13 @@ describe('rebuild task command', () => {
       cwd, platform: 'codex', scope: 'project',
     }, runtime);
 
-    const intent = await readPluginIntentState({ cwd, scope: 'project', env });
-    expect(intent.roots).toEqual([
-      { pluginId: 'team/alpha', platforms: ['codex'] },
-    ]);
+    await expect(readNativeIntentProjection({ cwd, env })).resolves.toEqual(requirements);
   });
 
   it('round-trips mixed Codex task scopes through intent and sync all', async () => {
     const { cwd, env } = await configureTaskCatalog();
+    await addProjectRequirements({ cwd, env, selectors: ['team/beta'] });
+    const projectRequirements = await readNativeIntentProjection({ cwd, env });
     const nativeCliRunner = async () => ({
       exitCode: 0,
       stdout: 'codex-cli 99.0.0',
@@ -531,14 +535,14 @@ describe('rebuild task command', () => {
     await taskWriteCommand([
       { pluginId: 'team/alpha', platform: 'codex', scope: 'user', method: 'sync' },
       { pluginId: 'team/beta', platform: 'codex', scope: 'project', method: 'sync' },
-    ], { cwd }, { env, nativeCliRunner });
+    ], { cwd }, { env, nativeCliRunner, projectRequirements });
 
     const [userIntent, projectIntent] = await Promise.all([
       readPluginIntentState({ cwd, scope: 'user', env }),
-      readPluginIntentState({ cwd, scope: 'project', env }),
+      readNativeIntentProjection({ cwd, env }),
     ]);
     expect(userIntent.roots).toContainEqual({ pluginId: 'team/alpha', platforms: ['codex'] });
-    expect(projectIntent.roots).toContainEqual({ pluginId: 'team/beta', platforms: ['codex'] });
+    expect(projectIntent).toEqual(projectRequirements);
 
     const [syncedUser, syncedProject] = await Promise.all((['user', 'project'] as const)
       .map((scope) => runRebuildCommand({

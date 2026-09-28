@@ -1,8 +1,10 @@
+import { writeIntentFixture, readIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import path from 'node:path';
 
 import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
+import { addProjectRequirements } from '../../src/project/project-commands.js';
 import { runCli } from '../../src/index.js';
 import { removeCatalogSourceCommand, updateCatalogSourceCommand } from '../../src/commands/catalog-source.js';
 import {
@@ -44,10 +46,6 @@ import {
   resetPluginConfigWithHelper,
 } from '../../src/utils/plugin-config-write.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
-import {
-  readPluginIntentState,
-  writePluginIntentState,
-} from '../../src/utils/plugin-intent-state.js';
 
 const SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
 
@@ -78,7 +76,7 @@ describe('phase 3B namespaced runtime stores', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     };
-    await writePluginIntentState(location, {
+    await writeIntentFixture(location, {
       schemaVersion: 2,
       kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex', 'claude'] }],
@@ -105,7 +103,7 @@ describe('phase 3B namespaced runtime stores', () => {
       intentChanges: [expect.objectContaining({ scope: 'user' })],
       evidence: { intentDigests: [expect.objectContaining({ scope: 'user' })] },
     });
-    await expect(readPluginIntentState(location)).resolves.toMatchObject({
+    await expect(readIntentFixture(location)).resolves.toMatchObject({
       roots: [{ pluginId: 'team/demo', platforms: ['claude', 'codex'] }],
     });
 
@@ -125,7 +123,7 @@ describe('phase 3B namespaced runtime stores', () => {
         state: 'completed',
       }],
     });
-    await expect(readPluginIntentState(location)).resolves.toEqual({
+    await expect(readIntentFixture(location)).resolves.toEqual({
       schemaVersion: 2,
       kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['claude'] }],
@@ -138,7 +136,7 @@ describe('phase 3B namespaced runtime stores', () => {
   it('treats force Intent-only cleanup as a successful Intent cancellation', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
-    await writePluginIntentState(location, {
+    await writeIntentFixture(location, {
       schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
@@ -160,7 +158,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(result.offlineCleanupPlans).toEqual([
       expect.objectContaining({ plan: expect.objectContaining({ actions: [] }) }),
     ]);
-    await expect(readPluginIntentState(location)).resolves.toMatchObject({ roots: [] });
+    await expect(readIntentFixture(location)).resolves.toMatchObject({ roots: [] });
   });
 
   it('treats unrelated inventory damage as irrelevant to an empty cleanup target', async () => {
@@ -226,7 +224,7 @@ describe('phase 3B namespaced runtime stores', () => {
   it('force cleanup removes safe live output but keeps unknown damaged residue as partial', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
-    await writePluginIntentState(location, {
+    await writeIntentFixture(location, {
       schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
@@ -274,7 +272,7 @@ describe('phase 3B namespaced runtime stores', () => {
     ]);
     await expect(fs.pathExists(safeRoot)).resolves.toBe(false);
     await expect(fs.pathExists(damagedRoot)).resolves.toBe(true);
-    await expect(readPluginIntentState(location)).resolves.toMatchObject({ roots: [] });
+    await expect(readIntentFixture(location)).resolves.toMatchObject({ roots: [] });
     expect(result.rebuildResults[0]).toMatchObject({
       status: 'failed',
       actions: expect.arrayContaining([expect.objectContaining({ status: 'succeeded' })]),
@@ -283,7 +281,7 @@ describe('phase 3B namespaced runtime stores', () => {
 
   it('previews cleanup all from the Intent and live union without Catalog', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, {
       schemaVersion: 2, kind: 'aw-plugin-intents',
@@ -319,7 +317,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     const skillRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'reviewed-demo');
-    await writePluginIntentState(location, {
+    await writeIntentFixture(location, {
       schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
@@ -338,7 +336,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const preview = await cleanupWriteCommand(['team/demo'], options, {
       env: isolation.env, previewOperationPlan: true,
     });
-    await writePluginIntentState(location, {
+    await writeIntentFixture(location, {
       schemaVersion: 2, kind: 'aw-plugin-intents', roots: [], dependencyScopeOverrides: [],
     });
 
@@ -354,7 +352,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     const skillRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'write-failure-demo');
-    await writePluginIntentState(location, {
+    await writeIntentFixture(location, {
       schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
@@ -379,7 +377,7 @@ describe('phase 3B namespaced runtime stores', () => {
 
     expect(result.overallState).toBe('failed');
     await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
-    await expect(readPluginIntentState(location)).resolves.toMatchObject({
+    await expect(readIntentFixture(location)).resolves.toMatchObject({
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
     });
   });
@@ -387,7 +385,7 @@ describe('phase 3B namespaced runtime stores', () => {
   it('stops before Intent mutation when inventory damage appears after Review', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
-    await writePluginIntentState(location, {
+    await writeIntentFixture(location, {
       schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
@@ -407,7 +405,7 @@ describe('phase 3B namespaced runtime stores', () => {
     });
 
     expect(result.overallState).toBe('failed');
-    await expect(readPluginIntentState(location)).resolves.toMatchObject({
+    await expect(readIntentFixture(location)).resolves.toMatchObject({
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
     });
     await expect(fs.pathExists(damagedRoot)).resolves.toBe(true);
@@ -424,7 +422,7 @@ describe('phase 3B namespaced runtime stores', () => {
       pluginId: 'team/demo', plugin: 'demo', artifactKey: 'reviewed-output',
       platform: 'codex', scope: 'project',
     };
-    await writePluginIntentState(location, {
+    await writeIntentFixture(location, {
       schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
@@ -457,10 +455,10 @@ describe('phase 3B namespaced runtime stores', () => {
       expectedPlanFingerprint: preview.operationPlan!.planFingerprint,
     });
 
-    expect(result.overallState).toBe('partial');
+    expect(result.overallState).toBe('failed');
     await expect(fs.pathExists(reviewedRoot)).resolves.toBe(false);
     await expect(fs.pathExists(addedRoot)).resolves.toBe(true);
-    await expect(readPluginIntentState(location)).resolves.toMatchObject({ roots: [] });
+    await expect(readIntentFixture(location)).resolves.toMatchObject({ roots: [{ pluginId: 'team/demo', platforms: ['codex'] }] });
     expect(result.rebuildResults[0]).toMatchObject({
       status: 'failed',
       residual: expect.arrayContaining(['added-after-review']),
@@ -472,7 +470,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const location = { scope: 'project' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
     const skillRoot = path.join(skillsRoot, 'project-force-output');
-    await writePluginIntentState(location, {
+    await writeIntentFixture(location, {
       schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
@@ -508,14 +506,14 @@ describe('phase 3B namespaced runtime stores', () => {
 
     expect(result.overallState).toBe('succeeded');
     await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
-    await expect(readPluginIntentState(location)).resolves.toMatchObject({ roots: [] });
+    await expect(readIntentFixture(location)).resolves.toMatchObject({ roots: [{ pluginId: 'team/demo', platforms: ['codex'] }] });
   });
 
   it('keeps the Intent cancellation and reports partial when output cleanup fails', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     const skillRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'cleanup-failure-demo');
-    await writePluginIntentState(location, {
+    await writeIntentFixture(location, {
       schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
@@ -550,7 +548,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(receipt).toMatchObject({ overallState: 'partial' });
     expect(receipt.changes).toContain('team/demo:codex:user:removeIntent');
     expect(receipt.changes.join('\n')).not.toContain('removeOwnedOutput');
-    await expect(readPluginIntentState(location)).resolves.toMatchObject({ roots: [] });
+    await expect(readIntentFixture(location)).resolves.toMatchObject({ roots: [] });
     await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
   });
 
@@ -2027,6 +2025,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const originalSourceIdentity = await calculateCatalogSourceIdentity({
       id: 'team', type: 'path', primary: true, path: sourceRoot,
     });
+    await addProjectRequirements({ cwd: isolation.layout.fixtureCwd, env: isolation.env, selectors: ['team/demo'] });
     const installBuilt = deferred();
     const resumeInstall = deferred();
     setRebuildCommandTestHooksForTests({

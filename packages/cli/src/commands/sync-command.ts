@@ -1,3 +1,4 @@
+import { readNativeIntentProjection } from '../project/project-demand.js';
 import type { PlatformSelection, Scope } from '../types.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
@@ -225,7 +226,7 @@ export async function syncCommand(
   }
 
   const env = options.env ?? runtime.env ?? process.env;
-  const initialIntent = await readPluginIntentState({
+  const initialIntent = await (options.scope === 'project' ? readNativeIntentProjection : readPluginIntentState)({
     scope: options.scope,
     cwd: options.cwd,
     env,
@@ -277,7 +278,7 @@ export async function syncCommand(
     env,
     token: runtime.awHomeMutationToken,
     action: async (token) => {
-      const intent = await readPluginIntentState({
+      const intent = await (options.scope === 'project' ? readNativeIntentProjection : readPluginIntentState)({
         scope: options.scope,
         cwd: options.cwd,
         env,

@@ -49,6 +49,7 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.review-publication.v1',
   'aw.catalog-snapshot.v7',
   'aw.self-check.v1',
+  'aw.project-recovery.v1',
 ] as const satisfies readonly RegisteredAwCapabilityId[]
 
 export class AwCapabilityUnsupportedError extends Error {

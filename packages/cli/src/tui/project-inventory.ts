@@ -1,4 +1,5 @@
 import path from 'node:path';
+import type { ProjectStatusV1, ProjectTargetResult, ProjectDiagnostic } from '../project/project-types.js';
 
 import type { PlatformName, Scope } from '../types.js';
 import {
@@ -43,6 +44,9 @@ export interface ProjectInventoryRoot {
   state: ProjectInventoryState;
   targets: ProjectInventoryTarget[];
   dependencies: ProjectInventoryDependency[];
+  agentResults?: ProjectTargetResult[];
+  blockers?: ProjectDiagnostic[];
+  sourceState?: string;
 }
 
 export interface ProjectInventoryViewModel {
@@ -53,6 +57,7 @@ export interface ProjectInventoryViewModel {
   extraInstalledRoots: ProjectInventoryRoot[];
   syncTargets: Array<{ pluginId: string; platform: PlatformName; scope: 'project' }>;
   counts: Record<ProjectInventoryState, number>;
+  recovery?: ProjectStatusV1;
 }
 
 type ProjectIntent =
@@ -117,6 +122,7 @@ export function buildProjectInventory(options: {
   targetRevisions?: readonly StatusTargetRevision[];
   dependencyOverviews?: readonly PluginDependencyOverviewViewModel[];
   actionableTargets?: readonly { pluginId: string; platform: PlatformName; scope: Scope }[];
+  projectRecovery?: ProjectStatusV1;
 }): ProjectInventoryViewModel {
   const targets = flattenStatusTargets(options.status.targets);
   const targetsById = new Map<string, StatusScopedTarget[]>();
@@ -147,9 +153,10 @@ export function buildProjectInventory(options: {
   const nameFor = (pluginId: string): string => plugins.get(pluginId)?.displayName
     ?? targetsById.get(pluginId)?.[0]?.pluginName
     ?? pluginId.split('/').at(-1) ?? pluginId;
-  const declared = options.projectIntent?.state === 'ready'
+  const declared = !options.projectRecovery && options.projectIntent?.state === 'ready'
     ? options.projectIntent.roots : [];
-  const declaredIds = new Set(declared.map((root) => root.pluginId));
+  const recoveryIds = new Set(options.projectRecovery?.inventory?.map((root) => root.pluginId) ?? []);
+  const declaredIds = new Set([...declared.map((root) => root.pluginId), ...recoveryIds]);
   const dependencyIds = new Set<string>();
   const declaredRoots = declared.map((root): ProjectInventoryRoot => {
     const rootTargets: ProjectInventoryTarget[] = [];
@@ -223,6 +230,29 @@ export function buildProjectInventory(options: {
       dependencies: nested,
     };
   });
+  if (options.projectRecovery?.inventory) {
+    for (const root of options.projectRecovery.inventory) {
+      const agentResults = root.targetResults;
+      const states = agentResults.map((target): ProjectInventoryState => {
+        if (target.blockers.length > 0) return 'blocked';
+        if (target.observation === 'verified') return 'ready';
+        if (target.observation === 'missing' || target.content === 'drifted') return 'pending';
+        return 'unknown';
+      });
+      declaredRoots.push({
+        pluginId: root.pluginId,
+        sourceId: root.source,
+        displayName: nameFor(root.pluginId),
+        section: 'declared',
+        state: root.blockers.length > 0 ? 'blocked'
+          : states.includes('blocked') ? 'blocked'
+            : states.includes('pending') ? 'pending'
+              : states.includes('unknown') || states.length === 0 ? 'unknown' : 'ready',
+        targets: [], dependencies: [], agentResults,
+        blockers: root.blockers, sourceState: root.sourceState,
+      });
+    }
+  }
   const extraById = new Map<string, ProjectInventoryTarget[]>();
   if (options.projectRoot) {
     for (const target of targets) {
@@ -247,7 +277,7 @@ export function buildProjectInventory(options: {
   for (const root of declaredRoots) counts[root.state] += 1;
   const declaredPlatforms = new Set(declared.flatMap((root) => root.platforms.map((platform) =>
     `${root.pluginId}\0${platform}`)));
-  const syncTargets = [...new Map((options.actionableTargets ?? [])
+  const syncTargets = [...new Map((options.projectRecovery ? [] : options.actionableTargets ?? [])
     .filter((target) => target.scope === 'project'
       && declaredPlatforms.has(`${target.pluginId}\0${target.platform}`))
     .map((target) => [`${target.pluginId}\0${target.platform}`, {
@@ -261,10 +291,14 @@ export function buildProjectInventory(options: {
       projectName: path.basename(options.projectRoot),
     } : {}),
     declarationState: options.projectRoot
-      ? options.projectIntent?.state ?? 'absent' : 'notProject',
+      ? options.projectRecovery
+        ? options.projectRecovery.intent.state === 'valid' ? 'ready'
+          : options.projectRecovery.intent.state === 'absent' ? 'absent' : 'invalid'
+        : options.projectIntent?.state ?? 'absent' : 'notProject',
     declaredRoots: sortedRoots(declaredRoots),
     extraInstalledRoots: sortedRoots(extraInstalledRoots),
     syncTargets,
     counts,
+    ...(options.projectRecovery ? { recovery: options.projectRecovery } : {}),
   };
 }

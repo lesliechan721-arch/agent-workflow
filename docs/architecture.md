@@ -14,7 +14,7 @@
 
 ## CLI Source Layout (`packages/cli/src`)
 
-- `commands/write-commands.ts` 是 `install`、`sync`、`reinstall`、`uninstall`、`cleanup` 的统一写入口。
+- `commands/write-commands.ts` 是 `install`、`sync`、`reinstall`、`uninstall`、`cleanup` 的写入口；Project v3 由 `project/` 解析需求、选择目标并编排恢复。
 - `commands/rebuild-command.ts` 解析当前 Catalog、依赖和现场状态，并交给统一 rebuild 流程。
 - `commands/rebuild-operations.ts` 编排 ownership 检查、preApply、清理、平台写入和完成后检查。
 - `commands/rebuild-integration.ts` 把插件能力转换成平台原生写入和 AW-owned 组件。
@@ -42,7 +42,7 @@
 - Codex native dynamic projection 在 payload 内使用固定 `.agents-plugin/aw-codex-native-render.json` receipt。schema 1 的 kind 是 `aw-codex-native-render`，strategy 固定为 `shared-user`；它只保存 logical plugin/source/version、renderer、规范化 target identity、per-target config/artifact digest、聚合 config/render-input digest 和排除 receipt 自身后的 payload digest，不保存原始 config。per-target config digest 绑定该 target 的 `refreshKeys` 对应 `values`、`sources` 和 `issues`，因此同值但来源变化会形成 render drift。旧 receipt 不兼容或损坏时报告可恢复的生成内容损坏，由现有 sync 重建；不增加 receipt 版本或迁移状态。所有 `codex-native` target 的 ID 与 Skill key 在整个 shared projection 内分别全局唯一，不受 scope 是否重叠影响。target 按稳定 ID 排序。AW 用完整 user effective config 的 sensitive string 检查最终 Skill tree；只有至少 8 个 Unicode code point 的原文或 JSON 转义形态会阻断。AW 生成并验证 receipt 内容后，才从该精确路径的扫描中排除 receipt；命中时在 marketplace commit、Codex remove/add 和 activation 前停止。receipt 是可重建的 projection evidence，不是 installed ledger。
 - Codex 或 Claude 操作重建共享 marketplace 时，保留非本次重新物化目标的有效 Codex native dynamic projection。保留前校验来源、插件版本、target identity 和旧输出完整性；以新 Catalog payload 为底恢复动态 Skill 和平台 manifest 的 Skill 设置后，候选 payload digest 必须与旧 receipt 一致。版本单独比较，不依赖会规范化版本的 payload digest。保留原 receipt，不运行其它插件 renderer，也不按当前配置重新签发旧输出。缺失、损坏或与新 Catalog 不兼容的 projection 不复用，由该插件单独 sync 恢复，不阻断本次其它插件；来源身份冲突、不安全路径和实际 I/O 失败仍阻断。
 - 插件依赖只来自 manifest `dependencies`，只在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图；执行顺序是稳定的依赖优先拓扑序。
-- live ownership 和实际平台组件是输出清理和 status 的唯一真值；Intent 只选择要取消的 desired root，不是 installed ledger。不得新增安装合同存储、第二套安装状态或持久依赖图。
+- live ownership 和实际平台组件是输出清理和 status 的现场证据；Intent 表示需求，不是 installed ledger。User v2 和 Project v3 分开读写，普通项目恢复及本地清理保留 Project v3 需求。不得新增安装合同存储、第二套安装状态或持久依赖图。
 - Codex project cleanup 和 uninstall 对当前仓库的 `.agents/skills` 做单层 owner marker 扫描。扫描不依赖当前 Manifest 是否仍声明该 Skill，也不进入嵌套目录或其它项目；删除仍要求 source、plugin、platform 和 scope 的 owner identity 精确匹配。
 - 配置写入、生命周期和平台写入各自保留最小的本地恢复；它们不组成跨第三方系统的事务。
 - Config v2 与 Definition v3 只允许顶层 string 字段声明 `sensitive: true`，且该字段不得声明 default 或 choices。object、object child、KV additionalProperties child、number 和 boolean 都不得声明 sensitive。sensitive 值只允许写入 user scope；writer 拒绝 project scope，因此 TUI 隐藏 project sensitive 编辑入口不能替代安全边界。`aw config set` 拒绝用 argv `--value-json` 或 `--preset` 提交 sensitive 值；非交互或 JSON 模式必须用 `--value-stdin`，交互 TTY 可用隐藏输入。stdin 按 EOF 读取原始 UTF-8，不 trim。string value 与 object key 共用同一 validation 合同和 RE2-WASM Unicode 实现；声明 pattern 时必须同时声明 `maxLength`，pattern 最多 512 个 Unicode code point，`maxLength` 范围是 `0..4096`。匹配保持非锚定；作者需要整串匹配时必须显式使用 `^` 和 `$`。
@@ -79,7 +79,7 @@ generated schema 7 snapshot
 - published snapshot 的 release metadata 只含 `state` 和 `sourceHead`，不含 plugin release ledger。Catalog manifest 的 owner/interface 是 Codex 和 Claude projection 的唯一根 metadata 真值。
 - `<AW_HOME>/catalog-sources.json` 缺失时使用内置 `official` source；首次来源修改才物化文件。文件损坏时，TUI 提供显式 Review：精确备份原始 bytes，再原子恢复唯一的 primary `official`；恢复不修改 `catalog-state.json` 或 Catalog store，自定义来源需之后重新添加。并发修复或删除使恢复 stale，TUI 只重新加载当前状态。稳定 CLI 使用 `catalog/latest`，预发布 CLI 使用 `catalog/beta`。`catalog-sources.json` 使用 schema 2；Path source 可带由 Workspace marker identity 绑定的 managed ownership。
 - `runtimes/codex/**` 和 store snapshot 都可删除和重建。它们不决定 live ownership，也不建立新的锁、GC、历史数据库、跨系统事务或补偿状态机。
-- Manifest v3、Catalog snapshot v7、config envelope v5、owner marker/token v3、Intent v2、Status v8、通用写入 Receipt v6、Config Mutation Receipt v7、Catalog generation status v2、Catalog dev status Receipt v4 和 Catalog dev deactivate Receipt v4 是 beta hard cut。旧状态不读取、不迁移，也不自动删除。config envelope v4 及更旧版本报告稳定 unsupported issue；schema-independent `config reset` 仍可删除。推荐使用新的 `AW_HOME`；如需保留旧环境，先用旧 CLI cleanup，再用新 CLI 重建强配置。
+- Manifest v3、Catalog snapshot v7、config envelope v5、owner marker/token v3、User Intent v2、Project Intent v3、Status v8、通用 Native 写入 Receipt v6、Project Recovery Receipt v1、Project Status v1、Config Mutation Receipt v7、Catalog generation status v2、Catalog dev status Receipt v4 和 Catalog dev deactivate Receipt v4 是公开合同。项目仅支持 Project v3，不兼容或迁移 Project v2；User v2 保持原格式。其它旧状态不自动读取或删除。config envelope v4 及更旧版本报告稳定 unsupported issue；schema-independent `config reset` 仍可删除。
 
 ### Portable Agent Skills Distribution
 
@@ -93,6 +93,8 @@ Portable materializer 使用调用方提供的同 source Catalog plugin set，�
 
 `aw skill install` 先物化和 Review 完整候选，再通过 PATH 中兼容的 `skills >=1.5.23 <2.0.0` 执行 scope-wide 冲突预检、`skills add ... --yes` 和完成后验证。确认后的执行复用单一 `AW_HOME` mutation lock，并重新采集 Catalog、config、物化、版本和冲突证据；外部安装失败或验证缺项不做补偿回滚，receipt 提供重跑或外部 `skills remove` 恢复方式。project scope 在解析的项目根运行，user scope 使用 `--global`。
 
+新 Project v3 恢复的 Portable 路径固定使用经资格检查的 `skills@1.5.23` copy 模式，并在调用 provider 前检查完整候选树。该版本会过滤任意层级的 `metadata.json` 文件及 `.git`、`__pycache__`、`__pypackages__` 目录；命中时返回 `portableProviderContentUnsupported`，不写该插件输出，独立合规插件可继续。此限制不改变一次性 `aw skill` 命令的兼容范围。Project v3 不提供未经证明的 Portable 自动 uninstall、cleanup 或 prune；可观察残留必须报告为未完成。
+
 安装后的完整 Skills CLI inventory 只作为观测输入，不直接成为本次 receipt 结果。显式 Agent 安装只投影所选 Skill 与请求 Agent 的精确组合；Skills CLI 清单返回显示名，绑定时只做大小写和空格到连字符的常规规范化，不猜测特殊别名。同名 Skill 只在其它 Agent 上可见或 Agent 身份无法可靠绑定时保持 unknown。精确重试只投影当前 `attemptedTargets`，不扩张为 Skill 与 Agent 的笛卡尔积。自动 Agent 安装只投影所选 Skill，并只保留 inventory 中可绑定的实际 Agent；无法绑定 Agent 的所选 Skill 保持 unknown。初次验证、只读复查和重试使用同一投影，unknown 不能直接重装。
 
 `aw skill materialize` 在同父目录 staging 中验证所选输出，再替换仅由相同 plugin ID、source identity 和 scope 的 schema 1 marker 证明属于 AW 的目标。foreign、身份不匹配、符号链接或过宽目标都 fail closed；命令不提供 force，也不创建 portable installed state。
@@ -100,6 +102,22 @@ Portable materializer 使用调用方提供的同 source Catalog plugin set，�
 TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显示 Portable 能力，不提前运行 renderer 或声明精确候选数和安装 ownership。用户进入安装流后分别物化 project 和 user 的完整依赖闭包，以两者的稳定候选并集选择 Skill 和 Agent，再选择 scope；选择 scope 后按该 scope 重新物化，所选 Skill 在该 scope 不可用时阻止进入 Review。Review 只显示所选 scope 的实际候选、依赖贡献和冲突。执行复用 `aw skill install` 的锁内证据重采集，证据变化时必须回到 Review 重新确认。
 
 TUI 批量原生安装先选择 Codex、Claude Code 或两者，再选择 scope，并只把当前状态确认缺失且合法的精确目标送入 Review；已有、受阻或未知目标不会重复安装。
+
+### 统一项目恢复
+
+Project v3 使用仓库根的 `.agent-workflows/plugin-intents.json` 保存平台无关需求。每个 root 只有 `pluginId`；`sources` 将 source alias 绑定到已有 Catalog logical identity。声明不保存 Agent、delivery、配置、版本、URL 或机器路径。User 文件仍为 `<AW_HOME>/plugin-intents.json` schema 2。Project v2 是不支持的版本；损坏、不可读或不支持的声明不能按空项目处理。
+
+本机 Agent 选择保存在 `<AW_HOME>/project-preferences/<project-key>.json`，与 Git 共享需求分离。`aw project add/remove` 精确编辑 root；`targets set/reset` 只改本机偏好；`project status` 只读检查。状态只把所选 Agent 的适用 Native 交付作为项目安装需求；执行保护视图仍保留其他平台，已有现场独立观察。没有目标且有 root 时，恢复返回 `localTargetsRequired`。一次性 `--target` 优先于本机偏好；旧 `-p` 是互斥别名。`project remove` 不自动删除旧输出。
+
+恢复逐 root 与所选 Agent 决定交付：有适用 Native 时优先 Native；只有无适用 Native 且插件显式声明 `distributions.agentSkills`，才考虑经资格验证的 Portable。Native 的工具、信任、配置或安装失败不触发 Portable 降级。不支持或未知的目标保留在完整结果中；独立且合规的目标可以继续。普通 sync、reinstall、uninstall、cleanup 和目标切换不修改 Project v3 需求或共享配置；显式 install 可以先提交需求，随后恢复失败也保留该声明。已从健康 Active Catalog 删除的插件仍可进入[整体清理](design/removed-plugin-cleanup.md)，经扩大范围确认后删除 user 与当前 project 的需求、设置和可证明归属输出。
+
+Project v3 的 `sync --refresh` 对每个相关来源独立处理。刷新失败时，该来源即使仍有健康旧 Active，也保留 `sourceRefreshFailed` blocker，不执行其项目请求；其它健康来源可继续。User v2 原生流程保留原有旧 Active warning/fallback 行为。
+
+本地 Agent 选择限定本次恢复目标，不隔离共享物理目录。固定 `skills@1.5.23` 的 Codex 与 Cursor copy 输出共用项目 `.agents/skills`；Review 显示共享影响，来源、内容或 Native footprint 冲突在写入前阻断。provider 清单中的 Agent 关联不证明逐 Agent 安装历史或 AW ownership。输出归属和安全更新仍需实际现场及已有来源证据；不增加安装账本或历史项目扫描。
+
+`aw project status` 返回 Project Status v1：`ok` 表示读取成功，`allSatisfied` 分别使用 true、false、null 表示满足、明确未满足、无法判定。Status v8 在当前项目有声明时附加 `projectRecovery`，原有 `targets` 继续表示 Native 现场。项目恢复命令返回 Project Recovery Receipt v1，保留请求、目标、blocker、未完成项和恢复动作；Portable 后端结果保留 `providerPluginId` 和当前请求的 `requiredBy`，同批共享依赖失败向相关 root 归因，不能重复执行或改报成功。只读状态不执行 renderer、preApply 或来源刷新；缺少物化证据时报告未知或待准备。
+
+资格证据只覆盖已实测组合：Darwin arm64 上精确 Codex CLI `0.151.0` 的项目 Native 真实资格 9/9 通过。Claude Code `2.1.119` 未观察到实际 Skill 加载；Cursor 缺少可运行 binary，二者的真实消费者资格仍未验证。固定 provider 的复制和清单证据不证明 Agent 加载。
 
 ## Catalog Sources
 
@@ -146,7 +164,7 @@ primary development deactivate 把 remove 和 primary change 放入同一 invent
 
 已确认从健康 Active Catalog 删除的插件，普通 `cleanup` 自动进入[已删除插件的整体清理](design/removed-plugin-cleanup.md)。该设计覆盖两个平台、用户与当前项目，并在确认后删除原生安装、设置和专属输出；不扫描其他项目。详细规格定义分类证据、扩大范围的确认、失败恢复与验收。下文关于不读取 Active、保留配置及 shared native 的普通离线清理规则，只适用于未进入该整体清理分支的目标；`cleanup --force` 仍保持原有受限恢复边界。
 
-`cleanup` 和 `cleanup --force` 使用专用 cleanup 流程，不进入上述 rebuild pipeline。两者在现有单一 `AW_HOME` mutation lock 内，先重新读取并完整核验 Intent 与 live/path Review evidence；任一 Review evidence 漂移时，在所有写入前返回 `operationReviewStale`。核验后原子提交所选 source/plugin、platform 和 scope 的 root Intent 取消，再尽力清理输出；Intent 读取或写入失败时，不开始输出删除。输出失败、输出不存在或 inventory 未发现输出都不回滚已提交的 Intent；未发现输出本身不是 inventory failure。只有 Intent 被取消也可成功；实际删除中的后续竞态或无法安全删除时，保留输出并返回 partial。取消只影响所选 root/platform，不删除其它 Intent、plugin config 或 `dependencyScopeOverrides`；一个 root 被取消不阻止另一个 root 之后把同一 plugin 作为 dependency 再次安装。内部“所有目标”选择只取当前 scope/platform 的 Intent 与 live ownership 并集，不扩张到其它 scope/platform。普通 cleanup 只使用 live ownership 或已绑定的 offline evidence，不读取 Active。force 可组合 live 可证明的专属路径与当前 Active 中所选 plugin bundle 的 shallow evidence；Active 或 bundle 缺失、损坏时，仍取消 Intent，并继续清理已有充分证据的输出，不能猜测路径。force 只 quarantine-delete `skill-directory` 或 exclusive `owned-text-file`，不删除 shared config、native plugin store 或 marketplace root。两者都不生成 Catalog dependency plan、不读取 dependent、不运行 renderer 或 preApply；只有 force 不运行 native manager，普通 cleanup 仍可按现有 activation cleanup 合同使用它。
+`cleanup` 和 `cleanup --force` 使用专用 cleanup 流程，不进入 rebuild pipeline。普通 Project v3 清理在现有 `AW_HOME` mutation lock 内重验现场和 Review evidence，只清理精确目标中可证明归属的输出；它不取消共享 root，也不删除共享配置。无 Active 时仍可凭 live 或已绑定离线证据恢复，未知路径、foreign 与 shared 内容保持不动。`--force` 仅处理现有合同允许的专属损坏输出。User v2 的所选 root 仍按原合同取消。已删除插件的整体清理单独按健康 Active 缺席证据分类，并在扩大范围确认后删除该插件的 user/project 需求与设置；独立失败保留未完成项。两类普通清理都不运行 renderer 或 preApply。
 
 性能观察复用现有 debug event。`review.prepare.*` 记录 Review 准备阶段耗时；`performance:stage` 只记录 `catalog.load`、`catalog.validation`、`inventory`、`dependency.plan` 和 `target.build` 的阶段名与耗时，命令阶段另记录结果，Catalog load 另记录聚合 source/Active/validation 计数，不记录 digest、路径或错误文本。`native:start|success|error` 只记录白名单 `agent`、稳定 operation、`exitCode`、固定 reason 和 `durationMs`，不记录 args、cwd、stdout、stderr 或未知 error/cause 文本；`rebuild:action` 分别记录 `inspect`、`native.write`、`artifacts.write` 和 `postcheck.inspect` 等真实写阶段耗时。没有 native 或 artifact 动作时不伪造对应阶段。测试用 provider 调用次数、检查范围和阶段事件验证 write 性能边界。Warm install 的总时长只对受控 fake native runner 使用宽松门槛；本地 Catalog 阶段 p95 目标为 500ms，不能据此承诺第三方 CLI 时长。
 
@@ -193,12 +211,12 @@ TUI 的依赖关系页只解释当前数据，不改变 placement。正向声明
 - `install`：按当前 Catalog 安装请求插件和缺失依赖；已存在且完整的依赖使用 `keep`，不重复安装。
 - `reinstall`：先只清理 AW-owned 组件，再按当前 Catalog 完整重建。expected exclusive path 的 owner marker/header 缺失或损坏时，它不自动 force，也不覆盖该路径；返回 `exclusiveOwnerEvidenceInvalid`，恢复顺序固定为先运行同 target 的 `cleanup --force`，再运行 reinstall。
 - `uninstall`：删除可由 live owner marker/token 证明属于 AW 的组件。它不重放历史脚本。
-- `cleanup`：不运行 preApply，也不读取依赖图、安装门槛或 Active。它在锁内核验后取消所选 root Intent，再只清理可由 live owner marker/token 或已绑定 offline evidence 证明属于 AW 的输出；保留 plugin config、`dependencyScopeOverrides`、foreign 内容和 shared/native payload。
-- `cleanup --force`：用于恢复专属且已损坏的 AW-owned 输出。它同样在锁内核验后取消所选 root Intent；只接受 shallow plan 中精确的 `skill-directory` 与 exclusive `owned-text-file`。候选必须位于合法 platform/project root，路径链和目标不能是 symlink，节点类型、basename 和 artifactKey 必须一致，且不能是 shared config、native plugin store 或 marketplace root。可选的当前 Active 所选 bundle evidence 缺失或损坏时，不阻止 Intent 取消或已有充分 live evidence 的清理。合法 foreign owner 在 normal 和 force 中都保留。它不扩大到其它 Intent、依赖 placement 或 shared native payload，且保留配置。
+- `cleanup`：不运行 preApply，也不读取依赖图、安装门槛或 Active。User v2 在锁内核验后取消所选 root；Project v3 保留共享 root，再只清理可由 live owner marker/token 或已绑定 offline evidence 证明属于 AW 的输出；保留 plugin config、`dependencyScopeOverrides`、foreign 内容和 shared/native payload。
+- `cleanup --force`：用于恢复专属且已损坏的 AW-owned 输出。User v2 在锁内取消所选 root；Project v3 保留共享 root。只接受 shallow plan 中精确的 `skill-directory` 与 exclusive `owned-text-file`。候选必须位于合法 platform/project root，路径链和目标不能是 symlink，节点类型、basename 和 artifactKey 必须一致，且不能是 shared config、native plugin store 或 marketplace root。可选的当前 Active 所选 bundle evidence 缺失或损坏时，不阻止 Intent 取消或已有充分 live evidence 的清理。合法 foreign owner 在 normal 和 force 中都保留。它不扩大到其它 Intent、依赖 placement 或 shared native payload，且保留配置。
 
-selected source/plugin 的 namespaced config inventory 损坏不阻止该目标的 cleanup 或 uninstall；命令保留坏 config，并提示之后使用 `config reset`。cleanup 的 Intent 读取或原子写入错误在输出删除前 fail closed；其它 plugin、ownership、foreign/shared/global 或安全输出 inventory 错误也继续 fail closed。
+selected source/plugin 的 namespaced config inventory 损坏不阻止该目标的 cleanup 或 uninstall；命令保留坏 config，并提示之后使用 `config reset`。User v2 cleanup 的需求读取或原子写入错误在输出删除前 fail closed；其它 plugin、ownership、foreign/shared/global 或安全输出 inventory 错误也继续 fail closed。
 
-TUI 的 cleanup 先执行上述已删除插件分类；未进入整体清理的动作继续走对应的 offline cleanup 流程，不依赖 issue code；`catalogSourceUnavailable`、`bundleUnavailable` 和 `codexIntentSourceUnavailable` 只说明该路由的不可用原因。Review 不解析缺失的 bundle，而是绑定包含来源身份、目标位置和 live ownership fingerprint 的 typed evidence。Execute 在同一个 `AW_HOME` mutation lock 内先重新读取并完整核验 Intent、owner marker/header、shared owner、native registration 和 Review evidence；任一漂移在 Intent 提交或输出删除前返回 stale Review。核验后才提交所选 root Intent 取消；没有可删除输出时，Intent-only 结果仍成功；实际删除中的后续竞态保留输出并返回 partial，不回滚 Intent。synthetic cleanup target 只使用这些 live evidence 发现的 matching-owner 组件。TUI 的受限高级维护入口只在当前命令 preview 返回唯一的 exact shallow `forceExclusive` 候选时显示；它不能把普通 offline evidence 转为 force，也不能从依赖阻断入口启动。确认与执行都重新取得 evidence，锁内漂移时停止。force 完成后 reinstall 是新的操作和新的 Review。
+TUI 的 cleanup 先执行上述已删除插件分类；未进入整体清理的动作继续走对应的 offline cleanup 流程，不依赖 issue code；`catalogSourceUnavailable`、`bundleUnavailable` 和 `codexIntentSourceUnavailable` 只说明该路由的不可用原因。Review 不解析缺失的 bundle，而是绑定包含来源身份、目标位置和 live ownership fingerprint 的 typed evidence。Execute 在同一个 `AW_HOME` mutation lock 内先重新读取并完整核验 Intent、owner marker/header、shared owner、native registration 和 Review evidence；任一漂移在 Intent 提交或输出删除前返回 stale Review。User v2 核验后提交所选 root 取消；Project v3 不修改共享需求。实际删除中的后续竞态保留输出并返回 partial。synthetic cleanup target 只使用这些 live evidence 发现的 matching-owner 组件。TUI 的受限高级维护入口只在当前命令 preview 返回唯一的 exact shallow `forceExclusive` 候选时显示；它不能把普通 offline evidence 转为 force，也不能从依赖阻断入口启动。确认与执行都重新取得 evidence，锁内漂移时停止。force 完成后 reinstall 是新的操作和新的 Review。
 
 每条失败链必须可用 `cleanup`、`cleanup --force`、`reinstall`、来源刷新或新版本发布恢复。无法证明 ownership 时宁可保留内容，也不能删除用户或共享内容。
 
@@ -253,7 +271,7 @@ Status v8 对已检查的直接依赖继续在所属范围的 `components` 中�
 
 TUI placement 在 ownership health 之外投影 collision blocker，但不能把 foreign-only collision 计为 installed。foreign-only placement 使用 `blocked`；`present` 或 `partial` placement 保留 installed ownership health，并同时保留 collision blocker。每个平台 placement 独立判断：混合平台仍可进入添加并只列可用 target；所有平台都阻断时，Preview 和平台菜单先提供“查看输出冲突”，且不显示添加、升级或重新安装。installed collision 仍提供安全移除入口，删除只处理 AW-owned 内容并保留 foreign 内容。
 
-TUI 插件清单组合当前 Catalog summary、status target 和可识别的 namespaced config v4 store identity。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，在统一插件库和问题页保留恢复入口，但不能作为可新增安装的候选。新增安装只接受当前 Catalog summary 中符合资格的插件；本地残留和已保存设置不代表可供安装。只有设置存储仍存在时，TUI 将条目标为已保存设置且来源不可用，只提供查看和精确 layer reset；它不伪造可安装的 Catalog plugin。普通 `cleanup` Review 说明会在锁内复核当前 Intent 与 live evidence 后取消所选 root Intent，再尽力清理所选目标中 AW-owned 的 live activation 和 extension；它保留 plugin config、`dependencyScopeOverrides`、foreign 内容和 shared native payload，不运行 preApply，也不读取 dependent 图，并显示不含 `--force` 的等价命令。受限高级 force 遵守上述 exact shallow 候选门禁。成功后是否从清单消失只由重新读取的 Intent、Catalog、live ownership 和可识别设置存储决定。
+TUI 插件清单组合当前 Catalog summary、status target 和可识别的 namespaced config v4 store identity。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，在统一插件库和问题页保留恢复入口，但不能作为可新增安装的候选。新增安装只接受当前 Catalog summary 中符合资格的插件；本地残留和已保存设置不代表可供安装。只有设置存储仍存在时，TUI 将条目标为已保存设置且来源不可用，只提供查看和精确 layer reset；它不伪造可安装的 Catalog plugin。普通 `cleanup` Review 说明锁内将复核需求与 live evidence，随后清理所选目标中可证明归属的 live activation 和 extension。User v2 所选 root 可取消；Project v3 的需求和共享配置保留。foreign 与 shared 内容保留，不运行 preApply 或读取 dependent 图。已删除插件的扩大范围整体清理单独确认。受限高级 force 遵守上述 exact shallow 候选门禁。成功后是否从清单消失只由重新读取的 Intent、Catalog、live ownership 和可识别设置存储决定。
 
 TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | error`、稳定 code 和可读 message。选择顺序为：来源移除、artifact collision、来源不可用、依赖图无效、依赖目标不支持、依赖未就绪或缺失、scope 冲突、必填或无效配置、安装不完整、通用诊断。问题中心按 `sourceRemoved`、`artifactCollision`、`sourceUnavailable`、`dependency`、`scope`、`config`、`installation`、`diagnostic` 稳定分组和排序，并渲染真实分组标题和每组数量。Root Cause 只在 TUI 本地复用公开 `rootIssueId` 和 `rootIssueCode` 聚合，不扩展 Status schema；投影明确记录 root entity、affected targets 和 `direct | consumer` 关系。direct partial 或 error 使用 root code、root plugin entity、platform 和 scope 形成 canonical key，并与同 entity、同 root code 的 dependency evidence 合并。direct root 永远优先；过滤结果没有 direct target 时，从 dependency evidence 稳定合成 root，不能选择任意 consumer。payload target 顺序不影响结果。 问题合并保留各 affected target 的合法恢复动作，并按动作、插件、平台和 scope 去重。desired consumer 使用自身 sync/reinstall 的完整依赖计划；无 desired consumer 保留自身 cleanup，不因依赖提示自动补装或新增 Intent。插件处理建议同时匹配问题主体、root entity 和 affected targets；单个问题直接进入详情，多个问题供用户选择。依赖跳转按插件、平台和 scope 精确匹配，缺少独立依赖问题时保留当前依赖证据和可用恢复动作。
 
@@ -386,9 +404,8 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 
 当前 write、Status v8 和 Receipt v6 使用以下合同。旧 Codex project materialization 不作为 AW fallback，也不维护第二套 project 安装模型。
 
-- Intent 只表示 desired state。user/project enablement、选中平台和 scope 都是待达成目标，不是安装事实。Codex native installed、absent 和 active version 只来自成功的 official marketplace-scoped JSON list；公开 config 只提供 activation 和 marketplace ownership。private cache 和 installed manifest 不得把 absent 或 unobserved 提升为 installed。
-- 用户确认后，Intent 可以在 best-effort actual materialization 前原子提交。平台写入或 post observation 失败不回滚 Intent；Receipt 报告失败，Status 以 `needsSync` 提供恢复入口。`reuse` target 在修改 extension 前必须使用锁内 pre snapshot 证明 shared native 为 installed；`none` target 的 extension mutation 只要求取得 installed 或 absent 的明确 pre observation。
-- Intent 使用严格 schema 2：`kind` 固定为 `aw-plugin-intents`，字段固定为 `schemaVersion`、`kind`、`roots` 和 `dependencyScopeOverrides`。它不保存 native claim 或安装事实。旧 schema 1 不读取、不迁移。user 文件是 `<AW_HOME>/plugin-intents.json`；project 文件是仓库根 `.agent-workflows/plugin-intents.json`，可以随仓库共享。dependency override 以 `(source/plugin, platform)` 为键；project root 可选择 project 或 user dependency placement，user root 的依赖固定为 user。install 为已完成 preparation 的 root 提交完整 locked dependency closure 和 scope override；之后 dependency 的 manager resolution 失败不裁剪 consumer root 的 Intent，执行仍跳过该 consumer。preflight、preApply 或 requested native target 的 manager resolution 未完成时，该 requested root 不进入 Intent。sync 和 reinstall 复用已提交的 placement。uninstall 在同一次 Intent 原子写入中删除当前 Catalog 依赖闭包对剩余 root 已不可达的 override；Catalog 证据不完整时保留 override。
+- Intent 只表示需求，不是安装事实。Codex native installed、absent 和 active version 只来自成功的 official marketplace-scoped JSON list；公开 config 只提供 activation 和 marketplace ownership。private cache 和 installed manifest 不得把 absent 或 unobserved 提升为 installed。
+- User Intent 使用严格 schema 2，保存平台及依赖 placement。Project Intent 使用严格 schema 3，仅保存 source-qualified root 和来源 logical identity binding；本地 Agent 及 dependency override 属于本机偏好。Native 项目执行只处理实际现场，不写 Project v3。显式项目 install 可先提交需求；平台执行失败不回滚声明。普通项目 sync、reinstall、uninstall 和 cleanup 保留声明，user 写命令不删除 Project v3 root。
 - Codex plugin 只物化一份 shared native user package。project scope 只在当前项目的 Codex 配置中激活该 native plugin。shared-native ownership 不得为此保存 project claim path、global claim、refcount、native installed ledger 或第二套安装状态，也不扫描历史项目或通过全局项目扫描执行 auto-GC。qualification report 也不是 installed ledger。
 - 静态 Codex native Skill 属于可重建的 marketplace 插件副本，不生成逐 Skill owner marker，也不作为 AW-owned Skill 单独预检、写入或清理。更新和重装使用共享原生安装观察、marketplace 来源归属与路径边界；已有逐 Skill 标记缺失不阻断操作。用户确认共享更新后允许从 Catalog 重建该副本，副本中的手工改动可能被覆盖。独立 AW 扩展仍按精确 owner identity 保护，来源冲突和不安全路径仍阻断。
 - Shared native 的 status inspector 对 static native 只检查 official observation、公开 marketplace ownership 和路径边界。receipt-backed dynamic `codex-native` 还检查 AW-owned canonical marketplace source projection，但绝不运行 renderer；完整有效的 projection 与当前 renderer/config/render input/target evidence 不同才报告 `renderDrift`。回执或生成内容缺失、格式损坏和摘要不匹配报告 `replaceable: damaged`，实际 I/O 失败报告 `blocked: unreadable`，来源或插件身份冲突及不安全路径报告 `blocked: foreign`，并保留具体 projection diagnostic。CLI、Status 和 TUI 不把生成内容缺失解释为个人配置变化，也不据此判断 Codex private cache 是否损坏。它使用 `missing`、`usable`、`replaceable`、`blocked` 或 `unobserved` 五态；`replaceable` 的 reason 是 `outdated | damaged | renderDrift`，`blocked` 的 reason 是 `foreign | unreadable`。install postcheck 必须观察精确 plugin installed，remove postcheck 必须观察精确 plugin absent。write preview 与 mutation lock 内重算使用同一 public observation 和 AW-owned source projection；replace 不得复用现场，并按 shared impact 要求 `--yes` 或 TUI 确认。private cache 或 installed manifest 的 bytes、digest、缺失或损坏都不触发 replace/remove。

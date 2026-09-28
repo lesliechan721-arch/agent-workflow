@@ -42,6 +42,7 @@ describe('current AW executable capabilities', () => {
     expect(result.capabilities).toContain('aw.skill-eval.v2')
     expect(result.capabilities).toContain('aw.review-preparation.v1')
     expect(result.capabilities).toContain('aw.review-inspection.v2')
+    expect(result.capabilities).toContain('aw.project-recovery.v1')
     expect(result.capabilities).not.toContain('aw.review-inspection.v1')
     expect(result.capabilitySetDigest).toBe(computeAwCapabilitySetDigest(result.capabilities))
   })

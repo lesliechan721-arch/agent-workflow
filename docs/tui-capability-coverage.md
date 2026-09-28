@@ -6,12 +6,14 @@
 
 | 用户任务 | CLI 能力 | TUI 入口、确认和恢复 |
 | --- | --- | --- |
-| 添加一个或多个插件 | `install` | 插件 → 插件详情 → 安装 → 平台/位置 → 操作汇总 → 结果。多选添加共用新安装的位置和平台；依赖会自动安排合适位置，并在操作汇总中显示。 |
-| 同步、重装、移除和普通清理 | `sync`、`reinstall`、`uninstall`、`cleanup` | 插件 → 插件详情的常用动作，或更多操作中的平台维护 → 目标选择与确认。来源不可用时仍保留普通离线清理。 |
-| 按项目清单准备 | `sync --all --scope project` | 首页 → 项目插件 → 同步全部可处理声明（N）。搜索、分区和状态筛选不缩小同步范围，N 为可处理声明根数；操作汇总保存精确 project 目标，允许准备尚未安装的根，不新增个人启用意图，被共用的内容与版本影响仍需确认。 |
-| 查看项目完整清单 | 项目 Intent 与 `status`，精确项目目标的 `sync` | 首页 → 项目插件（`projectStatus`）。默认显示全部声明根，包括就绪项、异常项和合法个人共用目标；额外安装只含当前项目实际安装的非声明根。多平台合为一张根卡。同步只为已确认可执行目标准备 Review，不重复安装共用目标。重新检查局部只读刷新，保留查询、焦点和草稿。 |
+| 添加一个或多个插件 | `install` | 插件 → 插件详情 → 安装 → 平台/位置 → 操作汇总 → 结果。项目位置的显式安装经统一项目 Review 增加 v3 需求；确认的依赖范围覆盖保存为本机偏好。多选添加共用新安装的位置和平台；依赖会自动安排合适位置，并在操作汇总中显示。 |
+| 同步、重装、移除和普通清理 | `sync`、`reinstall`、`uninstall`、`cleanup` | 插件 → 插件详情的常用动作，或更多操作中的平台维护 → 目标选择与确认。项目位置使用统一 coordinator；来源不可用时仍保留普通离线清理。 |
+| 按项目清单准备 | `sync --all --scope project` | 首页 → 项目插件 → 同步全部项目需求。搜索、分区和状态筛选不缩小请求范围；Review 显示完整 roots、所选 Agent、可执行子集、阻断项和共享影响。确认后由统一项目 coordinator 执行，部分失败保留未完成目标。 |
+| 查看项目完整清单 | 项目 Intent 与 `status.projectRecovery` | 首页 → 项目插件（`projectStatus`）。顶层显示本机 Agent；即使没有目标，仍列全部 root 并提供设置入口。每张 root 卡先显示需求，再显示每个所选 Agent 的 Native 或 Portable 交付与状态。额外安装只含本次可观察到的当前项目输出；重新检查只读，保留查询和焦点。 |
+| 设置本机 Agent | `project targets set/reset` | 项目插件 → 设置本机 Agent。多选 Codex、Claude Code 和 Cursor 后先查看 Review；set 保留已有本机依赖范围覆盖，reset 明确清空 Agent 和覆盖。确认只写本机偏好，不安装或删除旧目标。执行前在 AW_HOME 锁内复核偏好证据。 |
+| 整体清理已删除插件 | `cleanup -s project` | 健康 Active 中已删除的 root 在项目卡和操作列提供整体清理入口。Review 明示个人及当前项目需求和设置的删除、共用原生安装的影响，以及不能安全删除的 Portable 剩余项；结果列出剩余目标，可再次按精确 root/Agent 准备。 |
 | 处理项目受阻或未确认位置 | 来源管理、插件详情与安全诊断 | 项目插件 → 统一插件详情或对应问题 → 已有安全处理动作。来源、配置和输出冲突分别沿问题动作处理，不把所有受阻项都引向来源。未确认位置及无效或不可读的项目声明提供安全详情和重新检查；重新检查不自动安装、恢复或清理 foreign 内容。返回后可继续查看剩余位置。 |
-| 修复当前项目或所选异常插件 | 精确 selector 的 `sync` 或 `reinstall` | 项目插件的安全处理入口，或插件详情／多选维护 → 恢复。任务保留既有 `(pluginId, platform, scope)`；同一根因合并为一次修复及其受影响根插件。证据不足、版本已变或需要手动处理的目标不自动执行。 |
+| 修复当前项目或所选异常插件 | 精确 selector 的 `sync` 或 `reinstall` | 项目插件的 `s` 对聚焦 root 发起精确项目同步；`c` 对全部声明发起同步。准备、Review、进度和结果沿同一项目 coordinator，Review 取消不写入。插件维护入口选中项目位置时也进入同一流程。混合个人／项目恢复任务保留完整目标集合，按范围分别重新准备、确认和执行；首范围结果提供继续另一范围的入口。 |
 | 处理受阻修复项 | 设置、来源、状态检查和精确维护 | 恢复任务 → 对应问题的处理入口。版本改变需明确选择更新并重新显示操作汇总；无法确认版本时可重新检查和查看诊断。可执行子集完成后，剩余目标继续提供处理入口，不自动升级或删除。 |
 | 更新一个或多个插件 | `sync` | 插件库的可更新筛选、插件详情的“更新到 X”或恢复任务。只有已验证的 Active 或 session 候选清单、严格版本比较和 capability 兼容都成立时才显示目标版本；Catalog 版本本身不构成插件更新。候选需要启用时，先确认来源切换，再重新规划并确认精确插件更新。 |
 | 手动批量维护 | 多个 selector | 插件库 → 选择多个插件（`m`）。手动批次固定一种 action；`selected` 使用共同 scope 和平台，`targets` 沿用各自的精确 scope 和单个平台。更新和恢复任务复用已存在的精确目标，不把失败目标扩张为统一范围。 |
@@ -68,5 +70,6 @@
 - `packages/cli/tests/unit/tui-dependency-graph-v7.test.tsx`
 - `packages/cli/tests/unit/tui-config-experience-v7.test.tsx`
 - `packages/cli/tests/unit/tui-console-app-v5.test.tsx` 与 `packages/cli/tests/unit/tui-route-registry-v7.test.ts`
+- `packages/cli/tests/unit/tui-project-recovery.test.tsx` 与 `packages/cli/tests/unit/tui-project-flow.test.ts`
 
 新增或改变消费能力时，必须更新本表，说明 TUI 入口和失败恢复路径，或说明保留 CLI 的理由。新增 TUI 路由必须同时接入生产路由定义、渲染、实体失效处理和按键合同。

@@ -8,6 +8,7 @@ import {
   addSkills,
   listInstalledSkills,
   probeSkillsCli,
+  probeProjectRecoverySkillsCli,
   verifySkillTargets,
   verifySkills,
 } from '../../src/portable/skills-cli.js';
@@ -55,6 +56,22 @@ afterEach(async () => {
 });
 
 describe('Skills CLI adapter', () => {
+  it('keeps project recovery on its exact provider version and passes copy explicitly', async () => {
+    const incompatible = await fakeSkills({ version: '1.5.24' });
+    await expect(probeSkillsCli(incompatible)).resolves.toEqual({ version: '1.5.24' });
+    await expect(probeProjectRecoverySkillsCli(incompatible)).rejects.toThrow('portableSkillsCliIncompatible');
+    const fake = await fakeSkills();
+    await addSkills({ ...fake, rootDir: '/persistent/materialization', skills: ['alpha'],
+      agents: ['cursor'], global: false, copy: true, timeoutMs: 1000 });
+    expect(JSON.parse((await fs.readFile(fake.log, 'utf8')).trim()).args).toEqual([
+      'add', '/persistent/materialization', '--skill', 'alpha', '--agent', 'cursor', '--copy', '--yes',
+    ]);
+  });
+
+  it('bounds provider probes with an explicit timeout', async () => {
+    const fake = await fakeSkills({ delayVersion: true });
+    await expect(probeProjectRecoverySkillsCli({ ...fake, timeoutMs: 50 })).rejects.toThrow('portableSkillsCliIncompatible');
+  });
   it('trims and stably deduplicates safe Agent IDs and rejects unsafe selections', () => {
     expect(normalizePortableAgents([' codex ', 'claude-code', 'codex'])).toEqual(['codex', 'claude-code']);
     for (const invalid of [[], [''], ['two words'], ['-option'], ['line\nbreak'], ['a'.repeat(129)]]) {

@@ -150,6 +150,9 @@ import {
   configValuesEqual,
 } from './model.js';
 import type { ProjectInventoryRoot } from './project-inventory.js';
+import type { ProjectTuiPlan } from './project-flow.js';
+import type { ProjectAgentId } from '../project/project-preferences.js';
+import type { ProjectRecoveryReceiptV1 } from '../project/project-types.js';
 import type { PluginContentItem, PluginContentType } from './plugin-content.js';
 import type { PluginInstallFilter, TuiRoute } from './router.js';
 import { resolveTuiGlobalKeyAction, resolveTuiSessionNavigationKey } from './keys.js';
@@ -166,6 +169,84 @@ import {
 export const CONSOLE_V4_SCREEN_IDS = TUI_SCREEN_IDS;
 export type ConsoleV4ScreenId = TuiScreenId;
 type Overlay = 'help' | 'exit' | 'discard' | 'sessionNavigation' | undefined;
+
+interface SplitTaskContext {
+  goal: PluginWriteTaskGoal;
+  targets: Extract<OperationIntent, { kind: 'pluginWriteTask' }>['targets'];
+  executionPolicy: 'all' | 'executableSubset';
+  currentScope: Scope;
+  returnRoute: TuiRoute;
+}
+
+function splitTaskLines(context: SplitTaskContext): string[] {
+  const targetLabel = (target: SplitTaskContext['targets'][number]): string =>
+    `${target.pluginId} · ${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`;
+  return [
+    `完整任务请求：${context.targets.length} 个位置`,
+    ...context.targets.map((target) => `请求：${targetLabel(target)}`),
+    `本次范围：${scopeLabel(context.currentScope)}`,
+    ...context.targets.filter((target) => target.scope !== context.currentScope)
+      .map((target) => `其余范围未处理：${targetLabel(target)}`),
+  ];
+}
+
+type ProjectUiFlow =
+  | { stage: 'targets'; agents: ProjectAgentId[]; focus: number }
+  | { stage: 'preparing'; request: 'recovery' | 'targets'; returnTo: 'project' | 'targets' | 'task'; task?: SplitTaskContext }
+  | { stage: 'review'; plan: ProjectTuiPlan; returnTo: 'project' | 'targets' | 'task'; task?: SplitTaskContext; focus: number }
+  | { stage: 'progress'; plan: ProjectTuiPlan; task?: SplitTaskContext }
+  | { stage: 'result'; plan?: ProjectTuiPlan; receipt?: ProjectRecoveryReceiptV1;
+      changed?: boolean; errorCode?: string; task?: SplitTaskContext; focus: number };
+
+function projectPlanText(plan: ProjectTuiPlan, task?: SplitTaskContext): string {
+  if (plan.kind === 'targets') return [
+    '本次只保存本机偏好；不安装、删除或切换旧 Agent 输出。',
+    ...plan.changes, ...plan.warnings,
+  ].join('\n');
+  const { receipt } = plan.plan;
+  return [
+    ...(task ? splitTaskLines(task) : []),
+    ...(receipt.command === 'cleanup' && plan.plan.removedPluginIds?.length ? [
+      '整体清理会取消目标插件在个人及当前项目中的需求和设置，并移除可证明归属的共用原生安装。其他项目可能失去该共用包。',
+      '不能安全删除的 Portable 或其他输出会列为未完成，不会当作已清理。',
+    ] : receipt.command === 'cleanup' ? [
+      '普通清理仅处理所选目标的可验证现场，保留项目需求及共享设置。',
+    ] : []),
+    `项目全部需求：${receipt.intent.roots?.join('、') || '空项目或无法读取'}`,
+    `本次请求：${receipt.requestedRoots.join('、') || '空项目'}`,
+    `所选 Agent：${receipt.selection.agents.join('、') || '未选择'}（${receipt.selection.origin}）`,
+    `可执行目标：${receipt.targetResults.filter((target) => target.blockers.length === 0).length} 项`,
+    `受阻或未完成：${receipt.targetResults.filter((target) => target.blockers.length > 0).length} 项`,
+    ...receipt.targetResults.map((target) => {
+      const delivery = target.delivery?.kind === 'native'
+        ? `Native ${target.delivery.platform}`
+        : target.delivery?.kind === 'agent-skills' ? '通用 Skills' : '无适用交付';
+      return `${target.pluginId} · ${target.agent} · ${delivery} · ${target.blockers.length > 0
+        ? target.blockers.map((blocker) => blocker.code).join('、') : target.observation}`;
+    }),
+    ...receipt.blockers.map((blocker) => `阻断：${blocker.code} · ${blocker.message}`),
+    ...receipt.targetResults.flatMap((target) =>
+      (target.recoveryActions ?? []).map((action) => `恢复：${action}`)),
+    ...plan.plan.changes.map((change) => `影响：${change}`),
+    ...plan.plan.warnings.map((warning) => `注意：${warning}`),
+  ].join('\n');
+}
+
+function projectResultText(receipt: ProjectRecoveryReceiptV1, task?: SplitTaskContext): string {
+  return [
+    ...(task ? splitTaskLines(task) : []),
+    `请求：${receipt.requestedRoots.join('、') || '空项目'}`,
+    ...receipt.targetResults.map((target) =>
+      `${target.pluginId} · ${target.agent} · ${target.execution} · ${target.observation}`),
+    ...receipt.remainingTargets.map((target) => `未完成：${target.pluginId} · ${target.agent}`),
+    ...receipt.recoveryActions.map((action) => `恢复：${action}`),
+  ].join('\n');
+}
+
+function projectAgentsForPlatform(platform: PlatformName | 'both'): ProjectAgentId[] {
+  return platform === 'both' ? ['codex', 'claude-code']
+    : [platform === 'claude' ? 'claude-code' : 'codex'];
+}
 
 const PLUGIN_FILTERS: PluginInstallFilter[] = [
   'all', 'installed', 'uninstalled', 'updateAvailable', 'attention', 'project', 'user',
@@ -1453,12 +1534,21 @@ export function ConsoleAppV4(props: {
   const size = props.size ?? windowSize;
   const policy = resolveTuiSizePolicy(size.columns, size.rows);
   const [snapshot, setSnapshot] = useState(() => props.controller.snapshot);
+  const unifiedProjectScope = Boolean(snapshot.projectInventory?.recovery
+    || snapshot.projectInventory?.declarationState === 'absent'
+      && snapshot.projectInventory.projectRoot);
   const [overlay, setOverlay] = useState<Overlay>();
   const [overlayFocus, setOverlayFocus] = useState(0);
   const [helpPage, setHelpPage] = useState(1);
   const [operationConfirmation, setOperationConfirmation] = useState<OperationConfirmationOverlay>();
   const [sourceTransportOverlay, setSourceTransportOverlay] = useState<SourceTransportOverlay>();
   const [projectReminderOpen, setProjectReminderOpen] = useState(false);
+  const [projectFlow, setProjectFlow] = useState<ProjectUiFlow>();
+  const [splitTaskReview, setSplitTaskReview] = useState<SplitTaskContext>();
+  const projectFlowToken = useRef(0);
+  const projectFlowEnterBusy = useRef(false);
+  const projectPageAnchor = useRef(0);
+  const [projectAgentsDraft, setProjectAgentsDraft] = useState<ProjectAgentId[]>([]);
   const [discardForExit, setDiscardForExit] = useState(false);
   const [discardForSessionNavigation, setDiscardForSessionNavigation] = useState<SessionNavigation>();
   const [discardDraftConfirmation, setDiscardDraftConfirmation] = useState<ExternalDraftState[]>();
@@ -1665,7 +1755,9 @@ export function ConsoleAppV4(props: {
       || snapshot.phase !== 'ready'
       || route.name !== 'home'
       || !reminder
-      || reminder.actionableTargets.length + reminder.blockedTargets.length === 0
+      || reminder.actionableTargets.length + reminder.blockedTargets.length
+        + (reminder.kind === 'recovery'
+          ? reminder.unconfirmedTargets.length + reminder.diagnosticCodes.length : 0) === 0
       || overlay
       || operationConfirmation
       || sourceTransportOverlay
@@ -1689,7 +1781,9 @@ export function ConsoleAppV4(props: {
   useEffect(() => {
     const reminder = snapshot.projectIntentReminder;
     if (projectReminderOpen
-      && (!reminder || reminder.actionableTargets.length + reminder.blockedTargets.length === 0)) {
+      && (!reminder || reminder.actionableTargets.length + reminder.blockedTargets.length
+        + (reminder.kind === 'recovery'
+          ? reminder.unconfirmedTargets.length + reminder.diagnosticCodes.length : 0) === 0)) {
       setProjectReminderOpen(false);
     }
   }, [projectReminderOpen, snapshot.projectIntentReminder]);
@@ -2057,6 +2151,8 @@ export function ConsoleAppV4(props: {
       || candidates.some((candidate) => !candidate.eligible
         || !frozenPluginIds.has(candidate.target.pluginId))
       || [...frozenPluginIds].some((pluginId) => !representedPluginIds.has(pluginId))) return;
+    if (unifiedProjectScope
+      && new Set(candidates.map((candidate) => candidate.target.scope)).size > 1) return;
     const currentVersionEvidence = Object.assign({}, ...[...frozenPluginIds].map((pluginId) => {
       const candidatePlugin = props.controller.getPluginOverview(pluginId);
       return candidatePlugin ? pluginWriteTaskVersionEvidence(
@@ -2083,6 +2179,7 @@ export function ConsoleAppV4(props: {
     route.name === 'pluginWriteTask' ? JSON.stringify(route.versionEvidence ?? {}) : '',
     snapshot.router.current.context.autoPreparedUpdate,
     snapshot.viewModel,
+    unifiedProjectScope,
   ]);
 
   useEffect(() => {
@@ -2552,6 +2649,10 @@ export function ConsoleAppV4(props: {
   };
 
   const go = (next: TuiRoute): void => {
+    projectFlowToken.current += 1;
+    projectFlowEnterBusy.current = false;
+    if (projectFlow?.stage === 'preparing') props.controller.cancelProjectPreparation();
+    setProjectFlow(undefined);
     props.controller.updatePageContext({
       focusIndex: route.name === 'projectStatus' || route.name === 'platform' ? effectiveFocus : focus,
       scrollOffset,
@@ -2582,6 +2683,56 @@ export function ConsoleAppV4(props: {
     }
     setShowTechnical(false);
     setActionError(undefined);
+  };
+  const beginProjectTask = (
+    request: Parameters<TuiController['prepareProjectTask']>[0],
+    returnTo: 'project' | 'targets' | 'task' = 'project',
+    task?: SplitTaskContext,
+  ): void => {
+    if (projectFlowEnterBusy.current) return;
+    projectFlowEnterBusy.current = true;
+    if (returnTo === 'project') projectPageAnchor.current = batchTargetOffset;
+    const token = ++projectFlowToken.current;
+    setBatchTargetOffset(0);
+    setProjectFlow({ stage: 'preparing', request: request.kind, returnTo, ...(task ? { task } : {}) });
+    void props.controller.prepareProjectTask(request).then((plan) => {
+      if (projectFlowToken.current !== token) return;
+      projectFlowEnterBusy.current = false;
+      setProjectFlow({ stage: 'review', plan, returnTo, ...(task ? { task } : {}), focus: 0 });
+    }).catch((error) => {
+      if (projectFlowToken.current !== token) return;
+      projectFlowEnterBusy.current = false;
+      setProjectFlow({ stage: 'result',
+        errorCode: safeDiagnosticCode(error instanceof Error ? error.message : undefined,
+        'projectRecoveryPreparationFailed'), ...(task ? { task } : {}), focus: 0 });
+    });
+  };
+  const closeProjectFlow = (): void => {
+    setProjectFlow(undefined);
+    if (!projectFlow || !('task' in projectFlow) || !projectFlow.task) {
+      setBatchTargetOffset(projectPageAnchor.current);
+    }
+  };
+  const executeProjectReview = (plan: ProjectTuiPlan, task?: SplitTaskContext): void => {
+    if (projectFlowEnterBusy.current) return;
+    projectFlowEnterBusy.current = true;
+    const token = ++projectFlowToken.current;
+    setProjectFlow({ stage: 'progress', plan, ...(task ? { task } : {}) });
+    void props.controller.executeProjectTask(plan).then((outcome) => {
+      if (projectFlowToken.current !== token) return;
+      projectFlowEnterBusy.current = false;
+      setBatchTargetOffset(0);
+      setProjectFlow({ stage: 'result', plan,
+        ...(outcome.kind === 'recovery' ? { receipt: outcome.receipt } : { changed: outcome.changed }),
+        ...(task ? { task } : {}), focus: 0 });
+      void props.controller.refreshProjectInventory();
+    }).catch((error) => {
+      if (projectFlowToken.current !== token) return;
+      projectFlowEnterBusy.current = false;
+      setProjectFlow({ stage: 'result', plan,
+        errorCode: safeDiagnosticCode(error instanceof Error ? error.message : undefined,
+          'projectRecoveryFailed'), ...(task ? { task } : {}), focus: 0 });
+    });
   };
   const closeBatchSelectionTools = (): void => {
     if (!batchDraft) return;
@@ -2754,6 +2905,69 @@ export function ConsoleAppV4(props: {
     setActionError(undefined);
   };
   const beginReview = (intent: OperationIntent, returnRoute?: TuiRoute): void => {
+    setSplitTaskReview(undefined);
+    if (unifiedProjectScope) {
+      if (intent.kind === 'pluginWrite' && intent.scope === 'project') {
+        const agents = projectAgentsForPlatform(intent.platform);
+        const wholeRemovedCleanup = intent.action === 'cleanup' && !intent.force
+          && snapshot.projectInventory?.recovery?.inventory?.some((root) =>
+            root.pluginId === intent.pluginId && root.sourceState === 'ready'
+            && root.blockers.some((blocker) => blocker.code === 'pluginUnavailable'));
+        beginProjectTask({ kind: 'recovery',
+          command: intent.action === 'refreshAndSync' ? 'sync' : intent.action,
+          selectors: [intent.pluginId],
+          ...(!wholeRemovedCleanup ? { targets: agents,
+            exactTargets: agents.map((agent) => ({ pluginId: intent.pluginId, agent })) } : {}),
+          ...(intent.action === 'refreshAndSync' ? { refresh: true } : {}),
+          ...(intent.force ? { force: true } : {}),
+          ...(intent.scriptTimeoutMs !== undefined ? { scriptTimeoutMs: intent.scriptTimeoutMs } : {}),
+          ...(intent.action === 'install' && intent.dependencyScopeOverrides?.length
+            ? { dependencyScopeOverrides: intent.dependencyScopeOverrides } : {}),
+        });
+        return;
+      }
+      if (intent.kind === 'pluginWriteBatch' && (intent.scope === 'project'
+        || ((intent.selection.kind === 'targets' || intent.selection.kind === 'currentProjectIntentTargets')
+          && intent.selection.targets.some((target) => target.scope === 'project')))) {
+        if ((intent.selection.kind === 'targets' || intent.selection.kind === 'currentProjectIntentTargets')
+          && intent.selection.targets.some((target) => target.scope !== 'project')) {
+          setActionError('个人与项目恢复目标需要分别处理。');
+          return;
+        }
+        const exactTargets = intent.selection.kind === 'targets'
+          || intent.selection.kind === 'currentProjectIntentTargets'
+          ? intent.selection.targets.filter((target) => target.scope === 'project')
+            .map((target) => ({ pluginId: target.pluginId,
+              agent: projectAgentsForPlatform(target.platform)[0]! }))
+          : intent.selection.kind === 'selected'
+            ? intent.selection.pluginIds.flatMap((pluginId) => projectAgentsForPlatform(intent.platform)
+              .map((agent) => ({ pluginId, agent }))) : undefined;
+        const selectors = intent.selection.kind === 'selected' ? intent.selection.pluginIds
+          : exactTargets ? [...new Set(exactTargets.map((target) => target.pluginId))] : [];
+        beginProjectTask({ kind: 'recovery', command: intent.action, selectors,
+          ...(exactTargets ? { exactTargets,
+            targets: [...new Set(exactTargets.map((target) => target.agent))] } : {}),
+          ...(intent.scriptTimeoutMs !== undefined ? { scriptTimeoutMs: intent.scriptTimeoutMs } : {}),
+          ...(intent.action === 'install' && intent.dependencyScopeOverrides?.length
+            ? { dependencyScopeOverrides: intent.dependencyScopeOverrides } : {}),
+        });
+        return;
+      }
+      if (intent.kind === 'pluginWriteTask' && intent.targets.some((target) => target.scope === 'project')) {
+        if (intent.targets.some((target) => target.scope !== 'project')) {
+          setActionError('个人与项目恢复目标需要分别处理。');
+          return;
+        }
+        const exactTargets = intent.targets.map((target) => ({ pluginId: target.pluginId,
+          agent: projectAgentsForPlatform(target.platform)[0]! }));
+        beginProjectTask({ kind: 'recovery', command: 'sync',
+          selectors: [...new Set(exactTargets.map((target) => target.pluginId))],
+          exactTargets, targets: [...new Set(exactTargets.map((target) => target.agent))],
+          ...(intent.scriptTimeoutMs !== undefined ? { scriptTimeoutMs: intent.scriptTimeoutMs } : {}),
+        });
+        return;
+      }
+    }
     pendingReviewIntentRef.current = intent;
     setPendingReviewIntent(intent);
     const underlyingResultRoute = returnRoute ?? (route.name === 'result' && snapshot.result && 'returnRoute' in snapshot.result
@@ -2772,6 +2986,22 @@ export function ConsoleAppV4(props: {
     setFocus(0);
     setScrollOffset(0);
   };
+  const startSplitTaskScope = (context: SplitTaskContext, currentScope: Scope): void => {
+    const selected = context.targets.filter((target) => target.scope === currentScope);
+    const task = { ...context, currentScope };
+    if (currentScope === 'project') {
+      const exactTargets = selected.map((target) => ({ pluginId: target.pluginId,
+        agent: projectAgentsForPlatform(target.platform)[0]! }));
+      beginProjectTask({ kind: 'recovery', command: 'sync',
+        selectors: [...new Set(exactTargets.map((target) => target.pluginId))],
+        targets: [...new Set(exactTargets.map((target) => target.agent))], exactTargets,
+      }, 'task', task);
+      return;
+    }
+    beginReview({ kind: 'pluginWriteTask', goal: context.goal, targets: selected,
+      executionPolicy: context.executionPolicy }, context.returnRoute);
+    setSplitTaskReview(task);
+  };
   useEffect(() => {
     if (route.name !== 'pluginWriteTask' || route.goal !== 'restore') return;
     if (snapshot.router.current.context.autoPreparedRestore) return;
@@ -2784,6 +3014,8 @@ export function ConsoleAppV4(props: {
         ? retainedTargetKeys.has(pluginWriteTaskTargetKey(candidate))
         : candidate.target.pluginId === route.pluginId);
     if (candidates.length === 0 || candidates.some((candidate) => !candidate.eligible)) return;
+    if (unifiedProjectScope
+      && new Set(candidates.map((candidate) => candidate.target.scope)).size > 1) return;
     props.controller.updatePageContext({ autoPreparedRestore: true });
     beginReview({
       kind: 'pluginWriteTask',
@@ -2799,6 +3031,7 @@ export function ConsoleAppV4(props: {
     route.name === 'pluginWriteTask' ? route.targetKeys?.join('\0') ?? '' : '',
     snapshot.router.current.context.autoPreparedRestore,
     snapshot.viewModel,
+    unifiedProjectScope,
   ]);
   const openBatchSelection = (action?: BatchPluginWriteAction): void => {
     props.controller.updatePageContext({
@@ -3221,6 +3454,11 @@ export function ConsoleAppV4(props: {
     platform: PlatformName,
     selectedScope: Scope,
   ): Promise<void> => {
+    if (selectedScope === 'project' && snapshot.projectInventory?.recovery) {
+      beginReview({ kind: 'pluginWrite', action: 'cleanup', pluginId,
+        platform, scope: 'project', force: true });
+      return;
+    }
     const candidate = await props.controller.getForceCleanupCandidate(
       pluginId,
       platform,
@@ -4000,8 +4238,95 @@ export function ConsoleAppV4(props: {
         </Text>)}</Text>
       </HomeNavTile>
     </Box>)}</Box>;
+  } else if (projectFlow) {
+    breadcrumb = '项目插件';
+    context = undefined;
+    const flow = projectFlow;
+    if (flow.stage === 'targets') {
+      title = '选择本机 Agent';
+      description = '选择只保存在本机。保存后可单独同步项目需求。';
+      actions = (['codex', 'claude-code', 'cursor'] as const).map((agent): ActionItem => ({
+        label: `${flow.agents.includes(agent) ? '✓' : '○'} ${agent}`,
+        run: () => setProjectFlow({ ...flow,
+          agents: flow.agents.includes(agent)
+            ? flow.agents.filter((value) => value !== agent)
+            : [...flow.agents, agent].sort(),
+        }),
+      }));
+      actions.push({ label: '查看保存影响', run: () => {
+        setProjectAgentsDraft(flow.agents);
+        beginProjectTask({ kind: 'targets', action: 'set', agents: flow.agents }, 'targets');
+      } });
+      actions.push({ label: '重置本机目标与范围覆盖', run: () =>
+        beginProjectTask({ kind: 'targets', action: 'reset', agents: [] }, 'targets') });
+      actions.push({ label: '返回项目插件', run: closeProjectFlow });
+      content = <Box flexDirection="column">
+        <SectionCard title="本机 Agent"><StaticRow title={flow.agents.join('、') || '未选择'} compact /></SectionCard>
+        <SemanticRows actions={actions} focus={flow.focus} kind="action" compact
+          offset={Math.min(Math.max(0, flow.focus - Math.max(1, pageActionBudget(4)) + 1),
+            Math.max(0, actions.length - Math.max(1, pageActionBudget(4))))}
+          limit={Math.max(1, pageActionBudget(4))} />
+      </Box>;
+    } else if (flow.stage === 'preparing' || flow.stage === 'progress') {
+      title = flow.stage === 'preparing' ? '正在准备项目 Review' : '正在恢复项目插件';
+      description = flow.stage === 'preparing'
+        ? '正在读取当前证据并准备影响范围。Esc 可取消准备。'
+        : '操作已开始。完成后将显示每个目标的结果。';
+      content = <Box flexDirection="column"><ProgressRow
+        title={flow.stage === 'preparing' ? 'ReviewPreparing' : 'Progress'}
+        description={description} state="active" /></Box>;
+    } else if (flow.stage === 'review') {
+      title = '项目恢复 Review';
+      description = '确认完整请求、可执行子集、阻断项和共享影响。';
+      readingText = projectPlanText(flow.plan, flow.task);
+      actions = [
+        { label: flow.plan.kind === 'targets' ? '确认保存本机偏好' : '确认执行可处理目标',
+          run: () => executeProjectReview(flow.plan, flow.task) },
+        { label: '返回修改', run: () => flow.returnTo === 'targets'
+          ? setProjectFlow({ stage: 'targets', agents: projectAgentsDraft, focus: 0 })
+          : closeProjectFlow() },
+      ];
+      content = <Box flexDirection="column"><ReviewCard title="本次影响">
+        {readingPage(readingText, size.columns - 6, Math.max(1, pageActionBudget(6)))}
+        <SemanticRows actions={actions} focus={flow.focus} kind="action" compact />
+      </ReviewCard></Box>;
+    } else {
+      title = '项目操作 Result';
+      description = flow.errorCode ? `操作未完成：${flow.errorCode}`
+        : flow.receipt ? flow.receipt.ok ? '项目请求已完成。' : '项目请求仍有未完成目标。'
+          : '本机偏好已处理。';
+      if (flow.task) description += ' 另一范围仍需独立 Review。';
+      readingText = flow.receipt ? projectResultText(flow.receipt, flow.task)
+        : flow.errorCode ?? (flow.changed ? '本机偏好已保存。' : '本机偏好没有变化。');
+      actions = [
+        { label: flow.task ? '返回恢复任务' : '返回项目插件', run: closeProjectFlow },
+        ...(flow.task && flow.task.currentScope === 'project'
+          && flow.task.targets.some((target) => target.scope === 'user') ? [{
+          label: `继续处理所有项目 ${flow.task.targets.filter((target) => target.scope === 'user').length} 个位置`,
+          description: '重新准备个人范围并显示独立 Review',
+          run: () => {
+            closeProjectFlow();
+            startSplitTaskScope(flow.task!, 'user');
+          },
+        }] : []),
+        { label: '重新检查项目', run: () => { closeProjectFlow(); void props.controller.refreshProjectInventory(); } },
+        ...(flow.receipt?.remainingTargets.length ? [{ label: `仅重试未完成目标（${flow.receipt.remainingTargets.length}）`,
+          run: () => beginProjectTask({ kind: 'recovery',
+            command: flow.receipt!.command as 'sync' | 'install' | 'reinstall' | 'uninstall' | 'cleanup',
+            selectors: [...new Set(flow.receipt!.remainingTargets.map((target) => target.pluginId))],
+            exactTargets: flow.receipt!.remainingTargets,
+          }) }] : []),
+      ];
+      content = <Box flexDirection="column"><ResultCard
+        status={flow.errorCode || flow.receipt && !flow.receipt.ok ? 'warning' : 'success'}
+        title={description}>
+        {readingPage(readingText, size.columns - 6, Math.max(1, pageActionBudget(6)))}
+        <SemanticRows actions={actions} focus={flow.focus} kind="action" compact />
+      </ResultCard></Box>;
+    }
   } else if (route.name === 'projectStatus') {
     const inventory = snapshot.projectInventory;
+    const recovery = inventory?.recovery;
     const section = snapshot.router.current.context.projectSection ?? 'declared';
     const statusFilter = snapshot.router.current.context.projectStatusFilter ?? 'all';
     const stateLabel = { blocked: '受阻', pending: '待同步', unknown: '未确认', ready: '就绪' };
@@ -4037,6 +4362,11 @@ export function ConsoleAppV4(props: {
       : inventory?.declarationState === 'notProject' ? '当前不是项目；没有项目同步目标。'
       : inventory?.declarationState === 'absent' ? '未配置项目插件。'
         : inventory?.declarationState === 'invalid' || inventory?.declarationState === 'unavailable' ? '项目声明需要检查。' : undefined;
+    if (recovery && snapshot.projectInventoryRefresh.state !== 'error') {
+      description = `本机 Agent：${recovery.selection.agents.join('、') || '未选择'} · ${
+        recovery.selection.origin === 'preference' ? '本机偏好' : recovery.selection.origin === 'argument'
+          ? '一次性参数' : '请先选择'}`;
+    }
     actions = roots.map((root) => ({
       actionId: `project-root:${root.pluginId}`, pluginId: root.pluginId,
       label: root.displayName,
@@ -4044,11 +4374,31 @@ export function ConsoleAppV4(props: {
     }));
     const syncTargets = inventory?.syncTargets ?? [];
     const syncCount = new Set(syncTargets.map((target) => target.pluginId)).size;
-    const projectRestoreIds = [...new Set(props.controller.listPluginWriteTaskCandidates('restore')
+    const projectRestoreIds = recovery ? [] : [...new Set(props.controller.listPluginWriteTaskCandidates('restore')
       .filter((candidate) => candidate.target.scope === 'project')
       .map((candidate) => candidate.target.pluginId))];
+    const removedRoots = recovery?.inventory?.filter((root) => root.sourceState === 'ready'
+      && root.blockers.some((blocker) => blocker.code === 'pluginUnavailable')) ?? [];
     bottomActions = [
-      ...(inventory?.projectRoot && syncCount > 0 ? [{ actionId: 'project-sync-actionable',
+      ...(inventory?.projectRoot && recovery ? [{ actionId: 'project-targets',
+        label: '设置本机 Agent', status: 'info' as const,
+        run: () => {
+          projectPageAnchor.current = batchTargetOffset;
+          const agents = [...recovery.selection.agents];
+          setProjectAgentsDraft(agents);
+          setProjectFlow({ stage: 'targets', agents, focus: 0 });
+        } },
+      ...(recovery.inventory && recovery.inventory.length > 0 ? [{ actionId: 'project-sync-actionable',
+        label: `同步全部项目需求（${recovery.inventory.length}） [c]`, status: 'info' as const,
+        run: () => beginProjectTask({ kind: 'recovery', selectors: [] }) }] : []),
+      ] : []),
+      ...removedRoots.map((root): ActionItem => ({
+        actionId: `project-cleanup-removed:${root.pluginId}`,
+        label: `整体清理已删除插件 ${root.pluginId}`,
+        status: 'warning',
+        run: () => beginProjectTask({ kind: 'recovery', command: 'cleanup', selectors: [root.pluginId] }),
+      })),
+      ...(!recovery && inventory?.projectRoot && syncCount > 0 ? [{ actionId: 'project-sync-actionable',
         label: `同步全部可处理声明（${syncCount}） [c]`, status: 'info' as const,
         run: () => prepareCurrentProjectTargets(syncTargets) }] : []),
       ...(projectRestoreIds.length > 0 ? [{ actionId: 'project-restore',
@@ -4068,12 +4418,19 @@ export function ConsoleAppV4(props: {
           run: () => go(issue
             ? { name: 'issueDetail', issueId: issue.issueId } : { name: 'issueList' }) }];
       })(),
-      ...(!showTechnical && (inventory?.counts.blocked || inventory?.counts.unknown || snapshot.projectIntentIssue) ? [{ actionId: 'project-error-details', label: '错误详情', run: toggleTechnical }] : []),
+      ...(!showTechnical && (inventory?.counts.blocked || inventory?.counts.unknown || snapshot.projectIntentIssue
+        || recovery?.errors.length) ? [{ actionId: 'project-error-details', label: '错误详情', run: toggleTechnical }] : []),
       { actionId: 'project-recheck', label: snapshot.projectInventoryRefresh.state === 'checking' ? '正在检查项目' : '重新检查项目 [r]',
         disabled: snapshot.projectInventoryRefresh.state === 'checking' ? '检查中' : undefined,
         run: async () => { await props.controller.refreshProjectInventory(); } },
     ];
     const technicalText = [snapshot.projectIntentIssue ? `${safeDiagnosticCode(snapshot.projectIntentIssue.code, 'projectIntentUnknown')} · ${sanitizeDiagnosticText(snapshot.projectIntentIssue.message)}` : '',
+      ...(recovery?.errors.map((error) => `${error.code} · ${error.message}`) ?? []),
+      ...(recovery?.inventory?.flatMap((root) => [
+        ...root.blockers.map((blocker) => `${root.pluginId} · ${blocker.code} · ${blocker.message}`),
+        ...root.targetResults.flatMap((target) => target.blockers.map((blocker) =>
+          `${root.pluginId} · ${target.agent} · ${blocker.code} · ${blocker.message}`)),
+      ]) ?? []),
       ...props.controller.listProjectInventoryRoots(section).flatMap((root) => [...projectDependencyLines(root), ...root.targets.flatMap((target) => [
         `${root.pluginId} · ${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`,
         `目录参考 ${target.expectedVersion ?? '未知'} · 实际 ${target.installedVersion ?? '未知'} · ${stateLabel[target.state]}`,
@@ -4090,7 +4447,9 @@ export function ConsoleAppV4(props: {
       effectiveFocus = retained >= 0 ? retained
         : itemCount > 0 ? 0 : dynamicActionIds.indexOf('project-recheck');
     }
-    help = '↑↓ 移动 · Enter 查看 · Esc 返回';
+    help = recovery
+      ? '↑↓ 移动 · Enter 查看 · s 同步所选 · c 同步全部 · x 清理已删除 · t 设置 Agent · Esc 返回'
+      : '↑↓ 移动 · Enter 查看 · Esc 返回';
     if (showTechnical) {
       readingText = technicalText;
       content = <Box flexDirection="column">
@@ -4111,6 +4470,9 @@ export function ConsoleAppV4(props: {
         rowBudget: pageActionBudget(3 + Number(emptyHint)),
       });
       content = <Box flexDirection="column">
+      {recovery ? <StaticRow title={`本机 Agent：${recovery.selection.agents.join('、') || '未选择'}`}
+        description={recovery.selection.agents.length === 0 ? '设置本机 Agent 后可恢复项目需求。' : undefined}
+        status={recovery.selection.agents.length === 0 ? 'warning' : 'info'} compact /> : null}
       <QueryHeader width={size.columns - 2}
         tabs={{ items: [
           { id: 'declared', label: '项目声明', count: props.controller.listProjectInventoryRoots('declared').filter((root) => queryMatches(query, root.displayName, root.pluginId, root.sourceId)).length },
@@ -5791,19 +6153,33 @@ export function ConsoleAppV4(props: {
       }]];
     })).values()];
     const taskLabel = pluginWriteTaskLabel(route.goal);
-    const startTaskReview = (executionPolicy: 'all' | 'executableSubset'): void => {
+    const mixedScopes = unifiedProjectScope
+      && new Set(candidates.map((candidate) => candidate.target.scope)).size > 1;
+    const startTaskReview = (executionPolicy: 'all' | 'executableSubset', selectedScope?: Scope): void => {
       if (targetSetChanged) {
         setActionError('本次安装位置已变化。请返回调整后重新开始。');
         return;
       }
-      props.controller.startPluginWriteTaskReview({
+      if (selectedScope) {
+        startSplitTaskScope({ goal: route.goal,
+          targets: candidates.map((candidate) => candidate.target),
+          executionPolicy, currentScope: selectedScope,
+          returnRoute: props.controller.pluginWriteTaskReturnRoute(route),
+        }, selectedScope);
+        return;
+      }
+      const intent: Extract<OperationIntent, { kind: 'pluginWriteTask' }> = {
         kind: 'pluginWriteTask',
         goal: route.goal,
         targets: candidates.map((candidate) => candidate.target),
         executionPolicy,
-      }, props.controller.pluginWriteTaskReturnRoute(route));
-      setFocus(0);
-      setScrollOffset(0);
+      };
+      if (unifiedProjectScope) {
+        beginReview(intent, props.controller.pluginWriteTaskReturnRoute(route));
+      } else {
+        props.controller.startPluginWriteTaskReview(intent,
+          props.controller.pluginWriteTaskReturnRoute(route));
+      }
     };
     breadcrumb = taskPluginIds.length > 1
       ? `我的插件 / ${taskLabel} ${taskPluginIds.length} 个插件`
@@ -5819,14 +6195,22 @@ export function ConsoleAppV4(props: {
       ? 'PgUp/PgDn 查看全部位置 · ↑↓ 移动 · Enter 选择 · Esc 返回'
       : '↑↓ 移动 · Enter 选择 · Esc 返回';
     actions = [
-      ...(!targetSetChanged && !versionEvidenceChanged
+      ...(!targetSetChanged && !versionEvidenceChanged && mixedScopes
+        ? (['user', 'project'] as const).filter((selectedScope) => executable.some((candidate) =>
+          candidate.target.scope === selectedScope)).map((selectedScope) => ({
+          label: `先处理${scopeLabel(selectedScope)} ${executable.filter((candidate) => candidate.target.scope === selectedScope).length} 个位置`,
+          description: `完整请求 ${candidates.length} 个位置；另一范围留待重新准备和确认`,
+          status: 'warning' as const,
+          run: () => startTaskReview(blockedCandidates.length > 0 ? 'executableSubset' : 'all', selectedScope),
+        })) : []),
+      ...(!mixedScopes && !targetSetChanged && !versionEvidenceChanged
         && blockedCandidates.length === 0 && executable.length > 0 ? [{
         label: `确认${taskLabel} ${executable.length} 个位置`,
         description: '进入统一影响确认；执行前再次检查当前证据',
         status: 'success' as const,
         run: () => startTaskReview('all'),
       }] : []),
-      ...(!targetSetChanged && !versionEvidenceChanged
+      ...(!mixedScopes && !targetSetChanged && !versionEvidenceChanged
         && blockedCandidates.length > 0 && executable.length > 0 ? [{
         label: `先处理可执行的 ${executable.length} 个位置`,
         description: `${blockedCandidates.length} 个受阻位置保留，不会无声跳过`,
@@ -7846,15 +8230,22 @@ export function ConsoleAppV4(props: {
     const reminder = snapshot.projectIntentReminder;
     const pendingProjectTargets = (reminder?.actionableTargets.length ?? 0)
       + (reminder?.blockedTargets.length ?? 0) + (reminder?.unconfirmedTargets.length ?? 0);
-    if (snapshot.projectIntentIssue || pendingProjectTargets > 0) {
+    const projectDiagnostic = Boolean(snapshot.projectIntentIssue
+      || reminder?.kind === 'recovery' && reminder.diagnosticCodes.length > 0
+      || snapshot.projectInventory?.recovery?.inventory === null
+      || snapshot.projectInventory?.recovery
+        && !['valid', 'absent'].includes(snapshot.projectInventory.recovery.intent.state));
+    if (projectDiagnostic || pendingProjectTargets > 0) {
       title = '需要处理';
+      context = issues.length > 0 ? `${issues.length} 项 · 项目插件待处理` : '项目插件待处理';
       description = '查看项目插件、安装、来源或设置问题。';
       actions.unshift({ actionId: 'project-status', label: '项目插件',
-        description: snapshot.projectIntentIssue ? '项目声明需要检查' : `${pendingProjectTargets} 个位置待处理或未确认`,
+        description: projectDiagnostic ? '项目声明或状态需要检查'
+          : `${pendingProjectTargets} 个位置待处理或未确认`,
         status: 'warning', run: () => go({ name: 'projectStatus' }) });
     }
     const viewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(8, 12));
-    if (issues.length === 0 || snapshot.projectIntentIssue || pendingProjectTargets > 0) {
+    if (issues.length === 0 || projectDiagnostic || pendingProjectTargets > 0) {
       content = <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} />;
     } else {
       const groupCounts = new Map<UserIssueViewModel['group'], number>();
@@ -8245,6 +8636,8 @@ export function ConsoleAppV4(props: {
   } else if (route.name === 'review' && snapshot.activeReview) {
     const review = snapshot.activeReview;
     readingText = [
+      ...(review.operationKind === 'pluginWriteTask' && splitTaskReview
+        ? splitTaskLines(splitTaskReview) : []),
       `${review.title} · ${review.subject.name}`,
       review.description,
       ...(review.equivalentCommand && !review.requiresConfirmation
@@ -8663,7 +9056,7 @@ export function ConsoleAppV4(props: {
       };
       help = 'PgUp/PgDn 查看全部确认信息 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
-    content = <Box flexDirection="column"><ReviewCard title={reviewRootSummary ? `本次插件 · ${reviewRootSummary}` : review.subject.name} meta={reviewRootSummary ? `版本 ${reviewVersionSummary} · 范围 ${reviewRangeSummary || '未知'}` : `${review.subject.sourceLabel ?? ''} ${review.subject.version ?? ''}`} description={showEquivalentCommand ? review.description : undefined}>{showEquivalentCommand ? <Text>等价命令：{review.equivalentCommand}</Text> : null}{portableReview ? <SemanticRows actions={actions} focus={operationConfirmation ? -1 : focus} kind="action" compact offset={reviewActionViewport.offset} limit={reviewActionViewport.limit} /> : null}{showTechnical && review.catalogBinding ? <><StaticRow title={`Catalog：${review.catalogBinding.sourceId} ${review.catalogBinding.catalogVersion} · 当前使用`} meta={`generation ${review.catalogBinding.generationDigestShort}`} status="success" compact /><StaticRow title="操作期间不检查远端 Catalog" status="success" compact /></> : null}{installDependencyPluginIds.size > 0 ? <><StaticRow
+    content = <Box flexDirection="column"><ReviewCard title={reviewRootSummary ? `本次插件 · ${reviewRootSummary}` : review.subject.name} meta={reviewRootSummary ? `版本 ${reviewVersionSummary} · 范围 ${reviewRangeSummary || '未知'}` : `${review.subject.sourceLabel ?? ''} ${review.subject.version ?? ''}`} description={showEquivalentCommand ? review.description : undefined}>{review.operationKind === 'pluginWriteTask' && splitTaskReview ? <StaticRow title={`完整请求 ${splitTaskReview.targets.length} 个位置 · 本次${scopeLabel(splitTaskReview.currentScope)} ${splitTaskReview.targets.filter((target) => target.scope === splitTaskReview.currentScope).length} 个`} description={`其余${scopeLabel(splitTaskReview.currentScope === 'user' ? 'project' : 'user')}位置需另行确认；y 复制完整请求`} status="warning" compact /> : null}{showEquivalentCommand ? <Text>等价命令：{review.equivalentCommand}</Text> : null}{portableReview ? <SemanticRows actions={actions} focus={operationConfirmation ? -1 : focus} kind="action" compact offset={reviewActionViewport.offset} limit={reviewActionViewport.limit} /> : null}{showTechnical && review.catalogBinding ? <><StaticRow title={`Catalog：${review.catalogBinding.sourceId} ${review.catalogBinding.catalogVersion} · 当前使用`} meta={`generation ${review.catalogBinding.generationDigestShort}`} status="success" compact /><StaticRow title="操作期间不检查远端 Catalog" status="success" compact /></> : null}{installDependencyPluginIds.size > 0 ? <><StaticRow
       title={`需要 ${installDependencyPluginIds.size} 个额外插件；${reusedDependencyPluginIds.size} 个复用、${newDependencyCount} 个新增`}
       status="info" compact /><StaticRow
       title={widenedDependencyCount > 0 ? `${widenedDependencyCount} 个依赖会扩大到所有项目` : '没有依赖会扩大到所有项目'}
@@ -9034,6 +9427,10 @@ export function ConsoleAppV4(props: {
             ? resultSummary?.message ?? '设置层已经保存；平台应用失败不会回滚设置。'
             : '设置层已经更新。'
           : '状态已刷新。';
+    if (taskOperation && splitTaskReview?.currentScope === 'user') {
+      if (!blocked && !partial) title = '✓ 所有项目范围已处理';
+      description += ` 当前项目的 ${splitTaskReview.targets.filter((target) => target.scope === 'project').length} 个位置尚未处理。`;
+    }
     const pluginId = resultSummary?.pluginId
       ?? ('pluginId' in result ? result.pluginId : undefined);
     const configResultPluginId = pluginId ?? ('returnRoute' in result
@@ -9145,6 +9542,16 @@ export function ConsoleAppV4(props: {
         ]
       : taskOperation
       ? [
+          ...(splitTaskReview?.currentScope === 'user'
+            && splitTaskReview.targets.some((target) => target.scope === 'project') ? [{
+            label: `继续处理当前项目 ${splitTaskReview.targets.filter((target) => target.scope === 'project').length} 个位置`,
+            description: '重新准备项目范围并显示独立 Review',
+            run: () => {
+              const context = splitTaskReview;
+              leaveResult(context.returnRoute);
+              startSplitTaskScope(context, 'project');
+            },
+          }] : []),
           ...(nestedTaskReturn && taskReturnRoute ? [{
             label: '返回剩余恢复任务',
             description: '保留父任务已选择的位置；返回后重新读取当前状态',
@@ -9473,6 +9880,7 @@ export function ConsoleAppV4(props: {
         `materialization digest · ${portableReceipt.materializationDigest}`] : []),
       ...(resultSummary?.elapsedMs !== undefined ? [`elapsed · ${resultSummary.elapsedMs} ms`] : []),
     ].join('\n') : '当前结果已变化。请返回结果摘要。' : [
+      ...(taskOperation && splitTaskReview ? splitTaskLines(splitTaskReview) : []),
       resultSummary?.message ?? (blocked ? result.message : '操作结果'),
       ...(resultSummary?.messages ?? []).map(productResultMessage),
       ...(resultSummary?.changes ?? []),
@@ -10251,6 +10659,64 @@ export function ConsoleAppV4(props: {
     ? Math.min(effectiveFocus, Math.max(0, actions.length - 1))
     : effectiveFocus;
   useInput((input, key) => {
+    if (projectFlow && !overlay) {
+      const flow = projectFlow;
+      const sessionNavigation = resolveTuiSessionNavigationKey(
+        { input, key }, { characterInput: false });
+      if (sessionNavigation) {
+        if (flow.stage === 'progress') return;
+        if (flow.stage === 'preparing') props.controller.cancelProjectPreparation();
+        projectFlowToken.current += 1;
+        projectFlowEnterBusy.current = false;
+        closeProjectFlow();
+        requestSessionNavigation(sessionNavigation);
+        return;
+      }
+      if (input.toLowerCase() === 'q' || key.ctrl && input.toLowerCase() === 'c') {
+        if (flow.stage !== 'progress') requestConfirmedExit();
+        return;
+      }
+      if (flow.stage === 'review' || flow.stage === 'result') {
+        if (input.toLowerCase() === 'y' && readingText !== undefined) {
+          void copyToClipboard(readingText).then(() =>
+            setCopyFeedback({ routeKey, message: '全文已复制' })).catch(() =>
+            setCopyFeedback({ routeKey, message: '复制失败，请重试' }));
+          return;
+        }
+        if (key.pageUp || key.pageDown || key.leftArrow || key.rightArrow) {
+          readerNavigation?.move(key.pageUp || key.leftArrow ? -1 : 1);
+          return;
+        }
+      }
+      if (flow.stage === 'preparing') {
+        if (key.escape || input.toLowerCase() === 'b') {
+          projectFlowToken.current += 1;
+          projectFlowEnterBusy.current = false;
+          props.controller.cancelProjectPreparation();
+          setProjectFlow(flow.returnTo === 'targets'
+            ? { stage: 'targets', agents: projectAgentsDraft, focus: 0 } : undefined);
+          if (flow.returnTo === 'project') setBatchTargetOffset(projectPageAnchor.current);
+        }
+        return;
+      }
+      if (flow.stage === 'progress') return;
+      if (key.escape || input.toLowerCase() === 'b') {
+        if (flow.stage === 'review' && flow.returnTo === 'targets') {
+          setProjectFlow({ stage: 'targets', agents: projectAgentsDraft, focus: 0 });
+        } else closeProjectFlow();
+        return;
+      }
+      if (key.upArrow || key.downArrow || input.toLowerCase() === 'j'
+        || input.toLowerCase() === 'k') {
+        setProjectFlow({ ...flow, focus: moveIndex(actions.length, flow.focus,
+          key.upArrow || input.toLowerCase() === 'k' ? -1 : 1) });
+        return;
+      }
+      if (key.return || input === ' ' && flow.stage === 'targets') {
+        runAction(actions[flow.focus]);
+      }
+      return;
+    }
     if (!overlay && route.name === 'reviewPreparing' && snapshot.reviewPreparation?.state === 'failed'
       && (key.escape || input.toLowerCase() === 'b')) {
       back();
@@ -10381,7 +10847,15 @@ export function ConsoleAppV4(props: {
         closeProjectReminder();
         if (!reminder || overlayFocus === 0) return;
         if (overlayFocus === 1 && reminder.actionableTargets.length > 0) {
-          prepareCurrentProjectTargets(reminder.actionableTargets);
+          if (reminder.kind === 'recovery') {
+            const exactTargets = reminder.actionableTargets.map((target) => ({
+              pluginId: target.pluginId, agent: target.agent,
+            }));
+            go({ name: 'projectStatus' });
+            beginProjectTask({ kind: 'recovery', command: 'sync',
+              selectors: [...new Set(exactTargets.map((target) => target.pluginId))],
+              targets: [...new Set(exactTargets.map((target) => target.agent))], exactTargets });
+          } else prepareCurrentProjectTargets(reminder.actionableTargets);
         } else {
           go({ name: 'projectStatus' });
         }
@@ -11246,6 +11720,23 @@ export function ConsoleAppV4(props: {
       setScrollOffset(0);
     } else if (route.name === 'projectStatus' && input.toLowerCase() === 'f' && !showTechnical) {
       toggleProjectStatusFilter?.();
+    } else if (route.name === 'projectStatus' && input.toLowerCase() === 's'
+      && snapshot.projectInventory?.recovery && !showTechnical) {
+      const pluginId = actions[effectiveFocus]?.pluginId;
+      if (pluginId && snapshot.projectInventory.declaredRoots.some((root) => root.pluginId === pluginId)) {
+        beginProjectTask({ kind: 'recovery', selectors: [pluginId] });
+      }
+    } else if (route.name === 'projectStatus' && input.toLowerCase() === 'x'
+      && snapshot.projectInventory?.recovery && !showTechnical) {
+      const pluginId = actions[effectiveFocus]?.pluginId;
+      const root = snapshot.projectInventory.recovery.inventory?.find((entry) => entry.pluginId === pluginId);
+      if (root?.sourceState === 'ready'
+        && root.blockers.some((blocker) => blocker.code === 'pluginUnavailable')) {
+        beginProjectTask({ kind: 'recovery', command: 'cleanup', selectors: [pluginId!] });
+      }
+    } else if (route.name === 'projectStatus' && input.toLowerCase() === 't'
+      && snapshot.projectInventory?.recovery && !showTechnical) {
+      runAction(bottomActions.find((action) => action.actionId === 'project-targets'));
     } else if (route.name === 'projectStatus' && input.toLowerCase() === 'r') {
       runAction(bottomActions.find((action) => action.actionId === 'project-recheck'));
     } else if (route.name === 'projectStatus' && input.toLowerCase() === 'c') {
@@ -11482,12 +11973,14 @@ export function ConsoleAppV4(props: {
         marginLeft={Math.max(2, Math.floor((size.columns - reminderWidth) / 2))}
         width={reminderWidth} flexDirection="column">
         <ReviewCard
-          title={`本项目有 ${pluginCount} 个插件尚未就绪`}
+          title={pluginCount > 0 ? `本项目有 ${pluginCount} 个插件尚未就绪` : '项目状态需要检查'}
           description={`${reminder.actionableTargets.length} 个位置可同步；`
             + `${reminder.blockedTargets.length} 个位置需要先处理；`
             + `${reminder.unconfirmedTargets.length} 个位置未确认。`}
         >
           <StaticRow title="按项目共享设置恢复，个人设置不会被清空。" compact />
+          {reminder.kind === 'recovery' && reminder.diagnosticCodes.length > 0
+            ? <StaticRow title={`诊断：${reminder.diagnosticCodes.join('、')}`} status="warning" compact /> : null}
           <StaticRow title="确认同步前可查看脚本和完整影响。" status="warning" compact />
           <SemanticRows actions={reminderActions} focus={overlayFocus} kind="action" compact />
           <StaticRow title="↑↓ 选择 · Enter 确认 · Esc 稍后处理" status="muted" compact />

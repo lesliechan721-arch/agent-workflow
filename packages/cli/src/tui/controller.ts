@@ -100,6 +100,11 @@ import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
 import type { CatalogSessionReusableCandidate } from './catalog-sources/types.js';
 import type { CatalogStorePruneResult, CatalogStoreStatusResult } from '../commands/catalog-store.js';
 import type { CatalogStoreTaskEvidence } from './catalog-store-task.js';
+import type { ProjectTuiPlan } from './project-flow.js';
+import type { ProjectRecoveryReceiptV1 } from '../project/project-types.js';
+import { projectStatusReminder, type ProjectStatusReminder } from '../project/project-status.js';
+import type { ProjectRecoveryCommand } from '../project/recovery.js';
+import type { ProjectAgentId } from '../project/project-preferences.js';
 import { CatalogSourcesSession } from './catalog-sources/session.js';
 import {
   catalogSourceAutoCheckOnlyValue,
@@ -824,7 +829,8 @@ export interface ProjectIntentReminderTarget extends PluginWriteBatchTarget {
   reasonCodes: string[];
 }
 
-export interface ProjectIntentReminder {
+export interface LegacyProjectIntentReminder {
+  kind: 'legacy';
   projectRoot: string;
   signature: string;
   actionableTargets: ProjectIntentReminderTarget[];
@@ -832,11 +838,31 @@ export interface ProjectIntentReminder {
   unconfirmedTargets: ProjectIntentReminderTarget[];
 }
 
+export interface ProjectRecoveryIntentReminder extends ProjectStatusReminder {
+  kind: 'recovery';
+  projectRoot: string;
+  signature: string;
+}
+
+export type ProjectIntentReminder = LegacyProjectIntentReminder | ProjectRecoveryIntentReminder;
+
 function projectReminderTargetKey(target: PluginWriteBatchTarget): string {
   return [target.pluginId, target.platform, target.scope].join('\0');
 }
 
 export function projectCurrentIntentReminder(status: TuiStatusLoadResult): ProjectIntentReminder | undefined {
+  if (status.payload.projectRecovery) {
+    const recovery = status.payload.projectRecovery;
+    const reminder = projectStatusReminder(recovery);
+    if (reminder.actionableTargets.length + reminder.blockedTargets.length
+      + reminder.unconfirmedTargets.length + reminder.diagnosticCodes.length === 0) return undefined;
+    const projectRoot = status.projectRoot ?? status.payload.filters.cwd;
+    const signature = crypto.createHash('sha256').update(JSON.stringify({
+      projectRoot, intent: recovery.intent, selection: recovery.selection,
+      reminder,
+    })).digest('hex');
+    return { kind: 'recovery', projectRoot, signature: `sha256:${signature}`, ...reminder };
+  }
   if (status.projectIntent && status.projectIntent.state !== 'ready') return undefined;
   const actionableTargets: ProjectIntentReminderTarget[] = [];
   const blockedTargets: ProjectIntentReminderTarget[] = [];
@@ -908,6 +934,7 @@ export function projectCurrentIntentReminder(status: TuiStatusLoadResult): Proje
     blockedTargets: canonicalBlocked.map(projectReminderTargetKey),
   })).digest('hex');
   return {
+    kind: 'legacy',
     projectRoot,
     signature: `sha256:${signature}`,
     actionableTargets: canonicalActionable,
@@ -943,6 +970,16 @@ export interface TuiControllerDependencies {
     reuseValidatedGenerations?: boolean;
   }) => void;
   loadStatus: (signal: AbortSignal) => Promise<TuiStatusLoadResult>;
+  prepareProjectTask?: (request: {
+    kind: 'recovery'; command?: ProjectRecoveryCommand; selectors: string[];
+    exactTargets?: Array<{ pluginId: string; agent: ProjectAgentId }>;
+    targets?: ProjectAgentId[]; force?: boolean; refresh?: boolean; scriptTimeoutMs?: number;
+    dependencyScopeOverrides?: DependencyScopeOverride[]
+  } | { kind: 'targets'; action: 'set' | 'reset'; agents: string[] }, signal: AbortSignal) => Promise<ProjectTuiPlan>;
+  executeProjectTask?: (plan: ProjectTuiPlan) => Promise<
+    { kind: 'recovery'; receipt: ProjectRecoveryReceiptV1 }
+    | { kind: 'targets'; changed: boolean; agents: ProjectAgentId[] }
+  >;
   loadPluginContent?: (pluginId: string, signal: AbortSignal) => Promise<PluginContentOverview>;
   probeCatalogFreshness?: (
     sourceId: string,
@@ -1646,6 +1683,11 @@ export class TuiController {
     operationId: string;
     promise: Promise<OperationExecuteResult>;
   }>();
+  #projectTaskInflight?: { plan: ProjectTuiPlan; promise: Promise<{
+    kind: 'recovery'; receipt: ProjectRecoveryReceiptV1
+  } | { kind: 'targets'; changed: boolean; agents: ProjectAgentId[] }> };
+  readonly #projectExecuted = new WeakSet<object>();
+  #projectPreparationAbort?: AbortController;
   readonly #pendingReads = new Set<Promise<unknown>>();
   readonly #pluginContent = new Map<string, PluginContentOverview>();
   readonly #pluginContentInflight = new Map<string, Promise<void>>();
@@ -1829,7 +1871,7 @@ export class TuiController {
   }
 
   get hasActiveWrite(): boolean {
-    return this.#inflightOperations.size > 0;
+    return this.#inflightOperations.size > 0 || this.#projectTaskInflight !== undefined;
   }
 
   get retiring(): boolean {
@@ -1921,9 +1963,12 @@ export class TuiController {
 
   async waitForWrites(): Promise<void> {
     this.beginRetirement();
-    while (this.#inflightOperations.size > 0) {
+    while (this.hasActiveWrite) {
       await Promise.allSettled(
-        [...this.#inflightOperations.values()].map((operation) => operation.promise),
+        [
+          ...[...this.#inflightOperations.values()].map((operation) => operation.promise),
+          ...(this.#projectTaskInflight ? [this.#projectTaskInflight.promise] : []),
+        ],
       );
     }
   }
@@ -2213,7 +2258,9 @@ export class TuiController {
       pluginSummaries: this.#viewModel.plugins,
       targetRevisions: this.#status.targetRevisions,
       dependencyOverviews: this.#status.dependencyOverviews,
-      actionableTargets: this.#projectIntentReminder?.actionableTargets,
+      actionableTargets: this.#projectIntentReminder?.kind === 'legacy'
+        ? this.#projectIntentReminder.actionableTargets : undefined,
+      projectRecovery: this.#status.payload.projectRecovery,
     });
   }
 
@@ -2449,7 +2496,11 @@ export class TuiController {
       ? result.returnRoute.batchOrigin.flowId
       : undefined;
     const completedPluginId = completedSinglePluginId(intent, result);
-    if (completedPluginId && target.name === 'pluginDetail') {
+    const hasUnreviewedTaskTargets = intent.kind === 'pluginWriteTask'
+      && 'returnRoute' in result && result.returnRoute?.name === 'pluginWriteTask'
+      && result.returnRoute.targetKeys?.some((key) =>
+        !intent.targets.some((candidate) => pluginWriteTaskTargetKey(candidate) === key));
+    if (completedPluginId && target.name === 'pluginDetail' && !hasUnreviewedTaskTargets) {
       this.#recordTerminalResult();
       const action = intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch'
         ? intent.action : 'sync';
@@ -2619,6 +2670,47 @@ export class TuiController {
       this.#publish();
       return false;
     }
+  }
+
+  async prepareProjectTask(request: {
+    kind: 'recovery'; command?: ProjectRecoveryCommand; selectors: string[];
+    exactTargets?: Array<{ pluginId: string; agent: ProjectAgentId }>;
+    targets?: ProjectAgentId[]; force?: boolean; refresh?: boolean; scriptTimeoutMs?: number;
+    dependencyScopeOverrides?: DependencyScopeOverride[]
+  } | { kind: 'targets'; action: 'set' | 'reset'; agents: string[] }): Promise<ProjectTuiPlan> {
+    this.#assertAcceptingActions();
+    if (!this.dependencies.prepareProjectTask) throw new Error('projectRecoveryUnavailable');
+    this.#projectPreparationAbort?.abort();
+    const abort = new AbortController();
+    this.#projectPreparationAbort = abort;
+    try {
+      return await this.#trackRead(this.dependencies.prepareProjectTask(request,
+        AbortSignal.any([this.#abort.signal, abort.signal])));
+    } finally {
+      if (this.#projectPreparationAbort === abort) this.#projectPreparationAbort = undefined;
+    }
+  }
+
+  cancelProjectPreparation(): void {
+    this.#projectPreparationAbort?.abort();
+  }
+
+  executeProjectTask(plan: ProjectTuiPlan): Promise<
+    { kind: 'recovery'; receipt: ProjectRecoveryReceiptV1 }
+    | { kind: 'targets'; changed: boolean; agents: ProjectAgentId[] }
+  > {
+    if (this.#retiring || this.#disposed) return Promise.reject(new Error('sessionRetiring'));
+    if (!this.dependencies.executeProjectTask) return Promise.reject(new Error('projectRecoveryUnavailable'));
+    if (this.#projectTaskInflight?.plan === plan) return this.#projectTaskInflight.promise;
+    if (this.hasActiveWrite || this.#projectExecuted.has(plan)) {
+      return Promise.reject(new Error('reviewTicketInvalid'));
+    }
+    this.#projectExecuted.add(plan);
+    const promise = this.dependencies.executeProjectTask(plan).finally(() => {
+      if (this.#projectTaskInflight?.promise === promise) this.#projectTaskInflight = undefined;
+    });
+    this.#projectTaskInflight = { plan, promise };
+    return promise;
   }
 
   push(route: TuiRoute, context?: TuiPageContext): void {
@@ -5060,6 +5152,19 @@ export class TuiController {
             summary: pluginSummary,
           });
         }
+        const concurrentScopeConflict = ticket.intent.kind === 'pluginWrite'
+          && ticket.intent.action === 'install'
+          && unsuccessfulTargets.length === pluginSummary.targets?.length
+          && unsuccessfulTargets.every((target) => target.errorCode === 'codexExtensionScopeConflict');
+        if (concurrentScopeConflict) {
+          return this.#setBlocked(operationId, 'codexExtensionScopeConflict', {
+            intent: ticket.intent,
+            navigation: 'result',
+            returnRoute: ticket.returnRoute,
+            summary: pluginSummary,
+            writeMayHaveCompleted: false,
+          });
+        }
         const dependencyStillRequired = unsuccessfulTargets.length > 0
           && unsuccessfulTargets.every((target) => target.errorCode === 'dependencyStillRequired');
         return this.#setBlocked(operationId, dependencyStillRequired ? 'dependencyStillRequired' : 'operationFailed', {
@@ -5077,7 +5182,11 @@ export class TuiController {
         });
       }
       const originIssue = ticket.intent.kind === 'pluginWrite' ? ticket.intent.originIssue : undefined;
+      const projectRemovalKeepsDemand = ticket.intent.kind === 'pluginWrite'
+        && ticket.intent.action === 'uninstall' && ticket.intent.scope === 'project'
+        && pluginSummary?.code === 'operationSucceeded';
       if (originIssue && !dependencyPartial
+        && !projectRemovalKeepsDemand
         && this.#viewModel?.issues.some((issue) => originIssueRemains(issue, originIssue))) {
         return this.#setBlocked(operationId, 'issueStillPresent', {
           intent: ticket.intent,

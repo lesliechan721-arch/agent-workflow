@@ -24,7 +24,7 @@ Codex 和 Claude Code 都有自己的原生 Skill、命令和插件能力。Agen
 | --- | --- |
 | 跨平台目录 | 同一插件源码面向 Codex 和 Claude Code，安装时保留各平台原生 invocation metadata |
 | 统一管理 | 使用一个 `aw` CLI 完成发现、安装、刷新同步、配置、状态检查、清理和重建 |
-| 两种安装范围 | User scope 适合个人跨项目复用；Project scope 适合把受管能力随仓库共享 |
+| 两种安装范围 | User scope 适合个人跨项目复用；Project v3 在仓库声明插件需求，每台机器单独选择要恢复的 Agent |
 | 安全 ownership | 只更新或清理能够证明属于 AW 的组件，避免把平台目录中的其它内容误当作插件状态 |
 | 动态原生产物 | 插件可以按平台和配置物化 Skill、Agent role、instructions、hooks 等平台能力 |
 | 可选 Portable Skill 层 | 插件可在完整 native plugin closure 之外显式声明 Agent Skills 分发；该层是增量能力，不把原生 Skill 自动转换为 portable source |
@@ -161,9 +161,15 @@ aw uninstall git-toolkit -p both
 # 已从健康 Active Catalog 删除的插件：确认整体清理安装、设置和记录
 aw cleanup <source>/<plugin> --platform both --scope user --yes
 
-# 按已有 Codex desired intent 修复实际状态
-aw sync official/git-toolkit -p codex -s project
-aw sync --all -p codex -s project
+# 在项目中声明插件，本机选择 Agent，然后恢复全部项目需求
+aw project add official/git-toolkit
+aw project targets set codex
+aw project status --json
+aw sync --all -s project
+# 只在本次恢复中使用 Cursor，不保存为本机偏好
+aw sync --all -s project --target cursor
+# 声明编辑不自动删除已有输出
+aw project remove official/git-toolkit
 
 # 查看现场状态
 aw status
@@ -173,7 +179,7 @@ aw status git --verbose
 aw review inspect . --json
 aw review inspect ./plugins/decision-kit --json
 
-# 项目级安装
+# 声明项目需求并尝试恢复；恢复失败时已提交的需求仍保留
 aw install decision-kit -p codex -s project
 
 # 先导出并检查一个声明了 Portable 能力的合成本地 Catalog 插件
@@ -182,20 +188,20 @@ aw skill materialize <source>/<plugin> --scope project --out ./.aw-review/<plugi
 # Review 完整依赖闭包后，通过 PATH 中的兼容 Skills CLI 安装
 aw skill install <source>/<plugin> --scope project
 
-# 取消所选 root intent，并尽力清理 AW 管理的现场组件
+# 清理可证明归属的本地输出，保留普通项目需求与配置
 aw cleanup git -p codex -s project
 aw reinstall git -p codex -s user
 ```
 
 普通 `cleanup` 会读取本地 Active，识别已从 Catalog 删除的插件。确认后，整体清理 Codex、Claude、用户与当前项目的安装、激活、AW 设置、意图和插件专属投影；显式 platform/scope 也不缩小这个整体范围。TTY 展示范围后确认，JSON 和非交互模式须传 `--yes`。共享原生包会移除，其他项目可能因此无法继续使用，但 AW 不扫描或改写其他项目。原生卸载或其他删除失败会报告未完成，并保留重试入口。详情见[清理设计](docs/design/removed-plugin-cleanup.md)。
 
-未确认删除的插件及 `cleanup --force` 沿用离线恢复：在现有 `AW_HOME` mutation lock 内先原子取消所选 source/plugin、platform 和 scope 的 root intent，再尽力清理输出。Intent 写入失败时不会删除输出；未发现输出本身不是 inventory 失败，输出不存在、无法发现或无法安全删除时不回滚已取消的 Intent。只有 Intent 被取消也可成功；无法安全删除的输出返回 partial。两者保留其它 root intent、插件配置、`dependencyScopeOverrides`、foreign 内容和 shared/native payload。`uninstall` 和 `reinstall` 也不会删除 AW 保存的插件配置；这些操作保留的配置可由 `aw config reset` 删除。
+未确认删除的插件及 `cleanup --force` 沿用离线恢复：User v2 操作按所选平台取消用户需求；普通 Project v3 cleanup、force cleanup 与 uninstall 保留共享需求和配置，只处理明确目标及可证明归属的现场。来源或 Active 不可用时仍可用已有精确证据清理，不猜测路径，不删除 foreign 或 shared 内容。`project remove` 只编辑项目声明，不自动清理输出；如需删除保存的配置，可显式使用 `aw config reset`。已删除插件的整体清理是前述例外。
 
 `aw review inspect` 读取源码、已有 snapshot 和显式提供的物化来源 receipt，不执行被审插件代码。缺少当前物化产物时仍返回源码事实和证据缺口；该命令不作质量评价或发布决定。Eval prepare 和 Skill materialize 返回的 `sourceBindingPath` 可通过 `--materialization <receipt>` 交给检查命令，旧产物缺少该证据时重新准备即可。
 
 project 配置按 Catalog logical identity 共享，不绑定 Git URL、SSH/HTTPS transport 或本地 path。若 Git 无法验证配置路径可提交，命令仍写入并返回 `projectConfigShareabilityUnverified`；若路径明确被 ignore，则以 `projectConfigIgnored` 停止且不修改配置。`aw config reset` 不受该检查阻止。
 
-普通 install、reinstall、uninstall、status、config、TUI 初始 load 和 Portable 操作只读取本地 Active Catalog snapshot。显式 `sync --refresh` 和 TUI“刷新并同步”会先刷新相关来源，再基于新的 Active 建立 Review；刷新失败、候选影响未知或需要确认且旧 Active 可用时，会输出 warning 并继续使用旧 Active。没有 Active 时，CLI 提示 `aw catalog source sync <id>`。Active store 损坏时，Git source 先按 Active 的精确 commit 修复旧 store key；CLI 修复后继续检查当前候选，TUI 修复成功后停止并重新显示当前更新。精确旧版本无法取得，或 Path 当前内容不是旧 key 时，CLI 只接受 `aw catalog source sync <id> --replace-damaged --yes`，TUI 使用独立的“使用当前候选替换损坏的 Active” Review。`catalog-sources.json` 损坏时，TUI 可经 Review 备份原文件并恢复官方默认来源；它不删除 Catalog state 或 store。TUI 初始页面不等待网络；进入 ready 后，每个 session 只对开启自动检查的来源检查一次 freshness，并优先检查主来源。关闭后只能在来源详情手动检查。自动检查和“重新检查”先轻量检查健康 Git Active 的远端 ref；commit 未变时不 fetch，固定 commit 不联网；“完整验证”强制完整 resolve。没有 Active、Active 损坏和恢复动作仍完整验证，Path source 也完整验证本地候选。检查只更新当前 TUI 的提示，不修改 Status v8 或 Active，也不会自动激活候选。完整背景 candidate 只可在绑定相同 session token、source config fingerprint 和 Active store key 时复用于普通 Review preparation；Execute 仍重新 resolve。候选缺少当前 AW capability 时显示 missing IDs，旧 Active 保持可用，普通 update 不出现。网络检查失败时，旧 Active 保持可用，用户仍可浏览。Git 完整 resolve 默认 timeout 是 180000 ms；ref probe 最多 30000 ms；`AW_CATALOG_REMOTE_TIMEOUT_MS` 接受 `0` 或 `100..300000`，其中 `0` 表示无 deadline。Catalog 更新在影响现有引用或影响未知时需要 `--yes` 或 TUI 明确确认；成功切换 Active 后，已安装插件不会自动升级，TUI 只重新计算可用的插件升级。普通 `cleanup` 的已删除插件分类只读本地 Active；来源或 Active 不可用时，仍凭 live ownership 或离线 evidence 清理 AW-owned 输出，不扩大到整体清理；`cleanup --force` 可把当前 Active 中所选 plugin bundle 的 shallow evidence 作为可选补充。source、Active 或 Catalog store 缺失或损坏不能永久阻止 Intent 取消，或阻止已有充分 live evidence 的清理；两者仍保留 foreign、shared 和 native payload，且不能猜测输出路径。CLI 的 `catalog source add` 和 `update` 只改 config；`add --primary` 在主来源切换有引用或 inventory 不完整时需要 `--yes`，移除有引用或引用清单不完整的 source 也需要 `--yes`。TUI add/update 先汇总完整草稿，再明确选择只保存配置或保存并启用已确认候选。`sync --check` fetch 并验证但不写 store 或 Active，并在 JSON receipt 中返回脱敏的影响证据；普通 sync 原子写 store 后切换 Active，失败时保留原 Active。Git 普通更新只接受更高版本；同版本不同 digest 和版本回退会停止。明确修改 URL、path、subdir 或 ref 后的 sync 可经确认切换。Path source 允许内容变化。
+普通 install、reinstall、uninstall、status、config、TUI 初始 load 和 Portable 操作只读取本地 Active Catalog snapshot。显式 `sync --refresh` 和 TUI“刷新并同步”会先刷新相关来源，再基于新的 Active 建立 Review。Project v3 恢复中，某来源刷新失败即使旧 Active 仍健康，该来源的请求也保留 blocker 且不执行；其它已授权且独立的来源可以继续。User v2 原生流程仍沿用旧 Active 可用时的既有 warning/fallback 合同。没有 Active 时，CLI 提示 `aw catalog source sync <id>`。Active store 损坏时，Git source 先按 Active 的精确 commit 修复旧 store key；CLI 修复后继续检查当前候选，TUI 修复成功后停止并重新显示当前更新。精确旧版本无法取得，或 Path 当前内容不是旧 key 时，CLI 只接受 `aw catalog source sync <id> --replace-damaged --yes`，TUI 使用独立的“使用当前候选替换损坏的 Active” Review。`catalog-sources.json` 损坏时，TUI 可经 Review 备份原文件并恢复官方默认来源；它不删除 Catalog state 或 store。TUI 初始页面不等待网络；进入 ready 后，每个 session 只对开启自动检查的来源检查一次 freshness，并优先检查主来源。关闭后只能在来源详情手动检查。自动检查和“重新检查”先轻量检查健康 Git Active 的远端 ref；commit 未变时不 fetch，固定 commit 不联网；“完整验证”强制完整 resolve。没有 Active、Active 损坏和恢复动作仍完整验证，Path source 也完整验证本地候选。检查只更新当前 TUI 的提示，不修改 Status v8 或 Active，也不会自动激活候选。完整背景 candidate 只可在绑定相同 session token、source config fingerprint 和 Active store key 时复用于普通 Review preparation；Execute 仍重新 resolve。候选缺少当前 AW capability 时显示 missing IDs，旧 Active 保持可用，普通 update 不出现。网络检查失败时，旧 Active 保持可用，用户仍可浏览。Git 完整 resolve 默认 timeout 是 180000 ms；ref probe 最多 30000 ms；`AW_CATALOG_REMOTE_TIMEOUT_MS` 接受 `0` 或 `100..300000`，其中 `0` 表示无 deadline。Catalog 更新在影响现有引用或影响未知时需要 `--yes` 或 TUI 明确确认；成功切换 Active 后，已安装插件不会自动升级，TUI 只重新计算可用的插件升级。普通 `cleanup` 的已删除插件分类只读本地 Active；来源或 Active 不可用时，仍凭 live ownership 或离线 evidence 清理 AW-owned 输出，不扩大到整体清理；`cleanup --force` 可把当前 Active 中所选 plugin bundle 的 shallow evidence 作为可选补充。source、Active 或 Catalog store 缺失或损坏不能永久阻止 User v2 需求取消，或阻止已有充分 live evidence 的清理；两者仍保留 foreign、shared 和 native payload，且不能猜测输出路径。CLI 的 `catalog source add` 和 `update` 只改 config；`add --primary` 在主来源切换有引用或 inventory 不完整时需要 `--yes`，移除有引用或引用清单不完整的 source 也需要 `--yes`。TUI add/update 先汇总完整草稿，再明确选择只保存配置或保存并启用已确认候选。`sync --check` fetch 并验证但不写 store 或 Active，并在 JSON receipt 中返回脱敏的影响证据；普通 sync 原子写 store 后切换 Active，失败时保留原 Active。Git 普通更新只接受更高版本；同版本不同 digest 和版本回退会停止。明确修改 URL、path、subdir 或 ref 后的 sync 可经确认切换。Path source 允许内容变化。
 
 `aw catalog store status [--json]` 只读检查 immutable store。`aw catalog store prune` 默认是 dry-run；只有 `--yes` 才删除，且 `--dry-run` 与 `--yes` 互斥。只有仍在 source config 中的 source 所引用的 Active pointer 受保护；已删除 source 的 pointer 是 orphan，并按普通 inactive entry 的 30 天 retention 处理。若同一 store key 也被其它已配置 source 的 Active 使用，则 active 优先且继续受保护。健康的非 Active 正式 entry 只有超过 30 天才可回收；`.staging-*` 和 `.replacement-*` 超过 24 小时才可回收；`.quarantine-*` 还要求对应正式 entry 存在并通过完整验证。损坏、未知、unsafe、符号链接和 foreign node 都保留。实际 prune 在 AW_HOME mutation lock 内重新读取 state 和 store；state 损坏时零删除。单项删除失败不阻止其它安全项，并返回 partial receipt。这里没有自动 GC；误删的弱 snapshot 通过 source sync 重建，受保护的 Active、foreign 内容和无法证明安全的 residue 不由 prune 删除。
 
@@ -209,28 +215,24 @@ project 配置按 Catalog logical identity 共享，不绑定 Git URL、SSH/HTTP
 
 Codex native plugin 的基础最低版本是 `0.145.0`；任何 project activation 操作要求 `0.151.0`。AW-managed runtime 固定为已 qualification 的 `0.151.0`。PATH 中没有 system CLI 且操作只需修改 project activation 时，AW 不下载 manager。此时 AW 未观察到 system loader 或 Codex App，只把 project activation support 标为 `assumed`。
 
-AW 把 desired intent 保存为严格的 schema 2 JSON：user scope 位于 `<AW_HOME>/plugin-intents.json`，project scope 位于仓库根的 `.agent-workflows/plugin-intents.json`。project intent 可以提交到 Git，并在多台机器共享。
+AW 分开保存 User v2 与 Project v3。User 文件仍位于 `<AW_HOME>/plugin-intents.json`，保存平台和依赖 placement。项目共享声明位于仓库根的 `.agent-workflows/plugin-intents.json`，只保存 source-qualified 插件需求及 Catalog logical identity 来源绑定：
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "kind": "aw-plugin-intents",
-  "roots": [{ "pluginId": "source/plugin", "platforms": ["codex"] }],
-  "dependencyScopeOverrides": [
-    { "pluginId": "source/dependency", "platform": "codex", "scope": "user" }
-  ]
+  "sources": { "official": { "logicalIdentity": "<Catalog logical identity>" } },
+  "roots": [{ "pluginId": "official/decision-kit" }]
 }
 ```
 
-Project root 的依赖可以使用默认 project placement，或在 install 时用可重复的 `--dependency-scope source/plugin[#platform]=user|project` 覆盖；`#platform` 可以是 `#codex` 或 `#claude`，省略时同时覆盖两个平台。User root 的依赖固定为 user scope，不能降到 project scope。
+本机 Agent 选择和项目 dependency scope override 保存在 `<AW_HOME>/project-preferences/<project-key>.json`。`aw project targets set codex claude-code cursor` 只保存本机目标，不同步或删除旧目标；恢复的 `--target` 是一次性选择，`-p` 是旧平台别名，两者互斥。没有本机目标且声明有 root 时，项目恢复提示先设置目标。项目仅支持 Project v3，不兼容 Project v2；User v2 保持原格式。
 
-未进入已删除插件整体清理的 cleanup 只取消明确选择 root 的相应平台；它不删除 `dependencyScopeOverrides`，也不阻止另一个 root 在之后将同一插件再次作为 dependency 安装。内部“所有目标”选择只合并当前 scope/platform 的 Intent 与 live ownership。
-
-支持 `--all` 的命令中，插件 selector 与 `--all` 互斥；TTY 中两者都省略时会显示多选。JSON 或非交互模式必须提供至少一个 selector 或 `--all`。新 clone 在 Catalog Active snapshot 可用后，可运行 `aw sync --all -p both -s project` 恢复当前 project intent 的所有目标。
+`aw project add <source/plugin>` 用本地 Active 验证并增加需求；`aw project remove <source/plugin>` 只需有效声明，离线删除精确需求，不自动清理已安装输出。普通项目 sync、reinstall、uninstall 和 cleanup 保留共享需求和配置。`aw install ... -s project` 会先声明再尝试恢复；恢复失败时需求仍保留。新 clone 配置来源、取得 Active 并选择本机 Agent 后，可运行 `aw sync --all -s project` 恢复全部项目需求。Native 适用时优先使用 Native；没有适用 Native 时，只有插件明确提供并通过 provider 资格检查的 Portable 才用于项目恢复。工具或安装失败不会使 Native 自动切到 Portable。
 
 Codex static Skill、MCP、Hook 和 App 只存在于一份 user-level shared native package。project scope 只写项目 activation，以及插件明确声明的 AW-only 动态 Skill、instruction、permission 和 agent 输出；它不把 native payload 复制到仓库。健康且版本精确的 shared native 是零写入。需要替换、repair 或 reinstall shared native 时，Review 会警告它可能影响其它项目；直接 CLI 必须传 `--yes`，TUI 必须在 Review 中确认。
 
-公开状态合同是 Status v8，写操作 receipt 是 v6。Codex 状态分别报告共享内容和 user/project placements；顶层没有代表安装位置的 scope。没有使用意图、没有启用且无扩展残留时，即使共享内容仍存在，也显示正常未启用，不要求补装依赖或清理。Status 严格只读，不创建 intent、AW_HOME 或平台目录，也不修改 trust 或 activation。Codex shared-native ownership 模型不维护 project claim path 或 refcount ledger，也不通过全局项目扫描执行 auto-GC。project uninstall 不删除仍共享的 native package，foreign 内容始终保留。pure-native user/project activation 可以重叠；含 AW-only extension 的 mixed overlap 会报告 conflict，并要求先卸载不保留的 root intent，再 sync。
+公开状态合同是 Status v8，Native 写操作 receipt 是 v6；项目恢复另有 Project Status v1 与 Project Recovery Receipt v1。`aw project status --json` 的 `ok` 表示检查成功，`allSatisfied` 才表示需求是否全部满足。Codex 状态分别报告共享内容和 user/project placements；顶层没有代表安装位置的 scope。没有使用意图、没有启用且无扩展残留时，即使共享内容仍存在，也显示正常未启用，不要求补装依赖或清理。Status 严格只读，不创建 intent、AW_HOME 或平台目录，也不修改 trust 或 activation。Codex shared-native ownership 模型不维护 project claim path 或 refcount ledger，也不通过全局项目扫描执行 auto-GC。project uninstall 不删除仍共享的 native package，foreign 内容始终保留。pure-native user/project activation 可以重叠；含 AW-only extension 的 mixed overlap 会报告 conflict，并要求先明确处理冲突的现场，再 sync。
 
 TUI 安装流程依次选择 root scope、目标平台，并只在存在可配置依赖时编辑 dependency placement；随后进入 `ReviewPreparing`、Review 和写入 Progress。普通 `ReviewPreparing` 只读；显式“刷新并同步”会在建立 Review 前更新相关来源的可重建 Active 弱状态。Windows native 行为必须在 Windows 上运行 qualification 才能形成证据；macOS 的成功报告不能替代 Windows 证据。
 
@@ -239,6 +241,10 @@ TUI 首页提供插件、需要处理和插件来源三个入口。插件库统�
 Portable 命令必须显式传 `--scope project|user`。`aw skill install` 使用 PATH 中 `skills >=1.5.23 <2.0.0`：project scope 使用当前项目根，user scope 使用 Skills CLI 的 global 模式。Agent 默认使用 Skills CLI 的自动选择；命令行可传 `--agent <id...>`，TUI 也可改为显式 Agent。`--skill` 只筛选最终安装项；验证仍覆盖完整 plugin dependency closure。外部安装允许部分成功，不做补偿回滚；失败后可重跑命令，或按 receipt 提示使用外部 `skills remove`。
 
 `aw skill materialize` 先在临时目录验证完整候选，再写 schema 1 `.aw-materialization.json` ownership marker。它只替换 marker 中 plugin ID、source identity 和 scope 都与本次输出相同的 AW 目标；foreign、符号链接或身份不匹配目标会停止操作。TUI 从插件详情进入 Portable 流程，依次选择 Skill、Agent 和 scope，再显示 Review。详情页的 P13 只表示插件声明了该能力，安装状态仍是未知；AW 不维护 Portable installed state 或 Agent registry。
+
+资格边界：Darwin arm64 上精确 Codex CLI `0.151.0` 的项目 Native 真实资格 9/9 通过；Claude Code `2.1.119` 尚无实际 Skill 加载证据，Cursor 缺少可运行 binary，两者的真实消费者资格未验证。provider 的文件复制与清单结果不能代替 Agent 加载证明。
+
+Project v3 的 Portable 恢复固定使用经资格检查的 `skills@1.5.23` copy 模式。该版本会过滤任意层级的 `metadata.json` 文件和 `.git`、`__pycache__`、`__pypackages__` 目录；候选含这些内容时，AW 在写入前返回 `portableProviderContentUnsupported`。独立的合规插件可继续。Codex 和 Cursor 共用 `.agents/skills` 输出目录；Review 会显示共享影响。Portable 自动卸载和 prune 尚无已验证合同，已有残留需按回执检查和处理。
 
 ## 配置 `codex-enhance`
 
@@ -254,7 +260,7 @@ aw config set codex-enhance subagentMinimumInitialWaitMinutes -s user --value-js
 ## 安装范围
 
 - **User scope**：为当前用户安装，适合跨项目复用。
-- **Project scope**：把 desired intent 和项目 activation 写入当前仓库，适合团队共享；Claude 和 AW-only extension 仍按各自平台合同写项目输出。
+- **Project scope**：仓库共享无平台的插件需求；本机选择 Agent 后，AW 按适用 Native 或 Portable 交付恢复。Codex activation、Claude 输出和 AW-only extension 仍按各自平台合同写入。
 
 Codex project scope 不复制 static Skill、MCP、Hook、App 或其它 native plugin payload。它只在 `.codex/config.toml` 写 activation，并按需在 `.agents/skills`、`.codex/config.toml`、`.codex/rules/` 和 `.codex/agents/` 写 AW-only 动态或配置派生产物。AW owner marker 限定后续清理范围。
 

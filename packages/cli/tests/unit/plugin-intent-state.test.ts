@@ -51,7 +51,7 @@ async function projectFixture(name: string): Promise<string> {
 }
 
 describe('plugin intent state v2', () => {
-  it('strictly parses one user/project schema and rejects installed-ledger fields', () => {
+  it('strictly parses the user schema and rejects installed-ledger fields', () => {
     expect(parsePluginIntentState(state())).toEqual(state());
     for (const invalid of [
       { ...state(), schemaVersion: 1 },
@@ -124,23 +124,19 @@ describe('plugin intent state v2', () => {
     }).roots).toEqual([{ pluginId: 'official/demo', platforms: ['claude'] }]);
   });
 
-  it('uses fixed user/project paths and does not create a missing state on read', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const cwd = await projectFixture('intent-paths');
-    expect(resolvePluginIntentStatePath({ scope: 'user', cwd, env: isolation.env }))
-      .toBe(path.join(isolation.layout.awHomeDir, 'plugin-intents.json'));
-    expect(resolvePluginIntentStatePath({ scope: 'project', cwd, env: isolation.env }))
-      .toBe(path.join(cwd, '.agent-workflows', 'plugin-intents.json'));
-    await expect(readPluginIntentState({ scope: 'project', cwd, env: isolation.env }))
-      .resolves.toEqual(createEmptyPluginIntentState());
-    await expect(fs.pathExists(path.join(cwd, '.agent-workflows'))).resolves.toBe(false);
+  it('rejects project reads and writes through the User v2 API', async () => {
+    const location = { scope: 'project' as const, cwd: await projectFixture('intent-scope'),
+      env: getCurrentSourceTestIsolation().env };
+    await expect(readPluginIntentState(location)).rejects.toThrow('Project declarations require schemaVersion 3');
+    await expect(writePluginIntentState(location, state())).rejects.toThrow('Project declarations require schemaVersion 3');
+    expect(await fs.pathExists(resolvePluginIntentStatePath(location))).toBe(false);
   });
 
   it('distinguishes absent, valid empty, invalid JSON/schema, unsafe path, and unavailable reads', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = await projectFixture('intent-observation');
-    const location = { scope: 'project' as const, cwd, env: isolation.env };
-    const directory = path.join(cwd, '.agent-workflows');
+    const location = { scope: 'user' as const, cwd, env: isolation.env };
+    const directory = isolation.layout.awHomeDir;
     const filePath = path.join(directory, 'plugin-intents.json');
 
     await expect(observePluginIntentState(location)).resolves.toEqual({ state: 'absent' });
@@ -209,44 +205,6 @@ describe('plugin intent state v2', () => {
         ]),
       },
     });
-  });
-
-  it('writes both scopes atomically and applies the project shared visibility gate', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const cwd = await projectFixture('intent-write');
-    const expected = state();
-    await writePluginIntentState({ scope: 'user', cwd, env: isolation.env }, expected);
-    await writePluginIntentState({ scope: 'project', cwd, env: isolation.env }, expected);
-    await expect(readPluginIntentState({ scope: 'user', cwd, env: isolation.env }))
-      .resolves.toEqual(expected);
-    await expect(readPluginIntentState({ scope: 'project', cwd, env: isolation.env }))
-      .resolves.toEqual(expected);
-
-    const ignored = await projectFixture('intent-ignored');
-    await fs.outputFile(
-      path.join(ignored, '.gitignore'),
-      '.agent-workflows/\n',
-    );
-    await fs.ensureDir(path.join(ignored, '.agent-workflows'));
-    const ignoredTarget = path.join(ignored, '.agent-workflows', 'plugin-intents.json');
-    await expect(writePluginIntentState({
-      scope: 'project', cwd: ignored, env: isolation.env,
-    }, expected)).rejects.toThrow('被 ignore');
-    await expect(fs.pathExists(ignoredTarget)).resolves.toBe(false);
-  });
-
-  it('rejects symbolic-link path components for reads and writes', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const cwd = await projectFixture('intent-symlink');
-    const outside = path.join(isolation.layout.fixtureCwd, 'intent-outside');
-    await fs.ensureDir(outside);
-    await fs.symlink(outside, path.join(cwd, '.agent-workflows'), 'dir');
-
-    await expect(readPluginIntentState({ scope: 'project', cwd, env: isolation.env }))
-      .rejects.toThrow('符号链接');
-    await expect(writePluginIntentState({
-      scope: 'project', cwd, env: isolation.env,
-    }, state())).rejects.toThrow('符号链接');
   });
 
   it('rejects a user intent root that is a symlink or non-directory', async () => {
