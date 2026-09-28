@@ -708,16 +708,20 @@ describe('plugin detail readable structured facts', () => {
 });
 
 
-it.each(SIZES)('explains absent project declarations without scheduling writes at $columns x $rows', async (size) => {
+it.each(SIZES)('offers the personal inventory when there is no project at $columns x $rows', async (size) => {
   const data = loadResult();
   data.projectIntent = { state: 'absent' };
   const executeIntent = vi.fn();
   const value = controller({ loadStatus: vi.fn().mockResolvedValue(data), executeIntent });
   const instance = render(<ConsoleAppV4 controller={value} size={size} />);
   await nextTurn(3);
-  expect(frame(instance, size)).toContain('当前不是项目');
+  expect(frame(instance, size)).toContain('插件清单');
+  await input(instance, '\u001b[B');
   await input(instance, '\r');
-  expect(value.snapshot.router.current.route.name).toBe('pluginList');
+  expect(value.snapshot.router.current.route.name).toBe('intentScopes');
+  expect(frame(instance, size)).toContain('当前没有项目；个人清单仍可使用');
+  await input(instance, '\r');
+  expect(value.snapshot.router.current.route).toEqual({ name: 'intentInventory', scope: 'user' });
   expect(executeIntent).not.toHaveBeenCalled();
   value.dispose();
 });

@@ -1,4 +1,5 @@
-import { readProjectReferencedPluginIds } from '../project/project-demand.js';
+import { readIntentReferences } from '../recovery/demand.js';
+import { resolveIntentPath } from '../intent/intent-store.js';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
 
@@ -25,10 +26,6 @@ import {
 } from './ownership.js';
 import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
 import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
-import {
-  readPluginIntentState,
-  resolvePluginIntentStatePath,
-} from './plugin-intent-state.js';
 import type { PlatformName, Scope } from '../types.js';
 
 export type CatalogSourceReferenceKind =
@@ -380,6 +377,7 @@ async function inventoryPluginConfigRoots(options: {
   errors: CatalogSourceInventoryError[];
   env: NodeJS.ProcessEnv;
   cwd: string;
+  scope?: Scope;
 }): Promise<Array<{
   root: string;
   scope: 'user' | 'project';
@@ -418,6 +416,7 @@ async function inventoryPluginConfigRoots(options: {
     if (userRoot) roots.push({ root: userRoot, scope: 'user' });
   }
 
+  if (options.scope === 'user') return roots;
   const rawRepoRoot = resolveRepoRootSync(options.cwd);
   const repoRoot = await inventoryRead({
     operation: () => fs.realpath(rawRepoRoot),
@@ -452,6 +451,8 @@ async function inventoryPluginConfigRoots(options: {
 export async function inventoryLegacyOwnerReferences(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  scope?: Scope;
+  includeProjectAgentSkills?: boolean;
 }): Promise<CatalogSourceReferenceInventory> {
   const env = options.env ?? process.env;
   const awHome = resolveAwHome(env);
@@ -461,7 +462,11 @@ export async function inventoryLegacyOwnerReferences(options: {
   const skillRoots = new Set([
     path.join(getCodexHome(env), 'skills'),
     path.join(getClaudeHome(env), 'skills'),
-    path.join(repoRoot, '.claude', 'skills'),
+    ...(options.scope !== 'user' && (options.includeProjectAgentSkills ?? options.scope === undefined)
+      ? [path.join(repoRoot, '.agents', 'skills')] : []),
+    ...(options.scope === 'user' ? [] : [
+      path.join(repoRoot, '.claude', 'skills'),
+    ]),
   ]);
   const legacyPluginsRoot = path.join(awHome, 'plugins');
   const legacyPlugins = await inventoryRead({
@@ -525,11 +530,13 @@ export async function inventoryLegacyOwnerReferences(options: {
 export async function inventoryLegacyConfigReferences(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  scope?: Scope;
 }): Promise<CatalogSourceReferenceInventory> {
   const env = options.env ?? process.env;
   const references: CatalogSourceReference[] = [];
   const errors: CatalogSourceInventoryError[] = [];
-  for (const configRoot of await inventoryPluginConfigRoots({ errors, env, cwd: options.cwd })) {
+  for (const configRoot of await inventoryPluginConfigRoots({ errors, env, cwd: options.cwd,
+    scope: options.scope })) {
     const directory = configRoot.root;
     const entries = await inventoryRead({
       operation: () => fs.readdir(directory, { withFileTypes: true }),
@@ -1174,6 +1181,8 @@ function registeredMarketplaceRoots(
 export async function inventoryCatalogSourceReferences(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  scope?: Scope;
+  includeProjectAgentSkills?: boolean;
   includePlatformHistoricalProjects?: boolean;
 }): Promise<CatalogSourceReferenceInventory> {
   const env = options.env ?? process.env;
@@ -1192,13 +1201,17 @@ export async function inventoryCatalogSourceReferences(options: {
   const legacyConfig = await inventoryLegacyConfigReferences(options);
   references.push(...legacyConfig.references);
   errors.push(...legacyConfig.errors);
-  for (const scope of ['user', 'project'] as const) {
-    const location = resolvePluginIntentStatePath({ scope, cwd: options.cwd, env });
+  for (const scope of options.scope === 'user' ? ['user'] as const : ['user', 'project'] as const) {
+    let location: string;
+    try { location = await resolveIntentPath({ scope, cwd: options.cwd, env }); }
+    catch (error) {
+      if (scope === 'project' && error instanceof Error && error.message.startsWith('projectRootUnavailable')) continue;
+      throw error;
+    }
     const state = await inventoryRead({
       operation: async () => {
-        if (scope === 'user') return readPluginIntentState({ scope, cwd: options.cwd, env });
-        const ids = await readProjectReferencedPluginIds({ cwd: options.cwd, env });
-        return { roots: ids.map((pluginId) => ({ pluginId })), dependencyScopeOverrides: [] };
+        const ids = await readIntentReferences({ scope, cwd: options.cwd, env });
+        return { roots: ids.map((pluginId) => ({ pluginId })) };
       },
       absent: null,
       errors,
@@ -1208,10 +1221,7 @@ export async function inventoryCatalogSourceReferences(options: {
       cwd: options.cwd,
     });
     if (!state) continue;
-    for (const pluginId of new Set([
-      ...state.roots.map((root) => root.pluginId),
-      ...state.dependencyScopeOverrides.map((override) => override.pluginId),
-    ])) {
+    for (const pluginId of new Set(state.roots.map((root) => root.pluginId))) {
       const separator = pluginId.indexOf('/');
       if (separator <= 0 || separator === pluginId.length - 1) continue;
       references.push({
@@ -1223,7 +1233,8 @@ export async function inventoryCatalogSourceReferences(options: {
       });
     }
   }
-  for (const configInventory of await inventoryPluginConfigRoots({ errors, env, cwd: options.cwd })) {
+  for (const configInventory of await inventoryPluginConfigRoots({ errors, env, cwd: options.cwd,
+    scope: options.scope })) {
     const configRoot = configInventory.root;
     const sourceEntries = await inventoryRead({
       operation: () => fs.readdir(configRoot, { withFileTypes: true }),
@@ -1533,7 +1544,8 @@ export async function inventoryCatalogSourceReferences(options: {
     reference.projectKey ?? '',
   ].join('\0'), reference])).values()];
   unique.sort((left, right) => left.location.localeCompare(right.location));
-  return { inventorySchemaVersion: 1, references: unique, errors };
+  return { inventorySchemaVersion: 1, references: options.scope === 'user'
+    ? unique.filter((reference) => reference.scope !== 'project') : unique, errors };
 }
 
 export class LegacyCatalogStateUnsupportedError extends Error {

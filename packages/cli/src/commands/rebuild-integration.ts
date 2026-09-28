@@ -232,7 +232,6 @@ export interface RebuildIntegration {
     readOnlyInspectionPlan?: boolean;
     readOnlyShallowInspectionPlan?: boolean;
     includeNativeCleanupCandidate?: boolean;
-    removedPluginWhole?: boolean;
     codexActivationCleanup?: Array<{
       codexPluginId: string;
       scope: Scope;
@@ -4925,7 +4924,10 @@ function createNativeDriver(options: {
           `externalOwnershipPresent: Codex marketplace ${marketplaceName} has a foreign source instead of its canonical namespaced root.`,
         );
       }
-      if (target.nativeOverlayDesired) {
+      if (target.nativeOverlayDesired
+        && options.targets.some((candidate) =>
+          nativeGroupKey(candidate) === nativeGroupKey(target)
+          && (candidate.writeNativeRequired ?? candidate.requiresNative))) {
         await prepareCodexNativeRenderCached({
           context: options.context,
           plugin: target.plugin,
@@ -5536,12 +5538,9 @@ export function createRebuildIntegration(options: {
         || input.command === 'reinstall'
         || !codexNativeExact
       );
-      const nativeCleanupCandidate = input.platform === 'claude'
-        ? input.includeNativeCleanupCandidate !== false
-        : input.platform === 'codex'
-          && (nativeRequired || (input.removedPluginWhole === true
-            && input.includeNativeCleanupCandidate === true))
-          && (input.command === 'cleanup' || input.command === 'uninstall');
+      const nativeCleanupCandidate = input.includeNativeCleanupCandidate !== false
+        && (input.command === 'cleanup' || input.command === 'uninstall')
+        && (input.platform === 'claude' || (input.platform === 'codex' && nativeRequired));
       const nativePlugin = (nativeDesired || nativeCleanupCandidate)
         ? [{
             kind: 'native-plugin' as const,

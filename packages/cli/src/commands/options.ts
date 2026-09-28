@@ -7,7 +7,6 @@ import type {
   StatusCommandOptions,
 } from '../types.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
-import { normalizeProjectAgents, type ProjectAgentId } from '../project/project-preferences.js';
 
 export interface NormalizeCommandOptionsDefaults {
   cwd?: string;
@@ -94,22 +93,6 @@ export function parsePlatformValue(platform: unknown): PlatformSelection {
   throw new Error(
     `Unsupported platform "${renderUnsupportedValue(platform)}". Expected one of: codex, claude, both.`,
   );
-}
-
-export function normalizeProjectRecoveryTargets(raw: {
-  platform?: string;
-  targets?: readonly string[];
-}): { targets?: ProjectAgentId[] } {
-  if (raw.platform !== undefined && raw.targets?.length) {
-    throw new Error('--target and -p are mutually exclusive.');
-  }
-  const platform = raw.platform === undefined ? undefined : parsePlatformValue(raw.platform);
-  return {
-    ...(platform ? { targets: platform === 'both'
-      ? ['codex', 'claude-code'] as ProjectAgentId[]
-      : [platform === 'claude' ? 'claude-code' : 'codex'] as ProjectAgentId[] }
-      : raw.targets?.length ? { targets: normalizeProjectAgents(raw.targets) } : {}),
-  };
 }
 
 export function parseDependencyScopeOverrides(

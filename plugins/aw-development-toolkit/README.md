@@ -3,10 +3,10 @@
 开发和评审 AW Catalog 与插件，并通过显式用户宏发布 Catalog。依赖 `agent-content-toolkit` 和 `agent-skill-toolkit`。
 
 ```bash
-aw install aw-development-toolkit -p codex
+aw install aw-development-toolkit --scope user --target codex
 ```
 
-也支持 Claude，可将平台改为 `claude`。需要当前 PATH 中兼容的公开 AW CLI；不要求第三方项目具有本仓库的私有脚本目录。
+也支持 Claude Code，可改用 `--target claude-code`。需要当前 PATH 中兼容的公开 AW CLI；不要求第三方项目具有本仓库的私有脚本目录。
 
 | Skill | 适用任务 |
 | --- | --- |

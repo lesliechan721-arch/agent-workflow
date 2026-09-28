@@ -28,7 +28,6 @@ import type {
 import {
   flattenStatusTargets,
   statusTargetActivation,
-  statusTargetExtensions,
   statusTargetIntent,
   statusTargetOwnershipState,
   statusTargetSharedNative,
@@ -76,12 +75,13 @@ import {
   type SaveOperationReportResult,
 } from './operation-history.js';
 import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
-import {
-  buildProjectInventory,
-  hasStatusInstallationEvidence,
-  type ProjectInventoryRoot,
-  type ProjectInventoryViewModel,
-} from './project-inventory.js';
+import { hasStatusInstallationEvidence } from './scoped-inventory.js';
+import { buildScopedInventory, type RecoveryInventoryInput,
+  type ScopedInventoryViewModel, type ScopedInventoryLoadResult, type InventoryRoot } from './scoped-inventory.js';
+import type { ScopedTuiPlan } from './scoped-flow.js';
+import type { RecoveryReceipt } from '../recovery/receipt.js';
+import type { RecoveryCommand } from '../recovery/coordinator.js';
+import type { AgentId } from '../intent/deployment-preferences.js';
 import {
   TuiRouter,
   type ConfigInvalidStoreEvidence,
@@ -100,11 +100,6 @@ import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
 import type { CatalogSessionReusableCandidate } from './catalog-sources/types.js';
 import type { CatalogStorePruneResult, CatalogStoreStatusResult } from '../commands/catalog-store.js';
 import type { CatalogStoreTaskEvidence } from './catalog-store-task.js';
-import type { ProjectTuiPlan } from './project-flow.js';
-import type { ProjectRecoveryReceiptV1 } from '../project/project-types.js';
-import { projectStatusReminder, type ProjectStatusReminder } from '../project/project-status.js';
-import type { ProjectRecoveryCommand } from '../project/recovery.js';
-import type { ProjectAgentId } from '../project/project-preferences.js';
 import { CatalogSourcesSession } from './catalog-sources/session.js';
 import {
   catalogSourceAutoCheckOnlyValue,
@@ -153,9 +148,7 @@ export const PLUGIN_WRITE_BATCH_ACTIONS = [
 export type BatchPluginWriteAction = typeof PLUGIN_WRITE_BATCH_ACTIONS[number];
 export type PluginWriteBatchSelection =
   | { kind: 'selected'; pluginIds: string[] }
-  | { kind: 'targets'; targets: PluginWriteBatchTarget[] }
-  | { kind: 'currentProjectIntentTargets'; targets: PluginWriteBatchTarget[] }
-  | { kind: 'currentProjectIntentRoots' };
+  | { kind: 'targets'; targets: PluginWriteBatchTarget[] };
 
 export interface PluginWriteBatchTarget {
   pluginId: string;
@@ -219,6 +212,7 @@ export function pluginWriteBatchTargets(
 export interface PluginWriteBatchIntent {
   kind: 'pluginWriteBatch';
   dependencyScopeOverrides?: DependencyScopeOverride[];
+  saveDependencyScopeOverrides?: boolean;
   action: BatchPluginWriteAction;
   selection: PluginWriteBatchSelection;
   platform: PlatformName | 'both';
@@ -353,6 +347,7 @@ export type OperationIntent =
       platform: PlatformName | 'both';
       scope: Scope;
       dependencyScopeOverrides?: DependencyScopeOverride[];
+      saveDependencyScopeOverrides?: boolean;
       expectedUpdate?: {
         installedVersion: string;
         activeVersion: string;
@@ -799,13 +794,8 @@ export interface PluginOperationProgressLine {
 }
 
 export interface TuiStatusLoadResult {
+  scopedRecovery?: Partial<Record<Scope, RecoveryInventoryInput & Partial<Pick<ScopedInventoryLoadResult, 'nativeSnapshot'>>>>;
   projectRoot?: string;
-  projectIntent?:
-    | { state: 'ready'; roots: Array<{ pluginId: string; platforms: PlatformName[] }> }
-    | { state: 'absent' }
-    | { state: 'invalid' | 'unavailable'; code: string; message: string };
-  /** Compatibility input for older injected status fixtures. Production uses projectIntent. */
-  projectIntentRoots?: Array<{ pluginId: string; platforms: PlatformName[] }>;
   cliChannel?: 'latest' | 'beta';
   payload: StatusV8Payload;
   pluginSummaries: StatusV8PluginSummary[];
@@ -823,124 +813,6 @@ export interface TuiStatusLoadResult {
   }>;
   catalogGenerations?: CatalogSourceGenerationViewModel[];
   sessionGenerationKeys?: Record<string, string>;
-}
-
-export interface ProjectIntentReminderTarget extends PluginWriteBatchTarget {
-  reasonCodes: string[];
-}
-
-export interface LegacyProjectIntentReminder {
-  kind: 'legacy';
-  projectRoot: string;
-  signature: string;
-  actionableTargets: ProjectIntentReminderTarget[];
-  blockedTargets: ProjectIntentReminderTarget[];
-  unconfirmedTargets: ProjectIntentReminderTarget[];
-}
-
-export interface ProjectRecoveryIntentReminder extends ProjectStatusReminder {
-  kind: 'recovery';
-  projectRoot: string;
-  signature: string;
-}
-
-export type ProjectIntentReminder = LegacyProjectIntentReminder | ProjectRecoveryIntentReminder;
-
-function projectReminderTargetKey(target: PluginWriteBatchTarget): string {
-  return [target.pluginId, target.platform, target.scope].join('\0');
-}
-
-export function projectCurrentIntentReminder(status: TuiStatusLoadResult): ProjectIntentReminder | undefined {
-  if (status.payload.projectRecovery) {
-    const recovery = status.payload.projectRecovery;
-    const reminder = projectStatusReminder(recovery);
-    if (reminder.actionableTargets.length + reminder.blockedTargets.length
-      + reminder.unconfirmedTargets.length + reminder.diagnosticCodes.length === 0) return undefined;
-    const projectRoot = status.projectRoot ?? status.payload.filters.cwd;
-    const signature = crypto.createHash('sha256').update(JSON.stringify({
-      projectRoot, intent: recovery.intent, selection: recovery.selection,
-      reminder,
-    })).digest('hex');
-    return { kind: 'recovery', projectRoot, signature: `sha256:${signature}`, ...reminder };
-  }
-  if (status.projectIntent && status.projectIntent.state !== 'ready') return undefined;
-  const actionableTargets: ProjectIntentReminderTarget[] = [];
-  const blockedTargets: ProjectIntentReminderTarget[] = [];
-  const unconfirmedTargets: ProjectIntentReminderTarget[] = [];
-  const projectRoots = new Map((status.projectIntent?.state === 'ready'
-    ? status.projectIntent.roots : status.projectIntentRoots ?? []).map((root) => [
-    root.pluginId,
-    new Set(root.platforms),
-  ]));
-  const projectTargets = flattenStatusTargets(status.payload.targets).filter((target) => {
-    const intent = statusTargetIntent(target);
-    return target.scope === 'project'
-      && projectRoots.get(target.pluginId)?.has(target.platform) === true
-      && intent.scopes.includes('project');
-  });
-  for (const target of projectTargets) {
-    if (target.state === 'ready') continue;
-    const reminderTarget = {
-      pluginId: target.pluginId,
-      platform: target.platform,
-      scope: 'project' as const,
-    };
-    const statusReasons = [
-      ...target.reasons,
-      ...(target.sharedReasons ?? []),
-    ];
-    const reasonCodes = [...new Set(statusReasons.flatMap((reason) => [
-      reason.code,
-      ...(reason.rootIssueCode ? [reason.rootIssueCode] : []),
-    ]))].sort((left, right) => left.localeCompare(right, 'en'));
-    const sharedNative = statusTargetSharedNative(target);
-    const activation = statusTargetActivation(target);
-    const extensions = statusTargetExtensions(target);
-    const ownership = statusTargetOwnershipState(target);
-    const blocking = target.state === 'blocked'
-      || [...target.reasons, ...(target.sharedReasons ?? [])]
-        .some((reason) => reason.severity === 'blocking');
-    const unobserved = ownership === 'error'
-      || (!blocking && (sharedNative?.state === 'unobserved'
-        || activation?.evidence === 'unobserved'
-        || reasonCodes.includes('codexSharedNativeUnobserved')
-        || target.components.some((component) =>
-          component.metadata?.rootIssueCode === 'codexSharedNativeUnobserved')));
-    const confirmedDifference = ownership === 'absent' || ownership === 'partial'
-      || sharedNative?.state === 'missing' || sharedNative?.state === 'replaceable'
-      || extensions?.state === 'missing' || extensions?.state === 'drifted'
-      || activation?.evidence === 'observed' && activation.project === false
-      || target.components.some((component) => component.kind === 'dependency'
-        && (component.state === 'absent' || component.state === 'incomplete'));
-    if (blocking && confirmedDifference) {
-      blockedTargets.push({ ...reminderTarget, reasonCodes });
-    } else if (!unobserved && target.state === 'needsSync' && confirmedDifference) {
-      actionableTargets.push({ ...reminderTarget, reasonCodes });
-    } else {
-      unconfirmedTargets.push({ ...reminderTarget, reasonCodes });
-    }
-  }
-  if (projectTargets.length === 0) return undefined;
-  const canonicalActionable = actionableTargets.sort((left, right) =>
-    projectReminderTargetKey(left).localeCompare(projectReminderTargetKey(right), 'en'));
-  const canonicalBlocked = blockedTargets.sort((left, right) =>
-    projectReminderTargetKey(left).localeCompare(projectReminderTargetKey(right), 'en'));
-  const canonicalUnconfirmed = unconfirmedTargets.sort((left, right) =>
-    projectReminderTargetKey(left).localeCompare(projectReminderTargetKey(right), 'en'));
-  const projectRoot = status.projectRoot ?? projectTargets[0]!.cwd;
-  const signature = crypto.createHash('sha256').update(JSON.stringify({
-    projectRoot,
-    actionableTargets: canonicalActionable.map(projectReminderTargetKey),
-    blockedTargets: canonicalBlocked.map(projectReminderTargetKey),
-  })).digest('hex');
-  return {
-    kind: 'legacy',
-    projectRoot,
-    signature: `sha256:${signature}`,
-    actionableTargets: canonicalActionable,
-    blockedTargets: canonicalBlocked,
-    unconfirmedTargets: canonicalUnconfirmed,
-  };
 }
 
 export interface InstallTargetOption {
@@ -970,15 +842,21 @@ export interface TuiControllerDependencies {
     reuseValidatedGenerations?: boolean;
   }) => void;
   loadStatus: (signal: AbortSignal) => Promise<TuiStatusLoadResult>;
-  prepareProjectTask?: (request: {
-    kind: 'recovery'; command?: ProjectRecoveryCommand; selectors: string[];
-    exactTargets?: Array<{ pluginId: string; agent: ProjectAgentId }>;
-    targets?: ProjectAgentId[]; force?: boolean; refresh?: boolean; scriptTimeoutMs?: number;
-    dependencyScopeOverrides?: DependencyScopeOverride[]
-  } | { kind: 'targets'; action: 'set' | 'reset'; agents: string[] }, signal: AbortSignal) => Promise<ProjectTuiPlan>;
-  executeProjectTask?: (plan: ProjectTuiPlan) => Promise<
-    { kind: 'recovery'; receipt: ProjectRecoveryReceiptV1 }
-    | { kind: 'targets'; changed: boolean; agents: ProjectAgentId[] }
+  loadScopedStatus?: (scope: Scope, signal: AbortSignal) => Promise<ScopedInventoryLoadResult>;
+  prepareScopedTask?: (request: {
+    scope: Scope;
+    kind: 'recovery'; command?: RecoveryCommand; selectors: string[];
+    exactTargets?: Array<{ pluginId: string; agent: AgentId }>;
+    targets?: AgentId[]; force?: boolean; refresh?: boolean;
+    dependencyScopeOverrides?: DependencyScopeOverride[];
+    saveDependencyScopeOverrides?: boolean; scriptTimeoutMs?: number;
+  } | { scope: Scope; kind: 'targets'; action: 'set' | 'reset'; agents: string[] }
+  | { scope: Scope; kind: 'retire'; selector: string; targets?: AgentId[]; deleteConfig?: boolean }
+  | { scope: Scope; kind: 'intent'; action: 'add' | 'remove'; selector: string },
+  signal: AbortSignal) => Promise<ScopedTuiPlan>;
+  executeScopedTask?: (plan: ScopedTuiPlan) => Promise<
+    { kind: 'recovery'; receipt: RecoveryReceipt }
+    | { kind: 'targets'; changed: boolean; agents: AgentId[] }
   >;
   loadPluginContent?: (pluginId: string, signal: AbortSignal) => Promise<PluginContentOverview>;
   probeCatalogFreshness?: (
@@ -1084,19 +962,12 @@ export interface TuiControllerSnapshot {
     description: string;
     operationRecordId?: string;
   };
-  projectIntentReminder?: ProjectIntentReminder;
-  projectInventory?: ProjectInventoryViewModel;
-  projectInventoryRefresh: {
+  projectRoot?: string;
+  scopedInventories: Partial<Record<Scope, ScopedInventoryViewModel>>;
+  scopedInventoryRefresh: Partial<Record<Scope, {
     state: 'idle' | 'checking' | 'error';
-    checkedAtMs?: number;
     errorCode?: string;
-  };
-  projectDeclarationAbsent?: boolean;
-  projectIntentIssue?: {
-    state: 'invalid' | 'unavailable';
-    code: string;
-    message: string;
-  };
+  }>>;
 }
 
 interface ReviewTicket {
@@ -1176,8 +1047,7 @@ function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
     return { ...intent, targets: canonicalPluginWriteTaskTargets(intent.targets) };
   }
   if (intent.kind !== 'pluginWriteBatch') return intent;
-  if (intent.selection.kind === 'targets'
-    || intent.selection.kind === 'currentProjectIntentTargets') {
+  if (intent.selection.kind === 'targets') {
     return {
       ...intent,
       selection: {
@@ -1683,11 +1553,6 @@ export class TuiController {
     operationId: string;
     promise: Promise<OperationExecuteResult>;
   }>();
-  #projectTaskInflight?: { plan: ProjectTuiPlan; promise: Promise<{
-    kind: 'recovery'; receipt: ProjectRecoveryReceiptV1
-  } | { kind: 'targets'; changed: boolean; agents: ProjectAgentId[] }> };
-  readonly #projectExecuted = new WeakSet<object>();
-  #projectPreparationAbort?: AbortController;
   readonly #pendingReads = new Set<Promise<unknown>>();
   readonly #pluginContent = new Map<string, PluginContentOverview>();
   readonly #pluginContentInflight = new Map<string, Promise<void>>();
@@ -1721,10 +1586,16 @@ export class TuiController {
     promise: Promise<PortableInstallReceipt>;
   };
   #completionNotice?: TuiControllerSnapshot['completionNotice'];
-  #projectIntentReminder?: ProjectIntentReminder;
-  #projectInventory?: ProjectInventoryViewModel;
-  #projectInventoryRefresh: TuiControllerSnapshot['projectInventoryRefresh'] = { state: 'idle' };
-  #projectInventoryRefreshToken = 0;
+  #scopedInventories: Partial<Record<Scope, ScopedInventoryViewModel>> = {};
+  #lastRefreshedScope?: Scope;
+  #scopedInventoryRefresh: TuiControllerSnapshot['scopedInventoryRefresh'] = {};
+  #scopedRefreshToken: Record<Scope, number> = { user: 0, project: 0 };
+  #scopedPreparationAbort?: AbortController;
+  #scopedExecuted = new WeakSet<ScopedTuiPlan>();
+  #scopedTaskInflight?: { plan: ScopedTuiPlan; promise: Promise<
+    { kind: 'recovery'; receipt: RecoveryReceipt }
+    | { kind: 'targets'; changed: boolean; agents: AgentId[] }
+  > };
   #loadError?: { code: string; message: string };
   #portableDraft?: TuiControllerSnapshot['portableDraft'];
   #recoverablePortableDraft?: TuiControllerSnapshot['portableDraft'];
@@ -1851,16 +1722,9 @@ export class TuiController {
           } }
         : {}),
       ...(this.#completionNotice ? { completionNotice: this.#completionNotice } : {}),
-      ...(this.#projectIntentReminder
-        ? { projectIntentReminder: this.#projectIntentReminder }
-        : {}),
-      ...(this.#projectInventory ? { projectInventory: this.#projectInventory } : {}),
-      projectInventoryRefresh: this.#projectInventoryRefresh,
-      ...(this.#status?.projectIntent?.state === 'absent' ? { projectDeclarationAbsent: true } : {}),
-      ...(this.#status?.projectIntent?.state === 'invalid'
-        || this.#status?.projectIntent?.state === 'unavailable'
-        ? { projectIntentIssue: this.#status.projectIntent }
-        : {}),
+      ...(this.#status?.projectRoot ? { projectRoot: this.#status.projectRoot } : {}),
+      scopedInventories: this.#scopedInventories,
+      scopedInventoryRefresh: this.#scopedInventoryRefresh,
     });
   }
 
@@ -1871,7 +1735,7 @@ export class TuiController {
   }
 
   get hasActiveWrite(): boolean {
-    return this.#inflightOperations.size > 0 || this.#projectTaskInflight !== undefined;
+    return this.#inflightOperations.size > 0 || this.#scopedTaskInflight !== undefined;
   }
 
   get retiring(): boolean {
@@ -1967,7 +1831,7 @@ export class TuiController {
       await Promise.allSettled(
         [
           ...[...this.#inflightOperations.values()].map((operation) => operation.promise),
-          ...(this.#projectTaskInflight ? [this.#projectTaskInflight.promise] : []),
+          ...(this.#scopedTaskInflight ? [this.#scopedTaskInflight.promise] : []),
         ],
       );
     }
@@ -2234,7 +2098,6 @@ export class TuiController {
 
   #project(): void {
     if (!this.#status) return;
-    this.#projectIntentReminder = projectCurrentIntentReminder(this.#status);
     this.#viewModel = buildTuiViewModel({
       status: this.#status.payload,
       pluginSummaries: this.#status.pluginSummaries,
@@ -2251,17 +2114,22 @@ export class TuiController {
       portablePluginIds: this.#status.portablePluginIds,
       configStoreInventory: this.#status.configStoreInventory,
     });
-    this.#projectInventory = buildProjectInventory({
-      projectRoot: this.#status.projectRoot,
-      projectIntent: this.#status.projectIntent,
-      status: this.#status.payload,
-      pluginSummaries: this.#viewModel.plugins,
-      targetRevisions: this.#status.targetRevisions,
-      dependencyOverviews: this.#status.dependencyOverviews,
-      actionableTargets: this.#projectIntentReminder?.kind === 'legacy'
-        ? this.#projectIntentReminder.actionableTargets : undefined,
-      projectRecovery: this.#status.payload.projectRecovery,
-    });
+    for (const scope of ['user', 'project'] as const) {
+      const recovery = this.#status.scopedRecovery?.[scope];
+      if (!recovery) {
+        delete this.#scopedInventories[scope];
+        continue;
+      }
+      this.#scopedInventories[scope] = buildScopedInventory({
+        recovery,
+        status: recovery.nativeSnapshot?.payload ?? this.#status.payload,
+        pluginSummaries: recovery.nativeSnapshot?.pluginSummaries ?? this.#viewModel.plugins,
+        targetRevisions: recovery.nativeSnapshot?.targetRevisions ?? this.#status.targetRevisions,
+        dependencyOverviews: recovery.nativeSnapshot?.dependencyOverviews ?? this.#status.dependencyOverviews,
+        ...(scope === 'project' && this.#status.projectRoot
+          ? { projectRoot: this.#status.projectRoot } : {}),
+      });
+    }
   }
 
   #normalizeRoute(route: TuiRoute): TuiRoute {
@@ -2280,8 +2148,8 @@ export class TuiController {
   #routeEntityState(): RouteEntityState {
     return {
       hasPlugin: (pluginId) => this.#viewModel?.plugins.some((plugin) => plugin.pluginId === pluginId)
-        || this.#projectInventory?.declaredRoots.some((root) => root.pluginId === pluginId)
-        || this.#projectInventory?.extraInstalledRoots.some((root) => root.pluginId === pluginId)
+        || Object.values(this.#scopedInventories).some((inventory) => inventory.declaredRoots.some((root) =>
+          root.pluginId === pluginId) || inventory.extraInstalledRoots.some((root) => root.pluginId === pluginId))
         || false,
       hasSource: (sourceId) => this.#viewModel?.sourceTabs.some((source) => source.id === sourceId) ?? false,
       hasIssue: (issueId) => this.#viewModel?.issues.some((issue) => issue.issueId === issueId) ?? false,
@@ -2466,9 +2334,7 @@ export class TuiController {
       ? {
           ...structuredClone(intent),
           selection: {
-            kind: intent.selection.kind === 'currentProjectIntentRoots'
-              || intent.selection.kind === 'currentProjectIntentTargets'
-              ? 'currentProjectIntentTargets' : 'targets',
+            kind: 'targets',
             targets: structuredClone(result.summary.batch.retryTargets!),
           },
       }
@@ -2534,6 +2400,7 @@ export class TuiController {
   }
 
   #applyStatus(status: TuiStatusLoadResult): void {
+    this.#lastRefreshedScope = undefined;
     this.#pluginContentEpoch += 1;
     this.#pluginContent.clear();
     this.#pluginContentInflight.clear();
@@ -2603,8 +2470,10 @@ export class TuiController {
     this.#assertAcceptingActions();
     this.dependencies.beginCatalogSession?.();
     const generation = ++this.#generation;
-    this.#projectInventoryRefreshToken += 1;
-    this.#projectInventoryRefresh = { state: 'idle' };
+    this.#scopedRefreshToken.user += 1;
+    this.#scopedRefreshToken.project += 1;
+    this.#scopedInventoryRefresh = {};
+    this.#scopedInventories = {};
     this.#pluginContentEpoch += 1;
     this.#pluginContent.clear();
     this.#pluginContentInflight.clear();
@@ -2630,86 +2499,79 @@ export class TuiController {
     this.#publish();
   }
 
-  listProjectInventoryRoots(section: 'declared' | 'extraInstalled' = 'declared'): ProjectInventoryRoot[] {
+  listScopedInventoryRoots(scope: Scope, section: 'declared' | 'extraInstalled' = 'declared'): InventoryRoot[] {
+    const inventory = this.#scopedInventories[scope];
     return cloneFrozen(section === 'declared'
-      ? this.#projectInventory?.declaredRoots ?? []
-      : this.#projectInventory?.extraInstalledRoots ?? []);
+      ? inventory?.declaredRoots ?? [] : inventory?.extraInstalledRoots ?? []);
   }
 
-  getProjectInventoryRoot(pluginId: string): ProjectInventoryRoot | undefined {
-    const root = [...(this.#projectInventory?.declaredRoots ?? []),
-      ...(this.#projectInventory?.extraInstalledRoots ?? [])]
-      .find((entry) => entry.pluginId === pluginId);
-    return root ? cloneFrozen(root) : undefined;
-  }
-
-  async refreshProjectInventory(): Promise<boolean> {
+  async refreshScopedInventory(scope: Scope): Promise<boolean> {
     this.#assertAcceptingActions();
-    if (!this.#status || this.#phase !== 'ready') return false;
-    const token = ++this.#projectInventoryRefreshToken;
+    if (!this.#status || this.#phase !== 'ready' || !this.dependencies.loadScopedStatus) return false;
+    const token = ++this.#scopedRefreshToken[scope];
     const generation = this.#generation;
-    this.#projectInventoryRefresh = { state: 'checking' };
+    this.#scopedInventoryRefresh[scope] = { state: 'checking' };
     this.#publish();
     try {
-      const status = await this.#trackRead(this.dependencies.loadStatus(this.#abort.signal));
-      if (this.#disposed || generation !== this.#generation
-        || token !== this.#projectInventoryRefreshToken) return false;
-      this.#applyStatus(status);
-      this.#projectInventoryRefresh = {
-        state: 'idle',
-        checkedAtMs: this.#statusReadAtMs,
-      };
+      const recovery = await this.#trackRead(this.dependencies.loadScopedStatus(scope, this.#abort.signal));
+      if (this.#disposed || generation !== this.#generation || token !== this.#scopedRefreshToken[scope]) return false;
+      const inventory = buildScopedInventory({
+        recovery, status: recovery.nativeSnapshot.payload, pluginSummaries: recovery.nativeSnapshot.pluginSummaries,
+        targetRevisions: recovery.nativeSnapshot.targetRevisions,
+        dependencyOverviews: recovery.nativeSnapshot.dependencyOverviews,
+        ...(scope === 'project' && this.#status.projectRoot ? { projectRoot: this.#status.projectRoot } : {}),
+      });
+      this.#status.scopedRecovery = { ...this.#status.scopedRecovery, [scope]: structuredClone(recovery) };
+      this.#scopedInventories[scope] = inventory;
+      this.#lastRefreshedScope = scope;
+      this.#scopedInventoryRefresh[scope] = { state: 'idle' };
       this.#publish();
       return true;
     } catch (error) {
-      if (this.#disposed || generation !== this.#generation
-        || token !== this.#projectInventoryRefreshToken) return false;
+      if (this.#disposed || generation !== this.#generation || token !== this.#scopedRefreshToken[scope]) return false;
       const code = issueCode(error);
       await this.#logErrorSafe(error, code);
-      this.#projectInventoryRefresh = { state: 'error', errorCode: code };
+      if (this.#disposed || generation !== this.#generation || token !== this.#scopedRefreshToken[scope]) return false;
+      this.#scopedInventoryRefresh[scope] = { state: 'error', errorCode: code };
       this.#publish();
       return false;
     }
   }
 
-  async prepareProjectTask(request: {
-    kind: 'recovery'; command?: ProjectRecoveryCommand; selectors: string[];
-    exactTargets?: Array<{ pluginId: string; agent: ProjectAgentId }>;
-    targets?: ProjectAgentId[]; force?: boolean; refresh?: boolean; scriptTimeoutMs?: number;
-    dependencyScopeOverrides?: DependencyScopeOverride[]
-  } | { kind: 'targets'; action: 'set' | 'reset'; agents: string[] }): Promise<ProjectTuiPlan> {
+  async prepareScopedTask(request: Parameters<NonNullable<TuiControllerDependencies['prepareScopedTask']>>[0]):
+  Promise<ScopedTuiPlan> {
     this.#assertAcceptingActions();
-    if (!this.dependencies.prepareProjectTask) throw new Error('projectRecoveryUnavailable');
-    this.#projectPreparationAbort?.abort();
+    if (!this.dependencies.prepareScopedTask) throw new Error('recoveryUnavailable');
+    this.#scopedPreparationAbort?.abort();
     const abort = new AbortController();
-    this.#projectPreparationAbort = abort;
+    this.#scopedPreparationAbort = abort;
     try {
-      return await this.#trackRead(this.dependencies.prepareProjectTask(request,
+      return await this.#trackRead(this.dependencies.prepareScopedTask(request,
         AbortSignal.any([this.#abort.signal, abort.signal])));
     } finally {
-      if (this.#projectPreparationAbort === abort) this.#projectPreparationAbort = undefined;
+      if (this.#scopedPreparationAbort === abort) this.#scopedPreparationAbort = undefined;
     }
   }
 
-  cancelProjectPreparation(): void {
-    this.#projectPreparationAbort?.abort();
+  cancelScopedPreparation(): void { this.#scopedPreparationAbort?.abort(); }
+
+  async discardScopedPlan(plan: ScopedTuiPlan): Promise<void> {
+    this.#scopedExecuted.add(plan);
+    if (plan.kind === 'recovery' || plan.kind === 'retire') await plan.plan.context.dispose();
   }
 
-  executeProjectTask(plan: ProjectTuiPlan): Promise<
-    { kind: 'recovery'; receipt: ProjectRecoveryReceiptV1 }
-    | { kind: 'targets'; changed: boolean; agents: ProjectAgentId[] }
-  > {
+  executeScopedTask(plan: ScopedTuiPlan): ReturnType<NonNullable<TuiControllerDependencies['executeScopedTask']>> {
     if (this.#retiring || this.#disposed) return Promise.reject(new Error('sessionRetiring'));
-    if (!this.dependencies.executeProjectTask) return Promise.reject(new Error('projectRecoveryUnavailable'));
-    if (this.#projectTaskInflight?.plan === plan) return this.#projectTaskInflight.promise;
-    if (this.hasActiveWrite || this.#projectExecuted.has(plan)) {
+    if (!this.dependencies.executeScopedTask) return Promise.reject(new Error('recoveryUnavailable'));
+    if (this.#scopedTaskInflight?.plan === plan) return this.#scopedTaskInflight.promise;
+    if (this.hasActiveWrite || this.#scopedExecuted.has(plan)) {
       return Promise.reject(new Error('reviewTicketInvalid'));
     }
-    this.#projectExecuted.add(plan);
-    const promise = this.dependencies.executeProjectTask(plan).finally(() => {
-      if (this.#projectTaskInflight?.promise === promise) this.#projectTaskInflight = undefined;
+    this.#scopedExecuted.add(plan);
+    const promise = this.dependencies.executeScopedTask(plan).finally(() => {
+      if (this.#scopedTaskInflight?.promise === promise) this.#scopedTaskInflight = undefined;
     });
-    this.#projectTaskInflight = { plan, promise };
+    this.#scopedTaskInflight = { plan, promise };
     return promise;
   }
 
@@ -3146,37 +3008,29 @@ export class TuiController {
       kind: 'pluginWrite', action: 'cleanup', pluginId, platform, scope, force: true,
     };
     try {
-      const evidence = await this.#trackRead(this.dependencies.captureEvidence(intent, this.#abort.signal));
-      const candidate = (evidence.offlineCleanupPlans
-        ?? (evidence.offlineCleanup ? [evidence.offlineCleanup] : [])).find((entry) =>
-        entry.pluginId === pluginId
-        && entry.platform === platform
-        && entry.scope === scope);
-      if (!evidence.operationPlan
-        || !candidate
-        || candidate.platform !== platform
-        || candidate.scope !== scope
-        || (candidate.forceExclusive !== true && candidate.plan.actions.length > 0)
-        || (candidate.plan.actions.length === 0
-          && !evidence.operationPlan.intentChanges.some((change) => change.scope === scope))) {
-        return undefined;
-      }
-      return cloneFrozen({ pluginId, platform, scope, actionCount: candidate.plan.actions.length });
+      const prepared = await this.prepareScopedTask({ kind: 'recovery', command: 'cleanup',
+        scope, selectors: [pluginId], targets: [platform === 'claude' ? 'claude-code' : 'codex'],
+        exactTargets: [{ pluginId, agent: platform === 'claude' ? 'claude-code' : 'codex' }], force: true });
+      if (prepared.kind !== 'recovery') return undefined;
+      try {
+        const candidate = prepared.plan.nativeGroups.flatMap((group) =>
+          group.preview.operationPlan ? group.preview.offlineCleanupPlans ?? [] : [])
+          .find((entry) => entry.pluginId === pluginId && entry.platform === platform && entry.scope === scope);
+        if (prepared.plan.blockExecution || !candidate || candidate.forceExclusive !== true
+          || candidate.plan.actions.length === 0) return undefined;
+        return cloneFrozen({ pluginId, platform, scope, actionCount: candidate.plan.actions.length });
+      } finally { await this.discardScopedPlan(prepared); }
     } catch (error) {
       await this.#logOperationError(error, issueCode(error), intent);
       return undefined;
     }
   }
 
-  startForceCleanupReview(candidate: ForceCleanupCandidate): ReviewPreparationSnapshot {
-    return this.startReviewPreparation({
-      kind: 'pluginWrite',
-      action: 'cleanup',
-      pluginId: candidate.pluginId,
-      platform: candidate.platform,
-      scope: candidate.scope,
-      force: true,
-    });
+  startForceCleanupReview(candidate: ForceCleanupCandidate): Promise<ScopedTuiPlan> {
+    const agent = candidate.platform === 'claude' ? 'claude-code' : 'codex';
+    return this.prepareScopedTask({ kind: 'recovery', command: 'cleanup',
+      scope: candidate.scope, selectors: [candidate.pluginId], targets: [agent],
+      exactTargets: [{ pluginId: candidate.pluginId, agent }], force: true });
   }
 
   configOrigin(pluginId: string): TuiRoute | undefined {
@@ -3548,7 +3402,7 @@ export class TuiController {
       platform: draft.platforms.length === 2 ? 'both' : draft.platforms[0]!,
       scope: draft.rootScope,
       ...(draft.dependencyScopeOverrides.length > 0
-        ? { dependencyScopeOverrides: structuredClone(draft.dependencyScopeOverrides) } : {}),
+        ? { dependencyScopeOverrides: structuredClone(draft.dependencyScopeOverrides), saveDependencyScopeOverrides: true } : {}),
     };
     return {
       kind: 'pluginWrite',
@@ -3557,7 +3411,7 @@ export class TuiController {
       platform: draft.platforms.length === 2 ? 'both' : draft.platforms[0]!,
       scope: draft.rootScope,
       ...(draft.dependencyScopeOverrides.length > 0
-        ? { dependencyScopeOverrides: draft.dependencyScopeOverrides }
+        ? { dependencyScopeOverrides: draft.dependencyScopeOverrides, saveDependencyScopeOverrides: true }
         : {}),
     };
   }
@@ -3724,7 +3578,12 @@ export class TuiController {
       pluginSummaries: this.#status.pluginSummaries,
       targetRevisions: this.#status.targetRevisions,
       plugins: this.#viewModel.plugins,
-      projectInventory: this.#projectInventory,
+      scopedInventories: this.#scopedInventories,
+      scopedSnapshots: {
+        user: this.#status.scopedRecovery?.user?.nativeSnapshot,
+        project: this.#status.scopedRecovery?.project?.nativeSnapshot,
+      },
+      latestScope: this.#lastRefreshedScope,
       dependencyOverviews: this.#status.dependencyOverviews,
     });
     return subject ? cloneFrozen(subject) : undefined;
@@ -4446,30 +4305,6 @@ export class TuiController {
       }
     }
     if (intent.kind === 'pluginWriteBatch') {
-      if ((intent.selection.kind === 'currentProjectIntentRoots'
-        || intent.selection.kind === 'currentProjectIntentTargets')
-        && (intent.action !== 'sync' || intent.scope !== 'project')) {
-        throw new TuiOperationBlockedError(
-          'batchSelectionInvalid',
-          '当前项目全部同步只支持 project scope sync。',
-        );
-      }
-      if (intent.selection.kind === 'currentProjectIntentTargets') {
-        const targets = intent.selection.targets;
-        const canonical = [...new Map(targets.map((target) => [
-          projectReminderTargetKey(target), target,
-        ])).values()].sort((left, right) => projectReminderTargetKey(left)
-          .localeCompare(projectReminderTargetKey(right), 'en'));
-        if (targets.length === 0
-          || targets.some((target) => target.scope !== 'project')
-          || JSON.stringify(targets) !== JSON.stringify(canonical)) {
-          throw new TuiOperationBlockedError(
-            'batchSelectionInvalid',
-            '当前项目同步目标必须是非空、规范且精确的 project 目标集合。',
-          );
-        }
-        for (const target of targets) sourceIdFromPluginId(target.pluginId);
-      }
       if (intent.selection.kind === 'selected') {
         const canonical = canonicalPluginIds(intent.selection.pluginIds);
         if (canonical.length === 0) {
@@ -4495,7 +4330,7 @@ export class TuiController {
     if (intent.kind === 'pluginWriteBatch') {
       return intent.selection.kind === 'selected'
         ? `${intent.selection.pluginIds.length} 个插件`
-        : '当前项目全部插件';
+        : `${intent.selection.targets.length} 个目标`;
     }
     if ('pluginId' in intent) {
       return this.#viewModel?.plugins.find((plugin) => plugin.pluginId === intent.pluginId)?.displayName
@@ -5575,6 +5410,7 @@ export class TuiController {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#scopedPreparationAbort?.abort();
     this.#invalidatePortableResultRecheck();
     this.#cancelReviewPreparation();
     this.#cancelPortableRequest();

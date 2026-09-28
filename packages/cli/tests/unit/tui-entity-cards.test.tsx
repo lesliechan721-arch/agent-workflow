@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { EntityIdentityCard, PluginDetailCard, ProjectRootCard,
   entityCardWindowHeight, pluginDetailCardLayout, projectRootCardLayout } from '../../src/tui/entity-cards.js';
 import type { PluginDetailSubject } from '../../src/tui/plugin-detail.js';
-import type { ProjectInventoryRoot } from '../../src/tui/project-inventory.js';
+import type { InventoryRoot as ProjectInventoryRoot } from '../../src/tui/scoped-inventory.js';
 
 afterEach(cleanup);
 
@@ -16,6 +16,10 @@ function subject(overrides: Partial<PluginDetailSubject> = {}): PluginDetailSubj
     pluginId: 'team/workflow', sourceId: 'team', displayName: '流程助手',
     description: '核对项目中的中文配置与依赖关系。', catalogVersion: '2.0.0',
     definitionAvailable: true, savedConfigScopes: [], placements: [],
+    declarations: {
+      user: { state: 'unobserved', targets: 'unobserved', agents: [] },
+      project: { state: 'unobserved', targets: 'unobserved', agents: [] },
+    },
     relations: { outgoing: [], incoming: [], checkState: 'unknown', hasKnownRelations: false },
     ...overrides,
   };

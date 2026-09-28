@@ -1,12 +1,15 @@
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import * as rebuildIntegration from '../../src/commands/rebuild-integration.js';
 import { runCli } from '../../src/index.js';
-import { writeProjectPreferences } from '../../src/project/project-preferences.js';
+import { writePreferences } from '../../src/intent/deployment-preferences.js';
+import { createEmptyIntent } from '../../src/intent/intent-codec.js';
+import { resolveIntentPath } from '../../src/intent/intent-store.js';
+import { readRecoveryStatus } from '../../src/recovery/status.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   projectStatusSharedNativeReasons,
@@ -27,10 +30,6 @@ import {
 import { createSharedOwnerToken, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { type NativeCliRunner, setNativeCliRunnerOverrideForTests } from '../../src/utils/native-cli.js';
 import { applyCodexConfigTransactionFile } from '../../src/utils/codex-config.js';
-import {
-  createEmptyPluginIntentState,
-  resolvePluginIntentStatePath,
-} from '../../src/utils/plugin-intent-state.js';
 import { resolveAwHome, resolveClaudePaths, resolveCodexPaths } from '../../src/utils/paths.js';
 import { getCodexHome } from '../../src/utils/state-paths.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
@@ -169,6 +168,9 @@ async function writeSystemCodexPackage(options: {
 }
 
 describe('status v8 current behavior', () => {
+  beforeEach(async () => {
+    await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
+  });
   // Test Value Gate: platform-free project roots must not invent demand for unselected Agents.
   it.each([
     { agents: [], savedAgents: [] },
@@ -189,8 +191,8 @@ describe('status v8 current behavior', () => {
       schemaVersion: 3, kind: 'aw-plugin-intents', sources: { local: { logicalIdentity } },
       roots: [{ pluginId: 'local/top' }],
     });
-    await writeProjectPreferences({ cwd, env }, {
-      schemaVersion: 1, kind: 'aw-project-preferences', agents: savedAgents, dependencyScopeOverrides: [],
+    await writePreferences({ scope: 'project', cwd, env }, {
+      schemaVersion: 1, kind: 'aw-deployment-preferences', agents: savedAgents, dependencyScopeOverrides: [],
     });
     if (agents.includes('codex')) {
       await fs.copy(path.join(sourceRoot, 'plugins'), path.join(resolveAwHome(env), 'marketplaces', 'local', 'plugins'));
@@ -199,7 +201,8 @@ describe('status v8 current behavior', () => {
       await applyCodexConfigTransactionFile(resolveCodexPaths(cwd, 'project', env).configTomlPath,
         { upsertPluginActivations: { 'top@aw-local': true } });
     }
-    const result = await statusCommandV8({ cwd, env, ...(targets ? { projectSelection: { targets } } : {}) });
+    const result = await statusCommandV8({ cwd, env, scope: 'project',
+      ...(targets ? { recoverySelection: { targets } } : {}) });
     for (const target of result.payload.targets) {
       const selected = agents.includes(target.platform === 'claude' ? 'claude-code' : 'codex');
       if (!selected) {
@@ -208,12 +211,13 @@ describe('status v8 current behavior', () => {
         expect(target.state).toBe('absent');
       }
     }
-    expect(result.payload.projectRecovery?.selection.agents).toEqual(agents);
-    expect(result.payload.projectRecovery?.inventory?.map((root) => root.pluginId)).toEqual(['local/top']);
+    const recovery = await readRecoveryStatus({ scope: 'project', cwd, env, targets });
+    expect(recovery.selection.agents).toEqual(agents);
+    expect(recovery.inventory?.map((root) => root.pluginId)).toEqual(['local/top']);
   });
 
-  // Test Value Gate: an observation failure must fail public project status without leaking raw errors.
-  it('returns one failed project-status JSON for a Native read error and succeeds for ordinary missing output', async () => {
+  // Test Value Gate: an observation failure must fail public status without leaking raw errors.
+  it('returns one failed recovery-status JSON for a Native read error and succeeds for ordinary missing output', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-status-read-error-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo');
@@ -224,12 +228,12 @@ describe('status v8 current behavior', () => {
       schemaVersion: 3, kind: 'aw-plugin-intents', sources: { local: { logicalIdentity } },
       roots: [{ pluginId: 'local/demo' }],
     });
-    await writeProjectPreferences({ cwd, env }, {
-      schemaVersion: 1, kind: 'aw-project-preferences', agents: ['claude-code'], dependencyScopeOverrides: [],
+    await writePreferences({ scope: 'project', cwd, env }, {
+      schemaVersion: 1, kind: 'aw-deployment-preferences', agents: ['claude-code'], dependencyScopeOverrides: [],
     });
     const invoke = async () => {
       const captured = createCapturedCliIo();
-      const exit = await runCli(['project', 'status', '--json'], {
+      const exit = await runCli(['status', '--scope', 'project', '--json'], {
         cwd, env, interactive: false, io: captured.io,
         nativeCliRunner: async () => ({ exitCode: 0, stdout: '2.1.88 (Claude Code)', stderr: '' }),
       });
@@ -242,10 +246,11 @@ describe('status v8 current behavior', () => {
       const failed = await invoke();
       expect(failed.exit).toBe(1);
       expect(failed.payload).toMatchObject({
-        schemaVersion: 1, kind: 'aw-project-status', ok: false, allSatisfied: null,
+        schemaVersion: 1, kind: 'aw-recovery-status', scope: 'project', ok: false, allSatisfied: null,
         errors: expect.arrayContaining([expect.objectContaining({ code: 'nativeStateUnreadable' })]),
       });
       expect(failed.stdout).not.toContain('secret-native-state-detail');
+      expect(failed.stdout).not.toContain(cwd);
       expect(failed.stderr).toBe('');
     } finally {
       inspect.mockRestore();
@@ -259,8 +264,8 @@ describe('status v8 current behavior', () => {
     expect(missing.stderr).toBe('');
   });
 
-  // Test Value Gate: Native filters must not hide project demand or cause status writes.
-  it('includes complete v3 recovery inventory with Native filters and preserves filesystem bytes', async () => {
+  // Test Value Gate: status must preserve complete demand and filesystem bytes.
+  it('includes complete v3 recovery inventory and preserves filesystem bytes', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'v3-status-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo');
@@ -272,21 +277,20 @@ describe('status v8 current behavior', () => {
       sources: { local: { logicalIdentity } }, roots: [{ pluginId: 'local/demo' }],
     });
     const before = await filesystemSnapshot(cwd);
-    const status = await statusCommandV8({ cwd, env, platform: 'codex', scope: 'user', json: true });
-    expect(status.payload.projectRecovery).toMatchObject({
-      schemaVersion: 1, ok: true, intent: { state: 'valid' },
+    const status = await readRecoveryStatus({ scope: 'project', cwd, env });
+    expect(status).toMatchObject({
+      schemaVersion: 1, kind: 'aw-recovery-status', scope: 'project', ok: true, intent: { state: 'valid' },
       selection: { agents: [], origin: 'none' }, allSatisfied: null, errors: [],
       inventory: [{ pluginId: 'local/demo', sourceState: 'ready', targetResults: [],
         blockers: [{ code: 'localTargetsRequired', message: expect.any(String) }] }],
     });
-    expect(JSON.parse(status.output).projectRecovery).toEqual(status.payload.projectRecovery);
     expect(await filesystemSnapshot(cwd)).toEqual(before);
     const intentPath = path.join(cwd, '.agent-workflows', 'plugin-intents.json');
     const intent = await fs.readJson(intentPath);
     intent.sources.local.logicalIdentity = 'another-logical-identity';
     await fs.writeJson(intentPath, intent);
-    const mismatched = await statusCommandV8({ cwd, env });
-    expect(mismatched.payload.projectRecovery?.inventory?.[0]).toMatchObject({
+    const mismatched = await readRecoveryStatus({ scope: 'project', cwd, env });
+    expect(mismatched.inventory?.[0]).toMatchObject({
       pluginId: 'local/demo', sourceState: 'identity-mismatch',
       blockers: expect.arrayContaining([expect.objectContaining({ code: 'sourceIdentityMismatch' })]),
     });
@@ -379,7 +383,7 @@ describe('status v8 current behavior', () => {
       await writeIntentFixture({
         scope: 'project', cwd: isolation.layout.fixtureCwd, env,
       }, {
-        ...createEmptyPluginIntentState(),
+        ...createEmptyIntent(),
         roots: [{ pluginId: 'local/root', platforms: [platform] }],
       });
 
@@ -461,7 +465,7 @@ describe('status v8 current behavior', () => {
     };
     expect(statusRecovery(base)).toEqual([{
       command: 'manual',
-      description: '共享内容已损坏。先明确选择 user 或 project 使用范围，再运行 aw install local/demo --platform codex --scope <user|project> 重建。',
+      description: '共享内容已损坏。先明确选择 user 或 project 使用范围，再运行 aw install local/demo --target codex --scope <user|project> 重建。',
     }]);
     expect(statusRecovery({ ...base, actualEnabled: true })).toEqual([
       {
@@ -471,7 +475,7 @@ describe('status v8 current behavior', () => {
       },
       {
         command: 'manual',
-        description: '共享内容已损坏。先明确选择 user 或 project 使用范围，再运行 aw install local/demo --platform codex --scope <user|project> 重建。',
+        description: '共享内容已损坏。先明确选择 user 或 project 使用范围，再运行 aw install local/demo --target codex --scope <user|project> 重建。',
       },
     ]);
   });
@@ -512,7 +516,7 @@ describe('status v8 current behavior', () => {
     }
   });
 
-  it('aggregates user and project pure-native intent into one missing shared target', async () => {
+  it('keeps user and project pure-native requirements separate over shared content', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'pure-native-intent-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
@@ -523,7 +527,7 @@ describe('status v8 current behavior', () => {
     const { env } = await configurePathSource(sourceRoot);
     for (const scope of ['user', 'project'] as const) {
       await writeIntentFixture({ scope, cwd: isolation.layout.fixtureCwd, env }, {
-        ...createEmptyPluginIntentState(),
+        ...createEmptyIntent(),
         roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
       });
     }
@@ -544,9 +548,22 @@ describe('status v8 current behavior', () => {
       expect.objectContaining({ scope: 'project' }),
       expect.objectContaining({ scope: 'user' }),
     ]));
-    for (const placement of target.placements) {
-      expect(statusTargetIntent(placement)).toEqual({
-        enabled: true, scopes: [placement.scope], relation: 'root',
+    expect(statusTargetIntent(target.placements.find((placement) => placement.scope === 'user')!))
+      .toEqual({ enabled: true, scopes: ['user'], relation: 'root' });
+    expect(statusTargetIntent(target.placements.find((placement) => placement.scope === 'project')!))
+      .toEqual({ enabled: true, scopes: ['project'], relation: 'root' });
+    const explicitUser = await statusCommandV8({ plugins: ['local/demo'],
+      cwd: isolation.layout.fixtureCwd, env, platform: 'codex', scope: 'user', json: true });
+    expect(explicitUser.payload.targets[0]!.placements.map((placement) => placement.scope))
+      .toEqual(['user']);
+    expect(statusTargetIntent(explicitUser.payload.targets[0]!.placements[0]!))
+      .toEqual({ enabled: true, scopes: ['user'], relation: 'root' });
+    for (const scope of ['user', 'project'] as const) {
+      const recovery = await readRecoveryStatus({ scope, cwd: isolation.layout.fixtureCwd, env });
+      expect(recovery).toMatchObject({
+        scope, intent: { state: 'valid' }, selection: { agents: ['codex'] },
+        inventory: [{ pluginId: 'local/demo', targetResults: [{ agent: 'codex', scope,
+          delivery: { kind: 'native', platform: 'codex' } }] }],
       });
     }
     expect(statusTargetSharedNative(target)).toMatchObject({ state: 'unobserved' });
@@ -562,6 +579,35 @@ describe('status v8 current behavior', () => {
     ]));
   });
 
+  it('keeps explicit User Native status independent of invalid Project intent', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const sourceRoot = path.join(cwd, 'user-project-isolation-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+    });
+    const { env } = await configurePathSource(sourceRoot);
+    await writeIntentFixture({ scope: 'user', cwd, env }, {
+      roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+    });
+    await fs.outputFile(path.join(cwd, '.agent-workflows', 'plugin-intents.json'), '{ invalid project');
+
+    const result = await statusCommandV8({ plugins: ['local/demo'], cwd, env,
+      platform: 'codex', scope: 'user', json: true });
+    expect(statusTargetIntent(result.payload.targets[0]!.placements
+      .find((placement) => placement.scope === 'user')!)).toEqual({
+      enabled: true, scopes: ['user'], relation: 'root',
+    });
+    expect(result.payload.errors).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'pluginIntentStateInvalid' }),
+    ]));
+    const recovery = await readRecoveryStatus({ scope: 'user', cwd, env });
+    expect(recovery.intent.state).toBe('valid');
+    expect(recovery.inventory?.map((root) => root.pluginId)).toEqual(['local/demo']);
+  });
+
   it('keeps each ready pure-native Codex placement scoped to its own activation', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'pure-native-ready-source');
@@ -573,7 +619,7 @@ describe('status v8 current behavior', () => {
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
     for (const scope of ['user', 'project'] as const) {
       await writeIntentFixture({ scope, cwd: isolation.layout.fixtureCwd, env }, {
-        ...createEmptyPluginIntentState(),
+        ...createEmptyIntent(),
         roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
       });
     }
@@ -843,6 +889,29 @@ describe('status v8 current behavior', () => {
         reasons: expect.arrayContaining([expect.objectContaining({ code: 'removedPluginCleanupRequired' })]),
         recoveryActions: [expect.objectContaining({ command: 'cleanup' })],
       })]);
+      setNativeCliRunnerOverrideForTests(nativeRunner);
+      try {
+        const recovery = await readRecoveryStatus({ scope: 'user', cwd,
+          env: { ...env, PATH: binRoot } });
+        expect(recovery.inventory).toEqual([]);
+        expect(recovery.extraObserved).toEqual(expect.arrayContaining([
+          expect.objectContaining({ pluginId: 'local/demo', scope: 'user',
+            backend: expect.objectContaining({ state: 'blocked',
+              recoveryActions: expect.arrayContaining([expect.objectContaining({ command: 'cleanup' })]),
+            }) }),
+        ]));
+        const placement = recovery.extraObserved.find((entry) => entry.pluginId === 'local/demo'
+          && entry.agent === 'codex');
+        if (residue === 'disabled') {
+          expect(placement?.backend).toMatchObject({ ownerReferences: [
+            expect.objectContaining({ kind: 'namespacedMarketplace' }),
+          ] });
+        }
+        expect(JSON.stringify(placement)).not.toContain('message');
+        expect(JSON.stringify(recovery.extraObserved)).not.toContain(isolation.layout.rootDir);
+      } finally {
+        setNativeCliRunnerOverrideForTests(null);
+      }
       if (residue === 'unobserved') {
         expect(result.payload.targets[0]!.reasons).toEqual(expect.arrayContaining([
           expect.objectContaining({ code: 'codexNativeObservationFailed' }),
@@ -907,7 +976,7 @@ describe('status v8 current behavior', () => {
       } },
     );
     await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/root', platforms: ['codex'] }],
     });
     const binRoot = await writeSystemCodexPackage({
@@ -957,7 +1026,7 @@ describe('status v8 current behavior', () => {
     expect(listRunner).toHaveBeenCalledTimes(2);
 
     await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env },
-      createEmptyPluginIntentState());
+      createEmptyIntent());
     listRunner.mockClear();
     const manual = await read();
     expect(manual.payload.targets[0]).toMatchObject({
@@ -984,7 +1053,7 @@ describe('status v8 current behavior', () => {
     ]);
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
     await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/root', platforms: ['codex'] }],
     });
     for (const pluginName of ['root', 'middle']) {
@@ -1090,7 +1159,7 @@ describe('status v8 current behavior', () => {
     const { env } = await configurePathSource(sourceRoot);
     for (const scope of ['user', 'project'] as const) {
       await writeIntentFixture({ scope, cwd: isolation.layout.fixtureCwd, env }, {
-        ...createEmptyPluginIntentState(),
+        ...createEmptyIntent(),
         roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
       });
     }
@@ -1110,7 +1179,7 @@ describe('status v8 current behavior', () => {
     expect(result.hasErrors, JSON.stringify(result.payload, null, 2)).toBe(false);
   });
 
-  it('recovers a dependency scope conflict through its desired roots', async () => {
+  it('keeps dependency demand within each recovery scope', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-conflict-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
@@ -1122,40 +1191,50 @@ describe('status v8 current behavior', () => {
     await writeIntentFixture({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env,
     }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/user-root', platforms: ['codex'] }],
     });
     await writeIntentFixture({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env,
     }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/project-root', platforms: ['codex'] }],
     });
 
     const result = await statusCommandV8({
       plugins: ['local/leaf'], cwd: isolation.layout.fixtureCwd, env,
-      platform: 'codex', json: true,
+      platform: 'codex', scope: 'user', json: true,
     });
 
     expect(result.payload.targets).toEqual([expect.objectContaining({
-      pluginId: 'local/leaf',
-      state: 'blocked',
-      recoveryActions: expect.arrayContaining([
-        {
-          command: 'uninstall',
-          scope: 'user',
-          description: '运行 aw uninstall local/user-root --platform codex --scope user，再运行 aw sync local/project-root --platform codex --scope project。',
-        },
-        {
-          command: 'uninstall',
-          scope: 'project',
-          description: '运行 aw uninstall local/project-root --platform codex --scope project，再运行 aw sync local/user-root --platform codex --scope user。',
-        },
-      ]),
+      pluginId: 'local/leaf', state: 'needsSync',
     })]);
+    expect(result.payload.targets[0]?.reasons)
+      .not.toContainEqual(expect.objectContaining({ code: 'dependencyScopeConflict' }));
+    const combined = await statusCommandV8({
+      plugins: ['local/user-root', 'local/project-root', 'local/leaf'],
+      cwd: isolation.layout.fixtureCwd, env, platform: 'codex', json: true,
+    });
+    for (const [pluginId, scope] of [
+      ['local/user-root', 'user'], ['local/project-root', 'project'],
+    ] as const) {
+      const root = combined.payload.targets.find((target) => target.pluginId === pluginId);
+      expect(root).toBeDefined();
+      const placement = root!.placements.find((entry) => entry.scope === scope);
+      expect(statusTargetIntent(placement!)).toEqual({ enabled: true, scopes: [scope], relation: 'root' });
+      expect(placement?.state).not.toBe('orphaned');
+    }
+    const leaf = combined.payload.targets.find((target) => target.pluginId === 'local/leaf');
+    expect(leaf?.placements.map((placement) => [placement.scope, statusTargetIntent(placement).relation]))
+      .toEqual([['project', 'dependency'], ['user', 'dependency']]);
+    for (const [scope, root] of [['user', 'local/user-root'], ['project', 'local/project-root']] as const) {
+      const recovery = await readRecoveryStatus({ scope, cwd: isolation.layout.fixtureCwd, env });
+      expect(recovery.inventory?.map((entry) => entry.pluginId)).toEqual([root]);
+      expect(recovery.selection.agents).toEqual(['codex']);
+    }
   });
 
-  it('keeps the default-scope Codex dependency component aligned with its project reason', async () => {
+  it('keeps the Codex project dependency component aligned with its reason', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'project-dependency-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
@@ -1164,7 +1243,7 @@ describe('status v8 current behavior', () => {
     ]);
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
     await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/root', platforms: ['codex'] }],
     });
     await applyCodexConfigTransactionFile(
@@ -1188,7 +1267,7 @@ describe('status v8 current behavior', () => {
 
     const result = await statusCommandV8({
       plugins: ['local/root'], cwd: isolation.layout.fixtureCwd, env,
-      platform: 'codex', json: true,
+      platform: 'codex', scope: 'project', json: true,
     });
 
     const target = result.payload.targets[0]!;
@@ -1228,7 +1307,7 @@ describe('status v8 current behavior', () => {
     ]);
     const { env } = await configurePathSource(sourceRoot);
     await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/root', platforms: ['codex'] }],
     });
 
@@ -1282,7 +1361,7 @@ describe('status v8 current behavior', () => {
       ]);
       const { env, sourceIdentity } = await configurePathSource(sourceRoot);
       await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
-        ...createEmptyPluginIntentState(),
+        ...createEmptyIntent(),
         roots: [{ pluginId: 'local/root', platforms: ['codex'] }],
       });
       await applyCodexConfigTransactionFile(
@@ -1361,7 +1440,7 @@ describe('status v8 current behavior', () => {
     await createCatalogSnapshotFixture(sourceRoot);
     const { env } = await configurePathSource(sourceRoot);
     await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'gone/demo', platforms: ['codex'] }],
     });
 
@@ -1379,36 +1458,13 @@ describe('status v8 current behavior', () => {
     expect(statusTargetIntent(target.placements[0]!)).toEqual({
       enabled: true, scopes: ['project'], relation: 'root',
     });
-  });
-
-  it('does not apply managed intent from another same-name Codex marketplace', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'source-qualified-managed-source');
-    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
-      manifest.apps = './.app.json';
-    });
-    const { env } = await configurePathSource(sourceRoot);
-    await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
-      managed: { codexPluginIds: ['demo@aw-second'] },
-    });
-
-    const result = await statusCommandV8({
-      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
-      platform: 'codex', json: true,
-    });
-
-    expect(result.payload.targets).toEqual([expect.objectContaining({
-      pluginId: 'local/demo',
-      state: 'absent',
+    const recovery = await readRecoveryStatus({ scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env });
+    expect(recovery.inventory).toEqual([expect.objectContaining({
+      pluginId: 'gone/demo',
+      blockers: expect.arrayContaining([expect.objectContaining({ code: expect.any(String) })]),
     })]);
-    const target = result.payload.targets[0]!;
-    expect(target.platform).toBe('codex');
-    expect(statusTargetIntent(target.placements[0]!)).toEqual({
-      enabled: false, scopes: [], relation: 'none',
-    });
+    expect(recovery.inventory?.[0]?.sourceState).not.toBe('ready');
   });
 
   it('reports a current-target owned component without desired intent as orphaned', async () => {
@@ -1467,6 +1523,31 @@ describe('status v8 current behavior', () => {
     expect(result.payload.targets[0]!.recoveryActions).toEqual(expect.arrayContaining([
       expect.objectContaining({ command: 'cleanup' }),
     ]));
+    const recovery = await readRecoveryStatus({ scope: 'project', cwd: isolation.layout.fixtureCwd, env });
+      expect(recovery.inventory).toEqual([]);
+      expect(recovery.extraObserved).toEqual(expect.arrayContaining([
+        expect.objectContaining({ pluginId: 'local/demo', agent: 'codex', scope: 'project',
+          backend: expect.objectContaining({ state: 'orphaned', components: expect.arrayContaining([
+          expect.objectContaining({ kind: 'ownership', state: 'partial' }),
+        ]) }) }),
+      ]));
+  });
+
+  it('keeps config-only residue with no Agent selection in extra observations', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const sourceRoot = path.join(cwd, 'config-only-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo');
+    const { env, sourceIdentity, logicalIdentity } = await configurePathSource(sourceRoot);
+    await writePluginConfigStore({ sourceId: 'local', sourceIdentity, logicalIdentity,
+      pluginName: 'demo', scope: 'project', cwd, env, values: {} });
+
+    const recovery = await readRecoveryStatus({ scope: 'project', cwd, env });
+    expect(recovery.inventory).toEqual([]);
+    expect(recovery.extraObserved).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'local/demo', agent: null, scope: 'project',
+        backend: expect.objectContaining({ kind: 'namespacedConfig' }) }),
+    ]));
   });
 
   it('keeps desired intent structured when the Catalog has no active generation', async () => {
@@ -1474,7 +1555,7 @@ describe('status v8 current behavior', () => {
     await writeIntentFixture({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'official/demo', platforms: ['codex'] }],
     });
 
@@ -1513,9 +1594,8 @@ describe('status v8 current behavior', () => {
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
     await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
-      managed: { codexPluginIds: ['demo@aw-local'] },
     });
     await writeCodexNativeResidue({
       cwd: isolation.layout.fixtureCwd, env, version: '1.0.0', userEnabled: false,
@@ -1589,7 +1669,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'invalid-intent-source');
     await createCatalogSnapshotFixture(sourceRoot);
     const { env } = await configurePathSource(sourceRoot);
-    await fs.outputFile(resolvePluginIntentStatePath({
+    await fs.outputFile(await resolveIntentPath({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env,
     }), '{ invalid intent');
 
@@ -1728,15 +1808,19 @@ describe('status v8 current behavior', () => {
     expect(await fs.pathExists(sentinel)).toBe(false);
   });
 
-  it('does not report marker-only legacy project Skill residue', async () => {
+  it('reports marker-only owned Project Skill residue without deleting foreign files', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'residue-source');
     await createCatalogSnapshotFixture(sourceRoot);
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
     const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
     const skillRoot = path.join(skillsRoot, 'removed-skill');
+    const foreignSkillRoot = path.join(skillsRoot, 'foreign-skill');
     await fs.outputFile(path.join(skillRoot, 'SKILL.md'), [
       '---', 'name: removed-skill', 'description: Removed fixture.', '---', '',
+    ].join('\n'));
+    await fs.outputFile(path.join(foreignSkillRoot, 'SKILL.md'), [
+      '---', 'name: foreign-skill', 'description: Foreign fixture.', '---', '',
     ].join('\n'));
     await writeSkillOwnerMarker({
       skillRoot,
@@ -1747,14 +1831,69 @@ describe('status v8 current behavior', () => {
         platform: 'codex', scope: 'project',
       },
     });
+    const before = await filesystemSnapshot(skillsRoot);
 
     const result = await statusCommandV8({
       cwd: isolation.layout.fixtureCwd, env,
       platform: 'codex', scope: 'project', json: true,
     });
 
-    expect(result.payload.targets).toEqual([]);
-    await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      pluginId: 'local/removed', state: 'blocked',
+      reasons: expect.arrayContaining([expect.objectContaining({ code: 'removedPluginCleanupRequired' })]),
+      recoveryActions: [expect.objectContaining({ command: 'cleanup', scope: 'project' })],
+    })]);
+    expect(result.payload.targets[0]!.placements).toEqual([expect.objectContaining({
+      scope: 'project', state: 'blocked',
+      components: [expect.objectContaining({ kind: 'intent', state: 'absent' })],
+    })]);
+    const project = await readRecoveryStatus({ scope: 'project', cwd: isolation.layout.fixtureCwd, env });
+    expect(project.inventory).toEqual([]);
+    expect(project.extraObserved).toEqual(expect.arrayContaining([expect.objectContaining({
+      pluginId: 'local/removed', agent: 'codex', scope: 'project',
+      backend: expect.objectContaining({ state: 'blocked', ownerReferences: expect.arrayContaining([
+        expect.objectContaining({ kind: 'namespacedOwner' }),
+      ]) }),
+    })]));
+    const user = await readRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd, env });
+    expect(user.inventory).toEqual([]);
+    expect(user.extraObserved.map((entry) => entry.pluginId)).not.toContain('local/removed');
+    expect(await filesystemSnapshot(skillsRoot)).toEqual(before);
+    expect(await fs.pathExists(path.join(isolation.layout.fixtureCwd,
+      '.agent-workflows', 'plugin-intents.json'))).toBe(false);
+
+    const userSkillsRoot = path.join(isolation.layout.codexHomeDir, 'skills');
+    const userSkillRoot = path.join(userSkillsRoot, 'removed-skill-user');
+    await fs.outputFile(path.join(userSkillRoot, 'SKILL.md'), [
+      '---', 'name: removed-skill-user', 'description: User fixture.', '---', '',
+    ].join('\n'));
+    await writeSkillOwnerMarker({ skillRoot: userSkillRoot, allowedRoot: userSkillsRoot, identity: {
+      owner: 'agent-workflows', sourceId: 'local', sourceIdentity,
+      pluginId: 'local/removed', plugin: 'removed', artifactKey: 'removed-skill-user',
+      platform: 'codex', scope: 'user',
+    } });
+    await fs.outputFile(path.join(resolveAwHome(env), 'plugin-config'), 'not a directory');
+    const unreadable = await readRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd, env });
+    expect(unreadable).toMatchObject({ ok: false, inventory: [], allSatisfied: true,
+      errors: [expect.objectContaining({ code: 'stateInventoryFailed' })] });
+    expect(unreadable.extraObserved).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'local/removed', scope: 'user' }),
+    ]));
+  });
+
+  it('does not invent a project for a non-repository status inspection', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = path.join(isolation.layout.rootDir, 'plain-directory');
+    await fs.ensureDir(cwd);
+    await fs.outputFile(path.join(cwd, '.agent-workflows', 'plugin-intents.json'), '{ invalid project intent');
+    const status = await statusCommandV8({ cwd, env: { ...isolation.env, PATH: '' }, json: true });
+    expect(status.projectRoot).toBeUndefined();
+    expect(status.projectIntentObservation.state).toBe('unavailable');
+    expect(status.payload.errors).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'pluginIntentStateInvalid' }),
+    ]));
+    const user = await readRecoveryStatus({ scope: 'user', cwd, env: { ...isolation.env, PATH: '' } });
+    expect(user).toMatchObject({ ok: true, scope: 'user', inventory: [], allSatisfied: true });
   });
 
   it('does not create or change files during a real status inspection', async () => {
@@ -1772,6 +1911,11 @@ describe('status v8 current behavior', () => {
         plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
         platform: 'claude', scope: 'project', json: true,
       });
+      const recovery = await readRecoveryStatus({
+        scope: 'project', cwd: isolation.layout.fixtureCwd, env,
+      });
+      expect(recovery).toMatchObject({ schemaVersion: 1, kind: 'aw-recovery-status',
+        scope: 'project', inventory: [] });
     } finally {
       setNativeCliRunnerOverrideForTests(null);
     }
@@ -1877,6 +2021,20 @@ describe('status v8 current behavior', () => {
       && call.args[4] === '--json')).toBe(true);
     const neutralCwd = calls.find((call) => call.cwd !== isolation.layout.fixtureCwd)!.cwd!;
     await expect(fs.pathExists(neutralCwd)).resolves.toBe(false);
+
+    await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+      roots: pluginNames.map((name) => ({ pluginId: `local/${name}`, platforms: ['codex'] })),
+    });
+    calls.length = 0;
+    setNativeCliRunnerOverrideForTests(withCodexVersion(nativeRunner));
+    try {
+      const recovery = await readRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd,
+        env: { ...env, PATH: binRoot } });
+      expect(recovery.inventory).toHaveLength(20);
+      expect(calls.filter((call) => call.args[0] === 'plugin')).toHaveLength(1);
+    } finally {
+      setNativeCliRunnerOverrideForTests(null);
+    }
   });
 
   it('merges exact installed with neutral absent and blocks duplicate official IDs', async () => {
@@ -1889,7 +2047,7 @@ describe('status v8 current behavior', () => {
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
     await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
     await writeCodexNativeResidue({
@@ -1952,7 +2110,7 @@ describe('status v8 current behavior', () => {
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
     await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
     await writeCodexNativeResidue({
@@ -2014,7 +2172,7 @@ describe('status v8 current behavior', () => {
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
     await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
     await writeCodexNativeResidue({
@@ -2137,7 +2295,7 @@ describe('status v8 current behavior', () => {
     });
     const { env } = await configurePathSource(sourceRoot);
     await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
     const binRoot = await writeSystemCodexPackage({
@@ -2192,7 +2350,7 @@ describe('status v8 current behavior', () => {
     });
     const { env } = await configurePathSource(sourceRoot);
     await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
     const binRoot = await writeSystemCodexPackage({
@@ -2238,7 +2396,7 @@ describe('status v8 current behavior', () => {
   ] as const)('observes a POSIX wrapper with aliased activation: %s', async (observation, state) => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = path.join(isolation.env.HOME!, 'alias-home');
-    await fs.ensureDir(cwd);
+    await fs.ensureDir(path.join(cwd, '.git'));
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'wrapper-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
@@ -2251,7 +2409,7 @@ describe('status v8 current behavior', () => {
     await fs.chmod(path.join(binRoot, 'codex'), 0o755);
     const env = { ...configured.env, PATH: binRoot, AW_CODEX_HOME: path.join(cwd, '.codex') };
     await writeIntentFixture({ scope: 'user', cwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
     await writeCodexNativeResidue({
@@ -2318,7 +2476,7 @@ describe('status v8 current behavior', () => {
     });
     const { env } = await configurePathSource(sourceRoot);
     await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
-      ...createEmptyPluginIntentState(),
+      ...createEmptyIntent(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
     });
     const binRoot = await writeSystemCodexPackage({

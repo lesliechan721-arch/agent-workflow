@@ -180,7 +180,7 @@ describe('Codex native observation session', () => {
 
     expect(new Set(neutralCwds).size).toBe(2);
     for (const cwd of new Set(neutralCwds)) {
-      expect(path.dirname(cwd)).toBe(isolation.env.TMPDIR);
+      expect(path.dirname(cwd)).toBe(await fs.realpath(isolation.env.TMPDIR!));
       await expect(fs.pathExists(cwd)).resolves.toBe(false);
     }
   });

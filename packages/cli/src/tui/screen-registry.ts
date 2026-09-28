@@ -3,7 +3,7 @@ import { hasInstalledPlacement } from './model.js';
 import type { TuiRoute } from './router.js';
 
 export const TUI_SCREEN_IDS = [
-  'G01', 'G02', 'G03', 'G04', 'G05', 'G06',
+  'G01', 'G02', 'G03', 'G04', 'G05', 'G06', 'G07', 'G08',
   'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
   'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P21', 'P22',
   'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
@@ -157,12 +157,8 @@ function resultScreen(context: RouteScreenContext): TuiScreenId {
 
 export const TUI_ROUTE_DEFINITIONS = {
   home: { entity: 'none', rendererFamily: 'home', keymap: 'menu', normalize: keep, screenId: fixed('G02') },
-  projectStatus: { entity: 'none', rendererFamily: 'home', keymap: 'menu', normalize: keep,
-    screenId: (_route, { snapshot }) => snapshot.projectIntentIssue
-      || (snapshot.projectIntentReminder?.actionableTargets.length ?? 0) === 0
-        && (snapshot.projectIntentReminder?.blockedTargets.length ?? 0) === 0
-      ? 'G06'
-      : (snapshot.projectIntentReminder?.blockedTargets.length ?? 0) > 0 ? 'T02' : 'T01' },
+  intentScopes: { entity: 'none', rendererFamily: 'home', keymap: 'menu', normalize: keep, screenId: fixed('G07') },
+  intentInventory: { entity: 'none', rendererFamily: 'home', keymap: 'menuOrTextInput', normalize: keep, screenId: fixed('G08') },
   pluginList: { entity: 'source', rendererFamily: 'pluginList', keymap: 'menuOrTextInput', normalize: (route, state) =>
     route.sourceId && !state.hasSource(route.sourceId) ? { name: 'pluginList', mode: route.mode } : route,
   screenId: (route, { controller, searchMode }) => {

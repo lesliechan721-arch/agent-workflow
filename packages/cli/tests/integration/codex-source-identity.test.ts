@@ -3,16 +3,17 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
-import { syncCommand } from '../../src/commands/sync-command.js';
-import { installWriteCommand } from '../../src/commands/write-commands.js';
+import { runRecovery } from '../../src/recovery/coordinator.js';
 import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../../src/utils/codex-config.js';
-import { readPluginIntentState, writePluginIntentState } from '../../src/utils/plugin-intent-state.js';
+import { observeIntent, resolveIntentPath, writeIntent } from '../../src/intent/intent-store.js';
+import { resolvePreferencesPath } from '../../src/intent/deployment-preferences.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
 } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import type { PluginMeta } from '../../src/types.js';
@@ -46,6 +47,19 @@ async function createNativeSource(root: string): Promise<void> {
     ),
   ]);
   await createCatalogSnapshotFixture(root, 'demo', [], 'demo\n', configure);
+}
+
+async function createTwoNativeSource(root: string): Promise<void> {
+  const plugins = ['alpha', 'beta'].map((name) => ({ name, configureManifest: (manifest: PluginMeta['manifest']) => {
+    manifest.marketplace.policy.products = ['CODEX'];
+    manifest.skills = './skills';
+  } }));
+  await createDependencyCatalogSnapshotFixture(root, plugins);
+  for (const { name } of plugins) await fs.outputFile(
+    path.join(root, 'plugins', name, 'skills', `${name}-skill`, 'SKILL.md'),
+    `---\nname: ${name}-skill\ndescription: ${name}.\n---\n`,
+  );
+  await createDependencyCatalogSnapshotFixture(root, plugins);
 }
 
 function createNativeRuntime(isolation: ReturnType<typeof getCurrentSourceTestIsolation>) {
@@ -146,6 +160,85 @@ function createNativeRuntime(isolation: ReturnType<typeof getCurrentSourceTestIs
 }
 
 describe('Codex source-qualified native identity', () => {
+  // Test Value Gate: a selected User root cannot replace a sibling shared package or read caller project state.
+  it('keeps a sibling package and ignores poisoned caller project state during User recovery', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    await git(cwd, ['init', '--quiet']);
+    const sourceRoot = path.join(cwd, 'same-marketplace-source');
+    await createTwoNativeSource(sourceRoot);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [
+      { id: 'team', type: 'path', primary: true, path: sourceRoot },
+    ] }, expectedDigest: snapshot.digest, env: isolation.env });
+    const runtime = createNativeRuntime(isolation);
+    const options = { cwd, env: isolation.env, scope: 'user' as const,
+      cliVersion: '1.0.0', targets: ['codex'], yes: true };
+    const installed = await runRecovery('install', ['team/alpha', 'team/beta'], options, runtime);
+    expect(installed.ok, JSON.stringify(installed.targetResults)).toBe(true);
+    const betaCache = path.join(isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'beta', '1.0.0');
+    const betaManifest = path.join(betaCache, '.codex-plugin', 'plugin.json');
+    const betaBytes = await fs.readFile(betaManifest);
+    const userIntentPath = path.join(isolation.env.AW_HOME!, 'plugin-intents.json');
+    const userIntentBytes = await fs.readFile(userIntentPath);
+    await fs.outputFile(path.join(cwd, '.agent-workflows', 'plugin-intents.json'), '{invalid project state');
+    await fs.outputFile(path.join(cwd, '.codex', 'config.toml'), 'invalid = [ project config');
+    const synced = await runRecovery('sync', ['team/alpha'], options, runtime);
+    expect(synced.ok, JSON.stringify(synced.targetResults)).toBe(true);
+    expect(await fs.readFile(betaManifest)).toEqual(betaBytes);
+    expect(await fs.readFile(userIntentPath)).toEqual(userIntentBytes);
+    const cleaned = await runRecovery('cleanup', ['team/alpha'], options, runtime);
+    expect(cleaned.ok, JSON.stringify(cleaned.targetResults)).toBe(true);
+    expect(await fs.readFile(betaManifest)).toEqual(betaBytes);
+    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
+      .snapshot.plugins['beta@aw']?.enabled).toBe(true);
+    expect(await fs.readFile(userIntentPath)).toEqual(userIntentBytes);
+  });
+
+  // Test Value Gate: scope-specific cleanup must preserve the other activation and shared package.
+  it('cleans only the selected Codex activation in each scope', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    await git(cwd, ['init', '--quiet']);
+    const sourceRoot = path.join(cwd, 'two-scope-source');
+    await createNativeSource(sourceRoot);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [
+      { id: 'team', type: 'path', primary: true, path: sourceRoot },
+    ] }, expectedDigest: snapshot.digest, env: isolation.env });
+    const runtime = createNativeRuntime(isolation);
+    const options = (scope: 'user' | 'project') => ({ cwd, env: isolation.env, scope,
+      cliVersion: '1.0.0', targets: ['codex'], yes: true });
+    expect((await runRecovery('install', ['team/demo'], options('user'), runtime)).ok).toBe(true);
+    const projectInstall = await runRecovery('install', ['team/demo'], options('project'), runtime);
+    expect(projectInstall.ok, JSON.stringify(projectInstall.targetResults)).toBe(true);
+    const strongPaths = await Promise.all((['user', 'project'] as const).flatMap((scope) => [
+      resolveIntentPath({ scope, cwd, env: isolation.env }),
+      resolvePreferencesPath({ scope, cwd, env: isolation.env }),
+    ]));
+    const strongBytes = await Promise.all(strongPaths.map((file) => fs.readFile(file).catch(() => null)));
+    const cacheManifest = path.join(isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo',
+      '1.0.0', '.codex-plugin', 'plugin.json');
+    const packageBytes = await fs.readFile(cacheManifest);
+    const projectCleanup = await runRecovery('cleanup', ['team/demo'], options('project'), runtime);
+    expect(projectCleanup.ok, JSON.stringify(projectCleanup.targetResults)).toBe(true);
+    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
+      .snapshot.plugins['demo@aw']?.enabled).toBe(true);
+    expect(await fs.readFile(cacheManifest)).toEqual(packageBytes);
+    expect(await Promise.all(strongPaths.map((file) => fs.readFile(file).catch(() => null))))
+      .toEqual(strongBytes);
+
+    expect((await runRecovery('sync', ['team/demo'], options('project'), runtime)).ok).toBe(true);
+    const projectConfigPath = path.join(cwd, '.codex', 'config.toml');
+    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins['demo@aw']?.enabled).toBe(true);
+    const userCleanup = await runRecovery('cleanup', ['team/demo'], options('user'), runtime);
+    expect(userCleanup.ok, JSON.stringify(userCleanup.targetResults)).toBe(true);
+    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins['demo@aw']?.enabled).toBe(true);
+    expect(await fs.readFile(cacheManifest)).toEqual(packageBytes);
+    expect(await Promise.all(strongPaths.map((file) => fs.readFile(file).catch(() => null))))
+      .toEqual(strongBytes);
+  });
+
   it('syncs one same-name source without changing the other activation or root intent', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const baseRoot = path.join(isolation.layout.fixtureCwd, 'base-source');
@@ -170,12 +263,11 @@ describe('Codex source-qualified native identity', () => {
       env: isolation.env,
     });
     const runtime = createNativeRuntime(isolation);
-    const installed = await installWriteCommand(['first/demo', 'second/demo'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'user',
+    const installed = await runRecovery('install', ['first/demo', 'second/demo'], {
+      cwd: isolation.layout.fixtureCwd, scope: 'user', cliVersion: '1.0.0',
+      targets: ['codex'], yes: true,
     }, runtime);
-    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    expect(installed.ok, JSON.stringify(installed.targetResults)).toBe(true);
     const configPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
     await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
       snapshot: {
@@ -185,25 +277,22 @@ describe('Codex source-qualified native identity', () => {
         },
       },
     });
-    await expect(readPluginIntentState({
+    await expect(observeIntent({
       scope: 'user',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     })).resolves.toMatchObject({
-      roots: [
-        { pluginId: 'first/demo', platforms: ['codex'] },
-        { pluginId: 'second/demo', platforms: ['codex'] },
-      ],
+      state: 'valid', value: { roots: [
+        { pluginId: 'first/demo' },
+        { pluginId: 'second/demo' },
+      ] },
     });
 
-    const synced = await syncCommand(['first/demo'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'codex',
-      scope: 'user',
-      interactive: false,
+    const synced = await runRecovery('sync', ['first/demo'], {
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, scope: 'user',
+      cliVersion: '1.0.0', targets: ['codex'], yes: true,
     }, runtime);
-    expect(synced.overallState, JSON.stringify(synced.rebuildResults)).toBe('succeeded');
+    expect(synced.ok, JSON.stringify(synced.targetResults)).toBe(true);
     await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
       snapshot: {
         plugins: {
@@ -212,15 +301,15 @@ describe('Codex source-qualified native identity', () => {
         },
       },
     });
-    await expect(readPluginIntentState({
+    await expect(observeIntent({
       scope: 'user',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     })).resolves.toMatchObject({
-      roots: [
-        { pluginId: 'first/demo', platforms: ['codex'] },
-        { pluginId: 'second/demo', platforms: ['codex'] },
-      ],
+      state: 'valid', value: { roots: [
+        { pluginId: 'first/demo' },
+        { pluginId: 'second/demo' },
+      ] },
     });
   });
 
@@ -248,39 +337,35 @@ describe('Codex source-qualified native identity', () => {
       env: isolation.env,
     });
     const runtime = createNativeRuntime(isolation);
-    const installed = await installWriteCommand(['first/demo', 'second/demo'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'user',
+    const installed = await runRecovery('install', ['first/demo', 'second/demo'], {
+      cwd: isolation.layout.fixtureCwd, scope: 'user', cliVersion: '1.0.0',
+      targets: ['codex'], yes: true,
     }, runtime);
-    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    expect(installed.ok, JSON.stringify(installed.targetResults)).toBe(true);
     const intentLocation = {
       scope: 'user' as const,
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     };
-    const intent = await readPluginIntentState(intentLocation);
-    await writePluginIntentState(intentLocation, {
-      ...intent,
-      roots: intent.roots.filter((root) => root.pluginId === 'second/demo'),
+    const intent = await observeIntent(intentLocation);
+    expect(intent.state).toBe('valid');
+    if (intent.state !== 'valid') throw new Error('Fixture intent missing');
+    await writeIntent(intentLocation, {
+      ...intent.value, roots: intent.value.roots.filter((root) => root.pluginId === 'second/demo'),
     });
 
-    const synced = await syncCommand([], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'codex',
-      scope: 'user',
-      all: true,
-      interactive: false,
+    const synced = await runRecovery('sync', [], {
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, scope: 'user',
+      cliVersion: '1.0.0', targets: ['codex'], all: true, yes: true,
     }, runtime);
 
-    expect(synced.overallState, JSON.stringify(synced.rebuildResults)).toBe('succeeded');
-    expect(synced.dependencyPlan?.requestedPluginIds).toEqual(['second/demo']);
+    expect(synced.ok, JSON.stringify(synced.targetResults)).toBe(true);
+    expect(synced.requestedRoots).toEqual(['second/demo']);
     const config = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
     expect(config.snapshot.plugins['demo@aw-first']?.enabled).toBe(true);
     expect(config.snapshot.plugins['demo@aw-second']?.enabled).toBe(true);
-    await expect(readPluginIntentState(intentLocation)).resolves.toMatchObject({
-      roots: [{ pluginId: 'second/demo', platforms: ['codex'] }],
+    await expect(observeIntent(intentLocation)).resolves.toMatchObject({
+      state: 'valid', value: { roots: [{ pluginId: 'second/demo' }] },
     });
   });
 
@@ -305,19 +390,18 @@ describe('Codex source-qualified native identity', () => {
       env: isolation.env,
     });
     const runtime = createNativeRuntime(isolation);
-    const installed = await installWriteCommand(['first/demo'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'user',
+    const installed = await runRecovery('install', ['first/demo'], {
+      cwd: isolation.layout.fixtureCwd, scope: 'user', cliVersion: '1.0.0',
+      targets: ['codex'], yes: true,
     }, runtime);
-    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    expect(installed.ok, JSON.stringify(installed.targetResults)).toBe(true);
     const intentLocation = {
       scope: 'user' as const,
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     };
-    await expect(readPluginIntentState(intentLocation)).resolves.toMatchObject({
-      roots: [{ pluginId: 'first/demo', platforms: ['codex'] }],
+    await expect(observeIntent(intentLocation)).resolves.toMatchObject({
+      state: 'valid', value: { roots: [{ pluginId: 'first/demo' }] },
     });
 
     const current = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -333,22 +417,18 @@ describe('Codex source-qualified native identity', () => {
       env: isolation.env,
     });
 
-    const synced = await syncCommand([], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'codex',
-      scope: 'user',
-      all: true,
-      interactive: false,
+    const synced = await runRecovery('sync', [], {
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, scope: 'user',
+      cliVersion: '1.0.0', targets: ['codex'], all: true, yes: true,
     }, runtime);
 
-    expect(synced.overallState, JSON.stringify(synced.rebuildResults)).toBe('succeeded');
-    expect(synced.dependencyPlan?.requestedPluginIds).toEqual(['first/demo']);
+    expect(synced.ok, JSON.stringify(synced.targetResults)).toBe(true);
+    expect(synced.requestedRoots).toEqual(['first/demo']);
     const config = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
     expect(config.snapshot.plugins['demo@aw']?.enabled).toBe(true);
     expect(config.snapshot.plugins['demo@aw-first']).toBeUndefined();
-    await expect(readPluginIntentState(intentLocation)).resolves.toMatchObject({
-      roots: [{ pluginId: 'first/demo', platforms: ['codex'] }],
+    await expect(observeIntent(intentLocation)).resolves.toMatchObject({
+      state: 'valid', value: { roots: [{ pluginId: 'first/demo' }] },
     });
     expect(runtime.nativeCliRunner.mock.calls.some(([invocation]) => {
       const pluginIndex = invocation.args.indexOf('plugin');

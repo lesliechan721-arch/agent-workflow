@@ -24,6 +24,11 @@ export function platformLabel(platform: PlatformName): string {
   return platform === 'codex' ? 'Codex' : 'Claude Code';
 }
 
+export function agentLabel(agent: string): string {
+  return agent === 'codex' ? 'Codex' : agent === 'claude-code' ? 'Claude Code'
+    : agent === 'cursor' ? 'Cursor' : agent;
+}
+
 export function scopeLabel(scope: Scope): string {
   return scope === 'user' ? '所有项目' : '当前项目';
 }

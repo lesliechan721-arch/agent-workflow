@@ -7,6 +7,7 @@ import fs from 'fs-extra';
 import { readAwSourceBinding, type AwSourceBindingV2 } from '../review/source-binding.js';
 import type { PortableMaterializeReceipt } from './commands.js';
 import { validatePortableSkillName } from '../utils/dynamic-skill-tree.js';
+import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
 
 export interface HistoricalPortableMaterialization {
   rootDir: string;
@@ -64,29 +65,30 @@ export async function portableSkillTreeDigest(root: string): Promise<string> {
 
 /** Validate the old generation itself without applying current Workspace inputs. */
 export async function readHistoricalPortableMaterialization(options: {
-  projectRoot: string;
+  generationRoot: string;
+  scope: 'user' | 'project';
   rootDir: string;
   pluginId?: string;
   logicalIdentity?: string;
 }): Promise<HistoricalPortableMaterialization> {
-  const base = path.join(options.projectRoot, '.agent-workflows', '.local', 'portable');
-  if (!await assertPortablePath(options.projectRoot, options.rootDir)
-    || !await assertPortablePath(base, options.rootDir)
-    || path.relative(base, options.rootDir).split(path.sep).length !== 2) {
+  const base = await canonicalizePathThroughExistingAncestor(options.generationRoot);
+  const rootDir = await canonicalizePathThroughExistingAncestor(options.rootDir);
+  if (!await assertPortablePath(base, rootDir)
+    || path.relative(base, rootDir).split(path.sep).length !== 2) {
     throw new Error('portableOutputConflict');
   }
   for (const name of ['.aw-materialization.json', 'aw-source-binding.json']) {
-    const info = await fs.lstat(path.join(options.rootDir, name));
+    const info = await fs.lstat(path.join(rootDir, name));
     if (!info.isFile() || info.isSymbolicLink()) throw new Error('portableOutputConflict');
   }
-  const binding = await readAwSourceBinding(path.join(options.rootDir, 'aw-source-binding.json'));
-  const marker = await fs.readJson(path.join(options.rootDir, '.aw-materialization.json')) as
+  const binding = await readAwSourceBinding(path.join(rootDir, 'aw-source-binding.json'));
+  const marker = await fs.readJson(path.join(rootDir, '.aw-materialization.json')) as
     PortableMaterializeReceipt & { schemaVersion: number; config?: { pluginConfigDigest?: string } };
   if (binding.source.kind !== 'catalog-snapshot' || binding.profile.kind !== 'portable'
-    || binding.profile.scope !== 'project'
+    || binding.profile.scope !== options.scope
     || (options.logicalIdentity !== undefined && binding.source.logicalIdentity !== options.logicalIdentity)
     || marker.schemaVersion !== 1 || marker.receiptSchemaVersion !== 5
-    || marker.command !== 'skill:materialize' || marker.scope !== 'project'
+    || marker.command !== 'skill:materialize' || marker.scope !== options.scope
     || typeof marker.plugin?.id !== 'string'
     || (options.pluginId !== undefined && marker.plugin.id !== options.pluginId)
     || marker.plugin.id !== `${binding.source.sourceId}/${binding.subject.plugin}`
@@ -109,18 +111,18 @@ export async function readHistoricalPortableMaterialization(options: {
       || candidate.providerPluginId !== `${binding.source.sourceId}/${artifact.plugin}`) {
       throw new Error('portableOutputConflict');
     }
-    const skillPath = path.join(options.rootDir, artifact.path);
-    await assertPortablePath(options.rootDir, skillPath);
+    const skillPath = path.join(rootDir, artifact.path);
+    await assertPortablePath(rootDir, skillPath);
     if (await portableSkillTreeDigest(skillPath) !== candidate.filesDigest
       || await computeSkillDigest(skillPath) !== artifact.digest) throw new Error('portableOutputConflict');
   }
-  const children = await fs.readdir(path.join(options.rootDir, 'skills'));
+  const children = await fs.readdir(path.join(rootDir, 'skills'));
   if (children.length !== names.size || children.some((name) => !names.has(name))
     || marker.outputDigest !== portableJsonDigest(marker.selectedSkills.map((entry) => [entry.name, entry.filesDigest]))
     || marker.materializationDigest !== marker.outputDigest) throw new Error('portableOutputConflict');
-  const rootChildren = await fs.readdir(options.rootDir);
+  const rootChildren = await fs.readdir(rootDir);
   if (rootChildren.some((name) => !['skills', '.aw-materialization.json', 'aw-source-binding.json'].includes(name))) {
     throw new Error('portableOutputConflict');
   }
-  return { rootDir: options.rootDir, marker, binding };
+  return { rootDir, marker, binding };
 }

@@ -17,11 +17,7 @@ import {
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
-import {
-  createEmptyPluginIntentState,
-  upsertPluginIntentRoot,
-  writePluginIntentState,
-} from '../../src/utils/plugin-intent-state.js';
+import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { rewriteActiveCatalogCapabilities } from '../helpers/catalog-source-fixture.js';
 
@@ -250,10 +246,9 @@ describe('Catalog Workspace development source', () => {
     const initial = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
     expect(initial.exitCode, initial.stderr).toBe(0);
     const sourceId = initial.receipt.source.id as string;
-    await writePluginIntentState({ scope: 'user', cwd: workspaceRoot, env }, upsertPluginIntentRoot(
-      createEmptyPluginIntentState(),
-      { pluginId: `${sourceId}/dev-demo`, platforms: ['codex'] },
-    ));
+    await writeIntentFixture({ scope: 'user', cwd: workspaceRoot, env }, {
+      roots: [{ pluginId: `${sourceId}/dev-demo`, platforms: ['codex'] }],
+    });
     const manifestPath = path.join(
       workspaceRoot, 'plugins', 'dev-demo', '.agents-plugin', 'plugin.json',
     );
@@ -284,10 +279,9 @@ describe('Catalog Workspace development source', () => {
     expect(activated.exitCode, activated.stderr).toBe(0);
     const sourceId = activated.receipt.source.id as string;
     if (fixtureKind === 'lifecycle intent') {
-      await writePluginIntentState({ scope: 'user', cwd: workspaceRoot, env }, upsertPluginIntentRoot(
-        createEmptyPluginIntentState(),
-        { pluginId: `${sourceId}/dev-demo`, platforms: ['codex'] },
-      ));
+      await writeIntentFixture({ scope: 'user', cwd: workspaceRoot, env }, {
+        roots: [{ pluginId: `${sourceId}/dev-demo`, platforms: ['codex'] }],
+      });
     } else if (fixtureKind === 'plugin config') {
       const source = (await readCatalogSourcesConfigSnapshot(env)).config.sources
         .find((entry) => entry.id === sourceId);
@@ -355,10 +349,9 @@ describe('Catalog Workspace development source', () => {
     ], workspaceRoot, env);
     expect(activated.exitCode, activated.stderr).toBe(0);
     const sourceId = activated.receipt.source.id as string;
-    await writePluginIntentState({ scope: 'user', cwd: workspaceRoot, env }, upsertPluginIntentRoot(
-      createEmptyPluginIntentState(),
-      { pluginId: `${sourceId}/dev-demo`, platforms: ['codex'] },
-    ));
+    await writeIntentFixture({ scope: 'user', cwd: workspaceRoot, env }, {
+      roots: [{ pluginId: `${sourceId}/dev-demo`, platforms: ['codex'] }],
+    });
     const before = await readCatalogSourcesConfigSnapshot(env);
 
     const blocked = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
@@ -430,10 +423,9 @@ describe('Catalog Workspace development source', () => {
       runtime: {
         sourceRuntime: {
           afterImpactInspected: async () => {
-            await writePluginIntentState({ scope: 'user', cwd: workspaceRoot, env }, upsertPluginIntentRoot(
-              createEmptyPluginIntentState(),
-              { pluginId: `${sourceId}/dev-demo`, platforms: ['codex'] },
-            ));
+            await writeIntentFixture({ scope: 'user', cwd: workspaceRoot, env }, {
+              roots: [{ pluginId: `${sourceId}/dev-demo`, platforms: ['codex'] }],
+            });
           },
         },
       },

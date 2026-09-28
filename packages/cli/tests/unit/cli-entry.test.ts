@@ -15,7 +15,7 @@ function capture() {
   };
 }
 
-describe('CLI entry v5', () => {
+describe('CLI entry', () => {
   it('publishes the write commands plus sync, status, and config', async () => {
     const output = capture();
     expect(await runCli(['--help'], { io: output.io })).toBe(0);
@@ -25,7 +25,8 @@ describe('CLI entry v5', () => {
       'uninstall',
       'cleanup',
       'sync',
-      'project',
+      'intent',
+      'targets',
       'status',
       'config',
       'plugin',
@@ -34,38 +35,32 @@ describe('CLI entry v5', () => {
     ]) {
       expect(output.stdout()).toContain(command);
     }
+    expect(output.stdout()).not.toMatch(/^\s+project\s/mu);
   });
 
-  it('publishes Codex sync selection and stable non-interactive failure', async () => {
+  it('requires a scope and supports exact repeated Agent selection', async () => {
     const help = capture();
     expect(await runCli(['sync', '--help'], { io: help.io })).toBe(0);
     expect(help.stdout()).toContain('--all');
+    expect(help.stdout()).toContain('--scope <scope>');
+    expect(help.stdout()).toContain('--target <agent>');
     expect(help.stdout()).toContain('--yes');
     expect(help.stdout()).toContain('--allow-managed-codex-install');
+    expect(help.stdout()).not.toContain('--platform');
 
-    const conflict = capture();
-    expect(await runCli([
-      'sync', 'official/demo', '--all', '--platform', 'codex', '--scope', 'project', '--json',
-    ], { interactive: false, io: conflict.io })).toBe(1);
-    expect(JSON.parse(conflict.stdout())).toMatchObject({
-      schemaVersion: 1,
-      kind: 'aw-project-recovery',
-      command: 'sync',
-      ok: false,
-      blockers: [{ code: 'syncSelectorConflict' }],
+    const missing = capture();
+    expect(await runCli(['sync', '--all', '--json'], { interactive: false, io: missing.io }))
+      .toBe(2);
+    expect(JSON.parse(missing.stdout())).toMatchObject({
+      kind: 'aw-recovery', scope: null, errors: [{ code: 'invalidArguments',
+        message: expect.stringContaining('--scope') }],
     });
 
-    const empty = capture();
-    expect(await runCli([
-      'sync', '--platform', 'codex', '--scope', 'project', '--json',
-    ], { interactive: false, io: empty.io })).toBe(0);
-    expect(JSON.parse(empty.stdout())).toMatchObject({
-      schemaVersion: 1,
-      kind: 'aw-project-recovery',
-      ok: true,
-      command: 'sync',
-      requestedRoots: [],
-    });
+    const removed = capture();
+    expect(await runCli(['sync', '--all', '--scope', 'user', '-p', 'both'], {
+      interactive: false, io: removed.io,
+    })).toBe(2);
+    expect(removed.stderr()).toContain("unknown option '-p'");
   });
 
   it.each(['install', 'reinstall', 'uninstall', 'cleanup'])(
@@ -77,10 +72,14 @@ describe('CLI entry v5', () => {
     },
   );
 
-  it('publishes repeatable dependency placement on install only', async () => {
+  it('publishes one-time dependency placement on recovery commands that can install', async () => {
     const install = capture();
     expect(await runCli(['install', '--help'], { io: install.io })).toBe(0);
     expect(install.stdout()).toContain('--dependency-scope');
+
+    const sync = capture();
+    expect(await runCli(['sync', '--help'], { io: sync.io })).toBe(0);
+    expect(sync.stdout()).toContain('--dependency-scope');
 
     const uninstall = capture();
     expect(await runCli(['uninstall', '--help'], { io: uninstall.io })).toBe(0);
@@ -111,7 +110,10 @@ describe('CLI entry v5', () => {
     const output = capture();
     expect(await runCli(['cleanup', '--help'], { io: output.io })).toBe(0);
     expect(output.stdout()).toContain('--yes');
-    expect(output.stdout()).toContain('Codex, Claude Code, user and current project');
+    expect(output.stdout()).toContain('--force');
+    const retire = capture();
+    expect(await runCli(['intent', 'retire', '--help'], { io: retire.io })).toBe(0);
+    expect(retire.stdout()).toContain('--delete-config');
   });
 
   it('asks once at the first interactive managed Codex acquisition', async () => {
@@ -237,8 +239,8 @@ describe('CLI entry v5', () => {
   it('rejects legacy cleanup flags at Commander parsing', async () => {
     const output = capture();
     expect(await runCli([
-      'cleanup', 'git-commit', '-p', 'codex', '-s', 'user', '--dependency-index',
-    ], { io: output.io })).toBe(1);
+      'cleanup', 'git-commit', '--scope', 'user', '--target', 'codex', '--dependency-index',
+    ], { io: output.io })).toBe(2);
     expect(output.stderr()).toContain("unknown option '--dependency-index'");
   });
 
@@ -247,11 +249,11 @@ describe('CLI entry v5', () => {
     ['uninstall'],
     ['reinstall'],
     ['cleanup'],
-  ])('prints usage before starting the non-interactive %s write path', async (command) => {
+  ])('requires a scope before starting the non-interactive %s write path', async (command) => {
     const output = capture();
-    expect(await runCli([command], { interactive: false, io: output.io })).toBe(1);
+    expect(await runCli([command], { interactive: false, io: output.io })).toBe(2);
     expect(output.stdout()).toBe('');
-    expect(output.stderr()).toContain(`Usage: aw ${command}`);
+    expect(output.stderr()).toContain("required option '--scope <scope>'");
     expect(output.stdout()).not.toContain('\u001B[');
   });
 
@@ -300,14 +302,15 @@ describe('CLI entry v5', () => {
     stderr,
   }) => {
     const output = capture();
-    expect(await runCli(argv, { interactive: true, io: output.io })).toBe(1);
-    expect(JSON.parse(output.stdout())).toMatchObject({
-      ok: false,
-      command: receiptCommand,
-      receiptSchemaVersion: receiptCommand === 'config:set' ? 7 : 6,
-      overallState: 'failed',
-      ...(receiptCommand === 'config:set' ? { configWrite: 'notStarted' } : {}),
+    expect(await runCli(argv, { interactive: true, io: output.io }))
+      .toBe(receiptCommand === 'config:set' ? 1 : 2);
+    expect(JSON.parse(output.stdout())).toMatchObject(receiptCommand === 'config:set' ? {
+      ok: false, command: receiptCommand, receiptSchemaVersion: 7,
+      overallState: 'failed', configWrite: 'notStarted',
       errors: [{ code: 'invalidArguments', message: expect.stringContaining(usage) }],
+    } : {
+      schemaVersion: 1, kind: 'aw-recovery', command: receiptCommand, ok: false,
+      errors: [{ code: 'invalidArguments', message: expect.stringContaining('--scope') }],
     });
     if (stderr === 'usage') expect(output.stderr()).toContain(usage);
     else expect(output.stderr()).toBe(stderr);
@@ -316,14 +319,14 @@ describe('CLI entry v5', () => {
   it.each([
     { name: 'write CI', argv: ['install'] },
     { name: 'config CI', argv: ['config', 'set'] },
-  ])('fails closed without starting a TUI for $name', async ({ argv }) => {
+  ])('fails closed without starting a TUI for $name', async ({ argv, name }) => {
     const output = capture();
     expect(await runCli(argv, {
       interactive: true,
       env: { ...process.env, CI: '1' },
       io: output.io,
-    })).toBe(1);
-    expect(`${output.stdout()}${output.stderr()}`).toContain('Usage:');
+    })).toBe(name === 'write CI' ? 2 : 1);
+    expect(`${output.stdout()}${output.stderr()}`).toContain(name === 'write CI' ? '--scope' : 'Usage:');
     expect(`${output.stdout()}${output.stderr()}`).not.toContain('\u001B[');
   });
 });

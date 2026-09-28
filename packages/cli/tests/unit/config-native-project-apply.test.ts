@@ -22,6 +22,10 @@ const statusCommandV8 = vi.hoisted(() => vi.fn(async () => ({
         key: 'desired',
         state: 'desired',
         metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+      }, {
+        kind: 'ownership' as const,
+        key: 'project-skill',
+        state: 'present',
       }],
       reasons: [],
       recoveryActions: [],
@@ -183,7 +187,7 @@ describe('Claude project renderer config apply', () => {
     expect(reinstallCommandImpl).toHaveBeenCalledTimes(1);
     expect(reinstallCommandImpl).toHaveBeenCalledWith(
       ['claude-native-only'],
-      expect.objectContaining({ platform: 'claude', scope: 'project', cwd: fixture.cwd }),
+      expect.objectContaining({ platform: 'claude', scope: 'project', cwd: await fs.realpath(fixture.cwd) }),
       expect.any(Object),
     );
   });

@@ -3,10 +3,10 @@
 创建、评审和简化 Agent Skill，并审核 Eval 与跨组件架构。安装时会同时满足 `agent-content-toolkit` 依赖。
 
 ```bash
-aw install agent-skill-toolkit -p codex
+aw install agent-skill-toolkit --scope user --target codex
 ```
 
-也支持 Claude，可将平台改为 `claude`。
+也支持 Claude Code，可改用 `--target claude-code`。
 
 | Skill | 适用任务 |
 | --- | --- |

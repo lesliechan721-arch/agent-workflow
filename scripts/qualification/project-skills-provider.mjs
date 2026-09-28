@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 const VERSION = '1.5.23'
 const INTEGRITY = 'sha512-+hMNBSi35yfX0sKD+ZcRm9y5or7u313OdkcvrRvJAsAzGCaA8wRTu2OmVdN0KRbk9ybqKby5dijkn6OVvNTUmw=='
 const here = path.dirname(fileURLToPath(import.meta.url))
-const defaultReport = path.resolve(here, '../../.dev-workflows/project-plugin-recovery/qualification-provider-report.json')
+const defaultReport = path.resolve(here, '../../.dev-workflows/user-plugin-recovery/qualification-provider.json')
 const SKILL = 'aw-qualification-probe'
 const AGENTS = ['codex', 'claude-code', 'cursor']
 const DISPLAY = ['Claude Code', 'Codex', 'Cursor']
@@ -103,6 +103,28 @@ function contentTree(items) {
   return items.map(({ path: name, kind, sha256, target }) => ({ path: name, kind, ...(sha256 ? { sha256 } : {}), ...(target ? { target } : {}) }))
 }
 function same(a, b) { return JSON.stringify(a) === JSON.stringify(b) }
+function redactPaths(value, redact) {
+  if (Array.isArray(value)) return value.map(item => redactPaths(item, redact))
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactPaths(item, redact)]))
+  return redact(value)
+}
+
+function environmentPaths(env, redact) {
+  return Object.fromEntries(['HOME', 'USERPROFILE', 'AW_HOME', 'AW_CODEX_HOME', 'AW_CLAUDE_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'TMPDIR'].map(key => [key, env[key] ? redact(env[key]) : null]))
+}
+
+function globalLockPath(env) {
+  return env.XDG_STATE_HOME ? path.join(env.XDG_STATE_HOME, 'skills', '.skill-lock.json') : path.join(env.HOME, '.agents', '.skill-lock.json')
+}
+
+async function readLockProjection(file, redact) {
+  const raw = await fs.readFile(file, 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error))
+  if (raw === null) return { kind: 'missing' }
+  try {
+    const parsed = JSON.parse(raw)
+    return { kind: 'json', value: redactPaths(parsed, redact) }
+  } catch { return { kind: 'invalid', sha256: hash(raw) } }
+}
 
 async function prepareRoot(root) {
   const env = isolatedEnvironment(root)
@@ -161,8 +183,9 @@ export async function runQualification({ cli: providedCli, reportPath = defaultR
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skills-qualification-'))
   const realRoot = await fs.realpath(root)
   const redact = value => {
-    if (typeof value !== 'string' || !path.isAbsolute(value)) return value
+    if (typeof value !== 'string') return value
     for (const prefix of [realRoot, root]) if (value === prefix || value.startsWith(`${prefix}${path.sep}`)) return `<temporary-root>${value.slice(prefix.length)}`
+    for (const prefix of [realRoot, root]) if (value.includes(prefix.slice(1))) return value.replaceAll(prefix.slice(1), '<temporary-root-relative>')
     return value
   }
   const report = {
@@ -171,24 +194,25 @@ export async function runQualification({ cli: providedCli, reportPath = defaultR
     environment: { os: process.platform, release: os.release(), arch: process.arch, node: process.version, consumerLoadTested: false },
     package: null, agents: { ids: AGENTS, displayNames: DISPLAY },
     qualifiedContent: {
-      scope: 'local-project-copy-with-prewrite-filter',
+      scope: 'local-project-and-global-copy-with-prewrite-filter',
       observedCompleteTree: false,
       validMetadataJsonDropped: null,
+      excludedGlobalEntriesDropped: null,
       excludedFileBasenames: ['metadata.json'],
       excludedDirectoryBasenames: ['.git', '__pycache__', '__pypackages__'],
-      exclusionEvidence: 'metadata.json observed; remaining names in official skills v1.5.23 installer source',
+      exclusionEvidence: 'all listed names observed in real global copies; project metadata.json observed',
       affectedPluginAction: 'reject-before-provider-write',
       realConsumerLoad: 'unverified',
     },
-    cases: {}, requiredGuards: [], blockers: [], cleanup: null,
+    cases: {}, requiredGuards: [], blockers: [], evidenceGaps: ['real-agent-consumer-load', 'windows', 'linux', 'relative-home-paths'], cleanup: null,
   }
   try {
     const env = await prepareRoot(root)
     const { cli, evidence } = providedCli ? { cli: providedCli, evidence: { version: VERSION, source: fake ? 'test-fake' : 'provided' } } : await acquireOfficial(root, env)
     report.package = evidence
-    async function call(label, args, cwd, timeoutMs) {
-      const result = await boundedCommand(process.execPath, [cli, ...args], { cwd, env, timeoutMs })
-      report.cases[label] = { args: args.map(redact), exitCode: result.code, signal: result.signal, errorCode: result.errorCode, timedOut: result.timedOut, durationMs: result.durationMs }
+    async function call(label, args, cwd, timeoutMs, commandEnv = env) {
+      const result = await boundedCommand(process.execPath, [cli, ...args], { cwd, env: commandEnv, timeoutMs })
+      report.cases[label] = { args: args.map(redact), cwd: redact(cwd), environment: environmentPaths(commandEnv, redact), exitCode: result.code, signal: result.signal, errorCode: result.errorCode, timedOut: result.timedOut, durationMs: result.durationMs }
       return result
     }
     const version = await call('version', ['--version'], root)
@@ -230,19 +254,110 @@ export async function runQualification({ cli: providedCli, reportPath = defaultR
     const collisionRun = await call('sameNameCollision', addArgs, collision)
     report.cases.sameNameCollision.observed = { canonicalForeignRemains: (await tree(path.join(collision, '.agents', 'skills', SKILL))).some(item => item.path === 'foreign.txt'), claudeForeignRemains: (await tree(path.join(collision, '.claude', 'skills', SKILL))).some(item => item.path === 'foreign.txt') }
     const global = await project(root, 'global-cwd')
+    const foreignGlobal = { source: 'foreign/source', sourceType: 'github', sourceUrl: 'https://example.invalid/foreign', skillPath: 'skills/foreign', skillFolderHash: 'foreign-hash', installedAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z' }
+    const globalInitialLock = { version: 3, skills: { 'foreign-skill': foreignGlobal }, dismissed: { findSkillsPrompt: true }, lastSelectedAgents: ['cursor'] }
+    const xdgLockPath = globalLockPath(env)
+    await write(xdgLockPath, `${JSON.stringify(globalInitialLock)}\n`)
+    const projectBeforeGlobal = { canonical: contentTree(await tree(canonical)), claudeCode: contentTree(await tree(claude)), lock: await readLockProjection(path.join(main, 'skills-lock.json'), redact) }
     const globalRun = await call('globalAdd', [...addArgs, '--global'], global)
     const globalList = await call('globalList', ['list', '--json', '--global'], global)
-    report.cases.globalAdd.observed = { canonical: contentTree(await tree(path.join(env.HOME, '.agents', 'skills', SKILL))), claudeCode: contentTree(await tree(path.join(env.CLAUDE_CONFIG_DIR, 'skills', SKILL))), projectCanonical: contentTree(await tree(path.join(global, '.agents', 'skills', SKILL))) }
-    report.cases.globalList.observed = globalList.code === 0 ? JSON.parse(globalList.stdout).filter(entry => entry.name === SKILL).map(entry => ({ name: entry.name, scope: entry.scope, agents: entry.agents, path: redact(entry.path) })) : null
+    const globalLock = await readLockProjection(xdgLockPath, redact)
+    report.cases.globalAdd.observed = { canonical: contentTree(await tree(path.join(env.HOME, '.agents', 'skills', SKILL))), claudeCode: contentTree(await tree(path.join(env.CLAUDE_CONFIG_DIR, 'skills', SKILL))), codexSpecific: contentTree(await tree(path.join(env.CODEX_HOME, 'skills', SKILL))), cursorSpecific: contentTree(await tree(path.join(env.HOME, '.cursor', 'skills', SKILL))), projectCanonical: contentTree(await tree(path.join(global, '.agents', 'skills', SKILL))), projectLock: await readLockProjection(path.join(global, 'skills-lock.json'), redact), defaultGlobalLock: await readLockProjection(path.join(env.HOME, '.agents', '.skill-lock.json'), redact), lockPath: redact(xdgLockPath), lockBefore: redactPaths(globalInitialLock, redact), lockAfter: globalLock, projectBeforeGlobal, projectAfterGlobal: { canonical: contentTree(await tree(canonical)), claudeCode: contentTree(await tree(claude)), lock: await readLockProjection(path.join(main, 'skills-lock.json'), redact) } }
+    report.cases.globalList.observed = globalList.code === 0 ? JSON.parse(globalList.stdout).filter(entry => entry.name === SKILL).map(entry => ({ name: entry.name, scope: entry.scope, agents: entry.agents, path: redact(entry.path), source: redact(entry.source) })) : null
+    const beforeGlobalRepeat = { canonical: await tree(path.join(env.HOME, '.agents', 'skills', SKILL)), claudeCode: await tree(path.join(env.CLAUDE_CONFIG_DIR, 'skills', SKILL)) }
+    await new Promise(resolve => setTimeout(resolve, 1200))
+    const repeatedGlobal = await call('globalRepeatAdd', [...addArgs, '--global'], global)
+    report.cases.globalRepeatAdd.observed = { rewroteCanonical: !same(beforeGlobalRepeat.canonical, await tree(path.join(env.HOME, '.agents', 'skills', SKILL))), rewroteClaude: !same(beforeGlobalRepeat.claudeCode, await tree(path.join(env.CLAUDE_CONFIG_DIR, 'skills', SKILL))), lockAfter: await readLockProjection(xdgLockPath, redact) }
+    const defaultRoot = path.join(root, 'default-global')
+    const defaultEnv = await prepareRoot(defaultRoot)
+    delete defaultEnv.XDG_STATE_HOME
+    delete defaultEnv.CLAUDE_CONFIG_DIR
+    const defaultCwd = await project(defaultRoot, 'neutral-cwd')
+    const defaultLockPath = globalLockPath(defaultEnv)
+    await write(defaultLockPath, `${JSON.stringify(globalInitialLock)}\n`)
+    const defaultAdd = await call('globalDefaultAdd', [...addArgs, '--global'], defaultCwd, undefined, defaultEnv)
+    const defaultListed = await call('globalDefaultList', ['list', '--json', '--global'], defaultCwd, undefined, defaultEnv)
+    const defaultObserved = {
+      canonical: contentTree(await tree(path.join(defaultEnv.HOME, '.agents', 'skills', SKILL))),
+      claudeCode: contentTree(await tree(path.join(defaultEnv.HOME, '.claude', 'skills', SKILL))),
+      codexSpecific: contentTree(await tree(path.join(defaultEnv.CODEX_HOME, 'skills', SKILL))),
+      cursorSpecific: contentTree(await tree(path.join(defaultEnv.HOME, '.cursor', 'skills', SKILL))),
+      projectCanonical: contentTree(await tree(path.join(defaultCwd, '.agents', 'skills', SKILL))),
+      projectLock: await readLockProjection(path.join(defaultCwd, 'skills-lock.json'), redact),
+      lockPath: redact(defaultLockPath), lockBefore: redactPaths(globalInitialLock, redact), lockAfter: await readLockProjection(defaultLockPath, redact),
+      xdgLock: await readLockProjection(path.join(defaultRoot, 'xdg-state', 'skills', '.skill-lock.json'), redact),
+    }
+    report.cases.globalDefaultAdd.observed = defaultObserved
+    report.cases.globalDefaultList.observed = defaultListed.code === 0 ? JSON.parse(defaultListed.stdout).filter(entry => entry.name === SKILL).map(entry => ({ name: entry.name, scope: entry.scope, agents: entry.agents, path: redact(entry.path), source: redact(entry.source) })) : null
+    await write(path.join(defaultEnv.HOME, '.agents', 'skills', SKILL, 'foreign.txt'), 'FOREIGN\n')
+    await write(path.join(defaultEnv.HOME, '.claude', 'skills', SKILL, 'foreign.txt'), 'FOREIGN\n')
+    const globalCollision = await call('globalSameNameCollision', [...addArgs, '--global'], defaultCwd, undefined, defaultEnv)
+    report.cases.globalSameNameCollision.observed = { canonicalForeignRemains: (await tree(path.join(defaultEnv.HOME, '.agents', 'skills', SKILL))).some(item => item.path === 'foreign.txt'), claudeForeignRemains: (await tree(path.join(defaultEnv.HOME, '.claude', 'skills', SKILL))).some(item => item.path === 'foreign.txt') }
+    const customRoot = path.join(root, 'custom-global')
+    const customEnv = await prepareRoot(customRoot)
+    customEnv.HOME = path.join(customRoot, 'custom-home')
+    customEnv.USERPROFILE = customEnv.HOME
+    await fs.mkdir(path.join(customEnv.HOME, '.cursor'), { recursive: true })
+    const customCwd = await project(customRoot, 'neutral-cwd')
+    const customLockPath = globalLockPath(customEnv)
+    await write(customLockPath, `${JSON.stringify(globalInitialLock)}\n`)
+    const customAdd = await call('globalCustomHomesAdd', [...addArgs, '--global'], customCwd, undefined, customEnv)
+    const customListed = await call('globalCustomHomesList', ['list', '--json', '--global'], customCwd, undefined, customEnv)
+    report.cases.globalCustomHomesAdd.observed = {
+      canonical: contentTree(await tree(path.join(customEnv.HOME, '.agents', 'skills', SKILL))),
+      claudeCode: contentTree(await tree(path.join(customEnv.CLAUDE_CONFIG_DIR, 'skills', SKILL))),
+      codexSpecific: contentTree(await tree(path.join(customEnv.CODEX_HOME, 'skills', SKILL))),
+      cursorSpecific: contentTree(await tree(path.join(customEnv.HOME, '.cursor', 'skills', SKILL))),
+      oldHomeCanonical: contentTree(await tree(path.join(customRoot, 'home', '.agents', 'skills', SKILL))),
+      projectCanonical: contentTree(await tree(path.join(customCwd, '.agents', 'skills', SKILL))),
+      projectLock: await readLockProjection(path.join(customCwd, 'skills-lock.json'), redact),
+      lockPath: redact(customLockPath), lockBefore: redactPaths(globalInitialLock, redact), lockAfter: await readLockProjection(customLockPath, redact),
+    }
+    report.cases.globalCustomHomesList.observed = customListed.code === 0 ? JSON.parse(customListed.stdout).filter(entry => entry.name === SKILL).map(entry => ({ name: entry.name, scope: entry.scope, agents: entry.agents, path: redact(entry.path), source: redact(entry.source) })) : null
+    const globalBadRoot = path.join(root, 'bad-global-lock')
+    const globalBadEnv = await prepareRoot(globalBadRoot)
+    const globalBadCwd = await project(globalBadRoot, 'neutral-cwd')
+    const globalBadPath = globalLockPath(globalBadEnv)
+    await write(globalBadPath, '{bad json\n')
+    const badGlobal = await call('globalBadLock', [...addArgs, '--global'], globalBadCwd, undefined, globalBadEnv)
+    report.cases.globalBadLock.observed = { lockBefore: { kind: 'invalid', sha256: hash('{bad json\n') }, lockAfter: await readLockProjection(globalBadPath, redact), canonical: contentTree(await tree(path.join(globalBadEnv.HOME, '.agents', 'skills', SKILL))), claudeCode: contentTree(await tree(path.join(globalBadEnv.CLAUDE_CONFIG_DIR, 'skills', SKILL))) }
+    const foreignLockRoot = path.join(root, 'foreign-global-lock')
+    const foreignLockEnv = await prepareRoot(foreignLockRoot)
+    const foreignLockCwd = await project(foreignLockRoot, 'neutral-cwd')
+    const sameNameForeignLock = { version: 3, skills: { [SKILL]: foreignGlobal }, dismissed: { findSkillsPrompt: true }, lastSelectedAgents: ['cursor'] }
+    await write(globalLockPath(foreignLockEnv), `${JSON.stringify(sameNameForeignLock)}\n`)
+    const foreignGlobalLock = await call('globalForeignLockCollision', [...addArgs, '--global'], foreignLockCwd, undefined, foreignLockEnv)
+    report.cases.globalForeignLockCollision.observed = { lockBefore: sameNameForeignLock, lockAfter: await readLockProjection(globalLockPath(foreignLockEnv), redact), canonical: contentTree(await tree(path.join(foreignLockEnv.HOME, '.agents', 'skills', SKILL))), claudeCode: contentTree(await tree(path.join(foreignLockEnv.CLAUDE_CONFIG_DIR, 'skills', SKILL))) }
+    const globalPartialRoot = path.join(root, 'partial-global')
+    const globalPartialEnv = await prepareRoot(globalPartialRoot)
+    const globalPartialCwd = await project(globalPartialRoot, 'neutral-cwd')
+    await write(path.join(globalPartialEnv.CLAUDE_CONFIG_DIR, 'skills'), 'BLOCKED\n')
+    const partialGlobal = await call('globalPartialWrite', [...addArgs, '--global'], globalPartialCwd, undefined, globalPartialEnv)
+    report.cases.globalPartialWrite.observed = { canonical: contentTree(await tree(path.join(globalPartialEnv.HOME, '.agents', 'skills', SKILL))), claudeBlockerPreserved: (await fs.readFile(path.join(globalPartialEnv.CLAUDE_CONFIG_DIR, 'skills'), 'utf8')) === 'BLOCKED\n', lockAfter: await readLockProjection(globalLockPath(globalPartialEnv), redact) }
+    await fs.rm(path.join(globalPartialEnv.CLAUDE_CONFIG_DIR, 'skills'))
+    const retryGlobal = await call('globalPartialRetry', [...addArgs, '--global'], globalPartialCwd, undefined, globalPartialEnv)
+    report.cases.globalPartialRetry.observed = { canonical: contentTree(await tree(path.join(globalPartialEnv.HOME, '.agents', 'skills', SKILL))), claudeCode: contentTree(await tree(path.join(globalPartialEnv.CLAUDE_CONFIG_DIR, 'skills', SKILL))), lockAfter: await readLockProjection(globalLockPath(globalPartialEnv), redact) }
     const normalized = await fixture(root, 'AW_Qualification.Probe')
     await write(path.join(normalized, 'metadata.json'), '{"excluded":true}\n')
+    await write(path.join(normalized, 'assets', 'metadata.json'), '{"excluded":true}\n')
+    for (const name of ['.git', '__pycache__', '__pypackages__']) await write(path.join(normalized, name, 'excluded.txt'), 'EXCLUDED\n')
     const normProject = await project(root, 'normalization')
     const normRun = await call('normalization', ['add', normalized, '--agent', 'codex', '--copy', '--yes'], normProject)
     report.cases.normalization.observed = { paths: await fs.readdir(path.join(normProject, '.agents', 'skills')).catch(() => []), sourceName: 'AW_Qualification.Probe', sourceMetadataJsonSha256: hash(await fs.readFile(path.join(normalized, 'metadata.json'))), metadataJsonCopied: (await tree(path.join(normProject, '.agents', 'skills', 'aw_qualification.probe'))).some(item => item.path === 'metadata.json') }
     report.qualifiedContent.validMetadataJsonDropped = !report.cases.normalization.observed.metadataJsonCopied
+    const globalFiltered = await call('globalFilteredContent', ['add', normalized, '--agent', ...AGENTS, '--copy', '--yes', '--global'], defaultCwd, undefined, defaultEnv)
+    const filteredCanonical = contentTree(await tree(path.join(defaultEnv.HOME, '.agents', 'skills', 'aw_qualification.probe')))
+    const filteredClaude = contentTree(await tree(path.join(defaultEnv.HOME, '.claude', 'skills', 'aw_qualification.probe')))
+    const filteredNames = ['metadata.json', 'assets/metadata.json', '.git', '__pycache__', '__pypackages__']
+    const absentFiltered = items => filteredNames.every(name => !items.some(item => item.path === name || item.path.startsWith(`${name}/`)))
+    report.cases.globalFilteredContent.observed = { source: contentTree(await tree(normalized)), canonical: filteredCanonical, claudeCode: filteredClaude, excludedNames: filteredNames, canonicalExcludedAbsent: absentFiltered(filteredCanonical), claudeExcludedAbsent: absentFiltered(filteredClaude), normalizedName: 'aw_qualification.probe', lockAfter: await readLockProjection(defaultLockPath, redact) }
+    report.qualifiedContent.validMetadataJsonDropped = report.qualifiedContent.validMetadataJsonDropped && !filteredCanonical.some(item => item.path === 'metadata.json') && !filteredClaude.some(item => item.path === 'metadata.json')
+    report.qualifiedContent.excludedGlobalEntriesDropped = absentFiltered(filteredCanonical) && absentFiltered(filteredClaude)
     const normalizedCollision = await fixture(root, 'aw_qualification.probe', 'V2')
     const normalizedCollisionRun = await call('normalizationCollision', ['add', normalizedCollision, '--agent', 'codex', '--copy', '--yes'], normProject)
     report.cases.normalizationCollision.observed = { paths: await fs.readdir(path.join(normProject, '.agents', 'skills')).catch(() => []), contentChanged: (await fs.readFile(path.join(normProject, '.agents', 'skills', 'aw_qualification.probe', 'payload.txt'), 'utf8').catch(() => null)) === 'V2\n', lockSkillNames: Object.keys((await readJson(path.join(normProject, 'skills-lock.json'))).skills ?? {}).sort() }
+    const globalNormalizedCollision = await call('globalNormalizationCollision', ['add', normalizedCollision, '--agent', ...AGENTS, '--copy', '--yes', '--global'], defaultCwd, undefined, defaultEnv)
+    report.cases.globalNormalizationCollision.observed = { paths: await fs.readdir(path.join(defaultEnv.HOME, '.agents', 'skills')).catch(() => []), canonicalContentChanged: (await fs.readFile(path.join(defaultEnv.HOME, '.agents', 'skills', 'aw_qualification.probe', 'payload.txt'), 'utf8').catch(() => null)) === 'V2\n', claudeContentChanged: (await fs.readFile(path.join(defaultEnv.HOME, '.claude', 'skills', 'aw_qualification.probe', 'payload.txt'), 'utf8').catch(() => null)) === 'V2\n', lockAfter: await readLockProjection(defaultLockPath, redact) }
     await fs.rm(source, { recursive: true })
     const sourceGone = await call('listAfterSourceDeletion', ['list', '--json'], main)
     report.cases.listAfterSourceDeletion.observed = { sourceRemoved: !(await fs.stat(source).then(() => true).catch(() => false)), entries: sourceGone.code === 0 ? JSON.parse(sourceGone.stdout).filter(entry => entry.name === SKILL).map(entry => ({ name: entry.name, scope: entry.scope, source: redact(entry.source), agents: entry.agents })) : null, canonical: contentTree(await tree(canonical)), claudeCode: contentTree(await tree(claude)) }
@@ -255,7 +370,7 @@ export async function runQualification({ cli: providedCli, reportPath = defaultR
     await write(path.join(partialProject, '.claude', 'skills'), 'BLOCKED\n')
     const partial = await call('partialWrite', ['add', normalized, '--agent', 'codex', 'claude-code', '--copy', '--yes'], partialProject)
     report.cases.partialWrite.observed = { canonical: contentTree(await tree(path.join(partialProject, '.agents', 'skills'))), claudeBlockerPreserved: (await fs.readFile(path.join(partialProject, '.claude', 'skills'), 'utf8')) === 'BLOCKED\n', lock: contentTree(await tree(path.join(partialProject, 'skills-lock.json'))) }
-    for (const [label, result] of [['projectAdd', added], ['repeatAdd', repeated], ['sameNameCollision', collisionRun], ['globalAdd', globalRun], ['normalization', normRun], ['normalizationCollision', normalizedCollisionRun]]) if (result.code !== 0) report.blockers.push(`${label}Failed`)
+    for (const [label, result] of [['projectAdd', added], ['repeatAdd', repeated], ['sameNameCollision', collisionRun], ['globalAdd', globalRun], ['globalRepeatAdd', repeatedGlobal], ['globalSameNameCollision', globalCollision], ['globalDefaultAdd', defaultAdd], ['globalCustomHomesAdd', customAdd], ['globalPartialRetry', retryGlobal], ['globalFilteredContent', globalFiltered], ['globalForeignLockCollision', foreignGlobalLock], ['normalization', normRun], ['normalizationCollision', normalizedCollisionRun], ['globalNormalizationCollision', globalNormalizedCollision]]) if (result.code !== 0) report.blockers.push(`${label}Failed`)
     if (!report.cases.projectAdd.observed.completeCanonicalTree || !report.cases.projectAdd.observed.completeClaudeTree) report.blockers.push('incompleteCopyTree')
     if (!report.cases.projectAdd.observed.unrelatedLockPreserved) report.blockers.push('unrelatedLockLost')
     if (!lockSourceRelative || !lockSourceMatchesFixture) report.blockers.push('projectLockSourceMismatch')
@@ -264,7 +379,29 @@ export async function runQualification({ cli: providedCli, reportPath = defaultR
     const globalEntry = report.cases.globalList.observed?.find(entry => entry.name === SKILL)
     if (!globalEntry || globalEntry.scope !== 'global' || !same(globalEntry.agents, DISPLAY)) report.blockers.push('globalListMismatch')
     if (!same(sourceTree, report.cases.globalAdd.observed.canonical) || !same(sourceTree, report.cases.globalAdd.observed.claudeCode) || report.cases.globalAdd.observed.projectCanonical[0]?.kind !== 'missing') report.blockers.push('globalOutputMismatch')
+    report.qualifiedContent.observedCompleteTree = report.qualifiedContent.observedCompleteTree && same(sourceTree, report.cases.globalAdd.observed.canonical) && same(sourceTree, report.cases.globalAdd.observed.claudeCode)
+    for (const label of ['globalAdd', 'globalDefaultAdd', 'globalCustomHomesAdd']) {
+      const observed = report.cases[label].observed
+      if (!same(sourceTree, observed.canonical) || !same(sourceTree, observed.claudeCode) || observed.codexSpecific[0]?.kind !== 'missing' || observed.cursorSpecific[0]?.kind !== 'missing' || observed.projectCanonical[0]?.kind !== 'missing' || observed.projectLock.kind !== 'missing') report.blockers.push(`${label}LayoutMismatch`)
+      if (observed.lockAfter.kind !== 'json' || !same(observed.lockAfter.value, observed.lockBefore)) report.blockers.push(`${label}LockMismatch`)
+    }
+    if (report.cases.globalAdd.observed.defaultGlobalLock.kind !== 'missing' || report.cases.globalDefaultAdd.observed.xdgLock.kind !== 'missing' || report.cases.globalCustomHomesAdd.observed.oldHomeCanonical[0]?.kind !== 'missing' || !same(projectBeforeGlobal, report.cases.globalAdd.observed.projectAfterGlobal)) report.blockers.push('globalScopeIsolationMismatch')
+    for (const label of ['globalDefaultList', 'globalCustomHomesList']) {
+      const entry = report.cases[label].observed?.[0]
+      if (entry?.name !== SKILL || entry.scope !== 'global' || !same(entry.agents, DISPLAY)) report.blockers.push(`${label}Mismatch`)
+    }
+    if (badGlobal.code === 0 && same(sourceTree, report.cases.globalBadLock.observed.canonical)) report.requiredGuards.push('rejectMalformedGlobalLockBeforeAdd')
+    if (foreignGlobalLock.code === 0 && same(sourceTree, report.cases.globalForeignLockCollision.observed.canonical) && same(report.cases.globalForeignLockCollision.observed.lockAfter.value, sameNameForeignLock)) report.requiredGuards.push('rejectForeignSameNameGlobalLockBeforeAdd')
+    if (partialGlobal.code === 0) report.requiredGuards.push('verifyEveryGlobalPhysicalTargetAfterAddEvenOnZeroExit')
+    if (report.cases.globalRepeatAdd.observed.rewroteCanonical || report.cases.globalRepeatAdd.observed.rewroteClaude) report.requiredGuards.push('skipSatisfiedGlobalAdd')
+    if (!report.cases.globalSameNameCollision.observed.canonicalForeignRemains || !report.cases.globalSameNameCollision.observed.claudeForeignRemains) report.requiredGuards.push('rejectForeignGlobalSameNameBeforeAdd')
+    if (report.cases.globalAdd.observed.lockAfter.kind === 'json' && !report.cases.globalAdd.observed.lockAfter.value.skills?.[SKILL]) report.requiredGuards.push('doNotRequireLocalGlobalLockEntry')
+    if (globalNormalizedCollision.code === 0 && report.cases.globalNormalizationCollision.observed.canonicalContentChanged && report.cases.globalNormalizationCollision.observed.claudeContentChanged) report.requiredGuards.push('rejectNormalizedGlobalNameCollisionBeforeAdd')
+    if (retryGlobal.code !== 0 || !same(sourceTree, report.cases.globalPartialRetry.observed.canonical) || !same(sourceTree, report.cases.globalPartialRetry.observed.claudeCode)) report.blockers.push('globalPartialRetryMismatch')
     if (report.cases.normalization.observed.paths[0] !== 'aw_qualification.probe' || !report.cases.normalizationCollision.observed.contentChanged) report.blockers.push('normalizationMismatch')
+    if (!report.cases.globalFilteredContent.observed.canonicalExcludedAbsent || !report.cases.globalFilteredContent.observed.claudeExcludedAbsent) report.blockers.push('globalFilteredContentMismatch')
+    if (!same(report.cases.globalForeignLockCollision.observed.lockAfter.value, sameNameForeignLock) || !same(sourceTree, report.cases.globalForeignLockCollision.observed.canonical)) report.blockers.push('globalForeignLockCollisionMismatch')
+    if (!report.cases.globalNormalizationCollision.observed.canonicalContentChanged || !report.cases.globalNormalizationCollision.observed.claudeContentChanged) report.blockers.push('globalNormalizationCollisionMismatch')
     if (!same(report.cases.normalizationCollision.observed.lockSkillNames, ['AW_Qualification.Probe', 'aw_qualification.probe'])) report.blockers.push('normalizedCollisionLockMismatch')
     const deleted = report.cases.listAfterSourceDeletion.observed
     if (!deleted.sourceRemoved || deleted.entries?.length !== 1 || deleted.entries[0].source !== `<temporary-root>/source/${SKILL}` || !same(deleted.canonical, targets.canonical) || !same(deleted.claudeCode, targets.claudeCode)) report.blockers.push('sourceDeletionObservationMismatch')

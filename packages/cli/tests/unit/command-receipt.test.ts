@@ -438,36 +438,6 @@ describe('command receipt v6', () => {
     expect(human).not.toContain('AW extensions');
   });
 
-  it.each(['present', 'unknown'] as const)('reports %s Portable cleanup residue after completed Native work', (state) => {
-    const rebuilt = successfulRebuild('cleanup');
-    rebuilt.removed = ['pluginIntent:project', 'pluginConfig:project'];
-    const receipt = buildRebuildReceiptJson('cleanup', {
-      platforms: ['codex'], plugins: ['demo'], warnings: [], overallState: 'succeeded',
-      rebuildResults: [rebuilt], targetResults: [completedTarget('cleanup')],
-      portableCleanupResidues: [{
-        pluginId: 'team/demo', state,
-        targets: state === 'present' ? [{ skill: 'demo', agent: 'cursor', projectPath: '.agents/skills/demo' }] : [],
-        blockers: state === 'unknown' ? ['portableObservationFailed'] : [],
-      }],
-    });
-    expect(receipt).toMatchObject({ receiptSchemaVersion: 6, ok: false, overallState: 'partial' });
-    expect(receipt.targetResults).toHaveLength(1);
-    expect(receipt.targetResults[0]).toMatchObject({
-      target: { platform: 'codex', scope: 'user' }, state: 'completed', removed: rebuilt.removed,
-    });
-    expect(receipt.warnings.join(' ')).toContain(state === 'present' ? 'portableOutputRemains' : 'portableObservationFailed');
-    expect(receipt.recoveryActions.join(' ')).toContain('AW 不自动删除');
-    if (state === 'present') {
-      expect(receipt.recoveryActions.join(' ')).toContain('.agents/skills/demo');
-      expect(receipt.recoveryActions.join(' ')).toContain('Codex 和 Cursor');
-    } else {
-      expect(receipt.recoveryActions.join(' ')).toContain('无法确认');
-      expect(receipt.recoveryActions.join(' ')).not.toContain('.agents/skills/');
-    }
-    expect(JSON.stringify(receipt)).not.toContain('/repo');
-    expect(receipt.recoveryActions.join(' ')).not.toContain('--force');
-  });
-
   it('keeps the independent Catalog readiness receipt schema unchanged', () => {
     expect(buildInitReceiptJson({
       ok: true,

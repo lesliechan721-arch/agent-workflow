@@ -1,7 +1,4 @@
-import os from 'node:os';
-import path from 'node:path';
-
-import fs from 'fs-extra';
+import { createSafeNeutralCwd } from '../intent/scope-context.js';
 
 import {
   buildCodexPluginListJsonInvocation,
@@ -101,7 +98,8 @@ export async function createCodexNativeObservationSession(options: {
   runner?: NativeCliRunner;
   manager?: CodexManager;
 }): Promise<CodexNativeObservationSession> {
-  const neutralCwd = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-observation-'));
+  const neutral = await createSafeNeutralCwd(options.env);
+  const neutralCwd = neutral.executionCwd;
   let manager = options.manager ?? SYSTEM_CODEX_MANAGER;
   const snapshots = new Map<string, Promise<CodexObservationEntries>>();
   let generation = 0;
@@ -208,7 +206,7 @@ export async function createCodexNativeObservationSession(options: {
     async dispose() {
       if (disposed) return;
       disposed = true;
-      await fs.remove(neutralCwd);
+      await neutral.dispose();
     },
   };
 }

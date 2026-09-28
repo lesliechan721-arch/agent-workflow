@@ -43,6 +43,7 @@ import {
 } from '../../src/utils/manifest.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import {
   resolveClaudePaths,
@@ -354,7 +355,7 @@ describe('rebuild adapter integration', () => {
     });
     expect(calls.map((call) => call.cwd)).toEqual(expect.arrayContaining([
       isolation.layout.fixtureCwd,
-      expect.stringMatching(/aw-codex-observation-/u),
+      expect.stringMatching(/aw-user-neutral-/u),
     ]));
     expect(calls.every((call) =>
       call.args.join(' ') === 'plugin list --marketplace aw --json')).toBe(true);
@@ -4323,11 +4324,25 @@ describe('rebuild adapter integration', () => {
     await expect(fs.readFile(receiptPath, 'utf8')).resolves.toBe(receiptContent);
     await expect(fs.readFile(retainedSkillPath, 'utf8')).resolves.toBe(retainedSkillContent);
 
-    const taskResult = await taskWriteCommand([{
-      pluginId: pluginB.pluginId!, platform: 'codex', scope: 'user', method: 'reinstall',
-    }], {
-      cwd: isolation.layout.fixtureCwd, allowManagedCodexInstall: true,
-    }, { env: isolation.env, nativeCliRunner: runner });
+    const native = await createNativeTestExecution({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      selectedTargets: [{ pluginId: pluginB.pluginId!, platform: 'codex' }],
+      includeSelectedInDemand: true,
+    });
+    native.executionInput.requirements.roots.push({
+      pluginId: pluginA.pluginId!, platforms: ['codex'],
+    });
+    let taskResult;
+    try {
+      taskResult = await taskWriteCommand([{
+        pluginId: pluginB.pluginId!, platform: 'codex', scope: 'user', method: 'reinstall',
+      }], {
+        cwd: isolation.layout.fixtureCwd, allowManagedCodexInstall: true,
+      }, { env: isolation.env, nativeCliRunner: runner,
+        executionInput: native.executionInput });
+    } finally {
+      await native.dispose();
+    }
     expect(taskResult.targetResults, JSON.stringify(taskResult.targetResults)).toEqual([
       expect.objectContaining({
         target: expect.objectContaining({ pluginId: pluginB.pluginId, scope: 'user' }),

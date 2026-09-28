@@ -52,7 +52,7 @@ README 说明用户能获得什么、何时使用以及会产生什么影响。�
 ## 安装
 
 ```bash
-aw install <plugin> -p <platform>
+aw install <plugin> --scope user --target <codex|claude-code|cursor>
 ```
 
 ## 包含的 Skill

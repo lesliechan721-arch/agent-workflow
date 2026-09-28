@@ -41,11 +41,6 @@ import {
   calculateCatalogSourceImpactDigest,
   inspectCatalogSourceImpact,
 } from '../../src/utils/catalog-source-impact.js';
-import {
-  createEmptyPluginIntentState,
-  upsertPluginIntentRoot,
-  writePluginIntentState,
-} from '../../src/utils/plugin-intent-state.js';
 import { setNativeCliRunnerOverrideForTests } from '../../src/utils/native-cli.js';
 import {
   calculateCatalogSourcesConfigDigest,
@@ -56,6 +51,7 @@ import {
   createCatalogSnapshotFixture,
   createDependencyCatalogSnapshotFixture,
 } from '../helpers/catalog-source-fixture.js';
+import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function fixturePath(name: string): string {
@@ -1005,11 +1001,9 @@ describe('Catalog Active store and state', () => {
       env: isolation.env,
       runtime: {
         afterCandidateResolved: async () => {
-          await writePluginIntentState({
+          await writeIntentFixture({
             scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-          }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-            pluginId: 'team/consumer', platforms: ['codex'],
-          }));
+          }, { roots: [{ pluginId: 'team/consumer', platforms: ['codex'] }] });
         },
       },
     })).rejects.toMatchObject({ code: 'catalogImpactConfirmationRequired' });

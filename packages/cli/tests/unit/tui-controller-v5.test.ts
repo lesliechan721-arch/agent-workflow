@@ -1610,12 +1610,12 @@ describe('TUI v4 router and ViewModel', () => {
         {
           command: 'uninstall' as const,
           scope: 'user' as const,
-          description: '运行 aw uninstall official/demo --platform codex --scope user，再运行 aw sync official/demo --platform codex --scope project。',
+          description: '运行 aw uninstall official/demo --target codex --scope user，再运行 aw sync official/demo --target codex --scope project。',
         },
         {
           command: 'uninstall' as const,
           scope: 'project' as const,
-          description: '运行 aw uninstall official/demo --platform codex --scope project，再运行 aw sync official/demo --platform codex --scope user。',
+          description: '运行 aw uninstall official/demo --target codex --scope project，再运行 aw sync official/demo --target codex --scope user。',
         },
       ],
     };
@@ -2784,7 +2784,7 @@ describe('TUI v4 router and ViewModel', () => {
       pluginAction: 'cleanup',
       title: '强制清理插件',
       description: expect.stringContaining('依赖者会变为不完整'),
-      equivalentCommand: 'aw cleanup official/toolkit --platform codex --scope user --force',
+      equivalentCommand: 'aw cleanup official/toolkit --scope user --target codex --force',
       changes: expect.arrayContaining([
         expect.objectContaining({ kind: 'warning', title: '跳过依赖保护' }),
       ]),
@@ -4503,67 +4503,6 @@ describe('TUI v4 Review safety', () => {
     expect(loadStatus).toHaveBeenCalledTimes(2);
   });
 
-  it('opens force cleanup Review for an exact Intent-only preview', async () => {
-    const forceEvidence: OperationEvidence = {
-      ...baseEvidence,
-      operationPlan: createOperationPlan({
-        intentChanges: [{ scope: 'user', beforeDigest: 'sha256:before', afterDigest: 'sha256:after' }],
-        actions: [],
-        changes: ['official/demo:codex:user:removeIntent'],
-        warnings: [],
-        evidence: {
-          catalogDigests: [],
-          intentDigests: [{ scope: 'user', digest: 'sha256:intent' }],
-          configDigests: [],
-          targetOwnerFingerprints: [],
-        },
-      }),
-      offlineCleanupPlans: [{
-        reason: 'bundleUnavailable',
-        pluginId: 'official/demo',
-        pluginName: 'demo',
-        sourceId: 'official',
-        sourceIdentity: 'identity:official',
-        platform: 'codex',
-        scope: 'user',
-        forceExclusive: true,
-        plan: {
-          schemaVersion: 1,
-          pluginId: 'official/demo',
-          sourceIdentity: 'identity:official',
-          platform: 'codex',
-          scope: 'user',
-          actions: [],
-        },
-        planDigest: 'sha256:force',
-        targetFingerprint: 'sha256:force',
-      }],
-    };
-    const captureEvidence = vi.fn().mockResolvedValue(forceEvidence);
-    const controller = new TuiController(dependencies({ captureEvidence }));
-    await controller.load();
-    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
-
-    const candidate = await controller.getForceCleanupCandidate('official/demo', 'codex', 'user');
-    expect(candidate).toEqual({
-      pluginId: 'official/demo', platform: 'codex', scope: 'user', actionCount: 0,
-    });
-    controller.startForceCleanupReview(candidate!);
-    await vi.waitFor(() => expect(controller.snapshot.activeReview).toBeDefined());
-
-    expect(captureEvidence).toHaveBeenCalledTimes(2);
-    expect(captureEvidence.mock.calls.at(-1)?.[0]).toMatchObject({
-      kind: 'pluginWrite', action: 'cleanup', force: true,
-    });
-
-    const unavailable = new TuiController(dependencies({
-      captureEvidence: vi.fn().mockResolvedValue(baseEvidence),
-    }));
-    await unavailable.load();
-    await expect(unavailable.getForceCleanupCandidate('official/demo', 'codex', 'user'))
-      .resolves.toBeUndefined();
-  });
-
   it('shows refresh fallback in the ordinary Review and uses the refreshed plugin version', async () => {
     const controller = new TuiController(dependencies({
       captureEvidence: vi.fn().mockResolvedValue({
@@ -4756,9 +4695,6 @@ describe('TUI v4 Review safety', () => {
         kind: 'change', title: '核验当前 AW 管理现场',
       }),
       expect.objectContaining({
-        kind: 'remove', title: '取消已保存的使用设置',
-      }),
-      expect.objectContaining({
         kind: 'remove', title: '移除可验证的 AW 输出', description: 'Codex · 当前项目 · 2 项',
       }),
       expect.objectContaining({
@@ -4779,7 +4715,7 @@ describe('TUI v4 Review safety', () => {
     expect(JSON.stringify(review)).not.toContain('inventoryUnreadable');
   });
 
-  it('shows the full deleted-plugin cleanup scope before approval', () => {
+  it('keeps saved settings out of ordinary cleanup before approval', () => {
     const review = buildOperationReviewProjection({
       intent: {
         kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/demo',
@@ -4787,20 +4723,15 @@ describe('TUI v4 Review safety', () => {
       },
       evidence: { ...baseEvidence, removedPluginCleanupIds: ['official/demo'] },
     });
-    expect(review.title).toBe('整体清理已删除插件');
-    expect(review.requiresConfirmation).toBe(true);
-    expect(review.equivalentCommand).toContain('--yes');
-    expect(review.changes.filter((change) => change.kind === 'remove'
-      && (change.title.includes('Codex') || change.title.includes('Claude Code'))))
-      .toHaveLength(4);
+    expect(review.title).toBe('清理插件');
+    expect(review.equivalentCommand).toContain('--target codex');
     expect(review.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ title: '删除已保存的插件设置' }),
-      expect.objectContaining({ title: '移除 Codex 共享原生安装会影响其他项目' }),
+      expect.objectContaining({ description: expect.stringContaining('插件设置不会删除') }),
     ]));
-    expect(review.changes.some((change) => change.title.includes('插件设置保持不变'))).toBe(false);
+    expect(review.changes.some((change) => change.title.includes('删除已保存的插件设置'))).toBe(false);
   });
 
-  it('keeps an Intent-only cleanup valid when there are no removable outputs', async () => {
+  it('keeps an output-only cleanup valid when there are no removable outputs', async () => {
     const offlineCleanup: NonNullable<OperationEvidence['offlineCleanup']> = {
       reason: 'bundleUnavailable',
       pluginId: 'official/demo',
@@ -4847,11 +4778,10 @@ describe('TUI v4 Review safety', () => {
     });
 
     expect(review.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'remove', title: '取消已保存的使用设置' }),
       expect.objectContaining({
         kind: 'keep',
         title: '没有可验证的 AW 输出',
-        description: 'Codex · 所有项目 · 仍会取消此位置的使用设置',
+        description: 'Codex · 所有项目 · 不会删除现场内容',
       }),
     ]));
   });
@@ -5052,7 +4982,7 @@ describe('TUI v4 Review safety', () => {
       },
     });
     expect(review.equivalentCommand).toBe(
-      'aw install official/root --platform codex --scope user --script-timeout 300000 --yes',
+      'aw install official/root --scope user --target codex --script-timeout 300000 --yes',
     );
     await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
       state: 'blocked',

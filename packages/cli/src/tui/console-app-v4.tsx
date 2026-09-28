@@ -119,7 +119,7 @@ import {
   type DependencyGraphRow,
 } from './dependency-graph.js';
 import { DependencyGraphView, projectDependencyGraphView } from './dependency-graph-view.js';
-import { platformLabel, scopeLabel } from './glossary.js';
+import { agentLabel, platformLabel, scopeLabel } from './glossary.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
 import { QueryHeader, querySearchWidth } from './query-header.js';
 import { Pager, Reader, paginateWrappedRows, readerPage } from './reader.js';
@@ -149,12 +149,11 @@ import {
   hasInstalledPlacement,
   configValuesEqual,
 } from './model.js';
-import type { ProjectInventoryRoot } from './project-inventory.js';
-import type { ProjectTuiPlan } from './project-flow.js';
-import type { ProjectAgentId } from '../project/project-preferences.js';
-import type { ProjectRecoveryReceiptV1 } from '../project/project-types.js';
+import type { ScopedTuiPlan } from './scoped-flow.js';
+import type { RecoveryReceipt } from '../recovery/receipt.js';
+import type { AgentId } from '../intent/deployment-preferences.js';
 import type { PluginContentItem, PluginContentType } from './plugin-content.js';
-import type { PluginInstallFilter, TuiRoute } from './router.js';
+import type { PluginInstallFilter, TuiPageContext, TuiRoute } from './router.js';
 import { resolveTuiGlobalKeyAction, resolveTuiSessionNavigationKey } from './keys.js';
 import { tuiTheme } from './theme.js';
 import { contentRowBudget, rowViewport, wrapDisplayText, type RowViewport } from './viewport.js';
@@ -190,73 +189,93 @@ function splitTaskLines(context: SplitTaskContext): string[] {
   ];
 }
 
-type ProjectUiFlow =
-  | { stage: 'targets'; agents: ProjectAgentId[]; focus: number }
-  | { stage: 'preparing'; request: 'recovery' | 'targets'; returnTo: 'project' | 'targets' | 'task'; task?: SplitTaskContext }
-  | { stage: 'review'; plan: ProjectTuiPlan; returnTo: 'project' | 'targets' | 'task'; task?: SplitTaskContext; focus: number }
-  | { stage: 'progress'; plan: ProjectTuiPlan; task?: SplitTaskContext }
-  | { stage: 'result'; plan?: ProjectTuiPlan; receipt?: ProjectRecoveryReceiptV1;
-      changed?: boolean; errorCode?: string; task?: SplitTaskContext; focus: number };
+type ScopedTaskRequest = Parameters<TuiController['prepareScopedTask']>[0];
+type ScopedRecoveryRequest = Extract<ScopedTaskRequest, { kind: 'recovery' }>;
 
-function projectPlanText(plan: ProjectTuiPlan, task?: SplitTaskContext): string {
+type ScopedUiFlow =
+  | { stage: 'intentScope'; scope: Scope; selector: string; action: 'add' | 'remove';
+      scopes: Scope[]; focus: number }
+  | { stage: 'targets'; scope: Scope; agents: AgentId[]; savedAgents: AgentId[]; focus: number }
+  | { stage: 'preparing'; scope: Scope; request: 'recovery' | 'retire' | 'targets' | 'intent'; focus: number }
+  | { stage: 'review'; scope: Scope; request: ScopedTaskRequest; plan: ScopedTuiPlan; focus: number }
+  | { stage: 'risk'; scope: Scope; request: ScopedTaskRequest; plan: ScopedTuiPlan; focus: number }
+  | { stage: 'timeout'; scope: Scope; request: ScopedRecoveryRequest; focus: number }
+  | { stage: 'progress'; scope: Scope; plan: ScopedTuiPlan; focus: number }
+  | { stage: 'result'; scope: Scope; plan?: ScopedTuiPlan; receipt?: RecoveryReceipt;
+      changed?: boolean; errorCode?: string; focus: number };
+
+function scopedRiskReasons(plan: ScopedTuiPlan): string[] {
+  if (plan.kind === 'targets' || plan.kind === 'intent') return [];
+  if (plan.kind === 'retire') return [
+    ...(plan.plan.options.deleteConfig ? ['本次会删除所选范围已保存的插件设置。'] : []),
+    ...(plan.scope === 'user' && plan.plan.plannedImpact.outputs
+      ? ['本次会清理个人原生输出，可能影响其他项目。'] : []),
+  ];
+  const reasons = plan.plan.nativeGroups.flatMap((group) =>
+    (group.preview.codexReconcilePlans ?? []).filter((entry) => entry.review.requiresConfirmation)
+      .map((entry) => entry.review.sharedImpact.warning
+        ?? '本次共享原生内容变更可能影响其他使用位置。'));
+  if (plan.plan.command === 'cleanup' && plan.plan.options.force) {
+    reasons.push('本次受限强制清理只删除已确认的专属目标；依赖此插件的其它目标可能需要恢复。');
+  }
+  if (plan.scope === 'user' && plan.plan.portableGroups.length > 0) {
+    reasons.push('本次可能修改所选工具的个人 Skills 目录，适用于所有项目。');
+  }
+  return [...new Set(reasons)];
+}
+
+function scopedPlanText(plan: ScopedTuiPlan): string {
   if (plan.kind === 'targets') return [
-    '本次只保存本机偏好；不安装、删除或切换旧 Agent 输出。',
-    ...plan.changes, ...plan.warnings,
+    '偏好变更：', ...plan.changes, '需求变更：无', '配置变更：无', '输出变更：无',
+    ...plan.warnings,
+  ].join('\n');
+  if (plan.kind === 'intent') return [
+    `范围：${plan.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
+    `完整请求：${plan.selector}`,
+    `需求变更：${plan.action === 'add' ? '添加' : '移除'} ${plan.selector}`,
+    '偏好变更：无', '配置变更：无', '输出变更：无',
+    ...plan.warnings,
   ].join('\n');
   const { receipt } = plan.plan;
+  const impact = plan.plan.plannedImpact;
   return [
-    ...(task ? splitTaskLines(task) : []),
-    ...(receipt.command === 'cleanup' && plan.plan.removedPluginIds?.length ? [
-      '整体清理会取消目标插件在个人及当前项目中的需求和设置，并移除可证明归属的共用原生安装。其他项目可能失去该共用包。',
-      '不能安全删除的 Portable 或其他输出会列为未完成，不会当作已清理。',
-    ] : receipt.command === 'cleanup' ? [
-      '普通清理仅处理所选目标的可验证现场，保留项目需求及共享设置。',
-    ] : []),
-    `项目全部需求：${receipt.intent.roots?.join('、') || '空项目或无法读取'}`,
-    `本次请求：${receipt.requestedRoots.join('、') || '空项目'}`,
-    `所选 Agent：${receipt.selection.agents.join('、') || '未选择'}（${receipt.selection.origin}）`,
-    `可执行目标：${receipt.targetResults.filter((target) => target.blockers.length === 0).length} 项`,
-    `受阻或未完成：${receipt.targetResults.filter((target) => target.blockers.length > 0).length} 项`,
-    ...receipt.targetResults.map((target) => {
-      const delivery = target.delivery?.kind === 'native'
-        ? `Native ${target.delivery.platform}`
-        : target.delivery?.kind === 'agent-skills' ? '通用 Skills' : '无适用交付';
-      return `${target.pluginId} · ${target.agent} · ${delivery} · ${target.blockers.length > 0
-        ? target.blockers.map((blocker) => blocker.code).join('、') : target.observation}`;
-    }),
-    ...receipt.blockers.map((blocker) => `阻断：${blocker.code} · ${blocker.message}`),
-    ...receipt.targetResults.flatMap((target) =>
-      (target.recoveryActions ?? []).map((action) => `恢复：${action}`)),
+    `范围：${plan.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
+    `完整请求：${receipt.requestedRoots.join('、') || '无'}`,
+    `本机工具：${receipt.selection.agents.map(agentLabel).join('、') || '未选择'}`,
+    `需求变更（计划）：${impact.declaration
+      ? plan.kind === 'retire' ? '删除当前范围声明' : '保存当前范围需求' : '无'}`,
+    `偏好变更（计划）：${impact.preferences
+      ? plan.kind === 'retire' ? '删除当前范围本机依赖覆盖' : '保存当前范围明确选择的依赖偏好' : '无'}`,
+    `配置变更（计划）：${impact.config ? '删除当前范围已保存配置' : '无'}`,
+    `输出变更（计划）：${impact.outputs ? '执行所列精确目标' : '无可执行输出变更'}`,
+    ...receipt.targetResults.map((target) => `${target.pluginId} · ${agentLabel(target.agent)} [${target.scope === 'user' ? '个人' : '当前项目'}] · ${target.delivery?.kind === 'native' ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '不支持'} · ${target.blockers.length
+      ? `受阻：${target.blockers.map((blocker) => blocker.code).join('、')}` : target.observation}`),
     ...plan.plan.changes.map((change) => `影响：${change}`),
     ...plan.plan.warnings.map((warning) => `注意：${warning}`),
+    ...(plan.kind === 'retire' ? [`配置删除选项：${plan.plan.options.deleteConfig
+      ? impact.config ? '已选择' : '已选择；当前没有可删除配置' : '关闭（默认）'}`] : []),
   ].join('\n');
 }
 
-function projectResultText(receipt: ProjectRecoveryReceiptV1, task?: SplitTaskContext): string {
+function scopedResultText(receipt: RecoveryReceipt): string {
   return [
-    ...(task ? splitTaskLines(task) : []),
-    `请求：${receipt.requestedRoots.join('、') || '空项目'}`,
-    ...receipt.targetResults.map((target) =>
-      `${target.pluginId} · ${target.agent} · ${target.execution} · ${target.observation}`),
+    `范围：${receipt.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
+    `完整请求：${receipt.requestedRoots.join('、') || '无'}`,
+    `需求变更：${receipt.declarationChanged ? '是' : '无'}`,
+    `偏好变更：${receipt.preferencesChanged ? '是' : '无'}`,
+    `配置变更：${receipt.configChanged ? '是' : '无'}`,
+    `输出可能改变：${receipt.outputsMayHaveChanged ? '是' : '否'}`,
+    ...receipt.targetResults.map((target) => `${target.pluginId} · ${agentLabel(target.agent)} [${target.scope === 'user' ? '个人' : '当前项目'}] · ${target.delivery?.kind === 'native' ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '无交付'} · ${target.execution} · ${target.observation}${target.blockers.length ? ` · 受阻 ${target.blockers.map((blocker) => blocker.code).join('、')}` : ''}`),
+    ...receipt.targetResults.flatMap((target) => target.recoveryActions?.map((action) =>
+      `${target.pluginId} · ${target.agent}：${action}`) ?? []),
     ...receipt.remainingTargets.map((target) => `未完成：${target.pluginId} · ${target.agent}`),
     ...receipt.recoveryActions.map((action) => `恢复：${action}`),
   ].join('\n');
 }
 
-function projectAgentsForPlatform(platform: PlatformName | 'both'): ProjectAgentId[] {
-  return platform === 'both' ? ['codex', 'claude-code']
-    : [platform === 'claude' ? 'claude-code' : 'codex'];
-}
-
 const PLUGIN_FILTERS: PluginInstallFilter[] = [
   'all', 'installed', 'uninstalled', 'updateAvailable', 'attention', 'project', 'user',
 ];
-
-type ProjectStatusFilter = 'all' | 'pending' | 'blocked' | 'unknown' | 'ready';
-const PROJECT_STATUS_FILTERS: ProjectStatusFilter[] = ['all', 'pending', 'blocked', 'unknown', 'ready'];
-const PROJECT_STATUS_LABELS: Record<ProjectStatusFilter, string> = {
-  all: '全部', pending: '待同步', blocked: '受阻', unknown: '未确认', ready: '就绪',
-};
 
 function queryMatches(query: string, ...values: Array<string | null | undefined>): boolean {
   const normalized = query.trim().toLocaleLowerCase();
@@ -401,7 +420,7 @@ interface BatchDraft {
   recommendedGoal?: 'update';
   mode: 'browse' | 'installed';
   stage: 'select' | 'task' | 'maintenance';
-  selection: 'selected' | 'currentProjectIntentRoots';
+  selection: 'selected';
   selectedPluginIds: string[];
   frozenPluginIds?: string[];
   platform: PlatformName | 'both';
@@ -472,11 +491,6 @@ function helpTextForPage(help: string, busy: boolean): string {
   return [...help.split(' · ').filter((part) => part !== '? 帮助' && !/^(q|Ctrl-C) /u.test(part)),
     `q / Ctrl-C ${busy ? '操作完成后退出' : '退出控制台'}`,
     ...(!busy ? ['o 查看操作记录'] : []), 'Esc / ? 关闭帮助'].join('\n');
-}
-
-function projectDependencyLines(root: ProjectInventoryRoot | undefined): string[] {
-  return root?.dependencies.flatMap((dependency) => dependency.targets.map((target) =>
-    `依赖 ${dependency.displayName} · ${dependency.pluginId} · ${platformLabel(target.platform)} · ${target.location === 'sharedUser' ? '共用个人安装' : '当前项目'} · 目录参考 ${target.expectedVersion ?? '未知'} · 实际 ${target.installedVersion ?? '未知'}${target.reasonCodes.length ? ` · ${target.reasonCodes.map((code) => safeDiagnosticCode(code, 'projectTargetUnknown')).join('、')}` : ''}`)) ?? [];
 }
 
 function configOwnerKey(route: Extract<TuiRoute, {
@@ -1528,27 +1542,26 @@ export function ConsoleAppV4(props: {
     options?: { discardDrafts?: boolean; draftConfirmation?: ExternalDraftState[] },
   ) => Promise<SessionNavigationResult>;
   onCancelPendingSessionNavigation?: () => boolean;
-  onClaimProjectIntentReminder?: (projectRoot: string, signature: string) => boolean;
 }): React.JSX.Element {
   const windowSize = useWindowSize();
   const size = props.size ?? windowSize;
   const policy = resolveTuiSizePolicy(size.columns, size.rows);
   const [snapshot, setSnapshot] = useState(() => props.controller.snapshot);
-  const unifiedProjectScope = Boolean(snapshot.projectInventory?.recovery
-    || snapshot.projectInventory?.declarationState === 'absent'
-      && snapshot.projectInventory.projectRoot);
   const [overlay, setOverlay] = useState<Overlay>();
   const [overlayFocus, setOverlayFocus] = useState(0);
   const [helpPage, setHelpPage] = useState(1);
   const [operationConfirmation, setOperationConfirmation] = useState<OperationConfirmationOverlay>();
   const [sourceTransportOverlay, setSourceTransportOverlay] = useState<SourceTransportOverlay>();
-  const [projectReminderOpen, setProjectReminderOpen] = useState(false);
-  const [projectFlow, setProjectFlow] = useState<ProjectUiFlow>();
+  const [scopedFlow, setScopedFlow] = useState<ScopedUiFlow>();
+  const scopedFlowToken = useRef(0);
+  const scopedFlowBusy = useRef(false);
+  const scopedSelected = useRef<Record<string, string[]>>({});
+  const scopedActiveRoot = useRef<Record<string, string>>({});
+  const scopedPageContext = useRef<Record<string, TuiPageContext>>({});
+  const [, setScopedSelectionRevision] = useState(0);
+  const [scopedDiscardIntent, setScopedDiscardIntent] = useState<'close' | 'home' | 'reload' | 'exit'>();
+  const scopedStatusRequested = useRef<Record<string, boolean>>({});
   const [splitTaskReview, setSplitTaskReview] = useState<SplitTaskContext>();
-  const projectFlowToken = useRef(0);
-  const projectFlowEnterBusy = useRef(false);
-  const projectPageAnchor = useRef(0);
-  const [projectAgentsDraft, setProjectAgentsDraft] = useState<ProjectAgentId[]>([]);
   const [discardForExit, setDiscardForExit] = useState(false);
   const [discardForSessionNavigation, setDiscardForSessionNavigation] = useState<SessionNavigation>();
   const [discardDraftConfirmation, setDiscardDraftConfirmation] = useState<ExternalDraftState[]>();
@@ -1648,6 +1661,11 @@ export function ConsoleAppV4(props: {
   const exitSent = useRef(false);
   const operationBusy = useRef(false);
   const route = snapshot.router.current.route;
+  useEffect(() => {
+    if (route.name !== 'intentInventory' || scopedStatusRequested.current[route.scope]) return;
+    scopedStatusRequested.current[route.scope] = true;
+    void props.controller.refreshScopedInventory(route.scope);
+  }, [props.controller, route.name, route.name === 'intentInventory' ? route.scope : '']);
   const platformFacts = route.name === 'platform'
     ? props.controller.getPluginDetailSubject(route.pluginId)?.placements
       .filter((entry) => entry.platform === route.platform) ?? []
@@ -1749,44 +1767,6 @@ export function ConsoleAppV4(props: {
       if (props.ownsController) props.controller.dispose();
     };
   }, [props.controller, props.ownsController]);
-  useEffect(() => {
-    const reminder = snapshot.projectIntentReminder;
-    if (!props.onClaimProjectIntentReminder
-      || snapshot.phase !== 'ready'
-      || route.name !== 'home'
-      || !reminder
-      || reminder.actionableTargets.length + reminder.blockedTargets.length
-        + (reminder.kind === 'recovery'
-          ? reminder.unconfirmedTargets.length + reminder.diagnosticCodes.length : 0) === 0
-      || overlay
-      || operationConfirmation
-      || sourceTransportOverlay
-      || dirty
-      || props.controller.hasSessionDraft) return;
-    if (props.onClaimProjectIntentReminder(reminder.projectRoot, reminder.signature)) {
-      setOverlayFocus(0);
-      setProjectReminderOpen(true);
-    }
-  }, [
-    props.controller,
-    props.onClaimProjectIntentReminder,
-    snapshot.phase,
-    snapshot.projectIntentReminder?.signature,
-    route.name,
-    overlay,
-    operationConfirmation,
-    sourceTransportOverlay,
-    dirty,
-  ]);
-  useEffect(() => {
-    const reminder = snapshot.projectIntentReminder;
-    if (projectReminderOpen
-      && (!reminder || reminder.actionableTargets.length + reminder.blockedTargets.length
-        + (reminder.kind === 'recovery'
-          ? reminder.unconfirmedTargets.length + reminder.diagnosticCodes.length : 0) === 0)) {
-      setProjectReminderOpen(false);
-    }
-  }, [projectReminderOpen, snapshot.projectIntentReminder]);
   useEffect(() => {
     if (route.name !== 'pluginContent' || snapshot.phase !== 'ready') return;
     void props.controller.loadPluginContent(route.pluginId);
@@ -2151,8 +2131,7 @@ export function ConsoleAppV4(props: {
       || candidates.some((candidate) => !candidate.eligible
         || !frozenPluginIds.has(candidate.target.pluginId))
       || [...frozenPluginIds].some((pluginId) => !representedPluginIds.has(pluginId))) return;
-    if (unifiedProjectScope
-      && new Set(candidates.map((candidate) => candidate.target.scope)).size > 1) return;
+    if (new Set(candidates.map((candidate) => candidate.target.scope)).size > 1) return;
     const currentVersionEvidence = Object.assign({}, ...[...frozenPluginIds].map((pluginId) => {
       const candidatePlugin = props.controller.getPluginOverview(pluginId);
       return candidatePlugin ? pluginWriteTaskVersionEvidence(
@@ -2179,7 +2158,6 @@ export function ConsoleAppV4(props: {
     route.name === 'pluginWriteTask' ? JSON.stringify(route.versionEvidence ?? {}) : '',
     snapshot.router.current.context.autoPreparedUpdate,
     snapshot.viewModel,
-    unifiedProjectScope,
   ]);
 
   useEffect(() => {
@@ -2431,7 +2409,12 @@ export function ConsoleAppV4(props: {
   const supportsTechnicalDetails = !(route.name === 'pluginDependencies' && route.view !== 'removeBlocked'
     || route.name === 'pluginDependencyNode' || route.name === 'portableDependencies')
     && (snapshot.phase === 'error'
-    || route.name === 'projectStatus'
+
+    || Boolean(route.name === 'intentInventory' && (snapshot.scopedInventories[route.scope]?.errors.length
+      || snapshot.scopedInventoryRefresh[route.scope]?.state === 'error'
+      || snapshot.scopedInventories[route.scope]?.declarationState === 'invalid'
+      || snapshot.scopedInventories[route.scope]?.preferenceState === 'invalid'))
+
     || Boolean(route.name === 'reviewPreparing' && snapshot.reviewPreparation?.code)
     || Boolean(route.name === 'progress' && snapshot.progress.messages.length > 0)
     || Boolean(route.name === 'review' && snapshot.activeReview?.technicalDetails?.length)
@@ -2649,12 +2632,14 @@ export function ConsoleAppV4(props: {
   };
 
   const go = (next: TuiRoute): void => {
-    projectFlowToken.current += 1;
-    projectFlowEnterBusy.current = false;
-    if (projectFlow?.stage === 'preparing') props.controller.cancelProjectPreparation();
-    setProjectFlow(undefined);
-    props.controller.updatePageContext({
-      focusIndex: route.name === 'projectStatus' || route.name === 'platform' ? effectiveFocus : focus,
+    scopedFlowToken.current += 1;
+    if (scopedFlow?.stage === 'preparing') props.controller.cancelScopedPreparation();
+    if (scopedFlow?.stage === 'review' || scopedFlow?.stage === 'risk')
+      void props.controller.discardScopedPlan(scopedFlow.plan);
+    scopedFlowBusy.current = false;
+    setScopedFlow(undefined);
+    const leavingContext: TuiPageContext = {
+      focusIndex: route.name === 'intentInventory' || route.name === 'platform' ? effectiveFocus : focus,
       scrollOffset,
       entityLineOffset: entityCardNavigation || route.name === 'pluginDetail' ? batchTargetOffset : undefined,
       query,
@@ -2664,19 +2649,27 @@ export function ConsoleAppV4(props: {
         ? pluginRows[focus]?.pluginId
         : route.name === 'pluginContent' ? actions[focus]?.actionId?.replace(/^content:/u, '')
         : route.name === 'batchSelection' ? actions[focus]?.pluginId
-        : route.name === 'projectStatus' ? actions[effectiveFocus]?.pluginId
+        : route.name === 'intentInventory' ? actions[effectiveFocus]?.pluginId
           : route.name === 'sourceList' ? actions[focus]?.actionId?.replace(/^source:/u, '')
             : route.name === 'portableSkillSelect' ? actions[focus]?.actionId : undefined,
-      ...(route.name === 'projectStatus' || route.name === 'platform'
+      ...(route.name === 'intentInventory' || route.name === 'platform'
         ? { focusedActionId: actions[effectiveFocus]?.actionId } : {}),
-    });
-    props.controller.push(next);
+    };
+    props.controller.updatePageContext(leavingContext);
+    if (route.name === 'intentInventory') {
+      const key = route.scope === 'project' ? `project:${route.projectKey ?? ''}` : 'user';
+      scopedPageContext.current[key] = { ...snapshot.router.current.context, ...leavingContext };
+    }
+    const enteringContext = next.name === 'intentInventory'
+      ? scopedPageContext.current[next.scope === 'project' ? `project:${next.projectKey ?? ''}` : 'user']
+      : undefined;
+    props.controller.push(next, enteringContext);
     if (route.name === 'pluginContent') setContentReader(undefined);
-    setFocus(0);
+    setFocus(enteringContext?.focusIndex ?? 0);
     if (next.name === 'pluginDetail' || next.name === 'sourceDetail'
-      || next.name === 'projectStatus') setBatchTargetOffset(0);
-    setScrollOffset(0);
-    setQuery('');
+      || next.name === 'intentInventory') setBatchTargetOffset(0);
+    setScrollOffset(enteringContext?.scrollOffset ?? 0);
+    setQuery(enteringContext?.query ?? '');
     setSearchFocus(false);
     if (next.name === 'pluginList') {
       setInstallFilter(next.mode === 'installed' ? 'installed' : 'all');
@@ -2684,54 +2677,77 @@ export function ConsoleAppV4(props: {
     setShowTechnical(false);
     setActionError(undefined);
   };
-  const beginProjectTask = (
-    request: Parameters<TuiController['prepareProjectTask']>[0],
-    returnTo: 'project' | 'targets' | 'task' = 'project',
-    task?: SplitTaskContext,
+  const beginScopedTask = (
+    request: Parameters<TuiController['prepareScopedTask']>[0],
+    prepare = () => props.controller.prepareScopedTask(request),
   ): void => {
-    if (projectFlowEnterBusy.current) return;
-    projectFlowEnterBusy.current = true;
-    if (returnTo === 'project') projectPageAnchor.current = batchTargetOffset;
-    const token = ++projectFlowToken.current;
-    setBatchTargetOffset(0);
-    setProjectFlow({ stage: 'preparing', request: request.kind, returnTo, ...(task ? { task } : {}) });
-    void props.controller.prepareProjectTask(request).then((plan) => {
-      if (projectFlowToken.current !== token) return;
-      projectFlowEnterBusy.current = false;
-      setProjectFlow({ stage: 'review', plan, returnTo, ...(task ? { task } : {}), focus: 0 });
+    if (scopedFlowBusy.current) return;
+    scopedFlowBusy.current = true;
+    const token = ++scopedFlowToken.current;
+    setScopedFlow({ stage: 'preparing', scope: request.scope, request: request.kind, focus: 0 });
+    void prepare().then((plan) => {
+      if (scopedFlowToken.current !== token) {
+        void props.controller.discardScopedPlan(plan);
+        return;
+      }
+      scopedFlowBusy.current = false;
+      setScopedFlow({ stage: 'review', scope: request.scope, request, plan, focus: 0 });
     }).catch((error) => {
-      if (projectFlowToken.current !== token) return;
-      projectFlowEnterBusy.current = false;
-      setProjectFlow({ stage: 'result',
+      if (scopedFlowToken.current !== token) return;
+      scopedFlowBusy.current = false;
+      setScopedFlow({ stage: 'result', scope: request.scope,
         errorCode: safeDiagnosticCode(error instanceof Error ? error.message : undefined,
-        'projectRecoveryPreparationFailed'), ...(task ? { task } : {}), focus: 0 });
+          'recoveryPreparationFailed'), focus: 0 });
     });
   };
-  const closeProjectFlow = (): void => {
-    setProjectFlow(undefined);
-    if (!projectFlow || !('task' in projectFlow) || !projectFlow.task) {
-      setBatchTargetOffset(projectPageAnchor.current);
+  const closeScopedFlow = (): void => {
+    scopedFlowToken.current += 1;
+    scopedFlowBusy.current = false;
+    if (scopedFlow?.stage === 'preparing') props.controller.cancelScopedPreparation();
+    if (scopedFlow?.stage === 'review' || scopedFlow?.stage === 'risk')
+      void props.controller.discardScopedPlan(scopedFlow.plan);
+    setScopedFlow(undefined);
+    if (scopedFlow?.stage === 'result' && scopedFlow.receipt?.ok && route.name === 'pluginWriteTask') {
+      const parent = props.controller.pluginWriteTaskReturnRoute(route);
+      if (parent.name === 'pluginWriteTask' && parent.goal !== route.goal) {
+        props.controller.back();
+      } else {
+        props.controller.replace({ name: 'pluginDetail', pluginId: route.pluginId });
+      }
+      setFocus(0); setScrollOffset(0); setQuery('');
     }
   };
-  const executeProjectReview = (plan: ProjectTuiPlan, task?: SplitTaskContext): void => {
-    if (projectFlowEnterBusy.current) return;
-    projectFlowEnterBusy.current = true;
-    const token = ++projectFlowToken.current;
-    setProjectFlow({ stage: 'progress', plan, ...(task ? { task } : {}) });
-    void props.controller.executeProjectTask(plan).then((outcome) => {
-      if (projectFlowToken.current !== token) return;
-      projectFlowEnterBusy.current = false;
-      setBatchTargetOffset(0);
-      setProjectFlow({ stage: 'result', plan,
+  const executeScopedReview = (plan: ScopedTuiPlan): void => {
+    if (scopedFlowBusy.current) return;
+    scopedFlowBusy.current = true;
+    const token = ++scopedFlowToken.current;
+    const batchOwner = batchDraft && (route.name === 'batchSelection' || route.name === 'batchPlacement'
+      || route.name === 'batchInstallScope' || route.name === 'batchInstallPlatforms'
+      || route.name === 'pluginWriteTask' && route.batchOrigin?.flowId === batchDraft.flowId);
+    const nestedTaskParent = route.name === 'pluginWriteTask' && route.goal === 'update'
+      ? props.controller.pluginWriteTaskReturnRoute(route) : undefined;
+    setScopedFlow({ stage: 'progress', scope: plan.scope, plan, focus: 0 });
+    void props.controller.executeScopedTask(plan).then((outcome) => {
+      if (scopedFlowToken.current !== token) return;
+      scopedFlowBusy.current = false;
+      setScopedFlow({ stage: 'result', scope: plan.scope, plan,
         ...(outcome.kind === 'recovery' ? { receipt: outcome.receipt } : { changed: outcome.changed }),
-        ...(task ? { task } : {}), focus: 0 });
-      void props.controller.refreshProjectInventory();
+        focus: 0 });
+      if (batchOwner && outcome.kind === 'recovery' && outcome.receipt.ok
+        && !(route.name === 'pluginWriteTask' && nestedTaskParent?.name === 'pluginWriteTask'
+          && nestedTaskParent.goal !== route.goal)) {
+        setBatchDraft(undefined);
+        props.controller.replace({ name: 'pluginList', mode: 'installed' });
+      }
+      void props.controller.load().then(() => props.controller.refreshScopedInventory(plan.scope))
+        .catch((error: unknown) => props.controller.recordUiFailure(error,
+          { code: 'tuiScopedStatusReloadFailed', stage: 'scoped-status-reload' }));
     }).catch((error) => {
-      if (projectFlowToken.current !== token) return;
-      projectFlowEnterBusy.current = false;
-      setProjectFlow({ stage: 'result', plan,
+      if (scopedFlowToken.current !== token) return;
+      scopedFlowBusy.current = false;
+      setScopedFlow({ stage: 'result', scope: plan.scope, plan,
         errorCode: safeDiagnosticCode(error instanceof Error ? error.message : undefined,
-          'projectRecoveryFailed'), ...(task ? { task } : {}), focus: 0 });
+          'recoveryFailed'), focus: 0 });
     });
   };
   const closeBatchSelectionTools = (): void => {
@@ -2750,13 +2766,6 @@ export function ConsoleAppV4(props: {
     if (portableResultDetailOpen) setFocus(portableResultDetailReturnFocus.current);
     setPortableResultDetailOpen(false);
     setPortableResultDetailOffset(0);
-    if (route.name === 'projectStatus' && dynamicActionIds && dynamicActionSignature !== undefined) {
-      const recheck = actions.findIndex((action) => action.actionId === 'project-recheck');
-      dynamicMenuFocus.current = { routeKey, actionIds: dynamicActionSignature,
-        focusedActionId: 'project-recheck' };
-      setFocus(Math.max(0, recheck));
-      setScrollOffset(0);
-    }
     setShowTechnical((value) => !value);
     if (!(route.name === 'result' && snapshot.result
       && 'operationKind' in snapshot.result
@@ -2783,9 +2792,10 @@ export function ConsoleAppV4(props: {
       restoredFocus = restoredEntityIndex >= 0
         ? restoredEntityIndex
         : Math.min(restoredFocus, Math.max(0, rowIds.length - 1));
-    } else if (restoredFrame.route.name === 'projectStatus') {
+    } else if (restoredFrame.route.name === 'intentInventory') {
       const actionId = restored.focusedActionId
-        ?? (restored.focusedEntityId ? `project-root:${restored.focusedEntityId}` : 'project-recheck');
+        ?? (restored.focusedEntityId ? `inventory-root:${restored.focusedEntityId}`
+          : 'inventory-recheck');
       dynamicMenuFocus.current = {
         routeKey: JSON.stringify(restoredFrame.route), actionIds: '', focusedActionId: actionId,
       };
@@ -2826,7 +2836,8 @@ export function ConsoleAppV4(props: {
       itemCount = candidates.length + 2;
       restoredFocus = entityIndex >= 0 ? entityIndex : Math.min(restoredFocus, Math.max(0, itemCount - 1));
     }
-    const dynamicMenuRoute = restoredFrame.route.name === 'projectStatus' || restoredFrame.route.name === 'platform';
+    const dynamicMenuRoute = restoredFrame.route.name === 'intentInventory'
+      || restoredFrame.route.name === 'platform';
     let restoredScroll = dynamicMenuRoute
       ? restored.scrollOffset ?? 0
       : Math.min(restored.scrollOffset ?? 0, Math.max(0, (itemCount ?? 1) - 1));
@@ -2906,67 +2917,56 @@ export function ConsoleAppV4(props: {
   };
   const beginReview = (intent: OperationIntent, returnRoute?: TuiRoute): void => {
     setSplitTaskReview(undefined);
-    if (unifiedProjectScope) {
-      if (intent.kind === 'pluginWrite' && intent.scope === 'project') {
-        const agents = projectAgentsForPlatform(intent.platform);
-        const wholeRemovedCleanup = intent.action === 'cleanup' && !intent.force
-          && snapshot.projectInventory?.recovery?.inventory?.some((root) =>
-            root.pluginId === intent.pluginId && root.sourceState === 'ready'
-            && root.blockers.some((blocker) => blocker.code === 'pluginUnavailable'));
-        beginProjectTask({ kind: 'recovery',
-          command: intent.action === 'refreshAndSync' ? 'sync' : intent.action,
-          selectors: [intent.pluginId],
-          ...(!wholeRemovedCleanup ? { targets: agents,
-            exactTargets: agents.map((agent) => ({ pluginId: intent.pluginId, agent })) } : {}),
-          ...(intent.action === 'refreshAndSync' ? { refresh: true } : {}),
-          ...(intent.force ? { force: true } : {}),
-          ...(intent.scriptTimeoutMs !== undefined ? { scriptTimeoutMs: intent.scriptTimeoutMs } : {}),
-          ...(intent.action === 'install' && intent.dependencyScopeOverrides?.length
-            ? { dependencyScopeOverrides: intent.dependencyScopeOverrides } : {}),
-        });
-        return;
+    const agentForPlatform = (platform: PlatformName): AgentId =>
+      platform === 'claude' ? 'claude-code' : 'codex';
+    if (intent.kind === 'pluginWrite') {
+      const agents: AgentId[] = intent.platform === 'both' ? ['codex', 'claude-code']
+        : [agentForPlatform(intent.platform)];
+      beginScopedTask({ kind: 'recovery', scope: intent.scope,
+        command: intent.action === 'refreshAndSync' ? 'sync' : intent.action,
+        selectors: [intent.pluginId], targets: agents,
+        exactTargets: agents.map((agent) => ({ pluginId: intent.pluginId, agent })),
+        ...(intent.action === 'refreshAndSync' ? { refresh: true } : {}),
+        ...(intent.force ? { force: true } : {}),
+        ...(intent.dependencyScopeOverrides
+          ? { dependencyScopeOverrides: intent.dependencyScopeOverrides } : {}),
+        ...(intent.saveDependencyScopeOverrides ? { saveDependencyScopeOverrides: true } : {}),
+        ...(intent.scriptTimeoutMs !== undefined ? { scriptTimeoutMs: intent.scriptTimeoutMs } : {}),
+      });
+      return;
+    }
+    if (intent.kind === 'pluginWriteTask') {
+      const scopes = new Set(intent.targets.map((target) => target.scope));
+      if (scopes.size !== 1) {
+        setActionError('个人与项目目标需要分别确认，请先选择同一范围。'); return;
       }
-      if (intent.kind === 'pluginWriteBatch' && (intent.scope === 'project'
-        || ((intent.selection.kind === 'targets' || intent.selection.kind === 'currentProjectIntentTargets')
-          && intent.selection.targets.some((target) => target.scope === 'project')))) {
-        if ((intent.selection.kind === 'targets' || intent.selection.kind === 'currentProjectIntentTargets')
-          && intent.selection.targets.some((target) => target.scope !== 'project')) {
-          setActionError('个人与项目恢复目标需要分别处理。');
-          return;
-        }
-        const exactTargets = intent.selection.kind === 'targets'
-          || intent.selection.kind === 'currentProjectIntentTargets'
-          ? intent.selection.targets.filter((target) => target.scope === 'project')
-            .map((target) => ({ pluginId: target.pluginId,
-              agent: projectAgentsForPlatform(target.platform)[0]! }))
-          : intent.selection.kind === 'selected'
-            ? intent.selection.pluginIds.flatMap((pluginId) => projectAgentsForPlatform(intent.platform)
-              .map((agent) => ({ pluginId, agent }))) : undefined;
-        const selectors = intent.selection.kind === 'selected' ? intent.selection.pluginIds
-          : exactTargets ? [...new Set(exactTargets.map((target) => target.pluginId))] : [];
-        beginProjectTask({ kind: 'recovery', command: intent.action, selectors,
-          ...(exactTargets ? { exactTargets,
-            targets: [...new Set(exactTargets.map((target) => target.agent))] } : {}),
-          ...(intent.scriptTimeoutMs !== undefined ? { scriptTimeoutMs: intent.scriptTimeoutMs } : {}),
-          ...(intent.action === 'install' && intent.dependencyScopeOverrides?.length
-            ? { dependencyScopeOverrides: intent.dependencyScopeOverrides } : {}),
-        });
-        return;
+      const exactTargets = intent.targets.map((target) => ({ pluginId: target.pluginId,
+        agent: agentForPlatform(target.platform) }));
+      beginScopedTask({ kind: 'recovery', scope: intent.targets[0]!.scope,
+        command: intent.goal === 'update' ? 'reinstall' : 'sync',
+        selectors: [...new Set(exactTargets.map((target) => target.pluginId))],
+        targets: [...new Set(exactTargets.map((target) => target.agent))], exactTargets,
+        ...(intent.scriptTimeoutMs !== undefined ? { scriptTimeoutMs: intent.scriptTimeoutMs } : {}) });
+      return;
+    }
+    if (intent.kind === 'pluginWriteBatch') {
+      const targets = intent.selection.kind === 'targets' ? intent.selection.targets
+        : intent.selection.pluginIds.flatMap((pluginId) =>
+          (intent.platform === 'both' ? ['codex', 'claude'] as const : [intent.platform])
+            .map((platform) => ({ pluginId, platform, scope: intent.scope })));
+      const scopes = new Set(targets.map((target) => target.scope));
+      if (scopes.size !== 1) {
+        setActionError('个人与项目目标需要分别确认，请先选择同一范围。'); return;
       }
-      if (intent.kind === 'pluginWriteTask' && intent.targets.some((target) => target.scope === 'project')) {
-        if (intent.targets.some((target) => target.scope !== 'project')) {
-          setActionError('个人与项目恢复目标需要分别处理。');
-          return;
-        }
-        const exactTargets = intent.targets.map((target) => ({ pluginId: target.pluginId,
-          agent: projectAgentsForPlatform(target.platform)[0]! }));
-        beginProjectTask({ kind: 'recovery', command: 'sync',
-          selectors: [...new Set(exactTargets.map((target) => target.pluginId))],
-          exactTargets, targets: [...new Set(exactTargets.map((target) => target.agent))],
-          ...(intent.scriptTimeoutMs !== undefined ? { scriptTimeoutMs: intent.scriptTimeoutMs } : {}),
-        });
-        return;
-      }
+      const exactTargets = targets.map((target) => ({ pluginId: target.pluginId,
+        agent: agentForPlatform(target.platform) }));
+      beginScopedTask({ kind: 'recovery', scope: targets[0]!.scope, command: intent.action,
+        selectors: [...new Set(exactTargets.map((target) => target.pluginId))],
+        targets: [...new Set(exactTargets.map((target) => target.agent))], exactTargets,
+        ...(intent.dependencyScopeOverrides ? { dependencyScopeOverrides: intent.dependencyScopeOverrides } : {}),
+        ...(intent.saveDependencyScopeOverrides ? { saveDependencyScopeOverrides: true } : {}),
+        ...(intent.scriptTimeoutMs !== undefined ? { scriptTimeoutMs: intent.scriptTimeoutMs } : {}) });
+      return;
     }
     pendingReviewIntentRef.current = intent;
     setPendingReviewIntent(intent);
@@ -2974,33 +2974,17 @@ export function ConsoleAppV4(props: {
       ? snapshot.result.returnRoute
       : undefined);
     props.controller.updatePageContext({
-      focusIndex: route.name === 'projectStatus' || route.name === 'platform' ? effectiveFocus : focus,
+      focusIndex: route.name === 'platform' ? effectiveFocus : focus,
       scrollOffset,
       query,
       installFilter,
       sourceTabId: route.name === 'pluginList' ? route.sourceId ?? 'all' : undefined,
-      ...(route.name === 'projectStatus' || route.name === 'platform'
+      ...(route.name === 'platform'
         ? { focusedActionId: actions[effectiveFocus]?.actionId } : {}),
     });
     props.controller.startReviewPreparation(intent, underlyingResultRoute);
     setFocus(0);
     setScrollOffset(0);
-  };
-  const startSplitTaskScope = (context: SplitTaskContext, currentScope: Scope): void => {
-    const selected = context.targets.filter((target) => target.scope === currentScope);
-    const task = { ...context, currentScope };
-    if (currentScope === 'project') {
-      const exactTargets = selected.map((target) => ({ pluginId: target.pluginId,
-        agent: projectAgentsForPlatform(target.platform)[0]! }));
-      beginProjectTask({ kind: 'recovery', command: 'sync',
-        selectors: [...new Set(exactTargets.map((target) => target.pluginId))],
-        targets: [...new Set(exactTargets.map((target) => target.agent))], exactTargets,
-      }, 'task', task);
-      return;
-    }
-    beginReview({ kind: 'pluginWriteTask', goal: context.goal, targets: selected,
-      executionPolicy: context.executionPolicy }, context.returnRoute);
-    setSplitTaskReview(task);
   };
   useEffect(() => {
     if (route.name !== 'pluginWriteTask' || route.goal !== 'restore') return;
@@ -3014,8 +2998,7 @@ export function ConsoleAppV4(props: {
         ? retainedTargetKeys.has(pluginWriteTaskTargetKey(candidate))
         : candidate.target.pluginId === route.pluginId);
     if (candidates.length === 0 || candidates.some((candidate) => !candidate.eligible)) return;
-    if (unifiedProjectScope
-      && new Set(candidates.map((candidate) => candidate.target.scope)).size > 1) return;
+    if (new Set(candidates.map((candidate) => candidate.target.scope)).size > 1) return;
     props.controller.updatePageContext({ autoPreparedRestore: true });
     beginReview({
       kind: 'pluginWriteTask',
@@ -3031,7 +3014,6 @@ export function ConsoleAppV4(props: {
     route.name === 'pluginWriteTask' ? route.targetKeys?.join('\0') ?? '' : '',
     snapshot.router.current.context.autoPreparedRestore,
     snapshot.viewModel,
-    unifiedProjectScope,
   ]);
   const openBatchSelection = (action?: BatchPluginWriteAction): void => {
     props.controller.updatePageContext({
@@ -3220,27 +3202,6 @@ export function ConsoleAppV4(props: {
         ? current.selectedPluginIds.filter((candidate) => candidate !== pluginId)
         : [...current.selectedPluginIds, pluginId],
     } : current);
-  };
-  const prepareCurrentProjectTargets = (targets: PluginWriteBatchTarget[]): void => {
-    if (targets.length === 0) {
-      setActionError('当前项目没有已确认可同步的目标。');
-      return;
-    }
-    beginReview({
-      kind: 'pluginWriteBatch',
-      action: 'sync',
-      selection: {
-        kind: 'currentProjectIntentTargets',
-        targets: targets.map((target) => ({
-          pluginId: target.pluginId,
-          platform: target.platform,
-          scope: target.scope,
-        })),
-      },
-      platform: new Set(targets.map((target) => target.platform)).size > 1
-        ? 'both' : targets[0]!.platform,
-      scope: 'project',
-    });
   };
   const openSelectedPluginTask = (
     goal: PluginWriteTaskGoal,
@@ -3454,11 +3415,6 @@ export function ConsoleAppV4(props: {
     platform: PlatformName,
     selectedScope: Scope,
   ): Promise<void> => {
-    if (selectedScope === 'project' && snapshot.projectInventory?.recovery) {
-      beginReview({ kind: 'pluginWrite', action: 'cleanup', pluginId,
-        platform, scope: 'project', force: true });
-      return;
-    }
     const candidate = await props.controller.getForceCleanupCandidate(
       pluginId,
       platform,
@@ -3469,7 +3425,10 @@ export function ConsoleAppV4(props: {
       return;
     }
     try {
-      props.controller.startForceCleanupReview(candidate);
+      const agent = platform === 'claude' ? 'claude-code' : 'codex';
+      beginScopedTask({ kind: 'recovery', command: 'cleanup', scope: selectedScope,
+        selectors: [pluginId], targets: [agent], exactTargets: [{ pluginId, agent }], force: true },
+      () => props.controller.startForceCleanupReview(candidate));
       setFocus(0);
       setScrollOffset(0);
       setActionError(undefined);
@@ -4169,7 +4128,7 @@ export function ConsoleAppV4(props: {
     }
   }, [operationConfirmation, route.name, snapshot.activeReview?.reviewToken]);
 
-  if (snapshot.phase === 'error' && !isCatalogSourcesBootstrapFlow(snapshot)
+  if (!scopedFlow && snapshot.phase === 'error' && !isCatalogSourcesBootstrapFlow(snapshot)
     && !isOperationHistoryRoute(route)) {
     const sourcesConfigInvalid = snapshot.loadError?.code === 'catalogSourcesConfigInvalid';
     breadcrumb = sourcesConfigInvalid ? 'Catalog 来源恢复' : '启动失败';
@@ -4190,7 +4149,7 @@ export function ConsoleAppV4(props: {
       {actions.length > 0 ? <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /> : null}
       {showTechnical ? <TechnicalDetails><StaticRow title="安全诊断" meta={snapshot.loadError?.code ?? 'statusLoadFailed'} compact /></TechnicalDetails> : null}
     </Box>;
-  } else if (snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)
+  } else if (!scopedFlow && snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)
     && !isOperationHistoryRoute(route)) {
     breadcrumb = '启动';
     title = '正在检查插件状态';
@@ -4203,7 +4162,6 @@ export function ConsoleAppV4(props: {
     </StatusCard>;
   } else if (rendererFamily === 'home' && route.name === 'home') {
     const home = snapshot.viewModel!.home;
-    const inventory = snapshot.projectInventory;
     const plugins = props.controller.listPlugins({ mode: 'browse' });
     const attention = new Set(plugins.filter((entry) => entry.primaryAttention).map((entry) => entry.pluginId)).size;
     const unknown = new Set(plugins.filter((entry) => entry.supportedPlatforms.some((platform) => pluginPlatformUnknown(entry, platform))).map((entry) => entry.pluginId)).size;
@@ -4212,25 +4170,17 @@ export function ConsoleAppV4(props: {
     context = undefined;
     const pluginState = [home.pluginUpdateCount ? `↑ ${home.pluginUpdateCount} 可更新` : '',
       attention ? `! ${attention} 需处理` : '', unknown ? `? ${unknown} 未确认` : ''].filter(Boolean).join(' · ') || '✓ 当前可用';
-    const projectState = !inventory ? '检查中' : inventory.declarationState === 'notProject' ? '当前不是项目'
-      : inventory.declarationState === 'absent' ? '未配置项目插件'
-      : inventory.declarationState !== 'ready' ? '! 项目声明需要检查'
-      : [inventory.counts.blocked ? `! ${inventory.counts.blocked} 受阻` : '',
-          inventory.counts.pending ? `↻ ${inventory.counts.pending} 待同步` : '',
-          inventory.counts.unknown ? `? ${inventory.counts.unknown} 未确认` : ''].filter(Boolean).join(' · ') || '✓ 全部就绪';
-    const visibleProjectState = snapshot.projectInventoryRefresh.state === 'error'
-      ? `! 项目检查失败，显示上次检查结果 · ${projectState}` : projectState;
     const sourceState = [home.catalogUpdateCount ? `↑ ${home.catalogUpdateCount} 有更新` : '',
       home.catalogRecoveryCount ? `! ${home.catalogRecoveryCount} 检查失败` : '',
       home.unavailableSourceCount ? `! ${home.unavailableSourceCount} 不可用` : '',
       home.catalogCheckingCount ? `${home.catalogCheckingCount} 检查中` : ''].filter(Boolean).join(' · ') || '✓ 当前可用';
     actions = [
       { label: '插件', description: pluginState, run: () => go({ name: 'pluginList', mode: 'browse' }) },
-      { label: '项目插件', description: visibleProjectState, run: () => go({ name: 'projectStatus' }) },
+      { label: '插件清单', description: '个人与当前项目的插件需求', run: () => go({ name: 'intentScopes' }) },
       { label: '插件来源', description: sourceState, run: () => go({ name: 'sourceList' }) },
     ];
     content = <Box flexDirection="column">{actions.map((action, index) => <Box key={action.label} marginBottom={1}>
-      <HomeNavTile width={size.columns - 2} title={action.label} focused={!projectReminderOpen && focus === index}>
+      <HomeNavTile width={size.columns - 2} title={action.label} focused={focus === index}>
         <Text wrap="wrap">{action.description?.split(' · ').map((state, stateIndex) => <Text key={stateIndex}
           color={state.startsWith('↑') ? tuiTheme.roles.change : state.startsWith('!') || state.startsWith('↻') ? tuiTheme.roles.warning
             : state.startsWith('?') ? tuiTheme.roles.unknown : state.startsWith('✓') ? tuiTheme.roles.success : tuiTheme.roles.secondary}>
@@ -4238,262 +4188,288 @@ export function ConsoleAppV4(props: {
         </Text>)}</Text>
       </HomeNavTile>
     </Box>)}</Box>;
-  } else if (projectFlow) {
-    breadcrumb = '项目插件';
+  } else if (route.name === 'intentScopes') {
+    breadcrumb = '插件清单';
+    title = '选择清单范围';
     context = undefined;
-    const flow = projectFlow;
-    if (flow.stage === 'targets') {
-      title = '选择本机 Agent';
-      description = '选择只保存在本机。保存后可单独同步项目需求。';
+    description = undefined;
+    const scopes: Scope[] = snapshot.projectRoot ? ['user', 'project'] : ['user'];
+    actions = scopes.map((scope) => {
+      const inventory = snapshot.scopedInventories[scope];
+      const count = inventory?.counts;
+      const status = !inventory ? '未检查' : inventory.declarationState !== 'ready' && inventory.declarationState !== 'absent'
+        ? '需求清单需检查' : count!.blocked ? `${count!.blocked} 受阻`
+          : count!.unknown ? `${count!.unknown} 未确认` : count!.pending ? `${count!.pending} 待同步`
+            : inventory.allSatisfied === true ? '已就绪' : '尚未添加插件';
+      return { actionId: `scope:${scope}`, label: scope === 'user' ? '个人' : `当前项目 · ${inventory?.projectName ?? path.basename(snapshot.projectRoot ?? '')}`,
+        description: `${scope === 'user' ? '跨项目使用的插件需求' : '随仓库共享的插件需求'} · ${status}`,
+        run: () => go({ name: 'intentInventory', scope,
+          ...(scope === 'project' && snapshot.projectRoot
+            ? { projectKey: snapshot.projectRoot } : {}) }),
+      };
+    });
+    content = <Box flexDirection="column">
+      {actions.map((action, index) => <Box key={action.actionId} marginBottom={1}>
+        <HomeNavTile width={size.columns - 2} title={action.label} focused={focus === index}>
+          <Text>{action.description}</Text>
+        </HomeNavTile>
+      </Box>)}
+      {!snapshot.projectRoot
+        ? <StaticRow title="当前没有项目；个人清单仍可使用。" status="muted" compact /> : null}
+    </Box>;
+  } else if (scopedFlow) {
+    const flow = scopedFlow;
+    breadcrumb = `插件清单 / ${flow.scope === 'user' ? '个人' : '当前项目'}`;
+    context = undefined;
+    if (flow.stage === 'intentScope') {
+      title = flow.action === 'add' ? '选择插件需求范围' : '选择要移出的清单';
+      description = flow.action === 'add' ? '保存需求不会立即安装。'
+        : '移出需求后，现有安装仍会保留。';
+      actions = flow.scopes
+        .map((selectedScope) => ({ label: selectedScope === 'user' ? '个人（所有项目）' : '当前项目',
+          run: () => beginScopedTask({ kind: 'intent', action: flow.action, scope: selectedScope,
+            selector: flow.selector }) }));
+      content = <SemanticRows actions={actions} focus={flow.focus} kind="action" compact />;
+    } else if (flow.stage === 'targets') {
+      title = flow.scope === 'user' ? '个人插件使用的工具' : '此项目在本机使用的工具';
+      description = '保存后可单独准备同步任务。';
       actions = (['codex', 'claude-code', 'cursor'] as const).map((agent): ActionItem => ({
-        label: `${flow.agents.includes(agent) ? '✓' : '○'} ${agent}`,
-        run: () => setProjectFlow({ ...flow,
-          agents: flow.agents.includes(agent)
-            ? flow.agents.filter((value) => value !== agent)
+        actionId: `agent:${agent}`, label: `${flow.agents.includes(agent) ? '✓' : '○'} ${agent}`,
+        run: () => setScopedFlow({ ...flow,
+          agents: flow.agents.includes(agent) ? flow.agents.filter((value) => value !== agent)
             : [...flow.agents, agent].sort(),
         }),
       }));
-      actions.push({ label: '查看保存影响', run: () => {
-        setProjectAgentsDraft(flow.agents);
-        beginProjectTask({ kind: 'targets', action: 'set', agents: flow.agents }, 'targets');
-      } });
-      actions.push({ label: '重置本机目标与范围覆盖', run: () =>
-        beginProjectTask({ kind: 'targets', action: 'reset', agents: [] }, 'targets') });
-      actions.push({ label: '返回项目插件', run: closeProjectFlow });
-      content = <Box flexDirection="column">
-        <SectionCard title="本机 Agent"><StaticRow title={flow.agents.join('、') || '未选择'} compact /></SectionCard>
-        <SemanticRows actions={actions} focus={flow.focus} kind="action" compact
-          offset={Math.min(Math.max(0, flow.focus - Math.max(1, pageActionBudget(4)) + 1),
-            Math.max(0, actions.length - Math.max(1, pageActionBudget(4))))}
-          limit={Math.max(1, pageActionBudget(4))} />
-      </Box>;
+      actions.push({ actionId: 'targets-save', label: '保存选择', run: () =>
+        beginScopedTask({ kind: 'targets', action: 'set', scope: flow.scope, agents: flow.agents }) });
+      actions.push({ actionId: 'targets-reset', label: '重置本机部署偏好', run: () =>
+        beginScopedTask({ kind: 'targets', action: 'reset', scope: flow.scope, agents: [] }) });
+      content = <Box flexDirection="column"><SemanticRows actions={actions} focus={flow.focus}
+        kind="action" compact limit={Math.max(1, pageActionBudget(3))} /></Box>;
+      help = '↑↓ 移动 · Enter/Space 勾选 · s 保存 · Esc 返回';
     } else if (flow.stage === 'preparing' || flow.stage === 'progress') {
-      title = flow.stage === 'preparing' ? '正在准备项目 Review' : '正在恢复项目插件';
-      description = flow.stage === 'preparing'
-        ? '正在读取当前证据并准备影响范围。Esc 可取消准备。'
-        : '操作已开始。完成后将显示每个目标的结果。';
-      content = <Box flexDirection="column"><ProgressRow
-        title={flow.stage === 'preparing' ? 'ReviewPreparing' : 'Progress'}
-        description={description} state="active" /></Box>;
+      title = flow.stage === 'preparing' ? '正在准备操作汇总' : '正在执行恢复';
+      description = flow.stage === 'preparing' ? '正在检查当前证据。Esc 可取消准备。'
+        : '操作已开始。完成后显示每个目标结果。';
+      content = <ProgressRow title={title} state="active" />;
+    } else if (flow.stage === 'timeout') {
+      title = '设置脚本超时';
+      description = `输入 ${SCRIPT_TIMEOUT_MIN_MS}–${SCRIPT_TIMEOUT_MAX_MS} 毫秒。默认 ${SCRIPT_TIMEOUT_DEFAULT_MS} 毫秒。`;
+      help = '输入 · Enter 应用并重新准备 · Ctrl-U 清空 · Esc 保留原值';
+      content = <InputCard focused title={<InputDisplay value={scriptTimeoutInput}
+        columns={Math.max(8, size.columns - 8)} />}
+        description={scriptTimeoutError ?? '此值只用于本次任务。'}
+        status={scriptTimeoutError ? 'error' : undefined} />;
     } else if (flow.stage === 'review') {
-      title = '项目恢复 Review';
-      description = '确认完整请求、可执行子集、阻断项和共享影响。';
-      readingText = projectPlanText(flow.plan, flow.task);
+      title = '操作汇总';
+      description = '确认需求、偏好、配置及输出影响。';
+      readingText = scopedPlanText(flow.plan);
       actions = [
-        { label: flow.plan.kind === 'targets' ? '确认保存本机偏好' : '确认执行可处理目标',
-          run: () => executeProjectReview(flow.plan, flow.task) },
-        { label: '返回修改', run: () => flow.returnTo === 'targets'
-          ? setProjectFlow({ stage: 'targets', agents: projectAgentsDraft, focus: 0 })
-          : closeProjectFlow() },
+        { label: flow.plan.kind === 'targets' ? '确认保存本机工具'
+          : flow.plan.kind === 'intent' ? '确认修改需求' : '确认恢复可执行目标',
+          run: () => scopedRiskReasons(flow.plan).length
+            ? setScopedFlow({ stage: 'risk', scope: flow.scope, request: flow.request,
+              plan: flow.plan, focus: 0 }) : executeScopedReview(flow.plan) },
+        { label: '返回修改', run: closeScopedFlow },
+        ...(flow.request.kind === 'recovery' && batchDraft?.maintenanceTargets?.length
+          && batchDraft.maintenanceTargets.every((target) => target.scope === flow.scope)
+          ? [{ label: '修改处理范围', run: () => {
+            void props.controller.discardScopedPlan(flow.plan);
+            setScopedFlow(undefined);
+            props.controller.push({ name: 'batchPlacement' });
+            setFocus(0); setScrollOffset(0);
+          } }] : []),
+        ...(flow.request.kind === 'recovery' ? [{ label: '修改脚本超时', run: () => {
+          const request = flow.request;
+          if (request.kind !== 'recovery') return;
+          void props.controller.discardScopedPlan(flow.plan);
+          setScriptTimeoutInput(String(request.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS));
+          setScriptTimeoutError(undefined);
+          setScopedFlow({ stage: 'timeout', scope: flow.scope, request, focus: 0 });
+        } }] : []),
       ];
-      content = <Box flexDirection="column"><ReviewCard title="本次影响">
+      content = <ReviewCard title="本次影响">
         {readingPage(readingText, size.columns - 6, Math.max(1, pageActionBudget(6)))}
         <SemanticRows actions={actions} focus={flow.focus} kind="action" compact />
-      </ReviewCard></Box>;
-    } else {
-      title = '项目操作 Result';
-      description = flow.errorCode ? `操作未完成：${flow.errorCode}`
-        : flow.receipt ? flow.receipt.ok ? '项目请求已完成。' : '项目请求仍有未完成目标。'
-          : '本机偏好已处理。';
-      if (flow.task) description += ' 另一范围仍需独立 Review。';
-      readingText = flow.receipt ? projectResultText(flow.receipt, flow.task)
-        : flow.errorCode ?? (flow.changed ? '本机偏好已保存。' : '本机偏好没有变化。');
+      </ReviewCard>;
+    } else if (flow.stage === 'risk') {
+      title = '操作汇总';
+      description = '确认需求、偏好、配置及输出影响。';
+      readingText = [
+        `范围：${flow.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
+        `完整请求：${flow.plan.kind === 'recovery' || flow.plan.kind === 'retire'
+          ? flow.plan.plan.receipt.requestedRoots.join('、') : ''}`,
+        ...scopedRiskReasons(flow.plan).map((reason) => `! ${reason}`),
+      ].join('\n');
       actions = [
-        { label: flow.task ? '返回恢复任务' : '返回项目插件', run: closeProjectFlow },
-        ...(flow.task && flow.task.currentScope === 'project'
-          && flow.task.targets.some((target) => target.scope === 'user') ? [{
-          label: `继续处理所有项目 ${flow.task.targets.filter((target) => target.scope === 'user').length} 个位置`,
-          description: '重新准备个人范围并显示独立 Review',
-          run: () => {
-            closeProjectFlow();
-            startSplitTaskScope(flow.task!, 'user');
-          },
-        }] : []),
-        { label: '重新检查项目', run: () => { closeProjectFlow(); void props.controller.refreshProjectInventory(); } },
-        ...(flow.receipt?.remainingTargets.length ? [{ label: `仅重试未完成目标（${flow.receipt.remainingTargets.length}）`,
-          run: () => beginProjectTask({ kind: 'recovery',
-            command: flow.receipt!.command as 'sync' | 'install' | 'reinstall' | 'uninstall' | 'cleanup',
-            selectors: [...new Set(flow.receipt!.remainingTargets.map((target) => target.pluginId))],
-            exactTargets: flow.receipt!.remainingTargets,
-          }) }] : []),
+        { label: '返回检查', run: () => setScopedFlow({ ...flow, stage: 'review', focus: 0 }) },
+        { label: '确认并执行', run: () => executeScopedReview(flow.plan) },
       ];
-      content = <Box flexDirection="column"><ResultCard
-        status={flow.errorCode || flow.receipt && !flow.receipt.ok ? 'warning' : 'success'}
+      content = <ReviewCard title="本次影响">
+        {readingPage(scopedPlanText(flow.plan), size.columns - 6, Math.max(1, pageActionBudget(6)))}
+      </ReviewCard>;
+    } else {
+      title = '恢复结果';
+      description = flow.errorCode ? `操作未完成：${flow.errorCode}`
+        : flow.receipt ? flow.receipt.ok ? '请求已完成。' : '请求仍有未完成目标。'
+          : '本机工具已保存。';
+      readingText = flow.receipt ? scopedResultText(flow.receipt)
+        : flow.errorCode ?? (flow.changed ? '本机工具已保存。' : '本机工具没有变化。');
+      const retryTargets = flow.receipt?.targetResults.filter((target) =>
+        (target.execution === 'failed' || target.execution === 'partial')
+        && (target.observation === 'missing' || target.content === 'absent')) ?? [];
+      const retryKeys = new Set(retryTargets.map((target) => `${target.pluginId}\0${target.agent}`));
+      const unknownTargets = flow.receipt?.targetResults.filter((target) =>
+        target.observation === 'unknown'
+        && !retryKeys.has(`${target.pluginId}\0${target.agent}`)) ?? [];
+      actions = [
+        { label: route.name === 'issueDetail' ? '返回问题详情'
+          : route.name === 'pluginWriteTask' ? '返回插件任务'
+            : route.name === 'pluginDetail' ? '返回插件详情'
+              : route.name === 'intentInventory' ? '返回当前清单'
+                : '返回插件列表', run: closeScopedFlow },
+        ...(flow.plan?.kind === 'targets' ? [{ label: '立即同步', run: () => beginScopedTask({
+          kind: 'recovery', scope: flow.scope, selectors: [],
+        }) }] : []),
+        ...(unknownTargets.length ? [{ label: `检查未确认项（${unknownTargets.length}）`, run: () => {
+          closeScopedFlow(); void props.controller.refreshScopedInventory(flow.scope);
+        } }] : []),
+        ...(retryTargets.length ? [{ label: `重试明确失败项（${retryTargets.length}）`, run: () => beginScopedTask({
+          kind: 'recovery', scope: flow.scope, command: flow.receipt!.command as 'sync',
+          selectors: [...new Set(retryTargets.map((target) => target.pluginId))],
+          targets: [...new Set(retryTargets.map((target) => target.agent))],
+          exactTargets: retryTargets.map((target) => ({ pluginId: target.pluginId, agent: target.agent })),
+        }) }] : []),
+      ];
+      content = <ResultCard status={flow.errorCode || flow.receipt && !flow.receipt.ok ? 'warning' : 'success'}
         title={description}>
         {readingPage(readingText, size.columns - 6, Math.max(1, pageActionBudget(6)))}
         <SemanticRows actions={actions} focus={flow.focus} kind="action" compact />
-      </ResultCard></Box>;
+      </ResultCard>;
     }
-  } else if (route.name === 'projectStatus') {
-    const inventory = snapshot.projectInventory;
-    const recovery = inventory?.recovery;
-    const section = snapshot.router.current.context.projectSection ?? 'declared';
-    const statusFilter = snapshot.router.current.context.projectStatusFilter ?? 'all';
-    const stateLabel = { blocked: '受阻', pending: '待同步', unknown: '未确认', ready: '就绪' };
-    const searchedRoots = props.controller.listProjectInventoryRoots(section).filter((root) =>
-      queryMatches(query, root.displayName, root.pluginId, root.sourceId));
+  } else if (route.name === 'intentInventory') {
+    const inventory = snapshot.scopedInventories[route.scope];
+    const section = snapshot.router.current.context.inventorySection ?? 'declared';
+    const statusFilter = snapshot.router.current.context.inventoryStatusFilter ?? 'all';
+    const allRoots = props.controller.listScopedInventoryRoots(route.scope, section);
+    const searchedRoots = allRoots.filter((root) => queryMatches(query, root.displayName, root.pluginId, root.sourceId));
     const roots = searchedRoots.filter((root) => statusFilter === 'all' || root.state === statusFilter);
-    const statusCounts = Object.fromEntries(PROJECT_STATUS_FILTERS.map((filter) => [filter,
+    const filters = ['all', 'blocked', 'unknown', 'pending', 'ready'] as const;
+    const filterLabels = { all: '全部', blocked: '受阻', unknown: '未确认', pending: '待同步', ready: '就绪' };
+    const counts = Object.fromEntries(filters.map((filter) => [filter,
       filter === 'all' ? searchedRoots.length : searchedRoots.filter((root) => root.state === filter).length,
-    ])) as Record<ProjectStatusFilter, number>;
+    ])) as Record<typeof filters[number], number>;
     toggleProjectStatusFilter = () => {
-      const available = PROJECT_STATUS_FILTERS.filter((filter) =>
-        filter === 'all' || filter === statusFilter || statusCounts[filter] > 0);
+      const available = filters.filter((filter) => filter === 'all' || filter === statusFilter || counts[filter] > 0);
       const next = available[(available.indexOf(statusFilter) + 1) % available.length]!;
-      props.controller.updatePageContext({ projectStatusFilter: next });
-      dynamicMenuFocus.current = undefined;
-      actionJumpAnchor.current = undefined;
-      setFocus(0);
-      setScrollOffset(0);
+      props.controller.updatePageContext({ inventoryStatusFilter: next });
+      setFocus(0); setScrollOffset(0);
     };
     moveProjectSection = () => {
-      const next = section === 'declared' ? 'extraInstalled' : 'declared';
-      props.controller.updatePageContext({ projectSection: next });
-      dynamicMenuFocus.current = undefined;
-      actionJumpAnchor.current = undefined;
-      setFocus(0);
-      setScrollOffset(0);
+      props.controller.updatePageContext({ inventorySection: section === 'declared' ? 'extraInstalled' : 'declared' });
+      setFocus(0); setScrollOffset(0);
     };
-    breadcrumb = '项目插件';
-    title = showTechnical ? '项目状态安全详情' : inventory?.projectName ?? '项目插件';
-    context = undefined;
-    description = snapshot.projectInventoryRefresh.state === 'error'
-      ? '项目检查失败；以下显示上次检查结果。可重新检查。'
-      : inventory?.declarationState === 'notProject' ? '当前不是项目；没有项目同步目标。'
-      : inventory?.declarationState === 'absent' ? '未配置项目插件。'
-        : inventory?.declarationState === 'invalid' || inventory?.declarationState === 'unavailable' ? '项目声明需要检查。' : undefined;
-    if (recovery && snapshot.projectInventoryRefresh.state !== 'error') {
-      description = `本机 Agent：${recovery.selection.agents.join('、') || '未选择'} · ${
-        recovery.selection.origin === 'preference' ? '本机偏好' : recovery.selection.origin === 'argument'
-          ? '一次性参数' : '请先选择'}`;
-    }
+    breadcrumb = `插件清单 / ${route.scope === 'user' ? '个人' : '当前项目'}`;
+    title = showTechnical ? '清单安全详情' : route.scope === 'user' ? '个人清单' : '当前项目清单';
+    description = snapshot.scopedInventoryRefresh[route.scope]?.state === 'error'
+      ? '检查失败；以下显示上次结果，当前状态未确认。' : inventory?.declarationState === 'absent'
+        ? '清单尚未添加插件。' : inventory?.declarationState === 'invalid'
+          ? '无法确认需求清单；请查看详情并修正。' : !inventory ? '正在检查清单。'
+            : inventory.selectedAgents.length === 0 && inventory.declaredRoots.length > 0
+              ? `已有 ${inventory.declaredRoots.length} 项需求；本机工具未设置。` : undefined;
     actions = roots.map((root) => ({
-      actionId: `project-root:${root.pluginId}`, pluginId: root.pluginId,
-      label: root.displayName,
+      actionId: `inventory-root:${root.pluginId}`, pluginId: root.pluginId, label: root.displayName,
       run: () => go({ name: 'pluginDetail', pluginId: root.pluginId }),
     }));
-    const syncTargets = inventory?.syncTargets ?? [];
-    const syncCount = new Set(syncTargets.map((target) => target.pluginId)).size;
-    const projectRestoreIds = recovery ? [] : [...new Set(props.controller.listPluginWriteTaskCandidates('restore')
-      .filter((candidate) => candidate.target.scope === 'project')
-      .map((candidate) => candidate.target.pluginId))];
-    const removedRoots = recovery?.inventory?.filter((root) => root.sourceState === 'ready'
-      && root.blockers.some((blocker) => blocker.code === 'pluginUnavailable')) ?? [];
+    const selectedKey = route.scope === 'project' ? `project:${route.projectKey ?? ''}` : 'user';
+    const selectedIds = scopedSelected.current[selectedKey] ?? [];
+    const focusedRoot = roots.find((root) => root.pluginId === actions[effectiveFocus]?.pluginId);
+    if (focusedRoot) scopedActiveRoot.current[selectedKey] = focusedRoot.pluginId;
+    const activeRoot = focusedRoot ?? roots.find((root) => root.pluginId === scopedActiveRoot.current[selectedKey]);
     bottomActions = [
-      ...(inventory?.projectRoot && recovery ? [{ actionId: 'project-targets',
-        label: '设置本机 Agent', status: 'info' as const,
-        run: () => {
-          projectPageAnchor.current = batchTargetOffset;
-          const agents = [...recovery.selection.agents];
-          setProjectAgentsDraft(agents);
-          setProjectFlow({ stage: 'targets', agents, focus: 0 });
-        } },
-      ...(recovery.inventory && recovery.inventory.length > 0 ? [{ actionId: 'project-sync-actionable',
-        label: `同步全部项目需求（${recovery.inventory.length}） [c]`, status: 'info' as const,
-        run: () => beginProjectTask({ kind: 'recovery', selectors: [] }) }] : []),
-      ] : []),
-      ...removedRoots.map((root): ActionItem => ({
-        actionId: `project-cleanup-removed:${root.pluginId}`,
-        label: `整体清理已删除插件 ${root.pluginId}`,
-        status: 'warning',
-        run: () => beginProjectTask({ kind: 'recovery', command: 'cleanup', selectors: [root.pluginId] }),
-      })),
-      ...(!recovery && inventory?.projectRoot && syncCount > 0 ? [{ actionId: 'project-sync-actionable',
-        label: `同步全部可处理声明（${syncCount}） [c]`, status: 'info' as const,
-        run: () => prepareCurrentProjectTargets(syncTargets) }] : []),
-      ...(projectRestoreIds.length > 0 ? [{ actionId: 'project-restore',
-        label: `修复当前项目（${projectRestoreIds.length}）`,
-        run: () => openSelectedPluginTask('restore', projectRestoreIds, 'project') }] : []),
-      ...((): ActionItem[] => {
-        const issues = props.controller.listUserIssues().filter((issue) =>
-          props.controller.listProjectInventoryRoots('declared').some((root) =>
-            issueMatchesTarget(issue, root.pluginId)));
-        if (issues.length === 0) return [];
-        const focusedRoot = roots[focus];
-        const selectedIssue = focusedRoot
-          ? issues.find((issue) => issueMatchesTarget(issue, focusedRoot.pluginId)) : undefined;
-        const issue = selectedIssue ?? (issues.length === 1 ? issues[0] : undefined);
-        return [{ actionId: 'project-open-issues',
-          label: issue ? '查看对应问题' : '查看需要处理',
-          run: () => go(issue
-            ? { name: 'issueDetail', issueId: issue.issueId } : { name: 'issueList' }) }];
-      })(),
-      ...(!showTechnical && (inventory?.counts.blocked || inventory?.counts.unknown || snapshot.projectIntentIssue
-        || recovery?.errors.length) ? [{ actionId: 'project-error-details', label: '错误详情', run: toggleTechnical }] : []),
-      { actionId: 'project-recheck', label: snapshot.projectInventoryRefresh.state === 'checking' ? '正在检查项目' : '重新检查项目 [r]',
-        disabled: snapshot.projectInventoryRefresh.state === 'checking' ? '检查中' : undefined,
-        run: async () => { await props.controller.refreshProjectInventory(); } },
+      { actionId: 'inventory-sync-all', label: `同步可执行项（${new Set(inventory?.syncTargets.map((target) => target.pluginId)).size}）`,
+        disabled: !inventory?.syncTargets.length ? '当前没有可执行目标' : undefined,
+        run: () => beginScopedTask({ kind: 'recovery', scope: route.scope, selectors: [] }) },
+      ...(selectedIds.length ? [{ actionId: 'inventory-sync-selected', label: `同步所选插件（${selectedIds.length}）`,
+        run: () => beginScopedTask({ kind: 'recovery', scope: route.scope, selectors: selectedIds }) }] : []),
+      ...(section === 'declared' && activeRoot
+        ? [{ actionId: 'inventory-remove-demand', label: '移除此插件需求（保留安装）',
+          run: () => beginScopedTask({ kind: 'intent', action: 'remove', scope: route.scope,
+            selector: activeRoot.pluginId }) }] : []),
+      ...(activeRoot && activeRoot.sourceState === 'ready'
+        && activeRoot.blockers?.some((blocker) => blocker.code === 'pluginUnavailable')
+        ? [{ actionId: 'inventory-retire', label: '停用已移除插件（保留设置）',
+          run: () => beginScopedTask({ kind: 'retire', scope: route.scope,
+            selector: activeRoot.pluginId, deleteConfig: false }) },
+        { actionId: 'inventory-retire-config', label: '停用已移除插件并删除设置',
+          run: () => beginScopedTask({ kind: 'retire', scope: route.scope,
+            selector: activeRoot.pluginId, deleteConfig: true }) }] : []),
+      { actionId: 'inventory-targets', label: '选择本机工具', run: () => {
+        const agents = (inventory?.selectedAgents ?? []).filter((value): value is AgentId =>
+          value === 'codex' || value === 'claude-code' || value === 'cursor');
+        setScopedFlow({ stage: 'targets', scope: route.scope, agents, savedAgents: agents, focus: 0 });
+      } },
+      { actionId: 'inventory-add', label: '添加插件需求', run: () => {
+        setScope(route.scope); go({ name: 'pluginList', mode: 'browse' });
+      } },
+      { actionId: 'inventory-switch', label: '切换清单范围', run: () => go({ name: 'intentScopes' }) },
+      { actionId: 'inventory-recheck', label: '重新检查', run: () => { void props.controller.refreshScopedInventory(route.scope); } },
     ];
-    const technicalText = [snapshot.projectIntentIssue ? `${safeDiagnosticCode(snapshot.projectIntentIssue.code, 'projectIntentUnknown')} · ${sanitizeDiagnosticText(snapshot.projectIntentIssue.message)}` : '',
-      ...(recovery?.errors.map((error) => `${error.code} · ${error.message}`) ?? []),
-      ...(recovery?.inventory?.flatMap((root) => [
-        ...root.blockers.map((blocker) => `${root.pluginId} · ${blocker.code} · ${blocker.message}`),
-        ...root.targetResults.flatMap((target) => target.blockers.map((blocker) =>
-          `${root.pluginId} · ${target.agent} · ${blocker.code} · ${blocker.message}`)),
-      ]) ?? []),
-      ...props.controller.listProjectInventoryRoots(section).flatMap((root) => [...projectDependencyLines(root), ...root.targets.flatMap((target) => [
-        `${root.pluginId} · ${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`,
-        `目录参考 ${target.expectedVersion ?? '未知'} · 实际 ${target.installedVersion ?? '未知'} · ${stateLabel[target.state]}`,
-        ...target.reasonCodes.map((code) => `原因 · ${safeDiagnosticCode(code, 'projectTargetUnknown')}`)])])].filter(Boolean).join('\n');
-    const itemCount = showTechnical ? 0 : actions.length;
-    actions = [...(showTechnical ? [] : actions), ...bottomActions];
+    actions = [...actions, ...bottomActions];
     dynamicActionIds = actions.map((action) => action.actionId!);
     dynamicActionSignature = dynamicActionIds.join('\0');
-    const previousProjectFocus = dynamicMenuFocus.current;
-    if (previousProjectFocus?.routeKey === routeKey
-      && previousProjectFocus.actionIds !== dynamicActionSignature) {
-      const retained = previousProjectFocus.focusedActionId
-        ? dynamicActionIds.indexOf(previousProjectFocus.focusedActionId) : -1;
-      effectiveFocus = retained >= 0 ? retained
-        : itemCount > 0 ? 0 : dynamicActionIds.indexOf('project-recheck');
-    }
-    help = recovery
-      ? '↑↓ 移动 · Enter 查看 · s 同步所选 · c 同步全部 · x 清理已删除 · t 设置 Agent · Esc 返回'
-      : '↑↓ 移动 · Enter 查看 · Esc 返回';
-    if (showTechnical) {
-      readingText = technicalText;
-      content = <Box flexDirection="column">
-        {readingPage(technicalText, size.columns - 2, Math.max(1, pageActionBudget(4) - 1))}
-        <SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact /></Box>;
-    } else {
-      const cardWidth = size.columns - 2;
-      const lineLimit = Math.max(1, Math.min(3, pageActionBudget(3) - 4));
-      const cardSubjects = roots.map((root) => props.controller.getPluginDetailSubject(root.pluginId)!);
-      const cardLayouts = roots.map((root, index) => projectRootCardLayout(root, cardSubjects[index]!, cardWidth));
-      entityCardNavigation = { itemCount, factRows: cardLayouts.map((card) => card.factRows), lineLimit };
-      const emptyHint = roots.length === 0 && inventory?.declarationState === 'ready'
-        && Boolean(searchedRoots.length > 0 || query || statusFilter !== 'all');
-      const projectViewport = rowViewport({
-        rowHeights: [...cardLayouts.map((card, index) => entityCardWindowHeight(card,
-          index === effectiveFocus ? batchTargetOffset : 0, lineLimit)), ...bottomActions.map(() => 1)],
-        focus: effectiveFocus, requestedOffset: scrollOffset,
-        rowBudget: pageActionBudget(3 + Number(emptyHint)),
-      });
-      content = <Box flexDirection="column">
-      {recovery ? <StaticRow title={`本机 Agent：${recovery.selection.agents.join('、') || '未选择'}`}
-        description={recovery.selection.agents.length === 0 ? '设置本机 Agent 后可恢复项目需求。' : undefined}
-        status={recovery.selection.agents.length === 0 ? 'warning' : 'info'} compact /> : null}
+    effectiveFocus = Math.min(focus, Math.max(0, actions.length - 1));
+    help = '↑↓ 移动 · Enter 详情 · Space 勾选 · Esc 返回 · [a] 操作';
+    const cardWidth = size.columns - 2;
+    const cardSubjects = roots.map((root) => props.controller.getPluginDetailSubject(root.pluginId)!);
+    const cardLayouts = roots.map((root, index) => projectRootCardLayout(root, cardSubjects[index]!, cardWidth));
+    const lineLimit = Math.max(1, Math.min(3, pageActionBudget(3) - 4));
+    entityCardNavigation = { itemCount: roots.length, factRows: cardLayouts.map((card) => card.factRows), lineLimit };
+    const viewport = rowViewport({
+      rowHeights: [...cardLayouts.map((card, index) => entityCardWindowHeight(card,
+        index === effectiveFocus ? batchTargetOffset : 0, lineLimit)), ...bottomActions.map(() => 1)],
+      focus: effectiveFocus, requestedOffset: scrollOffset, rowBudget: pageActionBudget(4),
+    });
+    content = <Box flexDirection="column">
       <QueryHeader width={size.columns - 2}
         tabs={{ items: [
-          { id: 'declared', label: '项目声明', count: props.controller.listProjectInventoryRoots('declared').filter((root) => queryMatches(query, root.displayName, root.pluginId, root.sourceId)).length },
-          { id: 'extraInstalled', label: '额外安装', count: props.controller.listProjectInventoryRoots('extraInstalled').filter((root) => queryMatches(query, root.displayName, root.pluginId, root.sourceId)).length },
+          { id: 'declared', label: '声明插件', count: props.controller.listScopedInventoryRoots(route.scope, 'declared').length },
+          { id: 'extraInstalled', label: '额外安装', count: props.controller.listScopedInventoryRoots(route.scope, 'extraInstalled').length },
         ], currentId: section }}
         search={{ value: query, placeholder: '名称或来源', input: searchFocus
           ? <InputDisplay value={query} cursor={searchCursor} columns={querySearchWidth(size.columns - 2)} /> : undefined }}
-        filter={{ label: PROJECT_STATUS_LABELS[statusFilter], count: statusCounts[statusFilter],
-          currentZero: statusCounts[statusFilter] === 0 && statusFilter !== 'all' }} />
-      {emptyHint
-        ? <Text color={tuiTheme.roles.secondary}>当前条件无匹配；搜索和筛选保持原样。</Text> : null}
-      <ContentViewport>{actions.slice(projectViewport.offset, projectViewport.offset + projectViewport.limit)
-        .map((action, visibleIndex) => {
-          const index = projectViewport.offset + visibleIndex;
-          if (index >= itemCount) return <SemanticRows key={action.actionId} actions={actions}
-            focus={searchFocus ? -1 : effectiveFocus} kind="action" compact offset={index} limit={1} />;
-          return <ProjectRootCard key={action.actionId} root={roots[index]!}
-            subject={cardSubjects[index]!} width={cardWidth} focused={!searchFocus && effectiveFocus === index}
-            lineOffset={effectiveFocus === index ? batchTargetOffset : 0} lineLimit={lineLimit} />;
-        })}</ContentViewport>
+        filter={{ label: filterLabels[statusFilter], count: counts[statusFilter],
+          currentZero: counts[statusFilter] === 0 && statusFilter !== 'all' }}
+        selection={selectedIds.length ? { total: selectedIds.length,
+          hidden: selectedIds.filter((id) => !roots.some((root) => root.pluginId === id)).length } : undefined} />
+      <StaticRow title={`本机工具 ${inventory?.selectedAgents.map(agentLabel).join('、') || '未设置'}`} compact />
+      {roots.length === 0 ? <StaticRow title={query || statusFilter !== 'all' ? '当前条件无匹配；筛选保持原样。'
+        : inventory?.declarationState === 'absent' ? '清单尚未添加插件。' : '当前分区没有插件。'} compact /> : null}
+      <ContentViewport>{actions.slice(viewport.offset, viewport.offset + viewport.limit).map((action, visibleIndex) => {
+        const index = viewport.offset + visibleIndex;
+        if (index >= roots.length) return <SemanticRows key={action.actionId} actions={actions}
+          focus={searchFocus ? -1 : effectiveFocus} kind="action" compact offset={index} limit={1} />;
+        return <ProjectRootCard key={action.actionId} root={roots[index]!}
+          subject={{ ...cardSubjects[index]!, displayName: `${selectedIds.includes(roots[index]!.pluginId) ? '✓ ' : ''}${cardSubjects[index]!.displayName}` }}
+          width={cardWidth} focused={!searchFocus && effectiveFocus === index}
+          lineOffset={effectiveFocus === index ? batchTargetOffset : 0} lineLimit={lineLimit} />;
+      })}</ContentViewport>
     </Box>;
+    if (showTechnical) {
+      readingText = [
+        `范围：${route.scope === 'user' ? '个人' : '当前项目'}`,
+        `需求清单：${inventory?.declarationState ?? '未检查'}`,
+        `本机偏好：${inventory?.preferenceState ?? '未检查'}`,
+        ...(inventory?.errors.map((error) => `原因：${safeDiagnosticCode(error.code, 'inventoryUnavailable')}`) ?? []),
+        ...(snapshot.scopedInventoryRefresh[route.scope]?.state === 'error'
+          ? [`上次快照已过期：${safeDiagnosticCode(snapshot.scopedInventoryRefresh[route.scope]?.errorCode, 'inventoryRefreshFailed')}`] : []),
+        '重新检查只读取当前范围；不会安装或清理。',
+      ].join('\n');
+      actions = [{ label: '返回清单', run: toggleTechnical }];
+      content = <Box flexDirection="column">
+        {readingPage(readingText, size.columns - 2, pageActionBudget(3))}
+        <SemanticRows actions={actions} focus={focus} kind="action" compact />
+      </Box>;
     }
   } else if (route.name === 'pluginList') {
     const sourceId = route.sourceId ?? 'all';
@@ -5035,8 +5011,6 @@ export function ConsoleAppV4(props: {
         : batchDraft?.action ? batchActionLabel(batchDraft.action) : '处理';
     title = route.name === 'batchInstallScope' ? '选择安装目标'
       : maintenanceMode ? `确认批量${maintenanceLabel}范围`
-      : batchDraft?.selection === 'currentProjectIntentRoots'
-      ? '同步当前项目全部保存目标'
       : `设置批量${batchDraft?.action ? batchActionLabel(batchDraft.action) : ''}位置`;
     description = route.name === 'batchInstallScope'
       ? '选择范围后检查可添加、已有和受阻的精确位置。操作汇总之后才执行。'
@@ -5110,7 +5084,6 @@ export function ConsoleAppV4(props: {
       ];
       bottomActions = [confirmMaintenance];
     } else {
-      const projectIntent = batchDraft.selection === 'currentProjectIntentRoots';
       installPlacementTargets = batchDraft.action === 'install'
         && batchDraft.selection === 'selected'
         ? props.controller.listPluginInstallBatchTargets(
@@ -5135,7 +5108,6 @@ export function ConsoleAppV4(props: {
             {
               actionId: 'batch-placement-scope-user',
               label: '所有项目', selected: batchDraft.scope === 'user',
-              disabled: projectIntent ? '项目全部同步固定使用当前项目' : undefined,
               run: () => setBatchDraft((current) => current ? { ...current, scope: 'user' } : current),
             },
           ],
@@ -5160,7 +5132,7 @@ export function ConsoleAppV4(props: {
                 : `查看批量${batchActionLabel(batchDraft.action!)}确认`,
               description: batchDraft.action === 'install'
                 ? `${addTargets.length} 个可添加 · ${existingTargets.length} 个已有 · ${blockedTargets.length} 个受阻`
-                : `${batchDraft.selection === 'selected' ? `${batchDraft.selectedPluginIds.length} 个所选插件` : '当前项目全部保存目标'} · ${scopeLabel(batchDraft.scope)}`,
+                : `${batchDraft.selectedPluginIds.length} 个所选插件 · ${scopeLabel(batchDraft.scope)}`,
               disabled: batchDraft.selection === 'selected' && batchDraft.selectedPluginIds.length === 0
                 ? '请至少选择一个插件'
                 : batchDraft.action === 'install' && addTargets.length === 0
@@ -5178,13 +5150,11 @@ export function ConsoleAppV4(props: {
                     ? { kind: 'targets', targets: addTargets.map(({ pluginId, platform, scope }) => ({
                         pluginId, platform, scope,
                       })) }
-                    : batchDraft.selection === 'selected'
-                    ? {
+                    : {
                         kind: 'selected',
                         pluginIds: [...new Set(batchDraft.selectedPluginIds)]
                           .sort((left, right) => left.localeCompare(right, 'en')),
-                      }
-                    : { kind: 'currentProjectIntentRoots' },
+                      },
                   platform: addTargets[0]?.platform ?? batchDraft.platform,
                   scope: addTargets[0]?.scope ?? batchDraft.scope,
                 };
@@ -6153,19 +6123,17 @@ export function ConsoleAppV4(props: {
       }]];
     })).values()];
     const taskLabel = pluginWriteTaskLabel(route.goal);
-    const mixedScopes = unifiedProjectScope
-      && new Set(candidates.map((candidate) => candidate.target.scope)).size > 1;
+    const mixedScopes = new Set(candidates.map((candidate) => candidate.target.scope)).size > 1;
     const startTaskReview = (executionPolicy: 'all' | 'executableSubset', selectedScope?: Scope): void => {
       if (targetSetChanged) {
         setActionError('本次安装位置已变化。请返回调整后重新开始。');
         return;
       }
       if (selectedScope) {
-        startSplitTaskScope({ goal: route.goal,
-          targets: candidates.map((candidate) => candidate.target),
-          executionPolicy, currentScope: selectedScope,
-          returnRoute: props.controller.pluginWriteTaskReturnRoute(route),
-        }, selectedScope);
+        beginReview({ kind: 'pluginWriteTask', goal: route.goal,
+          targets: candidates.filter((candidate) => candidate.target.scope === selectedScope)
+            .map((candidate) => candidate.target), executionPolicy },
+        props.controller.pluginWriteTaskReturnRoute(route));
         return;
       }
       const intent: Extract<OperationIntent, { kind: 'pluginWriteTask' }> = {
@@ -6174,12 +6142,7 @@ export function ConsoleAppV4(props: {
         targets: candidates.map((candidate) => candidate.target),
         executionPolicy,
       };
-      if (unifiedProjectScope) {
-        beginReview(intent, props.controller.pluginWriteTaskReturnRoute(route));
-      } else {
-        props.controller.startPluginWriteTaskReview(intent,
-          props.controller.pluginWriteTaskReturnRoute(route));
-      }
+      beginReview(intent, props.controller.pluginWriteTaskReturnRoute(route));
     };
     breadcrumb = taskPluginIds.length > 1
       ? `我的插件 / ${taskLabel} ${taskPluginIds.length} 个插件`
@@ -6298,7 +6261,6 @@ export function ConsoleAppV4(props: {
     context = '插件详情';
     const issues = props.controller.listUserIssues().filter((entry) =>
       issueMatchesTarget(entry, detailSubject.pluginId));
-    const root = props.controller.getProjectInventoryRoot(detailSubject.pluginId);
     actions = [
       ...(issues.length > 0 ? [{ actionId: 'exceptional', label: '查看处理建议',
         status: 'warning' as const,
@@ -6310,8 +6272,6 @@ export function ConsoleAppV4(props: {
         label: '依赖关系', run: () => go({ name: 'pluginDependencies', pluginId: detailSubject.pluginId }) }] : []),
       ...(props.controller.getSourceOverview(detailSubject.sourceId).source ? [{ actionId: 'source',
         label: '查看插件来源', run: () => go({ name: 'sourceDetail', sourceId: detailSubject.sourceId }) }] : []),
-      ...(root && root.state !== 'ready' && issues.length === 0 ? [{ actionId: 'project-recheck',
-        label: '重新检查项目', run: async () => { await props.controller.refreshProjectInventory(); } }] : []),
     ];
     content = detailCardContent(detailSubject);
   } else if (route.name === 'pluginDetail' && plugin && detailSubject) {
@@ -6489,6 +6449,24 @@ export function ConsoleAppV4(props: {
       ...(restoreAction ? [{ ...restoreAction, actionId: 'restore' }] : []),
       ...(updateAction ? [{ ...updateAction, actionId: 'update' }] : []),
       ...(installAction ? [installAction] : []),
+      ...(!plugin.catalogEntryMissing && !plugin.sourceUnavailable ? [{ actionId: 'add-demand',
+        label: '加入插件清单（暂不安装）',
+        run: () => snapshot.projectRoot
+          ? setScopedFlow({ stage: 'intentScope', scope, selector: plugin.pluginId, action: 'add',
+            scopes: ['user', 'project'],
+            focus: scope === 'project' ? 1 : 0 })
+          : beginScopedTask({ kind: 'intent', action: 'add', scope: 'user',
+            selector: plugin.pluginId }) }] : []),
+      ...((['user', 'project'] as const).some((declaredScope) =>
+        detailSubject?.declarations[declaredScope].state === 'declared')
+        ? [{ actionId: 'remove-demand', label: '移出插件清单（保留安装）', run: () => {
+          const scopes = (['user', 'project'] as const).filter((candidate) =>
+            detailSubject!.declarations[candidate].state === 'declared');
+          if (scopes.length === 1) beginScopedTask({ kind: 'intent', action: 'remove',
+            scope: scopes[0]!, selector: plugin.pluginId });
+          else setScopedFlow({ stage: 'intentScope', scope, selector: plugin.pluginId,
+            action: 'remove', scopes: [...scopes], focus: 0 });
+        } }] : []),
       ...(settingsAction ? [{ ...settingsAction, actionId: 'settings' }] : []),
       ...(contentAction ? [contentAction] : []),
       ...(dependencyAction ? [dependencyAction] : []),
@@ -8227,25 +8205,8 @@ export function ConsoleAppV4(props: {
           : go({ name: 'issueDetail', issueId: entry.issueId }),
       }));
     }
-    const reminder = snapshot.projectIntentReminder;
-    const pendingProjectTargets = (reminder?.actionableTargets.length ?? 0)
-      + (reminder?.blockedTargets.length ?? 0) + (reminder?.unconfirmedTargets.length ?? 0);
-    const projectDiagnostic = Boolean(snapshot.projectIntentIssue
-      || reminder?.kind === 'recovery' && reminder.diagnosticCodes.length > 0
-      || snapshot.projectInventory?.recovery?.inventory === null
-      || snapshot.projectInventory?.recovery
-        && !['valid', 'absent'].includes(snapshot.projectInventory.recovery.intent.state));
-    if (projectDiagnostic || pendingProjectTargets > 0) {
-      title = '需要处理';
-      context = issues.length > 0 ? `${issues.length} 项 · 项目插件待处理` : '项目插件待处理';
-      description = '查看项目插件、安装、来源或设置问题。';
-      actions.unshift({ actionId: 'project-status', label: '项目插件',
-        description: projectDiagnostic ? '项目声明或状态需要检查'
-          : `${pendingProjectTargets} 个位置待处理或未确认`,
-        status: 'warning', run: () => go({ name: 'projectStatus' }) });
-    }
     const viewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(8, 12));
-    if (issues.length === 0 || projectDiagnostic || pendingProjectTargets > 0) {
+    if (issues.length === 0) {
       content = <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} />;
     } else {
       const groupCounts = new Map<UserIssueViewModel['group'], number>();
@@ -9542,16 +9503,6 @@ export function ConsoleAppV4(props: {
         ]
       : taskOperation
       ? [
-          ...(splitTaskReview?.currentScope === 'user'
-            && splitTaskReview.targets.some((target) => target.scope === 'project') ? [{
-            label: `继续处理当前项目 ${splitTaskReview.targets.filter((target) => target.scope === 'project').length} 个位置`,
-            description: '重新准备项目范围并显示独立 Review',
-            run: () => {
-              const context = splitTaskReview;
-              leaveResult(context.returnRoute);
-              startSplitTaskScope(context, 'project');
-            },
-          }] : []),
           ...(nestedTaskReturn && taskReturnRoute ? [{
             label: '返回剩余恢复任务',
             description: '保留父任务已选择的位置；返回后重新读取当前状态',
@@ -10401,7 +10352,7 @@ export function ConsoleAppV4(props: {
   if (snapshot.phase === 'ready' && !busy && !characterInput) {
     const hints: string[] = [];
     if (route.name === 'pluginList') hints.push('/ 搜索', 'f 筛选', '←→ 来源', 'm 多选');
-    if (route.name === 'projectStatus' && !showTechnical) hints.push('/ 搜索', '←→ 分区', 'f 筛选');
+    if (route.name === 'intentInventory' && !showTechnical) hints.push('/ 搜索', '←→ 分区', 'f 筛选');
     if (route.name === 'sourceList') {
       hints.push('/ 搜索');
       if (moveSourceType) hints.push('←→ 类型');
@@ -10411,8 +10362,8 @@ export function ConsoleAppV4(props: {
       if (bottomActions.some((action) => action.actionId === 'batch-selection-continue' && !action.disabled)) hints.push('c 继续');
     }
     if (route.name === 'portableSkillSelect' && !portableToolsOpen) hints.push('/ 搜索', 'c 继续');
-    if (bottomActions.some((action) => action.actionId === 'project-recheck' && !action.disabled)) hints.push('r 检查项目');
-    if (bottomActions.some((action) => action.actionId === 'project-sync-actionable' && !action.disabled)) hints.push('c 同步声明');
+    if (bottomActions.some((action) => action.actionId === 'inventory-recheck' && !action.disabled)) hints.push('r 检查清单');
+    if (bottomActions.some((action) => action.actionId === 'inventory-sync-all' && !action.disabled)) hints.push('c 同步声明');
     if (bottomActions.some((action) => action.actionId === 'source-check-all' && !action.disabled)) hints.push('r 检查全部');
     if (route.name === 'sourceDetail' || route.name === 'sourceMore') hints.push('r 检查来源');
     if (bottomActions.length > 0 && actions.length > bottomActions.length
@@ -10659,24 +10610,57 @@ export function ConsoleAppV4(props: {
     ? Math.min(effectiveFocus, Math.max(0, actions.length - 1))
     : effectiveFocus;
   useInput((input, key) => {
-    if (projectFlow && !overlay) {
-      const flow = projectFlow;
-      const sessionNavigation = resolveTuiSessionNavigationKey(
-        { input, key }, { characterInput: false });
-      if (sessionNavigation) {
+    if (scopedDiscardIntent) {
+      if (key.escape || input.toLowerCase() === 'b' || input.toLowerCase() === 'n') {
+        setScopedDiscardIntent(undefined); return;
+      }
+      if (input.toLowerCase() === 'y' || key.return) {
+        const intent = scopedDiscardIntent;
+        setScopedDiscardIntent(undefined);
+        closeScopedFlow();
+        if (intent === 'home' || intent === 'reload') requestSessionNavigation(intent);
+        if (intent === 'exit') requestConfirmedExit();
+      }
+      return;
+    }
+    if (scopedFlow && !overlay) {
+      const flow = scopedFlow;
+      if (flow.stage === 'timeout') {
+        if (key.escape) { beginScopedTask(flow.request); return; }
+        if (key.return) {
+          try {
+            const scriptTimeoutMs = parseScriptTimeoutMs(scriptTimeoutInput);
+            setScriptTimeoutError(undefined);
+            beginScopedTask({ ...flow.request, scriptTimeoutMs });
+          } catch (error) {
+            setScriptTimeoutError(error instanceof Error ? error.message : '脚本超时无效。');
+          }
+          return;
+        }
+        if (input === '\u0015' || input.toLowerCase() === 'u' && key.ctrl) setScriptTimeoutInput('');
+        else if (key.backspace || key.delete) setScriptTimeoutInput(removeLastGrapheme);
+        else if (input && !key.ctrl && !key.meta && input >= ' ') setScriptTimeoutInput((value) => value + input);
+        setScriptTimeoutError(undefined);
+        return;
+      }
+      const dirtyTargets = flow.stage === 'targets'
+        && flow.agents.join('\0') !== flow.savedAgents.join('\0');
+      const navigation = resolveTuiSessionNavigationKey({ input, key }, { characterInput: false });
+      if (navigation) {
         if (flow.stage === 'progress') return;
-        if (flow.stage === 'preparing') props.controller.cancelProjectPreparation();
-        projectFlowToken.current += 1;
-        projectFlowEnterBusy.current = false;
-        closeProjectFlow();
-        requestSessionNavigation(sessionNavigation);
+        if (dirtyTargets) { setScopedDiscardIntent(navigation); return; }
+        closeScopedFlow();
+        requestSessionNavigation(navigation);
         return;
       }
       if (input.toLowerCase() === 'q' || key.ctrl && input.toLowerCase() === 'c') {
-        if (flow.stage !== 'progress') requestConfirmedExit();
+        if (flow.stage !== 'progress') {
+          if (dirtyTargets) setScopedDiscardIntent('exit');
+          else requestConfirmedExit();
+        }
         return;
       }
-      if (flow.stage === 'review' || flow.stage === 'result') {
+      if (flow.stage === 'review' || flow.stage === 'risk' || flow.stage === 'result') {
         if (input.toLowerCase() === 'y' && readingText !== undefined) {
           void copyToClipboard(readingText).then(() =>
             setCopyFeedback({ routeKey, message: '全文已复制' })).catch(() =>
@@ -10688,33 +10672,25 @@ export function ConsoleAppV4(props: {
           return;
         }
       }
-      if (flow.stage === 'preparing') {
-        if (key.escape || input.toLowerCase() === 'b') {
-          projectFlowToken.current += 1;
-          projectFlowEnterBusy.current = false;
-          props.controller.cancelProjectPreparation();
-          setProjectFlow(flow.returnTo === 'targets'
-            ? { stage: 'targets', agents: projectAgentsDraft, focus: 0 } : undefined);
-          if (flow.returnTo === 'project') setBatchTargetOffset(projectPageAnchor.current);
-        }
-        return;
-      }
       if (flow.stage === 'progress') return;
       if (key.escape || input.toLowerCase() === 'b') {
-        if (flow.stage === 'review' && flow.returnTo === 'targets') {
-          setProjectFlow({ stage: 'targets', agents: projectAgentsDraft, focus: 0 });
-        } else closeProjectFlow();
-        return;
+        if (flow.stage === 'risk') {
+          setScopedFlow({ ...flow, stage: 'review', focus: 0 }); return;
+        }
+        if (dirtyTargets) { setScopedDiscardIntent('close'); return; }
+        closeScopedFlow(); return;
       }
-      if (key.upArrow || key.downArrow || input.toLowerCase() === 'j'
-        || input.toLowerCase() === 'k') {
-        setProjectFlow({ ...flow, focus: moveIndex(actions.length, flow.focus,
+      if (key.upArrow || key.downArrow || input.toLowerCase() === 'j' || input.toLowerCase() === 'k') {
+        setScopedFlow({ ...flow, focus: moveIndex(actions.length, flow.focus,
           key.upArrow || input.toLowerCase() === 'k' ? -1 : 1) });
         return;
       }
-      if (key.return || input === ' ' && flow.stage === 'targets') {
-        runAction(actions[flow.focus]);
+      if (flow.stage === 'targets' && input.toLowerCase() === 's') {
+        runAction(actions.find((action) => action.actionId === 'targets-save'));
+        return;
       }
+      if (key.return || input === ' ' && flow.stage === 'targets') runAction(actions[flow.focus]);
+      else if (key.return) runAction(actions[flow.focus]);
       return;
     }
     if (!overlay && route.name === 'reviewPreparing' && snapshot.reviewPreparation?.state === 'failed'
@@ -10820,45 +10796,6 @@ export function ConsoleAppV4(props: {
         closeEmptySelection();
       } else if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
         requestConfirmedExit(closeEmptySelection);
-      }
-      return;
-    }
-    if (projectReminderOpen) {
-      const closeProjectReminder = (): void => {
-        setProjectReminderOpen(false);
-        setOverlayFocus(0);
-      };
-      if (key.escape || input.toLowerCase() === 'b') {
-        closeProjectReminder();
-      } else if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
-        requestConfirmedExit(closeProjectReminder);
-      } else if (props.onSessionNavigation && (input === 'h' || input === 'H')) {
-        closeProjectReminder();
-        requestSessionNavigation(input === 'H' ? 'reload' : 'home');
-      } else if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) {
-        setOverlayFocus((value) => {
-          if ((snapshot.projectIntentReminder?.actionableTargets.length ?? 0) > 0) {
-            return moveIndex(3, value, key.upArrow || key.leftArrow ? -1 : 1);
-          }
-          return value === 0 ? 2 : 0;
-        });
-      } else if (key.return) {
-        const reminder = snapshot.projectIntentReminder;
-        closeProjectReminder();
-        if (!reminder || overlayFocus === 0) return;
-        if (overlayFocus === 1 && reminder.actionableTargets.length > 0) {
-          if (reminder.kind === 'recovery') {
-            const exactTargets = reminder.actionableTargets.map((target) => ({
-              pluginId: target.pluginId, agent: target.agent,
-            }));
-            go({ name: 'projectStatus' });
-            beginProjectTask({ kind: 'recovery', command: 'sync',
-              selectors: [...new Set(exactTargets.map((target) => target.pluginId))],
-              targets: [...new Set(exactTargets.map((target) => target.agent))], exactTargets });
-          } else prepareCurrentProjectTargets(reminder.actionableTargets);
-        } else {
-          go({ name: 'projectStatus' });
-        }
       }
       return;
     }
@@ -11177,7 +11114,7 @@ export function ConsoleAppV4(props: {
     if ((key.pageUp || key.pageDown || key.leftArrow || key.rightArrow)
       && (route.name === 'portableDependencies' || route.name === 'pluginContent'
         || route.name === 'pluginTechnical'
-        || route.name === 'projectStatus' && showTechnical
+        && showTechnical
         || route.name === 'issueDetail' && showTechnical
         || route.name === 'portableBlocker' && showTechnical
         || route.name === 'configUnavailable' && showTechnical
@@ -11461,7 +11398,8 @@ export function ConsoleAppV4(props: {
       setInputError(undefined);
       return;
     }
-    if (searchFocus && (route.name === 'pluginList' || route.name === 'projectStatus'
+    if (searchFocus && (route.name === 'pluginList'
+      || route.name === 'intentInventory'
       || route.name === 'pluginContent'
       || route.name === 'batchSelection' || route.name === 'sourceList'
       || route.name === 'portableSkillSelect')) {
@@ -11477,7 +11415,7 @@ export function ConsoleAppV4(props: {
         setSearchFocus(false);
         const candidateCount = route.name === 'batchSelection' && batchDraft
           ? batchCandidates(batchDraft).length
-          : route.name === 'projectStatus' || route.name === 'pluginContent'
+          : route.name === 'intentInventory' || route.name === 'pluginContent'
             || route.name === 'portableSkillSelect'
             || route.name === 'sourceList' ? actions.length - bottomActions.length : pluginRows.length;
         setFocus((value) => moveIndex(candidateCount,
@@ -11510,13 +11448,13 @@ export function ConsoleAppV4(props: {
             ...(route.sourceId ? { sourceId: route.sourceId } : {}),
             ...(nextQuery ? { query: nextQuery } : {}), installFilter }).map((item) => `plugin:${item.pluginId}`);
           retained = ids.indexOf(focusedId);
-        } else if (route.name === 'projectStatus') {
-          const section = snapshot.router.current.context.projectSection ?? 'declared';
-          const filter = snapshot.router.current.context.projectStatusFilter ?? 'all';
-          retained = props.controller.listProjectInventoryRoots(section).filter((root) =>
+        } else if (route.name === 'intentInventory') {
+          const section = snapshot.router.current.context.inventorySection ?? 'declared';
+          const filter = snapshot.router.current.context.inventoryStatusFilter ?? 'all';
+          retained = props.controller.listScopedInventoryRoots(route.scope, section).filter((root) =>
             queryMatches(nextQuery, root.displayName, root.pluginId, root.sourceId)
               && (filter === 'all' || root.state === filter))
-            .findIndex((root) => `project-root:${root.pluginId}` === focusedId);
+            .findIndex((root) => `inventory-root:${root.pluginId}` === focusedId);
         } else if (route.name === 'pluginContent') {
           const type = snapshot.router.current.context.contentTypeTab ?? 'all';
           retained = (props.controller.getPluginContentOverview(route.pluginId)?.items ?? [])
@@ -11541,7 +11479,7 @@ export function ConsoleAppV4(props: {
       if (route.name !== 'batchSelection') {
         setQuery(nextQuery);
         props.controller.updatePageContext({ query: nextQuery });
-        if (route.name === 'projectStatus') {
+        if (route.name === 'intentInventory') {
           dynamicMenuFocus.current = undefined;
           actionJumpAnchor.current = undefined;
         }
@@ -11555,7 +11493,8 @@ export function ConsoleAppV4(props: {
     // Paste and composed text are data, never multiple background commands.
     if (input.length > 1 && !key.ctrl && !key.meta) return;
     if (key.tab) return;
-    if ((route.name === 'projectStatus' && !showTechnical
+    if ((route.name === 'intentInventory' && !showTechnical
+      || route.name === 'intentInventory' && !showTechnical
       || route.name === 'pluginContent' && !contentReader
       || route.name === 'sourceList' || route.name === 'portableSkillSelect' && !portableToolsOpen) && input === '/') {
       setSearchCursor([...new Intl.Segmenter(undefined, { granularity: 'grapheme' })
@@ -11585,7 +11524,7 @@ export function ConsoleAppV4(props: {
           const entityIndex = anchor.entityId
             ? actions.findIndex((action) => action.pluginId === anchor.entityId) : -1;
           const next = entityIndex >= 0 ? entityIndex : Math.min(anchor.index, Math.max(0, firstAction - 1));
-          if (route.name === 'projectStatus' && dynamicActionIds && dynamicActionSignature) {
+          if ((route.name === 'intentInventory') && dynamicActionIds && dynamicActionSignature) {
             dynamicMenuFocus.current = { routeKey, actionIds: dynamicActionSignature,
               focusedActionId: dynamicActionIds[next] };
           }
@@ -11593,7 +11532,7 @@ export function ConsoleAppV4(props: {
           actionJumpAnchor.current = undefined;
         } else {
           actionJumpAnchor.current = { routeKey, index: focus, entityId: actions[focus]?.pluginId };
-          if (route.name === 'projectStatus' && dynamicActionIds && dynamicActionSignature) {
+          if ((route.name === 'intentInventory') && dynamicActionIds && dynamicActionSignature) {
             dynamicMenuFocus.current = { routeKey, actionIds: dynamicActionSignature,
               focusedActionId: dynamicActionIds[firstAction] };
           }
@@ -11718,29 +11657,21 @@ export function ConsoleAppV4(props: {
       } : current);
       setFocus(0);
       setScrollOffset(0);
-    } else if (route.name === 'projectStatus' && input.toLowerCase() === 'f' && !showTechnical) {
+    } else if (route.name === 'intentInventory' && input.toLowerCase() === 'f' && !showTechnical) {
       toggleProjectStatusFilter?.();
-    } else if (route.name === 'projectStatus' && input.toLowerCase() === 's'
-      && snapshot.projectInventory?.recovery && !showTechnical) {
+    } else if (route.name === 'intentInventory' && input.toLowerCase() === 'r') {
+      runAction(bottomActions.find((action) => action.actionId === 'inventory-recheck'));
+    } else if (route.name === 'intentInventory' && input.toLowerCase() === 'c') {
+      runAction(bottomActions.find((action) => action.actionId === 'inventory-sync-all'));
+    } else if (route.name === 'intentInventory' && input === ' ' && !showTechnical) {
       const pluginId = actions[effectiveFocus]?.pluginId;
-      if (pluginId && snapshot.projectInventory.declaredRoots.some((root) => root.pluginId === pluginId)) {
-        beginProjectTask({ kind: 'recovery', selectors: [pluginId] });
+      if (pluginId) {
+        const selectedKey = route.scope === 'project' ? `project:${route.projectKey ?? ''}` : 'user';
+        const selected = scopedSelected.current[selectedKey] ?? [];
+        scopedSelected.current[selectedKey] = selected.includes(pluginId)
+          ? selected.filter((item) => item !== pluginId) : [...selected, pluginId];
+        setScopedSelectionRevision((value) => value + 1);
       }
-    } else if (route.name === 'projectStatus' && input.toLowerCase() === 'x'
-      && snapshot.projectInventory?.recovery && !showTechnical) {
-      const pluginId = actions[effectiveFocus]?.pluginId;
-      const root = snapshot.projectInventory.recovery.inventory?.find((entry) => entry.pluginId === pluginId);
-      if (root?.sourceState === 'ready'
-        && root.blockers.some((blocker) => blocker.code === 'pluginUnavailable')) {
-        beginProjectTask({ kind: 'recovery', command: 'cleanup', selectors: [pluginId!] });
-      }
-    } else if (route.name === 'projectStatus' && input.toLowerCase() === 't'
-      && snapshot.projectInventory?.recovery && !showTechnical) {
-      runAction(bottomActions.find((action) => action.actionId === 'project-targets'));
-    } else if (route.name === 'projectStatus' && input.toLowerCase() === 'r') {
-      runAction(bottomActions.find((action) => action.actionId === 'project-recheck'));
-    } else if (route.name === 'projectStatus' && input.toLowerCase() === 'c') {
-      runAction(bottomActions.find((action) => action.actionId === 'project-sync-actionable'));
     } else if (route.name === 'installTargets' && route.view !== 'blocked'
       && input.toLowerCase() === 'c') {
       runAction(bottomActions.find((action) => action.actionId === 'confirm-install-platforms'));
@@ -11805,7 +11736,7 @@ export function ConsoleAppV4(props: {
       props.controller.updatePageContext({ configGroupId: next.id, focusIndex: 0, scrollOffset: 0 });
       setFocus(0);
       setScrollOffset(0);
-    } else if (route.name === 'projectStatus' && !showTechnical
+    } else if ((route.name === 'intentInventory') && !showTechnical
       && (key.leftArrow || key.rightArrow)) {
       moveProjectSection?.(key.leftArrow ? -1 : 1);
     } else if (route.name === 'pluginContent' && !contentReader
@@ -11912,14 +11843,41 @@ export function ConsoleAppV4(props: {
   }
   if (actionError) description = actionError;
   const base = (
-    <ScreenFrame title={projectReminderOpen ? '' : title}
-      description={projectReminderOpen ? undefined : description}
+    <ScreenFrame title={title}
+      description={description}
       breadcrumb={breadcrumb} context={context}
-      headerHint={!projectReminderOpen && route.name === 'pluginList' ? { key: 'm', label: '多选' } : undefined}
+      headerHint={route.name === 'pluginList' ? { key: 'm', label: '多选' } : undefined}
       help={portableEmptySelectionOpen ? 'Enter 返回选择 · Esc 返回' : help} size={size}>
-      {projectReminderOpen || sourceTransportOverlay ? null : content}
+      {sourceTransportOverlay ? null : content}
     </ScreenFrame>
   );
+  if (scopedFlow?.stage === 'risk') {
+    const modalWidth = Math.max(40, Math.floor(size.columns * 0.6));
+    return <Box position="relative" width={size.columns} height={size.rows}>
+      <Box>{base}</Box>
+      <Box position="absolute" marginTop={5}
+        marginLeft={Math.max(2, Math.floor((size.columns - modalWidth) / 2))}
+        width={modalWidth} flexDirection="column">
+        <ReviewCard title="请确认本次风险" description="确认只对当前操作汇总有效；默认返回检查。">
+          {readingPage(readingText ?? '', modalWidth - 6, Math.max(1, pageActionBudget(7)))}
+          <SemanticRows actions={actions} focus={scopedFlow.focus} kind="action" compact />
+        </ReviewCard>
+      </Box>
+    </Box>;
+  }
+  if (scopedDiscardIntent) {
+    return <Box position="relative" width={size.columns} height={size.rows}>
+      <Box>{base}</Box>
+      <Box position="absolute" marginTop={5} marginLeft={Math.max(2, Math.floor(size.columns / 6))}
+        width={Math.max(40, Math.floor(size.columns * 2 / 3))} flexDirection="column">
+        <ReviewCard title="放弃未保存的工具选择？" description="此清单的本机工具草稿尚未保存。">
+          <SemanticRows actions={[{ label: '继续编辑' }, { label: '放弃修改', status: 'warning' }]}
+            focus={1} kind="action" compact />
+          <Text color={tuiTheme.colors.muted}>y / Enter 放弃 · Esc 返回</Text>
+        </ReviewCard>
+      </Box>
+    </Box>;
+  }
   if (portableEmptySelectionOpen) {
     const modalWidth = Math.max(40, Math.floor(size.columns * 0.6));
     return <Box position="relative" width={size.columns} height={size.rows}>
@@ -11946,44 +11904,6 @@ export function ConsoleAppV4(props: {
           <SemanticRows actions={[{ label: '上移' }, { label: '下移' }, { label: '删除这一项', status: 'error' }]}
             focus={arrayToolFocus} kind="action" compact />
           <Text>↑↓ 选择 · Enter 确认 · Esc 返回</Text>
-        </ReviewCard>
-      </Box>
-    </Box>;
-  }
-  if (projectReminderOpen && snapshot.projectIntentReminder) {
-    const reminder = snapshot.projectIntentReminder;
-    const pluginCount = new Set([
-      ...reminder.actionableTargets,
-      ...reminder.blockedTargets,
-      ...reminder.unconfirmedTargets,
-    ].map((target) => target.pluginId)).size;
-    const reminderActions: ActionItem[] = [
-      { label: '稍后处理', description: '首页会保留项目插件入口' },
-      {
-        label: `查看并同步 ${reminder.actionableTargets.length} 个位置`,
-        description: `先显示完整操作汇总和脚本影响，再单独确认；保留 ${reminder.blockedTargets.length} 个受阻位置和 ${reminder.unconfirmedTargets.length} 个未确认位置`,
-        disabled: reminder.actionableTargets.length === 0 ? '当前没有已确认可同步的目标' : undefined,
-      },
-      { label: '查看全部项目插件', description: '包含需要先处理和无法确认的项目目标' },
-    ];
-    const reminderWidth = Math.max(40, size.columns - (policy.mode === 'compact' ? 8 : 16));
-    return <Box position="relative" width={size.columns} height={size.rows}>
-      <Box>{base}</Box>
-      <Box position="absolute" marginTop={policy.mode === 'compact' ? 2 : 5}
-        marginLeft={Math.max(2, Math.floor((size.columns - reminderWidth) / 2))}
-        width={reminderWidth} flexDirection="column">
-        <ReviewCard
-          title={pluginCount > 0 ? `本项目有 ${pluginCount} 个插件尚未就绪` : '项目状态需要检查'}
-          description={`${reminder.actionableTargets.length} 个位置可同步；`
-            + `${reminder.blockedTargets.length} 个位置需要先处理；`
-            + `${reminder.unconfirmedTargets.length} 个位置未确认。`}
-        >
-          <StaticRow title="按项目共享设置恢复，个人设置不会被清空。" compact />
-          {reminder.kind === 'recovery' && reminder.diagnosticCodes.length > 0
-            ? <StaticRow title={`诊断：${reminder.diagnosticCodes.join('、')}`} status="warning" compact /> : null}
-          <StaticRow title="确认同步前可查看脚本和完整影响。" status="warning" compact />
-          <SemanticRows actions={reminderActions} focus={overlayFocus} kind="action" compact />
-          <StaticRow title="↑↓ 选择 · Enter 确认 · Esc 稍后处理" status="muted" compact />
         </ReviewCard>
       </Box>
     </Box>;

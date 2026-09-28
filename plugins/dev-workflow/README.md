@@ -3,7 +3,7 @@
 五个阶段：需求对齐、规格确认、实施准备、实施集成、交付核验。前两阶段由dev-design协调，后三阶段由dev-build协调；完整入口dev-workflow连接两者并保持用户授权边界。
 
 ```bash
-aw install dev-workflow -p both
+aw install dev-workflow --scope user --target codex --target claude-code
 ```
 
 ```text

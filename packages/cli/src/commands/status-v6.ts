@@ -1,7 +1,6 @@
-import { selectProjectAgents } from '../project/project-preferences.js';
-import { readProjectDemand, projectDemandNativeProjection, type ProjectDemand } from '../project/project-demand.js';
-import { projectStatusFromObservations, type ReadProjectStatusOptions, type ProjectNativeObservation } from '../project/project-status.js';
-import type { ProjectStatusV1 } from '../project/project-types.js';
+import { selectAgents } from '../intent/deployment-preferences.js';
+import { readDemand, demandNativeProjection, type DemandSnapshot } from '../recovery/demand.js';
+import type { NativeObservation } from '../recovery/status.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -68,18 +67,14 @@ import {
   createProjectLocationKey,
   getClaudeHome,
   getCodexHome,
-  resolveCanonicalRepoProjectKey,
+  resolveRequiredCanonicalRepoRoot,
 } from '../utils/state-paths.js';
 import {
   resolveEffectivePluginConfig,
   resolveProjectArtifactRenderConfig,
 } from '../utils/plugin-config.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
-import {
-  observePluginIntentState,
-  type PluginIntentState,
-  type PluginIntentStateObservation,
-} from '../utils/plugin-intent-state.js';
+import { createEmptyNativeDemandView, type NativeDemandView } from '../utils/native-demand.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from './aw-capabilities.js';
 import { createDependencyPlacementPlan } from './dependency-operation-plan.js';
 import { getCodexOperationRequirement } from '../utils/agent-version.js';
@@ -462,7 +457,6 @@ export function statusTargetExtensions(
 
 export interface StatusV8Payload {
   schemaVersion: 8;
-  projectRecovery?: ProjectStatusV1;
   catalog: {
     primarySourceId: string;
     configDigest: string;
@@ -727,22 +721,20 @@ interface DesiredTargetState {
   relation: 'root' | 'dependency' | 'managed' | 'none';
 }
 
-function emptyIntent(): PluginIntentState {
-  return {
-    schemaVersion: 2,
-    kind: 'aw-plugin-intents',
-    roots: [],
-    dependencyScopeOverrides: [],
-  };
-}
+type NativeIntentObservation =
+  | { state: 'ready'; value: NativeDemandView }
+  | { state: 'absent' }
+  | { state: 'invalid' | 'unavailable'; code: string; message: string };
+
+const emptyIntent = createEmptyNativeDemandView;
 
 function desiredTargetKey(pluginId: string, platform: PlatformName): string {
   return `${pluginId}\0${platform}`;
 }
 
 function calculateDesiredTargetStates(options: {
-  userIntent: PluginIntentState;
-  projectIntent: PluginIntentState;
+  userIntent: NativeDemandView;
+  projectIntent: NativeDemandView;
   available: Array<{
     name: string;
     dependencies: string[];
@@ -949,7 +941,7 @@ export function statusRecovery(options: {
       }] : []),
       {
         command: 'manual',
-        description: `共享内容已损坏。先明确选择 user 或 project 使用范围，再运行 aw install ${options.pluginId} --platform codex --scope <user|project> 重建。`,
+        description: `共享内容已损坏。先明确选择 user 或 project 使用范围，再运行 aw install ${options.pluginId} --target codex --scope <user|project> 重建。`,
       },
     ];
   }
@@ -975,7 +967,7 @@ export function statusRecovery(options: {
         return (options.conflictRoots?.[scope] ?? []).map((rootPluginId) => ({
           command: 'uninstall' as const,
           scope,
-          description: `运行 aw uninstall ${rootPluginId} --platform ${options.platform} --scope ${scope}，再运行 aw sync ${retainedRoot} --platform ${options.platform} --scope ${retainedScope}。`,
+          description: `运行 aw intent remove ${rootPluginId} --scope ${scope}，再运行 aw uninstall ${rootPluginId} --target ${options.platform === 'claude' ? 'claude-code' : options.platform} --scope ${scope}，最后运行 aw sync ${retainedRoot} --target ${options.platform === 'claude' ? 'claude-code' : options.platform} --scope ${retainedScope}。`,
         }));
       });
     }
@@ -985,19 +977,19 @@ export function statusRecovery(options: {
     return [
       {
         command: 'sync',
-        description: `先移除或重命名 ${collision}，再运行 aw sync ${options.pluginId} --platform ${options.platform}。cleanup 会保留 foreign 内容，不会删除该冲突。`,
+        description: `先移除或重命名 ${collision}，再运行 aw sync ${options.pluginId} --target ${options.platform === 'claude' ? 'claude-code' : options.platform} --scope ${options.scope ?? 'user'}。cleanup 会保留 foreign 内容，不会删除该冲突。`,
       },
     ];
   }
   if (options.dependencyMoves?.length) {
     const rootScope = options.desired.scopes[0] ?? 'project';
     const removeDependencies = options.dependencyMoves.map((move) =>
-      `aw cleanup ${move.pluginId} --platform ${options.platform} --scope ${move.fromScope}`);
+      `aw cleanup ${move.pluginId} --target ${options.platform === 'claude' ? 'claude-code' : options.platform} --scope ${move.fromScope}`);
     const dependencyScopes = options.dependencyMoves.map((move) =>
       `--dependency-scope ${move.pluginId}#${options.platform}=${move.toScope}`);
     return [{
       command: 'manual',
-      description: `先按依赖保护提示依次移除 ${options.dependencyMoves.map((move) => move.pluginId).join('、')} 的所有直接和间接依赖者；若命令报告 dependencyStillRequired，继续处理提示的其他依赖者。再运行 ${removeDependencies.join('，再运行 ')} 移除依赖旧位置。最后逐个按原平台和 scope 重新添加全部已移除 root，并在安装时选择新的依赖 scope；当前 root 的示例命令是 aw install ${options.pluginId} --platform ${options.platform} --scope ${rootScope} ${dependencyScopes.join(' ')}。`,
+      description: `先按依赖保护提示依次移除 ${options.dependencyMoves.map((move) => move.pluginId).join('、')} 的所有直接和间接依赖者；若命令报告 dependencyStillRequired，继续处理提示的其他依赖者。再运行 ${removeDependencies.join('，再运行 ')} 移除依赖旧位置。最后逐个按原平台和 scope 重新添加全部已移除 root，并在安装时选择新的依赖 scope；当前 root 的示例命令是 aw install ${options.pluginId} --target ${options.platform === 'claude' ? 'claude-code' : options.platform} --scope ${rootScope} ${dependencyScopes.join(' ')}。`,
     }];
   }
   return [{
@@ -1013,8 +1005,8 @@ export function statusRecovery(options: {
 function rootIntentsForTarget(options: {
   pluginId: string;
   platform: PlatformName;
-  userIntent: PluginIntentState;
-  projectIntent: PluginIntentState;
+  userIntent: NativeDemandView;
+  projectIntent: NativeDemandView;
   available: Array<{ name: string; dependencies: string[]; source: { id: string } }>;
 }): Partial<Record<Scope, string[]>> {
   const byId = new Map(options.available.map((entry) => [
@@ -1185,9 +1177,8 @@ async function statusCommandV8InSession(options: {
   json?: boolean;
   verbose?: boolean;
   catalogOperationContext?: CatalogOperationContext;
-  projectDemand?: ProjectDemand;
-  projectSelection?: Pick<ReadProjectStatusOptions, 'target' | 'targets' | 'platform'>;
-  includeProjectRecovery?: boolean;
+  recoveryDemand?: DemandSnapshot;
+  recoverySelection?: { targets?: readonly string[] };
   inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
   codexObservationSession: Awaited<ReturnType<typeof createCodexNativeObservationSession>>;
 }): Promise<{
@@ -1197,7 +1188,9 @@ async function statusCommandV8InSession(options: {
   pluginSummaries: StatusV8PluginSummary[];
   targetRevisions: StatusTargetRevision[];
   projectRoot?: string;
-  projectIntentObservation: PluginIntentStateObservation;
+  projectIntentObservation: NativeIntentObservation;
+  nativeObservations: NativeObservation[];
+  nativeExtraObserved: Array<{ pluginId: string; platform?: PlatformName; scope: Scope; reference: CatalogSourceReference }>;
 }> {
   const env = options.env ?? process.env;
   const dependencyPluginCache = new Map<string, Promise<PluginMeta>>();
@@ -1220,35 +1213,52 @@ async function statusCommandV8InSession(options: {
     'packages/cli/package.json version',
   );
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
-  const demand = options.projectDemand ?? await readProjectDemand({
-    cwd: options.cwd, env, catalogOperationContext: options.catalogOperationContext,
+  const scope = options.scope === 'project' ? 'project' : 'user';
+  const demand = options.recoveryDemand ?? await readDemand({
+    scope, cwd: options.cwd, env, catalogOperationContext: options.catalogOperationContext,
   });
-  let projectObservationPlatforms: PlatformName[] = [];
-  try {
-    projectObservationPlatforms = selectProjectAgents({
-      preferences: demand.preferences, ...options.projectSelection,
-    }).agents.flatMap((agent): PlatformName[] => agent === 'codex' ? ['codex']
-      : agent === 'claude-code' ? ['claude'] : []);
-  } catch { /* The project status projection reports invalid preferences or selection. */ }
+  const observedDemands = new Map<Scope, DemandSnapshot>([[scope, demand]]);
+  if (options.scope !== 'user') {
+    const otherScope = scope === 'user' ? 'project' : 'user';
+    try {
+      observedDemands.set(otherScope, await readDemand({ scope: otherScope, cwd: options.cwd,
+        env, catalogOperationContext: options.catalogOperationContext }));
+    } catch { /* The other scope remains unknown; current scope stays readable. */ }
+  }
+  const selectedPlatformsByScope = new Map<Scope, PlatformName[]>();
+  for (const [demandScope, scopedDemand] of observedDemands) {
+    try {
+      selectedPlatformsByScope.set(demandScope, selectAgents({
+        preferences: scopedDemand.preferences,
+        ...(demandScope === scope ? options.recoverySelection : {}),
+      }).agents.flatMap((agent): PlatformName[] => agent === 'codex' ? ['codex']
+        : agent === 'claude-code' ? ['claude'] : []));
+    } catch { selectedPlatformsByScope.set(demandScope, []); }
+  }
+  const projectObservationPlatforms = selectedPlatformsByScope.get('project') ?? [];
 
   const intentErrors: Array<{ code: string; message: string }> = [];
-  const readIntent = async (scope: Scope): Promise<PluginIntentStateObservation> => {
-    let observation: PluginIntentStateObservation;
-    if (scope === 'project') {
+  const readIntent = async (scope: Scope): Promise<NativeIntentObservation> => {
+    let observation: NativeIntentObservation;
+    const scopedDemand = observedDemands.get(scope);
+    if (scopedDemand) {
       try {
-        const protective = projectDemandNativeProjection(demand);
+        const protective = demandNativeProjection(scopedDemand);
         // A protective execution view includes every supported Native platform. Status
         // demand is limited to selected Agents; live residue is observed separately.
         const value = { ...protective, roots: protective.roots.flatMap((root) => {
-          const platforms = root.platforms.filter((platform) => projectObservationPlatforms.includes(platform));
+          const platforms = root.platforms.filter((platform) =>
+            selectedPlatformsByScope.get(scope)?.includes(platform));
           return platforms.length ? [{ ...root, platforms }] : [];
         }) };
-        observation = demand.intent.state === 'absent' ? { state: 'absent' } : { state: 'ready', value };
+        observation = scopedDemand.intent.state === 'absent' ? { state: 'absent' }
+          : { state: 'ready', value };
       } catch {
-        observation = { state: 'invalid', code: 'pluginIntentStateInvalid', message: '项目声明或偏好无效。' };
+        observation = { state: 'invalid', code: 'pluginIntentStateInvalid', message: '声明或偏好无效。' };
       }
-    } else observation = await observePluginIntentState({ scope, cwd: options.cwd, env });
-    if (observation.state === 'invalid' || observation.state === 'unavailable') {
+    } else observation = options.scope === 'user' ? { state: 'absent' }
+      : { state: 'unavailable', code: 'pluginIntentStateUnavailable', message: '另一范围需求不可读。' };
+    if (observation.state === 'invalid') {
       intentErrors.push({
         code: 'pluginIntentStateInvalid',
         message: `pluginIntentStateInvalid: ${scope} plugin intent state is invalid.`,
@@ -1281,24 +1291,23 @@ async function statusCommandV8InSession(options: {
   const codexScopePathsAlias = codexProjectConfigAliasesUserHome(options.cwd, env);
   const [userCodexConfig, projectCodexConfig] = await Promise.all([
     readActivationConfig('user'),
-    codexScopePathsAlias ? undefined : readActivationConfig('project'),
+    options.scope === 'user' || codexScopePathsAlias ? undefined : readActivationConfig('project'),
   ]);
   let projectRoot: string | undefined;
   try {
-    projectRoot = await resolveCanonicalRepoProjectKey(options.cwd);
+    projectRoot = await resolveRequiredCanonicalRepoRoot(options.cwd);
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') throw error;
-    projectIntentObservation = {
-      state: 'unavailable',
-      code: 'pluginIntentStateUnavailable',
-      message: '无法确定当前项目位置，不能读取插件声明。',
-    };
-    projectIntent = emptyIntent();
-    if (!intentErrors.some((error) => error.message.includes('project plugin intent'))) {
-      intentErrors.push({
-        code: 'pluginIntentStateInvalid',
-        message: 'pluginIntentStateInvalid: project plugin intent state is unavailable.',
-      });
+    if (options.scope === 'project') {
+      projectIntentObservation = {
+        state: 'unavailable', code: 'pluginIntentStateUnavailable',
+        message: '无法确定当前项目位置，不能读取插件声明。',
+      };
+      projectIntent = emptyIntent();
+      if (!intentErrors.some((error) => error.message.includes('project plugin intent'))) {
+        intentErrors.push({ code: 'pluginIntentStateInvalid',
+          message: 'pluginIntentStateInvalid: project plugin intent state is unavailable.' });
+      }
     }
   }
   const currentProjectKey = projectRoot;
@@ -1307,9 +1316,11 @@ async function statusCommandV8InSession(options: {
   const inventoryErrors: StatusInventoryError[] = [];
   const readInventory = options.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
-  const ownerInventory = await readInventory({ cwd: options.cwd, env }).catch(async (error) => {
+  const ownerInventory = await readInventory({ cwd: options.cwd, env,
+    ...(options.scope === 'user' ? { scope: 'user' as const } : { includeProjectAgentSkills: true }) }).catch(async (error) => {
     inventoryErrors.push(projectStateInventoryError(error, env, options.cwd));
-    return inventoryLegacyOwnerReferences({ cwd: options.cwd, env }).catch((fallbackError) => {
+    return inventoryLegacyOwnerReferences({ cwd: options.cwd, env,
+      ...(options.scope === 'user' ? { scope: 'user' as const } : { includeProjectAgentSkills: true }) }).catch((fallbackError) => {
       inventoryErrors.push(projectStateInventoryError(fallbackError, env, options.cwd));
       return { inventorySchemaVersion: 1 as const, references: [], errors: [] };
     });
@@ -1502,7 +1513,8 @@ async function statusCommandV8InSession(options: {
     : planPluginSelectorSourceIds(plannedSelectors.map((selector) => selector.parsed));
   const plannedSourceIds = selectorSourceIds === undefined ? undefined : [...new Set([
     ...selectorSourceIds,
-    ...(demand.roots ?? []).map((root) => root.sourceId).filter((id) => configured.has(id)),
+    ...(options.catalogOperationContext ? [] : [...observedDemands.values()].flatMap((entry) => entry.roots ?? []))
+      .map((root) => root.sourceId).filter((id) => configured.has(id)),
   ])];
   const selectedConfiguredSources = plannedSourceIds === undefined
     ? snapshot.config.sources
@@ -1620,7 +1632,9 @@ async function statusCommandV8InSession(options: {
               sourceId: item.resolution!.sourceId,
               pluginName: entry.name,
             });
-            if (sourceDesired.get(desiredTargetKey(pluginId, 'codex'))?.scopes.includes('user')) {
+            if (options.scope === 'project'
+              ? userCodexConfig?.snapshot.plugins[`${entry.name}@${desiredMarketplaceName}`]?.enabled === true
+              : sourceDesired.get(desiredTargetKey(pluginId, 'codex'))?.scopes.includes('user')) {
               codexDesiredUserActivationIds.add(`${entry.name}@${desiredMarketplaceName}`);
             }
           }
@@ -3410,9 +3424,9 @@ async function statusCommandV8InSession(options: {
       pluginName: entry.name,
       ...issue,
     })));
-  const nativeObservations: ProjectNativeObservation[] = available.flatMap((entry) =>
-    (['codex', 'claude'] as const).map((platform): ProjectNativeObservation => {
-      const observed = entry.states[platform]?.project;
+  const nativeObservations: NativeObservation[] = available.flatMap((entry) =>
+    (['codex', 'claude'] as const).map((platform): NativeObservation => {
+      const observed = entry.states[platform]?.[scope];
       const blockers = (observed?.errors ?? []).map((error) => ({
         code: error.code, message: `${error.code}: 项目 Native 目标尚未满足。`,
       }));
@@ -3421,24 +3435,25 @@ async function statusCommandV8InSession(options: {
         selectors: [{ raw: `${entry.source.id}/${entry.name}`, parsed: {
           sourceId: entry.source.id, pluginName: entry.name,
         } }],
-        platformExplicit: true, scopeExplicit: true, platforms: [platform], scopes: ['project'],
+        platformExplicit: true, scopeExplicit: true, platforms: [platform], scopes: [scope],
         currentProjectLocationKey,
       }));
       blockers.push(...nativeInventoryErrors.map((error) => ({
         code: error.code, message: `${error.code}: 无法读取项目 Native 现场。`,
       })));
-      if (platform === 'codex' && codexConfigErrors.some((error) => error.scope === 'project' || error.scope === 'user')) {
+      if (platform === 'codex' && codexConfigErrors.some((error) => error.scope === scope
+        || scope === 'project' && error.scope === 'user')) {
         blockers.push({ code: 'nativeStateUnreadable', message: '无法读取 Codex 激活配置。' });
       }
       if (entry.configDiagnostic) blockers.push({ code: 'configReadFailed', message: '无法读取插件配置。' });
-      if (entry.configIssues?.some((issue) => issue.scope === 'project')) {
+      if (entry.configIssues?.some((issue) => issue.scope === scope)) {
         blockers.push({ code: 'configInvalid', message: '项目配置需要处理。' });
       }
       if (observed?.state === 'error' && !blockers.some((error) =>
         /Unsupported$|collision|conflict|foreign/iu.test(error.code))) {
         blockers.push({ code: 'nativeObservationFailed', message: '无法完成项目 Native 现场观察。' });
       }
-      let content: ProjectNativeObservation['content'] = !observed ? 'unknown'
+      let content: NativeObservation['content'] = !observed ? 'unknown'
         : observed.state === 'absent' ? 'absent'
           : observed.state === 'present' ? 'satisfied'
             : observed.state === 'partial' ? 'drifted' : 'unknown';
@@ -3453,19 +3468,14 @@ async function statusCommandV8InSession(options: {
       }
       return {
         pluginId: `${entry.source.id}/${entry.name}`, platform, content, blockers,
+        backend: flattenStatusTargets(projectedTargets).find((target) => target.pluginId === `${entry.source.id}/${entry.name}`
+          && target.platform === platform && target.scope === scope),
         ...(platform === 'codex' && entry.codex?.activation.evidence === 'assumed'
           ? { assumedActivation: true } : {}),
       };
     }));
-  const projectRecovery = demand.intent.state !== 'absent' || options.includeProjectRecovery
-    ? await projectStatusFromObservations({
-        cwd: options.cwd, env, cliVersion, demand, nativeObservations,
-        ...options.projectSelection,
-      }) : undefined;
-  if (projectRecovery) errors.push(...projectRecovery.errors);
   const payload: StatusV8Payload = {
     schemaVersion: 8,
-    ...(projectRecovery ? { projectRecovery } : {}),
     catalog: {
       primarySourceId: catalog.primarySourceId,
       configDigest: catalog.configDigest,
@@ -3497,6 +3507,14 @@ async function statusCommandV8InSession(options: {
     output: options.json ? JSON.stringify(payload) : renderStatusV8(payload, options.verbose === true),
     hasErrors,
     targetRevisions,
+    nativeObservations,
+    nativeExtraObserved: ownerInventory.references.flatMap((reference) => {
+      if (!reference.sourceId || !reference.pluginName || reference.scope !== scope
+        || !['namespacedOwner', 'namespacedConfig', 'namespacedMarketplace'].includes(reference.kind)) return [];
+      return [{ pluginId: `${reference.sourceId}/${reference.pluginName}`,
+        ...(reference.platform === 'codex' || reference.platform === 'claude'
+          ? { platform: reference.platform } : {}), scope, reference }];
+    }),
     ...(projectRoot ? { projectRoot } : {}),
     projectIntentObservation,
     pluginSummaries: available.map((entry) => {
@@ -3555,9 +3573,8 @@ export async function statusCommandV8(options: {
   json?: boolean;
   verbose?: boolean;
   catalogOperationContext?: CatalogOperationContext;
-  projectDemand?: ProjectDemand;
-  projectSelection?: Pick<ReadProjectStatusOptions, 'target' | 'targets' | 'platform'>;
-  includeProjectRecovery?: boolean;
+  recoveryDemand?: DemandSnapshot;
+  recoverySelection?: { targets?: readonly string[] };
   inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
   codexObservationSession?: CodexNativeObservationSession;
 }): ReturnType<typeof statusCommandV8InSession> {

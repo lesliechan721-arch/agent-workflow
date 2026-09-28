@@ -11,11 +11,30 @@ import { TuiController, type OperationEvidence, type OperationIntent, type TuiCo
 import type { PluginDetailPlacement, PluginDetailSubject } from '../../src/tui/plugin-detail.js';
 import type { PluginListItemViewModel, UserIssueViewModel } from '../../src/tui/model.js';
 import type { TuiPageContext, TuiRoute } from '../../src/tui/router.js';
+import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
 
 afterEach(() => cleanup());
 
 const pluginId = 'official/demo';
 const platform = 'codex' as const;
+
+type ScopedRequest = Parameters<TuiController['prepareScopedTask']>[0];
+function scopedPlan(request: ScopedRequest): ScopedTuiPlan {
+  if (request.kind !== 'recovery') throw new Error('unexpected scoped request');
+  return { kind: 'recovery', scope: request.scope, plan: {
+    changes: [], warnings: [], nativeGroups: [], portableGroups: [],
+    plannedImpact: { declaration: false, preferences: false, config: false, outputs: false },
+    context: { dispose: async () => {} }, receipt: {
+      schemaVersion: 1, kind: 'aw-recovery', scope: request.scope, command: request.command ?? 'sync', ok: true,
+      intent: { state: 'valid', roots: request.selectors }, requestedRoots: request.selectors,
+      requestedTargets: [], selection: { agents: request.targets ?? [],
+        origin: 'argument', preferences: 'valid' },
+      blockers: [], errors: [], targetResults: [], remainingTargets: [], recoveryActions: [],
+      declarationChanged: false, preferencesChanged: false, configChanged: false,
+      outputsMayHaveChanged: false,
+    },
+  } } as ScopedTuiPlan;
+}
 
 function placement(scope: 'project' | 'user', observation: 'known' | 'unknown' = 'known'): PluginDetailPlacement {
   return {
@@ -91,6 +110,7 @@ class PlatformControllerStub {
   context: TuiPageContext = {};
   previous: Array<{ route: TuiRoute; context: TuiPageContext }> = [];
   intents: OperationIntent[] = [];
+  scopedRequests: ScopedRequest[] = [];
   issues: UserIssueViewModel[] = [];
   forceChecks = 0;
   forceTargets: Array<{ pluginId: string; platform: string; scope: string }> = [];
@@ -130,6 +150,13 @@ class PlatformControllerStub {
     this.publish();
   }
   startReviewPreparation(intent: OperationIntent): void { this.intents.push(intent); }
+  async prepareScopedTask(request: ScopedRequest): Promise<ScopedTuiPlan> {
+    this.scopedRequests.push(request);
+    return scopedPlan(request);
+  }
+  async discardScopedPlan(): Promise<void> {}
+  cancelScopedPreparation(): void {}
+  recordUiFailure(): string { return 'ui-error'; }
   async getForceCleanupCandidate(candidatePluginId: string, candidatePlatform: string,
     candidateScope: string) {
     this.forceChecks += 1;
@@ -311,10 +338,10 @@ describe('platform maintenance v8', () => {
 
   it.each([[80, 24], [60, 18]] as const)(
     'returns to the same platform write action after Review preparation fails at %ix%i', async (columns, rows) => {
-      const captureEvidence = vi.fn().mockRejectedValue(new Error('evidence unavailable'));
+      const prepareScopedTask = vi.fn().mockRejectedValue(new Error('evidenceUnavailable'));
       const executeIntent = vi.fn();
       const controller = new TuiController({ loadStatus: async () => sourceRecoveryStatus(true),
-        captureEvidence, executeIntent });
+        prepareScopedTask, executeIntent });
       await controller.load();
       controller.push({ name: 'platform', pluginId, platform: 'claude' });
       const size = { columns, rows };
@@ -322,19 +349,19 @@ describe('platform maintenance v8', () => {
       await input(instance, '', '');
       await focusAction(instance, '重新安装所有项目位置');
       await input(instance, '\r');
-      expect(controller.snapshot.router.current.route.name).toBe('reviewPreparing');
-      await vi.waitFor(() => expect(controller.snapshot.reviewPreparation?.state).toBe('failed'));
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('evidenceUnavailable'));
       await input(instance, '\u001b');
       await new Promise((resolve) => setTimeout(resolve, 100));
       const returned = checkedFrame(instance, size);
       expect(controller.snapshot.router.current.route.name).toBe('platform');
       expect(returned).toContain('› 重新安装所有项目位置');
       await input(instance, '\r');
-      expect(controller.snapshot.router.current.route.name).toBe('reviewPreparing');
-      await vi.waitFor(() => expect(captureEvidence).toHaveBeenCalledTimes(2));
-      expect(captureEvidence.mock.calls.every(([intent]) => intent.kind === 'pluginWrite'
-        && intent.action === 'reinstall' && intent.pluginId === pluginId
-        && intent.platform === 'claude' && intent.scope === 'user')).toBe(true);
+      await vi.waitFor(() => expect(prepareScopedTask).toHaveBeenCalledTimes(2));
+      expect(prepareScopedTask.mock.calls.every(([request]) => request.kind === 'recovery'
+        && request.command === 'reinstall' && request.scope === 'user'
+        && request.selectors?.join(',') === pluginId
+        && request.exactTargets?.[0]?.pluginId === pluginId
+        && request.exactTargets?.[0]?.agent === 'claude-code')).toBe(true);
       expect(executeIntent).not.toHaveBeenCalled();
       await writeAcceptanceTrace('platform-review-return', size, { returned });
     },
@@ -386,14 +413,14 @@ describe('platform maintenance v8', () => {
       expect(controller.context.platformSelectedScope).toBe('user');
       await focusAction(instance, '从所有项目移除');
       await input(instance, '\r');
-      expect(controller.intents).toEqual([expect.objectContaining({
-        kind: 'pluginWrite', action: 'uninstall', pluginId, platform, scope: 'user',
+      expect(controller.scopedRequests).toEqual([expect.objectContaining({
+        kind: 'recovery', command: 'uninstall', scope: 'user', selectors: [pluginId],
+        exactTargets: [{ pluginId, agent: 'codex' }],
       })]);
-      expect(controller.intents[0]).not.toHaveProperty('targets');
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
       await writeAcceptanceTrace('platform-user-target', { columns, rows }, {
         initiallyUnselected, selectedUser, focusedReviewAction: instance.lastFrame() ?? '',
-      }, controller.intents[0]);
+      });
     },
   );
 
@@ -459,13 +486,14 @@ describe('platform maintenance v8', () => {
       await focusAction(instance, '同步当前项目的使用位置');
       const focusedReviewAction = instance.lastFrame() ?? '';
       await input(instance, '\r');
-      expect(controller.intents).toEqual([expect.objectContaining({
-        kind: 'pluginWrite', action: 'sync', pluginId, platform, scope: 'project',
+      expect(controller.scopedRequests).toEqual([expect.objectContaining({
+        kind: 'recovery', command: 'sync', scope: 'project', selectors: [pluginId],
+        exactTargets: [{ pluginId, agent: 'codex' }],
       })]);
       await writeAcceptanceTrace('platform-project-target', { columns, rows }, {
         initiallyUnselected, selectedProject, focusedReviewAction,
         afterReviewPreparation: instance.lastFrame() ?? '',
-      }, controller.intents[0]);
+      });
     },
   );
 
@@ -500,8 +528,9 @@ describe('platform maintenance v8', () => {
     expect(controller.context.platformSelectedScope).toBe('project');
     await focusAction(instance, '从当前项目移除');
     await input(instance, '\r');
-    expect(controller.intents).toEqual([expect.objectContaining({
-      kind: 'pluginWrite', action: 'uninstall', pluginId, platform, scope: 'project',
+    expect(controller.scopedRequests).toEqual([expect.objectContaining({
+      kind: 'recovery', command: 'uninstall', scope: 'project', selectors: [pluginId],
+      exactTargets: [{ pluginId, agent: 'codex' }],
     })]);
   });
 
@@ -557,12 +586,13 @@ describe('platform maintenance v8', () => {
 
       await focusAction(instance, '清理当前项目中的遗留内容');
       await input(instance, '\r');
-      expect(controller.intents).toEqual([expect.objectContaining({
-        kind: 'pluginWrite', action: 'cleanup', pluginId, platform, scope: 'project',
-        originIssue: expect.objectContaining({ issueId: cleanupIssue.issueId,
-          actionId: 'cleanup' }),
+      expect(controller.scopedRequests).toEqual([expect.objectContaining({
+        kind: 'recovery', command: 'cleanup', scope: 'project', selectors: [pluginId],
+        exactTargets: [{ pluginId, agent: 'codex' }],
       })]);
       expect(controller.forceChecks).toBe(1);
+      await input(instance, '\u001b');
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('清理当前项目中的遗留内容'));
       await focusAction(instance, '清理当前项目中的遗留内容');
       controller.issues = [];
       controller.publish();
@@ -571,7 +601,7 @@ describe('platform maintenance v8', () => {
       await input(instance, '\r');
       expect(controller.context.platformSelectedScope).toBe('project');
       expect(controller.forceChecks).toBe(1);
-      expect(controller.intents).toHaveLength(1);
+      expect(controller.scopedRequests).toHaveLength(1);
     },
   );
 

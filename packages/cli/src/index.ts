@@ -30,14 +30,6 @@ import {
   catalogStoreStatus,
 } from './commands/catalog-store.js';
 import {
-  cleanupWriteCommand as cleanupCommand,
-  installWriteCommand as installCommand,
-  reinstallWriteCommand as reinstallCommand,
-  uninstallWriteCommand as uninstallCommand,
-} from './commands/write-commands.js';
-import { syncCommand } from './commands/sync-command.js';
-import type { RebuildCommandResult } from './commands/rebuild-command.js';
-import {
   formatInteractiveConsoleUnavailableMessage,
   runConsoleController,
 } from './commands/console.js';
@@ -45,7 +37,6 @@ import {
   runCommandWizard,
   toWizardCandidates,
   WizardExecutionError,
-  type CommandWizardCommand,
   type CommandWizardPluginCandidate,
   type CommandWizardSelection,
 } from './commands/wizard.js';
@@ -57,16 +48,12 @@ import {
   type CliIo,
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
-import { loadConsoleItemsResult, statusCommandV8 } from './commands/status-v6.js';
+import { loadConsoleItemsResult } from './commands/status-v6.js';
 import {
-  normalizeUninstallCommandOptions,
-  normalizeCleanupCommandOptions,
   resolveConfigReadResolution,
   resolveConfigWriteScope,
-  normalizeInstallCommandOptions,
-  normalizeReinstallCommandOptions,
-  normalizeProjectRecoveryTargets,
   parseDependencyScopeOverrides,
+  parseScopeValue,
   resolveScriptTimeoutMs,
 } from './commands/options.js';
 import {
@@ -79,12 +66,8 @@ import {
   renderShellCommand,
 } from './output/equivalent-command.js';
 import {
-  buildRebuildReceiptJson,
   buildInitReceiptJson,
-  renderRebuildReceipt,
   renderInitReceipt,
-  type CliCommandResult,
-  type RebuildReceiptJson,
 } from './output/command-receipt.js';
 import { resolveCliPackageRoot } from './utils/paths.js';
 import {
@@ -104,7 +87,6 @@ import {
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
 import { assertStrictSemVer } from './utils/manifest.js';
-import { writeCandidateEligibility } from './utils/target-eligibility.js';
 import {
   assertCatalogSourceReferencesSupported,
   inventoryLegacyConfigReferences,
@@ -131,8 +113,6 @@ import {
 import type {
   ConfigFieldEntry,
   ConfigMutationCommand,
-  InstallCommandOptions,
-  PlatformName,
   PlatformSelection,
   Scope,
 } from './types.js';
@@ -205,15 +185,13 @@ import {
 } from './commands/aw-capabilities.js';
 import type { ManagedCodexAuthorizer } from './utils/codex-manager.js';
 import { prepareSkillEval } from './commands/skill-eval.js';
-import { readProjectStatus } from './project/project-status.js';
-import {
-  projectAdd,
-  projectRemove,
-  projectTargetsReset,
-  projectTargetsSet,
-} from './project/project-commands.js';
-import { runProjectRecovery, type ProjectRecoveryCommand } from './project/recovery.js';
-import type { ProjectRecoveryReceiptV1 } from './project/project-types.js';
+import { readRecoveryStatus, checkRecovery } from './recovery/status.js';
+import { intentAdd, intentRemove, intentList } from './commands/intent-command.js';
+import { targetsSet, targetsReset, targetsList } from './commands/targets-command.js';
+import { runRecovery } from './recovery/coordinator.js';
+import { runRetire } from './recovery/retirement.js';
+import type { RecoveryReceipt } from './recovery/receipt.js';
+import { normalizeAgents } from './intent/deployment-preferences.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type {
@@ -255,7 +233,7 @@ function strictValueOption(
   });
 }
 
-function collectUniqueOption(value: string, previous: string[]): string[] {
+function collectUniqueOption(value: string, previous: string[] = []): string[] {
   return previous.includes(value) ? previous : [...previous, value];
 }
 
@@ -339,12 +317,6 @@ function resolveCliVersion(): string {
   return assertStrictSemVer(packageJson.version, 'packages/cli/package.json version');
 }
 
-function resolveCommandReceiptExitCode(
-  result: CliCommandResult,
-): number {
-  return result.overallState === 'succeeded' ? 0 : 1;
-}
-
 interface RawDiagnosticsOptions {
   verbose?: boolean;
   debug?: boolean;
@@ -361,8 +333,6 @@ interface RawConfigOptions extends RawDiagnosticsOptions {
   apply?: boolean;
   scriptTimeout?: string;
 }
-
-type ReceiptWriteCommand = RebuildReceiptJson['command'];
 
 class WriteCommandRequestError extends Error {
   readonly code = 'invalidArguments';
@@ -393,136 +363,35 @@ function writeCommandFailure(error: unknown): { code: string; message: string } 
   };
 }
 
-interface PreparsedWriteReceiptRequest {
-  json: boolean;
-  plugins: string[];
-  platform?: string;
-  scope?: string;
-}
-
-function preparseWriteReceiptRequest(argv: string[]): PreparsedWriteReceiptRequest {
-  const request: PreparsedWriteReceiptRequest = { json: false, plugins: [] };
-  let positionalOnly = false;
-
-  for (let index = 1; index < argv.length; index += 1) {
-    const token = argv[index]!;
-    if (positionalOnly) {
-      request.plugins.push(token);
-      continue;
-    }
-    if (token === '--') {
-      positionalOnly = true;
-      continue;
-    }
-    if (token === '--json') {
-      request.json = true;
-      continue;
-    }
-    if (token === '--platform' || token === '--scope') {
-      const value = argv[index + 1];
-      if (token === '--platform') request.platform = value;
-      else request.scope = value;
-      index += 1;
-      continue;
-    }
-    if (token.startsWith('--platform=')) {
-      request.platform = token.slice('--platform='.length);
-      continue;
-    }
-    if (token.startsWith('--scope=')) {
-      request.scope = token.slice('--scope='.length);
-      continue;
-    }
-    if (token === '--target') {
-      while (argv[index + 1] && !argv[index + 1]!.startsWith('-')) index += 1;
-      continue;
-    }
-    if (token === '--dependency-scope' || token === '--script-timeout' || token === '--log-file') {
-      index += 1;
-      continue;
-    }
-    if (token.startsWith('--')) continue;
-    if (token.startsWith('-') && token !== '-') {
-      const shortOptions = token.slice(1);
-      for (let offset = 0; offset < shortOptions.length; offset += 1) {
-        const option = shortOptions[offset]!;
-        if (option === 'j') {
-          request.json = true;
-          continue;
-        }
-        if (option === 'p' || option === 's') {
-          const value = shortOptions.slice(offset + 1) || argv[index + 1];
-          if (option === 'p') request.platform = value;
-          else request.scope = value;
-          if (shortOptions.length === offset + 1) index += 1;
-          break;
-        }
-      }
-      continue;
-    }
-    request.plugins.push(token);
+function recoveryRequest(argv: string[]): { command: string; scope: Scope | null; json: boolean } | null {
+  const family = argv[0] ?? '';
+  if (!['intent', 'targets', 'sync', 'install', 'reinstall', 'uninstall', 'cleanup', 'status', 'project'].includes(family)) return null;
+  let rawScope: string | undefined;
+  let json = false;
+  for (let index = 1; index < argv.length; index++) {
+    const value = argv[index]!;
+    if (value === '--') break;
+    if (value === '--scope') rawScope = argv[++index];
+    else if (value.startsWith('--scope=')) rawScope = value.slice('--scope='.length);
+    else if (value === '--json' || (/^-[ajvyD]+$/u.test(value) && value.includes('j'))) json = true;
+    else if (['--target', '--dependency-scope', '--script-timeout', '--log-file'].includes(value)) index++;
   }
-
-  return request;
-}
-
-function jsonWriteCommandRequest(argv: string[]): {
-  command: ReceiptWriteCommand;
-  plugins: string[];
-  platform: PlatformSelection;
-  scope: Scope;
-} | null {
-  const command = argv[0];
-  if (!['install', 'reinstall', 'uninstall', 'cleanup', 'sync'].includes(command ?? '')) {
-    return null;
-  }
-  const request = preparseWriteReceiptRequest(argv);
-  if (!request.json) return null;
-  const rawPlatform = request.platform;
-  const platform = rawPlatform === 'codex' || rawPlatform === 'claude' || rawPlatform === 'both'
-    ? rawPlatform
-    : 'codex';
   return {
-    command: command as ReceiptWriteCommand,
-    plugins: request.plugins,
-    platform,
-    scope: request.scope === 'project' ? 'project' : 'user',
+    command: ['intent', 'targets', 'project'].includes(family) ? `${family}:${argv[1] ?? ''}` : family,
+    scope: rawScope === 'user' || rawScope === 'project' ? rawScope : null,
+    json,
   };
 }
 
-function writeCommandFailureReceipt(
-  write: (text: string) => void,
-  request: NonNullable<ReturnType<typeof jsonWriteCommandRequest>>,
-  error: unknown,
-): void {
-  const platforms: PlatformName[] = request.platform === 'both'
-    ? ['codex', 'claude']
-    : [request.platform];
-  writeJsonReceipt(write, buildRebuildReceiptJson(request.command, {
-    platforms,
-    plugins: request.plugins,
-    warnings: [],
-    overallState: 'failed',
-    errors: [writeCommandFailure(error)],
-    receiptTargets: request.plugins.flatMap((selector) => platforms.map((platform) => {
-      let pluginName = selector;
-      let sourceId: string | undefined;
-      try {
-        const parsed = parsePluginId(selector);
-        pluginName = parsed.pluginName;
-        sourceId = parsed.sourceId;
-      } catch {
-        // Keep the raw selector in the failed receipt.
-      }
-      return {
-        pluginName,
-        pluginId: selector,
-        ...(sourceId ? { sourceId } : {}),
-        platform,
-        scope: request.scope,
-      };
-    })),
-  }));
+function recoveryFailureReceipt(command: string, scope: Scope | null, error: unknown) {
+  const failure = writeCommandFailure(error);
+  return {
+    schemaVersion: 1, kind: 'aw-recovery', scope, command, ok: false,
+    intent: { state: 'unreadable', roots: null }, requestedRoots: [], requestedTargets: [],
+    selection: { agents: [], origin: 'none', preferences: 'unreadable' },
+    blockers: [failure], errors: [failure], targetResults: [], remainingTargets: [], recoveryActions: [],
+    declarationChanged: false, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: false,
+  };
 }
 
 interface PreparsedConfigMutationJsonRequest {
@@ -701,11 +570,6 @@ function toCliDiagnosticsOptions(
   };
 }
 
-type WriteWizardCommand = Extract<
-  CommandWizardCommand,
-  'install' | 'reinstall' | 'uninstall' | 'cleanup'
->;
-
 function isWizardAvailable(
   context: CliExecutionContext,
   rawOptions: { json?: boolean },
@@ -719,16 +583,6 @@ function shellCommand(tokens: string[]): string {
 
 function optionTokens(flag: string, value: string | undefined): string[] {
   return value === undefined ? [] : [flag, value];
-}
-
-function writeCommandUsage(command: WriteWizardCommand): string {
-  const cardinality = command === 'reinstall' || command === 'cleanup' ? '<plugin>' : '<plugin...>';
-  const scope = command === 'cleanup' ? ' --scope <project|user>' : ' [--scope <project|user>]';
-  return [
-    `${command} 命令缺少必要参数。`,
-    `Usage: aw ${command} ${cardinality} --platform <codex|claude|both>${scope}`,
-    `Example: aw ${command} example-plugin --platform codex --scope user`,
-  ].join('\n');
 }
 
 function configCommandUsage(command: 'list' | 'get' | 'set' | 'unset' | 'reset'): string {
@@ -752,40 +606,6 @@ async function readUtf8Stdin(stdin: NodeJS.ReadableStream): Promise<string> {
     chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk));
   }
   return Buffer.concat(chunks).toString('utf8');
-}
-
-function equivalentWriteCommand(
-  command: WriteWizardCommand,
-  selection: CommandWizardSelection,
-  rawOptions: RawWriteWizardOptions,
-): string {
-  return shellCommand(buildEquivalentWriteCommandTokens(command, selection, rawOptions));
-}
-
-export function buildEquivalentWriteCommandTokens(
-  command: WriteWizardCommand,
-  selection: CommandWizardSelection,
-  rawOptions: RawWriteWizardOptions,
-): string[] {
-  return [
-    'aw',
-    command,
-    '--platform',
-    selection.platform ?? 'both',
-    '--scope',
-    selection.scope ?? 'user',
-    ...(rawOptions.allowManagedCodexInstall === true
-      ? ['--allow-managed-codex-install']
-      : []),
-    ...(command === 'cleanup' ? ['--yes'] : []),
-    ...(command === 'install'
-      ? (rawOptions.dependencyScope ?? []).flatMap((value) => ['--dependency-scope', value])
-      : []),
-    ...((command === 'install' || command === 'reinstall')
-      ? optionTokens('--script-timeout', rawOptions.scriptTimeout)
-      : []),
-    ...(selection.plugins.length > 0 ? ['--', ...selection.plugins] : []),
-  ];
 }
 
 interface EquivalentConfigCommandOptions {
@@ -831,20 +651,6 @@ export function buildEquivalentConfigCommandTokens(
     ...(options.key === undefined ? [] : [options.key]),
     ...(options.value === undefined ? [] : [options.value]),
   ];
-}
-
-function hasSelectableWriteCandidate(
-  command: WriteWizardCommand,
-  candidates: CommandWizardPluginCandidate[],
-  selection: CommandWizardSelection,
-  options: { missingPlatform: boolean; missingScope: boolean },
-): boolean {
-  const platforms: PlatformSelection[] = options.missingPlatform
-    ? ['codex', 'claude', 'both']
-    : [selection.platform ?? 'both'];
-  const scopes: Scope[] = options.missingScope ? ['user', 'project'] : [selection.scope ?? 'user'];
-  return candidates.some((candidate) => platforms.some((platform) => scopes.some((scope) =>
-    writeCandidateEligibility(command, candidate, { ...selection, platform, scope }).selectable)));
 }
 
 function hasConfigSchemaKeys(candidate: CommandWizardPluginCandidate): boolean {
@@ -938,12 +744,7 @@ function configReadStoreLocations(rawOptions: RawConfigOptions): ConfigWizardSto
   ];
 }
 
-function isProjectReceipt(value: RebuildCommandResult | ProjectRecoveryReceiptV1): value is ProjectRecoveryReceiptV1 {
-  return 'kind' in value && value.kind === 'aw-project-recovery';
-}
-
-function overallResultState(value: { overallState: RebuildReceiptOverallState } | ProjectRecoveryReceiptV1): 'succeeded' | 'failed' {
-  if (!('overallState' in value)) return value.ok ? 'succeeded' : 'failed';
+function overallResultState(value: { overallState: RebuildReceiptOverallState }): 'succeeded' | 'failed' {
   return value.overallState === 'succeeded' ? 'succeeded' : 'failed';
 }
 
@@ -1118,51 +919,48 @@ async function resolveMultiSourceConfigRead(options: {
   });
 }
 
-interface RawWriteWizardOptions extends RawDiagnosticsOptions {
+interface RawRecoveryOptions extends RawDiagnosticsOptions {
   all?: boolean;
+  check?: boolean;
   refresh?: boolean;
   scope?: string;
-  platform?: string;
-  targets?: string[];
+  target?: string[];
   scriptTimeout?: string;
   json?: boolean;
   force?: boolean;
   allowManagedCodexInstall?: boolean;
   dependencyScope?: string[];
+  deleteConfig?: boolean;
   yes?: boolean;
 }
 
-function projectInstallDependencyOverrides(
-  command: WriteWizardCommand | 'sync',
-  rawOptions: RawWriteWizardOptions,
-): InstallCommandOptions['dependencyScopeOverrides'] {
-  return command === 'install'
-    ? normalizeWriteRequest(() => parseDependencyScopeOverrides(rawOptions.dependencyScope))
-    : undefined;
-}
-
-function renderProjectReceipt(write: (text: string) => void, value: ProjectRecoveryReceiptV1): void {
-  writeLine(write, `${value.command}: ${value.ok ? 'ok' : 'failed'}`);
-  if ('backupPath' in value && typeof value.backupPath === 'string') {
-    writeLine(write, `原始声明备份：${value.backupPath}`);
+function renderRecoveryReceipt(write: (text: string) => void, value: RecoveryReceipt): void {
+  writeLine(write, `${value.command} [${value.scope}]: ${value.ok ? 'ok' : 'failed'}`);
+  writeLine(write, `需求：${value.intent.roots?.join('、') || (value.intent.roots === null ? '不可读' : '无')}`);
+  writeLine(write, `本机工具：${value.selection.agents.join('、') || '未配置'}`);
+  writeLine(write, `变化：声明 ${value.declarationChanged ? '已保存' : '无'}；偏好 ${value.preferencesChanged ? '已保存' : '无'}；配置 ${value.configChanged ? '已保存' : '无'}；输出 ${value.outputsMayHaveChanged ? '可能已变更' : '无'}`);
+  for (const target of value.targetResults) {
+    writeLine(write, `${target.pluginId} / ${target.agent} [${target.scope}]: ${target.execution}; ${target.content ?? target.observation}`);
   }
-  for (const blocker of value.blockers) writeLine(write, `${blocker.code}: ${blocker.message}`);
+  const diagnostics = new Map([...value.blockers, ...value.errors,
+    ...value.targetResults.flatMap((target) => target.blockers)].map((item) => [`${item.code}:${item.message}`, item]));
+  for (const item of diagnostics.values()) writeLine(write, `${item.code}: ${item.message}`);
   for (const action of value.recoveryActions) writeLine(write, action);
 }
 
-function projectFailureReceipt(command: string, error: unknown): ProjectRecoveryReceiptV1 {
-  const failure = writeCommandFailure(error);
-  return {
-    schemaVersion: 1, kind: 'aw-project-recovery', command, ok: false,
-    intent: { state: 'unreadable', roots: null }, requestedRoots: [],
-    selection: { agents: [], origin: 'none' }, blockers: [failure],
-    targetResults: [], remainingTargets: [], recoveryActions: [],
-    declarationChanged: false, preferencesChanged: false, outputsMayHaveChanged: false,
-  };
+function renderRecoveryStatus(write: (text: string) => void, value: Awaited<ReturnType<typeof readRecoveryStatus>>): void {
+  writeLine(write, `status [${value.scope}]: ${value.ok ? 'ok' : 'failed'}`);
+  writeLine(write, `本机工具：${value.selection.agents.join('、') || '未配置'}`);
+  writeLine(write, `全部满足：${value.allSatisfied === null ? '未知' : value.allSatisfied ? '是' : '否'}`);
+  for (const root of value.inventory ?? []) {
+    writeLine(write, `${root.pluginId}: ${root.targetResults.length ? root.targetResults.map((target) =>
+      `${target.agent}/${target.content ?? target.observation}`).join(', ') : 'localTargetsRequired'}`);
+  }
+  for (const error of value.errors) writeLine(write, `${error.code}: ${error.message}`);
 }
 
 export function createManagedCodexAuthorizer(
-  rawOptions: Pick<RawWriteWizardOptions, 'allowManagedCodexInstall' | 'json'>,
+  rawOptions: Pick<RawRecoveryOptions, 'allowManagedCodexInstall' | 'json'>,
   context: Pick<CliExecutionContext, 'interactive' | 'isTty' | 'isCi' | 'prompt'>,
 ): ManagedCodexAuthorizer | undefined {
   if (rawOptions.allowManagedCodexInstall === true) return async () => true;
@@ -1177,9 +975,9 @@ export function createManagedCodexAuthorizer(
   };
 }
 
-function projectRecoveryRuntime(
+function recoveryRuntime(
   context: CliExecutionContext,
-  rawOptions: RawWriteWizardOptions,
+  rawOptions: RawRecoveryOptions,
   directCli: boolean,
 ) {
   const managedCodexAuthorizer = createManagedCodexAuthorizer(rawOptions, context);
@@ -1189,190 +987,6 @@ function projectRecoveryRuntime(
     preApplyConfirmed: rawOptions.yes === true,
     ...(managedCodexAuthorizer ? { managedCodexAuthorizer } : {}),
   };
-}
-
-async function executeWriteCommand(
-  command: WriteWizardCommand,
-  pluginNames: string[],
-  rawOptions: RawWriteWizardOptions,
-  context: CliExecutionContext,
-  directCli = false,
-  expectedPlanFingerprint?: string,
-): Promise<RebuildCommandResult | ProjectRecoveryReceiptV1> {
-  if (rawOptions.scope === 'project') {
-    const targets = normalizeProjectRecoveryTargets(rawOptions);
-    return runProjectRecovery(command, pluginNames, {
-      cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
-      ...targets, yes: rawOptions.yes, force: rawOptions.force,
-      ...(command === 'install' ? { dependencyScopeOverrides: projectInstallDependencyOverrides(command, rawOptions) } : {}),
-      allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
-      scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions),
-      interactive: context.interactive && context.isTty && !context.isCi && !rawOptions.json,
-      prompt: context.prompt,
-    }, projectRecoveryRuntime(context, rawOptions, directCli));
-  }
-  const raw = { cwd: context.cwd, ...rawOptions };
-  const commandOptions = normalizeWriteRequest(() => command === 'install'
-    ? normalizeInstallCommandOptions(raw)
-    : command === 'uninstall'
-        ? normalizeUninstallCommandOptions(raw)
-        : command === 'cleanup'
-          ? normalizeCleanupCommandOptions(raw)
-          : normalizeReinstallCommandOptions(raw));
-  await emitCommandEvent(context, {
-    type: 'options:normalized',
-    data: { plugins: pluginNames, options: commandOptions },
-  });
-  const managedCodexAuthorizer = createManagedCodexAuthorizer(rawOptions, context);
-  const runtime = {
-    ...context,
-    directCli,
-    preApplyConfirmed: rawOptions.yes === true,
-    ...(expectedPlanFingerprint ? { expectedPlanFingerprint } : {}),
-    ...(managedCodexAuthorizer ? { managedCodexAuthorizer } : {}),
-  };
-  switch (command) {
-    case 'install': return installCommand(pluginNames, commandOptions, runtime);
-    case 'uninstall': return uninstallCommand(pluginNames, commandOptions, runtime);
-    case 'cleanup': return cleanupCommand(pluginNames, commandOptions, runtime);
-    case 'reinstall': return reinstallCommand(pluginNames, commandOptions, runtime);
-  }
-}
-
-async function runWriteCommandAction(
-  command: WriteWizardCommand,
-  pluginNames: string[],
-  rawOptions: RawWriteWizardOptions,
-  context: CliExecutionContext,
-): Promise<{ cancelled: true } | { cancelled: false; result: RebuildCommandResult | ProjectRecoveryReceiptV1 }> {
-  if ((command === 'cleanup' || command === 'reinstall') && pluginNames.length > 1) {
-    throw new WriteCommandRequestError(`${command} 命令当前只支持单个插件目标。`);
-  }
-  const missingPlugin = pluginNames.length === 0;
-  const missingPlatform = rawOptions.platform === undefined;
-  const missingScope = command === 'cleanup' && rawOptions.scope === undefined;
-  const missing = missingPlugin || missingPlatform || missingScope;
-
-  // Validate every value already supplied by the caller before opening the TUI.
-  const validationOptions = {
-    cwd: context.cwd,
-    ...rawOptions,
-    platform: rawOptions.platform ?? 'both',
-    ...(command === 'cleanup' ? { scope: rawOptions.scope ?? 'user' } : {}),
-  };
-  void validationOptions;
-  if (!missing) {
-    if (command === 'cleanup' && rawOptions.force !== true && rawOptions.yes !== true
-      && isWizardAvailable(context, rawOptions) && context.prompt.confirm) {
-      const preview = await cleanupCommand(pluginNames, normalizeCleanupCommandOptions({
-        cwd: context.cwd,
-        ...rawOptions,
-      }), { ...context, previewOperationPlan: true });
-      if ((preview.removedPluginCleanupIds?.length ?? 0) > 0) {
-        if (!preview.operationPlan) {
-          throw new WriteCommandRequestError('cleanupPlanUnavailable: 无法建立可信的整体清理预览。');
-        }
-        const response = await context.prompt.confirm({
-          message: `清理已删除插件 ${preview.removedPluginCleanupIds!.join('、')}：将处理 Codex、Claude Code 的用户与当前项目位置，删除保存设置、安装意图、专属输出和共享原生安装。其他项目可能因此无法继续使用该插件；其本地记录不会修改。即使指定了 --platform 或 --scope，本次仍覆盖上述全部位置。继续？`,
-          defaultValue: false,
-        });
-        if (response.cancelled || response.value !== true) return { cancelled: true };
-        return {
-          cancelled: false,
-          result: await executeWriteCommand(command, pluginNames, {
-            ...rawOptions, yes: true,
-          }, context, true, preview.operationPlan.planFingerprint),
-        };
-      }
-    }
-    return {
-      cancelled: false,
-      result: await executeWriteCommand(command, pluginNames, rawOptions, context, true),
-    };
-  }
-  if (!isWizardAvailable(context, rawOptions)) {
-    throw new WriteCommandRequestError(writeCommandUsage(command));
-  }
-
-  const loaded = await loadConsoleItemsResult({
-    cwd: context.cwd,
-    scope: rawOptions.scope,
-    platform: rawOptions.platform,
-  }, context);
-  if (loaded.catalogUnavailable) {
-    throw new Error(
-      '插件目录不可用。请运行 `aw init` 或 `aw init --force`，或使用完整参数重试。',
-    );
-  }
-  const candidates = missingPlugin ? toWizardCandidates(loaded.items) : [];
-  const initialSelection: CommandWizardSelection = {
-    plugins: pluginNames,
-    platform: rawOptions.platform as PlatformSelection | undefined,
-    scope: (rawOptions.scope ?? 'user') as Scope,
-  };
-  if (missingPlugin && !hasSelectableWriteCandidate(command, candidates, initialSelection, {
-    missingPlatform,
-    missingScope,
-  })) {
-    throw new Error('没有可执行此操作的目标。请运行 `aw status` 检查当前状态。');
-  }
-  const result = await runCommandWizard(context, {
-    command,
-    candidates,
-    initial: initialSelection,
-    pluginMode: missingPlugin
-      ? command === 'cleanup' || command === 'reinstall' ? 'single' : 'multiple'
-      : 'none',
-    promptForPlatform: missingPlatform,
-    promptForScope: missingScope,
-    destructive: command === 'uninstall' || command === 'cleanup',
-    equivalentCommand: (selection) => equivalentWriteCommand(
-      command,
-      selection,
-      rawOptions,
-    ),
-    equivalentCommandTokens: (selection) => buildEquivalentWriteCommandTokens(
-      command,
-      selection,
-      rawOptions,
-    ),
-    isPluginSelectable: (candidate, selection) => selection.scope === 'project'
-      ? { selectable: true } : writeCandidateEligibility(command, candidate, selection),
-    resultState: overallResultState,
-    ...(command === 'cleanup' ? {
-      reviewDetails: async (selection: CommandWizardSelection) => {
-        if (selection.scope === 'project') return { lines: ['项目目标将由统一恢复流程检查。'] };
-        const preview = await cleanupCommand(selection.plugins, normalizeCleanupCommandOptions({
-          cwd: context.cwd,
-          ...rawOptions,
-          platform: selection.platform,
-          scope: selection.scope,
-        }), { ...context, previewOperationPlan: true });
-        if ((preview.removedPluginCleanupIds?.length ?? 0) === 0) return { lines: [] };
-        if (!preview.operationPlan) {
-          throw new WriteCommandRequestError('cleanupPlanUnavailable: 无法建立可信的整体清理预览。');
-        }
-        return {
-          lines: [
-            `已删除插件：${preview.removedPluginCleanupIds!.join('、')}`,
-            '实际清理范围：Codex、Claude Code；用户与当前项目。',
-            '将删除保存设置、安装意图、专属输出和共享原生安装。',
-            '其他项目可能失去此插件；其本地记录不会修改。',
-            '当前 --platform / --scope 选择不会限制整体清理范围。',
-          ],
-          expectedPlanFingerprint: preview.operationPlan.planFingerprint,
-        };
-      },
-    } : {}),
-    execute: (selection, expectedPlanFingerprint) => executeWriteCommand(command, selection.plugins, {
-      ...rawOptions,
-      platform: selection.platform,
-      scope: selection.scope,
-      ...(command === 'cleanup' ? { yes: true } : {}),
-    }, context, false, expectedPlanFingerprint),
-  });
-  if (result.cancelled) return { cancelled: true };
-  return { cancelled: false, result: result.value! };
 }
 
 function parseBareConsoleOptions(
@@ -1524,9 +1138,9 @@ function writeConfigApplyNotice(
         : entry.errorCode
           ? `失败原因：${entry.errorCode}。`
           : '未提供安全失败原因。';
-      const command = `aw reinstall ${receipt.plugin} -p ${entry.target.platform} -s ${entry.target.scope}`;
+      const command = `aw reinstall ${receipt.plugin} --target ${entry.target.platform === 'claude' ? 'claude-code' : entry.target.platform} --scope ${entry.target.scope}`;
       const recovery = entry.errorCode === 'invalidConfig'
-        ? ' 请修复无效配置后运行 aw sync。'
+        ? ` 请修复无效配置后运行 ${command}。`
         : entry.errorCode === 'preApplyAuthorizationRequired'
           || entry.errorCode === 'sharedNativeConfigApplyConfirmationRequired'
           || entry.errorCode === 'sharedNativeImpactAuthorizationRequired'
@@ -1559,12 +1173,12 @@ function writeConfigApplyNotice(
       ? `${receipt.apply.error.code}：${sanitizeMessage(receipt.apply.error.message)}`
       : `${receipt.apply.reason}：${fallbackMessages[receipt.apply.reason]}`;
     const recovery = receipt.apply.reason === 'invalidConfig'
-      ? '请修复无效配置后运行 aw sync。'
+      ? '请修复无效配置，再按目标范围运行 aw sync <source/plugin> --scope user|project。'
       : receipt.apply.reason === 'effectiveConfigUnavailable'
-        ? '请修复配置后运行 aw sync。'
+        ? '请修复配置，再按目标范围运行 aw sync <source/plugin> --scope user|project。'
         : receipt.apply.reason === 'schemaUnavailable' || receipt.apply.reason === 'sourceUnavailable'
-          ? '请修复插件来源或配置后运行 aw sync。'
-          : '请修复来源或配置后运行 aw sync。';
+          ? '请修复插件来源或配置，再按目标范围运行 aw sync <source/plugin> --scope user|project。'
+          : '请修复来源或配置，再按目标范围运行 aw sync <source/plugin> --scope user|project。';
     writeLine(write, `配置已保存，但当前无法应用配置。${detail} ${recovery}`);
     writeTargetFailures();
   } else {
@@ -3366,384 +2980,108 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = result.ok ? 0 : 1;
     });
 
-  const project = program.command('project').description('Manage current project requirements and targets');
-  const runProjectAction = async (
+  const scopedCommand = (command: Command): Command => command
+    .requiredOption('--scope <scope>', 'user or project; required for every inventory operation')
+    .option('-j, --json', 'print one recovery receipt as JSON', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file');
+  const recoveryScope = (rawOptions: RawRecoveryOptions): Scope =>
+    normalizeWriteRequest(() => parseScopeValue(rawOptions.scope));
+  const recoveryTargets = (rawOptions: RawRecoveryOptions) => rawOptions.target === undefined
+    ? undefined : normalizeWriteRequest(() => normalizeAgents(rawOptions.target!));
+  const runRecoveryAction = async (
     command: string,
-    rawOptions: { json?: boolean } & RawDiagnosticsOptions,
-    action: (context: CliExecutionContext) => Promise<ProjectRecoveryReceiptV1>,
+    rawOptions: RawRecoveryOptions,
+    action: (context: CliExecutionContext, scope: Scope) => Promise<RecoveryReceipt>,
   ): Promise<void> => {
+    const scope = recoveryScope(rawOptions);
     const context = createActionContext(command, rawOptions);
-    let result: ProjectRecoveryReceiptV1;
-    try {
-      result = await runActionWithContext(context, () => action(context));
-    } catch (error) {
-      result = projectFailureReceipt(command, error);
-    }
+    const result = await runActionWithContext(context, () => action(context, scope));
     if (rawOptions.json) writeJsonReceipt(io.stdout, result);
-    else renderProjectReceipt(io.stdout, result);
-    commandExitState.exitCode = result.ok ? 0 : 1;
-  };
-  const projectJsonOption = (command: Command): Command => command
-    .option('-j, --json', 'print one project receipt as JSON', false);
-  const runProjectRecoveryAction = async (
-    command: ProjectRecoveryCommand,
-    plugins: string[],
-    rawOptions: RawWriteWizardOptions,
-  ): Promise<void> => {
-    await runProjectAction(command, rawOptions, async (context) => {
-      const targets = normalizeWriteRequest(() => normalizeProjectRecoveryTargets(rawOptions));
-      return runProjectRecovery(command, plugins, {
-        cwd: context.cwd,
-        env: context.env,
-        cliVersion: resolveCliVersion(),
-        ...targets,
-        ...(command === 'install' ? { dependencyScopeOverrides: projectInstallDependencyOverrides(command, rawOptions) } : {}),
-        all: rawOptions.all,
-        yes: rawOptions.yes,
-        force: rawOptions.force,
-        refresh: rawOptions.refresh,
-        allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
-        scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions),
-        interactive: context.interactive && context.isTty && !context.isCi && !rawOptions.json,
-        prompt: context.prompt,
-      }, projectRecoveryRuntime(context, rawOptions, true));
-    });
+    else renderRecoveryReceipt(io.stdout, result);
+    commandExitState.exitCode = result.ok ? 0
+      : result.errors.some((error) => error.code === 'invalidArguments') ? 2 : 1;
   };
 
-  projectJsonOption(project.command('add').argument('<plugins...>'))
-    .action(async (plugins: string[], rawOptions: { json?: boolean }) =>
-      runProjectAction('project:add', rawOptions, (context) =>
-        projectAdd({ cwd: context.cwd, env: context.env, selectors: plugins })));
-  projectJsonOption(project.command('remove').argument('<plugin>'))
-    .action(async (plugin: string, rawOptions: { json?: boolean }) =>
-      runProjectAction('project:remove', rawOptions, (context) =>
-        projectRemove({ cwd: context.cwd, env: context.env, selector: plugin })));
+  const intent = program.command('intent').description('Manage independent user or project plugin requirements');
+  scopedCommand(intent.command('add').argument('<plugins...>'))
+    .action(async (plugins: string[], rawOptions: RawRecoveryOptions) =>
+      runRecoveryAction('intent:add', rawOptions, (context, scope) =>
+        intentAdd({ scope, cwd: context.cwd, env: context.env, selectors: plugins })));
+  scopedCommand(intent.command('remove').argument('<plugin>'))
+    .action(async (plugin: string, rawOptions: RawRecoveryOptions) =>
+      runRecoveryAction('intent:remove', rawOptions, (context, scope) =>
+        intentRemove({ scope, cwd: context.cwd, env: context.env, selector: plugin })));
+  scopedCommand(intent.command('list'))
+    .action(async (rawOptions: RawRecoveryOptions) =>
+      runRecoveryAction('intent:list', rawOptions, (context, scope) =>
+        intentList({ scope, cwd: context.cwd, env: context.env })));
+  scopedCommand(intent.command('retire').argument('<plugin>'))
+    .description('Retire a plugin proven absent from its healthy Catalog, in one scope')
+    .option('--target <agent>', 'limit output changes to this Agent; repeat to select more', collectUniqueOption)
+    .option('--delete-config', 'also delete saved plugin configuration in the selected scope', false)
+    .option('-y, --yes', 'confirm the reviewed retirement changes', false)
+    .option('--allow-managed-codex-install', 'allow acquisition of the pinned AW-managed Codex runtime', false)
+    .action(async (plugin: string, rawOptions: RawRecoveryOptions) =>
+      runRecoveryAction('intent:retire', rawOptions, (context, scope) =>
+        runRetire({ scope, cwd: context.cwd, env: context.env, selector: plugin,
+          cliVersion: resolveCliVersion(), targets: recoveryTargets(rawOptions),
+          deleteConfig: rawOptions.deleteConfig, yes: rawOptions.yes,
+          interactive: isWizardAvailable(context, rawOptions), prompt: context.prompt,
+        }, recoveryRuntime(context, rawOptions, true))));
 
-  const projectTargets = project.command('targets').description('Manage local Agent selection');
-  projectJsonOption(projectTargets.command('set').argument('<agents...>'))
-    .action(async (agents: string[], rawOptions: { json?: boolean }) =>
-      runProjectAction('project:targets:set', rawOptions, (context) =>
-        projectTargetsSet({ cwd: context.cwd, env: context.env, agents })));
-  projectJsonOption(projectTargets.command('reset'))
-    .action(async (rawOptions: { json?: boolean }) =>
-      runProjectAction('project:targets:reset', rawOptions, (context) =>
-        projectTargetsReset({ cwd: context.cwd, env: context.env })));
+  const targets = program.command('targets').description('Manage local Agent preferences without installing');
+  scopedCommand(targets.command('set').argument('<agents...>'))
+    .action(async (agents: string[], rawOptions: RawRecoveryOptions) =>
+      runRecoveryAction('targets:set', rawOptions, (context, scope) =>
+        targetsSet({ scope, cwd: context.cwd, env: context.env,
+          agents: normalizeWriteRequest(() => normalizeAgents(agents)) })));
+  scopedCommand(targets.command('list'))
+    .action(async (rawOptions: RawRecoveryOptions) =>
+      runRecoveryAction('targets:list', rawOptions, (context, scope) =>
+        targetsList({ scope, cwd: context.cwd, env: context.env })));
+  scopedCommand(targets.command('reset'))
+    .description('Clear Agent preferences and dependency placement overrides in this scope')
+    .action(async (rawOptions: RawRecoveryOptions) =>
+      runRecoveryAction('targets:reset', rawOptions, (context, scope) =>
+        targetsReset({ scope, cwd: context.cwd, env: context.env })));
 
-  projectJsonOption(project.command('status'))
-    .action(async (rawOptions: { json?: boolean }) => {
-      const context = createActionContext('project:status', rawOptions as RawDiagnosticsOptions);
-      const status = await runActionWithContext(context, () => readProjectStatus({
-        cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
-      }));
-      if (rawOptions.json) writeJsonReceipt(io.stdout, status);
-      else {
-        writeLine(io.stdout, `project:status: ${status.ok ? 'ok' : 'failed'}`);
-        writeLine(io.stdout, `Agent：${status.selection.agents.join('、') || '未配置'}`);
-        writeLine(io.stdout, `全部满足：${status.allSatisfied === null ? '未知' : status.allSatisfied ? '是' : '否'}`);
-        for (const root of status.inventory ?? []) {
-          writeLine(io.stdout, `${root.pluginId}: ${root.targetResults.length ? root.targetResults.map((target) =>
-            `${target.agent}/${target.content ?? target.observation}`).join(', ') : 'localTargetsRequired'}`);
-        }
-        for (const error of status.errors) writeLine(io.stdout, `${error.code}: ${error.message}`);
+  for (const command of ['sync', 'install', 'reinstall', 'uninstall', 'cleanup'] as const) {
+    const entry = scopedCommand(program.command(command)
+      .argument(command === 'sync' ? '[plugins...]' : '<plugins...>'))
+      .option('--target <agent>', 'Agent ID: codex, claude-code, cursor; repeat to select more', collectUniqueOption)
+      .option('-y, --yes', 'authorize reviewed scripts, shared replacement, or removal', false)
+      .option('--allow-managed-codex-install', 'allow acquisition of the pinned AW-managed Codex runtime', false);
+    if (command === 'sync') entry
+      .option('-a, --all', 'select every declared root in this scope', false)
+      .option('--check', 'observe selected requirements without preparing or writing', false)
+      .option('--refresh', 'refresh Catalog sources needed by selected roots before review', false);
+    if (command === 'cleanup') entry.option('--force', 'clean provably owned output despite damaged weak state', false);
+    if (command === 'install' || command === 'sync' || command === 'reinstall') entry
+      .option('--dependency-scope <placement>', 'one-time <source/plugin>[#platform]=<user|project>; repeat as needed', collectUniqueOption)
+      .option('--script-timeout <ms>', 'override plugin preApply timeout in milliseconds');
+    entry.action(async (plugins: string[], rawOptions: RawRecoveryOptions) => {
+      if (rawOptions.all && plugins.length) throw new WriteCommandRequestError('--all 与插件参数不能同时使用。');
+      if (command === 'sync' && !rawOptions.all && !plugins.length) {
+        throw new WriteCommandRequestError('sync 需要指定插件或 --all。');
       }
-      commandExitState.exitCode = status.errors.length ? 1 : 0;
-    });
-
-  program
-    .command('sync')
-    .description('Reconcile actual state from existing desired intent')
-    .argument('[plugins...]')
-    .requiredOption('-s, --scope <scope>', 'project or user')
-    .option('-p, --platform <platform>', 'codex, claude, or both in user mode; project Agent alias')
-    .option('--target <agents...>', 'project Agent ID, such as codex or cursor')
-    .option('-a, --all', 'reconcile every desired plugin in the selected scope', false)
-    .option('--refresh', 'refresh only Catalog sources required by selected intent roots', false)
-    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
-    .option('-y, --yes', 'authorize preApply and shared native replacement or forced repair', false)
-    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
-    .option('-j, --json', 'print sync receipt as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (
-      plugins: string[],
-      rawOptions: {
-        scope: string;
-        platform?: string;
-        target?: string[];
-        all?: boolean;
-        refresh?: boolean;
-        scriptTimeout?: string;
-        yes?: boolean;
-        allowManagedCodexInstall?: boolean;
-        json?: boolean;
-      } & RawDiagnosticsOptions,
-    ) => {
-      if (rawOptions.scope === 'project') {
-        await runProjectRecoveryAction('sync', plugins ?? [], {
-          ...rawOptions, targets: rawOptions.target,
-        });
-        return;
-      }
-      if (rawOptions.target?.length) throw new WriteCommandRequestError('--target is only available with --scope project.');
-      const context = createActionContext('sync', rawOptions);
-      const normalized = normalizeWriteRequest(() => normalizeInstallCommandOptions({
-          cwd: context.cwd,
-          scope: rawOptions.scope,
-          platform: rawOptions.platform,
-          scriptTimeout: rawOptions.scriptTimeout,
+      if (rawOptions.check && rawOptions.refresh) throw new WriteCommandRequestError('--check 与 --refresh 不能同时使用。');
+      await runRecoveryAction(command, rawOptions, (context, scope) => {
+        const options = {
+          scope, cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
+          targets: recoveryTargets(rawOptions), all: rawOptions.all,
+          yes: rawOptions.yes, force: rawOptions.force, refresh: rawOptions.refresh,
+          dependencyScopeOverrides: normalizeWriteRequest(() => parseDependencyScopeOverrides(rawOptions.dependencyScope)),
           allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
-        }));
-      const syncPlatform = normalized.platform;
-      const result = await runActionWithContext(context, () => syncCommand(
-        plugins ?? [],
-        {
-          cwd: context.cwd,
-          env: context.env,
-          platform: syncPlatform,
-          scope: normalized.scope,
-          all: rawOptions.all,
-          refresh: rawOptions.refresh,
-          cliVersion: resolveCliVersion(),
-          yes: rawOptions.yes,
-          json: rawOptions.json,
-          interactive: context.interactive && context.isTty && !context.isCi,
-          prompt: context.prompt,
-          allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
-          scriptTimeoutMs: normalized.scriptTimeoutMs,
-        },
-        context,
-      ));
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, buildRebuildReceiptJson('sync', result));
-      } else {
-        for (const line of renderRebuildReceipt('sync', result)) writeLine(io.stdout, line);
-      }
-      writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
-      commandExitState.exitCode = resolveCommandReceiptExitCode(result);
+          scriptTimeoutMs: normalizeWriteRequest(() => resolveScriptTimeoutMs(rawOptions)),
+          interactive: isWizardAvailable(context, rawOptions), prompt: context.prompt,
+        };
+        return rawOptions.check ? checkRecovery(plugins, options)
+          : runRecovery(command, plugins, options, recoveryRuntime(context, rawOptions, true));
+      });
     });
-
-  program
-    .command('install')
-    .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user')
-    .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--target <agents...>', 'project Agent ID')
-    .option(
-      '--dependency-scope <pluginId[#platform]=scope>',
-      'place one dependency at project or user scope; repeat for more dependencies',
-      (value: string, previous: string[]) => [...previous, value],
-      [],
-    )
-    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
-    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
-    .option('-y, --yes', 'authorize preApply and shared Codex native replacement', false)
-    .option('-j, --json', 'print receipt as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(
-      async (
-        plugins: string[],
-        rawOptions: {
-          scope?: string;
-          platform?: string;
-          target?: string[];
-          dependencyScope?: string[];
-          scriptTimeout?: string;
-          allowManagedCodexInstall?: boolean;
-          yes?: boolean;
-          json?: boolean;
-        } & RawDiagnosticsOptions,
-      ) => {
-        if (rawOptions.scope === 'project') {
-          await runProjectRecoveryAction('install', plugins ?? [], {
-            ...rawOptions, targets: rawOptions.target,
-          });
-          return;
-        }
-        if (rawOptions.target?.length) throw new WriteCommandRequestError('--target is only available with --scope project.');
-        const context = createActionContext('install', rawOptions);
-        const outcome = await runActionWithContext(context, () =>
-          runWriteCommandAction('install', plugins ?? [], rawOptions, context));
-        if (outcome.cancelled) return;
-        const receipt = outcome.result;
-        if (isProjectReceipt(receipt)) {
-          if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
-          else renderProjectReceipt(io.stdout, receipt);
-          commandExitState.exitCode = receipt.ok ? 0 : 1;
-          return;
-        }
-        if (rawOptions.json) {
-          writeJsonReceipt(io.stdout, buildRebuildReceiptJson('install', receipt));
-        } else {
-          for (const line of renderRebuildReceipt('install', receipt)) {
-            writeLine(io.stdout, line);
-          }
-        }
-        writeWarnings(io.stderr, receipt.warnings, { actionableOnly: true });
-        commandExitState.exitCode = resolveCommandReceiptExitCode(receipt);
-      },
-    );
-
-  program
-    .command('uninstall')
-    .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user')
-    .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--target <agents...>', 'project Agent ID')
-    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
-    .option('-j, --json', 'print receipt as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (
-      plugins: string[],
-      rawOptions: {
-        scope?: string;
-        platform?: string;
-        target?: string[];
-        allowManagedCodexInstall?: boolean;
-        json?: boolean;
-      } & RawDiagnosticsOptions,
-    ) => {
-      if (rawOptions.scope === 'project') {
-        await runProjectRecoveryAction('uninstall', plugins ?? [], {
-          ...rawOptions, targets: rawOptions.target,
-        });
-        return;
-      }
-      if (rawOptions.target?.length) throw new WriteCommandRequestError('--target is only available with --scope project.');
-      const context = createActionContext('uninstall', rawOptions);
-      const outcome = await runActionWithContext(context, () =>
-        runWriteCommandAction('uninstall', plugins ?? [], rawOptions, context));
-      if (outcome.cancelled) return;
-      const receipt = outcome.result;
-      if (isProjectReceipt(receipt)) {
-        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
-        else renderProjectReceipt(io.stdout, receipt);
-        commandExitState.exitCode = receipt.ok ? 0 : 1;
-        return;
-      }
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, buildRebuildReceiptJson('uninstall', receipt));
-      } else {
-        for (const line of renderRebuildReceipt('uninstall', receipt)) {
-          writeLine(io.stdout, line);
-        }
-      }
-      writeWarnings(io.stderr, receipt.warnings, { actionableOnly: true });
-      commandExitState.exitCode = resolveCommandReceiptExitCode(receipt);
-    });
-
-  program
-    .command('cleanup')
-    .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user')
-    .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--target <agents...>', 'project Agent ID')
-    .option('-j, --json', 'print cleanup result as JSON', false)
-    .option('--force', 'use exact shallow evidence for exclusively owned damaged output; preserve foreign/shared content; no deleted-plugin-wide cleanup', false)
-    .option('-y, --yes', 'authorize cleanup of a deleted plugin across Codex, Claude Code, user and current project, including saved settings and shared native install', false)
-    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (
-      plugins: string[],
-      rawOptions: {
-        scope?: string;
-        platform?: string;
-        target?: string[];
-        json?: boolean;
-        force?: boolean;
-        allowManagedCodexInstall?: boolean;
-        yes?: boolean;
-      } & RawDiagnosticsOptions,
-    ) => {
-      if (rawOptions.scope === 'project') {
-        await runProjectRecoveryAction('cleanup', plugins ?? [], {
-          ...rawOptions, targets: rawOptions.target,
-        });
-        return;
-      }
-      if (rawOptions.target?.length) throw new WriteCommandRequestError('--target is only available with --scope project.');
-      const context = createActionContext('cleanup', rawOptions);
-      const outcome = await runActionWithContext(context, () =>
-        runWriteCommandAction('cleanup', plugins ?? [], rawOptions, context));
-      if (outcome.cancelled) return;
-      const result = outcome.result;
-      if (isProjectReceipt(result)) {
-        if (rawOptions.json) writeJsonReceipt(io.stdout, result);
-        else renderProjectReceipt(io.stdout, result);
-        commandExitState.exitCode = result.ok ? 0 : 1;
-        return;
-      }
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, buildRebuildReceiptJson('cleanup', result));
-      } else {
-        for (const line of renderRebuildReceipt('cleanup', result)) {
-          writeLine(io.stdout, line);
-        }
-      }
-      writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
-      commandExitState.exitCode = resolveCommandReceiptExitCode(result);
-    });
-
-  program
-    .command('reinstall')
-    .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user')
-    .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--target <agents...>', 'project Agent ID')
-    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
-    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
-    .option('-y, --yes', 'authorize preApply and shared Codex native replacement or forced reinstall', false)
-    .option('-j, --json', 'print receipt as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (
-      plugins: string[],
-      rawOptions: {
-        scope?: string;
-        platform?: string;
-        target?: string[];
-        scriptTimeout?: string;
-        allowManagedCodexInstall?: boolean;
-        yes?: boolean;
-        json?: boolean;
-      } & RawDiagnosticsOptions,
-    ) => {
-      if (rawOptions.scope === 'project') {
-        await runProjectRecoveryAction('reinstall', plugins ?? [], {
-          ...rawOptions, targets: rawOptions.target,
-        });
-        return;
-      }
-      if (rawOptions.target?.length) throw new WriteCommandRequestError('--target is only available with --scope project.');
-      const context = createActionContext('reinstall', rawOptions);
-      const outcome = await runActionWithContext(context, () =>
-        runWriteCommandAction('reinstall', plugins ?? [], rawOptions, context));
-      if (outcome.cancelled) return;
-      const receipt = outcome.result;
-      if (isProjectReceipt(receipt)) {
-        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
-        else renderProjectReceipt(io.stdout, receipt);
-        commandExitState.exitCode = receipt.ok ? 0 : 1;
-        return;
-      }
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, buildRebuildReceiptJson('reinstall', receipt));
-      } else {
-        const lines = renderRebuildReceipt('reinstall', receipt);
-        for (const line of lines) {
-          writeLine(io.stdout, line);
-        }
-      }
-      writeWarnings(io.stderr, receipt.warnings, { actionableOnly: true });
-      commandExitState.exitCode = resolveCommandReceiptExitCode(receipt);
-    });
+  }
 
   const config = program
     .command('config')
@@ -4361,47 +3699,18 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
     });
 
-  program
-    .command('status')
-    .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'filter by scope')
-    .option('-p, --platform <platform>', 'filter by platform')
-    .option('-v, --verbose', 'show status details and command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .option('-j, --json', 'print status as JSON', false)
-    .action(async (
-      plugins: string[],
-      rawOptions: {
-        scope?: string;
-        platform?: string;
-        json?: boolean;
-      } & RawDiagnosticsOptions,
-    ) => {
+  scopedCommand(program.command('status'))
+    .description('Observe declared requirements and extra installations in one scope')
+    .option('--target <agent>', 'observe this Agent; repeat to select more', collectUniqueOption)
+    .action(async (rawOptions: RawRecoveryOptions) => {
       const context = createActionContext('status', rawOptions);
-      const result = await runActionWithContext(
-        context,
-        () => statusCommandV8({
-          plugins: plugins ?? [],
-          cwd,
-          env: context.env,
-          cliVersion: resolveCliVersion(),
-          platform: rawOptions.platform,
-          scope: rawOptions.scope,
-          json: rawOptions.json,
-          verbose: rawOptions.verbose,
-        }),
-      );
-      commandExitState.exitCode = result.hasErrors ? 1 : 0;
-      writeLine(io.stdout, result.output);
-      for (const source of result.payload.catalog.sources) {
-        if (rawOptions.json && source.error) writeLine(io.stderr, `${source.id}: ${source.error}`);
-      }
-      for (const error of result.payload.errors) {
-        if (rawOptions.json && error.code !== 'nativeStateUnreadable' && error.code !== 'stateInventoryFailed') {
-          writeLine(io.stderr, error.message);
-        }
-      }
+      const result = await runActionWithContext(context, () => readRecoveryStatus({
+        scope: recoveryScope(rawOptions), cwd: context.cwd, env: context.env,
+        cliVersion: resolveCliVersion(), targets: recoveryTargets(rawOptions),
+      }));
+      if (rawOptions.json) writeJsonReceipt(io.stdout, result);
+      else renderRecoveryStatus(io.stdout, result);
+      commandExitState.exitCode = result.errors.length ? 1 : 0;
     });
 
   Object.assign(program, { __awCommandExitState: commandExitState });
@@ -4452,12 +3761,8 @@ export async function runCli(
     && ['activate', 'status', 'deactivate'].includes(argv[2] ?? '')
     ? argv[2] as 'activate' | 'status' | 'deactivate'
     : null;
-  const jsonWriteRequest = jsonWriteCommandRequest(argv);
-  const jsonProjectRequest = (argv.includes('--json') || argv.includes('-j') || jsonWriteRequest !== null)
-    ? argv[0] === 'project'
-      ? `project:${argv[1] === 'targets' ? `targets:${argv[2] ?? ''}` : argv[1] ?? ''}`
-      : jsonWriteRequest?.scope === 'project' ? argv[0] : null
-    : null;
+  const recovery = recoveryRequest(argv);
+  const jsonRecoveryRequest = recovery?.json ? recovery : null;
   const jsonConfigMutation = jsonConfigMutationRequest(argv);
 
   try {
@@ -4582,7 +3887,7 @@ export async function runCli(
     }
     let catalogPublicationActionStarted = false;
     let configMutationActionStarted = false;
-    const programIo = jsonCatalogDevCommand || jsonWriteRequest || jsonReviewCommand
+    const programIo = jsonCatalogDevCommand || jsonRecoveryRequest || jsonReviewCommand
       ? { ...io, stderr: () => undefined }
       : jsonConfigMutation
         ? {
@@ -4660,24 +3965,24 @@ export async function runCli(
       }));
       return 1;
     }
-    if (jsonProjectRequest) {
+    if (recovery) {
       if (error instanceof CommanderError && error.exitCode === 0) return 0;
-      if (jsonProjectRequest === 'project:status') {
-        writeJsonReceipt(io.stdout, {
-          schemaVersion: 1, kind: 'aw-project-status', ok: false,
-          intent: { state: 'unreadable' },
-          selection: { agents: [], origin: 'none', preferences: 'unreadable' },
-          inventory: null, allSatisfied: null,
-          errors: [writeCommandFailure(error)],
-        });
-      } else {
-        writeJsonReceipt(io.stdout, projectFailureReceipt(jsonProjectRequest, error));
+      const failure = writeCommandFailure(error);
+      if (argv[0] === 'project' || argv.some((value) => value === '-p' || value === '--platform' || value.startsWith('--platform='))) {
+        failure.message += '\n使用 aw intent、aw targets 或 aw sync/install/reinstall/uninstall/cleanup/status --scope user|project；工具选择使用 --target。';
       }
-      return 1;
-    }
-    if (jsonWriteRequest) {
-      writeCommandFailureReceipt(io.stdout, jsonWriteRequest, error);
-      return 1;
+      if (jsonRecoveryRequest) {
+        if (recovery.command === 'status') writeJsonReceipt(io.stdout, {
+          schemaVersion: 1, kind: 'aw-recovery-status', scope: recovery.scope, ok: false,
+          intent: { state: 'unreadable', roots: null },
+          selection: { agents: [], origin: 'none', preferences: 'unreadable' },
+          inventory: null, extraObserved: [], coverage: null, counts: null, allSatisfied: null,
+          errors: [failure],
+        });
+        else writeJsonReceipt(io.stdout, { ...recoveryFailureReceipt(recovery.command, recovery.scope, error),
+          blockers: [failure], errors: [failure] });
+      } else writeLine(io.stderr, failure.message);
+      return failure.code === 'invalidArguments' ? 2 : 1;
     }
     if (jsonConfigMutation) {
       if (error instanceof CommanderError && error.exitCode === 0) return 0;

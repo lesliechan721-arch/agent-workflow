@@ -25,7 +25,7 @@ describe('console entry', () => {
 
     expect(exitCode).toBe(1);
     expect(captured.readStderr()).toContain('当前运行环境不可交互');
-    expect(captured.readStderr()).toContain('aw status --json');
+    expect(captured.readStderr()).toContain('aw status --scope user --json');
   });
 
   it('launches one V4 controller session, completes through onExit, and disposes ownership once', async () => {

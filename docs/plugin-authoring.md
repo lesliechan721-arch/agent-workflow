@@ -22,7 +22,7 @@
 - `version`：单插件稳定 artifact 版本。
 - `requires.aw.capabilities`：插件显式要求的 AW capability ID；插件版本只标识 artifact。
 
-`aw.project-recovery.v1` 是 CLI 的项目恢复能力。普通插件只要按现有 Manifest 声明 Native 或 `distributions.agentSkills` 交付即可参与解析；只有插件自己的生产内容直接使用新项目恢复命令时，才需声明该 capability。
+`aw.plugin-recovery.v1` 是 CLI 的 User 与 Project 统一恢复能力。普通插件只要按现有 Manifest 声明 Native 或 `distributions.agentSkills` 交付即可参与解析；只有插件自己的生产内容直接调用 `aw intent`、`aw targets` 或带显式 `--scope` 的恢复命令时，才需声明该 capability。旧 `aw.project-recovery.v1` 不再受支持。
 
 字段、类型、required 条件和 accepted values 通过当前 CLI 查询：
 

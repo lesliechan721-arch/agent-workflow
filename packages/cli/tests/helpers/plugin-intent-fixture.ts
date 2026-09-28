@@ -1,49 +1,70 @@
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import { createEmptyIntent, type PluginIntent } from '../../src/intent/intent-codec.js';
+import { observeIntent, writeIntent, type IntentLocation } from '../../src/intent/intent-store.js';
 import {
-  canonicalizePluginIntentState,
-  createEmptyPluginIntentState,
-  readPluginIntentState,
-  writePluginIntentState,
-  type PluginIntentState,
-  type PluginIntentStateLocation,
-} from '../../src/utils/plugin-intent-state.js';
-import { observeProjectIntent, writeProjectIntent } from '../../src/project/project-state.js';
-import { observeProjectPreferences, writeProjectPreferences } from '../../src/project/project-preferences.js';
+  createEmptyPreferences,
+  observePreferences,
+  writePreferences,
+  type AgentId,
+} from '../../src/intent/deployment-preferences.js';
+import type { DependencyScopeOverride } from '../../src/types.js';
 
-/** Build current declarations and local preferences for shared Native test scenarios. */
-export async function writeIntentFixture(location: PluginIntentStateLocation, state: PluginIntentState) {
-  if (location.scope === 'user') return writePluginIntentState(location, state);
+// Tests can specify target Agents beside roots, but the files always use the v3 contract.
+export interface FixtureIntentState {
+  schemaVersion?: number;
+  kind?: string;
+  sources?: PluginIntent['sources'];
+  roots: Array<{ pluginId: string; platforms?: readonly string[] }>;
+  agents?: readonly AgentId[];
+  dependencyScopeOverrides?: DependencyScopeOverride[];
+  managed?: unknown;
+}
+
+const toAgent = (platform: string): AgentId =>
+  platform === 'claude' ? 'claude-code' : platform as AgentId;
+
+export async function writeIntentFixture(location: IntentLocation, state: FixtureIntentState) {
   const generations = await readCatalogGenerationState(location.env);
   const sources = Object.fromEntries(state.roots.map(({ pluginId }) => {
     const sourceId = pluginId.split('/')[0]!;
-    return [sourceId, { logicalIdentity: generations.sources[sourceId]?.active?.logicalIdentity ?? `fixture-${sourceId}` }];
+    return [sourceId, state.sources?.[sourceId] ?? {
+      logicalIdentity: generations.sources[sourceId]?.active?.logicalIdentity ?? `fixture-${sourceId}`,
+    }];
   }));
-  await writeProjectIntent(location, {
-    schemaVersion: 3, kind: 'aw-plugin-intents', sources,
+  const intent = {
+    ...createEmptyIntent(),
+    sources,
     roots: state.roots.map(({ pluginId }) => ({ pluginId })),
+  };
+  const agents = [...new Set(state.agents ?? state.roots.flatMap((root) =>
+    (root.platforms ?? []).map(toAgent)))];
+  const written = await writeIntent(location, intent);
+  await writePreferences(location, {
+    ...createEmptyPreferences(),
+    agents,
+    dependencyScopeOverrides: state.dependencyScopeOverrides ?? [],
   });
-  await writeProjectPreferences(location, {
-    schemaVersion: 1, kind: 'aw-project-preferences',
-    agents: state.roots.flatMap((root) => root.platforms.map((platform) =>
-      platform === 'claude' ? 'claude-code' as const : 'codex' as const)),
-    dependencyScopeOverrides: state.dependencyScopeOverrides,
-  });
-  return canonicalizePluginIntentState(state);
+  return written.value;
 }
 
-export async function readIntentFixture(location: PluginIntentStateLocation): Promise<PluginIntentState> {
-  if (location.scope === 'user') return readPluginIntentState(location);
-  const intent = await observeProjectIntent(location);
-  if (intent.state === 'absent') return createEmptyPluginIntentState();
-  if (intent.state !== 'valid') throw new Error(`Invalid project fixture: ${intent.state}`);
-  const preferences = await observeProjectPreferences(location);
+export async function readIntentFixture(location: IntentLocation): Promise<FixtureIntentState> {
+  const intent = await observeIntent(location);
+  if (intent.state === 'invalid' || intent.state === 'unreadable'
+    || intent.state === 'unsupported-version') {
+    throw new Error(`Invalid fixture intent: ${intent.state}`);
+  }
+  const preferences = await observePreferences(location);
+  if (preferences.state === 'invalid' || preferences.state === 'unreadable') {
+    throw new Error(`Invalid fixture preferences: ${preferences.state}`);
+  }
+  const value = intent.state === 'valid' ? intent.value : createEmptyIntent();
   const agents = preferences.state === 'valid' ? preferences.value.agents : [];
-  return canonicalizePluginIntentState({
-    ...createEmptyPluginIntentState(),
-    roots: intent.value.roots.map((root) => ({ ...root,
-      platforms: agents.flatMap((agent) => agent === 'codex' ? ['codex' as const]
-        : agent === 'claude-code' ? ['claude' as const] : []),
+  return {
+    ...value,
+    roots: value.roots.map((root) => ({ ...root,
+      platforms: agents.map((agent) => agent === 'claude-code' ? 'claude' : agent),
     })),
-    dependencyScopeOverrides: preferences.state === 'valid' ? preferences.value.dependencyScopeOverrides : [],
-  });
+    dependencyScopeOverrides: preferences.state === 'valid'
+      ? preferences.value.dependencyScopeOverrides : [],
+  };
 }

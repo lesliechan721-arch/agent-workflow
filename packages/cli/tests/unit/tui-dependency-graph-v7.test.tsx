@@ -178,7 +178,10 @@ class DependencyControllerStub {
     return {
       pluginId, sourceId: pluginId.split('/')[0]!, displayName: item?.displayName ?? relation!.displayName,
       description: item?.description, catalogVersion: item?.version, definitionAvailable: Boolean(item),
-      savedConfigScopes: [], placements: item ? [{
+      savedConfigScopes: [], declarations: {
+        user: { state: 'unobserved' as const, targets: 'unobserved' as const, agents: [] },
+        project: { state: 'unobserved' as const, targets: 'unobserved' as const, agents: [] },
+      }, placements: item ? [{
         platform: 'codex' as const, scope: 'project' as const,
         platformLabel: 'Codex', scopeLabel: '当前项目',
         observation: 'known' as const, declared: true, actual: true,

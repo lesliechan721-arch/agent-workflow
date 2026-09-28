@@ -19,11 +19,8 @@ import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { setAtomicConfigBeforeRenameHookForTests } from '../../src/utils/plugin-config.js';
-import {
-  createEmptyPluginIntentState,
-  upsertPluginIntentRoot,
-  writePluginIntentState,
-} from '../../src/utils/plugin-intent-state.js';
+import { createEmptyIntent, addIntentRoot } from '../../src/intent/intent-codec.js';
+import { writeIntent } from '../../src/intent/intent-store.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -47,14 +44,11 @@ describe('catalog source mutation v6', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     });
-    await writePluginIntentState({
+    await writeIntent({
       scope: 'user',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-      pluginId: 'team/demo',
-      platforms: ['codex'],
-    }));
+    }, addIntentRoot(createEmptyIntent(), 'team/demo', 'team-test'));
 
     const preview = await preflightCatalogSourceMutation({
       request: { action: 'remove', sourceId: 'team' },
@@ -99,11 +93,9 @@ describe('catalog source mutation v6', () => {
       requireImpactConfirmation: true,
       runtime: {
         afterImpactInspected: async () => {
-          await writePluginIntentState({
+          await writeIntent({
             scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-          }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-            pluginId: 'team/demo', platforms: ['codex'],
-          }));
+          }, addIntentRoot(createEmptyIntent(), 'team/demo', 'team-test'));
         },
       },
     })).rejects.toMatchObject({ code: 'catalogSourceImpactConfirmationRequired' });
@@ -124,11 +116,9 @@ describe('catalog source mutation v6', () => {
       cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     });
     const addReference = async () => {
-      await writePluginIntentState({
+      await writeIntent({
         scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-        pluginId: 'team/demo', platforms: ['codex'],
-      }));
+      }, addIntentRoot(createEmptyIntent(), 'team/demo', 'team-test'));
     };
     const removePreview = await preflightCatalogSourceMutation({
       request: { action: 'remove', sourceId: 'team' },
@@ -146,9 +136,9 @@ describe('catalog source mutation v6', () => {
         id: 'team', path: expect.stringContaining('reviewed-impact-first'),
       });
 
-    await writePluginIntentState({
+    await writeIntent({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    }, createEmptyPluginIntentState());
+    }, createEmptyIntent());
     const updatePreview = await preflightCatalogSourceMutation({
       request: { action: 'update', sourceId: 'team', update: { type: 'path', path: second } },
       cwd: isolation.layout.fixtureCwd,

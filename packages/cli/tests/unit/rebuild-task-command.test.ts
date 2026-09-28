@@ -4,8 +4,6 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'fs-extra';
 
 import {
-  runRebuildCommand,
-  setRebuildCommandTestHooksForTests,
 } from '../../src/commands/rebuild-command.js';
 import {
   installWriteCommand,
@@ -18,14 +16,12 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
-import { addProjectRequirements } from '../../src/project/project-commands.js';
-import { readNativeIntentProjection } from '../../src/project/project-demand.js';
-import { readPluginIntentState } from '../../src/utils/plugin-intent-state.js';
-import {
-  applyCodexConfigTransactionFile,
-  readCodexConfigFile,
-  removeCodexMarketplace,
-} from '../../src/utils/codex-config.js';
+import { createScopeContext } from '../../src/intent/scope-context.js';
+import { readDemand, demandNativeProjection } from '../../src/recovery/demand.js';
+import { resolveIntentPath } from '../../src/intent/intent-store.js';
+import { resolvePreferencesPath } from '../../src/intent/deployment-preferences.js';
+import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
+import { git } from '../helpers/catalog-source-fixture.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -36,6 +32,7 @@ async function configureTaskCatalog(): Promise<{
 }> {
   const isolation = getCurrentSourceTestIsolation();
   const root = path.join(isolation.layout.fixtureCwd, 'rebuild-task-source');
+  await git(isolation.layout.fixtureCwd, ['init', '--quiet']);
   await createDependencyCatalogSnapshotFixture(root, [
     { name: 'alpha' },
     { name: 'beta' },
@@ -128,94 +125,6 @@ async function configureTaskCatalog(): Promise<{
   return { cwd: isolation.layout.fixtureCwd, env: isolation.env };
 }
 
-function createCodexNativeRunner(cwd: string, env: NodeJS.ProcessEnv) {
-  const installed = new Set<string>();
-  const installedVersions = new Map<string, string>();
-  const marketplaceRoots = new Map<string, string>();
-  const userConfigPath = path.join(env.AW_CODEX_HOME!, 'config.toml');
-  return vi.fn(async (invocation: NativeCliInvocation) => {
-    const args = invocation.args;
-    if (args.includes('--version')) {
-      return { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' };
-    }
-    const pluginIndex = args.indexOf('plugin');
-    const pluginArgs = pluginIndex >= 0 ? args.slice(pluginIndex) : args;
-    if (pluginArgs[1] === 'marketplace' && pluginArgs[2] === 'add') {
-      const marketplaceRoot = pluginArgs[3]!;
-      const config = await fs.readJson(path.join(marketplaceRoot, 'config.json')) as {
-        marketplaceName: string;
-      };
-      marketplaceRoots.set(config.marketplaceName, marketplaceRoot);
-      const current = await fs.readFile(userConfigPath, 'utf8').catch(() => '');
-      if (!(await readCodexConfigFile(userConfigPath)).snapshot.marketplaces[config.marketplaceName]) {
-        await fs.outputFile(userConfigPath, [
-          current,
-          `[marketplaces.${JSON.stringify(config.marketplaceName)}]`,
-          `source = ${JSON.stringify(marketplaceRoot)}`,
-          'source_type = "local"',
-          '',
-        ].filter(Boolean).join('\n'));
-      }
-    } else if (pluginArgs[1] === 'marketplace' && pluginArgs[2] === 'remove') {
-      const marketplaceName = pluginArgs[3]!;
-      marketplaceRoots.delete(marketplaceName);
-      const current = await fs.readFile(userConfigPath, 'utf8').catch(() => '');
-      await fs.outputFile(userConfigPath, removeCodexMarketplace(current, marketplaceName));
-    } else if (pluginArgs[1] === 'add') {
-      const pluginId = pluginArgs[2]!;
-      const separator = pluginId.lastIndexOf('@');
-      const pluginName = pluginId.slice(0, separator);
-      const marketplaceName = pluginId.slice(separator + 1);
-      installed.add(pluginId);
-      const marketplacePluginRoot = path.join(
-        marketplaceRoots.get(marketplaceName)!,
-        'plugins',
-        pluginName,
-      );
-      const pluginVersion = String((await fs.readJson(path.join(
-        marketplacePluginRoot,
-        '.agents-plugin',
-        'plugin.json',
-      ))).version);
-      installedVersions.set(pluginId, pluginVersion);
-      await fs.copy(marketplacePluginRoot, path.join(
-        env.AW_CODEX_HOME!,
-        'plugins',
-        'cache',
-        marketplaceName,
-        pluginName,
-        pluginVersion,
-      ), { overwrite: true });
-      await applyCodexConfigTransactionFile(userConfigPath, {
-        upsertPluginActivations: { [pluginId]: true },
-      });
-    }
-    if (pluginArgs[1] === 'list' && pluginArgs.includes('--json')) {
-      const [user, project] = await Promise.all([
-        readCodexConfigFile(userConfigPath),
-        readCodexConfigFile(path.join(cwd, '.codex', 'config.toml')),
-      ]);
-      const marketplaceName = pluginArgs[pluginArgs.indexOf('--marketplace') + 1];
-      return {
-        exitCode: 0,
-        stdout: JSON.stringify({
-          installed: [...installed].filter((pluginId) =>
-            pluginId.endsWith(`@${marketplaceName}`)).map((pluginId) => ({
-            pluginId,
-            installed: true,
-            enabled: user.snapshot.plugins[pluginId]?.enabled === true
-              || project.snapshot.plugins[pluginId]?.enabled === true,
-            version: installedVersions.get(pluginId) ?? '1.0.0',
-          })),
-          available: [],
-        }),
-        stderr: '',
-      };
-    }
-    return { exitCode: 0, stdout: '', stderr: '' };
-  });
-}
-
 function createClaudeNativeRunner(cwd: string, env: NodeJS.ProcessEnv) {
   const marketplaceRoots = new Map<string, string>();
   return vi.fn(async (invocation: NativeCliInvocation) => {
@@ -300,330 +209,146 @@ function createClaudeNativeRunner(cwd: string, env: NodeJS.ProcessEnv) {
   });
 }
 
-describe('rebuild task command', () => {
-  it('keeps mixed root methods and scopes in one plan and one execution', async () => {
+async function withExecutionInput<T>(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  scope: 'user' | 'project';
+  selectedTargets: Array<{ pluginId: string; platform: 'codex' | 'claude'; scope: 'user' | 'project' }>;
+}, run: (input: NonNullable<NonNullable<Parameters<typeof taskWriteCommand>[2]>['executionInput']>) => Promise<T>): Promise<T> {
+  const context = await createScopeContext({ scope: options.scope, cwd: options.cwd, env: options.env });
+  try {
+    const demand = await readDemand({ scope: options.scope, cwd: context.executionCwd, env: context.env });
+    return await run({ context, requirements: demandNativeProjection(demand),
+      selectedTargets: options.selectedTargets, preserveOtherObservedTargets: true });
+  } finally { await context.dispose(); }
+}
+
+describe('Native rebuild task execution input', () => {
+  it('requires an explicit scope context and complete demand before any native write', async () => {
     const { cwd, env } = await configureTaskCatalog();
-    const targets = [
-      { pluginId: 'team/alpha', platform: 'claude', scope: 'user', method: 'sync' },
-      { pluginId: 'team/beta', platform: 'claude', scope: 'project', method: 'reinstall' },
-    ] as const;
-    const runtime = {
-      env,
-      nativeCliRunner: vi.fn(async () => ({
-        exitCode: 0,
-        stdout: 'claude 99.0.0',
-        stderr: '',
-      })),
-    };
-
-    const preview = await taskWriteCommand(targets, { cwd }, {
-      ...runtime,
-      previewOperationPlan: true,
-    });
-
-    expect(preview.operationPlan, JSON.stringify(preview.targetResults)).toBeDefined();
-    expect(preview.dependencyPlan?.targets).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        pluginId: 'team/alpha', platform: 'claude', requestedScope: 'user', action: 'install',
-      }),
-      expect.objectContaining({
-        pluginId: 'team/beta', platform: 'claude', requestedScope: 'project', action: 'reinstall',
-      }),
-    ]));
-
-    const built = vi.fn();
-    setRebuildCommandTestHooksForTests({ afterTargetBuilt: built });
-    const executed = await taskWriteCommand(targets, { cwd }, runtime);
-    setRebuildCommandTestHooksForTests(undefined);
-
-    expect(executed.operationPlan).toBeDefined();
-    expect(executed.rebuildResults.map((result) => result.target)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'team/alpha', scope: 'user' }),
-      expect.objectContaining({ pluginId: 'team/beta', scope: 'project' }),
-    ]));
-    expect(built).toHaveBeenCalledTimes(2);
-    expect(built.mock.calls.map(([call]) => ({
-      command: call.command,
-      pluginId: call.identity.pluginId,
-      scope: call.identity.scope,
-    }))).toEqual([
-      { command: 'sync', pluginId: 'team/alpha', scope: 'user' },
-      { command: 'reinstall', pluginId: 'team/beta', scope: 'project' },
-    ]);
+    const result = await taskWriteCommand([
+      { pluginId: 'team/alpha', platform: 'claude', scope: 'project', method: 'sync' },
+    ], { cwd }, { env, nativeCliRunner: createClaudeNativeRunner(cwd, env) });
+    expect(result).toMatchObject({ overallState: 'failed', targetResults: [
+      expect.objectContaining({ errorCode: 'nativeExecutionInputRequired', state: 'failed' }),
+    ] });
   });
 
-  it('keeps the public sync writer behavior', async () => {
+  // Test Value Gate: selecting one root cannot make another declared root an execution target.
+  it('plans only an exact selected root and keeps independent declaration bytes', async () => {
     const { cwd, env } = await configureTaskCatalog();
-    const result = await syncWriteCommand(['team/alpha'], {
-      cwd,
-      platform: 'claude',
-      scope: 'project',
-    }, {
-      env,
-      previewOperationPlan: true,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'claude 99.0.0', stderr: '' }),
+    await writeIntentFixture({ scope: 'project', cwd, env }, {
+      roots: [{ pluginId: 'team/alpha', platforms: ['claude'] },
+        { pluginId: 'team/beta', platforms: ['claude'] }],
     });
-
-    expect(result.operationPlan, JSON.stringify(result.targetResults)).toBeDefined();
+    const intentPath = await resolveIntentPath({ scope: 'project', cwd, env });
+    const preferencesPath = await resolvePreferencesPath({ scope: 'project', cwd, env });
+    const before = await Promise.all([fs.readFile(intentPath), fs.readFile(preferencesPath)]);
+    const selected = [{ pluginId: 'team/alpha', platform: 'claude' as const, scope: 'project' as const }];
+    const result = await withExecutionInput({ cwd, env, scope: 'project', selectedTargets: selected },
+      (executionInput) => taskWriteCommand([
+        { ...selected[0]!, method: 'sync' },
+      ], { cwd }, { env, executionInput, previewOperationPlan: true,
+        nativeCliRunner: createClaudeNativeRunner(cwd, env) }));
     expect(result.dependencyPlan?.targets).toEqual([
-      expect.objectContaining({
-        pluginId: 'team/alpha', platform: 'claude', resolvedScope: 'project', action: 'install',
-      }),
+      expect.objectContaining({ pluginId: 'team/alpha', requestedScope: 'project', action: 'install' }),
     ]);
+    expect(result.targetResults.every((entry) => entry.target.pluginId !== 'team/beta')).toBe(true);
+    expect(await Promise.all([fs.readFile(intentPath), fs.readFile(preferencesPath)])).toEqual(before);
   });
 
-  it('keeps two scopes for the same plugin as exact roots', async () => {
+  it('repairs an exact dependency without widening the root method', async () => {
     const { cwd, env } = await configureTaskCatalog();
-    const result = await taskWriteCommand([
-      { pluginId: 'team/alpha', platform: 'claude', scope: 'user', method: 'sync' },
-      { pluginId: 'team/alpha', platform: 'claude', scope: 'project', method: 'reinstall' },
-    ], { cwd }, {
-      env,
-      previewOperationPlan: true,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'claude 99.0.0', stderr: '' }),
+    await writeIntentFixture({ scope: 'project', cwd, env }, {
+      roots: [{ pluginId: 'team/root', platforms: ['claude'] }],
     });
-
-    expect(result.operationPlan, JSON.stringify(result.targetResults)).toBeDefined();
-    expect(result.dependencyPlan?.targets.map((target) => ({
-      pluginId: target.pluginId,
-      scope: target.requestedScope,
-      action: target.action,
-    }))).toEqual([
-      { pluginId: 'team/alpha', scope: 'project', action: 'reinstall' },
-      { pluginId: 'team/alpha', scope: 'user', action: 'install' },
-    ]);
-  });
-
-  it('applies a dependency repair override without widening the root method', async () => {
-    const { cwd, env } = await configureTaskCatalog();
-    const result = await taskWriteCommand([
-      { pluginId: 'team/root', platform: 'claude', scope: 'project', method: 'sync' },
-    ], {
-      cwd,
-      repairTargets: [
+    const selected = [{ pluginId: 'team/root', platform: 'claude' as const, scope: 'project' as const }];
+    const result = await withExecutionInput({ cwd, env, scope: 'project', selectedTargets: selected },
+      (executionInput) => taskWriteCommand([
+        { ...selected[0]!, method: 'sync' },
+      ], { cwd, repairTargets: [
         { pluginId: 'team/alpha', platform: 'claude', scope: 'project', method: 'reinstall' },
-      ],
-    }, {
-      env,
-      previewOperationPlan: true,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'claude 99.0.0', stderr: '' }),
-    });
-
-    expect(result.operationPlan, JSON.stringify(result.targetResults)).toBeDefined();
+      ] }, { env, executionInput, previewOperationPlan: true,
+        nativeCliRunner: createClaudeNativeRunner(cwd, env) }));
     expect(result.dependencyPlan?.targets).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        pluginId: 'team/alpha', relation: 'dependency', action: 'reinstall',
-      }),
-      expect.objectContaining({
-        pluginId: 'team/root', relation: 'requested', action: 'install',
-      }),
+      expect.objectContaining({ pluginId: 'team/alpha', relation: 'dependency', action: 'reinstall' }),
+      expect.objectContaining({ pluginId: 'team/root', relation: 'requested', action: 'install' }),
     ]));
   });
 
-  it('blocks the matching consumer when dependency execution fails', async () => {
+  it('blocks only the consumer whose dependency execution fails', async () => {
     const { cwd, env } = await configureTaskCatalog();
-    const result = await taskWriteCommand([
-      { pluginId: 'team/consumer', platform: 'claude', scope: 'project', method: 'sync' },
-    ], { cwd, yes: true }, {
-      env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'claude 99.0.0', stderr: '' }),
+    await writeIntentFixture({ scope: 'project', cwd, env }, {
+      roots: [{ pluginId: 'team/consumer', platforms: ['claude'] }],
     });
-
+    const selected = [{ pluginId: 'team/consumer', platform: 'claude' as const, scope: 'project' as const }];
+    const result = await withExecutionInput({ cwd, env, scope: 'project', selectedTargets: selected },
+      (executionInput) => taskWriteCommand([
+        { ...selected[0]!, method: 'sync' },
+      ], { cwd, yes: true }, { env, executionInput,
+        nativeCliRunner: createClaudeNativeRunner(cwd, env) }));
     expect(result.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        target: expect.objectContaining({ pluginId: 'team/broken', scope: 'project' }),
-        state: 'failed',
-      }),
-      expect.objectContaining({
-        target: expect.objectContaining({ pluginId: 'team/consumer', scope: 'project' }),
-        action: 'skipped',
-        errorCode: 'dependencyInstallFailed',
-      }),
+      expect.objectContaining({ target: expect.objectContaining({ pluginId: 'team/broken' }), state: 'failed' }),
+      expect.objectContaining({ target: expect.objectContaining({ pluginId: 'team/consumer' }),
+        action: 'skipped', errorCode: 'dependencyInstallFailed' }),
     ]));
   });
 
-  it('does not share Codex failure state between exact scopes', async () => {
+  // Test Value Gate: a selected dependency is executed once even when another selected root requires it.
+  it('promotes a requested dependency to one exact root execution', async () => {
     const { cwd, env } = await configureTaskCatalog();
-    const nativeCliRunner = createCodexNativeRunner(cwd, env);
-    const codexManagerResolver = async () => ({
-      kind: 'system' as const,
-      version: '0.200.0',
-      command: 'codex',
-      argsPrefix: [] as string[],
+    await writeIntentFixture({ scope: 'project', cwd, env }, {
+      roots: [{ pluginId: 'team/a', platforms: ['claude'] },
+        { pluginId: 'team/z', platforms: ['claude'] }],
     });
-    const installed = await taskWriteCommand([
-      { pluginId: 'team/native', platform: 'codex', scope: 'user', method: 'sync' },
-    ], { cwd, yes: true }, { env, nativeCliRunner, codexManagerResolver });
-    expect(installed.overallState, JSON.stringify(installed.targetResults)).toBe('succeeded');
-    expect(nativeCliRunner.mock.calls.some(([invocation]) =>
-      invocation.args.includes('add')), JSON.stringify(nativeCliRunner.mock.calls)).toBe(true);
-    const installedConfig = await readCodexConfigFile(path.join(env.AW_CODEX_HOME!, 'config.toml'));
-    const codexPluginId = Object.keys(installedConfig.snapshot.plugins)[0]!;
-    expect(codexPluginId).toBeDefined();
-    await applyCodexConfigTransactionFile(path.join(env.AW_CODEX_HOME!, 'config.toml'), {
-      removePluginActivations: [codexPluginId],
-    });
-    nativeCliRunner.mockClear();
-    setRebuildCommandTestHooksForTests({
-      afterTargetBuilt: async ({ identity }) => {
-        if (identity.pluginId === 'team/native' && identity.scope === 'user') {
-          throw new Error('user scope preparation failed');
-        }
-      },
-    });
-    const result = await taskWriteCommand([
-      { pluginId: 'team/native', platform: 'codex', scope: 'user', method: 'sync' },
-      { pluginId: 'team/native', platform: 'codex', scope: 'project', method: 'sync' },
-    ], { cwd, yes: true }, {
-      env,
-      nativeCliRunner,
-      codexManagerResolver,
-    });
-    setRebuildCommandTestHooksForTests(undefined);
-
-    expect(result.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        target: expect.objectContaining({ pluginId: 'team/native', scope: 'user' }),
-        state: 'failed',
-      }),
-      expect.objectContaining({
-        target: expect.objectContaining({ pluginId: 'team/native', scope: 'project' }),
-        state: 'completed',
-      }),
-    ]));
-    const [userConfig, projectConfig] = await Promise.all([
-      readCodexConfigFile(path.join(env.AW_CODEX_HOME!, 'config.toml')),
-      readCodexConfigFile(path.join(cwd, '.codex', 'config.toml')),
-    ]);
-    expect(userConfig.snapshot.plugins[codexPluginId]).toBeUndefined();
-    expect(projectConfig.snapshot.plugins[codexPluginId]?.enabled).toBe(true);
-    expect(nativeCliRunner.mock.calls.filter(([invocation]) =>
-      invocation.args.includes('--json') && invocation.args.includes('list')).length).toBeGreaterThan(1);
-  });
-
-  it('keeps ordinary install, sync, and reinstall intent state', async () => {
-    const { cwd, env } = await configureTaskCatalog();
-    await addProjectRequirements({ cwd, env, selectors: ['team/alpha'] });
-    const requirements = await readNativeIntentProjection({ cwd, env });
-    const runtime = {
-      env,
-      projectExecution: { requirements, selectedTargets: [{ pluginId: 'team/alpha', platform: 'codex' as const, scope: 'project' as const }] },
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
-    };
-    await installWriteCommand(['team/alpha'], {
-      cwd, platform: 'codex', scope: 'project',
-    }, runtime);
-    await syncWriteCommand(['team/alpha'], {
-      cwd, platform: 'codex', scope: 'project',
-    }, runtime);
-    await reinstallWriteCommand(['team/alpha'], {
-      cwd, platform: 'codex', scope: 'project',
-    }, runtime);
-
-    await expect(readNativeIntentProjection({ cwd, env })).resolves.toEqual(requirements);
-  });
-
-  it('round-trips mixed Codex task scopes through intent and sync all', async () => {
-    const { cwd, env } = await configureTaskCatalog();
-    await addProjectRequirements({ cwd, env, selectors: ['team/beta'] });
-    const projectRequirements = await readNativeIntentProjection({ cwd, env });
-    const nativeCliRunner = async () => ({
-      exitCode: 0,
-      stdout: 'codex-cli 99.0.0',
-      stderr: '',
-    });
-    await taskWriteCommand([
-      { pluginId: 'team/alpha', platform: 'codex', scope: 'user', method: 'sync' },
-      { pluginId: 'team/beta', platform: 'codex', scope: 'project', method: 'sync' },
-    ], { cwd }, { env, nativeCliRunner, projectRequirements });
-
-    const [userIntent, projectIntent] = await Promise.all([
-      readPluginIntentState({ cwd, scope: 'user', env }),
-      readNativeIntentProjection({ cwd, env }),
-    ]);
-    expect(userIntent.roots).toContainEqual({ pluginId: 'team/alpha', platforms: ['codex'] });
-    expect(projectIntent).toEqual(projectRequirements);
-
-    const [syncedUser, syncedProject] = await Promise.all((['user', 'project'] as const)
-      .map((scope) => runRebuildCommand({
-        command: 'sync',
-        pluginNames: [],
-        all: true,
-        commandOptions: { cwd, platform: 'codex', scope },
-        runtime: { env, nativeCliRunner, previewOperationPlan: true },
-      })));
-    expect(syncedUser.dependencyPlan?.targets).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'team/alpha', resolvedScope: 'user' }),
-    ]));
-    expect(syncedProject.dependencyPlan?.targets).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'team/beta', resolvedScope: 'project' }),
-    ]));
-  });
-
-  it('promotes an explicitly requested dependency to one exact root execution', async () => {
-    const { cwd, env } = await configureTaskCatalog();
-    const built = vi.fn();
-    setRebuildCommandTestHooksForTests({ afterTargetBuilt: built });
-    const result = await taskWriteCommand([
-      { pluginId: 'team/a', platform: 'claude', scope: 'project', method: 'sync' },
-      { pluginId: 'team/z', platform: 'claude', scope: 'project', method: 'sync' },
-    ], { cwd, yes: true }, {
-      env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'claude 99.0.0', stderr: '' }),
-    });
-    setRebuildCommandTestHooksForTests(undefined);
-
-    expect(built).toHaveBeenCalledTimes(2);
+    const selected = ['team/a', 'team/z'].map((pluginId) => ({
+      pluginId, platform: 'claude' as const, scope: 'project' as const,
+    }));
+    const result = await withExecutionInput({ cwd, env, scope: 'project', selectedTargets: selected },
+      (executionInput) => taskWriteCommand(selected.map((target) => ({ ...target, method: 'sync' })),
+        { cwd, yes: true }, { env, executionInput,
+          nativeCliRunner: createClaudeNativeRunner(cwd, env) }));
     expect(result.dependencyPlan?.targets.find((target) => target.pluginId === 'team/z'))
-      .toEqual(expect.objectContaining({
-        relation: 'requested',
-        requestedScope: 'project',
-      }));
-    expect(result.rebuildResults.filter((entry) => entry.target.pluginId === 'team/z'))
-      .toHaveLength(1);
+      .toEqual(expect.objectContaining({ relation: 'requested', requestedScope: 'project' }));
+    expect(result.targetResults.some((entry) => entry.target.pluginId === 'team/z'
+      && entry.state === 'completed')).toBe(true);
     await expect(fs.readFile(path.join(env.AW_HOME!, 'z-pre-apply-count.txt'), 'utf8'))
       .resolves.toBe('1');
   });
 
-  it('normalizes duplicate dependency repair scopes to one placement', async () => {
+  it('rejects a mixed-scope task before mutating either scope', async () => {
     const { cwd, env } = await configureTaskCatalog();
-    const built = vi.fn();
-    setRebuildCommandTestHooksForTests({ afterTargetBuilt: built });
-    const result = await taskWriteCommand([
-      { pluginId: 'team/root', platform: 'claude', scope: 'user', method: 'sync' },
-      { pluginId: 'team/root', platform: 'claude', scope: 'project', method: 'sync' },
-    ], {
-      cwd,
-      yes: true,
-      repairTargets: [
+    const selected = [{ pluginId: 'team/alpha', platform: 'claude' as const,
+      scope: 'project' as const }];
+    const result = await withExecutionInput({ cwd, env, scope: 'project', selectedTargets: selected },
+      (executionInput) => taskWriteCommand([
+        { ...selected[0]!, method: 'sync' },
         { pluginId: 'team/alpha', platform: 'claude', scope: 'user', method: 'reinstall' },
-        { pluginId: 'team/alpha', platform: 'claude', scope: 'project', method: 'reinstall' },
-      ],
-    }, {
-      env,
-      nativeCliRunner: createClaudeNativeRunner(cwd, env),
-    });
-    setRebuildCommandTestHooksForTests(undefined);
-
-    expect(result.dependencyPlan?.targets.filter((target) =>
-      target.pluginId === 'team/alpha')).toEqual([
-      expect.objectContaining({
-        relation: 'dependency',
-        resolvedScope: 'user',
-        action: 'reinstall',
-      }),
-    ]);
-    expect(built.mock.calls.filter(([call]) => call.identity.pluginId === 'team/alpha'))
-      .toHaveLength(1);
+      ], { cwd }, { env, executionInput, nativeCliRunner: createClaudeNativeRunner(cwd, env) }));
+    expect(result.overallState).toBe('failed');
     expect(result.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        target: expect.objectContaining({ pluginId: 'team/root', scope: 'user' }),
-        state: 'completed',
-      }),
-      expect.objectContaining({
-        target: expect.objectContaining({ pluginId: 'team/root', scope: 'project' }),
-        state: 'completed',
-      }),
+      expect.objectContaining({ errorCode: 'nativeExecutionTargetScopeInvalid' }),
     ]));
+    expect(await fs.pathExists(await resolveIntentPath({ scope: 'user', cwd, env }))).toBe(false);
+    expect(await fs.pathExists(await resolveIntentPath({ scope: 'project', cwd, env }))).toBe(false);
+  });
+
+  // Test Value Gate: direct Native execution changes outputs, not strong requirement or preference files.
+  it('leaves strong state unchanged across install, sync and reinstall', async () => {
+    const { cwd, env } = await configureTaskCatalog();
+    await writeIntentFixture({ scope: 'project', cwd, env }, {
+      roots: [{ pluginId: 'team/alpha', platforms: ['claude'] }],
+    });
+    const intentPath = await resolveIntentPath({ scope: 'project', cwd, env });
+    const preferencesPath = await resolvePreferencesPath({ scope: 'project', cwd, env });
+    const before = await Promise.all([fs.readFile(intentPath), fs.readFile(preferencesPath)]);
+    const selected = [{ pluginId: 'team/alpha', platform: 'claude' as const, scope: 'project' as const }];
+    await withExecutionInput({ cwd, env, scope: 'project', selectedTargets: selected }, async (executionInput) => {
+      const runtime = { env, executionInput, nativeCliRunner: createClaudeNativeRunner(cwd, env) };
+      await installWriteCommand(['team/alpha'], { cwd, platform: 'claude', scope: 'project' }, runtime);
+      await syncWriteCommand(['team/alpha'], { cwd, platform: 'claude', scope: 'project' }, runtime);
+      await reinstallWriteCommand(['team/alpha'], { cwd, platform: 'claude', scope: 'project' }, runtime);
+    });
+    expect(await Promise.all([fs.readFile(intentPath), fs.readFile(preferencesPath)])).toEqual(before);
   });
 });

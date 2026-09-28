@@ -743,11 +743,11 @@ describe('pack smoke', () => {
     const capabilities = await execFileAsync(awBin, ['self', 'describe', '--json'], {
       cwd: tempRoot, env: externalAuthoringEnv,
     });
-    expect(JSON.parse(capabilities.stdout).capabilities).toContain('aw.project-recovery.v1');
-    for (const projectCommand of [
-      ['project', '--help'], ['project', 'status', '--help'], ['project', 'targets', 'set', '--help'],
+    expect(JSON.parse(capabilities.stdout).capabilities).toContain('aw.plugin-recovery.v1');
+    for (const recoveryCommand of [
+      ['intent', '--help'], ['status', '--help'], ['targets', 'set', '--help'],
     ]) {
-      await expect(execFileAsync(awBin, projectCommand, {
+      await expect(execFileAsync(awBin, recoveryCommand, {
         cwd: tempRoot, env: externalAuthoringEnv,
       })).resolves.toMatchObject({ stderr: '' });
     }
@@ -808,8 +808,9 @@ describe('pack smoke', () => {
       source: { action: 'added', primary: true },
     });
     const developmentSourceId = developmentSourceReceipt.source.id as string;
+    await execFileAsync('git', ['init'], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
     const projectInstallBeforeTrust = await execFileAsync(awBin, [
-      'install', `${developmentSourceId}/packed-build`, '-p', 'codex', '--scope', 'project', '--json',
+      'install', `${developmentSourceId}/packed-build`, '--target', 'codex', '--scope', 'project', '--json',
     ], {
       cwd: standaloneWorkspace,
       env: externalAuthoringEnv,
@@ -817,7 +818,8 @@ describe('pack smoke', () => {
     });
     expect(JSON.parse(projectInstallBeforeTrust.stdout)).toMatchObject({
       schemaVersion: 1,
-      kind: 'aw-project-recovery',
+      kind: 'aw-recovery',
+      scope: 'project',
       ok: true,
       command: 'install',
       intent: { state: 'valid', roots: [`${developmentSourceId}/packed-build`] },
@@ -843,14 +845,16 @@ describe('pack smoke', () => {
       '',
     ].join('\n'));
     const externalInstall = await execFileAsync(awBin, [
-      'install', `${developmentSourceId}/packed-build`, '-p', 'both', '--scope', 'project', '--json',
+      'install', `${developmentSourceId}/packed-build`, '--target', 'codex', '--target', 'claude-code',
+      '--scope', 'project', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024 }).catch((error: unknown) => {
       const failure = error as { stdout?: string; stderr?: string };
       throw new Error(`Packed project install failed. stdout=${failure.stdout ?? ''} stderr=${failure.stderr ?? ''}`);
     });
     expect(JSON.parse(externalInstall.stdout)).toMatchObject({
       schemaVersion: 1,
-      kind: 'aw-project-recovery',
+      kind: 'aw-recovery',
+      scope: 'project',
       ok: true,
       command: 'install',
       intent: { state: 'valid', roots: [`${developmentSourceId}/packed-build`] },
@@ -916,11 +920,9 @@ describe('pack smoke', () => {
         primaryChange: { fromSourceId: developmentSourceId, toSourceId: 'official' },
         inventoryComplete: true,
         references: expect.arrayContaining([expect.objectContaining({
-          category: 'installation',
           sourceId: developmentSourceId,
           pluginId: `${developmentSourceId}/packed-build`,
           scope: 'project',
-          projectRecord: 'current',
         })]),
         errors: [],
       },
@@ -929,7 +931,6 @@ describe('pack smoke', () => {
     const packedCatalogRemote = path.join(tempRoot, 'packed-catalog.git');
     registerSmokeWritableRoot(packedCatalogRemote, 'packed CLI Catalog publication remote');
     await execFileAsync('git', ['init', '--bare', packedCatalogRemote], { env: process.env });
-    await execFileAsync('git', ['init'], { cwd: standaloneWorkspace, env: process.env });
     await execFileAsync('git', ['add', '.'], { cwd: standaloneWorkspace, env: process.env });
     await execFileAsync('git', [
       '-c', 'user.name=Pack Smoke', '-c', 'user.email=pack-smoke@example.invalid',
@@ -960,7 +961,29 @@ describe('pack smoke', () => {
     const packedConsumerEnv = {
       ...process.env,
       AW_HOME: path.join(tempRoot, 'packed-catalog-consumer-home'),
+      HOME: path.join(tempRoot, 'packed-catalog-consumer-user'),
+      USERPROFILE: path.join(tempRoot, 'packed-catalog-consumer-user'),
+      AW_CODEX_HOME: path.join(tempRoot, 'packed-catalog-consumer-user', '.codex'),
+      CODEX_HOME: path.join(tempRoot, 'packed-catalog-consumer-user', '.codex'),
+      AW_CLAUDE_HOME: path.join(tempRoot, 'packed-catalog-consumer-user', '.claude'),
+      CLAUDE_CONFIG_DIR: path.join(tempRoot, 'packed-catalog-consumer-user', '.claude'),
+      XDG_STATE_HOME: path.join(tempRoot, 'packed-catalog-consumer-user', '.local', 'state'),
     };
+    const projectIntentPath = path.join(standaloneWorkspace, '.agent-workflows', 'plugin-intents.json');
+    const projectIntentBeforeUserRecovery = await fs.readFile(projectIntentPath, 'utf8');
+    for (const removedCommand of [
+      ['project', 'status', '--json'],
+      ['sync', '--all', '--scope', 'user', '--platform', 'both', '--json'],
+    ]) {
+      const failure = await execFileAsync(awBin, removedCommand, {
+        cwd: tempRoot, env: packedConsumerEnv,
+      }).then(() => null, (error: unknown) => error as { code: number; stdout: string });
+      expect(failure?.code).toBe(2);
+      expect(JSON.parse(failure!.stdout)).toMatchObject({
+        kind: 'aw-recovery', ok: false,
+        errors: expect.arrayContaining([expect.objectContaining({ code: 'invalidArguments' })]),
+      });
+    }
     const sourceAdd = await execFileAsync(awBin, [
       'catalog', 'source', 'add', 'packed', '--git', packedCatalogRemote,
       '--ref', 'refs/heads/catalog', '--primary', '--json',
@@ -979,18 +1002,21 @@ describe('pack smoke', () => {
       active: { snapshotDigest: expect.stringMatching(/^sha256:/u) },
     });
     expect(sourceSync.stderr).toBe('');
-    const consumedStatus = await execFileAsync(
-      awBin,
-      ['status', 'packed/packed-build', '--json'],
-      { cwd: tempRoot, env: packedConsumerEnv },
-    ).then(
-      () => null,
-      (error: unknown) => error as { stdout?: string },
-    );
-    expect(consumedStatus).not.toBeNull();
-    expect(JSON.parse(consumedStatus?.stdout ?? '{}')).toMatchObject({
-      catalog: { sources: expect.arrayContaining([expect.objectContaining({ id: 'packed' })]) },
-      targets: expect.arrayContaining([expect.objectContaining({
+    const consumedIntent = await execFileAsync(awBin, [
+      'intent', 'add', 'packed/packed-build', '--scope', 'user', '--json',
+    ], { cwd: tempRoot, env: packedConsumerEnv });
+    expect(JSON.parse(consumedIntent.stdout)).toMatchObject({
+      kind: 'aw-recovery', scope: 'user', ok: true,
+      intent: { roots: ['packed/packed-build'] },
+    });
+    expect(await fs.readFile(projectIntentPath, 'utf8')).toBe(projectIntentBeforeUserRecovery);
+    const consumedStatus = await execFileAsync(awBin, [
+      'status', '--scope', 'user', '--json',
+    ], { cwd: tempRoot, env: packedConsumerEnv });
+    expect(JSON.parse(consumedStatus.stdout)).toMatchObject({
+      schemaVersion: 1, kind: 'aw-recovery-status', scope: 'user',
+      intent: { state: 'valid' },
+      inventory: expect.arrayContaining([expect.objectContaining({
         pluginId: 'packed/packed-build',
       })]),
     });

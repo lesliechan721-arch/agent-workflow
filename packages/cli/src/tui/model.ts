@@ -746,9 +746,10 @@ function parsedScopedUninstallRecovery(
   expectedPlatform: PlatformName,
 ): { pluginId: string; scope: Scope; description: string } | undefined {
   if (recovery.command !== 'uninstall' || !recovery.scope) return undefined;
-  const match = /(?:^|\s)aw uninstall ([^\s]+) --platform (codex|claude) --scope (user|project)(?:，|,|\s|$)/u
+  const match = /(?:^|\s)aw uninstall ([^\s]+) --target (codex|claude-code) --scope (user|project)(?:，|,|\s|$)/u
     .exec(recovery.description);
-  if (!match || match[2] !== expectedPlatform || match[3] !== recovery.scope) return undefined;
+  if (!match || (match[2] === 'claude-code' ? 'claude' : 'codex') !== expectedPlatform
+    || match[3] !== recovery.scope) return undefined;
   return { pluginId: match[1]!, scope: recovery.scope, description: recovery.description };
 }
 

@@ -7,7 +7,7 @@ Decision Kit 先调查可以确认的事实，再按任务范围选择完整塑�
 ## 安装
 
 ```bash
-aw install decision-kit -p both
+aw install decision-kit --scope user --target codex --target claude-code
 ```
 
 ## 包含的 Skill

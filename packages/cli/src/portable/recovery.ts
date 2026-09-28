@@ -4,6 +4,8 @@ import fs from 'fs-extra';
 
 import { withAwHomeMutationLock, type AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
+import type { ScopeContext } from '../intent/scope-context.js';
+import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
 import { materializePortableSkillsToDirectory } from './commands.js';
 import { resolvePortableCatalogBindingInput } from './materializer.js';
 import {
@@ -16,23 +18,26 @@ import {
 import {
   addSkills,
   listInstalledSkills,
-  probeProjectRecoverySkillsCli,
+  probePortableRecoverySkillsCli,
   type InstalledSkillRecord,
 } from './skills-cli.js';
+import { portableRecoveryLayout, type PortableAgent } from './recovery-layout.js';
+import { observeProviderLock } from './provider-lock-observation.js';
 
-export type PortableProjectAgent = 'codex' | 'cursor' | 'claude-code';
-export interface PortableProjectRecoveryOptions {
+export type { PortableAgent } from './recovery-layout.js';
+export interface PortableRecoveryOptions {
+  scope: 'user' | 'project';
+  context: ScopeContext;
   selector: string;
-  cwd: string;
   cliVersion: string;
-  agents: PortableProjectAgent[];
+  agents: PortableAgent[];
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   catalogOperationContext?: CatalogOperationContext;
 }
-export interface PortableProjectTarget {
+export interface PortableTarget {
   skill: string;
-  agent: PortableProjectAgent;
+  agent: PortableAgent;
   physicalPath: string;
   providerPluginId: string;
   expectedDigest: string;
@@ -45,28 +50,29 @@ export interface PortableProjectTarget {
   blocker?: string;
 }
 /** skills@1.5.23 installer sanitizeName, verified by the provider qualification. */
-export function normalizeProjectPortableSkillName(name: string): string {
+export function normalizePortableSkillName(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9._]+/gu, '-')
     .replace(/^[.\-]+|[.\-]+$/gu, '').substring(0, 255) || 'unnamed-skill';
 }
-export interface PortableProjectPreparation {
-  options: PortableProjectRecoveryOptions;
+export interface PortablePreparation {
+  options: PortableRecoveryOptions;
   root: string;
   generation: string;
   logicalIdentity: string;
-  targets: PortableProjectTarget[];
+  targets: PortableTarget[];
   blockers: string[];
   globalBlockers: string[];
   evidenceDigest: string;
   bindingDigest?: string;
   lockEntries?: Record<string, unknown>;
+  lockDigest?: string;
 }
-export interface PortableProjectExecutionTarget extends PortableProjectTarget {
+export interface PortableExecutionTarget extends PortableTarget {
   execution: 'not-run' | 'no-op' | 'applied' | 'failed';
   blockers: string[];
 }
-export interface PortableProjectExecution {
-  targets: PortableProjectExecutionTarget[];
+export interface PortableExecution {
+  targets: PortableExecutionTarget[];
   blockers: string[];
   globalBlockers: string[];
   execution: 'not-run' | 'no-op' | 'applied' | 'partial' | 'failed';
@@ -79,8 +85,8 @@ interface CompletedPortableFootprint {
   logicalIdentity: string;
 }
 
-function targetPath(cwd: string, agent: PortableProjectAgent, skill: string): string {
-  return path.join(cwd, agent === 'claude-code' ? '.claude' : '.agents', 'skills', normalizeProjectPortableSkillName(skill));
+function targetPath(options: PortableRecoveryOptions, agent: PortableAgent, skill: string): string {
+  return portableRecoveryLayout(options.context).targetPath(agent, normalizePortableSkillName(skill));
 }
 
 async function providerPreservesTree(root: string): Promise<boolean> {
@@ -95,45 +101,55 @@ function agentName(agent: string): string {
   return agent.trim().toLowerCase().replace(/\s+/gu, '-');
 }
 
-async function providerLock(cwd: string): Promise<Record<string, unknown>> {
-  const filename = path.join(cwd, 'skills-lock.json');
-  if (!await assertPortablePath(cwd, filename)) return {};
-  const info = await fs.lstat(filename);
-  if (!info.isFile()) throw new Error('portableProviderLockInvalid');
-  const value = await fs.readJson(filename).catch(() => { throw new Error('portableProviderLockInvalid'); }) as Record<string, unknown>;
-  if (!value || value.version !== 1 || !value.skills || typeof value.skills !== 'object'
-    || Array.isArray(value.skills) || Object.keys(value).some((key) => !['version', 'skills'].includes(key))) {
-    throw new Error('portableProviderLockInvalid');
-  }
-  for (const row of Object.values(value.skills)) {
-    if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error('portableProviderLockInvalid');
-    const entry = row as Record<string, unknown>;
-    if (['source', 'sourceType', 'computedHash'].some((key) => typeof entry[key] !== 'string')
-      || ['sourceUrl', 'ref', 'skillPath', 'wellKnownDigest'].some((key) => entry[key] !== undefined && typeof entry[key] !== 'string')
-      || (entry.subagents !== undefined && (!Array.isArray(entry.subagents) || entry.subagents.some((item) => typeof item !== 'string')))
-      || Object.keys(entry).some((key) => !['source', 'sourceType', 'computedHash', 'sourceUrl', 'ref', 'skillPath', 'wellKnownDigest', 'subagents'].includes(key))) {
-      throw new Error('portableProviderLockInvalid');
-    }
-  }
-  return value.skills as Record<string, unknown>;
+async function providerLock(options: PortableRecoveryOptions): ReturnType<typeof observeProviderLock> {
+  return observeProviderLock(portableRecoveryLayout(options.context));
 }
 
-async function observeTarget(options: PortableProjectRecoveryOptions, materialization: HistoricalPortableMaterialization,
-  target: PortableProjectTarget, records: InstalledSkillRecord[] | undefined): Promise<PortableProjectTarget> {
+async function outputPathExists(target: string): Promise<boolean> {
+  return assertPortablePath(path.parse(target).root, target);
+}
+
+async function qualifiedRecordPath(options: PortableRecoveryOptions,
+  skill: string, recordPath: string | undefined): Promise<string | undefined> {
+  if (!recordPath || !path.isAbsolute(recordPath)) return undefined;
+  const layout = portableRecoveryLayout(options.context);
+  const name = normalizePortableSkillName(skill);
+  const canonical = [layout.targetPath('codex', name), layout.targetPath('claude-code', name)];
+  const raw = options.scope === 'user' ? [
+    path.join(options.context.env.HOME!, '.agents', 'skills', name),
+    path.join(options.context.env.CLAUDE_CONFIG_DIR || path.join(options.context.env.HOME!, '.claude'), 'skills', name),
+  ] : canonical;
+  if (![...raw, ...canonical].some((candidate) => path.resolve(candidate) === path.resolve(recordPath))) return undefined;
+  const resolved = await canonicalizePathThroughExistingAncestor(recordPath);
+  return canonical.includes(resolved) && await outputPathExists(resolved) ? resolved : undefined;
+}
+
+async function oldMaterialization(options: PortableRecoveryOptions,
+  source: string | null | undefined): Promise<HistoricalPortableMaterialization | undefined> {
+  const generationRoot = options.context.generationRoot;
+  if (source && path.isAbsolute(source)) {
+    try { return await readHistoricalPortableMaterialization({ generationRoot, scope: options.scope, rootDir: source }); }
+    catch { return undefined; }
+  }
+  return undefined;
+}
+
+async function observeTarget(options: PortableRecoveryOptions, materialization: HistoricalPortableMaterialization,
+  target: PortableTarget, records: InstalledSkillRecord[] | undefined): Promise<PortableTarget> {
   if (!records) return { ...target, blocker: 'portableSkillsCliVerificationFailed' };
   try {
-    const exists = await assertPortablePath(options.cwd, target.physicalPath);
+    const exists = await outputPathExists(target.physicalPath);
     const matches = records.filter((record) => record.name === target.skill);
     if (!exists && matches.length === 0) return { ...target, observation: 'absent' };
     if (matches.length !== 1) return { ...target, blocker: 'portableTargetAssociationUnknown' };
     const record = matches[0]!;
-    const paths = new Set(options.agents.map((agent) => targetPath(options.cwd, agent, target.skill)));
-    paths.add(targetPath(options.cwd, 'codex', target.skill));
-    paths.add(targetPath(options.cwd, 'claude-code', target.skill));
-    if (record.scope !== 'project' || !record.path || !paths.has(record.path)) {
+    const recordPath = await qualifiedRecordPath(options, target.skill, record.path);
+    const paths = new Set(options.agents.map((agent) => targetPath(options, agent, target.skill)));
+    paths.add(targetPath(options, 'codex', target.skill));
+    paths.add(targetPath(options, 'claude-code', target.skill));
+    if (record.scope !== (options.scope === 'user' ? 'global' : 'project') || !recordPath || !paths.has(recordPath)) {
       return { ...target, blocker: 'portableTargetAssociationUnknown' };
     }
-    if (!await assertPortablePath(options.cwd, record.path)) return { ...target, blocker: 'portableTargetAssociationUnknown' };
     const associated = record.agents.some((agent) => agentName(agent) === target.agent);
     if (!exists && !associated && record.agents.length > 0
       && record.agents.every((agent) => ['codex', 'cursor', 'claude-code'].includes(agentName(agent)))) {
@@ -144,13 +160,7 @@ async function observeTarget(options: PortableProjectRecoveryOptions, materializ
     const installedDigest = await portableSkillTreeDigest(target.physicalPath);
     const observed = { ...target, installedDigest, associatedAgents: record.agents,
       ...(typeof record.source === 'string' ? { sourcePath: record.source } : {}) };
-    let old: HistoricalPortableMaterialization | undefined;
-    if (typeof record.source === 'string' && path.isAbsolute(record.source)) {
-      try {
-        old = await readHistoricalPortableMaterialization({ projectRoot: options.cwd,
-          rootDir: record.source });
-      } catch { /* Missing or invalid old evidence grants no overwrite permission. */ }
-    }
+    const old = await oldMaterialization(options, record.source);
     const oldSkill = old?.marker.selectedSkills.find((candidate) => candidate.name === target.skill);
     if (old && (old.binding.source.kind !== 'catalog-snapshot'
       || materialization.binding.source.kind !== 'catalog-snapshot'
@@ -171,32 +181,34 @@ async function observeTarget(options: PortableProjectRecoveryOptions, materializ
   }
 }
 
-async function collectPreparation(options: PortableProjectRecoveryOptions, allowMaterialize: boolean): Promise<PortableProjectPreparation> {
-  const cwd = await fs.realpath(options.cwd);
-  options = { ...options, cwd };
-  const bindingInput = await resolvePortableCatalogBindingInput({ ...options, scope: 'project' });
+async function collectPreparation(options: PortableRecoveryOptions, allowMaterialize: boolean): Promise<PortablePreparation> {
+  options = { ...options, env: options.context.env };
+  const layout = portableRecoveryLayout(options.context);
+  if (options.scope !== layout.scope) throw new Error('portableEnvironmentUnsupported');
+  const cwd = layout.cwd;
+  const bindingInput = await resolvePortableCatalogBindingInput({ ...options, cwd, scope: options.scope });
   const rootKey = portableJsonDigest(options.selector).slice(7);
-  const generation = path.join(cwd, '.agent-workflows', '.local', 'portable', rootKey,
-    portableJsonDigest(bindingInput).slice(7));
-  const base: PortableProjectPreparation = { options, root: options.selector, generation,
+  const generation = path.join(layout.generationRoot, rootKey, portableJsonDigest(bindingInput).slice(7));
+  const base: PortablePreparation = { options, root: options.selector, generation,
     logicalIdentity: bindingInput.source.logicalIdentity, targets: [], blockers: [], globalBlockers: [], evidenceDigest: '' };
-  const blocked = (code: string): PortableProjectPreparation => ({ ...base, blockers: [code], globalBlockers: [code] });
+  const blocked = (code: string): PortablePreparation => ({ ...base, blockers: [code], globalBlockers: [code] });
   try {
-    if (!await assertPortablePath(cwd, generation)) {
+    if (!await assertPortablePath(path.parse(generation).root, generation)) {
       if (!allowMaterialize) return blocked('needs-preparation');
-      await materializePortableSkillsToDirectory({ ...options, scope: 'project', out: generation });
+      await materializePortableSkillsToDirectory({ ...options, cwd, out: generation });
     }
-    const materialization = await readHistoricalPortableMaterialization({ projectRoot: cwd, rootDir: generation,
+    const materialization = await readHistoricalPortableMaterialization({ generationRoot: layout.generationRoot,
+      scope: options.scope, rootDir: generation,
       pluginId: options.selector, logicalIdentity: bindingInput.source.logicalIdentity });
     if (JSON.stringify(materialization.binding.source) !== JSON.stringify(bindingInput.source)
       || materialization.binding.profile.inputDigest !== bindingInput.profile.inputDigest) {
       return blocked('operationReviewStale');
     }
-    await providerLock(cwd);
-    await probeProjectRecoverySkillsCli(options);
-    const records = await listInstalledSkills({ ...options, global: false, timeoutMs: 15_000 }).catch(() => undefined);
-    const targets: PortableProjectTarget[] = [];
-    const normalized = materialization.marker.selectedSkills.map((candidate) => normalizeProjectPortableSkillName(candidate.name));
+    await providerLock(options);
+    await probePortableRecoverySkillsCli({ ...options, cwd });
+    const records = await listInstalledSkills({ ...options, cwd, global: options.scope === 'user', timeoutMs: 15_000 }).catch(() => undefined);
+    const targets: PortableTarget[] = [];
+    const normalized = materialization.marker.selectedSkills.map((candidate) => normalizePortableSkillName(candidate.name));
     if (new Set(normalized).size !== normalized.length) return blocked('portableOutputConflict');
     for (const candidate of materialization.marker.selectedSkills) {
       if (!await providerPreservesTree(path.join(generation, 'skills', candidate.name))) {
@@ -205,14 +217,15 @@ async function collectPreparation(options: PortableProjectRecoveryOptions, allow
       for (const agent of options.agents) {
         targets.push(await observeTarget(options, materialization, { skill: candidate.name, agent,
           providerPluginId: candidate.providerPluginId, expectedDigest: candidate.filesDigest,
-          physicalPath: targetPath(cwd, agent, candidate.name), ownership: 'unknown',
+          physicalPath: targetPath(options, agent, candidate.name), ownership: 'unknown',
           observation: 'unknown', associatedAgents: [] }, records));
       }
     }
-    const lockEntries = await providerLock(cwd);
-    return { ...base, targets, lockEntries, bindingDigest: materialization.binding.finalDigest,
+    const lock = await providerLock(options);
+    return { ...base, targets, lockEntries: lock.entries, lockDigest: lock.digest,
+      bindingDigest: materialization.binding.finalDigest,
       blockers: [...new Set(targets.flatMap((target) => target.blocker ? [target.blocker] : []))],
-      evidenceDigest: portableJsonDigest({ binding: materialization.binding.finalDigest, targets, lock: lockEntries }) };
+      evidenceDigest: portableJsonDigest({ binding: materialization.binding.finalDigest, targets, lock: lock.digest }) };
   } catch (error) {
     const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
       && error.code.startsWith('portable') ? error.code
@@ -221,56 +234,68 @@ async function collectPreparation(options: PortableProjectRecoveryOptions, allow
   }
 }
 
-export async function preparePortableProjectRecovery(options: PortableProjectRecoveryOptions): Promise<PortableProjectPreparation> {
+export async function preparePortableRecovery(options: PortableRecoveryOptions): Promise<PortablePreparation> {
   return collectPreparation(options, true);
 }
-export async function inspectPortableProjectRecovery(options: PortableProjectRecoveryOptions): Promise<PortableProjectPreparation> {
+export async function inspectPortableRecovery(options: PortableRecoveryOptions): Promise<PortablePreparation> {
   return collectPreparation(options, false);
 }
 
-async function verifiedCompletedFootprints(options: PortableProjectRecoveryOptions,
-  completed: CompletedPortableFootprint[], lockEntries: Record<string, unknown>): Promise<Array<CompletedPortableFootprint & { skill: string }>> {
+async function verifiedCompletedFootprints(options: PortableRecoveryOptions,
+  completed: CompletedPortableFootprint[], current: PortablePreparation): Promise<Array<CompletedPortableFootprint & { skill: string }>> {
   const verified: Array<CompletedPortableFootprint & { skill: string }> = [];
-  const records = await listInstalledSkills({ ...options, global: false, timeoutMs: 15_000 }).catch(() => []);
+  const records = await listInstalledSkills({ ...options, cwd: options.context.executionCwd,
+    global: options.scope === 'user', timeoutMs: 15_000 }).catch(() => []);
   for (const footprint of completed) {
     try {
-      if (!await assertPortablePath(options.cwd, footprint.physicalPath)
+      if (!await outputPathExists(footprint.physicalPath)
         || await portableSkillTreeDigest(footprint.physicalPath) !== footprint.expectedDigest) continue;
-      const matches = records.filter((record) => record.scope === 'project'
-        && (targetPath(options.cwd, 'codex', record.name) === footprint.physicalPath
-          || targetPath(options.cwd, 'claude-code', record.name) === footprint.physicalPath));
+      const matches = records.filter((record) => record.scope === (options.scope === 'user' ? 'global' : 'project')
+        && (targetPath(options, 'codex', record.name) === footprint.physicalPath
+          || targetPath(options, 'claude-code', record.name) === footprint.physicalPath));
       if (matches.length !== 1) continue;
       const record = matches[0]!;
-      if (!record.path || ![targetPath(options.cwd, 'codex', record.name), targetPath(options.cwd, 'claude-code', record.name)].includes(record.path)
-        || typeof record.source !== 'string' || !path.isAbsolute(record.source)) continue;
-      const agent = footprint.physicalPath === targetPath(options.cwd, 'claude-code', record.name) ? 'claude-code' : 'codex';
+      const recordPath = await qualifiedRecordPath(options, record.name, record.path);
+      if (!recordPath || ![targetPath(options, 'codex', record.name), targetPath(options, 'claude-code', record.name)].includes(recordPath)) continue;
+      const agent = footprint.physicalPath === targetPath(options, 'claude-code', record.name) ? 'claude-code' : 'codex';
       if (!record.agents.some((value) => agentName(value) === agent || (agent === 'codex' && agentName(value) === 'cursor'))) continue;
-      await assertPortablePath(options.cwd, record.path);
-      const old = await readHistoricalPortableMaterialization({ projectRoot: options.cwd, rootDir: record.source,
-        logicalIdentity: footprint.logicalIdentity });
+      await outputPathExists(recordPath);
+      if (options.scope === 'user') {
+        if (current.logicalIdentity === footprint.logicalIdentity && current.targets.some((target) =>
+          target.skill === record.name && target.physicalPath === footprint.physicalPath
+          && target.providerPluginId === footprint.providerPluginId
+          && target.expectedDigest === footprint.expectedDigest && target.observation === 'satisfied')) {
+          verified.push({ ...footprint, skill: record.name });
+        }
+        continue;
+      }
+      const old = await oldMaterialization(options, record.source);
+      if (!old) continue;
       const candidate = old.marker.selectedSkills.find((entry) => entry.name === record.name);
-      const lock = lockEntries[record.name] as { source?: string; sourceType?: string } | undefined;
+      const lock = current.lockEntries?.[record.name] as { source?: string; sourceType?: string } | undefined;
       if (candidate?.providerPluginId !== footprint.providerPluginId || candidate.filesDigest !== footprint.expectedDigest
-        || lock?.sourceType !== 'local' || typeof lock.source !== 'string'
-        || path.resolve(options.cwd, lock.source) !== record.source) continue;
+        || old.binding.source.kind !== 'catalog-snapshot'
+        || old.binding.source.logicalIdentity !== footprint.logicalIdentity
+        || (options.scope === 'project' && (lock?.sourceType !== 'local' || typeof lock.source !== 'string'
+          || path.resolve(options.context.executionCwd, lock.source) !== record.source))) continue;
       verified.push({ ...footprint, skill: record.name });
     } catch { /* A previous result is not evidence when its actual output can no longer be verified. */ }
   }
   return verified;
 }
 
-export async function executePortableProjectRecovery(options: {
-  prepared: PortableProjectPreparation;
+export async function executePortableRecovery(options: {
+  prepared: PortablePreparation;
   token: AwHomeMutationToken;
   authorizeUpdate?: boolean;
-  targets?: Array<{ skill: string; agent: PortableProjectAgent }>;
+  targets?: Array<{ skill: string; agent: PortableAgent }>;
   action?: 'sync' | 'reinstall' | 'uninstall' | 'cleanup';
   completedFootprints?: CompletedPortableFootprint[];
-}): Promise<PortableProjectExecution> {
+}): Promise<PortableExecution> {
   const { prepared } = options;
-  const isSelected = (target: PortableProjectTarget): boolean => !options.targets || options.targets.some((pair) =>
+  const isSelected = (target: PortableTarget): boolean => !options.targets || options.targets.some((pair) =>
     pair.skill === target.skill && pair.agent === target.agent);
-  const failure = (blocker: string): PortableProjectExecution => ({ targets: prepared.targets.filter(isSelected).map((target) => ({
+  const failure = (blocker: string): PortableExecution => ({ targets: prepared.targets.filter(isSelected).map((target) => ({
     ...target, execution: 'not-run', blockers: [...new Set([blocker, ...(target.blocker ? [target.blocker] : [])])],
   })), globalBlockers: [blocker], blockers: [blocker], execution: 'not-run', outputsMayHaveChanged: false });
   if (options.action === 'uninstall' || options.action === 'cleanup') return failure('backend-action-unsupported');
@@ -280,7 +305,7 @@ export async function executePortableProjectRecovery(options: {
       const current = await collectPreparation(executionOptions, false);
       if (!prepared.evidenceDigest) return failure('operationReviewStale');
       const completed = options.completedFootprints?.length
-        ? await verifiedCompletedFootprints(executionOptions, options.completedFootprints, current.lockEntries ?? {})
+        ? await verifiedCompletedFootprints(executionOptions, options.completedFootprints, current)
         : [];
       if (prepared.evidenceDigest !== current.evidenceDigest) {
         const excludedPaths = new Set(completed.filter((footprint) => current.targets.every((target) =>
@@ -288,14 +313,18 @@ export async function executePortableProjectRecovery(options: {
             && target.expectedDigest === footprint.expectedDigest && target.providerPluginId === footprint.providerPluginId
             && current.logicalIdentity === footprint.logicalIdentity))).map((target) => target.physicalPath));
         const excludedNames = new Set(completed.map((target) => target.skill));
-        const unchanged = (plan: PortableProjectPreparation): string => portableJsonDigest({
+        const unchanged = (plan: PortablePreparation): string => portableJsonDigest({
           binding: plan.bindingDigest, targets: plan.targets.filter((target) => !excludedPaths.has(target.physicalPath)),
-          lock: Object.entries(plan.lockEntries ?? {}).filter(([name]) => !excludedNames.has(name)),
+          lock: plan.options.scope === 'user' ? plan.lockDigest
+            : Object.entries(plan.lockEntries ?? {}).filter(([name]) => !excludedNames.has(name)),
         });
         if (completed.length === 0 || unchanged(prepared) !== unchanged(current)) return failure('operationReviewStale');
       }
-      const selected = current.targets.filter(isSelected).map((target): PortableProjectTarget => {
-        if (options.action === 'reinstall' && target.observation === 'satisfied' && target.ownership !== 'aw') {
+      const selected = current.targets.filter(isSelected).map((target): PortableTarget => {
+        if (options.action === 'reinstall' && target.observation === 'satisfied' && target.ownership !== 'aw'
+          && !completed.some((footprint) => footprint.physicalPath === target.physicalPath
+            && footprint.expectedDigest === target.expectedDigest && footprint.providerPluginId === target.providerPluginId
+            && footprint.logicalIdentity === current.logicalIdentity)) {
           return { ...target, blocker: 'portableOutputConflict' };
         }
         if (target.observation === 'drifted' && !options.authorizeUpdate) {
@@ -317,14 +346,14 @@ export async function executePortableProjectRecovery(options: {
         })), globalBlockers: current.globalBlockers,
         blockers: [...new Set([...current.globalBlockers, ...selected.flatMap((target) => target.blocker ? [target.blocker] : [])])],
         execution: selected.every((target) => target.observation === 'satisfied' && !target.blocker) ? 'no-op' : 'not-run', outputsMayHaveChanged: false };
-      const beforeLock = await providerLock(prepared.options.cwd);
+      const beforeLock = await providerLock(prepared.options);
       const written = new Set<string>();
       const globalBlockers: string[] = [];
       const targetErrors = new Map<string, string>();
-      const groups = new Map<string, PortableProjectTarget[]>();
+      const groups = new Map<string, PortableTarget[]>();
       for (const target of actionable) {
         const group = groups.get(target.skill) ?? [];
-        if (!group.some((entry) => entry.physicalPath === target.physicalPath)) group.push(target);
+        group.push(target);
         groups.set(target.skill, group);
       }
       for (const [skill, group] of groups) {
@@ -339,19 +368,23 @@ export async function executePortableProjectRecovery(options: {
           }
           for (const target of group) written.add(target.physicalPath);
           // One Skill per call preserves exact retry pairs and copies each shared path once.
-          await addSkills({ ...prepared.options, rootDir: prepared.generation, skills: [skill],
-            agents: group.map((target) => target.agent), global: false, copy: true, timeoutMs: 60_000 });
+          await addSkills({ ...prepared.options, cwd: prepared.options.context.executionCwd,
+            rootDir: prepared.generation, skills: [skill],
+            agents: group.map((target) => target.agent), global: prepared.options.scope === 'user', copy: true, timeoutMs: 60_000 });
         } catch { for (const target of group) targetErrors.set(target.physicalPath, 'portableSkillsCliInstallFailed'); }
       }
       try {
-        const afterLock = await providerLock(prepared.options.cwd);
+        const afterLock = await providerLock(prepared.options);
         const changedSkills = new Set(actionable.map((target) => target.skill));
-        if (Object.entries(beforeLock).some(([name, value]) => !changedSkills.has(name)
-          && JSON.stringify(afterLock[name]) !== JSON.stringify(value))) globalBlockers.push('portableProviderLockChanged');
+        if (Object.entries(beforeLock.entries).some(([name, value]) => !changedSkills.has(name)
+          && JSON.stringify(afterLock.entries[name]) !== JSON.stringify(value))
+          || (prepared.options.scope === 'user' && beforeLock.digest !== afterLock.digest)) {
+          globalBlockers.push('portableProviderLockChanged');
+        }
       } catch { globalBlockers.push('portableProviderLockInvalid'); }
       const after = await collectPreparation(executionOptions, false);
       globalBlockers.push(...after.globalBlockers);
-      const results = selected.map((original): PortableProjectExecutionTarget => {
+      const results = selected.map((original): PortableExecutionTarget => {
         const actual = after.targets.find((target) => target.skill === original.skill && target.agent === original.agent);
         const target = actual ?? { ...original, observation: 'unknown' as const, blocker: 'portableSkillsCliVerificationFailed' };
         const error = targetErrors.get(target.physicalPath);
@@ -370,52 +403,65 @@ export async function executePortableProjectRecovery(options: {
     } });
 }
 
-export interface PortableProjectResidue {
+export interface PortableResidue {
   state: 'present' | 'absent' | 'unknown';
-  targets: Array<{ skill: string; agent: PortableProjectAgent; physicalPath: string }>;
+  targets: Array<{ skill: string; agent: PortableAgent; physicalPath: string }>;
   blockers: string[];
 }
 
-/** Inspect only current provider records and their bounded project sources, without current Catalog inputs. */
-export async function inspectPortableProjectResidue(options: {
+/** Inspect only current provider records and their bounded scope sources, without current Catalog inputs. */
+export async function inspectPortableResidue(options: {
+  scope: 'user' | 'project';
+  context: ScopeContext;
   selector: string;
-  cwd: string;
   env?: NodeJS.ProcessEnv;
-  agents?: PortableProjectAgent[];
+  agents?: PortableAgent[];
   signal?: AbortSignal;
-}): Promise<PortableProjectResidue> {
-  const unknown = (): PortableProjectResidue => ({ state: 'unknown', targets: [], blockers: ['portableObservationFailed'] });
-  let cwd: string;
-  try { cwd = await fs.realpath(options.cwd); } catch { return unknown(); }
-  const rootKey = path.join(cwd, '.agent-workflows', '.local', 'portable', portableJsonDigest(options.selector).slice(7));
+}): Promise<PortableResidue> {
+  options = { ...options, env: options.context.env };
+  const unknown = (): PortableResidue => ({ state: 'unknown', targets: [], blockers: ['portableObservationFailed'] });
+  let layout: ReturnType<typeof portableRecoveryLayout>;
+  try { layout = portableRecoveryLayout(options.context); } catch { return unknown(); }
+  if (layout.scope !== options.scope) return unknown();
+  const rootKey = path.join(layout.generationRoot, portableJsonDigest(options.selector).slice(7));
   let hasRootEvidence: boolean;
-  try { hasRootEvidence = await assertPortablePath(cwd, rootKey); } catch { return unknown(); }
+  try { hasRootEvidence = await assertPortablePath(path.parse(rootKey).root, rootKey); } catch { return unknown(); }
   let records: InstalledSkillRecord[];
   try {
-    await probeProjectRecoverySkillsCli({ ...options, cwd });
-    records = await listInstalledSkills({ ...options, cwd, global: false, timeoutMs: 15_000 });
+    await observeProviderLock(layout);
+    await probePortableRecoverySkillsCli({ ...options, cwd: layout.cwd });
+    records = await listInstalledSkills({ ...options, cwd: layout.cwd,
+      global: options.scope === 'user', timeoutMs: 15_000 });
   } catch {
     return hasRootEvidence ? unknown() : { state: 'absent', targets: [], blockers: [] };
   }
-  const targets: PortableProjectResidue['targets'] = [];
+  const targets: PortableResidue['targets'] = [];
   const blockers: string[] = [];
-  const agents: PortableProjectAgent[] = options.agents ?? ['codex', 'claude-code', 'cursor'];
+  const agents: PortableAgent[] = options.agents ?? ['codex', 'claude-code', 'cursor'];
+  const recoveryOptions: PortableRecoveryOptions = { ...options, cliVersion: '', agents };
   for (const record of records) {
-    if (typeof record.source !== 'string' || !path.isAbsolute(record.source)) {
-      if (hasRootEvidence) blockers.push('portableObservationFailed');
+    let recordPath: string | undefined;
+    try { recordPath = await qualifiedRecordPath(recoveryOptions, record.name, record.path); }
+    catch { blockers.push('portableObservationFailed'); continue; }
+    const relative = record.source && path.isAbsolute(record.source) ? path.relative(rootKey, record.source) : '..';
+    const pointsToRoot = relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    if (record.scope !== (options.scope === 'user' ? 'global' : 'project') || !recordPath
+      || ![targetPath(recoveryOptions, 'codex', record.name), targetPath(recoveryOptions, 'claude-code', record.name)].includes(recordPath)) {
+      if (pointsToRoot) blockers.push('portableObservationFailed');
       continue;
     }
-    const relative = path.relative(rootKey, record.source);
-    const pointsToRoot = relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-    let old: HistoricalPortableMaterialization;
-    try { old = await readHistoricalPortableMaterialization({ projectRoot: cwd, rootDir: record.source }); } catch {
-      if (pointsToRoot) blockers.push('portableObservationFailed');
+    let old: HistoricalPortableMaterialization | undefined;
+    try {
+      await portableSkillTreeDigest(recordPath);
+      old = await oldMaterialization(recoveryOptions, record.source);
+    } catch { /* Unverifiable record cannot authorize cleanup. */ }
+    if (!old) {
+      if (pointsToRoot || hasRootEvidence) blockers.push('portableObservationFailed');
       continue;
     }
     const candidate = old.marker.selectedSkills.find((entry) => entry.name === record.name);
     if (old.marker.plugin.id !== options.selector && candidate?.providerPluginId !== options.selector) continue;
-    if (!candidate || record.scope !== 'project' || !record.path
-      || ![targetPath(cwd, 'codex', record.name), targetPath(cwd, 'claude-code', record.name)].includes(record.path)) {
+    if (!candidate) {
       blockers.push('portableObservationFailed');
       continue;
     }
@@ -427,9 +473,9 @@ export async function inspectPortableProjectResidue(options: {
       continue;
     }
     for (const agent of associated) {
-      const physicalPath = targetPath(cwd, agent, record.name);
+      const physicalPath = targetPath(recoveryOptions, agent, record.name);
       try {
-        if (!await assertPortablePath(cwd, record.path) || !await assertPortablePath(cwd, physicalPath)
+        if (!await outputPathExists(recordPath) || !await outputPathExists(physicalPath)
           || await portableSkillTreeDigest(physicalPath) !== candidate.filesDigest) {
           blockers.push('portableObservationFailed');
           continue;

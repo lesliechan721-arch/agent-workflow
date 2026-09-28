@@ -45,7 +45,8 @@ export type ConfigResumeRoute =
 
 export type TuiRoute =
   | { name: 'home' }
-  | { name: 'projectStatus' }
+  | { name: 'intentScopes' }
+  | { name: 'intentInventory'; scope: Scope; projectKey?: string }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
   | {
       name: 'pluginWriteTask';
@@ -185,8 +186,8 @@ export interface TuiPageContext {
   focusedActionId?: string;
   installFilter?: PluginInstallFilter;
   configGroupId?: string;
-  projectSection?: 'declared' | 'extraInstalled';
-  projectStatusFilter?: 'all' | 'pending' | 'blocked' | 'unknown' | 'ready';
+  inventorySection?: 'declared' | 'extraInstalled';
+  inventoryStatusFilter?: 'all' | 'blocked' | 'unknown' | 'pending' | 'ready';
   sourceTypeTab?: 'all' | 'git' | 'path';
   contentTypeTab?: 'all' | PluginContentType;
   platformSelectedScope?: Scope;

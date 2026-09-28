@@ -42,6 +42,7 @@ import {
   createDependencyCatalogSnapshotFixture,
 } from '../helpers/catalog-source-fixture.js';
 import { createPerfSummary, printPerfSummary } from './perf-metrics.js';
+import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
 
 const SAMPLES = 20;
 const BUDGET_MS = 500;
@@ -465,6 +466,9 @@ describe('multi-source performance budgets', () => {
 
   it('keeps a real warm install path observable with local stage budgets', async () => {
     fanoutProviderInvocations = 0;
+    const native = await createNativeTestExecution({ scope: 'project', cwd: root, env: fanoutEnv,
+      selectedTargets: [{ pluginId: 'path-a/write-root', platform: 'codex' }],
+      includeSelectedInDemand: true });
     const commandDurations: number[] = [];
     const localStageDurations: number[] = [];
     const runInstall = async (record: boolean): Promise<void> => {
@@ -476,6 +480,7 @@ describe('multi-source performance budgets', () => {
         scope: 'project',
       }, {
         env: fanoutEnv,
+        executionInput: native.executionInput,
         nativeCliRunner: fakeNativeRunner,
         debugLogger: { log: (event) => { events.push(event); } },
       });
@@ -506,6 +511,7 @@ describe('multi-source performance budgets', () => {
     };
     await runInstall(false);
     for (let index = 0; index < 8; index += 1) await runInstall(true);
+    await native.dispose();
     expect(fanoutProviderInvocations).toBe(0);
     const commandSummary = createPerfSummary(
       'install-write-command-warm',

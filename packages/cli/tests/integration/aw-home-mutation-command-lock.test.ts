@@ -25,6 +25,7 @@ import {
   getSourceTestRepositoryCwd,
 } from '../setup/test-isolation.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
 
 interface MutationChildRun {
   completion: Promise<{ code: number | null; output: string }>;
@@ -180,18 +181,23 @@ describe('public AW_HOME mutation command lock', () => {
       cliVersion: '1.0.0',
       env: isolation.env,
     });
+    const native = await createNativeTestExecution({ scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      selectedTargets: [{ pluginId: 'team/demo', platform: 'codex' }], includeSelectedInDemand: true });
     const result = await withAwHomeMutationLock({
       env: isolation.env,
       action: () => installWriteCommand(['team/demo'], {
-          cwd: isolation.layout.fixtureCwd,
-          platform: 'codex',
-          scope: 'project',
-        }, {
-          env: isolation.env,
-          previewOperationPlan: true,
-          nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
-        }),
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'project',
+      }, {
+        env: isolation.env,
+        executionInput: native.executionInput,
+        previewOperationPlan: true,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+      }),
     });
+    await native.dispose();
 
     expect(result).toMatchObject({ overallState: 'succeeded' });
     expect(result.dependencyPlan?.requestedPluginIds).toEqual(['team/demo']);

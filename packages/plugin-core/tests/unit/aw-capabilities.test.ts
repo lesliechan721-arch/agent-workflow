@@ -47,6 +47,8 @@ describe('AW capability contracts', () => {
     expect(new Set(registry).size).toBe(registry.length)
     expect(registry).toContain('aw.review-preparation.v1')
     expect(registry).toContain('aw.review-inspection.v2')
+    expect(registry).toContain('aw.plugin-recovery.v1')
+    expect(registry).not.toContain('aw.project-recovery.v1')
     expect(registry).not.toContain('aw.review-inspection.v1')
     expect(registry).not.toContain('aw.catalog-context.v1')
     expect(normalizeAwCapabilities([

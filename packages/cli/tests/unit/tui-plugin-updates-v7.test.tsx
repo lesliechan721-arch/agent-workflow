@@ -1,19 +1,15 @@
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import type {
   StatusTargetRevision,
   StatusV8Payload,
   StatusV8PluginSummary,
 } from '../../src/commands/status-v6.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
+import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
 import {
-  operationEvidenceFingerprint,
   TuiController,
-  type OperationEvidence,
-  type OperationIntent,
-  type PluginWriteTaskEvidence,
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
@@ -269,51 +265,20 @@ describe('TUI plugin update evidence', () => {
   });
 
   it('shows the canonical update count, platform update badge, detail CTA, and update filter', async () => {
-    const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
-      if (intent.kind !== 'pluginWriteTask') {
-        return { catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' } };
-      }
-      const receiptTarget = {
-        pluginName: 'demo', pluginId: 'official/demo', sourceId: 'official',
-        platform: 'codex' as const, scope: 'user' as const,
-      };
-      const preview = {
-        platforms: ['codex'], plugins: ['demo'], warnings: [], rebuildResults: [],
-        targetResults: [{ target: receiptTarget, action: 'sync' as const, state: 'completed' as const }],
-        overallState: 'succeeded' as const,
-        receiptTargets: [receiptTarget],
-        operationPlan: createOperationPlan({
-          intentChanges: [], actions: [], changes: ['official/demo:codex:user'], warnings: [],
-          evidence: {
-            catalogDigests: [{ sourceId: 'official', digest: 'sha256:catalog' }],
-            intentDigests: [], configDigests: [], targetOwnerFingerprints: [],
-          },
-        }),
-      };
-      const evidence: PluginWriteTaskEvidence = {
-        catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
-        taskPlan: {
-          goal: intent.goal,
-          requestedTargets: intent.targets,
-          executableTargets: intent.targets,
-          causes: [],
-          blockedTargets: [],
-          sources: [{
-            sourceId: 'official',
-            sourceIdentity: 'identity:official',
-            requestedTargets: intent.targets,
-            causes: [],
-            preview,
-            executable: true,
-          }],
-          targetFingerprint: 'sha256:target',
-          planFingerprint: '',
-        },
-      };
-      evidence.taskPlan.planFingerprint = operationEvidenceFingerprint(evidence);
-      return evidence;
-    });
-    const controllerDependencies = dependencies({ captureEvidence });
+    const prepareScopedTask = vi.fn(async (request: Parameters<NonNullable<TuiControllerDependencies['prepareScopedTask']>>[0]): Promise<ScopedTuiPlan> => ({
+      kind: 'recovery', scope: request.scope,
+      plan: { changes: ['更新 official/demo'], warnings: [], nativeGroups: [], portableGroups: [],
+        plannedImpact: { declaration: false, preferences: false, config: false, outputs: true },
+        context: { dispose: async () => {} }, receipt: {
+        schemaVersion: 1, kind: 'aw-recovery', scope: request.scope, command: 'reinstall', ok: true,
+        intent: { state: 'valid', roots: ['official/demo'] }, requestedRoots: ['official/demo'],
+        requestedTargets: [], selection: { agents: ['codex'], origin: 'argument', preferences: 'valid' },
+        blockers: [], errors: [], targetResults: [], remainingTargets: [], recoveryActions: [],
+        declarationChanged: false, preferencesChanged: false, configChanged: false,
+        outputsMayHaveChanged: false,
+      } },
+    } as ScopedTuiPlan));
+    const controllerDependencies = dependencies({ prepareScopedTask });
     const controller = new TuiController(controllerDependencies);
     const home = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
     await controller.load();
@@ -347,19 +312,11 @@ describe('TUI plugin update evidence', () => {
     await nextTurn();
     expect(detail.lastFrame()).toContain('› 更新到 2.0.0');
     detail.stdin.write('\r');
-    await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('review'));
-    expect(controller.snapshot.activeReview).toMatchObject({
-      operationKind: 'pluginWriteTask', taskGoal: 'update',
-    });
-    expect(controllerDependencies.captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'pluginWriteTask', goal: 'update', executionPolicy: 'all',
-      targets: [{
-        pluginId: 'official/demo', platform: 'codex', scope: 'user',
-        expectedUpdate: {
-          installedVersion: '1.0.0', activeVersion: '2.0.0',
-          sourceIdentity: 'identity:official', generationKey: 'official/active',
-        },
-      }],
+    await vi.waitFor(() => expect(detail.lastFrame()).toContain('操作汇总'));
+    expect(controller.snapshot.router.current.route.name).toBe('pluginWriteTask');
+    expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'recovery', scope: 'user', command: 'reinstall', selectors: ['official/demo'],
+      exactTargets: [{ pluginId: 'official/demo', agent: 'codex' }],
     }), expect.any(AbortSignal));
     controller.dispose();
   });

@@ -4,19 +4,20 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
-import { addProjectRequirements } from '../../src/project/project-commands.js';
 import { runCli } from '../../src/index.js';
 import { removeCatalogSourceCommand, updateCatalogSourceCommand } from '../../src/commands/catalog-source.js';
 import {
-  runRebuildCommand,
+  runRebuildCommand as runNativeRebuildCommand,
   setRebuildCommandTestHooksForTests,
 } from '../../src/commands/rebuild-command.js';
 import { inspectNativeMarketplaceRegistrations } from '../../src/commands/rebuild-integration.js';
 import {
-  cleanupWriteCommand,
-  installWriteCommand,
-  uninstallWriteCommand,
+  cleanupWriteCommand as cleanupNativeWriteCommand,
+  installWriteCommand as installNativeWriteCommand,
+  uninstallWriteCommand as uninstallNativeWriteCommand,
 } from '../../src/commands/write-commands.js';
+import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
+import { readIntentReferences } from '../../src/recovery/demand.js';
 import {
   createSkillOwnerMarkerContent,
   createSharedOwnerToken,
@@ -49,6 +50,59 @@ import { createCapturedCliIo } from '../helpers/cli-entry.js';
 
 const SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
 
+type NativeWriter = typeof installNativeWriteCommand;
+async function invokeNativeWriter(
+  writer: NativeWriter,
+  pluginNames: Parameters<NativeWriter>[0],
+  options: Parameters<NativeWriter>[1],
+  runtime: Parameters<NativeWriter>[2] = {},
+) {
+  const isolation = getCurrentSourceTestIsolation();
+  const cwd = options.cwd ?? isolation.layout.fixtureCwd;
+  const scope = options.scope === 'project' ? 'project' : 'user';
+  const platform = options.platform === 'claude' ? 'claude' : 'codex';
+  const env = runtime?.env ?? isolation.env;
+  const ids = pluginNames.length ? pluginNames : await readIntentReferences({ scope, cwd, env });
+  const native = await createNativeTestExecution({ scope, cwd, env,
+    selectedTargets: ids.map((pluginId) => ({ pluginId, platform })),
+    includeSelectedInDemand: writer === installNativeWriteCommand,
+  });
+  try {
+    return await writer(pluginNames, options, { ...runtime, executionInput: native.executionInput });
+  } finally {
+    await native.dispose();
+  }
+}
+
+const installWriteCommand = (...args: Parameters<typeof installNativeWriteCommand>) =>
+  invokeNativeWriter(installNativeWriteCommand, ...args);
+const cleanupWriteCommand = (...args: Parameters<typeof cleanupNativeWriteCommand>) =>
+  invokeNativeWriter(cleanupNativeWriteCommand, ...args);
+const uninstallWriteCommand = (...args: Parameters<typeof uninstallNativeWriteCommand>) =>
+  invokeNativeWriter(uninstallNativeWriteCommand, ...args);
+
+async function runRebuildCommand(...args: Parameters<typeof runNativeRebuildCommand>) {
+  const [invocation] = args;
+  const isolation = getCurrentSourceTestIsolation();
+  const { commandOptions, runtime } = invocation;
+  const scope = commandOptions.scope;
+  const cwd = commandOptions.cwd;
+  const env = runtime?.env ?? isolation.env;
+  const ids = invocation.pluginNames.length ? invocation.pluginNames
+    : await readIntentReferences({ scope, cwd, env });
+  const platforms = commandOptions.platform === 'both' ? ['codex', 'claude'] as const
+    : [commandOptions.platform] as const;
+  const native = await createNativeTestExecution({ scope, cwd, env,
+    selectedTargets: ids.flatMap((pluginId) => platforms.map((platform) => ({ pluginId, platform }))),
+  });
+  try {
+    return await runNativeRebuildCommand({ ...invocation,
+      runtime: { ...runtime, executionInput: native.executionInput } });
+  } finally {
+    await native.dispose();
+  }
+}
+
 async function replaceCatalogSourcesConfig(
   options: Parameters<typeof replaceCatalogSourcesConfigWithoutActive>[0],
 ) {
@@ -69,7 +123,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe('phase 3B namespaced runtime stores', () => {
-  it('previews and executes Intent-only cleanup without reading Catalog', async () => {
+  it('previews and executes offline cleanup without changing declaration or reading Catalog', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = {
       scope: 'user' as const,
@@ -77,8 +131,6 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
     };
     await writeIntentFixture(location, {
-      schemaVersion: 2,
-      kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex', 'claude'] }],
       dependencyScopeOverrides: [{
         pluginId: 'team/dependency', platform: 'codex', scope: 'user',
@@ -100,7 +152,7 @@ describe('phase 3B namespaced runtime stores', () => {
       }),
     ]);
     expect(preview.operationPlan).toMatchObject({
-      intentChanges: [expect.objectContaining({ scope: 'user' })],
+      intentChanges: [],
       evidence: { intentDigests: [expect.objectContaining({ scope: 'user' })] },
     });
     await expect(readIntentFixture(location)).resolves.toMatchObject({
@@ -123,21 +175,16 @@ describe('phase 3B namespaced runtime stores', () => {
         state: 'completed',
       }],
     });
-    await expect(readIntentFixture(location)).resolves.toEqual({
-      schemaVersion: 2,
-      kind: 'aw-plugin-intents',
-      roots: [{ pluginId: 'team/demo', platforms: ['claude'] }],
-      dependencyScopeOverrides: [{
-        pluginId: 'team/dependency', platform: 'codex', scope: 'user',
-      }],
+    await expect(readIntentFixture(location)).resolves.toMatchObject({
+      schemaVersion: 3,
+      roots: [{ pluginId: 'team/demo', platforms: ['claude', 'codex'] }],
     });
   });
 
-  it('treats force Intent-only cleanup as a successful Intent cancellation', async () => {
+  it('treats force cleanup without output as a no-op and retains declaration', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     await writeIntentFixture(location, {
-      schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
     });
@@ -158,7 +205,9 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(result.offlineCleanupPlans).toEqual([
       expect.objectContaining({ plan: expect.objectContaining({ actions: [] }) }),
     ]);
-    await expect(readIntentFixture(location)).resolves.toMatchObject({ roots: [] });
+    await expect(readIntentFixture(location)).resolves.toMatchObject({
+      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
+    });
   });
 
   it('treats unrelated inventory damage as irrelevant to an empty cleanup target', async () => {
@@ -225,7 +274,6 @@ describe('phase 3B namespaced runtime stores', () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     await writeIntentFixture(location, {
-      schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
     });
@@ -272,7 +320,9 @@ describe('phase 3B namespaced runtime stores', () => {
     ]);
     await expect(fs.pathExists(safeRoot)).resolves.toBe(false);
     await expect(fs.pathExists(damagedRoot)).resolves.toBe(true);
-    await expect(readIntentFixture(location)).resolves.toMatchObject({ roots: [] });
+    await expect(readIntentFixture(location)).resolves.toMatchObject({
+      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
+    });
     expect(result.rebuildResults[0]).toMatchObject({
       status: 'failed',
       actions: expect.arrayContaining([expect.objectContaining({ status: 'succeeded' })]),
@@ -284,7 +334,6 @@ describe('phase 3B namespaced runtime stores', () => {
     await writeIntentFixture({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, {
-      schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [
         { pluginId: 'team/alpha', platforms: ['codex'] },
         { pluginId: 'team/beta', platforms: ['codex'] },
@@ -310,7 +359,7 @@ describe('phase 3B namespaced runtime stores', () => {
       .toEqual(['team/alpha', 'team/beta']);
     expect(preview.offlineCleanupPlans?.every((target) => target.plan.actions.length === 0))
       .toBe(true);
-    expect(preview.operationPlan?.intentChanges).toHaveLength(1);
+    expect(preview.operationPlan?.intentChanges).toEqual([]);
   });
 
   it('stops before output cleanup when reviewed Intent evidence drifts', async () => {
@@ -318,7 +367,6 @@ describe('phase 3B namespaced runtime stores', () => {
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     const skillRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'reviewed-demo');
     await writeIntentFixture(location, {
-      schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
     });
@@ -337,7 +385,7 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env, previewOperationPlan: true,
     });
     await writeIntentFixture(location, {
-      schemaVersion: 2, kind: 'aw-plugin-intents', roots: [], dependencyScopeOverrides: [],
+      roots: [], dependencyScopeOverrides: [],
     });
 
     const result = await cleanupWriteCommand(['team/demo'], options, {
@@ -348,45 +396,10 @@ describe('phase 3B namespaced runtime stores', () => {
     await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
   });
 
-  it('keeps output when the atomic Intent write fails', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
-    const skillRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'write-failure-demo');
-    await writeIntentFixture(location, {
-      schemaVersion: 2, kind: 'aw-plugin-intents',
-      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
-      dependencyScopeOverrides: [],
-    });
-    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), 'kept on write failure\n');
-    await writeSkillOwnerMarker({
-      skillRoot,
-      allowedRoot: path.dirname(skillRoot),
-      identity: {
-        owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
-        pluginId: 'team/demo', plugin: 'demo', artifactKey: 'write-failure-demo',
-        platform: 'codex', scope: 'user',
-      },
-    });
-
-    const result = await cleanupWriteCommand(['team/demo'], {
-      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
-    }, {
-      env: isolation.env,
-      writePluginIntentState: async () => { throw new Error('atomic Intent write failed'); },
-    });
-
-    expect(result.overallState).toBe('failed');
-    await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
-    await expect(readIntentFixture(location)).resolves.toMatchObject({
-      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
-    });
-  });
-
   it('stops before Intent mutation when inventory damage appears after Review', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     await writeIntentFixture(location, {
-      schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
     });
@@ -413,6 +426,7 @@ describe('phase 3B namespaced runtime stores', () => {
 
   it('preserves owned output added after cleanup evidence capture', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
     const location = { scope: 'project' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
     const reviewedRoot = path.join(skillsRoot, 'reviewed-output');
@@ -423,7 +437,6 @@ describe('phase 3B namespaced runtime stores', () => {
       platform: 'codex', scope: 'project',
     };
     await writeIntentFixture(location, {
-      schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
     });
@@ -467,11 +480,11 @@ describe('phase 3B namespaced runtime stores', () => {
 
   it('includes an existing project Skill owner marker in force cleanup Review evidence', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
     const location = { scope: 'project' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
     const skillRoot = path.join(skillsRoot, 'project-force-output');
     await writeIntentFixture(location, {
-      schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
     });
@@ -496,7 +509,9 @@ describe('phase 3B namespaced runtime stores', () => {
     });
 
     expect(preview.operationPlan?.actions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'removeOwnedArtifact', path: skillRoot }),
+      expect.objectContaining({ kind: 'removeOwnedArtifact',
+        path: path.join(await fs.realpath(isolation.layout.fixtureCwd),
+          '.agents', 'skills', 'project-force-output') }),
     ]));
     const result = await cleanupWriteCommand(['team/demo'], options, {
       env: isolation.env,
@@ -509,12 +524,11 @@ describe('phase 3B namespaced runtime stores', () => {
     await expect(readIntentFixture(location)).resolves.toMatchObject({ roots: [{ pluginId: 'team/demo', platforms: ['codex'] }] });
   });
 
-  it('keeps the Intent cancellation and reports partial when output cleanup fails', async () => {
+  it('reports failed output cleanup and retains the declaration', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     const skillRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'cleanup-failure-demo');
     await writeIntentFixture(location, {
-      schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
     });
@@ -544,11 +558,13 @@ describe('phase 3B namespaced runtime stores', () => {
     const receipt = (await import('../../src/output/command-receipt.js'))
       .buildRebuildReceiptJson('cleanup', result);
 
-    expect(result.overallState).toBe('partial');
-    expect(receipt).toMatchObject({ overallState: 'partial' });
-    expect(receipt.changes).toContain('team/demo:codex:user:removeIntent');
+    expect(result.overallState).toBe('failed');
+    expect(receipt).toMatchObject({ overallState: 'failed' });
+    expect(receipt.changes.join('\n')).not.toContain('removeIntent');
     expect(receipt.changes.join('\n')).not.toContain('removeOwnedOutput');
-    await expect(readIntentFixture(location)).resolves.toMatchObject({ roots: [] });
+    await expect(readIntentFixture(location)).resolves.toMatchObject({
+      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
+    });
     await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
   });
 
@@ -585,7 +601,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: backupPath }));
   });
 
-  it('inventories canonical project owner artifacts but ignores ordinary project and marketplace Skill markers', async () => {
+  it('inventories direct Project Skill owners but ignores nested and marketplace markers', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const identity: OwnerIdentity = {
       owner: 'agent-workflows',
@@ -667,18 +683,30 @@ describe('phase 3B namespaced runtime stores', () => {
     });
     expect(inventory.references).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'namespacedOwner', location: role, sourceId: 'team' }),
+      expect.objectContaining({
+        kind: 'namespacedOwner',
+        location: path.join(projectSkillRoot, '.agent-workflows-owner.json'),
+        sourceId: 'team',
+        scope: 'project',
+      }),
     ]));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: backup }));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: exampleMarker }));
-    expect(inventory.references).not.toContainEqual(expect.objectContaining({
-      location: path.join(projectSkillRoot, '.agent-workflows-owner.json'),
-    }));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: nestedSkillMarker }));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({
       kind: 'namespacedOwner',
       location: path.join(bundleSkillRoot, '.agent-workflows-owner.json'),
       sourceId: 'team',
     }));
+    const nativeProjectInventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      scope: 'project',
+    });
+    expect(nativeProjectInventory.references).not.toContainEqual(expect.objectContaining({
+      location: path.join(projectSkillRoot, '.agent-workflows-owner.json'),
+    }));
+    expect(nativeProjectInventory.references).toContainEqual(expect.objectContaining({ location: role }));
   });
 
   it('does not turn Codex cache residue into ordinary or orphan cleanup consumers', async () => {
@@ -1198,16 +1226,6 @@ describe('phase 3B namespaced runtime stores', () => {
       fs.outputJson(path.join(cacheRoot, 'plugin.json'), { name: 'demo', version: '1.0.0' }),
       fs.outputJson(path.join(installedRoot, 'manifest.json'), { id: 'demo@aw', version: '1.0.0' }),
     ]);
-    const statusOutput = createCapturedCliIo();
-    expect(await runCli(['status', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: statusOutput.io,
-      interactive: false,
-    })).toBe(1);
-    expect(JSON.parse(statusOutput.readStdout())).toMatchObject({
-      targets: [],
-    });
     const calls: string[] = [];
     const result = await cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
@@ -1291,7 +1309,7 @@ describe('phase 3B namespaced runtime stores', () => {
       entry.startsWith('team.backup-'))).toEqual([]);
   });
 
-  it('ignores all ordinary project Skill markers while reporting canonical owner errors', async () => {
+  it('reports damaged direct Project Skill owners without scanning them in ordinary Native inventory', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
     const validRoot = path.join(skillsRoot, 'valid');
@@ -1337,9 +1355,28 @@ describe('phase 3B namespaced runtime stores', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     });
-    expect(inventory.references).toEqual([]);
-    expect(inventory.errors).toEqual([]);
+    expect(inventory.references).toContainEqual(expect.objectContaining({
+      kind: 'namespacedOwner',
+      location: path.join(validRoot, '.agent-workflows-owner.json'),
+      sourceId: 'team',
+      scope: 'project',
+    }));
+    for (const name of ['bad-json', 'bad-schema', 'wrong-key']) {
+      expect(inventory.errors).toContainEqual(expect.objectContaining({
+        code: 'stateInventoryFailed',
+        location: `[catalog-source]/.agents/skills/${name}/.agent-workflows-owner.json`,
+      }));
+    }
     expect(JSON.stringify(inventory.errors)).not.toContain(isolation.layout.fixtureCwd);
+    const nativeProjectInventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      scope: 'project',
+    });
+    expect(nativeProjectInventory.references).not.toContainEqual(expect.objectContaining({
+      location: path.join(validRoot, '.agent-workflows-owner.json'),
+    }));
+    expect(nativeProjectInventory.errors).toEqual([]);
   });
 
   it('ignores marker-free system Skill directories but validates owner markers in them', async () => {
@@ -1821,131 +1858,6 @@ describe('phase 3B namespaced runtime stores', () => {
     },
   );
 
-  it('fails closed on invalid shared Codex inventory for a native project target', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'invalid-codex-inventory-source');
-    await fs.outputFile(
-      path.join(sourceRoot, 'plugins', 'demo', 'skills', 'managed', 'SKILL.md'),
-      '---\nname: managed\ndescription: managed\n---\n',
-    );
-    await fs.outputFile(
-      path.join(sourceRoot, 'plugins', 'demo', 'skills', 'managed', 'agents', 'openai.yaml'),
-      'policy:\n  allow_implicit_invocation: true\n',
-    );
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
-      manifest.skills = './skills';
-    });
-    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
-    const sourceIdentity = await calculateCatalogSourceIdentity(source);
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 2, sources: [source] },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    const skillRoot = path.join(skillsRoot, 'managed');
-    await fs.ensureDir(skillRoot);
-    await writeSkillOwnerMarker({
-      skillRoot,
-      allowedRoot: skillsRoot,
-      identity: {
-        owner: 'agent-workflows',
-        sourceId: 'team',
-        sourceIdentity,
-        pluginId: 'team/demo',
-        plugin: 'demo',
-        artifactKey: 'managed',
-        platform: 'codex',
-        scope: 'project',
-      },
-    });
-    const configPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
-    const invalid = '[[invalid codex toml\n';
-    await fs.outputFile(configPath, invalid);
-
-    const output = createCapturedCliIo();
-    expect(await runCli([
-      'status', 'team/demo', '--platform', 'codex', '--scope', 'project', '--json',
-    ], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: output.io,
-      interactive: false,
-    })).toBe(1);
-    const stdout = output.readStdout();
-    const payload = JSON.parse(stdout) as {
-      targets: Array<{ pluginId: string; state: string; reasons: Array<{ code: string }> }>;
-      errors: Array<{ code: string; message: string }>;
-    };
-    expect(stdout.trim().split('\n')).toHaveLength(1);
-    expect(payload.targets).toContainEqual(expect.objectContaining({
-      pluginId: 'team/demo',
-      state: 'blocked',
-      reasons: expect.arrayContaining([
-        expect.objectContaining({ code: 'codexSharedNativeCorrupt' }),
-        expect.objectContaining({ code: 'codexActivationDrift' }),
-      ]),
-    }));
-    expect(payload.errors).not.toContainEqual(expect.objectContaining({ code: 'pluginNotFound' }));
-    expect(payload.errors.map((error) => error.message).join('\n')).not.toContain(isolation.layout.rootDir);
-    expect(output.readStderr()).toBe('');
-    expect(await fs.readFile(configPath, 'utf8')).toBe(invalid);
-  });
-
-  it.each([
-    ['settings.json', (isolation: ReturnType<typeof getCurrentSourceTestIsolation>) =>
-      path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json')],
-    ['installed_plugins.json', (isolation: ReturnType<typeof getCurrentSourceTestIsolation>) =>
-      path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins', 'installed_plugins.json')],
-  ] as const)('reports unreadable Claude native state from %s without writing state', async (_label, filePath) => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, `invalid-claude-${_label}`);
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CLAUDE'];
-    });
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 2,
-        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
-      },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const invalidPath = filePath(isolation);
-    const invalid = '{ invalid json\n';
-    await fs.outputFile(invalidPath, invalid);
-    const beforeMarketplaceEntries = await fs.readdir(
-      path.join(isolation.env.AW_HOME!, 'marketplaces'),
-    ).catch(() => []);
-
-    const output = createCapturedCliIo();
-    expect(await runCli([
-      'status', 'team/demo', '--platform', 'claude', '--scope', 'user', '--json',
-    ], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: output.io,
-      interactive: false,
-    })).toBe(1);
-    const stdout = output.readStdout();
-    const payload = JSON.parse(stdout) as {
-      targets: Array<{ pluginId: string }>;
-      errors: Array<{ code: string; message: string }>;
-    };
-    expect(stdout.trim().split('\n')).toHaveLength(1);
-    expect(payload.targets).toContainEqual(expect.objectContaining({ pluginId: 'team/demo' }));
-    expect(payload.errors).toContainEqual(expect.objectContaining({ code: 'nativeStateUnreadable' }));
-    expect(payload.errors).not.toContainEqual(expect.objectContaining({ code: 'pluginNotFound' }));
-    expect(payload.errors.map((error) => error.message).join('\n')).not.toContain(isolation.layout.rootDir);
-    expect(output.readStderr()).toBe('');
-    expect(await fs.readFile(invalidPath, 'utf8')).toBe(invalid);
-    expect(await fs.readdir(path.join(isolation.env.AW_HOME!, 'marketplaces')).catch(() => []))
-      .toEqual(beforeMarketplaceEntries);
-  });
-
   it.each(['cleanup', 'uninstall'] as const)(
     '%s keeps a live platform after the current bundle revokes support',
     async (command) => {
@@ -2025,7 +1937,10 @@ describe('phase 3B namespaced runtime stores', () => {
     const originalSourceIdentity = await calculateCatalogSourceIdentity({
       id: 'team', type: 'path', primary: true, path: sourceRoot,
     });
-    await addProjectRequirements({ cwd: isolation.layout.fixtureCwd, env: isolation.env, selectors: ['team/demo'] });
+    await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
+    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
+      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
+    });
     const installBuilt = deferred();
     const resumeInstall = deferred();
     setRebuildCommandTestHooksForTests({

@@ -1,4 +1,5 @@
 import type { PlatformName, Scope } from '../types.js';
+import type { AgentId } from '../intent/deployment-preferences.js';
 import {
   flattenStatusTargets,
   statusTargetActivation,
@@ -13,7 +14,8 @@ import {
 import { platformLabel, scopeLabel } from './glossary.js';
 import { hasActualScopeEvidence, type PluginDependencyOverviewViewModel,
   type PluginListItemViewModel } from './model.js';
-import type { ProjectInventoryState, ProjectInventoryViewModel } from './project-inventory.js';
+import type { InventoryState as ProjectInventoryState,
+  InventoryRoot, ScopedInventoryViewModel, ScopedInventoryLoadResult } from './scoped-inventory.js';
 
 export interface PluginDetailPlacement {
   platform: PlatformName;
@@ -38,6 +40,13 @@ export interface PluginDetailRelation {
   verified: boolean;
 }
 
+export interface PluginDetailDeclaration {
+  state: 'declared' | 'not-declared' | 'unobserved';
+  sourceState?: string;
+  targets: 'selected' | 'empty' | 'unobserved';
+  agents: AgentId[];
+}
+
 export interface PluginDetailSubject {
   pluginId: string;
   sourceId: string;
@@ -48,6 +57,7 @@ export interface PluginDetailSubject {
   savedConfigScopes: Scope[];
   /** Existing overview is retained only for actions that already accept it. */
   plugin?: PluginListItemViewModel;
+  declarations: Record<Scope, PluginDetailDeclaration>;
   placements: PluginDetailPlacement[];
   relations: {
     outgoing: PluginDetailRelation[];
@@ -59,7 +69,26 @@ export interface PluginDetailSubject {
 
 type RelationFact = { from: string; to: string; declared: boolean; verified: boolean };
 
-function relationFacts(overviews: readonly PluginDependencyOverviewViewModel[]): {
+function declarationFact(inventory: ScopedInventoryViewModel | undefined,
+  pluginId: string): PluginDetailDeclaration {
+  const root = inventory?.declaredRoots.find((entry) => entry.pluginId === pluginId);
+  const state = root && inventory?.declarationState === 'ready' ? 'declared'
+    : inventory?.declarationState === 'ready' || inventory?.declarationState === 'absent'
+      ? 'not-declared' : 'unobserved';
+  const agents = inventory?.selectedAgents.filter((agent): agent is AgentId =>
+    agent === 'codex' || agent === 'claude-code' || agent === 'cursor') ?? [];
+  return {
+    state,
+    ...(state === 'declared' && root?.sourceState ? { sourceState: root.sourceState } : {}),
+    targets: !inventory || inventory.preferenceState === 'invalid'
+      || inventory.preferenceState === 'unreadable' ? 'unobserved'
+      : agents.length ? 'selected' : 'empty',
+    agents,
+  };
+}
+
+function relationFacts(overviews: readonly PluginDependencyOverviewViewModel[],
+  observed: Array<{ scope: Scope; overviews: readonly PluginDependencyOverviewViewModel[] }>): {
   facts: Map<string, RelationFact>;
   names: Map<string, string>;
   ids: Set<string>;
@@ -95,8 +124,16 @@ function relationFacts(overviews: readonly PluginDependencyOverviewViewModel[]):
       for (const reference of item.placementReferences ?? []) {
         add(reference.consumer.pluginId, reference.dependency.pluginId, true, false);
       }
-      for (const reference of item.availablePlacementReferences ?? []) {
-        add(reference.consumer.pluginId, reference.dependency.pluginId, true, true);
+
+    }
+  }
+  for (const observation of observed) {
+    for (const overview of observation.overviews) {
+      for (const item of [...overview.dependencies, ...overview.dependents]) {
+        for (const reference of item.availablePlacementReferences ?? []) {
+          if (reference.consumer.scope !== observation.scope) continue;
+          add(reference.consumer.pluginId, reference.dependency.pluginId, true, true);
+        }
       }
     }
   }
@@ -109,21 +146,38 @@ export function buildPluginDetailSubject(options: {
   pluginSummaries: readonly StatusV8PluginSummary[];
   targetRevisions?: readonly StatusTargetRevision[];
   plugins: readonly PluginListItemViewModel[];
-  projectInventory?: ProjectInventoryViewModel;
+  projectInventory?: { declaredRoots: InventoryRoot[]; extraInstalledRoots: InventoryRoot[] };
+  scopedInventories?: Partial<Record<Scope, ScopedInventoryViewModel>>;
   dependencyOverviews?: readonly PluginDependencyOverviewViewModel[];
+  scopedSnapshots?: Partial<Record<Scope, ScopedInventoryLoadResult['nativeSnapshot']>>;
+  latestScope?: Scope;
 }): PluginDetailSubject | undefined {
   const { pluginId } = options;
-  const summary = options.pluginSummaries.find((item) => item.pluginId === pluginId);
+  const latest = options.latestScope ? options.scopedSnapshots?.[options.latestScope] : undefined;
+  const overviews = latest?.dependencyOverviews ?? options.dependencyOverviews ?? [];
+  const summary = (latest?.pluginSummaries ?? options.pluginSummaries).find((item) => item.pluginId === pluginId);
   const plugin = options.plugins.find((item) => item.pluginId === pluginId);
-  const targets = flattenStatusTargets(options.status.targets)
-    .filter((target) => target.pluginId === pluginId);
+  const observed = (['user', 'project'] as const).map((scope) => ({ scope,
+    snapshot: options.scopedSnapshots?.[scope],
+  }));
+  const targets = observed.flatMap(({ scope, snapshot }) =>
+    flattenStatusTargets((snapshot?.payload ?? options.status).targets)
+      .filter((target) => target.scope === scope && target.pluginId === pluginId));
   const roots = [...(options.projectInventory?.declaredRoots ?? []),
-    ...(options.projectInventory?.extraInstalledRoots ?? [])]
+    ...(options.projectInventory?.extraInstalledRoots ?? []),
+    ...Object.values(options.scopedInventories ?? {}).flatMap((inventory) => [
+      ...inventory.declaredRoots, ...inventory.extraInstalledRoots,
+    ])]
     .filter((root) => root.pluginId === pluginId);
   const dependencies = [...(options.projectInventory?.declaredRoots ?? []),
-    ...(options.projectInventory?.extraInstalledRoots ?? [])]
+    ...(options.projectInventory?.extraInstalledRoots ?? []),
+    ...Object.values(options.scopedInventories ?? {}).flatMap((inventory) => [
+      ...inventory.declaredRoots, ...inventory.extraInstalledRoots,
+    ])]
     .flatMap((root) => root.dependencies.filter((item) => item.pluginId === pluginId));
-  const graph = relationFacts(options.dependencyOverviews ?? []);
+  const graph = relationFacts(overviews, observed.map(({ scope, snapshot }) => ({ scope,
+    overviews: snapshot?.dependencyOverviews ?? options.dependencyOverviews ?? [],
+  })));
   if (!summary && !plugin && targets.length === 0 && roots.length === 0
     && dependencies.length === 0 && !graph.ids.has(pluginId)) return undefined;
 
@@ -132,8 +186,9 @@ export function buildPluginDetailSubject(options: {
   const displayName = summary?.displayName ?? summary?.pluginName ?? plugin?.displayName
     ?? roots[0]?.displayName ?? dependencies[0]?.displayName ?? graph.names.get(pluginId)
     ?? targets[0]?.pluginName ?? pluginId.split('/').at(-1) ?? pluginId;
-  const revisions = new Map((options.targetRevisions ?? [])
-    .filter((item) => item.pluginId === pluginId)
+  const revisions = new Map(observed.flatMap(({ scope, snapshot }) =>
+    (snapshot?.targetRevisions ?? options.targetRevisions ?? [])
+      .filter((item) => item.scope === scope && item.pluginId === pluginId))
     .map((item) => [`${item.platform}\0${item.scope}`, item.revision]));
   const placements = new Map<string, PluginDetailPlacement>();
   const ensure = (platform: PlatformName, scope: Scope): PluginDetailPlacement => {
@@ -175,6 +230,10 @@ export function buildPluginDetailSubject(options: {
     for (const target of root.targets) {
       const placement = ensure(target.platform, target.scope);
       placement.projectState = target.state;
+      if (target.state === 'unknown' || target.state === 'blocked') {
+        placement.observation = 'unknown';
+        placement.statusState = target.state === 'blocked' ? 'blocked' : undefined;
+      }
       placement.declared ||= root.section === 'declared';
       placement.sharedWithCurrentProject ||= target.location === 'sharedUser';
       placement.reasonCodes = [...new Set([...placement.reasonCodes, ...target.reasonCodes])];
@@ -184,12 +243,21 @@ export function buildPluginDetailSubject(options: {
   }
   for (const dependency of dependencies) {
     for (const target of dependency.targets) {
+      const key = `${target.platform}\0${target.scope}`;
+      // A later direct scope observation takes precedence over an older shared dependency check.
+      if (target.location === 'sharedUser' && options.latestScope === target.scope
+        && options.scopedSnapshots?.[target.scope]) continue;
       const placement = ensure(target.platform, target.scope);
       placement.projectState = target.state;
       placement.sharedWithCurrentProject ||= target.location === 'sharedUser';
       placement.reasonCodes = [...new Set([...placement.reasonCodes, ...target.reasonCodes])];
-      const revision = revisions.get(`${target.platform}\0${target.scope}`);
-      if (revision?.installedVersion) placement.installedVersion = revision.installedVersion;
+      if (!targets.some((entry) => entry.platform === target.platform && entry.scope === target.scope)) {
+        placement.observation = target.state === 'ready' ? 'known' : 'unknown';
+        if (target.installedVersion) placement.installedVersion = target.installedVersion;
+      } else {
+        const revision = revisions.get(key);
+        if (revision?.installedVersion) placement.installedVersion = revision.installedVersion;
+      }
     }
   }
   const toRelation = (fact: RelationFact, otherId: string): PluginDetailRelation => ({
@@ -203,8 +271,8 @@ export function buildPluginDetailSubject(options: {
     .map((fact) => toRelation(fact, fact.to));
   const incoming = known.filter((fact) => fact.to === pluginId)
     .map((fact) => toRelation(fact, fact.from));
-  const overview = options.dependencyOverviews?.find((item) => item.pluginId === pluginId);
-  const source = options.status.catalog.sources.find((item) => item.id === sourceId);
+  const overview = overviews.find((item) => item.pluginId === pluginId);
+  const source = (latest?.payload ?? options.status).catalog.sources.find((item) => item.id === sourceId);
   const definitionAvailable = summary !== undefined && source !== undefined && !source.error;
   return {
     pluginId,
@@ -215,6 +283,10 @@ export function buildPluginDetailSubject(options: {
     definitionAvailable,
     savedConfigScopes: plugin?.savedConfigScopes ?? [],
     ...(plugin ? { plugin } : {}),
+    declarations: {
+      user: declarationFact(options.scopedInventories?.user, pluginId),
+      project: declarationFact(options.scopedInventories?.project, pluginId),
+    },
     placements: [...placements.values()].sort((left, right) =>
       `${left.platform}\0${left.scope}`.localeCompare(`${right.platform}\0${right.scope}`, 'en')),
     relations: {

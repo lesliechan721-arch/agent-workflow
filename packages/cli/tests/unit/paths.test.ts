@@ -58,35 +58,18 @@ describe('project key paths', () => {
 
   it('blocks real-home fallbacks and read-only home overrides while the test fence is installed', () => {
     const repositoryCwd = getSourceTestRepositoryCwd();
+    const realHome = os.userInfo().homedir;
     registerCurrentTestReadonlyFixtureRoot(repositoryCwd, 'repository cwd');
-    const previousHome = process.env.HOME;
-    const previousUserProfile = process.env.USERPROFILE;
-    delete process.env.HOME;
-    delete process.env.USERPROFILE;
-
-    try {
-      expectPathFenceViolation(
-        () => resolveAwHome({} as NodeJS.ProcessEnv),
-        {
-          access: 'write',
-          path: path.join(os.homedir(), '.aw'),
-          source: 'AW_HOME fallback (os.homedir())',
-          reason: 'outsideRegisteredRoots',
-          recommendedFixIncludes: 'createIsolatedTestEnv()',
-        },
-      );
-    } finally {
-      if (previousHome === undefined) {
-        delete process.env.HOME;
-      } else {
-        process.env.HOME = previousHome;
-      }
-      if (previousUserProfile === undefined) {
-        delete process.env.USERPROFILE;
-      } else {
-        process.env.USERPROFILE = previousUserProfile;
-      }
-    }
+    expectPathFenceViolation(
+      () => resolveAwHome({ HOME: realHome } as NodeJS.ProcessEnv),
+      {
+        access: 'write',
+        path: path.join(realHome, '.aw'),
+        source: 'AW_HOME fallback (HOME)',
+        reason: 'outsideRegisteredRoots',
+        recommendedFixIncludes: 'createIsolatedTestEnv()',
+      },
+    );
 
     expectPathFenceViolation(
       () => getCodexHome({

@@ -1,5 +1,6 @@
 import { statusTargetHasLiveConfigConsumer } from '../commands/status-v6.js';
-import { readProjectDemand, projectDemandNativeProjection } from '../project/project-demand.js';
+import { readDemand, demandNativeProjection } from '../recovery/demand.js';
+import { createScopeContext } from '../intent/scope-context.js';
 import type {
   PreApplyAuthorizationTarget,
   RebuildCommandRuntime,
@@ -7,7 +8,6 @@ import type {
 import {
   flattenStatusTargets,
   statusCommandV8,
-  statusTargetIntent,
 } from '../commands/status-v6.js';
 import { syncWriteCommand } from '../commands/write-commands.js';
 import {
@@ -267,20 +267,16 @@ async function discoverVisibleTargets(options: {
       : {}),
   });
   for (const statusTarget of flattenStatusTargets(status.payload.targets)) {
-    const intent = statusTargetIntent(statusTarget);
     if (statusTarget.pluginId !== selector && statusTarget.pluginName !== options.pluginName) continue;
     // A declaration alone is not a consumer. Config apply cannot install it.
-    const projectV3 = status.payload.projectRecovery?.intent.state === 'valid';
-    if (projectV3 ? !statusTargetHasLiveConfigConsumer(statusTarget) : !intent.enabled) continue;
-    for (const scope of projectV3 ? [statusTarget.scope] : intent.scopes) {
-      if (options.scope === 'project' && scope !== 'project') continue;
-      targets.push(await createCandidateTarget({
-        pluginName: options.pluginName,
-        platform: statusTarget.platform,
-        scope,
-        cwd: options.cwd,
-      }));
-    }
+    if (!statusTargetHasLiveConfigConsumer(statusTarget)) continue;
+    if (options.scope === 'project' && statusTarget.scope !== 'project') continue;
+    targets.push(await createCandidateTarget({
+      pluginName: options.pluginName,
+      platform: statusTarget.platform,
+      scope: statusTarget.scope,
+      cwd: options.cwd,
+    }));
   }
 
   return { targets: dedupeTargets(targets), failures };
@@ -310,13 +306,33 @@ async function reinstallVisibleTargets(options: {
         rebuildRuntime: options.rebuildRuntime,
       })
     : { targets: dedupeTargets(options.applyTargets), failures: [] });
-  const projectDemand = discovered.targets.some((target) => target.scope === 'project')
-    ? await readProjectDemand({ cwd: options.cwd, env: options.env }) : undefined;
+  const contexts = new Map<Scope, Awaited<ReturnType<typeof createScopeContext>>>();
+  const demands = new Map<Scope, Awaited<ReturnType<typeof readDemand>>>();
+  const failedScopes = new Set<Scope>();
+  try {
   const targetResults: InternalConfigApplyTargetResult[] = [...discovered.failures];
   let runtimeFailed = discovered.failures.length > 0;
   let invalidTargets = 0;
   let unavailableTargets = 0;
   const errors: ConfigApplyError[] = [];
+  for (const scope of new Set(discovered.targets.map((target) => target.scope))) {
+    try {
+      const context = await createScopeContext({ scope, cwd: options.cwd, env: options.env });
+      contexts.set(scope, context);
+      const demand = await readDemand({ scope, cwd: context.executionCwd, env: context.env });
+      demandNativeProjection(demand);
+      demands.set(scope, demand);
+    } catch {
+      failedScopes.add(scope);
+      runtimeFailed = true;
+      for (const target of discovered.targets.filter((entry) => entry.scope === scope)) {
+        targetResults.push({ target, action: 'reinstall', state: 'failed', errorCode: 'configApplyContextUnavailable',
+          message: 'The target scope or its demand cannot be read safely.' });
+      }
+      errors.push({ stage: 'targetValidation', code: 'configApplyContextUnavailable',
+        message: 'A visible target scope or its demand cannot be read safely.' });
+    }
+  }
   const reinstall = options.reinstallCommandImpl ?? syncWriteCommand;
   if (options.plugin.sourceId && !options.plugin.pluginId) {
     throw new Error(`Plugin "${options.plugin.manifest.name}" is missing its namespaced plugin ID.`);
@@ -394,6 +410,7 @@ async function reinstallVisibleTargets(options: {
 
   const preApplyExecutionCache = new Map<string, Promise<void>>();
   for (const target of discovered.targets) {
+    if (failedScopes.has(target.scope)) continue;
     try {
       const effective = await resolveEffectivePluginConfig({
         ...(options.plugin.sourceId ? {
@@ -441,7 +458,7 @@ async function reinstallVisibleTargets(options: {
       const result = await reinstall(
         [selector],
         {
-          cwd: options.cwd,
+          cwd: contexts.get(target.scope)!.executionCwd,
           platform: target.platform,
           scope: target.scope,
           ...(options.rebuildRuntime?.scriptTimeoutMs === undefined
@@ -450,14 +467,14 @@ async function reinstallVisibleTargets(options: {
         },
         {
           ...options.rebuildRuntime,
-          env: options.env,
+          env: contexts.get(target.scope)!.env,
           nativeCliRunner,
-          ...(target.scope === 'project' && projectDemand?.intent.state === 'valid' ? {
-            projectExecution: {
-              requirements: projectDemandNativeProjection(projectDemand),
-              selectedTargets: [{ pluginId: selector, platform: target.platform, scope: 'project' as const }],
-            },
-          } : {}),
+          executionInput: {
+            context: contexts.get(target.scope)!,
+            requirements: demandNativeProjection(demands.get(target.scope)!),
+            selectedTargets: [{ pluginId: selector, platform: target.platform, scope: target.scope }],
+            preserveOtherObservedTargets: true,
+          },
           preApplyConfirmed: options.preApplyConfirmed === true,
           preApplyExecutionCache,
           ...(debugLogger ? {
@@ -521,6 +538,9 @@ async function reinstallVisibleTargets(options: {
     };
   }
   return { state: 'succeeded', targetResults };
+  } finally {
+    await Promise.all([...contexts.values()].map((context) => context.dispose()));
+  }
 }
 
 async function resolveConfigApplyTargets(options: {
@@ -650,16 +670,26 @@ export async function resolveConfigPreApplyAuthorization(options: {
   const resolveGroup = async (targets: ReceiptTargetIdentity[]): Promise<boolean> => {
     const platforms = new Set(targets.map((target) => target.platform));
     const platform = platforms.size === 2 ? 'both' as const : [...platforms][0]!;
+    let context: Awaited<ReturnType<typeof createScopeContext>> | undefined;
     try {
+      context = await createScopeContext({ scope: targets[0]!.scope, cwd: options.cwd, env: options.env });
+      const demand = await readDemand({ scope: targets[0]!.scope,
+        cwd: context.executionCwd, env: context.env });
       const preview = await (options.reinstallCommandImpl ?? syncWriteCommand)([selector], {
-        cwd: options.cwd,
+        cwd: context.executionCwd,
         platform,
         scope: targets[0]!.scope,
       }, {
         ...options.rebuildRuntime,
-        env: options.env ?? process.env,
+        env: context.env,
         nativeCliRunner: options.nativeCliRunner,
         resolvePreApplyAuthorization: true,
+        executionInput: {
+          context, requirements: demandNativeProjection(demand),
+          selectedTargets: targets.map((target) => ({ pluginId: selector,
+            platform: target.platform, scope: target.scope })),
+          preserveOtherObservedTargets: true,
+        },
       });
       if (preview.overallState !== 'succeeded' || !preview.preApplyAuthorization) return false;
       authorization.push(...preview.preApplyAuthorization);
@@ -667,7 +697,7 @@ export async function resolveConfigPreApplyAuthorization(options: {
       return true;
     } catch {
       return false;
-    }
+    } finally { await context?.dispose(); }
   };
   for (const targets of groups.values()) {
     if (await resolveGroup(targets)) continue;

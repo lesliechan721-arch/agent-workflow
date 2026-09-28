@@ -114,13 +114,13 @@ export async function probeSkillsCli(
   return { version: version.join('.') };
 }
 
-/** Project recovery has a narrower, independently qualified provider contract. */
-export async function probeProjectRecoverySkillsCli(
+/** Portable recovery has a narrower, independently qualified provider contract. */
+export async function probePortableRecoverySkillsCli(
   options: SkillsCliInvocationOptions,
 ): Promise<{ version: string }> {
   const result = await probeSkillsCli({ ...options, timeoutMs: options.timeoutMs ?? 15_000 });
   if (result.version !== '1.5.23') {
-    throw new SkillsCliError('portableSkillsCliIncompatible', '项目恢复需要精确 skills 1.5.23。');
+    throw new SkillsCliError('portableSkillsCliIncompatible', 'Portable 恢复需要精确 skills 1.5.23。');
   }
   return result;
 }

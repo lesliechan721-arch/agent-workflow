@@ -1,6 +1,10 @@
 import path from 'node:path';
 
 import type { NormalizedPluginManifest, PlatformName, PluginMeta, Scope } from '../types.js';
+import { observePreferences, type PreferencesObservation, type AgentId } from '../intent/deployment-preferences.js';
+import { resolvePreferencesPath } from '../intent/deployment-preferences.js';
+import { observeIntent, resolveIntentPath, type IntentObservation } from '../intent/intent-store.js';
+import { describeStrongStateProblem } from '../intent/diagnostics.js';
 import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
 import {
   resolvePartialCatalogOperationContext,
@@ -8,54 +12,44 @@ import {
 } from '../utils/catalog-operation-context.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { readPluginManifest } from '../utils/manifest.js';
+import { createEmptyNativeDemandView, type NativeDemandView } from '../utils/native-demand.js';
 import { supportsPlatform } from '../utils/platform-support.js';
-import { createEmptyPluginIntentState, type PluginIntentState } from '../utils/plugin-intent-state.js';
-import { observeProjectIntent, type ProjectIntentObservation } from './project-state.js';
-import {
-  observeProjectPreferences,
-  type ProjectAgentId,
-  type ProjectPreferencesObservation,
-} from './project-preferences.js';
+import type { Delivery, Diagnostic } from './types.js';
 
-import type { ProjectDelivery, ProjectDiagnostic } from './project-types.js';
-export type { ProjectDelivery, ProjectDiagnostic } from './project-types.js';
-export type ProjectDemandSourceState = 'ready' | 'missing' | 'unavailable' | 'identity-mismatch';
-export interface ProjectDemandRoot {
+export type DemandSourceState = 'ready' | 'missing' | 'unavailable' | 'identity-mismatch';
+export interface DemandRoot {
   pluginId: string;
   sourceId: string;
-  sourceState: ProjectDemandSourceState;
+  sourceState: DemandSourceState;
   blockers: string[];
   plugin?: PluginMeta;
 }
-export interface ProjectDemand {
-  intent: ProjectIntentObservation;
-  preferences: ProjectPreferencesObservation;
-  roots: ProjectDemandRoot[] | null;
+export interface DemandSnapshot {
+  scope: Scope;
+  intent: IntentObservation;
+  preferences: PreferencesObservation;
+  roots: DemandRoot[] | null;
   plugins: PluginMeta[];
-  errors: ProjectDiagnostic[];
+  errors: Diagnostic[];
   catalogOperationContext?: CatalogOperationContext;
 }
-export interface ReadProjectDemandOptions {
-  intent?: ProjectIntentObservation;
+export interface ReadDemandOptions {
+  scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  intent?: IntentObservation;
   catalogOperationContext?: CatalogOperationContext;
 }
 
-/** Select delivery from the manifest only. Tool and configuration failures cannot change it. */
-export function resolveProjectDelivery(
-  manifest: NormalizedPluginManifest,
-  agent: ProjectAgentId,
-  scope: Scope = 'project',
-): ProjectDelivery | undefined {
+/** Manifest delivery choice is independent of tool, trust, and configuration health. */
+export function resolveDelivery(
+  manifest: NormalizedPluginManifest, agent: AgentId, scope: Scope,
+): Delivery | undefined {
   const platform = agent === 'claude-code' ? 'claude' : agent === 'codex' ? 'codex' : undefined;
   if (platform && supportsPlatform(manifest, platform)) {
     const surface = platform === 'codex' ? analyzeCodexSurface(manifest) : undefined;
-    // Ambiguous ownership remains a Native blocker. Only unsupported surface kinds
-    // or a surface confined to another scope remove Native applicability.
     const applicable = !surface || (surface.unsupportedKinds.length === 0
-      && surface.components.some((component) =>
-        component.scopes.includes(scope)));
+      && surface.components.some((component) => component.scopes.includes(scope)));
     if (applicable) return { kind: 'native', platform };
   }
   if (manifest.distributions?.agentSkills) {
@@ -64,23 +58,27 @@ export function resolveProjectDelivery(
   return undefined;
 }
 
-export async function readProjectDemand(options: ReadProjectDemandOptions): Promise<ProjectDemand> {
+export async function readDemand(options: ReadDemandOptions): Promise<DemandSnapshot> {
   const [intent, preferences] = await Promise.all([
-    options.intent ?? observeProjectIntent(options), observeProjectPreferences(options),
+    options.intent ?? observeIntent(options), observePreferences(options),
   ]);
-  const errors: ProjectDiagnostic[] = [];
-  if (!['absent', 'valid'].includes(intent.state)) {
-    errors.push({ code: 'pluginIntentStateInvalid', message: '项目声明无效或不可读。' });
+  const errors: Diagnostic[] = [];
+  if (intent.state !== 'absent' && intent.state !== 'valid') {
+    errors.push(describeStrongStateProblem({ kind: 'intent', scope: options.scope,
+      state: intent.state, filePath: await resolveIntentPath(options) }));
   }
   if (preferences.state === 'invalid' || preferences.state === 'unreadable') {
-    errors.push({ code: preferences.code, message: '项目本地偏好无效或不可读。' });
+    errors.push(describeStrongStateProblem({ kind: 'preferences', scope: options.scope,
+      state: preferences.state, filePath: await resolvePreferencesPath(options) }));
   }
-  const roots: ProjectDemandRoot[] | null = intent.state === 'absent' ? []
+  const roots: DemandRoot[] | null = intent.state === 'absent' ? []
     : intent.state === 'valid'
       ? intent.value.roots.map(({ pluginId }) => ({
           pluginId, sourceId: pluginId.split('/')[0]!, sourceState: 'unavailable', blockers: [],
         })) : null;
-  const result: ProjectDemand = { intent, preferences, roots, plugins: [], errors };
+  const result: DemandSnapshot = {
+    scope: options.scope, intent, preferences, roots, plugins: [], errors,
+  };
   if (!roots?.length) return result;
   let context = options.catalogOperationContext;
   let configured: Set<string>;
@@ -121,7 +119,6 @@ export async function readProjectDemand(options: ReadProjectDemandOptions): Prom
       root.blockers.push('pluginUnavailable');
       continue;
     }
-    // Include the source graph so all consumers use the same dependency facts.
     for (const entry of source.manifest.entries) {
       const pluginId = `${root.sourceId}/${entry.name}`;
       if (pluginCache.has(pluginId)) continue;
@@ -142,37 +139,32 @@ export async function readProjectDemand(options: ReadProjectDemandOptions): Prom
   return result;
 }
 
-/** A protective Native view, never an execution qualification or a writable project declaration. */
-export function projectDemandNativeProjection(demand: ProjectDemand): PluginIntentState {
+/** Protect the complete current-scope requirement, including unresolvable roots. */
+export function demandNativeProjection(demand: DemandSnapshot): NativeDemandView {
   if (demand.intent.state !== 'absent' && demand.intent.state !== 'valid') {
-    throw new Error('pluginIntentStateInvalid: 项目声明无效或不可读。');
+    throw new Error('pluginIntentStateInvalid: declaration cannot be read.');
   }
   if (demand.preferences.state === 'invalid' || demand.preferences.state === 'unreadable') {
-    throw new Error(`${demand.preferences.code}: 项目本地偏好无效或不可读。`);
+    throw new Error(`${demand.preferences.code}: preferences cannot be read.`);
   }
-  return {
-    ...createEmptyPluginIntentState(),
-    roots: (demand.roots ?? []).flatMap((root) => {
-      const platforms: PlatformName[] = root.plugin
-        ? (['codex', 'claude'] as const).filter((platform) => resolveProjectDelivery(
-            root.plugin!.manifest, platform === 'claude' ? 'claude-code' : 'codex',
-          )?.kind === 'native')
-        : ['codex', 'claude'];
-      return platforms.length ? [{ pluginId: root.pluginId, platforms }] : [];
-    }),
-    dependencyScopeOverrides: demand.preferences.state === 'valid'
-      ? demand.preferences.value.dependencyScopeOverrides : [],
-  };
+  const view = createEmptyNativeDemandView();
+  view.roots = (demand.roots ?? []).flatMap((root) => {
+    const platforms: PlatformName[] = root.plugin
+      ? (['codex', 'claude'] as const).filter((platform) => resolveDelivery(
+          root.plugin!.manifest, platform === 'claude' ? 'claude-code' : 'codex', demand.scope,
+        )?.kind === 'native')
+      : ['codex', 'claude'];
+    return platforms.length ? [{ pluginId: root.pluginId, platforms }] : [];
+  });
+  view.dependencyScopeOverrides = demand.preferences.state === 'valid'
+    ? demand.preferences.value.dependencyScopeOverrides : [];
+  return view;
 }
 
-export async function readNativeIntentProjection(options: ReadProjectDemandOptions): Promise<PluginIntentState> {
-  return projectDemandNativeProjection(await readProjectDemand(options));
-}
-
-/** Source usage exists even without a usable Catalog or local Agent selection. */
-export async function readProjectReferencedPluginIds(options: ReadProjectDemandOptions): Promise<string[]> {
-  const intent = options.intent ?? await observeProjectIntent(options);
+/** Source use is independent of selected Agents and local Catalog availability. */
+export async function readIntentReferences(options: Pick<ReadDemandOptions, 'scope' | 'cwd' | 'env' | 'intent'>): Promise<string[]> {
+  const intent = options.intent ?? await observeIntent(options);
   if (intent.state === 'absent') return [];
   if (intent.state === 'valid') return intent.value.roots.map((root) => root.pluginId);
-  throw new Error('pluginIntentStateInvalid: Project demand cannot be read.');
+  throw new Error('pluginIntentStateInvalid: demand cannot be read.');
 }

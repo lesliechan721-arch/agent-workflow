@@ -12,6 +12,7 @@ from pathlib import Path
 import pty
 import re
 import select
+import shutil
 import signal
 import struct
 import subprocess
@@ -24,6 +25,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "packages/cli/tests/fixtures/tui-pty-fixture.mjs"
 DIST_ENTRY = ROOT / "packages/cli/dist/src/tui/console-app-v4.js"
+CLI_ENTRY = ROOT / "packages/cli/dist/index.js"
 ANSI = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[()][0-2A-Z]|[=>])")
 SGR = re.compile(rb"\x1b\[([0-9;]*)m")
 
@@ -80,17 +82,26 @@ class PtySession:
         self.temp = tempfile.TemporaryDirectory(prefix="aw-tui-pty-")
         self.root = Path(self.temp.name)
         self.event_path = self.root / "events.jsonl"
+        self.failure_evidence_dir = os.environ.get("AW_TUI_PTY_EVIDENCE_DIR")
         self.master_fd, slave_fd = pty.openpty()
         set_size(slave_fd, columns, rows)
-        env = os.environ.copy()
+        if scenario == "scoped-inventory":
+            attrs = termios.tcgetattr(slave_fd)
+            attrs[0] &= ~termios.ICRNL
+            termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
+        real_entry = scenario == "entry-nonrepo"
+        env = {} if real_entry else os.environ.copy()
         env.update({
             "HOME": str(self.root / "home"),
             "AW_HOME": str(self.root / "aw"),
             "AW_CODEX_HOME": str(self.root / "codex"),
             "AW_CLAUDE_HOME": str(self.root / "claude"),
-            "AW_PTY_SANDBOX_ROOT": str(self.root),
-            "AW_PTY_EVENT_LOG": str(self.event_path),
-            "AW_PTY_SCENARIO": scenario,
+            "CODEX_HOME": str(self.root / "codex"),
+            "CLAUDE_CONFIG_DIR": str(self.root / "claude"),
+            "XDG_CONFIG_HOME": str(self.root / "xdg-config"),
+            "XDG_DATA_HOME": str(self.root / "xdg-data"),
+            "XDG_CACHE_HOME": str(self.root / "xdg-cache"),
+            "XDG_STATE_HOME": str(self.root / "xdg-state"),
             "NO_COLOR": "1",
             "FORCE_COLOR": "0",
             "CI": "",
@@ -98,11 +109,42 @@ class PtySession:
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
         })
-        for directory in (env["HOME"], env["AW_HOME"], env["AW_CODEX_HOME"], env["AW_CLAUDE_HOME"]):
+        if not real_entry:
+            env.update({
+                "AW_PTY_SANDBOX_ROOT": str(self.root),
+                "AW_PTY_EVENT_LOG": str(self.event_path),
+                "AW_PTY_SCENARIO": scenario,
+            })
+        else:
+            env["GIT_CONFIG_GLOBAL"] = str(self.root / "gitconfig")
+            env["GIT_CONFIG_SYSTEM"] = os.devnull
+            env["NPM_CONFIG_USERCONFIG"] = str(self.root / "npmrc")
+        for name in ("HOME", "AW_HOME", "AW_CODEX_HOME", "AW_CLAUDE_HOME",
+                     "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+            directory = env[name]
             Path(directory).mkdir(parents=True)
+        launch_cwd = self.root / "non-repository" if real_entry else ROOT
+        if real_entry:
+            launch_cwd.mkdir()
+            if launch_cwd.is_relative_to(ROOT):
+                raise HarnessFailure("real CLI cwd must be outside the checkout")
+        self.launch_cwd = launch_cwd
+        self.launch_env = env
+        node = shutil.which("node")
+        if not node:
+            raise HarnessFailure("node executable is unavailable")
+        if real_entry:
+            network_sandbox = shutil.which("sandbox-exec")
+            if not network_sandbox:
+                raise HarnessFailure("the real CLI PTY scenario requires a network-denying sandbox")
+            env["PATH"] = os.pathsep.join((str(Path(node).parent), "/usr/bin", "/bin", "/usr/sbin", "/sbin"))
+            command = [network_sandbox, "-p", "(version 1) (allow default) (deny network*)",
+                       node, str(CLI_ENTRY)]
+        else:
+            command = [node, str(FIXTURE)]
         self.process = subprocess.Popen(
-            ["node", str(FIXTURE)],
-            cwd=ROOT,
+            command,
+            cwd=launch_cwd,
             env=env,
             stdin=slave_fd,
             stdout=slave_fd,
@@ -202,8 +244,11 @@ class PtySession:
 
     def finish(self, allow_signal_cleanup: bool = False) -> tuple[bytes, list[dict[str, object]]]:
         try:
-            remaining = self.remaining()
-            self.process.wait(timeout=max(0.1, remaining))
+            # Keep reading while Ink restores the terminal. A real CLI can write
+            # more than a PTY buffer during shutdown and block until it is drained.
+            while self.process.poll() is None:
+                self.drain(0.1)
+            self.process.wait(timeout=0.1)
         except HarnessFailure as error:
             self.drain()
             plain_tail = ANSI.sub(b"", bytes(self.output[-2000:])).decode("utf-8", errors="replace")
@@ -691,97 +736,217 @@ def run_config_partial(columns: int, rows: int, timeout: float) -> dict[str, obj
         session.close()
 
 
-def run_project_recovery(columns: int, rows: int, timeout: float) -> dict[str, object]:
-    session = PtySession(columns, rows, timeout, "project-recovery")
-    stage = "project reminder"
+def run_scoped_inventory(columns: int, rows: int, timeout: float) -> dict[str, object]:
+    session = PtySession(columns, rows, timeout, "scoped-inventory")
+    stage = "scope selection"
+    stages: list[tuple[str, int]] = []
     try:
-        session.wait_route("home")
-        session.wait_text("本项目有 3 个插件尚未就绪")
-        session.wait_text("› 稍后处理")
-        session.send(b"\r")
-        session.wait_text("项目插件")
+        session.wait_route("intentScopes")
+        session.wait_text("选择清单范围")
+        time.sleep(0.35)
+        stages.append(("选择范围", len(session.output)))
 
-        stage = "project entry"
+        stage = "user inventory"
+        session.send(b"\r")
+        session.wait_route("intentInventory", lambda context: True)
+        session.wait_for(lambda events: any(event.get("type") == "scoped-status-load" and event.get("scope") == "user" for event in events), "user status read")
+        session.wait_text("个人清单")
+        session.wait_text("待同步")
+        stages.append(("个人清单", len(session.output)))
+        events = read_events(session.event_path)
+        if any(event.get("type") == "scoped-status-load" and event.get("scope") == "project" for event in events):
+            raise HarnessFailure("project status was read before selecting project")
+        session.send(b"f")
+        session.wait_route("intentInventory", lambda context: context.get("inventoryStatusFilter") == "pending")
+        session.send(b"r")
+        session.wait_for(lambda events: sum(event.get("type") == "scoped-status-load" and event.get("scope") == "user" for event in events) >= 2, "local user refresh")
+
+        stage = "hidden selection and risk review"
+        session.send(b" ")
+        session.wait_text("已选 1")
+        session.send(b"/")
+        session.send(b"no-match")
+        session.send(b"\x1b")
+        session.wait_text("隐藏已选 1")
+        stages.append(("隐藏勾选", len(session.output)))
+        session.send(b"c")
+        session.wait_text("操作汇总")
+        stages.append(("恢复计划", len(session.output)))
+        session.send(b"\x1b[C")
+        session.wait_text("输出变更（计划）")
+        stages.append(("恢复计划第二页", len(session.output)))
+        session.resize(60 if columns == 80 else 80, 18 if rows == 24 else 24)
+        session.wait_text("操作汇总")
+        stages.append(("恢复计划调整窗口", len(session.output)))
+        risk_start = len(session.output)
+        session.send(b"\r")
+        session.wait_for(lambda _events: "请确认本次风险".encode("utf-8")
+                         in ANSI.sub(b"", bytes(session.output[risk_start:])), "first risk overlay")
+        stages.append(("独立风险确认", len(session.output)))
+        session.send(b"\r")
+        time.sleep(0.35)
+        session.drain()
+        session.wait_for(lambda events: not any(event.get("type") == "scoped-execute" for event in events), "default return without write")
+        risk_start = len(session.output)
+        session.send(b"\r")
+        session.wait_for(lambda _events: "请确认本次风险".encode("utf-8")
+                         in ANSI.sub(b"", bytes(session.output[risk_start:])), "second risk overlay")
+        time.sleep(0.25)
+        session.drain()
         session.send(b"\x1b[B")
         session.send(b"\r")
-        session.wait_route("projectStatus")
-        session.wait_text("待同步")
-        session.send(b"f")
-        session.wait_route("projectStatus", lambda context: context.get("projectStatusFilter") == "pending")
-        session.send(b"f")
-        session.wait_route("projectStatus", lambda context: context.get("projectStatusFilter") == "blocked")
-        session.wait_text("受阻")
+        session.wait_for(lambda events: sum(event.get("type") == "scoped-execute" for event in events) == 1, "explicit risk execution")
+        session.wait_text("恢复结果")
+        stages.append(("恢复结果", len(session.output)))
+        session.send(b"\x1b")
+        time.sleep(0.4)
+        session.drain()
 
-        stage = "exact subset review"
-        session.send(b"c")
-        session.wait_route("review")
-        session.wait_text("批量同步插件 2 个插件")
-        confirm_review(session)
-        session.wait_for(
-            lambda events: sum(event.get("type") == "project-execute" for event in events) >= 1,
-            "first project execution",
-        )
-        session.wait_route("result")
-        session.wait_text("仅重试失败目标")
-
-        stage = "exact failed target retry"
+        stage = "project inventory"
+        session.send(b"\x1b")
+        session.wait_route("intentScopes")
+        time.sleep(0.35)
+        session.send(b"\x1b[B")
+        time.sleep(0.2)
         session.send(b"\r")
-        session.wait_route("review")
-        session.wait_text("批量同步插件 1 个插件")
-        confirm_review(session)
-        session.wait_for(
-            lambda events: sum(event.get("type") == "project-execute" for event in events) >= 2,
-            "second project execution",
-        )
-        session.wait_for(
-            lambda events: last_route(events) in ("result", "pluginDetail"),
-            "successful project retry result",
-        )
-        session.wait_text("状态已重新检查")
-
+        session.wait_route("intentInventory")
+        session.wait_for(lambda events: any(event.get("type") == "scoped-status-load" and event.get("scope") == "project" for event in events), "project status read")
+        session.wait_text("当前项目清单")
+        session.wait_text("代理实验室")
+        stages.append(("当前项目清单", len(session.output)))
         output, events = exit_ui(session)
-        assert_isolation(events, "project-recovery")
+        assert_isolation(events, "scoped-inventory")
         plain = assert_terminal_output(output)
-        executions = [event for event in events if event.get("type") == "project-execute"]
-        expected_first = [
-            {"pluginId": "official/agent-lab", "platform": "claude", "scope": "project"},
-            {"pluginId": "official/content-toolkit", "platform": "claude", "scope": "project"},
-        ]
-        expected_retry = [
-            {"pluginId": "official/content-toolkit", "platform": "claude", "scope": "project"},
-        ]
-        if len(executions) != 2 or executions[0].get("targets") != expected_first:
-            raise HarnessFailure(f"project subset execution was not exact: {executions!r}")
-        if executions[1].get("targets") != expected_retry:
-            raise HarnessFailure(f"project retry was not limited to the failed target: {executions[1]!r}")
-        for marker in (
-            "› 稍后处理", "项目插件", "待同步", "受阻", "仅重试失败目标", "状态已重新检查",
-        ):
+        for marker in ("选择清单范围", "个人清单", "当前项目清单", "待同步",
+                       "隐藏已选 1", "操作汇总", "请确认本次风险", "恢复结果"):
             if marker not in plain:
-                raise HarnessFailure(f"project recovery PTY output is missing {marker!r}")
+                raise HarnessFailure(f"scoped inventory PTY output is missing {marker!r}")
+        evidence_dir = os.environ.get("AW_TUI_PTY_EVIDENCE_DIR")
+        if evidence_dir:
+            destination = Path(evidence_dir)
+            destination.mkdir(parents=True, exist_ok=True)
+            stem = f"scoped-inventory-{columns}x{rows}"
+            (destination / f"{stem}.ansi").write_bytes(output)
+            (destination / f"{stem}.txt").write_text(plain, encoding="utf-8")
+            (destination / f"{stem}.events.jsonl").write_text(session.event_path.read_text(encoding="utf-8"), encoding="utf-8")
+            start = 0
+            snapshots = []
+            for label, end in stages:
+                before = ANSI.sub(b"", output[:start]).decode("utf-8", errors="ignore")
+                through = ANSI.sub(b"", output[:end]).decode("utf-8", errors="ignore")
+                snapshots.append(f"## {label}\n" + through[len(before):])
+                start = end
+            (destination / f"{stem}.stages.txt").write_text("\n\n".join(snapshots), encoding="utf-8")
         return {
-            "scenario": "project-recovery",
-            "initialSize": {"columns": columns, "rows": rows},
-            "exitCode": session.process.returncode,
-            "cleanup": "natural",
-            "ptyBytes": len(output),
-            "fixtureAnchor": ["projectStatusLoad", "home"],
-            "inputRouteSequence": [
-                "reminderLater", "home", "projectStatus", "review", "result", "review", "pluginDetail",
-            ],
-            "firstExecution": ["official/agent-lab", "official/content-toolkit"],
-            "syncWhileFiltered": "blocked",
-            "preservedBlocked": ["official/source-blocked"],
-            "retryExecution": ["official/content-toolkit"],
-            "colorSgrObserved": False,
-            "isolatedHomes": True,
+            "scenario": "scoped-inventory", "initialSize": {"columns": columns, "rows": rows},
+            "exitCode": session.process.returncode, "cleanup": "natural", "ptyBytes": len(output),
+            "fixtureAnchor": ["scopeSelection", "scopedStatus", "scopedReview", "riskConfirmation"],
+            "inputRouteSequence": ["intentScopes", "intentInventory:user", "intentScopes", "intentInventory:project"],
+            "scopeReads": [event.get("scope") for event in events if event.get("type") == "scoped-status-load"],
+            "colorSgrObserved": False, "isolatedHomes": True,
         }
     except HarnessFailure as error:
         events = read_events(session.event_path)
         plain_tail = ANSI.sub(b"", bytes(session.output[-1800:])).decode("utf-8", errors="replace")
         raise HarnessFailure(
-            f"project-recovery {columns}x{rows} stage {stage}: {error}; "
+            f"scoped-inventory {columns}x{rows} stage {stage}: {error}; "
             f"route={last_route(events)}; events={events[-3:]!r}; output={plain_tail!r}"
+        ) from error
+    finally:
+        session.close()
+
+
+def run_entry_nonrepo(columns: int, rows: int, timeout: float) -> dict[str, object]:
+    """Use the built aw entry and real status readers from a fresh non-repo cwd."""
+    session = PtySession(columns, rows, timeout, "entry-nonrepo")
+    stage = "home"
+    stages: list[tuple[str, int]] = []
+
+    def wait_after(marker: str, offset: int) -> None:
+        session.wait_for(
+            lambda _events: marker.encode("utf-8") in ANSI.sub(b"", bytes(session.output[offset:])),
+            f"{marker!r} after input",
+        )
+
+    try:
+        session.wait_text("管理  Agent Workflows 插件")
+        session.wait_text("插件清单")
+        stages.append(("真实 CLI 首页", len(session.output)))
+
+        stage = "scope choice"
+        session.send(b"\x1b[B")
+        choice_start = len(session.output)
+        session.send(b"\r")
+        wait_after("选择清单范围", choice_start)
+        wait_after("当前没有项目；个人清单仍可使用。", choice_start)
+        choice = ANSI.sub(b"", bytes(session.output[choice_start:])).decode("utf-8")
+        if "当前项目 ·" in choice or "随仓库共享的插件需求" in choice:
+            raise HarnessFailure("non-repo scope choice offered a project inventory")
+        if "跨项目使用的插件需求" not in choice:
+            raise HarnessFailure("non-repo scope choice did not offer the personal inventory")
+        stages.append(("仅个人范围可选", len(session.output)))
+
+        stage = "personal inventory"
+        inventory_start = len(session.output)
+        session.send(b"\r")
+        wait_after("个人清单", inventory_start)
+        wait_after("清单尚未添加插件。", inventory_start)
+        inventory = ANSI.sub(b"", bytes(session.output[inventory_start:])).decode("utf-8")
+        if "当前项目清单" in inventory or "正在检查清单。" in inventory.split("清单尚未添加插件。")[-1]:
+            raise HarnessFailure("non-repo personal inventory did not finish its real status read")
+        stages.append(("真实个人清单", len(session.output)))
+
+        stage = "natural exit"
+        session.send(b"q")
+        session.wait_text("退出控制台？")
+        session.send(b"\x1b[B")
+        time.sleep(0.7)
+        session.drain()
+        session.send(b"\r")
+        output, events = session.finish()
+        if events:
+            raise HarnessFailure("real CLI entry unexpectedly used the synthetic fixture event channel")
+        plain = assert_terminal_output(output)
+        evidence_dir = os.environ.get("AW_TUI_PTY_EVIDENCE_DIR")
+        if evidence_dir:
+            destination = Path(evidence_dir)
+            destination.mkdir(parents=True, exist_ok=True)
+            stem = f"entry-nonrepo-{columns}x{rows}"
+            (destination / f"{stem}.ansi").write_bytes(output)
+            (destination / f"{stem}.txt").write_text(plain, encoding="utf-8")
+            start = 0
+            snapshots = []
+            for label, end in stages:
+                before = ANSI.sub(b"", output[:start]).decode("utf-8", errors="ignore")
+                through = ANSI.sub(b"", output[:end]).decode("utf-8", errors="ignore")
+                snapshots.append(f"## {label}\n" + through[len(before):])
+                start = end
+            (destination / f"{stem}.stages.txt").write_text("\n\n".join(snapshots), encoding="utf-8")
+        return {
+            "scenario": "entry-nonrepo", "initialSize": {"columns": columns, "rows": rows},
+            "entry": "packages/cli/dist/index.js", "businessState": "real status and intent readers",
+            "cwd": "isolated temporary directory outside checkout", "isolatedEnvironment": sorted(
+                name for name in session.launch_env if name in (
+                    "HOME", "AW_HOME", "AW_CODEX_HOME", "AW_CLAUDE_HOME", "CODEX_HOME",
+                    "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+                    "XDG_CACHE_HOME", "XDG_STATE_HOME")),
+            "exitCode": session.process.returncode, "cleanup": "natural", "ptyBytes": len(output),
+            "scopeChoices": ["user"], "projectAvailable": False,
+            "personalInventory": "absent intent read completed", "colorSgrObserved": False,
+            "networkDenied": True,
+        }
+    except HarnessFailure as error:
+        if session.failure_evidence_dir:
+            destination = Path(session.failure_evidence_dir)
+            destination.mkdir(parents=True, exist_ok=True)
+            stem = f"entry-nonrepo-{columns}x{rows}-failed"
+            output = bytes(session.output)
+            (destination / f"{stem}.ansi").write_bytes(output)
+            (destination / f"{stem}.txt").write_text(
+                ANSI.sub(b"", output).decode("utf-8", errors="replace"), encoding="utf-8")
+        plain_tail = ANSI.sub(b"", bytes(session.output[-1800:])).decode("utf-8", errors="replace")
+        raise HarnessFailure(
+            f"entry-nonrepo {columns}x{rows} stage {stage}: {error}; output={plain_tail!r}"
         ) from error
     finally:
         session.close()
@@ -973,7 +1138,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timeout", type=float, default=15.0, help="timeout for each PTY session")
     parser.add_argument(
-        "--scenario", choices=("all", "browse", "native-install", "source-check", "config-partial", "project-recovery", "portable-recheck", "portable-flow"), default="all",
+        "--scenario", choices=("all", "browse", "native-install", "source-check", "config-partial", "scoped-inventory", "portable-recheck", "portable-flow", "entry-nonrepo"), default="all",
         help="run one scenario at both terminal sizes",
     )
     args = parser.parse_args()
@@ -981,6 +1146,8 @@ def main() -> int:
         raise HarnessFailure("this acceptance harness requires POSIX pty support")
     if not FIXTURE.is_file() or not DIST_ENTRY.is_file():
         raise HarnessFailure("compiled CLI dist is missing; run the repository build before this harness")
+    if args.scenario == "entry-nonrepo" and not CLI_ENTRY.is_file():
+        raise HarnessFailure("built CLI entry is missing; run the official build before this scenario")
 
     sessions = []
     if args.scenario in ("all", "browse"):
@@ -1003,10 +1170,10 @@ def main() -> int:
             run_config_partial(80, 24, args.timeout),
             run_config_partial(60, 18, args.timeout),
         ])
-    if args.scenario in ("all", "project-recovery"):
+    if args.scenario in ("all", "scoped-inventory"):
         sessions.extend([
-            run_project_recovery(80, 24, args.timeout),
-            run_project_recovery(60, 18, args.timeout),
+            run_scoped_inventory(80, 24, args.timeout),
+            run_scoped_inventory(60, 18, args.timeout),
         ])
     if args.scenario in ("all", "portable-recheck"):
         sessions.extend([
@@ -1018,13 +1185,16 @@ def main() -> int:
             run_portable_flow(80, 24, args.timeout),
             run_portable_flow(60, 18, args.timeout),
         ])
+    if args.scenario == "entry-nonrepo":
+        sessions.append(run_entry_nonrepo(60, 18, args.timeout))
     report = {
-        "schemaVersion": 1,
+            "schemaVersion": 1,
         "kind": "aw-tui-posix-pty",
         "sessions": sessions,
         "evidenceBoundary": {
             "layout": "PTY output from production Ink mount",
-            "businessState": "TuiController JSONL side channel",
+            "businessState": "real CLI readers" if args.scenario == "entry-nonrepo"
+                else "TuiController JSONL side channel",
             "thirdPartyNativeCompatibility": False,
         },
     }

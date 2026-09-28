@@ -26,7 +26,6 @@ import {
 } from './rebuild-command.js';
 import { createOperationPlan } from './operation-plan.js';
 import type { ReconcileOperationPlan } from './reconcile-operation-plan.js';
-import { createRemovedProjectRequirements } from '../project/removed-requirements.js';
 
 type WriteCommand = 'install' | 'sync' | 'reinstall' | 'uninstall' | 'cleanup';
 
@@ -57,9 +56,6 @@ export function mergeWriteCommandResults(
       : results.some((result) => result.overallState === 'succeeded'
         || result.overallState === 'partial') ? 'partial' : 'failed',
     receiptTargets: results.flatMap((result) => result.receiptTargets),
-    ...(results.some((result) => result.portableCleanupResidues !== undefined)
-      ? { portableCleanupResidues: results.flatMap((result) => result.portableCleanupResidues ?? []) }
-      : {}),
     ...(results.some((result) => result.nativeFootprints !== undefined)
       ? { nativeFootprints: results.flatMap((result) => result.nativeFootprints ?? []) }
       : {}),
@@ -84,9 +80,6 @@ export function mergeWriteCommandResults(
     } : {}),
     ...(results.some((result) => result.offlineCleanupPlans !== undefined)
       ? { offlineCleanupPlans: results.flatMap((result) => result.offlineCleanupPlans ?? []) }
-      : {}),
-    ...(results.some((result) => result.removedPluginCleanupIds !== undefined)
-      ? { removedPluginCleanupIds: [...new Set(results.flatMap((result) => result.removedPluginCleanupIds ?? []))] }
       : {}),
   };
 }
@@ -220,8 +213,8 @@ export function failedWriteCommandResult(
       errorCode,
       ...(errorCode === 'exclusiveOwnerEvidenceInvalid' && result.target.pluginId ? {
         recoveryActions: [
-          `run aw cleanup ${result.target.pluginId} --platform ${result.target.platform} --scope ${result.target.scope} --force`,
-          `then run aw reinstall ${result.target.pluginId} --platform ${result.target.platform} --scope ${result.target.scope}`,
+          `run aw cleanup ${result.target.pluginId} --target ${result.target.platform === 'claude' ? 'claude-code' : 'codex'} --scope ${result.target.scope} --force`,
+          `then run aw reinstall ${result.target.pluginId} --target ${result.target.platform === 'claude' ? 'claude-code' : 'codex'} --scope ${result.target.scope}`,
         ],
       } : errorCode === 'forceCleanupPathUnavailable' ? {
         recoveryActions: [
@@ -246,18 +239,12 @@ async function runPublicWriteCommand(options: {
     && !options.runtime.managedCodexAuthorizer
     ? { ...options.runtime, managedCodexAuthorizer: async () => true }
     : options.runtime;
-  const cleanupRuntime = (active: RebuildCommandRuntime): RebuildCommandRuntime =>
-    options.command === 'cleanup' && !active.removedProjectRequirements
-      ? { ...active, removedProjectRequirements: createRemovedProjectRequirements({
-          cwd: options.commandOptions.cwd, env: active.env, token: active.awHomeMutationToken,
-        }) }
-      : active;
   const execution = runtime.previewOperationPlan === true
     ? runRebuildCommand({
         command: options.command,
         pluginNames: options.pluginNames,
         commandOptions: options.commandOptions,
-        runtime: cleanupRuntime(runtime),
+        runtime,
         ...(options.all === undefined ? {} : { all: options.all }),
       })
     : (async () => {
@@ -268,7 +255,7 @@ async function runPublicWriteCommand(options: {
             command: options.command,
             pluginNames: options.pluginNames,
             commandOptions: options.commandOptions,
-            runtime: cleanupRuntime({ ...runtime, awHomeMutationToken: token }),
+            runtime: { ...runtime, awHomeMutationToken: token },
             ...(options.all === undefined ? {} : { all: options.all }),
           }),
         });

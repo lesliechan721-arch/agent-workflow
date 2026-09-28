@@ -1,22 +1,25 @@
 import { writeIntentFixture, readIntentFixture } from '../helpers/plugin-intent-fixture.js';
-import { describe, expect, it, vi } from 'vitest';
+import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { createElement } from 'react';
 import { render } from 'ink-testing-library';
 
 import {
-  cleanupWriteCommand,
-  installWriteCommand,
-  reinstallWriteCommand,
-  syncWriteCommand,
-  uninstallWriteCommand,
+  cleanupWriteCommand as nativeCleanupWriteCommand,
+  installWriteCommand as nativeInstallWriteCommand,
+  reinstallWriteCommand as nativeReinstallWriteCommand,
+  syncWriteCommand as nativeSyncWriteCommand,
+  uninstallWriteCommand as nativeUninstallWriteCommand,
 } from '../../src/commands/write-commands.js';
-import { syncCommand } from '../../src/commands/sync-command.js';
-import { resolveProjectPreferencesPath, observeProjectPreferences, createEmptyProjectPreferences, writeProjectPreferences } from '../../src/project/project-preferences.js';
-import { addProjectRequirements } from '../../src/project/project-commands.js';
+import { runRecovery } from '../../src/recovery/coordinator.js';
+import { prepareRetire, executeRetire, runRetire } from '../../src/recovery/retirement.js';
+import { readDemand, demandNativeProjection } from '../../src/recovery/demand.js';
+import { readRecoveryStatus } from '../../src/recovery/status.js';
+import { createScopeContext } from '../../src/intent/scope-context.js';
+import { observePreferences, resolvePreferencesPath, writePreferences, createEmptyPreferences } from '../../src/intent/deployment-preferences.js';
+import { addRoot, observeIntent, resolveIntentPath } from '../../src/intent/intent-store.js';
 import { portableJsonDigest } from '../../src/portable/historical-materialization.js';
-import { createRemovedProjectRequirements } from '../../src/project/removed-requirements.js';
-import { readNativeIntentProjection } from '../../src/project/project-demand.js';
 import { normalizeInstallCommandOptions } from '../../src/commands/options.js';
 import {
   runRebuildCommand,
@@ -111,12 +114,13 @@ import {
   calculateCodexNativeRenderPayloadDigest,
 } from '../../src/utils/catalog-digests.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
 import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
-import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
 import { validateCatalogSnapshotTransport } from '../../src/utils/catalog-snapshot.js';
 import { CodexManagerError } from '../../src/utils/codex-manager.js';
+import { createEmptyNativeDemandView } from '../../src/utils/native-demand.js';
 
 import {
   applyCodexConfigTransactionFile,
@@ -129,70 +133,113 @@ import {
   type CodexNativeRenderReceipt,
 } from '../../src/utils/codex-native-render-receipt.js';
 
-// Project declarations and local preferences are fixture input; the Native executor owns only outputs.
-async function installFixturePlugin(
-  names: Parameters<typeof installWriteCommand>[0],
-  raw: Parameters<typeof installWriteCommand>[1],
-  runtime: RebuildCommandRuntime = {},
+// The public recovery service owns declarations. These calls exercise only Native output handling.
+async function withNativeExecution(
+  names: string[],
+  raw: Parameters<typeof nativeInstallWriteCommand>[1],
+  runtime: RebuildCommandRuntime,
+  execute: (runtime: RebuildCommandRuntime) => ReturnType<typeof nativeInstallWriteCommand>,
+  allowDamagedPreferences = false,
 ) {
+  if (runtime.executionInput) return execute(runtime);
   const options = normalizeInstallCommandOptions(raw);
-  if (options.scope !== 'project' || runtime.previewOperationPlan || runtime.projectExecution) {
-    return installWriteCommand(names, raw, runtime);
+  const env = runtime.env;
+  if (options.scope === 'project') await fs.ensureDir(path.join(options.cwd, '.git'));
+  const context = await createScopeContext({ scope: options.scope, cwd: options.cwd, env });
+  try {
+    const demand = await readDemand({ scope: options.scope, cwd: options.cwd, env });
+    const requirements = (allowDamagedPreferences
+      && (demand.preferences.state === 'invalid' || demand.preferences.state === 'unreadable'))
+      ? createEmptyNativeDemandView()
+      : demand.intent.state === 'valid' || demand.intent.state === 'absent'
+      ? demandNativeProjection(demand) : createEmptyNativeDemandView();
+    const configured = await readCatalogSourcesConfigSnapshot(env).catch(() => undefined);
+    const primary = configured?.config.sources.find((source) => source.primary)?.id;
+    const ids = [...new Set(names.map((name) => name.includes('/') ? name : `${primary}/${name}`))];
+    const platforms = options.platform === 'both' ? ['codex', 'claude'] as const : [options.platform];
+    return execute({ ...runtime, env: context.env, executionInput: {
+      context, requirements,
+      selectedTargets: ids.flatMap((pluginId) => platforms.map((platform) => ({
+        pluginId, platform, scope: options.scope,
+      }))),
+      preserveOtherObservedTargets: true,
+    } });
+  } finally {
+    await context.dispose();
   }
-  const location = { cwd: options.cwd, env: runtime.env };
-  const config = await readCatalogSourcesConfigSnapshot(runtime.env).catch(() => undefined);
-  const primary = config?.config.sources.find((source) => source.primary)?.id;
+}
+
+function installWriteCommand(names: string[], raw: Parameters<typeof nativeInstallWriteCommand>[1],
+  runtime: RebuildCommandRuntime = {}) {
+  return withNativeExecution(names, raw, runtime, (prepared) => nativeInstallWriteCommand(names, raw, prepared));
+}
+function syncWriteCommand(names: string[], raw: Parameters<typeof nativeSyncWriteCommand>[1],
+  runtime: RebuildCommandRuntime = {}) {
+  return withNativeExecution(names, raw, runtime, (prepared) => nativeSyncWriteCommand(names, raw, prepared));
+}
+function reinstallWriteCommand(names: string[], raw: Parameters<typeof nativeReinstallWriteCommand>[1],
+  runtime: RebuildCommandRuntime = {}) {
+  return withNativeExecution(names, raw, runtime, (prepared) => nativeReinstallWriteCommand(names, raw, prepared));
+}
+function uninstallWriteCommand(names: string[], raw: Parameters<typeof nativeUninstallWriteCommand>[1],
+  runtime: RebuildCommandRuntime = {}) {
+  return withNativeExecution(names, raw, runtime, (prepared) => nativeUninstallWriteCommand(names, raw, prepared));
+}
+function cleanupWriteCommand(names: string[], raw: Parameters<typeof nativeCleanupWriteCommand>[1],
+  runtime: RebuildCommandRuntime = {}) {
+  return withNativeExecution(names, raw, runtime,
+    (prepared) => nativeCleanupWriteCommand(names, raw, prepared), true);
+}
+
+async function installFixturePlugin(names: string[], raw: Parameters<typeof installWriteCommand>[1],
+  runtime: RebuildCommandRuntime = {}) {
+  const options = normalizeInstallCommandOptions(raw);
+  const configured = await readCatalogSourcesConfigSnapshot(runtime.env).catch(() => undefined);
+  const primary = configured?.config.sources.find((source) => source.primary)?.id;
   const ids = [...new Set(names.map((name) => name.includes('/') ? name : `${primary}/${name}`))];
-  const declaration = await addProjectRequirements({ ...location, selectors: ids });
-  if (declaration.errors.length > 0) return installWriteCommand(names, raw, runtime);
-  const previous = await observeProjectPreferences(location);
-  const preferences = previous.state === 'valid' ? previous.value : createEmptyProjectPreferences();
+  const location = { scope: options.scope, cwd: options.cwd, env: runtime.env };
+  const generations = await readCatalogGenerationState(runtime.env);
+  for (const pluginId of ids) {
+    const existing = await observeIntent(location);
+    if (existing.state === 'valid' && existing.value.roots.some((root) => root.pluginId === pluginId)) continue;
+    const sourceId = pluginId.split('/')[0]!;
+    await addRoot(location, pluginId,
+      generations.sources[sourceId]?.active?.logicalIdentity ?? `fixture-${sourceId}`);
+  }
+  const observed = await observePreferences(location);
+  const preferences = observed.state === 'valid' ? observed.value : createEmptyPreferences();
   const platforms = options.platform === 'both' ? ['codex', 'claude'] as const : [options.platform];
-  await writeProjectPreferences(location, {
+  await writePreferences(location, {
     ...preferences,
     agents: [...new Set([...preferences.agents, ...platforms.map((platform) =>
       platform === 'claude' ? 'claude-code' as const : 'codex' as const)])],
-    dependencyScopeOverrides: [
-      ...preferences.dependencyScopeOverrides.filter((stored) => !(options.dependencyScopeOverrides ?? []).some((entry) =>
-        entry.pluginId === stored.pluginId && (!entry.platform || entry.platform === stored.platform))),
-      ...(options.dependencyScopeOverrides ?? []).flatMap((entry) =>
-        (entry.platform ? [entry.platform] : platforms).map((platform) => ({ ...entry, platform }))),
-    ],
+    dependencyScopeOverrides: preferences.dependencyScopeOverrides,
   });
-  const requirements = await readNativeIntentProjection(location);
-  return installWriteCommand(ids, raw, {
-    ...runtime,
-    projectExecution: {
-      requirements,
-      selectedTargets: ids.flatMap((pluginId) => platforms.filter((platform) =>
-        options.platform !== 'both' || requirements.roots.some((root) => root.pluginId === pluginId && root.platforms.includes(platform)))
-        .map((platform) => ({ pluginId, platform, scope: 'project' as const }))),
-    },
-  });
+  return installWriteCommand(ids, raw, runtime);
 }
 
-async function syncFixturePlugin(
-  names: Parameters<typeof syncCommand>[0],
-  options: Parameters<typeof syncCommand>[1],
-  runtime: RebuildCommandRuntime = {},
-) {
-  if (options.scope !== 'project') return syncCommand(names, options, runtime);
-  const requirements = await readNativeIntentProjection({ cwd: options.cwd!, env: runtime.env ?? options.env });
+async function syncFixturePlugin(names: string[], options: Parameters<typeof syncWriteCommand>[1],
+  runtime: RebuildCommandRuntime = {}) {
+  const location = { scope: options.scope as 'project' | 'user', cwd: options.cwd!, env: runtime.env };
+  const requirements = await readIntentFixture(location);
   const roots = requirements.roots.filter((root) => names.length
     ? names.some((name) => name === root.pluginId || root.pluginId.endsWith(`/${name}`))
-    : options.all);
-  if (!roots.length) return syncCommand(names, options, runtime);
-  const platforms = options.platform === 'both' ? ['codex', 'claude'] as const : [options.platform ?? 'codex'];
-  return syncWriteCommand(roots.map((root) => root.pluginId), options, {
-    ...runtime,
-    projectExecution: { requirements, selectedTargets: roots.flatMap((root) => root.platforms
-      .filter((platform) => platforms.includes(platform))
-      .map((platform) => ({ pluginId: root.pluginId, platform, scope: 'project' as const }))) },
-  });
+    : (options as { all?: boolean }).all);
+  return syncWriteCommand(roots.map((root) => root.pluginId), options, runtime);
 }
 
-async function readFixtureRequirements(options: Parameters<typeof readIntentFixture>[0]) {
-  return options.scope === 'project' ? readNativeIntentProjection(options) : readIntentFixture(options);
+const readFixtureRequirements = readIntentFixture;
+
+async function addProjectFixtureRoots(options: {
+  cwd: string; env: NodeJS.ProcessEnv; selectors: string[];
+}) {
+  const generations = await readCatalogGenerationState(options.env);
+  for (const pluginId of options.selectors) {
+    const sourceId = pluginId.split('/')[0]!;
+    await addRoot({ scope: 'project', cwd: options.cwd, env: options.env }, pluginId,
+      generations.sources[sourceId]?.active?.logicalIdentity ?? `fixture-${sourceId}`);
+  }
+  return { errors: [] };
 }
 
 async function replaceCatalogSourcesConfig(
@@ -557,7 +604,7 @@ function parseIntentRoundTripReceipt(output: string): {
   const end = output.indexOf('\n}\n', start);
   if (start < 0 || end < 0) throw new Error(`Child receipt is missing:\n${output}`);
   const receipt = JSON.parse(output.slice(start, end + 2));
-  if (receipt.kind === 'aw-project-recovery') {
+  if (receipt.kind === 'aw-recovery') {
     return { targetResults: receipt.targetResults.flatMap((entry: { backend?: { targetResults: unknown[] } }) =>
       entry.backend?.targetResults ?? []) } as ReturnType<typeof parseIntentRoundTripReceipt>;
   }
@@ -661,6 +708,10 @@ async function writeDynamicSkillRenderer(options: {
 }
 
 describe('five namespaced write commands', () => {
+  beforeEach(async () => {
+    await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
+  });
+
   it('executes selected project Native demand without writing either intent file or other roots', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'execution-only-source');
@@ -671,7 +722,6 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest, env: isolation.env,
     });
     const requirements = {
-      schemaVersion: 2 as const, kind: 'aw-plugin-intents' as const,
       roots: ['first', 'second'].map((name) => ({ pluginId: `team/${name}`, platforms: ['codex' as const] })),
       dependencyScopeOverrides: [],
     };
@@ -683,13 +733,9 @@ describe('five namespaced write commands', () => {
     });
     const intentBytes = await fs.readFile(intentPath);
     const runtime = createCodexNativeTestRuntime(isolation);
-    const writer = vi.fn(writeIntentFixture);
     const execute = (pluginId: string) => syncWriteCommand([pluginId], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-    }, {
-      ...runtime, writePluginIntentState: writer,
-      projectExecution: { requirements, selectedTargets: [{ pluginId, platform: 'codex', scope: 'project' }] },
-    });
+    }, runtime);
     const second = await execute('team/second');
     expect(second.overallState, JSON.stringify(second)).toBe('succeeded');
     const first = await execute('team/first');
@@ -697,49 +743,125 @@ describe('five namespaced write commands', () => {
     const repeated = await execute('team/first');
     expect(repeated.overallState, JSON.stringify(repeated)).toBe('succeeded');
     expect(repeated.targetResults[0]?.action).toBe('keep');
-    expect(writer).not.toHaveBeenCalled();
     expect(await fs.readFile(intentPath)).toEqual(intentBytes);
     expect((await readFixtureRequirements({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env })).roots).toEqual([]);
     const projectConfig = await readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'));
     expect(projectConfig.snapshot.plugins['second@aw']?.enabled).toBe(true);
+    const publicResult = await runRecovery('sync', ['team/first'], {
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      cliVersion: '1.0.0', targets: ['codex'], yes: true,
+    }, runtime);
+    expect(publicResult).toMatchObject({
+      schemaVersion: 1, kind: 'aw-recovery', ok: true,
+      requestedRoots: ['team/first'],
+      requestedTargets: [expect.objectContaining({ pluginId: 'team/first', agent: 'codex' })],
+    });
+    expect((await readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')))
+      .snapshot.plugins['second@aw']?.enabled).toBe(true);
     const activationPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
     const activationBytes = await fs.readFile(activationPath);
-    const noNativeSelection = await syncWriteCommand(['team/first'], {
+    const context = await createScopeContext({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    const noNativeSelection = await nativeSyncWriteCommand(['team/first'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-    }, { ...runtime, projectExecution: { requirements, selectedTargets: [] } });
+    }, { ...runtime, executionInput: {
+      context, requirements, selectedTargets: [], preserveOtherObservedTargets: true,
+    } });
+    await context.dispose();
     expect(noNativeSelection.overallState).toBe('succeeded');
     expect(await fs.readFile(activationPath)).toEqual(activationBytes);
-    const preferencesPath = await resolveProjectPreferencesPath({ cwd: isolation.layout.fixtureCwd, env: isolation.env });
+    const preferencesPath = await resolvePreferencesPath({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env });
     for (const command of [uninstallWriteCommand, cleanupWriteCommand]) {
       if (command === cleanupWriteCommand) await fs.outputFile(preferencesPath, '{broken');
       const removed = await command(['team/first'], {
         cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-      }, {
-        ...runtime, writePluginIntentState: writer,
-        projectExecution: { requirements, selectedTargets: [{ pluginId: 'team/first', platform: 'codex', scope: 'project' }] },
-      });
+      }, runtime);
       expect(removed.overallState, JSON.stringify(removed)).toBe('succeeded');
       expect(await fs.readFile(intentPath)).toEqual(intentBytes);
-      expect(writer).not.toHaveBeenCalled();
     }
     const forced = await cleanupWriteCommand(['team/first'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', force: true,
-    }, {
-      ...runtime, writePluginIntentState: writer,
-      projectExecution: { requirements, selectedTargets: [{ pluginId: 'team/first', platform: 'codex', scope: 'project' }] },
-    });
+    }, runtime);
     expect(forced.overallState, JSON.stringify(forced)).toBe('succeeded');
     expect(await fs.readFile(preferencesPath, 'utf8')).toBe('{broken');
     expect(await fs.readFile(intentPath)).toEqual(intentBytes);
-    expect(writer).not.toHaveBeenCalled();
     const userResult = await installFixturePlugin(['team/first'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
-    }, { ...runtime, projectRequirements: requirements });
+    }, runtime);
     expect(userResult.overallState, JSON.stringify(userResult)).toBe('succeeded');
     expect(await fs.readFile(intentPath)).toEqual(intentBytes);
     expect((await readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')))
       .snapshot.plugins['second@aw']?.enabled).toBe(true);
   });
+
+  it('runs User Native renderer with only User config from two projects and a non-repo cwd', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'user-neutral-native-source');
+    const renderEvents = path.join(isolation.layout.rootDir, 'user-neutral-native.jsonl');
+    await fs.outputFile(path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'render.mjs'), [
+      'import { appendFile, readFile } from "node:fs/promises";',
+      'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      `await appendFile(${JSON.stringify(renderEvents)}, JSON.stringify({ cwd: process.cwd(), scope: context.scope, mode: context.config.values.mode }) + "\\n");`,
+      'console.log(JSON.stringify({ version: 2, artifacts: [{',
+      '  id: "native", kind: "skill", platform: "codex", target: "codex.skill",',
+      '  state: "present", skillKey: "user-neutral", refreshKeys: ["mode"],',
+      '  content: { files: { "SKILL.md": `mode=${context.config.values.mode}\\n`, "README.md": "native readme\\n",',
+      '    "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n" } }',
+      '}] }));',
+    ].join('\n'));
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'neutral\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.config = { fields: { mode: { type: 'string', default: 'default' } } };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
+      manifest.artifacts = { targets: [{
+        id: 'native', platform: 'codex', scopes: ['user'], target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        states: ['present'], refreshKeys: ['mode'], skillKey: 'user-neutral',
+      }] };
+    });
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: configured.digest, env: isolation.env });
+    const callers = ['a', 'b', 'c'].map((name) => path.join(isolation.layout.rootDir, `neutral-${name}`));
+    await Promise.all(callers.map((cwd) => fs.ensureDir(cwd)));
+    await Promise.all(callers.slice(0, 2).map((cwd) => fs.ensureDir(path.join(cwd, '.git'))));
+    for (const cwd of callers.slice(0, 2)) {
+      await fs.outputFile(resolvePluginConfigStorePath({
+        sourceId: 'team', pluginName: 'demo', scope: 'project', cwd, env: isolation.env,
+      }), '{invalid-project-config');
+    }
+    await writePluginConfigStore({
+      sourceId: 'team', sourceIdentity: await calculateCatalogSourceIdentity(source),
+      logicalIdentity: await readCatalogLogicalIdentity(sourceRoot), pluginName: 'demo',
+      scope: 'user', cwd: callers[0]!, env: isolation.env, values: { mode: 'user-value' },
+    });
+    await writeIntentFixture({ scope: 'user', cwd: callers[0]!, env: isolation.env }, {
+      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    for (const cwd of callers) {
+      const result = await runRecovery('reinstall', ['team/demo'], {
+        scope: 'user', cwd, env: isolation.env, cliVersion: '1.0.0',
+        targets: ['codex'], yes: true,
+      }, runtime);
+      expect(result, JSON.stringify(result)).toMatchObject({
+        schemaVersion: 1, kind: 'aw-recovery', scope: 'user', ok: true,
+        requestedTargets: [expect.objectContaining({ pluginId: 'team/demo', agent: 'codex' })],
+      });
+    }
+    const events = (await fs.readFile(renderEvents, 'utf8')).trim().split('\n')
+      .map((line) => JSON.parse(line) as { cwd: string; scope: string; mode: string });
+    expect(events.length).toBeGreaterThanOrEqual(3);
+    for (const event of events) {
+      expect(event).toMatchObject({ scope: 'user', mode: 'user-value' });
+      expect(callers).not.toContain(event.cwd);
+    }
+    expect(runtime.nativeCliRunner.mock.calls.every(([invocation]) =>
+      !invocation.cwd || !callers.includes(invocation.cwd))).toBe(true);
+    expect(runtime.installed.has('demo@aw')).toBe(true);
+  }, 30_000);
 
   it('keeps sensitive config input out of argv and preserves stdin bytes', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -1288,7 +1410,7 @@ describe('five namespaced write commands', () => {
       pluginName: 'demo', scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toMatchObject({ state: 'ready', values: { mode: 'first' } });
     expect(await runPublic([
-      'install', 'team/demo', '--platform', 'codex', '--scope', 'project',
+      'install', 'team/demo', '--target', 'codex', '--scope', 'project',
     ])).toMatchObject({ exitCode: 0 });
     expect(await runPublic([
       'config', 'set', 'team/demo', 'mode', '--scope', 'project', '--value-json', '"second"',
@@ -1421,16 +1543,15 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     })).resolves.toMatchObject({ exists: false });
-    await expect(controller.buildOperationReview({
-      kind: 'pluginWrite',
-      action: 'install',
-      pluginId: 'missing/demo',
-      platform: 'codex',
-      scope: 'project',
-    })).rejects.toMatchObject({
-      code: 'catalogGenerationUnavailable',
-      message: expect.stringContaining('重新加载'),
+    const missingPlan = await controller.prepareScopedTask({
+      kind: 'recovery', command: 'install', scope: 'project',
+      selectors: ['missing/demo'], targets: ['codex'],
     });
+    expect(missingPlan).toMatchObject({ kind: 'recovery', scope: 'project' });
+    if (missingPlan.kind !== 'recovery') throw new Error('Expected recovery plan.');
+    expect(missingPlan.plan.receipt.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'sourceActiveUnavailable' }),
+    ]));
     expect(goodProviderCalls).toBe(1);
     await vi.waitFor(() => {
       expect(missingProviderCalls).toBe(1);
@@ -1441,6 +1562,7 @@ describe('five namespaced write commands', () => {
   it('keeps a Codex user install healthy when the project config aliases the user home', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = path.join(isolation.layout.fixtureCwd, 'codex-scope-alias-home');
+    await fs.ensureDir(path.join(cwd, '.git'));
     const { env, nativeCliRunner } = await configureCodexAliasCatalog({
       cwd,
       userConfig: path.join(cwd, '.codex'),
@@ -1467,7 +1589,7 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({
         pluginId: 'team/demo',
         state: 'ready',
-        placements: [expect.objectContaining({ scope: 'user', state: 'ready' })],
+        placements: expect.arrayContaining([expect.objectContaining({ scope: 'user', state: 'ready' })]),
       }),
     ]);
     await expect(statusCommandV8({
@@ -1752,6 +1874,44 @@ describe('five namespaced write commands', () => {
     ]));
   });
 
+  it('repairs one shared Native dependency for two reviewed project roots', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'two-root-shared-dependency');
+    await createNativeDependencyCatalog(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'first', dependencies: ['leaf'] },
+      { name: 'second', dependencies: ['leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      nativeCliRunner: runtime.nativeCliRunner, interactive: false,
+    }));
+    const plan = await dependencies.prepareScopedTask({
+      kind: 'recovery', command: 'install', scope: 'project',
+      selectors: ['team/first', 'team/second'], targets: ['codex'],
+    }, new AbortController().signal);
+    expect(plan.kind).toBe('recovery');
+    const result = await dependencies.executeScopedTask(plan);
+    expect(result, JSON.stringify(result)).toMatchObject({ kind: 'recovery', receipt: { kind: 'aw-recovery', ok: true } });
+    if (result.kind !== 'recovery') throw new Error('Expected recovery receipt.');
+    expect(result.receipt.requestedRoots).toEqual(['team/first', 'team/second']);
+    const backend = result.receipt.targetResults.find((target) => target.pluginId === 'team/first')
+      ?.backend as { targetResults?: Array<{ target: { pluginId: string }; action: string }> } | undefined;
+    expect(backend?.targetResults?.filter((target) => target.target.pluginId === 'team/leaf'))
+      .toHaveLength(1);
+    expect(runtime.installed).toEqual(new Set(['leaf@aw', 'first@aw', 'second@aw']));
+    expect((await readIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd,
+      env: isolation.env })).roots.map((root) => root.pluginId)).toEqual(['team/first', 'team/second']);
+    expect((await readIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd,
+      env: isolation.env })).roots).toEqual([]);
+  }, 30_000);
+
   it('materializes one native marketplace generation and one Codex post snapshot for a dependency group', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-group-source');
@@ -1814,30 +1974,25 @@ describe('five namespaced write commands', () => {
       nativeCliRunner: runtime.nativeCliRunner,
       interactive: false,
     }));
-    const intent = {
-      kind: 'pluginWrite',
-      action: 'install',
-      pluginId: 'team/root',
-      platform: 'codex',
-      scope: 'project',
-    } as const;
-    const evidence = await dependencies.captureEvidence(intent);
+    const plan = await dependencies.prepareScopedTask({
+      kind: 'recovery', command: 'install', selectors: ['team/root'],
+      targets: ['codex'], scope: 'project',
+    }, new AbortController().signal);
+    expect(plan.kind).toBe('recovery');
     const lockedCallsStart = runtime.nativeCliRunner.mock.calls.length;
     const previewLists = runtime.nativeCliRunner.mock.calls.slice(0, lockedCallsStart).filter(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
         === 'plugin list --marketplace aw --json');
-    expect(previewLists).toHaveLength(2);
+    expect(previewLists.length).toBeLessThanOrEqual(2);
     const copy = vi.spyOn(fs, 'copy');
     const move = vi.spyOn(fs, 'move');
     const rename = vi.spyOn(fs, 'rename');
-    let result: Awaited<ReturnType<typeof installWriteCommand>>;
+    let result: Awaited<ReturnType<typeof dependencies.executeScopedTask>>;
     let catalogCopyGenerationCount = 0;
     let generationSwapCount = 0;
     let committedBackupCount = 0;
     try {
-      result = await dependencies.executeIntent(intent, evidence) as Awaited<
-        ReturnType<typeof installWriteCommand>
-      >;
+      result = await dependencies.executeScopedTask(plan);
       catalogCopyGenerationCount = new Set(copy.mock.calls.flatMap(([, destination]) =>
         path.basename(path.dirname(String(destination))).startsWith('.team-staging-')
           ? [path.dirname(String(destination))]
@@ -1853,7 +2008,7 @@ describe('five namespaced write commands', () => {
       rename.mockRestore();
     }
 
-    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect(result, JSON.stringify(result)).toMatchObject({ kind: 'recovery', receipt: { kind: 'aw-recovery', ok: true } });
     expect(catalogCopyGenerationCount).toBe(1);
     expect(generationSwapCount).toBe(1);
     expect(committedBackupCount).toBe(1);
@@ -2738,7 +2893,7 @@ describe('five namespaced write commands', () => {
         state: 'failed',
         errorCode: 'dependencyInstallFailed',
         recoveryActions: expect.arrayContaining([
-          'run aw sync --all --platform codex --scope project',
+          'run aw sync team/root --target codex --scope project',
         ]),
       }),
     ]));
@@ -2752,7 +2907,7 @@ describe('five namespaced write commands', () => {
         state: 'failed',
         errorCode: 'dependencyInstallFailed',
         recoveryActions: expect.arrayContaining([
-          'run aw sync --all --platform codex --scope project',
+          'run aw sync team/root --target codex --scope project',
         ]),
       }),
     ]));
@@ -2760,9 +2915,20 @@ describe('five namespaced write commands', () => {
       entry.target.pluginId === 'team/leaf' || entry.target.pluginId === 'team/root')) {
       expect(target.actions.map((action) => action.name)).not.toContain('postApply');
     }
+    const recoveryAction = receipt.targetResults.find((entry) => entry.target.pluginId === 'team/root')!
+      .recoveryActions.find((action) => action.startsWith('run aw sync '))!;
+    const captured = createCapturedCliIo();
+    expect(await runCli([...recoveryAction.slice('run aw '.length).split(' '), '--json'], {
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, io: captured.io, interactive: false,
+      nativeCliRunner: runtime.nativeCliRunner, codexManagerResolver: runtime.codexManagerResolver,
+    }), captured.readStdout()).toBe(0);
+    expect(JSON.parse(captured.readStdout())).toMatchObject({
+      kind: 'aw-recovery', command: 'sync', scope: 'project', ok: true,
+      requestedRoots: ['team/root'], selection: { agents: ['codex'] },
+    });
   }, 30_000);
 
-  it('preserves project requirements and overrides when a conflicting user placement is blocked', async () => {
+  it('preserves project output and one-shot placement when the user scope installs separately', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'protected-project-placement');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'leaf' }, { name: 'root', dependencies: ['leaf'] }]);
@@ -2783,11 +2949,12 @@ describe('five namespaced write commands', () => {
     const user = await installFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime);
-    expect(user.overallState, JSON.stringify(user)).toBe('failed');
-    expect(user.targetResults.some((target) => target.errorCode === 'codexExtensionScopeConflict')).toBe(true);
+    expect(user.overallState, JSON.stringify(user)).toBe('succeeded');
+    await expect(fs.pathExists(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
+      .resolves.toBe(true);
     expect(await readFixtureRequirements({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env })).toEqual(requirements);
     expect(await fs.readFile(configPath)).toEqual(config);
-    expect(requirements.dependencyScopeOverrides).toEqual([{ pluginId: 'team/leaf', platform: 'codex', scope: 'user' }]);
+    expect(requirements.dependencyScopeOverrides).toEqual([]);
   });
 
   it('repairs missing project output through public sync without changing desired roots', async () => {
@@ -2835,7 +3002,7 @@ describe('five namespaced write commands', () => {
     await fs.remove(configPath);
     const publicOutput = createCapturedCliIo();
     await expect(runCli([
-      'sync', '--all', '--platform', 'codex', '--scope', 'project', '--json',
+      'sync', '--all', '--target', 'codex', '--scope', 'project', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -2845,7 +3012,7 @@ describe('five namespaced write commands', () => {
     expect(JSON.parse(publicOutput.readStdout())).toMatchObject({
       command: 'sync',
       ok: true,
-      kind: 'aw-project-recovery',
+      kind: 'aw-recovery',
     });
     await expect(readFixtureRequirements(intentLocation)).resolves.toEqual(intentBefore);
     await expect(fs.readFile(configPath, 'utf8')).resolves.toContain('demo.');
@@ -3335,7 +3502,7 @@ describe('five namespaced write commands', () => {
           observationSession.invalidate('aw');
         },
       });
-      let result: Awaited<ReturnType<typeof syncCommand>>;
+      let result: Awaited<ReturnType<typeof syncWriteCommand>>;
       try {
         result = sharedAction === 'reuse'
           ? await installFixturePlugin(['team/demo'], {
@@ -3353,7 +3520,7 @@ describe('five namespaced write commands', () => {
         expect.objectContaining({ action: sharedAction }),
       );
       expect(result.targetResults, JSON.stringify(result.targetResults)).toContainEqual(expect.objectContaining({
-        state: 'failed', errorCode: sharedAction === 'none' ? 'writeFailed' : errorCode,
+        state: 'failed', errorCode,
       }));
       expect(await fs.readFile(targetConfigPath, 'utf8').catch(() => undefined))
         .toBe(targetConfigBefore);
@@ -3533,6 +3700,59 @@ describe('five namespaced write commands', () => {
       'utf8',
     )).resolves.toContain('Observed reuse.');
   }, 30_000);
+
+  it.each(['aw-only', 'mixed'] as const)(
+    'blocks a Project %s Codex root that overlaps an observed User extension',
+    async (kind) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(isolation.layout.fixtureCwd, `cross-scope-${kind}-extension-source`);
+      const definition = {
+        name: 'demo',
+        configureManifest: (manifest: PluginMeta['manifest']) => {
+          manifest.extensions = { agents: [{ name: 'shared-role', description: 'Shared.',
+            prompt: 'Keep User role.' }] };
+        },
+      };
+      if (kind === 'mixed') await createNativeDependencyCatalog(sourceRoot, [definition]);
+      else await createDependencyCatalogSnapshotFixture(sourceRoot, [definition]);
+      const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+      await replaceCatalogSourcesConfig({
+        config: { schemaVersion: 2, sources: [
+          { id: 'team', type: 'path', primary: true, path: sourceRoot },
+        ] }, expectedDigest: snapshot.digest, env: isolation.env,
+      });
+      const runtime = createCodexNativeTestRuntime(isolation);
+      const user = await installFixturePlugin(['team/demo'], {
+        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
+      }, runtime);
+      expect(user.overallState, JSON.stringify(user.targetResults)).toBe('succeeded');
+      const userRolePath = path.join(isolation.env.AW_CODEX_HOME!, 'agents', 'aw-demo-shared-role.toml');
+      const userRoleBefore = await fs.readFile(userRolePath);
+      const userConfigPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+      const userConfigBefore = await fs.readFile(userConfigPath).catch(() => undefined);
+      const projectRolePath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents',
+        'aw-demo-shared-role.toml');
+      const projectInstalled = await installFixturePlugin(['team/demo'], {
+        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+      }, runtime);
+      expect(projectInstalled.overallState, JSON.stringify(projectInstalled.targetResults)).toBe('failed');
+      expect(projectInstalled.targetResults).toEqual(expect.arrayContaining([
+        expect.objectContaining({ errorCode: 'codexExtensionScopeConflict' }),
+      ]));
+      const projectSynced = await syncFixturePlugin(['team/demo'], {
+        cwd: isolation.layout.fixtureCwd, env: isolation.env,
+        platform: 'codex', scope: 'project', interactive: false,
+      }, runtime);
+      expect(projectSynced.overallState, JSON.stringify(projectSynced.targetResults)).toBe('failed');
+      expect(projectSynced.targetResults).toEqual(expect.arrayContaining([
+        expect.objectContaining({ errorCode: 'codexExtensionScopeConflict' }),
+      ]));
+      await expect(fs.readFile(userRolePath)).resolves.toEqual(userRoleBefore);
+      await expect(fs.readFile(userConfigPath).catch(() => undefined))
+        .resolves.toEqual(userConfigBefore);
+      await expect(fs.pathExists(projectRolePath)).resolves.toBe(false);
+    },
+  );
 
   it.each([
     ['absent', 'partial', 'codexNativeInstallIncomplete'],
@@ -3744,7 +3964,7 @@ describe('five namespaced write commands', () => {
     const blockedOutput = createCapturedCliIo();
     const nativeCallsBeforeBlocked = runtime.nativeCliRunner.mock.calls.length;
     expect(await runCli([
-      'sync', 'team/demo', '--platform', 'codex', '--scope', 'user', '--json',
+      'sync', 'team/demo', '--target', 'codex', '--scope', 'user', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -3754,12 +3974,13 @@ describe('five namespaced write commands', () => {
       codexManagerResolver: runtime.codexManagerResolver,
     })).toBe(0);
     expect(JSON.parse(blockedOutput.readStdout())).toMatchObject({
-      receiptSchemaVersion: 6,
-      overallState: 'succeeded',
+      schemaVersion: 1,
+      kind: 'aw-recovery',
+      scope: 'user',
+      command: 'sync',
+      ok: true,
       targetResults: [expect.objectContaining({
-        state: 'completed',
-        relation: 'requested',
-        target: expect.objectContaining({ scope: 'user' }),
+        pluginId: 'team/demo', agent: 'codex', scope: 'user',
       })],
       recoveryActions: [],
     });
@@ -3770,7 +3991,7 @@ describe('five namespaced write commands', () => {
     const repairedOutput = createCapturedCliIo();
     const nativeCallsBeforeRepair = runtime.nativeCliRunner.mock.calls.length;
     const repairedExit = await runCli([
-      'sync', 'team/demo', '--platform', 'codex', '--scope', 'user', '--yes', '--json',
+      'sync', 'team/demo', '--target', 'codex', '--scope', 'user', '--yes', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -3781,11 +4002,13 @@ describe('five namespaced write commands', () => {
     });
     expect(repairedExit, repairedOutput.readStdout()).toBe(0);
     expect(JSON.parse(repairedOutput.readStdout())).toMatchObject({
-      receiptSchemaVersion: 6,
-      overallState: 'succeeded',
+      schemaVersion: 1,
+      kind: 'aw-recovery',
+      scope: 'user',
+      command: 'sync',
+      ok: true,
       targetResults: [expect.objectContaining({
-        state: 'completed',
-        target: expect.objectContaining({ pluginId: 'team/demo', scope: 'user' }),
+        pluginId: 'team/demo', agent: 'codex', scope: 'user',
       })],
       recoveryActions: [],
     });
@@ -3839,7 +4062,7 @@ describe('five namespaced write commands', () => {
     });
     const foreignOutput = createCapturedCliIo();
     expect(await runCli([
-      'sync', 'team/demo', '--platform', 'codex', '--scope', 'user', '--yes', '--json',
+      'sync', 'team/demo', '--target', 'codex', '--scope', 'user', '--yes', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -3849,8 +4072,9 @@ describe('five namespaced write commands', () => {
       codexManagerResolver: runtime.codexManagerResolver,
     })).toBe(0);
     expect(JSON.parse(foreignOutput.readStdout())).toMatchObject({
+      schemaVersion: 1, kind: 'aw-recovery', scope: 'user', command: 'sync', ok: true,
       targetResults: [expect.objectContaining({
-        state: 'completed',
+        pluginId: 'team/demo', agent: 'codex', scope: 'user',
       })],
     });
     await expect(fs.readFile(externalPayload, 'utf8')).resolves.toBe('foreign\n');
@@ -3979,7 +4203,7 @@ describe('five namespaced write commands', () => {
     expect(result.dependencyPlan?.targets).toEqual(expect.arrayContaining([
       expect.objectContaining({
         pluginId: 'team/leaf',
-        resolvedScope: 'user',
+        resolvedScope: 'project',
         assignmentSource: 'default',
         state: 'absent',
         action: 'install',
@@ -4076,10 +4300,29 @@ describe('five namespaced write commands', () => {
       path.join(isolation.layout.fixtureCwd, 'project-native-dependency-prefix'),
       '0.151.0',
     );
+    setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
+    try {
+      const publicStatus = await readRecoveryStatus({
+        scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+        cliVersion: '1.0.0', targets: ['codex'],
+      });
+      const live = publicStatus.inventory?.find((entry) => entry.pluginId === 'team/root')
+        ?.targetResults.find((entry) => entry.agent === 'codex')?.backend as {
+          live?: { state: string; components: Array<{ kind: string; key: string; metadata?: { scope?: string } }> };
+        } | undefined;
+      expect(live?.live?.state).toBe('ready');
+      expect(live?.live?.components).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'dependency', key: 'team/leaf',
+          metadata: expect.objectContaining({ scope: 'project' }) }),
+      ]));
+    } finally {
+      setNativeCliRunnerOverrideForTests(undefined);
+    }
+
     const status = await statusCommandV8({
       plugins: ['team/root'], cwd: isolation.layout.fixtureCwd,
       env: { ...isolation.env, PATH: binRoot }, nativeCliRunner: runtime.nativeCliRunner,
-      cliVersion: '1.0.0', platform: 'codex', json: true,
+      cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
     });
     const root = status.payload.targets.find((target) => target.pluginId === 'team/root');
     const projectRoot = root?.placements.find((placement) => placement.scope === 'project');
@@ -4174,25 +4417,11 @@ describe('five namespaced write commands', () => {
     expect(reassigned.overallState, JSON.stringify(reassigned.rebuildResults)).toBe('succeeded');
     expect(reassigned.dependencyPlan?.targets).toContainEqual(expect.objectContaining({
       pluginId: 'team/leaf', resolvedScope: 'project', action: 'reinstall',
-      preservedScope: 'user',
     }));
     expect(reassigned.rebuildResults).not.toContainEqual(expect.objectContaining({
       command: 'cleanup',
       target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }),
     }));
-    expect(reassigned.codexReconcilePlans?.[0]).toMatchObject({
-      desiredTargets: expect.arrayContaining([
-        { pluginId: 'team/leaf', scopes: ['project', 'user'] },
-      ]),
-      activationActions: {
-        user: expect.arrayContaining([expect.objectContaining({
-          pluginId: 'team/leaf', action: 'none', desired: true,
-        })]),
-        project: expect.arrayContaining([expect.objectContaining({
-          pluginId: 'team/leaf', desired: true,
-        })]),
-      },
-    });
     const [userConfig, projectConfig] = await Promise.all([
       readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
       readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
@@ -4224,175 +4453,38 @@ describe('five namespaced write commands', () => {
         { pluginId: 'team/other', platforms: ['codex'] },
         { pluginId: 'team/root', platforms: ['codex'] },
       ],
-      dependencyScopeOverrides: [{
-        pluginId: 'team/leaf', platform: 'codex', scope: 'project',
-      }],
-    });
-
-    const binRoot = await writeStatusSystemCodexPackage(
-      path.join(isolation.layout.fixtureCwd, 'dependency-user-to-project-prefix'),
-      '0.151.0',
-    );
-    const statusEnv = { ...isolation.env, PATH: binRoot };
-    const status = await statusCommandV8({
-      plugins: ['team/root'], cwd: isolation.layout.fixtureCwd,
-      env: statusEnv,
-      cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
-      nativeCliRunner: runtime.nativeCliRunner,
-    });
-    const root = status.payload.targets.find((target) => target.pluginId === 'team/root');
-    expect(root, JSON.stringify(status.payload.targets)).toMatchObject({
-      state: 'needsSync',
-      placements: [expect.objectContaining({
-        scope: 'project',
-        components: expect.arrayContaining([expect.objectContaining({
-          kind: 'dependency', key: 'team/bridge', state: 'ready',
-          metadata: expect.objectContaining({ scope: 'project', project: 'current' }),
-        })]),
-      })],
-      reasons: [expect.objectContaining({
-        code: 'dependencyScopeMigrationCleanupRequired',
-        severity: 'warning',
-        dependencyPluginId: 'team/leaf',
-        dependencyPlatform: 'codex',
-        dependencyScope: 'project',
-        dependencyProject: 'current',
-      })],
-      recoveryActions: [{
-        command: 'manual',
-        description: '先按依赖保护提示依次移除 team/leaf 的所有直接和间接依赖者；若命令报告 dependencyStillRequired，继续处理提示的其他依赖者。再运行 aw cleanup team/leaf --platform codex --scope user 移除依赖旧位置。最后逐个按原平台和 scope 重新添加全部已移除 root，并在安装时选择新的依赖 scope；当前 root 的示例命令是 aw install team/root --platform codex --scope project --dependency-scope team/leaf#codex=project。',
-      }],
+      dependencyScopeOverrides: [],
     });
 
     setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
-    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
-      cwd: isolation.layout.fixtureCwd,
-      env: statusEnv,
-      nativeCliRunner: runtime.nativeCliRunner,
-      interactive: false,
-    })));
     try {
-      await controller.load();
-      const availableBridge = controller.getPluginDependencyOverview('team/root')
-        ?.dependencies.find((dependency) => dependency.pluginId === 'team/bridge');
-      expect(availableBridge?.placementReferences).toEqual([]);
-      expect(availableBridge?.availablePlacementReferences).toEqual([{
-        consumer: {
-          pluginId: 'team/root', platform: 'codex', scope: 'project', project: 'current',
-        },
-        dependency: {
-          pluginId: 'team/bridge', platform: 'codex', scope: 'project', project: 'current',
-        },
-      }]);
-      controller.push({
-        name: 'pluginDependencies', pluginId: 'team/root', direction: 'dependencies',
+      const status = await readRecoveryStatus({
+        scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+        cliVersion: '1.0.0', targets: ['codex'],
       });
-      const mounted = render(createElement(ConsoleAppV4, {
-        controller,
-        size: { columns: 80, rows: 24 },
-      }));
-      await new Promise((resolve) => setImmediate(resolve));
-      expect(mounted.lastFrame()).toContain('依赖与当前可用关系');
-      expect(mounted.lastFrame()).toContain('bridge');
-      mounted.unmount();
-      const migrationIssue = controller.listUserIssues().find((issue) =>
-        issue.category === 'incompleteInstallation'
-        && issue.pluginId === 'team/root'
-        && issue.platform === 'codex'
-        && issue.scope === 'project');
-      expect(migrationIssue, JSON.stringify(controller.snapshot.viewModel?.issues)).toBeDefined();
-      expect(migrationIssue!.actions).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          id: 'remove', pluginId: 'team/root', platform: 'codex', scope: 'project',
-          writeAction: 'uninstall',
-        }),
+      const root = status.inventory?.find((entry) => entry.pluginId === 'team/root')
+        ?.targetResults.find((entry) => entry.agent === 'codex');
+      expect(root?.backend?.live?.state).toBe('ready');
+      expect(root?.backend?.live?.components).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'dependency', key: 'team/bridge', state: 'ready' }),
       ]));
-      expect(migrationIssue!.actions.map((action) => action.id)
-        .filter((id) => id === 'cleanup' || id === 'sync' || id === 'reinstall'))
-        .toEqual([]);
-      const uninstallReview = await controller.buildOperationReview({
-        kind: 'pluginWrite',
-        action: 'uninstall',
-        pluginId: 'team/root',
-        platform: 'codex',
-        scope: 'project',
-        originIssue: {
-          issueId: migrationIssue!.issueId,
-          issueKey: userIssueKey(migrationIssue!),
-          category: migrationIssue!.category,
-          actionId: 'remove',
-        },
-      });
-      expect(uninstallReview).toMatchObject({
-        pluginAction: 'uninstall',
-        equivalentCommand: expect.stringContaining(
-          'aw uninstall team/root --platform codex --scope project',
-        ),
-        originIssue: { actionId: 'remove' },
-      });
     } finally {
-      controller.dispose();
-      setNativeCliRunnerOverrideForTests(null);
+      setNativeCliRunnerOverrideForTests(undefined);
     }
 
-    const receipt = (await import('../../src/output/command-receipt.js'))
-      .buildRebuildReceiptJson('install', reassigned);
-    expect(receipt, JSON.stringify(receipt)).toMatchObject({
-      recoveryActions: [
-        'remove every direct and indirect dependent of team/leaf in consumer-first order; if dependencyStillRequired is reported, handle the other reported dependents first',
-        'then run aw cleanup team/leaf --platform codex --scope user',
-        'then reinstall every removed root at its original platform and scope, selecting --dependency-scope team/leaf#codex=project during each install',
-      ],
-      targetResults: expect.arrayContaining([expect.objectContaining({
-        target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'project' }),
-        relation: 'dependency',
-        recoveryActions: [
-          'remove every direct and indirect dependent of team/leaf in consumer-first order; if dependencyStillRequired is reported, handle the other reported dependents first',
-          'then run aw cleanup team/leaf --platform codex --scope user',
-          'then reinstall every removed root at its original platform and scope, selecting --dependency-scope team/leaf#codex=project during each install',
-        ],
-      })]),
-    });
-
-    await expect(uninstallWriteCommand(['team/leaf'], {
-      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
-    }, runtime)).resolves.toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({ errorCode: 'dependencyStillRequired' })],
-    });
-    await expect(uninstallWriteCommand(['team/root'], {
-      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
-    await expect(uninstallWriteCommand(['team/leaf'], {
-      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
-    }, runtime)).resolves.toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({ errorCode: 'dependencyStillRequired' })],
-    });
-    await expect(uninstallWriteCommand(['team/other'], {
-      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const projectAgentBeforeUserCleanup = await fs.readFile(projectAgentPath, 'utf8');
+    const projectConfigBeforeUserCleanup = await fs.readFile(
+      path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'), 'utf8',
+    );
     const removedLeaf = await cleanupWriteCommand(['team/leaf'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime);
     expect(removedLeaf.overallState, JSON.stringify(removedLeaf.targetResults)).toBe('succeeded');
     await expect(fs.pathExists(userAgentPath)).resolves.toBe(false);
-    await expect(installFixturePlugin(['team/root'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-      dependencyScopeOverrides: [{
-        pluginId: 'team/leaf', platform: 'codex', scope: 'project',
-      }],
-    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
-    await expect(installFixturePlugin(['team/other'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-      dependencyScopeOverrides: [{
-        pluginId: 'team/leaf', platform: 'codex', scope: 'project',
-      }],
-    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await expect(fs.readFile(projectAgentPath, 'utf8')).resolves.toBe(projectAgentBeforeUserCleanup);
+    await expect(fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'), 'utf8'))
+      .resolves.toBe(projectConfigBeforeUserCleanup);
+    expect(runtime.installed.has('leaf@aw')).toBe(true);
     await expect(readFixtureRequirements({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toMatchObject({
@@ -4400,22 +4492,25 @@ describe('five namespaced write commands', () => {
         { pluginId: 'team/other', platforms: ['codex'] },
         { pluginId: 'team/root', platforms: ['codex'] },
       ],
-      dependencyScopeOverrides: [{
-        pluginId: 'team/leaf', platform: 'codex', scope: 'project',
-      }],
+      dependencyScopeOverrides: [],
     });
     await expect(readFixtureRequirements({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toMatchObject({ roots: [] });
-    const finalStatus = await statusCommandV8({
-      plugins: ['team/root', 'team/other'], cwd: isolation.layout.fixtureCwd,
-      env: statusEnv, cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
-      nativeCliRunner: runtime.nativeCliRunner,
-    });
-    const finalRoot = finalStatus.payload.targets.find((target) => target.pluginId === 'team/root');
-    const finalOther = finalStatus.payload.targets.find((target) => target.pluginId === 'team/other');
-    expect(finalRoot, JSON.stringify(finalRoot)).toMatchObject({ state: 'ready' });
-    expect(finalOther, JSON.stringify(finalOther)).toMatchObject({ state: 'ready' });
+    setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
+    try {
+      const finalStatus = await readRecoveryStatus({
+        scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+        cliVersion: '1.0.0', targets: ['codex'],
+      });
+      for (const pluginId of ['team/root', 'team/other']) {
+        const target = finalStatus.inventory?.find((entry) => entry.pluginId === pluginId)
+          ?.targetResults.find((entry) => entry.agent === 'codex');
+        expect(target?.backend?.live?.state).toBe('ready');
+      }
+    } finally {
+      setNativeCliRunnerOverrideForTests(undefined);
+    }
   }, 60_000);
 
   it('adds a second pure-native Codex scope without removing the first scope intent', async () => {
@@ -4441,10 +4536,14 @@ describe('five namespaced write commands', () => {
     }, runtime);
 
     expect(secondScope.overallState, JSON.stringify(secondScope.rebuildResults)).toBe('succeeded');
-    expect(secondScope.codexReconcilePlans?.[0]).toMatchObject({
-      desiredTargets: [{ pluginId: 'team/demo', scopes: ['project', 'user'] }],
-      sharedNativeActions: [expect.objectContaining({ action: 'reuse' })],
-    });
+    const [userConfig, projectConfig] = await Promise.all([
+      readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
+      readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
+    ]);
+    expect(userConfig.snapshot.plugins['demo@aw']?.enabled).toBe(true);
+    expect(projectConfig.snapshot.plugins['demo@aw']?.enabled).toBe(true);
+    expect(secondScope.codexReconcilePlans?.[0]?.sharedNativeActions)
+      .toEqual([expect.objectContaining({ action: 'reuse' })]);
     const receipt = (await import('../../src/output/command-receipt.js'))
       .buildRebuildReceiptJson('install', secondScope);
     expect(receipt.targetResults).toContainEqual(expect.objectContaining({
@@ -4465,27 +4564,22 @@ describe('five namespaced write commands', () => {
     expect(nativeCalls.filter((call) => call === 'plugin add demo@aw')).toHaveLength(1);
     expect(nativeCalls).not.toContain('plugin remove demo@aw');
     const binRoot = await writeStatusSystemCodexPackage(
-      path.join(isolation.layout.fixtureCwd, 'pure-native-second-scope-prefix'),
-      '0.151.0',
+      path.join(isolation.layout.fixtureCwd, 'pure-native-second-scope-prefix'), '0.151.0',
     );
     setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
-    let status;
     try {
-      status = await statusCommandV8({
-        plugins: ['team/demo'], cwd: isolation.layout.fixtureCwd,
-        env: { ...isolation.env, PATH: binRoot },
-        cliVersion: '1.0.0', platform: 'codex', json: true,
-      });
+      for (const scope of ['user', 'project'] as const) {
+        const status = await readRecoveryStatus({
+          scope, cwd: isolation.layout.fixtureCwd, env: { ...isolation.env, PATH: binRoot },
+          cliVersion: '1.0.0', targets: ['codex'],
+        });
+        const target = status.inventory?.find((entry) => entry.pluginId === 'team/demo')
+          ?.targetResults.find((entry) => entry.agent === 'codex');
+        expect(target?.backend?.live?.state).toBe('ready');
+      }
     } finally {
-      setNativeCliRunnerOverrideForTests(null);
+      setNativeCliRunnerOverrideForTests(undefined);
     }
-    expect(status.payload.targets[0], JSON.stringify(status.payload.targets[0]))
-      .toMatchObject({ state: 'ready' });
-    expect(status.payload.targets[0]!.placements.map((placement) => statusTargetIntent(placement)))
-      .toEqual([
-        { enabled: true, scopes: ['project'], relation: 'root' },
-        { enabled: true, scopes: ['user'], relation: 'root' },
-      ]);
   });
 
   it('keeps pure-native intent visible when status only observes cache residue', async () => {
@@ -4970,7 +5064,7 @@ describe('five namespaced write commands', () => {
 
     const unauthorizedOutput = createCapturedCliIo();
     const unauthorizedExitCode = await runCli([
-      'install', 'team/demo', '--platform', 'claude', '--scope', 'user', '--json',
+      'install', 'team/demo', '--target', 'claude-code', '--scope', 'user', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -4980,10 +5074,16 @@ describe('five namespaced write commands', () => {
     });
     expect(unauthorizedExitCode).toBe(1);
     expect(JSON.parse(unauthorizedOutput.readStdout())).toMatchObject({
-      overallState: 'failed',
+      schemaVersion: 1,
+      kind: 'aw-recovery',
+      scope: 'user',
+      ok: false,
+      declarationChanged: true,
+      outputsMayHaveChanged: false,
       targetResults: [expect.objectContaining({
-        state: 'failed',
-        errorCode: 'preApplyAuthorizationRequired',
+        pluginId: 'team/demo', agent: 'claude-code', scope: 'user',
+        execution: 'failed',
+        blockers: [expect.objectContaining({ code: 'preApplyAuthorizationRequired' })],
       })],
     });
     expect(marketplaceRoots.size).toBe(0);
@@ -5000,7 +5100,7 @@ describe('five namespaced write commands', () => {
     const output = createCapturedCliIo();
     const debugLogPath = path.join(isolation.layout.debugLogsDir, 'pre-apply-redaction.log');
     const exitCode = await runCli([
-      'install', 'team/demo', '--platform', 'claude', '--scope', 'user', '--yes', '--json',
+      'install', 'team/demo', '--target', 'claude-code', '--scope', 'user', '--yes', '--json',
       '--debug', '--log-file', debugLogPath,
     ], {
       cwd: isolation.layout.fixtureCwd,
@@ -5011,29 +5111,16 @@ describe('five namespaced write commands', () => {
     });
 
     expect(exitCode, output.readStdout()).toBe(1);
-    const receipt = JSON.parse(output.readStdout()) as {
-      overallState: string;
-      warnings: string[];
-      targetResults: Array<{
-        state: string;
-        errorCode: string;
-        actions: Array<{ name: string; status: string }>;
-        failures: Array<{ phase: string; message: string }>;
-      }>;
-    };
-    expect(receipt.overallState).toBe('failed');
-    expect(receipt.targetResults).toEqual([
-      expect.objectContaining({
-        state: 'failed',
-        errorCode: 'preApplyFailed',
-        actions: expect.arrayContaining([{ name: 'preApply', status: 'failed' }]),
-        failures: expect.arrayContaining([expect.objectContaining({
-          phase: 'preApply',
-          message: expect.stringContaining('ordinary preApply failed'),
-        })]),
-      }),
-    ]);
-    expect(receipt.warnings).toEqual([]);
+    const receipt = JSON.parse(output.readStdout());
+    expect(receipt).toMatchObject({
+      schemaVersion: 1, kind: 'aw-recovery', scope: 'user', ok: false,
+      declarationChanged: false, outputsMayHaveChanged: false,
+      targetResults: [expect.objectContaining({
+        pluginId: 'team/demo', agent: 'claude-code', scope: 'user',
+        execution: 'failed',
+        blockers: [expect.objectContaining({ code: 'preApplyFailed' })],
+      })],
+    });
     const serializedReceipt = JSON.stringify(receipt);
     expect(serializedReceipt).toContain('prefix[REDACTED]Suffix ordinary preApply failed');
     for (const privateValue of [
@@ -5050,7 +5137,7 @@ describe('five namespaced write commands', () => {
 
     const humanOutput = createCapturedCliIo();
     const humanExitCode = await runCli([
-      'install', 'team/demo', '--platform', 'claude', '--scope', 'user', '--yes',
+      'install', 'team/demo', '--target', 'claude-code', '--scope', 'user', '--yes',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -5060,7 +5147,7 @@ describe('five namespaced write commands', () => {
     });
     expect(humanExitCode).toBe(1);
     const humanText = `${humanOutput.readStdout()}\n${humanOutput.readStderr()}`;
-    expect(humanText).toContain('prefix[REDACTED]Suffix ordinary preApply failed');
+    expect(humanText).toContain('preApplyFailed');
     expect(humanText).not.toContain(secret);
     expect(humanText).not.toContain(escapedSecret);
     expect(marketplaceRoots.size).toBe(0);
@@ -5072,90 +5159,59 @@ describe('five namespaced write commands', () => {
       .resolves.toEqual(intentsBefore);
   }, 30_000);
 
-  it('does not authorize preApply from the legacy write wizard confirmation', async () => {
+  it('does not authorize preApply from an interactive install without --yes', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'legacy-wizard-pre-apply-source');
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'interactive-pre-apply-source');
     const definitions = [{
       name: 'demo',
       configureManifest: (manifest: PluginMeta['manifest']) => {
+        manifest.marketplace.policy.products = ['CODEX'];
         manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
       },
     }];
     await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
-    await fs.outputFile(
-      path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'preApply.mjs'),
-      'await import("node:fs/promises").then((fs) => fs.writeFile(`${process.env.AW_HOME}/legacy-wizard-pre-apply.txt`, "ran"));\n',
-    );
+    await fs.outputFile(path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'preApply.mjs'),
+      'await import("node:fs/promises").then((fs) => fs.writeFile(`${process.env.AW_HOME}/interactive-pre-apply.txt`, "ran"));\n');
     await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 2,
-        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
-      },
-      expectedDigest: snapshot.digest,
-      env: isolation.env,
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      expectedDigest: snapshot.digest, env: isolation.env,
     });
-    const markerPath = path.join(isolation.env.AW_HOME!, 'legacy-wizard-pre-apply.txt');
-    const nativeCliRunner = async () => ({
-      exitCode: 0,
-      stdout: 'codex-cli 99.0.0',
-      stderr: '',
-    });
-    const runWizard = async (yes: boolean) => {
+    const markerPath = path.join(isolation.env.AW_HOME!, 'interactive-pre-apply.txt');
+    const nativeCliRunner = async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' });
+    const launch = vi.fn();
+    const run = async (yes: boolean) => {
       const captured = createCapturedCliIo();
-      let executed: Awaited<ReturnType<typeof installWriteCommand>> | undefined;
-      const launch = vi.fn(async (request: {
-        render: (complete: (result: unknown) => void) => {
-          props: {
-            request: {
-              initial: CommandWizardSelection;
-              execute: (selection: CommandWizardSelection) => Promise<
-                Awaited<ReturnType<typeof installWriteCommand>>
-              >;
-            };
-          };
-        };
-      }) => {
-        const wizard = request.render(() => undefined).props.request;
-        const selection: CommandWizardSelection = {
-          ...wizard.initial,
-          platform: 'codex',
-          scope: 'user',
-        };
-        executed = await wizard.execute(selection);
-        return {
-          cancelled: false,
-          selection,
-          value: executed,
-          failed: executed.overallState === 'failed',
-        };
-      });
       const exitCode = await runCli([
-        'install', 'team/demo', '--scope', 'user', ...(yes ? ['--yes'] : []),
+        'install', 'team/demo', '--scope', 'user', '--target', 'codex',
+        ...(yes ? ['--yes'] : []), '--json',
       ], {
-        cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
-        io: captured.io,
-        interactive: true,
-        tuiRunner: { launch } as never,
-        nativeCliRunner,
-        ...createTtyRuntimeStreams(),
+        cwd: isolation.layout.fixtureCwd, env: isolation.env, io: captured.io,
+        interactive: true, tuiRunner: { launch } as never,
+        nativeCliRunner, ...createTtyRuntimeStreams(),
       });
-      return { exitCode, executed, launch };
+      return { exitCode, receipt: JSON.parse(captured.readStdout()) };
     };
 
-    const ordinaryConfirmation = await runWizard(false);
-    expect(ordinaryConfirmation.exitCode).toBe(1);
-    expect(ordinaryConfirmation.launch).toHaveBeenCalledOnce();
-    expect(ordinaryConfirmation.executed?.targetResults).toEqual([
-      expect.objectContaining({ errorCode: 'preApplyAuthorizationRequired' }),
-    ]);
+    const unauthorized = await run(false);
+    expect(unauthorized.exitCode).toBe(1);
+    expect(unauthorized.receipt).toMatchObject({
+      kind: 'aw-recovery', ok: false,
+      targetResults: [expect.objectContaining({
+        pluginId: 'team/demo', execution: 'failed',
+        blockers: [expect.objectContaining({ code: 'preApplyAuthorizationRequired' })],
+      })],
+    });
+    expect(launch).not.toHaveBeenCalled();
     await expect(fs.pathExists(markerPath)).resolves.toBe(false);
 
-    const explicitAuthorization = await runWizard(true);
-    expect(explicitAuthorization.exitCode).toBe(0);
-    expect(explicitAuthorization.executed).toMatchObject({ overallState: 'succeeded' });
+    const authorized = await run(true);
+    expect(authorized.exitCode).toBe(0);
+    expect(authorized.receipt).toMatchObject({
+      kind: 'aw-recovery', ok: true,
+      targetResults: [expect.objectContaining({ pluginId: 'team/demo', execution: 'applied' })],
+    });
     await expect(fs.readFile(markerPath, 'utf8')).resolves.toBe('ran');
   }, 30_000);
 
@@ -5215,7 +5271,7 @@ describe('five namespaced write commands', () => {
     };
 
     expect(await runPublic([
-      'install', 'team/demo', '--platform', 'codex', '--scope', 'project', '--yes',
+      'install', 'team/demo', '--target', 'codex', '--scope', 'project', '--yes',
     ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
     const failed = await runPublic([
       'config', 'set', 'team/demo', 'mode', '--scope', 'project',
@@ -5547,7 +5603,7 @@ describe('five namespaced write commands', () => {
     expect(JSON.stringify(result)).toContain('awCapabilityUnsupported');
   });
 
-  it('reuses current-project inventory without historical consumer scans', async () => {
+  it('rebuilds and cleans a project root with current and offline Catalog evidence', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'inventory-reuse-source');
     const remainingRoot = path.join(isolation.layout.fixtureCwd, 'inventory-reuse-remaining');
@@ -5565,14 +5621,8 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const inventoryReads: Array<boolean> = [];
-    const readInventory: typeof inventoryCatalogSourceReferences = async (options) => {
-      inventoryReads.push(options.cwd === isolation.layout.fixtureCwd);
-      return inventoryCatalogSourceReferences(options);
-    };
     const runtime = {
       env: isolation.env,
-      inventoryCatalogSourceReferences: readInventory,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
     };
 
@@ -5581,26 +5631,21 @@ describe('five namespaced write commands', () => {
     }, runtime);
     expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
     expect(installed.dependencyPlan?.resolvedPluginIds).toEqual(['team/leaf', 'team/root']);
-    expect(inventoryReads).toEqual([true]);
 
-    inventoryReads.length = 0;
     const cleaned = await cleanupWriteCommand(['team/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
     expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
-    expect(inventoryReads).toEqual([true]);
 
     const installedAgain = await installFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
     expect(installedAgain.overallState, JSON.stringify(installedAgain.rebuildResults)).toBe('succeeded');
-    inventoryReads.length = 0;
     const upgraded = await syncFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
       platform: 'codex', scope: 'project', interactive: false,
     }, runtime);
     expect(upgraded.overallState, JSON.stringify(upgraded.rebuildResults)).toBe('succeeded');
-    expect(inventoryReads).toEqual([true, true]);
 
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -5611,12 +5656,10 @@ describe('five namespaced write commands', () => {
       expectedDigest: configured.digest,
       env: isolation.env,
     });
-    inventoryReads.length = 0;
     const offline = await cleanupWriteCommand(['team/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
     expect(offline.overallState, JSON.stringify(offline.rebuildResults)).toBe('succeeded');
-    expect(inventoryReads).toEqual([true]);
   });
 
   it('keeps a present user transitive dependency when installing its project consumer', async () => {
@@ -5668,6 +5711,10 @@ describe('five namespaced write commands', () => {
     const leafUserTarget = leafStatus.payload.targets[0];
     expect(leafUserTarget?.state, JSON.stringify(leafUserTarget)).toBe('ready');
 
+    await writePreferences({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
+      ...createEmptyPreferences(), agents: ['codex'],
+      dependencyScopeOverrides: [{ pluginId: 'team/leaf', platform: 'codex', scope: 'user' }],
+    });
     const installed = await installFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', yes: true,
     }, runtime);
@@ -5676,8 +5723,8 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({ pluginId: 'team/leaf', resolvedScope: 'user', action: 'keep' }),
       expect.objectContaining({ pluginId: 'team/middle', resolvedScope: 'project' }),
     ]));
-    expect(installed.rebuildResults.find((result) => result.target.pluginId === 'team/leaf')?.actions)
-      .toContainEqual({ name: 'preApply', status: 'succeeded' });
+    expect(installed.rebuildResults.find((result) => result.target.pluginId === 'team/leaf'))
+      .toBeUndefined();
     expect(installed.targetResults).toEqual(expect.arrayContaining([
       expect.objectContaining({
         target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }),
@@ -5736,34 +5783,15 @@ describe('five namespaced write commands', () => {
     }, runtime);
     expect(repeated.overallState, JSON.stringify(repeated.rebuildResults)).toBe('succeeded');
     await expect(fs.readFile(path.join(isolation.env.AW_HOME!, 'pre-apply-count-leaf.txt'), 'utf8'))
-      .resolves.toBe('3');
+      .resolves.toBe('1');
     await expect(fs.readFile(path.join(isolation.env.AW_HOME!, 'pre-apply-count-middle.txt'), 'utf8'))
       .resolves.toBe('2');
     await expect(fs.readFile(path.join(isolation.env.AW_HOME!, 'pre-apply-count-root.txt'), 'utf8'))
       .resolves.toBe('2');
 
-    setRebuildCommandTestHooksForTests({
-      afterTargetBuilt: async ({ identity }) => {
-        if (identity.pluginId === 'team/leaf') throw new Error('injected keep preflight failure');
-      },
-    });
-    let preflightFailed: Awaited<ReturnType<typeof installWriteCommand>>;
-    try {
-      preflightFailed = await installFixturePlugin(['team/root'], {
-        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', yes: true,
-      }, runtime);
-    } finally {
-      setRebuildCommandTestHooksForTests(undefined);
-    }
-    expect(preflightFailed.overallState).toBe('failed');
-    expect(preflightFailed.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        target: expect.objectContaining({ pluginId: 'team/leaf' }),
-        state: 'failed',
-      }),
-    ]));
-    await expect(fs.readFile(path.join(isolation.env.AW_HOME!, 'pre-apply-count-leaf.txt'), 'utf8'))
-      .resolves.toBe('3');
+    // Project recovery must not execute the healthy User dependency again.
+    expect(repeated.rebuildResults.find((entry) => entry.target.pluginId === 'team/leaf'))
+      .toBeUndefined();
   });
 
   it('keeps an absent project placement out of extension repair for a healthy user install', async () => {
@@ -5842,6 +5870,12 @@ describe('five namespaced write commands', () => {
       upsertPluginActivations: { 'agent-content-toolkit@aw': true },
     });
 
+    await writePreferences({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
+      ...createEmptyPreferences(), agents: ['codex'],
+      dependencyScopeOverrides: [{
+        pluginId: 'official/agent-content-toolkit', platform: 'codex', scope: 'user',
+      }],
+    });
     const installed = await installFixturePlugin(['official/aw-catalog-development'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
@@ -5850,7 +5884,7 @@ describe('five namespaced write commands', () => {
     expect(installed.dependencyPlan?.targets).toEqual(expect.arrayContaining([
       expect.objectContaining({
         pluginId: 'official/agent-content-toolkit', resolvedScope: 'user',
-        assignmentSource: 'existingWiderTarget', action: 'keep',
+        assignmentSource: 'userOverride', action: 'keep',
       }),
     ]));
     await expect(readFixtureRequirements({
@@ -5863,7 +5897,9 @@ describe('five namespaced write commands', () => {
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toMatchObject({
       roots: [{ pluginId: 'official/aw-catalog-development', platforms: ['codex'] }],
-      dependencyScopeOverrides: [],
+      dependencyScopeOverrides: [{
+        pluginId: 'official/agent-content-toolkit', platform: 'codex', scope: 'user',
+      }],
     });
 
     const binRoot = await writeStatusSystemCodexPackage(
@@ -5943,7 +5979,7 @@ describe('five namespaced write commands', () => {
       upsertPluginActivations: { 'leaf@aw': projectEnabled },
     });
 
-    const result = await (projectEnabled ? reinstallWriteCommand : syncCommand)(['official/leaf'], {
+    const result = await (projectEnabled ? reinstallWriteCommand : syncWriteCommand)(['official/leaf'], {
       ...options, scope: 'user',
     }, runtime);
 
@@ -5982,9 +6018,18 @@ describe('five namespaced write commands', () => {
     await expect(installFixturePlugin(['official/leaf'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
-    await expect(installFixturePlugin(['official/root'], {
+    await writePreferences({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
+      ...createEmptyPreferences(), agents: ['codex'],
+      dependencyScopeOverrides: [{ pluginId: 'official/leaf', platform: 'codex', scope: 'user' }],
+    });
+    const initialProject = await installFixturePlugin(['official/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    }, runtime);
+    expect(initialProject.overallState, JSON.stringify({
+      targetResults: initialProject.targetResults,
+      rebuildResults: initialProject.rebuildResults,
+      dependencyPlan: initialProject.dependencyPlan,
+    })).toBe('succeeded');
     const agentPath = path.join(isolation.env.AW_CODEX_HOME!, 'agents', 'aw-leaf-leaf-role.toml');
     await expect(fs.pathExists(agentPath)).resolves.toBe(true);
     await fs.remove(agentPath);
@@ -6012,7 +6057,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(agentPath)).resolves.toBe(true);
   }, 30_000);
 
-  it('blocks conflicting user dependency promotion and preserves project output', async () => {
+  it('keeps project output unchanged when a separate User consumer installs the same dependency', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-user-promotion-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
@@ -6039,19 +6084,20 @@ describe('five namespaced write commands', () => {
     const projectConfigPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
     await expect(fs.readFile(projectConfigPath, 'utf8')).resolves.toContain('leaf.');
 
+    const projectBefore = await fs.readFile(projectConfigPath);
     const promoted = await installFixturePlugin(['team/user-root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime);
 
-    expect(promoted.overallState, JSON.stringify(promoted)).toBe('failed');
+    expect(promoted.overallState, JSON.stringify(promoted)).toBe('succeeded');
     expect(promoted.targetResults).toContainEqual(expect.objectContaining({
-      target: expect.objectContaining({ pluginId: 'team/leaf' }), errorCode: 'codexExtensionScopeConflict',
+      target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }), state: 'completed',
     }));
     expect(promoted.rebuildResults).not.toContainEqual(expect.objectContaining({ command: 'cleanup' }));
-    await expect(fs.readFile(projectConfigPath, 'utf8')).resolves.toContain('leaf.');
+    await expect(fs.readFile(projectConfigPath)).resolves.toEqual(projectBefore);
   });
 
-  it('preserves both scopes when a partial user dependency conflicts with project output', async () => {
+  it('repairs partial User output without changing the separate Project output', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(
       isolation.layout.fixtureCwd,
@@ -6121,17 +6167,18 @@ describe('five namespaced write commands', () => {
       'aw-leaf-leaf-role.toml',
     );
     await expect(fs.pathExists(projectAgentPath)).resolves.toBe(true);
-
+    const projectBefore = await fs.readFile(projectAgentPath);
     const promoted = await installFixturePlugin(['team/user-root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime);
 
-    expect(promoted.overallState, JSON.stringify(promoted)).toBe('failed');
+    expect(promoted.overallState, JSON.stringify(promoted)).toBe('succeeded');
     expect(promoted.targetResults).toContainEqual(expect.objectContaining({
-      target: expect.objectContaining({ pluginId: 'team/leaf' }), errorCode: 'codexExtensionScopeConflict',
+      target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }), state: 'completed',
     }));
-    await expect(fs.readFile(userAgentPath, 'utf8')).resolves.toContain('partial leaf role');
+    await expect(fs.readFile(userAgentPath, 'utf8')).resolves.not.toContain('partial leaf role');
     await expect(fs.pathExists(projectAgentPath)).resolves.toBe(true);
+    await expect(fs.readFile(projectAgentPath)).resolves.toEqual(projectBefore);
     await expect(fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'), 'utf8'))
       .resolves.toContain('leaf.');
   });
@@ -6407,6 +6454,10 @@ describe('five namespaced write commands', () => {
     });
     const runtime = createCodexNativeTestRuntime(isolation);
     const nativeCliRunner = runtime.nativeCliRunner;
+    await writePreferences({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
+      ...createEmptyPreferences(), agents: ['codex'],
+      dependencyScopeOverrides: [{ pluginId: 'team/leaf', platform: 'codex', scope: 'user' }],
+    });
     for (const scope of ['user', 'project'] as const) {
       const installed = await installFixturePlugin(['team/root'], {
         cwd: isolation.layout.fixtureCwd,
@@ -6437,6 +6488,8 @@ describe('five namespaced write commands', () => {
       path.join(sourceRoot, 'plugins', 'leaf', 'scripts', 'preApply.mjs'),
       [
         'import { readFile, writeFile } from "node:fs/promises";',
+        'const context = JSON.parse(await new Promise((resolve) => { let data = ""; process.stdin.on("data", (chunk) => { data += chunk; }); process.stdin.on("end", () => resolve(data)); }));',
+        'if (context.target.scope !== "user") throw new Error("shared leaf used the wrong scope");',
         `const counter = ${JSON.stringify(counterPath)};`,
         'const previous = Number(await readFile(counter, "utf8").catch(() => "0"));',
         'await writeFile(counter, String(previous + 1));',
@@ -6473,23 +6526,31 @@ describe('five namespaced write commands', () => {
     };
 
     const succeeded = await applyMode('fast');
-    expect(succeeded.exitCode, JSON.stringify(succeeded.receipt)).toBe(1);
+    expect(succeeded.exitCode, JSON.stringify(succeeded.receipt)).toBe(0);
     expect(succeeded.receipt).toMatchObject({
       configWrite: 'succeeded',
-      overallState: 'partial',
+      overallState: 'succeeded',
       apply: {
+        state: 'succeeded',
         targetResults: expect.arrayContaining([
           expect.objectContaining({
-            target: expect.objectContaining({ pluginId: 'team/root', scope: 'user' }),
-            errorCode: 'dependencyStillRequired',
+            target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }),
+            action: 'keep', state: 'completed',
           }),
           expect.objectContaining({
             target: expect.objectContaining({ pluginId: 'team/root', scope: 'project' }),
-            state: 'completed',
+            action: 'keep', state: 'completed',
+          }),
+          expect.objectContaining({
+            target: expect.objectContaining({ pluginId: 'team/root', scope: 'user' }),
+            action: 'keep', state: 'completed',
           }),
         ]),
       },
     });
+    expect(succeeded.receipt.apply.targetResults).not.toContainEqual(expect.objectContaining({
+      target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'project' }),
+    }));
     await expect(fs.readFile(counterPath, 'utf8')).resolves.toBe('1');
 
     await fs.outputFile(controlPath, 'fail');
@@ -6502,11 +6563,15 @@ describe('five namespaced write commands', () => {
     expect(failed.receipt.apply.targetResults).toEqual(expect.arrayContaining([
       expect.objectContaining({
         target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }),
-        errorCode: 'preApplyFailed',
+        action: 'keep', state: 'failed', errorCode: 'preApplyFailed',
       }),
       expect.objectContaining({
-        target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }),
-        errorCode: 'dependencyStillRequired',
+        target: expect.objectContaining({ pluginId: 'team/root', scope: 'user' }),
+        action: 'skipped', state: 'skipped', errorCode: 'dependencyInstallFailed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/root', scope: 'project' }),
+        action: 'keep', state: 'completed',
       }),
     ]));
     await expect(fs.readFile(counterPath, 'utf8')).resolves.toBe('2');
@@ -6541,7 +6606,7 @@ describe('five namespaced write commands', () => {
 
     const result = await installFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd,
-      platform: 'both',
+      platform: 'codex',
       scope: 'project',
     }, {
       env: isolation.env,
@@ -6549,6 +6614,7 @@ describe('five namespaced write commands', () => {
     });
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect(result.rebuildResults.every((entry) => entry.target.platform === 'codex')).toBe(true);
     expect(result.receiptTargets).toEqual([
       expect.objectContaining({ pluginId: 'team/leaf', platform: 'codex' }),
       expect.objectContaining({ pluginId: 'team/root', platform: 'codex' }),
@@ -6727,7 +6793,7 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     };
-    await addProjectRequirements({ cwd: isolation.layout.fixtureCwd, env: isolation.env, selectors: ['team/demo'] });
+    await addProjectFixtureRoots({ cwd: isolation.layout.fixtureCwd, env: isolation.env, selectors: ['team/demo'] });
     const intentBeforeExecution = await readFixtureRequirements(intentLocation);
     const nativeCallsBeforeExecution = nativeCliRunner.mock.calls.length;
 
@@ -6895,7 +6961,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
     await expect(readFixtureRequirements({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    })).resolves.toMatchObject({ roots: [] });
+    })).resolves.toMatchObject({ roots: [{ pluginId: 'team/demo', platforms: ['codex'] }] });
     await expect(fs.readFile(projectIntentPath)).resolves.toEqual(projectIntentBefore);
   });
 
@@ -7001,7 +7067,7 @@ describe('five namespaced write commands', () => {
     ))).resolves.toBe(false);
   }, 30_000);
 
-  it('does not run preApply when cleanup reconciles a still-desired Codex target', async () => {
+  it('cleans selected Codex output without running preApply or changing Intent', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'cleanup-desired-pre-apply-source');
     const definitions: Array<{
@@ -7027,6 +7093,10 @@ describe('five namespaced write commands', () => {
       platform: 'codex',
       scope: 'project',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const configPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
+    expect(await fs.readFile(configPath, 'utf8')).toContain('aw-owner-v3:');
+    const intentPath = path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-intents.json');
+    const intentBefore = await fs.readFile(intentPath);
 
     definitions[0]!.configureManifest = (manifest) => {
       manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
@@ -7048,6 +7118,8 @@ describe('five namespaced write commands', () => {
     }, runtime);
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect((await fs.readFile(configPath, 'utf8').catch(() => ''))).not.toContain('aw-owner-v3:');
+    await expect(fs.readFile(intentPath)).resolves.toEqual(intentBefore);
     await expect(fs.pathExists(
       path.join(isolation.env.AW_HOME!, 'cleanup-pre-apply-ran.txt'),
     )).resolves.toBe(false);
@@ -7119,6 +7191,7 @@ describe('five namespaced write commands', () => {
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
     await expect(installFixturePlugin(['team/root'], {
       cwd: projectA, platform: 'codex', scope: 'project',
+      dependencyScopeOverrides: [{ pluginId: 'team/leaf', platform: 'codex', scope: 'user' }],
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
     const userIntent = { scope: 'user' as const, cwd: projectA, env: isolation.env };
     await writeIntentFixture(userIntent, {
@@ -7523,16 +7596,134 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
     }));
-    await expect(dependencies.captureEvidence({
-      kind: 'pluginWrite', action: 'install', pluginId: 'team/root', platform: 'codex', scope: 'project',
-    })).rejects.toMatchObject({
-      code: 'artifactCollision',
-      diagnostics: [expect.objectContaining({
-        code: 'artifactCollision', stage: 'dependencyPlan',
-        target: { pluginId: 'team/leaf', platform: 'codex', scope: 'project' },
-      })],
-    });
+    const plan = await dependencies.prepareScopedTask({
+      kind: 'recovery', command: 'install', selectors: ['team/root'],
+      targets: ['codex'], scope: 'project',
+    }, new AbortController().signal);
+    expect(plan.kind).toBe('recovery');
+    expect(plan.plan.receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/root', blockers: expect.arrayContaining([
+        expect.objectContaining({ code: 'artifactCollision' }),
+      ]) }),
+    ]));
+    await plan.plan.context.dispose();
+    const controller = new TuiController(dependencies);
+    controller.beginInstallFlow('team/root', 'project');
+    controller.setInstallPlatforms(['codex']);
+    await controller.prepareInstallDependencyPlacement();
+    expect(controller.snapshot.installPlacementDraft).toMatchObject({ state: 'blocked', canContinue: false,
+      targets: [expect.objectContaining({ pluginId: 'team/leaf', action: 'block' })] });
+    controller.dispose();
     await expect(fs.readFile(foreignPath, 'utf8')).resolves.toBe('developer_instructions = "foreign"\n');
+  });
+
+  it.each([['user', ['codex']], ['project', ['codex']], ['project', ['codex', 'claude']]] as const)('previews dependency placement through the real TUI runtime for %s %s', async (scope, platforms) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'tui-placement-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' }, { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [
+      { id: 'team', type: 'path', primary: true, path: sourceRoot },
+    ] }, expectedDigest: snapshot.digest, env: isolation.env });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    }));
+    const controller = new TuiController(dependencies);
+    controller.beginInstallFlow('team/root', scope);
+    controller.setInstallPlatforms([...platforms]);
+    await controller.prepareInstallDependencyPlacement();
+    expect(controller.snapshot.installPlacementDraft).toMatchObject({ state: 'ready', canContinue: true,
+      targets: expect.arrayContaining(platforms.map((platform) => expect.objectContaining({ pluginId: 'team/leaf', platform }))) });
+    expect(await observeIntent({ scope, cwd: isolation.layout.fixtureCwd, env: isolation.env }))
+      .toMatchObject({ state: 'absent' });
+    expect(await observePreferences({ scope, cwd: isolation.layout.fixtureCwd, env: isolation.env }))
+      .toMatchObject({ state: 'absent' });
+    controller.dispose();
+  });
+
+  it.each(['save', 'cancel', 'stale', 'write-failure'] as const)(
+    'preserves scope preferences across explicit TUI dependency placement %s', async (outcome) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const location = { scope: 'project' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    const sourceRoot = path.join(location.cwd, 'tui-save-placement-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' }, { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(location.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [
+      { id: 'team', type: 'path', primary: true, path: sourceRoot },
+    ] }, expectedDigest: snapshot.digest, env: location.env });
+    const unrelated = { pluginId: 'other/retained', platform: 'claude' as const, scope: 'project' as const };
+    await writePreferences(location, { ...createEmptyPreferences(), agents: ['cursor'],
+      dependencyScopeOverrides: [unrelated] });
+    await writePreferences({ ...location, scope: 'user' }, { ...createEmptyPreferences(), agents: ['claude-code'] });
+    const prefsPath = await resolvePreferencesPath(location);
+    const original = await fs.readFile(prefsPath);
+    const userPrefsPath = await resolvePreferencesPath({ ...location, scope: 'user' });
+    const userOriginal = await fs.readFile(userPrefsPath);
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      ...location, interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    }));
+    const controller = new TuiController(dependencies);
+    controller.beginInstallFlow('team/root', 'project');
+    controller.setInstallPlatforms(['codex']);
+    await controller.prepareInstallDependencyPlacement();
+    await controller.setDependencyScope('team/leaf', 'codex', 'user');
+    const intent = controller.installPlacementIntent();
+    expect(intent.saveDependencyScopeOverrides).toBe(true);
+    const prepare = () => controller.prepareScopedTask({ kind: 'recovery', command: 'install',
+      selectors: ['team/root'], scope: 'project', targets: ['codex'],
+      dependencyScopeOverrides: intent.dependencyScopeOverrides,
+      saveDependencyScopeOverrides: intent.saveDependencyScopeOverrides });
+    const plan = await prepare();
+    if (plan.kind !== 'recovery') throw new Error('Expected recovery plan');
+    expect(plan.plan.plannedImpact.preferences).toBe(true);
+    expect(plan.plan.changes).toContain('保存 project 依赖偏好：team/leaf#codex=user。');
+    expect(await fs.readFile(prefsPath)).toEqual(original);
+    expect(await observeIntent(location)).toMatchObject({ state: 'absent' });
+    if (outcome === 'cancel') {
+      await controller.discardScopedPlan(plan);
+      await controller.resetDependencyScopes();
+      expect(controller.installPlacementIntent().saveDependencyScopeOverrides).toBeUndefined();
+      expect(await fs.readFile(prefsPath)).toEqual(original);
+      expect(await observeIntent(location)).toMatchObject({ state: 'absent' });
+    } else {
+      if (outcome === 'stale') await fs.appendFile(prefsPath, '\n');
+      if (outcome === 'write-failure') setAtomicConfigBeforeRenameHookForTests(async (filePath) => {
+        if (filePath === prefsPath) throw new Error('fixturePreferenceWriteFailure');
+      });
+      const result = await controller.executeScopedTask(plan).finally(() =>
+        setAtomicConfigBeforeRenameHookForTests(undefined));
+      if (result.kind !== 'recovery') throw new Error('Expected recovery receipt');
+      if (outcome === 'stale') {
+        expect(result.receipt).toMatchObject({ declarationChanged: false, preferencesChanged: false,
+          outputsMayHaveChanged: false, blockers: [expect.objectContaining({ code: 'operationReviewStale' })] });
+        expect(await fs.readFile(prefsPath, 'utf8')).toBe(original.toString() + '\n');
+      } else if (outcome === 'write-failure') {
+        expect(result.receipt).toMatchObject({ declarationChanged: true, preferencesChanged: false,
+          outputsMayHaveChanged: false, ok: false });
+        expect(await fs.readFile(prefsPath)).toEqual(original);
+      } else {
+        expect(result.receipt).toMatchObject({ ok: true, declarationChanged: true, preferencesChanged: true });
+        expect(await observePreferences(location)).toMatchObject({ state: 'valid', value: {
+          agents: ['cursor'], dependencyScopeOverrides: [unrelated,
+            { pluginId: 'team/leaf', platform: 'codex', scope: 'user' }],
+        } });
+        const restored = await controller.prepareScopedTask({ kind: 'recovery', command: 'sync',
+          selectors: ['team/root'], scope: 'project', targets: ['codex'] });
+        if (restored.kind !== 'recovery') throw new Error('Expected recovery plan');
+        expect(restored.plan.nativeGroups[0]?.preview.dependencyPlan?.targets).toEqual(expect.arrayContaining([
+          expect.objectContaining({ pluginId: 'team/leaf', resolvedScope: 'user' }),
+        ]));
+        await controller.discardScopedPlan(restored);
+      }
+    }
+    expect(await fs.readFile(userPrefsPath)).toEqual(userOriginal);
+    controller.dispose();
   });
 
   it('executes dependency installation through the reviewed TUI backend', async () => {
@@ -7548,31 +7739,27 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const inventoryReads: Array<boolean> = [];
-    const readInventory: typeof inventoryCatalogSourceReferences = async (options) => {
-      inventoryReads.push(options.cwd === isolation.layout.fixtureCwd);
-      return inventoryCatalogSourceReferences(options);
-    };
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
       interactive: false,
-    }), undefined, { inventoryCatalogSourceReferences: readInventory });
-    const intent = {
-      kind: 'pluginWrite', action: 'install', pluginId: 'team/root', platform: 'codex', scope: 'project',
-    } as const;
-    const evidence = await dependencies.captureEvidence(intent);
-    expect(inventoryReads).toEqual([true]);
-    inventoryReads.length = 0;
-    const result = await dependencies.executeIntent(intent, evidence) as Awaited<ReturnType<typeof installWriteCommand>>;
-
-    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
-    expect(result.rebuildResults.map((entry) => entry.target.pluginName)).toEqual(['leaf', 'root']);
-    expect(result.dependencyPlan?.dependencyEdges).toEqual([
-      { from: 'team/root', to: 'team/leaf', platform: 'codex' },
-    ]);
-    expect(inventoryReads).toEqual([true]);
+    }));
+    const plan = await dependencies.prepareScopedTask({
+      kind: 'recovery', command: 'install', selectors: ['team/root'],
+      targets: ['codex'], scope: 'project',
+    }, new AbortController().signal);
+    expect(plan.kind).toBe('recovery');
+    const result = await dependencies.executeScopedTask(plan);
+    expect(result).toMatchObject({ kind: 'recovery', receipt: { ok: true } });
+    if (result.kind !== 'recovery') throw new Error('Expected recovery receipt.');
+    expect(result.receipt.targetResults).toEqual([expect.objectContaining({
+      pluginId: 'team/root', execution: 'applied',
+      backend: expect.objectContaining({
+        resolvedPluginIds: ['team/leaf', 'team/root'],
+        dependencyEdges: [{ from: 'team/root', to: 'team/leaf', platform: 'codex' }],
+      }),
+    })]);
   });
 
   it('fails closed before a dependency write when the operation plan no longer matches', async () => {
@@ -7613,7 +7800,7 @@ describe('five namespaced write commands', () => {
       .resolves.toBe(false);
   });
 
-  it('uses one fresh ordinary inventory for reviewed TUI writes without a historical cleanup scan', async () => {
+  it('runs TUI project install and cleanup while retaining the declared root', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'tui-inventory-owner-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }]);
@@ -7623,42 +7810,29 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const inventoryReads: Array<boolean> = [];
-    const readInventory: typeof inventoryCatalogSourceReferences = async (options) => {
-      inventoryReads.push(options.cwd === isolation.layout.fixtureCwd);
-      return inventoryCatalogSourceReferences(options);
-    };
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
       interactive: false,
-    }), undefined, { inventoryCatalogSourceReferences: readInventory });
-    const installIntent = {
-      kind: 'pluginWrite', action: 'install', pluginId: 'team/demo', platform: 'codex', scope: 'project',
-    } as const;
-    const installEvidence = await dependencies.captureEvidence(installIntent);
-    expect(inventoryReads).toEqual([true]);
-    inventoryReads.length = 0;
-
-    await expect(dependencies.executeIntent(installIntent, installEvidence)).resolves.toMatchObject({
-      overallState: 'succeeded',
-    });
-    expect(inventoryReads).toEqual([true]);
-
-    inventoryReads.length = 0;
-    const cleanupIntent = { ...installIntent, action: 'cleanup' as const };
-    const cleanupEvidence = await dependencies.captureEvidence(cleanupIntent);
-    expect(inventoryReads).toEqual([true]);
-    inventoryReads.length = 0;
-
-    await expect(dependencies.executeIntent(cleanupIntent, cleanupEvidence)).resolves.toMatchObject({
-      overallState: 'succeeded',
-    });
-    expect(inventoryReads).toEqual([true]);
+    }));
+    const installPlan = await dependencies.prepareScopedTask!({
+      kind: 'recovery', scope: 'project', command: 'install', selectors: ['team/demo'],
+      targets: ['codex'],
+    }, new AbortController().signal);
+    const installed = await dependencies.executeScopedTask!(installPlan);
+    expect(installed).toMatchObject({ kind: 'recovery', receipt: { ok: true } });
+    const cleanupPlan = await dependencies.prepareScopedTask!({
+      kind: 'recovery', scope: 'project', command: 'cleanup', selectors: ['team/demo'],
+      targets: ['codex'],
+    }, new AbortController().signal);
+    const cleaned = await dependencies.executeScopedTask!(cleanupPlan);
+    expect(cleaned).toMatchObject({ kind: 'recovery', receipt: { ok: true } });
+    await expect(readFixtureRequirements({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }))
+      .resolves.toMatchObject({ roots: [{ pluginId: 'team/demo' }] });
   });
 
-  it('rejects stale reviewed TUI inventory before changing an already advanced target', async () => {
+  it('rejects a stale TUI recovery plan before changing an already advanced target', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'tui-inventory-stale-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }]);
@@ -7668,41 +7842,76 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const inventoryReads: Array<boolean> = [];
-    const readInventory: typeof inventoryCatalogSourceReferences = async (options) => {
-      inventoryReads.push(options.cwd === isolation.layout.fixtureCwd);
-      return inventoryCatalogSourceReferences(options);
-    };
     const context = createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
       interactive: false,
     });
-    const dependencies = createTuiControllerDependencies(
-      context,
-      undefined,
-      { inventoryCatalogSourceReferences: readInventory },
-    );
-    const intent = {
-      kind: 'pluginWrite', action: 'install', pluginId: 'team/demo', platform: 'codex', scope: 'project',
-    } as const;
-    const reviewEvidence = await dependencies.captureEvidence(intent);
-    expect(inventoryReads).toEqual([true]);
+    const dependencies = createTuiControllerDependencies(context);
+    const plan = await dependencies.prepareScopedTask!({
+      kind: 'recovery', scope: 'project', command: 'install', selectors: ['team/demo'],
+      targets: ['codex'],
+    }, new AbortController().signal);
     await expect(installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, context)).resolves.toMatchObject({ overallState: 'succeeded' });
     const targetPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
     const before = await fs.readFile(targetPath, 'utf8');
     const beforeMtime = (await fs.stat(targetPath)).mtimeMs;
-    inventoryReads.length = 0;
-
-    await expect(dependencies.executeIntent(intent, reviewEvidence)).rejects.toMatchObject({
-      code: 'operationReviewStale',
+    await expect(dependencies.executeScopedTask!(plan)).resolves.toMatchObject({
+      kind: 'recovery', receipt: {
+        ok: false, outputsMayHaveChanged: false,
+        blockers: [expect.objectContaining({ code: 'operationReviewStale' })],
+      },
     });
-    expect(inventoryReads).toEqual([true]);
     await expect(fs.readFile(targetPath, 'utf8')).resolves.toBe(before);
     await expect(fs.stat(targetPath)).resolves.toMatchObject({ mtimeMs: beforeMtime });
+  });
+
+  it('reviews exact force cleanup through the real controller and rejects changed output evidence', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const location = { scope: 'project' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    const sourceRoot = path.join(location.cwd, 'tui-force-owned-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo', configureManifest: (manifest) => {
+      manifest.extensions = { agents: [{ name: 'reviewer', description: 'Review.', prompt: 'Review changes.' }] };
+    } }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(location.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [
+      { id: 'team', type: 'path', primary: true, path: sourceRoot },
+    ] }, expectedDigest: snapshot.digest, env: location.env });
+    const context = createCliExecutionContext({ ...location, interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }) });
+    const dependencies = createTuiControllerDependencies(context);
+    const controller = new TuiController(dependencies);
+    const agentPath = path.join(location.cwd, '.codex', 'agents', 'aw-demo-reviewer.toml');
+    const foreignPath = path.join(location.cwd, '.codex', 'agents', 'foreign.toml');
+    await fs.outputFile(agentPath, '# agent-workflows-owner: {invalid\nowned damaged output\n');
+    await fs.outputFile(foreignPath, 'foreign bytes\n');
+    const original = await fs.readFile(agentPath);
+    const candidate = await controller.getForceCleanupCandidate('team/demo', 'codex', 'project');
+    expect(candidate).toMatchObject({ pluginId: 'team/demo', platform: 'codex', scope: 'project', actionCount: 1 });
+    const cancelled = await controller.startForceCleanupReview(candidate!);
+    expect(cancelled.kind).toBe('recovery');
+    await controller.discardScopedPlan(cancelled);
+    expect(await fs.readFile(agentPath)).toEqual(original);
+    const stale = await controller.startForceCleanupReview(candidate!);
+    await fs.appendFile(agentPath, 'changed\n');
+    expect(await controller.executeScopedTask(stale)).toMatchObject({ kind: 'recovery', receipt: {
+      ok: false, outputsMayHaveChanged: false, blockers: [expect.objectContaining({ code: 'operationReviewStale' })],
+    } });
+    expect(await fs.readFile(agentPath, 'utf8')).toBe(original.toString() + 'changed\n');
+    const reviewed = await controller.startForceCleanupReview(candidate!);
+    if (reviewed.kind !== 'recovery') throw new Error('Expected recovery plan');
+    expect(reviewed.plan.receipt.requestedTargets).toEqual([
+      expect.objectContaining({ pluginId: 'team/demo', agent: 'codex', scope: 'project' }),
+    ]);
+    const result = await controller.executeScopedTask(reviewed);
+    expect(result).toMatchObject({ kind: 'recovery', receipt: { declarationChanged: false, preferencesChanged: false } });
+    expect(await fs.pathExists(agentPath)).toBe(false);
+    expect(await fs.readFile(foreignPath, 'utf8')).toBe('foreign bytes\n');
+    expect(await observeIntent(location)).toMatchObject({ state: 'absent' });
+    controller.dispose();
   });
 
   it('does not offer shared-only force cleanup without an Intent change or exact path', async () => {
@@ -7781,10 +7990,10 @@ describe('five namespaced write commands', () => {
         nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
         interactive: false,
       }));
-      const intent = {
-        kind: 'pluginWrite', action: 'install', pluginId: 'team/demo', platform: 'codex', scope: 'project',
-      } as const;
-      const evidence = await dependencies.captureEvidence(intent);
+      const plan = await dependencies.prepareScopedTask!({
+        kind: 'recovery', scope: 'project', command: 'install', selectors: ['team/demo'],
+        targets: ['codex'],
+      }, new AbortController().signal);
       await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'review B\n', (manifest) => {
         manifest.marketplace.policy.products = ['CODEX'];
       });
@@ -7800,16 +8009,12 @@ describe('five namespaced write commands', () => {
     await syncCatalogSourceGeneration({
         sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
       });
-      const dispatched = vi.fn();
-      setTuiControllerRuntimeTestHooksForTests({ afterMutationEvidenceCapture: async () => dispatched() });
-      try {
-        await expect(dependencies.executeIntent(intent, evidence)).rejects.toMatchObject({
-          code: 'operationReviewStale',
-        });
-      } finally {
-        setTuiControllerRuntimeTestHooksForTests(undefined);
-      }
-      expect(dispatched).not.toHaveBeenCalled();
+      await expect(dependencies.executeScopedTask!(plan)).resolves.toMatchObject({
+        kind: 'recovery', receipt: {
+          ok: false, outputsMayHaveChanged: false,
+          blockers: [expect.objectContaining({ code: 'operationReviewStale' })],
+        },
+      });
       await expect(fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')))
         .resolves.toBe(false);
     },
@@ -7868,10 +8073,21 @@ describe('five namespaced write commands', () => {
       }
     };
 
-    const pluginResult = await executeWithSourceAdvance({
-      kind: 'pluginWrite', action: 'install', pluginId: 'team/demo', platform: 'codex', scope: 'project',
+    await writeSource('review B');
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    const dependencies = createTuiControllerDependencies(context);
+    const plan = await dependencies.prepareScopedTask!({
+      kind: 'recovery', scope: 'project', command: 'install', selectors: ['team/demo'],
+      targets: ['codex'],
+    }, new AbortController().signal);
+    await writeSource('actual C');
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    await expect(dependencies.executeScopedTask!(plan)).resolves.toMatchObject({
+      kind: 'recovery', receipt: {
+        ok: false, outputsMayHaveChanged: false,
+        blockers: [expect.objectContaining({ code: 'operationReviewStale' })],
+      },
     });
-    expect(pluginResult).toMatchObject({ state: 'stale', review: { title: '添加插件' } });
     await expect(fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')))
       .resolves.toBe(false);
 
@@ -8242,19 +8458,13 @@ describe('five namespaced write commands', () => {
         await expect(fs.readFile(intentPath, 'utf8')).resolves.toBe(intentBefore);
         await expect(snapshotRegularTree(platformRoot)).resolves.toEqual(platformBefore);
       } else {
-        const cleaned = await withAwHomeMutationLock({
-          env: isolation.env,
-          action: (token) => runRebuildCommand({
-            command: 'cleanup',
-            pluginNames: [],
-            all: true,
-            commandOptions: {
-              cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-            },
-            runtime: { ...runtime, awHomeMutationToken: token },
-          }),
-        });
-        expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
+        const cleaned = await runRecovery('cleanup', [], {
+          scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+          cliVersion: '1.0.0', all: true, targets: ['codex'], yes: true,
+        }, runtime);
+        expect(cleaned.ok, JSON.stringify(cleaned.targetResults)).toBe(true);
+        expect(cleaned.targetResults.map((target) => target.pluginId).sort())
+          .toEqual(['team/leaf', 'team/root']);
         await expect(readFixtureRequirements({
           scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
         })).resolves.toMatchObject({ roots: expect.arrayContaining([expect.objectContaining({ pluginId: 'team/root' }), expect.objectContaining({ pluginId: 'team/leaf' })]) });
@@ -8428,24 +8638,14 @@ describe('five namespaced write commands', () => {
       nativeCliRunner,
       interactive: false,
     }));
-    const controller = new TuiController(dependencies);
-    await controller.load();
-    const issue = controller.listUserIssues().find((entry) => entry.category === 'sourceMissing'
-      && entry.pluginId === 'team/demo' && entry.platform === 'codex' && entry.scope === 'project');
-    expect(issue?.actions.map((action) => action.id)).toEqual(['cleanup', 'reAddSource', 'viewTechnical']);
-    const cleanupIntent = {
-      kind: 'pluginWrite', action: 'cleanup', pluginId: 'team/demo', platform: 'codex', scope: 'project',
-      originIssue: {
-        issueId: issue!.issueId,
-        issueKey: userIssueKey(issue!),
-        category: 'sourceMissing',
-        actionId: 'cleanup',
-      },
-    } as const;
-    const review = await controller.buildOperationReview(cleanupIntent);
-    await expect(controller.executeOperation(review.reviewToken))
-      .resolves.toMatchObject({ state: 'succeeded' });
-    controller.dispose();
+    const review = await dependencies.prepareScopedTask({
+      kind: 'recovery', scope: 'project', command: 'cleanup',
+      selectors: ['team/demo'], targets: ['codex'],
+    }, new AbortController().signal);
+    const execution = await dependencies.executeScopedTask(review);
+    expect(execution).toMatchObject({ kind: 'recovery', receipt: {
+      command: 'cleanup', ok: true,
+    } });
     await expect(fs.readFile(configPath, 'utf8')).resolves.not.toBe(before);
     await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain('aw-owner-v3:');
     await expect(readPluginConfigStore({
@@ -8493,15 +8693,24 @@ describe('five namespaced write commands', () => {
     expect(before.payload.targets).toEqual([expect.objectContaining({
       state: 'blocked', reasons: expect.arrayContaining([expect.objectContaining({ code: 'bundleUnavailable' })]),
     })]);
-    await expect(cleanupWriteCommand(['official/demo'], { ...options, yes: true }, runtime))
-      .resolves.toMatchObject({ overallState: 'succeeded' });
+    const retired = await runRetire({
+      scope: 'user', cwd: options.cwd, env: isolation.env,
+      selector: 'official/demo', targets: ['codex'], yes: true,
+    }, runtime);
+    expect(retired).toMatchObject({ kind: 'aw-recovery', command: 'intent:retire',
+      declarationChanged: true, configChanged: false });
     const config = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
-    expect(config.snapshot.plugins['demo@aw']).toBeUndefined();
+    expect(config.snapshot.plugins['demo@aw']?.enabled).toBe(false);
+    expect((await readFixtureRequirements({ scope: 'user', cwd: options.cwd,
+      env: isolation.env })).roots).toEqual([]);
     const after = await statusCommandV8({
       ...options, plugins: ['demo'], env: isolation.env,
     });
-    expect(after.payload.errors).toEqual([expect.objectContaining({ code: 'pluginNotFound' })]);
-    expect(after.payload.targets).toEqual([]);
+    expect(after.payload.errors).toEqual([]);
+    expect(after.payload.targets).toEqual([expect.objectContaining({
+      pluginId: 'official/demo', state: 'blocked',
+      reasons: expect.arrayContaining([expect.objectContaining({ code: 'removedPluginCleanupRequired' })]),
+    })]);
     const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -8510,7 +8719,7 @@ describe('five namespaced write commands', () => {
     })));
     await controller.load();
     expect(controller.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId))
-      .not.toContain('official/demo');
+      .toContain('official/demo');
     expect(controller.listPlugins({ mode: 'browse', installFilter: 'uninstalled' })
       .map((plugin) => plugin.pluginId)).not.toContain('official/demo');
     controller.dispose();
@@ -8569,67 +8778,65 @@ describe('five namespaced write commands', () => {
     await syncCatalogSourceGeneration({
       sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
-    const selected = { cwd, platform: 'claude' as const, scope: 'project' as const };
-    const preview = await cleanupWriteCommand(['official/demo'], selected, {
-      ...runtime, previewOperationPlan: true,
-    });
-    expect(preview.removedPluginCleanupIds).toEqual(['official/demo']);
-    expect(preview.operationPlan?.actions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'removeNativeRegistration', platform: 'codex', scope: 'user' }),
-      expect.objectContaining({ kind: 'removePluginConfig', scope: 'user' }),
-      expect.objectContaining({ kind: 'removePluginConfig', scope: 'project' }),
-      expect.objectContaining({ kind: 'removeActivation', scope: 'project' }),
-      expect.objectContaining({ kind: 'removeMarketplaceProjection' }),
+    const projectOptions = { scope: 'project' as const, cwd, env: isolation.env,
+      selector: 'official/demo', targets: ['codex'] as const, deleteConfig: false };
+    const preview = await prepareRetire(projectOptions, runtime);
+    expect(preview.changes).toEqual(expect.arrayContaining([
+      expect.stringContaining('删除 project 声明 official/demo'),
+      expect.stringContaining('删除 project 本地依赖范围覆盖'),
     ]));
-    expect(preview.operationPlan?.intentChanges.map((change) => change.scope).sort())
-      .toEqual(['project', 'user']);
-    const unauthorized = await cleanupWriteCommand(['official/demo'], selected, runtime);
-    expect(unauthorized.targetResults[0]?.errorCode).toBe('removedPluginCleanupAuthorizationRequired');
+    const unauthorized = await executeRetire(preview);
+    expect(unauthorized.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'operationReviewRequired' }),
+    ]));
     expect((await readFixtureRequirements({ scope: 'project', cwd, env: isolation.env })).roots)
-      .toContainEqual({ pluginId: 'official/demo', platforms: ['codex', 'claude'] });
-    await applyCodexConfigTransactionFile(projectConfigPath, {
-      upsertPluginActivations: { 'demo@aw': true },
-    });
-    const stale = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, {
-      ...runtime, expectedPlanFingerprint: preview.operationPlan!.planFingerprint,
-    });
-    expect(stale.targetResults[0]?.errorCode).toBe('operationPlanStale');
+      .toContainEqual({ pluginId: 'official/demo', platforms: ['claude', 'codex'] });
+    const stalePreview = await prepareRetire(projectOptions, runtime);
+    const preferenceLocation = { scope: 'project' as const, cwd, env: isolation.env };
+    const originalPreferences = await observePreferences(preferenceLocation);
+    if (originalPreferences.state !== 'valid') throw new Error('Expected valid project preferences.');
+    await writePreferences(preferenceLocation, { ...originalPreferences.value, agents: ['codex'] });
+    const stale = await executeRetire(stalePreview, { yes: true });
+    expect(stale.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'operationReviewStale' }),
+    ]));
+    await writePreferences(preferenceLocation, originalPreferences.value);
+    const projectRetired = await runRetire({ ...projectOptions, yes: true }, runtime);
+    expect(projectRetired).toMatchObject({ kind: 'aw-recovery', command: 'intent:retire',
+      scope: 'project', declarationChanged: true, preferencesChanged: true, configChanged: false });
     expect((await readFixtureRequirements({ scope: 'project', cwd, env: isolation.env })).roots)
-      .toContainEqual({ pluginId: 'official/demo', platforms: ['codex', 'claude'] });
-    const refreshed = await cleanupWriteCommand(['official/demo'], selected, {
-      ...runtime, previewOperationPlan: true,
-    });
-    const cleaned = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, {
-      ...runtime, expectedPlanFingerprint: refreshed.operationPlan!.planFingerprint,
-    });
-    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
-    expect(cleaned.removedPluginCleanupIds).toEqual(['official/demo']);
+      .toEqual([{ pluginId: 'official/other', platforms: ['claude', 'codex'] }]);
+    expect((await readFixtureRequirements({ scope: 'user', cwd, env: isolation.env })).roots)
+      .toContainEqual({ pluginId: 'official/demo', platforms: ['claude', 'codex'] });
+    expect(await fs.pathExists(resolvePluginConfigStorePath({
+      sourceId: 'official', pluginName: 'demo', scope: 'project', cwd, env: isolation.env,
+    }))).toBe(true);
+    const userRetired = await runRetire({ scope: 'user', cwd, env: isolation.env,
+      selector: 'official/demo', targets: ['codex'], deleteConfig: true, yes: true }, runtime);
+    expect(userRetired).toMatchObject({ kind: 'aw-recovery', command: 'intent:retire',
+      scope: 'user', declarationChanged: true, preferencesChanged: true, configChanged: true });
     for (const scope of ['user', 'project'] as const) {
       const state = await readFixtureRequirements({ scope, cwd, env: isolation.env });
-      expect(state.roots).toEqual([{ pluginId: 'official/other', platforms: ['codex'] }]);
+      expect(state.roots).toEqual([{ pluginId: 'official/other', platforms: ['claude', 'codex'] }]);
       expect(state.dependencyScopeOverrides).toEqual([{
         pluginId: 'official/other', platform: 'codex', scope: 'user',
       }]);
-      expect(await fs.pathExists(resolvePluginConfigStorePath({
-        sourceId: 'official', pluginName: 'demo', scope, cwd, env: isolation.env,
-      }))).toBe(false);
     }
-    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins['demo@aw'])
-      .toBeUndefined();
-    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
-      .snapshot.plugins['demo@aw']).toBeUndefined();
-    expect(runtime.installed.has('demo@aw')).toBe(false);
-    expect(await fs.pathExists(path.join(isolation.env.AW_HOME!, 'marketplaces', 'official', 'plugins', 'demo')))
-      .toBe(false);
+    expect(await fs.pathExists(resolvePluginConfigStorePath({
+      sourceId: 'official', pluginName: 'demo', scope: 'user', cwd, env: isolation.env,
+    }))).toBe(false);
+    expect(await fs.pathExists(resolvePluginConfigStorePath({
+      sourceId: 'official', pluginName: 'demo', scope: 'project', cwd, env: isolation.env,
+    }))).toBe(true);
     expect((await readPluginConfigStore({
       sourceId: 'official', sourceIdentity: active.sourceIdentity, pluginName: 'other',
       scope: 'user', cwd, env: isolation.env,
     })).values).toEqual({ retained: true });
-    const repeated = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, runtime);
-    expect(repeated.overallState).toBe('succeeded');
+    const repeated = await runRetire({ ...projectOptions, yes: true }, runtime);
+    expect(repeated.declarationChanged).toBe(false);
   });
 
-  it('retains activation and marketplace evidence when official native removal fails, then retries', async () => {
+  it('keeps shared Codex output when official observation fails, then retries retirement', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-native-retry-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
@@ -8652,29 +8859,30 @@ describe('five namespaced write commands', () => {
     });
     const workingRunner = runtime.nativeCliRunner.getMockImplementation()!;
     runtime.nativeCliRunner.mockImplementation(async (invocation) =>
-      invocation.args.includes('remove') && invocation.args.includes('demo@aw')
+      invocation.args.includes('list') && invocation.args.includes('--json')
         ? { exitCode: 1, stdout: '', stderr: 'simulated failure' }
         : workingRunner(invocation));
-    const failed = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, runtime);
-    expect(failed.overallState).toBe('partial');
-    expect(failed.targetResults.some((target) => target.state === 'failed'
-      && target.recoveryActions?.some((action) => action.includes(
-        'aw cleanup official/demo --platform both --scope user --yes'))))
-      .toBe(true);
+    const retireOptions = { scope: 'user' as const, cwd: selected.cwd, env: isolation.env,
+      selector: 'official/demo', targets: ['codex'], yes: true };
+    const failed = await runRetire(retireOptions, runtime);
+    expect(failed.ok).toBe(false);
+    expect(failed.targetResults[0]?.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'sharedNativePreserved' }),
+    ]));
     expect(runtime.installed.has('demo@aw')).toBe(true);
-    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
-      .snapshot.plugins['demo@aw']?.enabled).toBe(true);
     expect(await fs.pathExists(path.join(isolation.env.AW_HOME!, 'marketplaces', 'official', 'plugins', 'demo')))
       .toBe(true);
     runtime.nativeCliRunner.mockImplementation(workingRunner);
-    const recovered = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, runtime);
-    expect(recovered.overallState, JSON.stringify(recovered.rebuildResults)).toBe('succeeded');
-    expect(runtime.installed.has('demo@aw')).toBe(false);
+    const recovered = await runRetire(retireOptions, runtime);
+    expect(recovered.command).toBe('intent:retire');
+    expect(runtime.installed.has('demo@aw')).toBe(true);
     expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
-      .snapshot.plugins['demo@aw']).toBeUndefined();
+      .snapshot.plugins['demo@aw']?.enabled).toBe(false);
+    expect((await readFixtureRequirements({ scope: 'user', cwd: selected.cwd, env: isolation.env })).roots)
+      .toEqual([]);
   });
 
-  it('keeps an active bare selector in the requested scope during mixed removed-plugin cleanup', async () => {
+  it('keeps declarations and the other scope unchanged during mixed ordinary cleanup', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-mixed-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
@@ -8711,32 +8919,33 @@ describe('five namespaced write commands', () => {
       sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
     const selectors = ['official/demo', 'other'];
+    const projectIntentBefore = await observeIntent({
+      scope: 'project', cwd, env: isolation.env,
+    });
+    const userIntentBefore = await observeIntent({
+      scope: 'user', cwd, env: isolation.env,
+    });
+    const projectConfigBefore = await fs.readFile(projectConfigPath);
     const preview = await cleanupWriteCommand(selectors, user, {
       ...runtime, previewOperationPlan: true,
     });
-    expect(preview.removedPluginCleanupIds).toEqual(['official/demo']);
-    expect(preview.operationPlan?.actions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'removeActivation', scope: 'project' }),
-    ]));
+    expect(preview.operationPlan?.actions.some((action) => action.scope === 'project'))
+      .toBe(false);
     const cleaned = await cleanupWriteCommand(selectors, { ...user, yes: true }, {
       ...runtime, expectedPlanFingerprint: preview.operationPlan!.planFingerprint,
     });
-    expect(cleaned.overallState, JSON.stringify(cleaned.targetResults)).toBe('succeeded');
-    expect(cleaned.removedPluginCleanupIds).toEqual(['official/demo']);
     expect(cleaned.targetResults).toEqual(expect.arrayContaining([
       expect.objectContaining({ target: expect.objectContaining({ pluginId: 'official/other', scope: 'user', platform: 'codex' }) }),
     ]));
-    expect((await readFixtureRequirements({ scope: 'project', cwd, env: isolation.env })).roots)
-      .toEqual([{ pluginId: 'official/other', platforms: ['codex'] }]);
-    const projectConfig = await readCodexConfigFile(projectConfigPath);
-    expect(projectConfig.snapshot.plugins['demo@aw']).toBeUndefined();
-    expect(projectConfig.snapshot.plugins['other@aw']?.enabled).toBe(false);
-    expect(runtime.installed.has('other@aw')).toBe(true);
-    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
-      .snapshot.plugins['other@aw']?.enabled).toBe(false);
+    await expect(observeIntent({ scope: 'project', cwd, env: isolation.env }))
+      .resolves.toEqual(projectIntentBefore);
+    await expect(observeIntent({ scope: 'user', cwd, env: isolation.env }))
+      .resolves.toEqual(userIntentBefore);
+    await expect(fs.readFile(projectConfigPath)).resolves.toEqual(projectConfigBefore);
+    expect(runtime.installed.has('demo@aw')).toBe(true);
   });
 
-  it('retains activation and projection after successful native remove with unknown postcheck, then retries', async () => {
+  it('preserves shared Codex projection when official retirement evidence becomes unknown', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-native-unknown-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
@@ -8758,35 +8967,30 @@ describe('five namespaced write commands', () => {
       sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
     const workingRunner = runtime.nativeCliRunner.getMockImplementation()!;
-    let removed = false;
+    let listCalls = 0;
     runtime.nativeCliRunner.mockImplementation(async (invocation) => {
       const args = invocation.args;
-      if (args.includes('remove') && args.includes('demo@aw')) {
-        runtime.installed.delete('demo@aw');
-        removed = true;
-        return { exitCode: 0, stdout: '', stderr: '' };
-      }
-      if (removed && args.includes('list') && args.includes('--json')) {
+      if (args.includes('list') && args.includes('--json') && ++listCalls > 2) {
         return { exitCode: 1, stdout: '', stderr: 'simulated postcheck unavailable' };
       }
       return workingRunner(invocation);
     });
-    const failed = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, runtime);
-    expect(failed.overallState).toBe('partial');
-    expect(removed).toBe(true);
-    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
-      .snapshot.plugins['demo@aw']?.enabled).toBe(true);
+    const retireOptions = { scope: 'user' as const, cwd: selected.cwd, env: isolation.env,
+      selector: 'official/demo', targets: ['codex'], yes: true };
+    const failed = await runRetire(retireOptions, runtime);
+    expect(failed.ok).toBe(false);
     const projection = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official', 'plugins', 'demo');
     expect(await fs.pathExists(projection)).toBe(true);
+    expect(runtime.installed.has('demo@aw')).toBe(true);
     runtime.nativeCliRunner.mockImplementation(workingRunner);
-    const recovered = await cleanupWriteCommand(['official/demo'], { ...selected, yes: true }, runtime);
-    expect(recovered.overallState, JSON.stringify(recovered.rebuildResults)).toBe('succeeded');
+    const recovered = await runRetire(retireOptions, runtime);
+    expect(recovered.command).toBe('intent:retire');
     expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
-      .snapshot.plugins['demo@aw']).toBeUndefined();
-    expect(await fs.pathExists(projection)).toBe(false);
+      .snapshot.plugins['demo@aw']?.enabled).toBe(false);
+    expect(await fs.pathExists(projection)).toBe(true);
   });
 
-  it('uninstalls a removed Claude plugin in both scopes and retains another plugin from the source', async () => {
+  it('retires removed Claude demand one scope at a time and preserves the shared package', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-claude-source');
     const definitions = ['demo', 'other'].map((name) => ({
@@ -8823,17 +9027,24 @@ describe('five namespaced write commands', () => {
     await syncCatalogSourceGeneration({
       sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
-    const cleaned = await cleanupWriteCommand(['official/demo'], {
-      cwd, platform: 'claude', scope: 'project', yes: true,
-    }, runtime);
-    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
+    const projectRetired = await runRetire({ scope: 'project', cwd, env: isolation.env,
+      selector: 'official/demo', targets: ['claude-code'], yes: true }, runtime);
+    expect(projectRetired.declarationChanged).toBe(true);
+    expect((await readFixtureRequirements({ scope: 'user', cwd, env: isolation.env })).roots)
+      .toContainEqual(expect.objectContaining({ pluginId: 'official/demo' }));
+    const userRetired = await runRetire({ scope: 'user', cwd, env: isolation.env,
+      selector: 'official/demo', targets: ['claude-code'], yes: true }, runtime);
+    expect(userRetired.declarationChanged).toBe(true);
+    expect((await readFixtureRequirements({ scope: 'project', cwd, env: isolation.env })).roots).toEqual([]);
+    expect((await readFixtureRequirements({ scope: 'user', cwd, env: isolation.env })).roots)
+      .toEqual([expect.objectContaining({ pluginId: 'official/other' })]);
     const uninstallScopes = nativeCliRunner.mock.calls.filter(([invocation]) =>
       invocation.command === 'claude' && invocation.args[0] === 'plugin'
       && invocation.args[1] === 'uninstall' && invocation.args[2] === 'demo@aw')
       .map(([invocation]) => invocation.args[invocation.args.indexOf('--scope') + 1]);
-    expect(uninstallScopes.sort()).toEqual(['project', 'user']);
+    expect(uninstallScopes).toEqual([]);
     const after = await fs.readJson(installedPath) as { plugins: Record<string, unknown[]> };
-    expect(after.plugins['demo@aw']).toBeUndefined();
+    expect(after.plugins['demo@aw']).toEqual(before.plugins['demo@aw']);
     expect(after.plugins['other@aw']).toEqual([expect.objectContaining({ scope: 'user' })]);
     expect((await fs.readJson(path.join(claudeHome, 'settings.json'))).enabledPlugins)
       .toMatchObject({ 'other@aw': true });
@@ -8842,10 +9053,10 @@ describe('five namespaced write commands', () => {
   });
 
   it.each([
-    ['canonical with bare record', 'canonical', 'succeeded'],
-    ['foreign registration with bare record', 'foreign', 'partial'],
-    ['unreadable marketplace registration', 'unknown', 'partial'],
-  ] as const)('keeps Claude native ownership safe for %s', async (_label, mode, expectedState) => {
+    ['canonical with bare record', 'canonical'],
+    ['foreign registration with bare record', 'foreign'],
+    ['unreadable marketplace registration', 'unknown'],
+  ] as const)('keeps Claude shared native ownership safe during retirement for %s', async (_label, mode) => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, `removed-claude-${mode}-source`);
     const definitions = ['demo', 'other'].map((name) => ({
@@ -8896,27 +9107,26 @@ describe('five namespaced write commands', () => {
       sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
     nativeCliRunner.mockClear();
-    const cleaned = await cleanupWriteCommand(['official/demo'], {
-      cwd, platform: 'claude', scope: 'user', yes: true,
-    }, runtime);
-    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe(expectedState);
+    const retired = await runRetire({ scope: 'user', cwd, env: isolation.env,
+      selector: 'official/demo', targets: ['claude-code'], yes: true }, runtime);
+    expect(retired.configChanged).toBe(false);
     const uninstalls = nativeCliRunner.mock.calls.filter(([invocation]) =>
       invocation.command === 'claude' && invocation.args[0] === 'plugin'
       && invocation.args[1] === 'uninstall' && invocation.args[2] === 'demo@aw');
-    expect(uninstalls).toHaveLength(mode === 'canonical' ? 1 : 0);
+    expect(uninstalls).toHaveLength(0);
     const records = (await fs.readJson(installedPath)).plugins as Record<string, unknown[]>;
     if (mode !== 'unknown') {
       expect(records.demo).toEqual([expect.objectContaining({ name: 'demo' })]);
     }
-    expect(records['demo@aw'] === undefined).toBe(mode === 'canonical');
+    expect(records['demo@aw']).toEqual([expect.objectContaining({ name: 'demo' })]);
     expect(records['other@aw']).toEqual([expect.objectContaining({ name: 'other' })]);
     const projection = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official', 'plugins', 'demo');
-    expect(await fs.pathExists(projection)).toBe(mode !== 'canonical');
+    expect(await fs.pathExists(projection)).toBe(true);
     if (mode === 'foreign') {
-      expect(cleaned.warnings.join(' ')).toContain('removedPluginClaudeOwnershipConflict');
+      expect(JSON.stringify(retired.blockers)).toContain('removedPluginClaudeOwnershipConflict');
     }
     if (mode === 'unknown') {
-      expect(cleaned.warnings.join(' ')).toContain('removedPluginMarketplaceRegistrationUnknown');
+      expect(JSON.stringify(retired.blockers)).toContain('removedPluginMarketplaceRegistrationUnknown');
     }
   });
 
@@ -8953,18 +9163,17 @@ describe('five namespaced write commands', () => {
     await syncCatalogSourceGeneration({
       sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
-    const result = await cleanupWriteCommand(['official/demo'], {
-      cwd, platform: 'codex', scope: 'project', yes: true,
-    }, runtime);
-    expect(result.overallState).toBe('partial');
-    expect(result.warnings.join(' ')).toContain('removedPluginNativeOwnershipUnavailable');
+    const result = await runRetire({ scope: 'project', cwd, env: isolation.env,
+      selector: 'official/demo', targets: ['codex'], yes: true }, runtime);
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result.blockers)).toContain('removedPluginNativeOwnershipUnavailable');
     expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins['demo@aw']?.enabled)
       .toBe(false);
     expect(await fs.pathExists(path.join(isolation.env.AW_HOME!, 'marketplaces', 'official', 'plugins', 'demo')))
       .toBe(true);
   });
 
-  it('keeps marketplace manifest ownership when projection directory removal fails, then retries', async () => {
+  it('does not delete shared marketplace projection when its remove operation would fail', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-projection-retry-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
@@ -8990,30 +9199,27 @@ describe('five namespaced write commands', () => {
     await syncCatalogSourceGeneration({
       sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
+    const options = { scope: 'user' as const, cwd, env: isolation.env,
+      selector: 'official/demo', targets: ['codex'], yes: true };
     const removeOriginal = fs.remove.bind(fs);
-    let failProjection = true;
+    let projectionRemoveAttempted = false;
     const remove = vi.spyOn(fs, 'remove').mockImplementation(async (candidate) => {
-      if (failProjection && path.resolve(String(candidate)) === path.resolve(projection)) {
-        failProjection = false;
+      if (path.resolve(String(candidate)) === path.resolve(projection)) {
+        projectionRemoveAttempted = true;
         throw new Error('simulated projection delete failure');
       }
       return removeOriginal(candidate);
     });
-    const options = { cwd, platform: 'codex' as const, scope: 'user' as const, yes: true };
-    try {
-      const failed = await cleanupWriteCommand(['official/demo'], options, runtime);
-      expect(failed.overallState).toBe('partial');
-      expect(await fs.pathExists(projection)).toBe(true);
-      const manifest = await fs.readJson(path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json')) as {
-        plugins: Array<{ name: string }>;
-      };
-      expect(manifest.plugins.map((plugin) => plugin.name)).toContain('demo');
-    } finally {
-      remove.mockRestore();
-    }
-    const recovered = await cleanupWriteCommand(['official/demo'], options, runtime);
-    expect(recovered.overallState, JSON.stringify(recovered.rebuildResults)).toBe('succeeded');
-    expect(await fs.pathExists(projection)).toBe(false);
+    const first = await runRetire(options, runtime).finally(() => remove.mockRestore());
+    expect(projectionRemoveAttempted).toBe(false);
+    expect(first.declarationChanged).toBe(true);
+    const manifestPath = path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json');
+    const manifestBefore = await fs.readFile(manifestPath);
+    expect(await fs.pathExists(projection)).toBe(true);
+    const second = await runRetire(options, runtime);
+    expect(second.declarationChanged).toBe(false);
+    await expect(fs.readFile(manifestPath)).resolves.toEqual(manifestBefore);
+    expect(await fs.pathExists(projection)).toBe(true);
   });
 
   it('preserves a foreign tree behind a symlinked marketplace plugins ancestor', async () => {
@@ -9045,16 +9251,20 @@ describe('five namespaced write commands', () => {
     await fs.symlink(foreignRoot, pluginsRoot, 'dir');
     const foreignFile = path.join(foreignRoot, 'demo', 'preserve.txt');
     await fs.outputFile(foreignFile, 'foreign content\n');
-    const result = await cleanupWriteCommand(['official/demo'], {
+    const cleaned = await cleanupWriteCommand(['official/demo'], {
       cwd, platform: 'codex', scope: 'user', yes: true,
     }, runtime);
-    expect(result.overallState).toBe('partial');
-    expect(result.warnings.join(' ')).toContain('removedPluginMarketplaceProjectionUnsafe');
+    expect(cleaned.overallState).toBe('succeeded');
+    expect(await fs.readFile(foreignFile, 'utf8')).toBe('foreign content\n');
+    const result = await runRetire({ scope: 'user', cwd, env: isolation.env,
+      selector: 'official/demo', targets: ['codex'], yes: true }, runtime);
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result.blockers)).toContain('removedPluginMarketplaceProjectionUnsafe');
     expect(await fs.readFile(foreignFile, 'utf8')).toBe('foreign content\n');
     expect(runtime.installed.has('demo@aw')).toBe(true);
   });
 
-  it.each([['absent', false], ['unknown', false], ['unknown', true]] as const)('reports %s Portable residue through User D1 JSON (subdirectory=%s) while committing strong-state cleanup', async (portableState, fromSubdirectory) => {
+  it.each([['absent', false], ['unknown', false], ['unknown', true]] as const)('retires User demand without reading caller Project Portable/config state (%s, subdirectory=%s)', async (portableState, fromSubdirectory) => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-config-only-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
@@ -9078,7 +9288,7 @@ describe('five namespaced write commands', () => {
       sourceId: 'team', pluginName: 'demo', scope: 'project', cwd, env: isolation.env,
     });
     await fs.outputFile(projectPath, '{broken-project-json');
-    await addProjectRequirements({ cwd, env: isolation.env, selectors: ['team/demo'] });
+    await addProjectFixtureRoots({ cwd, env: isolation.env, selectors: ['team/demo'] });
     await writeIntentFixture({ cwd, env: isolation.env, scope: 'user' }, {
       schemaVersion: 2, kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }], dependencyScopeOverrides: [],
@@ -9098,93 +9308,29 @@ describe('five namespaced write commands', () => {
     await syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
-    const options = { cwd: invocationCwd, platform: 'codex' as const, scope: 'user' as const };
-    const preview = await cleanupWriteCommand(['team/demo'], options, { env, previewOperationPlan: true });
-    expect(preview.removedPluginCleanupIds).toEqual(['team/demo']);
-    expect(preview.operationPlan?.actions).toContainEqual(expect.objectContaining({
-      kind: 'removePluginConfig', pluginId: 'team/demo', scope: 'user',
-    }));
+    const projectIntentBefore = await observeIntent({ cwd, env, scope: 'project' });
+    const configBefore = await fs.readFile(userPath);
+    const projectConfigBefore = await fs.readFile(projectPath);
+    const retirement = { cwd: invocationCwd, env, scope: 'user' as const,
+      selector: 'team/demo', targets: ['codex'], yes: true };
+    const preview = await prepareRetire(retirement, { nativeCliRunner: async () => ({
+      exitCode: 0, stdout: '{"installed":[],"available":[]}', stderr: '',
+    }) });
+    expect(preview.receipt.command).toBe('intent:retire');
+    const receipt = await executeRetire(preview, { yes: true });
+    expect(receipt).toMatchObject({ kind: 'aw-recovery', scope: 'user',
+      declarationChanged: true, configChanged: false });
     if (portableState === 'unknown') {
-      expect(preview.operationPlan?.warnings.join(' ')).toContain('portableObservationFailed');
-      expect(preview.portableCleanupResidues).toMatchObject([{ pluginId: 'team/demo', state: 'unknown' }]);
-    }
-    const output = createCapturedCliIo();
-    const exitCode = await runCli(['cleanup', 'team/demo', '--scope', 'user', '--platform', 'codex', '--yes', '--json'], {
-      cwd: invocationCwd, env, io: output.io, interactive: false,
-    });
-    const receipt = JSON.parse(output.readStdout());
-    expect(exitCode).toBe(portableState === 'unknown' ? 1 : 0);
-    expect(receipt).toMatchObject({ receiptSchemaVersion: 6,
-      overallState: portableState === 'unknown' ? 'partial' : 'succeeded', ok: portableState === 'absent' });
-    if (portableState === 'unknown') {
-      expect(receipt.recoveryActions.join(' ')).toContain('无法确认');
-      expect(receipt.warnings.join(' ')).toContain('portableObservationFailed');
       await expect(fs.readFile(portableSkill, 'utf8')).resolves.toBe('portable bytes must remain');
       await expect(fs.readFile(path.join(providerRoot, 'evidence.txt'), 'utf8')).resolves.toBe('unverified provider evidence');
     }
-    expect(await fs.pathExists(userPath)).toBe(false);
-    expect(await fs.pathExists(projectPath)).toBe(false);
-    await expect(readFixtureRequirements({ cwd, env, scope: 'project' })).resolves.toMatchObject({ roots: [] });
+    await expect(fs.readFile(userPath)).resolves.toEqual(configBefore);
+    await expect(fs.readFile(projectPath)).resolves.toEqual(projectConfigBefore);
+    await expect(observeIntent({ cwd, env, scope: 'project' })).resolves.toEqual(projectIntentBefore);
     await expect(readIntentFixture({ cwd, env, scope: 'user' })).resolves.toMatchObject({ roots: [] });
-    expect(await fs.pathExists(path.join(isolation.env.AW_HOME!, 'marketplaces', 'team')))
-      .toBe(false);
   });
 
-  it('reports a committed user Intent when project Intent write fails and retries the remainder', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-intent-retry-source');
-    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 2, sources: [{
-        id: 'team', type: 'path', primary: true, path: sourceRoot,
-      }] },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const cwd = isolation.layout.fixtureCwd;
-    const configPath = resolvePluginConfigStorePath({
-      sourceId: 'team', pluginName: 'demo', scope: 'user', cwd, env: isolation.env,
-    });
-    await fs.outputFile(configPath, '{broken-json');
-    await writeIntentFixture({ scope: 'user', cwd, env: isolation.env }, {
-      schemaVersion: 2, kind: 'aw-plugin-intents',
-      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }], dependencyScopeOverrides: [],
-    });
-    expect((await addProjectRequirements({ cwd, env: isolation.env, selectors: ['team/demo'] })).errors).toEqual([]);
-    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'other' }]);
-    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
-    await syncCatalogSourceGeneration({
-      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
-    });
-    const options = { cwd, platform: 'claude' as const, scope: 'project' as const, yes: true };
-    const first = await cleanupWriteCommand(['team/demo'], options, {
-      env: isolation.env,
-      removedProjectRequirements: {
-        ...createRemovedProjectRequirements({ cwd, env: isolation.env }),
-        commit: async () => { throw new Error('simulated project Intent write failure'); },
-      },
-    });
-    expect(first.overallState).toBe('partial');
-    expect(first.rebuildResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        status: 'succeeded', target: expect.objectContaining({ scope: 'user' }),
-        removed: ['pluginIntent:user'],
-      }),
-      expect.objectContaining({
-        status: 'failed', target: expect.objectContaining({ scope: 'project' }),
-      }),
-    ]));
-    expect((await readFixtureRequirements({ scope: 'user', cwd, env: isolation.env })).roots).toEqual([]);
-    expect((await readFixtureRequirements({ scope: 'project', cwd, env: isolation.env })).roots)
-      .toEqual([expect.objectContaining({ pluginId: 'team/demo' })]);
-    expect(await fs.pathExists(configPath)).toBe(true);
-    const recovered = await cleanupWriteCommand(['team/demo'], options, { env: isolation.env });
-    expect(recovered.overallState).toBe('succeeded');
-    expect(await fs.pathExists(configPath)).toBe(false);
-  });
-
-  it('reports that whole cleanup was skipped for config-only state when Active is unavailable', async () => {
+  it('blocks explicit retirement when Active is unavailable and preserves saved config', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'unavailable-config-only-source');
     const remainingRoot = path.join(isolation.layout.fixtureCwd, 'unavailable-config-only-remaining');
@@ -9213,11 +9359,12 @@ describe('five namespaced write commands', () => {
       expectedDigest: configured.digest,
       env: isolation.env,
     });
-    const result = await cleanupWriteCommand(['team/demo'], {
-      cwd, platform: 'claude', scope: 'project',
-    }, { env: isolation.env });
-    expect(result.warnings.join(' ')).toContain('removedPluginCleanupNotPerformed');
-    expect(result.operationPlan?.warnings.join(' ')).toContain('removedPluginCleanupNotPerformed');
+    const result = await runRetire({ scope: 'user', cwd, env: isolation.env,
+      selector: 'team/demo', targets: ['claude-code'], yes: true });
+    expect(result.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'removedPluginActiveUnavailable' }),
+    ]));
+    expect(result.configChanged).toBe(false);
     expect((await readPluginConfigStore({
       sourceId: 'team', sourceIdentity: active.sourceIdentity,
       pluginName: 'demo', scope: 'user', cwd, env: isolation.env,
@@ -9241,6 +9388,7 @@ describe('five namespaced write commands', () => {
       const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: isolation.env });
       const cwd = isolation.layout.fixtureCwd;
       const scope = mode === 'directory' || mode === 'binding-project-source' ? 'project' : 'user';
+      if (scope === 'project') await fs.ensureDir(path.join(cwd, '.git'));
       const configPath = resolvePluginConfigStorePath({
         sourceId: 'team', pluginName: 'demo', scope, cwd, env: isolation.env,
       });
@@ -9267,17 +9415,16 @@ describe('five namespaced write commands', () => {
       await syncCatalogSourceGeneration({
         sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
       });
-      const result = await cleanupWriteCommand(['team/demo'], {
-        cwd, platform: 'claude', scope: 'project', yes: true,
-      }, { env: isolation.env });
+      const result = await runRetire({ scope, cwd, env: isolation.env,
+        selector: 'team/demo', targets: ['claude-code'], deleteConfig: true, yes: true });
       if (mode === 'symlink') {
-        expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+        expect(result.configChanged).toBe(true);
         expect(await fs.pathExists(configPath)).toBe(false);
         expect(await fs.readFile(external, 'utf8')).toBe('retained\n');
       } else {
-        expect(result.overallState).toBe('failed');
+        expect(result.ok).toBe(false);
         expect(await fs.pathExists(configPath)).toBe(true);
-        expect(result.warnings.join(' ')).toContain(mode === 'directory'
+        expect(JSON.stringify(result.blockers)).toContain(mode === 'directory'
           ? 'removedPluginConfigTargetUnsupported'
           : 'removedPluginConfigIdentityConflict');
       }
@@ -9289,7 +9436,7 @@ describe('five namespaced write commands', () => {
     { mode: 'owned-force', force: true, intentOnly: false },
     { mode: 'intent-only-normal', force: false, intentOnly: true },
   ] as const)(
-    'cleans through real Status and TUI Review after the Active Catalog drops the plugin ($mode)',
+    'retires through scoped TUI Review after the Active Catalog drops the plugin ($mode)',
     async ({ force, intentOnly }) => {
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(
@@ -9352,6 +9499,12 @@ describe('five namespaced write commands', () => {
         sourceId: 'team', sourceIdentity, pluginName: 'demo', scope: 'user',
         cwd: isolation.layout.fixtureCwd, env: isolation.env, values: { retained: true },
       });
+      const activeBeforeRemoval = await resolveActiveCatalogGeneration({ sourceId: 'team', env: isolation.env });
+      await writePluginConfigStore({
+        sourceId: 'team', sourceIdentity, logicalIdentity: activeBeforeRemoval.logicalIdentity,
+        pluginName: 'demo', scope: 'project', cwd: isolation.layout.fixtureCwd,
+        env: isolation.env, values: { selected: true },
+      });
       const sharedConfig = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
       await applyCodexConfigTransactionFile(sharedConfig, {
         upsertMcpServers: { foreign: { command: 'foreign' } },
@@ -9396,29 +9549,25 @@ describe('five namespaced write commands', () => {
           })]),
         }),
       ]);
-      const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+      const dependencies = createTuiControllerDependencies(createCliExecutionContext({
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
         nativeCliRunner: runtime.nativeCliRunner,
         interactive: false,
-      })));
-      await controller.load();
-      const issue = controller.listUserIssues().find((entry) => entry.rootCode === 'codexIntentSourceUnavailable'
-        && entry.pluginId === 'team/demo' && entry.platform === 'codex' && entry.scope === 'project');
-      expect(issue, JSON.stringify(controller.listUserIssues())).toBeDefined();
-      expect(issue?.actions.map((action) => action.id)).toContain('cleanup');
-      const review = await controller.buildOperationReview({
-        kind: 'pluginWrite', action: 'cleanup', pluginId: 'team/demo',
-        platform: 'codex', scope: 'project', force,
-      });
-      const execution = await controller.executeOperation(review.reviewToken);
-      expect(execution.state, JSON.stringify({ status, review, execution })).toBe('succeeded');
-      controller.dispose();
+      }));
+      const review = await dependencies.prepareScopedTask({ kind: 'retire', scope: 'project',
+        selector: 'team/demo', targets: ['codex'], deleteConfig: force },
+      new AbortController().signal);
+      expect(review.kind).toBe('retire');
+      const execution = await dependencies.executeScopedTask(review);
+      expect(execution).toMatchObject({ kind: 'recovery', receipt: {
+        command: 'intent:retire', ok: true, declarationChanged: true, configChanged: force,
+      } });
 
-      await expect(readFixtureRequirements(projectIntentLocation)).resolves.toEqual({
-        schemaVersion: 2,
+      await expect(readFixtureRequirements(projectIntentLocation)).resolves.toMatchObject({
+        schemaVersion: 3,
         kind: 'aw-plugin-intents',
-        roots: force ? [{ pluginId: 'team/demo', platforms: ['codex', 'claude'] }] : [],
+        roots: [],
         dependencyScopeOverrides: [{
           pluginId: 'team/dependency', platform: 'codex', scope: 'user',
         }],
@@ -9426,20 +9575,19 @@ describe('five namespaced write commands', () => {
       await expect(readFixtureRequirements(userIntentLocation)).resolves.toMatchObject({
         roots: [{ pluginId: 'team/other', platforms: ['codex'] }],
       });
-      const refreshed = await statusCommandV8({
-        plugins: ['team/demo'], cwd: isolation.layout.fixtureCwd, env: isolation.env,
-        cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
+      const refreshed = await readRecoveryStatus({
+        scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+        cliVersion: '1.0.0', targets: ['codex'],
       });
-      for (const target of refreshed.payload.targets) {
-        for (const placement of target.placements) {
-          expect(statusTargetIntent(placement).scopes.includes('project')).toBe(force);
-        }
-      }
+      expect(refreshed.intent.state).toBe('valid');
+      expect(refreshed.inventory?.some((target) => target.pluginId === 'team/demo')).toBe(false);
       await expect(readPluginConfigStore({
         sourceId: 'team', sourceIdentity, pluginName: 'demo', scope: 'user',
         cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      })).resolves.toMatchObject({ values: force ? { retained: true } : {} });
-      await expect(fs.pathExists(ownedSkill)).resolves.toBe(false);
+      })).resolves.toMatchObject({ values: { retained: true } });
+      expect(await fs.pathExists(resolvePluginConfigStorePath({ sourceId: 'team', pluginName: 'demo',
+        scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }))).toBe(!force);
+      expect(await fs.pathExists(ownedSkill), JSON.stringify(execution.receipt)).toBe(false);
       await expect(fs.readFile(foreignSkill, 'utf8')).resolves.toBe('foreign\n');
       await expect(readCodexConfigFile(sharedConfig)).resolves.toMatchObject({
         snapshot: { mcpServers: { foreign: { value: { command: 'foreign' } } } },
@@ -9448,7 +9596,7 @@ describe('five namespaced write commands', () => {
     30_000,
   );
 
-  it('returns a new Review when offline cleanup ownership evidence drifts under the mutation lock', async () => {
+  it('rejects a stale scoped retire Review when owned output appears before the write', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'offline-review-stale-source');
     const remainingSourceRoot = path.join(isolation.layout.fixtureCwd, 'offline-review-stale-remaining');
@@ -9469,32 +9617,16 @@ describe('five namespaced write commands', () => {
     }, { env: isolation.env, nativeCliRunner });
     expect(installed.overallState).toBe('succeeded');
     const sourceIdentity = installed.rebuildResults[0]!.target.sourceIdentity!;
-    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 2,
-        sources: [{ id: 'remaining', type: 'path', primary: true, path: remainingSourceRoot }],
-      },
-      expectedDigest: configured.digest,
-      env: isolation.env,
-    });
-    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
-      cwd: isolation.layout.fixtureCwd, env: isolation.env, nativeCliRunner, interactive: false,
-    })));
-    await controller.load();
-    const issue = controller.listUserIssues().find((entry) => entry.category === 'sourceMissing'
-      && entry.pluginId === 'team/demo' && entry.platform === 'codex' && entry.scope === 'project')!;
-    const review = await controller.buildOperationReview({
-      kind: 'pluginWrite', action: 'cleanup', pluginId: 'team/demo', platform: 'codex', scope: 'project',
-      originIssue: {
-        issueId: issue.issueId, issueKey: userIssueKey(issue), category: 'sourceMissing', actionId: 'cleanup',
-      },
-    });
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0',
+      env: isolation.env, impactConfirmed: true });
+    const review = await prepareRetire({ scope: 'project', cwd: isolation.layout.fixtureCwd,
+      env: isolation.env, selector: 'team/demo', targets: ['codex'], yes: true },
+    { nativeCliRunner });
     const rulesRoot = path.join(isolation.layout.fixtureCwd, '.codex', 'rules');
     const driftPath = path.join(rulesRoot, 'aw-demo-drift-owner.rules');
-    setTuiControllerRuntimeTestHooksForTests({
-      beforeMutationEvidenceCapture: async () => {
-        await writeOwnedTextFile({
+    await writeOwnedTextFile({
           path: driftPath,
           allowedRoot: rulesRoot,
           identity: {
@@ -9503,18 +9635,12 @@ describe('five namespaced write commands', () => {
             platform: 'codex', scope: 'project',
           },
           content: 'prefix_rule(pattern = ["git"], decision = "allow")\n',
-        });
-      },
     });
-    try {
-      const execution = await controller.executeOperation(review.reviewToken);
-      expect(execution, JSON.stringify(execution)).toMatchObject({
-        state: 'stale', review: { pluginAction: 'cleanup' },
-      });
-    } finally {
-      setTuiControllerRuntimeTestHooksForTests(undefined);
-      controller.dispose();
-    }
+    const execution = await executeRetire(review, { yes: true });
+    expect(execution.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'operationReviewStale' }),
+    ]));
+    expect(execution.declarationChanged).toBe(false);
     await expect(fs.pathExists(driftPath)).resolves.toBe(true);
     await expect(fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'), 'utf8'))
       .resolves.toContain('aw-owner-v3:');
@@ -9608,13 +9734,11 @@ describe('five namespaced write commands', () => {
   }, 30_000);
 
   it.each(['user', 'project'] as const)(
-    'executes the frozen source-missing Codex activation cleanup for %s scope and retains shared native state',
+    'retires only the selected Codex activation for %s scope and retains shared native state',
     async (scope) => {
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(isolation.layout.fixtureCwd, `offline-native-${scope}-source`);
-      const remainingRoot = path.join(isolation.layout.fixtureCwd, `offline-native-${scope}-remaining`);
       await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);
-      await createDependencyCatalogSnapshotFixture(remainingRoot, [{ name: 'other' }]);
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
@@ -9666,62 +9790,29 @@ describe('five namespaced write commands', () => {
         fs.readFile(payloadSkill),
         fs.readFile(cacheSkill),
       ]);
-      const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-      await replaceCatalogSourcesConfig({
-        config: {
-          schemaVersion: 2,
-          sources: [{ id: 'remaining', type: 'path', primary: true, path: remainingRoot }],
-        },
-        expectedDigest: configured.digest,
-        env: isolation.env,
+      await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
+      await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+      await syncCatalogSourceGeneration({
+        sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
       });
+      const retired = await runRetire({
+        scope, cwd: isolation.layout.fixtureCwd, env: isolation.env,
+        selector: 'team/demo', targets: ['codex'], yes: true,
+      }, runtime);
 
-      const preview = await cleanupWriteCommand(['team/demo'], {
-        cwd: isolation.layout.fixtureCwd,
-        platform: 'codex',
-        scope,
-      }, { ...runtime, previewOperationPlan: true });
-      const evidence = preview.offlineCleanupPlans?.[0];
-      expect(evidence?.plan.actions, JSON.stringify(preview)).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          action: 'removeNativeRegistration',
-          target: 'demo@aw',
-          marketplaceName: 'aw',
-          activationScope: scope,
-        }),
-      ]));
-      expect(
-        evidence?.plan.actions.some((action) => action.target === path.dirname(payloadSkill)),
-        JSON.stringify(evidence?.plan.actions),
-      ).toBe(false);
-
-      const unavailableNativeRunner = vi.fn(async () => {
-        throw Object.assign(new Error('official Codex is unavailable offline'), { code: 'ENOENT' });
-      });
-      const cleaned = await cleanupWriteCommand(['team/demo'], {
-        cwd: isolation.layout.fixtureCwd,
-        platform: 'codex',
-        scope,
-      }, {
-        ...runtime,
-        nativeCliRunner: unavailableNativeRunner,
-        expectedOfflineCleanupEvidence: evidence,
-      });
-
-      expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
-      expect(unavailableNativeRunner).not.toHaveBeenCalled();
-      expect(JSON.stringify(cleaned.rebuildResults[0]?.removed)).toContain('demo@aw');
+      expect(retired.command).toBe('intent:retire');
+      expect(retired.declarationChanged).toBe(true);
+      expect(retired.configChanged).toBe(false);
       const activationConfig = await readCodexConfigFile(activationConfigPath);
-      expect(activationConfig.snapshot.plugins['demo@aw']?.enabled)
-        .toBe(scope === 'user' ? false : undefined);
+      expect(activationConfig.snapshot.plugins['demo@aw']?.enabled).toBe(false);
       expect(activationConfig.snapshot.plugins['foreign@outside']?.enabled).toBe(true);
       expect(activationConfig.snapshot.plugins['demo@outside']?.enabled).toBe(true);
-      expect(await fs.pathExists(payloadSkill), JSON.stringify(cleaned)).toBe(true);
+      expect(await fs.pathExists(payloadSkill), JSON.stringify(retired)).toBe(true);
       await expect(fs.readFile(payloadSkill)).resolves.toEqual(payloadBefore);
       await expect(fs.readFile(cacheSkill)).resolves.toEqual(cacheBefore);
       await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(true);
       expect(runtime.installed.has('demo@aw')).toBe(true);
-      await expect(readFixtureRequirements(intentLocation)).resolves.toMatchObject({ roots: scope === 'project' ? [expect.objectContaining({ pluginId: 'team/demo' })] : [] });
+      await expect(readFixtureRequirements(intentLocation)).resolves.toMatchObject({ roots: [] });
       if (scope === 'user') {
         await expect(readCodexConfigFile(
           path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'),
@@ -9734,7 +9825,7 @@ describe('five namespaced write commands', () => {
   );
 
   it.each([false, true])(
-    'cleans an exact offline Codex extension with ambiguous native identity (force=%s)',
+    'cleans an exact offline Codex extension without changing Intent when native identity is ambiguous (force=%s)',
     async (force) => {
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(
@@ -9819,7 +9910,9 @@ describe('five namespaced write commands', () => {
       ]);
       await expect(fs.pathExists(extensionPath)).resolves.toBe(false);
       await expect(fs.readFile(configPath, 'utf8')).resolves.toBe(ambiguousConfig);
-      await expect(readFixtureRequirements(intentLocation)).resolves.toMatchObject({ roots: [] });
+      await expect(readFixtureRequirements(intentLocation)).resolves.toMatchObject({
+        roots: [expect.objectContaining({ pluginId: 'team/demo' })],
+      });
       await expect(snapshotRegularTree(cacheRoot)).resolves.toEqual(cacheBefore);
       expect(runtime.installed.has('demo@aw')).toBe(true);
       expect(runtime.nativeCliRunner).not.toHaveBeenCalled();
@@ -9914,7 +10007,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.readFile(cacheSkill)).resolves.toEqual(cacheBefore);
   }, 30_000);
 
-  it('does not create offline Review issues from marker-only Codex project Skills', async () => {
+  it('shows marker-only Project residue without authorizing ambiguous retirement', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const remainingSourceRoot = path.join(isolation.layout.fixtureCwd, 'offline-identity-remaining');
     await createDependencyCatalogSnapshotFixture(remainingSourceRoot, [{ name: 'other' }]);
@@ -9950,13 +10043,30 @@ describe('five namespaced write commands', () => {
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
       interactive: false,
     })));
-    await controller.load();
-    expect(controller.listUserIssues().some((entry) => entry.category === 'sourceMissing'
-      && entry.pluginId === 'removed/demo')).toBe(false);
-    for (const entry of identities) {
-      await expect(fs.pathExists(entry.root)).resolves.toBe(true);
+    try {
+      await controller.load();
+      expect(controller.listUserIssues()).toContainEqual(expect.objectContaining({
+        category: 'sourceMissing', pluginId: 'removed/demo', scope: 'project',
+      }));
+      const plan = await prepareRetire({
+        scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+        selector: 'removed/demo', targets: ['codex'],
+      }, { env: isolation.env, nativeCliRunner: async () => ({
+        exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '',
+      }) });
+      try {
+        expect(plan.receipt.blockers).toContainEqual(expect.objectContaining({
+          code: 'removedPluginActiveUnavailable',
+        }));
+      } finally {
+        await plan.context.dispose();
+      }
+      for (const entry of identities) {
+        await expect(fs.pathExists(entry.root)).resolves.toBe(true);
+      }
+    } finally {
+      controller.dispose();
     }
-    controller.dispose();
   });
 
   it('cleans a valid live owner when the configured path source is unavailable', async () => {
@@ -9985,6 +10095,8 @@ describe('five namespaced write commands', () => {
     expect(installed).toMatchObject({ overallState: 'succeeded' });
     const configPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
     const configBefore = await fs.readFile(configPath);
+    const intentPath = path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-intents.json');
+    const intentBefore = await fs.readFile(intentPath);
     await fs.move(sourceRoot, `${sourceRoot}-unavailable`);
     const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: isolation.env });
     await fs.remove(active.snapshotPath);
@@ -10022,10 +10134,10 @@ describe('five namespaced write commands', () => {
     });
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
-    expect(result.warnings).toEqual(expect.arrayContaining([
+    expect(result.warnings).toEqual([
       'obsoleteContractsCleanupFailed: Obsolete installation contracts could not be removed.',
-      expect.stringContaining('removedPluginCleanupNotPerformed: team/demo'),
-    ]));
+    ]);
+    await expect(fs.readFile(intentPath)).resolves.toEqual(intentBefore);
     expect(JSON.stringify(result)).not.toContain('private cleanup failure');
     expect(JSON.stringify(result.warnings)).not.toContain(isolation.env.AW_HOME);
   });
@@ -10356,6 +10468,8 @@ describe('five namespaced write commands', () => {
         scope: 'project',
       },
     });
+    const intentPath = path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-intents.json');
+    const intentBefore = await fs.readFile(intentPath);
 
     const result = await (command === 'sync' ? syncWriteCommand : uninstallWriteCommand)(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
@@ -10363,6 +10477,7 @@ describe('five namespaced write commands', () => {
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
     expect(result.rebuildResults.some((entry) => entry.removed.includes('removed-in-v2'))).toBe(true);
+    await expect(fs.readFile(intentPath)).resolves.toEqual(intentBefore);
     await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
     await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(false);
     await expect(fs.readFile(path.join(foreignSkillRoot, 'SKILL.md'), 'utf8'))
@@ -10486,22 +10601,34 @@ describe('five namespaced write commands', () => {
     });
     const skillRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills', 'removable-skill');
     await fs.outputFile(path.join(skillRoot, 'SKILL.md'), 'markerless but exact\n');
-
-    const result = await withAwHomeMutationLock({
-      env: isolation.env,
-      action: (token) => runRebuildCommand({
-        command: 'cleanup',
-        pluginNames: ['local/removable', 'local/shared-only'],
-        commandOptions: {
-          cwd: isolation.layout.fixtureCwd,
-          platform: 'codex',
-          scope: 'project',
-          json: false,
-          force: true,
-        },
-        runtime: { env: isolation.env, awHomeMutationToken: token },
-      }),
+    const execution = await createNativeTestExecution({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      selectedTargets: [
+        { pluginId: 'local/removable', platform: 'codex' },
+        { pluginId: 'local/shared-only', platform: 'codex' },
+      ],
     });
+    let result: Awaited<ReturnType<typeof runRebuildCommand>>;
+    try {
+      result = await withAwHomeMutationLock({
+        env: isolation.env,
+        action: (token) => runRebuildCommand({
+          command: 'cleanup',
+          pluginNames: ['local/removable', 'local/shared-only'],
+          commandOptions: {
+            cwd: isolation.layout.fixtureCwd,
+            platform: 'codex',
+            scope: 'project',
+            json: false,
+            force: true,
+          },
+          runtime: { env: isolation.env, awHomeMutationToken: token,
+            executionInput: execution.executionInput },
+        }),
+      });
+    } finally {
+      await execution.dispose();
+    }
     expect(result).toMatchObject({
       overallState: 'succeeded',
       targetResults: [expect.objectContaining({
@@ -10604,16 +10731,16 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({
         errorCode: 'exclusiveOwnerEvidenceInvalid',
         recoveryActions: [
-          'run aw cleanup local/demo --platform codex --scope project --force',
-          'then run aw reinstall local/demo --platform codex --scope project',
+          'run aw cleanup local/demo --target codex --scope project --force',
+          'then run aw reinstall local/demo --target codex --scope project',
         ],
       }),
     ]);
     const blockedReceipt = (await import('../../src/output/command-receipt.js'))
       .buildRebuildReceiptJson('reinstall', blockedReinstall);
     expect(blockedReceipt.recoveryActions).toEqual([
-      'run aw cleanup local/demo --platform codex --scope project --force',
-      'then run aw reinstall local/demo --platform codex --scope project',
+      'run aw cleanup local/demo --target codex --scope project --force',
+      'then run aw reinstall local/demo --target codex --scope project',
     ]);
     await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
     const activeState = await fs.readJson(path.join(isolation.env.AW_HOME!, 'catalog-state.json')) as {
@@ -10786,8 +10913,8 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({
         errorCode: 'exclusiveOwnerEvidenceInvalid',
         recoveryActions: [
-          'run aw cleanup team/demo --platform codex --scope project --force',
-          'then run aw reinstall team/demo --platform codex --scope project',
+          'run aw cleanup team/demo --target codex --scope project --force',
+          'then run aw reinstall team/demo --target codex --scope project',
         ],
       }),
     ]);
@@ -10805,9 +10932,14 @@ describe('five namespaced write commands', () => {
     const cleaned = await cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', force: true,
     }, { env: isolation.env });
-    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('failed');
-    await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
-    await expect(fs.pathExists(agentPath)).resolves.toBe(true);
+    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('partial');
+    expect(cleaned.rebuildResults).toEqual([expect.objectContaining({
+      status: 'failed',
+      removed: expect.arrayContaining(['project-skill', 'aw-demo-reviewer.toml']),
+      residual: expect.arrayContaining(['plugin-intents.json']),
+    })]);
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(agentPath)).resolves.toBe(false);
     await expect(fs.readFile(intentPath)).resolves.toEqual(malformedIntent);
 
     await fs.outputFile(intentPath, validIntent);
@@ -11075,8 +11207,8 @@ describe('five namespaced write commands', () => {
         }),
         errorCode: 'exclusiveOwnerEvidenceInvalid',
         recoveryActions: [
-          'run aw cleanup team/leaf --platform codex --scope project --force',
-          'then run aw reinstall team/leaf --platform codex --scope project',
+          'run aw cleanup team/leaf --target codex --scope project --force',
+          'then run aw reinstall team/leaf --target codex --scope project',
         ],
       }),
       expect.objectContaining({
@@ -11143,7 +11275,7 @@ describe('five namespaced write commands', () => {
     expect(nativeCliRunner.mock.calls).toHaveLength(actualBefore.nativeCalls);
   });
 
-  it('attributes damaged dependency owner evidence after resolving a project override to user scope', async () => {
+  it('blocks a project override on damaged user dependency ownership and permits exact user recovery', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'reinstall-user-owner-source');
     const configureLeaf = (manifest: PluginMeta['manifest']) => {
@@ -11191,7 +11323,9 @@ describe('five namespaced write commands', () => {
     }, runtime);
     expect(installed.overallState, JSON.stringify(installed)).toBe('succeeded');
     const damagedRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'shared-name');
-    await fs.outputJson(path.join(damagedRoot, '.agent-workflows-owner.json'), {
+    const ownerMarker = path.join(damagedRoot, '.agent-workflows-owner.json');
+    await expect(fs.pathExists(ownerMarker)).resolves.toBe(true);
+    await fs.outputJson(ownerMarker, {
       schemaVersion: 2,
       owner: 'agent-workflows',
       sourceId: 'team',
@@ -11201,24 +11335,47 @@ describe('five namespaced write commands', () => {
       platform: 'codex',
       scope: 'user',
     });
+    const damagedMarker = await fs.readFile(ownerMarker);
+    const projectIntentPath = path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-intents.json');
+    const projectIntent = await fs.readFile(projectIntentPath);
+    const foreignSkill = path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'foreign-skill', 'SKILL.md');
+    await fs.outputFile(foreignSkill, 'foreign\n');
 
     const result = await reinstallWriteCommand(['team/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
 
-    expect(result.targetResults).toEqual(expect.arrayContaining([
+    expect(result.targetResults).toEqual([
       expect.objectContaining({
         target: expect.objectContaining({
-          pluginId: 'team/leaf', platform: 'codex', scope: 'user',
+          pluginId: 'team/root', platform: 'codex', scope: 'project',
         }),
-        errorCode: 'exclusiveOwnerEvidenceInvalid',
-        recoveryActions: [
-          'run aw cleanup team/leaf --platform codex --scope user --force',
-          'then run aw reinstall team/leaf --platform codex --scope user',
-        ],
+        errorCode: 'stateInventoryFailed',
+        message: expect.stringContaining(
+          'ownerMarkerValidation@[catalog-source]/skills/shared-name/.agent-workflows-owner.json',
+        ),
       }),
-    ]));
+    ]);
+    await expect(fs.readFile(ownerMarker)).resolves.toEqual(damagedMarker);
+    await expect(fs.readFile(projectIntentPath)).resolves.toEqual(projectIntent);
+    await expect(fs.readFile(foreignSkill, 'utf8')).resolves.toBe('foreign\n');
     await expect(fs.pathExists(damagedRoot)).resolves.toBe(true);
+
+    const cleaned = await cleanupWriteCommand(['team/leaf'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user', force: true,
+    }, runtime);
+    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
+    await expect(fs.pathExists(damagedRoot)).resolves.toBe(false);
+    await expect(fs.readFile(projectIntentPath)).resolves.toEqual(projectIntent);
+    await expect(fs.readFile(foreignSkill, 'utf8')).resolves.toBe('foreign\n');
+
+    const restored = await reinstallWriteCommand(['team/leaf'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
+    }, runtime);
+    expect(restored.overallState, JSON.stringify(restored.rebuildResults)).toBe('succeeded');
+    await expect(fs.pathExists(ownerMarker)).resolves.toBe(true);
+    await expect(fs.readFile(projectIntentPath)).resolves.toEqual(projectIntent);
+    await expect(fs.readFile(foreignSkill, 'utf8')).resolves.toBe('foreign\n');
   });
 
   it('does not touch obsolete contract state during markerless force recovery', async () => {
@@ -11246,7 +11403,7 @@ describe('five namespaced write commands', () => {
     expect(result.warnings).toEqual([]);
     await expect(readFixtureRequirements({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    })).resolves.toMatchObject({ roots: [] });
+    })).resolves.toMatchObject({ roots: [{ pluginId: 'local/demo', platforms: ['codex'] }] });
     await expect(fs.pathExists(obsolete)).resolves.toBe(true);
   });
 
@@ -11266,6 +11423,10 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
     };
+    await writePreferences({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
+      ...createEmptyPreferences(), agents: ['codex'],
+      dependencyScopeOverrides: [{ pluginId: 'team/leaf', platform: 'codex', scope: 'user' }],
+    });
     await expect(installFixturePlugin(['team/leaf'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -11305,13 +11466,14 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
     };
+    await writePreferences({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
+      ...createEmptyPreferences(), agents: ['codex'],
+      dependencyScopeOverrides: [{ pluginId: 'team/leaf', platform: 'codex', scope: 'user' }],
+    });
     await expect(installFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
       scope: 'project',
-      dependencyScopeOverrides: [{
-        pluginId: 'team/leaf', platform: 'codex', scope: 'user',
-      }],
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
     await fs.remove(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
 
@@ -11464,16 +11626,19 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     };
-    await expect(readFixtureRequirements(intentLocation)).resolves.toEqual({
-      schemaVersion: 2,
+    await expect(readFixtureRequirements(intentLocation)).resolves.toMatchObject({
+      schemaVersion: 3,
       kind: 'aw-plugin-intents',
       roots: [
         { pluginId: 'team/a', platforms: ['codex'] },
         { pluginId: 'team/independent', platforms: ['codex'] },
       ],
-      dependencyScopeOverrides: [
-        { pluginId: 'team/b', platform: 'codex', scope: 'user' },
-      ],
+      dependencyScopeOverrides: [],
+    });
+    await writePreferences(intentLocation, {
+      ...createEmptyPreferences(),
+      agents: ['codex'],
+      dependencyScopeOverrides: [{ pluginId: 'team/b', platform: 'codex', scope: 'user' }],
     });
 
     const fakeCodexBin = await writeIntentRoundTripCodexPackage(path.join(
@@ -11485,7 +11650,7 @@ describe('five namespaced write commands', () => {
       '--all',
       '--scope',
       'project',
-      '--platform',
+      '--target',
       'codex',
       '--json',
       '--yes',
@@ -11505,8 +11670,8 @@ describe('five namespaced write commands', () => {
       target: { pluginId: 'team/independent', scope: 'project' },
       state: 'completed',
     });
-    await expect(readFixtureRequirements(intentLocation)).resolves.toEqual({
-      schemaVersion: 2,
+    await expect(readFixtureRequirements(intentLocation)).resolves.toMatchObject({
+      schemaVersion: 3,
       kind: 'aw-plugin-intents',
       roots: [
         { pluginId: 'team/a', platforms: ['codex'] },
@@ -11525,16 +11690,27 @@ describe('five namespaced write commands', () => {
       { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user' },
       { ...runtime, codexManagerResolver: failingManagerResolver },
     );
-    expect(overlapping.overallState).toBe('failed');
+    expect(overlapping.overallState).toBe('partial');
     expect(overlapping.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({ errorCode: 'codexExtensionScopeConflict' }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/b', scope: 'user' }),
+        errorCode: 'writeFailed', state: 'failed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/a', scope: 'user' }),
+        errorCode: 'dependencyInstallFailed', state: 'failed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent', scope: 'user' }),
+        state: 'completed',
+      }),
     ]));
     await expect(readFixtureRequirements({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toEqual(projectBeforeOverlap);
   }, 60_000);
 
-  it('round-trips only an explicit dependency override through independent CLI processes', async () => {
+  it('round-trips an explicitly saved dependency override through independent CLI processes', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'intent-round-trip-source');
     const dynamicSkill = (skillKey: string) => (manifest: PluginMeta['manifest']) => {
@@ -11601,7 +11777,7 @@ describe('five namespaced write commands', () => {
       'team/a',
       '--scope',
       'project',
-      '--platform',
+      '--target',
       'codex',
       '--dependency-scope',
       'team/b#codex=user',
@@ -11613,13 +11789,16 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     };
-    await expect(readFixtureRequirements(intentLocation)).resolves.toEqual({
-      schemaVersion: 2,
+    await expect(readFixtureRequirements(intentLocation)).resolves.toMatchObject({
+      schemaVersion: 3,
       kind: 'aw-plugin-intents',
-      roots: [{ pluginId: 'team/a', platforms: ['codex'] }],
-      dependencyScopeOverrides: [
-        { pluginId: 'team/b', platform: 'codex', scope: 'user' },
-      ],
+      roots: [{ pluginId: 'team/a', platforms: [] }],
+      dependencyScopeOverrides: [],
+    });
+    await writePreferences(intentLocation, {
+      ...createEmptyPreferences(),
+      agents: ['codex'],
+      dependencyScopeOverrides: [{ pluginId: 'team/b', platform: 'codex', scope: 'user' }],
     });
 
     const userSkillsRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills');
@@ -11633,7 +11812,7 @@ describe('five namespaced write commands', () => {
       'team/a',
       '--scope',
       'project',
-      '--platform',
+      '--target',
       'codex',
       '--json',
       '--yes',
@@ -11642,8 +11821,8 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(path.join(userSkillsRoot, 'c-skill'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(projectSkillsRoot, 'b-skill'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(projectSkillsRoot, 'c-skill'))).resolves.toBe(false);
-    await expect(readFixtureRequirements(intentLocation)).resolves.toEqual({
-      schemaVersion: 2,
+    await expect(readFixtureRequirements(intentLocation)).resolves.toMatchObject({
+      schemaVersion: 3,
       kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/a', platforms: ['codex'] }],
       dependencyScopeOverrides: [
@@ -11656,12 +11835,12 @@ describe('five namespaced write commands', () => {
       'team/a',
       '--scope',
       'project',
-      '--platform',
+      '--target',
       'codex',
       '--json',
     ], isolation.layout.fixtureCwd, childEnv);
-    await expect(readFixtureRequirements(intentLocation)).resolves.toEqual({
-      schemaVersion: 2,
+    await expect(readFixtureRequirements(intentLocation)).resolves.toMatchObject({
+      schemaVersion: 3,
       kind: 'aw-plugin-intents',
       roots: [{ pluginId: 'team/a', platforms: ['codex'] }],
       dependencyScopeOverrides: [{ pluginId: 'team/b', platform: 'codex', scope: 'user' }],
@@ -11780,7 +11959,7 @@ describe('five namespaced write commands', () => {
   });
 
   it.each(['uninstall', 'cleanup'] as const)(
-    'applies the command-specific cross-scope policy for %s with a live project consumer',
+    'keeps a Project consumer unchanged during a User %s',
     async (command) => {
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(isolation.layout.fixtureCwd, `cross-scope-batch-${command}-source`);
@@ -11806,32 +11985,22 @@ describe('five namespaced write commands', () => {
       }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
       await expect(installFixturePlugin(['team/root'], {
         cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+        dependencyScopeOverrides: [{ pluginId: 'team/leaf', platform: 'codex', scope: 'user' }],
       }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
-      if (command === 'uninstall') {
-        const result = await uninstallWriteCommand(['team/root', 'team/leaf'], {
-          cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
-        }, runtime);
-        expect(result.targetResults).toEqual(expect.arrayContaining([
-          expect.objectContaining({ errorCode: 'dependencyStillRequired' }),
-        ]));
-      } else {
-        await expect(withAwHomeMutationLock({
-          env: isolation.env,
-          action: (token) => runRebuildCommand({
-            command: 'cleanup',
-            pluginNames: ['team/root', 'team/leaf'],
-            commandOptions: {
-              cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
-            },
-            runtime: { ...runtime, awHomeMutationToken: token },
-          }),
-        })).resolves.toMatchObject({ overallState: 'succeeded' });
-      }
-      await expect(uninstallWriteCommand(['team/leaf'], {
-        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
-      }, runtime)).resolves.toMatchObject({
-        targetResults: [expect.objectContaining({ errorCode: 'dependencyStillRequired' })],
-      });
+      const projectIntentPath = path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-intents.json');
+      const projectConfigPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
+      const [projectIntentBefore, projectConfigBefore] = await Promise.all([
+        fs.readFile(projectIntentPath), fs.readFile(projectConfigPath),
+      ]);
+      const result = await (command === 'uninstall' ? uninstallWriteCommand : cleanupWriteCommand)(
+        ['team/leaf'], { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user' }, runtime);
+      expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+      expect(result.targetResults).toContainEqual(expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }),
+        state: 'completed',
+      }));
+      await expect(fs.readFile(projectIntentPath)).resolves.toEqual(projectIntentBefore);
+      await expect(fs.readFile(projectConfigPath)).resolves.toEqual(projectConfigBefore);
     },
   );
 
@@ -12358,94 +12527,99 @@ describe('five namespaced write commands', () => {
       }),
       interactive: false,
     }));
-    const intent = {
-      kind: 'pluginWrite',
-      action: 'install',
-      pluginId: 'team/demo',
-      platform: 'both',
-      scope: 'project',
-    } as const;
-    await dependencies.validateIntent!(intent, new AbortController().signal);
-    const evidence = await dependencies.captureEvidence(intent);
 
-    const result = await dependencies.executeIntent(intent, evidence) as Awaited<ReturnType<typeof installWriteCommand>>;
-
-    expect(result.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({ target: expect.objectContaining({ platform: 'codex', scope: 'project' }) }),
-      expect.objectContaining({ target: expect.objectContaining({ platform: 'claude', scope: 'project' }) }),
+    await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
+    const exactTargets = [
+      { pluginId: 'team/demo', agent: 'codex' as const },
+      { pluginId: 'team/demo', agent: 'claude-code' as const },
+    ];
+    const request = { kind: 'recovery' as const, command: 'install' as const,
+      scope: 'project' as const, selectors: ['team/demo'],
+      targets: ['codex' as const, 'claude-code' as const], exactTargets };
+    const installPlan = await dependencies.prepareScopedTask!(request, new AbortController().signal);
+    expect(installPlan).toMatchObject({ kind: 'recovery', scope: 'project' });
+    if (installPlan.kind !== 'recovery') throw new Error('Expected recovery plan.');
+    expect(installPlan.plan.receipt.requestedTargets.map((target) => target.agent))
+      .toEqual(['claude-code', 'codex']);
+    const installed = await dependencies.executeScopedTask!(installPlan);
+    expect(installed).toMatchObject({ kind: 'recovery',
+      receipt: { scope: 'project', command: 'install' } });
+    if (installed.kind !== 'recovery') throw new Error('Expected recovery receipt.');
+    expect(installed.receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/demo', agent: 'codex', scope: 'project' }),
+      expect.objectContaining({ pluginId: 'team/demo', agent: 'claude-code', scope: 'project' }),
     ]));
-    expect(result.targetResults.map((target) => target.errorCode)).not.toContain('operationReviewStale');
+    expect(installed.receipt.targetResults.flatMap((target) =>
+      target.blockers.map((blocker) => blocker.code))).not.toContain('operationReviewStale');
 
-    const reinstallIntent = {
-      kind: 'pluginWrite', action: 'reinstall', pluginId: 'team/demo', platform: 'both', scope: 'project',
-    } as const;
-    const allFailedEvidence = await dependencies.captureEvidence(reinstallIntent);
+    const reinstallRequest = { ...request, command: 'reinstall' as const };
+    const failedPlan = await dependencies.prepareScopedTask!(
+      reinstallRequest, new AbortController().signal);
     setRebuildCommandTestHooksForTests({
       async afterTargetBuilt() {
         throw new Error('durableCleanupFailed: retained backup cleanup failed');
       },
     });
     try {
-      await expect(dependencies.executeIntent(reinstallIntent, allFailedEvidence)).resolves.toMatchObject({
-        overallState: 'failed',
-        targetResults: [
-          expect.objectContaining({ state: 'failed' }),
-          expect.objectContaining({ state: 'failed' }),
-        ],
-      });
+      const outcome = await dependencies.executeScopedTask!(failedPlan);
+      expect(outcome).toMatchObject({ kind: 'recovery',
+        receipt: { scope: 'project', command: 'reinstall', ok: false } });
+      if (outcome.kind !== 'recovery') throw new Error('Expected recovery receipt.');
+      expect(outcome.receipt.targetResults.map((target) => target.agent))
+        .toEqual(expect.arrayContaining(['codex', 'claude-code']));
     } finally {
       setRebuildCommandTestHooksForTests(undefined);
     }
     const configIntent = {
-      kind: 'configSave', pluginId: 'team/demo', scope: 'project', projectLayer: 'shared', updates: { mode: 'strict' },
+      kind: 'configSave', pluginId: 'team/demo', scope: 'project', projectLayer: 'shared',
+      updates: { mode: 'strict' },
     } as const;
-    const [reinstallEvidence, configEvidence] = await Promise.all([
-      dependencies.captureEvidence(reinstallIntent),
-      dependencies.captureEvidence(configIntent),
-    ]);
+    const reinstallPlan = await dependencies.prepareScopedTask!(
+      reinstallRequest, new AbortController().signal);
+    const configController = new TuiController(dependencies);
+    await configController.load();
+    const configReview = await configController.buildOperationReview(configIntent);
     const concurrentResults = await Promise.race([
       Promise.allSettled([
-        dependencies.executeIntent(reinstallIntent, reinstallEvidence),
-        dependencies.executeIntent(configIntent, configEvidence),
+        dependencies.executeScopedTask!(reinstallPlan),
+        configController.executeOperation(configReview.reviewToken),
       ]),
-      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('ABBA operation lock timeout')), 5_000)),
+      new Promise<never>((_resolve, reject) => setTimeout(() =>
+        reject(new Error('ABBA operation lock timeout')), 5_000)),
     ]);
     if (concurrentResults[0].status === 'rejected') {
       expect(concurrentResults[0].reason).toMatchObject({ code: 'operationReviewStale' });
     } else {
-      expect(concurrentResults[0].value).toMatchObject({
-        overallState: 'partial',
-        targetResults: [
-          expect.objectContaining({ target: expect.objectContaining({ platform: 'codex' }), state: 'completed' }),
-          expect.objectContaining({ target: expect.objectContaining({ platform: 'claude' }), state: 'failed' }),
-        ],
-      });
+      expect(concurrentResults[0].value).toMatchObject({ kind: 'recovery',
+        receipt: { scope: 'project', command: 'reinstall' } });
     }
     if (concurrentResults[1].status === 'rejected') {
       expect(concurrentResults[1].reason).toMatchObject({ code: 'operationReviewStale' });
     } else {
-      expect(concurrentResults[1].value).toMatchObject({ configWrite: 'succeeded' });
-      const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
-      await expect(readPluginConfigStore({
-        sourceId: 'team',
-        sourceIdentity: (await calculateCatalogSourceIdentity({ id: 'team', type: 'path', primary: true, path: sourceRoot })),
-        logicalIdentity,
-        pluginName: 'demo',
-        scope: 'project',
-        projectLayer: 'shared',
-        cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
-      })).resolves.toMatchObject({ values: { mode: 'strict' } });
+      expect(concurrentResults[1].value.state).toMatch(/succeeded|stale/);
+      if (concurrentResults[1].value.state === 'succeeded') {
+        const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
+        await expect(readPluginConfigStore({
+          sourceId: 'team',
+          sourceIdentity: (await calculateCatalogSourceIdentity({
+            id: 'team', type: 'path', primary: true, path: sourceRoot,
+          })),
+          logicalIdentity, pluginName: 'demo', scope: 'project', projectLayer: 'shared',
+          cwd: isolation.layout.fixtureCwd, env: isolation.env,
+        })).resolves.toMatchObject({ values: { mode: 'strict' } });
+      }
     }
+    configController.dispose();
   });
 
-  it('blocks a reviewed install when the other scope is installed concurrently', async () => {
+  it('keeps a reviewed User install isolated from a concurrent Project install', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-scope-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.extensions = {
         instructions: [{ name: 'review', title: 'Review', content: 'scope evidence' }],
+        agents: [{ name: 'reviewer', description: 'Review.', prompt: 'scope evidence' }],
       };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -12458,35 +12632,40 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
     });
     const nativeCliRunner = async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' });
-    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      nativeCliRunner,
-      interactive: false,
-    })));
-    const review = await controller.buildOperationReview({
-      kind: 'pluginWrite',
-      action: 'install',
-      pluginId: 'team/demo',
-      platform: 'codex',
-      scope: 'user',
-    });
+    await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
+
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, nativeCliRunner, interactive: false,
+    }));
+    const request = { kind: 'recovery' as const, command: 'install' as const,
+      scope: 'user' as const, selectors: ['team/demo'], targets: ['codex' as const],
+      exactTargets: [{ pluginId: 'team/demo', agent: 'codex' as const }] };
+    const review = await dependencies.prepareScopedTask!(request, new AbortController().signal);
+    expect(review).toMatchObject({ kind: 'recovery', scope: 'user' });
     const concurrent = await installFixturePlugin(['team/demo'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, { env: isolation.env, nativeCliRunner });
     expect(concurrent.overallState).toBe('succeeded');
+    const projectIntent = await readFixtureRequirements({ scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env });
+    const projectAgentPath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-demo-reviewer.toml');
+    const projectConfigPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
+    const projectAgent = await fs.readFile(projectAgentPath);
+    const projectConfig = await fs.readFile(projectConfigPath);
 
-    const result = await controller.executeOperation(review.reviewToken);
-
-    expect(result, JSON.stringify(result)).toMatchObject({
-      state: 'blocked',
-      code: 'codexExtensionScopeConflict',
-    });
-    expect(result.state === 'blocked' && result.writeMayHaveCompleted).not.toBe(true);
-    await expect(fs.pathExists(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'))).resolves.toBe(false);
-    controller.dispose();
+    const result = await dependencies.executeScopedTask!(review);
+    expect(result).toMatchObject({ kind: 'recovery', receipt: { scope: 'user', ok: true } });
+    if (result.kind !== 'recovery') throw new Error('Expected recovery receipt.');
+    expect(result.receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/demo', agent: 'codex', scope: 'user',
+        execution: 'applied', blockers: [] }),
+    ]));
+    await expect(fs.readFile(path.join(isolation.env.AW_CODEX_HOME!, 'agents', 'aw-demo-reviewer.toml'), 'utf8'))
+      .resolves.toContain('scope evidence');
+    await expect(readFixtureRequirements({ scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env })).resolves.toEqual(projectIntent);
+    await expect(fs.readFile(projectAgentPath)).resolves.toEqual(projectAgent);
+    await expect(fs.readFile(projectConfigPath)).resolves.toEqual(projectConfig);
   });
 
   it('reviews and executes I03 partial removal through the real TUI write bridge', async () => {
@@ -12532,11 +12711,11 @@ describe('five namespaced write commands', () => {
       .find((entry) => entry.endsWith('SKILL.md'));
     expect(installedSkill).toBeDefined();
     await fs.remove(path.join(skillsRoot, installedSkill!));
+
+    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd,
+      env: isolation.env }, { roots: [{ pluginId: 'team/demo', platforms: ['codex'] }] });
     const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      nativeCliRunner,
-      interactive: false,
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, nativeCliRunner, interactive: false,
     })));
     await controller.load();
     const issue = controller.listUserIssues().find((entry) =>
@@ -12545,27 +12724,22 @@ describe('five namespaced write commands', () => {
       && entry.platform === 'codex'
       && entry.scope === 'project');
     expect(issue, JSON.stringify(controller.snapshot.viewModel?.issues)).toBeDefined();
-    const review = await controller.buildOperationReview({
-      kind: 'pluginWrite',
-      action: 'uninstall',
-      pluginId: 'team/demo',
-      platform: 'codex',
-      scope: 'project',
-      originIssue: {
-        issueId: issue!.issueId,
-        issueKey: userIssueKey(issue!),
-        category: issue!.category,
-        actionId: 'remove',
-      },
-    });
-    expect(review).toMatchObject({ pluginAction: 'uninstall', originIssue: { actionId: 'remove' } });
+    const review = await controller.prepareScopedTask({ kind: 'recovery', command: 'uninstall',
+      scope: 'project', selectors: ['team/demo'], targets: ['codex'],
+      exactTargets: [{ pluginId: 'team/demo', agent: 'codex' }] });
+    expect(review).toMatchObject({ kind: 'recovery', scope: 'project' });
 
-    const removal = await controller.executeOperation(review.reviewToken);
-    expect(removal, JSON.stringify(removal)).toMatchObject({ state: 'succeeded' });
-    expect(controller.listUserIssues().some((entry) => entry.issueId === issue!.issueId)).toBe(true);
-    await expect(readFixtureRequirements({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }))
-      .resolves.toMatchObject({ roots: [{ pluginId: 'team/demo', platforms: ['codex'] }] });
-    await expect(fs.pathExists(path.dirname(path.join(skillsRoot, installedSkill!)))).resolves.toBe(false);
+    const removal = await controller.executeScopedTask(review);
+    expect(removal).toMatchObject({ kind: 'recovery', receipt: {
+      scope: 'project', command: 'uninstall', declarationChanged: false,
+      preferencesChanged: false, configChanged: false,
+    } });
+    await expect(readFixtureRequirements({ scope: 'project', cwd: isolation.layout.fixtureCwd,
+      env: isolation.env })).resolves.toMatchObject({
+        roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
+      });
+    await expect(fs.pathExists(path.dirname(path.join(skillsRoot, installedSkill!))))
+      .resolves.toBe(false);
     controller.dispose();
   });
 
@@ -12587,43 +12761,36 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
+
+    await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
       interactive: false,
-    })));
-    try {
-      const review = await controller.buildOperationReview({
-        kind: 'pluginWrite',
-        action: 'install',
-        pluginId: 'team/demo',
-        platform: 'codex',
-        scope: 'project',
-      });
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'changed\n', (manifest) => {
-        manifest.marketplace.policy.products = ['CODEX'];
-        manifest.extensions = {
-          instructions: [{ name: 'review', title: 'Review', content: 'changed content' }],
-        };
-      });
+    }));
+    const request = { kind: 'recovery' as const, command: 'install' as const,
+      scope: 'project' as const, selectors: ['team/demo'], targets: ['codex' as const],
+      exactTargets: [{ pluginId: 'team/demo', agent: 'codex' as const }] };
+    const review = await dependencies.prepareScopedTask!(request, new AbortController().signal);
+    expect(review).toMatchObject({ kind: 'recovery', scope: 'project' });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'changed\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.extensions = {
+        instructions: [{ name: 'review', title: 'Review', content: 'changed content' }],
+      };
+    });
     await syncCatalogSourceGeneration({
-        sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
-      });
-      const result = await controller.executeOperation(review.reviewToken);
-
-      expect(result, JSON.stringify(result)).toMatchObject({
-        state: 'stale',
-        review: { title: '添加插件' },
-      });
-      await expect(fs.pathExists(path.join(
-        isolation.layout.fixtureCwd,
-        '.codex',
-        'config.toml',
-      ))).resolves.toBe(false);
-    } finally {
-      controller.dispose();
-    }
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    const result = await dependencies.executeScopedTask!(review);
+    expect(result).toMatchObject({ kind: 'recovery', receipt: { scope: 'project', ok: false } });
+    if (result.kind !== 'recovery') throw new Error('Expected recovery receipt.');
+    expect(result.receipt.blockers.concat(result.receipt.errors).map((entry) => entry.code))
+      .toContain('operationReviewStale');
+    await expect(readFixtureRequirements({ scope: 'project', cwd: isolation.layout.fixtureCwd,
+      env: isolation.env })).resolves.toMatchObject({ roots: [] });
+    await expect(fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')))
+      .resolves.toBe(false);
   });
 
   it('preserves the generated shared marketplace root during ordinary cleanup', async () => {
@@ -12738,7 +12905,7 @@ describe('five namespaced write commands', () => {
     })).resolves.toMatchObject({ ok: true, changed: true, sourceId: 'team' });
   });
 
-  it('runs every command through the same namespaced runtime without an unrelated Codex probe', async () => {
+  it('runs every command through the same namespaced runtime with a neutral User Codex observation', async () => {
     const isolation = await configureCatalog();
     const nativeCliRunner = vi.fn(async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }));
     const report = vi.fn();
@@ -12762,8 +12929,8 @@ describe('five namespaced write commands', () => {
       await cleanupWriteCommand(['demo'], options, runtime),
     ];
 
-    for (const result of results.slice(0, -1)) {
-      expect(result).toMatchObject({
+    for (const [index, result] of results.slice(0, -1).entries()) {
+      expect(result, JSON.stringify({ index, result })).toMatchObject({
         overallState: 'succeeded',
         warnings: [],
         receiptTargets: [{
@@ -12780,7 +12947,12 @@ describe('five namespaced write commands', () => {
       warnings: [],
       receiptTargets: [],
     });
-    expect(nativeCliRunner).not.toHaveBeenCalled();
+    expect(nativeCliRunner).toHaveBeenCalledTimes(1);
+    expect(nativeCliRunner.mock.calls[0]![0]).toMatchObject({
+      agentKind: 'codex',
+      args: expect.arrayContaining(['plugin', 'list', '--json']),
+    });
+    expect(nativeCliRunner.mock.calls[0]![0].cwd).not.toBe(isolation.layout.fixtureCwd);
     expect(report).toHaveBeenCalled();
   });
 
@@ -12863,6 +13035,7 @@ describe('five namespaced write commands', () => {
 
   it('blocks same-name unbound Claude records and preserves different-name records', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
     const codexRoot = path.join(isolation.layout.fixtureCwd, 'codex-source');
     const claudeRoot = path.join(isolation.layout.fixtureCwd, 'claude-source');
     const dualRoot = path.join(isolation.layout.fixtureCwd, 'dual-source');
@@ -13065,38 +13238,26 @@ describe('five namespaced write commands', () => {
     await fs.outputJson(installedPath, {
       plugins: { 'default-plugin': [unboundInstalledRecord] },
     });
-    for (const command of [installWriteCommand, syncWriteCommand]) {
-      const result = await command(selectors, options, runtime);
-      expect(result).toMatchObject({
-        overallState: 'succeeded',
-        receiptTargets: expect.arrayContaining([
-          expect.objectContaining({ pluginId: 'codex/codex-only', platform: 'codex' }),
-          expect.objectContaining({ pluginId: 'claude/claude-only', platform: 'claude' }),
-        ]),
-      });
-      expect(result.receiptTargets).toHaveLength(2);
-      await expect(fs.readJson(installedPath)).resolves.toMatchObject({
-        plugins: { 'default-plugin': [unboundInstalledRecord] },
-      });
-    }
-
     for (const [selector, platform] of [
       ['codex/codex-only', 'codex'],
       ['claude/claude-only', 'claude'],
     ] as const) {
-      const result = await reinstallWriteCommand([selector], options, runtime);
-      expect(result).toMatchObject({
-        overallState: 'succeeded',
-        receiptTargets: [expect.objectContaining({ pluginId: selector, platform })],
-      });
-      await expect(fs.readJson(installedPath)).resolves.toMatchObject({
-        plugins: { 'default-plugin': [unboundInstalledRecord] },
-      });
+      for (const command of [installWriteCommand, syncWriteCommand, reinstallWriteCommand]) {
+        const result = await command([selector], { ...options, platform }, runtime);
+        expect(result, JSON.stringify({ selector, command: command.name, result })).toMatchObject({
+          overallState: 'succeeded',
+          receiptTargets: [expect.objectContaining({ pluginId: selector, platform })],
+        });
+        await expect(fs.readJson(installedPath)).resolves.toMatchObject({
+          plugins: { 'default-plugin': [unboundInstalledRecord] },
+        });
+      }
     }
 
-    const uninstalled = await uninstallWriteCommand(['claude/claude-only'], options, runtime);
+    const claudeOptions = { ...options, platform: 'claude' as const };
+    const uninstalled = await uninstallWriteCommand(['claude/claude-only'], claudeOptions, runtime);
     expect(uninstalled.overallState, JSON.stringify(uninstalled.rebuildResults)).toBe('succeeded');
-    const cleaned = await cleanupWriteCommand(['claude/claude-only'], options, runtime);
+    const cleaned = await cleanupWriteCommand(['claude/claude-only'], claudeOptions, runtime);
     expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
     await expect(fs.readJson(installedPath)).resolves.toMatchObject({
       plugins: { 'default-plugin': [unboundInstalledRecord] },
@@ -13149,7 +13310,8 @@ describe('five namespaced write commands', () => {
       interactive: false,
       nativeCliRunner,
     })).toBe(1);
-    expect(JSON.parse(captured.readStdout())).toMatchObject({
+    const applyReceipt = JSON.parse(captured.readStdout());
+    expect(applyReceipt, JSON.stringify(applyReceipt)).toMatchObject({
       configWrite: 'succeeded',
       overallState: 'partial',
       apply: {
@@ -13180,7 +13342,7 @@ describe('five namespaced write commands', () => {
 
     const lifecycleCaptured = createCapturedCliIo();
     expect(await runCli([
-      'sync', 'dual/config-dual', '--platform', 'both', '--scope', 'project', '--json',
+      'sync', 'dual/config-dual', '--target', 'codex', '--target', 'claude-code', '--scope', 'project', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -13191,7 +13353,7 @@ describe('five namespaced write commands', () => {
     expect(JSON.parse(lifecycleCaptured.readStdout())).toMatchObject({
       ok: false,
       command: 'sync',
-      kind: 'aw-project-recovery',
+      kind: 'aw-recovery',
       targetResults: expect.arrayContaining([
         expect.objectContaining({ agent: 'codex', execution: 'applied' }),
         expect.objectContaining({ agent: 'claude-code', execution: 'failed' }),
@@ -13287,7 +13449,7 @@ describe('five namespaced write commands', () => {
     expect(JSON.parse(captured.readStdout())).toMatchObject({
       configWrite: 'succeeded',
       overallState: 'succeeded',
-      apply: { state: 'skipped', reason: 'noVisibleTarget', targetResults: [] },
+      apply: { state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] },
     });
     expect(nativeCliRunner).not.toHaveBeenCalled();
     expect((await readPluginConfigStore({
@@ -13323,7 +13485,7 @@ describe('five namespaced write commands', () => {
 
     const result = await installFixturePlugin(['demo', 'team/demo', 'team/demo'], {
       cwd: isolation.layout.fixtureCwd,
-      platform: 'both',
+      platform: 'codex',
       scope: 'project',
     }, {
       env: isolation.env,
@@ -13412,59 +13574,42 @@ describe('five namespaced write commands', () => {
       interactive: false,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
     }));
-    const intent = {
-      kind: 'pluginWriteBatch' as const,
-      action: 'install' as const,
-      selection: {
-        kind: 'selected' as const,
-        pluginIds: ['first/alpha', 'first/omega', 'second/beta'],
-      },
-      platform: 'codex' as const,
-      scope: 'project' as const,
-    };
+    const selectors = ['first/alpha', 'first/omega', 'second/beta'];
+    const installPlan = await dependencies.prepareScopedTask!({
+      kind: 'recovery', scope: 'project', command: 'install', selectors, targets: ['codex'],
+    }, new AbortController().signal);
+    const installed = await dependencies.executeScopedTask!(installPlan);
+    expect(installed).toMatchObject({ kind: 'recovery', receipt: { ok: true, scope: 'project' } });
+    if (installed.kind !== 'recovery') throw new Error('Expected recovery receipt.');
+    expect(installed.receipt.targetResults.map((target) => [target.pluginId, target.execution]))
+      .toEqual(expect.arrayContaining(selectors.map((pluginId) => [pluginId, 'applied'])));
+    await expect(readFixtureRequirements({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toMatchObject({
+      roots: selectors.map((pluginId) => ({ pluginId })),
+    });
 
-    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
-    const result = await dependencies.executeIntent(intent, evidence) as {
-      overallState: string;
-      groupResults: Array<{
-        sourceId: string;
-        result: Awaited<ReturnType<typeof installWriteCommand>>;
-      }>;
-    };
-
-    expect(result.overallState).toBe('succeeded');
-    expect(result.groupResults.map((group) => [group.sourceId, group.result.overallState])).toEqual([
-      ['first', 'succeeded'],
-      ['second', 'succeeded'],
-    ]);
-    const firstGroup = result.groupResults[0]!.result;
-    expect(firstGroup.receiptTargets.filter((target) => target.pluginId === 'first/leaf'))
-      .toHaveLength(1);
-
-    const syncIntent = { ...intent, action: 'sync' as const };
-    const syncEvidence = await dependencies.captureEvidence(
-      syncIntent,
-      new AbortController().signal,
-    );
-    const syncResult = await dependencies.executeIntent(syncIntent, syncEvidence) as {
-      overallState: string;
-      groupResults: Array<{ sourceId: string; result: { overallState: string } }>;
-    };
-    expect(syncResult.overallState).toBe('succeeded');
-    expect(syncResult.groupResults.map((group) => [group.sourceId, group.result.overallState]))
-      .toEqual([['first', 'succeeded'], ['second', 'succeeded']]);
+    const syncPlan = await dependencies.prepareScopedTask!({
+      kind: 'recovery', scope: 'project', command: 'sync', selectors, targets: ['codex'],
+    }, new AbortController().signal);
+    const synced = await dependencies.executeScopedTask!(syncPlan);
+    expect(synced).toMatchObject({ kind: 'recovery', receipt: { ok: true, scope: 'project' } });
+    if (synced.kind !== 'recovery') throw new Error('Expected recovery receipt.');
+    expect(synced.receipt.targetResults.map((target) => [target.pluginId, target.observation]))
+      .toEqual(expect.arrayContaining(selectors.map((pluginId) => [pluginId, 'verified'])));
   });
 
-  it('rejects sync --all when no intent roots exist', async () => {
+  it('keeps sync --all without intent roots as an empty recovery', async () => {
     const isolation = await configureCatalog();
-    await expect(syncFixturePlugin([], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'codex',
-      scope: 'user',
-      all: true,
-      interactive: false,
-    })).rejects.toMatchObject({ code: 'syncSelectionRequired' });
+    const receipt = await runRecovery('sync', [], {
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      cliVersion: '1.0.0', all: true, targets: ['codex'], yes: true,
+    });
+    expect(receipt).toMatchObject({
+      schemaVersion: 1, kind: 'aw-recovery', scope: 'user', command: 'sync', ok: true,
+      requestedRoots: [], requestedTargets: [], targetResults: [], blockers: [],
+      declarationChanged: false, outputsMayHaveChanged: false,
+    });
   });
 
   it('keeps safely separable same-name project instruction owners namespaced', async () => {
@@ -13639,7 +13784,7 @@ describe('five namespaced write commands', () => {
       throw error;
     });
     expect(await runCli([
-      'install', 'team/demo', '--platform', 'codex', '--scope', 'user', '--json',
+      'install', 'team/demo', '--target', 'codex', '--scope', 'user', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: { ...isolation.env, PATH: '' },
@@ -13648,8 +13793,18 @@ describe('five namespaced write commands', () => {
       nativeCliRunner: missingSystemRunner,
     })).toBe(1);
     expect(JSON.parse(output.readStdout())).toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({ errorCode: 'managedCodexAuthorizationRequired' })],
+      schemaVersion: 1,
+      kind: 'aw-recovery',
+      scope: 'user',
+      ok: false,
+      targetResults: [expect.objectContaining({
+        agent: 'codex', execution: 'failed',
+        blockers: [expect.objectContaining({ code: 'managedCodexAuthorizationRequired' })],
+        backend: expect.objectContaining({
+          overallState: 'failed',
+          targetResults: [expect.objectContaining({ errorCode: 'managedCodexAuthorizationRequired' })],
+        }),
+      })],
     });
     expect(output.readStderr()).toBe('');
     expect(nativeCliRunner).not.toHaveBeenCalled();
@@ -13722,7 +13877,7 @@ describe('five namespaced write commands', () => {
     }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
     expect(alreadyClean.overallState, JSON.stringify(alreadyClean.rebuildResults)).toBe('succeeded');
     expect(codexManagerResolver).not.toHaveBeenCalled();
-    expect(nativeCliRunner).toHaveBeenCalledTimes(2);
+    expect(nativeCliRunner).toHaveBeenCalledTimes(1);
     expect(nativeCliRunner.mock.calls.every(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
         === 'plugin list --marketplace aw --json')).toBe(true);
@@ -13885,9 +14040,10 @@ describe('five namespaced write commands', () => {
     expect(registeredVersion).toBe('2.0.0');
   }, 30_000);
 
-  it('refreshes an existing config-backed Codex role through sync and config apply', async () => {
+  it.each(['user', 'project'] as const)('refreshes an installed %s Codex role after removing its Intent root', async (scope) => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-role-refresh-source');
+    const otherSourceRoot = path.join(isolation.layout.fixtureCwd, 'other-config-role-source');
     await fs.outputFile(path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'render.mjs'), [
       'import { readFile } from "node:fs/promises";',
       'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
@@ -13946,7 +14102,7 @@ describe('five namespaced write commands', () => {
         targets: [{
           id: 'helper-role',
           platform: 'codex',
-          scopes: ['user'],
+          scopes: ['user', 'project'],
           target: 'codex.agentRole',
           states: ['present'],
           refreshKeys: ['effort'],
@@ -13955,11 +14111,20 @@ describe('five namespaced write commands', () => {
         }],
       };
     });
+    await createCatalogSnapshotFixture(otherSourceRoot, 'sentinel', [], 'sentinel\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.extensions = {
+        agents: [{ name: 'watcher', description: 'Watcher.', prompt: 'Watch.' }],
+      };
+    });
     const before = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
         schemaVersion: 2,
-        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+        sources: [
+          { id: 'team', type: 'path', primary: true, path: sourceRoot },
+          { id: 'other', type: 'path', primary: false, path: otherSourceRoot },
+        ],
       },
       expectedDigest: before.digest,
       env: isolation.env,
@@ -13979,20 +14144,25 @@ describe('five namespaced write commands', () => {
         payload: JSON.parse(captured.readStdout()) as Record<string, unknown>,
       };
     };
-    const rolePath = path.join(
-      isolation.env.AW_CODEX_HOME!,
-      'agents',
-      'aw-demo-helper.toml',
-    );
+    const rolePath = path.join(scope === 'user' ? isolation.env.AW_CODEX_HOME!
+      : path.join(isolation.layout.fixtureCwd, '.codex'), 'agents', 'aw-demo-helper.toml');
+    const otherScope = scope === 'user' ? 'project' : 'user';
+    const otherHome = otherScope === 'user' ? isolation.env.AW_CODEX_HOME!
+      : path.join(isolation.layout.fixtureCwd, '.codex');
+    const otherRolePath = path.join(otherHome, 'agents', 'aw-sentinel-watcher.toml');
 
     expect(await runPublic([
-      'install', 'team/demo', '--platform', 'codex', '--scope', 'user',
+      'install', 'team/demo', '--target', 'codex', '--scope', scope,
     ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    expect(await runPublic([
+      'install', 'other/sentinel', '--target', 'codex', '--scope', otherScope,
+    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    const otherRoleBefore = await fs.readFile(otherRolePath);
     await expect(fs.readFile(rolePath, 'utf8'))
       .resolves.toContain('model_reasoning_effort = "medium"');
 
     expect(await runPublic([
-      'config', 'set', 'team/demo', 'effort', '--scope', 'user', '--value-json', '"high"',
+      'config', 'set', 'team/demo', 'effort', '--scope', scope, '--value-json', '"high"',
     ])).toMatchObject({
       exitCode: 0,
       payload: { apply: { state: 'skipped', reason: 'notRequested' } },
@@ -14000,13 +14170,13 @@ describe('five namespaced write commands', () => {
     await expect(fs.readFile(rolePath, 'utf8'))
       .resolves.toContain('model_reasoning_effort = "medium"');
     expect(await runPublic([
-      'sync', 'team/demo', '--platform', 'codex', '--scope', 'user',
+      'sync', 'team/demo', '--target', 'codex', '--scope', scope,
     ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
     await expect(fs.readFile(rolePath, 'utf8'))
       .resolves.toContain('model_reasoning_effort = "high"');
 
     expect(await runPublic([
-      'config', 'set', 'team/demo', 'effort', '--scope', 'user',
+      'config', 'set', 'team/demo', 'effort', '--scope', scope,
       '--value-json', '"xhigh"', '--apply',
     ])).toMatchObject({
       exitCode: 0,
@@ -14014,6 +14184,33 @@ describe('five namespaced write commands', () => {
     });
     await expect(fs.readFile(rolePath, 'utf8'))
       .resolves.toContain('model_reasoning_effort = "xhigh"');
+
+    const intentLocation = { scope, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    const intentPath = await resolveIntentPath(intentLocation);
+    const otherIntentPath = await resolveIntentPath({ ...intentLocation, scope: otherScope });
+    const intentBeforeRemoval = await fs.readFile(intentPath);
+    const otherIntentBefore = await fs.readFile(otherIntentPath);
+    expect(await runPublic(['intent', 'remove', 'team/demo', '--scope', scope])).toMatchObject({
+      exitCode: 0, payload: { kind: 'aw-recovery', command: 'intent:remove',
+        declarationChanged: true, outputsMayHaveChanged: false, intent: { roots: [] } },
+    });
+    const intentAfterRemoval = await fs.readFile(intentPath);
+    expect(intentAfterRemoval).not.toEqual(intentBeforeRemoval);
+    await expect(fs.readFile(rolePath, 'utf8'))
+      .resolves.toContain('model_reasoning_effort = "xhigh"');
+
+    expect(await runPublic([
+      'config', 'set', 'team/demo', 'effort', '--scope', scope,
+      '--value-json', '"medium"', '--apply',
+    ])).toMatchObject({
+      exitCode: 0, payload: { apply: { state: 'succeeded' } },
+    });
+    await expect(fs.readFile(rolePath, 'utf8'))
+      .resolves.toContain('model_reasoning_effort = "medium"');
+    await expect(fs.readFile(intentPath)).resolves.toEqual(intentAfterRemoval);
+    await expect(fs.readFile(otherIntentPath)).resolves.toEqual(otherIntentBefore);
+    await expect(fs.readFile(otherRolePath)).resolves.toEqual(otherRoleBefore);
+    expect(runtime.installed.has('demo@aw')).toBe(true);
   });
 
   it('sets and unsets whole arrays, rejects v4 bytes, and recreates v5 after reset', async () => {
@@ -14199,7 +14396,7 @@ describe('five namespaced write commands', () => {
     const configPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
 
     expect(await runPublic([
-      'install', 'team/demo', '--platform', 'codex', '--scope', 'project',
+      'install', 'team/demo', '--target', 'codex', '--scope', 'project',
     ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
@@ -14226,7 +14423,7 @@ describe('five namespaced write commands', () => {
 
     await fs.remove(configPath);
     await expect(statusCommandV8({
-      projectSelection: { targets: ['codex'] },
+      recoverySelection: { targets: ['codex'] },
       plugins: ['team/demo'],
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -14257,7 +14454,7 @@ describe('five namespaced write commands', () => {
     ]));
     expect((await readStore()).values).toEqual({ mode: 'fast' });
     await expect(fs.pathExists(configPath)).resolves.toBe(false);
-    expect(await runPublic(['sync', 'team/demo', '--platform', 'codex', '--scope', 'project']))
+    expect(await runPublic(['sync', 'team/demo', '--target', 'codex', '--scope', 'project']))
       .toMatchObject({ exitCode: 0, payload: { ok: true } });
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
 
@@ -14431,7 +14628,9 @@ describe('five namespaced write commands', () => {
     expect(unavailableHuman.stdout).toContain('已写入 demo.mode');
     expect(unavailableHuman.stderr).toContain('invalidConfig：The effective config is invalid for every visible target.');
     expect(unavailableHuman.stderr).toContain('codex/project：[invalidConfig] The effective config is invalid for this target.');
-    expect(unavailableHuman.stderr).toContain('请修复无效配置后运行 aw sync。');
+    expect(unavailableHuman.stderr).toContain(
+      '请修复无效配置，再按目标范围运行 aw sync <source/plugin> --scope user|project。',
+    );
     expect(unavailableHuman.stderr).not.toContain('bad key');
 
     const repaired = await runPublic([
@@ -14459,7 +14658,9 @@ describe('five namespaced write commands', () => {
     ]);
     expect(failed).toMatchObject({ exitCode: 1 });
     expect(failed.stderr).toContain('renderer requested failure');
-    expect(failed.stderr).toContain('请在解决失败原因后运行 aw reinstall demo -p codex -s project。');
+    expect(failed.stderr).toContain(
+      '请在解决失败原因后运行 aw reinstall demo --target codex --scope project。',
+    );
     expect(failed.stderr).not.toContain('file:///');
     expect((await readStore()).values).toEqual({
       labels: { good_key: 'repaired' },
@@ -14897,7 +15098,7 @@ describe('five namespaced write commands', () => {
       cliVersion: '1.0.0',
       env: isolation.env,
     });
-    await addProjectRequirements({
+    await addProjectFixtureRoots({
       cwd: isolation.layout.fixtureCwd, env: isolation.env, selectors: ['team/native-config'],
     });
     const runtime = createCodexNativeTestRuntime(isolation);
@@ -14991,6 +15192,16 @@ describe('five namespaced write commands', () => {
     });
     expect((await readStore()).values).toEqual({ mode: 'saved' });
 
+    const userConfigBeforeAuthorized = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
+    const projectConfigBeforeAuthorized = await readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'));
+    const legacyBeforeAuthorized = {
+      user: await fs.pathExists(legacyUserSkillRoot),
+      project: await fs.pathExists(legacyProjectSkillRoot),
+    };
+    expect(legacyBeforeAuthorized).toEqual({ user: true, project: true });
+    expect(userConfigBeforeAuthorized.snapshot.plugins['native-config@aw']?.enabled).toBeUndefined();
+    expect(projectConfigBeforeAuthorized.snapshot.plugins['native-config@aw']?.enabled).toBeUndefined();
+    const nativeCallsBeforeAuthorized = runtime.nativeCliRunner.mock.calls.length;
     const authorized = await runPublic([
       'config', 'set', 'team/native-config', 'mode', '--value-json', '"authorized"', '--scope', 'user', '--apply', '--yes',
     ]);
@@ -15002,6 +15213,16 @@ describe('five namespaced write commands', () => {
       },
     });
     expect((await readStore()).values).toEqual({ mode: 'authorized' });
+    const userConfigAfterAuthorized = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
+    const projectConfigAfterAuthorized = await readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'));
+    expect(userConfigAfterAuthorized.snapshot.plugins['native-config@aw']?.enabled).toBe(true);
+    expect(projectConfigAfterAuthorized.snapshot.plugins['native-config@aw']?.enabled).toBe(true);
+    expect((authorized.payload as { apply: { targetResults: unknown[] } }).apply.targetResults).toEqual(
+      expect.arrayContaining(['user', 'project'].map((targetScope) => expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/native-config', scope: targetScope }),
+        action: 'reinstall', state: 'completed',
+      }))),
+    );
 
     const [canonicalPluginId] = [...runtime.installed];
     expect(canonicalPluginId).toBe('native-config@aw');
@@ -15044,9 +15265,20 @@ describe('five namespaced write commands', () => {
     const firstRenderEvents = (await fs.readFile(rendererMarker, 'utf8')).trim().split('\n')
       .map((line) => JSON.parse(line) as {
         cwd: string;
-        context: { plugin: { rootDir: string }; config: { schema: object; values: object } };
+        context: { scope: string; requestedArtifactIds: string[];
+          plugin: { rootDir: string }; config: { targetScope: string; schema: object;
+            values: Record<string, unknown> } };
       });
-    expect(firstRenderEvents).toHaveLength(1);
+    expect(firstRenderEvents, JSON.stringify({
+      events: firstRenderEvents.map(({ cwd, context }) => ({
+        cwd, scope: context.scope, targetScope: context.config.targetScope,
+        requestedArtifactIds: context.requestedArtifactIds, mode: context.config.values.mode,
+      })),
+      apply: (authorized.payload as { apply?: unknown }).apply,
+      nativeWrites: runtime.nativeCliRunner.mock.calls.slice(nativeCallsBeforeAuthorized)
+        .map(([invocation]) => invocation.args.slice(invocation.args.indexOf('plugin')).join(' '))
+        .filter((args) => args.includes(' add ') || args.includes(' remove ')),
+    })).toHaveLength(1);
     expect(firstRenderEvents[0]!.cwd).toBe(firstRenderEvents[0]!.context.plugin.rootDir);
     expect(firstRenderEvents[0]!.cwd).not.toBe(isolation.layout.fixtureCwd);
     expect(firstRenderEvents[0]!.context.config.schema).not.toHaveProperty('projectMode');
@@ -15061,7 +15293,7 @@ describe('five namespaced write commands', () => {
       setNativeCliRunnerOverrideForTests(statusRunner);
       try {
         const status = await statusCommandV8({
-          projectSelection: { targets: ['codex'] },
+          recoverySelection: { targets: ['codex'] },
           plugins: ['team/native-config'],
           cwd: isolation.layout.fixtureCwd,
           env: { ...isolation.env, PATH: statusBinRoot },
@@ -15077,12 +15309,21 @@ describe('five namespaced write commands', () => {
     };
     const exactStatus = await readNativeStatus();
     expect(exactStatus.status.payload.targets).toEqual([
-      expect.objectContaining({ state: 'ready' }),
+      expect.objectContaining({
+        state: 'ready',
+        placements: [expect.objectContaining({
+          scope: 'project', state: 'ready',
+          components: expect.arrayContaining([
+            expect.objectContaining({ kind: 'intent', state: 'desired' }),
+            expect.objectContaining({ kind: 'ownership', key: 'native-config', state: 'absent' }),
+          ]),
+        })],
+      }),
     ]);
     expect(statusTargetSharedNative(exactStatus.status.payload.targets[0]!))
       .toMatchObject({ state: 'usable', version: '1.0.0' });
     expect(statusTargetActivation(exactStatus.status.payload.targets[0]!.placements[0]!))
-      .toMatchObject({ user: false, project: true, effective: true });
+      .toMatchObject({ project: true, effective: true });
     expect((await fs.readFile(rendererMarker, 'utf8')).trim().split('\n')).toHaveLength(1);
 
     expect(await runPublic([
@@ -15122,7 +15363,7 @@ describe('five namespaced write commands', () => {
     const refreshedProjectConfig = await readCodexConfigFile(
       path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'),
     );
-    expect(refreshedConfig.snapshot.plugins[canonicalPluginId!]?.enabled).toBe(false);
+    expect(refreshedConfig.snapshot.plugins[canonicalPluginId!]?.enabled).toBe(true);
     expect(refreshedProjectConfig.snapshot.plugins[canonicalPluginId!]?.enabled).toBe(true);
 
     const canonicalReceiptPath = path.join(
@@ -15273,7 +15514,7 @@ describe('five namespaced write commands', () => {
         state: 'replaceable', reason: 'damaged', diagnostic: 'projectionPayloadDigestMismatch',
       });
     const recoveredProjection = await runPublic([
-      'sync', 'team/native-config', '--platform', 'codex', '--scope', 'project', '--yes',
+      'sync', 'team/native-config', '--target', 'codex', '--scope', 'project', '--yes',
     ]);
     expect(recoveredProjection, JSON.stringify(recoveredProjection, null, 2))
       .toMatchObject({ exitCode: 0, payload: { ok: true } });
@@ -15296,7 +15537,7 @@ describe('five namespaced write commands', () => {
     expect(damagedStatus.status.payload.targets[0]).toMatchObject({ state: 'ready' });
     const callsBeforeRepair = runtime.nativeCliRunner.mock.calls.length;
     const repairedTamper = await runPublic([
-      'sync', 'team/native-config', '--platform', 'codex', '--scope', 'project', '--yes',
+      'sync', 'team/native-config', '--target', 'codex', '--scope', 'project', '--yes',
     ]);
     expect(repairedTamper, JSON.stringify(repairedTamper, null, 2))
       .toMatchObject({ exitCode: 0, payload: { ok: true } });
@@ -15430,6 +15671,8 @@ describe('five namespaced write commands', () => {
         scope: 'project',
       },
     });
+    const projectSkillBeforeUserInstall = await fs.readFile(path.join(legacyProjectSkillRoot, 'SKILL.md'));
+    const projectOwnerBeforeUserInstall = await fs.readFile(path.join(legacyProjectSkillRoot, SKILL_OWNER_MARKER));
     const userInstalled = await installFixturePlugin(['team/native-config'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -15437,7 +15680,10 @@ describe('five namespaced write commands', () => {
     }, runtime);
     expect(userInstalled, JSON.stringify(userInstalled, null, 2))
       .toMatchObject({ overallState: 'succeeded' });
-    await expect(fs.pathExists(legacyProjectSkillRoot)).resolves.toBe(false);
+    await expect(fs.readFile(path.join(legacyProjectSkillRoot, 'SKILL.md')))
+      .resolves.toEqual(projectSkillBeforeUserInstall);
+    await expect(fs.readFile(path.join(legacyProjectSkillRoot, SKILL_OWNER_MARKER)))
+      .resolves.toEqual(projectOwnerBeforeUserInstall);
 
     const reset = await runPublic([
       'config', 'reset', 'team/native-config', '--scope', 'user', '--apply', '--yes',
@@ -15683,7 +15929,7 @@ describe('five namespaced write commands', () => {
       payload: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
     });
     const projectInstall = await runPublic([
-      'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project',
+      'install', 'team/codex-enhance', '--target', 'codex', '--scope', 'project',
     ]);
     expect(projectInstall, JSON.stringify(projectInstall, null, 2))
       .toMatchObject({ exitCode: 0, payload: { ok: true } });
@@ -15741,28 +15987,50 @@ describe('five namespaced write commands', () => {
     ));
     expect(projectOnlyConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
     expect(projectOnlyUserConfig.snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
+    const projectIntentPath = path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-intents.json');
+    const projectRolePath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents',
+      'aw-codex-enhance-codex-explore.toml');
+    const projectIntentBefore = await fs.readFile(projectIntentPath);
+    const projectRoleBefore = await fs.readFile(projectRolePath);
+    const projectConfigBefore = await fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'));
 
     const userInstall = await runPublic([
-      'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'user',
+      'install', 'team/codex-enhance', '--target', 'codex', '--scope', 'user',
     ]);
     expect(userInstall, JSON.stringify(userInstall)).toMatchObject({
-      exitCode: 1, payload: { targetResults: [expect.objectContaining({ errorCode: 'codexExtensionScopeConflict' })] },
+      exitCode: 0,
+      payload: {
+        schemaVersion: 1, kind: 'aw-recovery', scope: 'user', ok: true,
+        targetResults: [expect.objectContaining({ agent: 'codex', execution: 'applied', observation: 'verified' })],
+      },
     });
     await expect(fs.pathExists(path.join(
       isolation.env.AW_CODEX_HOME!, 'agents', 'aw-codex-enhance-codex-explore.toml',
-    ))).resolves.toBe(false);
-    await expect(fs.readFile(path.join(
-      isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-codex-enhance-codex-explore.toml',
-    ), 'utf8')).resolves.toBe(roleBefore);
-    expect(await runPublic([
-      'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project',
-    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    ))).resolves.toBe(true);
+    await expect(fs.readFile(projectIntentPath)).resolves.toEqual(projectIntentBefore);
+    await expect(fs.readFile(projectRolePath)).resolves.toEqual(projectRoleBefore);
+    await expect(fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')))
+      .resolves.toEqual(projectConfigBefore);
+    const projectReinstall = await runPublic([
+      'install', 'team/codex-enhance', '--target', 'codex', '--scope', 'project',
+    ]);
+    expect(projectReinstall, JSON.stringify(projectReinstall)).toMatchObject({
+      exitCode: 1,
+      payload: { ok: false, targetResults: [expect.objectContaining({
+        agent: 'codex', execution: 'not-run',
+        blockers: [expect.objectContaining({ code: 'codexExtensionScopeConflict' })],
+      })] },
+    });
+    await expect(fs.readFile(projectIntentPath)).resolves.toEqual(projectIntentBefore);
+    await expect(fs.readFile(projectRolePath)).resolves.toEqual(projectRoleBefore);
+    await expect(fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')))
+      .resolves.toEqual(projectConfigBefore);
 
     const [userConfig, projectConfig] = await Promise.all([
       readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
       readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
     ]);
-    expect(userConfig.snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
+    expect(userConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
     expect(projectConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
   });
 });

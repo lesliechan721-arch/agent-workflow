@@ -29,6 +29,9 @@ fs.appendFileSync(logPath, JSON.stringify({
     USERPROFILE: process.env.USERPROFILE,
     AW_HOME: process.env.AW_HOME,
     AW_CODEX_HOME: process.env.AW_CODEX_HOME,
+    AW_CLAUDE_HOME: process.env.AW_CLAUDE_HOME,
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+    XDG_STATE_HOME: process.env.XDG_STATE_HOME,
     HTTP_PROXY: process.env.HTTP_PROXY,
   },
 }) + '\n')
@@ -59,6 +62,16 @@ if (args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'add') {
 if (args[0] === 'plugin' && args[1] === 'add') {
   fs.appendFileSync(configPath, '\n[plugins."' + pluginId + '"]\nenabled = true\n')
   process.stdout.write(JSON.stringify({ name: pluginName, marketplaceName, pluginId }) + '\n')
+  process.exit(0)
+}
+
+if (args[0] === 'plugin' && args[1] === 'list') {
+  const userConfig = fs.readFileSync(configPath, 'utf8')
+  const userEnabled = /\[plugins\."aw-native-qualification@aw-native-qualification"\]\s*enabled\s*=\s*true/u.test(userConfig)
+  process.stdout.write(JSON.stringify({
+    installed: [{ pluginId, installed: true, enabled: userEnabled }],
+    available: [],
+  }) + '\n')
   process.exit(0)
 }
 
@@ -207,6 +220,9 @@ test('isolates fake Codex execution and emits a redacted schema-1 report', async
 
     assertQualificationReport(report)
     assert.equal(report.minimumContractPassed, true)
+    assert.equal(report.scenarios.find((scenario) => scenario.id === 'neutral-cwd-repo-free')?.result, 'passed')
+    assert.equal(report.scenarios.find((scenario) => scenario.id === 'user-true-project-false')?.result, 'passed')
+    assert.equal(report.scenarios.find((scenario) => scenario.id === 'both-disabled-shared-package-retained')?.result, 'passed')
     assert.equal(report.isolation.cleanup, 'completed')
     assert.deepEqual(
       Object.fromEntries(Object.entries(report.nativeKinds).map(([id, value]) => [id, value.result])),
@@ -234,9 +250,12 @@ test('isolates fake Codex execution and emits a redacted schema-1 report', async
       assert.equal(invocation.env.USERPROFILE.startsWith(isolatedRoot), true)
       assert.equal(invocation.env.AW_HOME.startsWith(isolatedRoot), true)
       assert.equal(invocation.env.AW_CODEX_HOME, invocation.env.CODEX_HOME)
+      assert.equal(invocation.env.AW_CLAUDE_HOME, invocation.env.CLAUDE_CONFIG_DIR)
+      assert.equal(invocation.env.XDG_STATE_HOME.startsWith(isolatedRoot), true)
       assert.equal(invocation.env.HTTP_PROXY, 'http://127.0.0.1:1')
       assert.equal(invocation.cwd.includes(path.basename(isolatedRoot)), true)
     }
+    assert.equal(await pathExists(path.join(isolatedRoot, 'neutral', '.git')), false)
     assert.equal(await pathExists(isolatedRoot), false)
   } finally {
     await rm(harness.root, { recursive: true, force: true })
@@ -268,6 +287,27 @@ test('stops at the exact-version gate for another fake Codex version', async () 
     assert.equal(invocations.length, 1)
     assert.equal(await pathExists(path.dirname(invocations[0].env.CODEX_HOME)), false)
     assert.equal(JSON.stringify(report).includes('must-not-appear'), false)
+  } finally {
+    await rm(harness.root, { recursive: true, force: true })
+  }
+})
+
+test('rejects a neutral cwd under a project marker before starting Codex', async () => {
+  const harness = await createHarness()
+  try {
+    await mkdir(path.join(harness.root, '.agent-workflows'))
+    const report = await runQualification({
+      codexCommand: process.execPath,
+      codexArgsPrefix: [harness.fakeCodex],
+      tempParent: harness.root,
+      baseEnv: { ...process.env, FAKE_CODEX_LOG: harness.logPath },
+    })
+
+    assertQualificationReport(report)
+    assert.equal(report.minimumContractPassed, false)
+    assert.equal(report.scenarios.find((scenario) => scenario.id === 'neutral-cwd-repo-free')?.result, 'failed')
+    assert.equal(await pathExists(harness.logPath), false)
+    assert.equal(JSON.stringify(report).includes(harness.root), false)
   } finally {
     await rm(harness.root, { recursive: true, force: true })
   }

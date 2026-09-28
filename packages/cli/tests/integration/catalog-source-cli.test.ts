@@ -6,11 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { runCli } from '../../src/index.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
-import {
-  createEmptyPluginIntentState,
-  upsertPluginIntentRoot,
-  writePluginIntentState,
-} from '../../src/utils/plugin-intent-state.js';
+import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function capture() {
@@ -147,11 +143,9 @@ describe('catalog source auto-check CLI', () => {
     expect((await runJson([
       'catalog', 'source', 'add', 'team', '--path', sourceRoot, '--json',
     ])).exitCode).toBe(0);
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-      pluginId: 'team/demo', platforms: ['codex'],
-    }));
+    }, { roots: [{ pluginId: 'team/demo', platforms: ['codex'] }] });
 
     const blocked = await runJson(['catalog', 'source', 'remove', 'team', '--json']);
     expect(blocked.exitCode).toBe(1);

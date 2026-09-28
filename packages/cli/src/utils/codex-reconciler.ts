@@ -223,8 +223,10 @@ function activationAction(options: {
   desired: boolean;
   scope: Scope;
   nativeDesiredSomewhere: boolean;
+  preservePackage: boolean;
 }): CodexActivationAction {
   if (options.desired) return options.actual === true ? 'none' : 'enable';
+  if (options.preservePackage) return options.actual === false ? 'none' : 'disable';
   if (options.scope === 'user' && options.nativeDesiredSomewhere) {
     return options.actual === false ? 'none' : 'disable';
   }
@@ -411,6 +413,7 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
         desired: userDesired,
         scope: 'user',
         nativeDesiredSomewhere,
+        preservePackage: input.operation === 'cleanup' || input.operation === 'uninstall',
       }),
       desired: userDesired,
     };
@@ -423,6 +426,7 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
         desired: projectDesired,
         scope: 'project',
         nativeDesiredSomewhere,
+        preservePackage: input.operation === 'cleanup' || input.operation === 'uninstall',
       }),
       desired: projectDesired,
     };

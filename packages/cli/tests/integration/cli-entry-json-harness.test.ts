@@ -54,14 +54,15 @@ afterEach(async () => {
   vi.resetModules();
   vi.doUnmock('../../src/commands/status-v6.js');
   vi.doUnmock('../../src/commands/write-commands.js');
-  vi.doUnmock('../../src/project/recovery.js');
+  vi.doUnmock('../../src/recovery/coordinator.js');
+  vi.doUnmock('../../src/recovery/status.js');
   vi.clearAllMocks();
   vi.restoreAllMocks();
   await setEmbeddedRootOverride(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
-describe('CLI JSON Status v8, User Receipt v6 and Project Receipt v1 harness', () => {
+describe('CLI JSON recovery and independent command harness', () => {
   it.each([
     [['catalog', 'publish', 'apply', '--json'], "error: required option '--expected-plan-digest <sha256>' not specified"],
     [[
@@ -99,124 +100,34 @@ describe('CLI JSON Status v8, User Receipt v6 and Project Receipt v1 harness', (
     expect(`${result.stdout}\n${result.stderr}`).not.toContain(sensitivePath);
   });
 
-  it.each([
-    ['install', '-jy'],
-    ['reinstall', '-jy'],
-    ['uninstall', '-j'],
-    ['cleanup', '-j'],
-    ['sync', '-jy'],
-  ] as const)('emits one exact User Receipt v6 when %s short options fail during Commander parsing', async (
-    command,
-    jsonOption,
-  ) => {
+  it.each(['user', 'project'] as const)('emits one scoped recovery error for %s parse failures', async (scope) => {
     const result = await runCliEntry([
-      command, 'official/git-commit', '-suser', '-pcodex', jsonOption, '--unknown',
+      'install', 'official/git-commit', '--scope', scope, '--target', 'codex', '--json', '--unknown',
     ]);
-
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.stderr).toBe('');
-    expect(result.parseJsonStdout()).toEqual({
-      ok: false,
-      command,
-      receiptSchemaVersion: 6,
-      overallState: 'failed',
-      changes: [],
-      targetResults: [{
-        target: {
-          pluginName: 'git-commit',
-          pluginId: 'official/git-commit',
-          sourceId: 'official',
-          platform: 'codex',
-          scope: 'user',
-        },
-        action: command,
-        state: 'failed',
-        message: "error: unknown option '--unknown'",
-        errorCode: 'invalidArguments',
-        relation: 'requested',
-        requiredBy: [],
-        changes: [],
-        recoveryActions: ['run sync', 'run reinstall', 'run cleanup for AW-owned residue'],
-        cleanupAttempted: false,
-        actions: [],
-        removed: [],
-        absent: [],
-        residual: [],
-        quarantined: [],
-        failures: [],
-      }],
-      warnings: [],
-      recoveryActions: ['run sync', 'run reinstall', 'run cleanup for AW-owned residue'],
+    expect(result.parseJsonStdout()).toMatchObject({
+      schemaVersion: 1, kind: 'aw-recovery', scope, command: 'install', ok: false,
+      intent: { state: 'unreadable', roots: null },
+      selection: { agents: [], origin: 'none', preferences: 'unreadable' },
+      requestedTargets: [], targetResults: [], remainingTargets: [],
+      declarationChanged: false, preferencesChanged: false, configChanged: false,
+      outputsMayHaveChanged: false,
       errors: [{ code: 'invalidArguments', message: "error: unknown option '--unknown'" }],
     });
+    expect(result.stdout.trim().startsWith('{')).toBe(true);
+    expect(result.stdout.trim().endsWith('}')).toBe(true);
   });
 
-  it.each([
-    ['install', '-jy'], ['reinstall', '-jy'], ['uninstall', '-j'], ['cleanup', '-j'], ['sync', '-jy'],
-  ] as const)('emits one exact Project Receipt v1 when %s fails during Commander parsing', async (
-    command, jsonOption,
-  ) => {
+  it('rejects an invalid Agent without writing declaration state', async () => {
     const result = await runCliEntry([
-      command, 'official/git-commit', '-sproject', '-pcodex', jsonOption, '--unknown',
+      'install', 'official/git-commit', '--scope', 'project', '--target', 'invalid', '--json',
     ]);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toBe('');
-    expect(result.parseJsonStdout()).toEqual({
-      schemaVersion: 1, kind: 'aw-project-recovery', command, ok: false,
-      intent: { state: 'unreadable', roots: null }, requestedRoots: [],
-      selection: { agents: [], origin: 'none' },
-      blockers: [{ code: 'invalidArguments', message: "error: unknown option '--unknown'" }],
-      targetResults: [], remainingTargets: [], recoveryActions: [],
-      declarationChanged: false, preferencesChanged: false, outputsMayHaveChanged: false,
-    });
-  });
-
-  it('projects attached short option values in a User Receipt v6 failure', async () => {
-    const result = await runCliEntry([
-      'install', 'official/git-commit', '-suser', '-pclaude', '-j', '--unknown',
-    ]);
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toBe('');
+    expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
-      errors: [{ code: 'invalidArguments' }],
-      receiptSchemaVersion: 6,
-      targetResults: [expect.objectContaining({
-        action: 'install',
-        state: 'failed',
-        target: expect.objectContaining({
-          pluginId: 'official/git-commit', platform: 'claude', scope: 'user',
-        }),
-      })],
-    });
-  });
-
-  it('uses a stable Project Receipt v1 early failure for an invalid platform alias', async () => {
-    const result = await runCliEntry(['install', 'official/git-commit', '-sproject', '-pinvalid', '-j']);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toBe('');
-    expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1, kind: 'aw-project-recovery', command: 'install', ok: false,
-      blockers: [{ code: 'invalidArguments', message: expect.any(String) }],
+      schemaVersion: 1, kind: 'aw-recovery', scope: 'project', command: 'install', ok: false,
       declarationChanged: false, outputsMayHaveChanged: false,
-    });
-  });
-
-  it('uses a stable User Receipt v6 early failure when sync omits scope', async () => {
-    const code = 'invalidArguments';
-    const argv = ['sync', 'official/git-commit', '-p', 'claude', '--json'];
-    const result = await runCliEntry([...argv]);
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toBe('');
-    expect(result.parseJsonStdout()).toMatchObject({
-      ok: false,
-      receiptSchemaVersion: 6,
-      overallState: 'failed',
-      errors: [{ code, message: expect.any(String) }],
-      changes: expect.any(Array),
-      targetResults: expect.any(Array),
-      recoveryActions: expect.any(Array),
+      errors: [{ code: 'invalidArguments' }],
     });
   });
 
@@ -267,286 +178,55 @@ describe('CLI JSON Status v8, User Receipt v6 and Project Receipt v1 harness', (
     });
   });
 
-  it('keeps exact status v8 JSON on stdout', async () => {
-    vi.resetModules();
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-v3-'));
+  it('emits a unified recovery receipt from the scoped coordinator', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-recovery-json-'));
     tempDirs.push(tempDir);
-    vi.doMock('../../src/commands/status-v6.js', () => ({
-      statusCommandV8: vi.fn(async () => {
-        const payload = {
-          schemaVersion: 8,
-          catalog: {
-            primarySourceId: 'official',
-            configDigest: 'sha256:config',
-            compositeDigest: 'sha256:composite',
-            sources: [],
-          },
-          filters: {
-            plugins: ['git-commit'],
-            platform: 'codex',
-            scope: 'project',
-            cwd: tempDir,
-          },
-          targets: [{
-            pluginName: 'git-commit',
-            pluginId: 'official/git-commit',
-            sourceId: 'official',
-            sourceIdentity: 'sha256:source',
-            version: '1.0.0',
-            platform: 'codex', cwd: tempDir,
-            state: 'needsSync',
-            components: [],
-            reasons: [{
-              code: 'codexExtensionDrift',
-              message: 'codexExtensionDrift: extension drift requires repair.',
-              severity: 'warning',
-            }],
-            recoveryActions: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
-            placements: [{
-              scope: 'project', state: 'needsSync',
-              components: [
-                {
-                  kind: 'intent', key: 'desired', state: 'desired',
-                  metadata: { enabled: true, scopes: ['project'], relation: 'root' },
-                },
-                { kind: 'ownership', key: 'aw', state: 'partial' },
-              ],
-              reasons: [{
-                code: 'codexExtensionDrift',
-                message: 'codexExtensionDrift: extension drift requires repair.',
-                severity: 'warning',
-              }],
-              recoveryActions: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
-            }],
-          }],
-          errors: [],
-        };
-        return {
-          output: JSON.stringify(payload),
-          payload,
-          pluginSummaries: [],
-          hasErrors: false,
-          targetRevisions: [],
-        };
-      }),
-    }));
-
-    const result = await runCliEntry(
-      ['status', 'git-commit', '-p', 'codex', '-s', 'project', '--json', '--verbose'],
-      { cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv },
-    );
-
-    expect(result.exitCode, result.stderr).toBe(0);
-    expect(result.parseJsonStdout()).toEqual({
-      schemaVersion: 8,
-      catalog: {
-        primarySourceId: 'official', configDigest: 'sha256:config',
-        compositeDigest: 'sha256:composite', sources: [],
-      },
-      filters: {
-        plugins: ['git-commit'], platform: 'codex', scope: 'project', cwd: tempDir,
-      },
-      targets: [{
-        pluginName: 'git-commit', pluginId: 'official/git-commit', sourceId: 'official',
-        sourceIdentity: 'sha256:source', version: '1.0.0', platform: 'codex',
-        cwd: tempDir,
-        state: 'needsSync',
-        components: [],
-        reasons: [{
-          code: 'codexExtensionDrift',
-          message: 'codexExtensionDrift: extension drift requires repair.',
-          severity: 'warning',
-        }],
-        recoveryActions: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
-        placements: [{
-          scope: 'project', state: 'needsSync',
-          components: [
-            {
-              kind: 'intent', key: 'desired', state: 'desired',
-              metadata: { enabled: true, scopes: ['project'], relation: 'root' },
-            },
-            { kind: 'ownership', key: 'aw', state: 'partial' },
-          ],
-          reasons: [{
-            code: 'codexExtensionDrift',
-            message: 'codexExtensionDrift: extension drift requires repair.',
-            severity: 'warning',
-          }],
-          recoveryActions: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
-        }],
-      }],
-      errors: [],
-    });
-    expect(result.stdout).not.toContain('调试：');
-    expect(result.stderr).toContain('调试：command:start');
-  });
-
-  it('returns empty stdout, stderr error text, and exit 1 for a status execution error', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-error-'));
-    tempDirs.push(tempDir);
-    vi.doMock('../../src/commands/status-v6.js', () => ({
-      statusCommandV8: vi.fn(async () => {
-        throw new Error('status inspection failed');
-      }),
-    }));
-
-    const result = await runCliEntry(
-      ['status', 'git-commit', '--json'],
-      { cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv },
-    );
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stdout).toBe('');
-    expect(result.stderr).toContain('status inspection failed');
-  });
-
-  it.each([
-    'install',
-    'reinstall',
-    'uninstall',
-    'cleanup',
-  ] as const)('emits a namespaced successful User %s receipt with the requested target', async (command) => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-write-json-v3-'));
-    tempDirs.push(tempDir);
-    const result = {
-      platforms: ['codex'],
-      plugins: ['git-commit'],
-      warnings: [],
-      rebuildResults: [],
-      targetResults: [],
-      overallState: 'succeeded',
-      receiptTargets: [{
-        pluginName: 'git-commit',
-        pluginId: 'official/git-commit',
-        sourceId: 'official',
-        platform: 'codex',
-        scope: 'user',
-      }],
+    const receipt = {
+      schemaVersion: 1, kind: 'aw-recovery', scope: 'project', command: 'sync', ok: true,
+      intent: { state: 'valid', digest: 'sha256:fixture', roots: ['official/git-commit'] },
+      requestedRoots: ['official/git-commit'],
+      requestedTargets: [{ pluginId: 'official/git-commit', agent: 'codex', scope: 'project',
+        delivery: { kind: 'native', platform: 'codex' } }],
+      selection: { agents: ['codex'], origin: 'argument', preferences: 'absent' },
+      blockers: [], errors: [], targetResults: [{
+        pluginId: 'official/git-commit', agent: 'codex', scope: 'project',
+        delivery: { kind: 'native', platform: 'codex' }, execution: 'no-op',
+        observation: 'verified', content: 'satisfied', blockers: [],
+        requiredBy: ['official/git-commit'], relation: 'root',
+      }], remainingTargets: [], recoveryActions: [],
+      declarationChanged: false, preferencesChanged: false, configChanged: false,
+      outputsMayHaveChanged: false,
     };
-    const commands = {
-      installWriteCommand: vi.fn(async () => result),
-      reinstallWriteCommand: vi.fn(async () => result),
-      uninstallWriteCommand: vi.fn(async () => result),
-      cleanupWriteCommand: vi.fn(async () => result),
-    };
-    vi.doMock('../../src/commands/write-commands.js', async (importOriginal) => ({
-      ...await importOriginal<typeof import('../../src/commands/write-commands.js')>(),
-      ...commands,
+    const runRecovery = vi.fn(async () => receipt);
+    vi.doMock('../../src/recovery/coordinator.js', async (importOriginal) => ({
+      ...await importOriginal<typeof import('../../src/recovery/coordinator.js')>(), runRecovery,
     }));
-
-    const success = await runCliEntry(
-      [command, 'official/git-commit', '-p', 'codex', '-s', 'user', '--json'],
-      { cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv },
-    );
-    expect(success.exitCode).toBe(0);
-    const receipt = success.parseJsonStdout();
-    expect(receipt).toMatchObject({
-      ok: true,
-      command,
-      receiptSchemaVersion: 6,
-      overallState: 'succeeded',
-      changes: [command],
-      targetResults: [{
-        target: {
-          pluginName: 'git-commit',
-          pluginId: 'official/git-commit',
-          sourceId: 'official',
-          platform: 'codex',
-          scope: 'user',
-        },
-        action: command,
-        state: 'completed',
-        relation: 'requested',
-        requiredBy: [],
-        changes: [command],
-        recoveryActions: [],
-        cleanupAttempted: false,
-        actions: [],
-        removed: [],
-        absent: [],
-        residual: [],
-        quarantined: [],
-        failures: [],
-      }],
-      recoveryActions: [],
-      errors: [],
-    });
-    expect(receipt).not.toHaveProperty('layers');
-    expect(receipt).not.toHaveProperty('targets');
-    expect(commands[`${command}WriteCommand` as keyof typeof commands]).toHaveBeenCalledOnce();
+    const result = await runCliEntry([
+      'sync', 'official/git-commit', '--scope', 'project', '--target', 'codex', '--json',
+    ], { cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv });
+    expect(result).toMatchObject({ exitCode: 0, stderr: '' });
+    expect(result.parseJsonStdout()).toEqual(receipt);
+    expect(runRecovery).toHaveBeenCalledOnce();
   });
 
-  it.each(['install', 'reinstall', 'uninstall', 'cleanup'] as const)(
-    'emits a Project Receipt v1 from the %s coordinator with one requested target', async (command) => {
-      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-project-json-v1-'));
-      tempDirs.push(tempDir);
-      const receipt = {
-        schemaVersion: 1, kind: 'aw-project-recovery', command, ok: true,
-        intent: { state: 'valid', digest: 'sha256:project', roots: ['official/git-commit'] },
-        requestedRoots: ['official/git-commit'],
-        selection: { agents: ['codex'], origin: 'argument' }, blockers: [],
-        targetResults: [{
-          pluginId: 'official/git-commit', agent: 'codex',
-          delivery: { kind: 'native', platform: 'codex', assumedActivation: true },
-          execution: 'no-op', observation: 'verified', content: 'satisfied',
-          blockers: [], requiredBy: ['official/git-commit'],
-        }],
-        remainingTargets: [], recoveryActions: [], declarationChanged: command === 'install',
-        preferencesChanged: false, outputsMayHaveChanged: false,
-      };
-      const runProjectRecovery = vi.fn(async () => receipt);
-      vi.doMock('../../src/project/recovery.js', async (importOriginal) => ({
-        ...await importOriginal<typeof import('../../src/project/recovery.js')>(),
-        runProjectRecovery,
-      }));
-      const result = await runCliEntry([
-        command, 'official/git-commit', '-p', 'codex', '-s', 'project', '--json',
-      ], { cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv });
-      expect(result.exitCode).toBe(0);
-      expect(result.stderr).toBe('');
-      expect(result.parseJsonStdout()).toEqual(receipt);
-      expect(runProjectRecovery).toHaveBeenCalledOnce();
-    },
-  );
-
-  it.each([
-    'codexProjectPluginVersionTooLow',
-    'codexProjectPluginUnsupported',
-    'codexSystemCliUnsupported',
-  ])('keeps the official system Codex CLI recovery in User Receipt v6 for %s', async (code) => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-write-json-codex-recovery-'));
+  it('emits one status object and keeps diagnostics on stderr', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-'));
     tempDirs.push(tempDir);
-    const error = Object.assign(new Error(`${code}: consumer probe failed`), { code });
-    const installWriteCommand = vi.fn(async () => {
-      throw error;
-    });
-    vi.doMock('../../src/commands/write-commands.js', async (importOriginal) => ({
-      ...await importOriginal<typeof import('../../src/commands/write-commands.js')>(),
-      installWriteCommand,
+    const status = { schemaVersion: 1, kind: 'aw-recovery-status', scope: 'user', ok: true,
+      intent: { state: 'absent' }, selection: { agents: [], origin: 'none', preferences: 'absent' },
+      inventory: [], extraObserved: [], coverage: { native: true, portable: true },
+      counts: { blocked: 0, unconfirmed: 0, pending: 0, ready: 0 }, allSatisfied: true, errors: [] };
+    const readRecoveryStatus = vi.fn(async () => status);
+    vi.doMock('../../src/recovery/status.js', async (importOriginal) => ({
+      ...await importOriginal<typeof import('../../src/recovery/status.js')>(), readRecoveryStatus,
     }));
-
-    const result = await runCliEntry(
-      ['install', 'official/demo', '-p', 'codex', '-s', 'user', '-jy'],
-      { cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv },
-    );
-
-    expect(result.exitCode).toBe(1);
+    const result = await runCliEntry(['status', '--scope', 'user', '--json', '--verbose'], {
+      cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.parseJsonStdout()).toEqual(status);
     expect(result.stderr).toBe('');
-    expect(result.parseJsonStdout()).toMatchObject({
-      ok: false,
-      errors: [{ code }],
-      receiptSchemaVersion: 6,
-      targetResults: [{
-        target: { pluginId: 'official/demo' },
-        recoveryActions: [
-          'upgrade or repair the official system Codex CLI, then retry the original operation',
-        ],
-      }],
-      recoveryActions: [
-        'upgrade or repair the official system Codex CLI, then retry the original operation',
-      ],
-    });
-    expect(installWriteCommand).toHaveBeenCalledOnce();
+    expect(readRecoveryStatus).toHaveBeenCalledOnce();
   });
 
   it.each([

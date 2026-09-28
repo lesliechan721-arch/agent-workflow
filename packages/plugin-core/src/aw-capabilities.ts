@@ -24,7 +24,7 @@ export const AW_CAPABILITY_IDS = [
   'aw.review-publication.v1',
   'aw.catalog-snapshot.v7',
   'aw.self-check.v1',
-  'aw.project-recovery.v1',
+  'aw.plugin-recovery.v1',
 ] as const
 
 export type RegisteredAwCapabilityId = typeof AW_CAPABILITY_IDS[number]

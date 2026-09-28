@@ -7,9 +7,9 @@
 在包含本插件的 Catalog 中选择客户端：
 
 ```bash
-aw install browser-use -p codex --yes
+aw install browser-use --scope user --target codex --yes
 # 或
-aw install browser-use -p claude --yes
+aw install browser-use --scope user --target claude-code --yes
 ```
 
 需要提前安装 `agent-browser` 和所需浏览器，安装要求以[上游文档](https://agent-browser.dev/)为准。安装前脚本检查 `agent-browser --version` 能否在当前 PATH 中运行；检查失败时阻止该目标安装。`--yes` 授权运行此脚本。

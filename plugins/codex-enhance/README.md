@@ -7,7 +7,7 @@
 ## 安装
 
 ```bash
-aw install codex-enhance -p codex
+aw install codex-enhance --scope user --target codex
 ```
 
 ## 包含的 Skill

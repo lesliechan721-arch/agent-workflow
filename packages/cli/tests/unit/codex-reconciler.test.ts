@@ -110,6 +110,17 @@ describe('Codex desired-state reconciliation planner', () => {
     expect(plan.sharedNativeActions[0]?.action).toBe('none');
   });
 
+  it('disables only the selected project activation while the shared package remains', () => {
+    const plan = createCodexReconcilePlan(input('cleanup', target({
+      resolvedScope: 'project', desiredScopes: [], executionScopes: ['project'],
+    }), live({ state: 'usable', version: '1.0.0' }, {
+      activations: { user: true, project: true },
+    })));
+    expect(plan.sharedNativeActions[0]?.action).toBe('reuse');
+    expect(plan.activationActions.user[0]?.action).toBe('none');
+    expect(plan.activationActions.project[0]?.action).toBe('disable');
+  });
+
   it('does not remove extensions outside selected execution scopes', () => {
     const plan = createCodexReconcilePlan(input('uninstall', target({
       surface: surface('extension'), resolvedScope: 'project', desiredScopes: [],

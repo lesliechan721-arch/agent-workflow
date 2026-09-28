@@ -8,7 +8,7 @@
 - catalog staging 和 runtime bundle 是构建产物，不要直接修改。
 - 内置插件作者只维护 plugin source 和稳定 plugin version。不要手改 Git catalog refs、publication journal 或 Catalog store。
 - 作者用 Plugin Manifest v3 的 `requires.aw.capabilities` 声明真实要求。未知但语法合法的 capability 是合法数据；当前 AW 未实现时，validator 报告 `awCapabilityUnsupported`。
-- CLI 公开 `aw.project-recovery.v1`，用于识别新项目恢复能力。普通插件不因可在 Project v3 中被声明而增加这项 requirement；只有插件自己的生产内容实际调用该能力时才声明。
+- CLI 公开 `aw.plugin-recovery.v1`，用于识别 User 与 Project 共用的声明、目标选择和恢复命令。普通插件不因可在 Intent v3 中被声明而增加这项 requirement；只有插件自己的生产内容实际调用该能力时才声明。旧 `aw.project-recovery.v1` 不再表示受支持入口。
 - Catalog 生成和消费只使用 snapshot schema 7；Catalog source config 只使用 schema 2。旧 manifest、Catalog 或 source schema 只可作为拒绝 fixture 或历史记录，不是受支持作者合同。
 - 创建或修改插件能力时只维护源码层；平台产物由 CLI、adapter 和发布流程生成。
 - 插件和 Skill 的 production README 使用[插件与 Skill README 规范](readme-standard.md)。
@@ -52,7 +52,7 @@ manifest `dependencies` 声明安装或升级某插件时必须同时满足的�
 - Portable Agent Skills 使用 `distributions.agentSkills.skills` 声明独立的 `./` plugin-relative Skill root。`buildConfig.skillRuntimeFiles.distributions: ["agent-skills"]` 只投影到 portable surface；字段缺失时保持既有 native 行为，同时声明 `platforms` 和 `distributions` 时投影到两组明确 surface。`agent-skills.skill` dynamic target 必须由 `distributions.agentSkills` 门禁，并可用 `runtimeImports` 引用 build-time runtime export；bundle 保存其 bytes、digest 和 provenance，renderer materialize 时只读 consumer bundle-local 文件。
 - 使用 Portable 字段的 source manifest 必须是 Manifest v3，并保留至少一个非空 native capability；空 `extensions` 和空 native 数组不满足该门禁。static portable root 的每个直接子目录必须是有效 `portable-agent-skills` Skill，并包含 production `README.md`。构建器负责注入保留的 runtime requirements receipt，源码和 renderer 不得声明该文件。
 - `agent-skills.skill` 必须显式声明 `distribution: "agent-skills"`、`skillKey`、`scopes`、`states` 和 `refreshKeys`；不得从 native target 或 marketplace product 推导 distribution。所有 `codex.skill` delivery、`claude.skill` 和 `agent-skills.skill` 的 `refreshKeys` 都不得引用 sensitive config；非 Skill target 可以读取。作者 validator 以 distribution surface 运行 renderer fixture，设置 `AW_PLUGIN_DISTRIBUTION=agent-skills`，不设置第三种 `AW_PLUGIN_PLATFORM`。最终树按 `sourceDirs → distribution skillRuntimeFiles → renderer files` 合并，并拒绝无效 Skill、名字冲突、author-only 内容、未解析模板、至少 8 个 Unicode code point 的 sensitive string 原文或 JSON 转义形态，以及缺失 runtime file。该长度阈值不表示 secret 强度；日志仍脱敏所有长度。receipt 只有在 AW 生成或内容验证后，才从精确路径扫描中排除，不使用 basename 通配。
-- 新 Project v3 Portable 恢复固定 `skills@1.5.23` copy 合同。该 provider 会过滤任意层级的 `metadata.json` 和 `.git`、`__pycache__`、`__pypackages__` 目录；候选含这些内容时，恢复在 provider 写入前以 `portableProviderContentUnsupported` 阻断该插件。作者应在真实物化树中检查这些路径；一次性 `aw skill` 的兼容范围不随此限制改变。
+- User 与 Project 的 Portable 恢复固定 `skills@1.5.23` copy 合同。该 provider 会过滤任意层级的 `metadata.json` 和 `.git`、`__pycache__`、`__pypackages__` 目录；候选含这些内容时，恢复在 provider 写入前以 `portableProviderContentUnsupported` 阻断该插件。作者应在真实物化树中检查这些路径；一次性 `aw skill` 的兼容范围不随此限制改变。
 - 同一插件的静态 Codex Skill/MCP/Hook/App 与所有 dynamic native target 必须使用完全相同的 scope 集；静态组件固定为 `{project,user}`。renderer context 只公开本次请求的 refresh-key 并集，不公开 store 路径，并使用请求级临时 `AW_HOME`、`AW_CODEX_HOME` 和 `AW_CLAUDE_HOME`。同一 surface/scope 的 Skill 与读取 sensitive config 的非 Skill target 分批请求，复用相同不可变 `previousArtifacts`，每批返回精确 `ArtifactPlan`。该输入隔离不是 OS sandbox，executable source 仍是受信任代码。
 - 消费者使用 `aw skill install <plugin> --scope <project|user>` 通过兼容的外部 `skills` CLI 安装 portable Skill，或使用 `aw skill materialize <plugin> --scope <project|user> --out <dir>` 安全导出。两个入口都先验证完整依赖闭包和全部候选；`--skill` 只过滤最终选择，不缩小验证边界。
 
