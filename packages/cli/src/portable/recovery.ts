@@ -407,6 +407,7 @@ export interface PortableResidue {
   state: 'present' | 'absent' | 'unknown';
   targets: Array<{ skill: string; agent: PortableAgent; physicalPath: string }>;
   blockers: string[];
+  unknownAgents?: PortableAgent[];
 }
 
 export interface PortableExtraObservation {
@@ -499,14 +500,52 @@ export async function inspectPortableResidue(options: {
   signal?: AbortSignal;
 }): Promise<PortableResidue> {
   options = { ...options, env: options.context.env };
-  const unknown = (): PortableResidue => ({ state: 'unknown', targets: [], blockers: ['portableObservationFailed'] });
+  const agents: PortableAgent[] = options.agents ?? ['codex', 'claude-code', 'cursor'];
+  const unknown = (): PortableResidue => ({ state: 'unknown', targets: [],
+    blockers: ['portableObservationFailed'], unknownAgents: agents });
   const rootKey = path.join(options.context.generationRoot, portableJsonDigest(options.selector).slice(7));
   let hasRootEvidence: boolean;
   try { hasRootEvidence = await assertPortablePath(path.parse(rootKey).root, rootKey); } catch { return unknown(); }
+  const candidateNames = new Set<string>();
+  let historyUnknown = false;
+  if (hasRootEvidence) {
+    try {
+      for (const entry of await fs.readdir(rootKey, { withFileTypes: true })) {
+        try {
+          if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error('portableObservationFailed');
+          const old = await readHistoricalPortableMaterialization({
+            generationRoot: options.context.generationRoot, scope: options.scope,
+            rootDir: path.join(rootKey, entry.name), pluginId: options.selector,
+          });
+          for (const candidate of old.marker.selectedSkills) candidateNames.add(candidate.name);
+        } catch { historyUnknown = true; }
+      }
+      if (!candidateNames.size) historyUnknown = true;
+    } catch { historyUnknown = true; }
+  }
+  try {
+    for (const root of await fs.readdir(options.context.generationRoot, { withFileTypes: true })) {
+      if (!root.isDirectory() || root.name === path.basename(rootKey)) continue;
+      const directory = path.join(options.context.generationRoot, root.name);
+      for (const generation of await fs.readdir(directory, { withFileTypes: true }).catch(() => [])) {
+        if (!generation.isDirectory()) continue;
+        try {
+          const old = await readHistoricalPortableMaterialization({
+            generationRoot: options.context.generationRoot, scope: options.scope,
+            rootDir: path.join(directory, generation.name),
+          });
+          for (const candidate of old.marker.selectedSkills) {
+            if (candidate.providerPluginId === options.selector) candidateNames.add(candidate.name);
+          }
+        } catch { /* Other roots cannot establish this plugin's candidate names. */ }
+      }
+    }
+  } catch { /* Missing other generations do not change this plugin's evidence. */ }
+  const hasEvidence = hasRootEvidence || candidateNames.size > 0;
   let layout: ReturnType<typeof portableRecoveryLayout>;
   try { layout = portableRecoveryLayout(options.context); }
-  catch { return hasRootEvidence ? unknown() : { state: 'absent', targets: [], blockers: [] }; }
-  if (layout.scope !== options.scope) return hasRootEvidence ? unknown() : { state: 'absent', targets: [], blockers: [] };
+  catch { return hasEvidence ? unknown() : { state: 'absent', targets: [], blockers: [] }; }
+  if (layout.scope !== options.scope) return hasEvidence ? unknown() : { state: 'absent', targets: [], blockers: [] };
   let records: InstalledSkillRecord[];
   try {
     await observeProviderLock(layout);
@@ -514,21 +553,27 @@ export async function inspectPortableResidue(options: {
     records = await listInstalledSkills({ ...options, cwd: layout.cwd,
       global: options.scope === 'user', timeoutMs: 15_000 });
   } catch {
-    return hasRootEvidence ? unknown() : { state: 'absent', targets: [], blockers: [] };
+    return hasEvidence ? unknown() : { state: 'absent', targets: [], blockers: [] };
   }
   const targets: PortableResidue['targets'] = [];
-  const blockers: string[] = [];
-  const agents: PortableAgent[] = options.agents ?? ['codex', 'claude-code', 'cursor'];
+  const blockers: string[] = historyUnknown ? ['portableObservationFailed'] : [];
+  const unknownAgents = new Set<PortableAgent>(historyUnknown ? agents : []);
   const recoveryOptions: PortableRecoveryOptions = { ...options, cliVersion: '', agents };
   for (const record of records) {
-    let recordPath: string | undefined;
-    try { recordPath = await qualifiedRecordPath(recoveryOptions, record.name, record.path); }
-    catch { blockers.push('portableObservationFailed'); continue; }
     const relative = record.source && path.isAbsolute(record.source) ? path.relative(rootKey, record.source) : '..';
     const pointsToRoot = relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    if (!record.source && !candidateNames.has(record.name)) continue;
+    const associated = agents.filter((agent) => record.agents.some((entry) => agentName(entry) === agent));
+    const markUnknown = () => {
+      blockers.push('portableObservationFailed');
+      for (const agent of associated.length ? associated : agents) unknownAgents.add(agent);
+    };
+    let recordPath: string | undefined;
+    try { recordPath = await qualifiedRecordPath(recoveryOptions, record.name, record.path); }
+    catch { markUnknown(); continue; }
     if (record.scope !== (options.scope === 'user' ? 'global' : 'project') || !recordPath
       || ![targetPath(recoveryOptions, 'codex', record.name), targetPath(recoveryOptions, 'claude-code', record.name)].includes(recordPath)) {
-      if (pointsToRoot) blockers.push('portableObservationFailed');
+      if (pointsToRoot || candidateNames.has(record.name)) markUnknown();
       continue;
     }
     let old: HistoricalPortableMaterialization | undefined;
@@ -537,20 +582,19 @@ export async function inspectPortableResidue(options: {
       old = await oldMaterialization(recoveryOptions, record.source);
     } catch { /* Unverifiable record cannot authorize cleanup. */ }
     if (!old) {
-      if (pointsToRoot || hasRootEvidence) blockers.push('portableObservationFailed');
+      if (pointsToRoot || candidateNames.has(record.name)) markUnknown();
       continue;
     }
     const candidate = old.marker.selectedSkills.find((entry) => entry.name === record.name);
     if (old.marker.plugin.id !== options.selector && candidate?.providerPluginId !== options.selector) continue;
     if (!candidate) {
-      blockers.push('portableObservationFailed');
+      markUnknown();
       continue;
     }
-    const associated = agents.filter((agent) => record.agents.some((entry) => agentName(entry) === agent));
     if (associated.length === 0) {
       const onlyUnselectedAgents = record.agents.length > 0
         && record.agents.every((entry) => ['codex', 'claude-code', 'cursor'].includes(agentName(entry)));
-      if (!onlyUnselectedAgents) blockers.push('portableObservationFailed');
+      if (!onlyUnselectedAgents) markUnknown();
       continue;
     }
     for (const agent of associated) {
@@ -558,15 +602,17 @@ export async function inspectPortableResidue(options: {
       try {
         if (!await outputPathExists(recordPath) || !await outputPathExists(physicalPath)
           || await portableSkillTreeDigest(physicalPath) !== candidate.filesDigest) {
+          unknownAgents.add(agent);
           blockers.push('portableObservationFailed');
           continue;
         }
         if (!targets.some((target) => target.agent === agent && target.skill === record.name)) {
           targets.push({ skill: record.name, agent, physicalPath });
         }
-      } catch { blockers.push('portableObservationFailed'); }
+      } catch { unknownAgents.add(agent); blockers.push('portableObservationFailed'); }
     }
   }
   return { state: targets.length > 0 ? 'present' : blockers.length > 0 ? 'unknown' : 'absent',
-    targets, blockers: [...new Set(blockers)] };
+    targets, blockers: [...new Set(blockers)],
+    ...(unknownAgents.size ? { unknownAgents: [...unknownAgents] } : {}) };
 }

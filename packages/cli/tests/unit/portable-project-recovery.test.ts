@@ -13,13 +13,13 @@ import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-const state = vi.hoisted(() => ({ content: 'first', extraFile: '', builds: 0 }));
+const state = vi.hoisted(() => ({ content: 'first', extraFile: '', builds: 0, scope: 'project' as 'project' | 'user' }));
 vi.mock('../../src/portable/materializer.js', () => ({
   resolvePortableCatalogBindingInput: async () => ({ source: {
     kind: 'catalog-snapshot', sourceId: 'team', catalogSourceIdentity: portableJsonDigest('catalog'),
     logicalIdentity: 'team-catalog', snapshotDigest: portableJsonDigest('snapshot'), workspaceIdentity: 'workspace',
     workspaceSourceIdentity: portableJsonDigest('workspace'),
-  }, subject: { plugin: 'root' }, profile: { kind: 'portable', id: 'agent-skills-project', scope: 'project', inputDigest: portableJsonDigest(state.content) } }),
+  }, subject: { plugin: 'root' }, profile: { kind: 'portable', id: `agent-skills-${state.scope}`, scope: state.scope, inputDigest: portableJsonDigest(state.content) } }),
 }));
 vi.mock('../../src/portable/commands.js', () => ({
   materializePortableSkillsToDirectory: async (options: { out: string }) => {
@@ -35,7 +35,7 @@ vi.mock('../../src/portable/commands.js', () => ({
     const selectedSkills = [{ name: 'alpha', providerPluginId: 'team/root', filesDigest: await portableSkillTreeDigest(skill) }];
     const outputDigest = portableJsonDigest(selectedSkills.map((entry) => [entry.name, entry.filesDigest]));
     await fs.writeJson(path.join(options.out, '.aw-materialization.json'), {
-      schemaVersion: 1, receiptSchemaVersion: 5, command: 'skill:materialize', scope: 'project',
+      schemaVersion: 1, receiptSchemaVersion: 5, command: 'skill:materialize', scope: state.scope,
       plugin: { id: 'team/root', sourceId: 'team', sourceIdentity: binding.source.catalogSourceIdentity },
       config: { pluginConfigDigest: binding.profile.inputDigest }, selectedSkills, outputDigest, materializationDigest: outputDigest,
     });
@@ -57,6 +57,11 @@ if(args[0] === '--version') { console.log('1.5.23'); process.exit(0); }
 let lock = {version:1, skills:{}}; try { lock=JSON.parse(fs.readFileSync('skills-lock.json')); } catch {}
 if(args[0] === 'list') {
  if(process.env.FAIL_LIST) process.exit(2);
+ if(args.includes('--global')) {
+  const other=path.join(process.env.HOME,'.agents/skills/beta');
+  console.log(JSON.stringify(fs.existsSync(other) ? [{name:'beta',path:other,scope:'global',agents:['Codex'],source:null}] : []));
+  process.exit(0);
+ }
  const root = path.join(cwd,'.agents/skills/alpha');
  const claude = path.join(cwd,'.claude/skills/alpha');
  console.log(JSON.stringify(fs.existsSync(root)||fs.existsSync(claude) ? [{name:'alpha',path:fs.existsSync(root)?root:claude,
@@ -82,7 +87,7 @@ process.exit(2);
 async function addCalls(log: string) {
   return (await fs.readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((args) => args[0] === 'add');
 }
-beforeEach(() => { state.content = 'first'; state.extraFile = ''; state.builds = 0; });
+beforeEach(() => { state.content = 'first'; state.extraFile = ''; state.builds = 0; state.scope = 'project'; });
 
 describe('project Portable recovery', () => {
   it('reports Project Portable extras from verified provider source evidence', async () => {
@@ -136,9 +141,21 @@ describe('project Portable recovery', () => {
       expect(await inspectPortableResidue(options)).toEqual({ state: 'absent', targets: [], blockers: [] });
       await fs.ensureDir(path.join(userContext.generationRoot, portableJsonDigest('team/root').slice(7)));
       expect(await inspectPortableResidue(options)).toEqual({
-        state: 'unknown', targets: [], blockers: ['portableObservationFailed'],
+        state: 'unknown', targets: [], blockers: ['portableObservationFailed'], unknownAgents: ['codex'],
       });
     } finally { await userContext.dispose(); }
+  });
+  it('ignores an unrelated global Skill after the selected User Portable output was removed', async () => {
+    const fixtureValue = await fixture();
+    state.scope = 'user';
+    const context = await createScopeContext({ scope: 'user', cwd: fixtureValue.cwd, env: fixtureValue.env });
+    try {
+      const options = { scope: 'user' as const, context, selector: 'team/root',
+        env: context.env, cliVersion: '1.0.0', agents: ['codex' as const] };
+      await preparePortableRecovery(options);
+      await fs.outputFile(path.join(context.env.HOME!, '.agents/skills/beta/SKILL.md'), 'unrelated');
+      expect(await inspectPortableResidue(options)).toEqual({ state: 'absent', targets: [], blockers: [] });
+    } finally { await context.dispose(); }
   });
 
   it('ignores a verified Claude-only residue for Codex selection but retains unknown associations', async () => {
@@ -154,11 +171,25 @@ describe('project Portable recovery', () => {
       const env = { ...options.env, PROVIDER_AGENTS: JSON.stringify(agents) };
       const context = await createScopeContext({ scope: 'project', cwd: options.cwd, env });
       expect(await inspectPortableResidue({ ...options, context, agents: ['codex'], env }))
-        .toEqual({ state: 'unknown', targets: [], blockers: ['portableObservationFailed'] });
+        .toEqual({ state: 'unknown', targets: [], blockers: ['portableObservationFailed'], unknownAgents: ['codex'] });
     }
     expect(await addCalls(options.log)).toHaveLength(1);
     expect(await fs.pathExists(path.join(options.cwd, '.claude/skills/alpha/SKILL.md'))).toBe(true);
     expect(await fs.pathExists(path.join(options.cwd, '.agents/skills/alpha'))).toBe(false);
+  });
+  it('retains an uncertain Claude residue beside a verified Codex residue', async () => {
+    const fixtureValue = await fixture();
+    const options = { ...fixtureValue, agents: ['codex' as const] };
+    await withAwHomeMutationLock({ env: options.env, action: async (token) => {
+      expect((await executePortableRecovery({ prepared: await preparePortableRecovery(options), token })).execution)
+        .toBe('applied');
+    } });
+    await fs.copy(path.join(options.cwd, '.agents/skills/alpha'), path.join(options.cwd, '.claude/skills/alpha'));
+    await fs.appendFile(path.join(options.cwd, '.claude/skills/alpha/SKILL.md'), '\nmodified');
+    const residue = await inspectPortableResidue({ ...options, agents: ['codex', 'claude-code'] });
+    expect(residue.state).toBe('present');
+    expect(residue.targets.map((target) => target.agent)).toEqual(['codex']);
+    expect(residue.unknownAgents).toEqual(['claude-code']);
   });
   it('static inspection never materializes; shared paths install once and subsequent recovery is a file no-op', async () => {
     const fixtureValue = await fixture();

@@ -223,6 +223,23 @@ describe('scoped sync source refresh', () => {
 });
 
 describe('ordinary scoped cleanup residue', () => {
+  it('keeps each uncertain Agent in the cleanup retry set beside confirmed Portable residue', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    await addRoot(location, 'local/demo', 'sha256:logical');
+    portable.inspectResidue.mockResolvedValue({ state: 'present', blockers: ['portableObservationFailed'],
+      unknownAgents: ['claude-code'], targets: [{ skill: 'demo', agent: 'codex',
+        physicalPath: path.join(isolation.layout.homeDir, '.agents', 'skills', 'demo') }] });
+
+    const receipt = await runRecovery('cleanup', ['local/demo'], { ...location,
+      cliVersion: '1.0.0', targets: ['codex', 'claude-code'], yes: true });
+    expect(receipt.remainingTargets.map((target) => target.agent).sort()).toEqual(['claude-code', 'codex']);
+    expect(receipt.targetResults.find((target) => target.agent === 'codex')?.blockers)
+      .toContainEqual(expect.objectContaining({ code: 'backend-action-unsupported' }));
+    expect(receipt.targetResults.find((target) => target.agent === 'claude-code')?.blockers)
+      .toContainEqual(expect.objectContaining({ code: 'portableObservationFailed' }));
+    portable.inspectResidue.mockReset();
+  });
   it.each(['cleanup', 'uninstall'] as const)('keeps strong config and reports precise Portable residue for %s', async (command) => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };

@@ -615,7 +615,9 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
       if (observation.state === 'absent') continue;
       for (const target of candidates) {
         const residues = observation.targets.filter((entry) => entry.agent === target.agent);
-        if (residues.length === 0 && observation.state === 'present' && observation.blockers.length === 0) continue;
+        const uncertain = observation.unknownAgents?.includes(target.agent)
+          ?? (observation.blockers.length > 0 && residues.length === 0);
+        if (residues.length === 0 && !uncertain) continue;
         if (residues.length === 0) {
           block(target, 'deliverySwitchPortableObservationFailed');
           target.recoveryActions = [`检查 ${pluginId}/${target.agent} 的 Portable 输出和 provider 关联后重新准备。`];
@@ -939,9 +941,13 @@ export async function executeRecovery(plan: RecoveryPlan,
         if (kind !== 'cleanup') continue;
         if (observation.state === 'absent') continue;
         const targets = receipt.targetResults.filter((target) => target.pluginId === pluginId
-          && (observation.state === 'unknown' || observation.targets.some((entry) => entry.agent === target.agent)));
+          && (observation.targets.some((entry) => entry.agent === target.agent)
+            || (observation.unknownAgents?.includes(target.agent)
+              ?? (observation.blockers.length > 0))));
         for (const target of targets) {
-          block(target, observation.state === 'present' ? 'backend-action-unsupported' : 'portableObservationFailed');
+          block(target, observation.unknownAgents?.includes(target.agent)
+            || !observation.targets.some((entry) => entry.agent === target.agent)
+              ? 'portableObservationFailed' : 'backend-action-unsupported');
           if (target.execution === 'applied') target.execution = 'partial';
           target.backend = { ...(target.delivery?.kind === 'native' ? { native: target.backend } : { portable: target.backend }), portableRemaining: {
             state: observation.state, targets: observation.targets.map(({ skill, agent, physicalPath }) =>

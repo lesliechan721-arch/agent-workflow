@@ -459,4 +459,32 @@ describe('Portable historical recovery through real catalog materialization', ()
     expect(await fs.readFile(path.join(f.installed, 'SKILL.md'))).toEqual(before);
     expect(await f.addCalls()).toHaveLength(1);
   });
+  it('keeps a verified residue visible beside a damaged historical generation', async () => {
+    const f = await fixture();
+    const prepared = await apply(f);
+    await fs.ensureDir(path.join(path.dirname(prepared.generation), 'bad'));
+    const residue = await inspectPortableResidue(f.options);
+    expect(residue.state).toBe('present');
+    expect(residue.targets).toEqual([{ skill: 'alpha', agent: 'cursor', physicalPath: await fs.realpath(f.installed) }]);
+    expect(residue.unknownAgents).toEqual(['cursor']);
+  });
+  it.each(['project', 'user'] as const)('finds dependency Portable residue materialized by another %s root', async (scope) => {
+    const f = await fixture(scope, true);
+    const root = { ...f.options, selector: 'local/root-a' };
+    const prepared = await preparePortableRecovery(root);
+    await withAwHomeMutationLock({ env: f.options.env, action: (token) =>
+      executePortableRecovery({ prepared, token }) });
+    const residue = await inspectPortableResidue({ ...f.options, selector: 'local/portable' });
+    if (scope === 'project') {
+      expect(residue.targets).toEqual([expect.objectContaining({ skill: 'alpha', agent: 'cursor' })]);
+    } else {
+      expect(residue.targets).toEqual([]);
+      expect(residue.unknownAgents).toEqual(['cursor']);
+    }
+    expect(residue.state).not.toBe('absent');
+    const env = { ...f.options.env, PATH: '' };
+    const context = await createScopeContext({ scope, cwd: f.options.cwd, env });
+    expect(await inspectPortableResidue({ ...f.options, context, env, selector: 'local/portable' }))
+      .toMatchObject({ state: 'unknown', unknownAgents: ['cursor'] });
+  });
 });

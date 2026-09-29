@@ -246,7 +246,7 @@ export function buildPluginDetailSubject(options: {
   }
   for (const root of roots) {
     for (const target of root.targets) {
-      if (target.delivery === 'agent-skills' && target.state === 'pending') continue;
+      if (target.delivery === 'agent-skills' && target.state === 'pending' && !target.actual) continue;
       const placement = ensure({ ...(target.platform ? { platform: target.platform } : {}),
         ...(target.agent ? { agent: target.agent } : {}),
         ...(target.delivery ? { delivery: target.delivery } : {}) }, target.scope);
@@ -268,7 +268,7 @@ export function buildPluginDetailSubject(options: {
   }
   for (const dependency of dependencies) {
     for (const target of dependency.targets) {
-      if (target.delivery === 'agent-skills' && target.state === 'pending') continue;
+      if (target.delivery === 'agent-skills' && target.state === 'pending' && !target.actual) continue;
       const key = target.platform ? `${target.platform}\0${target.scope}` : undefined;
       // A later direct scope observation takes precedence over an older shared dependency check.
       if (target.location === 'sharedUser' && options.latestScope === target.scope
@@ -284,7 +284,8 @@ export function buildPluginDetailSubject(options: {
       placement.sharedWithCurrentProject ||= target.location === 'sharedUser';
       placement.reasonCodes = [...new Set([...placement.reasonCodes, ...target.reasonCodes])];
       if (!target.platform || !targets.some((entry) => entry.platform === target.platform && entry.scope === target.scope)) {
-        placement.observation = target.state === 'ready' ? 'known' : 'unknown';
+        placement.observation = target.delivery === 'agent-skills' ? target.observation ?? 'unknown'
+          : target.state === 'ready' ? 'known' : 'unknown';
         if (target.installedVersion) placement.installedVersion = target.installedVersion;
       } else {
         const revision = key ? revisions.get(key) : undefined;

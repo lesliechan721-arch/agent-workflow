@@ -192,8 +192,9 @@ export function buildScopedInventory(options: {
         reasonCodes: target.blockers.map((blocker) => blocker.code),
         agent: target.agent, delivery: target.delivery.kind,
         ...(target.delivery.kind === 'agent-skills' ? {
-          observation: target.observation === 'verified' || target.observation === 'missing' ? 'known' as const : 'unknown' as const,
-          actual: target.observation === 'verified' && target.content !== 'absent',
+          observation: target.content === 'drifted' || target.observation === 'verified' || target.observation === 'missing'
+            ? 'known' as const : 'unknown' as const,
+          actual: target.content === 'satisfied' || target.content === 'drifted',
         } : {}),
       }] : []);
     const observedTargets = nativeTargets.map((target) => targetView(target, 'scope'));
@@ -267,8 +268,9 @@ export function buildScopedInventory(options: {
       ...(target.agent ? { agent: target.agent } : {}),
       ...(target.delivery ? { delivery: target.delivery.kind } : {}),
       ...(target.delivery?.kind === 'agent-skills' ? {
-        observation: target.observation === 'verified' || target.observation === 'missing' ? 'known' as const : 'unknown' as const,
-        actual: target.observation === 'verified' && target.content !== 'absent',
+        observation: target.content === 'drifted' || target.observation === 'verified' || target.observation === 'missing'
+          ? 'known' as const : 'unknown' as const,
+        actual: target.content === 'satisfied' || target.content === 'drifted',
       } : {}),
     }]);
   }

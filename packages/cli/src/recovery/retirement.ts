@@ -113,17 +113,19 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
       ...(removed && (removed.nativeState === 'installed' || removed.nativeState === 'unknown'
         || removed.projectionPresent || removed.activationScopes.length > 0) ? ['codex' as const] : []),
       ...portable.targets.map((entry) => entry.agent),
+      ...(portable.unknownAgents ?? []),
     ])];
     const targetResults: RecoveryTarget[] = agents.map((agent) => {
       const delivery = agent === 'cursor' ? { kind: 'agent-skills' as const, provider: 'skills-cli' as const, agentId: agent }
         : { kind: 'native' as const, platform: agent === 'claude-code' ? 'claude' as const : 'codex' as const };
-      const hasPortable = portable.state === 'unknown' || portable.targets.some((target) => target.agent === agent);
+      const portableUnknown = portable.unknownAgents?.includes(agent) ?? portable.state === 'unknown';
+      const hasPortable = portableUnknown || portable.targets.some((target) => target.agent === agent);
       const hasNative = agent !== 'cursor' && (removed?.evidence.some((entry) => entry.platform === delivery.platform)
         || removed?.nativeState === 'installed' || removed?.nativeState === 'unknown'
         || removed?.projectionPresent || (removed?.activationScopes.length ?? 0) > 0);
       return { pluginId: options.selector, agent, scope: options.scope, delivery,
         execution: 'not-run', observation: 'unknown', content: hasPortable || hasNative ? 'unknown' : 'absent',
-        blockers: hasPortable ? [diagnostic(portable.state === 'unknown'
+        blockers: hasPortable ? [diagnostic(portableUnknown
           ? 'portableObservationFailed' : 'backend-action-unsupported')] : [], requiredBy: [options.selector],
         relation: 'residue', backend: { native: safeRemovedEvidence(removed?.evidence.find((entry) =>
           entry.platform === delivery.platform)),

@@ -71,6 +71,7 @@ describe('scoped inventory in Ink', () => {
   // Test Value Gate: a verified Portable target must show the same health in inventory and detail cards.
   it.each([
     { observation: 'verified', content: 'satisfied', state: 'ready', label: '可用', actual: true },
+    { observation: 'unknown', content: 'drifted', state: 'pending', label: '待同步', actual: true },
     { observation: 'unknown', content: 'unknown', state: 'unknown', label: '未确认', actual: false },
     { observation: 'unknown', content: 'conflict', state: 'blocked', label: '受阻', actual: false },
   ] as const)('projects Portable $content through recovery, inventory, detail and Ink', (caseValue) => {
@@ -92,7 +93,8 @@ describe('scoped inventory in Ink', () => {
       scopedInventories: { user: inventory } });
     expect(subject?.placements).toEqual([expect.objectContaining({
       agent: 'cursor', delivery: 'agent-skills', projectState: caseValue.state,
-      observation: caseValue.state === 'ready' ? 'known' : 'unknown', actual: caseValue.actual,
+      observation: caseValue.state === 'ready' || caseValue.content === 'drifted'
+        || caseValue.content === 'absent' ? 'known' : 'unknown', actual: caseValue.actual,
     })]);
     const rootFrame = render(<ProjectRootCard root={inventory.declaredRoots[0]!} subject={subject!}
       width={80} focused />).lastFrame() ?? '';
@@ -102,6 +104,32 @@ describe('scoped inventory in Ink', () => {
     if (caseValue.state === 'ready') {
       expect(rootFrame).not.toContain('[? 未确认]');
       expect(detailFrame).not.toContain('[? 未确认]');
+    }
+  });
+
+  it('keeps a Portable location through satisfied, drifted and satisfied observations but omits absence', () => {
+    const pluginId = 'official/demo';
+    for (const [observation, content, actual] of [
+      ['verified', 'satisfied', true], ['unknown', 'drifted', true],
+      ['verified', 'satisfied', true], ['missing', 'absent', false],
+    ] as const) {
+      const recoveryStatus: ScopedInventoryLoadResult = { ...recovery('project'),
+        selection: { agents: ['cursor'], preferences: 'valid' },
+        inventory: [{ pluginId, source: 'official', sourceState: 'ready', blockers: [], targetResults: [{
+          pluginId, agent: 'cursor', scope: 'project',
+          delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor' },
+          execution: 'not-run', observation, content, blockers: [], requiredBy: [pluginId],
+        }] }],
+      };
+      const inventory = buildScopedInventory({ recovery: recoveryStatus, status: status.payload,
+        pluginSummaries: status.pluginSummaries });
+      expect(inventory.declaredRoots[0]?.targets[0]?.actual).toBe(actual);
+      const model = buildTuiViewModel({ status: status.payload, pluginSummaries: status.pluginSummaries });
+      const detail = buildPluginDetailSubject({ pluginId, status: status.payload,
+        pluginSummaries: status.pluginSummaries, plugins: model.plugins,
+        scopedInventories: { project: inventory } });
+      expect(detail?.placements.filter((placement) => placement.agent === 'cursor')).toHaveLength(actual ? 1 : 0);
+      if (actual) expect(detail?.placements[0]?.projectState).toBe(content === 'drifted' ? 'pending' : 'ready');
     }
   });
 

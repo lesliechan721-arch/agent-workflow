@@ -74,7 +74,7 @@ export async function statusFromObservations(options: ReadRecoveryStatusOptions 
   portableCoverage?: boolean;
 }): Promise<RecoveryStatus> {
   const { demand } = options;
-  const errors = [...demand.errors, ...(options.nativeReadErrors ?? [])];
+  const errors: RecoveryDiagnostic[] = [...demand.errors, ...(options.nativeReadErrors ?? [])];
   let selection: RecoveryStatus['selection'];
   try { selection = selectAgents({ preferences: demand.preferences, targets: options.targets }); }
   catch {
@@ -99,12 +99,13 @@ export async function statusFromObservations(options: ReadRecoveryStatusOptions 
         if (native) {
           target.content = native.content;
           target.blockers.push(...native.blockers);
-          errors.push(...native.blockers.filter((entry) => NATIVE_READ_ERRORS.has(entry.code)));
+          errors.push(...native.blockers.filter((entry) => NATIVE_READ_ERRORS.has(entry.code))
+            .map((entry) => ({ ...entry, pluginId: root.pluginId })));
           target.backend = { ...(native.assumedActivation ? { assumedActivation: true } : {}),
             ...(native.backend ? { live: safeNativePlacement(native.backend as StatusScopedTarget) } : {}) };
         } else {
           target.blockers.push(diagnostic('nativeObservationUnavailable'));
-          errors.push(diagnostic('nativeObservationUnavailable'));
+          errors.push({ ...diagnostic('nativeObservationUnavailable'), pluginId: root.pluginId });
         }
       } else {
         try {
@@ -120,11 +121,11 @@ export async function statusFromObservations(options: ReadRecoveryStatusOptions 
           target.backend = observed.map((entry) => ({ skill: entry.skill, agent: entry.agent,
             ownership: entry.ownership, observation: entry.observation, associatedAgents: entry.associatedAgents }));
           if (target.blockers.some((entry) => /(?:VerificationFailed|ReadFailed|LockInvalid)/u.test(entry.code))) {
-            errors.push(diagnostic('portableObservationFailed'));
+            errors.push({ ...diagnostic('portableObservationFailed'), pluginId: root.pluginId });
           }
         } catch {
           target.blockers.push(diagnostic('portableObservationFailed'));
-          errors.push(diagnostic('portableObservationFailed'));
+          errors.push({ ...diagnostic('portableObservationFailed'), pluginId: root.pluginId });
         }
       }
       target.observation = target.content === 'satisfied' ? 'verified'
@@ -167,14 +168,17 @@ export async function statusFromObservations(options: ReadRecoveryStatusOptions 
 }
 
 export async function readRecoveryStatus(options: ReadRecoveryStatusOptions & {
+  onDemand?: (demand: DemandSnapshot) => string[] | undefined;
   onNativeStatus?: (native: Awaited<ReturnType<typeof statusCommandV8>>,
     demand: DemandSnapshot) => void | Promise<void>;
 }): Promise<RecoveryStatus> {
   const context = await createScopeContext({ scope: options.scope, cwd: options.cwd, env: options.env, readOnly: true });
   try {
     const demand = await readDemand({ scope: options.scope, cwd: context.executionCwd, env: context.env });
+    const nativePlugins = options.onDemand?.(demand);
     const native = options.nativeObservations ? undefined : await statusCommandV8({
       cwd: context.executionCwd, env: context.env, scope: options.scope,
+      ...(nativePlugins ? { plugins: nativePlugins } : {}),
       recoveryDemand: demand, recoverySelection: { targets: options.targets }, cliVersion: options.cliVersion,
     });
     if (native) await options.onNativeStatus?.(native, demand);
@@ -241,31 +245,49 @@ export async function readRecoveryStatus(options: ReadRecoveryStatusOptions & {
 }
 
 export async function checkRecovery(selectors: readonly string[], options: ReadRecoveryStatusOptions & { all?: boolean }): Promise<RecoveryReceipt> {
-  const status = await readRecoveryStatus(options);
-  const roots = status.inventory?.map((root) => root.pluginId) ?? [];
   const blockers: RecoveryDiagnostic[] = [];
   let requested: string[] = [];
-  if (options.all && selectors.length) blockers.push(diagnostic('syncSelectorConflict'));
-  else if (options.all) requested = roots;
-  else if (!selectors.length && roots.length) blockers.push(diagnostic('syncSelectionRequired'));
-  else for (const selector of selectors) {
-    const parsed = parsePluginId(selector);
-    const matches = roots.filter((id) => parsed.sourceId ? id === selector : parsePluginId(id).pluginName === parsed.pluginName);
-    if (matches.length !== 1) blockers.push(diagnostic('syncPluginNotDesired'));
-    else if (!requested.includes(matches[0]!)) requested.push(matches[0]!);
-  }
+  const relevant = new Set<string>();
+  const status = await readRecoveryStatus({ ...options, onDemand: (demand) => {
+    const roots = demand.roots?.map((root) => root.pluginId) ?? [];
+    if (options.all && selectors.length) blockers.push(diagnostic('syncSelectorConflict'));
+    else if (options.all) requested = roots;
+    else if (!selectors.length && roots.length) blockers.push(diagnostic('syncSelectionRequired'));
+    else for (const selector of selectors) {
+      const parsed = parsePluginId(selector);
+      const matches = roots.filter((id) => parsed.sourceId ? id === selector : parsePluginId(id).pluginName === parsed.pluginName);
+      if (matches.length !== 1) blockers.push(diagnostic('syncPluginNotDesired'));
+      else if (!requested.includes(matches[0]!)) requested.push(matches[0]!);
+    }
+    const plugins = new Map(demand.plugins.map((plugin) => [plugin.pluginId, plugin]));
+    const queue = [...requested];
+    for (const id of requested) relevant.add(id);
+    while (queue.length) {
+      const pluginId = queue.shift()!;
+      const plugin = plugins.get(pluginId);
+      if (!plugin) continue;
+      for (const name of plugin.manifest.dependencies ?? []) {
+        const dependencyId = `${plugin.sourceId}/${name}`;
+        if (relevant.has(dependencyId)) continue;
+        relevant.add(dependencyId);
+        queue.push(dependencyId);
+      }
+    }
+    return options.all ? undefined : [...relevant];
+  } });
   const selectedRoots = status.inventory?.filter((root) => requested.includes(root.pluginId)) ?? [];
+  const errors = status.errors.filter((error) => !error.pluginId || relevant.has(error.pluginId));
   blockers.push(...selectedRoots.flatMap((root) => root.blockers));
   const targetResults = selectedRoots.flatMap((root) => root.targetResults);
   const remainingTargets = targetResults.filter((target) => target.blockers.length || target.observation !== 'verified')
     .map(({ pluginId, agent, scope, delivery }) => ({ pluginId, agent, scope, delivery }));
   if (status.intent.state !== 'valid' && status.intent.state !== 'absent') blockers.push(diagnostic('pluginIntentStateInvalid'));
-  const ok = blockers.length === 0 && remainingTargets.length === 0 && status.errors.length === 0
+  const ok = blockers.length === 0 && remainingTargets.length === 0 && errors.length === 0
     && !(requested.length === 0 && status.allSatisfied === null);
   return { schemaVersion: 1, kind: 'aw-recovery', scope: options.scope, command: 'sync:check', ok,
     intent: { ...status.intent, roots: status.inventory?.map((root) => root.pluginId) ?? null },
     requestedRoots: requested, requestedTargets: targetResults.map(({ pluginId, agent, scope, delivery }) =>
-      ({ pluginId, agent, scope, delivery })), selection: status.selection, blockers, errors: status.errors,
+      ({ pluginId, agent, scope, delivery })), selection: status.selection, blockers, errors,
     targetResults, remainingTargets, recoveryActions: ok ? [] : [`aw status --scope ${options.scope} --json`],
     declarationChanged: false, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: false };
 }

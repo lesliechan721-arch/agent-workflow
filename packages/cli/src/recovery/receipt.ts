@@ -2,7 +2,7 @@ import type { Scope } from '../types.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
 import type { IntentObservation } from '../intent/intent-store.js';
 
-export interface RecoveryDiagnostic { code: string; message: string }
+export interface RecoveryDiagnostic { code: string; message: string; pluginId?: string }
 export type RecoveryDelivery =
   | { kind: 'native'; platform: 'codex' | 'claude' }
   | { kind: 'agent-skills'; provider: 'skills-cli'; agentId: string };

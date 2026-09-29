@@ -3,19 +3,21 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
+import * as nativeStatus from '../../src/commands/status-v6.js';
 import { prepareRecovery, executeRecovery, runRecovery } from '../../src/recovery/coordinator.js';
 import { targetsSet } from '../../src/commands/targets-command.js';
 import { createEmptyPreferences, resolvePreferencesPath } from '../../src/intent/deployment-preferences.js';
 import { resolveIntentPath } from '../../src/intent/intent-store.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
-import { readRecoveryStatus } from '../../src/recovery/status.js';
+import { checkRecovery, readRecoveryStatus } from '../../src/recovery/status.js';
 import { readDemand } from '../../src/recovery/demand.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
+import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 type Agent = 'codex' | 'claude-code' | 'cursor';
@@ -153,6 +155,44 @@ async function addCalls(log: string): Promise<string[][]> {
 }
 
 describe('scoped recovery integration', () => {
+  it('passes selected roots to Native status so an unrelated inventory error cannot fail User --check', async () => {
+    const setup = await fixture([{ name: 'alpha', native: true }, { name: 'beta', native: true }]);
+    await writeIntentFixture({ scope: 'user', cwd: setup.cwd, env: setup.env }, {
+      roots: [{ pluginId: 'team/alpha' }, { pluginId: 'team/beta' }], agents: ['claude-code'],
+    });
+    const native = vi.spyOn(nativeStatus, 'statusCommandV8').mockImplementation(async (input) => ({
+      payload: { schemaVersion: 8, catalog: { primarySourceId: 'team', configDigest: 'config',
+        compositeDigest: 'catalog', sources: [] },
+      filters: { plugins: input.plugins ?? [], platform: 'both', cwd: input.cwd }, targets: [],
+      errors: input.plugins?.includes('team/beta') || !input.plugins
+        ? [{ code: 'stateInventoryFailed', message: 'beta inventory unreadable' }] : [] },
+      nativeObservations: [{ pluginId: 'team/alpha', platform: 'claude', content: 'satisfied', blockers: [] }],
+      nativeExtraObserved: [],
+    }) as never);
+    try {
+      const options = { scope: 'user' as const, cwd: setup.cwd, env: setup.env, targets: ['claude-code'] };
+      expect((await checkRecovery(['team/alpha'], options)).ok).toBe(true);
+      expect(native).toHaveBeenCalledWith(expect.objectContaining({ plugins: ['team/alpha'] }));
+      expect((await checkRecovery([], { ...options, all: true })).errors)
+        .toContainEqual(expect.objectContaining({ code: 'stateInventoryFailed' }));
+    } finally { native.mockRestore(); }
+  });
+  it.each([false, true])('limits User sync --check observation errors to selected roots and dependencies (dependency=%s)', async (dependsOnBeta) => {
+    const setup = await fixture([{ name: 'alpha', native: true,
+      ...(dependsOnBeta ? { dependencies: ['beta'] } : {}) }, { name: 'beta', native: true }]);
+    await writeIntentFixture({ scope: 'user', cwd: setup.cwd, env: setup.env }, {
+      roots: [{ pluginId: 'team/alpha' }, { pluginId: 'team/beta' }], agents: ['claude-code'],
+    });
+    const options = { scope: 'user' as const, cwd: setup.cwd, env: setup.env,
+      targets: ['claude-code'], nativeObservations: [{ pluginId: 'team/alpha', platform: 'claude' as const,
+        content: 'satisfied' as const, blockers: [] }] };
+    const alpha = await checkRecovery(['team/alpha'], options);
+    expect(alpha.requestedRoots).toEqual(['team/alpha']);
+    expect(alpha.errors.map((error) => error.pluginId)).toEqual(dependsOnBeta ? ['team/beta'] : []);
+    expect(alpha.ok).toBe(!dependsOnBeta);
+    expect((await checkRecovery(['team/beta'], options)).ok).toBe(false);
+    expect((await checkRecovery([], { ...options, all: true })).ok).toBe(false);
+  });
   // Test Value Gate: unreadable demand and a missing Agent selection must never appear as an empty success.
   it('keeps no-target, empty and invalid declarations distinct', async () => {
     const setup = await fixture([{ name: 'alpha' }]);
