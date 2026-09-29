@@ -26,6 +26,44 @@ function validatePluginScriptPath(): string {
   );
 }
 
+async function createPluginRepository(root: string): Promise<string> {
+  const workspaceRoot = path.join(root, 'repo');
+  for (const name of ['batch-target', 'batch-sibling']) {
+    const pluginRoot = path.join(workspaceRoot, 'plugins', name);
+    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
+      schemaVersion: 3,
+      name,
+      version: '0.1.0',
+      description: 'Git batch validation fixture.',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'ON_INSTALL',
+        },
+      },
+    });
+    // Identical files exercise blob deduplication across the full source set.
+    await fs.outputFile(path.join(pluginRoot, 'README.md'), '# Batch Fixture\n');
+  }
+  // Exercise both tree and blob output beyond the pipe buffer boundary.
+  const dataRoot = path.join(workspaceRoot, 'plugins', 'batch-sibling', 'data');
+  await fs.ensureDir(dataRoot);
+  for (let index = 0; index < 1024; index += 1) {
+    await fs.writeFile(path.join(dataRoot, `file-${index}.txt`), 'Shared fixture content.\n');
+  }
+  await fs.writeFile(path.join(dataRoot, 'large-blob.txt'), 'x'.repeat(128 * 1024));
+  await execFileAsync('git', ['init'], { cwd: workspaceRoot });
+  await execFileAsync('git', ['add', 'plugins'], { cwd: workspaceRoot });
+  await execFileAsync('git', [
+    '-c', 'user.name=AW Test',
+    '-c', 'user.email=aw-test@example.invalid',
+    'commit', '-m', 'baseline',
+  ], { cwd: workspaceRoot });
+  return workspaceRoot;
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -35,6 +73,7 @@ describe('built Git cat-file batch validation', () => {
   stubbornValidateTest('force-kills a malformed batch child that ignores SIGTERM during validate', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-stubborn-git-test-'));
     tempDirs.push(root);
+    const workspaceRoot = await createPluginRepository(root);
     const binRoot = path.join(root, 'bin');
     const pidPath = path.join(root, 'pid');
     const signalLogPath = path.join(root, 'signals.log');
@@ -46,9 +85,11 @@ describe('built Git cat-file batch validation', () => {
       "import { spawn } from 'node:child_process';",
       "const args = process.argv.slice(2);",
       "if (args[0] !== 'cat-file' || args[1] !== '--batch') {",
-      "  const child = spawn(process.env.AW_REAL_GIT, args, { stdio: 'inherit' });",
-      "  child.on('error', (error) => { console.error(error.message); process.exit(127); });",
-      "  child.on('exit', (code, signal) => { if (signal) process.kill(process.pid, signal); else process.exit(code ?? 1); });",
+      "  const child = spawn(process.env.AW_REAL_GIT, args, { stdio: ['inherit', 'pipe', 'pipe'] });",
+      "  child.stdout.pipe(process.stdout);",
+      "  child.stderr.pipe(process.stderr);",
+      "  child.on('error', (error) => { console.error(error.message); process.exitCode = 127; });",
+      "  child.on('close', (code, signal) => { if (signal) process.kill(process.pid, signal); else process.exitCode = code ?? 1; });",
       "} else {",
       "  fs.writeFileSync(process.env.AW_FAKE_GIT_PID, String(process.pid));",
       "  process.on('SIGTERM', () => fs.appendFileSync(process.env.AW_FAKE_GIT_SIGNAL_LOG, 'TERM\\n'));",
@@ -62,12 +103,12 @@ describe('built Git cat-file batch validation', () => {
     const startedAt = Date.now();
     const validation = execFileAsync(process.execPath, [
       validatePluginScriptPath(),
-      path.join(repoRoot(), 'plugins', 'aw-development-toolkit'),
+      path.join(workspaceRoot, 'plugins', 'batch-target'),
       '--workspace-root',
-      repoRoot(),
+      workspaceRoot,
       '--json',
     ], {
-      cwd: repoRoot(),
+      cwd: workspaceRoot,
       env: {
         ...process.env,
         AW_FAKE_GIT_PID: pidPath,
@@ -93,6 +134,7 @@ describe('built Git cat-file batch validation', () => {
   it('uses one cat-file process and at most five Git processes for full-source validation', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-git-count-test-'));
     tempDirs.push(root);
+    const workspaceRoot = await createPluginRepository(root);
     const binRoot = path.join(root, 'bin');
     const logPath = path.join(root, 'git-calls.jsonl');
     const batchInputPath = path.join(root, 'cat-file-input.txt');
@@ -104,22 +146,24 @@ describe('built Git cat-file batch validation', () => {
       "import { spawn } from 'node:child_process';",
       "appendFileSync(process.env.AW_GIT_CALL_LOG, `${JSON.stringify(process.argv.slice(2))}\\n`);",
       "const args = process.argv.slice(2);",
-      "const child = spawn(process.env.AW_REAL_GIT, args, { stdio: ['pipe', 'inherit', 'inherit'] });",
+      "const child = spawn(process.env.AW_REAL_GIT, args, { stdio: ['pipe', 'pipe', 'pipe'] });",
+      "child.stdout.pipe(process.stdout);",
+      "child.stderr.pipe(process.stderr);",
       "if (args[0] === 'cat-file' && args[1] === '--batch') process.stdin.on('data', (chunk) => appendFileSync(process.env.AW_GIT_BATCH_INPUT, chunk));",
       "process.stdin.pipe(child.stdin);",
-      "child.on('error', (error) => { console.error(error.message); process.exit(127); });",
-      "child.on('exit', (code, signal) => { if (signal) process.kill(process.pid, signal); else process.exit(code ?? 1); });",
+      "child.on('error', (error) => { console.error(error.message); process.exitCode = 127; });",
+      "child.on('close', (code, signal) => { if (signal) process.kill(process.pid, signal); else process.exitCode = code ?? 1; });",
     ].join('\n'), 'utf8');
     await fs.chmod(path.join(binRoot, 'git'), 0o755);
 
-    await execFileAsync(process.execPath, [
+    const validation = await execFileAsync(process.execPath, [
       validatePluginScriptPath(),
-      path.join(repoRoot(), 'plugins', 'aw-development-toolkit'),
+      path.join(workspaceRoot, 'plugins', 'batch-target'),
       '--workspace-root',
-      repoRoot(),
+      workspaceRoot,
       '--json',
     ], {
-      cwd: repoRoot(),
+      cwd: workspaceRoot,
       env: {
         ...process.env,
         AW_GIT_CALL_LOG: logPath,
@@ -128,6 +172,18 @@ describe('built Git cat-file batch validation', () => {
         PATH: `${binRoot}${path.delimiter}${process.env.PATH ?? ''}`,
       },
       maxBuffer: 20 * 1024 * 1024,
+    }).catch((error) => {
+      throw new Error(`Plugin validation failed:\n${error.stdout}\n${error.stderr}`, { cause: error });
+    });
+    expect(validation.stderr).toBe('');
+    expect(JSON.parse(validation.stdout)).toMatchObject({
+      ok: true,
+      errors: [],
+      versionCheck: {
+        ok: true,
+        checkedPlugins: 1,
+        checks: [{ plugin: 'batch-target', status: 'unchanged' }],
+      },
     });
     const calls = (await fs.readFile(logPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     expect(calls.filter((args) => args[0] === 'cat-file')).toEqual([['cat-file', '--batch']]);
@@ -135,10 +191,11 @@ describe('built Git cat-file batch validation', () => {
     const requestedObjectIds = (await fs.readFile(batchInputPath, 'ascii')).trim().split('\n');
     expect(new Set(requestedObjectIds).size).toBe(requestedObjectIds.length);
     const tree = await execFileAsync(realGit, ['ls-tree', '-r', '-z', 'HEAD', '--', 'plugins'], {
-      cwd: repoRoot(),
+      cwd: workspaceRoot,
       encoding: null,
       maxBuffer: 20 * 1024 * 1024,
     });
+    expect(tree.stdout.length).toBeGreaterThan(64 * 1024);
     const treeObjectIds = tree.stdout.toString('utf8').split('\0').filter(Boolean).map((record) => (
       record.slice(0, record.indexOf('\t')).split(' ')[2]
     ));
