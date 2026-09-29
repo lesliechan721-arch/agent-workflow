@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.31",
+  "catalogVersion": "0.1.0-beta.32",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "7b4c464d226229d7aa5030901f16b2d816ae613f"
+    "sourceHead": "b6e7b66585e93121023c302bbb0517557cb9733f"
   },
   "entries": [
     {
@@ -117,7 +117,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.4",
+      "version": "0.1.0-beta.5",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -141,9 +141,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:997b7d3e185a62b50b864ba03da11d558793acdf50169d8c78f14eaab2109e7d",
-      "manifestDigest": "sha256:0267224bb5e14207b70fb552d2240a287bc956d4f4768ba2cc4fdb3fd603d114",
-      "contentDigest": "sha256:5250eadb56375b4a399282ee0825958758b775ccfb233c314819e8296a65eb66"
+      "artifactDigest": "sha256:d44c364736eed787b534a82b91ddf0d3cc3e44848011b6d27662b8668e5524ea",
+      "manifestDigest": "sha256:45607294700da3021937a14f175cd714d589a41cc96fb94e9df787051d4aa697",
+      "contentDigest": "sha256:57c917624b8e6ef49cc2d82f7a884564069942b24d3db3cffbef9a44dfb3557e"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -282,7 +282,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.2",
+      "version": "0.1.0-beta.3",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -293,9 +293,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:b57ee887d7f70a162daaa716b35e8ca8f2c9904872c8a05b74fc95c0d3d068b7",
-      "manifestDigest": "sha256:7ff9ff877856581b4a936a505763c77e5ca8e77bae2ec365983fd0b5f10453dd",
-      "contentDigest": "sha256:bd62bcc66d860c29d4ca08252c36e375d2e47bd3090a120f9757cc4c291e05c7"
+      "artifactDigest": "sha256:f116feb02d529a1aa1489c530456a34872e72455b48283708889efb057f645e0",
+      "manifestDigest": "sha256:1a04df448b5e30b3450aad5e27fbb726b0b526fedff2518cd1f456b104eed231",
+      "contentDigest": "sha256:11b10c5fd42b078fde0a4bf56e50b67c3c32985932e98884fefc854fe6590376"
     },
     {
       "name": "dev-workflow",
@@ -320,7 +320,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.9",
+      "version": "0.1.0-beta.10",
       "dependencies": [
         "decision-kit"
       ],
@@ -333,9 +333,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:7d445ae6749ea53bba917dad0f791033d5e87148b19019c268c2874fe937db39",
-      "manifestDigest": "sha256:ed4e916a838f98e83bd1181bc22d786e38ede67a90c734ddba456ee35b50a57f",
-      "contentDigest": "sha256:b89d8fbc05e31a0ca96b7941395a29796e857397fae1563b54f352ab9388ebcb"
+      "artifactDigest": "sha256:6a20f55fc34b56193707d56f58b534e6cd033d0e640ae82315cb058e1fa5a653",
+      "manifestDigest": "sha256:13508bbde2ec1792febd78998cd29bbaea8877752cfad4dc0dc802de983d8167",
+      "contentDigest": "sha256:576ee42f4f6764cd7311b52b84f12abcc6b57c956ea248a96efbd62241dd07db"
     },
     {
       "name": "git-toolkit",

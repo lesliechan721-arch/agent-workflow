@@ -3,7 +3,7 @@
   "kind": "aw-plugin-requirements",
   "plugin": {
     "name": "dev-workflow",
-    "version": "0.1.0-beta.9"
+    "version": "0.1.0-beta.10"
   },
   "requiredCapabilities": [
     "aw.plugin-build-config.v1",
