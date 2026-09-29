@@ -43,6 +43,17 @@
       "runs": 1,
       "timeoutMs": 300000,
       "requiredForRelease": false
+    },
+    {
+      "id": "simplified-design",
+      "kind": "conversation",
+      "cases": "simplified-design-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
     }
   ]
 }

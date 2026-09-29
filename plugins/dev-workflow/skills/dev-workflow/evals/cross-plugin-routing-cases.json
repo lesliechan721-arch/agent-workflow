@@ -4,6 +4,7 @@
     "kind": "trigger",
     "unitUnderTest": "dev-workflow",
     "participants": [
+      "dev-repair",
       "dev-spec",
       "dev-review-spec",
       "dev-implement",
@@ -38,7 +39,7 @@
         "workflow-routing"
       ],
       "input": {
-        "query": "使用 dev-workflow 修复一个明确的低风险 bug：用户名末尾空格未去除。范围只限现有 normalizeName；非目标是不改公开接口。没有未解决材料决定，也不需要 Prototype、实验或测量。有稳定失败测试，改动可逆且一个上下文可完成。",
+        "query": "使用 $dev-workflow 修复一个明确的低风险 bug：用户名末尾空格未去除。范围只限现有 normalizeName；非目标是不改公开接口。没有未解决材料决定，也不需要 Prototype、实验或测量。有稳定失败测试，改动可逆且一个上下文可完成。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -63,7 +64,7 @@
         "minimalCounterexample": "同一任务若当前上下文足够且没有正式审阅或持久交接需求，可以直接以一个工作项进入 Build。"
       },
       "input": {
-        "query": "使用 dev-workflow 修复用户名末尾空格未去除的问题。结果、范围和非目标已清楚，没有材料未决，不需要体验或实验，改动低风险、可逆且有稳定失败测试；但仓库很大，预计需要多个上下文才能完成。Shape 已完整，当前没有 Spec。",
+        "query": "使用 $dev-workflow 修复用户名末尾空格未去除的问题。结果、范围和非目标已清楚，没有材料未决，不需要体验或实验，改动低风险、可逆且有稳定失败测试；但仓库很大，预计需要多个上下文才能完成。Shape 已完整，当前没有 Spec。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -85,7 +86,7 @@
         "minimalCounterexample": "如果当前 Code Review 已为 clean，则可以进入 Delivery，不需要再次加载 Review。"
       },
       "input": {
-        "query": "使用 dev-workflow 继续这个局部任务：实现已经完成，可靠验证已经通过，当前还没有 Code Review。",
+        "query": "使用 $dev-workflow 继续这个局部任务：实现已经完成，可靠验证已经通过，当前还没有 Code Review。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -107,7 +108,7 @@
         "minimalCounterexample": "同一团队权限功能若行为、范围、材料决定和验证已明确，当前上下文足够且无需持久交接，可进入 Build。"
       },
       "input": {
-        "query": "使用 dev-workflow 实现一个新的团队权限功能。当前没有 Shape、Spec 或明确验收。",
+        "query": "使用 $dev-workflow 实现一个新的团队权限功能。当前没有 Shape、Spec 或明确验收。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -124,7 +125,7 @@
         "workflow-routing"
       ],
       "input": {
-        "query": "使用 dev-workflow 组织新的权限模型；多个材料决定相互依赖。",
+        "query": "使用 $dev-workflow 组织新的权限模型；多个材料决定相互依赖。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -141,7 +142,7 @@
         "workflow-routing"
       ],
       "input": {
-        "query": "使用 dev-workflow 继续：Shape 仍有一个审批页信息层级问题，必须操作候选页面后才能决定。本任务需要跨会话持续维护当前 Shape。",
+        "query": "使用 $dev-workflow 继续：Shape 仍有一个审批页信息层级问题，必须操作候选页面后才能决定。本任务需要跨会话持续维护当前 Shape。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -158,7 +159,7 @@
         "workflow-routing"
       ],
       "input": {
-        "query": "使用 dev-workflow 继续：Shape 已完整且没有开放材料决定，当前还没有 Spec。本任务需要正式规格和用户批准。",
+        "query": "使用 $dev-workflow 继续：Shape 已完整且没有开放材料决定，当前还没有 Spec。本任务需要正式规格和用户批准。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -175,7 +176,7 @@
         "workflow-routing"
       ],
       "input": {
-        "query": "使用 dev-workflow 继续：Spec Review 为 clean，用户已经明确批准，当前尚未实现。",
+        "query": "使用 $dev-workflow 继续：Spec Review 为 clean，用户已经明确批准，当前尚未实现。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -195,7 +196,7 @@
         "review-routing"
       ],
       "input": {
-        "query": "使用 dev-workflow 继续：Spec 已根据 blocked Review 修订。",
+        "query": "使用 $dev-workflow 继续：Spec 已根据 blocked Review 修订。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -212,7 +213,7 @@
         "review-routing"
       ],
       "input": {
-        "query": "使用 dev-workflow 处理 blocked Code Review；Spec 正确，问题是实现缺陷。用户已授权自动修复当前 blocker，现有预算尚未开始使用。",
+        "query": "使用 $dev-workflow 处理 blocked Code Review；Spec 正确，问题是实现缺陷。用户已授权自动修复当前 blocker，现有预算尚未开始使用。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -232,7 +233,7 @@
         "review-routing"
       ],
       "input": {
-        "query": "使用 dev-workflow 继续：Code Review blocker 已修复并验证。",
+        "query": "使用 $dev-workflow 继续：Code Review blocker 已修复并验证。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -252,7 +253,7 @@
         "review-routing"
       ],
       "input": {
-        "query": "使用 dev-workflow 处理 blocked Code Review。reviewer 发现 Spec 漏写失败行为，但用户在原始确认中已经明确“失败保留草稿并显示错误”；当前只是遗漏整理，没有新的材料选择，修订已授权。",
+        "query": "使用 $dev-workflow 处理 blocked Code Review。reviewer 发现 Spec 漏写失败行为，但用户在原始确认中已经明确“失败保留草稿并显示错误”；当前只是遗漏整理，没有新的材料选择，修订已授权。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -276,7 +277,7 @@
       "audit": {
         "rationale": "直接请求专业能力时不加载宏入口。",
         "allowedVariance": "措辞可以不同，但只能加载当前阶段需要的能力。",
-        "minimalCounterexample": "要求同时组织后续修订、实现和复审时，宏入口应加载。"
+        "minimalCounterexample": "用户显式调用 $dev-workflow 组织后续修订、实现和复审时，宏入口应加载。"
       },
       "input": {
         "query": "正式审查这份 Spec 是否可以批准。",
@@ -297,7 +298,7 @@
       "audit": {
         "rationale": "直接请求专业能力时不加载宏入口。",
         "allowedVariance": "措辞可以不同，但只能加载当前阶段需要的能力。",
-        "minimalCounterexample": "要求审查后继续修复并重新审查时，宏入口应加载。"
+        "minimalCounterexample": "用户显式调用 $dev-workflow 组织修复和复审时，宏入口应加载。"
       },
       "input": {
         "query": "审查这个 PR 的需求符合度和工程质量。",
@@ -315,7 +316,7 @@
         "regression"
       ],
       "input": {
-        "query": "使用 dev-workflow 处理 Code Review：Spec 没有约定提交失败后自动重试还是保留草稿，两者有不同副作用；原始请求与用户确认均未决定这件事。",
+        "query": "使用 $dev-workflow 处理 Code Review：Spec 没有约定提交失败后自动重试还是保留草稿，两者有不同副作用；原始请求与用户确认均未决定这件事。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
