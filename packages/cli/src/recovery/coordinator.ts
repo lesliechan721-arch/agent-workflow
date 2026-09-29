@@ -69,6 +69,7 @@ export interface RecoveryOptions {
 interface NativeGroup {
   pluginIds: string[];
   platform: PlatformName;
+  command: RecoveryCommand;
   preview: RebuildCommandResult;
 }
 interface Footprint {
@@ -101,6 +102,9 @@ export interface RecoveryPlan {
   declaration?: string[];
   preferences?: DeploymentPreferences;
   nativeGroups: NativeGroup[];
+  historicalNativeTargets: Set<string>;
+  deliverySwitchChecks: Array<{ pluginIds: string[]; cleanPluginIds: string[];
+    platform: PlatformName; fingerprint: string }>;
   portableGroups: PortablePreparation[];
   runtime: RebuildCommandRuntime;
   portableResidues: Array<{ pluginId: string; agents: AgentId[]; observation: PortableResidue }>;
@@ -120,6 +124,8 @@ function diagnostic(code: string): RecoveryDiagnostic {
     sourceRefreshFailed: '来源刷新失败，此来源的插件未恢复。',
     sourceRefreshConfirmationRequired: '来源更新必须先单独确认，再重新准备插件恢复。',
     artifactCollision: '多个交付占用相同输出位置，请先处理冲突。',
+    deliverySwitchCleanupRequired: '此目标仍有旧 Native 输出；请先清理旧交付，再恢复 Portable。',
+    deliverySwitchObservationFailed: '无法确认此目标是否仍有旧 Native 输出；请先恢复 Native 观察能力或人工核验。',
     'backend-action-unsupported': '此后端尚不支持安全移除，请检查精确的 Portable 输出。',
   };
   return { code, message: messages[code] ?? `操作受阻：${code}。` };
@@ -202,9 +208,11 @@ function selectRoots(demand: DemandSnapshot, selectors: readonly string[], all: 
 }
 
 async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform: PlatformName,
-  preview: boolean, runtime: RebuildCommandRuntime = plan.runtime): Promise<RebuildCommandResult> {
+  preview: boolean, runtime: RebuildCommandRuntime = plan.runtime,
+  command: RecoveryCommand = plan.command): Promise<RebuildCommandResult> {
+  const rebuildCommand = command === 'install' ? 'sync' : command;
   return runRebuildCommand({
-    command: plan.command === 'install' ? 'sync' : plan.command,
+    command: rebuildCommand,
     pluginNames: pluginIds,
     commandOptions: {
       cwd: plan.context.executionCwd, scope: plan.options.scope, platform,
@@ -212,7 +220,7 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
       allowManagedCodexInstall: plan.options.allowManagedCodexInstall,
       scriptTimeoutMs: plan.options.scriptTimeoutMs,
       ...(plan.options.dependencyScopeOverrides ? { dependencyScopeOverrides: plan.options.dependencyScopeOverrides } : {}),
-      ...(plan.command === 'cleanup' ? { force: plan.options.force } : {}),
+      ...(command === 'cleanup' ? { force: plan.options.force } : {}),
     },
     runtime: {
       ...runtime,
@@ -221,7 +229,7 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
       previewOperationPlan: preview,
       executionInput: {
         context: plan.context,
-        requirements: plan.command === 'cleanup' && (plan.demand.intent.state !== 'valid'
+        requirements: command === 'cleanup' && (plan.demand.intent.state !== 'valid'
           || plan.demand.preferences.state === 'invalid' || plan.demand.preferences.state === 'unreadable')
           ? createEmptyNativeDemandView() : demandNativeProjection(plan.demand),
         selectedTargets: pluginIds.map((pluginId) => ({ pluginId, platform, scope: plan.options.scope })),
@@ -229,6 +237,17 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
       },
     },
   });
+}
+
+function nativeCleanupEvidence(
+  result: RebuildCommandResult,
+  pluginId: string,
+  platform: PlatformName,
+  scope: Scope,
+): string[] {
+  const actions = result.operationPlan?.actions.filter((action) =>
+    action.pluginId === pluginId && action.platform === platform && action.scope === scope) ?? [];
+  return [...new Set(actions.map((action) => action.kind))];
 }
 
 function nativeResults(plan: RecoveryPlan, group: NativeGroup,
@@ -239,7 +258,7 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
       const agent = agentForPlatform(platform);
       const target = pair(plan, pluginId, agent)!;
       if (!target) continue;
-      const backend = buildRebuildReceiptJson(plan.command === 'install' ? 'sync' : plan.command, result);
+      const backend = buildRebuildReceiptJson(group.command === 'install' ? 'sync' : group.command, result);
       target.backend = backend;
       target.recoveryActions = backend.recoveryActions;
       const backendTargets = result.targetResults.filter((entry) => entry.target.pluginId === pluginId
@@ -448,7 +467,8 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
   const plan: RecoveryPlan = { command, options, receipt, demand, context, originalIntent,
     plannedImpact: { declaration: proposed?.changed === true, preferences: false, config: false, outputs: false },
     preferencesEvidence: preferenceEvidence(demand), changes: [], warnings: [],
-    nativeGroups: [], portableGroups: [], runtime, portableResidues: [], sourceRefreshes,
+    nativeGroups: [], historicalNativeTargets: new Set(), deliverySwitchChecks: [], portableGroups: [], runtime,
+    portableResidues: [], sourceRefreshes,
     sourceRefreshFailures: [...refreshFailures].map(([sourceId, code]) => ({ sourceId, code })),
     blockExecution: false,
     ...(proposed?.state && proposed.errors.length === 0 ? { declaration: proposed.roots } : {}),
@@ -490,9 +510,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
       if (options.exactTargets
         && !options.exactTargets.some((target) => target.pluginId === pluginId && target.agent === agent)) continue;
       const resolvedDelivery = root?.plugin ? resolveDelivery(root.plugin.manifest, agent, options.scope) ?? null : null;
-      const delivery = preciseCleanup && !resolvedDelivery && agent !== 'cursor'
-        ? { kind: 'native' as const, platform: agent === 'claude-code' ? 'claude' as const : 'codex' as const }
-        : resolvedDelivery;
+      const delivery = resolvedDelivery;
       receipt.targetResults.push({ pluginId, agent, scope: options.scope, delivery, execution: 'not-run', observation: 'unknown',
         blockers: [...(preciseCleanup ? [] : root?.blockers ?? []).map(diagnostic),
           ...(refreshFailures.has(parsePluginId(pluginId).sourceId!)
@@ -515,18 +533,84 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
     }
     return { ...plan, receipt: completeReceipt(receipt) };
   }
-  const groups = new Map<string, { platform: PlatformName; pluginIds: string[] }>();
+  if (command === 'cleanup' || command === 'uninstall') {
+    for (const platform of ['codex', 'claude'] as const) {
+      const candidates = receipt.targetResults.filter((target) => target.agent === agentForPlatform(platform));
+      if (candidates.length === 0) continue;
+      try {
+        const preview = await nativeOperation(plan, candidates.map((target) => target.pluginId), platform,
+          true, plan.runtime, 'cleanup');
+        for (const target of candidates) {
+          if (target.delivery?.kind === 'native') continue;
+          const cleanupEvidence = nativeCleanupEvidence(preview, target.pluginId, platform, options.scope);
+          if (cleanupEvidence.length === 0) continue;
+          target.delivery = { kind: 'native', platform };
+          plan.historicalNativeTargets.add(`${target.pluginId}\0${platform}`);
+          target.blockers = target.blockers.filter((entry) => entry.code !== 'backend-action-unsupported'
+            && entry.code !== 'deliveryUnsupported');
+        }
+      } catch (error) {
+        for (const target of candidates.filter((entry) => entry.delivery?.kind === 'native')) {
+          block(target, errorCode(error, 'nativePreparationFailed'));
+        }
+      }
+    }
+  }
+  if (command !== 'cleanup' && command !== 'uninstall') {
+    for (const platform of ['codex', 'claude'] as const) {
+      const candidates = receipt.targetResults.filter((target) => target.blockers.length === 0
+        && target.delivery?.kind === 'agent-skills' && target.agent === agentForPlatform(platform));
+      if (candidates.length === 0) continue;
+      try {
+        const pluginIds = candidates.map((target) => target.pluginId);
+        const preview = await nativeOperation(plan, pluginIds, platform, true, plan.runtime, 'cleanup');
+        const cleanPluginIds: string[] = [];
+        for (const target of candidates) {
+          const evidence = nativeCleanupEvidence(preview, target.pluginId, platform, options.scope);
+          if (evidence.length === 0) {
+            if (preview.overallState !== 'succeeded' || preview.warnings.length > 0
+              || !preview.operationPlan) {
+              block(target, 'deliverySwitchObservationFailed');
+              target.recoveryActions = [`检查 ${target.pluginId}/${target.agent} 的 Native 现场后重试 aw sync。`];
+            } else {
+              cleanPluginIds.push(target.pluginId);
+            }
+            continue;
+          }
+          block(target, 'deliverySwitchCleanupRequired');
+          target.backend = { previousDelivery: { kind: 'native', platform }, cleanupEvidence: evidence };
+          target.recoveryActions = [
+            `aw cleanup ${target.pluginId} --scope ${options.scope} --target ${target.agent}`,
+            `aw sync ${target.pluginId} --scope ${options.scope} --target ${target.agent}`,
+          ];
+          plan.changes.push(`先清理 ${target.pluginId}/${target.agent} 的旧 Native 输出，再恢复 Portable。`);
+        }
+        if (cleanPluginIds.length && preview.operationPlan) plan.deliverySwitchChecks.push({
+          pluginIds, cleanPluginIds, platform, fingerprint: preview.operationPlan.planFingerprint,
+        });
+      } catch (error) {
+        for (const target of candidates) {
+          block(target, 'deliverySwitchObservationFailed');
+          target.recoveryActions = [`检查 ${target.pluginId}/${target.agent} 的 Native 现场后重试 aw sync。`];
+          plan.warnings.push(`${target.pluginId}/${target.agent}：${errorCode(error, 'deliverySwitchObservationFailed')}。`);
+        }
+      }
+    }
+  }
+  const groups = new Map<string, { platform: PlatformName; command: RecoveryCommand; pluginIds: string[] }>();
   for (const target of receipt.targetResults) {
     if (target.blockers.length || target.delivery?.kind !== 'native') continue;
-    const key = target.delivery.platform;
-    const group = groups.get(key) ?? { platform: target.delivery.platform, pluginIds: [] };
+    const command = plan.historicalNativeTargets.has(`${target.pluginId}\0${target.delivery.platform}`)
+      ? 'cleanup' : plan.command;
+    const key = `${target.delivery.platform}\0${command}`;
+    const group = groups.get(key) ?? { platform: target.delivery.platform, command, pluginIds: [] };
     group.pluginIds.push(target.pluginId);
     groups.set(key, group);
   }
   for (const group of groups.values()) {
     if (group.pluginIds.length === 0) continue;
     try {
-      const preview = await nativeOperation(plan, group.pluginIds, group.platform, true);
+      const preview = await nativeOperation(plan, group.pluginIds, group.platform, true, plan.runtime, group.command);
       const nativeGroup = { ...group, preview };
       plan.nativeGroups.push(nativeGroup);
       nativeResults(plan, nativeGroup, preview, false);
@@ -717,9 +801,20 @@ export async function executeRecovery(plan: RecoveryPlan,
         ...(session ? { codexObservationSession: session } : {}) };
       try {
       // Freeze every backend before the first declaration or output write.
+      for (const check of plan.deliverySwitchChecks) {
+        const checked = await nativeOperation(plan, check.pluginIds, check.platform, true, nativeRuntime, 'cleanup')
+          .catch(() => undefined);
+        if (!checked || checked.overallState !== 'succeeded' || checked.warnings.length > 0
+          || checked.operationPlan?.planFingerprint !== check.fingerprint
+          || check.cleanPluginIds.some((pluginId) =>
+            nativeCleanupEvidence(checked, pluginId, check.platform, plan.options.scope).length > 0)) {
+          receipt.blockers.push(diagnostic('operationReviewStale'));
+          return completeReceipt(receipt);
+        }
+      }
       for (const group of plan.nativeGroups) {
         if (group.pluginIds.every((id) => pair(plan, id, agentForPlatform(group.platform))!.blockers.length)) continue;
-        const checked = await nativeOperation(plan, group.pluginIds, group.platform, true, nativeRuntime);
+        const checked = await nativeOperation(plan, group.pluginIds, group.platform, true, nativeRuntime, group.command);
         if (checked.operationPlan?.planFingerprint !== group.preview.operationPlan?.planFingerprint) {
           receipt.blockers.push(diagnostic('operationReviewStale'));
           return completeReceipt(receipt);
@@ -766,7 +861,7 @@ export async function executeRecovery(plan: RecoveryPlan,
           const result = await nativeOperation(plan, executable, group.platform, false,
             { ...nativeRuntime,
               ...(executable.length === group.pluginIds.length && group.preview.operationPlan
-                ? { expectedPlanFingerprint: group.preview.operationPlan.planFingerprint } : {}) });
+                ? { expectedPlanFingerprint: group.preview.operationPlan.planFingerprint } : {}) }, group.command);
           receipt.outputsMayHaveChanged ||= result.rebuildResults.some((result) => result.actions.some((action) =>
             action.name === 'stale.cleanup' || action.name === 'native.write' || action.name === 'artifacts.write'
               || action.name === 'recovery.cleanup' || action.name === 'cleanup.owned'));

@@ -191,6 +191,43 @@ describe('retire strong state and residue', () => {
     })]);
   });
 
+  it('attributes a partial Native retirement only to the target that retained output', async () => {
+    const options = location();
+    await addRoot(options, 'local/demo', 'sha256:logical');
+    backend.inspect.mockImplementation(async () => ({ ...removedEvidence(), nativeState: 'installed' }));
+    backend.execute.mockResolvedValue({ overallState: 'partial',
+      rebuildResults: [
+        { status: 'succeeded', command: 'cleanup', target: { pluginId: 'local/demo', pluginName: 'demo',
+          platform: 'codex', scope: 'user' }, actions: [], cleanupAttempted: true,
+          removed: [], absent: [], residual: ['shared-native'], quarantined: [], failures: [] },
+        { status: 'succeeded', command: 'cleanup', target: { pluginId: 'local/demo', pluginName: 'demo',
+          platform: 'claude', scope: 'user' }, actions: [], cleanupAttempted: true,
+          removed: ['claude-output'], absent: [], residual: [], quarantined: [], failures: [] },
+      ],
+      targetResults: [
+        { target: { pluginId: 'local/demo', pluginName: 'demo', platform: 'codex', scope: 'user' },
+          action: 'keep', state: 'completed' },
+        { target: { pluginId: 'local/demo', pluginName: 'demo', platform: 'claude', scope: 'user' },
+          action: 'cleanup', state: 'completed' },
+      ],
+      platforms: ['codex', 'claude'], plugins: ['local/demo'], warnings: [], receiptTargets: [] });
+
+    const result = await runRetire({ ...options, selector: 'local/demo',
+      targets: ['codex', 'claude-code'], yes: true }, {
+      inventoryCatalogSourceReferences: async () =>
+        ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }),
+    });
+
+    expect(result.remainingTargets).toEqual([
+      expect.objectContaining({ pluginId: 'local/demo', agent: 'codex' }),
+    ]);
+    expect(result.targetResults.find((target) => target.agent === 'codex')?.blockers)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'sharedNativePreserved' })]));
+    expect(result.targetResults.find((target) => target.agent === 'claude-code')).toMatchObject({
+      execution: 'applied', blockers: [],
+    });
+  });
+
   it.each([{ targets: undefined }, { targets: ['cursor'] }])('returns a no-op for a fully absent removed plugin with targets $targets without requiring confirmation', async ({ targets }) => {
     const options = location();
     const result = await runRetire({ ...options, selector: 'local/demo', targets }, {

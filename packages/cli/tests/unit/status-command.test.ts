@@ -220,7 +220,10 @@ describe('status v8 current behavior', () => {
   it('returns one failed recovery-status JSON for a Native read error and succeeds for ordinary missing output', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-status-read-error-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CLAUDE'];
+      manifest.extensions = { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] };
+    });
     const { env, logicalIdentity } = await configurePathSource(sourceRoot);
     const cwd = path.join(isolation.layout.fixtureCwd, 'native-status-read-error-project');
     await fs.ensureDir(path.join(cwd, '.git'));

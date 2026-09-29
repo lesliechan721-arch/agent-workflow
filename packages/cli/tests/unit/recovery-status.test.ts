@@ -16,7 +16,7 @@ function demand(ids: string[], agents: Array<'codex' | 'claude-code'>): DemandSn
       agents, dependencyScopeOverrides: [] }, digest: 'sha256:test', rawDigest: 'sha256:test', rawBytes: Buffer.from('{}') },
     roots: ids.map((pluginId) => ({ pluginId, sourceId: 'local', sourceState: 'ready' as const,
       blockers: [], plugin: { manifest: { name: pluginId.split('/')[1],
-        marketplace: { policy: { products: ['CLAUDE'] } } } } as never })),
+        marketplace: { policy: { products: ['CLAUDE'] } }, skills: './skills' } } as never })),
     plugins: [], errors: [],
   };
 }

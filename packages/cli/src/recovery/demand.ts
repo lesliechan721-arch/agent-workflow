@@ -6,6 +6,8 @@ import { resolvePreferencesPath } from '../intent/deployment-preferences.js';
 import { observeIntent, resolveIntentPath, type IntentObservation } from '../intent/intent-store.js';
 import { describeStrongStateProblem } from '../intent/diagnostics.js';
 import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
+import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
+import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import {
   resolvePartialCatalogOperationContext,
   type CatalogOperationContext,
@@ -15,6 +17,28 @@ import { readPluginManifest } from '../utils/manifest.js';
 import { createEmptyNativeDemandView, type NativeDemandView } from '../utils/native-demand.js';
 import { supportsPlatform } from '../utils/platform-support.js';
 import type { Delivery, Diagnostic } from './types.js';
+
+function claudeNativeApplicable(manifest: NormalizedPluginManifest, scope: Scope): boolean {
+  const staticSurface = Boolean(
+    manifest.skills
+    || manifest.slashCommands
+    || manifest.mcpServers
+    || resolvePlatformHookDefinitions(manifest, 'claude').length > 0
+    || resolvePlatformEntries(manifest.extensions?.instructions, 'claude').length > 0
+    || resolvePlatformEntries(manifest.extensions?.permissions, 'claude').length > 0
+    || resolvePlatformEntries(manifest.extensions?.agents, 'claude').length > 0
+    || Object.keys(manifest.buildConfig?.manifestOverrides?.claude ?? {}).length > 0
+  );
+  if (staticSurface) return true;
+  const dynamicTargets = (manifest.artifacts?.targets ?? []).filter((target) =>
+    target.platform === 'claude'
+    && target.target === 'claude.skill'
+    && target.states.includes('present'));
+  if (dynamicTargets.length > 0) {
+    return dynamicTargets.some((target) => target.scopes.includes(scope));
+  }
+  return false;
+}
 
 export type DemandSourceState = 'ready' | 'missing' | 'unavailable' | 'identity-mismatch';
 export interface DemandRoot {
@@ -48,8 +72,10 @@ export function resolveDelivery(
   const platform = agent === 'claude-code' ? 'claude' : agent === 'codex' ? 'codex' : undefined;
   if (platform && supportsPlatform(manifest, platform)) {
     const surface = platform === 'codex' ? analyzeCodexSurface(manifest) : undefined;
-    const applicable = !surface || (surface.unsupportedKinds.length === 0
-      && surface.components.some((component) => component.scopes.includes(scope)));
+    const applicable = platform === 'claude'
+      ? claudeNativeApplicable(manifest, scope)
+      : surface!.unsupportedKinds.length === 0
+        && surface!.components.some((component) => component.scopes.includes(scope));
     if (applicable) return { kind: 'native', platform };
   }
   if (manifest.distributions?.agentSkills) {

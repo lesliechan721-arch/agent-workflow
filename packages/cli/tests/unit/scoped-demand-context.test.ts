@@ -34,6 +34,37 @@ describe('scoped demand and execution context', () => {
     expect(resolveDelivery(plugin, 'cursor', 'project')).toBeUndefined();
   });
 
+  // Test Value Gate: a Claude Native target that is not applicable to the requested scope must not hide Portable.
+  it('uses Claude dynamic target scopes when choosing Native versus Portable', () => {
+    const plugin = manifest();
+    delete plugin.skills;
+    plugin.marketplace.policy.products = ['CLAUDE'];
+    plugin.artifacts = { targets: [{
+      id: 'project-skill', platform: 'claude', scopes: ['project'], target: 'claude.skill',
+      states: ['present'], refreshKeys: [], skillKey: 'project-skill',
+    }] };
+
+    expect(resolveDelivery(plugin, 'claude-code', 'user')).toEqual({
+      kind: 'agent-skills', provider: 'skills-cli', agentId: 'claude-code',
+    });
+    expect(resolveDelivery(plugin, 'claude-code', 'project')).toEqual({ kind: 'native', platform: 'claude' });
+    plugin.artifacts.targets![0]!.scopes = ['user'];
+    expect(resolveDelivery(plugin, 'claude-code', 'user')).toEqual({ kind: 'native', platform: 'claude' });
+    delete plugin.distributions;
+    expect(resolveDelivery({ ...plugin, artifacts: { targets: [{
+      ...plugin.artifacts.targets![0]!, scopes: ['project'],
+    }] } }, 'claude-code', 'user')).toBeUndefined();
+  });
+
+  it('does not treat Claude product eligibility as Native scope applicability by itself', () => {
+    const plugin = manifest();
+    delete plugin.skills;
+    delete plugin.distributions;
+    plugin.marketplace.policy.products = ['CLAUDE'];
+
+    expect(resolveDelivery(plugin, 'claude-code', 'user')).toBeUndefined();
+  });
+
   it('retains source references with no Agents or available Catalog and uses a protocol-free Native view', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };

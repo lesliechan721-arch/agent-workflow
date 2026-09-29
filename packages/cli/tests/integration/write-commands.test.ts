@@ -4974,6 +4974,7 @@ describe('five namespaced write commands', () => {
     const escapedSecret = JSON.stringify(secret).slice(1, -1);
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CLAUDE'];
+      manifest.extensions = { instructions: [{ name: 'pre-apply', title: 'Pre Apply', content: 'Native.' }] };
       manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
       manifest.config = { fields: { token: { type: 'string', required: true, sensitive: true } } };
     });
@@ -4992,6 +4993,7 @@ describe('five namespaced write commands', () => {
     );
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CLAUDE'];
+      manifest.extensions = { instructions: [{ name: 'pre-apply', title: 'Pre Apply', content: 'Native.' }] };
       manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
       manifest.config = { fields: { token: { type: 'string', required: true, sensitive: true } } };
     });

@@ -259,11 +259,19 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
               const result = await executeRemovedPluginOutputCleanup({ target: plan.evidence, selectedTargets,
                 context: plan.context, runtime: { ...runtime, awHomeMutationToken: token } });
               receipt.outputsMayHaveChanged = result.rebuildResults.some((entry) => entry.actions.length > 0);
+              let partialAttributed = false;
               for (const target of receipt.targetResults.filter((entry) => entry.delivery?.kind === 'native')) {
                 const platform = target.delivery?.kind === 'native' ? target.delivery.platform : undefined;
                 const backendTargets = result.targetResults.filter((entry) => entry.target.pluginId === target.pluginId
                   && entry.target.scope === target.scope && entry.target.platform === platform);
+                const rebuildTargets = result.rebuildResults.filter((entry) => entry.target.pluginId === target.pluginId
+                  && entry.target.scope === target.scope && entry.target.platform === platform);
                 const failed = backendTargets.some((entry) => entry.state === 'failed');
+                const sharedNativePreserved = platform === 'codex'
+                  && result.warnings.some((warning) => warning.startsWith('sharedNativePreserved:'));
+                const preserved = backendTargets.some((entry) => entry.action === 'keep')
+                  || rebuildTargets.some((entry) => entry.residual.length > 0 || entry.quarantined.length > 0)
+                  || sharedNativePreserved;
                 target.execution = failed ? 'failed' : backendTargets.length ? 'applied' : 'no-op';
                 target.observation = failed ? 'unknown' : target.content === 'absent' ? 'missing' : 'unknown';
                 target.backend = backendTargets.map((entry) => ({
@@ -272,7 +280,11 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
                   ...(entry.errorCode ? { errorCode: entry.errorCode } : {}),
                 }));
                 if (failed) target.blockers.push(diagnostic('nativeRetireFailed'));
-                else if (result.overallState === 'partial') target.blockers.push(diagnostic('sharedNativePreserved'));
+                else if (preserved) target.blockers.push(diagnostic('sharedNativePreserved'));
+                partialAttributed ||= failed || preserved;
+              }
+              if (result.overallState === 'partial' && !partialAttributed) {
+                receipt.blockers.push(diagnostic('nativeRetirePartial'));
               }
             } catch (error) {
               for (const target of receipt.targetResults.filter((entry) => entry.delivery?.kind === 'native')) {
