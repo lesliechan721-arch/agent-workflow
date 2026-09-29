@@ -734,4 +734,51 @@ describe('scoped inventory in Ink', () => {
       instance.unmount();
     } finally { inspect.mockRestore(); }
   });
+
+  it.each(['user', 'project'] as const)('keeps explicit Portable drifted %s targets pending and syncable in Ink', async (scope) => {
+    const inspect = vi.spyOn(portableRecovery, 'inspectPortableRecovery')
+      .mockResolvedValue({ blockers: [], targets: [{ agent: 'cursor', observation: 'drifted' }] } as never);
+    try {
+      const demand = { scope, intent: { state: 'valid', value: { schemaVersion: 3,
+        kind: 'aw-plugin-intents', sources: { official: { logicalIdentity: 'official' } },
+        roots: [{ pluginId: 'official/demo' }] }, digest: 'intent', rawDigest: 'intent', rawBytes: Buffer.from('{}') },
+      preferences: { state: 'valid', value: { schemaVersion: 1,
+        kind: 'aw-deployment-preferences', agents: ['cursor'], dependencyScopeOverrides: [] },
+      digest: 'preferences', rawDigest: 'preferences', rawBytes: Buffer.from('{}') },
+      roots: [{ pluginId: 'official/demo', sourceId: 'official', sourceState: 'ready', blockers: [],
+        plugin: { manifest: { distributions: { agentSkills: {} } } } }], plugins: [], errors: [],
+      } as unknown as DemandSnapshot;
+      const projected = await statusFromObservations({ scope, cwd: '/tmp/project',
+        context: { scope } as ScopeContext, demand, nativeObservations: [] });
+      expect(projected.inventory?.[0]?.targetResults[0]).toMatchObject({
+        content: 'drifted', observation: 'unknown', blockers: [],
+      });
+      const view = buildScopedInventory({ recovery: projected, status: status.payload,
+        pluginSummaries: status.pluginSummaries });
+      expect(view.declaredRoots[0]?.state).toBe('pending');
+      expect(view.syncTargets).toEqual([{ pluginId: 'official/demo', agent: 'cursor', scope }]);
+      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+        loadScopedStatus: vi.fn().mockResolvedValue({ ...projected, nativeSnapshot: recovery(scope).nativeSnapshot }) });
+      await controller.load();
+      controller.push({ name: 'intentInventory', scope,
+        ...(scope === 'project' ? { projectKey: '/tmp/project' } : {}) });
+      const instance = render(<ConsoleAppV4 controller={controller} size={sizes[1]!} />);
+      await tick();
+      expect(checkedFrame(instance, sizes[1]!)).toContain('同步可执行项（1）');
+      instance.unmount();
+    } finally { inspect.mockRestore(); }
+  });
+
+  it('shows incomplete Portable coverage in the scoped inventory', async () => {
+    const current = recovery('project');
+    current.coverage = { native: true, portable: false };
+    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+      loadScopedStatus: vi.fn().mockResolvedValue(current) });
+    await controller.load();
+    controller.push({ name: 'intentInventory', scope: 'project', projectKey: '/tmp/project' });
+    const instance = render(<ConsoleAppV4 controller={controller} size={sizes[0]!} />);
+    await tick();
+    expect(checkedFrame(instance, sizes[0]!)).toContain('通用 Skills 额外安装未完整覆盖');
+    instance.unmount();
+  });
 });

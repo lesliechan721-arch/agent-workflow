@@ -3328,7 +3328,7 @@ async function runRebuildCommandInSession(
       if (checked.omitted) stateInventory.errors = checked.inventory.errors;
       assertWriteInventoryComplete(checked.inventory);
       const requirements = executionInput.requirements;
-      const commandProjectKey = executionInput.context.projectKey ?? executionInput.context.executionCwd;
+      const commandProjectKey = executionInput.context.projectRoot ?? executionInput.context.executionCwd;
       const codexScopePathsAlias = options.commandOptions.scope === 'project' && codexProjectConfigAliasesUserHome(
         options.commandOptions.cwd,
         runtimeEnv,

@@ -409,6 +409,86 @@ export interface PortableResidue {
   blockers: string[];
 }
 
+export interface PortableExtraObservation {
+  pluginId: string;
+  skill: string;
+  agent: PortableAgent;
+  physicalPath: string;
+  observation: 'verified' | 'unknown';
+  content: 'satisfied' | 'drifted';
+}
+
+export interface PortableExtraInspection {
+  targets: PortableExtraObservation[];
+  complete: boolean;
+}
+
+/** Project provider records have source paths that can be verified against AW materialization evidence. */
+export async function inspectPortableExtraInstalled(options: {
+  scope: 'user' | 'project';
+  context: ScopeContext;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}): Promise<PortableExtraInspection> {
+  options = { ...options, env: options.context.env };
+  if (options.scope === 'user') return { targets: [], complete: false };
+  let layout: ReturnType<typeof portableRecoveryLayout>;
+  try { layout = portableRecoveryLayout(options.context); } catch { return { targets: [], complete: false }; }
+  if (layout.scope !== options.scope) return { targets: [], complete: false };
+  let records: InstalledSkillRecord[];
+  try {
+    await observeProviderLock(layout);
+    await probePortableRecoverySkillsCli({ ...options, cwd: layout.cwd });
+    records = await listInstalledSkills({ ...options, cwd: layout.cwd, global: false, timeoutMs: 15_000 });
+  } catch {
+    return { targets: [], complete: false };
+  }
+  const agents: PortableAgent[] = ['codex', 'claude-code', 'cursor'];
+  const recoveryOptions: PortableRecoveryOptions = {
+    ...options, selector: '', cliVersion: '', agents,
+  };
+  const targets: PortableExtraObservation[] = [];
+  let complete = true;
+  for (const record of records) {
+    if (record.scope !== 'project') continue;
+    let recordPath: string | undefined;
+    try { recordPath = await qualifiedRecordPath(recoveryOptions, record.name, record.path); }
+    catch { complete = false; continue; }
+    if (!recordPath) { complete = false; continue; }
+    let old: HistoricalPortableMaterialization | undefined;
+    try { old = await oldMaterialization(recoveryOptions, record.source); } catch { old = undefined; }
+    if (!old) {
+      const source = typeof record.source === 'string' && path.isAbsolute(record.source) ? record.source : undefined;
+      if (!source) complete = false;
+      else {
+        const relative = path.relative(options.context.generationRoot, source);
+        if (relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))) {
+          complete = false;
+        }
+      }
+      continue;
+    }
+    const candidate = old.marker.selectedSkills.find((entry) => entry.name === record.name);
+    if (!candidate) { complete = false; continue; }
+    const associated = agents.filter((agent) => record.agents.some((entry) => agentName(entry) === agent));
+    if (associated.length === 0) { complete = false; continue; }
+    for (const agent of associated) {
+      const physicalPath = targetPath(recoveryOptions, agent, record.name);
+      try {
+        if (!await outputPathExists(physicalPath)) { complete = false; continue; }
+        const installedDigest = await portableSkillTreeDigest(physicalPath);
+        const content = installedDigest === candidate.filesDigest ? 'satisfied' : 'drifted';
+        const key = `${candidate.providerPluginId}\0${agent}\0${physicalPath}`;
+        if (!targets.some((target) => `${target.pluginId}\0${target.agent}\0${target.physicalPath}` === key)) {
+          targets.push({ pluginId: candidate.providerPluginId, skill: record.name, agent, physicalPath,
+            observation: content === 'satisfied' ? 'verified' : 'unknown', content });
+        }
+      } catch { complete = false; }
+    }
+  }
+  return { targets, complete };
+}
+
 /** Inspect only current provider records and their bounded scope sources, without current Catalog inputs. */
 export async function inspectPortableResidue(options: {
   scope: 'user' | 'project';
@@ -420,12 +500,13 @@ export async function inspectPortableResidue(options: {
 }): Promise<PortableResidue> {
   options = { ...options, env: options.context.env };
   const unknown = (): PortableResidue => ({ state: 'unknown', targets: [], blockers: ['portableObservationFailed'] });
-  let layout: ReturnType<typeof portableRecoveryLayout>;
-  try { layout = portableRecoveryLayout(options.context); } catch { return unknown(); }
-  if (layout.scope !== options.scope) return unknown();
-  const rootKey = path.join(layout.generationRoot, portableJsonDigest(options.selector).slice(7));
+  const rootKey = path.join(options.context.generationRoot, portableJsonDigest(options.selector).slice(7));
   let hasRootEvidence: boolean;
   try { hasRootEvidence = await assertPortablePath(path.parse(rootKey).root, rootKey); } catch { return unknown(); }
+  let layout: ReturnType<typeof portableRecoveryLayout>;
+  try { layout = portableRecoveryLayout(options.context); }
+  catch { return hasRootEvidence ? unknown() : { state: 'absent', targets: [], blockers: [] }; }
+  if (layout.scope !== options.scope) return hasRootEvidence ? unknown() : { state: 'absent', targets: [], blockers: [] };
   let records: InstalledSkillRecord[];
   try {
     await observeProviderLock(layout);

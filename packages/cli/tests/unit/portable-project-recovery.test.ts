@@ -4,10 +4,13 @@ import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createScopeContext } from '../../src/intent/scope-context.js';
+import { removeRoot } from '../../src/intent/intent-store.js';
 import { writeAwSourceBinding } from '../../src/review/source-binding.js';
 import { portableJsonDigest, portableSkillTreeDigest } from '../../src/portable/historical-materialization.js';
-import { executePortableRecovery, inspectPortableRecovery, inspectPortableResidue, preparePortableRecovery } from '../../src/portable/recovery.js';
+import { executePortableRecovery, inspectPortableExtraInstalled, inspectPortableRecovery, inspectPortableResidue, preparePortableRecovery } from '../../src/portable/recovery.js';
+import { readRecoveryStatus } from '../../src/recovery/status.js';
 import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
+import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const state = vi.hoisted(() => ({ content: 'first', extraFile: '', builds: 0 }));
@@ -82,6 +85,62 @@ async function addCalls(log: string) {
 beforeEach(() => { state.content = 'first'; state.extraFile = ''; state.builds = 0; });
 
 describe('project Portable recovery', () => {
+  it('reports Project Portable extras from verified provider source evidence', async () => {
+    const fixtureValue = await fixture();
+    const options = { ...fixtureValue, agents: [...fixtureValue.agents] };
+    await withAwHomeMutationLock({ env: options.env, action: async (token) => {
+      expect((await executePortableRecovery({ prepared: await preparePortableRecovery(options), token })).execution)
+        .toBe('applied');
+    } });
+    const observed = await inspectPortableExtraInstalled({
+      scope: 'project', context: options.context, env: options.env,
+    });
+    expect(observed.complete).toBe(true);
+    expect(observed.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/root', skill: 'alpha', agent: 'codex',
+        observation: 'verified', content: 'satisfied' }),
+      expect.objectContaining({ pluginId: 'team/root', skill: 'alpha', agent: 'cursor',
+        observation: 'verified', content: 'satisfied' }),
+    ]));
+    const intentLocation = { scope: 'project' as const, cwd: options.cwd, env: options.env };
+    await writeIntentFixture(intentLocation, { roots: [{ pluginId: 'team/root' }], agents: ['cursor'] });
+    await removeRoot(intentLocation, 'team/root');
+    const status = await readRecoveryStatus({ ...intentLocation, nativeObservations: [] });
+    expect(status.inventory).toEqual([]);
+    expect(status.coverage).toEqual({ native: true, portable: true });
+    expect(status.extraObserved).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/root', agent: 'cursor', scope: 'project',
+        delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor' },
+        observation: 'verified', content: 'satisfied' }),
+    ]));
+    const missingProviderEnv = { ...options.env, PATH: '' };
+    const missingProviderContext = await createScopeContext({
+      scope: 'project', cwd: options.cwd, env: missingProviderEnv,
+    });
+    expect(await inspectPortableExtraInstalled({
+      scope: 'project', context: missingProviderContext, env: missingProviderEnv,
+    })).toEqual({ targets: [], complete: false });
+    expect((await readRecoveryStatus({
+      scope: 'project', cwd: options.cwd, env: missingProviderEnv, nativeObservations: [],
+    })).coverage).toEqual({ native: true, portable: false });
+  });
+
+  it('does not turn unsupported User Portable observation into residue without AW evidence', async () => {
+    const fixtureValue = await fixture();
+    const userContext = await createScopeContext({ scope: 'user', cwd: fixtureValue.cwd, env: fixtureValue.env });
+    try {
+      const unsupported = { ...userContext,
+        env: { ...userContext.env, HOME: path.join(fixtureValue.cwd, 'different-home') } };
+      const options = { scope: 'user' as const, context: unsupported, selector: 'team/root',
+        env: unsupported.env, agents: ['codex' as const] };
+      expect(await inspectPortableResidue(options)).toEqual({ state: 'absent', targets: [], blockers: [] });
+      await fs.ensureDir(path.join(userContext.generationRoot, portableJsonDigest('team/root').slice(7)));
+      expect(await inspectPortableResidue(options)).toEqual({
+        state: 'unknown', targets: [], blockers: ['portableObservationFailed'],
+      });
+    } finally { await userContext.dispose(); }
+  });
+
   it('ignores a verified Claude-only residue for Codex selection but retains unknown associations', async () => {
     const fixtureValue = await fixture();
     const options = { ...fixtureValue, agents: ['claude-code' as const] };

@@ -3,7 +3,7 @@ import { selectAgents, type AgentId } from '../intent/deployment-preferences.js'
 import { createScopeContext, type ScopeContext } from '../intent/scope-context.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { statusCommandV8, flattenStatusTargets, type StatusScopedTarget } from '../commands/status-v6.js';
-import { inspectPortableRecovery } from '../portable/recovery.js';
+import { inspectPortableExtraInstalled, inspectPortableRecovery } from '../portable/recovery.js';
 import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
 import type { RecoveryDiagnostic, RecoveryReceipt, RecoveryTarget } from './receipt.js';
 
@@ -71,6 +71,7 @@ export async function statusFromObservations(options: ReadRecoveryStatusOptions 
   demand: DemandSnapshot; context: ScopeContext; nativeObservations: NativeObservation[];
   extraObserved?: RecoveryStatus['extraObserved'];
   nativeReadErrors?: RecoveryDiagnostic[];
+  portableCoverage?: boolean;
 }): Promise<RecoveryStatus> {
   const { demand } = options;
   const errors = [...demand.errors, ...(options.nativeReadErrors ?? [])];
@@ -160,7 +161,8 @@ export async function statusFromObservations(options: ReadRecoveryStatusOptions 
   const allSatisfied = definiteFailure ? false : uncertain ? null : true;
   return { schemaVersion: 1, kind: 'aw-recovery-status', scope: options.scope, ok: errors.length === 0,
     intent: { state: demand.intent.state, ...('digest' in demand.intent ? { digest: demand.intent.digest } : {}) },
-    selection, inventory, extraObserved: options.extraObserved ?? [], coverage: { native: true, portable: true },
+    selection, inventory, extraObserved: options.extraObserved ?? [],
+    coverage: { native: true, portable: options.portableCoverage ?? true },
     counts, allSatisfied, errors };
 }
 
@@ -211,7 +213,7 @@ export async function readRecoveryStatus(options: ReadRecoveryStatusOptions & {
     const key = (entry: RecoveryStatus['extraObserved'][number]) =>
       `${entry.pluginId}\0${entry.agent ?? ''}\0${entry.scope}`;
     const placedKeys = new Set(placed.map(key));
-    const extraObserved = [
+    const nativeExtraObserved = [
       ...owned.filter((entry) => !placedKeys.has(key(entry))),
       ...placed.map((entry) => {
         const references = owned.filter((candidate) => key(candidate) === key(entry))
@@ -220,8 +222,19 @@ export async function readRecoveryStatus(options: ReadRecoveryStatusOptions & {
           ownerReferences: references } } : entry;
       }),
     ];
+    const portableExtra = await inspectPortableExtraInstalled({
+      scope: options.scope, context, env: context.env,
+    });
+    const portableObserved: RecoveryStatus['extraObserved'] = portableExtra.targets
+      .filter((entry) => !roots.has(entry.pluginId))
+      .map((entry) => ({ pluginId: entry.pluginId, agent: entry.agent, scope: options.scope,
+        delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: entry.agent },
+        observation: entry.observation, content: entry.content,
+        backend: { skill: entry.skill } }));
+    const extraObserved = [...nativeExtraObserved, ...portableObserved];
     return statusFromObservations({ ...options, context, demand,
       nativeObservations: options.nativeObservations ?? native!.nativeObservations, extraObserved,
+      portableCoverage: portableExtra.complete,
       nativeReadErrors: native?.payload.errors.filter((error) => NATIVE_READ_ERRORS.has(error.code))
         .map((error) => diagnostic(error.code)) });
   } finally { await context.dispose(); }

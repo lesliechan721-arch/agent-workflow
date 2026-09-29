@@ -18,7 +18,7 @@ import { readDemand, demandNativeProjection } from '../../src/recovery/demand.js
 import { readRecoveryStatus } from '../../src/recovery/status.js';
 import { createScopeContext } from '../../src/intent/scope-context.js';
 import { observePreferences, resolvePreferencesPath, writePreferences, createEmptyPreferences } from '../../src/intent/deployment-preferences.js';
-import { addRoot, observeIntent, resolveIntentPath } from '../../src/intent/intent-store.js';
+import { addRoot, observeIntent, removeRoot, resolveIntentPath } from '../../src/intent/intent-store.js';
 import { portableJsonDigest } from '../../src/portable/historical-materialization.js';
 import { normalizeInstallCommandOptions } from '../../src/commands/options.js';
 import {
@@ -8118,7 +8118,7 @@ describe('five namespaced write commands', () => {
     })).resolves.toMatchObject({ exists: true, values: { mode: 'preserved' } });
   });
 
-  it('blocks removal of a dependency with a known live consumer', async () => {
+  it('blocks removal of a dependency after its known live consumer demand is removed', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-removal-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
@@ -8137,6 +8137,9 @@ describe('five namespaced write commands', () => {
     await expect(installFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await removeRoot({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }, 'team/root');
+    await expect(readIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }))
+      .resolves.toMatchObject({ roots: [] });
     const blocked = await uninstallWriteCommand(['team/leaf'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);

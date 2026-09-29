@@ -4376,7 +4376,9 @@ export function ConsoleAppV4(props: {
         ? '清单尚未添加插件。' : inventory?.declarationState === 'invalid'
           ? '无法确认需求清单；请查看详情并修正。' : !inventory ? '正在检查清单。'
             : inventory.selectedAgents.length === 0 && inventory.declaredRoots.length > 0
-              ? `已有 ${inventory.declaredRoots.length} 项需求；本机工具未设置。` : undefined;
+              ? `已有 ${inventory.declaredRoots.length} 项需求；本机工具未设置。`
+              : inventory.coverage?.portable === false
+                ? '通用 Skills 额外安装未完整覆盖；不会猜测无法关联的归属。' : undefined;
     actions = roots.map((root) => ({
       actionId: `inventory-root:${root.pluginId}`, pluginId: root.pluginId, label: root.displayName,
       run: () => go({ name: 'pluginDetail', pluginId: root.pluginId }),
@@ -4460,6 +4462,7 @@ export function ConsoleAppV4(props: {
         `范围：${route.scope === 'user' ? '个人' : '当前项目'}`,
         `需求清单：${inventory?.declarationState ?? '未检查'}`,
         `本机偏好：${inventory?.preferenceState ?? '未检查'}`,
+        ...(inventory?.coverage?.portable === false ? ['通用 Skills 覆盖：未完整覆盖'] : []),
         ...(inventory?.errors.map((error) => `原因：${safeDiagnosticCode(error.code, 'inventoryUnavailable')}`) ?? []),
         ...(snapshot.scopedInventoryRefresh[route.scope]?.state === 'error'
           ? [`上次快照已过期：${safeDiagnosticCode(snapshot.scopedInventoryRefresh[route.scope]?.errorCode, 'inventoryRefreshFailed')}`] : []),

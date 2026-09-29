@@ -54,6 +54,7 @@ export interface ScopedInventoryViewModel {
   counts: Record<InventoryState, number>;
   errors: Array<{ code: string; message: string }>;
   allSatisfied: boolean | null;
+  coverage?: { native: boolean; portable: boolean };
 }
 
 export interface RecoveryInventoryInput {
@@ -69,6 +70,7 @@ export interface RecoveryInventoryInput {
   }> | null;
   errors: Array<{ code: string; message: string }>;
   allSatisfied: boolean | null;
+  coverage?: { native: boolean; portable: boolean };
   extraObserved?: Array<{
     pluginId: string; agent: string | null; scope: Scope;
     delivery: RecoveryTarget['delivery']; observation: RecoveryTarget['observation'];
@@ -98,9 +100,9 @@ export function hasStatusInstallationEvidence(target: StatusScopedTarget): boole
 function targetState(target: RecoveryTarget): InventoryState {
   if (target.blockers.length) return canPreparePortable(target) ? 'pending' : 'blocked';
   if (target.content === 'conflict') return 'blocked';
-  if (target.observation === 'unknown' || target.content === 'unknown') return 'unknown';
   if (target.observation === 'missing' || target.content === 'absent'
     || target.content === 'drifted') return 'pending';
+  if (target.observation === 'unknown' || target.content === 'unknown') return 'unknown';
   return 'ready';
 }
 
@@ -241,8 +243,8 @@ export function buildScopedInventory(options: {
       continue;
     }
     const state: InventoryState = target.content === 'conflict' ? 'blocked'
-      : target.observation === 'unknown' || target.content === 'unknown' ? 'unknown'
-        : target.observation === 'missing' ? 'pending' : 'ready';
+      : target.observation === 'missing' || target.content === 'absent' || target.content === 'drifted' ? 'pending'
+        : target.observation === 'unknown' || target.content === 'unknown' ? 'unknown' : 'ready';
     const platform = target.delivery?.kind === 'native' ? target.delivery.platform
       : target.agent === 'claude-code' ? 'claude' : 'codex';
     extras.set(target.pluginId, [...(extras.get(target.pluginId) ?? []), {
@@ -285,5 +287,6 @@ export function buildScopedInventory(options: {
     selectedAgents: recovery.selection.agents,
     declaredRoots: sortedRoots(declaredRoots), extraInstalledRoots: sortedRoots(extraInstalledRoots),
     syncTargets, counts, errors: recovery.errors, allSatisfied: recovery.allSatisfied,
+    ...(recovery.coverage ? { coverage: recovery.coverage } : {}),
   };
 }

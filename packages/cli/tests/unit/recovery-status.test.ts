@@ -32,6 +32,12 @@ describe('recovery status satisfaction', () => {
     expect(unselected.allSatisfied).toBeNull();
   });
 
+  it('reports incomplete Portable coverage when extra installation observation is unavailable', async () => {
+    const status = await statusFromObservations({ scope: 'user', cwd: '/tmp/aw-status', context,
+      demand: demand([], []), nativeObservations: [], portableCoverage: false });
+    expect(status.coverage).toEqual({ native: true, portable: false });
+  });
+
   it('keeps a known missing target false when another target is unknown', async () => {
     const observations: NativeObservation[] = [
       { pluginId: 'local/one', platform: 'claude', content: 'absent', blockers: [] },
