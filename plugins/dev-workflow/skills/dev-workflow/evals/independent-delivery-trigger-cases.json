@@ -24,7 +24,7 @@
         "boundary"
       ],
       "input": {
-        "query": "按开发工作流把需求从当前共识推进到交付，帮我决定各阶段该做什么。",
+        "query": "$dev-workflow 把需求从当前共识推进到交付，帮我决定各阶段该做什么。",
         "expectedLoad": true
       },
       "audit": {
@@ -45,7 +45,7 @@
       },
       "audit": {
         "rationale": "区分本能力的明确用户结果与相邻意图。",
-        "minimalCounterexample": "按开发工作流把需求从当前共识推进到交付，帮我决定各阶段该做什么。",
+        "minimalCounterexample": "$dev-workflow 把需求从当前共识推进到交付，帮我决定各阶段该做什么。",
         "allowedVariance": "仅观测当前能力是否加载；不推断完整任务是否执行或禁止合理后续辅助能力。"
       }
     }

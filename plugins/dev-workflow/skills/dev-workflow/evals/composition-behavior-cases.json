@@ -4,6 +4,7 @@
     "kind": "conversation",
     "unitUnderTest": "dev-workflow",
     "participants": [
+      "dev-repair",
       "dev-spec",
       "dev-review-spec",
       "dev-implement",
@@ -34,12 +35,13 @@
         "representative",
         "prototype-to-spec-handoff"
       ],
-      "prompt": "使用 dev-workflow 处理名为 approval-layout 的任务。仓库没有开发文档目录约定，我也不指定路径。先做一个可点击原型让我比较单栏和双栏；我反馈后，把稳定结论整理成轻量 Spec。不要修改 src/approval-page.ts，也不要进入生产实现。本任务需要跨会话维护当前 Shape。",
+      "prompt": "使用 $dev-workflow 处理名为 approval-layout 的任务。仓库没有开发文档目录约定，我也不指定路径。先做一个可点击原型让我比较单栏和双栏；我反馈后，把稳定结论整理成轻量 Spec。不要修改 src/approval-page.ts，也不要进入生产实现。本任务需要跨会话维护当前 Shape。",
       "assertions": [
         "trace 先由 dev-workflow 进入 dev-design，再由 Design 使用 decision-shape 和按需 decision-prototype；用户反馈并归一当前决定后才进入 dev-spec。",
         "过程资料与完整Spec采用本地 .dev-workflows/approval-layout/，向Prototype提供该主题下的具体位置；活动Spec的必要原型与接受范围保持可达，不强制创建永久完整设计。",
         "Spec 保留用户确认的设计关系、接受范围与允许变化，并提供可访问的原型依据和实现自由；不要求固定标题。",
-        "不加载 dev-implement，不修改 src/approval-page.ts，也不把原型升级为生产实现"
+        "不加载 dev-implement，不修改 src/approval-page.ts，也不把原型升级为生产实现",
+        "当前Spec及相关原型记录能恢复真实确认来源、接受范围与开放问题，不强制创建task.md或提前的work.md。"
       ],
       "input": {
         "scriptedReplies": [
@@ -56,20 +58,13 @@
         }
       },
       "expected": {
-        "output": "Design取得真实原型反馈，在本地task.md保留确认与未决，将完整双栏行为写入本地Spec；生产页面不变，必要原型保留供后续实施。",
+        "output": "Design取得真实原型反馈，在本地Spec或相关原型记录中保留确认来源与开放问题，将完整双栏行为写入Spec；生产页面不变，必要原型保留供后续实施，不默认创建Task或Work。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           ".gitignore",
           ".dev-workflows/approval-layout/**"
         ],
         "artifacts": [
-          {
-            "path": ".dev-workflows/approval-layout/task.md",
-            "exists": true,
-            "contains": [
-              "双栏"
-            ]
-          },
           {
             "path": ".dev-workflows/approval-layout/spec.md",
             "exists": true,
@@ -89,7 +84,7 @@
         "representative",
         "assured-approval-gate"
       ],
-      "prompt": "使用 dev-workflow 处理名为 token-key-rotation 的生产数据迁移。已确认决定在 docs/token-key-rotation-decisions.md。仓库没有开发文档目录约定；请在项目设计位置维护当前规范，并将独立审查记录保存到默认本地任务目录的 spec-review.md。审查覆盖充分且无未关闭实质问题后向我请求批准，但不要在批准前修改 src/token-store.js。",
+      "prompt": "使用 $dev-workflow 处理名为 token-key-rotation 的生产数据迁移。已确认决定在 docs/token-key-rotation-decisions.md。仓库没有开发文档目录约定；请在项目设计位置维护当前规范，并将独立审查记录保存到默认本地任务目录的 spec-review.md。审查覆盖充分且无未关闭实质问题后向我请求批准，但不要在批准前修改 src/token-store.js。",
       "assertions": [
         "依据生产迁移的实际风险保留授权、回滚与验证要求，停在必要的规格确认阶段，不因代码量小跳过保障",
         "Spec 包含双读窗口、分批迁移、回滚、验证和生产授权边界",
@@ -145,10 +140,10 @@
         "boundary",
         "review-repair-stop"
       ],
-      "prompt": "使用 dev-workflow 继续 docs/dev/invite-expiry/。请先判断当前是否需要我决定，不要自动修改文件。",
+      "prompt": "使用 $dev-workflow 继续 docs/dev/invite-expiry/。请先判断当前是否需要我决定，不要自动修改文件。",
       "assertions": [
         "trace 只使用 dev-workflow 判断当前状态，不加载 dev-build、dev-implement 或 dev-review-code；本次请求没有新的自动修复授权",
-        "不读取 review-repair.md；根据当前 blocked Review 和无新授权进入用户检查点",
+        "依据当前 blocked Review、已耗尽的一轮授权和用户停止点进入用户检查点；不启动新的修复批次，方法切换不刷新预算。",
         "向用户说明最新 blocker、关闭条件和需要重新决定的动作；没有新授权时停止",
         "用户选择停止后不修改 Spec、Review 或产品代码",
         "新版未指定预算默认三轮，不扩大旧的一轮授权，也不解除原有人类停止点"
@@ -195,7 +190,7 @@
         "regression",
         "route-visibility"
       ],
-      "prompt": "使用 dev-workflow 判断这个任务的下一阶段。Shape 已完整，没有 Spec。只说明路由结果和理由；不要修改工作区。本任务需要正式规格和用户批准。",
+      "prompt": "使用 $dev-workflow 判断这个任务的下一阶段。Shape 已完整，没有 Spec。只说明路由结果和理由；不要修改工作区。本任务需要正式规格和用户批准。",
       "assertions": [
         "说明当前最早未满足的 gate 和主要依据",
         "说明下一能力、接下来会发生什么以及用户是否需要参与",

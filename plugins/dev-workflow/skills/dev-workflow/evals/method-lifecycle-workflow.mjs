@@ -186,8 +186,10 @@ export async function gradeLifecycleWorkflow(input) {
     evidence.skillLoads?.some((entry) => entry.skill === skill) ? 'pass' : 'unknown', `Engine skill-load evidence for ${skill}.`));
   const local = selected.id === 'shape-grill-before-material-answer' ? ['.dev-workflows/export/spec.md']
     : selected.id === 'prototype-answer-and-new-question' ? ['.dev-workflows/form/prototype/artifact/index.html', '.dev-workflows/form/prototype/verdict.md']
-      : ['.dev-workflows/selection/spec.md', '.dev-workflows/selection/task.md'];
-  for (const file of local) {
+      : ['.dev-workflows/selection/spec.md'];
+  // Existing local sources must survive; new designs need no generic task record.
+  const retainedSources = Object.keys(selected.input.workspaceFiles).filter((file) => file.startsWith('.dev-workflows/'));
+  for (const file of new Set([...local, ...retainedSources])) {
     try {
       const content = await regularText(input.paths.workspace, file);
       checks.push(check(`artifact:${file}`, content.trim() ? 'pass' : 'fail', 'Actual local artifact remains readable.'));

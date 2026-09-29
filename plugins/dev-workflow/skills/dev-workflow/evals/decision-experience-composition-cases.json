@@ -30,7 +30,7 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "使用 dev-workflow 设计并实现新的批量导入功能。没有 Shape、Spec 或验收；我只说希望尽快上线，但不能产生不可恢复的数据错误。请开始。本轮只展示共享方向和第一个材料问题，不写文件。",
+      "prompt": "使用 $dev-workflow 设计并实现新的批量导入功能。没有 Shape、Spec 或验收；我只说希望尽快上线，但不能产生不可恢复的数据错误。请开始。本轮只展示共享方向和第一个材料问题，不写文件。",
       "assertions": [
         "明确当前实现请求尚未 implementation-ready，本轮不进入 Spec、实现或文件修改",
         "用户在回答第一个材料问题前或同轮看见 provisional 共享方向，并知道可以修正该方向",
@@ -68,7 +68,7 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "使用 dev-workflow 继续 approval-layout。Prototype Review 已在网页中提交 accepted；读取 session-results/approval-layout-wait.json 及其 feedback，更新当前 Shape 后停止。不要重新运行 start 或 wait，不要要求我另发“已完成”，也不要写 Spec。",
+      "prompt": "使用 $dev-workflow 继续 approval-layout。Prototype Review 已在网页中提交 accepted；读取 session-results/approval-layout-wait.json 及其 feedback，更新当前 Shape 后停止。不要重新运行 start 或 wait，不要要求我另发“已完成”，也不要写 Spec。",
       "assertions": [
         "识别当前最早未满足 gate 仍是 Shape，并通过 decision-shape 消费 Prototype 结果",
         "核对 submitted receipt、feedback 和 prototype 的 ID/revision 一致",

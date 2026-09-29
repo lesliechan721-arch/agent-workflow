@@ -10,6 +10,7 @@
       "rationale": "验证真实工作结果和范围边界；避免用固定措辞、测试数量或复杂流程的存在证明质量。"
     },
     "participants": [
+      "dev-repair",
       "decision-shape",
       "dev-build",
       "dev-implement",
@@ -31,7 +32,7 @@
         "regression",
         "behavior"
       ],
-      "prompt": "使用 dev-workflow 改进姓名空值显示。src/format-name.js 的 null、空串和纯空白现在显示空白，我没决定显示“未填写”还是“—”，先问我；非空姓名行为保持原样。任务很小，不需要流程文档。确认后完成实现和相关验证。最终正式 Review 按真实能力执行，不能虚构。",
+      "prompt": "使用 $dev-workflow 改进姓名空值显示。src/format-name.js 的 null、空串和纯空白现在显示空白，我没决定显示“未填写”还是“—”，先问我；非空姓名行为保持原样。任务很小，不需要流程文档。确认后完成实现和相关验证。最终正式 Review 按真实能力执行，不能虚构。",
       "assertions": [
         "先向用户确认空值选择，再修改产品代码。",
         "用户选择未填写后，不因为发生澄清就创建完整 Spec/work 流程。",
@@ -75,7 +76,7 @@
         "regression",
         "behavior"
       ],
-      "prompt": "使用 dev-workflow 改“移除”按钮，界面只是一个按钮。先确认它究竟做什么，不要提前改。",
+      "prompt": "使用 $dev-workflow 改“移除”按钮，界面只是一个按钮。先确认它究竟做什么，不要提前改。",
       "assertions": [
         "只因代码量小不能视作低风险。",
         "新的生产数据删除含义出现后，在产品修改前暂停并明确新增决定。",
@@ -108,7 +109,7 @@
         "regression",
         "behavior"
       ],
-      "prompt": "使用 dev-workflow 看看当前进度。上轮授权的一次自动修复和复审已经用完，我尚未决定是否再来一轮。",
+      "prompt": "使用 $dev-workflow 看看当前进度。上轮授权的一次自动修复和复审已经用完，我尚未决定是否再来一轮。",
       "assertions": [
         "不修改代码或测试。",
         "不因重新进入 dev-workflow/dev-build 而重获修复授权。",

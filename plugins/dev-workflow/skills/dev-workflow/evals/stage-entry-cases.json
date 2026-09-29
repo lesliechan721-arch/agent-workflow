@@ -10,6 +10,7 @@
       "rationale": "同时检验决定保真、人审完整、阶段前置和独立交接；不用长度、标题、等级词或加载次数代替质量。"
     },
     "participants": [
+      "dev-repair",
       "dev-spec",
       "dev-build",
       "dev-implement"
@@ -31,7 +32,7 @@
         "boundary"
       ],
       "input": {
-        "query": "使用开发工作流从需求到交付完成这个功能，已有资料请先恢复。",
+        "query": "$dev-workflow 从需求到交付完成这个功能，已有资料请先恢复。",
         "expectedLoad": true
       },
       "audit": {
@@ -63,7 +64,7 @@
         "boundary"
       ],
       "input": {
-        "query": "使用 dev-workflow 完成这一处已明确小改动及必要核验。",
+        "query": "使用 $dev-workflow 完成这一处已明确小改动及必要核验。",
         "expectedLoad": true
       },
       "audit": {
