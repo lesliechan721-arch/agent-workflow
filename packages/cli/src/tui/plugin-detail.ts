@@ -11,14 +11,16 @@ import {
   type StatusV8PluginSummary,
   type StatusV8State,
 } from '../commands/status-v6.js';
-import { platformLabel, scopeLabel } from './glossary.js';
+import { agentLabel, platformLabel, scopeLabel } from './glossary.js';
 import { hasActualScopeEvidence, type PluginDependencyOverviewViewModel,
   type PluginListItemViewModel } from './model.js';
 import type { InventoryState as ProjectInventoryState,
   InventoryRoot, ScopedInventoryViewModel, ScopedInventoryLoadResult } from './scoped-inventory.js';
 
 export interface PluginDetailPlacement {
-  platform: PlatformName;
+  platform?: PlatformName;
+  agent?: AgentId;
+  delivery?: 'native' | 'agent-skills';
   scope: Scope;
   platformLabel: string;
   scopeLabel: string;
@@ -31,6 +33,15 @@ export interface PluginDetailPlacement {
   expectedVersion?: string;
   installedVersion?: string;
   reasonCodes: string[];
+}
+
+function agentForPlatform(platform: PlatformName): AgentId {
+  return platform === 'claude' ? 'claude-code' : 'codex';
+}
+
+function placementIdentity(placement: Pick<PluginDetailPlacement,
+  'platform' | 'agent' | 'delivery' | 'scope'>): string {
+  return [placement.agent ?? '', placement.delivery ?? '', placement.platform ?? '', placement.scope].join('\0');
 }
 
 export interface PluginDetailRelation {
@@ -191,14 +202,20 @@ export function buildPluginDetailSubject(options: {
       .filter((item) => item.scope === scope && item.pluginId === pluginId))
     .map((item) => [`${item.platform}\0${item.scope}`, item.revision]));
   const placements = new Map<string, PluginDetailPlacement>();
-  const ensure = (platform: PlatformName, scope: Scope): PluginDetailPlacement => {
-    const key = `${platform}\0${scope}`;
+  const ensure = (identity: { platform?: PlatformName; agent?: AgentId;
+    delivery?: 'native' | 'agent-skills' }, scope: Scope): PluginDetailPlacement => {
+    const resolvedAgent = identity.agent ?? (identity.platform ? agentForPlatform(identity.platform) : undefined);
+    const resolvedDelivery = identity.delivery ?? (identity.platform ? 'native' : undefined);
+    const key = placementIdentity({ ...identity, agent: resolvedAgent, delivery: resolvedDelivery, scope });
     const current = placements.get(key);
     if (current) return current;
     const placement: PluginDetailPlacement = {
-      platform,
+      ...identity,
+      ...(resolvedAgent ? { agent: resolvedAgent } : {}),
+      ...(resolvedDelivery ? { delivery: resolvedDelivery } : {}),
       scope,
-      platformLabel: platformLabel(platform),
+      platformLabel: identity.platform ? platformLabel(identity.platform)
+        : resolvedAgent ? agentLabel(resolvedAgent) : '目标',
       scopeLabel: scopeLabel(scope),
       observation: 'unknown',
       declared: false,
@@ -213,7 +230,8 @@ export function buildPluginDetailSubject(options: {
     const intent = statusTargetIntent(target);
     const actual = hasActualScopeEvidence(target);
     if (target.state === 'absent' && !actual && !intent.scopes.includes(target.scope)) continue;
-    const placement = ensure(target.platform, target.scope);
+    const placement = ensure({ platform: target.platform, agent: agentForPlatform(target.platform),
+      delivery: 'native' }, target.scope);
     const unobserved = statusTargetSharedNative(target)?.state === 'unobserved'
       || statusTargetActivation(target)?.evidence === 'unobserved'
       || statusTargetOwnershipState(target) === 'error';
@@ -228,7 +246,10 @@ export function buildPluginDetailSubject(options: {
   }
   for (const root of roots) {
     for (const target of root.targets) {
-      const placement = ensure(target.platform, target.scope);
+      if (target.delivery === 'agent-skills' && target.state === 'pending') continue;
+      const placement = ensure({ ...(target.platform ? { platform: target.platform } : {}),
+        ...(target.agent ? { agent: target.agent } : {}),
+        ...(target.delivery ? { delivery: target.delivery } : {}) }, target.scope);
       placement.projectState = target.state;
       if (target.state === 'unknown' || target.state === 'blocked') {
         placement.observation = 'unknown';
@@ -237,25 +258,28 @@ export function buildPluginDetailSubject(options: {
       placement.declared ||= root.section === 'declared';
       placement.sharedWithCurrentProject ||= target.location === 'sharedUser';
       placement.reasonCodes = [...new Set([...placement.reasonCodes, ...target.reasonCodes])];
-      const revision = revisions.get(`${target.platform}\0${target.scope}`);
+      const revision = target.platform ? revisions.get(`${target.platform}\0${target.scope}`) : undefined;
       if (revision?.installedVersion) placement.installedVersion = revision.installedVersion;
     }
   }
   for (const dependency of dependencies) {
     for (const target of dependency.targets) {
-      const key = `${target.platform}\0${target.scope}`;
+      if (target.delivery === 'agent-skills' && target.state === 'pending') continue;
+      const key = target.platform ? `${target.platform}\0${target.scope}` : undefined;
       // A later direct scope observation takes precedence over an older shared dependency check.
       if (target.location === 'sharedUser' && options.latestScope === target.scope
         && options.scopedSnapshots?.[target.scope]) continue;
-      const placement = ensure(target.platform, target.scope);
+      const placement = ensure({ ...(target.platform ? { platform: target.platform } : {}),
+        ...(target.agent ? { agent: target.agent } : {}),
+        ...(target.delivery ? { delivery: target.delivery } : {}) }, target.scope);
       placement.projectState = target.state;
       placement.sharedWithCurrentProject ||= target.location === 'sharedUser';
       placement.reasonCodes = [...new Set([...placement.reasonCodes, ...target.reasonCodes])];
-      if (!targets.some((entry) => entry.platform === target.platform && entry.scope === target.scope)) {
+      if (!target.platform || !targets.some((entry) => entry.platform === target.platform && entry.scope === target.scope)) {
         placement.observation = target.state === 'ready' ? 'known' : 'unknown';
         if (target.installedVersion) placement.installedVersion = target.installedVersion;
       } else {
-        const revision = revisions.get(key);
+        const revision = key ? revisions.get(key) : undefined;
         if (revision?.installedVersion) placement.installedVersion = revision.installedVersion;
       }
     }
@@ -288,7 +312,7 @@ export function buildPluginDetailSubject(options: {
       project: declarationFact(options.scopedInventories?.project, pluginId),
     },
     placements: [...placements.values()].sort((left, right) =>
-      `${left.platform}\0${left.scope}`.localeCompare(`${right.platform}\0${right.scope}`, 'en')),
+      placementIdentity(left).localeCompare(placementIdentity(right), 'en')),
     relations: {
       outgoing,
       incoming,

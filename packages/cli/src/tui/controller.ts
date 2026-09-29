@@ -856,6 +856,7 @@ export interface TuiControllerDependencies {
   signal: AbortSignal) => Promise<ScopedTuiPlan>;
   executeScopedTask?: (plan: ScopedTuiPlan) => Promise<
     { kind: 'recovery'; receipt: RecoveryReceipt }
+    | { kind: 'recoveryReview'; plan: ScopedTuiPlan }
     | { kind: 'targets'; changed: boolean; agents: AgentId[] }
   >;
   loadPluginContent?: (pluginId: string, signal: AbortSignal) => Promise<PluginContentOverview>;
@@ -1594,6 +1595,7 @@ export class TuiController {
   #scopedExecuted = new WeakSet<ScopedTuiPlan>();
   #scopedTaskInflight?: { plan: ScopedTuiPlan; promise: Promise<
     { kind: 'recovery'; receipt: RecoveryReceipt }
+    | { kind: 'recoveryReview'; plan: ScopedTuiPlan }
     | { kind: 'targets'; changed: boolean; agents: AgentId[] }
   > };
   #loadError?: { code: string; message: string };

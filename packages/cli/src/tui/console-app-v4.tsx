@@ -202,7 +202,7 @@ type ScopedUiFlow =
   | { stage: 'timeout'; scope: Scope; request: ScopedRecoveryRequest; focus: number }
   | { stage: 'progress'; scope: Scope; plan: ScopedTuiPlan; focus: number }
   | { stage: 'result'; scope: Scope; plan?: ScopedTuiPlan; receipt?: RecoveryReceipt;
-      changed?: boolean; errorCode?: string; focus: number };
+      request?: ScopedTaskRequest; changed?: boolean; errorCode?: string; focus: number };
 
 function scopedRiskReasons(plan: ScopedTuiPlan): string[] {
   if (plan.kind === 'targets' || plan.kind === 'intent') return [];
@@ -215,6 +215,13 @@ function scopedRiskReasons(plan: ScopedTuiPlan): string[] {
     (group.preview.codexReconcilePlans ?? []).filter((entry) => entry.review.requiresConfirmation)
       .map((entry) => entry.review.sharedImpact.warning
         ?? '本次共享原生内容变更可能影响其他使用位置。'));
+  for (const refresh of plan.plan.sourceRefreshes ?? []) {
+    if (!refresh.impact.inventoryComplete) {
+      reasons.push(`${refresh.sourceId} 的来源影响清单不完整；必须明确确认来源变更。`);
+    } else if (refresh.impact.affectedReferences.length > 0) {
+      reasons.push(`${refresh.sourceId} 的来源变更会影响 ${refresh.impact.affectedReferences.length} 个已知引用。`);
+    }
+  }
   if (plan.plan.command === 'cleanup' && plan.plan.options.force) {
     reasons.push('本次受限强制清理只删除已确认的专属目标；依赖此插件的其它目标可能需要恢复。');
   }
@@ -238,6 +245,10 @@ function scopedPlanText(plan: ScopedTuiPlan): string {
   ].join('\n');
   const { receipt } = plan.plan;
   const impact = plan.plan.plannedImpact;
+  const diagnostics = [...new Map([
+    ...receipt.errors.map((entry) => [`${entry.code}:${entry.message}`, `全局错误：${entry.code} · ${entry.message}`] as const),
+    ...receipt.blockers.map((entry) => [`${entry.code}:${entry.message}`, `全局受阻：${entry.code} · ${entry.message}`] as const),
+  ]).values()];
   return [
     `范围：${plan.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
     `完整请求：${receipt.requestedRoots.join('、') || '无'}`,
@@ -250,6 +261,7 @@ function scopedPlanText(plan: ScopedTuiPlan): string {
     `输出变更（计划）：${impact.outputs ? '执行所列精确目标' : '无可执行输出变更'}`,
     ...receipt.targetResults.map((target) => `${target.pluginId} · ${agentLabel(target.agent)} [${target.scope === 'user' ? '个人' : '当前项目'}] · ${target.delivery?.kind === 'native' ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '不支持'} · ${target.blockers.length
       ? `受阻：${target.blockers.map((blocker) => blocker.code).join('、')}` : target.observation}`),
+    ...diagnostics,
     ...plan.plan.changes.map((change) => `影响：${change}`),
     ...plan.plan.warnings.map((warning) => `注意：${warning}`),
     ...(plan.kind === 'retire' ? [`配置删除选项：${plan.plan.options.deleteConfig
@@ -258,6 +270,12 @@ function scopedPlanText(plan: ScopedTuiPlan): string {
 }
 
 function scopedResultText(receipt: RecoveryReceipt): string {
+  const diagnostics = [...new Map([
+    ...receipt.errors.map((entry) => [`${entry.code}:${entry.message}`, `全局错误：${entry.code} · ${entry.message}`] as const),
+    ...receipt.blockers.map((entry) => [`${entry.code}:${entry.message}`, `全局受阻：${entry.code} · ${entry.message}`] as const),
+  ]).values()];
+  const reviewStale = [...receipt.blockers, ...receipt.errors]
+    .some((entry) => entry.code === 'operationReviewStale');
   return [
     `范围：${receipt.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
     `完整请求：${receipt.requestedRoots.join('、') || '无'}`,
@@ -265,6 +283,8 @@ function scopedResultText(receipt: RecoveryReceipt): string {
     `偏好变更：${receipt.preferencesChanged ? '是' : '无'}`,
     `配置变更：${receipt.configChanged ? '是' : '无'}`,
     `输出可能改变：${receipt.outputsMayHaveChanged ? '是' : '否'}`,
+    ...diagnostics,
+    ...(reviewStale ? ['本次未执行，需要重新准备。'] : []),
     ...receipt.targetResults.map((target) => `${target.pluginId} · ${agentLabel(target.agent)} [${target.scope === 'user' ? '个人' : '当前项目'}] · ${target.delivery?.kind === 'native' ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '无交付'} · ${target.execution} · ${target.observation}${target.blockers.length ? ` · 受阻 ${target.blockers.map((blocker) => blocker.code).join('、')}` : ''}`),
     ...receipt.targetResults.flatMap((target) => target.recoveryActions?.map((action) =>
       `${target.pluginId} · ${target.agent}：${action}`) ?? []),
@@ -1424,7 +1444,8 @@ function dependencyEvidenceLines(
 ): string[] {
   const references = row.edge?.availablePlacementReferences ?? [];
   const placementLines = subject?.placements.map((placement) =>
-    `安装位置 · ${platformLabel(placement.platform)} · ${scopeLabel(placement.scope)} · 实际安装版本 ${placement.installedVersion ?? '未确认'} · 观察 ${placement.observation === 'unknown' ? '未确认' : '已检查'}`) ?? [];
+    `安装位置 · ${placement.agent ? agentLabel(placement.agent)
+      : placement.platform ? platformLabel(placement.platform) : '目标'}${placement.delivery ? ` · ${placement.delivery === 'native' ? '原生' : 'Skills'}` : ''} · ${scopeLabel(placement.scope)} · 实际安装版本 ${placement.installedVersion ?? '未确认'} · 观察 ${placement.observation === 'unknown' ? '未确认' : '已检查'}`) ?? [];
   const referenceLines = (reference: typeof references[number]): string[] => [
     `consumer · ${reference.consumer.pluginId}`,
     `consumer · platform=${platformLabel(reference.consumer.platform)} · scope=${reference.consumer.scope}`,
@@ -2721,6 +2742,8 @@ export function ConsoleAppV4(props: {
     if (scopedFlowBusy.current) return;
     scopedFlowBusy.current = true;
     const token = ++scopedFlowToken.current;
+    const request = scopedFlow?.stage === 'review' || scopedFlow?.stage === 'risk'
+      ? scopedFlow.request : undefined;
     const batchOwner = batchDraft && (route.name === 'batchSelection' || route.name === 'batchPlacement'
       || route.name === 'batchInstallScope' || route.name === 'batchInstallPlatforms'
       || route.name === 'pluginWriteTask' && route.batchOrigin?.flowId === batchDraft.flowId);
@@ -2730,7 +2753,20 @@ export function ConsoleAppV4(props: {
     void props.controller.executeScopedTask(plan).then((outcome) => {
       if (scopedFlowToken.current !== token) return;
       scopedFlowBusy.current = false;
+      if (outcome.kind === 'recoveryReview') {
+        const nextRequest = request?.kind === 'recovery'
+          ? { ...request, refresh: false } : request;
+        if (!nextRequest) {
+          setScopedFlow({ stage: 'result', scope: plan.scope,
+            errorCode: 'recoveryReprepareFailed', focus: 0 });
+          return;
+        }
+        setScopedFlow({ stage: 'review', scope: plan.scope,
+          request: nextRequest, plan: outcome.plan, focus: 0 });
+        return;
+      }
       setScopedFlow({ stage: 'result', scope: plan.scope, plan,
+        ...(request ? { request } : {}),
         ...(outcome.kind === 'recovery' ? { receipt: outcome.receipt } : { changed: outcome.changed }),
         focus: 0 });
       if (batchOwner && outcome.kind === 'recovery' && outcome.receipt.ok
@@ -2746,6 +2782,7 @@ export function ConsoleAppV4(props: {
       if (scopedFlowToken.current !== token) return;
       scopedFlowBusy.current = false;
       setScopedFlow({ stage: 'result', scope: plan.scope, plan,
+        ...(request ? { request } : {}),
         errorCode: safeDiagnosticCode(error instanceof Error ? error.message : undefined,
           'recoveryFailed'), focus: 0 });
     });
@@ -4322,12 +4359,18 @@ export function ConsoleAppV4(props: {
       const unknownTargets = flow.receipt?.targetResults.filter((target) =>
         target.observation === 'unknown'
         && !retryKeys.has(`${target.pluginId}\0${target.agent}`)) ?? [];
+      const reviewStale = flow.receipt
+        ? [...flow.receipt.blockers, ...flow.receipt.errors]
+          .some((entry) => entry.code === 'operationReviewStale')
+        : false;
       actions = [
         { label: route.name === 'issueDetail' ? '返回问题详情'
           : route.name === 'pluginWriteTask' ? '返回插件任务'
             : route.name === 'pluginDetail' ? '返回插件详情'
               : route.name === 'intentInventory' ? '返回当前清单'
                 : '返回插件列表', run: closeScopedFlow },
+        ...(reviewStale && flow.request ? [{ label: '重新准备本次操作', run: () =>
+          beginScopedTask(flow.request!) }] : []),
         ...(flow.plan?.kind === 'targets' ? [{ label: '立即同步', run: () => beginScopedTask({
           kind: 'recovery', scope: flow.scope, selectors: [],
         }) }] : []),
@@ -4391,7 +4434,13 @@ export function ConsoleAppV4(props: {
     bottomActions = [
       { actionId: 'inventory-sync-all', label: `同步可执行项（${new Set(inventory?.syncTargets.map((target) => target.pluginId)).size}）`,
         disabled: !inventory?.syncTargets.length ? '当前没有可执行目标' : undefined,
-        run: () => beginScopedTask({ kind: 'recovery', scope: route.scope, selectors: [] }) },
+        run: () => {
+          const syncTargets = inventory?.syncTargets ?? [];
+          beginScopedTask({ kind: 'recovery', scope: route.scope,
+            selectors: [...new Set(syncTargets.map((target) => target.pluginId))],
+            targets: [...new Set(syncTargets.map((target) => target.agent))],
+            exactTargets: syncTargets.map(({ pluginId, agent }) => ({ pluginId, agent })) });
+        } },
       ...(selectedIds.length ? [{ actionId: 'inventory-sync-selected', label: `同步所选插件（${selectedIds.length}）`,
         run: () => beginScopedTask({ kind: 'recovery', scope: route.scope, selectors: selectedIds }) }] : []),
       ...(section === 'declared' && activeRoot
@@ -6697,8 +6746,8 @@ export function ConsoleAppV4(props: {
       candidate.pluginId === plugin.pluginId && candidate.platform === route.platform
       && candidate.scope === platformSelectedScope) : undefined;
     const factActions: ActionItem[] = platformFacts.map((entry) => ({
-      actionId: `placement:${entry.platform}:${entry.scope}`,
-      label: `${platformLabel(entry.platform)} · ${scopeLabel(entry.scope)}`,
+      actionId: `placement:${route.platform}:${entry.scope}`,
+      label: `${platformLabel(route.platform)} · ${scopeLabel(entry.scope)}`,
       selected: entry.scope === platformSelectedScope,
       run: () => {
         props.controller.updatePageContext({

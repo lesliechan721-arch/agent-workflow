@@ -30,6 +30,21 @@ function assertWidth(frame: string, columns: number): void {
 }
 
 describe('entity cards in the real Ink renderer', () => {
+  it('renders Native and Portable Agent placements without converting Cursor into Codex', () => {
+    const data = subject({ placements: [{
+      platform: 'codex', agent: 'codex', delivery: 'native', scope: 'user',
+      platformLabel: 'Codex', scopeLabel: '所有项目', statusState: 'ready', observation: 'known',
+      declared: true, actual: true, sharedWithCurrentProject: false, reasonCodes: [],
+    }, {
+      agent: 'cursor', delivery: 'agent-skills', scope: 'user', platformLabel: 'Cursor',
+      scopeLabel: '所有项目', statusState: 'ready', observation: 'known', declared: true, actual: true,
+      sharedWithCurrentProject: false, reasonCodes: [],
+    }] });
+    const frame = render(<PluginDetailCard subject={data} width={80} />).lastFrame() ?? '';
+    expect(frame.replace(/ +/gu, ' ')).toContain('Codex [所有项目]');
+    expect(frame.replace(/ +/gu, ' ')).toContain('Cursor [所有项目]');
+  });
+
   it.each([60, 80])('keeps separate position and version facts at %i columns', (width) => {
     const data = subject({ placements: [{
       platform: 'codex', scope: 'user', platformLabel: 'Codex', scopeLabel: '所有项目',

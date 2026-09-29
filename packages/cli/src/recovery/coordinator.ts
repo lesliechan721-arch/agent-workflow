@@ -1,6 +1,13 @@
 import path from 'node:path';
 
-import type { InstallCommandOptions, PlatformName, Scope } from '../types.js';
+import type {
+  CatalogGenerationActiveV1,
+  CatalogGenerationCandidateEvidence,
+  CatalogSourceImpact,
+  InstallCommandOptions,
+  PlatformName,
+  Scope,
+} from '../types.js';
 import type { CliPrompt } from '../commands/runtime.js';
 import { runRebuildCommand, type RebuildCommandResult, type RebuildCommandRuntime } from '../commands/rebuild-command.js';
 import { buildRebuildReceiptJson } from '../output/command-receipt.js';
@@ -10,7 +17,16 @@ import { getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { portableRecoveryLayout } from '../portable/recovery-layout.js';
 import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
-import { syncCatalogSourceGeneration } from '../utils/catalog-generation-service.js';
+import {
+  activateCatalogSourceGeneration,
+  probeCatalogSourceGeneration,
+} from '../utils/catalog-generation-service.js';
+import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
+import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
+import {
+  calculateCatalogSourceImpactDigest,
+  inspectCatalogSourceImpact,
+} from '../utils/catalog-source-impact.js';
 import {
   preparePortableRecovery,
   inspectPortableRecovery,
@@ -63,6 +79,14 @@ interface Footprint {
   sharedNative?: boolean;
   nativeGroup?: number;
 }
+export interface RecoverySourceRefresh {
+  sourceId: string;
+  candidate: CatalogGenerationCandidateEvidence;
+  previousActive: CatalogGenerationActiveV1 | null;
+  configDigest: string;
+  impact: CatalogSourceImpact;
+  impactDigest: string;
+}
 export interface RecoveryPlan {
   command: RecoveryCommand;
   options: RecoveryOptions;
@@ -80,6 +104,8 @@ export interface RecoveryPlan {
   portableGroups: PortablePreparation[];
   runtime: RebuildCommandRuntime;
   portableResidues: Array<{ pluginId: string; agents: AgentId[]; observation: PortableResidue }>;
+  sourceRefreshes: RecoverySourceRefresh[];
+  sourceRefreshFailures: Array<{ sourceId: string; code: string }>;
   blockExecution: boolean;
 }
 
@@ -92,6 +118,7 @@ function diagnostic(code: string): RecoveryDiagnostic {
     syncSelectionRequired: '请指定插件或使用 --all。',
     invalidExactTargets: '精确重试目标不属于当前请求，请重新检查并选择。',
     sourceRefreshFailed: '来源刷新失败，此来源的插件未恢复。',
+    sourceRefreshConfirmationRequired: '来源更新必须先单独确认，再重新准备插件恢复。',
     artifactCollision: '多个交付占用相同输出位置，请先处理冲突。',
     'backend-action-unsupported': '此后端尚不支持安全移除，请检查精确的 Portable 输出。',
   };
@@ -363,17 +390,42 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
   options = { ...options, cwd: context.executionCwd, env: context.env };
   let demand = await readDemand(options);
   const refreshFailures = new Map<string, string>();
+  const sourceRefreshes: RecoverySourceRefresh[] = [];
   if (options.refresh && command === 'sync') {
     let selected: string[] = [];
     try { selected = selectRoots(demand, selectors, options.all ?? false); }
     catch { /* Selection below reports the invalid request without refreshing any source. */ }
-    for (const sourceId of new Set(selected.map((id) => parsePluginId(id).sourceId!))) {
-      try { await syncCatalogSourceGeneration({ sourceId, env: options.env,
-        cwd: options.cwd, impactConfirmed: options.yes === true, cliVersion: options.cliVersion,
-        runtime: runtime.catalogGenerationRuntime }); }
-      catch (error) { refreshFailures.set(sourceId, errorCode(error, 'sourceRefreshFailed')); }
+    if (selected.length > 0) {
+      const config = await readCatalogSourcesConfigSnapshot(options.env);
+      const generationState = await readCatalogGenerationState(options.env);
+      for (const sourceId of new Set(selected.map((id) => parsePluginId(id).sourceId!))) {
+        try {
+          const source = config.config.sources.find((entry) => entry.id === sourceId);
+          const probe = await probeCatalogSourceGeneration({ sourceId, env: options.env,
+            cliVersion: options.cliVersion, runtime: runtime.catalogGenerationRuntime });
+          const previousActive = generationState.sources[sourceId]?.active ?? null;
+          const candidateChanged = !previousActive
+            || previousActive.sourceConfigFingerprint !== probe.candidate.sourceConfigFingerprint
+            || previousActive.sourceIdentity !== probe.candidate.sourceIdentity
+            || previousActive.logicalIdentity !== probe.candidate.logicalIdentity
+            || previousActive.requestedRef !== probe.candidate.requestedRef
+            || previousActive.manifestDigest !== probe.candidate.manifestDigest
+            || previousActive.snapshotDigest !== probe.candidate.snapshotDigest
+            || previousActive.resolvedCommit !== probe.candidate.resolvedCommit;
+          if (!candidateChanged) continue;
+          const inspectImpact = runtime.catalogGenerationRuntime?.inspectSourceImpact
+            ?? inspectCatalogSourceImpact;
+          const impact = await inspectImpact({ sourceId, cwd: options.cwd, env: options.env,
+            sourcePrimary: source?.primary === true, mode: 'generation', candidateManifest: probe.manifest });
+          sourceRefreshes.push({ sourceId, candidate: probe.candidate, previousActive,
+            configDigest: config.digest, impact, impactDigest: calculateCatalogSourceImpactDigest(impact) });
+        }
+        catch (error) {
+          const code = errorCode(error, 'catalogGenerationRefreshFailed');
+          refreshFailures.set(sourceId, code.startsWith('catalog') ? code : 'catalogGenerationRefreshFailed');
+        }
+      }
     }
-    demand = await readDemand(options);
   }
   const originalIntent = intentEvidence(demand.intent);
   const proposed = command === 'install'
@@ -396,7 +448,9 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
   const plan: RecoveryPlan = { command, options, receipt, demand, context, originalIntent,
     plannedImpact: { declaration: proposed?.changed === true, preferences: false, config: false, outputs: false },
     preferencesEvidence: preferenceEvidence(demand), changes: [], warnings: [],
-    nativeGroups: [], portableGroups: [], runtime, portableResidues: [], blockExecution: false,
+    nativeGroups: [], portableGroups: [], runtime, portableResidues: [], sourceRefreshes,
+    sourceRefreshFailures: [...refreshFailures].map(([sourceId, code]) => ({ sourceId, code })),
+    blockExecution: false,
     ...(proposed?.state && proposed.errors.length === 0 ? { declaration: proposed.roots } : {}),
   };
   if (proposed?.changed) plan.changes.push(`保存 ${options.scope} 插件需求：${proposed.roots.join('、')}。`);
@@ -450,6 +504,17 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
     }
   }
   if (plan.blockExecution) return { ...plan, receipt: completeReceipt(receipt) };
+  if (sourceRefreshes.length > 0) {
+    for (const refresh of sourceRefreshes) {
+      plan.changes.push(`刷新 Catalog 来源 ${refresh.sourceId}，确认后激活已检查的候选 generation。`);
+      if (!refresh.impact.inventoryComplete) {
+        plan.warnings.push(`${refresh.sourceId}：来源影响清单不完整，需要明确确认。`);
+      } else if (refresh.impact.affectedReferences.length > 0) {
+        plan.warnings.push(`${refresh.sourceId}：来源更新会影响 ${refresh.impact.affectedReferences.length} 个已知引用，需要明确确认。`);
+      }
+    }
+    return { ...plan, receipt: completeReceipt(receipt) };
+  }
   const groups = new Map<string, { platform: PlatformName; pluginIds: string[] }>();
   for (const target of receipt.targetResults) {
     if (target.blockers.length || target.delivery?.kind !== 'native') continue;
@@ -541,8 +606,78 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
   }
 }
 
+export async function activateRecoverySourcesAndReprepare(
+  plan: RecoveryPlan,
+  execution: { runtime?: RebuildCommandRuntime } = {},
+): Promise<RecoveryPlan> {
+  if (plan.sourceRefreshes.length === 0) return plan;
+  const runtime = { ...plan.runtime, ...execution.runtime };
+  const failures = new Map(plan.sourceRefreshFailures.map(({ sourceId, code }) => [sourceId, code]));
+  try {
+    for (const refresh of plan.sourceRefreshes) {
+      try {
+        await activateCatalogSourceGeneration({
+          sourceId: refresh.sourceId,
+          cliVersion: plan.options.cliVersion,
+          cwd: plan.options.cwd,
+          env: plan.options.env,
+          impactConfirmed: true,
+          expectedImpactDigest: refresh.impactDigest,
+          expectedCandidate: refresh.candidate,
+          expectedActive: refresh.previousActive,
+          expectedConfigDigest: refresh.configDigest,
+          runtime: runtime.catalogGenerationRuntime,
+        });
+      } catch (error) {
+        const code = errorCode(error, 'catalogGenerationRefreshFailed');
+        failures.set(refresh.sourceId, code.startsWith('catalog') ? code : 'catalogGenerationRefreshFailed');
+      }
+    }
+    const failedSourceIds = new Set(failures.keys());
+    const originalExactTargets = plan.options.exactTargets
+      ?? plan.receipt.targetResults.map(({ pluginId, agent }) => ({ pluginId, agent }));
+    const exactTargets = failures.size > 0
+      ? originalExactTargets.filter((target) =>
+        !failedSourceIds.has(parsePluginId(target.pluginId).sourceId!))
+      : plan.options.exactTargets;
+    const next = await prepareRecovery(plan.command, plan.receipt.requestedRoots, {
+      ...plan.options,
+      all: false,
+      refresh: false,
+      ...(exactTargets ? { exactTargets } : {}),
+    }, runtime);
+    if (failures.size === 0) return next;
+    if (exactTargets?.length === 0) {
+      next.receipt.blockers = next.receipt.blockers.filter((entry) => entry.code !== 'invalidExactTargets');
+      next.blockExecution = true;
+    }
+    for (const [sourceId, code] of failures) {
+      next.receipt.blockers.push({ code, message: `${sourceId}：${diagnostic('sourceRefreshFailed').message}` });
+    }
+    for (const target of plan.receipt.targetResults) {
+      const sourceId = parsePluginId(target.pluginId).sourceId!;
+      const code = failures.get(sourceId);
+      if (!code || next.receipt.targetResults.some((entry) =>
+        entry.pluginId === target.pluginId && entry.agent === target.agent)) continue;
+      const failed = structuredClone(target);
+      block(failed, code);
+      next.receipt.targetResults.push(failed);
+    }
+    next.receipt = completeReceipt(next.receipt);
+    return next;
+  } finally {
+    await plan.context.dispose();
+  }
+}
+
 export async function executeRecovery(plan: RecoveryPlan,
   execution: { yes?: boolean; runtime?: RebuildCommandRuntime } = {}): Promise<RecoveryReceipt> {
+  if (plan.sourceRefreshes.length > 0) {
+    const receipt = structuredClone(plan.receipt);
+    receipt.blockers.push(diagnostic('sourceRefreshConfirmationRequired'));
+    await plan.context.dispose();
+    return completeReceipt(receipt);
+  }
   const receipt = structuredClone(plan.receipt);
   plan = { ...plan, receipt, options: { ...plan.options, yes: execution.yes ?? plan.options.yes },
     runtime: { ...plan.runtime, ...execution.runtime } };
@@ -704,7 +839,28 @@ export async function executeRecovery(plan: RecoveryPlan,
 
 export async function runRecovery(command: RecoveryCommand, selectors: readonly string[],
   options: RecoveryOptions, runtime: RebuildCommandRuntime = {}): Promise<RecoveryReceipt> {
-  const plan = await prepareRecovery(command, selectors, options, runtime);
+  let plan = await prepareRecovery(command, selectors, options, runtime);
+  if (plan.sourceRefreshes.length > 0) {
+    if (options.yes !== true) {
+      if (!options.interactive || !options.prompt?.confirm) {
+        plan.receipt.blockers.push(diagnostic('sourceRefreshConfirmationRequired'));
+        await plan.context.dispose();
+        return completeReceipt(plan.receipt);
+      }
+      const response = await options.prompt.confirm({ defaultValue: false, message: [
+        `先更新来源：${plan.sourceRefreshes.map((entry) => entry.sourceId).join('、')}。`,
+        ...plan.changes,
+        ...plan.warnings,
+        '确认后只激活已检查的来源候选；随后会基于新的 Active 重新准备插件恢复，并再次确认。',
+      ].join('\n') });
+      if (response.cancelled || response.value !== true) {
+        plan.receipt.blockers.push(diagnostic('operationCancelled'));
+        await plan.context.dispose();
+        return completeReceipt(plan.receipt);
+      }
+    }
+    plan = await activateRecoverySourcesAndReprepare(plan, { runtime });
+  }
   if (options.interactive && options.yes !== true && options.prompt?.confirm
     && (plan.declaration || plan.receipt.targetResults.some((target) => target.blockers.length === 0))) {
     const response = await options.prompt.confirm({ defaultValue: false, message: [

@@ -80,9 +80,13 @@ const projectStates: Record<ProjectInventoryState, { label: string; status: TuiS
   ready: { label: '可用', status: 'success', symbol: '✓' },
 };
 
-export type EntityPlacementFact = Pick<PluginDetailPlacement, 'platform' | 'scope' | 'observation'
+export type EntityPlacementFact = Pick<PluginDetailPlacement, 'platform' | 'agent' | 'delivery' | 'scope' | 'observation'
   | 'statusState' | 'projectState' | 'declared' | 'actual' | 'installedVersion' | 'expectedVersion'>
   & { shared: boolean };
+
+function placementIdentity(fact: Pick<EntityPlacementFact, 'platform' | 'agent' | 'delivery' | 'scope'>): string {
+  return [fact.agent ?? '', fact.delivery ?? '', fact.platform ?? '', fact.scope].join(':');
+}
 
 function placementHealth(fact: EntityPlacementFact) {
   if (fact.projectState === 'blocked' || fact.statusState === 'blocked') return projectStates.blocked;
@@ -101,8 +105,10 @@ function placementHealth(fact: EntityPlacementFact) {
 
 function placementFields(fact: EntityPlacementFact): CardCell[] {
   const health = placementHealth(fact);
+  const identity = fact.agent ? agentLabel(fact.agent)
+    : fact.platform ? platformLabel(fact.platform) : '目标';
   return [
-    { text: platformLabel(fact.platform), role: 'platform' },
+    { text: identity, role: 'platform' },
     muted(`[${scopeLabel(fact.scope)}]`),
     ...(fact.shared ? [muted('[共用个人安装]')] : []),
     ...(fact.declared && !fact.actual
@@ -117,7 +123,7 @@ function fromProjectTarget(
   declared = false,
 ): EntityPlacementFact {
   return {
-    platform: target.platform, scope: target.scope,
+    platform: target.platform, agent: target.agent, delivery: target.delivery, scope: target.scope,
     shared: target.location === 'sharedUser',
     declared: detail?.declared ?? declared,
     actual: detail?.actual ?? false,
@@ -175,7 +181,7 @@ function pluginFacts(subject: PluginDetailSubject, width: number) {
     }
   }
   for (const placement of subject.placements) {
-    const key = `placement:${placement.platform}:${placement.scope}`;
+    const key = `placement:${placementIdentity(placement)}`;
     addFields(lines, sections, key, width,
       placementFields({ ...placement, shared: placement.sharedWithCurrentProject }));
     if (placement.declared && placement.expectedVersion) {
@@ -230,9 +236,10 @@ function projectFacts(root: ProjectInventoryRoot, subject: PluginDetailSubject, 
           ? statusCell('未选择', 'warning', '!') : statusCell('目标未确认', 'muted', '?')]);
     }
     for (const target of root.targets) {
-      const detail = subject.placements.find((placement) =>
-        placement.platform === target.platform && placement.scope === target.scope);
-      addFields(lines, sections, `placement:${target.platform}:${target.scope}`, width,
+      const detail = subject.placements.find((placement) => placement.scope === target.scope
+        && (target.agent ? placement.agent === target.agent : placement.platform === target.platform)
+        && (target.delivery ? placement.delivery === target.delivery : true));
+      addFields(lines, sections, `placement:${placementIdentity(fromProjectTarget(target, detail, true))}`, width,
         placementFields(fromProjectTarget(target, detail, true)));
     }
     for (const dependency of root.dependencies) {
@@ -240,15 +247,16 @@ function projectFacts(root: ProjectInventoryRoot, subject: PluginDetailSubject, 
       addFields(lines, sections, `dependency:${dependency.pluginId}`, width,
         [muted('依赖'), plain(dependency.displayName)]);
       for (const target of dependency.targets) addFields(lines, sections,
-        `dependency:${dependency.pluginId}:${target.platform}:${target.scope}`,
+        `dependency:${dependency.pluginId}:${placementIdentity(fromProjectTarget(target))}`,
         width, placementFields(fromProjectTarget(target)));
     }
     return { lines, sections };
   }
   for (const target of root.targets) {
-    const detail = subject.placements.find((placement) =>
-      placement.platform === target.platform && placement.scope === target.scope);
-    addFields(lines, sections, `placement:${target.platform}:${target.scope}`, width,
+    const detail = subject.placements.find((placement) => placement.scope === target.scope
+      && (target.agent ? placement.agent === target.agent : placement.platform === target.platform)
+      && (target.delivery ? placement.delivery === target.delivery : true));
+    addFields(lines, sections, `placement:${placementIdentity(fromProjectTarget(target, detail, root.section === 'declared'))}`, width,
       placementFields(fromProjectTarget(target, detail, root.section === 'declared')));
   }
   if (root.targets.length === 0) {
@@ -261,7 +269,7 @@ function projectFacts(root: ProjectInventoryRoot, subject: PluginDetailSubject, 
       [muted('依赖'), plain(dependency.displayName)]);
     for (const target of dependency.targets) {
       addFields(lines, sections,
-        `dependency:${dependency.pluginId}:${target.platform}:${target.scope}`,
+        `dependency:${dependency.pluginId}:${placementIdentity(fromProjectTarget(target))}`,
         width, placementFields(fromProjectTarget(target)));
     }
   }

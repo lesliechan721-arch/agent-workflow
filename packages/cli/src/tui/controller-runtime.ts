@@ -46,7 +46,11 @@ import {
 } from '../utils/plugin-config.js';
 import { assertProjectSharedConfigPathVisible } from '../utils/project-boundary.js';
 import { readRecoveryStatus } from '../recovery/status.js';
-import { prepareRecovery, executeRecovery } from '../recovery/coordinator.js';
+import {
+  activateRecoverySourcesAndReprepare,
+  prepareRecovery,
+  executeRecovery,
+} from '../recovery/coordinator.js';
 import { prepareRetire, executeRetire } from '../recovery/retirement.js';
 import { prepareTargetsPlan, executeTargetsPlan, prepareIntentPlan, executeIntentPlan } from './scoped-flow.js';
 import {
@@ -1961,6 +1965,10 @@ export function createTuiControllerDependencies(
       if (plan.kind === 'retire') {
         const receipt = await executeRetire(plan.plan, { yes: true, runtime: context });
         return { kind: 'recovery', receipt };
+      }
+      if ((plan.plan.sourceRefreshes?.length ?? 0) > 0) {
+        const refreshed = await activateRecoverySourcesAndReprepare(plan.plan, { runtime: context });
+        return { kind: 'recoveryReview', plan: { kind: 'recovery', scope: plan.scope, plan: refreshed } };
       }
       const receipt = await executeRecovery(plan.plan, { yes: true, runtime: context });
       return { kind: 'recovery', receipt };

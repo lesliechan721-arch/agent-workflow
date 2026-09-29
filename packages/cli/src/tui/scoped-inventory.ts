@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import type { PlatformName, Scope } from '../types.js';
+import type { AgentId } from '../intent/deployment-preferences.js';
 import { flattenStatusTargets, statusTargetActivation, statusTargetIntent,
   statusTargetOwnershipState, statusTargetSharedNative, type StatusScopedTarget,
   type StatusTargetRevision, type StatusV8Payload, type StatusV8PluginSummary } from '../commands/status-v6.js';
@@ -10,14 +11,14 @@ import { hasActualScopeEvidence, type PluginDependencyOverviewViewModel } from '
 export type InventoryState = 'blocked' | 'unknown' | 'pending' | 'ready';
 
 export interface InventoryTarget {
-  platform: PlatformName;
+  platform?: PlatformName;
   scope: Scope;
   location: 'scope' | 'sharedUser';
   state: InventoryState;
   expectedVersion?: string;
   installedVersion?: string;
   reasonCodes: string[];
-  agent?: string;
+  agent?: AgentId;
   delivery?: 'native' | 'agent-skills';
 }
 
@@ -47,10 +48,10 @@ export interface ScopedInventoryViewModel {
   projectName?: string;
   declarationState: 'ready' | 'absent' | 'invalid' | 'unavailable' | 'notProject';
   preferenceState: string;
-  selectedAgents: string[];
+  selectedAgents: AgentId[];
   declaredRoots: InventoryRoot[];
   extraInstalledRoots: InventoryRoot[];
-  syncTargets: Array<{ pluginId: string; agent: string; scope: Scope }>;
+  syncTargets: Array<{ pluginId: string; agent: AgentId; scope: Scope }>;
   counts: Record<InventoryState, number>;
   errors: Array<{ code: string; message: string }>;
   allSatisfied: boolean | null;
@@ -60,7 +61,7 @@ export interface ScopedInventoryViewModel {
 export interface RecoveryInventoryInput {
   scope: Scope;
   intent: { state: string };
-  selection: { agents: string[]; preferences: string };
+  selection: { agents: AgentId[]; preferences: string };
   inventory: Array<{
     pluginId: string;
     source: string;
@@ -72,7 +73,7 @@ export interface RecoveryInventoryInput {
   allSatisfied: boolean | null;
   coverage?: { native: boolean; portable: boolean };
   extraObserved?: Array<{
-    pluginId: string; agent: string | null; scope: Scope;
+    pluginId: string; agent: AgentId | null; scope: Scope;
     delivery: RecoveryTarget['delivery']; observation: RecoveryTarget['observation'];
     content?: RecoveryTarget['content']; backend?: unknown;
   }>;
@@ -90,6 +91,14 @@ export interface ScopedInventoryLoadResult extends RecoveryInventoryInput {
 const stateOrder: Record<InventoryState, number> = {
   blocked: 0, unknown: 1, pending: 2, ready: 3,
 };
+
+function agentForPlatform(platform: PlatformName): AgentId {
+  return platform === 'claude' ? 'claude-code' : 'codex';
+}
+
+function targetIdentity(target: Pick<InventoryTarget, 'platform' | 'scope' | 'agent' | 'delivery'>): string {
+  return [target.agent ?? '', target.delivery ?? '', target.platform ?? '', target.scope].join('\0');
+}
 
 export function hasStatusInstallationEvidence(target: StatusScopedTarget): boolean {
   return hasActualScopeEvidence(target)
@@ -159,6 +168,7 @@ export function buildScopedInventory(options: {
     const revision = revisions.get(`${target.pluginId}\0${target.platform}\0${target.scope}`);
     return {
       platform: target.platform, scope: target.scope, location, state: statusState(target),
+      agent: agentForPlatform(target.platform), delivery: 'native',
       ...(revision?.availableVersion ?? target.version
         ? { expectedVersion: revision?.availableVersion ?? target.version } : {}),
       ...(revision?.installedVersion ? { installedVersion: revision.installedVersion } : {}),
@@ -173,21 +183,21 @@ export function buildScopedInventory(options: {
     const nativeTargets = (targetsById.get(root.pluginId) ?? [])
       .filter((target) => target.scope === recovery.scope
         && (statusTargetIntent(target).scopes.includes(recovery.scope) || hasActualScopeEvidence(target)));
-    const nativeRecoveryTargets = root.targetResults.flatMap((target): InventoryTarget[] =>
-      target.delivery?.kind === 'native' ? [{
-        platform: target.delivery.platform, scope: target.scope, location: 'scope',
-        state: targetState(target), reasonCodes: target.blockers.map((blocker) => blocker.code),
-        agent: target.agent, delivery: 'native',
+    const recoveryTargets = root.targetResults.flatMap((target): InventoryTarget[] =>
+      target.delivery ? [{
+        ...(target.delivery.kind === 'native' ? { platform: target.delivery.platform } : {}),
+        scope: target.scope, location: 'scope', state: targetState(target),
+        reasonCodes: target.blockers.map((blocker) => blocker.code),
+        agent: target.agent, delivery: target.delivery.kind,
       }] : []);
     const observedTargets = nativeTargets.map((target) => targetView(target, 'scope'));
-    for (const target of nativeRecoveryTargets) {
-      const current = observedTargets.find((entry) => entry.platform === target.platform
-        && entry.scope === target.scope);
+    for (const target of recoveryTargets) {
+      const current = observedTargets.find((entry) => targetIdentity(entry) === targetIdentity(target));
       if (current) {
         current.state = target.state;
         current.reasonCodes = [...new Set([...current.reasonCodes, ...target.reasonCodes])];
         current.agent = target.agent;
-        current.delivery = 'native';
+        current.delivery = target.delivery;
       } else observedTargets.push(target);
     }
     const overview = options.dependencyOverviews?.find((entry) => entry.pluginId === root.pluginId);
@@ -245,10 +255,9 @@ export function buildScopedInventory(options: {
     const state: InventoryState = target.content === 'conflict' ? 'blocked'
       : target.observation === 'missing' || target.content === 'absent' || target.content === 'drifted' ? 'pending'
         : target.observation === 'unknown' || target.content === 'unknown' ? 'unknown' : 'ready';
-    const platform = target.delivery?.kind === 'native' ? target.delivery.platform
-      : target.agent === 'claude-code' ? 'claude' : 'codex';
     extras.set(target.pluginId, [...(extras.get(target.pluginId) ?? []), {
-      platform, scope: recovery.scope, location: 'scope', state, reasonCodes: [],
+      ...(target.delivery?.kind === 'native' ? { platform: target.delivery.platform } : {}),
+      scope: recovery.scope, location: 'scope', state, reasonCodes: [],
       ...(target.agent ? { agent: target.agent } : {}),
       ...(target.delivery ? { delivery: target.delivery.kind } : {}),
     }]);
@@ -259,7 +268,7 @@ export function buildScopedInventory(options: {
       || statusTargetIntent(target).relation === 'dependency') continue;
     const observed = targetView(target, 'scope');
     const current = extras.get(target.pluginId) ?? [];
-    const index = current.findIndex((entry) => entry.platform === target.platform && entry.scope === target.scope);
+    const index = current.findIndex((entry) => targetIdentity(entry) === targetIdentity(observed));
     if (index < 0) extras.set(target.pluginId, [...current, observed]);
     else extras.set(target.pluginId, current.map((entry, entryIndex) => entryIndex === index
       ? { ...entry, ...observed, state: stateOrder[entry.state] < stateOrder[observed.state] ? entry.state : observed.state,

@@ -9,7 +9,12 @@ vi.mock('../../src/portable/recovery.js', async (importOriginal) => ({
   inspectPortableResidue: portable.inspectResidue,
 }));
 
-import { executeRecovery, prepareRecovery, runRecovery } from '../../src/recovery/coordinator.js';
+import {
+  activateRecoverySourcesAndReprepare,
+  executeRecovery,
+  prepareRecovery,
+  runRecovery,
+} from '../../src/recovery/coordinator.js';
 import { checkRecovery } from '../../src/recovery/status.js';
 import { addRoot, observeIntent } from '../../src/intent/intent-store.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
@@ -19,6 +24,116 @@ import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('scoped sync source refresh', () => {
+  it('keeps Active unchanged during refresh Review and rebuilds the recovery plan after activation', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const env = isolation.env;
+    const sourceRoot = path.join(cwd, 'review-refresh-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'active\n');
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }] },
+    expectedDigest: current.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    const before = (await readCatalogGenerationState(env)).sources.local?.active;
+    if (!before) throw new Error('Missing Active generation in fixture.');
+    await addRoot({ scope: 'user', cwd, env }, 'local/demo', before.logicalIdentity);
+
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'reviewed candidate\n');
+    const manifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    await fs.writeJson(manifestPath, { ...manifest, catalogVersion: '2.0.0' }, { spaces: 2 });
+
+    const plan = await prepareRecovery('sync', ['local/demo'], { scope: 'user', cwd, env,
+      cliVersion: '1.0.0', targets: ['codex'], refresh: true });
+    expect(plan.sourceRefreshes).toHaveLength(1);
+    expect((await readCatalogGenerationState(env)).sources.local?.active).toEqual(before);
+    const reviewedDigest = plan.sourceRefreshes[0]!.candidate.snapshotDigest;
+
+    const rebuilt = await activateRecoverySourcesAndReprepare(plan);
+    const activated = (await readCatalogGenerationState(env)).sources.local?.active;
+    expect(activated?.snapshotDigest).toBe(reviewedDigest);
+    expect(activated?.snapshotDigest).not.toBe(before.snapshotDigest);
+    expect(rebuilt.sourceRefreshes).toEqual([]);
+    expect(rebuilt.demand.catalogOperationContext?.generationSetDigest)
+      .not.toBe(plan.demand.catalogOperationContext?.generationSetDigest);
+    await rebuilt.context.dispose();
+  });
+
+  it('keeps a failed source blocked after another source is activated and the recovery plan is rebuilt', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const env = isolation.env;
+    const freshRoot = path.join(cwd, 'mixed-refresh-fresh');
+    const failedRoot = path.join(cwd, 'mixed-refresh-failed');
+    await createCatalogSnapshotFixture(freshRoot, 'alpha', [], 'active alpha\n');
+    await createCatalogSnapshotFixture(failedRoot, 'beta', [], 'active beta\n');
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [
+      { id: 'fresh', type: 'path', primary: true, path: freshRoot },
+      { id: 'failed', type: 'path', primary: false, path: failedRoot },
+    ] }, expectedDigest: current.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'fresh', cliVersion: '1.0.0', env });
+    await syncCatalogSourceGeneration({ sourceId: 'failed', cliVersion: '1.0.0', env });
+    const state = await readCatalogGenerationState(env);
+    const freshActive = state.sources.fresh?.active;
+    const failedActive = state.sources.failed?.active;
+    if (!freshActive || !failedActive) throw new Error('Missing Active generation in fixture.');
+    await addRoot({ scope: 'user', cwd, env }, 'fresh/alpha', freshActive.logicalIdentity);
+    await addRoot({ scope: 'user', cwd, env }, 'failed/beta', failedActive.logicalIdentity);
+
+    await createCatalogSnapshotFixture(freshRoot, 'alpha', [], 'candidate alpha\n');
+    const manifestPath = path.join(freshRoot, 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    await fs.writeJson(manifestPath, { ...manifest, catalogVersion: '2.0.0' }, { spaces: 2 });
+    await fs.remove(failedRoot);
+
+    const plan = await prepareRecovery('sync', ['fresh/alpha', 'failed/beta'], {
+      scope: 'user', cwd, env, cliVersion: '1.0.0', targets: ['codex'], refresh: true,
+    });
+    expect(plan.sourceRefreshes.map((entry) => entry.sourceId)).toEqual(['fresh']);
+    expect(plan.sourceRefreshFailures).toEqual([
+      { sourceId: 'failed', code: 'catalogGenerationRefreshFailed' },
+    ]);
+
+    const rebuilt = await activateRecoverySourcesAndReprepare(plan);
+    expect((await readCatalogGenerationState(env)).sources.fresh?.active.snapshotDigest)
+      .toBe(plan.sourceRefreshes[0]!.candidate.snapshotDigest);
+    expect(rebuilt.receipt.targetResults.find((target) => target.pluginId === 'failed/beta')?.blockers)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'catalogGenerationRefreshFailed' }),
+      ]));
+    await rebuilt.context.dispose();
+  });
+
+  it('does not activate a refresh without explicit source confirmation', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const env = isolation.env;
+    const sourceRoot = path.join(cwd, 'unconfirmed-refresh-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'active\n');
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }] },
+    expectedDigest: current.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    const before = (await readCatalogGenerationState(env)).sources.local?.active;
+    if (!before) throw new Error('Missing Active generation in fixture.');
+    await addRoot({ scope: 'user', cwd, env }, 'local/demo', before.logicalIdentity);
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'candidate\n');
+    const manifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    await fs.writeJson(manifestPath, { ...manifest, catalogVersion: '2.0.0' }, { spaces: 2 });
+
+    const receipt = await runRecovery('sync', ['local/demo'], { scope: 'user', cwd, env,
+      cliVersion: '1.0.0', targets: ['codex'], refresh: true });
+
+    expect(receipt.blockers).toContainEqual(expect.objectContaining({
+      code: 'sourceRefreshConfirmationRequired',
+    }));
+    expect((await readCatalogGenerationState(env)).sources.local?.active).toEqual(before);
+  });
+
   it('reviews a new install declaration separately from an already saved root', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
