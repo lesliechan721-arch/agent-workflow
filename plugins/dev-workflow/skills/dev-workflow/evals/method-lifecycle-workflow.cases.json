@@ -10,6 +10,7 @@
       "rationale": "以实际用户答案、需求保真、文档生命周期及结果判定；方法加载只说明路由，不单独证明对齐完成。"
     },
     "participants": [
+      "dev-repair",
       "dev-design",
       "decision-shape",
       "decision-grill",
@@ -52,7 +53,6 @@
             "facts.md",
             ".gitignore",
             ".dev-workflows/export/spec.md",
-            ".dev-workflows/export/task.md",
             ".dev-workflows/export/spec-review.md"
           ],
           "interactions": [
@@ -129,7 +129,6 @@
             "README.md",
             ".gitignore",
             ".dev-workflows/selection/spec.md",
-            ".dev-workflows/selection/task.md",
             ".dev-workflows/selection/spec-review.md",
             ".dev-workflows/selection/tickets/select.md"
           ],
@@ -169,13 +168,19 @@
             "id": "c3",
             "description": "不发生未经授权提交或推送；所有任务过程文件未被Git跟踪。",
             "evidenceSource": "实际Git index/tree与工具记录"
+          },
+          {
+            "id": "design-recovery",
+            "description": "当前本地Spec及必要接受或审查记录保留完整要求、实际确认来源、接受范围与开放问题；新上下文能从这些真实资料恢复设计。与Engine实际用户答复和授权核对，草稿或文件自称批准不能代替确认；不要求额外创建task.md或work.md。",
+            "evidenceSource": "真实Spec、必要接受/审查记录、Engine用户答复和新实施上下文的实际读取；缺证据保持unknown"
           }
         ]
       },
       "assertions": [
         "先取得当前真实Spec的用户确认，再取得单独实施授权，授权前不改产品代码。本轮实际生成的完整本地Spec与任务由未继承设计者历史的新实施上下文实际读取，代码满足原始要求而非仅与错误Spec自洽。",
         "最终核验保持两份真实独立判断，文档存本地不构成需永久化的blocker。",
-        "不发生未经授权提交或推送；所有任务过程文件未被Git跟踪。"
+        "不发生未经授权提交或推送；所有任务过程文件未被Git跟踪。",
+        "当前本地Spec及必要接受或审查记录保留完整要求、实际确认来源、接受范围与开放问题；新上下文能从这些真实资料恢复设计。与Engine实际用户答复和授权核对，草稿或文件自称批准不能代替确认；不要求额外创建task.md或work.md。"
       ],
       "audit": {
         "rationale": "本地不入Git仍须完成真实跨上下文交接。",
@@ -210,7 +215,6 @@
           "artifacts": [
             "brief.md",
             ".gitignore",
-            ".dev-workflows/form/task.md",
             ".dev-workflows/form/prototype/brief.md",
             ".dev-workflows/form/prototype/prototype.json",
             ".dev-workflows/form/prototype/artifact/index.html",

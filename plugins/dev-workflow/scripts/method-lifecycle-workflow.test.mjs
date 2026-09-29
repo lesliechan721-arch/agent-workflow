@@ -104,7 +104,7 @@ test('adapter refuses absent artifacts, missing independent checks, and fabricat
   };
   assert.equal((await grade(evidence)).passed, false);
   await mkdir(path.join(state.paths.workspace, '.dev-workflows/export'), { recursive: true });
-  for (const file of ['spec.md', 'task.md']) await writeFile(path.join(state.paths.workspace, '.dev-workflows/export', file), '# Synthetic artifact\n');
+  await writeFile(path.join(state.paths.workspace, '.dev-workflows/export/spec.md'), '# Synthetic artifact\n');
   assert.equal((await grade(evidence)).passed, true);
   const missing = structuredClone(evidence);
   missing.evaluation.checks.pop();
@@ -135,7 +135,10 @@ test('generated Spec requires confirmation before a separate implementation auth
   ]);
   for (const step of prepared.evaluation.interactions) assert.ok(step.protectedPaths.includes('src/select.js'));
   await mkdir(path.join(state.paths.workspace, '.dev-workflows/selection'), { recursive: true });
-  for (const file of ['spec.md', 'task.md']) await writeFile(path.join(state.paths.workspace, '.dev-workflows/selection', file), '# Synthetic artifact\n');
+  await writeFile(path.join(state.paths.workspace, '.dev-workflows/selection/spec.md'), '# Synthetic artifact\n');
+  for (const file of ['task.md', 'work.md']) {
+    await assert.rejects(readFile(path.join(state.paths.workspace, '.dev-workflows/selection', file)), { code: 'ENOENT' });
+  }
   await writeFile(path.join(state.paths.workspace, 'src/select.js'), goodSelection);
   const evidence = evidenceFor(prepared);
   const grade = async (value) => {
@@ -143,6 +146,15 @@ test('generated Spec requires confirmation before a separate implementation auth
     return gradeLifecycleWorkflow({ case: selected, paths: state.paths, variant: 'current' });
   };
   assert.equal((await grade(evidence)).passed, true);
+  for (const verdict of ['fail', 'unknown', 'missing']) {
+    const unrecoverable = structuredClone(evidence);
+    const recovery = unrecoverable.evaluation.checks.find((item) => item.name === 'design-recovery');
+    assert.ok(recovery, 'The Engine must independently check recoverable decisions, sources and open questions.');
+    if (verdict === 'missing') {
+      unrecoverable.evaluation.checks = unrecoverable.evaluation.checks.filter((item) => item !== recovery);
+    } else recovery.verdict = verdict;
+    assert.equal((await grade(unrecoverable)).passed, false, 'A readable Spec alone does not prove recoverable design evidence.');
+  }
   for (const [questionOrdinal, answerOrdinal] of [[1, 2], [0, 1], [1, 4]]) {
     const premature = structuredClone(evidence);
     Object.assign(premature.evaluation.decisions[1], { questionOrdinal, answerOrdinal });
@@ -173,7 +185,7 @@ test('committed project cannot pass when no project tests execute', async (t) =>
 
 test('final project grading reads committed behavior without local history and preserves unrelated staging', async (t) => {
   const selected = cases.find((item) => item.id === 'completed-project-without-local-history');
-  for (const mode of ['valid', 'bad-committed-product', 'tracked-local-process', 'unrelated-commit']) {
+  for (const mode of ['valid', 'bad-committed-product', 'tracked-local-process', 'unrelated-commit', 'missing-local-source']) {
     const state = await fixture(t);
     const prepared = await prepareLifecycleWorkflow({ case: selected, paths: state.paths });
     const workspace = state.paths.workspace;
@@ -187,6 +199,7 @@ test('final project grading reads committed behavior without local history and p
     }
     if (mode === 'bad-committed-product') await writeFile(path.join(workspace, 'src/select.js'), goodSelection);
     if (mode === 'tracked-local-process') await git(workspace, ['add', '--force', '--', '.dev-workflows/selection/spec.md']);
+    if (mode === 'missing-local-source') await rm(path.join(workspace, '.dev-workflows/selection/task.md'));
     await writeFile(state.paths.evidence, JSON.stringify(evidenceFor(prepared)));
     const result = await gradeLifecycleWorkflow({ case: selected, paths: state.paths, variant: 'current' });
     assert.equal(result.passed, mode === 'valid', JSON.stringify(result.details.checks));

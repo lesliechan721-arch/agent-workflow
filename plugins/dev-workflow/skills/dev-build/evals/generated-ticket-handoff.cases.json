@@ -4,6 +4,7 @@
     "kind": "codex-workflow",
     "unitUnderTest": "dev-build",
     "participants": [
+      "dev-repair",
       "dev-breakdown",
       "dev-implement",
       "dev-review-code"

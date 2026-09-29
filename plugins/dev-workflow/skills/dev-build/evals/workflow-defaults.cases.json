@@ -10,6 +10,7 @@
       "rationale": "主动选择有价值的方法，保持范围、权限和实际质量；没有完整证据的运行不计为完成。"
     },
     "participants": [
+      "dev-repair",
       "dev-implement",
       "dev-breakdown",
       "dev-review-code",

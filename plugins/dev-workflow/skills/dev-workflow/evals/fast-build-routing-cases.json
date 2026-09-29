@@ -10,6 +10,7 @@
       "rationale": "验证真实工作结果和范围边界；避免用固定措辞、测试数量或复杂流程的存在证明质量。"
     },
     "participants": [
+      "dev-repair",
       "dev-build",
       "dev-breakdown",
       "dev-implement",
@@ -37,7 +38,7 @@
         "boundary"
       ],
       "input": {
-        "query": "使用 dev-workflow。只是内部姓名空值显示，我尚未选“未填写”还是“—”；先向我问这个问题，不要改代码，也不需要完整访谈。",
+        "query": "使用 $dev-workflow。只是内部姓名空值显示，我尚未选“未填写”还是“—”；先向我问这个问题，不要改代码，也不需要完整访谈。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -60,7 +61,7 @@
         "boundary"
       ],
       "input": {
-        "query": "使用 dev-workflow 完成这个局部 bug。结果和验证已明确，用户确认过；不需要持久流程文档。",
+        "query": "使用 $dev-workflow 完成这个局部 bug。结果和验证已明确，用户确认过；不需要持久流程文档。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -81,7 +82,7 @@
         "boundary"
       ],
       "input": {
-        "query": "使用 dev-workflow 实现新的权限继承系统，范围、兼容、审批和回滚都没有决定。",
+        "query": "使用 $dev-workflow 实现新的权限继承系统，范围、兼容、审批和回滚都没有决定。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -102,7 +103,7 @@
         "boundary"
       ],
       "input": {
-        "query": "使用 dev-workflow 继续；当前 Spec 已通过正式审查并得到明确批准，尚未实施。",
+        "query": "使用 $dev-workflow 继续；当前 Spec 已通过正式审查并得到明确批准，尚未实施。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -203,7 +204,7 @@
         "boundary"
       ],
       "input": {
-        "query": "使用 dev-workflow，先通过一次有界访谈确定内部通知的默认开关；只需逐轮讨论，不需要原型或持续维护 Shape。本轮不要实现。",
+        "query": "使用 $dev-workflow，先通过一次有界访谈确定内部通知的默认开关；只需逐轮讨论，不需要原型或持续维护 Shape。本轮不要实现。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
@@ -224,7 +225,7 @@
         "boundary"
       ],
       "input": {
-        "query": "使用 dev-workflow，只做一个可以操作的候选页面，让我确定列表密度。已有需求和约束，只剩这一个体验问题，不需要跨会话维护 Shape，也不要生产实现。",
+        "query": "使用 $dev-workflow，只做一个可以操作的候选页面，让我确定列表密度。已有需求和约束，只剩这一个体验问题，不需要跨会话维护 Shape，也不要生产实现。",
         "expected": {
           "loadedSkills": [
             "dev-workflow",
