@@ -132,6 +132,41 @@ describe('retire strong state and residue', () => {
     await noRoot.context.dispose();
   });
 
+  // Test Value Gate: a changed Portable residue must stop retirement before any strong configuration write.
+  it.each(['appeared', 'removed', 'association-changed'] as const)(
+    'rejects Portable residue that %s after Review', async (change) => {
+      const options = location();
+      await addRoot(options, 'local/demo', 'sha256:logical');
+      await writePreferences(options, { schemaVersion: 1, kind: 'aw-deployment-preferences', agents: ['cursor'],
+        dependencyScopeOverrides: [{ pluginId: 'local/demo', platform: 'codex', scope: 'user' }] });
+      backend.inspect.mockImplementation(async () => ({ ...removedEvidence(),
+        configTargets: [{ scope: 'user', kind: 'file', fingerprint: 'sha256:config' }] }));
+      const absent = { state: 'absent', targets: [], blockers: [] };
+      const present = { state: 'present', targets: [{ skill: 'demo', agent: 'cursor',
+        physicalPath: path.join(options.cwd, 'portable-demo') }], blockers: [] };
+      const changed = change === 'appeared' ? present : change === 'removed' ? absent
+        : { ...present, targets: [{ ...present.targets[0]!, physicalPath: path.join(options.cwd, 'other-demo') }] };
+      backend.portable.mockResolvedValueOnce(change === 'appeared' ? absent : present)
+        .mockResolvedValueOnce(changed);
+      const beforeIntent = await observeIntent(options);
+      const beforePreferences = await observePreferences(options);
+      const plan = await prepareRetire({ ...options, selector: 'local/demo', targets: ['cursor'],
+        deleteConfig: true, yes: true }, { inventoryCatalogSourceReferences: async () =>
+          ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }) });
+
+      const result = await executeRetire(plan);
+
+      expect(result.blockers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'operationReviewStale' }),
+      ]));
+      expect(result).toMatchObject({ declarationChanged: false, preferencesChanged: false,
+        configChanged: false, outputsMayHaveChanged: false });
+      expect(await observeIntent(options)).toEqual(beforeIntent);
+      expect(await observePreferences(options)).toEqual(beforePreferences);
+      expect(backend.resetConfig).not.toHaveBeenCalled();
+      expect(backend.execute).not.toHaveBeenCalled();
+    });
+
   it('stops output cleanup after an optional config deletion fails, keeping prior commits visible', async () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');

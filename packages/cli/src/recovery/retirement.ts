@@ -221,6 +221,13 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
           receipt.blockers.push(diagnostic('operationReviewStale'));
           return finish(receipt);
         }
+        const portable = await inspectPortableResidue({ scope: plan.options.scope, context: plan.context,
+          selector: plan.options.selector, env: plan.context.env, agents: plan.options.targets === undefined
+            ? undefined : plan.receipt.selection.agents }).catch(() => undefined);
+        if (!portable || JSON.stringify(portable) !== JSON.stringify(plan.portable)) {
+          receipt.blockers.push(diagnostic('operationReviewStale'));
+          return finish(receipt);
+        }
         const refreshIntent = async () => {
           const refreshed = await observeIntent(location);
           receipt.intent = { state: refreshed.state, ...('digest' in refreshed ? { digest: refreshed.digest } : {}),
@@ -293,7 +300,7 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
             }
           }
         }
-        if (plan.portable.state === 'unknown' && !receipt.targetResults.some((target) =>
+        if (portable.state === 'unknown' && !receipt.targetResults.some((target) =>
           target.blockers.some((entry) => entry.code === 'portableObservationFailed'))) {
           receipt.blockers.push(diagnostic('portableObservationFailed'));
         }

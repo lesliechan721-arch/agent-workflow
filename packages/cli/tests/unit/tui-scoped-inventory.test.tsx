@@ -5,6 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import { TuiController, type TuiStatusLoadResult } from '../../src/tui/controller.js';
 import { buildScopedInventory, type ScopedInventoryLoadResult } from '../../src/tui/scoped-inventory.js';
+import { buildPluginDetailSubject } from '../../src/tui/plugin-detail.js';
+import { PluginDetailCard, ProjectRootCard } from '../../src/tui/entity-cards.js';
+import { buildTuiViewModel } from '../../src/tui/model.js';
 import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
 import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
 import { prepareRecovery } from '../../src/recovery/coordinator.js';
@@ -65,6 +68,43 @@ function checkedFrame(instance: ReturnType<typeof render>, size: { columns: numb
 afterEach(cleanup);
 
 describe('scoped inventory in Ink', () => {
+  // Test Value Gate: a verified Portable target must show the same health in inventory and detail cards.
+  it.each([
+    { observation: 'verified', content: 'satisfied', state: 'ready', label: '可用', actual: true },
+    { observation: 'unknown', content: 'unknown', state: 'unknown', label: '未确认', actual: false },
+    { observation: 'unknown', content: 'conflict', state: 'blocked', label: '受阻', actual: false },
+  ] as const)('projects Portable $content through recovery, inventory, detail and Ink', (caseValue) => {
+    const pluginId = 'official/demo';
+    const recoveryStatus: ScopedInventoryLoadResult = { ...recovery('user'),
+      selection: { agents: ['cursor'], preferences: 'valid' },
+      inventory: [{ pluginId, source: 'official', sourceState: 'ready', blockers: [], targetResults: [{
+        pluginId, agent: 'cursor', scope: 'user',
+        delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor' },
+        execution: 'not-run', observation: caseValue.observation, content: caseValue.content,
+        blockers: [], requiredBy: [pluginId],
+      }] }],
+    };
+    const inventory = buildScopedInventory({ recovery: recoveryStatus, status: status.payload,
+      pluginSummaries: status.pluginSummaries });
+    const model = buildTuiViewModel({ status: status.payload, pluginSummaries: status.pluginSummaries });
+    const subject = buildPluginDetailSubject({ pluginId, status: status.payload,
+      pluginSummaries: status.pluginSummaries, plugins: model.plugins,
+      scopedInventories: { user: inventory } });
+    expect(subject?.placements).toEqual([expect.objectContaining({
+      agent: 'cursor', delivery: 'agent-skills', projectState: caseValue.state,
+      observation: caseValue.state === 'ready' ? 'known' : 'unknown', actual: caseValue.actual,
+    })]);
+    const rootFrame = render(<ProjectRootCard root={inventory.declaredRoots[0]!} subject={subject!}
+      width={80} focused />).lastFrame() ?? '';
+    const detailFrame = render(<PluginDetailCard subject={subject!} width={80} />).lastFrame() ?? '';
+    expect(rootFrame).toContain(caseValue.label);
+    expect(detailFrame).toContain(caseValue.label);
+    if (caseValue.state === 'ready') {
+      expect(rootFrame).not.toContain('[? 未确认]');
+      expect(detailFrame).not.toContain('[? 未确认]');
+    }
+  });
+
   it.each(sizes)('selects one scope and keeps its inventory within $columns x $rows', async (size) => {
     const loadScopedStatus = vi.fn(async (scope: 'user' | 'project') => recovery(scope));
     const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status), loadScopedStatus });

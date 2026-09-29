@@ -20,6 +20,8 @@ export interface InventoryTarget {
   reasonCodes: string[];
   agent?: AgentId;
   delivery?: 'native' | 'agent-skills';
+  observation?: 'known' | 'unknown';
+  actual?: boolean;
 }
 
 export interface InventoryDependency {
@@ -189,6 +191,10 @@ export function buildScopedInventory(options: {
         scope: target.scope, location: 'scope', state: targetState(target),
         reasonCodes: target.blockers.map((blocker) => blocker.code),
         agent: target.agent, delivery: target.delivery.kind,
+        ...(target.delivery.kind === 'agent-skills' ? {
+          observation: target.observation === 'verified' || target.observation === 'missing' ? 'known' as const : 'unknown' as const,
+          actual: target.observation === 'verified' && target.content !== 'absent',
+        } : {}),
       }] : []);
     const observedTargets = nativeTargets.map((target) => targetView(target, 'scope'));
     for (const target of recoveryTargets) {
@@ -260,6 +266,10 @@ export function buildScopedInventory(options: {
       scope: recovery.scope, location: 'scope', state, reasonCodes: [],
       ...(target.agent ? { agent: target.agent } : {}),
       ...(target.delivery ? { delivery: target.delivery.kind } : {}),
+      ...(target.delivery?.kind === 'agent-skills' ? {
+        observation: target.observation === 'verified' || target.observation === 'missing' ? 'known' as const : 'unknown' as const,
+        actual: target.observation === 'verified' && target.content !== 'absent',
+      } : {}),
     }]);
   }
   for (const target of statusTargets) {

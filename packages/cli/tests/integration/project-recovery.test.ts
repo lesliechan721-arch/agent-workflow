@@ -27,6 +27,7 @@ async function fixture(plugins: Array<{
   nativeArtifactOnly?: boolean;
   nativeSkill?: string;
   portableSkill?: string;
+  portableCodexSwitch?: boolean;
   configurable?: boolean;
 }>) {
   const isolation = getCurrentSourceTestIsolation();
@@ -53,7 +54,11 @@ async function fixture(plugins: Array<{
     ...(plugin.dependencies ? { dependencies: plugin.dependencies } : {}),
     configureManifest: (manifest) => {
       manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
-      if (!plugin.native) manifest.marketplace.policy.products = ['CODEX'];
+      if (plugin.portableCodexSwitch) {
+        manifest.extensions!.instructions![0]!.agentOverrides = { codex: null };
+      }
+      if (!plugin.native) manifest.marketplace.policy.products = plugin.portableCodexSwitch
+        ? ['CODEX', 'CLAUDE'] : ['CODEX'];
       if (plugin.native) manifest.extensions = {
         instructions: [{ name: 'native', title: 'Native', content: 'Native.' }],
       };
@@ -305,6 +310,79 @@ describe('scoped recovery integration', () => {
     expect(uninstalled.ok, JSON.stringify(uninstalled)).toBe(true);
     expect(uninstalled.targetResults[0]).toMatchObject({
       delivery: { kind: 'native', platform: 'codex' }, execution: 'applied', blockers: [],
+    });
+  });
+
+  // Test Value Gate: changing delivery must not install Native beside a separately located Portable Skill.
+  it('blocks Portable-to-Native delivery until the old Portable output is moved', async () => {
+    const setup = await fixture([{ name: 'alpha', portableCodexSwitch: true }]);
+    const nativeRuntime = {
+      nativeCliRunner: async (invocation: { args: string[] }) => invocation.args.includes('--version')
+        ? { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }
+        : invocation.args.includes('--json')
+          ? { exitCode: 0, stdout: JSON.stringify({ installed: [], available: [] }), stderr: '' }
+          : { exitCode: 0, stdout: '', stderr: '' },
+      codexManagerResolver: async () => ({
+        kind: 'system' as const, version: '0.200.0', command: 'codex', argsPrefix: [] as string[],
+      }),
+    };
+    const portable = await runRecovery('sync', [], setup.options(['codex']), nativeRuntime);
+    expect(portable.ok, JSON.stringify(portable)).toBe(true);
+    const portablePath = path.join(setup.cwd, '.agents', 'skills', 'alpha');
+    expect(await fs.pathExists(portablePath)).toBe(true);
+
+    const pluginRoot = path.join(setup.sourceRoot, 'plugins', 'alpha');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath) as {
+      extensions: { instructions: Array<{ agentOverrides?: { codex: null } }> };
+    };
+    delete manifest.extensions.instructions[0]!.agentOverrides;
+    await fs.writeJson(manifestPath, manifest);
+    const catalogPath = path.join(setup.sourceRoot, 'catalog-manifest.json');
+    const catalog = await fs.readJson(catalogPath) as Record<string, unknown>;
+    await fs.writeJson(catalogPath, { ...catalog, entries: [
+      await createCatalogManifestV7Entry(await readPluginManifest(pluginRoot, { mode: 'bundle' }), pluginRoot),
+    ] });
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: setup.env,
+      impactConfirmed: true });
+
+    const beforeWrites = await addCalls(setup.log);
+    const blocked = await runRecovery('sync', [], setup.options(['codex']), nativeRuntime);
+    expect(blocked).toMatchObject({ ok: false, outputsMayHaveChanged: false });
+    expect(blocked.targetResults[0]).toMatchObject({
+      delivery: { kind: 'native', platform: 'codex' }, execution: 'not-run',
+    });
+    expect(blocked.targetResults[0]?.blockers.map((entry) => entry.code))
+      .toEqual(['deliverySwitchPortableCleanupRequired']);
+    expect(await fs.pathExists(portablePath)).toBe(true);
+    expect(await addCalls(setup.log)).toEqual(beforeWrites);
+
+    const lockPath = path.join(setup.cwd, 'skills-lock.json');
+    const lockBytes = await fs.readFile(lockPath);
+    await fs.writeFile(lockPath, '{broken');
+    const uncertain = await prepareRecovery('sync', [], setup.options(['codex']), nativeRuntime);
+    expect(uncertain.receipt.targetResults[0]?.blockers.map((entry) => entry.code))
+      .toContain('deliverySwitchPortableObservationFailed');
+    await uncertain.context.dispose();
+    await fs.writeFile(lockPath, lockBytes);
+
+    await fs.move(portablePath, path.join(setup.cwd, 'saved-portable'));
+    const unblocked = await prepareRecovery('sync', [], setup.options(['codex']), nativeRuntime);
+    expect(unblocked.receipt.targetResults[0]?.blockers.map((entry) => entry.code))
+      .not.toContain('deliverySwitchPortableCleanupRequired');
+    const nativePaths = unblocked.nativeGroups.flatMap((group) =>
+      group.preview.nativeFootprints?.map((footprint) => footprint.path) ?? []);
+    expect(nativePaths.length).toBeGreaterThan(0);
+    expect(nativePaths).not.toContain(portablePath);
+    await fs.move(path.join(setup.cwd, 'saved-portable'), portablePath);
+    const stale = await executeRecovery(unblocked);
+    expect(stale.blockers.map((entry) => entry.code)).toContain('operationReviewStale');
+    expect(stale.outputsMayHaveChanged).toBe(false);
+    await fs.move(portablePath, path.join(setup.cwd, 'saved-portable'));
+    const recovered = await runRecovery('sync', [], setup.options(['codex']), nativeRuntime);
+    expect(recovered.ok, JSON.stringify(recovered)).toBe(true);
+    expect(recovered.targetResults[0]).toMatchObject({
+      delivery: { kind: 'native', platform: 'codex' }, blockers: [],
     });
   });
 

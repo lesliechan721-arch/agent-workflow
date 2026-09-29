@@ -251,6 +251,10 @@ export function buildPluginDetailSubject(options: {
         ...(target.agent ? { agent: target.agent } : {}),
         ...(target.delivery ? { delivery: target.delivery } : {}) }, target.scope);
       placement.projectState = target.state;
+      if (target.delivery === 'agent-skills') {
+        placement.observation = target.observation ?? 'unknown';
+        placement.actual ||= target.actual === true;
+      }
       if (target.state === 'unknown' || target.state === 'blocked') {
         placement.observation = 'unknown';
         placement.statusState = target.state === 'blocked' ? 'blocked' : undefined;
@@ -273,6 +277,10 @@ export function buildPluginDetailSubject(options: {
         ...(target.agent ? { agent: target.agent } : {}),
         ...(target.delivery ? { delivery: target.delivery } : {}) }, target.scope);
       placement.projectState = target.state;
+      if (target.delivery === 'agent-skills') {
+        placement.observation = target.observation ?? 'unknown';
+        placement.actual ||= target.actual === true;
+      }
       placement.sharedWithCurrentProject ||= target.location === 'sharedUser';
       placement.reasonCodes = [...new Set([...placement.reasonCodes, ...target.reasonCodes])];
       if (!target.platform || !targets.some((entry) => entry.platform === target.platform && entry.scope === target.scope)) {

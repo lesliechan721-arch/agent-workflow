@@ -107,7 +107,8 @@ export interface RecoveryPlan {
     platform: PlatformName; fingerprint: string }>;
   portableGroups: PortablePreparation[];
   runtime: RebuildCommandRuntime;
-  portableResidues: Array<{ pluginId: string; agents: AgentId[]; observation: PortableResidue }>;
+  portableResidues: Array<{ kind: 'cleanup' | 'delivery-switch'; pluginId: string;
+    agents: AgentId[]; observation: PortableResidue }>;
   sourceRefreshes: RecoverySourceRefresh[];
   sourceRefreshFailures: Array<{ sourceId: string; code: string }>;
   blockExecution: boolean;
@@ -126,6 +127,8 @@ function diagnostic(code: string): RecoveryDiagnostic {
     artifactCollision: '多个交付占用相同输出位置，请先处理冲突。',
     deliverySwitchCleanupRequired: '此目标仍有旧 Native 输出；请先清理旧交付，再恢复 Portable。',
     deliverySwitchObservationFailed: '无法确认此目标是否仍有旧 Native 输出；请先恢复 Native 观察能力或人工核验。',
+    deliverySwitchPortableCleanupRequired: '此目标仍有旧 Portable 输出；请先核验并移开旧交付，再恢复 Native。',
+    deliverySwitchPortableObservationFailed: '无法确认此目标是否仍有旧 Portable 输出；请先核验 Portable 现场。',
     'backend-action-unsupported': '此后端尚不支持安全移除，请检查精确的 Portable 输出。',
   };
   return { code, message: messages[code] ?? `操作受阻：${code}。` };
@@ -596,6 +599,34 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
         }
       }
     }
+    for (const pluginId of receipt.requestedRoots) {
+      const candidates = receipt.targetResults.filter((target) => target.pluginId === pluginId
+        && target.blockers.length === 0 && target.delivery?.kind === 'native');
+      if (candidates.length === 0) continue;
+      const agents = candidates.map((target) => target.agent);
+      let observation: PortableResidue;
+      try {
+        observation = await inspectPortableResidue({ scope: options.scope, context, selector: pluginId,
+          env: options.env, agents });
+      } catch {
+        observation = { state: 'unknown', targets: [], blockers: ['portableObservationFailed'] };
+      }
+      plan.portableResidues.push({ kind: 'delivery-switch', pluginId, agents, observation });
+      if (observation.state === 'absent') continue;
+      for (const target of candidates) {
+        const residues = observation.targets.filter((entry) => entry.agent === target.agent);
+        if (residues.length === 0 && observation.state === 'present' && observation.blockers.length === 0) continue;
+        if (residues.length === 0) {
+          block(target, 'deliverySwitchPortableObservationFailed');
+          target.recoveryActions = [`检查 ${pluginId}/${target.agent} 的 Portable 输出和 provider 关联后重新准备。`];
+        } else {
+          block(target, 'deliverySwitchPortableCleanupRequired');
+          target.backend = { previousDelivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: target.agent },
+            portableResidue: residues };
+          target.recoveryActions = portableRecoveryActions(plan, pluginId, residues);
+        }
+      }
+    }
   }
   const groups = new Map<string, { platform: PlatformName; command: RecoveryCommand; pluginIds: string[] }>();
   for (const target of receipt.targetResults) {
@@ -665,7 +696,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
   for (const pluginId of command === 'cleanup' || command === 'uninstall' ? receipt.requestedRoots : []) {
     const agents = receipt.targetResults.filter((target) => target.pluginId === pluginId).map((target) => target.agent);
     const observation = await inspectPortableResidue({ scope: options.scope, context, selector: pluginId, env: options.env, agents });
-    plan.portableResidues.push({ pluginId, agents, observation });
+    plan.portableResidues.push({ kind: 'cleanup', pluginId, agents, observation });
     if (observation.state !== 'absent') {
       plan.warnings.push(`${pluginId}：Portable 输出${observation.state === 'present' ? '仍存在' : '无法确认'}，本次操作不会删除它们。`);
       for (const target of receipt.targetResults.filter((entry) => entry.pluginId === pluginId)) {
@@ -830,8 +861,8 @@ export async function executeRecovery(plan: RecoveryPlan,
       }
       for (const residue of plan.portableResidues) {
         const checked = await inspectPortableResidue({ scope: plan.options.scope, context: plan.context,
-          selector: residue.pluginId, env: plan.options.env, agents: residue.agents });
-        if (JSON.stringify(checked) !== JSON.stringify(residue.observation)) {
+          selector: residue.pluginId, env: plan.options.env, agents: residue.agents }).catch(() => undefined);
+        if (!checked || JSON.stringify(checked) !== JSON.stringify(residue.observation)) {
           receipt.blockers.push(diagnostic('operationReviewStale'));
           return completeReceipt(receipt);
         }
@@ -904,7 +935,8 @@ export async function executeRecovery(plan: RecoveryPlan,
           .map(({ physicalPath, expectedDigest, providerPluginId }) => ({ physicalPath, expectedDigest, providerPluginId,
             logicalIdentity: prepared.logicalIdentity })));
       }
-      for (const { pluginId, observation } of plan.portableResidues) {
+      for (const { kind, pluginId, observation } of plan.portableResidues) {
+        if (kind !== 'cleanup') continue;
         if (observation.state === 'absent') continue;
         const targets = receipt.targetResults.filter((target) => target.pluginId === pluginId
           && (observation.state === 'unknown' || observation.targets.some((entry) => entry.agent === target.agent)));
