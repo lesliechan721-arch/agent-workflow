@@ -115,6 +115,8 @@ User Intent 与 Project Intent 都用严格 schema 3：`sources` 绑定 Catalog 
 
 每个 root×Agent 优先适用 Native；没有适用 Native 且 Manifest 显式声明 Portable 时才选择 Portable。Native 工具、权限、配置、信任或执行失败不自动降级。不支持与未知目标留在结果，独立安全目标可继续。完整当前 scope 需求用于保护，本次选中目标用于执行；缩小选择、未观察其它 scope 或缺少当前 Project 声明均不授权删除共享输出。Codex 共享一份 user native package，Project 只控制当前项目 activation。替换共享包显示其它消费者影响，foreign/shared 内容保留。User 不扫描调用仓库来推断其它项目没有需求。
 
+Native 的旧 Portable 交付检查使用当前 scope 的完整 root 与依赖、保存的目标偏好和本次目标。恢复准备可重建缺失的当前 Portable 物化证据，以核验共享输出；未选中目标只提供保护，不执行安装或更新。仍属于当前 Portable 交付、且内容已核验的精确共享 Skill 目录，不因 Native Agent 的额外读取关联而要求清理；缩小本次 root 或 Agent 集合也不取消这项保护。User 的外部同内容副本仍只表示满足，不因此获得 AW 所有权。
+
 `sync --refresh` 对选中 roots 的相关来源独立刷新；失败来源即使旧 Active 健康也不执行本次恢复，健康独立来源可继续。`config set/unset/reset --scope user --apply` 保留当前 cwd 已安装 user/project 消费者的刷新合同；Review 明示消费者范围，未安装 root 不因声明而被安装。Project 配置 apply 仍仅限当前项目。恢复 scope 与配置写层分离，User 普通恢复不消费调用仓库值。
 
 公开写回执为 `aw-recovery` schema 1，包含 scope、command、ok、intent、selection、完整 requestedTargets、targetResults、remainingTargets、blockers/errors、recoveryActions，及 `declarationChanged`、`preferencesChanged`、`configChanged`、`outputsMayHaveChanged` 四个实际变化事实。目标分别报告 `execution: not-run|no-op|applied|partial|failed`、`observation: verified|missing|unknown` 和适用的 `content: absent|satisfied|drifted|conflict|unknown`。写请求仅全部完成才 `ok=true` 并退出 0，partial、unknown、blocked、failed 退出 1，参数错误退出 2。
@@ -167,6 +169,8 @@ primary development deactivate 把 remove 和 primary change 放入同一 invent
 这些命令在 `AW_HOME` mutation lock 内只采集一次当前 target 和当前 project 的现场 inventory。Active snapshot、marketplace 选择和 dependency plan 复用该内存 snapshot；执行不为计划再做第二次全量 inventory。计划完成后，writer 只对计划中的目标重新构建并检查 live ownership、native registration、有效 config 和固定 snapshot evidence。普通 inventory 不扫描历史项目、不建立全局 refcount，也不执行自动 dependency GC。
 
 已确认从健康 Active Catalog 移除的插件通过独立 [`aw intent retire`](design/removed-plugin-cleanup.md) 停用。普通 `cleanup` 不自动分类或删除强配置；停用只修改显式选中的 scope，保存配置删除默认关闭，Portable 与共享残留必须可见。
+
+停用失败的恢复命令保留 scope 和 Review 中已确定的输出 Agent 集合；未完成的配置删除保留 `--delete-config`，已完成时不再请求。Portable 残留提供精确人工检查指引，重试重新 Review，不自动携带 `--yes`。
 
 `cleanup` 和 `cleanup --force` 使用专用 cleanup 流程，不进入恢复写入 pipeline。两种 scope 都只清理所选 Agent 中可证明归属的现场，不改 Intent、部署偏好或插件配置。无 Active 时仍可凭 live 或已绑定离线证据恢复，未知路径、foreign 与 shared 内容保持不动。`--force` 仅处理现有合同允许的专属损坏输出。两者都不运行 renderer 或 preApply。
 

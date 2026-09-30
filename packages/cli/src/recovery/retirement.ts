@@ -64,7 +64,8 @@ function blocksStrongRetirement(code: string, deleteConfig: boolean): boolean {
     'removedPluginMarketplaceIdentityConflict'].includes(code)
     || deleteConfig && (code === 'removedPluginConfigTargetUnsupported' || code === 'removedPluginConfigTargetUnsafe');
 }
-function finish(receipt: RecoveryReceipt): RecoveryReceipt {
+function finish(receipt: RecoveryReceipt, options: RetireOptions, portable: PortableResidue,
+  configDeletionCompleted = false): RecoveryReceipt {
   receipt.requestedTargets = receipt.targetResults.map(({ pluginId, agent, scope, delivery }) =>
     ({ pluginId, agent, scope, delivery }));
   receipt.remainingTargets = receipt.targetResults.filter((target) => target.blockers.length
@@ -72,7 +73,15 @@ function finish(receipt: RecoveryReceipt): RecoveryReceipt {
     ({ pluginId, agent, scope, delivery }));
   receipt.errors = [...receipt.blockers];
   receipt.ok = !receipt.blockers.length && !receipt.remainingTargets.length;
-  receipt.recoveryActions = receipt.ok ? [] : [`aw intent retire ${receipt.requestedRoots[0]} --scope ${receipt.scope}`];
+  const agents = [...new Set(receipt.requestedTargets.map((target) => target.agent))];
+  const retry = `aw intent retire ${options.selector} --scope ${options.scope}`
+    + agents.map((agent) => ` --target ${agent}`).join('')
+    + (options.deleteConfig && !configDeletionCompleted ? ' --delete-config' : '');
+  receipt.recoveryActions = receipt.ok ? [] : [...new Set([
+    ...portable.targets.map((entry) =>
+      `请检查并备份 Portable 目录 ${entry.physicalPath}；核验共享读取和归属后自行移开，AW 不自动删除。`),
+    retry,
+  ])];
   return receipt;
 }
 
@@ -157,7 +166,7 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
       ...agents.filter((agent) => agent !== 'cursor').map((agent) =>
         `检查并清理 ${options.scope}/${agent} 已验证原生输出。`),
     ];
-    return { options, context, evidence: removed, portable, receipt: finish(receipt),
+    return { options, context, evidence: removed, portable, receipt: finish(receipt, options, portable),
       intentEvidence: evidence(intent), preferenceEvidence: evidence(preferences), plannedImpact, changes,
       warnings: portable.state === 'present' ? ['Portable 输出需人工核验，AW 不自动删除。'] : [], runtime };
   } catch (error) { await context.dispose(); throw error; }
@@ -166,6 +175,7 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
 export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean; runtime?: RebuildCommandRuntime } = {}): Promise<RecoveryReceipt> {
   const receipt = structuredClone(plan.receipt);
   const runtime = { ...plan.runtime, ...execution.runtime };
+  let configDeletionCompleted = false;
   try {
     for (const target of receipt.targetResults) {
       if (target.delivery?.kind === 'agent-skills' && plan.portable.state === 'absent'
@@ -175,10 +185,10 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
       }
     }
     if (plan.changes.length === 0 && plan.portable.state === 'absent'
-      && plan.receipt.blockers.length === 0) return finish(receipt);
+      && plan.receipt.blockers.length === 0) return finish(receipt, plan.options, plan.portable);
     if (execution.yes !== true && plan.options.yes !== true) {
       receipt.blockers.push(diagnostic('operationReviewRequired'));
-      return finish(receipt);
+      return finish(receipt, plan.options, plan.portable);
     }
     const freshContext = await createScopeContext({ scope: plan.options.scope,
       cwd: plan.context.callerCwd, env: plan.context.env });
@@ -192,18 +202,18 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
         .then((value) => value === plan.context.executionCwd, () => false);
     if (!environmentStable || !executionCwdStable) {
       receipt.blockers.push(diagnostic('operationReviewStale'));
-      return finish(receipt);
+      return finish(receipt, plan.options, plan.portable);
     }
     return await withAwHomeMutationLock({ env: plan.context.env, token: runtime.awHomeMutationToken,
       action: async (token) => {
         if (receipt.blockers.some((entry) => blocksStrongRetirement(entry.code, plan.options.deleteConfig === true))) {
-          return finish(receipt);
+          return finish(receipt, plan.options, plan.portable);
         }
         const location = { scope: plan.options.scope, cwd: plan.context.executionCwd, env: plan.context.env, token };
         const [intent, preferences] = await Promise.all([observeIntent(location), observePreferences(location)]);
         if (evidence(intent) !== plan.intentEvidence || evidence(preferences) !== plan.preferenceEvidence) {
           receipt.blockers.push(diagnostic('operationReviewStale'));
-          return finish(receipt);
+          return finish(receipt, plan.options, plan.portable);
         }
         const inventory = await (runtime.inventoryCatalogSourceReferences ?? inventoryCatalogSourceReferences)({
           cwd: plan.context.executionCwd, env: plan.context.env, scope: plan.options.scope,
@@ -221,14 +231,14 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
           || JSON.stringify(current.configTargets) !== JSON.stringify(plan.evidence.configTargets)
           || JSON.stringify(current.evidence) !== JSON.stringify(plan.evidence.evidence)) {
           receipt.blockers.push(diagnostic('operationReviewStale'));
-          return finish(receipt);
+          return finish(receipt, plan.options, plan.portable);
         }
         const portable = await inspectPortableResidue({ scope: plan.options.scope, context: plan.context,
           selector: plan.options.selector, env: plan.context.env, agents: plan.options.targets === undefined
             ? undefined : plan.receipt.selection.agents }).catch(() => undefined);
         if (!portable || JSON.stringify(portable) !== JSON.stringify(plan.portable)) {
           receipt.blockers.push(diagnostic('operationReviewStale'));
-          return finish(receipt);
+          return finish(receipt, plan.options, plan.portable);
         }
         const refreshIntent = async () => {
           const refreshed = await observeIntent(location);
@@ -253,11 +263,12 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
               sourceIdentity: plan.evidence.sourceIdentity, pluginName: plan.evidence.pluginName,
               scope: plan.options.scope, cwd: plan.context.executionCwd, env: plan.context.env });
             receipt.configChanged = result.deleted;
+            configDeletionCompleted = true;
           }
         } catch (error) {
           receipt.blockers.push(diagnostic(codeOf(error, 'retireConfigurationFailed')));
           await refreshIntent();
-          return finish(receipt);
+          return finish(receipt, plan.options, plan.portable);
         }
         await refreshIntent();
         if (plan.evidence) {
@@ -306,7 +317,7 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
           target.blockers.some((entry) => entry.code === 'portableObservationFailed'))) {
           receipt.blockers.push(diagnostic('portableObservationFailed'));
         }
-        return finish(receipt);
+        return finish(receipt, plan.options, plan.portable, configDeletionCompleted);
       } });
   } finally { await plan.context.dispose(); }
 }
@@ -319,7 +330,7 @@ export async function runRetire(options: RetireOptions, runtime: RebuildCommandR
     if (response.cancelled || response.value !== true) {
       plan.receipt.blockers.push(diagnostic('operationCancelled'));
       await plan.context.dispose();
-      return finish(plan.receipt);
+      return finish(plan.receipt, plan.options, plan.portable);
     }
     return executeRetire(plan, { yes: true });
   }

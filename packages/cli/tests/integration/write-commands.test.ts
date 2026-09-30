@@ -13,6 +13,7 @@ import {
   uninstallWriteCommand as nativeUninstallWriteCommand,
 } from '../../src/commands/write-commands.js';
 import { runRecovery } from '../../src/recovery/coordinator.js';
+import * as pluginConfig from '../../src/utils/plugin-config.js';
 import { prepareRetire, executeRetire, runRetire } from '../../src/recovery/retirement.js';
 import { readDemand, demandNativeProjection } from '../../src/recovery/demand.js';
 import { readRecoveryStatus } from '../../src/recovery/status.js';
@@ -8839,6 +8840,58 @@ describe('five namespaced write commands', () => {
     })).values).toEqual({ retained: true });
     const repeated = await runRetire({ ...projectOptions, yes: true }, runtime);
     expect(repeated.declarationChanged).toBe(false);
+  });
+
+  // Test Value Gate: a receipt retry must retain config deletion and the original output target boundary.
+  it('retries config deletion through the retirement receipt without expanding output targets', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const sourceRoot = path.join(cwd, 'removed-config-receipt-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+    expectedDigest: initial.digest, env: isolation.env });
+    const runtime = await createClaudeNativeTestRuntime(isolation);
+    for (const platform of ['codex', 'claude'] as const) {
+      await expect(installFixturePlugin(['team/demo'], { cwd, platform, scope: 'user' }, runtime.runtime))
+        .resolves.toMatchObject({ overallState: 'succeeded' });
+    }
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: isolation.env });
+    await writePluginConfigStore({ sourceId: 'team', sourceIdentity: active.sourceIdentity,
+      pluginName: 'demo', scope: 'user', cwd, env: isolation.env, values: { retained: true } });
+    const configPath = resolvePluginConfigStorePath({ sourceId: 'team', pluginName: 'demo',
+      scope: 'user', cwd, env: isolation.env });
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0',
+      env: isolation.env, impactConfirmed: true });
+    const claudeSettingsPath = path.join(runtime.claudeHome, 'settings.json');
+    const claudeBefore = await fs.readFile(claudeSettingsPath);
+    const reset = vi.spyOn(pluginConfig, 'resetPluginConfigStore').mockRejectedValueOnce(
+      Object.assign(new Error('injected config deletion failure'), { code: 'configResetFailed' }));
+    const failed = await runRetire({ scope: 'user', cwd, env: isolation.env,
+      selector: 'team/demo', targets: ['codex'], deleteConfig: true, yes: true }, runtime.runtime)
+      .finally(() => reset.mockRestore());
+    expect(failed).toMatchObject({ ok: false, declarationChanged: true,
+      configChanged: false, outputsMayHaveChanged: false,
+      blockers: expect.arrayContaining([expect.objectContaining({ code: 'configResetFailed' })]) });
+    expect(await fs.pathExists(configPath)).toBe(true);
+
+    const retry = failed.recoveryActions.find((action) => action.startsWith('aw intent retire '));
+    expect(retry).toBeDefined();
+    const captured = createCapturedCliIo();
+    const exitCode = await runCli([...retry!.split(' ').slice(1), '--yes', '--json'], {
+      cwd, env: isolation.env, io: captured.io, interactive: false,
+      nativeCliRunner: runtime.nativeCliRunner,
+    });
+    const recovered = JSON.parse(captured.readStdout());
+    expect(exitCode, JSON.stringify(recovered)).not.toBe(2);
+    expect(recovered).toMatchObject({ command: 'intent:retire', configChanged: true, declarationChanged: false });
+    expect(recovered.requestedTargets.map((target: { agent: string }) => target.agent)).toEqual(['codex']);
+    expect(recovered.recoveryActions.join('\n')).not.toContain('--delete-config');
+    expect(await fs.pathExists(configPath)).toBe(false);
+    expect(await fs.readFile(claudeSettingsPath)).toEqual(claudeBefore);
   });
 
   it('keeps shared Codex output when official observation fails, then retries retirement', async () => {

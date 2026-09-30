@@ -31,7 +31,7 @@ async function fixture(plugins: Array<{
   portableSkill?: string;
   portableCodexSwitch?: boolean;
   configurable?: boolean;
-}>) {
+}>, scope: 'user' | 'project' = 'project') {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = path.join(isolation.layout.fixtureCwd, 'recovery-project');
   const sourceRoot = path.join(isolation.layout.fixtureCwd, 'recovery-source');
@@ -91,7 +91,7 @@ async function fixture(plugins: Array<{
   });
   await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
   const generated = await fs.readJson(path.join(sourceRoot, '.aw-generated.json')) as { workspaceIdentity: string };
-  const intentPath = await resolveIntentPath({ scope: 'project', cwd });
+  const intentPath = await resolveIntentPath({ scope, cwd, env: isolation.env });
   const intent = {
     schemaVersion: 3, kind: 'aw-plugin-intents',
     sources: { team: { logicalIdentity: generated.workspaceIdentity } },
@@ -104,6 +104,9 @@ async function fixture(plugins: Array<{
   await fs.writeFile(path.join(bin, 'skills'), `#!/usr/bin/env node
 const fs = require('node:fs'); const path = require('node:path');
 const args = process.argv.slice(2); const cwd = process.cwd();
+const global=args.includes('--global');
+const targetRoot=global?process.env.HOME:cwd;
+const claudeRoot=global?(process.env.CLAUDE_CONFIG_DIR||path.join(targetRoot,'.claude')):path.join(cwd,'.claude');
 fs.appendFileSync(process.env.RECOVERY_SKILLS_LOG, JSON.stringify(args) + '\\n');
 if (args[0] === '--version') { console.log('1.5.23'); process.exit(0); }
 let lock = {version:1,skills:{}};
@@ -111,12 +114,13 @@ try { lock=JSON.parse(fs.readFileSync(path.join(cwd,'skills-lock.json'))); } cat
 if (args[0] === 'list') {
  const rows = [];
  const queried=args.includes('--agent')?args[args.indexOf('--agent')+1]:null;
- for (const name of Object.keys(lock.skills)) {
-  const shared=path.join(cwd,'.agents','skills',name);
-  const claude=path.join(cwd,'.claude','skills',name);
+ const names=global?[...new Set([path.join(targetRoot,'.agents','skills'),path.join(claudeRoot,'skills')].flatMap(root=>fs.existsSync(root)?fs.readdirSync(root):[]))]:Object.keys(lock.skills);
+ for (const name of names) {
+  const shared=path.join(targetRoot,'.agents','skills',name);
+  const claude=path.join(claudeRoot,'skills',name);
   const dest=queried==='claude-code'?claude:queried?shared:fs.existsSync(shared)?shared:claude;
   const agents=[...(fs.existsSync(shared)&&queried!=='claude-code'?['Codex','Cursor']:[]),...(fs.existsSync(claude)&&(!queried||queried==='claude-code')?['Claude Code']:[])];
-  if (fs.existsSync(dest)) rows.push({name,path:dest,scope:'project',agents,source:lock.skills[name].source});
+  if (fs.existsSync(dest)) rows.push({name,path:dest,scope:global?'global':'project',agents,source:global?null:lock.skills[name].source});
  }
  console.log(JSON.stringify(rows)); process.exit(0);
 }
@@ -126,7 +130,7 @@ if (process.env.RECOVERY_FAIL_SKILL === name) {
  if (process.env.RECOVERY_BAD_LOCK_ON_FAIL_SKILL) fs.writeFileSync(path.join(cwd,'skills-lock.json'),'{broken');
  process.exit(2);
 }
- const dest=path.join(cwd,agent==='claude-code'?'.claude':'.agents','skills',name);
+ const dest=agent==='claude-code'?path.join(claudeRoot,'skills',name):path.join(targetRoot,'.agents','skills',name);
  fs.mkdirSync(path.dirname(dest),{recursive:true});
  if (process.env.RECOVERY_PARTIAL_SKILL === name) {
   fs.rmSync(dest,{recursive:true,force:true});
@@ -135,7 +139,7 @@ if (process.env.RECOVERY_FAIL_SKILL === name) {
  }
  fs.cpSync(path.join(source,'skills',name),dest,{recursive:true});
  lock.skills[name]={source,sourceType:'local',computedHash:'fixture'};
- fs.writeFileSync(path.join(cwd,'skills-lock.json'),JSON.stringify(lock));
+ if(!global) fs.writeFileSync(path.join(cwd,'skills-lock.json'),JSON.stringify(lock));
  process.exit(process.env.RECOVERY_FAIL_AFTER_COPY_SKILL === name ? 2 : 0);
 }
 process.exit(2);
@@ -143,7 +147,7 @@ process.exit(2);
   await fs.chmod(path.join(bin, 'skills'), 0o755);
   const env = { ...isolation.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, RECOVERY_SKILLS_LOG: log };
   return { cwd, sourceRoot, intentPath, log, env,
-    options: (targets?: Agent[]) => ({ scope: 'project' as const, cwd, env,
+    options: (targets?: Agent[]) => ({ scope, cwd, env,
       cliVersion: '1.0.0', ...(targets ? { targets } : {}), all: true, yes: true }),
   };
 }
@@ -353,8 +357,127 @@ describe('scoped recovery integration', () => {
     });
   });
 
+  // Test Value Gate: a Native root must preserve a still-required Portable dependency delivered by another root.
+  it('protects shared Portable dependencies outside the selected root', async () => {
+    const setup = await fixture([{ name: 'alpha', native: true, nativeArtifactOnly: true },
+      { name: 'beta', dependencies: ['alpha'], configurable: true }]);
+    await targetsSet({ scope: 'project', cwd: setup.cwd, env: setup.env, agents: ['codex', 'cursor'] });
+    const options = { ...setup.options(), all: false };
+    expect((await runRecovery('sync', ['team/beta'], { ...options, targets: ['cursor'] })).ok).toBe(true);
+    const portablePath = path.join(setup.cwd, '.agents', 'skills', 'alpha', 'SKILL.md');
+    const bytes = await fs.readFile(portablePath);
+    const writes = await addCalls(setup.log);
+    const nativeRuntime = {
+      nativeCliRunner: async (invocation: { args: string[] }) => invocation.args.includes('--version')
+        ? { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }
+        : invocation.args.includes('--json')
+          ? { exitCode: 0, stdout: JSON.stringify({ installed: [], available: [] }), stderr: '' }
+          : { exitCode: 0, stdout: '', stderr: '' },
+      codexManagerResolver: async () => ({
+        kind: 'system' as const, version: '0.200.0', command: 'codex', argsPrefix: [] as string[],
+      }),
+    };
+    const nativeOnly = await runRecovery('sync', ['team/alpha'], { ...options, targets: ['codex'] }, nativeRuntime);
+    expect(nativeOnly.ok, JSON.stringify(nativeOnly)).toBe(true);
+    expect(nativeOnly.targetResults.map((target) => target.agent)).toEqual(['codex']);
+    expect(nativeOnly.recoveryActions).toEqual([]);
+    expect(await fs.readFile(portablePath)).toEqual(bytes);
+    expect(await addCalls(setup.log)).toEqual(writes);
+
+    const reviewed = await prepareRecovery('sync', ['team/alpha'], { ...options, targets: ['codex'] }, nativeRuntime);
+    const beta = (await readDemand(options)).roots!.find((root) => root.pluginId === 'team/beta')!.plugin!;
+    await writePluginConfigStore({ sourceId: 'team', sourceIdentity: beta.sourceIdentity,
+      logicalIdentity: beta.catalogLogicalIdentity, pluginName: 'beta', scope: 'project',
+      cwd: setup.cwd, env: setup.env, values: { mode: 'changed' } });
+    const stale = await executeRecovery(reviewed);
+    expect(stale.blockers.map((entry) => entry.code)).toContain('operationReviewStale');
+    expect(stale.outputsMayHaveChanged).toBe(false);
+    expect(await fs.readFile(portablePath)).toEqual(bytes);
+    expect(await addCalls(setup.log)).toEqual(writes);
+
+    // A new Review must rebuild weak protection evidence without writing unselected Portable targets.
+    const refreshed = await prepareRecovery('sync', ['team/alpha'], { ...options, targets: ['codex'] }, nativeRuntime);
+    const generation = refreshed.portableProtectionGroups.find((group) => group.root === 'team/beta')?.generation;
+    const afterConfigChange = await executeRecovery(refreshed);
+    expect(afterConfigChange.ok, JSON.stringify(afterConfigChange)).toBe(true);
+    expect(afterConfigChange.targetResults.map((target) => target.agent)).toEqual(['codex']);
+    expect(afterConfigChange.recoveryActions).toEqual([]);
+    expect(await fs.readFile(portablePath)).toEqual(bytes);
+    expect(await addCalls(setup.log)).toEqual(writes);
+
+    expect(generation).toBeDefined();
+    await fs.remove(generation!);
+    const afterGenerationLoss = await runRecovery('sync', ['team/alpha'], { ...options, targets: ['codex'] }, nativeRuntime);
+    expect(afterGenerationLoss.ok, JSON.stringify(afterGenerationLoss)).toBe(true);
+    expect(afterGenerationLoss.targetResults.map((target) => target.agent)).toEqual(['codex']);
+    expect(afterGenerationLoss.recoveryActions).toEqual([]);
+    expect(await fs.pathExists(generation!)).toBe(true);
+    expect(await fs.readFile(portablePath)).toEqual(bytes);
+    expect(await addCalls(setup.log)).toEqual(writes);
+  });
+
+  // Test Value Gate: shared provider association must not require deleting another selected Agent's valid output.
+  it.each(['project', ...(process.platform === 'darwin' && process.arch === 'arm64' ? ['user' as const] : [])] as const)(
+    'keeps mixed Native and Portable delivery idempotent with shared provider association (%s)', async (scope) => {
+    const setup = await fixture([{ name: 'dual', native: true, nativeArtifactOnly: true }], scope);
+    const nativeRuntime = {
+      nativeCliRunner: async (invocation: { args: string[] }) => invocation.args.includes('--version')
+        ? { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }
+        : invocation.args.includes('--json')
+          ? { exitCode: 0, stdout: JSON.stringify({ installed: [], available: [] }), stderr: '' }
+          : { exitCode: 0, stdout: '', stderr: '' },
+      codexManagerResolver: async () => ({
+        kind: 'system' as const, version: '0.200.0', command: 'codex', argsPrefix: [] as string[],
+      }),
+    };
+    await fs.remove(setup.intentPath);
+    await targetsSet({ scope, cwd: setup.cwd, env: setup.env, agents: ['codex', 'cursor'] });
+    const options = { ...setup.options(), all: false };
+    const installed = await runRecovery('install', ['team/dual'], options, nativeRuntime);
+    expect(installed.ok, JSON.stringify(installed)).toBe(true);
+    expect(installed.targetResults.map(({ agent, delivery }) => [agent, delivery?.kind]))
+      .toEqual([['codex', 'native'], ['cursor', 'agent-skills']]);
+    const portablePath = path.join(scope === 'user' ? setup.env.HOME! : setup.cwd,
+      '.agents', 'skills', 'dual', 'SKILL.md');
+    const portableBytes = await fs.readFile(portablePath);
+    const writes = await addCalls(setup.log);
+    expect(writes.map((args) => args[args.indexOf('--agent') + 1])).toEqual(['cursor']);
+
+    const repeated = await runRecovery('sync', ['team/dual'], options, nativeRuntime);
+    expect(repeated.ok, JSON.stringify(repeated)).toBe(true);
+    expect(repeated.remainingTargets).toEqual([]);
+    expect(repeated.recoveryActions).toEqual([]);
+    expect(repeated.targetResults.every((target) => target.blockers.length === 0)).toBe(true);
+    expect(repeated.targetResults.find((target) => target.agent === 'cursor')?.execution).toBe('no-op');
+    expect(await fs.readFile(portablePath)).toEqual(portableBytes);
+    expect(await addCalls(setup.log)).toEqual(writes);
+
+    for (const narrowed of [
+      { targets: ['codex'] },
+      { exactTargets: [{ pluginId: 'team/dual', agent: 'codex' as const }] },
+    ]) {
+      const nativeOnly = await runRecovery('sync', ['team/dual'], { ...options, ...narrowed }, nativeRuntime);
+      expect(nativeOnly.ok, JSON.stringify(nativeOnly)).toBe(true);
+      expect(nativeOnly.targetResults.map((target) => target.agent)).toEqual(['codex']);
+      expect(nativeOnly.recoveryActions).toEqual([]);
+      expect(await fs.readFile(portablePath)).toEqual(portableBytes);
+      expect(await addCalls(setup.log)).toEqual(writes);
+    }
+    if (scope === 'user') {
+      await fs.appendFile(portablePath, 'external edit');
+      const changedBytes = await fs.readFile(portablePath);
+      const uncertain = await runRecovery('sync', ['team/dual'], { ...options, targets: ['codex'] }, nativeRuntime);
+      expect(uncertain.ok).toBe(false);
+      expect(uncertain.targetResults[0]?.blockers.map((entry) => entry.code))
+        .toContain('deliverySwitchPortableObservationFailed');
+      expect(uncertain.outputsMayHaveChanged).toBe(false);
+      expect(await fs.readFile(portablePath)).toEqual(changedBytes);
+      expect(await addCalls(setup.log)).toEqual(writes);
+    }
+  });
+
   // Test Value Gate: changing delivery must not install Native beside a separately located Portable Skill.
-  it('blocks Portable-to-Native delivery until the old Portable output is moved', async () => {
+  it.each([false, true])('blocks Portable-to-Native delivery until the old output is moved (renamed Skill=%s)', async (renamedSkill) => {
     const setup = await fixture([{ name: 'alpha', portableCodexSwitch: true }]);
     const nativeRuntime = {
       nativeCliRunner: async (invocation: { args: string[] }) => invocation.args.includes('--version')
@@ -376,6 +499,13 @@ describe('scoped recovery integration', () => {
     const manifest = await fs.readJson(manifestPath) as {
       extensions: { instructions: Array<{ agentOverrides?: { codex: null } }> };
     };
+    if (renamedSkill) {
+      await targetsSet({ scope: 'project', cwd: setup.cwd, env: setup.env, agents: ['codex', 'cursor'] });
+      const currentSkill = path.join(pluginRoot, 'agent-skills', 'skills', 'current');
+      await fs.move(path.join(pluginRoot, 'agent-skills', 'skills', 'alpha'), currentSkill);
+      await fs.writeFile(path.join(currentSkill, 'SKILL.md'),
+        '---\nname: current\ndescription: Current Portable fixture\n---\nCurrent.\n');
+    }
     delete manifest.extensions.instructions[0]!.agentOverrides;
     await fs.writeJson(manifestPath, manifest);
     const catalogPath = path.join(setup.sourceRoot, 'catalog-manifest.json');
@@ -396,6 +526,12 @@ describe('scoped recovery integration', () => {
       .toEqual(['deliverySwitchPortableCleanupRequired']);
     expect(await fs.pathExists(portablePath)).toBe(true);
     expect(await addCalls(setup.log)).toEqual(beforeWrites);
+    if (renamedSkill) {
+      const mixed = await prepareRecovery('sync', [], setup.options(), nativeRuntime);
+      expect(mixed.receipt.targetResults.find((target) => target.agent === 'codex')?.blockers.map((entry) => entry.code))
+        .toContain('deliverySwitchPortableCleanupRequired');
+      await mixed.context.dispose();
+    }
 
     const lockPath = path.join(setup.cwd, 'skills-lock.json');
     const lockBytes = await fs.readFile(lockPath);

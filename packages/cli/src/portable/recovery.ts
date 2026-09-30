@@ -497,6 +497,7 @@ export async function inspectPortableResidue(options: {
   selector: string;
   env?: NodeJS.ProcessEnv;
   agents?: PortableAgent[];
+  retainedTargets?: readonly Pick<PortableTarget, 'skill' | 'agent' | 'physicalPath' | 'installedDigest'>[];
   signal?: AbortSignal;
 }): Promise<PortableResidue> {
   options = { ...options, env: options.context.env };
@@ -563,7 +564,7 @@ export async function inspectPortableResidue(options: {
     const relative = record.source && path.isAbsolute(record.source) ? path.relative(rootKey, record.source) : '..';
     const pointsToRoot = relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
     if (!record.source && !candidateNames.has(record.name)) continue;
-    const associated = agents.filter((agent) => record.agents.some((entry) => agentName(entry) === agent));
+    let associated = agents.filter((agent) => record.agents.some((entry) => agentName(entry) === agent));
     const markUnknown = () => {
       blockers.push('portableObservationFailed');
       for (const agent of associated.length ? associated : agents) unknownAgents.add(agent);
@@ -578,7 +579,15 @@ export async function inspectPortableResidue(options: {
     }
     let old: HistoricalPortableMaterialization | undefined;
     try {
-      await portableSkillTreeDigest(recordPath);
+      const installedDigest = await portableSkillTreeDigest(recordPath);
+      // Current desired copies can be shared observations without proving AW ownership.
+      const retained = options.retainedTargets?.filter((target) =>
+        target.skill === record.name && target.installedDigest === installedDigest
+        && target.physicalPath === recordPath
+        && record.agents.some((entry) => agentName(entry) === target.agent)) ?? [];
+      associated = associated.filter((agent) => !retained.some((target) =>
+        target.physicalPath === targetPath(recoveryOptions, agent, record.name)));
+      if (retained.length && associated.length === 0) continue;
       old = await oldMaterialization(recoveryOptions, record.source);
     } catch { /* Unverifiable record cannot authorize cleanup. */ }
     if (!old) {

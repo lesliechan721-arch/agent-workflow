@@ -115,6 +115,29 @@ describe('retire strong state and residue', () => {
     expect(backend.execute).not.toHaveBeenCalled();
   });
 
+  // Test Value Gate: inferred output targets stay frozen in retries; completed config deletion is not requested again.
+  it.each([true, false])('keeps inferred targets after config deletion completes (deleted=%s)', async (deleted) => {
+    const options = location();
+    await addRoot(options, 'local/demo', 'sha256:logical');
+    const physicalPath = path.join(options.env.HOME!, '.agents', 'skills', 'demo');
+    backend.inspect.mockImplementation(async () => ({ ...removedEvidence(), nativeState: 'installed' }));
+    backend.portable.mockResolvedValue({ state: 'present', blockers: [], targets: [
+      { skill: 'demo', agent: 'cursor', physicalPath },
+    ] });
+    backend.resetConfig.mockResolvedValue({ deleted });
+    backend.execute.mockResolvedValue({ overallState: 'succeeded', rebuildResults: [], targetResults: [],
+      platforms: [], plugins: [], warnings: [], receiptTargets: [] });
+    const result = await runRetire({ ...options, selector: 'local/demo', deleteConfig: true, yes: true }, {
+      inventoryCatalogSourceReferences: async () =>
+        ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }),
+    });
+    expect(result).toMatchObject({ ok: false, declarationChanged: true, configChanged: deleted });
+    expect(result.recoveryActions).toContain('aw intent retire local/demo --scope user --target codex --target cursor');
+    expect(result.recoveryActions.some((action) => action.includes(physicalPath) && action.includes('AW 不自动删除')))
+      .toBe(true);
+    expect(result.recoveryActions.join('\n')).not.toContain('--delete-config');
+  });
+
   it('reviews only observed strong-state changes before retirement writes', async () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');

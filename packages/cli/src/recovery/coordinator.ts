@@ -106,9 +106,10 @@ export interface RecoveryPlan {
   deliverySwitchChecks: Array<{ pluginIds: string[]; cleanPluginIds: string[];
     platform: PlatformName; fingerprint: string }>;
   portableGroups: PortablePreparation[];
+  portableProtectionGroups: PortablePreparation[];
   runtime: RebuildCommandRuntime;
   portableResidues: Array<{ kind: 'cleanup' | 'delivery-switch'; pluginId: string;
-    agents: AgentId[]; observation: PortableResidue }>;
+    agents: AgentId[]; observation: PortableResidue; retainedTargets?: PortableTarget[] }>;
   sourceRefreshes: RecoverySourceRefresh[];
   sourceRefreshFailures: Array<{ sourceId: string; code: string }>;
   blockExecution: boolean;
@@ -470,7 +471,8 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
   const plan: RecoveryPlan = { command, options, receipt, demand, context, originalIntent,
     plannedImpact: { declaration: proposed?.changed === true, preferences: false, config: false, outputs: false },
     preferencesEvidence: preferenceEvidence(demand), changes: [], warnings: [],
-    nativeGroups: [], historicalNativeTargets: new Set(), deliverySwitchChecks: [], portableGroups: [], runtime,
+    nativeGroups: [], historicalNativeTargets: new Set(), deliverySwitchChecks: [], portableGroups: [],
+    portableProtectionGroups: [], runtime,
     portableResidues: [], sourceRefreshes,
     sourceRefreshFailures: [...refreshFailures].map(([sourceId, code]) => ({ sourceId, code })),
     blockExecution: false,
@@ -599,36 +601,6 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
         }
       }
     }
-    for (const pluginId of receipt.requestedRoots) {
-      const candidates = receipt.targetResults.filter((target) => target.pluginId === pluginId
-        && target.blockers.length === 0 && target.delivery?.kind === 'native');
-      if (candidates.length === 0) continue;
-      const agents = candidates.map((target) => target.agent);
-      let observation: PortableResidue;
-      try {
-        observation = await inspectPortableResidue({ scope: options.scope, context, selector: pluginId,
-          env: options.env, agents });
-      } catch {
-        observation = { state: 'unknown', targets: [], blockers: ['portableObservationFailed'] };
-      }
-      plan.portableResidues.push({ kind: 'delivery-switch', pluginId, agents, observation });
-      if (observation.state === 'absent') continue;
-      for (const target of candidates) {
-        const residues = observation.targets.filter((entry) => entry.agent === target.agent);
-        const uncertain = observation.unknownAgents?.includes(target.agent)
-          ?? (observation.blockers.length > 0 && residues.length === 0);
-        if (residues.length === 0 && !uncertain) continue;
-        if (residues.length === 0) {
-          block(target, 'deliverySwitchPortableObservationFailed');
-          target.recoveryActions = [`检查 ${pluginId}/${target.agent} 的 Portable 输出和 provider 关联后重新准备。`];
-        } else {
-          block(target, 'deliverySwitchPortableCleanupRequired');
-          target.backend = { previousDelivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: target.agent },
-            portableResidue: residues };
-          target.recoveryActions = portableRecoveryActions(plan, pluginId, residues);
-        }
-      }
-    }
   }
   const groups = new Map<string, { platform: PlatformName; command: RecoveryCommand; pluginIds: string[] }>();
   for (const target of receipt.targetResults) {
@@ -695,6 +667,60 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
     }
   }
   for (const prepared of plan.portableGroups) portableResults(plan, prepared);
+  if (command !== 'cleanup' && command !== 'uninstall') {
+    // Complete scope demand protects copies contributed by unselected roots and their dependencies.
+    const desiredAgents = new Set([...receipt.selection.agents,
+      ...(demand.preferences.state === 'valid' ? demand.preferences.value.agents : [])]);
+    const retainedPortableTargets: PortableTarget[] = [];
+    for (const root of demand.roots ?? []) {
+      const portableAgents = [...desiredAgents].filter((agent) => root.plugin
+        && resolveDelivery(root.plugin.manifest, agent, options.scope)?.kind === 'agent-skills');
+      if (!portableAgents.length) continue;
+      try {
+        const prepared = plan.portableGroups.find((group) => group.options.selector === root.pluginId
+          && portableAgents.every((agent) => group.options.agents.includes(agent)))
+          ?? await preparePortableRecovery({ scope: options.scope, context, selector: root.pluginId,
+            env: options.env, agents: portableAgents, cliVersion: options.cliVersion,
+            catalogOperationContext: demand.catalogOperationContext });
+        if (!prepared.globalBlockers.length) {
+          retainedPortableTargets.push(...prepared.targets.filter((target) =>
+            !target.blocker && ['satisfied', 'drifted'].includes(target.observation)));
+          if (!plan.portableGroups.includes(prepared)) plan.portableProtectionGroups.push(prepared);
+        }
+      } catch { /* Missing current Portable evidence cannot protect historical residue. */ }
+    }
+    for (const pluginId of receipt.requestedRoots) {
+      const candidates = receipt.targetResults.filter((target) => target.pluginId === pluginId
+        && target.blockers.length === 0 && target.delivery?.kind === 'native');
+      if (candidates.length === 0) continue;
+      const agents = candidates.map((target) => target.agent);
+      const retainedTargets = retainedPortableTargets.filter((target) => target.providerPluginId === pluginId);
+      let observation: PortableResidue;
+      try {
+        observation = await inspectPortableResidue({ scope: options.scope, context, selector: pluginId,
+          env: options.env, agents, retainedTargets });
+      } catch {
+        observation = { state: 'unknown', targets: [], blockers: ['portableObservationFailed'] };
+      }
+      plan.portableResidues.push({ kind: 'delivery-switch', pluginId, agents, observation, retainedTargets });
+      if (observation.state === 'absent') continue;
+      for (const target of candidates) {
+        const residues = observation.targets.filter((entry) => entry.agent === target.agent);
+        const uncertain = observation.unknownAgents?.includes(target.agent)
+          ?? (observation.blockers.length > 0 && residues.length === 0);
+        if (residues.length === 0 && !uncertain) continue;
+        if (residues.length === 0) {
+          block(target, 'deliverySwitchPortableObservationFailed');
+          target.recoveryActions = [`检查 ${pluginId}/${target.agent} 的 Portable 输出和 provider 关联后重新准备。`];
+        } else {
+          block(target, 'deliverySwitchPortableCleanupRequired');
+          target.backend = { previousDelivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: target.agent },
+            portableResidue: residues };
+          target.recoveryActions = portableRecoveryActions(plan, pluginId, residues);
+        }
+      }
+    }
+  }
   for (const pluginId of command === 'cleanup' || command === 'uninstall' ? receipt.requestedRoots : []) {
     const agents = receipt.targetResults.filter((target) => target.pluginId === pluginId).map((target) => target.agent);
     const observation = await inspectPortableResidue({ scope: options.scope, context, selector: pluginId, env: options.env, agents });
@@ -861,9 +887,17 @@ export async function executeRecovery(plan: RecoveryPlan,
           return completeReceipt(receipt);
         }
       }
+      for (const prepared of plan.portableProtectionGroups) {
+        const checked = await inspectPortableRecovery(prepared.options);
+        if (checked.evidenceDigest !== prepared.evidenceDigest) {
+          receipt.blockers.push(diagnostic('operationReviewStale'));
+          return completeReceipt(receipt);
+        }
+      }
       for (const residue of plan.portableResidues) {
         const checked = await inspectPortableResidue({ scope: plan.options.scope, context: plan.context,
-          selector: residue.pluginId, env: plan.options.env, agents: residue.agents }).catch(() => undefined);
+          selector: residue.pluginId, env: plan.options.env, agents: residue.agents,
+          retainedTargets: residue.retainedTargets }).catch(() => undefined);
         if (!checked || JSON.stringify(checked) !== JSON.stringify(residue.observation)) {
           receipt.blockers.push(diagnostic('operationReviewStale'));
           return completeReceipt(receipt);
