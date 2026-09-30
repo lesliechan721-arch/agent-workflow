@@ -47,6 +47,9 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "src/select.js"
+        ],
+        "artifacts": [
+          { "path": "src/select.js", "exists": true }
         ]
       },
       "audit": {
@@ -118,6 +121,9 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "src/select.js"
+        ],
+        "artifacts": [
+          { "path": "src/select.js", "exists": true }
         ]
       },
       "audit": {
@@ -258,6 +264,10 @@
         "allowedWorkspaceChanges": [
           "src/select.js",
           ".dev-workflows/selection/work.md"
+        ],
+        "artifacts": [
+          { "path": "src/select.js", "exists": true },
+          { "path": ".dev-workflows/selection/work.md", "exists": true }
         ]
       },
       "audit": {

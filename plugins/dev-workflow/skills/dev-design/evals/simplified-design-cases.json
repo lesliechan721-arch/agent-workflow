@@ -79,6 +79,9 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           ".dev-workflows/export/spec.md"
+        ],
+        "artifacts": [
+          { "path": ".dev-workflows/export/spec.md", "exists": true }
         ]
       },
       "audit": {
@@ -115,6 +118,9 @@
           ".dev-workflows/selection/spec.md",
           ".dev-workflows/selection/spec/**",
           ".dev-workflows/selection/reviews/**"
+        ],
+        "artifacts": [
+          { "path": ".dev-workflows/selection/spec.md", "exists": true }
         ]
       },
       "audit": {
