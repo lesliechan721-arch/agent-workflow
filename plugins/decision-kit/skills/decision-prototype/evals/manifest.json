@@ -78,9 +78,7 @@
           "node",
           "prototype-builder-workflow.mjs"
         ],
-        "allowedModels": [
-          "gpt-5.6-luna"
-        ]
+        "allowedModels": []
       }
     },
     {

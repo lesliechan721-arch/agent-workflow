@@ -243,10 +243,9 @@ test('all Explore workflow commands prepare bounded requests without starting Co
         'developerInstructions', 'model', 'multiAgent', 'prompt', 'roles', 'sandbox', 'version',
       ]);
       assert.equal(request.roles.every((role) => !path.isAbsolute(role.configFile)), true);
-      assert.equal(request.model === null || suite.provider.allowedModels.includes(request.model), true);
+      assert.equal(request.model, null);
       if (suite.id === 'workflow') {
         assert.equal(request.sandbox, 'read-only');
-        assert.equal(request.model, 'gpt-5.6-luna');
         assert.match(request.prompt, /clean context/u);
         assert.match(request.prompt, /spawn 不要覆盖 model 或 reasoning/u);
         assert.match(request.prompt, /child 结果和最终答复/u);

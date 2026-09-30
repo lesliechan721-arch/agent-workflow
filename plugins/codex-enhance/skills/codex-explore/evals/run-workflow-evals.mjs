@@ -65,12 +65,6 @@ function validateCase(entry, index) {
   if (typeof entry.prompt !== 'string' || entry.prompt.trim() === '') {
     throw new Error(`${entry.id}.prompt must be a non-empty string.`);
   }
-  if (
-    entry.parent_model !== undefined &&
-    (typeof entry.parent_model !== 'string' || entry.parent_model.trim() === '')
-  ) {
-    throw new Error(`${entry.id}.parent_model must be a non-empty string.`);
-  }
   const expected = entry.expected;
   if (
     !expected ||
@@ -625,7 +619,6 @@ export function evaluateLeafOutput(results, contract) {
 export function workflowEvalRunCase(entry) {
   return {
     query: entry.prompt,
-    parent_model: entry.parent_model,
     explicit_skill: true,
     should_load_skill: true,
     should_spawn_agent: true,
@@ -641,7 +634,7 @@ export async function prepareWorkflow(input) {
     version: 1,
     prompt: entry.prompt,
     sandbox: 'read-only',
-    model: entry.parent_model ?? null,
+    model: null,
     developerInstructions: EXPLORE_DEVELOPER_INSTRUCTIONS,
     roles: await workflowRoles(input.paths.workspace),
     multiAgent: workflowProfile(entry),

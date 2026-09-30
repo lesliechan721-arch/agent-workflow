@@ -96,7 +96,6 @@ function testCorpusShape() {
     entry.tags.includes('diagnostic') &&
     typeof entry.input?.prompt === 'string' &&
     entry.input.prompt.length > 0 &&
-    (entry.input.parent_model === undefined || typeof entry.input.parent_model === 'string') &&
     (entry.input.codex_config === undefined || typeof entry.input.codex_config === 'object') &&
     typeof entry.expected?.criteria?.agent_type === 'string' &&
     entry.expected.criteria.agent_type.length > 0 &&

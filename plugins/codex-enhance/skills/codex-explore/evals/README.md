@@ -59,7 +59,7 @@ workflow suite 保留 V1/V2 两个无并行本地工作的关键路径用例，�
 - 最终答复包含预期来源、行号和 `FACT key=value`；包含推断的用例还必须区分直接证据与推断。
 - 临时 workspace 在运行前后没有新增、删除或修改文件。
 
-V1 用例显式使用支持直接工具调用且未固定 V2 的父模型；只设置 `features.multi_agent_v2.enabled=false` 不足以覆盖父模型自带的 V2 声明。
+Eval adapter 不固定父模型。Engine 按请求中的 `multiAgent.protocol` 选择：V1 使用 `gpt-5.6-luna`，其它情况使用运行器默认的 `gpt-6-luna`。只设置 `features.multi_agent_v2.enabled=false` 不足以覆盖父模型自带的 V2 声明，因此 V1 兼容模型由 Engine 统一选择。
 
 Engine 为每个 attempt 启动一个 app-server root，并从脱敏 rollout 生成 `workflow-evidence.json`、`workflow-trace.json` 和 `model-output.txt`。adapter 的 prepare 只生成有界 `CodexWorkflowRequest v1`；grade 只读取 normalized evidence 和本 suite 所需的 model output。真实 smoke 覆盖正常完成路径；主动探测、恢复超限和过早清理由合成 timeline 单元测试覆盖。它不声称证明 Codex 内部消息投递语义或未出现在 normalized evidence 中的主代理读取行为。
 

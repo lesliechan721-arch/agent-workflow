@@ -232,12 +232,14 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
       paths: fixtures[0].paths,
     });
     assert.equal(prepared.sandbox, 'workspace-write');
+    assert.equal(prepared.model, null);
     assert.equal(prepared.roles[0].name, 'prototype-builder');
     assert.equal(prepared.roles[0].configFile, '.codex/agents/prototype-builder.toml');
-    assert.match(
-      await readFile(path.join(fixtures[0].paths.workspace, prepared.roles[0].configFile), 'utf8'),
-      /只创建或修改指定 Prototype 的 artifact\/\*\*/u,
+    const builderConfig = await readFile(
+      path.join(fixtures[0].paths.workspace, prepared.roles[0].configFile), 'utf8',
     );
+    assert.match(builderConfig, /只创建或修改指定 Prototype 的 artifact\/\*\*/u);
+    assert.doesNotMatch(builderConfig, /^model(?:_reasoning_effort)?\s*=/mu);
 
     const prototypeRoot = path.join(
       fixtures[0].paths.workspace,

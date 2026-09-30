@@ -2,7 +2,7 @@
 
 该 manifest 覆盖 default/non-default、project/user 最终制品和 lifecycle 专用 timeout profile；普通模型用例位于 project-default：
 
-Eval 主代理使用 `gpt-6-luna`：trigger 使用 Eval 引擎默认值，routing 和 lifecycle 在请求及 manifest 白名单中显式指定。子代理模型仍由被测 Skill 和用例要求选择。启用 spawn 观测的 trigger 默认运行 multi-agent V2；routing 的 V1/V2 则由各 case 的 `runtimeProfile` 选择。
+Eval adapter 不固定主代理模型。Engine 为 V1 case 使用 `gpt-5.6-luna`，其它情况使用运行器默认的 `gpt-6-luna`。子代理模型仍由被测 Skill 和用例要求选择。启用 spawn 观测的 trigger 默认运行 multi-agent V2；routing 的 V1/V2 则由各 case 的 `runtimeProfile` 选择。
 
 ## 准备与运行
 

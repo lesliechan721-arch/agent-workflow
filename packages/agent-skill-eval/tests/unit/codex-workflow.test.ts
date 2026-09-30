@@ -127,10 +127,10 @@ async function adapterFixture(): Promise<{
     '    version: 1,',
     '    prompt: "Run the workflow.",',
     '    sandbox: input.case.writable ? "workspace-write" : "read-only",',
-    '    model: "allowed-model",',
+    '    model: input.case.defaultModel ? null : "allowed-model",',
     '    developerInstructions: "Follow the workflow contract.",',
     '    roles: [{ name: "explorer", description: "Inspect the workspace.", configFile: ".codex/agents/explorer.toml" }],',
-    '    multiAgent: { protocol: "v2", maxDepth: 2, hideSpawnAgentMetadata: true, exposeSpawnAgentModelOverrides: true },',
+    '    multiAgent: { protocol: input.case.protocol ?? "v2", maxDepth: 2, hideSpawnAgentMetadata: input.case.protocol !== "v1", exposeSpawnAgentModelOverrides: input.case.protocol !== "v1" },',
     '    ...(input.case.evaluation ? { evaluation: input.case.evaluation } : {})',
     '  }))',
     '} else {',
@@ -354,6 +354,38 @@ describe('codex-workflow provider', () => {
     expect(env).not.toHaveProperty('HTTPS_PROXY')
     expect(env).not.toHaveProperty('CODEX_HOME')
     expect(env).not.toHaveProperty('AW_SKILL_EVAL_CODEX_MODEL')
+  })
+
+  it.skipIf(process.platform === 'win32').each([
+    { protocol: 'v1', expectedModel: 'gpt-5.6-luna' },
+    { protocol: 'v2', expectedModel: null },
+  ] as const)('selects the compatible default model for $protocol workflows', async ({ protocol, expectedModel }) => {
+    const fixture = await adapterFixture()
+    const run = vi.fn<CodexWorkflowTransport['run']>(async () => execution())
+    await executeCodexWorkflowProvider({
+      provider: {
+        type: 'codex-workflow',
+        command: [process.execPath, fixture.adapter],
+        allowedModels: [],
+      },
+      evalRoot: fixture.root,
+      input: {
+        case: { defaultModel: true, protocol },
+        variant: 'current',
+        attempt: 1,
+        workspacePath: fixture.workspace,
+        fixturesPath: fixture.fixtures,
+        outputDir: fixture.output,
+        timeoutMs: 5_000,
+      },
+      sourceEnv: { PATH: process.env.PATH },
+      codexRuntime: { ...runtime(fixture.root), model: 'gpt-6-luna' },
+      processTree: fixture.processTree,
+      transport: { run },
+    })
+    expect(run).toHaveBeenCalledOnce()
+    expect(run.mock.calls[0]![0].request.model).toBe(expectedModel)
+    expect(run.mock.calls[0]![0].codexRuntime.model).toBe('gpt-6-luna')
   })
 
   it.skipIf(process.platform === 'win32')(
