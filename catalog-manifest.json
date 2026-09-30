@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.32",
+  "catalogVersion": "0.1.0-beta.33",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "b6e7b66585e93121023c302bbb0517557cb9733f"
+    "sourceHead": "f342a342c417d852f7aaad2d77f99f6bd1b9d4c1"
   },
   "entries": [
     {
@@ -79,7 +79,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.6",
+      "version": "0.1.0-beta.7",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -92,9 +92,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:b98a24d1962f50e0945afc32e736935defa8fd66966af081e4332720e82ec523",
-      "manifestDigest": "sha256:e1b59f92c6bb485aab4d7de1895acb421d6ced681761d53d8663fb9a1968e542",
-      "contentDigest": "sha256:46b6819b633d26e47ecd1a5050be040396a60e341d57ecfe44c713bd6d9192d5"
+      "artifactDigest": "sha256:b5ea81f7cd98f15f370afd425e95b8fd1bfaa5d88b47cab5ce48369c809dbc77",
+      "manifestDigest": "sha256:781e7341aeb568199097ac6e422c77fe2d6f26d7b25a80d2cd3f2b5173baf32d",
+      "contentDigest": "sha256:a783b6aa703aa290066891e09f3cd669b8364f0814ba9bc24dcba6c40687c01d"
     },
     {
       "name": "aw-development-toolkit",
@@ -248,7 +248,7 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.7",
+      "version": "0.2.0-beta.8",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -261,9 +261,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:c1af7133b4f8a7003d3072a4aa318b77747b189f003be799fb0fc4172729192a",
-      "manifestDigest": "sha256:9386c9f701b92b12a74a3d9eec3a363a072fa1937abc574723c34c7215c93226",
-      "contentDigest": "sha256:09b54c97d97f045407f04642393f7557dd59a86d14ebad92a03a8819fad828c8"
+      "artifactDigest": "sha256:20280c1e5fca2ef97103d08e4efe97d4b9922d9c2c9144032861b4669b791d8d",
+      "manifestDigest": "sha256:e1e47c66231f868ae3548b8a2beb31f0b8250b5d6807e2b84e0aed27e8cbdbae",
+      "contentDigest": "sha256:0b882efdb0bb6f302209371ac6ffc49c0843cab576095e03050cdd4c64765ec9"
     },
     {
       "name": "decision-kit",

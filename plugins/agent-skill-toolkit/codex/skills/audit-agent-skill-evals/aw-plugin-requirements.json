@@ -3,7 +3,7 @@
   "kind": "aw-plugin-requirements",
   "plugin": {
     "name": "agent-skill-toolkit",
-    "version": "0.1.0-beta.6"
+    "version": "0.1.0-beta.7"
   },
   "requiredCapabilities": [
     "aw.plugin-build-config.v1",

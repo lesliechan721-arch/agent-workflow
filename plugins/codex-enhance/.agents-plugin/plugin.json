@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "codex-enhance",
-  "version": "0.2.0-beta.7",
+  "version": "0.2.0-beta.8",
   "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
   "marketplace": {
     "category": "workflow",
@@ -54,6 +54,46 @@
           "model": {
             "type": "string",
             "required": true,
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "gpt-6.1-sol",
+                  "title": "gpt-6.1-sol",
+                  "value": "gpt-6.1-sol"
+                },
+                {
+                  "id": "gpt-6-luna",
+                  "title": "gpt-6-luna",
+                  "value": "gpt-6-luna"
+                },
+                {
+                  "id": "gpt-6-astra",
+                  "title": "gpt-6-astra",
+                  "value": "gpt-6-astra"
+                },
+                {
+                  "id": "gpt-6-sol",
+                  "title": "gpt-6-sol",
+                  "value": "gpt-6-sol"
+                },
+                {
+                  "id": "gpt-5.6-luna",
+                  "title": "gpt-5.6-luna",
+                  "value": "gpt-5.6-luna"
+                },
+                {
+                  "id": "gpt-5.6-terra",
+                  "title": "gpt-5.6-terra",
+                  "value": "gpt-5.6-terra"
+                },
+                {
+                  "id": "gpt-5.6-sol",
+                  "title": "gpt-5.6-sol",
+                  "value": "gpt-5.6-sol"
+                }
+              ]
+            },
             "validation": {
               "minLength": 1
             }
@@ -62,7 +102,7 @@
             "type": "string",
             "required": true,
             "choices": {
-              "allowCustom": false,
+              "allowCustom": true,
               "presets": [
                 {
                   "id": "low",
@@ -113,6 +153,46 @@
           "model": {
             "type": "string",
             "required": true,
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "gpt-6.1-sol",
+                  "title": "gpt-6.1-sol",
+                  "value": "gpt-6.1-sol"
+                },
+                {
+                  "id": "gpt-6-luna",
+                  "title": "gpt-6-luna",
+                  "value": "gpt-6-luna"
+                },
+                {
+                  "id": "gpt-6-astra",
+                  "title": "gpt-6-astra",
+                  "value": "gpt-6-astra"
+                },
+                {
+                  "id": "gpt-6-sol",
+                  "title": "gpt-6-sol",
+                  "value": "gpt-6-sol"
+                },
+                {
+                  "id": "gpt-5.6-luna",
+                  "title": "gpt-5.6-luna",
+                  "value": "gpt-5.6-luna"
+                },
+                {
+                  "id": "gpt-5.6-terra",
+                  "title": "gpt-5.6-terra",
+                  "value": "gpt-5.6-terra"
+                },
+                {
+                  "id": "gpt-5.6-sol",
+                  "title": "gpt-5.6-sol",
+                  "value": "gpt-5.6-sol"
+                }
+              ]
+            },
             "validation": {
               "minLength": 1
             }
@@ -121,7 +201,7 @@
             "type": "string",
             "required": true,
             "choices": {
-              "allowCustom": false,
+              "allowCustom": true,
               "presets": [
                 {
                   "id": "low",
@@ -172,6 +252,46 @@
           "model": {
             "type": "string",
             "required": true,
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "gpt-6.1-sol",
+                  "title": "gpt-6.1-sol",
+                  "value": "gpt-6.1-sol"
+                },
+                {
+                  "id": "gpt-6-luna",
+                  "title": "gpt-6-luna",
+                  "value": "gpt-6-luna"
+                },
+                {
+                  "id": "gpt-6-astra",
+                  "title": "gpt-6-astra",
+                  "value": "gpt-6-astra"
+                },
+                {
+                  "id": "gpt-6-sol",
+                  "title": "gpt-6-sol",
+                  "value": "gpt-6-sol"
+                },
+                {
+                  "id": "gpt-5.6-luna",
+                  "title": "gpt-5.6-luna",
+                  "value": "gpt-5.6-luna"
+                },
+                {
+                  "id": "gpt-5.6-terra",
+                  "title": "gpt-5.6-terra",
+                  "value": "gpt-5.6-terra"
+                },
+                {
+                  "id": "gpt-5.6-sol",
+                  "title": "gpt-5.6-sol",
+                  "value": "gpt-5.6-sol"
+                }
+              ]
+            },
             "validation": {
               "minLength": 1
             }
@@ -180,7 +300,7 @@
             "type": "string",
             "required": true,
             "choices": {
-              "allowCustom": false,
+              "allowCustom": true,
               "presets": [
                 {
                   "id": "low",
@@ -231,6 +351,46 @@
           "model": {
             "type": "string",
             "required": true,
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "gpt-6.1-sol",
+                  "title": "gpt-6.1-sol",
+                  "value": "gpt-6.1-sol"
+                },
+                {
+                  "id": "gpt-6-luna",
+                  "title": "gpt-6-luna",
+                  "value": "gpt-6-luna"
+                },
+                {
+                  "id": "gpt-6-astra",
+                  "title": "gpt-6-astra",
+                  "value": "gpt-6-astra"
+                },
+                {
+                  "id": "gpt-6-sol",
+                  "title": "gpt-6-sol",
+                  "value": "gpt-6-sol"
+                },
+                {
+                  "id": "gpt-5.6-luna",
+                  "title": "gpt-5.6-luna",
+                  "value": "gpt-5.6-luna"
+                },
+                {
+                  "id": "gpt-5.6-terra",
+                  "title": "gpt-5.6-terra",
+                  "value": "gpt-5.6-terra"
+                },
+                {
+                  "id": "gpt-5.6-sol",
+                  "title": "gpt-5.6-sol",
+                  "value": "gpt-5.6-sol"
+                }
+              ]
+            },
             "validation": {
               "minLength": 1
             }
@@ -239,7 +399,7 @@
             "type": "string",
             "required": true,
             "choices": {
-              "allowCustom": false,
+              "allowCustom": true,
               "presets": [
                 {
                   "id": "low",
@@ -282,7 +442,7 @@
         "title": "常规任务配置",
         "description": "常规任务 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-6-sol",
+          "model": "gpt-6.1-sol",
           "reasoningEffort": "medium"
         },
         "required": true,
@@ -290,6 +450,46 @@
           "model": {
             "type": "string",
             "required": true,
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "gpt-6.1-sol",
+                  "title": "gpt-6.1-sol",
+                  "value": "gpt-6.1-sol"
+                },
+                {
+                  "id": "gpt-6-luna",
+                  "title": "gpt-6-luna",
+                  "value": "gpt-6-luna"
+                },
+                {
+                  "id": "gpt-6-astra",
+                  "title": "gpt-6-astra",
+                  "value": "gpt-6-astra"
+                },
+                {
+                  "id": "gpt-6-sol",
+                  "title": "gpt-6-sol",
+                  "value": "gpt-6-sol"
+                },
+                {
+                  "id": "gpt-5.6-luna",
+                  "title": "gpt-5.6-luna",
+                  "value": "gpt-5.6-luna"
+                },
+                {
+                  "id": "gpt-5.6-terra",
+                  "title": "gpt-5.6-terra",
+                  "value": "gpt-5.6-terra"
+                },
+                {
+                  "id": "gpt-5.6-sol",
+                  "title": "gpt-5.6-sol",
+                  "value": "gpt-5.6-sol"
+                }
+              ]
+            },
             "validation": {
               "minLength": 1
             }
@@ -298,7 +498,7 @@
             "type": "string",
             "required": true,
             "choices": {
-              "allowCustom": false,
+              "allowCustom": true,
               "presets": [
                 {
                   "id": "low",
@@ -341,7 +541,7 @@
         "title": "复杂任务配置",
         "description": "复杂任务 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
-          "model": "gpt-6-sol",
+          "model": "gpt-6.1-sol",
           "reasoningEffort": "xhigh"
         },
         "required": true,
@@ -349,6 +549,46 @@
           "model": {
             "type": "string",
             "required": true,
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "gpt-6.1-sol",
+                  "title": "gpt-6.1-sol",
+                  "value": "gpt-6.1-sol"
+                },
+                {
+                  "id": "gpt-6-luna",
+                  "title": "gpt-6-luna",
+                  "value": "gpt-6-luna"
+                },
+                {
+                  "id": "gpt-6-astra",
+                  "title": "gpt-6-astra",
+                  "value": "gpt-6-astra"
+                },
+                {
+                  "id": "gpt-6-sol",
+                  "title": "gpt-6-sol",
+                  "value": "gpt-6-sol"
+                },
+                {
+                  "id": "gpt-5.6-luna",
+                  "title": "gpt-5.6-luna",
+                  "value": "gpt-5.6-luna"
+                },
+                {
+                  "id": "gpt-5.6-terra",
+                  "title": "gpt-5.6-terra",
+                  "value": "gpt-5.6-terra"
+                },
+                {
+                  "id": "gpt-5.6-sol",
+                  "title": "gpt-5.6-sol",
+                  "value": "gpt-5.6-sol"
+                }
+              ]
+            },
             "validation": {
               "minLength": 1
             }
@@ -357,7 +597,7 @@
             "type": "string",
             "required": true,
             "choices": {
-              "allowCustom": false,
+              "allowCustom": true,
               "presets": [
                 {
                   "id": "low",
@@ -401,13 +641,53 @@
         "description": "高难任务 调度的模型与推理强度偏好，仅支持 user scope。",
         "default": {
           "model": "gpt-6-astra",
-          "reasoningEffort": "medium"
+          "reasoningEffort": "high"
         },
         "required": true,
         "properties": {
           "model": {
             "type": "string",
             "required": true,
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "gpt-6.1-sol",
+                  "title": "gpt-6.1-sol",
+                  "value": "gpt-6.1-sol"
+                },
+                {
+                  "id": "gpt-6-luna",
+                  "title": "gpt-6-luna",
+                  "value": "gpt-6-luna"
+                },
+                {
+                  "id": "gpt-6-astra",
+                  "title": "gpt-6-astra",
+                  "value": "gpt-6-astra"
+                },
+                {
+                  "id": "gpt-6-sol",
+                  "title": "gpt-6-sol",
+                  "value": "gpt-6-sol"
+                },
+                {
+                  "id": "gpt-5.6-luna",
+                  "title": "gpt-5.6-luna",
+                  "value": "gpt-5.6-luna"
+                },
+                {
+                  "id": "gpt-5.6-terra",
+                  "title": "gpt-5.6-terra",
+                  "value": "gpt-5.6-terra"
+                },
+                {
+                  "id": "gpt-5.6-sol",
+                  "title": "gpt-5.6-sol",
+                  "value": "gpt-5.6-sol"
+                }
+              ]
+            },
             "validation": {
               "minLength": 1
             }
@@ -416,7 +696,7 @@
             "type": "string",
             "required": true,
             "choices": {
-              "allowCustom": false,
+              "allowCustom": true,
               "presets": [
                 {
                   "id": "low",
