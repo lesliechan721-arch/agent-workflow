@@ -119,7 +119,6 @@
       "input": {
         "prompt": "请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
         "files": [],
-        "parent_model": "gpt-5.6-luna",
         "config_values": {},
         "codex_config": {
           "features.multi_agent_v2.enabled": false
@@ -525,7 +524,6 @@
       ],
       "input": {
         "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
-        "parent_model": "gpt-5.6-luna",
         "files": [],
         "config_values": {},
         "codex_config": {
@@ -595,7 +593,6 @@
       ],
       "input": {
         "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
-        "parent_model": "gpt-5.6-sol",
         "files": [],
         "config_values": {},
         "codex_config": {
@@ -666,7 +663,6 @@
       ],
       "input": {
         "prompt": "$codex-subagent-guide 我明确授权两层委派：你可以启动一个高难计划子代理；该计划子代理也可以为可分离的大范围只读事实探索继续启动 Codex Explore 子代理。你必须把第二层授权明确写入计划子代理的初始 message。请使用干净上下文，并要求它先从 repo/ 的网关、结算、任务和共享模块追踪 regional_checkout 的完整传递事实，再由它自己形成系统级、高歧义跨模块改造计划。你只负责派发、等待和整合，不要自己调查或修改文件。",
-        "parent_model": "gpt-5.6-sol",
         "files": [],
         "config_values": {},
         "codex_config": {

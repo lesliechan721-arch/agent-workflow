@@ -295,14 +295,22 @@ async function testStaticManifestContract() {
     assert.equal(profile.required, true);
     assert.equal(shape.additionalProperties, false);
     assert.deepEqual(Object.keys(shape.properties), ['model', 'reasoningEffort']);
-    assert.deepEqual(shape.properties.model, {
-      type: 'string',
-      required: true,
-      validation: { minLength: 1 },
-    });
+    assert.equal(shape.properties.model.type, 'string');
+    assert.equal(shape.properties.model.required, true);
+    assert.deepEqual(shape.properties.model.validation, { minLength: 1 });
+    assert.equal(shape.properties.model.choices.allowCustom, true);
+    assert.deepEqual(shape.properties.model.choices.presets, [
+      'gpt-6.1-sol',
+      'gpt-6-luna',
+      'gpt-6-astra',
+      'gpt-6-sol',
+      'gpt-5.6-luna',
+      'gpt-5.6-terra',
+      'gpt-5.6-sol',
+    ].map((value) => ({ id: value, title: value, value })));
     assert.equal(shape.properties.reasoningEffort.type, 'string');
     assert.equal(shape.properties.reasoningEffort.required, true);
-    assert.equal(shape.properties.reasoningEffort.choices.allowCustom, false);
+    assert.equal(shape.properties.reasoningEffort.choices.allowCustom, true);
     assert.deepEqual(shape.properties.reasoningEffort.choices.presets.map((preset) => preset.value), [
       'low',
       'medium',

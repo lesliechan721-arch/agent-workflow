@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-design",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按用户授权、当前范围、真实结果与独立性评价，兼顾漏修和误触发/范围扩张；方法精简效果须与固定基线比较。"
+    },
+    "participants": [
+      "decision-shape",
+      "decision-grill",
+      "dev-spec",
+      "dev-review-spec"
+    ],
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "simple-design-one-answer-no-records",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "用 dev-design 确定列表中空姓名的显示文字，本次先设计，不实现。我只需要二选一：破折号还是“未填写”。",
+      "assertions": [
+        "Shape使用Grill方法取得用户选择；允许只问一题，用户选择不被模型推荐覆盖。",
+        "形成当前行为与验收即可结束，不生成Spec/Task/Work或擅自改产品。",
+        "用户答复直接明确当前选择且没有新含义时不重复询问同一确认。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "选择“未填写”，只影响null或空字符串，保留其他名称。"
+        ],
+        "workspaceFiles": {
+          "README.md": "# 简单列表\n当前没有空姓名展示约定。\n",
+          "src/name.js": "export const displayName = name => name;\n"
+        }
+      },
+      "expected": {
+        "output": "在当前对话形成设计并停止，产品和工作区不变。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "小任务策略属于Design，轻便不意味着绕过材料问答。",
+        "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
+        "minimalCounterexample": "多主题正式规格或持久批准需要时应建立足够工件并作相应检查。"
+      }
+    },
+    {
+      "id": "long-design-draft-preserves-open-question",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "继续 dev-design。在进入较长原型制作前先保存目前已确认的导出决定和仍开放的问题，写入已有 spec.md，本轮不实现也不制作原型。",
+      "assertions": [
+        "将已确认条件、例外与来源准确写入已有Spec；同步/异步继续标明开放且不生成生产默认。",
+        "不创建task.md或提前的work.md，不新增隐含批准。",
+        "恢复说明能从草稿读出确认与缺口，不能只留下“导出已讨论”。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          ".dev-workflows/export/spec.md": "# 导出草稿\n用户已确认：只导出当前租户的筛选结果；文件不得包含token。格式CSV。\n仍未确定：同步下载还是异步通知；尚未批准完整规格，不得当作已就绪任务。\n",
+          "source.md": "# 当前实际用户答复（本场景输入）\n结果按原列表顺序。空筛选结果也可下载只有表头的CSV。同步/异步尚未选择。允许保存当前草稿。\n"
+        }
+      },
+      "expected": {
+        "output": "草稿完整可恢复，未决和批准边界保持。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/export/spec.md"
+        ],
+        "artifacts": [
+          { "path": ".dev-workflows/export/spec.md", "exists": true }
+        ]
+      },
+      "audit": {
+        "rationale": "删除task的前提是有意义的信息仍有明确去处。",
+        "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
+        "minimalCounterexample": "没有保存授权且只是私有对话时先在对话保留，而非擅自改项目资料。"
+      }
+    },
+    {
+      "id": "formal-spec-request-remains-formal",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用 dev-design 依据当前确认形成正式本地规格，安排必要审查后给我确认；本轮只设计。",
+      "assertions": [
+        "显式正式规格请求不因功能小就被降为只口头总结；保留条件和实施自由。",
+        "按实际独立能力安排Spec Review，缺能力如实披露；不能自称批准。",
+        "设计结束不调用Build或产品Repair，也不修改代码，不生成实施Work。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "source.md": "# 当前确认\n选择函数只返回当前tenantId中id命中selectedIds的记录；保持输入顺序，空选择返回空数组，输入不变。使用哪个内部集合由实施者选择。\n",
+          "src/select.js": "export function selectRecords(rows,t,ids){return rows;}\n"
+        }
+      },
+      "expected": {
+        "output": "交付当前完整规格和实际审查/确认状态，保持设计停止。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/selection/spec.md",
+          ".dev-workflows/selection/spec/**",
+          ".dev-workflows/selection/reviews/**"
+        ],
+        "artifacts": [
+          { "path": ".dev-workflows/selection/spec.md", "exists": true }
+        ]
+      },
+      "audit": {
+        "rationale": "小任务简化不能覆盖用户指定的正式交付。",
+        "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
+        "minimalCounterexample": "用户只需一个明确文字选择且无持久需求时不必写完整Spec。"
+      }
+    }
+  ]
+}

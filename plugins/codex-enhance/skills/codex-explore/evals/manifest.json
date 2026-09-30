@@ -87,10 +87,7 @@
           "node",
           "run-model-selection-evals.mjs"
         ],
-        "allowedModels": [
-          "gpt-5.6-luna",
-          "gpt-5.6-sol"
-        ]
+        "allowedModels": []
       }
     },
     {
@@ -109,10 +106,7 @@
           "node",
           "run-workflow-evals.mjs"
         ],
-        "allowedModels": [
-          "gpt-5.5",
-          "gpt-5.6-luna"
-        ]
+        "allowedModels": []
       }
     },
     {
@@ -150,9 +144,7 @@
           "node",
           "run-liveness-evals.mjs"
         ],
-        "allowedModels": [
-          "gpt-5.5"
-        ]
+        "allowedModels": []
       }
     }
   ]

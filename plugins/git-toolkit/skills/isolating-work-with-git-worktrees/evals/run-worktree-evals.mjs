@@ -453,7 +453,7 @@ async function runCodex(workspace, prompt) {
     'exec', '--json', '--skip-git-repo-check', '--color', 'never',
     '--sandbox', 'workspace-write', ...metadataArgs,
     '--cd', workspace.repo,
-    '--model', process.env.AW_SKILL_EVAL_CODEX_MODEL ?? 'gpt-5.6-luna',
+    ...(process.env.AW_SKILL_EVAL_CODEX_MODEL ? ['--model', process.env.AW_SKILL_EVAL_CODEX_MODEL] : []),
     '--config', 'approval_policy="never"',
     '--config', 'skills.include_instructions=true', containedPrompt,
   ];

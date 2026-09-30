@@ -41,11 +41,6 @@
   "buildConfig": {
     "skillRuntimeFiles": [
       {
-        "skill": "dev-workflow",
-        "target": "references/local-workspace.md",
-        "source": "./references/local-workspace.md"
-      },
-      {
         "skill": "dev-design",
         "target": "references/local-workspace.md",
         "source": "./references/local-workspace.md"

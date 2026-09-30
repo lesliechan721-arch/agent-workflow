@@ -2267,6 +2267,9 @@ export async function executeCodexWorkflowProvider(
       options.provider.allowedModels,
       paths.workspacePath,
     )
+    if (request.model === null && request.multiAgent.protocol === 'v1') {
+      request.model = 'gpt-5.6-luna'
+    }
     let execution: CodexWorkflowExecutionResult
     try {
       execution = await (options.transport ?? defaultTransport).run({

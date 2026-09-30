@@ -236,8 +236,6 @@ async function materializeBuilderRole(workspace) {
     `name = ${JSON.stringify(BUILDER_ROLE)}`,
     `description = ${JSON.stringify('构建父代理指定的轻量 Prototype Artifact，只修改 artifact/**。')}`,
     `developer_instructions = ${JSON.stringify('只完成父代理委派的 Artifact 构建。只创建或修改指定 Prototype 的 artifact/**；不要写 brief.md、prototype.json、feedback.json 或 verdict.md；不要替用户决定。完成后返回路径、查看方式、摘要和限制。')}`,
-    'model = "gpt-5.6-luna"',
-    'model_reasoning_effort = "medium"',
     '',
   ].join('\n'), { flag: 'wx' });
 }
@@ -249,7 +247,7 @@ export async function prepareBuilderWorkflow(input) {
     version: 1,
     prompt: evalCase.prompt,
     sandbox: 'workspace-write',
-    model: 'gpt-5.6-luna',
+    model: null,
     developerInstructions: [
       'Follow the user request and applicable skills.',
       'Delegation is authorized when explicitly requested by the user or allowed by applicable Skill guidance.',

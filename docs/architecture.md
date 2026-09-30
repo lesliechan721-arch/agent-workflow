@@ -111,7 +111,7 @@ User Intent 与 Project Intent 都用严格 schema 3：`sources` 绑定 Catalog 
 
 `aw intent add/remove/list/retire`、`aw targets set/list/reset`、`aw install/sync/reinstall/uninstall/cleanup/status` 都要求显式 scope；`--target` 可重复，仅支持 `codex|claude-code|cursor`，且只作用本次请求。`--all` 选择当前 scope 的全部 root；`aw sync --all --scope user --check` 是恢复的只读观察，不与 `--refresh` 同用，未满足或未知时退出 1。旧 `aw project`、恢复命令的 `-p/--platform/both` 不保留别名。作者、config 和一次性 `aw skill` 命令的 platform 参数不变。
 
-`intent add` 只从本地健康 Active 核实 root 和来源身份，不联网或安装；`intent remove` 只编辑当前 scope 声明，不依赖 Catalog 或现场。`targets set` 只替换 agents，`targets reset` 同时清空 agents 和 override；两者不安装。显式 target 优先于保存偏好；无目标且有 root 时返回 `localTargetsRequired`，声明保留。`install` 先原子保存所选 scope root，再尽力执行目标；安装失败不回滚声明。普通 sync、reinstall、uninstall、cleanup 不改声明、偏好或配置。已移除插件通过独立的 [`intent retire`](design/removed-plugin-cleanup.md) 精确停用。
+`intent add` 只从本地健康 Active 核实 root 和来源身份，不联网或安装；`intent remove` 只编辑当前 scope 声明，不依赖 Catalog 或现场。`targets set` 只替换 agents，`targets reset` 同时清空 agents 和 override；两者不安装。显式 target 优先于保存偏好；无目标且有 root 时返回 `localTargetsRequired`，声明保留。`install` 先原子保存所选 scope root，再尽力执行目标；安装失败不回滚声明。普通 sync、reinstall、uninstall、cleanup 不改声明、偏好或配置。已移除插件通过独立的 `intent retire` 精确停用。
 
 每个 root×Agent 优先适用 Native；没有适用 Native 且 Manifest 显式声明 Portable 时才选择 Portable。Native 工具、权限、配置、信任或执行失败不自动降级。不支持与未知目标留在结果，独立安全目标可继续。完整当前 scope 需求用于保护，本次选中目标用于执行；缩小选择、未观察其它 scope 或缺少当前 Project 声明均不授权删除共享输出。Codex 共享一份 user native package，Project 只控制当前项目 activation。替换共享包显示其它消费者影响，foreign/shared 内容保留。User 不扫描调用仓库来推断其它项目没有需求。
 
@@ -168,7 +168,7 @@ primary development deactivate 把 remove 和 primary change 放入同一 invent
 
 这些命令在 `AW_HOME` mutation lock 内只采集一次当前 target 和当前 project 的现场 inventory。Active snapshot、marketplace 选择和 dependency plan 复用该内存 snapshot；执行不为计划再做第二次全量 inventory。计划完成后，writer 只对计划中的目标重新构建并检查 live ownership、native registration、有效 config 和固定 snapshot evidence。普通 inventory 不扫描历史项目、不建立全局 refcount，也不执行自动 dependency GC。
 
-已确认从健康 Active Catalog 移除的插件通过独立 [`aw intent retire`](design/removed-plugin-cleanup.md) 停用。普通 `cleanup` 不自动分类或删除强配置；停用只修改显式选中的 scope，保存配置删除默认关闭，Portable 与共享残留必须可见。
+已确认从健康 Active Catalog 移除的插件通过独立 `aw intent retire` 停用。普通 `cleanup` 不自动分类或删除强配置；停用只修改显式选中的 scope，保存配置删除默认关闭，Portable 与共享残留必须可见。
 
 停用失败的恢复命令保留 scope 和 Review 中已确定的输出 Agent 集合；未完成的配置删除保留 `--delete-config`，已完成时不再请求。Portable 残留提供精确人工检查指引，重试重新 Review，不自动携带 `--yes`。
 
@@ -454,6 +454,7 @@ Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不�
   - Engine 在运行期观察该合同；发现违反即失败。检查失效时 Engine fail closed：丢弃 grade 并停止 batch。用户态 macOS/Linux 无法对已逃逸且又失去检查的后代保证清理，因此不得盲杀 foreign 进程。
   - credential 递归清理只检查本次 provider 的 `outputDir`；其中的符号链接一律只 unlink，绝不跟随。subject workspace、Eval fixture 和其它 attempt 输入不扫描、不改 mode、也不删除。隔离 runtime home、HOME 和 temp 始终清理。output 脱敏失败时只尝试删除 `outputDir` 并让 attempt 失败；Engine 从已脱敏的内存结果写入 `provider-result.json`。
 - `codex-workflow` 是 Engine-owned object provider。Manifest 必须显式提供非空 `command` 和可为空的 `allowedModels`；同一 adapter command 只接收固定的 `prepare` 与 `grade` phase。Engine 使用单一 attempt deadline，先取得有界 WorkflowRequest，再启动一个由 Engine 拥有的隔离 app-server root，且只接受 root thread 的完成事件。Engine 在清理 app-server 和临时 Codex home 前读取 raw rollout，并写入脱敏的 `workflow-evidence.json`、`workflow-trace.json` 和 `model-output.txt`；`skillLoads` 同时记录原生注入的 selected Skill 和显式读取的 `SKILL.md`，并按 thread 与 Skill 去重。grade 只读取规范化 evidence，且只能返回 grade。adapter 继续使用 verified-observed containment，但其环境不含 Codex/OpenAI credential 或 proxy。Windows 在模型调用前拒绝该 provider。
+- Eval 的统一默认模型是 `gpt-6-luna`，运行器可通过 `AW_SKILL_EVAL_CODEX_MODEL` 覆盖。插件内 Eval adapter 不固定执行模型或推理强度，custom-process 脚本不保存模型后备值。`WorkflowRequest.model=null` 且 `multiAgent.protocol=v1` 时，Engine 使用支持 V1 的 `gpt-5.6-luna`；V2 沿用运行器模型。该兼容默认不属于 adapter 的 `allowedModels` 覆盖值。推理强度沿用用户 Codex 配置；case 中用于验证选型行为的模型和推理强度仍属于测试输入及 Oracle。
 - `WorkflowRequest v1` 可选 `evaluation`，包含有界 `artifacts`、具名 `checks`、`interactions` 和可选 `setupPrompt`。它们是 Eval-owned 输入，不写入被测者的 prompt、角色配置或工作区。每个 interaction 提供语义条件、隐藏答复和受保护产品路径；Engine 复用现有独立只读 grader，实际问题满足条件且观察到的受保护产物未提前改变时才回复对应问题。普通文本问答按相同条件续接，不按回合无条件补答。`setupPrompt` 创建真实前提轮次，测量起点单独记录，不能把导入历史或准备动作计为本轮行为。
 - 启用 `evaluation` 的 workflow 使用与 conversation 相同的一层 macOS OS 文件边界：阻止被测进程读取准备输入、其他运行和输出，只开放当前 subject；没有该能力时在被测者调用前拒绝，不静默退回仅按文件名隐藏。网络能力保持开启。未启用此选项的旧 workflow 请求沿用原路径。额外语义 matcher/grader 是真实模型调用，消耗同一 attempt deadline，费用和 usage 计入结果，仍受原 passing Audit 和运行授权门禁约束。
 - 交互 workflow 的 evidence 增加 Engine-owned `evaluation`：实际接收事件的顺序、线程身份、有界普通文件快照、实际答复及独立逐项判断。快照不证明两个可观察事件之间没有隐藏写入；缺少读写归因、在途任务接收、判断独立性或固定阶段范围证据时保留 `unknown`。被测进程清理后才做最终独立核对。必需检查缺失、重复、失败或未知时，即使 adapter 返回通过，Engine 也不接纳通过结果；原 adapter 仍只负责 `prepare/grade`，不取得模型凭据，不新增持久恢复状态。

@@ -10,6 +10,7 @@
       "rationale": "主动识别有后果的未确认选择并消费实际用户答复，同时保留充分共识与工程委托下的直接执行。质量、授权、问答时序和实际结果分别取证。"
     },
     "participants": [
+      "dev-repair",
       "decision-shape",
       "decision-grill",
       "decision-prototype",
@@ -45,7 +46,7 @@
           "test/list.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {customers,activeCustomers} from '../src/list.js';\ntest('现有筛选行为',()=>assert.deepEqual(activeCustomers(customers).map(x=>x.id),['c1','c3']));\n",
           "README.md": "# 客户列表\n当前可以查看完整客户列表，或筛选active=true；筛选后的界面仍能访问完整授权客户集合。导出功能还没有产品决定或验收记录。\n新增导出复用公开模块 src/export.js 的 chooseExportRows(allRows, filteredRows)，输入只含本用户有权读取的数据。选定范围后保留输入顺序与内容，不修改传入数组。CSV序列化由现有调用方处理，不属于本次工作。\n"
         },
-        "task": "使用开发工作流把客户列表的导出补上，让用户可以导出客户。现有模块、数据和测试在仓库里，本次不提交代码。"
+        "task": "$dev-workflow把客户列表的导出补上，让用户可以导出客户。现有模块、数据和测试在仓库里，本次不提交代码。"
       },
       "expected": {
         "output": "主动澄清导出范围并等待答复，实际实现采用筛选集合，执行相称验证；Fast无需流程文件，独立审查能力不足如实说明。",
@@ -91,7 +92,7 @@
           "test/list.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {customers,activeCustomers} from '../src/list.js';\ntest('现有筛选行为',()=>assert.deepEqual(activeCustomers(customers).map(x=>x.id),['c1','c3']));\n",
           "README.md": "# 客户列表\n当前可以查看完整客户列表，或筛选active=true；筛选后的界面仍能访问完整授权客户集合。导出功能还没有产品决定或验收记录。\n新增导出复用公开模块 src/export.js 的 chooseExportRows(allRows, filteredRows)，输入只含本用户有权读取的数据。选定范围后保留输入顺序与内容，不修改传入数组。CSV序列化由现有调用方处理，不属于本次工作。\n"
         },
-        "task": "使用开发工作流把客户列表的导出补上，让用户可以导出客户。现有模块、数据和测试在仓库里，本次不提交代码。"
+        "task": "$dev-workflow把客户列表的导出补上，让用户可以导出客户。现有模块、数据和测试在仓库里，本次不提交代码。"
       },
       "expected": {
         "output": "主动澄清导出范围并等待答复，实际实现采用完整授权集合，执行相称验证；Fast无需流程文件，独立审查能力不足如实说明。",
@@ -134,7 +135,7 @@
           "test/list.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {customers,activeCustomers} from '../src/list.js';\ntest('现有筛选行为',()=>assert.deepEqual(activeCustomers(customers).map(x=>x.id),['c1','c3']));\n",
           "README.md": "# 客户列表\n当前可以查看完整客户列表，或筛选active=true；筛选后的界面仍能访问完整授权客户集合。导出功能还没有产品决定或验收记录。\n新增导出复用公开模块 src/export.js 的 chooseExportRows(allRows, filteredRows)，输入只含本用户有权读取的数据。选定范围后保留输入顺序与内容，不修改传入数组。CSV序列化由现有调用方处理，不属于本次工作。\n"
         },
-        "task": "使用开发工作流完成 src/export.js：chooseExportRows 必须返回 filteredRows 的浅复制，顺序不变，输入数组不变；本任务没有其它行为选择，不提交。"
+        "task": "$dev-workflow完成 src/export.js：chooseExportRows 必须返回 filteredRows 的浅复制，顺序不变，输入数组不变；本任务没有其它行为选择，不提交。"
       },
       "expected": {
         "output": "把用户原始明确要求作为当前依据，直接实现和验证，必要审查如实执行，不机械再确认导出范围。",
@@ -176,7 +177,7 @@
           "test/list.test.js": "import test from 'node:test';import assert from 'node:assert/strict';import {customers,activeCustomers} from '../src/list.js';\ntest('现有筛选行为',()=>assert.deepEqual(activeCustomers(customers).map(x=>x.id),['c1','c3']));\n",
           "README.md": "# 客户列表\n当前可以查看完整客户列表，或筛选active=true；筛选后的界面仍能访问完整授权客户集合。导出功能还没有产品决定或验收记录。\n新增导出复用公开模块 src/export.js 的 chooseExportRows(allRows, filteredRows)，输入只含本用户有权读取的数据。选定范围后保留输入顺序与内容，不修改传入数组。CSV序列化由现有调用方处理，不属于本次工作。\n"
         },
-        "task": "使用开发工作流补上客户导出。导出当前筛选客户还是完整授权客户，由你决定并说明选择；只能从输入的已授权集合中选，保持顺序与输入不变，不额外访问数据。按这个小任务直接实现，不提交。"
+        "task": "$dev-workflow补上客户导出。导出当前筛选客户还是完整授权客户，由你决定并说明选择；只能从输入的已授权集合中选，保持顺序与输入不变，不额外访问数据。按这个小任务直接实现，不提交。"
       },
       "expected": {
         "output": "在用户明确委托范围内自主选择并解释，实施与说明一致、数据不越界，不重复询问已委托的选择。",
@@ -219,7 +220,7 @@
           "src/archive.js": "export function archive(record){return {...record, archived:true};}\n",
           "request.md": "# 原始用户请求\n我想把不再使用的客户归档，方便从日常列表整理出去。未讨论恢复或删除历史数据。\n"
         },
-        "task": "使用 dev-workflow 继续客户归档需求，现有说明在 request.md 和 planning/，按当前实际依据处理。"
+        "task": "使用 $dev-workflow 继续客户归档需求，现有说明在 request.md 和 planning/，按当前实际依据处理。"
       },
       "expected": {
         "output": "追溯原始用户需求，发现生成Spec的已确认标签没有支持且引入删除语义；先询问，用户未决定后保持原文件。",
@@ -262,7 +263,7 @@
           "src/service.js": "export const capabilities={maxRows:2,supportsPagination:false};\nexport function fetchRows(rows){return rows.slice(0,2);}\n",
           "src/export.js": "export async function exportCustomers(service){throw new Error('Not implemented');}\n"
         },
-        "task": "使用 dev-workflow 继续已确认的导出任务。任务、原始要求和当前服务实现都在工作区，本次不提交。"
+        "task": "使用 $dev-workflow 继续已确认的导出任务。任务、原始要求和当前服务实现都在工作区，本次不提交。"
       },
       "expected": {
         "output": "查明接口无法保持原结果，主动说明并取得用户变化；只更新受影响规范与任务，等新范围审查批准，产品仍不修改。",

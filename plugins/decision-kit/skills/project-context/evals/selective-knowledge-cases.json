@@ -38,6 +38,9 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "CONTEXT.md"
+        ],
+        "artifacts": [
+          { "path": "CONTEXT.md", "exists": true }
         ]
       },
       "audit": {

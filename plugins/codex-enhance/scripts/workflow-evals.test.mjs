@@ -108,7 +108,6 @@ function testCorpusAndAssertions() {
     entry.id.length > 0 &&
     typeof entry.input?.prompt === 'string' &&
     entry.input.prompt.length > 0 &&
-    (entry.input.parent_model === undefined || typeof entry.input.parent_model === 'string') &&
     (entry.input.codex_config === undefined || typeof entry.input.codex_config === 'object') &&
     Number.isInteger(entry.expected?.criteria?.spawn_count) &&
     typeof entry.expected?.criteria?.agent_type === 'string' &&
@@ -123,7 +122,6 @@ function testCorpusAndAssertions() {
   )), true);
   assert.equal(new Set(spec.cases.map((entry) => entry.id)).size, spec.cases.length);
   const versionedCase = spec.cases.find((entry) => entry.id === 'versioned_docs_outcome');
-  assert.equal(versionedCase.input.parent_model, 'gpt-5.6-luna');
   assert.equal(versionedCase.expected.criteria.target_skill_loaded, true);
   assert.equal(versionedCase.expected.criteria.clean_context_leaf_delegation, true);
   assert.equal(nonEmptyStrings(versionedCase.expected.criteria.leaf_terminal_includes_all), true);
@@ -163,12 +161,10 @@ function testCorpusAndAssertions() {
   assert.deepEqual(
     workflowEvalRunCase({
       prompt: 'inspect',
-      parent_model: 'parent-model',
       codex_config: { feature: true },
     }),
     {
       query: 'inspect',
-      parent_model: 'parent-model',
       explicit_skill: true,
       should_load_skill: true,
       should_spawn_agent: true,

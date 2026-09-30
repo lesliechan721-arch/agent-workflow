@@ -194,7 +194,7 @@ aw cleanup official/git-toolkit --scope project --target codex
 aw reinstall official/git-toolkit --scope user --target codex
 ```
 
-普通 `uninstall`、`cleanup` 与 `cleanup --force` 只处理所选 scope 和 Agent 中可证明归属的现场，不修改声明、偏好或插件配置。来源或 Active 不可用时，有充分 live 或离线证据的清理仍可执行；foreign 和 shared 内容保留。`aw intent remove` 只编辑所选 scope 的声明，不删除已有输出。已移除插件使用独立的 `aw intent retire`；它要求健康 Active 中精确插件缺席，仅修改指定 scope，配置删除默认关闭。共享原生包无法安全移除或 Portable 有残留时会报告未完成目标。详见[停用设计](docs/design/removed-plugin-cleanup.md)。
+普通 `uninstall`、`cleanup` 与 `cleanup --force` 只处理所选 scope 和 Agent 中可证明归属的现场，不修改声明、偏好或插件配置。来源或 Active 不可用时，有充分 live 或离线证据的清理仍可执行；foreign 和 shared 内容保留。`aw intent remove` 只编辑所选 scope 的声明，不删除已有输出。已移除插件使用独立的 `aw intent retire`；它要求健康 Active 中精确插件缺席，仅修改指定 scope，配置删除默认关闭。共享原生包无法安全移除或 Portable 有残留时会报告未完成目标。
 
 `aw review inspect` 读取源码、已有 snapshot 和显式提供的物化来源 receipt，不执行被审插件代码。缺少当前物化产物时仍返回源码事实和证据缺口；该命令不作质量评价或发布决定。Eval prepare 和 Skill materialize 返回的 `sourceBindingPath` 可通过 `--materialization <receipt>` 交给检查命令，旧产物缺少该证据时重新准备即可。
 

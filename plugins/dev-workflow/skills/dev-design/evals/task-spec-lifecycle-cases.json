@@ -27,7 +27,7 @@
         "regression",
         "boundary"
       ],
-      "prompt": "使用dev-design，只做可实施设计。本次已确认：用户当前确认：返回当前tenantId中id精确命中selectedIds的记录，顺序沿输入；空选择返回空数组；不修改输入数组或记录。id大小写敏感。CSV序列化、后台任务及跨租户导出不属于当前范围。内部组织可自主决定。 需要稍后交给另一上下文；默认文档位置即可。本次不实施、不提交。",
+      "prompt": "使用dev-design，只做可实施设计。本次已确认：用户当前确认：返回当前tenantId中id精确命中selectedIds的记录，顺序沿输入；空选择返回空数组；不修改输入数组或记录。id大小写敏感。CSV序列化、后台任务及跨租户导出不属于当前范围。内部组织可自主决定。 需要稍后交给另一上下文；任务名为selection，默认文档位置即可。本次不实施、不提交。",
       "assertions": [
         "默认完整目标写入.dev-workflows下的任务Spec，不因新功能而创建docs/design、CONTEXT或ADR。",
         "所有决定、例外和实施自由完整，不以本地存放为理由缩成一句摘要。",
@@ -49,6 +49,9 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           ".dev-workflows/**"
+        ],
+        "artifacts": [
+          { "path": ".dev-workflows/selection/spec.md", "exists": true }
         ]
       },
       "audit": {
@@ -88,6 +91,9 @@
         "allowedWorkspaceChanges": [
           "docs/api/selection.md",
           ".dev-workflows/**"
+        ],
+        "artifacts": [
+          { "path": "docs/api/selection.md", "exists": true }
         ]
       },
       "audit": {
@@ -103,7 +109,7 @@
         "regression",
         "boundary"
       ],
-      "prompt": "只对齐并记录本次范围：这次只接一个上游；未来是否多上游尚未决定。保存本地任务说明即可，不实施。",
+      "prompt": "只对齐并记录本次范围：这次只接一个上游；未来是否多上游尚未决定。任务名为upstream，保存本地任务说明即可，不实施。",
       "assertions": [
         "本次单上游范围按任务记录，不改成永久架构禁令。",
         "不为这个单次非目标强制新增ADR或design规范；后续未决仍未决。"
@@ -122,6 +128,9 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           ".dev-workflows/**"
+        ],
+        "artifacts": [
+          { "path": ".dev-workflows/upstream/spec.md", "exists": true }
         ]
       },
       "audit": {

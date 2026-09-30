@@ -12,9 +12,9 @@ import {
 } from '../skills/dev-build/evals/context-role-workflow.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const skills = ['dev-workflow', 'dev-design', 'dev-spec', 'dev-review-spec', 'dev-build', 'dev-breakdown', 'dev-implement', 'dev-review-code'];
+const skills = ['dev-workflow', 'dev-design', 'dev-spec', 'dev-review-spec', 'dev-build', 'dev-repair', 'dev-breakdown', 'dev-implement', 'dev-review-code'];
 const decisionSkills = ['decision-shape', 'decision-grill', 'decision-prototype', 'project-context'];
-const localWorkspaceSkills = ['dev-workflow', 'dev-design', 'dev-build'];
+const localWorkspaceSkills = ['dev-design', 'dev-build'];
 const allParticipants = new Set([...skills, ...decisionSkills]);
 const read = (file) => readFile(file, 'utf8');
 const readJson = async (file) => JSON.parse(await read(file));
@@ -96,15 +96,21 @@ test('manifest exposes local Skills and declares the decision-kit dependency', a
   await access(path.join(target.source, 'references', 'local-workspace.md'));
 });
 
-test('source exposes eight directly usable Skills', async () => {
+test('source exposes nine directly usable Skills', async () => {
   assert.deepEqual((await readdir(path.join(target.source, 'skills'))).sort(), [...skills].sort());
   for (const name of skills) {
     const skillRoot = path.join(target.source, 'skills', name);
-    assertSkill(await read(path.join(skillRoot, 'SKILL.md')), name);
+    const skill = await read(path.join(skillRoot, 'SKILL.md'));
+    assertSkill(skill, name);
+    if (name === 'dev-workflow') {
+      // Static contract exception: users must explicitly invoke the published Skill; runtime routing alone cannot verify both platform metadata fields.
+      assert.match(skill, /^user-invocable: true$/m);
+      assert.match(skill, /^disable-model-invocation: true$/m);
+    }
     await read(path.join(skillRoot, 'README.md'));
     const metadata = await read(path.join(skillRoot, 'agents', 'openai.yaml'));
     assert.match(metadata, new RegExp(`\\$${name}`));
-    assert.match(metadata, /^policy:\n  allow_implicit_invocation: true$/m);
+    assert.match(metadata, new RegExp(`^policy:\\n  allow_implicit_invocation: ${name === 'dev-workflow' ? 'false' : 'true'}$`, 'm'));
   }
 });
 
@@ -565,7 +571,7 @@ test('runtime keeps all Skill roots and conditional references', async () => {
     assertSkill(await read(path.join(skillsRoot, name, 'SKILL.md')), name);
   }
   await read(path.join(skillsRoot, 'dev-design', 'references', 'review-repair.md'));
-  for (const reference of ['review-repair.md', 'task-artifacts.md']) {
+  for (const reference of ['review-repair.md', 'task-artifacts.md', 'local-workspace.md']) {
     await assert.rejects(
       read(path.join(skillsRoot, 'dev-workflow', 'references', reference)),
       { code: 'ENOENT' },
@@ -584,9 +590,18 @@ test('runtime keeps all Skill roots and conditional references', async () => {
   await read(path.join(skillsRoot, 'dev-review-spec', 'references', 'rereview.md'));
   await read(path.join(skillsRoot, 'dev-review-code', 'references', 'rereview.md'));
   await read(path.join(skillsRoot, 'dev-review-code', 'references', 'design-fidelity.md'));
-  for (const reference of ['coordinated-build.md', 'review-repair.md', 'checkpoints.md', 'review-planning.md']) {
+  await read(path.join(skillsRoot, 'dev-repair', 'references', 'review-loop.md'));
+  for (const reference of ['coordinated-build.md', 'checkpoints.md', 'review-planning.md']) {
     await read(path.join(skillsRoot, 'dev-build', 'references', reference));
   }
+  await assert.rejects(
+    read(path.join(skillsRoot, 'dev-build', 'references', 'review-repair.md')),
+    { code: 'ENOENT' },
+  );
+  await assert.rejects(
+    read(path.join(skillsRoot, 'dev-design', 'assets', 'task-template.md')),
+    { code: 'ENOENT' },
+  );
   await read(path.join(skillsRoot, 'dev-breakdown', 'assets', 'ticket-template.md'));
   await read(path.join(skillsRoot, 'dev-build', 'assets', 'work-index-template.md'));
   await assert.rejects(
@@ -594,7 +609,7 @@ test('runtime keeps all Skill roots and conditional references', async () => {
     { code: 'ENOENT' },
   );
   if (target.platform) {
-    for (const name of ['dev-build', 'dev-breakdown']) {
+    for (const name of ['dev-build', 'dev-breakdown', 'dev-repair']) {
       await assert.rejects(readdir(path.join(skillsRoot, name, 'evals')), { code: 'ENOENT' });
     }
   }

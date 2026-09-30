@@ -84,12 +84,6 @@ function validateEvalCase(entry, index) {
     throw new Error(`${entry.id}.prompt must be a non-empty string.`);
   }
   if (
-    entry.parent_model !== undefined &&
-    (typeof entry.parent_model !== 'string' || entry.parent_model.trim() === '')
-  ) {
-    throw new Error(`${entry.id}.parent_model must be a non-empty string.`);
-  }
-  if (
     typeof entry.expected_output !== 'string' ||
     entry.expected_output.trim() === ''
   ) {
@@ -417,7 +411,6 @@ export function modelEvalRunCase(entry) {
     stop_after_nested_evidence: Boolean(entry.expected.nested_delegation) &&
       !entry.wait_for_completion,
     expected: entry.expected,
-    parent_model: entry.parent_model,
     enable_features: entry.enable_features,
     disable_features: entry.disable_features,
     codex_config: entry.codex_config,
@@ -431,7 +424,7 @@ export async function prepareModelSelection(input) {
     version: 1,
     prompt: entry.prompt,
     sandbox: 'read-only',
-    model: entry.parent_model ?? null,
+    model: null,
     developerInstructions: EXPLORE_DEVELOPER_INSTRUCTIONS,
     roles: await workflowRoles(input.paths.workspace),
     multiAgent: workflowProfile(entry),

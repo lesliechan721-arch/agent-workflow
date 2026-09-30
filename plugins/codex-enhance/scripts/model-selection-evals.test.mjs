@@ -26,12 +26,6 @@ async function testProviderManifestComposition() {
     ['output-contract', ['node', 'run-workflow-evals.mjs']],
     ['liveness', ['node', 'run-liveness-evals.mjs']],
   ]);
-  const allowedModels = new Map([
-    ['model-selection', ['gpt-5.6-luna', 'gpt-5.6-sol']],
-    ['workflow', ['gpt-5.5', 'gpt-5.6-luna']],
-    ['output-contract', []],
-    ['liveness', ['gpt-5.5']],
-  ]);
   for (const suite of workflowSuites) {
     assert.equal(suite.kind, 'codex-workflow');
     assert.equal(Object.hasOwn(suite, 'entry'), false);
@@ -45,7 +39,7 @@ async function testProviderManifestComposition() {
     assert.ok(provider && typeof provider === 'object');
     assert.equal(provider.type, 'codex-workflow');
     assert.deepEqual(provider.command, commands.get(suite.id));
-    assert.deepEqual(provider.allowedModels, allowedModels.get(suite.id));
+    assert.deepEqual(provider.allowedModels, []);
     assert.equal(new Set(provider.allowedModels).size, provider.allowedModels.length);
     for (const field of ['id', 'entry', 'assets', 'credentialEnvironment', 'capabilities', 'describe']) {
       assert.equal(Object.hasOwn(provider, field), false);
@@ -80,7 +74,6 @@ async function testProviderManifestComposition() {
   assert.deepEqual(
     modelEvalRunCase({
       prompt: 'inspect',
-      parent_model: 'parent-model',
       wait_for_completion: true,
       expected: { spawn_calls: { min: 1 } },
       codex_config: { feature: true },
@@ -93,7 +86,6 @@ async function testProviderManifestComposition() {
       wait_for_completion: true,
       stop_after_nested_evidence: false,
       expected: { spawn_calls: { min: 1 } },
-      parent_model: 'parent-model',
       enable_features: undefined,
       disable_features: undefined,
       codex_config: { feature: true },
