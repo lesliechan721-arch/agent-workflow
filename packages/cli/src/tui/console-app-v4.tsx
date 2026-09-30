@@ -4414,7 +4414,9 @@ export function ConsoleAppV4(props: {
     };
     breadcrumb = `插件清单 / ${route.scope === 'user' ? '个人' : '当前项目'}`;
     title = showTechnical ? '清单安全详情' : route.scope === 'user' ? '个人清单' : '当前项目清单';
-    description = snapshot.scopedInventoryRefresh[route.scope]?.state === 'error'
+    description = snapshot.scopedInventoryRefresh[route.scope]?.errorCode === 'catalogSessionReloadRequired'
+      ? 'Catalog 已变化；以下保留会话结果。请按 H 重新加载，再检查清单。'
+      : snapshot.scopedInventoryRefresh[route.scope]?.state === 'error'
       ? '检查失败；以下显示上次结果，当前状态未确认。' : inventory?.declarationState === 'absent'
         ? '清单尚未添加插件。' : inventory?.declarationState === 'invalid'
           ? '无法确认需求清单；请查看详情并修正。' : !inventory ? '正在检查清单。'

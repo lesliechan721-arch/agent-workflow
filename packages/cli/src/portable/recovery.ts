@@ -182,6 +182,7 @@ async function observeTarget(options: PortableRecoveryOptions, materialization: 
 }
 
 async function collectPreparation(options: PortableRecoveryOptions, allowMaterialize: boolean): Promise<PortablePreparation> {
+  options.signal?.throwIfAborted();
   options = { ...options, env: options.context.env };
   const layout = portableRecoveryLayout(options.context);
   if (options.scope !== layout.scope) throw new Error('portableEnvironmentUnsupported');
@@ -206,7 +207,11 @@ async function collectPreparation(options: PortableRecoveryOptions, allowMateria
     }
     await providerLock(options);
     await probePortableRecoverySkillsCli({ ...options, cwd });
-    const records = await listInstalledSkills({ ...options, cwd, global: options.scope === 'user', timeoutMs: 15_000 }).catch(() => undefined);
+    const records = await listInstalledSkills({ ...options, cwd, global: options.scope === 'user', timeoutMs: 15_000 }).catch((error) => {
+      options.signal?.throwIfAborted();
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      return undefined;
+    });
     const targets: PortableTarget[] = [];
     const normalized = materialization.marker.selectedSkills.map((candidate) => normalizePortableSkillName(candidate.name));
     if (new Set(normalized).size !== normalized.length) return blocked('portableOutputConflict');
@@ -227,6 +232,8 @@ async function collectPreparation(options: PortableRecoveryOptions, allowMateria
       blockers: [...new Set(targets.flatMap((target) => target.blocker ? [target.blocker] : []))],
       evidenceDigest: portableJsonDigest({ binding: materialization.binding.finalDigest, targets, lock: lock.digest }) };
   } catch (error) {
+    options.signal?.throwIfAborted();
+    if (error instanceof Error && error.name === 'AbortError') throw error;
     const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
       && error.code.startsWith('portable') ? error.code
       : error instanceof Error && error.message === 'portableProviderLockInvalid' ? error.message : 'portableOutputConflict';
@@ -553,7 +560,9 @@ export async function inspectPortableResidue(options: {
     await probePortableRecoverySkillsCli({ ...options, cwd: layout.cwd });
     records = await listInstalledSkills({ ...options, cwd: layout.cwd,
       global: options.scope === 'user', timeoutMs: 15_000 });
-  } catch {
+  } catch (error) {
+    options.signal?.throwIfAborted();
+    if (error instanceof Error && error.name === 'AbortError') throw error;
     return hasEvidence ? unknown() : { state: 'absent', targets: [], blockers: [] };
   }
   const targets: PortableResidue['targets'] = [];

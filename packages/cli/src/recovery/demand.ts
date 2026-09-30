@@ -63,6 +63,7 @@ export interface ReadDemandOptions {
   env?: NodeJS.ProcessEnv;
   intent?: IntentObservation;
   catalogOperationContext?: CatalogOperationContext;
+  signal?: AbortSignal;
 }
 
 /** Manifest delivery choice is independent of tool, trust, and configuration health. */
@@ -85,6 +86,7 @@ export function resolveDelivery(
 }
 
 export async function readDemand(options: ReadDemandOptions): Promise<DemandSnapshot> {
+  options.signal?.throwIfAborted();
   const [intent, preferences] = await Promise.all([
     options.intent ?? observeIntent(options), observePreferences(options),
   ]);
@@ -104,6 +106,7 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
         })) : null;
   const result: DemandSnapshot = {
     scope: options.scope, intent, preferences, roots, plugins: [], errors,
+    catalogOperationContext: options.catalogOperationContext,
   };
   if (!roots?.length) return result;
   let context = options.catalogOperationContext;
@@ -112,10 +115,12 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
     const snapshot = await readCatalogSourcesConfigSnapshot(options.env);
     configured = new Set(snapshot.config.sources.map((source) => source.id));
     context ??= await resolvePartialCatalogOperationContext({
-      env: options.env, configSnapshot: snapshot,
+      env: options.env, configSnapshot: snapshot, signal: options.signal,
       sourceIds: [...new Set(roots.map((root) => root.sourceId))].filter((id) => configured.has(id)),
     });
-  } catch {
+  } catch (error) {
+    options.signal?.throwIfAborted();
+    if (error instanceof Error && error.name === 'AbortError') throw error;
     for (const root of roots) root.blockers.push('sourceUnavailable');
     errors.push({ code: 'catalogReadFailed', message: '无法读取本地 Catalog 配置或状态。' });
     return result;
@@ -123,6 +128,7 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
   result.catalogOperationContext = context;
   const pluginCache = new Map<string, PluginMeta>();
   for (const root of roots) {
+    options.signal?.throwIfAborted();
     if (!configured.has(root.sourceId)) {
       root.sourceState = 'missing';
       root.blockers.push('sourceMissing');

@@ -258,6 +258,7 @@ export class CodexActivationPostcheckError extends Error {
 }
 
 export interface RebuildExecutionContext {
+  signal?: AbortSignal;
   env: NodeJS.ProcessEnv;
   nativeCliRunner: NativeCliRunner;
   codexManager?: CodexManager;
@@ -1428,6 +1429,7 @@ async function resolveDynamicArtifacts(options: {
   previousArtifacts: readonly GeneratedArtifact[];
   requestedArtifactIds?: readonly string[];
   scriptTimeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<{
   artifacts: ValidatedArtifactPlanArtifact[];
   sourceDirs(artifact: ValidatedArtifactPlanArtifact): string[];
@@ -1456,6 +1458,7 @@ async function resolveDynamicArtifacts(options: {
       previousArtifacts,
       requestedArtifactIds,
       scriptTimeoutMs: options.scriptTimeoutMs,
+      signal: options.signal,
     }));
   }
   const config = await resolveArtifactRenderConfig({
@@ -1588,6 +1591,7 @@ async function buildClaudeWrites(options: {
   event: 'install';
   historicalArtifacts: readonly GeneratedArtifact[];
   scriptTimeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<PlannedWrite[]> {
   const paths = resolveClaudePaths(options.cwd, options.scope, options.env);
   const writes: PlannedWrite[] = [];
@@ -1675,6 +1679,7 @@ async function buildCodexWrites(options: {
   marketplaceRoot?: string;
   marketplaceName?: string;
   userActivationDesired?: ReadonlySet<string>;
+  signal?: AbortSignal;
 }): Promise<PlannedWrite[]> {
   const paths = resolveCodexPaths(options.cwd, options.scope, options.env);
   const writes: PlannedWrite[] = [];
@@ -3664,6 +3669,7 @@ async function prepareCodexNativeRender(options: {
   env: NodeJS.ProcessEnv;
   requestedArtifactIds?: readonly string[];
   scriptTimeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<PreparedCodexNativeRender | null> {
   const requested = options.requestedArtifactIds
     ? new Set(options.requestedArtifactIds)
@@ -3697,6 +3703,7 @@ async function prepareCodexNativeRender(options: {
       previousArtifacts: [],
       requestedArtifactIds: group.map((target) => target.id),
       scriptTimeoutMs: options.scriptTimeoutMs,
+      signal: options.signal,
     });
     rendererDigest = rendered.target.rendererDigest;
     const validated = validateArtifactPlan({
@@ -3786,6 +3793,7 @@ function prepareCodexNativeRenderCached(options: {
     preparation = prepareCodexNativeRender({
       plugin: options.plugin,
       env: options.context.env,
+      signal: options.context.signal,
       scriptTimeoutMs: options.scriptTimeoutMs,
     });
     cache.set(options.plugin, preparation);
@@ -5349,6 +5357,7 @@ export function createRebuildIntegration(options: {
             env: options.context.env,
             event,
             historicalArtifacts,
+            signal: options.context.signal,
             scriptTimeoutMs: options.scriptTimeoutMs,
             marketplaceName: input.marketplaceName,
             userActivationDesired: options.context.codexUserActivationDesired,
@@ -5359,6 +5368,7 @@ export function createRebuildIntegration(options: {
             env: options.context.env,
             event,
             historicalArtifacts,
+            signal: options.context.signal,
             scriptTimeoutMs: options.scriptTimeoutMs,
           });
         }

@@ -1891,9 +1891,20 @@ export function createTuiControllerDependencies(
     async loadScopedStatus(scope, signal) {
       signal.throwIfAborted();
       const packageInfo = await readCliPackageInfo();
+      const currentCatalog = await resolvePartialCatalogOperationContext({
+        env: context.env, signal, validatedStoreEntries, validatingStoreEntries,
+      });
+      signal.throwIfAborted();
+      if (sessionCatalogOperationContext
+        && currentCatalog.generationSetDigest !== sessionCatalogOperationContext.generationSetDigest) {
+        throw new TuiOperationBlockedError('catalogSessionReloadRequired',
+          'Catalog 已变化。请按 H 重新加载，再检查清单。');
+      }
+      const catalogOperationContext = sessionCatalogOperationContext ?? currentCatalog;
       let nativeSnapshot: Awaited<ReturnType<NonNullable<TuiControllerDependencies['loadScopedStatus']>>>['nativeSnapshot'] | undefined;
       const status = await readRecoveryStatus({
         scope, cwd: context.cwd, env: context.env, cliVersion: packageInfo.version,
+        catalogOperationContext,
         onNativeStatus: async (native, demand) => {
           signal.throwIfAborted();
           const dependencyOverviews = await loadDependencyOverviews({ context,
@@ -1922,6 +1933,7 @@ export function createTuiControllerDependencies(
         const packageInfo = await readCliPackageInfo();
         signal.throwIfAborted();
         const plan = await prepareRetire({ scope: request.scope, cwd: context.cwd, env: context.env,
+          signal,
           selector: request.selector, cliVersion: packageInfo.version,
           ...(request.targets ? { targets: request.targets } : {}),
           deleteConfig: request.deleteConfig === true,
@@ -1935,6 +1947,7 @@ export function createTuiControllerDependencies(
       const packageInfo = await readCliPackageInfo();
       signal.throwIfAborted();
       const plan = await prepareRecovery(request.command ?? 'sync', request.selectors, {
+        signal,
         scope: request.scope, cwd: context.cwd, env: context.env,
         cliVersion: packageInfo.version,
         all: request.selectors.length === 0,

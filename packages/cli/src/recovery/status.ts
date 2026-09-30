@@ -6,6 +6,7 @@ import { statusCommandV8, flattenStatusTargets, type StatusScopedTarget } from '
 import { inspectPortableExtraInstalled, inspectPortableRecovery } from '../portable/recovery.js';
 import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
 import type { RecoveryDiagnostic, RecoveryReceipt, RecoveryTarget } from './receipt.js';
+import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
 
 export interface NativeObservation {
   pluginId: string;
@@ -32,6 +33,7 @@ export interface RecoveryStatus {
   errors: RecoveryDiagnostic[];
 }
 export interface ReadRecoveryStatusOptions {
+  catalogOperationContext?: CatalogOperationContext;
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -174,12 +176,14 @@ export async function readRecoveryStatus(options: ReadRecoveryStatusOptions & {
 }): Promise<RecoveryStatus> {
   const context = await createScopeContext({ scope: options.scope, cwd: options.cwd, env: options.env, readOnly: true });
   try {
-    const demand = await readDemand({ scope: options.scope, cwd: context.executionCwd, env: context.env });
+    const demand = await readDemand({ scope: options.scope, cwd: context.executionCwd, env: context.env,
+      catalogOperationContext: options.catalogOperationContext });
     const nativePlugins = options.onDemand?.(demand);
     const native = options.nativeObservations ? undefined : await statusCommandV8({
       cwd: context.executionCwd, env: context.env, scope: options.scope,
       ...(nativePlugins ? { plugins: nativePlugins } : {}),
       recoveryDemand: demand, recoverySelection: { targets: options.targets }, cliVersion: options.cliVersion,
+      catalogOperationContext: options.catalogOperationContext,
     });
     if (native) await options.onNativeStatus?.(native, demand);
     const roots = new Set(demand.roots?.map((root) => root.pluginId) ?? []);

@@ -4,7 +4,7 @@ import {
   executeRemovedPluginOutputCleanup, inspectRemovedPluginCleanup,
   type RebuildCommandRuntime, type RemovedPluginCleanupTarget,
 } from '../commands/rebuild-command.js';
-import { getDefaultNativeCliRunner } from '../utils/native-cli.js';
+import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
@@ -16,6 +16,7 @@ import { inspectPortableResidue, type PortableResidue } from '../portable/recove
 import type { RecoveryReceipt, RecoveryTarget } from './receipt.js';
 
 export interface RetireOptions {
+  signal?: AbortSignal;
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -86,8 +87,10 @@ function finish(receipt: RecoveryReceipt, options: RetireOptions, portable: Port
 }
 
 export async function prepareRetire(options: RetireOptions, runtime: RebuildCommandRuntime = {}): Promise<RetirePlan> {
+  options.signal?.throwIfAborted();
   const context = await createScopeContext({ scope: options.scope, cwd: options.cwd, env: options.env });
   try {
+    options.signal?.throwIfAborted();
     const parsed = parsePluginId(options.selector);
     if (!parsed.sourceId || `${parsed.sourceId}/${parsed.pluginName}` !== options.selector) throw new Error('invalidArguments');
     const [intent, preferences] = await Promise.all([
@@ -102,9 +105,12 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
     const inventory = await (runtime.inventoryCatalogSourceReferences ?? inventoryCatalogSourceReferences)({
       cwd: context.executionCwd, env: context.env, scope: options.scope, includeProjectAgentSkills: true,
     });
+    options.signal?.throwIfAborted();
     const removed = await inspectRemovedPluginCleanup({ pluginId: options.selector, scope: options.scope,
       inventory, cwd: context.executionCwd, env: context.env,
-      nativeCliRunner: runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), codexManager: runtime.codexManager });
+      nativeCliRunner: bindNativeCliRunnerSignal(runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), options.signal),
+      codexManager: runtime.codexManager });
+    options.signal?.throwIfAborted();
     if (!removed) blockers.push(diagnostic('removedPluginActiveUnavailable',
       '需要健康的本地 Active 和插件缺席证据，才能停用已移除插件。'));
     else blockers.push(...removed.blockers.map((message) => diagnostic(codeOf(new Error(message), 'removedPluginBlocked'))));
@@ -115,7 +121,8 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
     }
     const requestedAgents = options.targets === undefined ? undefined : selectAgents({ preferences, targets: options.targets }).agents;
     const portable = await inspectPortableResidue({ scope: options.scope, context, selector: options.selector,
-      env: context.env, agents: requestedAgents });
+      env: context.env, agents: requestedAgents, signal: options.signal });
+    options.signal?.throwIfAborted();
     const agents = requestedAgents ?? [...new Set([
       ...(removed?.evidence.filter((entry) => entry.plan.actions.length).map((entry) => entry.platform === 'claude'
         ? 'claude-code' as const : 'codex' as const) ?? []),
@@ -166,7 +173,8 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
       ...agents.filter((agent) => agent !== 'cursor').map((agent) =>
         `检查并清理 ${options.scope}/${agent} 已验证原生输出。`),
     ];
-    return { options, context, evidence: removed, portable, receipt: finish(receipt, options, portable),
+    const { signal: _signal, ...executionOptions } = options;
+    return { options: executionOptions, context, evidence: removed, portable, receipt: finish(receipt, options, portable),
       intentEvidence: evidence(intent), preferenceEvidence: evidence(preferences), plannedImpact, changes,
       warnings: portable.state === 'present' ? ['Portable 输出需人工核验，AW 不自动删除。'] : [], runtime };
   } catch (error) { await context.dispose(); throw error; }

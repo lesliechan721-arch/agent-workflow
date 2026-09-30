@@ -155,6 +155,18 @@ export function setNativeCliRunnerOverrideForTests(
   nativeCliRunnerOverrideForTests = runner;
 }
 
+/** Bind cancellation to preparation reads without retaining it for later writes. */
+export function bindNativeCliRunnerSignal(runner: NativeCliRunner, signal?: AbortSignal): NativeCliRunner {
+  if (!signal) return runner;
+  return async (invocation) => {
+    signal.throwIfAborted();
+    try {
+      return await runner({ ...invocation,
+        signal: invocation.signal ? AbortSignal.any([signal, invocation.signal]) : signal });
+    } finally { signal.throwIfAborted(); }
+  };
+}
+
 export function getDefaultNativeCliRunner(): NativeCliRunner {
   return nativeCliRunnerOverrideForTests ?? execFileNativeCliRunner;
 }

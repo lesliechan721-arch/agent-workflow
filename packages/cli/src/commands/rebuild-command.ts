@@ -687,6 +687,7 @@ async function runSingleSourceRebuildCommand(options: {
   };
 }): Promise<RebuildCommandResult> {
   const runtime: RebuildExecutionContext = {
+    signal: options.runtime?.signal,
     env: options.runtime?.env ?? process.env,
     nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
     reporter: options.runtime?.reporter ?? createNoopReporter(),
@@ -3460,6 +3461,7 @@ async function runRebuildCommandInSession(
         }
       }
       const executionContext: RebuildExecutionContext = {
+        signal: options.runtime?.signal,
         env: runtimeEnv,
         nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
         reporter: options.runtime?.reporter ?? createNoopReporter(),

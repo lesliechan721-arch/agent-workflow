@@ -13,7 +13,7 @@ import { runRebuildCommand, type RebuildCommandResult, type RebuildCommandRuntim
 import { buildRebuildReceiptJson } from '../output/command-receipt.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
-import { getDefaultNativeCliRunner } from '../utils/native-cli.js';
+import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { portableRecoveryLayout } from '../portable/recovery-layout.js';
 import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
@@ -49,6 +49,7 @@ import { createEmptyNativeDemandView } from '../utils/native-demand.js';
 
 export type RecoveryCommand = 'sync' | 'install' | 'reinstall' | 'uninstall' | 'cleanup';
 export interface RecoveryOptions {
+  signal?: AbortSignal;
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -215,7 +216,7 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
   preview: boolean, runtime: RebuildCommandRuntime = plan.runtime,
   command: RecoveryCommand = plan.command): Promise<RebuildCommandResult> {
   const rebuildCommand = command === 'install' ? 'sync' : command;
-  return runRebuildCommand({
+  const result = await runRebuildCommand({
     command: rebuildCommand,
     pluginNames: pluginIds,
     commandOptions: {
@@ -228,6 +229,8 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
     },
     runtime: {
       ...runtime,
+      ...(preview ? { nativeCliRunner: bindNativeCliRunnerSignal(
+        runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), runtime.signal) } : {}),
       env: plan.options.env,
       catalogOperationContext: plan.demand.catalogOperationContext,
       previewOperationPlan: preview,
@@ -241,6 +244,8 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
       },
     },
   });
+  if (preview) runtime.signal?.throwIfAborted();
+  return result;
 }
 
 function nativeCleanupEvidence(
@@ -408,8 +413,10 @@ async function checkFootprints(plan: RecoveryPlan): Promise<void> {
 
 export async function prepareRecovery(command: RecoveryCommand, selectors: readonly string[],
   options: RecoveryOptions, runtime: RebuildCommandRuntime = {}): Promise<RecoveryPlan> {
+  options.signal?.throwIfAborted();
   const context = await createScopeContext({ scope: options.scope, cwd: options.cwd, env: options.env });
   try {
+  options.signal?.throwIfAborted();
   options = { ...options, cwd: context.executionCwd, env: context.env };
   let demand = await readDemand(options);
   const refreshFailures = new Map<string, string>();
@@ -425,7 +432,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
         try {
           const source = config.config.sources.find((entry) => entry.id === sourceId);
           const probe = await probeCatalogSourceGeneration({ sourceId, env: options.env,
-            cliVersion: options.cliVersion, runtime: runtime.catalogGenerationRuntime });
+            cliVersion: options.cliVersion, signal: options.signal, runtime: runtime.catalogGenerationRuntime });
           const previousActive = generationState.sources[sourceId]?.active ?? null;
           const candidateChanged = !previousActive
             || previousActive.sourceConfigFingerprint !== probe.candidate.sourceConfigFingerprint
@@ -444,12 +451,16 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
             configDigest: config.digest, impact, impactDigest: calculateCatalogSourceImpactDigest(impact) });
         }
         catch (error) {
+          options.signal?.throwIfAborted();
+          if (error instanceof Error && error.name === 'AbortError') throw error;
           const code = errorCode(error, 'catalogGenerationRefreshFailed');
           refreshFailures.set(sourceId, code.startsWith('catalog') ? code : 'catalogGenerationRefreshFailed');
         }
       }
     }
   }
+  options.signal?.throwIfAborted();
+  const preparationRuntime = { ...runtime, signal: options.signal };
   const originalIntent = intentEvidence(demand.intent);
   const proposed = command === 'install'
     ? await addRequirements({ ...options, selectors, dryRun: true, installSelectors: true }) : undefined;
@@ -468,7 +479,8 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
     blockers: proposed?.errors ?? [], errors: [], targetResults: [], remainingTargets: [], recoveryActions: [],
     declarationChanged: false, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: false,
   };
-  const plan: RecoveryPlan = { command, options, receipt, demand, context, originalIntent,
+  const { signal: _signal, ...executionOptions } = options;
+  const plan: RecoveryPlan = { command, options: executionOptions, receipt, demand, context, originalIntent,
     plannedImpact: { declaration: proposed?.changed === true, preferences: false, config: false, outputs: false },
     preferencesEvidence: preferenceEvidence(demand), changes: [], warnings: [],
     nativeGroups: [], historicalNativeTargets: new Set(), deliverySwitchChecks: [], portableGroups: [],
@@ -544,7 +556,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
       if (candidates.length === 0) continue;
       try {
         const preview = await nativeOperation(plan, candidates.map((target) => target.pluginId), platform,
-          true, plan.runtime, 'cleanup');
+          true, preparationRuntime, 'cleanup');
         for (const target of candidates) {
           if (target.delivery?.kind === 'native') continue;
           const cleanupEvidence = nativeCleanupEvidence(preview, target.pluginId, platform, options.scope);
@@ -555,6 +567,8 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
             && entry.code !== 'deliveryUnsupported');
         }
       } catch (error) {
+        options.signal?.throwIfAborted();
+        if (error instanceof Error && error.name === 'AbortError') throw error;
         for (const target of candidates.filter((entry) => entry.delivery?.kind === 'native')) {
           block(target, errorCode(error, 'nativePreparationFailed'));
         }
@@ -568,7 +582,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
       if (candidates.length === 0) continue;
       try {
         const pluginIds = candidates.map((target) => target.pluginId);
-        const preview = await nativeOperation(plan, pluginIds, platform, true, plan.runtime, 'cleanup');
+        const preview = await nativeOperation(plan, pluginIds, platform, true, preparationRuntime, 'cleanup');
         const cleanPluginIds: string[] = [];
         for (const target of candidates) {
           const evidence = nativeCleanupEvidence(preview, target.pluginId, platform, options.scope);
@@ -594,6 +608,8 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
           pluginIds, cleanPluginIds, platform, fingerprint: preview.operationPlan.planFingerprint,
         });
       } catch (error) {
+        options.signal?.throwIfAborted();
+        if (error instanceof Error && error.name === 'AbortError') throw error;
         for (const target of candidates) {
           block(target, 'deliverySwitchObservationFailed');
           target.recoveryActions = [`检查 ${target.pluginId}/${target.agent} 的 Native 现场后重试 aw sync。`];
@@ -615,7 +631,8 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
   for (const group of groups.values()) {
     if (group.pluginIds.length === 0) continue;
     try {
-      const preview = await nativeOperation(plan, group.pluginIds, group.platform, true, plan.runtime, group.command);
+      const preview = await nativeOperation(plan, group.pluginIds, group.platform, true, preparationRuntime, group.command);
+      options.signal?.throwIfAborted();
       const nativeGroup = { ...group, preview };
       plan.nativeGroups.push(nativeGroup);
       nativeResults(plan, nativeGroup, preview, false);
@@ -628,6 +645,8 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
       }
       plan.warnings.push(...preview.warnings);
     } catch (error) {
+      options.signal?.throwIfAborted();
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       for (const pluginId of group.pluginIds) block(pair(plan, pluginId, agentForPlatform(group.platform))!, errorCode(error, 'nativePreparationFailed'));
     }
   }
@@ -659,10 +678,12 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
     if (!agents.length) continue;
     try {
       const prepared = await preparePortableRecovery({ scope: options.scope, context, selector: pluginId, agents,
-        env: options.env, cliVersion: options.cliVersion,
+        env: options.env, cliVersion: options.cliVersion, signal: options.signal,
         catalogOperationContext: demand.catalogOperationContext });
       plan.portableGroups.push(prepared);
     } catch (error) {
+      options.signal?.throwIfAborted();
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       for (const agent of agents) block(pair(plan, pluginId, agent)!, errorCode(error, 'portablePreparationFailed'));
     }
   }
@@ -680,14 +701,18 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
         const prepared = plan.portableGroups.find((group) => group.options.selector === root.pluginId
           && portableAgents.every((agent) => group.options.agents.includes(agent)))
           ?? await preparePortableRecovery({ scope: options.scope, context, selector: root.pluginId,
-            env: options.env, agents: portableAgents, cliVersion: options.cliVersion,
+            env: options.env, agents: portableAgents, cliVersion: options.cliVersion, signal: options.signal,
             catalogOperationContext: demand.catalogOperationContext });
         if (!prepared.globalBlockers.length) {
           retainedPortableTargets.push(...prepared.targets.filter((target) =>
             !target.blocker && ['satisfied', 'drifted'].includes(target.observation)));
           if (!plan.portableGroups.includes(prepared)) plan.portableProtectionGroups.push(prepared);
         }
-      } catch { /* Missing current Portable evidence cannot protect historical residue. */ }
+      } catch (error) {
+        options.signal?.throwIfAborted();
+        if (error instanceof Error && error.name === 'AbortError') throw error;
+        // Missing current Portable evidence cannot protect historical residue.
+      }
     }
     for (const pluginId of receipt.requestedRoots) {
       const candidates = receipt.targetResults.filter((target) => target.pluginId === pluginId
@@ -698,8 +723,10 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
       let observation: PortableResidue;
       try {
         observation = await inspectPortableResidue({ scope: options.scope, context, selector: pluginId,
-          env: options.env, agents, retainedTargets });
-      } catch {
+          env: options.env, agents, retainedTargets, signal: options.signal });
+      } catch (error) {
+        options.signal?.throwIfAborted();
+        if (error instanceof Error && error.name === 'AbortError') throw error;
         observation = { state: 'unknown', targets: [], blockers: ['portableObservationFailed'] };
       }
       plan.portableResidues.push({ kind: 'delivery-switch', pluginId, agents, observation, retainedTargets });
@@ -723,7 +750,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
   }
   for (const pluginId of command === 'cleanup' || command === 'uninstall' ? receipt.requestedRoots : []) {
     const agents = receipt.targetResults.filter((target) => target.pluginId === pluginId).map((target) => target.agent);
-    const observation = await inspectPortableResidue({ scope: options.scope, context, selector: pluginId, env: options.env, agents });
+    const observation = await inspectPortableResidue({ scope: options.scope, context, selector: pluginId, env: options.env, agents, signal: options.signal });
     plan.portableResidues.push({ kind: 'cleanup', pluginId, agents, observation });
     if (observation.state !== 'absent') {
       plan.warnings.push(`${pluginId}：Portable 输出${observation.state === 'present' ? '仍存在' : '无法确认'}，本次操作不会删除它们。`);
@@ -733,7 +760,12 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
       }
     }
   }
+  options.signal?.throwIfAborted();
   await checkFootprints(plan);
+  options.signal?.throwIfAborted();
+  for (const prepared of [...plan.portableGroups, ...plan.portableProtectionGroups]) {
+    delete prepared.options.signal;
+  }
   plan.plannedImpact.outputs = !plan.blockExecution && (
     plan.nativeGroups.some((group) => (group.preview.operationPlan?.actions.length ?? 0) > 0
       && group.pluginIds.some((pluginId) => pair(plan, pluginId, agentForPlatform(group.platform))?.blockers.length === 0))

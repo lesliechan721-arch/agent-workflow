@@ -374,6 +374,8 @@ TUI 浏览历史的每一帧有会话内稳定 ID。安装、插件维护、配�
 
 控制台进程由一个 Session Host 持有当前 Controller、进度 feed 和 session epoch。`h` 只清除当前导航 flow、Review ticket、临时进度和草稿，并回到唯一根帧；它保留本次加载的状态 snapshot、来源检查时间和 session cache。`H` 先保护所有草稿，再取消并等待本 session 的只读请求；确认没有写操作后，才销毁旧订阅并用新的 runtime dependencies、进度 feed 和 Controller 读取本地状态。迟到响应必须同时受 session epoch 和 Controller 内的 flow、frame 或 request identity 保护。执行中 `h`/`H` 只覆盖一个待处理导航；Esc 只撤销该导航。只有 succeeded Result 才自动执行待处理导航，且先把结果交给共享 history owner；partial、stale、blocked 或无法确认清理结果都停留在 Result。Session Host 不用取消 signal 中断写操作，也不新增持久状态。正常退出和异常退出都必须在 session reporter 仍绑定时封闭新入口，等待现有写操作，再取消并等待只读请求，最后释放 Controller。
 
+范围清单重查使用同一会话的 Catalog 快照。若当前 Active generation 或来源配置已变化，保留旧结果及查询、焦点、滚动和选择状态，明确提示按 `H` 重新加载；清单、详情、内容和设置定义不得混用新旧快照。恢复和退役的准备阶段把取消信号传至来源探测、Native 读取、Portable 准备及 renderer；取消向上传播 `AbortError` 并释放操作 context，不继续准备后续组。准备信号不保留给已确认的写入。
+
 ### TUI v7.2 投影与键盘修复
 
 v7.2 只调整 TUI 的页面投影、阅读和键盘路径。它不新增 CLI 入口、Status JSON、I/O、持久记录、锁或恢复状态机。
