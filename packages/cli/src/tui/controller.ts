@@ -16,6 +16,7 @@ import { SkillsCliError } from '../portable/skills-cli.js';
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
+import { NativeCliError } from '../utils/native-cli.js';
 import type {
   CatalogGenerationFreshnessState,
   CatalogGenerationFreshnessResult,
@@ -1556,7 +1557,7 @@ export class TuiController {
     promise: Promise<OperationExecuteResult>;
   }>();
   readonly #pendingReads = new Set<Promise<unknown>>();
-  #readCleanupError?: SkillsCliError;
+  #readCleanupError?: SkillsCliError | NativeCliError;
   readonly #pluginContent = new Map<string, PluginContentOverview>();
   readonly #pluginContentInflight = new Map<string, Promise<void>>();
   #pluginContentEpoch = 0;
@@ -1820,9 +1821,10 @@ export class TuiController {
 
   #trackRead<T>(promise: Promise<T>): Promise<T> {
     const tracked = promise.catch(async (error: unknown) => {
-      if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') {
+      if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed'
+        || error instanceof NativeCliError && error.cleanupError) {
         this.#readCleanupError ??= error;
-        await this.#logErrorSafe(error, error.code);
+        await this.#logErrorSafe(error, error instanceof SkillsCliError ? error.code : issueCode(error));
       }
       throw error;
     });

@@ -2,6 +2,7 @@ import { createSafeNeutralCwd } from '../intent/scope-context.js';
 
 import {
   buildCodexPluginListJsonInvocation,
+  NativeCliError,
   parseCodexPluginListJson,
   runNativeCli,
   SYSTEM_CODEX_MANAGER,
@@ -103,6 +104,7 @@ export async function createCodexNativeObservationSession(options: {
   let manager = options.manager ?? SYSTEM_CODEX_MANAGER;
   const snapshots = new Map<string, Promise<CodexObservationEntries>>();
   const pendingReads = new Set<Promise<CodexObservationEntries>>();
+  let cleanupFailure: NativeCliError | undefined;
   let generation = 0;
   let disposal: Promise<void> | undefined;
 
@@ -123,6 +125,10 @@ export async function createCodexNativeObservationSession(options: {
           if (nativeResult.exitCode !== 0) return { failure: 'unavailable' };
           return indexCodexEntries(parseCodexPluginListJson(nativeResult.stdout));
         } catch (error) {
+          if (error instanceof NativeCliError && error.cleanupError) {
+            cleanupFailure ??= error;
+            throw error;
+          }
           if (error instanceof Error && error.name === 'AbortError') throw error;
           return (error as NodeJS.ErrnoException).code === 'ENOENT'
             ? { unobserved: true }
@@ -210,7 +216,11 @@ export async function createCodexNativeObservationSession(options: {
     dispose() {
       disposal ??= (async () => {
         await Promise.allSettled([...pendingReads]);
-        await neutral.dispose();
+        try {
+          await neutral.dispose();
+        } finally {
+          if (cleanupFailure) throw cleanupFailure;
+        }
       })();
       return disposal;
     },

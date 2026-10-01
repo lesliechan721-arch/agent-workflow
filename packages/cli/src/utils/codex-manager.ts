@@ -20,7 +20,7 @@ import {
   type CodexManager,
   type NativeCliRunner,
 } from './native-cli.js';
-import { getCodexHome, resolveAwHome } from './state-paths.js';
+import { getCodexHome, readEnvironmentValue, resolveAwHome } from './state-paths.js';
 
 export const MANAGED_CODEX_PACKAGE_NAME = '@openai/codex';
 export const MANAGED_CODEX_VERSION = '0.151.0';
@@ -597,24 +597,13 @@ async function acquireManagedCodexRuntime(options: CodexManagerOptions): Promise
   }
 }
 
-function readPathEnvironment(
-  env: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform,
-): string | undefined {
-  if (platform !== 'win32') return env.PATH;
-  const pathEntry = Object.entries(env).find(([key]) => key.toLowerCase() === 'path');
-  return pathEntry?.[1];
-}
-
 function executableNames(
   command: string,
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
 ): string[] {
   if (platform !== 'win32') return [command];
-  const pathExt = Object.entries(env)
-    .find(([key]) => key.toLowerCase() === 'pathext')?.[1]
-    ?? '.COM;.EXE;.BAT;.CMD';
+  const pathExt = readEnvironmentValue(env, 'PATHEXT', platform) ?? '.COM;.EXE;.BAT;.CMD';
   const supportedExtensions = new Set(['.com', '.exe', '.bat', '.cmd']);
   const extensions = pathExt.split(';')
     .map((extension) => extension.trim())
@@ -782,7 +771,7 @@ async function resolvePathExecutable(
   const platform = options.platform ?? process.platform;
   const cwd = options.cwd ?? process.cwd();
   const delimiter = platform === 'win32' ? ';' : ':';
-  const pathEnvironment = readPathEnvironment(env, platform);
+  const pathEnvironment = readEnvironmentValue(env, 'PATH', platform);
   if (pathEnvironment === undefined) return undefined;
   for (const rawEntry of pathEnvironment.split(delimiter)) {
     const entry = rawEntry.replace(/^"|"$/gu, '');

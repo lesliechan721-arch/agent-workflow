@@ -33,6 +33,9 @@ import { TuiRouter } from '../../src/tui/router.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
 import type { PortableInstallReceipt } from '../../src/portable/commands.js';
 import { SkillsCliError } from '../../src/portable/skills-cli.js';
+import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
+import { bindNativeCliRunnerSignal, NativeCliError } from '../../src/utils/native-cli.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function source(
   id: string,
@@ -50,6 +53,68 @@ function source(
 }
 
 describe('TuiController session retirement', () => {
+  // Test Value Gate: cancelled Codex reads must block retirement when the observation session cannot confirm process cleanup.
+  it.each(['status', 'review'] as const)('reports unconfirmed Codex cleanup after cancelled %s reads', async (kind) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const started = deferred<void>();
+    let failure: NativeCliError | undefined;
+    let reading: Promise<void> | undefined;
+    const readCodex = async (signal: AbortSignal): Promise<void> => {
+      const session = await createCodexNativeObservationSession({
+        exactCwd: isolation.layout.fixtureCwd, env: isolation.env,
+        runner: bindNativeCliRunnerSignal(async (invocation) => {
+          failure = new NativeCliError({
+            invocation, exitCode: 1, stdout: '', stderr: '', reason: 'aborted',
+            cleanupError: new Error('child exit unconfirmed'),
+          });
+          started.resolve();
+          await new Promise<void>((resolve) => invocation.signal!.addEventListener('abort', () => resolve(), { once: true }));
+          throw failure;
+        }, signal),
+      });
+      try {
+        await session.inspectPlugin({ pluginId: 'demo@aw', scope: 'user' });
+      } finally {
+        await session.dispose();
+      }
+    };
+    const base = dependencies();
+    const logError = vi.fn();
+    const controller = new TuiController(dependencies({
+      logError,
+      loadStatus: async (signal) => {
+        if (kind === 'status') await (reading = readCodex(signal));
+        return base.loadStatus(signal);
+      },
+      captureEvidence: async (intent, signal) => {
+        await (reading = readCodex(signal!));
+        return base.captureEvidence(intent, signal);
+      },
+    }));
+    const loading = controller.load();
+    try {
+      if (kind === 'review') {
+        await loading;
+        controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+        controller.startReviewPreparation({ kind: 'pluginWrite', action: 'reinstall',
+          pluginId: 'official/demo', platform: 'codex', scope: 'user' });
+      }
+      await started.promise;
+      if (kind === 'review') {
+        controller.back();
+        await reading!.catch(() => undefined);
+      }
+      await expect(controller.cancelAndWaitForReads()).rejects.toBe(failure);
+      await loading;
+      expect(failure!.name).toBe('AbortError');
+      expect(logError).toHaveBeenCalledWith(failure, 'nativeCliFailed', undefined);
+    } finally {
+      controller.dispose();
+      await loading;
+      await reading?.catch(() => undefined);
+    }
+  });
+
   // Test Value Gate: a session drain must report provider cleanup failure instead of declaring reads safely stopped.
   it('reports unconfirmed Skills cleanup while draining cancelled status reads', async () => {
     const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
