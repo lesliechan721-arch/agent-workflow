@@ -6,6 +6,7 @@ import type { DemandSnapshot } from '../../src/recovery/demand.js';
 import type { ScopeContext } from '../../src/intent/scope-context.js';
 import * as portableRecovery from '../../src/portable/recovery.js';
 import * as demandService from '../../src/recovery/demand.js';
+import { SkillsCliError } from '../../src/portable/skills-cli.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const context = { scope: 'user', executionCwd: '/tmp/aw-status', env: {},
@@ -27,6 +28,21 @@ function demand(ids: string[], agents: Array<'codex' | 'claude-code'>): DemandSn
 
 describe('recovery status satisfaction', () => {
   afterEach(() => vi.restoreAllMocks());
+
+  // Test Value Gate: status must preserve a cleanup failure even when the observation also cancels its signal.
+  it.each([false, true])('propagates Portable cleanup failure with cancellation %s', async (cancelled) => {
+    const snapshot = demand(['local/one'], ['claude-code']);
+    snapshot.roots![0]!.plugin!.manifest = { name: 'one', marketplace: { policy: { products: ['CODEX'] } },
+      distributions: { agentSkills: { sourceDirs: ['./skills'] } } } as never;
+    const abort = new AbortController();
+    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    vi.spyOn(portableRecovery, 'inspectPortableRecovery').mockImplementation(async () => {
+      if (cancelled) abort.abort();
+      throw failure;
+    });
+    await expect(statusFromObservations({ scope: 'user', cwd: '/tmp/aw-status', context,
+      demand: snapshot, nativeObservations: [], signal: abort.signal })).rejects.toBe(failure);
+  });
 
   // Test Value Gate: cancellation must escape the status fallback and stop observation of later roots.
   it('propagates Portable inventory cancellation without observing later roots', async () => {

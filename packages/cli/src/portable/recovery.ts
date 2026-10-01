@@ -19,6 +19,7 @@ import {
   addSkills,
   listInstalledSkills,
   probePortableRecoverySkillsCli,
+  SkillsCliError,
   type InstalledSkillRecord,
 } from './skills-cli.js';
 import { portableRecoveryLayout, type PortableAgent } from './recovery-layout.js';
@@ -212,6 +213,7 @@ async function collectPreparation(options: PortableRecoveryOptions, allowMateria
     options.signal?.throwIfAborted();
     await probePortableRecoverySkillsCli({ ...options, cwd });
     const records = await listInstalledSkills({ ...options, cwd, global: options.scope === 'user', timeoutMs: 15_000 }).catch((error) => {
+      if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
       options.signal?.throwIfAborted();
       if (error instanceof Error && error.name === 'AbortError') throw error;
       return undefined;
@@ -239,6 +241,7 @@ async function collectPreparation(options: PortableRecoveryOptions, allowMateria
       blockers: [...new Set(targets.flatMap((target) => target.blocker ? [target.blocker] : []))],
       evidenceDigest: portableJsonDigest({ binding: materialization.binding.finalDigest, targets, lock: lock.digest }) };
   } catch (error) {
+    if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
     options.signal?.throwIfAborted();
     if (error instanceof Error && error.name === 'AbortError') throw error;
     const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
@@ -259,7 +262,10 @@ async function verifiedCompletedFootprints(options: PortableRecoveryOptions,
   completed: CompletedPortableFootprint[], current: PortablePreparation): Promise<Array<CompletedPortableFootprint & { skill: string }>> {
   const verified: Array<CompletedPortableFootprint & { skill: string }> = [];
   const records = await listInstalledSkills({ ...options, cwd: options.context.executionCwd,
-    global: options.scope === 'user', timeoutMs: 15_000 }).catch(() => []);
+    global: options.scope === 'user', timeoutMs: 15_000 }).catch((error) => {
+      if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
+      return [];
+    });
   for (const footprint of completed) {
     try {
       if (!await outputPathExists(footprint.physicalPath)
@@ -385,7 +391,10 @@ export async function executePortableRecovery(options: {
           await addSkills({ ...prepared.options, cwd: prepared.options.context.executionCwd,
             rootDir: prepared.generation, skills: [skill],
             agents: group.map((target) => target.agent), global: prepared.options.scope === 'user', copy: true, timeoutMs: 60_000 });
-        } catch { for (const target of group) targetErrors.set(target.physicalPath, 'portableSkillsCliInstallFailed'); }
+        } catch (error) {
+          if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
+          for (const target of group) targetErrors.set(target.physicalPath, 'portableSkillsCliInstallFailed');
+        }
       }
       try {
         const afterLock = await providerLock(prepared.options);
@@ -458,6 +467,7 @@ export async function inspectPortableExtraInstalled(options: {
     await probePortableRecoverySkillsCli({ ...options, cwd: layout.cwd });
     records = await listInstalledSkills({ ...options, cwd: layout.cwd, global: false, timeoutMs: 15_000 });
   } catch (error) {
+    if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
     options.signal?.throwIfAborted();
     if (error instanceof Error && error.name === 'AbortError') throw error;
     return { targets: [], complete: false };
@@ -575,6 +585,7 @@ export async function inspectPortableResidue(options: {
     records = await listInstalledSkills({ ...options, cwd: layout.cwd,
       global: options.scope === 'user', timeoutMs: 15_000 });
   } catch (error) {
+    if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
     options.signal?.throwIfAborted();
     if (error instanceof Error && error.name === 'AbortError') throw error;
     return hasEvidence ? unknown() : { state: 'absent', targets: [], blockers: [] };

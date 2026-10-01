@@ -32,6 +32,7 @@ import {
 import { TuiRouter } from '../../src/tui/router.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
 import type { PortableInstallReceipt } from '../../src/portable/commands.js';
+import { SkillsCliError } from '../../src/portable/skills-cli.js';
 
 function source(
   id: string,
@@ -49,6 +50,66 @@ function source(
 }
 
 describe('TuiController session retirement', () => {
+  // Test Value Gate: a session drain must report provider cleanup failure instead of declaring reads safely stopped.
+  it('reports unconfirmed Skills cleanup while draining cancelled status reads', async () => {
+    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    const value = new TuiController(dependencies({ loadStatus: (signal) =>
+      new Promise<TuiStatusLoadResult>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(failure), { once: true });
+      }) }));
+    const loading = value.load();
+    await Promise.resolve();
+    await expect(value.cancelAndWaitForReads()).rejects.toBe(failure);
+    await loading;
+  });
+
+  // Test Value Gate: cleanup failure from a finished read must remain visible to a later session drain.
+  it('retains and reports cleanup failure after a status read has settled', async () => {
+    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    const logError = vi.fn();
+    const value = new TuiController(dependencies({ loadStatus: async () => { throw failure; }, logError }));
+    await value.load();
+    await expect(value.cancelAndWaitForReads()).rejects.toBe(failure);
+    expect(logError).toHaveBeenCalledWith(failure, 'portableSkillsCliCleanupFailed', undefined);
+  });
+
+  // Test Value Gate: cancelling Review must not hide a late cleanup failure or allow later retirement to succeed.
+  it('reports cleanup failure after a cancelled Review preparation', async () => {
+    let reject!: (error: unknown) => void;
+    const captured = new Promise<OperationEvidence>((_resolve, fail) => { reject = fail; });
+    const captureEvidence = vi.fn(() => captured);
+    const logError = vi.fn();
+    const controller = new TuiController(dependencies({ captureEvidence, logError }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    controller.startReviewPreparation({ kind: 'pluginWrite', action: 'reinstall',
+      pluginId: 'official/demo', platform: 'codex', scope: 'user' });
+    await nextTurn();
+    expect(captureEvidence).toHaveBeenCalledOnce();
+    controller.back();
+    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    reject(failure);
+    await nextTurn();
+    expect(logError).toHaveBeenCalledWith(failure, failure.code, undefined);
+    await expect(controller.cancelAndWaitForReads()).rejects.toBe(failure);
+  });
+
+  // Test Value Gate: one available scope must not hide another scope's unconfirmed provider cleanup.
+  it('fails Portable preparation when another scope cannot confirm cleanup', async () => {
+    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    const controller = new TuiController(dependencies({
+      loadStatus: async () => ({ payload: status(), pluginSummaries: summaries(['official', 'demo']),
+        portablePluginIds: ['official/demo'] }),
+      captureEvidence: async (intent) => {
+        if (intent.kind === 'portableInstall' && intent.scope === 'user') throw failure;
+        return portableEvidence(portableReceipt());
+      },
+    }));
+    await controller.load();
+    await expect(controller.preparePortableInstall('official/demo')).rejects.toBe(failure);
+    await expect(controller.cancelAndWaitForReads()).rejects.toBe(failure);
+  });
+
   it('records only successful status read time and keeps it when returning home', async () => {
     let now = 1_000;
     const value = new TuiController(dependencies({ now: () => now }));

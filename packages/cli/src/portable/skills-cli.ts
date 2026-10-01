@@ -1,9 +1,9 @@
-import { execFile, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
-import { promisify } from 'node:util';
+import type { ExecFileOptionsWithStringEncoding } from 'node:child_process';
 
+import { execFileNativeCliRunner, NativeCliError } from '../utils/native-cli.js';
+import type { SafeOperationErrorMetadata } from '../utils/safe-operation-diagnostic.js';
 import { resolveWindowsSkillsCommand } from './windows-skills-command.js';
 
-const execFileAsync = promisify(execFile);
 const MIN_VERSION = [1, 5, 23] as const;
 const MAX_VERSION = [2, 0, 0] as const;
 export const SKILLS_CLI_SUPPORTED_VERSION_LABEL = '>=1.5.23 <2.0.0';
@@ -12,15 +12,22 @@ export type SkillsCliErrorCode =
   | 'portableSkillsCliMissing'
   | 'portableSkillsCliIncompatible'
   | 'portableSkillsCliInstallFailed'
+  | 'portableSkillsCliCleanupFailed'
   | 'portableSkillsCliVerificationFailed';
 
 export class SkillsCliError extends Error {
+  readonly operationDiagnostic?: SafeOperationErrorMetadata;
+
   constructor(
     readonly code: SkillsCliErrorCode,
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(`${code}: ${message}`);
+    super(`${code}: ${message}`, options);
     this.name = 'SkillsCliError';
+    if (code === 'portableSkillsCliCleanupFailed') {
+      this.operationDiagnostic = { code, safeMessage: 'Skills CLI process cleanup could not be confirmed.' };
+    }
   }
 }
 
@@ -48,6 +55,30 @@ export type SkillsCliRunner = (
   args: string[],
   options: ExecFileOptionsWithStringEncoding,
 ) => Promise<{ stdout: string; stderr: string }>;
+
+// Reuse the bounded process-group/Windows Job lifecycle before releasing a caller's cwd.
+const defaultSkillsCliRunner = async (
+  command: string, args: string[], options: ExecFileOptionsWithStringEncoding & { cwd: string },
+): ReturnType<SkillsCliRunner> => {
+  try {
+    return await execFileNativeCliRunner({ command, args, cwd: options.cwd, env: options.env,
+      signal: options.signal, timeoutMs: options.timeout });
+  } catch (error) {
+    if (error instanceof NativeCliError) {
+      if ((error.cause as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+        throw new SkillsCliError('portableSkillsCliMissing', 'PATH 中没有 skills 可执行文件。');
+      }
+      if (error.cleanupError) {
+        throw new SkillsCliError('portableSkillsCliCleanupFailed', '无法确认 skills 进程已清理。', { cause: error });
+      }
+      if (error.reason === 'aborted') {
+        throw Object.assign(new Error('The operation was aborted.', { cause: error }),
+          { name: 'AbortError', code: 'ABORT_ERR' });
+      }
+    }
+    throw error;
+  }
+};
 
 export interface PortableSkillTarget {
   skill: string;
@@ -92,7 +123,7 @@ async function invokeSkills(
           error instanceof Error ? error.message : '无法核验 Windows Skills CLI 入口。');
       }
     }
-    const result = await (options.runner ?? execFileAsync)(command, [...argsPrefix, ...args], {
+    const result = await (options.runner ?? defaultSkillsCliRunner)(command, [...argsPrefix, ...args], {
       cwd: options.cwd,
       env,
       encoding: 'utf8',
@@ -242,6 +273,7 @@ export async function verifySkillTargets(options: SkillsCliInvocationOptions & {
     try {
       current = await listInstalledSkills({ ...options, ...(agent ? { agent } : {}) });
     } catch (error) {
+      if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
       if (error instanceof SkillsCliError) {
         unknown.push(...targets);
         continue;

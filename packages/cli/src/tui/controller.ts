@@ -12,6 +12,7 @@ import type {
   Scope,
 } from '../types.js';
 import type { PortableReview, PortableInstallReceipt, PortableRetryReview } from '../portable/commands.js';
+import { SkillsCliError } from '../portable/skills-cli.js';
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
@@ -1555,6 +1556,7 @@ export class TuiController {
     promise: Promise<OperationExecuteResult>;
   }>();
   readonly #pendingReads = new Set<Promise<unknown>>();
+  #readCleanupError?: SkillsCliError;
   readonly #pluginContent = new Map<string, PluginContentOverview>();
   readonly #pluginContentInflight = new Map<string, Promise<void>>();
   #pluginContentEpoch = 0;
@@ -1817,9 +1819,16 @@ export class TuiController {
   }
 
   #trackRead<T>(promise: Promise<T>): Promise<T> {
-    this.#pendingReads.add(promise);
-    void promise.finally(() => this.#pendingReads.delete(promise)).catch(() => undefined);
-    return promise;
+    const tracked = promise.catch(async (error: unknown) => {
+      if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') {
+        this.#readCleanupError ??= error;
+        await this.#logErrorSafe(error, error.code);
+      }
+      throw error;
+    });
+    this.#pendingReads.add(tracked);
+    void tracked.finally(() => this.#pendingReads.delete(tracked)).catch(() => undefined);
+    return tracked;
   }
 
   beginRetirement(): void {
@@ -1852,6 +1861,7 @@ export class TuiController {
       await Promise.allSettled([...this.#pendingReads]);
     }
     await catalogDrain;
+    if (this.#readCleanupError) throw this.#readCleanupError;
     return !this.hasActiveWrite;
   }
 
@@ -2656,6 +2666,10 @@ export class TuiController {
         selectedSkills: [],
       }, signal)),
     })));
+    const cleanupFailure = prepared.find((entry): entry is PromiseRejectedResult =>
+      entry.status === 'rejected' && entry.reason instanceof SkillsCliError
+      && entry.reason.code === 'portableSkillsCliCleanupFailed');
+    if (cleanupFailure) throw cleanupFailure.reason;
     const available = prepared.flatMap((entry) =>
       entry.status === 'fulfilled' && entry.value.evidence.portable ? [entry.value] : []);
     if (available.length === 0) {

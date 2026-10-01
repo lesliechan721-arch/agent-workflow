@@ -25,6 +25,7 @@ import { addRoot, observeIntent } from '../../src/intent/intent-store.js';
 import { observePreferences, writePreferences } from '../../src/intent/deployment-preferences.js';
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { SkillsCliError } from '../../src/portable/skills-cli.js';
 
 function removedEvidence() {
   return { pluginId: 'local/demo', pluginName: 'demo', sourceId: 'local',
@@ -48,6 +49,20 @@ beforeEach(() => {
 });
 
 describe('retire strong state and residue', () => {
+  // Test Value Gate: locked retirement rechecks must preserve cleanup failure and keep the declaration intact.
+  it('preserves cleanup failure from the locked residue recheck', async () => {
+    const options = location();
+    await addRoot(options, 'local/demo', 'sha256:logical');
+    const runtime = { inventoryCatalogSourceReferences: async () =>
+      ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }) };
+    const plan = await prepareRetire({ ...options, selector: 'local/demo', targets: ['cursor'], yes: true }, runtime);
+    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    backend.portable.mockRejectedValue(failure);
+    await expect(executeRetire(plan, runtime)).rejects.toBe(failure);
+    expect((await observeIntent(options)).value.roots).toEqual([{ pluginId: 'local/demo' }]);
+    expect(backend.execute).not.toHaveBeenCalled();
+  });
+
   it('does not start a noninteractive retirement without Review authorization', async () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');

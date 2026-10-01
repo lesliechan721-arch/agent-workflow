@@ -401,6 +401,8 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 
 Portable 跨平台支持不受实测 OS/架构范围限制。AW 按固定 provider 源码解析实际路径，保留版本、lock、symlink、目标一致性与归属门禁。共用 Skills adapter 在 Windows 核验 npm/pnpm shim 与 package bin，再以 Node 和独立 argv 启动；不通过 shell 拼接参数。真实 provider/Agent 验证按实际平台分别记录，未实跑平台明确为待验证。
 
+Skills adapter 的默认 runner 复用 Native CLI 的有限进程收尾：取消和超时在确认进程退出后才结束，读取 context 随后释放临时中性 cwd。清理未确认时传出 `portableSkillsCliCleanupFailed`，优先于普通取消、provider observation fallback 和会话关闭成功判断；不增加持久进程状态。
+
 - 只删除可证明属于 AW 的 marker、managed block、artifact 或 namespaced 组件。
 - 一次写操作按 `sourceId + sourceIdentity + marketplaceName + normalized marketplaceRoot + platform` 分组 native marketplace materialization。每组汇总全部 target 的动态 native overlay，并只执行一次 copy、staging validation、atomic swap 和 commit。已删除插件的整体 cleanup 不进入本条的重建顺序：它保留目标插件的 marketplace 投影与归属证据，先完成原生卸载及 absent 后检查，再移除该插件投影并保持其他插件有效；失败时保留重试所需证据。其他 native materialization 的共享投影 commit 必须先于该组的 plugin add/remove/activation；分组 materialization 失败时，该组不启动 native mutation。commit 后逐 target 执行平台 mutation；单 target 失败不回滚共享投影，也不回滚其它 target 的成功结果。
 - primary source 默认继续使用 `aw` marketplace。若用户级 Codex 或 Claude 的 `aw` 已由 legacy 或 foreign source 占用，首次安装改用 source-bound `aw-<sourceId>`；两个平台使用同一名称。已有 canonical 注册继续决定名称，候选名称被 foreign source 占用时 fail closed。

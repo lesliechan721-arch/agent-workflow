@@ -22,6 +22,7 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { SkillsCliError } from '../../src/portable/skills-cli.js';
 
 describe('scoped sync source refresh', () => {
   it('keeps Active unchanged during refresh Review and rebuilds the recovery plan after activation', async () => {
@@ -223,6 +224,24 @@ describe('scoped sync source refresh', () => {
 });
 
 describe('ordinary scoped cleanup residue', () => {
+  // Test Value Gate: locked residue rechecks must report provider cleanup failure before any recovery write.
+  it('preserves cleanup failure from the locked residue recheck', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    await addRoot(location, 'local/demo', 'sha256:logical');
+    portable.inspectResidue.mockResolvedValue({ state: 'absent', targets: [], blockers: [] });
+    const plan = await prepareRecovery('cleanup', ['local/demo'], { ...location,
+      cliVersion: '1.0.0', targets: ['cursor'], yes: true });
+    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    portable.inspectResidue.mockRejectedValue(failure);
+    try {
+      await expect(executeRecovery(plan)).rejects.toBe(failure);
+    } finally {
+      portable.inspectResidue.mockReset();
+      await plan.context.dispose();
+    }
+  });
+
   it('keeps each uncertain Agent in the cleanup retry set beside confirmed Portable residue', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };

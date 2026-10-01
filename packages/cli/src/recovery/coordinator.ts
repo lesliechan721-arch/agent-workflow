@@ -15,6 +15,7 @@ import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
 import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { portableRecoveryLayout } from '../portable/recovery-layout.js';
+import { SkillsCliError } from '../portable/skills-cli.js';
 import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import {
@@ -682,6 +683,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
         catalogOperationContext: demand.catalogOperationContext });
       plan.portableGroups.push(prepared);
     } catch (error) {
+      if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
       options.signal?.throwIfAborted();
       if (error instanceof Error && error.name === 'AbortError') throw error;
       for (const agent of agents) block(pair(plan, pluginId, agent)!, errorCode(error, 'portablePreparationFailed'));
@@ -709,6 +711,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
           if (!plan.portableGroups.includes(prepared)) plan.portableProtectionGroups.push(prepared);
         }
       } catch (error) {
+        if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
         options.signal?.throwIfAborted();
         if (error instanceof Error && error.name === 'AbortError') throw error;
         // Missing current Portable evidence cannot protect historical residue.
@@ -725,6 +728,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
         observation = await inspectPortableResidue({ scope: options.scope, context, selector: pluginId,
           env: options.env, agents, retainedTargets, signal: options.signal });
       } catch (error) {
+        if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
         options.signal?.throwIfAborted();
         if (error instanceof Error && error.name === 'AbortError') throw error;
         observation = { state: 'unknown', targets: [], blockers: ['portableObservationFailed'] };
@@ -929,7 +933,10 @@ export async function executeRecovery(plan: RecoveryPlan,
       for (const residue of plan.portableResidues) {
         const checked = await inspectPortableResidue({ scope: plan.options.scope, context: plan.context,
           selector: residue.pluginId, env: plan.options.env, agents: residue.agents,
-          retainedTargets: residue.retainedTargets }).catch(() => undefined);
+          retainedTargets: residue.retainedTargets }).catch((error) => {
+            if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
+            return undefined;
+          });
         if (!checked || JSON.stringify(checked) !== JSON.stringify(residue.observation)) {
           receipt.blockers.push(diagnostic('operationReviewStale'));
           return completeReceipt(receipt);

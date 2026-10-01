@@ -4,6 +4,7 @@ import { createScopeContext, type ScopeContext } from '../intent/scope-context.j
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { statusCommandV8, flattenStatusTargets, type StatusScopedTarget } from '../commands/status-v6.js';
 import { inspectPortableExtraInstalled, inspectPortableRecovery } from '../portable/recovery.js';
+import { SkillsCliError } from '../portable/skills-cli.js';
 import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
 import type { RecoveryDiagnostic, RecoveryReceipt, RecoveryTarget } from './receipt.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
@@ -131,6 +132,7 @@ export async function statusFromObservations(options: ReadRecoveryStatusOptions 
             errors.push({ ...diagnostic('portableObservationFailed'), pluginId: root.pluginId });
           }
         } catch (error) {
+          if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
           options.signal?.throwIfAborted();
           if (error instanceof Error && error.name === 'AbortError') throw error;
           target.blockers.push(diagnostic('portableObservationFailed'));

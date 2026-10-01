@@ -13,6 +13,7 @@ import { observeIntent, removeRoot } from '../intent/intent-store.js';
 import { observePreferences, writePreferences, selectAgents } from '../intent/deployment-preferences.js';
 import { assertNeutralAncestorChain, createScopeContext, type ScopeContext } from '../intent/scope-context.js';
 import { inspectPortableResidue, type PortableResidue } from '../portable/recovery.js';
+import { SkillsCliError } from '../portable/skills-cli.js';
 import type { RecoveryReceipt, RecoveryTarget } from './receipt.js';
 
 export interface RetireOptions {
@@ -243,7 +244,10 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
         }
         const portable = await inspectPortableResidue({ scope: plan.options.scope, context: plan.context,
           selector: plan.options.selector, env: plan.context.env, agents: plan.options.targets === undefined
-            ? undefined : plan.receipt.selection.agents }).catch(() => undefined);
+            ? undefined : plan.receipt.selection.agents }).catch((error) => {
+              if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
+              return undefined;
+            });
         if (!portable || JSON.stringify(portable) !== JSON.stringify(plan.portable)) {
           receipt.blockers.push(diagnostic('operationReviewStale'));
           return finish(receipt, plan.options, plan.portable);

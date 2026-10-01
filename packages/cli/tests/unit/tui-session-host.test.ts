@@ -4,6 +4,7 @@ import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js'
 import type { ExternalDraftState, OperationExecuteResult, TuiController, TuiControllerSnapshot } from '../../src/tui/controller.js';
 import { LatestSessionResultHistory, SessionHost } from '../../src/tui/session-host.js';
 import type { OperationHistoryStore } from '../../src/tui/operation-history.js';
+import { SkillsCliError } from '../../src/portable/skills-cli.js';
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -85,6 +86,7 @@ function fakeController(options: {
       return true;
     }),
     beginRetirement: vi.fn(),
+    recordUiFailure: vi.fn(() => 'reload-failure'),
     waitForWrites: vi.fn().mockResolvedValue(undefined),
     attachOperationHistory: vi.fn((_history: OperationHistoryStore, _epoch: number) => undefined),
     goHome: vi.fn(() => true),
@@ -176,6 +178,38 @@ describe('TUI session host', () => {
     await host.requestNavigation('home');
     first.emitLateResult(result('partial'));
     expect(host.snapshot.pendingNavigation).toBe('home');
+  });
+
+  // Test Value Gate: a failed read drain must stay explicit and release the transient reload state.
+  it('propagates cleanup failure without leaving reload permanently busy', async () => {
+    const controller = fakeController();
+    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    controller.cancelAndWaitForReads.mockRejectedValue(failure);
+    const createSession = vi.fn(() => session(controller));
+    const host = new SessionHost({ createSession });
+    await expect(host.requestNavigation('reload')).rejects.toBe(failure);
+    expect(host.snapshot.reloading).toBe(false);
+    expect(controller.dispose).not.toHaveBeenCalled();
+    expect(createSession).toHaveBeenCalledOnce();
+    await expect(host.requestNavigation('reload')).rejects.toBe(failure);
+  });
+
+  // Test Value Gate: queued reload must handle cleanup failure after a successful write without an unhandled rejection.
+  it('records cleanup failure from a queued reload and keeps the old session', async () => {
+    const controller = fakeController({ write: true });
+    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    controller.cancelAndWaitForReads.mockRejectedValue(failure);
+    const createSession = vi.fn(() => session(controller));
+    const host = new SessionHost({ createSession });
+    await expect(host.requestNavigation('reload')).resolves.toBe('pending');
+    controller.setWrite(false);
+    controller.emitResult(result('succeeded'));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(controller.recordUiFailure).toHaveBeenCalledWith(failure,
+      { code: 'tuiSessionReloadFailed', stage: 'session-reload' });
+    expect(host.snapshot).toMatchObject({ epoch: 1, reloading: false, controller });
+    expect(controller.dispose).not.toHaveBeenCalled();
+    expect(createSession).toHaveBeenCalledOnce();
   });
 
   it('keeps one last-wins pending navigation and records success before reloading', async () => {

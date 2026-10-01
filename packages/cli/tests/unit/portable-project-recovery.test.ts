@@ -12,6 +12,7 @@ import { readRecoveryStatus } from '../../src/recovery/status.js';
 import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import * as skillsCli from '../../src/portable/skills-cli.js';
 
 const state = vi.hoisted(() => ({ content: 'first', extraFile: '', builds: 0, scope: 'project' as 'project' | 'user' }));
 vi.mock('../../src/portable/materializer.js', () => ({
@@ -91,6 +92,29 @@ async function addCalls(log: string) {
 beforeEach(() => { state.content = 'first'; state.extraFile = ''; state.builds = 0; state.scope = 'project'; });
 
 describe('project Portable recovery', () => {
+  // Test Value Gate: provider cleanup failure must escape root, extra and residue observation fallbacks before cancellation.
+  it.each([
+    ['root', false], ['root', true], ['extra', false], ['extra', true], ['residue', false], ['residue', true],
+  ] as const)('preserves cleanup failure in %s observation with cancellation %s', async (kind, cancelled) => {
+    const value = await fixture();
+    const options = { ...value, agents: [...value.agents] };
+    await preparePortableRecovery(options);
+    const abort = new AbortController();
+    const failure = new skillsCli.SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    const list = vi.spyOn(skillsCli, 'listInstalledSkills').mockImplementation(async () => {
+      if (cancelled) abort.abort();
+      throw failure;
+    });
+    try {
+      const inspect = kind === 'root' ? inspectPortableRecovery
+        : kind === 'extra' ? inspectPortableExtraInstalled : inspectPortableResidue;
+      await expect(inspect({ ...options, signal: abort.signal })).rejects.toBe(failure);
+    } finally {
+      list.mockRestore();
+      await value.context.dispose();
+    }
+  });
+
   // Test Value Gate: Portable inventory cancellation must stop the provider process and escape incomplete-coverage fallbacks.
   it.each(['root', 'extra'] as const)('propagates cancellation from a pending Portable %s inventory read', async (kind) => {
     const value = await fixture();
