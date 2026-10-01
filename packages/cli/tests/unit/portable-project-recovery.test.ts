@@ -56,6 +56,7 @@ fs.appendFileSync(process.env.PROVIDER_LOG, JSON.stringify(args) + '\\n');
 if(args[0] === '--version') { console.log('1.5.23'); process.exit(0); }
 let lock = {version:1, skills:{}}; try { lock=JSON.parse(fs.readFileSync('skills-lock.json')); } catch {}
 if(args[0] === 'list') {
+ if(process.env.SUSPEND_LIST) { fs.writeFileSync(process.env.SUSPEND_LIST, String(process.pid)); setInterval(() => {}, 1000); return; }
  if(process.env.FAIL_LIST) process.exit(2);
  if(args.includes('--global')) {
   const other=path.join(process.env.HOME,'.agents/skills/beta');
@@ -90,6 +91,36 @@ async function addCalls(log: string) {
 beforeEach(() => { state.content = 'first'; state.extraFile = ''; state.builds = 0; state.scope = 'project'; });
 
 describe('project Portable recovery', () => {
+  // Test Value Gate: Portable inventory cancellation must stop the provider process and escape incomplete-coverage fallbacks.
+  it.each(['root', 'extra'] as const)('propagates cancellation from a pending Portable %s inventory read', async (kind) => {
+    const value = await fixture();
+    await preparePortableRecovery({ ...value, agents: [...value.agents] });
+    const startedPath = path.join(value.cwd, 'pending-list.pid');
+    const pendingContext = await createScopeContext({ scope: 'project', cwd: value.cwd,
+      env: { ...value.env, SUSPEND_LIST: startedPath } });
+    const abort = new AbortController();
+    let pid: number | undefined;
+    let observation: Promise<unknown> | undefined;
+    try {
+      observation = kind === 'root'
+        ? inspectPortableRecovery({ ...value, context: pendingContext, agents: [...value.agents], signal: abort.signal })
+        : readRecoveryStatus({ scope: 'project', cwd: value.cwd, env: pendingContext.env,
+          nativeObservations: [], signal: abort.signal });
+      let failure: unknown;
+      void observation.catch((error) => { failure = error; });
+      await vi.waitFor(async () => expect(await fs.pathExists(startedPath)).toBe(true));
+      pid = Number(await fs.readFile(startedPath, 'utf8'));
+      abort.abort();
+      await vi.waitFor(() => expect(failure).toMatchObject({ name: 'AbortError' }));
+      await vi.waitFor(() => expect(() => process.kill(pid!, 0)).toThrow());
+    } finally {
+      abort.abort();
+      if (pid) { try { process.kill(pid); } catch { /* The cancelled provider has already stopped. */ } }
+      await observation?.catch(() => undefined);
+      await pendingContext.dispose();
+      await value.context.dispose();
+    }
+  });
   it('reports Project Portable extras from verified provider source evidence', async () => {
     const fixtureValue = await fixture();
     const options = { ...fixtureValue, agents: [...fixtureValue.agents] };

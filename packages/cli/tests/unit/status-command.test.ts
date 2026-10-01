@@ -28,7 +28,7 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { createSharedOwnerToken, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
-import { type NativeCliRunner, setNativeCliRunnerOverrideForTests } from '../../src/utils/native-cli.js';
+import { NativeCliError, type NativeCliRunner, setNativeCliRunnerOverrideForTests } from '../../src/utils/native-cli.js';
 import { applyCodexConfigTransactionFile } from '../../src/utils/codex-config.js';
 import { resolveAwHome, resolveClaudePaths, resolveCodexPaths } from '../../src/utils/paths.js';
 import { getCodexHome } from '../../src/utils/state-paths.js';
@@ -170,6 +170,71 @@ async function writeSystemCodexPackage(options: {
 describe('status v8 current behavior', () => {
   beforeEach(async () => {
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
+  });
+  // Test Value Gate: cancelling inventory observation must stop Native processes and release both temporary cwd owners.
+  it.each([
+    { stage: 'version', cleanupFailure: false }, { stage: 'list', cleanupFailure: false },
+    { stage: 'version', cleanupFailure: true }, { stage: 'list', cleanupFailure: true },
+  ] as const)('propagates scoped status cancellation during the Native $stage read with cleanup failure=$cleanupFailure', async ({ stage, cleanupFailure }) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'cancel-native-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+    });
+    const { env } = await configurePathSource(sourceRoot);
+    const binRoot = await writeSystemCodexPackage({ root: path.join(isolation.layout.fixtureCwd, 'cancel-native-bin'),
+      version: '0.151.0' });
+    const observedEnv = { ...env, PATH: binRoot };
+    await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: observedEnv }, {
+      roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+    });
+    const abort = new AbortController();
+    const readCwds = new Set<string>();
+    let started = false;
+    let receivedSignal: AbortSignal | undefined;
+    let nativeFailure: NativeCliError | undefined;
+    const cleanupError = new Error('Native CLI cleanup unconfirmed: remaining process identity is unavailable.');
+    const nativeRunner = vi.fn<NativeCliRunner>(async (invocation) => {
+      readCwds.add(invocation.cwd!);
+      if (stage === 'list' && invocation.args.at(-1) === '--version') {
+        return { exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' };
+      }
+      started = true;
+      receivedSignal = invocation.signal;
+      return new Promise((_resolve, reject) => {
+        abort.signal.addEventListener('abort', () => {
+          nativeFailure = new NativeCliError({ invocation, exitCode: 1, stdout: '', stderr: '',
+            reason: 'aborted', cause: abort.signal.reason, cleanupError });
+          reject(cleanupFailure ? nativeFailure : new DOMException('cancelled', 'AbortError'));
+        }, { once: true });
+      });
+    });
+    setNativeCliRunnerOverrideForTests(nativeRunner);
+    try {
+      const read = readRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd,
+        env: observedEnv, cliVersion: '1.0.0', signal: abort.signal });
+      const rejected = read.catch((error: unknown) => error);
+      await vi.waitFor(() => expect(started).toBe(true));
+      abort.abort();
+      const failure = await rejected;
+      expect(failure).toMatchObject({ name: 'AbortError' });
+      if (cleanupFailure) {
+        expect(failure).toBeInstanceOf(NativeCliError);
+        expect(failure).toBe(nativeFailure);
+        expect((failure as NativeCliError).cleanupError).toBe(cleanupError);
+        expect((failure as NativeCliError).cause).toBe(abort.signal.reason);
+      }
+      expect(receivedSignal).toBe(abort.signal);
+      expect(nativeRunner).toHaveBeenCalledTimes(stage === 'version' ? 1 : 2);
+      for (const cwd of readCwds) expect(await fs.pathExists(cwd)).toBe(false);
+      const remaining = await fs.readdir(isolation.env.TMPDIR!);
+      expect(remaining.filter((name) => name.startsWith('aw-user-neutral-'))).toEqual([]);
+    } finally {
+      abort.abort();
+      setNativeCliRunnerOverrideForTests(null);
+    }
   });
   // Test Value Gate: platform-free project roots must not invent demand for unselected Agents.
   it.each([
@@ -2410,7 +2475,7 @@ describe('status v8 current behavior', () => {
     const binRoot = path.join(isolation.layout.fixtureCwd, 'wrapper-bin');
     await fs.outputFile(path.join(binRoot, 'codex'), '#!/bin/sh\nexit 0\n');
     await fs.chmod(path.join(binRoot, 'codex'), 0o755);
-    const env = { ...configured.env, PATH: binRoot, AW_CODEX_HOME: path.join(cwd, '.codex') };
+    const env = { ...configured.env, PATH: binRoot, CODEX_HOME: path.join(cwd, '.codex') };
     await writeIntentFixture({ scope: 'user', cwd, env }, {
       ...createEmptyIntent(),
       roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],

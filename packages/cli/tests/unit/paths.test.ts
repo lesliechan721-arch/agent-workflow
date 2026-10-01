@@ -15,6 +15,7 @@ import {
   resolveCodexProjectKey,
 } from '../../src/utils/paths.js';
 import { setTestPathFenceHookForTests } from '../../src/utils/test-path-fence.js';
+import { resolveUserHome } from '../../src/utils/state-paths.js';
 import { expectPathFenceViolation } from '../helpers/test-isolation.js';
 import {
   getCurrentSourceTestIsolation,
@@ -30,6 +31,35 @@ afterEach(async () => {
 });
 
 describe('project key paths', () => {
+  // Test Value Gate: plain copied Windows environments must resolve the same target as the child provider.
+  it('uses mixed-case Windows home keys and keeps POSIX keys exact', () => {
+    expect(resolveUserHome({ UserProfile: 'D:\\custom\\home' }, 'win32', 'C:\\Users\\default'))
+      .toBe('D:\\custom\\home');
+    expect(resolveUserHome({ home: '/ignored', HOME: '/exact' }, 'linux', '/system')).toBe('/exact');
+    expect(resolveUserHome({ home: '/ignored' }, 'linux', '/system')).toBe('/system');
+  });
+
+  it('chooses the first sorted Windows home key, including an undefined first value', () => {
+    expect(resolveUserHome({ userprofile: 'Z:\\last', UserProfile: 'D:\\first' }, 'win32', 'C:\\system'))
+      .toBe('D:\\first');
+    expect(resolveUserHome({ UserProfile: 'D:\\ignored', USERPROFILE: undefined }, 'win32', 'C:\\system'))
+      .toBe('C:\\system');
+  });
+
+  it('resolves formal Windows Agent and AW homes from mixed-case keys', () => {
+    // These are pure path calculations for a foreign platform; no filesystem access follows.
+    setTestPathFenceHookForTests(null);
+    const env = { UserProfile: 'C:\\Users\\custom', CodeX_Home: '  D:\\codex  ',
+      Claude_Config_Dir: '  E:\\claude  ', Aw_Home: 'F:\\aw' };
+    expect(getCodexHome(env, 'win32', 'C:\\system')).toBe('D:\\codex');
+    expect(getClaudeHome(env, 'win32', 'C:\\system')).toBe('E:\\claude');
+    expect(resolveAwHome(env, 'win32', 'C:\\system')).toBe('F:\\aw');
+    expect(getCodexHome({ UserProfile: env.UserProfile }, 'win32', 'C:\\system'))
+      .toBe('C:\\Users\\custom\\.codex');
+    expect(getClaudeHome({ UserProfile: env.UserProfile }, 'win32', 'C:\\system'))
+      .toBe('C:\\Users\\custom\\.claude');
+  });
+
   it('uses the canonical repo root for Claude project paths from a subdirectory', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const repoRoot = path.join(isolation.layout.rootDir, 'claude-project-root');
@@ -73,12 +103,12 @@ describe('project key paths', () => {
 
     expectPathFenceViolation(
       () => getCodexHome({
-        AW_CODEX_HOME: path.join(repositoryCwd, '.codex-test-home'),
+        CODEX_HOME: path.join(repositoryCwd, '.codex-test-home'),
       } as NodeJS.ProcessEnv),
       {
         access: 'write',
         path: path.join(repositoryCwd, '.codex-test-home'),
-        source: 'AW_CODEX_HOME',
+        source: 'CODEX_HOME',
         reason: 'writeToReadOnlyRoot',
         conflictingRootPath: repositoryCwd,
         recommendedFixIncludes: 'registerWritableStateRoot()',
@@ -87,12 +117,12 @@ describe('project key paths', () => {
 
     expectPathFenceViolation(
       () => getClaudeHome({
-        AW_CLAUDE_HOME: path.join(repositoryCwd, '.claude-test-home'),
+        CLAUDE_CONFIG_DIR: path.join(repositoryCwd, '.claude-test-home'),
       } as NodeJS.ProcessEnv),
       {
         access: 'write',
         path: path.join(repositoryCwd, '.claude-test-home'),
-        source: 'AW_CLAUDE_HOME',
+        source: 'CLAUDE_CONFIG_DIR',
         reason: 'writeToReadOnlyRoot',
         conflictingRootPath: repositoryCwd,
         recommendedFixIncludes: 'registerWritableStateRoot()',
@@ -109,17 +139,21 @@ describe('project key paths', () => {
     } as NodeJS.ProcessEnv)).toBe(unsafeAwHome);
   });
 
-  it('resolves Codex home from the test override, public override, and default in priority order', () => {
+  it('uses official Agent homes and ignores AW test overrides', () => {
     setTestPathFenceHookForTests(null);
-
+    const home = path.join(os.tmpdir(), 'agent-home');
+    const env = { HOME: home, USERPROFILE: home,
+      AW_CODEX_HOME: path.join(home, 'aw-codex'),
+      AW_CLAUDE_HOME: path.join(home, 'aw-claude') };
     expect(getCodexHome({
-      AW_CODEX_HOME: '/tmp/aw-codex-home',
-      CODEX_HOME: '/tmp/public-codex-home',
-    } as NodeJS.ProcessEnv)).toBe('/tmp/aw-codex-home');
-    expect(getCodexHome({
-      CODEX_HOME: '/tmp/public-codex-home',
-    } as NodeJS.ProcessEnv)).toBe('/tmp/public-codex-home');
-    expect(getCodexHome({} as NodeJS.ProcessEnv)).toBe(path.join(os.homedir(), '.codex'));
+      ...env, CODEX_HOME: path.join(home, 'public-codex'),
+    })).toBe(path.join(home, 'public-codex'));
+    expect(getClaudeHome({
+      ...env, CLAUDE_CONFIG_DIR: path.join(home, 'public-claude'),
+    })).toBe(path.join(home, 'public-claude'));
+    expect(getCodexHome(env)).toBe(path.join(home, '.codex'));
+    expect(getClaudeHome(env)).toBe(path.join(home, '.claude'));
+    expect(getCodexHome({})).toBe(path.join(os.userInfo().homedir, '.codex'));
   });
 
   it('normalizes symlink and realpath aliases to the same Claude/Codex project key', async () => {

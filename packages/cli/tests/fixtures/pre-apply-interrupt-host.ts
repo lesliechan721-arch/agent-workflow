@@ -44,8 +44,8 @@ async function main(): Promise<void> {
     context: {
       env: {
         AW_HOME: awHome,
-        AW_CODEX_HOME: path.join(awHome, 'codex-home'),
-        AW_CLAUDE_HOME: path.join(awHome, 'claude-home'),
+        CODEX_HOME: path.join(awHome, 'codex-home'),
+        CLAUDE_CONFIG_DIR: path.join(awHome, 'claude-home'),
         PATH: process.env.PATH,
       },
     } as CommandExecutionContext,

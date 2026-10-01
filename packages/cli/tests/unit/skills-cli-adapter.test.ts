@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   addSkills,
@@ -11,6 +11,7 @@ import {
   probePortableRecoverySkillsCli,
   verifySkillTargets,
   verifySkills,
+  type SkillsCliRunner,
 } from '../../src/portable/skills-cli.js';
 import { normalizePortableAgents } from '../../src/portable/commands.js';
 
@@ -51,11 +52,245 @@ async function fakeSkills(options: {
   };
 }
 
+async function windowsSkills(kind: 'npm-global' | 'npm-local' | 'pnpm' | 'pnpm-basic'): Promise<
+  Awaited<ReturnType<typeof fakeSkills>> & { launcher: string; shim: string; packageRoot: string }
+> {
+  const fake = await fakeSkills();
+  const prefix = path.join(fake.cwd, 'prefix with spaces');
+  const binRoot = kind === 'npm-local' ? path.join(prefix, 'node_modules', '.bin') : prefix;
+  const packageRoot = kind.startsWith('pnpm')
+    ? path.join(prefix, 'global', '5', 'node_modules', 'skills')
+    : path.join(prefix, 'node_modules', 'skills');
+  const launcher = path.join(packageRoot, 'bin', 'cli.mjs');
+  const shim = path.join(binRoot, 'skills.cmd');
+  await fs.ensureDir(path.dirname(launcher));
+  await fs.ensureDir(binRoot);
+  await fs.writeFile(launcher, (await fs.readFile(path.join(fake.cwd, 'skills'), 'utf8'))
+    .replace("const fs = require('node:fs');", "import fs from 'node:fs';"));
+  await fs.writeJson(path.join(packageRoot, 'package.json'), {
+    name: 'skills', version: '1.5.23', type: 'module', bin: { skills: './bin/cli.mjs' },
+  });
+  const target = path.relative(binRoot, launcher).split(path.sep).join('\\');
+  // Fixtures follow npm cmd-shim@8.0.0 and pnpm@10.33.0's @zkochan/cmd-shim@7.0.0.
+  const nodePath = 'C:\\pnpm home\\global\\5\\node_modules\\.pnpm\\node_modules';
+  const content = kind.startsWith('pnpm') ? [
+    '@SETLOCAL',
+    ...(kind === 'pnpm' ? [
+      '@IF NOT DEFINED NODE_PATH (',
+      `  @SET "NODE_PATH=${nodePath}"`,
+      ') ELSE (',
+      `  @SET "NODE_PATH=${nodePath};%NODE_PATH%"`,
+      ')',
+    ] : []),
+    '@IF EXIST "%~dp0\\node.exe" (',
+    `  "%~dp0\\node.exe"  "%~dp0\\${target}" %*`,
+    ') ELSE (',
+    '  @SET PATHEXT=%PATHEXT:;.JS;=;%',
+    `  node  "%~dp0\\${target}" %*`,
+    ')',
+    '',
+  ] : [
+    '@ECHO off', 'GOTO start', ':find_dp0', 'SET dp0=%~dp0', 'EXIT /b', ':start',
+    'SETLOCAL', 'CALL :find_dp0', '', 'IF EXIST "%dp0%\\node.exe" (',
+    '  SET "_prog=%dp0%\\node.exe"', ') ELSE (', '  SET "_prog=node"',
+    '  SET PATHEXT=%PATHEXT:;.JS;=;%', ')', '',
+    `endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${target}" %*`,
+    '',
+  ];
+  await fs.writeFile(shim, content.join('\r\n'));
+  return { ...fake, launcher, shim, packageRoot,
+    env: { ...fake.env, PATH: `"${binRoot}"`, PATHEXT: '.cmd' } };
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
 });
 
 describe('Skills CLI adapter', () => {
+  it.each(['npm-global', 'npm-local', 'pnpm', 'pnpm-basic'] as const)(
+    'runs Windows %s Node bins for public probes, lists and both recovery scopes', async (kind) => {
+      const fake = await windowsSkills(kind);
+      const options = { ...fake, platform: 'win32' as const };
+      await expect(probePortableRecoverySkillsCli(options)).resolves.toEqual({ version: '1.5.23' });
+      const scopeCwds: string[] = [];
+      for (const global of [false, true]) {
+        const cwd = path.join(fake.cwd, global ? 'neutral' : 'project');
+        await fs.ensureDir(cwd);
+        scopeCwds.push(await fs.realpath(cwd));
+        await expect(listInstalledSkills({ ...options, cwd, global, agent: 'claude-code' })).resolves.toEqual([]);
+        await addSkills({ ...options, cwd, rootDir: '/source with spaces/"quoted" & | <> ^ % !',
+          skills: ['skill with spaces', 'quote"and&shell|chars'], agents: ['claude-code'], global, copy: true });
+      }
+      const calls = (await fs.readFile(fake.log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+      expect(calls.map((call) => call.args)).toEqual([
+        ['--version'],
+        ['list', '--agent', 'claude-code', '--json'],
+        ['add', '/source with spaces/"quoted" & | <> ^ % !', '--skill', 'skill with spaces',
+          'quote"and&shell|chars', '--agent', 'claude-code', '--copy', '--yes'],
+        ['list', '--global', '--agent', 'claude-code', '--json'],
+        ['add', '/source with spaces/"quoted" & | <> ^ % !', '--skill', 'skill with spaces',
+          'quote"and&shell|chars', '--agent', 'claude-code', '--global', '--copy', '--yes'],
+      ]);
+      expect(calls.map((call) => call.cwd)).toEqual([
+        await fs.realpath(fake.cwd), scopeCwds[0], scopeCwds[0], scopeCwds[1], scopeCwds[1],
+      ]);
+    },
+  );
+
+  it('passes the resolved Windows Node entry, timeout and cancellation to a runner without a shell', async () => {
+    const fake = await windowsSkills('npm-global');
+    const { PATH, ...env } = fake.env;
+    const signal = new AbortController().signal;
+    const runner = vi.fn<SkillsCliRunner>(async () => ({ stdout: '1.5.23', stderr: '' }));
+    await probeSkillsCli({ ...fake, env: { ...env, Path: PATH }, platform: 'win32',
+      runner, timeoutMs: 321, signal });
+    expect(runner).toHaveBeenCalledWith(process.execPath, [await fs.realpath(fake.launcher), '--version'],
+      expect.objectContaining({ cwd: fake.cwd, encoding: 'utf8', timeout: 321, signal }));
+    expect(runner.mock.calls[0]?.[2]).not.toHaveProperty('shell');
+  });
+
+  it.each(['', 'inherited installation'])(
+    'uses Node-selected Windows PATH instead of the inherited Path %s', async (inheritedPath) => {
+      const selected = await windowsSkills('npm-global');
+      const inherited = await windowsSkills('npm-global');
+      await fs.writeFile(inherited.launcher, '#!/usr/bin/env node\nconsole.log("1.5.22");\n');
+      const { PATH, PATHEXT, ...env } = selected.env;
+      await expect(probePortableRecoverySkillsCli({ ...selected, platform: 'win32', env: {
+        ...env, Path: inheritedPath ? inherited.env.PATH : '', PATH, PATHEXT,
+      } })).resolves.toEqual({ version: '1.5.23' });
+      expect(JSON.parse((await fs.readFile(selected.log, 'utf8')).trim()).args).toEqual(['--version']);
+    },
+  );
+
+  it('uses Node-selected Windows PATHEXT for the public Skills probe', async () => {
+    const fake = await windowsSkills('npm-global');
+    const { PATHEXT, ...env } = fake.env;
+    await expect(probePortableRecoverySkillsCli({ ...fake, platform: 'win32',
+      env: { ...env, Pathext: '.bat', PATHEXT } })).resolves.toEqual({ version: '1.5.23' });
+  });
+
+  it('preserves the pnpm default NODE_PATH prefix and an existing Windows environment value', async () => {
+    const fake = await windowsSkills('pnpm');
+    const runner = vi.fn<SkillsCliRunner>(async () => ({ stdout: '1.5.23', stderr: '' }));
+    await probeSkillsCli({ ...fake, env: { ...fake.env, Node_Path: 'C:\\existing modules' }, platform: 'win32', runner });
+    expect(runner.mock.calls[0]?.[2].env).toMatchObject({
+      NODE_PATH: 'C:\\pnpm home\\global\\5\\node_modules\\.pnpm\\node_modules;C:\\existing modules',
+    });
+  });
+
+  it.each(['C:\\selected modules', ''])(
+    'prepends pnpm NODE_PATH to the Node-selected environment value %s', async (selectedPath) => {
+      const fake = await windowsSkills('pnpm');
+      const runner = vi.fn<SkillsCliRunner>(async () => ({ stdout: '1.5.23', stderr: '' }));
+      await expect(probePortableRecoverySkillsCli({ ...fake, platform: 'win32', runner,
+        env: { ...fake.env, Node_Path: 'C:\\inherited modules', NODE_PATH: selectedPath } }))
+        .resolves.toEqual({ version: '1.5.23' });
+      const childEnv = runner.mock.calls[0]?.[2].env;
+      expect(childEnv?.NODE_PATH).toBe('C:\\pnpm home\\global\\5\\node_modules\\.pnpm\\node_modules'
+        + (selectedPath ? `;${selectedPath}` : ''));
+      expect(runner.mock.calls[0]?.[2]).not.toHaveProperty('shell');
+    },
+  );
+
+  it.each(['%COMSPEC%', 'C:\\modules" & calc.exe & "'])(
+    'rejects unsafe pnpm environment expansion %s before execution', async (value) => {
+      const fake = await windowsSkills('pnpm');
+      await fs.writeFile(fake.shim, (await fs.readFile(fake.shim, 'utf8')).replaceAll(
+        'C:\\pnpm home\\global\\5\\node_modules\\.pnpm\\node_modules', value,
+      ));
+      const runner = vi.fn<SkillsCliRunner>(async () => ({ stdout: '1.5.23', stderr: '' }));
+      await expect(probeSkillsCli({ ...fake, platform: 'win32', runner }))
+        .rejects.toThrow('portableSkillsCliIncompatible');
+      expect(runner).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps POSIX startup on the PATH command', async () => {
+    const runner = vi.fn<SkillsCliRunner>(async () => ({ stdout: '1.5.23', stderr: '' }));
+    await probeSkillsCli({ cwd: os.tmpdir(), env: { PATH: '' }, platform: 'linux', runner });
+    expect(runner).toHaveBeenCalledWith('skills', ['--version'], expect.objectContaining({ encoding: 'utf8' }));
+  });
+
+  it('keeps Windows version gates, process timeouts, cancellation and add failures', async () => {
+    const fake = await windowsSkills('npm-global');
+    const options = { ...fake, platform: 'win32' as const };
+    await expect(probePortableRecoverySkillsCli({ ...options, env: { ...fake.env, FAKE_SKILLS_VERSION: '1.5.24' } }))
+      .rejects.toThrow('portableSkillsCliIncompatible');
+    await expect(probeSkillsCli({ ...options, env: { ...fake.env, FAKE_SKILLS_VERSION: '2.0.0' } }))
+      .rejects.toThrow('portableSkillsCliIncompatible');
+    await expect(probePortableRecoverySkillsCli({ ...options,
+      env: { ...fake.env, FAKE_SKILLS_DELAY_VERSION: '1' }, timeoutMs: 50 }))
+      .rejects.toThrow('portableSkillsCliIncompatible');
+    const abort = new AbortController();
+    abort.abort();
+    await expect(probeSkillsCli({ ...options, signal: abort.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(addSkills({ ...options, env: { ...fake.env, FAKE_SKILLS_ADD_EXIT: '7' },
+      rootDir: '/source', skills: ['alpha'], global: false })).rejects.toThrow('portableSkillsCliInstallFailed');
+  });
+
+  it.each([undefined, ''])('reports missing Windows PATH %s without running a command', async (PATH) => {
+    const runner = vi.fn<SkillsCliRunner>(async () => ({ stdout: '1.5.23', stderr: '' }));
+    await expect(probeSkillsCli({ cwd: os.tmpdir(), env: { PATH }, platform: 'win32', runner }))
+      .rejects.toThrow('portableSkillsCliMissing');
+    expect(runner).not.toHaveBeenCalled();
+  });
+
+  it('uses Windows PATHEXT and reports absent PATH binaries', async () => {
+    const fake = await windowsSkills('npm-global');
+    await fs.move(fake.shim, fake.shim.replace(/\.cmd$/u, '.CMD'));
+    await expect(probeSkillsCli({ ...fake, env: { ...fake.env, PATHEXT: undefined }, platform: 'win32' }))
+      .resolves.toEqual({ version: '1.5.23' });
+    await expect(probeSkillsCli({ ...fake, env: { ...fake.env, PATH: fake.cwd }, platform: 'win32' }))
+      .rejects.toThrow('portableSkillsCliMissing');
+  });
+
+  it.each([
+    ['changed shim', async (fake: Awaited<ReturnType<typeof windowsSkills>>) => fs.appendFile(fake.shim, '@calc.exe\r\n')],
+    ['foreign package', async (fake: Awaited<ReturnType<typeof windowsSkills>>) => fs.writeJson(
+      path.join(fake.packageRoot, 'package.json'), { name: 'foreign', bin: { skills: './bin/cli.mjs' } },
+    )],
+    ['wrong bin', async (fake: Awaited<ReturnType<typeof windowsSkills>>) => fs.writeJson(
+      path.join(fake.packageRoot, 'package.json'), { name: 'skills', bin: { skills: '../../foreign.mjs' } },
+    )],
+    ['missing bin', async (fake: Awaited<ReturnType<typeof windowsSkills>>) => fs.remove(fake.launcher)],
+    ['batch shim', async (fake: Awaited<ReturnType<typeof windowsSkills>>) => {
+      await fs.move(fake.shim, fake.shim.replace(/\.cmd$/u, '.bat'));
+      fake.env.PATHEXT = '.bat';
+    }],
+    ['linked shim', async (fake: Awaited<ReturnType<typeof windowsSkills>>) => {
+      const outside = path.join(fake.cwd, 'outside.cmd');
+      await fs.move(fake.shim, outside);
+      await fs.symlink(outside, fake.shim);
+    }],
+    ['linked bin', async (fake: Awaited<ReturnType<typeof windowsSkills>>) => {
+      const outside = path.join(fake.cwd, 'outside.mjs');
+      await fs.move(fake.launcher, outside);
+      await fs.symlink(outside, fake.launcher);
+    }],
+  ])('rejects an unsupported Windows %s before public execution', async (_name, change) => {
+    const fake = await windowsSkills('npm-global');
+    await change(fake);
+    const runner = vi.fn<SkillsCliRunner>(async () => ({ stdout: '1.5.23', stderr: '' }));
+    const options = { ...fake, platform: 'win32' as const, runner };
+    await expect(probeSkillsCli(options)).rejects.toThrow('portableSkillsCliIncompatible');
+    await expect(listInstalledSkills({ ...options, global: false })).rejects.toThrow('portableSkillsCliIncompatible');
+    await expect(addSkills({ ...options, rootDir: '/source', skills: ['alpha'], global: true }))
+      .rejects.toThrow('portableSkillsCliIncompatible');
+    expect(runner).not.toHaveBeenCalled();
+  });
+
+  it('supports pnpm package links while retaining the canonical package bin boundary', async () => {
+    const fake = await windowsSkills('pnpm');
+    const storedPackage = path.join(fake.cwd, 'store', 'node_modules', 'skills');
+    await fs.move(fake.packageRoot, storedPackage);
+    await fs.symlink(storedPackage, fake.packageRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(probeSkillsCli({ ...fake, platform: 'win32' })).resolves.toEqual({ version: '1.5.23' });
+    const outside = path.join(fake.cwd, 'foreign-bin');
+    await fs.move(path.join(storedPackage, 'bin'), outside);
+    await fs.symlink(outside, path.join(storedPackage, 'bin'), process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(probeSkillsCli({ ...fake, platform: 'win32' })).rejects.toThrow('portableSkillsCliIncompatible');
+  });
+
   it('keeps project recovery on its exact provider version and passes copy explicitly', async () => {
     const incompatible = await fakeSkills({ version: '1.5.24' });
     await expect(probeSkillsCli(incompatible)).resolves.toEqual({ version: '1.5.24' });

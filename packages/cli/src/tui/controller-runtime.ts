@@ -1904,7 +1904,7 @@ export function createTuiControllerDependencies(
       let nativeSnapshot: Awaited<ReturnType<NonNullable<TuiControllerDependencies['loadScopedStatus']>>>['nativeSnapshot'] | undefined;
       const status = await readRecoveryStatus({
         scope, cwd: context.cwd, env: context.env, cliVersion: packageInfo.version,
-        catalogOperationContext,
+        catalogOperationContext, signal,
         onNativeStatus: async (native, demand) => {
           signal.throwIfAborted();
           const dependencyOverviews = await loadDependencyOverviews({ context,

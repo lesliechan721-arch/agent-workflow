@@ -147,7 +147,7 @@ async function copyUserMaterializedArtifacts(options: {
     }
   }
 
-  const codexHome = options.env.AW_CODEX_HOME!;
+  const codexHome = options.env.CODEX_HOME!;
   if (await fs.pathExists(codexHome)) {
     const codexSkillsRoot = path.join(codexHome, 'skills');
     if (await fs.pathExists(codexSkillsRoot)) {

@@ -91,6 +91,8 @@ function buildIsolatedEnv(
     AW_HOME: layout.awHomeDir,
     AW_CODEX_HOME: layout.codexHomeDir,
     AW_CLAUDE_HOME: layout.claudeHomeDir,
+    CODEX_HOME: layout.codexHomeDir,
+    CLAUDE_CONFIG_DIR: layout.claudeHomeDir,
     XDG_CONFIG_HOME: layout.xdgConfigHomeDir,
     XDG_CACHE_HOME: layout.xdgCacheHomeDir,
     XDG_STATE_HOME: layout.xdgStateHomeDir,
@@ -119,8 +121,8 @@ function registerDefaultWritableRoots(
   registerWritableStateRoot(registry, layout.awHomeDir, 'AW_HOME');
   registerWritableStateRoot(registry, layout.localMarketplaceStagingRoot, 'local marketplace staging');
   registerWritableStateRoot(registry, layout.localMarketplaceBackupRoot, 'local marketplace backup');
-  registerWritableStateRoot(registry, layout.codexHomeDir, 'AW_CODEX_HOME');
-  registerWritableStateRoot(registry, layout.claudeHomeDir, 'AW_CLAUDE_HOME');
+  registerWritableStateRoot(registry, layout.codexHomeDir, 'CODEX_HOME');
+  registerWritableStateRoot(registry, layout.claudeHomeDir, 'CLAUDE_CONFIG_DIR');
   registerWritableStateRoot(registry, layout.xdgConfigHomeDir, 'XDG_CONFIG_HOME');
   registerWritableStateRoot(registry, layout.xdgCacheHomeDir, 'XDG_CACHE_HOME');
   registerWritableStateRoot(registry, layout.xdgStateHomeDir, 'XDG_STATE_HOME');
@@ -153,6 +155,8 @@ function collectRequiredEnvPaths(env: NodeJS.ProcessEnv): EnvPathEntry[] {
     { key: 'AW_HOME', path: readRequiredEnvPath(env, 'AW_HOME') },
     { key: 'AW_CODEX_HOME', path: readRequiredEnvPath(env, 'AW_CODEX_HOME') },
     { key: 'AW_CLAUDE_HOME', path: readRequiredEnvPath(env, 'AW_CLAUDE_HOME') },
+    { key: 'CODEX_HOME', path: readRequiredEnvPath(env, 'CODEX_HOME') },
+    { key: 'CLAUDE_CONFIG_DIR', path: readRequiredEnvPath(env, 'CLAUDE_CONFIG_DIR') },
     { key: 'XDG_CONFIG_HOME', path: readRequiredEnvPath(env, 'XDG_CONFIG_HOME') },
     { key: 'XDG_CACHE_HOME', path: readRequiredEnvPath(env, 'XDG_CACHE_HOME') },
     { key: 'XDG_STATE_HOME', path: readRequiredEnvPath(env, 'XDG_STATE_HOME') },

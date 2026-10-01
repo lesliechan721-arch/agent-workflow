@@ -572,8 +572,6 @@ async function runPreparedPluginTests(options: {
     const env = {
       ...options.env,
       AW_HOME: awHome,
-      AW_CODEX_HOME: path.join(runRoot, 'codex-home'),
-      AW_CLAUDE_HOME: path.join(runRoot, 'claude-home'),
       NODE_PATH: '',
     } as NodeJS.ProcessEnv;
     const writtenContext = await writeTestContext({

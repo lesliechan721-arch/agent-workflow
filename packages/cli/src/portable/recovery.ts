@@ -5,7 +5,7 @@ import fs from 'fs-extra';
 import { withAwHomeMutationLock, type AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import type { ScopeContext } from '../intent/scope-context.js';
-import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
+import { canonicalizePathThroughExistingAncestor, readEnvironmentValue, resolveUserHome } from '../utils/state-paths.js';
 import { materializePortableSkillsToDirectory } from './commands.js';
 import { resolvePortableCatalogBindingInput } from './materializer.js';
 import {
@@ -115,9 +115,11 @@ async function qualifiedRecordPath(options: PortableRecoveryOptions,
   const layout = portableRecoveryLayout(options.context);
   const name = normalizePortableSkillName(skill);
   const canonical = [layout.targetPath('codex', name), layout.targetPath('claude-code', name)];
+  const home = resolveUserHome(options.context.env);
   const raw = options.scope === 'user' ? [
-    path.join(options.context.env.HOME!, '.agents', 'skills', name),
-    path.join(options.context.env.CLAUDE_CONFIG_DIR || path.join(options.context.env.HOME!, '.claude'), 'skills', name),
+    path.join(home, '.agents', 'skills', name),
+    path.join(readEnvironmentValue(options.context.env, 'CLAUDE_CONFIG_DIR')?.trim()
+      || path.join(home, '.claude'), 'skills', name),
   ] : canonical;
   if (![...raw, ...canonical].some((candidate) => path.resolve(candidate) === path.resolve(recordPath))) return undefined;
   const resolved = await canonicalizePathThroughExistingAncestor(recordPath);
@@ -188,6 +190,7 @@ async function collectPreparation(options: PortableRecoveryOptions, allowMateria
   if (options.scope !== layout.scope) throw new Error('portableEnvironmentUnsupported');
   const cwd = layout.cwd;
   const bindingInput = await resolvePortableCatalogBindingInput({ ...options, cwd, scope: options.scope });
+  options.signal?.throwIfAborted();
   const rootKey = portableJsonDigest(options.selector).slice(7);
   const generation = path.join(layout.generationRoot, rootKey, portableJsonDigest(bindingInput).slice(7));
   const base: PortablePreparation = { options, root: options.selector, generation,
@@ -206,6 +209,7 @@ async function collectPreparation(options: PortableRecoveryOptions, allowMateria
       return blocked('operationReviewStale');
     }
     await providerLock(options);
+    options.signal?.throwIfAborted();
     await probePortableRecoverySkillsCli({ ...options, cwd });
     const records = await listInstalledSkills({ ...options, cwd, global: options.scope === 'user', timeoutMs: 15_000 }).catch((error) => {
       options.signal?.throwIfAborted();
@@ -216,10 +220,12 @@ async function collectPreparation(options: PortableRecoveryOptions, allowMateria
     const normalized = materialization.marker.selectedSkills.map((candidate) => normalizePortableSkillName(candidate.name));
     if (new Set(normalized).size !== normalized.length) return blocked('portableOutputConflict');
     for (const candidate of materialization.marker.selectedSkills) {
+      options.signal?.throwIfAborted();
       if (!await providerPreservesTree(path.join(generation, 'skills', candidate.name))) {
         return blocked('portableProviderContentUnsupported');
       }
       for (const agent of options.agents) {
+        options.signal?.throwIfAborted();
         targets.push(await observeTarget(options, materialization, { skill: candidate.name, agent,
           providerPluginId: candidate.providerPluginId, expectedDigest: candidate.filesDigest,
           physicalPath: targetPath(options, agent, candidate.name), ownership: 'unknown',
@@ -227,6 +233,7 @@ async function collectPreparation(options: PortableRecoveryOptions, allowMateria
       }
     }
     const lock = await providerLock(options);
+    options.signal?.throwIfAborted();
     return { ...base, targets, lockEntries: lock.entries, lockDigest: lock.digest,
       bindingDigest: materialization.binding.finalDigest,
       blockers: [...new Set(targets.flatMap((target) => target.blocker ? [target.blocker] : []))],
@@ -438,6 +445,7 @@ export async function inspectPortableExtraInstalled(options: {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 }): Promise<PortableExtraInspection> {
+  options.signal?.throwIfAborted();
   options = { ...options, env: options.context.env };
   if (options.scope === 'user') return { targets: [], complete: false };
   let layout: ReturnType<typeof portableRecoveryLayout>;
@@ -446,9 +454,12 @@ export async function inspectPortableExtraInstalled(options: {
   let records: InstalledSkillRecord[];
   try {
     await observeProviderLock(layout);
+    options.signal?.throwIfAborted();
     await probePortableRecoverySkillsCli({ ...options, cwd: layout.cwd });
     records = await listInstalledSkills({ ...options, cwd: layout.cwd, global: false, timeoutMs: 15_000 });
-  } catch {
+  } catch (error) {
+    options.signal?.throwIfAborted();
+    if (error instanceof Error && error.name === 'AbortError') throw error;
     return { targets: [], complete: false };
   }
   const agents: PortableAgent[] = ['codex', 'claude-code', 'cursor'];
@@ -458,6 +469,7 @@ export async function inspectPortableExtraInstalled(options: {
   const targets: PortableExtraObservation[] = [];
   let complete = true;
   for (const record of records) {
+    options.signal?.throwIfAborted();
     if (record.scope !== 'project') continue;
     let recordPath: string | undefined;
     try { recordPath = await qualifiedRecordPath(recoveryOptions, record.name, record.path); }
@@ -481,6 +493,7 @@ export async function inspectPortableExtraInstalled(options: {
     const associated = agents.filter((agent) => record.agents.some((entry) => agentName(entry) === agent));
     if (associated.length === 0) { complete = false; continue; }
     for (const agent of associated) {
+      options.signal?.throwIfAborted();
       const physicalPath = targetPath(recoveryOptions, agent, record.name);
       try {
         if (!await outputPathExists(physicalPath)) { complete = false; continue; }
@@ -494,6 +507,7 @@ export async function inspectPortableExtraInstalled(options: {
       } catch { complete = false; }
     }
   }
+  options.signal?.throwIfAborted();
   return { targets, complete };
 }
 

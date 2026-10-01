@@ -83,8 +83,8 @@ describe('multi-source performance budgets', () => {
     env = {
       ...process.env,
       AW_HOME: path.join(root, 'aw-home'),
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+      CODEX_HOME: path.join(root, 'codex-home'),
+      CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'),
     };
     await fs.outputJson(path.join(env.AW_HOME!, 'catalog-sources.json'), {
       schemaVersion: 2,
@@ -142,8 +142,8 @@ describe('multi-source performance budgets', () => {
     fanoutEnv = {
       ...process.env,
       AW_HOME: path.join(root, 'fanout-aw-home'),
-      AW_CODEX_HOME: path.join(root, 'fanout-codex-home'),
-      AW_CLAUDE_HOME: path.join(root, 'fanout-claude-home'),
+      CODEX_HOME: path.join(root, 'fanout-codex-home'),
+      CLAUDE_CONFIG_DIR: path.join(root, 'fanout-claude-home'),
     };
     await fs.outputJson(path.join(fanoutEnv.AW_HOME!, 'catalog-sources.json'), {
       schemaVersion: 2,
@@ -231,9 +231,9 @@ describe('multi-source performance budgets', () => {
     await fs.outputJson(path.join(plugin.rootDir, '.app.json'), { apps: {} });
     const marketplaceRoot = path.join(env.AW_HOME!, 'marketplaces', 'local');
     const marketplaceName = 'aw-local';
-    const configPath = path.join(env.AW_CODEX_HOME!, 'config.toml');
+    const configPath = path.join(env.CODEX_HOME!, 'config.toml');
     const cacheRoot = path.join(
-      env.AW_CODEX_HOME!,
+      env.CODEX_HOME!,
       'plugins',
       'cache',
       marketplaceName,

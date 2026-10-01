@@ -199,9 +199,9 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
     "const args = process.argv.slice(2);",
     "const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };",
     "const writeJson = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\\n'); };",
-    "const home = process.env.AW_CLAUDE_HOME;",
+    "const home = process.env.CLAUDE_CONFIG_DIR;",
     "if (args[0] === '--version') { console.log('2.1.88'); process.exit(0); }",
-    "if (!home) { console.error('AW_CLAUDE_HOME is required'); process.exit(2); }",
+    "if (!home) { console.error('CLAUDE_CONFIG_DIR is required'); process.exit(2); }",
     "const scope = args.includes('--scope') ? args[args.indexOf('--scope') + 1] : 'user';",
     "const projectPath = fs.realpathSync(process.cwd());",
     "const settingsPath = scope === 'project' ? path.join(projectPath, '.claude', 'settings.json') : path.join(home, 'settings.json');",
@@ -453,14 +453,14 @@ describe('pack smoke', () => {
     const externalAuthoringEnv = {
       ...envWithoutNodePath,
       AW_HOME: path.join(tempRoot, 'external-aw-home'),
-      AW_CODEX_HOME: path.join(tempRoot, 'external-codex-home'),
-      AW_CLAUDE_HOME: path.join(tempRoot, 'external-claude-home'),
+      CODEX_HOME: path.join(tempRoot, 'external-codex-home'),
+      CLAUDE_CONFIG_DIR: path.join(tempRoot, 'external-claude-home'),
       PATH: `${externalNativeBin}${path.delimiter}${process.env.PATH ?? ''}`,
     };
     await Promise.all([
       fs.ensureDir(externalAuthoringEnv.AW_HOME),
-      fs.ensureDir(externalAuthoringEnv.AW_CODEX_HOME),
-      fs.ensureDir(externalAuthoringEnv.AW_CLAUDE_HOME),
+      fs.ensureDir(externalAuthoringEnv.CODEX_HOME),
+      fs.ensureDir(externalAuthoringEnv.CLAUDE_CONFIG_DIR),
     ]);
     expect(externalAuthoringEnv.NODE_PATH).toBeUndefined();
 
@@ -838,7 +838,7 @@ describe('pack smoke', () => {
     );
     expect(projectConfigBeforeTrust).toContain('[plugins."packed-build@aw"]');
     expect(projectConfigBeforeTrust).toContain('enabled = true');
-    await fs.appendFile(path.join(externalAuthoringEnv.AW_CODEX_HOME, 'config.toml'), [
+    await fs.appendFile(path.join(externalAuthoringEnv.CODEX_HOME, 'config.toml'), [
       '',
       `[projects.${JSON.stringify(await fs.realpath(standaloneWorkspace))}]`,
       'trust_level = "trusted"',
@@ -880,7 +880,7 @@ describe('pack smoke', () => {
     await expect(fs.pathExists(path.join(standaloneWorkspace, '.codex', 'hooks.json')))
       .resolves.toBe(false);
     await expect(fs.pathExists(path.join(
-      externalAuthoringEnv.AW_CODEX_HOME,
+      externalAuthoringEnv.CODEX_HOME,
       'plugins',
       'cache',
       'aw',
@@ -900,7 +900,7 @@ describe('pack smoke', () => {
         })]),
       });
     const claudeInstalledPlugins = await fs.readJson(
-      path.join(externalAuthoringEnv.AW_CLAUDE_HOME, 'plugins', 'installed_plugins.json'),
+      path.join(externalAuthoringEnv.CLAUDE_CONFIG_DIR, 'plugins', 'installed_plugins.json'),
     ) as { plugins: Record<string, Array<Record<string, unknown>>> };
     expect(Object.values(claudeInstalledPlugins.plugins).flat()).toContainEqual(expect.objectContaining({
       name: 'packed-build',
@@ -963,9 +963,7 @@ describe('pack smoke', () => {
       AW_HOME: path.join(tempRoot, 'packed-catalog-consumer-home'),
       HOME: path.join(tempRoot, 'packed-catalog-consumer-user'),
       USERPROFILE: path.join(tempRoot, 'packed-catalog-consumer-user'),
-      AW_CODEX_HOME: path.join(tempRoot, 'packed-catalog-consumer-user', '.codex'),
       CODEX_HOME: path.join(tempRoot, 'packed-catalog-consumer-user', '.codex'),
-      AW_CLAUDE_HOME: path.join(tempRoot, 'packed-catalog-consumer-user', '.claude'),
       CLAUDE_CONFIG_DIR: path.join(tempRoot, 'packed-catalog-consumer-user', '.claude'),
       XDG_STATE_HOME: path.join(tempRoot, 'packed-catalog-consumer-user', '.local', 'state'),
     };
@@ -1165,8 +1163,8 @@ describe('pack smoke', () => {
     const portableEnv = {
       ...process.env,
       AW_HOME: portableHome,
-      AW_CODEX_HOME: path.join(tempRoot, 'portable-codex-home'),
-      AW_CLAUDE_HOME: path.join(tempRoot, 'portable-claude-home'),
+      CODEX_HOME: path.join(tempRoot, 'portable-codex-home'),
+      CLAUDE_CONFIG_DIR: path.join(tempRoot, 'portable-claude-home'),
       PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`,
       FAKE_SKILLS_LOG: fakeLog,
       FAKE_SKILLS_STATE: fakeState,

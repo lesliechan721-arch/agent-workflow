@@ -50,7 +50,7 @@ import {
 } from './rebuild-integration.js';
 import { createNoopReporter } from '../output/reporter.js';
 import { createNoopDebugLogger } from '../output/debug-log.js';
-import { getDefaultNativeCliRunner, type NativeCliRunner } from '../utils/native-cli.js';
+import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, type NativeCliRunner } from '../utils/native-cli.js';
 import {
   createCodexNativeObservationSession,
   type CodexNativeObservationSession,
@@ -1170,6 +1170,7 @@ async function statusCommandV8InSession(options: {
   plugins?: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
   nativeCliRunner?: NativeCliRunner;
   cliVersion?: string;
   platform?: string;
@@ -1192,6 +1193,11 @@ async function statusCommandV8InSession(options: {
   nativeObservations: NativeObservation[];
   nativeExtraObserved: Array<{ pluginId: string; platform?: PlatformName; scope: Scope; reference: CatalogSourceReference }>;
 }> {
+  const throwIfCancelled = (error?: unknown): void => {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    options.signal?.throwIfAborted();
+  };
+  throwIfCancelled();
   const env = options.env ?? process.env;
   const dependencyPluginCache = new Map<string, Promise<PluginMeta>>();
   const dependencyInspectionCache = new Map<
@@ -1213,17 +1219,19 @@ async function statusCommandV8InSession(options: {
     'packages/cli/package.json version',
   );
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
+  throwIfCancelled();
   const scope = options.scope === 'project' ? 'project' : 'user';
   const demand = options.recoveryDemand ?? await readDemand({
-    scope, cwd: options.cwd, env, catalogOperationContext: options.catalogOperationContext,
+    scope, cwd: options.cwd, env, catalogOperationContext: options.catalogOperationContext, signal: options.signal,
   });
+  throwIfCancelled();
   const observedDemands = new Map<Scope, DemandSnapshot>([[scope, demand]]);
   if (options.scope !== 'user') {
     const otherScope = scope === 'user' ? 'project' : 'user';
     try {
       observedDemands.set(otherScope, await readDemand({ scope: otherScope, cwd: options.cwd,
-        env, catalogOperationContext: options.catalogOperationContext }));
-    } catch { /* The other scope remains unknown; current scope stays readable. */ }
+        env, catalogOperationContext: options.catalogOperationContext, signal: options.signal }));
+    } catch (error) { throwIfCancelled(error); /* The other scope remains unknown; current scope stays readable. */ }
   }
   const selectedPlatformsByScope = new Map<Scope, PlatformName[]>();
   for (const [demandScope, scopedDemand] of observedDemands) {
@@ -1318,13 +1326,16 @@ async function statusCommandV8InSession(options: {
     ?? inventoryCatalogSourceReferences;
   const ownerInventory = await readInventory({ cwd: options.cwd, env,
     ...(options.scope === 'user' ? { scope: 'user' as const } : { includeProjectAgentSkills: true }) }).catch(async (error) => {
+    throwIfCancelled(error);
     inventoryErrors.push(projectStateInventoryError(error, env, options.cwd));
     return inventoryLegacyOwnerReferences({ cwd: options.cwd, env,
       ...(options.scope === 'user' ? { scope: 'user' as const } : { includeProjectAgentSkills: true }) }).catch((fallbackError) => {
+      throwIfCancelled(fallbackError);
       inventoryErrors.push(projectStateInventoryError(fallbackError, env, options.cwd));
       return { inventorySchemaVersion: 1 as const, references: [], errors: [] };
     });
   });
+  throwIfCancelled();
   for (const error of ownerInventory.errors ?? []) {
     const code = error.kind === 'nativeStateRead' ? 'nativeStateUnreadable' : 'stateInventoryFailed';
     inventoryErrors.push({
@@ -1336,6 +1347,7 @@ async function statusCommandV8InSession(options: {
   const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
   const codexSystemConsumerInspections = new Map<Scope, Promise<SystemCodexInspection>>();
   const inspectCodexSystemConsumer = (scope: Scope) => {
+    throwIfCancelled();
     let inspection = codexSystemConsumerInspections.get(scope);
     if (!inspection) {
       inspection = inspectSystemCodex({
@@ -1343,7 +1355,7 @@ async function statusCommandV8InSession(options: {
         cwd: options.cwd,
         env,
         operationRequirement: getCodexOperationRequirement(scope),
-      });
+      }).then((result) => { throwIfCancelled(); return result; });
       codexSystemConsumerInspections.set(scope, inspection);
     }
     return inspection;
@@ -1354,6 +1366,7 @@ async function statusCommandV8InSession(options: {
   >();
   const inspectCodexRegistration = async (pluginId: string, scope: Scope) => {
     const consumer = await inspectCodexSystemConsumer(scope);
+    throwIfCancelled();
     if (consumer.state !== 'compatible') {
       return {
         observation: { state: 'unobserved' as const },
@@ -1541,11 +1554,13 @@ async function statusCommandV8InSession(options: {
       ? { operationContext: options.catalogOperationContext }
       : {}),
     env,
+    signal: options.signal,
     consume: async (resolution) => ({
       primarySourceId: resolution.primarySourceId,
       configDigest: resolution.configDigest,
       compositeDigest: resolution.compositeDigest,
       sources: await Promise.all(resolution.sources.map(async (item) => {
+        throwIfCancelled();
         const source = configured.get(item.sourceId)!;
         const identity = identities.get(item.sourceId)!;
         const base = {
@@ -1640,6 +1655,7 @@ async function statusCommandV8InSession(options: {
           }
           const plugins: StatusPluginCapability[] = await Promise.all(
             item.resolution!.manifest.entries.map(async (entry) => {
+              throwIfCancelled();
               const capabilitySupport = checkAwCapabilitySupport(
                 entry.requires.aw.capabilities ?? [],
                 IMPLEMENTED_AW_CAPABILITIES,
@@ -1782,6 +1798,7 @@ async function statusCommandV8InSession(options: {
               for (const platform of ['codex', 'claude'] as const) {
                 states[platform] = {};
                 for (const scope of ['user', 'project'] as const) {
+                  throwIfCancelled();
                   if (platform === 'codex'
                     && scope === 'project'
                     && codexScopePathsAlias
@@ -2129,14 +2146,17 @@ async function statusCommandV8InSession(options: {
                           }
                         }
                         return { state: 'ready' as const, dependencyScope };
-                      })().catch(() => ({
-                        state: 'error' as const,
-                        dependencyScope,
-                        rootIssueId: `diagnostic:${dependencyId}:${platform}:${dependencyScope}`,
-                        rootIssueCode: 'diagnostic',
-                        issuePluginId: dependencyId,
-                        issueScope: dependencyScope,
-                      }));
+                      })().catch((error) => {
+                        throwIfCancelled(error);
+                        return {
+                          state: 'error' as const,
+                          dependencyScope,
+                          rootIssueId: `diagnostic:${dependencyId}:${platform}:${dependencyScope}`,
+                          rootIssueCode: 'diagnostic',
+                          issuePluginId: dependencyId,
+                          issueScope: dependencyScope,
+                        };
+                      });
                       dependencyInspectionCache.set(inspectionCacheKey, inspection);
                       return inspection;
                     }
@@ -2333,6 +2353,7 @@ async function statusCommandV8InSession(options: {
                         : {}),
                     };
                   } catch (error) {
+                    throwIfCancelled(error);
                     const message = error instanceof Error ? error.message : String(error);
                     const configErrorCode = platform === 'codex' && codexConfigErrors.length > 0
                       ? codexSurface.nativeKinds.length > 0
@@ -2393,7 +2414,8 @@ async function statusCommandV8InSession(options: {
                       nativeCliRunner,
                       pluginRegistration,
                       ...(hasNativeRenderTargets ? { nativeRenderPlugin: plugin } : {}),
-                    }).catch(() => {
+                    }).catch((error) => {
+                      throwIfCancelled(error);
                       residueFailed = true;
                       return undefined;
                     })
@@ -2498,6 +2520,7 @@ async function statusCommandV8InSession(options: {
             plugins,
           };
         } catch (error) {
+          throwIfCancelled(error);
           const sanitized = sanitizeCatalogSourceError(error, env);
           return {
             ...base,
@@ -2513,6 +2536,7 @@ async function statusCommandV8InSession(options: {
     : []);
   const removedProjectionReferences: CatalogSourceReference[] = [];
   for (const source of catalog.sources) {
+    throwIfCancelled();
     if (!('plugins' in source)) continue;
     const marketplaceRoot = path.join(resolveAwHome(env), 'marketplaces', source.id);
     try {
@@ -2574,6 +2598,7 @@ async function statusCommandV8InSession(options: {
         });
       }
     } catch (error) {
+      throwIfCancelled(error);
       const projected = projectStateInventoryError(error, env, options.cwd);
       selectedInventoryErrors.push({ ...projected, relevance: { sourceId: source.id, global: false } });
     }
@@ -3566,6 +3591,7 @@ export async function statusCommandV8(options: {
   plugins?: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
   nativeCliRunner?: NativeCliRunner;
   cliVersion?: string;
   platform?: string;
@@ -3578,6 +3604,9 @@ export async function statusCommandV8(options: {
   inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
   codexObservationSession?: CodexNativeObservationSession;
 }): ReturnType<typeof statusCommandV8InSession> {
+  options.signal?.throwIfAborted();
+  options = { ...options, nativeCliRunner: bindNativeCliRunnerSignal(
+    options.nativeCliRunner ?? getDefaultNativeCliRunner(), options.signal) };
   if (options.codexObservationSession) {
     return statusCommandV8InSession({
       ...options,
@@ -3591,7 +3620,10 @@ export async function statusCommandV8(options: {
     runner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
   });
   try {
-    return await statusCommandV8InSession({ ...options, codexObservationSession: session });
+    options.signal?.throwIfAborted();
+    const result = await statusCommandV8InSession({ ...options, codexObservationSession: session });
+    options.signal?.throwIfAborted();
+    return result;
   } finally {
     await session.dispose();
   }

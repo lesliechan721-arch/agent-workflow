@@ -26,7 +26,7 @@
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store v5 和独立版本的 config v4 输出。
 - `output/command-receipt.ts` 保留内部后端 receipt 事实；公开恢复命令统一输出 `aw-recovery` schema 1。
 - `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；基于 Git base 的 status 差异检查和安全删除依赖 Git。
-- `review/skill-materialization.ts` 复用本地 bundle 和 runtime import resolver，提供 Skill 物化共用的构建准备与临时环境。Eval 保留自己的 subject/Git 布局；构建和 renderer 均显式使用隔离 HOME、AW homes 和临时目录。普通 bundle 调用未提供 `commandEnv` 时沿用原进程环境；这种输入隔离不是 OS sandbox。
+- `review/skill-materialization.ts` 复用本地 bundle 和 runtime import resolver，提供 Skill 物化共用的构建准备与临时环境。Eval 保留自己的 subject/Git 布局；构建和 renderer 均显式使用隔离 HOME、正式 Agent homes、AW_HOME 和临时目录。普通 bundle 调用未提供 `commandEnv` 时沿用原进程环境；这种输入隔离不是 OS sandbox。
 - Core 的 `plugin-authoring-capabilities` API 是 manifest 字段、类型、必填项和 accepted values 的稳定结构 registry。CLI 只叠加 requires、conflicts、profiles 和 validator provenance 等执行/作者适配事实，并通过 `aw plugin capabilities [--surface <surface>] [--json]` 在运行时公开组合结果。
 - Core 的 AW capability registry 定义稳定 ID、集合规范化与摘要、Manifest 结构派生、受限生产源码扫描和 schema 1 runtime requirements receipt。`effective` 是 `declared + derived`；`detected` 只给作者提示。扫描器只检查 `SKILL.md` 中独立 shell fence 和 Manifest executable entry；不扫描 inline command、reference、任意脚本或 Node transitive closure。第三方公开 `aw catalog build` 默认只 advisory；官方 `pnpm build` 必须使用 `--strict-requirements` 语义，把不匹配变为阻断，且 `release:verify:catalog:core` 通过该 build 覆盖此门禁。未登记但语法合法的 ID 是可交换数据；是否支持只由当前 executable 的实现集合决定。`aw self describe --json` 公开该集合，`aw self check --json` 从最近的 receipt 或 Manifest 检查兼容性，`aw plugin requirements <plugin-directory> --add/--remove <capability> --json` 只修改 `requires.aw.capabilities`，并计算 declared、derived、detected 和 effective requirements。Plugin Manifest v3 要求显式 `schemaVersion: 3`。
 
@@ -34,7 +34,7 @@
 
 ### Module Invariants
 
-- renderer context 使用规范化的非空 `requestedArtifactIds` 精确限定本次请求；`config.schema/values/sources/issues` 和 `changedConfigKeys` 只包含这些 target 的 `refreshKeys` 并集。同一 surface/scope 同时包含 Skill target 和读取 sensitive config 的非 Skill target 时，AW 把它们放入两个请求；两个请求使用同一份不可变 `previousArtifacts`，且各自只接受与本批 ID 精确相等的 `ArtifactPlan`。context 不公开 config store 路径，且 context 中的 home 与 renderer 进程的 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 都指向本次请求的临时目录。该输入隔离不是 OS sandbox。renderer 不直接写平台文件。AW direct writer 不请求 `codex-native` target。标准 config helper 只读取 CLI 已校验的 `AW_PLUGIN_CONTEXT` effective config，不读取 config store，也不重复 schema 或 value validation；缺少 context 或请求 user/project scope 时 fail closed。
+- renderer context 使用规范化的非空 `requestedArtifactIds` 精确限定本次请求；`config.schema/values/sources/issues` 和 `changedConfigKeys` 只包含这些 target 的 `refreshKeys` 并集。同一 surface/scope 同时包含 Skill target 和读取 sensitive config 的非 Skill target 时，AW 把它们放入两个请求；两个请求使用同一份不可变 `previousArtifacts`，且各自只接受与本批 ID 精确相等的 `ArtifactPlan`。context 不公开 config store 路径，且 context 中的 home 与 renderer 进程的 `AW_HOME`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 都指向本次请求的临时目录。该输入隔离不是 OS sandbox。renderer 不直接写平台文件。AW direct writer 不请求 `codex-native` target。标准 config helper 只读取 CLI 已校验的 `AW_PLUGIN_CONTEXT` effective config，不读取 config store，也不重复 schema 或 value validation；缺少 context 或请求 user/project scope 时 fail closed。
 - renderer 输出在 JSON 解析后、envelope 和 `ArtifactPlan` 详细结构验证前，统一拒绝包含 effective sensitive config 明文或其 JSON 转义形态的普通及 Portable dynamic artifact；扫描通过后仍执行完整 envelope 和结构验证。阻断只匹配至少 8 个 Unicode code point 的 string；此阈值是减少短值误报的产物门禁，不表示 secret 强度。preApply 和 renderer 在插件执行边界清理错误与输出摘要中的原值和 JSON 转义形态，再交给 debug、文本输出或 Receipt；日志和诊断脱敏所有长度的 sensitive 值。只有 AW 已生成或按内容验证的精确 receipt path 才从扫描中排除；不得按 basename 或通配符排除。错误只公开稳定 code，不回显 sensitive 值。
 - build-generated Skill reference 必须由 `buildConfig.generatedSkillRuntimeFiles` 精确声明。源码 validation 不把声明目标误报为缺失；最终 bundle 必须生成目标并通过完整 runtime closure。
 - 写入前验证 scope、路径边界、目标身份和最终 Skill tree。
@@ -396,6 +396,10 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 操作结果诊断在 CLI/runtime 服务边界抽取可信 code、stage、target、exitCode 和已知 cause，再进入 TUI 私有投影；未知异常正文、任意 stderr 和未知 cause 不进入公共 snapshot。结果分别记录配置提交、AW 写入、preApply 外部影响和最终复核，配置提交后的 apply/status 失败仍显示已保存；preApply 开始后失败时，本目标 AW 写入尚未开始，但外部影响只能标为可能存在。SessionHost 持有最多 20 条安全内存记录并跨会话重载复用，记录 ID 绑定 session epoch 和 operation ID；公共 snapshot 只包含小摘要和记录 ID。单次诊断正文最多 256 KiB 或 1000 行，截断必须明确标记。完整正文与短摘要共用脱敏规则，但不先按短摘要的 240 字符限额删除尾部；详情、技术信息和报告按终端显示宽度换行，再按显示行分页，CJK 和长行尾部仍可阅读。安全报告先预览，再由用户显式保存到本地唯一文件；不自动上传，也不建立持久诊断状态或改变 Receipt、Status JSON schema。
 
 ## Platform Boundaries
+
+生产 Agent home 只使用 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 和对应平台用户目录；`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 仅为测试资产，不参与生产路径解析。用户目录按 Node `os.homedir()` 合同解析：Windows 使用 `USERPROFILE`，POSIX 使用 `HOME`，缺少时回退系统用户目录。Windows 环境变量名不区分大小写，重复键按 Node 子进程的排序选择规则解析。空值、相对路径及 Windows 缺少 drive 的根相对路径不能成为安装目标。`AW_HOME` 保留。renderer、Review 物化和插件脚本的隔离执行显式使用临时正式 Agent homes、HOME/USERPROFILE 与 XDG，不继承真实路径。
+
+Portable 跨平台支持不受实测 OS/架构范围限制。AW 按固定 provider 源码解析实际路径，保留版本、lock、symlink、目标一致性与归属门禁。共用 Skills adapter 在 Windows 核验 npm/pnpm shim 与 package bin，再以 Node 和独立 argv 启动；不通过 shell 拼接参数。真实 provider/Agent 验证按实际平台分别记录，未实跑平台明确为待验证。
 
 - 只删除可证明属于 AW 的 marker、managed block、artifact 或 namespaced 组件。
 - 一次写操作按 `sourceId + sourceIdentity + marketplaceName + normalized marketplaceRoot + platform` 分组 native marketplace materialization。每组汇总全部 target 的动态 native overlay，并只执行一次 copy、staging validation、atomic swap 和 commit。已删除插件的整体 cleanup 不进入本条的重建顺序：它保留目标插件的 marketplace 投影与归属证据，先完成原生卸载及 absent 后检查，再移除该插件投影并保持其他插件有效；失败时保留重试所需证据。其他 native materialization 的共享投影 commit 必须先于该组的 plugin add/remove/activation；分组 materialization 失败时，该组不启动 native mutation。commit 后逐 target 执行平台 mutation；单 target 失败不回滚共享投影，也不回滚其它 target 的成功结果。

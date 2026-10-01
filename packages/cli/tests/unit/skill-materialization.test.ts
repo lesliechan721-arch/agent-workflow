@@ -27,6 +27,10 @@ describe('Skill materialization', () => {
       AW_HOME: '/unexpected/aw-home',
       AW_CODEX_HOME: '/unexpected/codex-home',
       AW_CLAUDE_HOME: '/unexpected/claude-home',
+      CODEX_HOME: '/unexpected/official-codex',
+      CLAUDE_CONFIG_DIR: '/unexpected/official-claude',
+      XDG_DATA_HOME: '/unexpected/xdg-data',
+      XDG_RUNTIME_DIR: '/unexpected/xdg-runtime',
       TMPDIR: '/unexpected/tmp',
     }, root);
 
@@ -34,23 +38,28 @@ describe('Skill materialization', () => {
       HOME: path.join(root, 'home'),
       USERPROFILE: path.join(root, 'home'),
       AW_HOME: path.join(root, 'aw-home'),
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
       CODEX_HOME: path.join(root, 'codex-home'),
+      CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'),
+      XDG_DATA_HOME: path.join(root, 'xdg-data'),
+      XDG_RUNTIME_DIR: path.join(root, 'xdg-runtime'),
       TMPDIR: path.join(root, 'tmp'),
       TEMP: path.join(root, 'tmp'),
       TMP: path.join(root, 'tmp'),
       NODE_PATH: '',
     });
+    expect(env).not.toHaveProperty('AW_CODEX_HOME');
+    expect(env).not.toHaveProperty('AW_CLAUDE_HOME');
     for (const key of [
       'HOME',
       'AW_HOME',
-      'AW_CODEX_HOME',
-      'AW_CLAUDE_HOME',
+      'CODEX_HOME',
+      'CLAUDE_CONFIG_DIR',
       'TMPDIR',
       'XDG_CACHE_HOME',
       'XDG_CONFIG_HOME',
       'XDG_STATE_HOME',
+      'XDG_DATA_HOME',
+      'XDG_RUNTIME_DIR',
     ] as const) {
       expect((await fs.stat(env[key]!)).isDirectory()).toBe(true);
     }
@@ -130,7 +139,7 @@ describe('Skill materialization', () => {
     await fs.writeFile(path.join(pluginRoot, 'build.mjs'), [
       "import fs from 'node:fs/promises';",
       "await fs.mkdir('skills/demo/references', { recursive: true });",
-      "const keys = ['HOME', 'AW_HOME', 'AW_CODEX_HOME', 'AW_CLAUDE_HOME', 'TMPDIR'];",
+      "const keys = ['HOME', 'AW_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'TMPDIR'];",
       'const values = Object.fromEntries(keys.map((key) => [key, process.env[key]]));',
       "await fs.writeFile('skills/demo/references/environment.json', JSON.stringify(values));",
     ].join('\n'));
@@ -155,8 +164,8 @@ describe('Skill materialization', () => {
     ))).resolves.toEqual({
       HOME: env.HOME,
       AW_HOME: env.AW_HOME,
-      AW_CODEX_HOME: env.AW_CODEX_HOME,
-      AW_CLAUDE_HOME: env.AW_CLAUDE_HOME,
+      CODEX_HOME: env.CODEX_HOME,
+      CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR,
       TMPDIR: env.TMPDIR,
     });
     await expect(fs.readJson(path.join(

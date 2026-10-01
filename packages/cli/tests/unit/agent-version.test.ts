@@ -116,7 +116,8 @@ describe('agent-version', () => {
   it('passes the effective Codex home and agent kind only to Codex version probes', async () => {
     const codexEnv: NodeJS.ProcessEnv = {
       ...process.env,
-      CODEX_HOME: '/ignored/codex-home',
+      CODEX_HOME: process.env.CODEX_HOME,
+      AW_CODEX_HOME: '/ignored/codex-home',
       HOME: '/preserved/home',
       USERPROFILE: 'C:\\preserved\\profile',
     };
@@ -146,7 +147,7 @@ describe('agent-version', () => {
     expect(codexInvocation).toMatchObject({
       agentKind: 'codex',
       env: {
-        CODEX_HOME: process.env.AW_CODEX_HOME,
+        CODEX_HOME: process.env.CODEX_HOME,
         HOME: '/preserved/home',
         USERPROFILE: 'C:\\preserved\\profile',
       },

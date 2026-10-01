@@ -161,9 +161,16 @@ export function bindNativeCliRunnerSignal(runner: NativeCliRunner, signal?: Abor
   return async (invocation) => {
     signal.throwIfAborted();
     try {
-      return await runner({ ...invocation,
+      const result = await runner({ ...invocation,
         signal: invocation.signal ? AbortSignal.any([signal, invocation.signal]) : signal });
-    } finally { signal.throwIfAborted(); }
+      signal.throwIfAborted();
+      return result;
+    } catch (error) {
+      if (signal.aborted && error instanceof NativeCliError) error.name = 'AbortError';
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      signal.throwIfAborted();
+      throw error;
+    }
   };
 }
 

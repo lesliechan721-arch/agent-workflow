@@ -144,8 +144,8 @@ describe('preApply script', () => {
           PATH: process.env.PATH,
           HOME: path.join(plugin.rootDir, 'host-home'),
           AW_HOME: awHome,
-          AW_CODEX_HOME: path.join(awHome, 'codex-home'),
-          AW_CLAUDE_HOME: path.join(awHome, 'claude-home'),
+          CODEX_HOME: path.join(awHome, 'codex-home'),
+          CLAUDE_CONFIG_DIR: path.join(awHome, 'claude-home'),
         },
         stdio: ['ignore', 'ignore', 'ignore'],
       });
@@ -187,8 +187,8 @@ describe('preApply script', () => {
           PATH: process.env.PATH,
           HOME: path.join(plugin.rootDir, 'host-home'),
           AW_HOME: awHome,
-          AW_CODEX_HOME: path.join(awHome, 'codex-home'),
-          AW_CLAUDE_HOME: path.join(awHome, 'claude-home'),
+          CODEX_HOME: path.join(awHome, 'codex-home'),
+          CLAUDE_CONFIG_DIR: path.join(awHome, 'claude-home'),
         },
         stdio: ['ignore', 'ignore', 'pipe'],
       });
@@ -724,7 +724,12 @@ describe('preApply script', () => {
       platform: 'codex',
       scope: 'project',
       cwd,
-      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home'), PATH: process.env.PATH } }),
+      context: createCommandExecutionContext({ env: {
+        AW_HOME: path.join(plugin.rootDir, 'aw-home'), PATH: process.env.PATH,
+        CODEX_HOME: process.env.CODEX_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+        AW_CODEX_HOME: process.env.AW_CODEX_HOME, AW_CLAUDE_HOME: process.env.AW_CLAUDE_HOME,
+        XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_STATE_HOME: process.env.XDG_STATE_HOME,
+      } }),
       runner: { async run(value, options) {
         timeoutMs = options.timeoutMs;
         return runner.run(value, options);
@@ -734,6 +739,13 @@ describe('preApply script', () => {
     expect(invocation?.command).toBe(process.execPath);
     expect(invocation?.cwd).toBe(plugin.rootDir);
     expect(invocation?.env.HOME).not.toBe(process.env.HOME);
+    expect(invocation?.env).not.toHaveProperty('AW_CODEX_HOME');
+    expect(invocation?.env).not.toHaveProperty('AW_CLAUDE_HOME');
+    const temporaryRoot = path.dirname(invocation!.env.HOME!);
+    for (const key of ['USERPROFILE', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME',
+      'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR']) {
+      expect(path.relative(temporaryRoot, invocation!.env[key]!).startsWith('..')).toBe(false);
+    }
     expect(JSON.parse(invocation?.stdin ?? '{}')).toEqual({
       schemaVersion: 1,
       plugin: { pluginId: 'local/demo', name: 'demo', version: '1.0.0', rootDir: plugin.rootDir },
@@ -828,8 +840,8 @@ describe('preApply script', () => {
             invocation.cwd,
             cwd,
             invocation.env.AW_HOME,
-            invocation.env.AW_CODEX_HOME,
-            invocation.env.AW_CLAUDE_HOME,
+            invocation.env.CODEX_HOME,
+            invocation.env.CLAUDE_CONFIG_DIR,
             invocation.env.HOME,
             invocation.env.TMPDIR,
           ].join(' | '),

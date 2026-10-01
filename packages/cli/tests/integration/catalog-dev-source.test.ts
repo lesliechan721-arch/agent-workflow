@@ -44,8 +44,8 @@ async function fixture() {
   const env = {
     ...process.env,
     AW_HOME: path.join(root, 'aw-home'),
-    AW_CODEX_HOME: path.join(root, 'codex-home'),
-    AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+    CODEX_HOME: path.join(root, 'codex-home'),
+    CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'),
   };
   expect(await runCli(['catalog', 'init', '--workspace-root', workspaceRoot], {
     cwd: workspaceRoot, env, io: capture().io,
@@ -296,7 +296,7 @@ describe('Catalog Workspace development source', () => {
         values: { enabled: true },
       });
     } else if (fixtureKind === 'installed target') {
-      const skillsRoot = path.join(env.AW_CODEX_HOME!, 'skills');
+      const skillsRoot = path.join(env.CODEX_HOME!, 'skills');
       const skillRoot = path.join(skillsRoot, 'dev-demo');
       await fs.ensureDir(skillRoot);
       await writeSkillOwnerMarker({
@@ -313,7 +313,7 @@ describe('Catalog Workspace development source', () => {
         },
       });
     } else {
-      await fs.outputFile(path.join(env.AW_CODEX_HOME!, 'config.toml'), 'invalid = [\n');
+      await fs.outputFile(path.join(env.CODEX_HOME!, 'config.toml'), 'invalid = [\n');
     }
 
     const blocked = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);

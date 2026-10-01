@@ -68,8 +68,8 @@ async function createWorkspace(): Promise<{
     HOME: path.join(root, 'home'),
     USERPROFILE: path.join(root, 'home'),
     AW_HOME: path.join(root, 'aw-home'),
-    AW_CODEX_HOME: path.join(root, 'codex-home'),
-    AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+    CODEX_HOME: path.join(root, 'codex-home'),
+    CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'),
   }
   await fs.ensureDir(env.HOME)
   expect(await runCli(['catalog', 'init', '--workspace-root', root], {

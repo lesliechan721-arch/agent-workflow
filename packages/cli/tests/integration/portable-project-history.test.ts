@@ -191,7 +191,7 @@ describe('Portable historical recovery through real catalog materialization', ()
     f.options.agents = ['codex', 'cursor', 'claude-code'];
     const userPlan = await apply(f);
     const userPath = path.join(f.options.context.targetHomes.home, '.agents/skills/alpha');
-    const claudePath = path.join(f.options.context.targetHomes.home, '.claude/skills/alpha');
+    const claudePath = path.join(f.options.context.targetHomes.claude, 'skills/alpha');
     expect(userPlan.generation).toContain('/portable/user/');
     expect(await fs.pathExists(userPath)).toBe(true);
     expect(await fs.pathExists(claudePath)).toBe(true);

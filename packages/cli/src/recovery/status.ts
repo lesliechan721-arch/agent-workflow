@@ -38,6 +38,7 @@ export interface ReadRecoveryStatusOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   cliVersion?: string;
+  signal?: AbortSignal;
   targets?: readonly string[];
   nativeObservations?: NativeObservation[];
 }
@@ -75,6 +76,7 @@ export async function statusFromObservations(options: ReadRecoveryStatusOptions 
   nativeReadErrors?: RecoveryDiagnostic[];
   portableCoverage?: boolean;
 }): Promise<RecoveryStatus> {
+  options.signal?.throwIfAborted();
   const { demand } = options;
   const errors: RecoveryDiagnostic[] = [...demand.errors, ...(options.nativeReadErrors ?? [])];
   let selection: RecoveryStatus['selection'];
@@ -85,10 +87,12 @@ export async function statusFromObservations(options: ReadRecoveryStatusOptions 
   }
   const inventory: RecoveryStatus['inventory'] = demand.roots === null ? null : [];
   for (const root of demand.roots ?? []) {
+    options.signal?.throwIfAborted();
     const blockers = root.blockers.map(diagnostic);
     if (!selection.agents.length) blockers.push(diagnostic('localTargetsRequired'));
     const targetResults: RecoveryTarget[] = [];
     for (const agent of selection.agents) {
+      options.signal?.throwIfAborted();
       const delivery = root.plugin ? resolveDelivery(root.plugin.manifest, agent, options.scope) ?? null : null;
       const target: RecoveryTarget = { pluginId: root.pluginId, agent, scope: options.scope, delivery,
         execution: 'not-run', observation: 'unknown', content: 'unknown', blockers: [...blockers],
@@ -112,8 +116,9 @@ export async function statusFromObservations(options: ReadRecoveryStatusOptions 
       } else {
         try {
           const portable = await inspectPortableRecovery({ scope: options.scope, context: options.context,
-            selector: root.pluginId, agents: [agent], env: options.env,
+            selector: root.pluginId, agents: [agent], env: options.env, signal: options.signal,
             cliVersion: options.cliVersion ?? '0.0.0', catalogOperationContext: demand.catalogOperationContext });
+          options.signal?.throwIfAborted();
           target.blockers.push(...portable.blockers.map(diagnostic));
           const observed = portable.targets.filter((entry) => entry.agent === agent);
           target.blockers.push(...observed.flatMap((entry) => entry.blocker ? [diagnostic(entry.blocker)] : []));
@@ -125,7 +130,9 @@ export async function statusFromObservations(options: ReadRecoveryStatusOptions 
           if (target.blockers.some((entry) => /(?:VerificationFailed|ReadFailed|LockInvalid)/u.test(entry.code))) {
             errors.push({ ...diagnostic('portableObservationFailed'), pluginId: root.pluginId });
           }
-        } catch {
+        } catch (error) {
+          options.signal?.throwIfAborted();
+          if (error instanceof Error && error.name === 'AbortError') throw error;
           target.blockers.push(diagnostic('portableObservationFailed'));
           errors.push({ ...diagnostic('portableObservationFailed'), pluginId: root.pluginId });
         }
@@ -162,6 +169,7 @@ export async function statusFromObservations(options: ReadRecoveryStatusOptions 
     }
   }
   const allSatisfied = definiteFailure ? false : uncertain ? null : true;
+  options.signal?.throwIfAborted();
   return { schemaVersion: 1, kind: 'aw-recovery-status', scope: options.scope, ok: errors.length === 0,
     intent: { state: demand.intent.state, ...('digest' in demand.intent ? { digest: demand.intent.digest } : {}) },
     selection, inventory, extraObserved: options.extraObserved ?? [],
@@ -174,18 +182,24 @@ export async function readRecoveryStatus(options: ReadRecoveryStatusOptions & {
   onNativeStatus?: (native: Awaited<ReturnType<typeof statusCommandV8>>,
     demand: DemandSnapshot) => void | Promise<void>;
 }): Promise<RecoveryStatus> {
+  options.signal?.throwIfAborted();
   const context = await createScopeContext({ scope: options.scope, cwd: options.cwd, env: options.env, readOnly: true });
   try {
+    options.signal?.throwIfAborted();
     const demand = await readDemand({ scope: options.scope, cwd: context.executionCwd, env: context.env,
-      catalogOperationContext: options.catalogOperationContext });
+      catalogOperationContext: options.catalogOperationContext, signal: options.signal });
+    options.signal?.throwIfAborted();
     const nativePlugins = options.onDemand?.(demand);
     const native = options.nativeObservations ? undefined : await statusCommandV8({
       cwd: context.executionCwd, env: context.env, scope: options.scope,
       ...(nativePlugins ? { plugins: nativePlugins } : {}),
       recoveryDemand: demand, recoverySelection: { targets: options.targets }, cliVersion: options.cliVersion,
       catalogOperationContext: options.catalogOperationContext,
+      signal: options.signal,
     });
+    options.signal?.throwIfAborted();
     if (native) await options.onNativeStatus?.(native, demand);
+    options.signal?.throwIfAborted();
     const roots = new Set(demand.roots?.map((root) => root.pluginId) ?? []);
     const queue = [...(demand.roots ?? []).map((root) => root.plugin).filter((plugin) => plugin !== undefined)];
     const byId = new Map(demand.plugins.map((plugin) => [plugin.pluginId, plugin]));
@@ -231,8 +245,9 @@ export async function readRecoveryStatus(options: ReadRecoveryStatusOptions & {
       }),
     ];
     const portableExtra = await inspectPortableExtraInstalled({
-      scope: options.scope, context, env: context.env,
+      scope: options.scope, context, env: context.env, signal: options.signal,
     });
+    options.signal?.throwIfAborted();
     const portableObserved: RecoveryStatus['extraObserved'] = portableExtra.targets
       .filter((entry) => !roots.has(entry.pluginId))
       .map((entry) => ({ pluginId: entry.pluginId, agent: entry.agent, scope: options.scope,
@@ -240,7 +255,7 @@ export async function readRecoveryStatus(options: ReadRecoveryStatusOptions & {
         observation: entry.observation, content: entry.content,
         backend: { skill: entry.skill } }));
     const extraObserved = [...nativeExtraObserved, ...portableObserved];
-    return statusFromObservations({ ...options, context, demand,
+    return await statusFromObservations({ ...options, context, demand,
       nativeObservations: options.nativeObservations ?? native!.nativeObservations, extraObserved,
       portableCoverage: portableExtra.complete,
       nativeReadErrors: native?.payload.errors.filter((error) => NATIVE_READ_ERRORS.has(error.code))

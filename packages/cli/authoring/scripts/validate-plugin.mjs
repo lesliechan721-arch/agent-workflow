@@ -3085,8 +3085,15 @@ function runArtifactRendererFixture(
       fs.mkdirSync(rendererTemp, { recursive: true });
       const rendererEnv = {
         AW_HOME: rendererAwHome,
-        AW_CODEX_HOME: rendererCodexHome,
-        AW_CLAUDE_HOME: rendererClaudeHome,
+        CODEX_HOME: rendererCodexHome,
+        CLAUDE_CONFIG_DIR: rendererClaudeHome,
+        HOME: rendererHome,
+        USERPROFILE: rendererHome,
+        XDG_CONFIG_HOME: path.join(requestRoot, 'xdg-config'),
+        XDG_CACHE_HOME: path.join(requestRoot, 'xdg-cache'),
+        XDG_STATE_HOME: path.join(requestRoot, 'xdg-state'),
+        XDG_DATA_HOME: path.join(requestRoot, 'xdg-data'),
+        XDG_RUNTIME_DIR: path.join(requestRoot, 'xdg-runtime'),
         PATH: process.env.PATH ?? process.env.Path ?? '',
         AW_PLUGIN_CONTEXT: contextPath,
         AW_PLUGIN_ROOT: pluginDir,
@@ -3098,13 +3105,11 @@ function runArtifactRendererFixture(
         AW_PLUGIN_SCOPE: scope,
       };
       if (process.platform === 'win32') {
-        rendererEnv.USERPROFILE = rendererHome;
         rendererEnv.TEMP = rendererTemp;
         rendererEnv.TMP = rendererTemp;
         if (process.env.SystemRoot) rendererEnv.SystemRoot = process.env.SystemRoot;
         if (process.env.ComSpec) rendererEnv.ComSpec = process.env.ComSpec;
       } else {
-        rendererEnv.HOME = rendererHome;
         rendererEnv.TMPDIR = rendererTemp;
       }
       const result = spawnSync(

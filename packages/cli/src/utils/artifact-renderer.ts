@@ -567,12 +567,8 @@ export async function runArtifactRenderer(options: {
       manifestTimeoutMs: undefined,
     });
     const spawnEnv = buildPluginScriptSpawnEnv({
-      commandEnv: {
-        ...commandEnv,
-        AW_HOME: writtenContext.context.paths.awHome,
-        AW_CODEX_HOME: writtenContext.context.paths.codexHome,
-        AW_CLAUDE_HOME: writtenContext.context.paths.claudeHome,
-      },
+      commandEnv,
+      isolatedHomes: writtenContext.context.paths,
       contextPath: writtenContext.contextPath,
       tempDir: writtenContext.tempDir,
       plugin: writtenContext.context.plugin,

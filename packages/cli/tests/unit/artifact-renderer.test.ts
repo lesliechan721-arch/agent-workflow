@@ -625,6 +625,10 @@ describe('artifact renderer runtime', () => {
         AW_HOME: realHomes.aw,
         AW_CODEX_HOME: realHomes.codex,
         AW_CLAUDE_HOME: realHomes.claude,
+        CODEX_HOME: realHomes.codex,
+        CLAUDE_CONFIG_DIR: realHomes.claude,
+        XDG_CONFIG_HOME: realHomes.aw,
+        XDG_STATE_HOME: realHomes.aw,
       },
       requestedArtifactIds: ['codex-explorer-role'],
       runner: {
@@ -632,8 +636,14 @@ describe('artifact renderer runtime', () => {
           observedContextPath = invocation.env.AW_PLUGIN_CONTEXT!;
           const context = await fs.readJson(observedContextPath);
           expect(invocation.env.AW_HOME).toBe(context.paths.awHome);
-          expect(invocation.env.AW_CODEX_HOME).toBe(context.paths.codexHome);
-          expect(invocation.env.AW_CLAUDE_HOME).toBe(context.paths.claudeHome);
+          expect(invocation.env.CODEX_HOME).toBe(context.paths.codexHome);
+          expect(invocation.env.CLAUDE_CONFIG_DIR).toBe(context.paths.claudeHome);
+          expect(invocation.env).not.toHaveProperty('AW_CODEX_HOME');
+          expect(invocation.env).not.toHaveProperty('AW_CLAUDE_HOME');
+          for (const key of ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME',
+            'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR']) {
+            expect(path.relative(path.dirname(observedContextPath), invocation.env[key]!).startsWith('..')).toBe(false);
+          }
           expect(Object.values(context.paths)).not.toContain(realHomes.aw);
           expect(Object.values(context.paths)).not.toContain(realHomes.codex);
           expect(Object.values(context.paths)).not.toContain(realHomes.claude);

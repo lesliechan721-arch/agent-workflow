@@ -12,6 +12,7 @@ import {
   NativeCliError,
   CodexProjectConfigNotEffectiveError,
   SYSTEM_CODEX_MANAGER,
+  bindNativeCliRunnerSignal,
   buildCodexMarketplaceAddInvocation,
   buildCodexMarketplaceRemoveInvocation,
   buildCodexPluginAddInvocation,
@@ -98,6 +99,26 @@ async function writeWindowsClaudeNpmFixture(root: string): Promise<{
 }
 
 describe('native-cli', () => {
+  // Test Value Gate: cancellation must preserve the production runner's unconfirmed-cleanup evidence and original cause.
+  it('preserves NativeCliError cleanup evidence when a bound read is cancelled', async () => {
+    const abort = new AbortController();
+    const cause = new DOMException('session cancelled', 'AbortError');
+    const cleanupError = new Error('Native CLI cleanup unconfirmed: remaining process identity is unavailable.');
+    let nativeFailure: NativeCliError | undefined;
+    const runner = bindNativeCliRunnerSignal(async (invocation) => {
+      abort.abort(cause);
+      nativeFailure = new NativeCliError({ invocation, exitCode: 1, stdout: '', stderr: '',
+        reason: 'aborted', cause, cleanupError });
+      throw nativeFailure;
+    }, abort.signal);
+    const failure = await runner({ command: 'codex', args: ['plugin', 'list'] }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(NativeCliError);
+    expect(failure).toMatchObject({ name: 'AbortError', reason: 'aborted' });
+    expect(failure).toBe(nativeFailure);
+    expect((failure as NativeCliError).cleanupError).toBe(cleanupError);
+    expect((failure as NativeCliError).cause).toBe(cause);
+  });
+
   it('resolves the official Windows Claude npm shim for version probes and runner calls', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-shim-'));
     try {
@@ -359,8 +380,8 @@ describe('native-cli', () => {
 
   it('builds system Codex plugin and marketplace invocations with unchanged arguments and the effective home', () => {
     const cwd = '/tmp/workspace';
-    const codexHome = process.env.AW_CODEX_HOME!;
-    const env = { ...process.env, CODEX_HOME: '/ignored/codex-home' };
+    const codexHome = process.env.CODEX_HOME!;
+    const env = { ...process.env, AW_CODEX_HOME: '/ignored/codex-home' };
 
     const invocations = [
       buildCodexPluginAddInvocation(SYSTEM_CODEX_MANAGER, 'demo@aw', cwd, env),
@@ -384,7 +405,7 @@ describe('native-cli', () => {
   });
 
   it('builds exact and neutral Codex JSON postcheck invocations without changing trust', () => {
-    const env = { ...process.env, CODEX_HOME: '/ignored' };
+    const env = { ...process.env, AW_CODEX_HOME: '/ignored' };
     const invocations = buildCodexProjectPluginListInvocations(SYSTEM_CODEX_MANAGER, {
       marketplaceName: 'aw-team',
       exactCwd: '/tmp/project',
@@ -514,7 +535,7 @@ describe('native-cli', () => {
       ],
       agentKind: 'codex',
       timeoutMs: 60_000,
-      env: { CODEX_HOME: process.env.AW_CODEX_HOME },
+      env: { CODEX_HOME: process.env.CODEX_HOME },
     });
   });
 

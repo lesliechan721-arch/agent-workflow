@@ -3782,10 +3782,15 @@ describe('authoring tools', () => {
         'if (process.env.AW_PLUGIN_EVENT !== "install") throw new Error("missing fixture event");',
         'const fs = await import("node:fs");',
         'const path = await import("node:path");',
-        'const rendererHomes = [process.env.AW_HOME, process.env.AW_CODEX_HOME, process.env.AW_CLAUDE_HOME];',
+        'if (process.env.AW_CODEX_HOME || process.env.AW_CLAUDE_HOME) throw new Error("test home variable leaked");',
+        'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        'if (process.env.CODEX_HOME !== context.paths.codexHome || process.env.CLAUDE_CONFIG_DIR !== context.paths.claudeHome || process.env.AW_HOME !== context.paths.awHome) throw new Error("renderer home differs from context");',
+        'if (!process.env.HOME || process.env.HOME !== process.env.USERPROFILE) throw new Error("missing isolated user home");',
+        'const rendererHomes = [process.env.AW_HOME, process.env.CODEX_HOME, process.env.CLAUDE_CONFIG_DIR, process.env.HOME, ...["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"].map((key) => process.env[key])];',
+        'if (rendererHomes.some((home) => !home || !path.isAbsolute(home))) throw new Error("missing isolated state home");',
+        'for (const rendererHome of rendererHomes) fs.mkdirSync(rendererHome, { recursive: true });',
         'for (const rendererHome of rendererHomes) fs.writeFileSync(path.join(rendererHome, "probe"), "probe");',
         'fs.appendFileSync(path.join(process.env.AW_PLUGIN_ROOT, "renderer-home-probes.jsonl"), JSON.stringify(rendererHomes) + "\\n");',
-        'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
         'if (context.config.mode !== "artifact-render") throw new Error("missing config mode");',
         'if (context.config.values.explorerModel !== "gpt-5.4-mini") throw new Error("missing config values");',
         'if (context.renderConfig || context.artifactRenderConfig) throw new Error("validator-only context alias");',
@@ -3794,10 +3799,16 @@ describe('authoring tools', () => {
       'utf8',
     );
 
-    await expect(runValidatePlugin(pluginDir, [], {
+    const parentEnv = {
       ...process.env,
       AW_VALIDATOR_SECRET_SENTINEL: 'must-not-reach-renderer',
-    })).resolves.toMatchObject({
+      ...Object.fromEntries([
+        'AW_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'AW_CODEX_HOME', 'AW_CLAUDE_HOME',
+        'HOME', 'USERPROFILE', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+        'XDG_DATA_HOME', 'XDG_RUNTIME_DIR',
+      ].map((key) => [key, path.join(tempRoot, 'parent', key)])),
+    };
+    await expect(runValidatePlugin(pluginDir, [], parentEnv)).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
     const rendererHomes = (await fs.readFile(rendererHomeProbesPath, 'utf8'))
@@ -3806,9 +3817,7 @@ describe('authoring tools', () => {
       .flatMap((line) => JSON.parse(line) as string[]);
     const actualHomes = [
       os.homedir(),
-      process.env.AW_HOME,
-      process.env.AW_CODEX_HOME,
-      process.env.AW_CLAUDE_HOME,
+      ...Object.values(parentEnv),
     ].filter((home): home is string => typeof home === 'string' && home !== '');
     expect(rendererHomes).not.toHaveLength(0);
     for (const rendererHome of rendererHomes) {

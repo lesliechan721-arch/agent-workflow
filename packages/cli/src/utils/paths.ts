@@ -130,7 +130,7 @@ export function resolveClaudePluginsDir(env: NodeJS.ProcessEnv = process.env): s
   return assertWritableHomePathForTests(
     path.join(getClaudeHome(env), 'plugins'),
     'Claude plugins root',
-    '用 createIsolatedTestEnv() 生成默认 AW_CLAUDE_HOME，或通过 registerWritableStateRoot() 登记 Claude plugins 根。',
+    '用 createIsolatedTestEnv() 生成隔离 CLAUDE_CONFIG_DIR，或通过 registerWritableStateRoot() 登记 Claude plugins 根。',
   );
 }
 

@@ -129,7 +129,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 | Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |
 | Codex shared native/project activation qualification | 独立 qualification | `pnpm test:qualification:codex-project-native:harness`，并在支持的本机运行 `pnpm qualification:codex-project-native`；Windows 未实跑时必须报告证据缺口 |
-| User/Project Portable provider 行为 | 独立 qualification + Unit/Integration | 定向恢复测试与 `pnpm test:qualification:project-skills-provider:harness`；支持的本机运行 `pnpm qualification:project-skills-provider`，记录固定版本、OS、scope、Agent、lock、内容和失败证据，未验证组合保持阻断 |
+| User/Project Portable provider 行为 | 独立 qualification + Unit/Integration | 定向恢复测试与 `pnpm test:qualification:project-skills-provider:harness`；支持的本机运行 `pnpm qualification:project-skills-provider`，记录固定版本、OS、scope、Agent、lock、内容和失败证据，其他平台实测待补，不以实测范围建立 OS/架构门禁 |
 | Codex native 性能与版本合同 | Unit + Integration + 独立 qualification | Codex observation/native CLI 定向 unit、grouped write 与 Git batch integration、`pnpm test:qualification:codex-native-performance:harness`；有精确 binary 时分别运行三个版本的 `pnpm qualification:codex-native-performance`，缺失版本必须报告证据缺口 |
 
 所有文档或代码改动最后运行 `git diff --check`。
@@ -173,7 +173,7 @@ Codex 优化的主要门禁是确定性计数，不是 500ms fake runner 断言�
 
 ## Test Isolation
 
-- 使用测试提供的隔离 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 和 workspace。
+- 使用测试构造器提供的隔离 `AW_HOME`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 和 workspace。
 - 三个 package 的 Vitest 入口由统一进程树 wrapper 运行。正常结束、`SIGINT` 和 `SIGTERM` 会清理本次 wrapper 通过 PID 与 start identity 证实的进程树；清理期间再次收到中断信号时立即升级强制清理。只有确认清理成功时才返回标准信号退出码，清理无法验证时必须报告错误并以 `1` 退出。wrapper 自身被 `SIGKILL`、宿主崩溃或断电时不承诺清理。
 - 合成长驻 detached 测试子进程必须设置有界的自退出时限，防止测试宿主被强制终止后永久遗留；行为断言仍必须证明正常路径会在更短的既定期限内主动清理。
 - 平台命令使用 fake native runner。

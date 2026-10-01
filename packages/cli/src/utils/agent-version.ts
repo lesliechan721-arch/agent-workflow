@@ -257,6 +257,7 @@ async function probeAgentVersionUncached(
       exitCode: result.exitCode,
     };
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
     const nativeError = error as {
       exitCode?: number;
       stdout?: string;

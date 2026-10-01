@@ -1,12 +1,18 @@
 import path from 'node:path';
 
 import type { ScopeContext } from '../intent/scope-context.js';
-import { canonicalizePathThroughExistingAncestorSync } from '../utils/state-paths.js';
+import { canonicalizePathThroughExistingAncestorSync, readEnvironmentValue, resolveUserHome } from '../utils/state-paths.js';
 
 export type PortableAgent = 'codex' | 'cursor' | 'claude-code';
 
-/** Paths observed for skills@1.5.23 copy installs on Darwin arm64. */
-export function portableRecoveryLayout(context: ScopeContext): {
+interface PortableLayoutEnvironment {
+  platform?: NodeJS.Platform;
+  systemHome?: string;
+  canonicalizePath?: (value: string) => string;
+}
+
+/** skills@1.5.23 uses the canonical .agents root for Codex and Cursor copy installs. */
+export function portableRecoveryLayout(context: ScopeContext, options: PortableLayoutEnvironment = {}): {
   cwd: string;
   scope: 'user' | 'project';
   generationRoot: string;
@@ -15,30 +21,36 @@ export function portableRecoveryLayout(context: ScopeContext): {
   targetRoot(agent: PortableAgent): string;
 } {
   const { scope, env, executionCwd, targetHomes } = context;
+  const platform = options.platform ?? process.platform;
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const canonicalizePath = options.canonicalizePath ?? canonicalizePathThroughExistingAncestorSync;
+  const absolute = (value: string): boolean => paths.isAbsolute(value)
+    && (platform !== 'win32' || !/^[/\\](?![/\\])/u.test(value));
+  const claudeOverride = readEnvironmentValue(env, 'CLAUDE_CONFIG_DIR', platform)?.trim();
+  const xdgState = readEnvironmentValue(env, 'XDG_STATE_HOME', platform);
   if (scope !== 'user' && scope !== 'project') throw new Error('portableEnvironmentUnsupported');
+  if (!absolute(executionCwd)) throw new Error('portableEnvironmentUnsupported');
   if (scope === 'user') {
-    const sameHome = (value: string, expected: string): boolean => path.isAbsolute(value)
-      && canonicalizePathThroughExistingAncestorSync(value) === expected;
-    if (process.platform !== 'darwin' || process.arch !== 'arm64'
-      || !env.HOME || !sameHome(env.HOME, targetHomes.home)
-      || (env.CLAUDE_CONFIG_DIR && !path.isAbsolute(env.CLAUDE_CONFIG_DIR))
-      || (env.XDG_STATE_HOME && !sameHome(env.XDG_STATE_HOME, targetHomes.xdgState))) {
+    const sameHome = (value: string, expected: string): boolean => absolute(value)
+      && canonicalizePath(value) === expected;
+    if (!sameHome(resolveUserHome(env, platform, options.systemHome), targetHomes.home)
+      || (claudeOverride && !absolute(claudeOverride))
+      || (xdgState && !sameHome(xdgState, targetHomes.xdgState))) {
       throw new Error('portableEnvironmentUnsupported');
     }
   }
-  const canonical = scope === 'user' ? path.join(targetHomes.home, '.agents') : path.join(executionCwd, '.agents');
+  const canonical = scope === 'user' ? paths.join(targetHomes.home, '.agents') : paths.join(executionCwd, '.agents');
   const claude = scope === 'user'
-    ? env.CLAUDE_CONFIG_DIR ? canonicalizePathThroughExistingAncestorSync(env.CLAUDE_CONFIG_DIR)
-      : path.join(targetHomes.home, '.claude')
-    : path.join(executionCwd, '.claude');
+    ? claudeOverride ? canonicalizePath(claudeOverride) : paths.join(targetHomes.home, '.claude')
+    : paths.join(executionCwd, '.claude');
   const targetRoot = (agent: PortableAgent): string => agent === 'claude-code' ? claude : canonical;
-  const lockPath = scope === 'project' ? path.join(executionCwd, 'skills-lock.json')
-    : env.XDG_STATE_HOME
-      ? path.join(targetHomes.xdgState, 'skills', '.skill-lock.json')
-      : path.join(canonical, '.skill-lock.json');
+  const lockPath = scope === 'project' ? paths.join(executionCwd, 'skills-lock.json')
+    : xdgState
+      ? paths.join(targetHomes.xdgState, 'skills', '.skill-lock.json')
+      : paths.join(canonical, '.skill-lock.json');
   return {
     cwd: executionCwd, scope, generationRoot: context.generationRoot, lockPath,
     targetRoot,
-    targetPath: (agent, skill) => path.join(targetRoot(agent), 'skills', skill),
+    targetPath: (agent, skill) => paths.join(targetRoot(agent), 'skills', skill),
   };
 }

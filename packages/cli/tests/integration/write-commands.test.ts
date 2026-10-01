@@ -309,7 +309,7 @@ function createCodexNativeTestRuntime(
   const installed = new Set<string>();
   const installedVersions = new Map<string, string>();
   const marketplaceRoots = new Map<string, string>();
-  const userConfigPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+  const userConfigPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
   const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
     const args = invocation.args;
     if (args.includes('--version')) {
@@ -356,7 +356,7 @@ function createCodexNativeTestRuntime(
       ))).version);
       installedVersions.set(pluginId, pluginVersion);
       const cacheRoot = path.join(
-        isolation.env.AW_CODEX_HOME!,
+        isolation.env.CODEX_HOME!,
         'plugins',
         'cache',
         marketplaceName,
@@ -377,7 +377,7 @@ function createCodexNativeTestRuntime(
       installed.delete(pluginId);
       installedVersions.delete(pluginId);
       await fs.remove(path.join(
-        isolation.env.AW_CODEX_HOME!,
+        isolation.env.CODEX_HOME!,
         'plugins',
         'cache',
         pluginId.slice(separator + 1),
@@ -435,7 +435,7 @@ async function createClaudeNativeTestRuntime(
 ) {
   const cwd = isolation.layout.fixtureCwd;
   const projectRoot = await fs.realpath(cwd);
-  const claudeHome = isolation.env.AW_CLAUDE_HOME!;
+  const claudeHome = isolation.env.CLAUDE_CONFIG_DIR!;
   const installedPath = path.join(claudeHome, 'plugins', 'installed_plugins.json');
   const knownPath = path.join(claudeHome, 'plugins', 'known_marketplaces.json');
   const marketplaceRoots = new Map<string, string>();
@@ -652,7 +652,7 @@ async function configureCodexAliasCatalog(options: {
   sourceName: string;
 }) {
   const isolation = getCurrentSourceTestIsolation();
-  const env = { ...isolation.env, AW_CODEX_HOME: options.userConfig };
+  const env = { ...isolation.env, CODEX_HOME: options.userConfig };
   const sourceRoot = path.join(isolation.layout.fixtureCwd, options.sourceName);
   await fs.ensureDir(options.cwd);
   await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
@@ -1771,7 +1771,7 @@ describe('five namespaced write commands', () => {
     }, { env: initialEnv, nativeCliRunner });
     expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
 
-    const aliasEnv = { ...initialEnv, AW_CODEX_HOME: path.join(cwd, '.codex') };
+    const aliasEnv = { ...initialEnv, CODEX_HOME: path.join(cwd, '.codex') };
     const cleaned = await cleanupWriteCommand(['team/demo'], {
       cwd,
       platform: 'codex',
@@ -2951,7 +2951,7 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime);
     expect(user.overallState, JSON.stringify(user)).toBe('succeeded');
-    await expect(fs.pathExists(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
+    await expect(fs.pathExists(path.join(isolation.env.CODEX_HOME!, 'config.toml')))
       .resolves.toBe(true);
     expect(await readFixtureRequirements({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env })).toEqual(requirements);
     expect(await fs.readFile(configPath)).toEqual(config);
@@ -3064,10 +3064,10 @@ describe('five namespaced write commands', () => {
     const cloneEnv = {
       ...isolation.env,
       AW_HOME: path.join(isolation.layout.fixtureCwd, 'clone-recovery-aw-home'),
-      AW_CODEX_HOME: path.join(isolation.layout.fixtureCwd, 'clone-recovery-codex-home'),
-      AW_CLAUDE_HOME: path.join(isolation.layout.fixtureCwd, 'clone-recovery-claude-home'),
+      CODEX_HOME: path.join(isolation.layout.fixtureCwd, 'clone-recovery-codex-home'),
+      CLAUDE_CONFIG_DIR: path.join(isolation.layout.fixtureCwd, 'clone-recovery-claude-home'),
     };
-    for (const home of [cloneEnv.AW_HOME, cloneEnv.AW_CODEX_HOME, cloneEnv.AW_CLAUDE_HOME]) {
+    for (const home of [cloneEnv.AW_HOME, cloneEnv.CODEX_HOME, cloneEnv.CLAUDE_CONFIG_DIR]) {
       await expect(fs.pathExists(home)).resolves.toBe(false);
     }
     const sourceConfig = await readCatalogSourcesConfigSnapshot(cloneEnv);
@@ -3102,7 +3102,7 @@ describe('five namespaced write commands', () => {
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
     expect(runtime.installed.has('demo@aw')).toBe(true);
     await expect(fs.readFile(path.join(
-      cloneEnv.AW_CODEX_HOME,
+      cloneEnv.CODEX_HOME,
       'plugins', 'cache', 'aw', 'demo', '1.0.0', 'skills', 'demo-native', 'SKILL.md',
     ), 'utf8')).resolves.toContain('name: demo-native');
     const projectConfigPath = path.join(cloneRoot, '.codex', 'config.toml');
@@ -3261,7 +3261,7 @@ describe('five namespaced write commands', () => {
     }, { ...runtime, nativeCliRunner: stalePostcheckRunner });
     expect(failedUninstall.overallState).toBe('failed');
     await applyCodexConfigTransactionFile(
-      path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'),
+      path.join(isolation.env.CODEX_HOME!, 'config.toml'),
       { upsertPluginActivations: { 'leaf@aw': true } },
     );
     const uninstalled = await syncFixturePlugin(['team/root'], {
@@ -3284,7 +3284,7 @@ describe('five namespaced write commands', () => {
       staleActivationRemovals: [],
     });
     const [userConfig, projectConfig] = await Promise.all([
-      readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
+      readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml')),
       readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
     ]);
     expect(userConfig.snapshot.plugins['leaf@aw']?.enabled).toBe(true);
@@ -3303,7 +3303,7 @@ describe('five namespaced write commands', () => {
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toMatchObject({ roots: [expect.objectContaining({ pluginId: 'team/root' })] });
     const [userAfter, projectAfter] = await Promise.all([
-      readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
+      readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml')),
       readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
     ]);
     expect(userAfter.snapshot.plugins['leaf@aw']?.enabled).toBe(true);
@@ -3328,7 +3328,7 @@ describe('five namespaced write commands', () => {
       }),
     ]);
     const [userMovedProject, projectMovedProject] = await Promise.all([
-      readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
+      readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml')),
       readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
     ]);
     expect(userMovedProject.snapshot.plugins['leaf@aw']?.enabled).toBe(true);
@@ -3344,7 +3344,7 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({ pluginId: 'team/leaf', resolvedScope: 'user' }),
     ]);
     const [userMovedBack, projectMovedBack] = await Promise.all([
-      readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
+      readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml')),
       readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
     ]);
     expect(userMovedBack.snapshot.plugins['leaf@aw']?.enabled).toBe(true);
@@ -3458,14 +3458,14 @@ describe('five namespaced write commands', () => {
         cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: sharedAction === 'reuse' ? 'project' : 'user',
       }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
       const targetConfigPath = sharedAction === 'none'
-        ? path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')
+        ? path.join(isolation.env.CODEX_HOME!, 'config.toml')
         : path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
       if (sharedAction === 'reuse') await fs.remove(targetConfigPath);
       const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
       const installedPluginId = [...runtime.installed][0]!;
       const marketplaceName = installedPluginId.slice(installedPluginId.lastIndexOf('@') + 1);
       const nativePayloadRoot = path.join(
-        isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', marketplaceName, 'demo', '1.0.0',
+        isolation.env.CODEX_HOME!, 'plugins', 'cache', marketplaceName, 'demo', '1.0.0',
       );
       const [marketplaceBefore, nativePayloadBefore] = await Promise.all([
         snapshotRegularTree(marketplaceRoot),
@@ -3586,9 +3586,9 @@ describe('five namespaced write commands', () => {
     const installedPluginId = [...runtime.installed][0]!;
     const marketplaceName = installedPluginId.slice(installedPluginId.lastIndexOf('@') + 1);
     const nativePayloadRoot = path.join(
-      isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', marketplaceName, 'demo', '1.0.0',
+      isolation.env.CODEX_HOME!, 'plugins', 'cache', marketplaceName, 'demo', '1.0.0',
     );
-    const userConfigPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+    const userConfigPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
     const projectConfigPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
     const [marketplaceBefore, payloadBefore, userConfigBefore, projectConfigBefore] = await Promise.all([
       snapshotRegularTree(marketplaceRoot),
@@ -3727,9 +3727,9 @@ describe('five namespaced write commands', () => {
         cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
       }, runtime);
       expect(user.overallState, JSON.stringify(user.targetResults)).toBe('succeeded');
-      const userRolePath = path.join(isolation.env.AW_CODEX_HOME!, 'agents', 'aw-demo-shared-role.toml');
+      const userRolePath = path.join(isolation.env.CODEX_HOME!, 'agents', 'aw-demo-shared-role.toml');
       const userRoleBefore = await fs.readFile(userRolePath);
-      const userConfigPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+      const userConfigPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
       const userConfigBefore = await fs.readFile(userConfigPath).catch(() => undefined);
       const projectRolePath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents',
         'aw-demo-shared-role.toml');
@@ -3908,7 +3908,7 @@ describe('five namespaced write commands', () => {
     }, runtime);
     expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
     const payloadReadme = path.join(
-      isolation.env.AW_CODEX_HOME!,
+      isolation.env.CODEX_HOME!,
       'plugins', 'cache', 'aw', 'demo', '1.0.0', 'README.md',
     );
     const reviewed = await syncFixturePlugin(['team/demo'], {
@@ -4045,7 +4045,7 @@ describe('five namespaced write commands', () => {
 
     const externalPayload = path.join(isolation.layout.fixtureCwd, 'foreign-payload.txt');
     const payloadLink = path.join(
-      isolation.env.AW_CODEX_HOME!,
+      isolation.env.CODEX_HOME!,
       'plugins', 'cache', 'aw', 'demo', '1.0.0', 'foreign-link',
     );
     await fs.outputFile(externalPayload, 'foreign\n');
@@ -4116,7 +4116,7 @@ describe('five namespaced write commands', () => {
     const expectedSkill = await fs.readFile(path.join(sourceRoot, 'plugins', 'alpha', 'skills',
       'alpha-skill', 'SKILL.md'), 'utf8');
     await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe(expectedSkill);
-    await expect(fs.readFile(path.join(isolation.env.AW_CODEX_HOME!, 'plugins', 'cache',
+    await expect(fs.readFile(path.join(isolation.env.CODEX_HOME!, 'plugins', 'cache',
       'aw', 'alpha', '2.0.0', 'skills', 'alpha-skill', 'SKILL.md'), 'utf8')).resolves.toBe(expectedSkill);
     expect(runtime.installed.has('beta@aw')).toBe(true);
   });
@@ -4135,7 +4135,7 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
     });
     const cacheRoot = path.join(
-      isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo', '1.0.0',
+      isolation.env.CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo', '1.0.0',
     );
     const runtime = createCodexNativeTestRuntime(isolation);
     const first = await installFixturePlugin(['team/demo'], {
@@ -4188,7 +4188,7 @@ describe('five namespaced write commands', () => {
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
     runtime.installed.delete('leaf@aw');
     const sentinel = path.join(
-      isolation.env.AW_CODEX_HOME!,
+      isolation.env.CODEX_HOME!,
       'plugins', 'cache', 'aw', 'leaf', '1.0.0', 'metadata.json',
     );
     await fs.outputFile(sentinel, '{"cacheOnly":true}\n');
@@ -4396,7 +4396,7 @@ describe('five namespaced write commands', () => {
       }],
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
     const userAgentPath = path.join(
-      isolation.env.AW_CODEX_HOME!,
+      isolation.env.CODEX_HOME!,
       'agents',
       'aw-leaf-preserved-role.toml',
     );
@@ -4424,7 +4424,7 @@ describe('five namespaced write commands', () => {
       target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }),
     }));
     const [userConfig, projectConfig] = await Promise.all([
-      readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
+      readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml')),
       readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
     ]);
     expect(userConfig.snapshot.plugins['leaf@aw']?.enabled).toBe(true);
@@ -4538,7 +4538,7 @@ describe('five namespaced write commands', () => {
 
     expect(secondScope.overallState, JSON.stringify(secondScope.rebuildResults)).toBe('succeeded');
     const [userConfig, projectConfig] = await Promise.all([
-      readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
+      readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml')),
       readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
     ]);
     expect(userConfig.snapshot.plugins['demo@aw']?.enabled).toBe(true);
@@ -5022,8 +5022,8 @@ describe('five namespaced write commands', () => {
     const marketplaceRoots = new Map<string, string>();
     const nativeCliRunner = async (invocation: NativeCliInvocation) => {
       if (invocation.command === 'claude' && invocation.args[0] === 'plugin') {
-        const settingsPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
-        const pluginsRoot = path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins');
+        const settingsPath = path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+        const pluginsRoot = path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'plugins');
         const knownPath = path.join(pluginsRoot, 'known_marketplaces.json');
         const installedPath = path.join(pluginsRoot, 'installed_plugins.json');
         if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
@@ -5091,8 +5091,8 @@ describe('five namespaced write commands', () => {
     });
     expect(marketplaceRoots.size).toBe(0);
 
-    await fs.ensureDir(isolation.env.AW_CLAUDE_HOME!);
-    const platformBefore = await snapshotRegularTree(isolation.env.AW_CLAUDE_HOME!);
+    await fs.ensureDir(isolation.env.CLAUDE_CONFIG_DIR!);
+    const platformBefore = await snapshotRegularTree(isolation.env.CLAUDE_CONFIG_DIR!);
     const intentPaths = [
       path.join(isolation.env.AW_HOME!, 'plugin-intents.json'),
       path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-intents.json'),
@@ -5154,7 +5154,7 @@ describe('five namespaced write commands', () => {
     expect(humanText).not.toContain(secret);
     expect(humanText).not.toContain(escapedSecret);
     expect(marketplaceRoots.size).toBe(0);
-    await expect(snapshotRegularTree(isolation.env.AW_CLAUDE_HOME!))
+    await expect(snapshotRegularTree(isolation.env.CLAUDE_CONFIG_DIR!))
       .resolves.toEqual(platformBefore);
     await expect(Promise.all(intentPaths.map((intentPath) =>
       fs.readFile(intentPath).catch((error: NodeJS.ErrnoException) =>
@@ -5220,6 +5220,7 @@ describe('five namespaced write commands', () => {
 
   it('redacts private preApply data from a config apply receipt', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    const privateToken = 'preapply-private-token-0123456789';
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-pre-apply-redaction-source');
     await fs.outputFile(path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'preApply.mjs'), [
       'let input = "";',
@@ -5256,7 +5257,7 @@ describe('five namespaced write commands', () => {
     await writePluginConfigStore({
       sourceId: 'team', sourceIdentity, logicalIdentity,
       pluginName: 'demo', scope: 'user', cwd: isolation.layout.fixtureCwd,
-      env: isolation.env, values: { token: 'abc' },
+      env: isolation.env, values: { token: privateToken },
     });
     const nativeCliRunner = vi.fn(async () => ({
       exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '',
@@ -5288,7 +5289,7 @@ describe('five namespaced write commands', () => {
     const serializedReceipt = JSON.stringify(failed.payload);
     expect(serializedReceipt).toContain('prefix[REDACTED]Suffix config preApply failed');
     for (const privateValue of [
-      'abc',
+      privateToken,
       isolation.layout.fixtureCwd,
       isolation.env.AW_HOME!,
     ]) {
@@ -5990,7 +5991,7 @@ describe('five namespaced write commands', () => {
     const project = await readCodexConfigFile(projectConfigPath);
     expect(project.snapshot.plugins['leaf@aw']?.enabled).toBe(projectEnabled);
     expect(project.snapshot.plugins['root@aw']?.enabled).toBe(true);
-    const user = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
+    const user = await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml'));
     expect(user.snapshot.plugins['leaf@aw']?.enabled).toBe(true);
   });
 
@@ -6033,7 +6034,7 @@ describe('five namespaced write commands', () => {
       rebuildResults: initialProject.rebuildResults,
       dependencyPlan: initialProject.dependencyPlan,
     })).toBe('succeeded');
-    const agentPath = path.join(isolation.env.AW_CODEX_HOME!, 'agents', 'aw-leaf-leaf-role.toml');
+    const agentPath = path.join(isolation.env.CODEX_HOME!, 'agents', 'aw-leaf-leaf-role.toml');
     await expect(fs.pathExists(agentPath)).resolves.toBe(true);
     await fs.remove(agentPath);
 
@@ -6144,13 +6145,13 @@ describe('five namespaced write commands', () => {
     const sourceIdentity = projectInstall.rebuildResults.find((result) =>
       result.target.pluginId === 'team/leaf')!.target.sourceIdentity!;
     const userAgentPath = path.join(
-      isolation.env.AW_CODEX_HOME!,
+      isolation.env.CODEX_HOME!,
       'agents',
       'aw-leaf-leaf-role.toml',
     );
     await writeOwnedTextFile({
       path: userAgentPath,
-      allowedRoot: isolation.env.AW_CODEX_HOME!,
+      allowedRoot: isolation.env.CODEX_HOME!,
       identity: {
         owner: 'agent-workflows',
         sourceId: 'team',
@@ -6877,7 +6878,7 @@ describe('five namespaced write commands', () => {
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
     });
     const rendererCount = path.join(counterRoot, 'render-count-demo.txt');
-    const skillRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'demo-skill');
+    const skillRoot = path.join(isolation.env.CODEX_HOME!, 'skills', 'demo-skill');
 
     const preview = await cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
@@ -6948,7 +6949,7 @@ describe('five namespaced write commands', () => {
     await expect(installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
-    const skillRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'demo-skill');
+    const skillRoot = path.join(isolation.env.CODEX_HOME!, 'skills', 'demo-skill');
     const projectIntentPath = path.join(
       isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-intents.json',
     );
@@ -7066,7 +7067,7 @@ describe('five namespaced write commands', () => {
       'utf8',
     )).resolves.toBe('1');
     await expect(fs.pathExists(path.join(
-      isolation.env.AW_CODEX_HOME!, 'skills', 'leaf-skill',
+      isolation.env.CODEX_HOME!, 'skills', 'leaf-skill',
     ))).resolves.toBe(false);
   }, 30_000);
 
@@ -7130,7 +7131,7 @@ describe('five namespaced write commands', () => {
 
   it('preserves incomplete, all-zero, and path-mismatched owner markers during force cleanup', async () => {
     const isolation = await configureCatalog();
-    const skillsRoot = path.join(isolation.env.AW_CLAUDE_HOME!, 'skills');
+    const skillsRoot = path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'skills');
     const marker = {
       schemaVersion: 2,
       owner: 'agent-workflows',
@@ -8503,8 +8504,8 @@ describe('five namespaced write commands', () => {
         const projectPath = await fs.realpath(invocation.cwd ?? projectA);
         const settingsPath = scope === 'project'
           ? path.join(projectPath, '.claude', 'settings.json')
-          : path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
-        const pluginsDir = path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins');
+          : path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+        const pluginsDir = path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'plugins');
         const knownPath = path.join(pluginsDir, 'known_marketplaces.json');
         const installedPath = path.join(pluginsDir, 'installed_plugins.json');
         if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
@@ -8705,7 +8706,7 @@ describe('five namespaced write commands', () => {
     }, runtime);
     expect(retired).toMatchObject({ kind: 'aw-recovery', command: 'intent:retire',
       declarationChanged: true, configChanged: false });
-    const config = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
+    const config = await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml'));
     expect(config.snapshot.plugins['demo@aw']?.enabled).toBe(false);
     expect((await readFixtureRequirements({ scope: 'user', cwd: options.cwd,
       env: isolation.env })).roots).toEqual([]);
@@ -8934,7 +8935,7 @@ describe('five namespaced write commands', () => {
     const recovered = await runRetire(retireOptions, runtime);
     expect(recovered.command).toBe('intent:retire');
     expect(runtime.installed.has('demo@aw')).toBe(true);
-    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
+    expect((await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml')))
       .snapshot.plugins['demo@aw']?.enabled).toBe(false);
     expect((await readFixtureRequirements({ scope: 'user', cwd: selected.cwd, env: isolation.env })).roots)
       .toEqual([]);
@@ -9043,7 +9044,7 @@ describe('five namespaced write commands', () => {
     runtime.nativeCliRunner.mockImplementation(workingRunner);
     const recovered = await runRetire(retireOptions, runtime);
     expect(recovered.command).toBe('intent:retire');
-    expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
+    expect((await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml')))
       .snapshot.plugins['demo@aw']?.enabled).toBe(false);
     expect(await fs.pathExists(projection)).toBe(true);
   });
@@ -9206,7 +9207,7 @@ describe('five namespaced write commands', () => {
       cwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
     runtime.installed.delete('demo@aw');
-    const userConfigPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+    const userConfigPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
     await fs.outputFile(userConfigPath,
       removeCodexMarketplace(await fs.readFile(userConfigPath, 'utf8'), 'aw'));
     await applyCodexConfigTransactionFile(userConfigPath, {
@@ -9831,7 +9832,7 @@ describe('five namespaced write commands', () => {
         );
       }
       const activationConfigPath = scope === 'user'
-        ? path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')
+        ? path.join(isolation.env.CODEX_HOME!, 'config.toml')
         : path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
       await applyCodexConfigTransactionFile(activationConfigPath, {
         upsertPluginActivations: { 'foreign@outside': true, 'demo@outside': true },
@@ -9841,7 +9842,7 @@ describe('five namespaced write commands', () => {
         marketplaceRoot, 'plugins', 'demo', 'skills', 'demo-skill', 'SKILL.md',
       );
       const cacheSkill = path.join(
-        isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo', '1.0.0',
+        isolation.env.CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo', '1.0.0',
         'skills', 'demo-skill', 'SKILL.md',
       );
       const [payloadBefore, cacheBefore] = await Promise.all([
@@ -9918,10 +9919,10 @@ describe('five namespaced write commands', () => {
       }, runtime);
       expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
       const extensionPath = path.join(
-        isolation.env.AW_CODEX_HOME!, 'agents', 'aw-demo-reviewer.toml',
+        isolation.env.CODEX_HOME!, 'agents', 'aw-demo-reviewer.toml',
       );
       await expect(fs.pathExists(extensionPath)).resolves.toBe(true);
-      const configPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+      const configPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
       const ambiguousConfig = [
         '[plugins."demo@outside"]',
         'enabled = true',
@@ -9932,7 +9933,7 @@ describe('five namespaced write commands', () => {
       ].join('\n');
       await fs.outputFile(configPath, ambiguousConfig);
       const cacheRoot = path.join(
-        isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo',
+        isolation.env.CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo',
       );
       const cacheBefore = await snapshotRegularTree(cacheRoot);
       const intentLocation = {
@@ -10035,7 +10036,7 @@ describe('five namespaced write commands', () => {
       'skills', 'demo-skill', 'SKILL.md',
     );
     const cacheSkill = path.join(
-      isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo', '1.0.0',
+      isolation.env.CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo', '1.0.0',
       'skills', 'demo-skill', 'SKILL.md',
     );
     const [marketplaceBefore, cacheBefore] = await Promise.all([
@@ -10059,7 +10060,7 @@ describe('five namespaced write commands', () => {
 
     expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
     await expect(readCodexConfigFile(path.join(
-      isolation.env.AW_CODEX_HOME!, 'config.toml',
+      isolation.env.CODEX_HOME!, 'config.toml',
     ))).resolves.toMatchObject({ snapshot: { plugins: {} } });
     await expect(fs.readFile(marketplaceSkill)).resolves.toEqual(marketplaceBefore);
     await expect(fs.readFile(cacheSkill)).resolves.toEqual(cacheBefore);
@@ -10228,7 +10229,7 @@ describe('five namespaced write commands', () => {
     expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
     const projectConfig = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
     await expect(fs.readFile(projectConfig, 'utf8')).resolves.toContain('aw-owner-v3:');
-    const damagedUserConfig = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+    const damagedUserConfig = path.join(isolation.env.CODEX_HOME!, 'config.toml');
     await fs.outputFile(damagedUserConfig, 'invalid = [\n');
     await fs.remove(projectConfig);
 
@@ -10737,7 +10738,7 @@ describe('five namespaced write commands', () => {
     });
     const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
     const skillRoot = path.join(skillsRoot, 'damaged-demo');
-    const otherSkillsRoot = path.join(isolation.env.AW_CLAUDE_HOME!, 'skills');
+    const otherSkillsRoot = path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'skills');
     const otherSkillRoot = path.join(otherSkillsRoot, 'damaged-demo');
     const invalidSkillRoot = path.join(skillsRoot, 'invalid-json');
     const linkedSkillRoot = path.join(skillsRoot, 'linked-marker');
@@ -11026,7 +11027,7 @@ describe('five namespaced write commands', () => {
     });
 
     const unrelatedUserAgent = path.join(
-      isolation.env.AW_CODEX_HOME!, 'agents', 'aw-demo-reviewer.toml',
+      isolation.env.CODEX_HOME!, 'agents', 'aw-demo-reviewer.toml',
     );
     await fs.outputFile(unrelatedUserAgent, '# agent-workflows-owner: {invalid\nforeign body\n');
     const unrelatedBlocked = await reinstallWriteCommand(['team/demo'], {
@@ -11229,11 +11230,11 @@ describe('five namespaced write commands', () => {
     });
     const distractors = [
       {
-        root: path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'shared-name'),
+        root: path.join(isolation.env.CODEX_HOME!, 'skills', 'shared-name'),
         sourceId: 'other', platform: 'codex' as const, scope: 'user' as const,
       },
       {
-        root: path.join(isolation.env.AW_CLAUDE_HOME!, 'skills', 'shared-name'),
+        root: path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'skills', 'shared-name'),
         sourceId: 'team', platform: 'claude' as const, scope: 'user' as const,
       },
     ];
@@ -11380,7 +11381,7 @@ describe('five namespaced write commands', () => {
       dependencyScopeOverrides: [{ pluginId: 'team/leaf', platform: 'codex', scope: 'user' }],
     }, runtime);
     expect(installed.overallState, JSON.stringify(installed)).toBe('succeeded');
-    const damagedRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'shared-name');
+    const damagedRoot = path.join(isolation.env.CODEX_HOME!, 'skills', 'shared-name');
     const ownerMarker = path.join(damagedRoot, '.agent-workflows-owner.json');
     await expect(fs.pathExists(ownerMarker)).resolves.toBe(true);
     await fs.outputJson(ownerMarker, {
@@ -11396,7 +11397,7 @@ describe('five namespaced write commands', () => {
     const damagedMarker = await fs.readFile(ownerMarker);
     const projectIntentPath = path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-intents.json');
     const projectIntent = await fs.readFile(projectIntentPath);
-    const foreignSkill = path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'foreign-skill', 'SKILL.md');
+    const foreignSkill = path.join(isolation.env.CODEX_HOME!, 'skills', 'foreign-skill', 'SKILL.md');
     await fs.outputFile(foreignSkill, 'foreign\n');
 
     const result = await reinstallWriteCommand(['team/root'], {
@@ -11533,7 +11534,7 @@ describe('five namespaced write commands', () => {
       platform: 'codex',
       scope: 'project',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
-    await fs.remove(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
+    await fs.remove(path.join(isolation.env.CODEX_HOME!, 'config.toml'));
 
     const upgraded = await syncWriteCommand(['team/root'], {
       cwd: isolation.layout.fixtureCwd,
@@ -11546,7 +11547,7 @@ describe('five namespaced write commands', () => {
         pluginId: 'team/leaf', resolvedScope: 'user', assignmentSource: 'userOverride',
       }),
     ]));
-    await fs.remove(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
+    await fs.remove(path.join(isolation.env.CODEX_HOME!, 'config.toml'));
 
     const reinstalled = await reinstallWriteCommand(['team/root'], {
       cwd: isolation.layout.fixtureCwd,
@@ -11859,7 +11860,7 @@ describe('five namespaced write commands', () => {
       dependencyScopeOverrides: [{ pluginId: 'team/b', platform: 'codex', scope: 'user' }],
     });
 
-    const userSkillsRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills');
+    const userSkillsRoot = path.join(isolation.env.CODEX_HOME!, 'skills');
     const projectSkillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
     await Promise.all([
       fs.remove(path.join(userSkillsRoot, 'b-skill')),
@@ -12718,7 +12719,7 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({ pluginId: 'team/demo', agent: 'codex', scope: 'user',
         execution: 'applied', blockers: [] }),
     ]));
-    await expect(fs.readFile(path.join(isolation.env.AW_CODEX_HOME!, 'agents', 'aw-demo-reviewer.toml'), 'utf8'))
+    await expect(fs.readFile(path.join(isolation.env.CODEX_HOME!, 'agents', 'aw-demo-reviewer.toml'), 'utf8'))
       .resolves.toContain('scope evidence');
     await expect(readFixtureRequirements({ scope: 'project',
       cwd: isolation.layout.fixtureCwd, env: isolation.env })).resolves.toEqual(projectIntent);
@@ -12912,7 +12913,7 @@ describe('five namespaced write commands', () => {
     });
     const historicalProject = path.join(isolation.layout.rootDir, 'historical-project-b');
     const installedPluginsPath = path.join(
-      isolation.env.AW_CLAUDE_HOME!,
+      isolation.env.CLAUDE_CONFIG_DIR!,
       'plugins',
       'installed_plugins.json',
     );
@@ -13157,13 +13158,13 @@ describe('five namespaced write commands', () => {
     const marketplaceRoots = new Map<string, string>();
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       if (invocation.command === 'claude' && invocation.args[0] === 'plugin') {
-        const pluginsDir = path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins');
+        const pluginsDir = path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'plugins');
         const scopeIndex = invocation.args.indexOf('--scope');
         const scope = scopeIndex === -1 ? 'user' : invocation.args[scopeIndex + 1]!;
         const projectPath = await fs.realpath(invocation.cwd ?? isolation.layout.fixtureCwd);
         const settingsPath = scope === 'project'
           ? path.join(projectPath, '.claude', 'settings.json')
-          : path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
+          : path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'settings.json');
         const knownPath = path.join(pluginsDir, 'known_marketplaces.json');
         const installedPath = path.join(pluginsDir, 'installed_plugins.json');
         if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
@@ -13242,7 +13243,7 @@ describe('five namespaced write commands', () => {
     });
     const runtime = { env: isolation.env, nativeCliRunner };
     const installedPath = path.join(
-      isolation.env.AW_CLAUDE_HOME!,
+      isolation.env.CLAUDE_CONFIG_DIR!,
       'plugins',
       'installed_plugins.json',
     );
@@ -13250,9 +13251,9 @@ describe('five namespaced write commands', () => {
       name: 'claude-only',
       scope: 'user',
       version: '1.0.0',
-      installPath: path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins', 'cache', 'claude-only'),
+      installPath: path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'plugins', 'cache', 'claude-only'),
     };
-    const settingsPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
+    const settingsPath = path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'settings.json');
     const settingsBytes = Buffer.from('{ "sentinel": true }\n');
     const installedBytes = Buffer.from(`${JSON.stringify({
       plugins: { 'claude-only': [sameNameUnboundRecord] },
@@ -13291,7 +13292,7 @@ describe('five namespaced write commands', () => {
       scope: 'project',
       projectPath: await fs.realpath(isolation.layout.fixtureCwd),
       version: '1.0.0',
-      installPath: path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins', 'cache', 'default-plugin'),
+      installPath: path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'plugins', 'cache', 'default-plugin'),
     };
     await fs.outputJson(installedPath, {
       plugins: { 'default-plugin': [unboundInstalledRecord] },
@@ -13455,14 +13456,14 @@ describe('five namespaced write commands', () => {
       const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
       await fs.writeJson(manifestPath, { ...manifest, name: 'aw' });
     }
-    const settingsPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
+    const settingsPath = path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'settings.json');
     const installedPath = path.join(
-      isolation.env.AW_CLAUDE_HOME!,
+      isolation.env.CLAUDE_CONFIG_DIR!,
       'plugins',
       'installed_plugins.json',
     );
     const knownPath = path.join(
-      isolation.env.AW_CLAUDE_HOME!,
+      isolation.env.CLAUDE_CONFIG_DIR!,
       'plugins',
       'known_marketplaces.json',
     );
@@ -13768,7 +13769,7 @@ describe('five namespaced write commands', () => {
     let installed = false;
     let marketplace = false;
     let marketplaceRoot = '';
-    const configPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+    const configPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
     const writeCodexConfig = async () => fs.outputFile(configPath, [
       ...(marketplace ? [
         '[marketplaces.aw]',
@@ -13797,12 +13798,12 @@ describe('five namespaced write commands', () => {
         await writeCodexConfig();
         await fs.copy(
           path.join(marketplaceRoot, 'plugins', 'demo'),
-          path.join(isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo', '1.0.0'),
+          path.join(isolation.env.CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo', '1.0.0'),
           { overwrite: true },
         );
       } else if (args[1] === 'remove') {
         installed = false;
-        await fs.remove(path.join(isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo'));
+        await fs.remove(path.join(isolation.env.CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo'));
         await writeCodexConfig();
       }
       if (args[1] === 'list' && args.includes('--json')) {
@@ -13990,9 +13991,9 @@ describe('five namespaced write commands', () => {
       argsPrefix: ['/managed/codex.js'],
     };
     let registeredVersion: string | undefined = '1.0.0';
-    const configPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+    const configPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
     const cacheRoot = path.join(
-      isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo',
+      isolation.env.CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo',
     );
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       const pluginIndex = invocation.args.indexOf('plugin');
@@ -14202,10 +14203,10 @@ describe('five namespaced write commands', () => {
         payload: JSON.parse(captured.readStdout()) as Record<string, unknown>,
       };
     };
-    const rolePath = path.join(scope === 'user' ? isolation.env.AW_CODEX_HOME!
+    const rolePath = path.join(scope === 'user' ? isolation.env.CODEX_HOME!
       : path.join(isolation.layout.fixtureCwd, '.codex'), 'agents', 'aw-demo-helper.toml');
     const otherScope = scope === 'user' ? 'project' : 'user';
-    const otherHome = otherScope === 'user' ? isolation.env.AW_CODEX_HOME!
+    const otherHome = otherScope === 'user' ? isolation.env.CODEX_HOME!
       : path.join(isolation.layout.fixtureCwd, '.codex');
     const otherRolePath = path.join(otherHome, 'agents', 'aw-sentinel-watcher.toml');
 
@@ -14819,7 +14820,7 @@ describe('five namespaced write commands', () => {
       const pluginId = `${pluginName}@aw`;
       const marketplaceBefore = await snapshotRegularTree(marketplaceRoot);
       const installedBefore = new Set(runtime.installed);
-      const configPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+      const configPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
       const configBefore = await fs.readFile(configPath);
       const projectConfigPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
       const projectConfigBefore = await fs.readFile(projectConfigPath).catch(() => undefined);
@@ -14979,7 +14980,7 @@ describe('five namespaced write commands', () => {
     });
     const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
     const marketplaceBefore = await snapshotRegularTree(marketplaceRoot);
-    const userConfigPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+    const userConfigPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
     const userConfigBefore = await fs.readFile(userConfigPath);
     const projectConfigPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
     const projectConfigBefore = await fs.readFile(projectConfigPath).catch(() => undefined);
@@ -15213,7 +15214,7 @@ describe('five namespaced write commands', () => {
         scope: 'project',
       },
     });
-    const legacyUserSkillsRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills');
+    const legacyUserSkillsRoot = path.join(isolation.env.CODEX_HOME!, 'skills');
     const legacyUserSkillRoot = path.join(legacyUserSkillsRoot, 'native-config');
     await fs.outputFile(path.join(legacyUserSkillRoot, 'SKILL.md'), 'legacy user owned\n');
     await writeSkillOwnerMarker({
@@ -15250,7 +15251,7 @@ describe('five namespaced write commands', () => {
     });
     expect((await readStore()).values).toEqual({ mode: 'saved' });
 
-    const userConfigBeforeAuthorized = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
+    const userConfigBeforeAuthorized = await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml'));
     const projectConfigBeforeAuthorized = await readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'));
     const legacyBeforeAuthorized = {
       user: await fs.pathExists(legacyUserSkillRoot),
@@ -15271,7 +15272,7 @@ describe('five namespaced write commands', () => {
       },
     });
     expect((await readStore()).values).toEqual({ mode: 'authorized' });
-    const userConfigAfterAuthorized = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
+    const userConfigAfterAuthorized = await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml'));
     const projectConfigAfterAuthorized = await readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'));
     expect(userConfigAfterAuthorized.snapshot.plugins['native-config@aw']?.enabled).toBe(true);
     expect(projectConfigAfterAuthorized.snapshot.plugins['native-config@aw']?.enabled).toBe(true);
@@ -15285,7 +15286,7 @@ describe('five namespaced write commands', () => {
     const [canonicalPluginId] = [...runtime.installed];
     expect(canonicalPluginId).toBe('native-config@aw');
     const cachePluginRoot = path.join(
-      isolation.env.AW_CODEX_HOME!,
+      isolation.env.CODEX_HOME!,
       'plugins',
       'cache',
       'aw',
@@ -15416,7 +15417,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.readFile(path.join(marketplaceSkillRoot, 'SKILL.md'), 'utf8'))
       .resolves.toContain('mode=refreshed\nrequestScope=user\nconfigScope=user\n');
     const refreshedConfig = await readCodexConfigFile(
-      path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'),
+      path.join(isolation.env.CODEX_HOME!, 'config.toml'),
     );
     const refreshedProjectConfig = await readCodexConfigFile(
       path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'),
@@ -15916,7 +15917,7 @@ describe('five namespaced write commands', () => {
       'aw-mixed-native-helper.toml',
     ), 'utf8')).resolves.toContain('developer_instructions = "Help."');
     await expect(fs.readFile(path.join(
-      isolation.env.AW_CODEX_HOME!,
+      isolation.env.CODEX_HOME!,
       'plugins',
       'cache',
       'aw',
@@ -15992,7 +15993,7 @@ describe('five namespaced write commands', () => {
     expect(projectInstall, JSON.stringify(projectInstall, null, 2))
       .toMatchObject({ exitCode: 0, payload: { ok: true } });
     const cacheRoot = path.join(
-      isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'codex-enhance', manifest.version,
+      isolation.env.CODEX_HOME!, 'plugins', 'cache', 'aw', 'codex-enhance', manifest.version,
     );
     const marketplaceRoot = path.join(
       isolation.env.AW_HOME!, 'marketplaces', 'team', 'plugins', 'codex-enhance',
@@ -16001,7 +16002,7 @@ describe('five namespaced write commands', () => {
       path.join(cacheRoot, 'codex', 'skills', skill, 'SKILL.md'));
     for (const skillPath of skillPaths) await expect(fs.pathExists(skillPath)).resolves.toBe(true);
     for (const skill of ['codex-explore', 'codex-subagent-guide']) {
-      await expect(fs.pathExists(path.join(isolation.env.AW_CODEX_HOME!, 'skills', skill)))
+      await expect(fs.pathExists(path.join(isolation.env.CODEX_HOME!, 'skills', skill)))
         .resolves.toBe(false);
     }
     const initialSkillBytes = await Promise.all(skillPaths.map((skillPath) => fs.readFile(skillPath)));
@@ -16041,7 +16042,7 @@ describe('five namespaced write commands', () => {
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
     ));
     const projectOnlyUserConfig = await readCodexConfigFile(path.join(
-      isolation.env.AW_CODEX_HOME!, 'config.toml',
+      isolation.env.CODEX_HOME!, 'config.toml',
     ));
     expect(projectOnlyConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
     expect(projectOnlyUserConfig.snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
@@ -16063,7 +16064,7 @@ describe('five namespaced write commands', () => {
       },
     });
     await expect(fs.pathExists(path.join(
-      isolation.env.AW_CODEX_HOME!, 'agents', 'aw-codex-enhance-codex-explore.toml',
+      isolation.env.CODEX_HOME!, 'agents', 'aw-codex-enhance-codex-explore.toml',
     ))).resolves.toBe(true);
     await expect(fs.readFile(projectIntentPath)).resolves.toEqual(projectIntentBefore);
     await expect(fs.readFile(projectRolePath)).resolves.toEqual(projectRoleBefore);
@@ -16085,7 +16086,7 @@ describe('five namespaced write commands', () => {
       .resolves.toEqual(projectConfigBefore);
 
     const [userConfig, projectConfig] = await Promise.all([
-      readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
+      readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml')),
       readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
     ]);
     expect(userConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);

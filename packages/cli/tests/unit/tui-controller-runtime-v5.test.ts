@@ -256,10 +256,13 @@ describe('TUI scoped recovery runtime', () => {
     runtimeMocks.readRecoveryStatus.mockImplementation(actual.readRecoveryStatus);
     const native = { ...bundleUnavailableStatus(), targetRevisions: [], nativeObservations: [], nativeExtraObserved: [] };
     runtimeMocks.statusCommandV8.mockResolvedValue(native);
-    const result = await dependencies.loadScopedStatus!('user', new AbortController().signal);
+    const signal = new AbortController().signal;
+    const result = await dependencies.loadScopedStatus!('user', signal);
     expect(result).toMatchObject({ scope: 'user', nativeSnapshot: { payload: native.payload, targetRevisions: [] } });
     expect(runtimeMocks.statusCommandV8).toHaveBeenCalledOnce();
-    expect(runtimeMocks.statusCommandV8).toHaveBeenCalledWith(expect.objectContaining({ scope: 'user' }));
+    expect(runtimeMocks.readRecoveryStatus.mock.calls[0]![0].signal).toBe(signal);
+    expect(runtimeMocks.statusCommandV8.mock.calls[0]![0].signal).toBe(signal);
+    expect(runtimeMocks.statusCommandV8.mock.calls[0]![0].scope).toBe('user');
     expect(runtimeMocks.statusCommandV8.mock.calls[0]![0].cwd).not.toBe(isolation.layout.fixtureCwd);
     const publicStatus = await runtimeMocks.readRecoveryStatus.mock.results[0]!.value;
     expect(JSON.parse(JSON.stringify(publicStatus))).not.toHaveProperty('nativeSnapshot');

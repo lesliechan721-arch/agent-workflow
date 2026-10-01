@@ -7,7 +7,7 @@ import type { Scope } from '../types.js';
 import {
   canonicalizePathThroughExistingAncestor,
   createProjectLocationKey, ensureRegularDirectoryPath, getClaudeHome, getCodexHome,
-  resolveAbsoluteAwHome, resolveRequiredCanonicalRepoRoot,
+  readEnvironmentValue, resolveAbsoluteAwHome, resolveRequiredCanonicalRepoRoot, resolveUserHome,
 } from '../utils/state-paths.js';
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
 
@@ -39,7 +39,9 @@ export interface ScopeContextOptions {
 }
 
 function absolutePath(value: string, label: string): string {
-  if (!path.isAbsolute(value)) throw new Error(`scopeEnvironmentAmbiguous: ${label} must be absolute.`);
+  if (!path.isAbsolute(value) || (process.platform === 'win32' && /^[/\\](?![/\\])/u.test(value))) {
+    throw new Error(`scopeEnvironmentAmbiguous: ${label} must be absolute.`);
+  }
   return path.resolve(value);
 }
 
@@ -78,7 +80,11 @@ export async function createSafeNeutralCwd(env: NodeJS.ProcessEnv): Promise<{
   executionCwd: string;
   dispose(): Promise<void>;
 }> {
-  const candidates = [env.TMPDIR, env.TEMP, env.TMP, os.tmpdir(), '/tmp']
+  const systemRoot = process.platform === 'win32'
+    ? readEnvironmentValue(env, 'SystemRoot') || readEnvironmentValue(env, 'windir')
+    : undefined;
+  const candidates = [readEnvironmentValue(env, 'TMPDIR'), readEnvironmentValue(env, 'TEMP'),
+    readEnvironmentValue(env, 'TMP'), os.tmpdir(), systemRoot ? path.join(systemRoot, 'temp') : undefined, '/tmp']
     .filter((value): value is string => Boolean(value));
   let lastError: unknown;
   for (const candidate of new Set(candidates)) {
@@ -117,11 +123,12 @@ export async function createScopeContext(options: ScopeContextOptions): Promise<
   const env = Object.freeze({ ...(options.env ?? process.env) });
   const callerCwd = await canonicalPath(options.cwd, 'caller cwd');
   const awHome = await canonicalPath(resolveAbsoluteAwHome(env), 'AW_HOME');
-  const home = await canonicalPath(env.HOME || env.USERPROFILE || os.homedir(), 'HOME');
+  const home = await canonicalPath(resolveUserHome(env), 'user home');
   const codex = await canonicalPath(getCodexHome(env), 'Codex home');
   const claude = await canonicalPath(getClaudeHome(env), 'Claude home');
   const cursor = await canonicalPath(path.join(home, '.cursor'), 'Cursor home');
-  const xdgState = await canonicalPath(env.XDG_STATE_HOME || path.join(home, '.local', 'state'), 'XDG_STATE_HOME');
+  const xdgState = await canonicalPath(readEnvironmentValue(env, 'XDG_STATE_HOME')
+    || path.join(home, '.local', 'state'), 'XDG_STATE_HOME');
   const targetHomes = Object.freeze({ home, codex, claude, cursor, xdgState });
   const distinctTargets = [awHome, codex, claude, cursor, xdgState];
   if (new Set(distinctTargets).size !== distinctTargets.length || awHome === home) {

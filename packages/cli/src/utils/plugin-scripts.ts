@@ -71,20 +71,27 @@ export function buildNodeScriptInvocation(options: { entryPath: string; cwd: str
 export function buildPluginScriptSpawnEnv(options: {
   commandEnv: NodeJS.ProcessEnv; contextPath: string; tempDir: string; plugin: { name: string; version: string };
   event: string; platform?: PlatformName; distribution?: DistributionName; scope: Scope; bundleRoot: string;
+  isolatedHomes?: { awHome: string; codexHome: string; claudeHome: string };
 }): NodeJS.ProcessEnv {
   const input = options.commandEnv;
   const output: NodeJS.ProcessEnv = {
-    AW_HOME: resolveAwHome(input), AW_CODEX_HOME: input.AW_CODEX_HOME || path.join(resolveAwHome(input), 'isolated-codex-home'),
-    AW_CLAUDE_HOME: input.AW_CLAUDE_HOME || path.join(resolveAwHome(input), 'isolated-claude-home'), PATH: input.PATH ?? input.Path ?? '',
+    AW_HOME: options.isolatedHomes?.awHome ?? resolveAwHome(input),
+    CODEX_HOME: options.isolatedHomes?.codexHome ?? path.join(options.tempDir, 'codex-home'),
+    CLAUDE_CONFIG_DIR: options.isolatedHomes?.claudeHome ?? path.join(options.tempDir, 'claude-home'),
+    HOME: path.join(options.tempDir, 'home'), USERPROFILE: path.join(options.tempDir, 'home'),
+    XDG_CONFIG_HOME: path.join(options.tempDir, 'xdg-config'), XDG_CACHE_HOME: path.join(options.tempDir, 'xdg-cache'),
+    XDG_STATE_HOME: path.join(options.tempDir, 'xdg-state'), XDG_DATA_HOME: path.join(options.tempDir, 'xdg-data'),
+    XDG_RUNTIME_DIR: path.join(options.tempDir, 'xdg-runtime'),
+    PATH: input.PATH ?? input.Path ?? '',
     AW_PLUGIN_CONTEXT: options.contextPath, AW_PLUGIN_ROOT: options.bundleRoot, AW_PLUGIN_NAME: options.plugin.name,
     AW_PLUGIN_VERSION: options.plugin.version, AW_PLUGIN_EVENT: options.event, AW_PLUGIN_SCOPE: options.scope,
   };
   if (options.platform) output.AW_PLUGIN_PLATFORM = options.platform;
   if (options.distribution) output.AW_PLUGIN_DISTRIBUTION = options.distribution;
   if (process.platform === 'win32') {
-    output.USERPROFILE = path.join(options.tempDir, 'home'); output.TEMP = path.join(options.tempDir, 'tmp'); output.TMP = output.TEMP;
+    output.TEMP = path.join(options.tempDir, 'tmp'); output.TMP = output.TEMP;
     if (input.SystemRoot) output.SystemRoot = input.SystemRoot; if (input.ComSpec) output.ComSpec = input.ComSpec;
-  } else { output.HOME = path.join(options.tempDir, 'home'); output.TMPDIR = path.join(options.tempDir, 'tmp'); }
+  } else { output.TMPDIR = path.join(options.tempDir, 'tmp'); }
   return output;
 }
 
@@ -436,8 +443,6 @@ export async function runPreApplyScript(options: {
 }): Promise<void> {
   const declaration = options.plugin.manifest.scripts?.preApply; if (!declaration) return;
   const awHome = resolveAwHome(options.context.env);
-  const codexHome = options.context.env.AW_CODEX_HOME || path.join(awHome, 'isolated-codex-home');
-  const claudeHome = options.context.env.AW_CLAUDE_HOME || path.join(awHome, 'isolated-claude-home');
   let tempDir: string | undefined;
   let interruptSignal: 'SIGINT' | 'SIGTERM' | undefined;
   let interruptReason: Error | undefined;
@@ -448,10 +453,10 @@ export async function runPreApplyScript(options: {
     ...(tempDir ? [
       { root: path.join(tempDir, 'home'), replacement: '[temporary-home]' },
       { root: path.join(tempDir, 'tmp'), replacement: '[temporary]' },
+      { root: path.join(tempDir, 'codex-home'), replacement: '[codex-home]' },
+      { root: path.join(tempDir, 'claude-home'), replacement: '[claude-home]' },
       { root: tempDir, replacement: '[temporary]' },
     ] : []),
-    { root: codexHome, replacement: '[codex-home]' },
-    { root: claudeHome, replacement: '[claude-home]' },
     { root: awHome, replacement: '[aw-home]' },
     { root: options.plugin.rootDir, replacement: '[plugin-root]' },
     { root: options.cwd, replacement: '[project-root]' },

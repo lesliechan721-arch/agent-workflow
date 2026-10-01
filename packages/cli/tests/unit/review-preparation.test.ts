@@ -31,8 +31,8 @@ async function createWorkspace(label = 'aw-review-preparation-'): Promise<{
     HOME: path.join(root, 'state', 'home'),
     USERPROFILE: path.join(root, 'state', 'home'),
     AW_HOME: path.join(root, 'state', 'aw-home'),
-    AW_CODEX_HOME: path.join(root, 'state', 'codex-home'),
-    AW_CLAUDE_HOME: path.join(root, 'state', 'claude-home'),
+    CODEX_HOME: path.join(root, 'state', 'codex-home'),
+    CLAUDE_CONFIG_DIR: path.join(root, 'state', 'claude-home'),
   }
   await fs.ensureDir(env.HOME!)
   return { root, env }
@@ -50,8 +50,8 @@ async function copyWorkspace(source: string, label: string): Promise<{
     HOME: path.join(root, 'state', 'home'),
     USERPROFILE: path.join(root, 'state', 'home'),
     AW_HOME: path.join(root, 'state', 'aw-home'),
-    AW_CODEX_HOME: path.join(root, 'state', 'codex-home'),
-    AW_CLAUDE_HOME: path.join(root, 'state', 'claude-home'),
+    CODEX_HOME: path.join(root, 'state', 'codex-home'),
+    CLAUDE_CONFIG_DIR: path.join(root, 'state', 'claude-home'),
   }
   await fs.ensureDir(env.HOME!)
   return { root, env }
@@ -826,7 +826,7 @@ describe('Review preparation', () => {
     await expect(fs.pathExists(path.join(realParent, 'review'))).resolves.toBe(false)
   })
 
-  it.each(['AW_HOME', 'AW_CODEX_HOME', 'AW_CLAUDE_HOME', '.agents', '.codex', '.claude'])(
+  it.each(['AW_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', '.agents', '.codex', '.claude'])(
     'rejects output inside the physical installation root behind %s',
     async (installationRoot) => {
       const fixture = await createWorkspace()
@@ -845,7 +845,7 @@ describe('Review preparation', () => {
       const alias = path.join(fixture.root, installationRoot)
       await fs.symlink(physicalRoot, alias, 'junction')
       const suffix = installationRoot === 'AW_HOME' ? 'not-created-yet' : ''
-      if (installationRoot.startsWith('AW_')) {
+      if (['AW_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR'].includes(installationRoot)) {
         fixture.env[installationRoot] = path.join(alias, suffix)
       }
       const output = path.join(physicalRoot, suffix, 'review-copy')

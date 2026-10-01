@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'fs-extra';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { statusFromObservations, type NativeObservation } from '../../src/recovery/status.js';
+import { readRecoveryStatus, statusFromObservations, type NativeObservation } from '../../src/recovery/status.js';
 import type { DemandSnapshot } from '../../src/recovery/demand.js';
 import type { ScopeContext } from '../../src/intent/scope-context.js';
+import * as portableRecovery from '../../src/portable/recovery.js';
+import * as demandService from '../../src/recovery/demand.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const context = { scope: 'user', executionCwd: '/tmp/aw-status', env: {},
   dispose: async () => undefined } as ScopeContext;
@@ -22,6 +26,57 @@ function demand(ids: string[], agents: Array<'codex' | 'claude-code'>): DemandSn
 }
 
 describe('recovery status satisfaction', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  // Test Value Gate: cancellation must escape the status fallback and stop observation of later roots.
+  it('propagates Portable inventory cancellation without observing later roots', async () => {
+    const snapshot = demand(['local/one', 'local/two'], ['claude-code']);
+    for (const root of snapshot.roots!) root.plugin!.manifest = { name: root.plugin!.manifest.name,
+      marketplace: { policy: { products: ['CODEX'] } },
+      distributions: { agentSkills: { sourceDirs: ['./skills'] } } } as never;
+    const abort = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    const inspect = vi.spyOn(portableRecovery, 'inspectPortableRecovery').mockImplementation(async (options) => {
+      observedSignal = options.signal;
+      abort.abort();
+      throw new DOMException('cancelled', 'AbortError');
+    });
+    await expect(statusFromObservations({ scope: 'user', cwd: '/tmp/aw-status', context,
+      demand: snapshot, nativeObservations: [], signal: abort.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(observedSignal).toBe(abort.signal);
+    expect(inspect).toHaveBeenCalledOnce();
+  });
+
+  // Test Value Gate: the operation cwd must remain available until a pending Portable observation ends, including cancellation.
+  it('keeps the scoped status context until Portable observation cancellation settles', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const snapshot = demand(['local/one', 'local/two'], ['claude-code']);
+    for (const root of snapshot.roots!) root.plugin!.manifest = { name: root.plugin!.manifest.name,
+      marketplace: { policy: { products: ['CODEX'] } },
+      distributions: { agentSkills: { sourceDirs: ['./skills'] } } } as never;
+    vi.spyOn(demandService, 'readDemand').mockResolvedValue(snapshot);
+    let finish: ((value: portableRecovery.PortablePreparation) => void) | undefined;
+    let observedCwd: string | undefined;
+    const inspect = vi.spyOn(portableRecovery, 'inspectPortableRecovery').mockImplementation(async (options) => {
+      observedCwd = options.context.executionCwd;
+      return new Promise((resolve) => { finish = resolve; });
+    });
+    const abort = new AbortController();
+    const read = readRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      nativeObservations: [], signal: abort.signal });
+    const rejected = expect(read).rejects.toMatchObject({ name: 'AbortError' });
+    try {
+      await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+      expect(await fs.pathExists(observedCwd!)).toBe(true);
+      abort.abort();
+    } finally {
+      abort.abort();
+      finish!({ targets: [], blockers: [] } as unknown as portableRecovery.PortablePreparation);
+      await rejected;
+    }
+    expect(await fs.pathExists(observedCwd!)).toBe(false);
+    expect(inspect).toHaveBeenCalledOnce();
+  });
   it('treats a valid empty demand as satisfied and an unselected demand as unknown', async () => {
     const empty = await statusFromObservations({ scope: 'user', cwd: '/tmp/aw-status', context,
       demand: demand([], []), nativeObservations: [] });

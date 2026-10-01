@@ -949,9 +949,9 @@ describe('portable skill public commands', () => {
     const originalCodexBytes = await fs.readFile(path.join(codexHome, 'agent-owned.txt'));
     const env: NodeJS.ProcessEnv = {
       ...fixture.env,
-      AW_CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
     };
-    delete env.AW_CODEX_HOME;
+    delete env.CODEX_HOME;
 
     for (const target of [codexHome, claudeHome]) {
       const io = createCapturedCliIo();

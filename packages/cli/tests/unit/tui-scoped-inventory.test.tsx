@@ -155,6 +155,40 @@ describe('scoped inventory in Ink', () => {
     instance.unmount();
   });
 
+  // Test Value Gate: session cancellation must invalidate a delayed local inventory refresh without replacing its snapshot or preparing Review.
+  it('cancels an Ink inventory refresh and ignores its delayed observation', async () => {
+    let finish: ((value: ScopedInventoryLoadResult) => void) | undefined;
+    let refreshSignal: AbortSignal | undefined;
+    const loadScopedStatus = vi.fn().mockResolvedValueOnce(recovery('user')).mockImplementationOnce(
+      async (_scope: 'user' | 'project', signal: AbortSignal) => {
+        refreshSignal = signal;
+        return new Promise<ScopedInventoryLoadResult>((resolve) => { finish = resolve; });
+      });
+    const prepareScopedTask = vi.fn();
+    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status), loadScopedStatus,
+      prepareScopedTask });
+    await controller.load();
+    const instance = render(<ConsoleAppV4 controller={controller} size={sizes[0]!} />);
+    controller.push({ name: 'intentScopes' });
+    await tick();
+    await press(instance, '\r');
+    const previous = controller.snapshot.scopedInventories.user;
+    await press(instance, 'r');
+    await vi.waitFor(() => expect(loadScopedStatus).toHaveBeenCalledTimes(2));
+    expect(controller.snapshot.scopedInventoryRefresh.user).toEqual({ state: 'checking' });
+    const cancelled = controller.cancelAndWaitForReads();
+    expect(refreshSignal?.aborted).toBe(true);
+    finish!({ ...recovery('user'), inventory: [] });
+    expect(await cancelled).toBe(true);
+    await tick();
+    expect(controller.snapshot.scopedInventories.user).toEqual(previous);
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'intentInventory', scope: 'user' });
+    expect(checkedFrame(instance, sizes[0]!)).toContain('Demo');
+    expect(prepareScopedTask).not.toHaveBeenCalled();
+    instance.unmount();
+    controller.dispose();
+  });
+
   it('opens the same scoped detail from both inventories, the library, and the dependency graph', async () => {
     const loaded: TuiStatusLoadResult = { ...status, dependencyOverviews: [{
       pluginId: 'official/demo',

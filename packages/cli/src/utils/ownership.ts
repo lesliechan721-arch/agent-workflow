@@ -717,6 +717,7 @@ export async function inspectOwnedComponents(options: {
               : {}),
       });
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       const message = errorMessage(error);
       components.push({ component, state: 'error', diagnostic: message });
       errors.push({ label, message });

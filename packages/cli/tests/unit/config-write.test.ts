@@ -184,7 +184,7 @@ async function createFixture(
   return {
     root,
     cwd,
-    env: { AW_HOME: path.join(root, 'aw-home') },
+    env: { ...process.env, AW_HOME: path.join(root, 'aw-home') },
     plugin: { rootDir: pluginRoot, manifestPath, manifest },
   };
 }

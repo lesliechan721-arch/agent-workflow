@@ -1,5 +1,7 @@
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
 import { promisify } from 'node:util';
+
+import { resolveWindowsSkillsCommand } from './windows-skills-command.js';
 
 const execFileAsync = promisify(execFile);
 const MIN_VERSION = [1, 5, 23] as const;
@@ -37,7 +39,15 @@ export interface SkillsCliInvocationOptions {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   timeoutMs?: number;
+  platform?: NodeJS.Platform;
+  runner?: SkillsCliRunner;
 }
+
+export type SkillsCliRunner = (
+  command: string,
+  args: string[],
+  options: ExecFileOptionsWithStringEncoding,
+) => Promise<{ stdout: string; stderr: string }>;
 
 export interface PortableSkillTarget {
   skill: string;
@@ -70,9 +80,21 @@ async function invokeSkills(
   options: SkillsCliInvocationOptions,
 ): Promise<{ stdout: string; stderr: string }> {
   try {
-    const result = await execFileAsync('skills', args, {
+    let command = 'skills';
+    let argsPrefix: string[] = [];
+    let env = options.env;
+    if ((options.platform ?? process.platform) === 'win32') {
+      try {
+        ({ command, argsPrefix, env } = await resolveWindowsSkillsCommand({ cwd: options.cwd, env: env ?? process.env }));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw error;
+        throw new SkillsCliError('portableSkillsCliIncompatible',
+          error instanceof Error ? error.message : '无法核验 Windows Skills CLI 入口。');
+      }
+    }
+    const result = await (options.runner ?? execFileAsync)(command, [...argsPrefix, ...args], {
       cwd: options.cwd,
-      env: options.env,
+      env,
       encoding: 'utf8',
       maxBuffer: 1024 * 1024,
       ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),

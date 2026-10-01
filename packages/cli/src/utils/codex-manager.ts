@@ -727,7 +727,8 @@ export async function inspectSystemCodex(
   let system: SystemCodexProbe;
   try {
     system = await probeSystemCodex(options);
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
     return unresolved('The PATH Codex launcher could not be inspected. Check the launcher and retry.');
   }
   if (system.state === 'missing') return { state: 'missing', requiredMinVersion };
