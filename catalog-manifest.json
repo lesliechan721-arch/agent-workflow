@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.34",
+  "catalogVersion": "0.1.0-beta.35",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "3219bfa4796e4e0cbad89b72814aaf398b3bc23b"
+    "sourceHead": "de4a98897bfc2ced154e426c187667ea284a7af1"
   },
   "entries": [
     {
@@ -320,7 +320,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.11",
+      "version": "0.1.0-beta.12",
       "dependencies": [
         "decision-kit"
       ],
@@ -333,9 +333,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:400a72597cbccb2ea27c167609c3898cd2ba1a5e10fa3e7ffd12d87f9133a6b2",
-      "manifestDigest": "sha256:4631450c02c97a6be7b280fd0a8ff9f9a7030a2b68a0f2ce4654ce2dd68067b9",
-      "contentDigest": "sha256:2ab4181aa13fff81dfe1c529ca1d683f3496f0cac36178276f154f12346190b7"
+      "artifactDigest": "sha256:76b800eee7fc52b188b2adf80aabc0b9578e96df24765f7c811ebbf7b57c74f8",
+      "manifestDigest": "sha256:b1f78375d2573feaa748ce7a8554e0bee8204f339348cb66aff223b1d305a3c3",
+      "contentDigest": "sha256:b727635f523481e117360b56e2ebbe88554cf0b898c51e3d834e44225ca2f980"
     },
     {
       "name": "git-toolkit",

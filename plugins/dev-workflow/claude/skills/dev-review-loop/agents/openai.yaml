@@ -1,0 +1,6 @@
+interface:
+  display_name: dev-review-loop
+  short_description: "对明确范围核验并有界续修；已知工作先完成，复审按实际影响补足"
+  default_prompt: "使用 $dev-review-loop 按当前请求选择起点；明确工作先完成再核验，沿用有效授权与累计预算，报告真实结果和覆盖限制。"
+policy:
+  allow_implicit_invocation: true

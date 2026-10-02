@@ -1,6 +1,6 @@
 interface:
   display_name: dev-build
-  short_description: "协调任务实施与集成，将有界核验修复交给 dev-repair"
+  short_description: "协调任务实施与集成，将有界核验修复交给 dev-review-loop"
   default_prompt: "使用 $dev-build 处理当前请求，遵循实际范围、资料和授权。"
 policy:
   allow_implicit_invocation: true

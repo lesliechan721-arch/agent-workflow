@@ -1,6 +1,0 @@
-interface:
-  display_name: dev-repair
-  short_description: "在明确范围与预算内协调独立审查、必要修复、验证与复审"
-  default_prompt: "使用 $dev-repair 核验当前指定范围，在实际授权与剩余预算内修复，并报告真实结果与限制。"
-policy:
-  allow_implicit_invocation: true
