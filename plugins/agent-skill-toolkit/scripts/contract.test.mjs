@@ -42,10 +42,11 @@ test('publishes five model-callable Skills with valid public metadata', () => {
   }
 });
 
-test('materializes the shared Reviewer resource closure on both platforms', () => {
+test('materializes shared method and audit resources on both platforms', () => {
   const targets = [
     ['author-agent-skill', 'references/invocation-and-description.md'],
     ['author-agent-skill', 'references/composition-audit.md'],
+    ['simplify-agent-skill', 'references/skill-composition.md'],
     ['review-agent-skill', 'references/skill-invocation.md'],
     ['review-agent-skill', 'references/skill-composition.md'],
     ['review-agent-skill', 'scripts/audit-output-contracts.mjs'],
