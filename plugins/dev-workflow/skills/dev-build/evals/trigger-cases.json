@@ -4,7 +4,7 @@
     "kind": "trigger",
     "unitUnderTest": "dev-build",
     "participants": [
-      "dev-repair",
+      "dev-review-loop",
       "dev-implement",
       "dev-review-code",
       "decision-shape"

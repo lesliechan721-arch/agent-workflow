@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-review-code",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "分别观察默认入口误选、有效上游漏选及实际质量。严格匹配能力减少流程误进入；基础方法在有增益的范围减少漏用。分类不替代权限或真实执行证据。"
+    },
+    "participants": [
+      "dev-review-loop",
+      "dev-implement"
+    ],
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "implicit_design_conformance",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "检查当前页面实现是否保持我接受的原型布局和交互，并给出质量问题，只报告。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "没有说代码审查但需要实际符合度与工程判断。",
+        "minimalCounterexample": "只解释页面DOM结构时可直接回答。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "explaining_is_not_adjudicating",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "解释这个函数每一步在做什么，我暂时不需要质量评价。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "解释不是正式审查，不为了基础召回扩大任务。",
+        "minimalCounterexample": "要求判断是否满足需求及安全约束时采用Review。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    }
+  ]
+}

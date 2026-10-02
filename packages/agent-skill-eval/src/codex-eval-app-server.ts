@@ -119,6 +119,7 @@ export interface ConversationEvalCase {
 
 export interface AppServerRunEvidence {
   variant: 'with_skill' | 'without_skill';
+  rootThreadId?: string | null;
   complete: boolean;
   mechanicalPassed: boolean;
   hostSourceAccessAbsent: boolean | null;
@@ -1227,6 +1228,7 @@ async function runConversationOnce(options: {
   skillNames: string[];
   codexBin: string;
   model?: string;
+  outputSchema?: Record<string, unknown>;
   codexRuntime: CodexEvalRuntimeConfig;
   timeoutMs: number;
   sourceEnv: NodeJS.ProcessEnv;
@@ -1258,6 +1260,7 @@ async function runConversationOnce(options: {
   const fallbackUserReplies: NonNullable<AppServerRunEvidence['fallbackUserReplies']> = [];
   const finalMessages: string[] = [];
   const eventTrace: unknown[] = [];
+  let rootThreadId: string | null = null;
   let usage: unknown = null;
   let isolationEvidence: CodexEvalRpcIsolationEvidence | null = null;
   let session: EvalAppServerSession | undefined;
@@ -1351,6 +1354,7 @@ async function runConversationOnce(options: {
     removeHandler = session.onFrame(async (frame) => {
       const method = typeof frame.method === 'string' ? frame.method : '';
       const params = isRecord(frame.params) ? frame.params : {};
+      const isRootThread = rootThreadId !== null && params.threadId === rootThreadId;
       if (!method.startsWith('remoteControl/') && !method.startsWith('account/')) {
         eventTrace.push(frame);
       }
@@ -1358,7 +1362,7 @@ async function runConversationOnce(options: {
       if (options.isolation === 'strict' && configWarning) {
         throw new Error(`Strict Codex eval received a config warning: ${configWarning}`);
       }
-      if (method === 'item/tool/requestUserInput') {
+      if (method === 'item/tool/requestUserInput' && isRootThread) {
         turnUsedRequestUserInput = true;
         const responseId = appServerRequestId(frame.id);
         const id = requestId(responseId);
@@ -1410,7 +1414,7 @@ async function runConversationOnce(options: {
         });
         return;
       }
-      if (method === 'item/completed' && isRecord(params.item)) {
+      if (method === 'item/completed' && isRootThread && isRecord(params.item)) {
         const item = params.item;
         if (
           item.type === 'agentMessage' &&
@@ -1421,14 +1425,14 @@ async function runConversationOnce(options: {
           finalMessages.push(item.text);
         }
       }
-      if (method === 'thread/tokenUsage/updated') {
+      if (method === 'thread/tokenUsage/updated' && isRootThread) {
         usage = params.tokenUsage ?? usage;
       }
-      if (method === 'turn/completed') {
+      if (method === 'turn/completed' && isRootThread) {
         const turn = isRecord(params.turn) ? params.turn : {};
         turnResolve?.({ complete: turn.status === 'completed' });
       }
-      if (method === 'error') {
+      if (method === 'error' && (params.threadId === undefined || isRootThread)) {
         turnReject?.(new Error(`app-server error: ${JSON.stringify(params)}`));
       }
     });
@@ -1454,6 +1458,7 @@ async function runConversationOnce(options: {
       ...(options.model ? { model: options.model } : {}),
     }, control.rpcTimeout('thread/start'));
     const threadId = extractAppServerThreadId(threadResult);
+    rootThreadId = threadId;
     options.onStage?.('thread-started');
     let nextTurnText = options.evalCase.prompt;
     let completed = { complete: false };
@@ -1476,6 +1481,7 @@ async function runConversationOnce(options: {
           networkAccess: 'enabled' as const,
         },
         ...(options.model ? { model: options.model } : {}),
+        ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
       }, control.rpcTimeout('turn/start'));
       options.onStage?.('turn-started');
       completed = await turnDone;
@@ -1549,6 +1555,7 @@ async function runConversationOnce(options: {
     }
     return session.scrub({
       variant: options.variant,
+      rootThreadId,
       complete: completed.complete,
       mechanicalPassed: completed.complete && diagnostics.length === 0,
       hostSourceAccessAbsent,
@@ -1577,6 +1584,7 @@ async function runConversationOnce(options: {
       : null;
     const evidence: AppServerRunEvidence = {
       variant: options.variant,
+      rootThreadId,
       complete: false,
       mechanicalPassed: false,
       hostSourceAccessAbsent,
@@ -1626,6 +1634,7 @@ export async function runCodexConversationProviderCase(options: {
   skillNames: string[];
   codexBin: string;
   model?: string;
+  outputSchema?: Record<string, unknown>;
   codexRuntime: CodexEvalRuntimeConfig;
   timeoutMs: number;
   sourceEnv?: NodeJS.ProcessEnv;
@@ -1646,6 +1655,7 @@ export async function runCodexConversationProviderCase(options: {
     skillNames: options.skillNames,
     codexBin: options.codexBin,
     ...(options.model ? { model: options.model } : {}),
+    ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
     codexRuntime: options.codexRuntime,
     timeoutMs: options.timeoutMs,
     sourceEnv: options.sourceEnv ?? process.env,

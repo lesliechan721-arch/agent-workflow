@@ -10,7 +10,7 @@
       "rationale": "同时检验决定保真、人审完整、阶段前置和独立交接；不用长度、标题、等级词或加载次数代替质量。"
     },
     "participants": [
-      "dev-repair",
+      "dev-review-loop",
       "dev-spec",
       "dev-build",
       "dev-implement"

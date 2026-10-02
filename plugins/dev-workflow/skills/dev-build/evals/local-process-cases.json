@@ -10,7 +10,7 @@
       "rationale": "衡量有依据的设计、长期知识和本地过程分工，同时保留既定范围、真实确认及独立证据。"
     },
     "participants": [
-      "dev-repair",
+      "dev-review-loop",
       "dev-implement",
       "dev-review-code"
     ],

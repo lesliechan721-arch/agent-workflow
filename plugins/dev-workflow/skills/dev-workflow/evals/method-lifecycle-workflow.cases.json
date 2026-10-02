@@ -10,7 +10,7 @@
       "rationale": "以实际用户答案、需求保真、文档生命周期及结果判定；方法加载只说明路由，不单独证明对齐完成。"
     },
     "participants": [
-      "dev-repair",
+      "dev-review-loop",
       "dev-design",
       "decision-shape",
       "decision-grill",

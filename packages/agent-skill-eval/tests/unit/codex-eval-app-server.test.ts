@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   createPosixProcessTreeMonitor,
   inspectAppServerConfigWarning,
+  runCodexConversationProviderCase,
   runCodexTriggerProviderCase,
   settleAppServerProcessCleanup,
   type AwSkillEvalTriggerCase,
@@ -20,6 +21,90 @@ import { createDirectChildProcessMonitor } from '../../src/index.js'
 import { CodexEvalAttemptControl, EvalAppServerSession } from '../../src/codex-eval-app-server.js'
 
 describe('Codex provider app-server process boundary', () => {
+  it.skipIf(process.platform !== 'darwin').each([false, true])(
+    'sends the output schema and waits for the root conversation turn (structured=%s)', async (structured) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eval-output-schema-'))
+      try {
+        const subjectRoot = path.join(root, 'subject')
+        const codexBin = path.join(root, 'fake-codex.mjs')
+        await fs.ensureDir(subjectRoot)
+        await fs.writeFile(codexBin, [
+          '#!/usr/bin/env node',
+          "let buffer = ''",
+          "const emit = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n')",
+          "process.stdin.setEncoding('utf8')",
+          "process.stdin.on('data', (chunk) => {",
+          '  buffer += chunk',
+          "  let newline = buffer.indexOf('\\n')",
+          '  while (newline >= 0) {',
+          '    const frame = JSON.parse(buffer.slice(0, newline))',
+          '    buffer = buffer.slice(newline + 1)',
+          "    if (frame.method === 'initialize') emit({ id: frame.id, result: {} })",
+          "    if (frame.method === 'thread/start') emit({ id: frame.id, result: { thread: { id: 'thread-1' } } })",
+          "    if (frame.method === 'turn/start') {",
+          "      emit({ method: 'test/turnRequest', params: frame.params })",
+          '      emit({ id: frame.id, result: {} })',
+          "      emit({ method: 'item/tool/requestUserInput', id: 'child-question', params: { threadId: 'child-thread', questions: [] } })",
+          "      emit({ method: 'item/completed', params: { threadId: 'child-thread', item: { type: 'agentMessage', phase: 'final_answer', text: 'child finished' } } })",
+          "      emit({ method: 'thread/tokenUsage/updated', params: { threadId: 'child-thread', tokenUsage: { total: { inputTokens: 999, outputTokens: 999 } } } })",
+          "      emit({ method: 'turn/completed', params: { threadId: 'child-thread', turn: { status: 'completed' } } })",
+          '      setTimeout(() => {',
+          "        emit({ method: 'item/completed', params: { threadId: 'thread-1', item: { type: 'agentMessage', phase: 'final_answer', text: '{\"answer\":\"done\"}' } } })",
+          "        emit({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', tokenUsage: { total: { inputTokens: 10, outputTokens: 2 } } } })",
+          "        emit({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { status: 'completed' } } })",
+          '      }, 100)',
+          '    }',
+          "    newline = buffer.indexOf('\\n')",
+          '  }',
+          '})',
+          'setTimeout(() => process.exit(124), 30_000)',
+        ].join('\n'))
+        await fs.chmod(codexBin, 0o755)
+        const schema = {
+          type: 'object', properties: { answer: { type: 'string' } },
+          required: ['answer'], additionalProperties: false,
+        }
+        const evidence = await runCodexConversationProviderCase({
+          evalCase: {
+            id: 'structured', prompt: 'Return an answer.', scriptedReplies: [],
+            expectedOutput: 'A JSON answer.', checks: [], workspaceFiles: {},
+            workspaceUnchanged: true, sandbox: 'read-only', allowedWorkspaceChanges: [],
+            artifacts: [], environmentPathPrepend: [],
+          },
+          sourceProjectRoot: subjectRoot, skillMode: 'without-skill',
+          skillName: 'unused', skillNames: [], codexBin,
+          codexRuntime: {
+            inherited: false, model: null, modelProvider: 'openai',
+            credentialSource: 'environment', configToml: 'model_provider = "openai"\n',
+            providerEnvironment: { OPENAI_API_KEY: 'fake-key' },
+            sourceCodexHome: root, copyOpenAiAuth: false,
+            sensitiveEnvironmentNames: ['OPENAI_API_KEY'], sensitiveValues: ['fake-key'],
+            evidenceDigest: 'sha256:test',
+          },
+          timeoutMs: 5_000, sourceEnv: { PATH: process.env.PATH },
+          isolation: 'standard', environmentFixtures: [],
+          ...(structured ? { outputSchema: schema } : {}),
+        })
+        expect(evidence.complete).toBe(true)
+        expect(evidence.mechanicalPassed).toBe(true)
+        expect(evidence.rootThreadId).toBe('thread-1')
+        expect(evidence.finalMessages).toEqual(['{"answer":"done"}'])
+        expect(evidence.questions).toEqual([])
+        expect(evidence.usage).toEqual({ total: { inputTokens: 10, outputTokens: 2 } })
+        expect(evidence.eventTrace).toContainEqual({
+          method: 'turn/completed', params: { threadId: 'child-thread', turn: { status: 'completed' } },
+        })
+        const request = evidence.eventTrace.find((event) => event !== null && typeof event === 'object'
+          && (event as Record<string, unknown>).method === 'test/turnRequest') as
+          { params: { outputSchema?: unknown } } | undefined
+        expect(request).toBeDefined()
+        expect(request?.params.outputSchema).toEqual(structured ? schema : undefined)
+      } finally {
+        await fs.remove(root)
+      }
+    },
+  )
+
   it('keeps the attempt budget separate from the 30 second RPC cap', () => {
     vi.useFakeTimers({ now: new Date('2026-08-31T00:00:00.000Z') })
     try {

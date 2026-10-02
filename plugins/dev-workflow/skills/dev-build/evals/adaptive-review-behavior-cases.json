@@ -4,7 +4,7 @@
     "kind": "conversation",
     "unitUnderTest": "dev-build",
     "participants": [
-      "dev-repair",
+      "dev-review-loop",
       "dev-implement",
       "dev-breakdown",
       "dev-review-code"

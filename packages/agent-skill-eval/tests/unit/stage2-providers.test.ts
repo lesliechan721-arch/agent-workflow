@@ -405,6 +405,83 @@ describe('built-in Eval provider registry', () => {
     expect(evaluationInput.skillName).toBe('fixture-skill')
     expect(evaluationInput.timeoutMs).toBeGreaterThan(299_000)
     expect(evaluationInput.timeoutMs).toBeLessThanOrEqual(300_000)
+    expect(evaluationInput.outputSchema).toBeUndefined()
+    const graderInput = runConversationProviderCase.mock.calls[1]![0]
+    expect(graderInput.outputSchema).toMatchObject({
+      type: 'object',
+      required: ['passed', 'score', 'details'],
+      additionalProperties: false,
+      properties: {
+        passed: { type: 'boolean' },
+        score: { type: ['number', 'null'] },
+        details: {
+          type: 'object',
+          properties: {
+            reason: { type: 'string' },
+            questionId: { type: ['string', 'null'] },
+            checks: {
+              type: 'array',
+              items: {
+                required: ['name', 'verdict', 'evidence'],
+                properties: { verdict: { enum: ['pass', 'fail', 'unknown'] } },
+              },
+            },
+          },
+        },
+      },
+    })
+  })
+
+  it('gives the grader observed command results separately from candidate claims and redacts them', async () => {
+    const paths = await runRoot()
+    const secret = 'observed-command-secret'
+    const command = {
+      type: 'commandExecution',
+      command: `node --test --token ${secret}`,
+      cwd: '/isolated/subject',
+      status: 'completed',
+      exitCode: 1,
+      aggregatedOutput: `tests 4; fail 1; ${secret}`,
+    }
+    const evidence = conversationEvidence({
+      eventTrace: [
+        { method: 'item/started', params: { item: command } },
+        { method: 'item/completed', params: { item: { type: 'reasoning', text: 'private reasoning' } } },
+        { method: 'item/completed', params: { item: command } },
+      ],
+    })
+    let candidateData: Record<string, unknown> = {}
+    await runBuiltinEvalProvider('codex-conversation', input(paths, conversationCaseValue()), {
+      sourceEnv: { OPENAI_API_KEY: secret },
+      transport: {
+        runTrigger: vi.fn(async () => { throw new Error('not used') }),
+        runConversation: vi.fn(async () => ({
+          evidence, modelOutput: 'I ran different tests and all passed.', usage: null,
+        })),
+        runGrader: vi.fn(async ({ prompt }) => {
+          candidateData = JSON.parse(prompt.split('<UNTRUSTED_CANDIDATE_DATA_JSON>\n')[1]!
+            .split('\n</UNTRUSTED_CANDIDATE_DATA_JSON>')[0]!)
+          expect(prompt).not.toContain(secret)
+          return { output: '{"passed":false,"score":0}', usage: null, mechanicalPassed: true }
+        }),
+      },
+    })
+    expect(candidateData.modelOutput).toBe('I ran different tests and all passed.')
+    expect(candidateData.mechanicalEvidence).toMatchObject({
+      hostSourceAccessAbsent: true,
+      completedItems: [{
+        eventOrdinal: 3, threadId: null,
+        item: {
+          type: 'commandExecution',
+          command: 'node --test --token [redacted]',
+          cwd: '/isolated/subject',
+          status: 'completed',
+          exitCode: 1,
+          aggregatedOutput: 'tests 4; fail 1; [redacted]',
+        },
+      }],
+    })
+    expect(JSON.stringify(candidateData)).not.toContain('private reasoning')
   })
 
   it('strictly parses only the production grader final answer and redacts it', async () => {
@@ -515,7 +592,7 @@ describe('built-in Eval provider registry', () => {
     } satisfies Partial<EvalProviderExecutionError>)
   })
 
-  it('gives the grader redacted user-visible turns in their real order only', async () => {
+  it('gives the grader ordered redacted turns and separate observed tool evidence', async () => {
     const paths = await runRoot()
     const secret = 'secret-token'
     const internalReasoning = `internal reasoning with ${secret}`
@@ -615,15 +692,18 @@ describe('built-in Eval provider registry', () => {
       } },
     )
 
-    const beforeIndex = prompt.indexOf('BEFORE the question.')
-    const questionIndex = prompt.indexOf('Header: Scope')
-    const firstAnswerIndex = prompt.indexOf('- Use project scope.')
-    const secondQuestionIndex = prompt.indexOf('Header: Mode')
-    const secondAnswerIndex = prompt.indexOf('- Careful [redacted]')
-    const afterIndex = prompt.indexOf(after)
-    const interimFinalIndex = prompt.indexOf(interimFinal)
-    const finalIndex = prompt.indexOf(final)
-    const fallbackReplyIndex = prompt.indexOf('Continue after the first final answer.')
+    const candidateData = JSON.parse(prompt.split('<UNTRUSTED_CANDIDATE_DATA_JSON>\n')[1]!
+      .split('\n</UNTRUSTED_CANDIDATE_DATA_JSON>')[0]!)
+    const modelOutput = candidateData.modelOutput as string
+    const beforeIndex = modelOutput.indexOf('BEFORE the question.')
+    const questionIndex = modelOutput.indexOf('Header: Scope')
+    const firstAnswerIndex = modelOutput.indexOf('- Use project scope.')
+    const secondQuestionIndex = modelOutput.indexOf('Header: Mode')
+    const secondAnswerIndex = modelOutput.indexOf('- Careful [redacted]')
+    const afterIndex = modelOutput.indexOf(after)
+    const interimFinalIndex = modelOutput.indexOf(interimFinal)
+    const finalIndex = modelOutput.indexOf(final)
+    const fallbackReplyIndex = modelOutput.indexOf('Continue after the first final answer.')
     expect(beforeIndex).toBeGreaterThanOrEqual(0)
     expect(questionIndex).toBeGreaterThan(beforeIndex)
     expect(firstAnswerIndex).toBeGreaterThan(questionIndex)
@@ -639,12 +719,30 @@ describe('built-in Eval provider registry', () => {
     expect(prompt).toContain('- User: Change the user configuration.')
     expect(prompt).toContain('Question: Which mode should I use?')
     expect(prompt).toContain('user reply step 2:')
-    expect(prompt.match(/INTERIM FINAL\./gu)).toHaveLength(1)
-    expect(prompt.match(/FINAL answer\./gu)).toHaveLength(1)
-    expect(prompt.match(/Continue after the first final answer\./gu)).toHaveLength(1)
+    expect(modelOutput.match(/INTERIM FINAL\./gu)).toHaveLength(1)
+    expect(modelOutput.match(/FINAL answer\./gu)).toHaveLength(1)
+    expect(modelOutput.match(/Continue after the first final answer\./gu)).toHaveLength(1)
     expect(prompt).not.toContain(internalReasoning)
-    expect(prompt).not.toContain(toolDetails)
+    expect(modelOutput).not.toContain('node internal-tool.js')
+    expect(candidateData.mechanicalEvidence.completedItems).toContainEqual({
+      eventOrdinal: 3, threadId: null,
+      item: { type: 'commandExecution', command: 'node internal-tool.js --token [redacted]' },
+    })
     expect(prompt).not.toContain(secret)
+  })
+
+  it('keeps child messages out of the candidate root conversation output', () => {
+    const evidence = conversationEvidence({
+      rootThreadId: 'root-thread',
+      eventTrace: [
+        { method: 'item/completed', params: { threadId: 'child-thread',
+          item: { type: 'agentMessage', phase: 'commentary', text: 'child progress' } } },
+        { method: 'item/completed', params: { threadId: 'root-thread',
+          item: { type: 'agentMessage', phase: 'final_answer', text: 'root answer' } } },
+      ],
+      finalMessages: ['root answer'],
+    })
+    expect(conversationModelOutputOf(evidence)).toBe('root answer')
   })
 
   it('keeps untrusted candidate instructions inside data delimiters', async () => {
@@ -676,6 +774,7 @@ describe('built-in Eval provider registry', () => {
       assertions: ['approved assertion'],
       modelOutput: malicious,
       mechanicalEvidence: {
+        rootThreadId: null,
         complete: true,
         mechanicalPassed: true,
         hostSourceAccessAbsent: true,
@@ -683,6 +782,7 @@ describe('built-in Eval provider registry', () => {
         workspaceChanges: [],
         workspaceArtifacts: [],
         diagnostics: [],
+        completedItems: [],
       },
     }))
     const serializedMalicious = JSON.stringify(malicious).slice(1, -1)

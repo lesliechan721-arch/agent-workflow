@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-implement",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "分别观察默认入口误选、有效上游漏选及实际质量。严格匹配能力减少流程误进入；基础方法在有增益的范围减少漏用。分类不替代权限或真实执行证据。"
+    },
+    "participants": [
+      "dev-breakdown",
+      "dev-review-code",
+      "dev-review-loop"
+    ],
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "constrained_local_change",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "根据现有tenant契约补齐选择函数：保持输入不变，只返回该租户中选中的记录；实现并验证。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "明确有界合同的实际实施，减少方法漏用。",
+        "minimalCounterexample": "仅改变一个确定文案通常直接完成。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "worker_handoff",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "你负责这个实现工作项，相关代码、接受设计和验证条件在已给Ticket中，完成其范围并返回真实结果。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "跨上下文实施方法有独立价值。",
+        "minimalCounterexample": "只要求拆出任务而不实施时使用Breakdown。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    }
+  ]
+}
