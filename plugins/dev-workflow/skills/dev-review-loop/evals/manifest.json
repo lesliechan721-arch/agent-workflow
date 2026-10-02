@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "defaults": {},
+  "profiles": {
+    "project-default": {
+      "scope": "project",
+      "plugins": {
+        "dev-workflow": {},
+        "decision-kit": {}
+      }
+    }
+  },
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "cases": "trigger-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 180000,
+      "requiredForRelease": false
+    },
+    {
+      "id": "behavior",
+      "kind": "conversation",
+      "cases": "behavior-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
+    },
+    {
+      "id": "invocation-boundary",
+      "kind": "trigger",
+      "cases": "invocation-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 180000,
+      "requiredForRelease": false
+    },
+    {
+      "id": "entry-behavior",
+      "kind": "conversation",
+      "cases": "entry-behavior-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
+    },
+    {
+      "id": "adaptive-coverage-workflow",
+      "kind": "codex-workflow",
+      "cases": "adaptive-coverage-workflow.cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 600000,
+      "requiredForRelease": false,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "runtime/workflow-evaluation.mjs"
+        ],
+        "allowedModels": []
+      }
+    }
+  ]
+}

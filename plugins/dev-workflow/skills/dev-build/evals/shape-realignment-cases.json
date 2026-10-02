@@ -10,7 +10,7 @@
       "rationale": "默认对齐入口与真实用户决定同时验证；已有共识复用，短任务不过度展开。"
     },
     "participants": [
-      "dev-repair",
+      "dev-review-loop",
       "decision-shape",
       "dev-workflow",
       "dev-implement"

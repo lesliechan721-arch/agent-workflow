@@ -35,6 +35,40 @@ async function fixture() {
 }
 
 describe('workflow decision and evidence boundary', () => {
+  it('grades complete normalized calls and attributed messages without duplicating the raw rollout', async () => {
+    const root = await fixture()
+    const judge = vi.fn(async () => ({ passed: false, score: 0, details: {
+      checks: [{ name: 'choice', verdict: 'fail', evidence: 'The observed test failed.' }],
+    } }))
+    const evaluation = new WorkflowEvaluation({ ...config, interactions: [] }, root, judge)
+    const frame = { method: 'item/completed', params: { threadId: 'reviewer',
+      item: { type: 'commandExecution', command: 'node --test', exitCode: 1, aggregatedOutput: 'Actual test failed.' } } }
+    evaluation.observe(frame, 'reviewer')
+    const call = { ordinal: 1, threadId: 'reviewer', parentThreadId: 'root', callId: 'test-1',
+      tool: 'exec_command', arguments: { cmd: 'node --test' }, output: 'Actual test failed.', status: 'completed' }
+    const evidence = { rootThreadId: 'root', finalMessage: 'Candidate claims all checks passed.',
+      threadGraph: [{ threadId: 'reviewer', parentThreadId: 'root', initialMessage: { kind: 'plaintext', text: 'Review the current source independently.' } }],
+      collaborationCalls: [call], leafCalls: [call] }
+    const message = { type: 'response_item', threadId: 'reviewer', parentThreadId: 'root', ordinal: 4,
+      payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'The current test fails.' }] } }
+    const transcript = [
+      { type: 'session_meta', payload: { base_instructions: 'large runtime context '.repeat(60_000) } },
+      { type: 'response_item', payload: { type: 'reasoning', encrypted_content: 'opaque-private-reasoning' } },
+      { type: 'event_msg', payload: { type: 'token_count' } },
+      message,
+    ]
+    const result = await evaluation.finish(evidence, transcript)
+    const prompt = judge.mock.calls[0]![0]!
+    expect(prompt.length).toBeLessThan(50_000)
+    expect(prompt).not.toContain('opaque-private-reasoning')
+    const candidate = JSON.parse(prompt.split('<UNTRUSTED_CANDIDATE_DATA_JSON>\n')[1]!.split('\n</UNTRUSTED_CANDIDATE_DATA_JSON>')[0]!)
+    expect(JSON.parse(candidate.modelOutput)).toEqual([message])
+    expect(candidate.mechanicalEvidence.evidence).toEqual({ ...evidence, leafCalls: undefined })
+    expect(candidate.mechanicalEvidence.observations[0]).toMatchObject({ ordinal: 1, threadId: 'reviewer', frame })
+    expect(candidate.mechanicalEvidence.snapshots[0][0].text).toContain('throw new Error')
+    expect(result.checks).toEqual([{ name: 'choice', verdict: 'fail', evidence: 'The observed test failed.' }])
+  })
+
   it('sends only the matched actual question an answer, never exposing the answer to the matcher', async () => {
     const root = await fixture()
     const judge = vi.fn(async () => ({ passed: true, score: 1, details: { questionId: 'scope-question' } }))

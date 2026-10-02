@@ -68,6 +68,17 @@
       "runs": 1,
       "timeoutMs": 300000,
       "requiredForRelease": false
+    },
+    {
+      "id": "output-intent",
+      "kind": "trigger",
+      "cases": "output-intent-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 180000,
+      "requiredForRelease": false
     }
   ]
 }

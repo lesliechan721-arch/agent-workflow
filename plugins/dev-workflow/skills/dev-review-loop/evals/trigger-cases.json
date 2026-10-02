@@ -2,7 +2,7 @@
   "version": 1,
   "suite": {
     "kind": "trigger",
-    "unitUnderTest": "dev-repair",
+    "unitUnderTest": "dev-review-loop",
     "policy": {
       "optimization": "balanced",
       "falseNegativeCost": "high",
@@ -64,7 +64,7 @@
         "boundary"
       ],
       "input": {
-        "query": "使用 dev-repair 检查当前模块并修复本范围问题，保留当前授权和预算。",
+        "query": "使用 dev-review-loop 检查当前模块并修复本范围问题，保留当前授权和预算。",
         "expectedLoad": true
       },
       "audit": {

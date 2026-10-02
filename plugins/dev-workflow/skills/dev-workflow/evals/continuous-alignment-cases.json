@@ -10,7 +10,7 @@
       "rationale": "主动识别有后果的未确认选择并消费实际用户答复，同时保留充分共识与工程委托下的直接执行。质量、授权、问答时序和实际结果分别取证。"
     },
     "participants": [
-      "dev-repair",
+      "dev-review-loop",
       "decision-shape",
       "decision-grill",
       "decision-prototype",

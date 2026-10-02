@@ -1827,7 +1827,7 @@ export async function normalizeCodexWorkflowRollouts(options: {
       || (call.linkedThreadId !== undefined && descendants.has(call.linkedThreadId))),
     skillLoads,
     trace: selected.flatMap((record) => record.trace.map((event) => sanitizeTraceValue(
-      event,
+      isRecord(event) ? { ...event, threadId: record.threadId, parentThreadId: record.parentThreadId } : event,
       options.runtime,
       [
         ...isolatedPaths,
@@ -1862,10 +1862,11 @@ const defaultTransport: CodexWorkflowTransport = {
       ...(input.signal ? { signal: input.signal } : {}),
     })
     const temporaryRoot = await createCodexEvalTemporaryRoot('codex-workflow-')
-    const codexHome = path.join(temporaryRoot.root, 'codex-home')
+    const runtimeRoot = await fs.realpath(temporaryRoot.root)
+    const codexHome = path.join(runtimeRoot, 'codex-home')
     const env = buildEngineEnvironment(
       input.sourceEnv,
-      temporaryRoot.root,
+      runtimeRoot,
       codexHome,
       input.codexRuntime,
     )
@@ -1912,11 +1913,15 @@ const defaultTransport: CodexWorkflowTransport = {
       if (evaluation) {
         containment = hostReadContainmentProfile({
           forbiddenHostRoots: [input.input.fixturesPath, input.input.outputDir],
-          writableRoots: [temporaryRoot.root, input.input.workspacePath],
+          writableRoots: [runtimeRoot, input.input.workspacePath],
           unwritableRoots: input.request.sandbox === 'read-only' ? [input.input.workspacePath] : [],
         }) + '\n' + [...new Set([input.evalRoot, ...(input.protectedEvalRoots ?? [])])].map((root) =>
           `(deny file-read* (require-all (subpath ${JSON.stringify(root)}) (require-not (subpath ${JSON.stringify(input.input.workspacePath)}))))`,
         ).join('\n')
+        for (let ancestor = path.dirname(input.input.workspacePath);
+          ancestor !== path.dirname(ancestor); ancestor = path.dirname(ancestor)) {
+          containment += `\n(allow file-read-metadata (literal ${JSON.stringify(ancestor)}))`
+        }
         await assertHostReadContainmentAvailable(containment)
       }
       session = new EvalAppServerSession({
@@ -1951,7 +1956,7 @@ const defaultTransport: CodexWorkflowTransport = {
         const isolatedPaths = [
           { path: codexHome, marker: '[codex-home]' },
           { path: env.HOME!, marker: '[isolated-home]' },
-          { path: temporaryRoot.root, marker: '[runtime-root]' },
+          { path: runtimeRoot, marker: '[runtime-root]' },
         ]
         frames.push(sanitizeTraceValue(
           frame,
@@ -2067,7 +2072,7 @@ const defaultTransport: CodexWorkflowTransport = {
       const isolatedPaths = [
         { path: codexHome, marker: '[codex-home]' },
         { path: env.HOME!, marker: '[isolated-home]' },
-        { path: temporaryRoot.root, marker: '[runtime-root]' },
+        { path: runtimeRoot, marker: '[runtime-root]' },
       ]
       const rollout = await normalizeCodexWorkflowRollouts({
         codexHome,
@@ -2109,7 +2114,22 @@ const defaultTransport: CodexWorkflowTransport = {
       }
       if (evaluation) {
         // Subject processes are stopped before final snapshots and independent grading.
-        evidence.evaluation = await evaluation.finish(evidence, rollout.trace)
+        try {
+          evidence.evaluation = await evaluation.finish(evidence, rollout.trace)
+        } catch (error) {
+          evidence.evaluation = {
+            complete: false, checks: [], observations: evaluation.observations,
+            snapshots: evaluation.snapshots, decisions: evaluation.decisions,
+            measurementStart: evaluation.measurementStart,
+          }
+          await writeWorkflowArtifacts(input.input.outputDir, {
+            evidence: session.scrub(redactCodexEvalValue(evidence, input.codexRuntime)),
+            trace: session.scrub(redactCodexEvalValue([...frames, ...rollout.trace], input.codexRuntime)),
+            modelOutput: redactCodexEvalValue(finalMessage!, input.codexRuntime),
+            usage: redactCodexEvalValue(evidence.usage, input.codexRuntime),
+          })
+          throw error
+        }
         const totals = [usage, ...judgeUsage].map(standardUsage)
         if (totals.some((value) => value === null)) throw new Error('workflow evaluation lacks required judge usage evidence.')
         evidence.usage = {

@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-review-loop",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "分别观察默认入口误选、有效上游漏选及实际质量。严格匹配能力减少流程误进入；基础方法在有增益的范围减少漏用。分类不替代权限或真实执行证据。"
+    },
+    "participants": [
+      "dev-implement",
+      "dev-review-code",
+      "dev-build",
+      "dev-breakdown"
+    ],
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "ordinary_bug_investigation",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "分页偶尔重复加载，帮我定位原因并修好。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "普通诊断和验证不是独立审查复审的委托。",
+        "minimalCounterexample": "明确要求检查整个当前变更、修复实质问题并独立复审时采用Loop。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "red_green_is_not_review_loop",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "当前函数的两个边界测试失败，按README公开合同修复并跑测试。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "多次测试红绿不自动成为正式核验循环。",
+        "minimalCounterexample": "调用者明确分派当前累计范围的核验闭环时采用Loop。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "single_mechanical_fix",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把README标题“设置”改成“团队设置”，其它不动。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "机械修改可直接完成，不要求基础方法或协调能力覆盖所有写入。",
+        "minimalCounterexample": "有接口/设计合同且需要受约束实现的工作项应使用Implement。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "only_read_review",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只读审查当前diff是否符合需求与工程标准，不要修复。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "只读质量判断采用Review，不从问题推断修改权限。",
+        "minimalCounterexample": "用户明确要求审查后有界修复并复审时采用Loop。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "loop_natural_language",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "这批改动已经完成，请对当前完整范围独立审查，发现实质问题就在现有要求内修复、验证并复核。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "完整结果核验闭环无需用户点名Skill。",
+        "minimalCounterexample": "仅局部排查bug时不采用完整范围循环。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "known_finding_then_assess",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-review-loop，先按已确认规则修复这条Review finding，再核验修复结果与必要影响。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "显式选择和先修后核验意图均成立。",
+        "minimalCounterexample": "只有提供finding要求一次修复而未委托核验循环时采用Implement。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "caller_assigned_loop",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "当前Build已完成一个milestone。已获范围内修复授权；现分派该累计范围的独立核验、必要修复与复审。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "有效上游可靠调用；初始用户没有点名不造成漏触发。",
+        "minimalCounterexample": "worker只接到一个finding的修复子任务时不接管父循环。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "assigned_fix_leaf",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "你是已分配的实现子代理，只修复finding F1并验证。父协调者负责当前范围的独立复审。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "使用当前叶子职责，避免因出现复审字样重建循环。",
+        "minimalCounterexample": "整个核验闭环被明确交给当前代理时使用Loop。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "discuss_review_process",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "讨论一下代码Review与修复闭环各有什么优缺点，不执行当前项目工作。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "方法讨论不自动执行。",
+        "minimalCounterexample": "用户要求对实际代码范围执行闭环时选择Loop。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    }
+  ]
+}

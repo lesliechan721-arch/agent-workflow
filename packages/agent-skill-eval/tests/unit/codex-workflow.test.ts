@@ -169,10 +169,14 @@ function execution(secret = 'workflow-runtime-secret') {
 }
 
 describe('codex-workflow provider', () => {
-  it.each(['structured', 'text', 'unrelated', 'setup'] as const)(
+  it.each(['structured', 'text', 'unrelated', 'setup', 'grader-error'] as const)(
     'runs the Engine-owned %s interaction loop with a deterministic RPC peer and independent matcher seam',
     async (mode) => {
       const fixture = await adapterFixture()
+      const nodeTestFile = path.join(fixture.workspace, 'runtime.test.mjs')
+      if (mode === 'structured') {
+        await writeFile(nodeTestFile, "import test from 'node:test'; test('runtime module loads', () => {});\n")
+      }
       const hiddenAnswer = 'Export the authorized collection.'
       const turns: string[] = []
       const responses: unknown[] = []
@@ -184,13 +188,18 @@ describe('codex-workflow provider', () => {
         interactions: [{ id: 'scope', when: 'A genuine question about export collection.', answer: hiddenAnswer, protectedPaths: ['product.txt'] }],
         ...(mode === 'setup' ? { setupPrompt: 'Create the actual setup precondition.' } : {}),
       }
-      const grader = vi.fn(async ({ prompt }: { prompt: string }) => ({
+      const grader = vi.fn(async ({ prompt }: { prompt: string }) => {
+        if (mode === 'grader-error' && !prompt.includes('details.questionId')) {
+          throw new Error('Deterministic grader input rejection.')
+        }
+        return {
         output: JSON.stringify(prompt.includes('details.questionId')
           ? { passed: mode !== 'unrelated', score: mode === 'unrelated' ? 0 : 1,
               details: { questionId: mode === 'structured' ? 'scope-question' : 'text' } }
           : { passed: true, score: 1, details: { checks: [{ name: 'actual-result', verdict: 'pass', evidence: 'Deterministic test seam, not a real model verdict.' }] } }),
         usage: { inputTokens: 2, outputTokens: 1 }, mechanicalPassed: true,
-      }))
+        }
+      })
       vi.spyOn(providers, 'createCodexGrader').mockReturnValue(grader)
       // The RPC seam exercises the real Engine loop, file observation, and lifecycle.
       // It is not native-tool, model, or OS-containment qualification.
@@ -199,7 +208,19 @@ describe('codex-workflow provider', () => {
         private handlers = new Set<(frame: Record<string, unknown>) => unknown>()
         private failure: ((error: Error) => void) | undefined
         constructor(options: { env: NodeJS.ProcessEnv }) { codexHome = options.env.CODEX_HOME! }
-        async initialize() { await writeRollout(codexHome, 'root', [session('root'), developer()]) }
+        async initialize() {
+          if (mode === 'structured' && process.platform === 'darwin') {
+            // Exercise the emitted OS write permission before runtime cleanup.
+            const profile = admission.mock.calls[0]![0]
+            const target = path.join(await realpath(codexHome), 'state-probe.txt')
+            await promisify(execFile)('/usr/bin/sandbox-exec', ['-p', profile, process.execPath,
+              '--input-type=module', '-e',
+              `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(target)}, 'state');`],
+            { cwd: fixture.workspace, env: { PATH: process.env.PATH }, timeout: 5_000 })
+            expect(await readFile(target, 'utf8')).toBe('state')
+          }
+          await writeRollout(codexHome, 'root', [session('root'), developer()])
+        }
         onFrame(handler: (frame: Record<string, unknown>) => unknown) { this.handlers.add(handler); return () => this.handlers.delete(handler) }
         onFailure(handler: (error: Error) => void) { this.failure = handler; return () => { this.failure = undefined } }
         private emit(frame: Record<string, unknown>) {
@@ -240,7 +261,7 @@ describe('codex-workflow provider', () => {
       vi.spyOn(appServer, 'EvalAppServerSession').mockImplementation((function (options: { env: NodeJS.ProcessEnv }) {
         return new Peer(options)
       }) as never)
-      const result = await executeCodexWorkflowProvider({
+      const execution = executeCodexWorkflowProvider({
         provider: { type: 'codex-workflow', command: ['node', 'adapter.mjs'], allowedModels: ['allowed-model'] },
         evalRoot: fixture.root,
         input: { case: { id: mode, evaluation, writable: true }, variant: 'current', attempt: 1,
@@ -248,6 +269,22 @@ describe('codex-workflow provider', () => {
         codexRuntime: runtime(), sourceEnv: { PATH: process.env.PATH },
         processTree: fixture.processTree,
       })
+      if (mode === 'grader-error') {
+        await expect(execution).rejects.toThrow('Deterministic grader input rejection')
+        const evidence = JSON.parse(await readFile(path.join(fixture.output, 'workflow-evidence.json'), 'utf8'))
+        expect(evidence.completion.turnStatus).toBe('completed')
+        expect(evidence.evaluation).toMatchObject({ complete: false, checks: [] })
+        expect(evidence.evaluation.observations).toContainEqual(expect.objectContaining({ threadId: 'root' }))
+        expect(evidence.evaluation.snapshots.at(-1)[0].text).toBe(hiddenAnswer)
+        expect(JSON.parse(await readFile(path.join(fixture.output, 'workflow-trace.json'), 'utf8'))).not.toHaveLength(0)
+        expect(await readFile(path.join(fixture.output, 'model-output.txt'), 'utf8')).toBe('Implementation complete.\n')
+        expect(cleaned).toBe(true)
+        await expect(readFile(path.join(codexHome, 'config.toml'))).rejects.toThrow()
+        expect(grader).toHaveBeenCalledTimes(2)
+        await expect(readFile(path.join(fixture.output, 'provider-result.json'))).rejects.toThrow()
+        return
+      }
+      const result = await execution
       const actual = JSON.parse(await readFile(path.join(fixture.output, 'workflow-evidence.json'), 'utf8'))
       if (mode === 'structured' && process.platform === 'darwin') {
         // Actual OS check of the emitted profile, without any model/native Codex run.
@@ -256,9 +293,13 @@ describe('codex-workflow provider', () => {
           "import fs from 'node:fs'; import assert from 'node:assert/strict';",
           `assert.equal(fs.readFileSync(${JSON.stringify(path.join(fixture.workspace, 'product.txt'))},'utf8'),${JSON.stringify(hiddenAnswer)});`,
           `assert.throws(()=>fs.readFileSync(${JSON.stringify(fixture.adapter)}),error=>error.code==='EPERM'||error.code==='EACCES');`,
+          `assert.throws(()=>fs.readdirSync(${JSON.stringify(fixture.root)}),error=>error.code==='EPERM'||error.code==='EACCES');`,
           `assert.throws(()=>fs.readFileSync(${JSON.stringify(path.join(fixture.output, 'workflow-evidence.json'))}),error=>error.code==='EPERM'||error.code==='EACCES');`,
         ].join('\n')
         await promisify(execFile)('/usr/bin/sandbox-exec', ['-p', profile, process.execPath, '--input-type=module', '-e', source], {
+          cwd: fixture.workspace, env: { PATH: process.env.PATH }, timeout: 5_000,
+        })
+        await promisify(execFile)('/usr/bin/sandbox-exec', ['-p', profile, process.execPath, '--test', nodeTestFile], {
           cwd: fixture.workspace, env: { PATH: process.env.PATH }, timeout: 5_000,
         })
       }
@@ -1521,6 +1562,10 @@ describe('codex-workflow raw rollout normalization', () => {
     ])
     expect(JSON.stringify(normalized.trace)).not.toContain('developer full text')
     expect(JSON.stringify(normalized.trace)).toContain('child prompt')
+    expect(normalized.trace).toContainEqual(expect.objectContaining({
+      type: 'response_item', threadId: 'child', parentThreadId: 'root',
+      payload: expect.objectContaining({ type: 'message', role: 'user' }),
+    }))
   })
 
   it('normalizes the formal full-history V2 shape without agent_type and redacts its message', async () => {

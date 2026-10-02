@@ -292,6 +292,15 @@ export class WorkflowEvaluation {
 
   async finish(evidence: unknown, transcript: unknown): Promise<Record<string, unknown>> {
     this.capture()
+    // Calls and outputs already have normalized identity/order in the evidence.
+    // Keep source messages; the full rollout remains in the archived trace.
+    const messages = Array.isArray(transcript) ? transcript.filter((event) => {
+      if (!event || typeof event !== 'object') return false
+      const entry = event as Record<string, unknown>
+      if (entry.type !== 'response_item' || !entry.payload || typeof entry.payload !== 'object') return false
+      return ['message', 'agent_message'].includes(String((entry.payload as Record<string, unknown>).type))
+    }) : transcript
+    const { leafCalls: _leafCalls, ...graderEvidence } = object(evidence, 'workflow evidence')
     const grade = await this.judge(createConversationGraderPrompt({
       assertions: [
         ...this.request.checks.map((check) => `${check.name}: ${check.criterion}`),
@@ -302,9 +311,9 @@ export class WorkflowEvaluation {
         'Setup/imported history is not a measured action. Grader conclusions do not replace subject Review. Preserve failures alongside missing coverage.',
         'An independent root may form one axis before observing the other; two clean children are also valid. A participant in authoring cannot count as an independent reviewer.',
       ],
-      modelOutput: JSON.stringify(transcript),
+      modelOutput: JSON.stringify(messages),
       mechanicalEvidence: {
-        evidence, observations: this.observations, snapshots: this.snapshots,
+        evidence: graderEvidence, observations: this.observations, snapshots: this.snapshots,
         decisions: this.decisions, measurementStart: this.measurementStart,
       },
     }))

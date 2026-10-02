@@ -10,7 +10,7 @@
       "rationale": "验证真实工作结果和范围边界；避免用固定措辞、测试数量或复杂流程的存在证明质量。"
     },
     "participants": [
-      "dev-repair",
+      "dev-review-loop",
       "dev-implement",
       "dev-breakdown",
       "dev-review-code"

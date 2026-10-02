@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-breakdown",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "分别观察默认入口误选、有效上游漏选及实际质量。严格匹配能力减少流程误进入；基础方法在有增益的范围减少漏用。分类不替代权限或真实执行证据。"
+    },
+    "participants": [
+      "dev-implement",
+      "dev-build"
+    ],
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "deliver_handoff",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把已确认需求准备成可交给别人接手的工作项，写明依赖和验收，先不实施。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "输出目标是可接手工作，不要求精确关键词Ticket。",
+        "minimalCounterexample": "仅让实施者自己想步骤再修改时沿实施方法。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "internal_plan",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "按当前公开接口实现这个输入校验函数，先想一下步骤再直接修改和验证。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "内部计划不是独立交接产物。",
+        "minimalCounterexample": "明确要求交付任务图和分工时使用Breakdown。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "reuse_ticket",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "按已有完整Ticket实现；其中提供了原型、接口和验收。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "既有任务足够时不重新拆解。",
+        "minimalCounterexample": "Ticket实际缺少跨项安排且调用者要求重新分解时使用Breakdown。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    },
+    {
+      "id": "caller_preparation",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "当前Build已有批准Spec，三个实现者需要可独立接手的工作项；准备首批任务及真实阻塞关系。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "合法上游调用不得因非直接用户入口被拒。",
+        "minimalCounterexample": "任务有三份文件但只有一个简单修改，不自动需要任务树。",
+        "allowedVariance": "只检查本次隔离探针中被测能力是否加载，不限制合法辅助能力，不据此推断首次入口或完整执行。起点、修复和独立性另由真实工作流证据检查。"
+      }
+    }
+  ]
+}
