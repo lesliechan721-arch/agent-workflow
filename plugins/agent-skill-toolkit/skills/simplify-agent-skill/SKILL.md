@@ -21,7 +21,7 @@ metadata:
 
 ## 有限对照
 
-1. 读取 `references/simplification-method.md`，选择一个可归因的变化族。一次文件拆分允许同步改指针，不把“一个变化族”误解成只能改一个文件。
+1. 读取 `references/simplification-method.md`，选择一个可归因的变化族；候选涉及职责归属、调用关系或执行角色时，读取 `references/skill-composition.md`。一次文件拆分允许同步改指针，不把“一个变化族”误解成只能改一个文件。
 2. 在隔离候选的权威源码中应用修改；必要时使用 `author-agent-skill`。需要构建时由项目适配按与 baseline 相同的 profile 和未变构建条件取得候选运行包，分别保留来源并比较实际读入内容。baseline、用户已有修改和 Oracle 保持不变。源码缩短而 final 未变时，只报告维护成本变化。
 3. 对照使用相同 corpus、grader、环境和错误代价。Oracle 的 source audit 与候选的精确绑定是两件事：每个 candidate 都须满足当前 Runner 的 Spec/Audit 绑定规则，不能复用旧 target 的 passing Audit。
 4. 公开兼容 Runner 执行已授权实验；需要独立 Audit/triage 时在隔离上下文使用 `audit-agent-skill-evals`。没有该能力时保留为未验证候选。

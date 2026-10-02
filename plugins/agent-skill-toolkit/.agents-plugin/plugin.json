@@ -59,6 +59,11 @@
         "source": "./references/skill-composition.md"
       },
       {
+        "skill": "simplify-agent-skill",
+        "target": "references/skill-composition.md",
+        "source": "./references/skill-composition.md"
+      },
+      {
         "skill": "review-agent-skill",
         "target": "scripts/audit-output-contracts.mjs",
         "source": "./scripts/audit-output-contracts.mjs"
