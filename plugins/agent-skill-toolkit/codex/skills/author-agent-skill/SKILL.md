@@ -20,7 +20,7 @@ metadata:
 | description、自动/手动触发或 Skill 组合 | `references/invocation-and-description.md` |
 | 脚本新增或接口修改 | `references/script-authoring.md` |
 | 创建或修改 Eval case/suite | `references/eval-design.md` |
-| 拆分/合并、共享职责、独立证据、委派角色或固定输出 | `references/composition-audit.md` |
+| 正文/reference 的职责归属、拆分/合并、独立证据、委派角色或固定输出 | `references/composition-audit.md` |
 
 ## 边界
 

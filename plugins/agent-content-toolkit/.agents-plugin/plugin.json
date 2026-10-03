@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "agent-content-toolkit",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "description": "创建、修改或评价给 Agent 读取的内容；统一事实依据、指针、信息层级、最小控制、完成条件、输出需要与剪枝方法。",
   "marketplace": {
     "category": "workflow",

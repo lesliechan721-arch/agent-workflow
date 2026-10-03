@@ -5,7 +5,8 @@
 - 模型默认会正确处理的规则；
 - schema、配置、`--help` 可直接查询的缓存；
 - 没有 observed/normative 依据的理论边界；
-- 重复或 scattering；
+- 同一实际读取路径中没有新增用途的重复或 scattering；
+- 当前任务不需要的下游方法复述，或混入通用能力的调用方政策；
 - 必要的层级、关系、顺序或条件散落在冗长叙述中，增加定位和重建结构的成本；
 - rare branch 的 common-path 内容；
 - 没有真实 consumer 的固定字段/schema；

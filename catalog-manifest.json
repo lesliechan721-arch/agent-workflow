@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.35",
+  "catalogVersion": "0.1.0-beta.36",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "de4a98897bfc2ced154e426c187667ea284a7af1"
+    "sourceHead": "eeda906ec91c615c6de3d2efd629718e002ef9d0"
   },
   "entries": [
     {
@@ -44,7 +44,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.3",
+      "version": "0.1.0-beta.4",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -54,9 +54,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:6fdb516c36c3b7a4d7adeb8a974b9d37a5ec0fa9b6cf0d42e267d1e8767d85eb",
-      "manifestDigest": "sha256:4f9ba1f94ca6daf56c1463b21654402db41f4f0d92be5876363e7d91065ef307",
-      "contentDigest": "sha256:409995a3a184a3538f4fe5a734599647f229c21ea42362a5a6f535828e5ec99c"
+      "artifactDigest": "sha256:a3a109ae1acfde73a38188fe8862878ea72956f62befe8628b56e69cd715027a",
+      "manifestDigest": "sha256:11161931204317729698436f4b05a94691066a6ee85badfd5456dbc00c51a11e",
+      "contentDigest": "sha256:dbc9a091bb2c0ed7ae1ee2fa9dedef0b821a83450bc4b5942b42888c4597e542"
     },
     {
       "name": "agent-skill-toolkit",
@@ -79,7 +79,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.7",
+      "version": "0.1.0-beta.8",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -92,9 +92,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:b5ea81f7cd98f15f370afd425e95b8fd1bfaa5d88b47cab5ce48369c809dbc77",
-      "manifestDigest": "sha256:781e7341aeb568199097ac6e422c77fe2d6f26d7b25a80d2cd3f2b5173baf32d",
-      "contentDigest": "sha256:a783b6aa703aa290066891e09f3cd669b8364f0814ba9bc24dcba6c40687c01d"
+      "artifactDigest": "sha256:30973446f30c1d496c2a98938785a458eaf2e6968665614801482a56b6dfa0f8",
+      "manifestDigest": "sha256:35df3b781b4bcf3f83951aac4c739a1feca10f243eaef21c2b6733389741e6cc",
+      "contentDigest": "sha256:ed33358b161dfdfaa07cec34e08dde5e47dd0c60d76fd3048933f3e0eeb9c973"
     },
     {
       "name": "aw-development-toolkit",

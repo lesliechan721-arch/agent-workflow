@@ -15,7 +15,7 @@ metadata:
 
 - 大型或多分支 Agent-facing 内容使用 `agent-content`。
 - 源 Eval case 的设计审核、正式准入或异常结果归因使用 `audit-agent-skill-evals`。
-- 多个 Skill、完整插件、workflow 或 public surface 使用 `review-agent-architecture`；本 Skill 不把 leaf 结果合成为全局 pass。
+- 评审对象涵盖多个 Skill、完整插件、workflow 或 public surface 时使用 `review-agent-architecture`；本 Skill 不把 leaf 结果合成为全局 pass。
 
 涉及调用属性/适用范围时读取 `references/skill-invocation.md`；涉及组合、caller/leaf、执行角色、独立上下文或固定输出时读取 `references/skill-composition.md`。
 
