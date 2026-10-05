@@ -15,7 +15,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const skills = ['dev-workflow', 'dev-design', 'dev-spec', 'dev-review-spec', 'dev-build', 'dev-review-loop', 'dev-breakdown', 'dev-implement', 'dev-review-code'];
 const decisionSkills = ['decision-shape', 'decision-grill', 'decision-prototype', 'project-context'];
 const localWorkspaceSkills = ['dev-design', 'dev-build'];
-const allParticipants = new Set([...skills, ...decisionSkills]);
+const allParticipants = new Set([...skills, ...decisionSkills, 'explain-for-review']);
 const read = (file) => readFile(file, 'utf8');
 const readJson = async (file) => JSON.parse(await read(file));
 
@@ -77,10 +77,10 @@ function assertCaseDocument(document) {
 
 const target = await context();
 
-test('manifest exposes local Skills and declares the decision-kit dependency', async () => {
+test('manifest exposes local Skills and declares alignment and presentation dependencies', async () => {
   const manifest = await readJson(path.join(target.source, '.agents-plugin', 'plugin.json'));
   assert.equal(manifest.name, 'dev-workflow');
-  assert.deepEqual(manifest.dependencies, ['decision-kit']);
+  assert.deepEqual(manifest.dependencies, ['decision-kit', 'human-content']);
   assert.equal(manifest.skills, './skills');
   assert.deepEqual(manifest.interface.capabilities, ['Skills']);
   for (const key of ['slashCommands', 'extensions', 'config', 'artifacts', 'lifecycle']) {

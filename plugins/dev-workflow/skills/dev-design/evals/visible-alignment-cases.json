@@ -1,0 +1,190 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-design",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "分别检查实际对齐、完整语义和可用阅读路径；页面数量、长度和视觉装饰不是质量通过依据。"
+    },
+    "participants": [
+      "decision-shape",
+      "decision-grill",
+      "dev-spec",
+      "dev-review-spec",
+      "explain-for-review"
+    ],
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "implicit-new-design-aligns",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用 dev-design 改进列表导出，形成能继续实施的方案；先只做设计。",
+      "assertions": [
+        "当前请求没有给出全部材料取舍，先使用Shape/Grill建立实际共识；不把模型推荐直接当成已定要求。",
+        "提出问题后才消费实际用户回答，输出跟随所选范围和格式；不提前完成依赖未决答案的详细合同。",
+        "小任务允许无文件设计；只设计不写产品或启动Build。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "只导出当前租户的当前筛选结果，CSV；保持列表顺序，空结果给只有表头的文件。内部实现你决定。"
+        ],
+        "workspaceFiles": {
+          "README.md": "# 导出模块\n当前列表按租户和筛选结果展示；没有导出格式或范围的既有约定。\n",
+          "src/export.js": "export const exportRows = rows => rows;\n"
+        }
+      },
+      "expected": {
+        "output": "先形成可见目标、边界与决定依据，再交付有明确状态的设计。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "覆盖没有显式提醒“先问我”的普通请求。",
+        "minimalCounterexample": "请求本身已明确这些结果与自由时应复用，不重复问。",
+        "allowedVariance": "允许等价语言、主题组织和相称媒介；按实际行为、来源语义与用户回答判定，不强制模板标题或固定字数。真实独立性另需Engine证据。"
+      }
+    },
+    {
+      "id": "clear-request-reuses-evidence",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "用 dev-design 确定这一处改动：把空姓名显示为“未填写”，只对null和空字符串生效，其他值原样。只设计，不写文件。",
+      "assertions": [
+        "已有明确请求能作为依据，说明采用的结果、边界和验收即可；不为了调用Shape而重复访谈。",
+        "不创建Spec、Work或阅读网页，不修改实现。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "src/name.js": "export const show = value => value;\n"
+        }
+      },
+      "expected": {
+        "output": "直接复用完整当前要求并在设计边界结束。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "加强默认对齐不能制造无用途确认。",
+        "minimalCounterexample": "空姓名的表现尚未选择时需要实际对齐。",
+        "allowedVariance": "允许等价语言、主题组织和相称媒介；按实际行为、来源语义与用户回答判定，不强制模板标题或固定字数。真实独立性另需Engine证据。"
+      }
+    },
+    {
+      "id": "candidate-for-decision-not-approval",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "现阶段请给出同步导出和异步导出两种候选及主要后果，帮助我之后选择。尚不作决定，不实施。",
+      "assertions": [
+        "可准备足够比较的候选，不以未批准为由拒绝帮助决定。",
+        "候选状态明确；不把任一提案写成正式已定合同或开展生产修改，不无依据展开完整运行协议。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "README.md": "# 导出模块\n当前列表按租户和筛选结果展示；没有导出格式或范围的既有约定。\n",
+          "src/export.js": "export const exportRows = rows => rows;\n"
+        }
+      },
+      "expected": {
+        "output": "得到可判断的候选与主要后果，仍待用户选择。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "前置对齐不是禁止探索或所有草稿。",
+        "minimalCounterexample": "用户明确授权完整详细候选规格时可按请求增加细节并保持未定状态。",
+        "allowedVariance": "允许等价语言、主题组织和相称媒介；按实际行为、来源语义与用户回答判定，不强制模板标题或固定字数。真实独立性另需Engine证据。"
+      }
+    },
+    {
+      "id": "source-change-reopens-affected-choice",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "继续 dev-design。看一下新证据如何影响当前设计，先处理该问题，不实施。",
+      "assertions": [
+        "定位同步时限冲突，保留完整数据及CSV的未受影响决定。",
+        "使用当前对齐方法取得取舍，而不是自行截断结果、删除时限或强改异步。",
+        "只在用户答复后形成新的受影响目标；未提供新答复时明确停在当前问题。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "spec.md": "# 已确认设计\n在10秒内同步导出当前租户全部筛选结果，输出CSV。原用户答复见 request.md。\n",
+          "request.md": "用户已确认必须完整数据、不分段、不改变列；同步10秒为先前选择。\n",
+          "experiment.md": "本场景提供的真实测试记录：代表数据导出至少60秒，服务单请求超时30秒。是否异步尚未决定。\n"
+        }
+      },
+      "expected": {
+        "output": "只重开受影响的同步/等待选择，不改写其余共识。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "覆盖连续对齐而不重启全部访谈。",
+        "minimalCounterexample": "等价内部优化已经有证据满足10秒时可在授权自由内继续。",
+        "allowedVariance": "允许等价语言、主题组织和相称媒介；按实际行为、来源语义与用户回答判定，不强制模板标题或固定字数。真实独立性另需Engine证据。"
+      }
+    },
+    {
+      "id": "present-complex-draft-before-confirmation",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "用 dev-design 继续这份候选稿。请制作本地阅读页，写入 .dev-workflows/export/reviews/reading.html，让我看清需要我选什么，再确认；不修改产品或候选稿。",
+      "assertions": [
+        "呈现两项敏感后果及联网代价，必要时使用解释能力，原文待定状态保持。",
+        "反馈或页面阅读不自动批准；取得决定仍通过Shape/Grill，问题提出后才获得答复。",
+        "给出完整原文入口和产物位置，保留来源与产品。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "采用联网查看，不生成含密钥的离线文件；我可接受联网。"
+        ],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          ".dev-workflows/export/spec.md": "# 导出候选\n整体未批准。建议离线文件包含访问密钥，方便跨机使用；该文件分享会泄漏凭据，共享机器下载也会留下副本。联网查看方案不产生离线副本，但需要网络。用户尚未选择。\n"
+        }
+      },
+      "expected": {
+        "output": "可理解当前取舍，用户答案不会被候选或阅读点击替代。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/export/reviews/**"
+        ],
+        "artifacts": [
+          {
+            "path": ".dev-workflows/export/reviews/reading.html",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证解释为真实决定服务，而不是好看摘要遮蔽风险。",
+        "minimalCounterexample": "仅修改五个字且无材料取舍时不应强制网页。",
+        "allowedVariance": "允许等价语言、主题组织和相称媒介；按实际行为、来源语义与用户回答判定，不强制模板标题或固定字数。真实独立性另需Engine证据。"
+      }
+    }
+  ]
+}
