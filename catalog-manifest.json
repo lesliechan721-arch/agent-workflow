@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.36",
+  "catalogVersion": "0.1.0-beta.37",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "eeda906ec91c615c6de3d2efd629718e002ef9d0"
+    "sourceHead": "b98f17d4262ae604e843d23f969dda53f48f7cbb"
   },
   "entries": [
     {
@@ -320,9 +320,10 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.12",
+      "version": "0.1.0-beta.13",
       "dependencies": [
-        "decision-kit"
+        "decision-kit",
+        "human-content"
       ],
       "requires": {
         "aw": {
@@ -333,9 +334,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:76b800eee7fc52b188b2adf80aabc0b9578e96df24765f7c811ebbf7b57c74f8",
-      "manifestDigest": "sha256:b1f78375d2573feaa748ce7a8554e0bee8204f339348cb66aff223b1d305a3c3",
-      "contentDigest": "sha256:b727635f523481e117360b56e2ebbe88554cf0b898c51e3d834e44225ca2f980"
+      "artifactDigest": "sha256:b7d6224ad2fff029639d68d38c7574b492f064c29e2f00e2546a1e3fba03defd",
+      "manifestDigest": "sha256:dd969453c632a47644131dee0c0938e4f15f3cd6b769c14e4a542056cc7ff2d3",
+      "contentDigest": "sha256:f508b544c355581f0cbaf916660fa652f8a3997f1411a0552595ed4414df1d07"
     },
     {
       "name": "git-toolkit",
@@ -374,6 +375,42 @@
       "artifactDigest": "sha256:02eba122738fba35051477c6b5a2dba528853711035e93291e286c0ac7693c0e",
       "manifestDigest": "sha256:e17477a579f42093d1f42bf68c61a033ed72f54b003e0d76b77d938e907fe733",
       "contentDigest": "sha256:75378c8e74636f2979274641aa597a47d3a08fd57c46777b42c4493b6c2aace9"
+    },
+    {
+      "name": "human-content",
+      "source": "./plugins/human-content",
+      "description": "面向人的复杂材料阅读与反馈；保留原意、状态和完整依据。",
+      "interface": {
+        "displayName": "Human Content",
+        "shortDescription": "清楚理解、查证与反馈已有复杂材料",
+        "capabilities": [
+          "Skills"
+        ]
+      },
+      "category": "workflow",
+      "tags": [
+        "explanation",
+        "reading",
+        "review"
+      ],
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "version": "0.1.0-beta.1",
+      "dependencies": [],
+      "requires": {
+        "aw": {
+          "capabilities": [
+            "aw.plugin-manifest.v3",
+            "aw.plugin-skills.v1"
+          ]
+        }
+      },
+      "artifactDigest": "sha256:1993d24938b8c6c1f3da2812f88b4c96ae8f52b25a6f96fcb5a8256f6dc550ef",
+      "manifestDigest": "sha256:23edc6a6ff71eaf525dd9f79c4abce46c024276b8892b32c9e0f80bb369afe65",
+      "contentDigest": "sha256:d568ee1444002ea460c36685573f83c990270d36e8e1b8822c02027c20828b9d"
     }
   ]
 }
