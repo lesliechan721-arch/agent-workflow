@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 3,
+  "name": "human-content",
+  "version": "0.1.0",
+  "description": "面向人的复杂材料阅读与反馈；保留原意、状态和完整依据。",
+  "skills": "./skills",
+  "marketplace": {
+    "category": "workflow",
+    "tags": [
+      "explanation",
+      "reading",
+      "review"
+    ],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL"
+    }
+  },
+  "interface": {
+    "displayName": "Human Content",
+    "shortDescription": "清楚理解、查证与反馈已有复杂材料",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "scripts": {
+    "tests": {
+      "node": [
+        "./scripts/contract.test.mjs"
+      ]
+    }
+  }
+}

@@ -78,6 +78,17 @@
       "runs": 1,
       "timeoutMs": 300000,
       "requiredForRelease": false
+    },
+    {
+      "id": "reader-structure",
+      "kind": "conversation",
+      "cases": "reader-structure-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
     }
   ]
 }
