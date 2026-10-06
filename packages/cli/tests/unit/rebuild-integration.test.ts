@@ -71,6 +71,7 @@ import {
   parseCodexNativeRenderReceipt,
 } from '../../src/utils/codex-native-render-receipt.js';
 import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
+import { parseCodexRoleFile } from '../../src/utils/codex-roles.js';
 import { createCodexSkillStagingTreeContentDigest } from '../../src/utils/codex-skill-staging.js';
 import {
   AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH,
@@ -3006,7 +3007,13 @@ describe('rebuild adapter integration', () => {
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', pluginName), {
         mode: 'bundle',
       });
-      plugin.manifest.config = { fields: { token: { type: 'string', sensitive: true } } };
+      plugin.manifest.config = {
+        ...plugin.manifest.config,
+        fields: {
+          ...plugin.manifest.config?.fields,
+          token: { type: 'string', sensitive: true },
+        },
+      };
       await writePluginConfigStore({
         sourceId: plugin.sourceId,
         sourceIdentity: plugin.sourceIdentity,
@@ -3015,7 +3022,7 @@ describe('rebuild adapter integration', () => {
         scope: 'user',
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
-        values: { token: `team/${pluginName}` },
+        values: { token: `test-sensitive-value-for-${pluginName}` },
       });
       const dynamicTarget = plugin.manifest.artifacts?.targets.find((target) =>
         target.platform === 'codex'
@@ -3142,7 +3149,7 @@ describe('rebuild adapter integration', () => {
         .filter((artifact) => artifact.target === 'codex.agentRole')
         .map((artifact) => artifact.roleKey)
         .sort())
-        .toEqual(['codex-explore', 'codex-subagent']);
+        .toEqual(['codex-advisor', 'codex-explore', 'codex-subagent']);
       const cacheRoot = path.join(
         isolation.layout.codexHomeDir,
         'plugins',
@@ -3151,7 +3158,7 @@ describe('rebuild adapter integration', () => {
         pluginName,
         plugin.manifest.version,
       );
-      for (const skillKey of ['codex-explore', 'codex-subagent-guide']) {
+      for (const skillKey of ['codex-explore', 'codex-subagent-guide', 'codex-advisor']) {
         expect(await fs.pathExists(path.join(
           cacheRoot,
           'codex',
@@ -3168,6 +3175,7 @@ describe('rebuild adapter integration', () => {
       await expect(fs.readJson(path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH)))
         .resolves.toMatchObject({
           targets: [
+            { id: 'codex-advisor-skill', skillKey: 'codex-advisor' },
             { id: 'codex-explore-skill', skillKey: 'codex-explore' },
             { id: 'codex-subagent-guide-skill', skillKey: 'codex-subagent-guide' },
           ],
@@ -4738,7 +4746,7 @@ describe('rebuild adapter integration', () => {
       root: isolation.layout.rootDir,
       name: 'role-reinstall',
       roleKey: 'reinstall-role',
-      roleInstructions: 'Version one instructions.',
+      roleInstructions: '  Version one instructions.\n',
     });
     const installTarget = await integration.buildTarget({
       plugin: v1, platform: 'codex', scope: 'project', cwd,
@@ -4753,7 +4761,7 @@ describe('rebuild adapter integration', () => {
       root: isolation.layout.rootDir,
       name: 'role-reinstall',
       roleKey: 'reinstall-role',
-      roleInstructions: 'Version two instructions.',
+      roleInstructions: '  Version two instructions.\n',
     });
     const reinstallTarget = await integration.buildTarget({
       plugin: v2, platform: 'codex', scope: 'project', cwd,
@@ -4769,6 +4777,7 @@ describe('rebuild adapter integration', () => {
     const rolePath = path.resolve(path.dirname(configPath), registration!.configFile!);
     const roleContent = await fs.readFile(rolePath, 'utf8');
     expect(roleContent).toContain('Version two instructions.');
+    expect(parseCodexRoleFile(roleContent).developerInstructions).toBe('  Version two instructions.\n');
     expect(parseOwnedTextHeader(roleContent)?.identity.plugin).toBe('role-reinstall');
 
     const protectedTarget = await integration.buildTarget({

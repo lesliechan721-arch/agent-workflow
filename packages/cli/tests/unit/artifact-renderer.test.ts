@@ -11,6 +11,7 @@ import {
   runArtifactRenderer as runArtifactRendererExact,
   writeArtifactRendererContext as writeArtifactRendererContextExact,
   resolveArtifactRendererTarget,
+  ARTIFACT_RENDERER_MAX_STDOUT_BYTES,
 } from '../../src/utils/artifact-renderer.js';
 import {
   resolvePluginConfigStorePath,
@@ -740,6 +741,47 @@ describe('artifact renderer runtime', () => {
       cwd,
       commandEnv: env,
     })).rejects.toThrow('only supports install, refresh, and materialize events');
+  });
+
+  it('preserves a large structured renderer payload while keeping diagnostics bounded', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-large-json-');
+    const cwd = path.join(root, 'repo');
+    await fs.ensureDir(cwd);
+    const instructions = `AW_SUBAGENT_PROCESS_TOKEN: record.processToken\n${'原始材料'.repeat(30_000)}`;
+    const plan = { version: 2, artifacts: [{
+      id: 'codex-explorer-role', kind: 'codexRole', platform: 'codex',
+      target: 'codex.agentRole', state: 'present', roleKey: 'codex-explorer',
+      refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      content: { roleFile: { name: 'codex-explorer', developer_instructions: instructions } },
+    }] };
+    const plugin = await writePlugin(root, createManifest(), `process.stdout.write(JSON.stringify(${JSON.stringify(plan)}));`);
+    const result = await runArtifactRenderer({
+      event: 'install', plugin, platform: 'codex', scope: 'user', cwd,
+      commandEnv: { AW_HOME: path.join(root, 'aw-home') },
+      requestedArtifactIds: ['codex-explorer-role'],
+    });
+    expect(result.plan).toEqual(plan);
+    expect(result.stdout.length).toBeLessThanOrEqual(OUTPUT_LIMIT);
+  });
+
+  it('rejects structured renderer overflow and stops the actual process', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-json-limit-');
+    const cwd = path.join(root, 'repo');
+    await fs.ensureDir(cwd);
+    const pidFile = path.join(root, 'renderer-pid');
+    const plugin = await writePlugin(root, createManifest(), [
+      'import fs from "node:fs";',
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+      `process.stdout.write('界'.repeat(${Math.ceil(ARTIFACT_RENDERER_MAX_STDOUT_BYTES / 3) + 1}));`,
+      `setTimeout(() => {}, ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS});`,
+    ].join('\n'));
+    await expect(runArtifactRenderer({
+      event: 'install', plugin, platform: 'codex', scope: 'user', cwd,
+      commandEnv: { AW_HOME: path.join(root, 'aw-home') },
+      requestedArtifactIds: ['codex-explorer-role'],
+    })).rejects.toThrow('artifactRendererOutputTooLarge');
+    const pid = Number(await fs.readFile(pidFile, 'utf8'));
+    expect(processIsRunning(pid)).toBe(false);
   });
 
   it('fails when stdout is not JSON and redacts sensitive diagnostics', async () => {

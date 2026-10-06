@@ -139,6 +139,13 @@ export interface PluginConfigArrayValidation {
   minItems?: number;
   maxItems?: number;
   uniqueItems?: boolean;
+  uniqueBy?: string;
+}
+export interface PluginConfigValueReference {
+  field: string;
+  key: string;
+  label?: string;
+  include?: PluginConfigScalar[];
 }
 export interface PluginConfigFieldBase<Value extends PluginConfigValue> {
   title?: string;
@@ -150,6 +157,7 @@ export interface PluginConfigFieldBase<Value extends PluginConfigValue> {
 interface PluginConfigPlainStringField extends Omit<PluginConfigFieldBase<string>, 'sensitive'> {
   type: 'string';
   sensitive?: false;
+  valueRef?: PluginConfigValueReference;
   choices?: PluginConfigChoices<string>;
   validation?: PluginConfigStringValidation;
 }
@@ -165,11 +173,13 @@ export type PluginConfigStringField =
   | PluginConfigSensitiveStringField;
 export interface PluginConfigNumberField extends PluginConfigFieldBase<number> {
   type: 'number';
+  valueRef?: PluginConfigValueReference;
   choices?: PluginConfigChoices<number>;
   validation?: PluginConfigNumberValidation;
 }
 export interface PluginConfigBooleanField extends PluginConfigFieldBase<boolean> {
   type: 'boolean';
+  valueRef?: PluginConfigValueReference;
   choices?: PluginConfigChoices<boolean>;
 }
 export type PluginConfigScalarField =
@@ -324,6 +334,7 @@ interface PluginArtifactTargetDefinitionBase {
   skillKey?: string;
   sourceDirs?: string[];
   runtimeImports?: ArtifactRuntimeImportDefinition[];
+  runtimeConfig?: import('./runtime-config.js').PluginRuntimeConfigDeclaration;
 }
 export type PluginArtifactTargetDefinition =
   | PluginArtifactTargetDefinitionBase & {

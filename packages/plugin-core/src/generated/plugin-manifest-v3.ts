@@ -35,6 +35,7 @@ roleKey?: string
 skillKey?: string
 sourceDirs?: StringArray
 runtimeImports?: ArtifactRuntimeImports
+runtimeConfig?: RuntimeConfig
 } | {
 id: string
 platform?: ("codex" | "claude")
@@ -50,6 +51,7 @@ roleKey?: string
 skillKey?: string
 sourceDirs?: StringArray
 runtimeImports?: ArtifactRuntimeImports
+runtimeConfig?: RuntimeConfig
 })
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
@@ -98,14 +100,14 @@ export type ConfigField = (ConfigStringField | ConfigNumberField | ConfigBoolean
 export type ConfigStringField = (ConfigPlainStringField | ConfigSensitiveStringField)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "configObjectField".
- */
-export type ConfigObjectField = (ConfigFixedObjectField | ConfigKeyValueObjectField)
-/**
- * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalar".
  */
 export type ConfigScalar = (string | number | boolean)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configObjectField".
+ */
+export type ConfigObjectField = (ConfigFixedObjectField | ConfigKeyValueObjectField)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalarChildField".
@@ -288,6 +290,15 @@ targets?: ArtifactTarget[]
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "runtimeConfig".
+ */
+export interface RuntimeConfig {
+keys: string[]
+artifactIds?: string[]
+resourceVersion: string
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "buildConfig".
  */
 export interface BuildConfig {
@@ -431,6 +442,7 @@ advanced?: boolean
  * via the `definition` "configPlainStringField".
  */
 export interface ConfigPlainStringField {
+valueRef?: ConfigValueReference
 type: "string"
 title?: string
 description?: string
@@ -439,6 +451,19 @@ required?: boolean
 sensitive?: false
 choices?: ConfigStringChoices
 validation?: ConfigStringValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configValueReference".
+ */
+export interface ConfigValueReference {
+field: string
+key: string
+label?: string
+/**
+ * @maxItems 128
+ */
+include?: ConfigScalar[]
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
@@ -486,6 +511,7 @@ validation?: ConfigStringValidation
  * via the `definition` "configNumberField".
  */
 export interface ConfigNumberField {
+valueRef?: ConfigValueReference
 type: "number"
 title?: string
 description?: string
@@ -529,6 +555,7 @@ multipleOf?: number
  * via the `definition` "configBooleanField".
  */
 export interface ConfigBooleanField {
+valueRef?: ConfigValueReference
 type: "boolean"
 title?: string
 description?: string
@@ -602,6 +629,7 @@ recommended?: true
  * via the `definition` "configStringChildField".
  */
 export interface ConfigStringChildField {
+valueRef?: ConfigValueReference
 type: "string"
 title?: string
 description?: string
@@ -615,6 +643,7 @@ validation?: ConfigStringValidation
  * via the `definition` "configNumberChildField".
  */
 export interface ConfigNumberChildField {
+valueRef?: ConfigValueReference
 type: "number"
 title?: string
 description?: string
@@ -628,6 +657,7 @@ validation?: ConfigNumberValidation
  * via the `definition` "configBooleanChildField".
  */
 export interface ConfigBooleanChildField {
+valueRef?: ConfigValueReference
 type: "boolean"
 title?: string
 description?: string
@@ -666,6 +696,7 @@ validation?: ConfigObjectValidation
  * via the `definition` "configStringDynamicField".
  */
 export interface ConfigStringDynamicField {
+valueRef?: ConfigValueReference
 type: "string"
 title?: string
 description?: string
@@ -678,6 +709,7 @@ validation?: ConfigStringValidation
  * via the `definition` "configNumberDynamicField".
  */
 export interface ConfigNumberDynamicField {
+valueRef?: ConfigValueReference
 type: "number"
 title?: string
 description?: string
@@ -690,6 +722,7 @@ validation?: ConfigNumberValidation
  * via the `definition` "configBooleanDynamicField".
  */
 export interface ConfigBooleanDynamicField {
+valueRef?: ConfigValueReference
 type: "boolean"
 title?: string
 description?: string
@@ -871,6 +904,7 @@ export interface ConfigArrayValidation {
 minItems?: number
 maxItems?: number
 uniqueItems?: boolean
+uniqueBy?: string
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema

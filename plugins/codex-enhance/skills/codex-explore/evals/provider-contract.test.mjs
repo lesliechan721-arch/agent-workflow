@@ -19,10 +19,7 @@ import { evidenceRun } from './codex-workflow-adapter.mjs';
 
 const evalRoot = path.dirname(fileURLToPath(import.meta.url));
 const roles = [
-  'codex-explore-custom',
-  'codex-explore-deep',
-  'codex-explore-quick',
-  'codex-explore-standard',
+  'codex-explore',
 ];
 
 async function invoke(runner, input, env = process.env) {
@@ -75,7 +72,7 @@ function adapterInput(phase, selectedCase, root) {
   };
 }
 
-function evidence(agentType = 'codex-explore-quick') {
+function evidence(agentType = 'codex-explore') {
   return {
     version: 1,
     rootThreadId: 'root',
@@ -98,7 +95,7 @@ function evidence(agentType = 'codex-explore-quick') {
       ordinal: 1, threadId: 'root', parentThreadId: null, callId: 'spawn',
       namespace: 'collaboration', tool: 'spawn_agent',
       arguments: {
-        agent_type: agentType, message: 'inspect', task_name: 'inspect', fork_turns: 'none',
+        agent_type: agentType, model: 'gpt-6-luna', reasoning_effort: 'medium', message: 'inspect', task_name: 'inspect', fork_turns: 'none',
       },
       output: { task_name: '/root/inspect' }, status: 'completed',
     }],
@@ -130,7 +127,8 @@ function nestedV1Evidence(initialMessage) {
     ordinal: 1, threadId: 'root', parentThreadId: null, callId: 'spawn-plan',
     namespace: 'collaboration', tool: 'spawn_agent', status: 'completed',
     arguments: {
-      agent_type: 'codex-subagent-advanced', message: initialMessage, fork_context: false,
+      agent_type: 'codex-subagent', message: initialMessage, fork_context: false,
+      model: 'gpt-6-astra', reasoning_effort: 'high',
     },
     output: { agent_id: 'plan', status: 'running' },
   };
@@ -143,7 +141,7 @@ function nestedV1Evidence(initialMessage) {
   const nestedSpawn = {
     ordinal: 3, threadId: 'plan', parentThreadId: 'root', callId: 'spawn-deep',
     namespace: 'collaboration', tool: 'spawn_agent', status: 'completed',
-    arguments: { agent_type: 'codex-explore-deep', message: 'inspect repo' },
+    arguments: { agent_type: 'codex-explore', message: 'inspect repo' },
     output: { agent_id: 'deep', status: 'running' },
   };
   return {
@@ -160,8 +158,8 @@ function nestedV1Evidence(initialMessage) {
     ],
     threadGraph: [
       thread('root', null, null, { kind: 'plaintext', text: 'root' }),
-      thread('plan', 'root', 'codex-subagent-advanced', { kind: 'plaintext', text: initialMessage }),
-      thread('deep', 'plan', 'codex-explore-deep', { kind: 'plaintext', text: 'inspect repo' }),
+      thread('plan', 'root', 'codex-subagent', { kind: 'plaintext', text: initialMessage }),
+      thread('deep', 'plan', 'codex-explore', { kind: 'plaintext', text: 'inspect repo' }),
     ],
     collaborationCalls: [rootSpawn, skillLoad, nestedSpawn],
     leafCalls: [skillLoad, nestedSpawn],
@@ -173,7 +171,7 @@ function scopeIsolationEvidence(finalMessage, leafResult) {
   const rootSpawn = {
     ordinal: 1, threadId: 'root', parentThreadId: null, callId: 'spawn',
     namespace: 'multi_agent_v2', tool: 'spawn_agent', status: 'completed',
-    arguments: { agent_type: 'codex-explore-quick', message: 'inspect', fork_turns: 'none' },
+    arguments: { agent_type: 'codex-explore', message: 'inspect', fork_turns: 'none' },
     output: { task_name: '/root/inspect' },
   };
   const rootWait = {
@@ -208,7 +206,7 @@ function scopeIsolationEvidence(finalMessage, leafResult) {
     skillLoads: [{ threadId: 'root', skill: 'codex-explore', callId: 'load' }],
     threadGraph: [
       thread('root', null, null, { kind: 'plaintext', text: 'root' }),
-      thread('child', 'root', 'codex-explore-quick', {
+      thread('child', 'root', 'codex-explore', {
         kind: 'opaque-link', sha256: 'sha256:child', linkedCallId: 'spawn',
       }),
     ],
@@ -247,7 +245,6 @@ test('all Explore workflow commands prepare bounded requests without starting Co
       if (suite.id === 'workflow') {
         assert.equal(request.sandbox, 'read-only');
         assert.match(request.prompt, /clean context/u);
-        assert.match(request.prompt, /spawn 不要覆盖 model 或 reasoning/u);
         assert.match(request.prompt, /child 结果和最终答复/u);
         assert.match(request.prompt, /FACT v1_timeout_seconds=<整数>/u);
         assert.doesNotMatch(request.prompt, /v1_timeout_seconds=30/u);
@@ -318,6 +315,10 @@ test('Explore grade consumes canonical V1 nested evidence and rejects authorizat
     const initialMessage = selectedCase.expected.criteria.nested_delegation.child_initial_message;
     const input = adapterInput('grade', selectedCase, root);
     const observed = nestedV1Evidence(initialMessage);
+    observed.skillLoads = observed.skillLoads.filter((load) => load.threadId === 'root');
+    observed.threadGraph = observed.threadGraph.filter((thread) => thread.threadId !== 'deep');
+    observed.collaborationCalls = observed.collaborationCalls.filter((call) => call.threadId === 'root');
+    observed.leafCalls = [];
     await Promise.all([
       writeFile(input.paths.evidence, JSON.stringify(observed)),
       writeFile(input.paths.modelOutput, 'nested delegation observed\n'),
@@ -337,7 +338,7 @@ test('Explore grade consumes canonical V1 nested evidence and rejects authorizat
     assert.equal(JSON.parse((await invoke('run-model-selection-evals.mjs', input)).stdout).passed, false);
 
     const incomplete = structuredClone(observed);
-    incomplete.leafCalls = incomplete.leafCalls.filter((call) => call.tool !== 'spawn_agent');
+    incomplete.collaborationCalls[0].arguments.fork_context = true;
     await writeFile(input.paths.evidence, JSON.stringify(incomplete));
     assert.equal(JSON.parse((await invoke('run-model-selection-evals.mjs', input)).stdout).passed, false);
   } finally {
@@ -375,7 +376,7 @@ test('Explore root-delivered child final is one leaf result and child investigat
     const result = await invoke('run-workflow-evals.mjs', input);
     assert.equal(result.code, 0, result.stderr);
     const grade = JSON.parse(result.stdout);
-    assert.equal(grade.passed, true);
+    assert.equal(grade.passed, true, JSON.stringify(grade.details));
     assert.equal(
       grade.details.assertions.find((entry) => entry.name === 'leaf:result_count').evidence,
       'count=1',
@@ -429,8 +430,8 @@ test('Explore workflow grades the safe V2 versioned Result shape', async () => {
       'FACT migration_matches=v2',
     ].join('\n');
     const observed = scopeIsolationEvidence(outcome, outcome);
-    observed.threadGraph[1].agentRole = 'codex-explore-standard';
-    observed.collaborationCalls[0].arguments.agent_type = 'codex-explore-standard';
+    observed.threadGraph[1].agentRole = 'codex-explore';
+    observed.collaborationCalls[0].arguments.agent_type = 'codex-explore';
     observed.collaborationCalls[0].output.task_name = '/root/vendor_timeout_docs';
     const input = adapterInput('grade', selectedCase, root);
     await Promise.all([
@@ -447,7 +448,7 @@ test('Explore workflow grades the safe V2 versioned Result shape', async () => {
 
 test('Explore keeps equal terminal text from different descendant threads', () => {
   const observed = scopeIsolationEvidence('done', 'same terminal result');
-  observed.threadGraph.push(thread('child-two', 'root', 'codex-explore-quick', {
+  observed.threadGraph.push(thread('child-two', 'root', 'codex-explore', {
     kind: 'opaque-link', sha256: 'sha256:child-two', linkedCallId: 'spawn-two',
   }));
   const first = observed.leafCalls.find((call) => call.tool === 'agent_message');
@@ -486,9 +487,9 @@ test('Explore V2 liveness keeps root waits and grades the child verifier call fr
     ].join('\n');
     const observed = scopeIsolationEvidence(finalMessage, 'done');
     observed.completion.durationMs = 65_000;
-    observed.threadGraph[1].agentRole = 'codex-explore-standard';
+    observed.threadGraph[1].agentRole = 'codex-explore';
     const spawn = observed.collaborationCalls[0];
-    spawn.arguments.agent_type = 'codex-explore-standard';
+    spawn.arguments.agent_type = 'codex-explore';
     const terminalWait = observed.collaborationCalls[1];
     terminalWait.ordinal = 3;
     terminalWait.arguments.timeout_ms = 60_000;

@@ -28,7 +28,7 @@
       "expected": {
         "criteria": {
           "spawn_count": 1,
-          "agent_type": "codex-explore-quick",
+          "agent_type": "codex-explore",
           "final_message_includes_all": [
             "docs/output/shared-policy.md",
             "FACT retry_limit=3",
@@ -83,7 +83,7 @@
       "expected": {
         "criteria": {
           "spawn_count": 1,
-          "agent_type": "codex-explore-standard",
+          "agent_type": "codex-explore",
           "final_message_includes_all": [
             "docs/output/regions-a.md",
             "docs/output/regions-b.md",
@@ -142,7 +142,7 @@
       "expected": {
         "criteria": {
           "spawn_count": 1,
-          "agent_type": "codex-explore-standard",
+          "agent_type": "codex-explore",
           "final_message_includes_all": [
             "docs/vendor/api-v2.md",
             "docs/vendor/migration.md",
@@ -202,7 +202,7 @@
       "expected": {
         "criteria": {
           "spawn_count": 1,
-          "agent_type": "codex-explore-standard",
+          "agent_type": "codex-explore",
           "final_message_includes_all": [
             "docs/output/default-a.md",
             "docs/output/default-b.md",
@@ -261,7 +261,7 @@
       "expected": {
         "criteria": {
           "spawn_count": 1,
-          "agent_type": "codex-explore-quick",
+          "agent_type": "codex-explore",
           "final_message_includes_all": [
             "docs/output/blocked-index.md",
             "FACT archive_source=https://private.example.invalid/admin/runbook",
@@ -319,7 +319,7 @@
       "expected": {
         "criteria": {
           "spawn_count": 1,
-          "agent_type": "codex-explore-quick",
+          "agent_type": "codex-explore",
           "final_message_includes_all": [
             "docs/output/partial-migration.md",
             "FACT migration_timeout_value=45",

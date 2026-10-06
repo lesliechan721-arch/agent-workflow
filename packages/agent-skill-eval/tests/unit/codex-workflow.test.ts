@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
@@ -22,6 +23,7 @@ import {
 import { codexWorkflowMissingFinalMessageDiagnostic } from '../../src/codex-workflow.js'
 import * as appServer from '../../src/codex-eval-app-server.js'
 import * as providers from '../../src/providers.js'
+import * as providerProcess from '../../src/process.js'
 
 const roots: string[] = []
 
@@ -131,7 +133,8 @@ async function adapterFixture(): Promise<{
     '    developerInstructions: "Follow the workflow contract.",',
     '    roles: [{ name: "explorer", description: "Inspect the workspace.", configFile: ".codex/agents/explorer.toml" }],',
     '    multiAgent: { protocol: input.case.protocol ?? "v2", maxDepth: 2, hideSpawnAgentMetadata: input.case.protocol !== "v1", exposeSpawnAgentModelOverrides: input.case.protocol !== "v1" },',
-    '    ...(input.case.evaluation ? { evaluation: input.case.evaluation } : {})',
+    '    ...(input.case.evaluation ? { evaluation: input.case.evaluation } : {}),',
+    '    ...(input.case.workflowRequest ?? {})',
     '  }))',
     '} else {',
     '  const evidence = JSON.parse(fs.readFileSync(input.paths.evidence, "utf8"))',
@@ -169,7 +172,139 @@ function execution(secret = 'workflow-runtime-secret') {
 }
 
 describe('codex-workflow provider', () => {
-  it.each(['structured', 'text', 'unrelated', 'setup', 'grader-error'] as const)(
+  // Value gate: the real public Engine entry exercises separate text/receipt channels,
+  // credential isolation, truthful terminal states, and rejection before grade.
+  it.each(['completed', 'user-prefix', 'bad-digest', 'missing-receipt', 'empty', 'nonzero', 'missing-terminal', 'timeout'])(
+    'runs instruction-v2 with %s evidence through the Engine-owned process runner', async (mode) => {
+      const fixture = await adapterFixture()
+      const external = path.join(fixture.workspace, 'external.mjs')
+      await writeFile(external, [
+        "import fs from 'node:fs'",
+        "const request = JSON.parse(fs.readFileSync(0, 'utf8'))",
+        "const mode = request.run.id",
+        "fs.writeFileSync(process.env.AW_SUBAGENT_TRACE_FILE, JSON.stringify({ type: 'thread.started', thread_id: 'real-session', untrusted: process.env.UNTRUSTED_SECRET ?? null, credential: process.env.OPENAI_API_KEY ?? null, gitPrompt: process.env.GIT_TERMINAL_PROMPT }) + '\\n')",
+        "if (mode !== 'missing-receipt') fs.writeFileSync(process.env.AW_SUBAGENT_RESULT_FILE, JSON.stringify({ protocolVersion: 2, outcome: 'completed', instructionChannel: mode === 'user-prefix' ? 'user-prefix' : 'developer', instructionsRevision: mode === 'bad-digest' ? 'wrong' : request.instructions.revision, providerSessionId: 'real-session', traceFile: 'codex-events.jsonl', ...(mode === 'missing-terminal' ? {} : { providerTerminal: 'turn.completed' }) }))",
+        "if (mode !== 'empty') process.stdout.write('Actual worker result workflow-runtime-secret')",
+        "if (mode === 'nonzero') process.exitCode = 1",
+        "if (mode === 'timeout') await new Promise((resolve) => setTimeout(resolve, 10_000))",
+      ].join('\n'))
+      const instruction = 'Follow the workflow contract.'
+      const revision = createHash('sha256').update(instruction).digest('hex')
+      const workflowRequest = {
+        roles: [], transport: { type: 'instruction-v2', command: [process.execPath, external], request: {
+          protocolVersion: 2, run: { id: mode, mode: 'workspace', access: 'read-only', model: 'allowed-model', configRevision: 'effective-config' },
+          instructions: { workerKey: 'opaque-worker', revision, text: instruction }, task: 'Run the workflow.', materials: [],
+        } },
+      }
+      const execution = executeCodexWorkflowProvider({
+        provider: { type: 'codex-workflow', command: [process.execPath, fixture.adapter], allowedModels: ['allowed-model'] },
+        evalRoot: fixture.root,
+        input: { case: { id: mode, workflowRequest }, variant: 'current', attempt: 1,
+          workspacePath: fixture.workspace, fixturesPath: fixture.fixtures, outputDir: fixture.output, timeoutMs: mode === 'timeout' ? 800 : 5_000 },
+        codexRuntime: runtime(fixture.root), codexBin: process.execPath,
+        sourceEnv: { PATH: process.env.PATH, UNTRUSTED_SECRET: 'must-not-inherit', OPENAI_API_KEY: 'must-not-inherit' },
+        processTree: fixture.processTree,
+      })
+      if (mode === 'completed') {
+        const result = await execution
+        expect(result.grade.passed).toBe(true)
+        expect(result.usage).toBeNull()
+      } else await expect(execution).rejects.toThrow(mode === 'timeout' ? 'timed out' : 'execution is unknown')
+      const evidence = JSON.parse(await readFile(path.join(fixture.output, 'workflow-evidence.json'), 'utf8'))
+      expect(evidence.completion.status).toBe(mode === 'completed' ? 'completed' : 'unknown')
+      expect(evidence.transport.request.instructions).toEqual({ workerKey: 'opaque-worker', revision, text: instruction })
+      expect(evidence.transport.receipt?.actualModel).toBeUndefined()
+      expect(evidence.usage).toBeNull()
+      expect(await readFile(path.join(fixture.output, 'model-output.txt'), 'utf8')).not.toContain('workflow-runtime-secret')
+      const trace = JSON.parse(await readFile(path.join(fixture.output, 'workflow-trace.json'), 'utf8'))
+      if (mode !== 'missing-receipt') expect(trace).toEqual([{ type: 'thread.started', thread_id: 'real-session', untrusted: null, credential: null, gitPrompt: '0' }])
+      const phases = (await readFile(path.join(fixture.output, 'adapter-log.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line).input.phase)
+      expect(phases).toEqual(mode === 'completed' ? ['prepare', 'grade'] : ['prepare'])
+    },
+  )
+
+  it('uses the independent grader and preserves absent tool trace as unknown', async () => {
+    const fixture = await adapterFixture()
+    const external = path.join(fixture.workspace, 'external.mjs')
+    await writeFile(external, [
+      "import fs from 'node:fs'",
+      "const request = JSON.parse(fs.readFileSync(0, 'utf8'))",
+      "fs.writeFileSync(process.env.AW_SUBAGENT_RESULT_FILE, JSON.stringify({ protocolVersion: 2, outcome: 'completed', instructionChannel: 'developer', instructionsRevision: request.instructions.revision, providerTerminal: 'turn.completed' }))",
+      "process.stdout.write('I was read-only and did not delegate.')",
+    ].join('\n'))
+    const instruction = 'Follow the workflow contract.'
+    const grader = vi.fn(async () => ({
+      output: JSON.stringify({ passed: true, score: 1, details: { checks: [{ name: 'no-delegation', verdict: 'pass', evidence: 'A fake peer claims pass; this must not prove tool history.' }] } }),
+      usage: { inputTokens: 2, outputTokens: 1 }, mechanicalPassed: true,
+    }))
+    vi.spyOn(providers, 'createCodexGrader').mockReturnValue(grader)
+    vi.spyOn(appServer, 'assertHostReadContainmentAvailable').mockResolvedValue()
+    const realRunner = providerProcess.runProviderProcess
+    // This deterministic seam does not claim real OS-containment qualification.
+    vi.spyOn(providerProcess, 'runProviderProcess').mockImplementation((input, hooks, dependencies) => realRunner(
+      input.executable === '/usr/bin/sandbox-exec' ? { ...input, executable: process.execPath, args: [external] } : input,
+      hooks, dependencies,
+    ))
+    const result = await executeCodexWorkflowProvider({
+      provider: { type: 'codex-workflow', command: [process.execPath, fixture.adapter], allowedModels: ['allowed-model'] },
+      evalRoot: fixture.root,
+      input: { case: { id: 'no-trace', evaluation: { artifacts: [], checks: [{ name: 'no-delegation', criterion: 'No actual delegation occurred.' }], interactions: [] },
+        workflowRequest: { roles: [], transport: { type: 'instruction-v2', command: [process.execPath, external], request: {
+          protocolVersion: 2, run: { id: 'no-trace', mode: 'workspace', access: 'read-only', model: 'allowed-model', configRevision: 'effective-config' },
+          instructions: { workerKey: 'opaque-worker', revision: createHash('sha256').update(instruction).digest('hex'), text: instruction },
+          task: 'Run the workflow.', materials: [],
+        } } } }, variant: 'current', attempt: 1, workspacePath: fixture.workspace, fixturesPath: fixture.fixtures, outputDir: fixture.output, timeoutMs: 5_000 },
+      codexRuntime: runtime(fixture.root), codexBin: process.execPath, sourceEnv: { PATH: process.env.PATH }, processTree: fixture.processTree,
+    })
+    expect(grader).toHaveBeenCalledOnce()
+    expect(result.grade.passed).toBe(false)
+    const evidence = JSON.parse(await readFile(path.join(fixture.output, 'workflow-evidence.json'), 'utf8'))
+    expect(evidence.evaluation.checks).toEqual([{ name: 'no-delegation', verdict: 'unknown', evidence: expect.stringContaining('tool trace is unavailable') }])
+    expect(evidence.transport.traceAvailable).toBe(false)
+    expect(result.usage).toBeNull()
+  })
+
+  it('runs the actual Codex v2 adapter with an isolated fake backend and captures real program parameters', async () => {
+    const fixture = await adapterFixture()
+    const backend = path.join(fixture.workspace, 'fake-codex')
+    await writeFile(backend, [
+      `#!${process.execPath}`,
+      "import fs from 'node:fs'",
+      "if (process.argv.includes('--version')) { process.stdout.write('codex-cli 0.160.1\\n'); process.exit(0) }",
+      "const task = JSON.parse(fs.readFileSync(0, 'utf8'))",
+      "const args = process.argv.slice(2)",
+      "const output = args[args.indexOf('--output-last-message') + 1]",
+      "fs.writeFileSync(output, 'Actual adapter result from the local fake backend.')",
+      "process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'fake-provider-session', task, arguments: args, env: { gitPrompt: process.env.GIT_TERMINAL_PROMPT, gitSystem: process.env.GIT_CONFIG_NOSYSTEM, gitLocks: process.env.GIT_OPTIONAL_LOCKS, markerPresent: Boolean(process.env.AW_AGENT_SKILL_EVAL_PROCESS_MARKER), untrusted: process.env.UNTRUSTED_SECRET ?? null } }) + '\\n')",
+      "process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 3, output_tokens: 2 } }) + '\\n')",
+    ].join('\n'))
+    await chmod(backend, 0o700)
+    const instruction = 'Follow the workflow contract.'
+    const external = path.resolve('../../plugins/codex-enhance/skills/codex-subagent-guide/scripts/adapters/codex-v2.mjs')
+    const result = await executeCodexWorkflowProvider({
+      provider: { type: 'codex-workflow', command: [process.execPath, fixture.adapter], allowedModels: ['allowed-model'] },
+      evalRoot: fixture.root,
+      input: { case: { id: 'real-adapter', workflowRequest: { roles: [], transport: { type: 'instruction-v2', command: [process.execPath, external], request: {
+        protocolVersion: 2, run: { id: 'real-adapter', mode: 'bundle', access: 'read-only', model: 'allowed-model', configRevision: 'effective-config' },
+        instructions: { workerKey: 'opaque-worker', revision: createHash('sha256').update(instruction).digest('hex'), text: instruction }, task: 'Run the workflow.', materials: [],
+      } } } }, variant: 'current', attempt: 1, workspacePath: fixture.workspace, fixturesPath: fixture.fixtures, outputDir: fixture.output, timeoutMs: 5_000 },
+      codexRuntime: runtime(fixture.root), codexBin: backend, sourceEnv: { PATH: process.env.PATH, UNTRUSTED_SECRET: 'must-not-inherit' }, processTree: fixture.processTree,
+    }).catch(async (error: Error) => {
+      const evidence = JSON.parse(await readFile(path.join(fixture.output, 'workflow-evidence.json'), 'utf8'))
+      throw new Error(`${error.message}: ${JSON.stringify(evidence.transport.receipt)}; ${evidence.transport.stderr}`)
+    })
+    expect(result.usage).toEqual({ inputTokens: 3, outputTokens: 2 })
+    const evidence = JSON.parse(await readFile(path.join(fixture.output, 'workflow-evidence.json'), 'utf8'))
+    expect(evidence.transport.receipt).toMatchObject({ outcome: 'completed', providerTerminal: 'turn.completed', generationStarted: true, localExitCode: 0, adapter: { id: 'codex-exec-v2' } })
+    expect(evidence.transport.receipt.actualModel).toBeUndefined()
+    const trace = JSON.parse(await readFile(path.join(fixture.output, 'workflow-trace.json'), 'utf8'))
+    expect(trace[0].task).toEqual({ task: 'Run the workflow.', materials: [] })
+    expect(trace[0].arguments).toContain(`developer_instructions=${JSON.stringify(instruction)}`)
+    expect(trace[0].arguments).toContain('features.shell_tool=false')
+    expect(trace[0].env).toEqual({ gitPrompt: '0', gitSystem: '1', gitLocks: '0', markerPresent: true, untrusted: null })
+  })
+
+  it.each(['structured', 'text', 'unrelated', 'setup', 'grader-error', 'fixture-action'] as const)(
     'runs the Engine-owned %s interaction loop with a deterministic RPC peer and independent matcher seam',
     async (mode) => {
       const fixture = await adapterFixture()
@@ -178,17 +313,32 @@ describe('codex-workflow provider', () => {
         await writeFile(nodeTestFile, "import test from 'node:test'; test('runtime module loads', () => {});\n")
       }
       const hiddenAnswer = 'Export the authorized collection.'
+      const action = { command: ['node', 'action.mjs'], input: { operation: 'release' } }
+      if (mode === 'fixture-action') await writeFile(path.join(fixture.fixtures, 'action.mjs'), [
+        "import fs from 'node:fs'; import path from 'node:path'; import assert from 'node:assert/strict';",
+        "const input = JSON.parse(fs.readFileSync(0, 'utf8')); assert.equal(process.env.OPENAI_API_KEY, undefined);",
+        "const file = input.input.operation === 'setup' ? 'setup.txt' : input.input.operation === 'verify' ? 'verification.txt' : 'later.txt';",
+        "if (input.input.operation === 'verify') assert.equal(fs.readFileSync(path.join(input.paths.workspace, 'product.txt'), 'utf8'), 'Export the authorized collection.');",
+        "fs.writeFileSync(path.join(input.paths.workspace, file), input.input.operation);",
+        "process.stdout.write(JSON.stringify({ version: 1, completed: true, artifacts: [file], evidence: { actualOperation: input.input.operation } }));",
+      ].join('\n'))
       const turns: string[] = []
       const responses: unknown[] = []
       let codexHome = ''
       let cleaned = false
       const evaluation = {
-        artifacts: ['product.txt'],
+        artifacts: mode === 'fixture-action' ? ['product.txt', 'setup.txt', 'later.txt', 'verification.txt'] : ['product.txt'],
         checks: [{ name: 'actual-result', criterion: 'The actual product follows the delivered answer.' }],
-        interactions: [{ id: 'scope', when: 'A genuine question about export collection.', answer: hiddenAnswer, protectedPaths: ['product.txt'] }],
+        interactions: [{ id: 'scope', when: 'A genuine question about export collection.', answer: hiddenAnswer, protectedPaths: ['product.txt'], ...(mode === 'fixture-action' ? { action } : {}) }],
         ...(mode === 'setup' ? { setupPrompt: 'Create the actual setup precondition.' } : {}),
+        ...(mode === 'fixture-action' ? { setupActions: [{ ...action, input: { operation: 'setup' } }] } : {}),
+        ...(mode === 'fixture-action' ? { finalActions: [{ ...action, input: { operation: 'verify' } }] } : {}),
       }
       const grader = vi.fn(async ({ prompt }: { prompt: string }) => {
+        if (mode === 'fixture-action' && !prompt.includes('details.questionId')) {
+          expect(cleaned).toBe(true)
+          expect(await readFile(path.join(fixture.workspace, 'verification.txt'), 'utf8')).toBe('verify')
+        }
         if (mode === 'grader-error' && !prompt.includes('details.questionId')) {
           throw new Error('Deterministic grader input rejection.')
         }
@@ -204,11 +354,19 @@ describe('codex-workflow provider', () => {
       // The RPC seam exercises the real Engine loop, file observation, and lifecycle.
       // It is not native-tool, model, or OS-containment qualification.
       const admission = vi.spyOn(appServer, 'assertHostReadContainmentAvailable').mockResolvedValue()
+      let actualOverrides: string[] = []
       class Peer {
         private handlers = new Set<(frame: Record<string, unknown>) => unknown>()
         private failure: ((error: Error) => void) | undefined
-        constructor(options: { env: NodeJS.ProcessEnv }) { codexHome = options.env.CODEX_HOME! }
+        constructor(options: { env: NodeJS.ProcessEnv; configOverrides: string[] }) {
+          codexHome = options.env.CODEX_HOME!
+          actualOverrides = options.configOverrides
+        }
         async initialize() {
+          if (mode === 'fixture-action') {
+            expect(await readFile(path.join(fixture.workspace, 'setup.txt'), 'utf8')).toBe('setup')
+            await expect(readFile(path.join(fixture.workspace, 'later.txt'))).rejects.toThrow()
+          }
           if (mode === 'structured' && process.platform === 'darwin') {
             // Exercise the emitted OS write permission before runtime cleanup.
             const profile = admission.mock.calls[0]![0]
@@ -232,6 +390,7 @@ describe('codex-workflow provider', () => {
           this.emit({ method: 'turn/completed', params: { threadId: 'root', turn: { status: 'completed' } } })
         }
         private async implement() {
+          if (mode === 'fixture-action') expect(await readFile(path.join(fixture.workspace, 'later.txt'), 'utf8')).toBe('release')
           await writeFile(path.join(fixture.workspace, 'product.txt'), hiddenAnswer)
           this.emit({ method: 'item/completed', params: { threadId: 'root', item: { type: 'fileChange', changes: [{ path: path.join(fixture.workspace, 'product.txt'), kind: { type: 'add' } }] } } })
           this.complete('Implementation complete.')
@@ -308,6 +467,17 @@ describe('codex-workflow provider', () => {
       expect(grader).toHaveBeenCalledTimes(2)
       expect(grader.mock.calls[0]![0].prompt).not.toContain(hiddenAnswer)
       expect(result.usage).toEqual({ inputTokens: 14, outputTokens: 6 })
+      expect(actual.launch).toMatchObject({
+        instructionChannel: 'developer', developerInstructions: 'Follow the workflow contract.',
+        instructionsRevision: createHash('sha256').update('Follow the workflow contract.').digest('hex'),
+        model: 'allowed-model', reasoningEffort: null, sandbox: 'workspace-write', hostRoleAdoption: 'unknown',
+        configOverrides: actualOverrides,
+      })
+      if (mode === 'fixture-action') {
+        expect(actual.evaluation.fixtureActions.map((entry: { phase: string }) => entry.phase)).toEqual(['setup', 'interaction:scope', 'final'])
+        expect(actual.evaluation.fixtureActions[1].ordinal).toBeLessThan(actual.evaluation.decisions[0].answerOrdinal)
+        expect(actual.evaluation.measurementStart).toBeGreaterThan(actual.evaluation.fixtureActions[0].ordinal)
+      }
       if (mode === 'unrelated') {
         expect(turns).toHaveLength(1)
         expect(actual.evaluation.decisions[0].status).toBe('rejected')

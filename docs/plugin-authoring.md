@@ -69,7 +69,27 @@ v3 的 `presentation.summaries.<name>` 只支持 `{ kind: "join", parts: [{ path
 
 v3 的 `type: "array"` 必须给出单一 `items` schema，允许 string、number、boolean、fixed object 或 KV object。items 可引用本地 definitions，展开后仍禁止嵌套；items 本身不能声明 default、required、sensitive，fixed object item 的属性可 required。数组级 default 和 choices 是完整数组，allowCustom=false 禁止自定义增删改排。`validation.minItems/maxItems` 是非负整数，最大 128 项，未声明 max 也受此限制；每个数组完整值的规范化紧凑 JSON UTF-8 编码最多 262144 字节，对象元素仍最多 32 属性。`uniqueItems` 默认 false，true 时重复值报错，不静默去重；对象 key 顺序不影响相等，数组顺序影响相等。`[]` 可覆盖非空默认，unset 不等于空数组，required 不代表非空。`fieldViews.<field>.itemSummary` 可引用一个针对 fixed-object 元素的 join summary；KV 元素使用安全对象预览。CLI 用完整 JSON set/unset，TUI 在本地列表中增删改排，确认整列后选一次保存范围，不提供 index 写入命令。
 
+v3 的对象数组可以用 `validation.uniqueBy` 指定一个已声明的标量属性。重复属性值会使整个候选无效，属性值保持原类型和大小写。非敏感标量可以声明 `valueRef: { field, key, label?, include? }`：`field` 是另一顶层对象数组，`key` 是同类型标量属性，`label` 是可选展示属性，`include` 是允许的静态内置值。静态值同时保留，源数组不能使用同值的 key。引用只使用固定字段和一层属性；保存、有效配置读取与 apply 都校验依赖闭包。删除仍被引用的 key 会失败，可先新增 key，再切换引用，最后删除旧 key。调用者得到的字段仍受原允许 keys 限制。两项能力分别要求 `aw.plugin-config-unique-by.v1` 和 `aw.plugin-config-value-ref.v1`。
+
 AW 只提供 `default < user < project` 两个持久写入层。所有新 namespaced Store 使用 schemaVersion 5，包括只含标量、对象或空 values 的配置；旧格式显示 schemaVersionUnsupported 并保留原文件。user 配置绑定 source identity；project 配置绑定 Catalog logical identity，所以 Git URL、SSH/HTTPS transport 或 path source 的变化不改变同一 Catalog 的项目配置身份。sensitive 字段只允许 user scope。project 写入若无法由 Git 验证可共享性，会返回 `projectConfigShareabilityUnverified` warning；明确被 ignore 时以 `projectConfigIgnored` 拒绝写入。object 和 array 值按顶层字段完整覆盖，不深合并或拼接列表。字符串 validation format 只支持 `identifier`、`slug`、`semver`、`url`、`hostname` 和 `email`；Config 不提供文件系统 path、file 或 directory format，也不解析 realpath 或建立 project artifact path boundary。CLI 写入使用 `aw config set <plugin> <field> --scope <user|project> (--value-json <json> | --value-stdin | --preset <id>)`。sensitive 字段拒绝 `--value-json` 和 `--preset`；非交互或 JSON 模式必须使用 `--scope user --value-stdin`，并按 EOF 原样读取 UTF-8。preset 只用于选择 manifest 中的实际值，store 不保存 preset ID。作者脚本使用 scaffolding 生成的 `scripts/aw-config.mjs` 读取 CLI 已校验的 `AW_PLUGIN_CONTEXT` effective config；helper 保持敏感值脱敏，不读取持久 store，也不维护第二份字段 validator。user/project 层诊断使用 `aw config get/list --scope ...`。
+
+### 已安装配置读取
+
+动态 Skill target 可声明 `runtimeConfig: { keys: ["<field>"], resourceVersion: "<version>", artifactIds?: ["<id>"] }`，要求 `aw.installed-runtime-config.v1`。keys 必须属于该 target 的 refresh keys，字段及其依赖闭包均不得敏感。artifactIds 可声明包含自身的一致性组；组内声明必须对称，并具有相同平台、delivery、scope、keys 和资源版本。AW 签发各成员的定位信息，reader 拒绝缺失、来源不符或混合 revision 的成员。未声明该组时不关联其它 Skill。相同配置输入与资源版本的 Skill 使用同一执行 revision；不同来源中的同名插件仍保持隔离。
+
+AW 在最终 Skill 中生成 `scripts/aw-runtime-config.mjs` 和 `.aw-runtime-config.json`。二者是保留路径，source 和 renderer 不得提供同名文件。程序从真实安装文件调用：
+
+```js
+import { readRuntimeConfig } from './aw-runtime-config.mjs';
+
+const runtime = await readRuntimeConfig({
+  from: import.meta.url,
+  keys: ['<field>'],
+  expectedRevision: '<本次加载的执行 revision>',
+});
+```
+
+返回值包含 `installedIdentity`、`effectiveValues`、`revision`、`resourceRoot` 和 `resourceVersion`。reader 无须 `AW_PLUGIN_CONTEXT`，只读该产物的生效快照。保存但未 apply 的配置不改变返回值。缺失 binding、未知版本、越权 keys、资源损坏或 revision 不符时拒绝调用，并提供 sync/reinstall 恢复。binding 是可重建的弱资源，不能改变 ownership、status 或 cleanup 的安装判断。
 
 字段覆盖不符合当前 schema 时，AW 保留该层值供用户修改或 unset，但 runtime 不使用低层 fallback 继续运行；fallback 只用于解释删除后的恢复结果。删除 project 覆盖后若会暴露无效 user 值，fallback 是 `invalid`，不能用 schema default 代替。结构损坏的 store 必须整层 reset。Config Mutation Receipt v7 的 `configWrite: succeeded` 说明强配置已经越过 commit point；之后的解析、target discovery、target validation 或 apply 失败使用 `overallState: partial` 和 discriminated `apply` 报告，不回滚已保存设置。每个 target 按自己的 platform 和 scope 验证，健康 target 可以继续 apply，无效 target 报告 `skipped/invalidConfig`。reset receipt 用 `absent | deletedFile | unlinkedSymlink | quarantinedDirectory` 说明实际处理结果，目录隔离只公开 basename。
 
@@ -141,6 +161,10 @@ Portable Agent Skills 是插件的显式增量 distribution。其 native capabil
 `aw skill materialize`、`aw skill eval prepare` 和 `aw review prepare` 均返回 `sourceBindingPath`，指向被测 Skill 外的 schema 2 `aw-source-binding.json`。它把本次 source 或 Catalog snapshot、profile 输入和实际产物绑定，供后续 inspection 只读核验。该文件不替代 EvalSpec/Audit/Result，也不证明语义质量。缺失、过期或 v1 凭据均需通过对应入口在新目录重新准备，不原地迁移或手工补写 digest。inspection v2 与相关插件同步升级，不保留旧 inspection 输出。
 
 Eval Manifest v1 profile 的 `plugins` 对象选择参与插件，并为每个插件提供公共非敏感配置。可选 `configByScope` 使用 `{ "user": { "plugin-name": {} }, "project": { "plugin-name": {} } }`；其中插件必须已在 `plugins` 中声明。每个 scope 覆盖按顶层字段替换，未写字段继承公共配置。普通 artifact 和 role 使用 profile 的 `scope`；共享 `codex-native` Skill 始终使用合并后的 user 配置。`prepare` 将这些实际输入写入隔离 config store，并把有效配置摘要绑定到 source binding；它不安装插件或启动模型。
+
+本次准备可用 `--config-file <file>` 传入同形的插件配置 map，按顶层字段覆盖选定 profile 的公共及 scope 值。文件必须是普通文件；插件必须已被选中，字段不得敏感。来源绑定保存实际覆盖，输出提交前复查输入。此入口可为独立运行包提供已经安装的绝对 adapter 路径，不在 source profile 保存机器专属占位路径。
+
+renderer 的结构化 stdout 保持完整 JSON，最大为 16 MiB；超限时 AW 停止本次进程树并拒绝产物。诊断摘要仍有独立的 64 KiB 上限和脱敏。已声明 runtimeConfig 的 Skill 源脚本可导入该 Skill 的 `scripts/aw-runtime-config.mjs`；源码和 bundle 检查识别这个注入合同，最终读取脚本仍由 AW 提供。其它缺失导入继续失败。
 
 每个 `codex.skill` dynamic target 必须显式声明 `delivery`。AW-owned 输出使用 `{ "mode": "aw-extension" }`。Codex native 输出只使用 `{ "mode": "codex-native", "identity": "shared", "renderProfile": "user" }`。所有 `codex.skill` delivery、`claude.skill` 和 `agent-skills.skill` 的 `refreshKeys` 都不得引用 sensitive config；非 Skill target 可以读取 sensitive config。native target 使用 user 配置 profile；与其 `refreshKeys` 匹配的字段只能在 user scope 写入，project scope 的 set 会被拒绝。user 配置中与 `refreshKeys` 匹配的变更会刷新投影，空数组合法。非 `codex.skill` target 不能声明 `delivery`。native dynamic Skill 不能与静态 Codex Skill 同名。同一插件 identity 的所有 Codex native 组件必须使用完全相同的 scope 集；静态 Skill、MCP、Hook 和 App 固定为 `{project,user}`，dynamic native 使用声明 scopes，slash command 不参与该规则。
 

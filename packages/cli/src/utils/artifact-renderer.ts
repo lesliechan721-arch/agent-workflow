@@ -36,7 +36,6 @@ import {
   resolveBundledPluginFilePath,
   resolvePluginScriptTimeoutMs,
   summarizePluginScriptOutput,
-  truncatePluginScriptOutput,
   type PluginProcessRunner,
   type PluginProcessResult,
   type PluginScriptInvocation,
@@ -44,6 +43,8 @@ import {
 import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
 import { resolveArtifactRequest } from './artifact-request.js';
 import { validateArtifactPlan } from './artifact-plan.js';
+import { createArtifactRuntimeConfigSnapshots } from './runtime-config.js';
+import type { RuntimeConfigSnapshot } from '@lesliechan721/aw-plugin-core';
 
 export type ArtifactRenderEvent = 'install' | 'refresh' | 'materialize';
 
@@ -78,6 +79,7 @@ export interface ArtifactRendererContext {
   };
   changedConfigKeys: string[];
   requestedArtifactIds: string[];
+  runtimeConfig?: Record<string, { revision: string; resourceVersion: string }>;
   previousArtifacts: unknown[];
   artifactSources: Array<{
     id: string;
@@ -123,6 +125,7 @@ export interface WrittenArtifactRendererContext {
   contextPath: string;
   tempDir: string;
   sensitiveValues: string[];
+  runtimeConfigSnapshots: Record<string, RuntimeConfigSnapshot>;
   cleanup: () => Promise<void>;
 }
 
@@ -130,6 +133,7 @@ export interface RunArtifactRendererResult {
   plan: ArtifactPlan;
   target: ArtifactRendererTarget;
   context: ArtifactRendererContext;
+  runtimeConfigSnapshots: Record<string, RuntimeConfigSnapshot>;
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   stdout: string;
@@ -332,6 +336,16 @@ export async function writeArtifactRendererContext(options: {
     sources: selectConfigKeys(config.sources, requestedConfigKeys),
     issues: config.issues.filter((issue) => requestedConfigKeys.has(issue.key)),
   };
+  const runtimeConfigSnapshots = platform ? createArtifactRuntimeConfigSnapshots({
+    sourceId: options.sourceId,
+    sourceIdentity: options.sourceIdentity,
+    logicalIdentity: options.logicalIdentity,
+    manifest: options.target.sourceManifest,
+    platform,
+    scope: options.scope,
+    config,
+    requestedArtifactIds: request.requestedArtifactIds,
+  }) : {};
 
   const artifactSources = await Promise.all(
     request.declarations
@@ -374,6 +388,11 @@ export async function writeArtifactRendererContext(options: {
       changedConfigKeys: (options.changedConfigKeys ?? [])
         .filter((key) => requestedConfigKeys.has(key)),
       requestedArtifactIds: request.requestedArtifactIds,
+      ...(Object.keys(runtimeConfigSnapshots).length > 0 ? {
+        runtimeConfig: Object.fromEntries(Object.entries(runtimeConfigSnapshots).map(([id, snapshot]) => [
+          id, { revision: snapshot.revision, resourceVersion: snapshot.resourceVersion },
+        ])),
+      } : {}),
       previousArtifacts: options.previousArtifacts ?? [],
       artifactSources,
       runtimeImports: request.declarations
@@ -421,6 +440,7 @@ export async function writeArtifactRendererContext(options: {
         options.target.sourceManifest,
         config.values,
       ),
+      runtimeConfigSnapshots,
       cleanup: async () => {
         await fs.remove(tempDir);
       },
@@ -435,6 +455,8 @@ function summarizeRenderOutput(value: string, sensitiveValues: readonly string[]
   const summary = summarizePluginScriptOutput(value, sensitiveValues);
   return summary === '' ? '<empty>' : summary;
 }
+
+export const ARTIFACT_RENDERER_MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 
 function assertArtifactPlanEnvelope(
   value: unknown,
@@ -496,6 +518,7 @@ async function runArtifactRendererProcess(options: {
 }): Promise<PluginProcessResult> {
   const runOptions = {
     timeoutMs: options.timeoutMs,
+    maxStdoutBytes: ARTIFACT_RENDERER_MAX_STDOUT_BYTES,
     ...(options.signal ? { signal: options.signal } : {}),
   };
   return options.runner
@@ -606,6 +629,10 @@ export async function runArtifactRenderer(options: {
       writtenContext.sensitiveValues,
     );
 
+    if (result.stdoutTruncated || Buffer.byteLength(result.stdout, 'utf8') > ARTIFACT_RENDERER_MAX_STDOUT_BYTES) {
+      throw new Error('artifactRendererOutputTooLarge: Artifact renderer JSON exceeds the 16 MiB limit.');
+    }
+
     if (result.timedOut) {
       throw new Error(
         `Artifact renderer timed out after ${timeoutMs} ms. stderr: ${stderrSummary}`,
@@ -617,7 +644,7 @@ export async function runArtifactRenderer(options: {
       );
     }
 
-    const rawStdout = truncatePluginScriptOutput(result.stdout).trim();
+    const rawStdout = result.stdout.trim();
     let parsed: unknown;
     try {
       parsed = JSON.parse(rawStdout);
@@ -659,6 +686,7 @@ export async function runArtifactRenderer(options: {
       plan,
       target,
       context: writtenContext.context,
+      runtimeConfigSnapshots: writtenContext.runtimeConfigSnapshots,
       exitCode: result.exitCode,
       signal: result.signal,
       stdout: stdoutSummary,

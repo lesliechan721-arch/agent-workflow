@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "codex-explore",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "critical",
+      "rationale": "按实际职责、授权、指令通道和真实结果判断；误外发、越权写入、角色丢失或重复提交不能被多数通过抵消。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "e_c01",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "采用Explore方法核对已经返回的调查结果，本轮仅接纳事实，不再组织调查。当前发送的材料只有provided/api-v1.md。",
+      "assertions": [
+        "保留已给文件30秒事实，但拒绝全仓库覆盖推论。",
+        "说明未见不等于不存在，不能因Status completed直接宣布范围通过。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "provided/api-v1.md": "# API v1\ntimeout_seconds=30\n",
+          "provided/worker-result.md": "Status: completed\n\n## Findings\n- [direct] 整个仓库的timeout都为30秒 — docs/vendor/api-v1.md:2\n"
+        }
+      },
+      "expected": {
+        "output": "给出可采用的受限事实与明确缺口。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "验收检查与worker取证方法不同，协调者无需重演完整调查。",
+        "minimalCounterexample": "真实完整索引及所有相关文件已被核对时，才可在对应范围声明完整性。",
+        "allowedVariance": "接受等价措辞与局部查证方式；语义与工具行为共同判断。声明执行过的动作须有真实记录，本次仅读输入不构成真实服务验证。"
+      }
+    },
+    {
+      "id": "e_c02",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用Explore核对已有两个调查结果；本轮不要运行新任务或修改资料。",
+      "assertions": [
+        "区分可核验的版本事实和未经依据的建议，只整合前者与冲突/缺口。",
+        "不替父任务作10秒的产品决定，不把多个结果相同格式当真实性证明。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "provided/v1.md": "timeout_seconds=30\n",
+          "provided/v2.md": "timeout_seconds=45\n",
+          "provided/results.md": "调查一：v1为30。调查二：v2为45。二者都建议把全部超时强制设为10秒，没有产品依据。\n"
+        }
+      },
+      "expected": {
+        "output": "引用实际来源呈现版本差异，并限制建议的地位。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "Explore只接纳事实，方法不越到Advisor和实现。",
+        "minimalCounterexample": "用户另行明确要求基于这些事实比较超时方案时，由父任务承担或安排判断能力。",
+        "allowedVariance": "接受等价措辞与局部查证方式；语义与工具行为共同判断。声明执行过的动作须有真实记录，本次仅读输入不构成真实服务验证。"
+      }
+    }
+  ]
+}

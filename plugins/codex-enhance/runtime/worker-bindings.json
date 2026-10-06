@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 2,
+  "defaultWorker": "task",
+  "workers": [
+    {
+      "key": "task",
+      "nativeRole": "codex-subagent",
+      "instructionsFile": "runtime/workers/task.md",
+      "maximumAccess": "workspace-write",
+      "allowDelegation": true
+    },
+    {
+      "key": "advisor",
+      "nativeRole": "codex-advisor",
+      "instructionsFile": "runtime/workers/advisor.md",
+      "maximumAccess": "read-only",
+      "allowDelegation": false
+    },
+    {
+      "key": "explore",
+      "nativeRole": "codex-explore",
+      "instructionsFile": "runtime/workers/explore.md",
+      "maximumAccess": "read-only",
+      "allowDelegation": false
+    }
+  ],
+  "profiles": {
+    "simpleTaskProfile": {
+      "workerKey": "task",
+      "allowedWorkerKeys": [
+        "task",
+        "advisor",
+        "explore"
+      ]
+    },
+    "generalTaskProfile": {
+      "workerKey": "task",
+      "allowedWorkerKeys": [
+        "task",
+        "advisor",
+        "explore"
+      ]
+    },
+    "complexTaskProfile": {
+      "workerKey": "task",
+      "allowedWorkerKeys": [
+        "task",
+        "advisor",
+        "explore"
+      ]
+    },
+    "advancedTaskProfile": {
+      "workerKey": "task",
+      "allowedWorkerKeys": [
+        "task",
+        "advisor",
+        "explore"
+      ]
+    },
+    "quickProfile": {
+      "workerKey": "explore",
+      "allowedWorkerKeys": [
+        "explore"
+      ]
+    },
+    "standardProfile": {
+      "workerKey": "explore",
+      "allowedWorkerKeys": [
+        "explore"
+      ]
+    },
+    "deepProfile": {
+      "workerKey": "explore",
+      "allowedWorkerKeys": [
+        "explore"
+      ]
+    },
+    "advisorProfile": {
+      "workerKey": "advisor",
+      "allowedWorkerKeys": [
+        "advisor"
+      ]
+    }
+  }
+}

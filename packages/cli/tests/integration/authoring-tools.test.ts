@@ -4375,6 +4375,7 @@ describe('authoring tools', () => {
             scopes: ['user', 'project'],
             states: ['present'],
             refreshKeys: ['nativeMode'],
+            runtimeConfig: { keys: ['nativeMode'], resourceVersion: 'fixture-runtime-v1' },
             skillKey: nativeId,
             sourceDirs: [`./skills/${nativeId}`],
           }],
@@ -4387,6 +4388,7 @@ describe('authoring tools', () => {
           'const fs = await import("node:fs");',
           'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
           'if (context.scope !== "user" || context.config.targetScope !== "user") process.exit(1);',
+          `if (!context.runtimeConfig?.[${JSON.stringify(nativeId)}]?.revision || context.runtimeConfig[${JSON.stringify(nativeId)}].resourceVersion !== "fixture-runtime-v1") process.exit(3);`,
           `if (JSON.stringify(context.requestedArtifactIds) !== ${JSON.stringify(JSON.stringify([nativeId]))}) process.exit(2);`,
           'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
           `  id: ${JSON.stringify(nativeId)}, platform: "codex", target: "codex.skill", kind: "skill",`,
@@ -6162,7 +6164,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v13 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v14 is unavailable'),
     });
   });
 
@@ -6211,7 +6213,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v13 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v14 is unavailable'),
     });
 
     const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
@@ -6224,7 +6226,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v13 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v14 is unavailable'),
     });
   });
 

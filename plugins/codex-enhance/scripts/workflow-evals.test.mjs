@@ -278,7 +278,7 @@ function versionedRun() {
     tool: 'spawn_agent',
     call_id: 'spawn-versioned',
     arguments: {
-      agent_type: 'codex-explore-standard',
+      agent_type: 'codex-explore',
       message: '调查 docs/ 中的 timeout 演进。',
       fork_turns: 'none',
     },
@@ -306,7 +306,7 @@ function versionedRun() {
     leaf_trace: {
       child_threads: [{
         thread_id: childId,
-        agent_role: 'codex-explore-standard',
+        agent_role: 'codex-explore',
         initial_user_message: null,
         initial_opaque_link: { linkedCallId: 'spawn-versioned' },
       }],
@@ -360,16 +360,16 @@ function testVersionedWorkflowOracle() {
   assert.equal(evaluateWorkflowRun(missingLoad, expected).passed, false);
 
   const wrongRole = structuredClone(passing);
-  wrongRole.leaf_trace.child_threads[0].agent_role = 'codex-explore-quick';
+  wrongRole.leaf_trace.child_threads[0].agent_role = 'codex-advisor';
   assert.equal(evaluateWorkflowRun(wrongRole, expected).passed, false);
 
   const inheritedContext = structuredClone(passing);
   delete inheritedContext.spawn_calls[0].arguments.fork_turns;
   assert.equal(evaluateWorkflowRun(inheritedContext, expected).passed, false);
 
-  const overriddenPreset = structuredClone(passing);
-  overriddenPreset.spawn_calls[0].arguments.model = 'gpt-5.6-luna';
-  assert.equal(evaluateWorkflowRun(overriddenPreset, expected).passed, false);
+  const explicitModelSelection = structuredClone(passing);
+  explicitModelSelection.spawn_calls[0].arguments.model = 'gpt-5.6-luna';
+  assert.equal(evaluateWorkflowRun(explicitModelSelection, expected).passed, true);
 
   const missingTerminal = structuredClone(passing);
   missingTerminal.leaf_tool_calls = [];
@@ -491,7 +491,7 @@ function rolloutExecutedOutput(callId, output, executedToolCalls) {
 function testRolloutTimeline() {
   const spawn = rolloutCall(
     'spawn_agent',
-    { agent_type: 'codex-explore-standard' },
+    { agent_type: 'codex-explore' },
     'call-spawn',
   );
   const lines = [
@@ -552,7 +552,7 @@ function testCodeModeRolloutTimeline() {
       {
         name: 'collaboration__spawn_agent',
         arguments: {
-          agent_type: 'codex-explore-standard',
+          agent_type: 'codex-explore',
           task_name: 'evidence',
         },
       },
@@ -572,7 +572,7 @@ function testCodeModeRolloutTimeline() {
   assert.equal(timeline[1].tool, 'spawn_agent');
   assert.equal(timeline[1].namespace, 'collaboration');
   assert.deepEqual(timeline[1].arguments, {
-    agent_type: 'codex-explore-standard',
+    agent_type: 'codex-explore',
     task_name: 'evidence',
   });
   assert.equal(timeline[2].tool, 'exec_command');
@@ -766,10 +766,7 @@ async function testRoleContractDigest() {
   try {
     await mkdir(agentsRoot, { recursive: true });
     for (const name of [
-      'codex-explore-custom',
-      'codex-explore-deep',
-      'codex-explore-quick',
-      'codex-explore-standard',
+      'codex-explore',
     ]) {
       await writeFile(
         path.join(agentsRoot, `${name}.toml`),
@@ -780,14 +777,11 @@ async function testRoleContractDigest() {
     const initial = await inspectExploreRoleContract(root);
     assert.match(initial.digest, /^sha256:[a-f0-9]{64}$/u);
     assert.deepEqual(initial.roles.map((role) => role.name), [
-      'codex-explore-custom',
-      'codex-explore-deep',
-      'codex-explore-quick',
-      'codex-explore-standard',
+      'codex-explore',
     ]);
     await writeFile(
-      path.join(agentsRoot, 'codex-explore-standard.toml'),
-      'name = "codex-explore-standard"\ndescription = "standard role"\ndeveloper_instructions = "Changed."\n',
+      path.join(agentsRoot, 'codex-explore.toml'),
+      'name = "codex-explore"\ndescription = "standard role"\ndeveloper_instructions = "Changed."\n',
       'utf8',
     );
     assert.notEqual((await inspectExploreRoleContract(root)).digest, initial.digest);

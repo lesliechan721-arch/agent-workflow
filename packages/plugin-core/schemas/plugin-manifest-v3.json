@@ -240,7 +240,8 @@
             "refreshKeys": { "$ref": "#/$defs/stringArray" }, "requiresCodexProjectConfig": { "type": "boolean" },
             "delivery": { "$ref": "#/$defs/codexSkillDelivery" },
             "roleKey": { "type": "string" }, "skillKey": { "type": "string" }, "sourceDirs": { "$ref": "#/$defs/stringArray" },
-            "runtimeImports": { "$ref": "#/$defs/artifactRuntimeImports" }
+            "runtimeImports": { "$ref": "#/$defs/artifactRuntimeImports" },
+            "runtimeConfig": { "$ref": "#/$defs/runtimeConfig" }
           }
         },
         {
@@ -255,10 +256,19 @@
             "states": { "type": "array", "items": { "enum": ["present", "disabled"] } },
             "refreshKeys": { "$ref": "#/$defs/stringArray" }, "requiresCodexProjectConfig": { "type": "boolean" },
             "roleKey": { "type": "string" }, "skillKey": { "type": "string" }, "sourceDirs": { "$ref": "#/$defs/stringArray" },
-            "runtimeImports": { "$ref": "#/$defs/artifactRuntimeImports" }
+            "runtimeImports": { "$ref": "#/$defs/artifactRuntimeImports" },
+            "runtimeConfig": { "$ref": "#/$defs/runtimeConfig" }
           }
         }
       ]
+    },
+    "runtimeConfig": {
+      "type": "object", "additionalProperties": false, "required": ["keys", "resourceVersion"],
+      "properties": {
+        "keys": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "artifactIds": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "resourceVersion": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
     },
     "artifacts": {
       "type": "object", "additionalProperties": false,
@@ -361,7 +371,8 @@
       "properties": {
         "minItems": { "type": "integer", "minimum": 0, "maximum": 128 },
         "maxItems": { "type": "integer", "minimum": 0, "maximum": 128 },
-        "uniqueItems": { "type": "boolean" }
+        "uniqueItems": { "type": "boolean" },
+        "uniqueBy": { "type": "string", "minLength": 1 }
       }
     },
     "configStringPreset": {
@@ -426,6 +437,15 @@
         "presets": { "type": "array", "items": { "$ref": "#/$defs/configObjectPreset" } }
       }
     },
+    "configValueReference": {
+      "type": "object", "additionalProperties": false, "required": ["field", "key"],
+      "properties": {
+        "field": { "type": "string", "minLength": 1 },
+        "key": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "include": { "type": "array", "maxItems": 128, "uniqueItems": true, "items": { "$ref": "#/$defs/configScalar" } }
+      }
+    },
     "configScalar": {
       "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }]
     },
@@ -467,6 +487,7 @@
     "configPlainStringField": {
       "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
+        "valueRef": { "$ref": "#/$defs/configValueReference" },
         "type": { "const": "string" }, "title": { "type": "string" }, "description": { "type": "string" },
         "default": { "type": "string" }, "required": { "type": "boolean" }, "sensitive": { "const": false },
         "choices": { "$ref": "#/$defs/configStringChoices" }, "validation": { "$ref": "#/$defs/configStringValidation" }
@@ -483,6 +504,7 @@
     "configNumberField": {
       "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
+        "valueRef": { "$ref": "#/$defs/configValueReference" },
         "type": { "const": "number" }, "title": { "type": "string" }, "description": { "type": "string" },
         "default": { "type": "number" }, "required": { "type": "boolean" }, "sensitive": false,
         "choices": { "$ref": "#/$defs/configNumberChoices" }, "validation": { "$ref": "#/$defs/configNumberValidation" }
@@ -491,6 +513,7 @@
     "configBooleanField": {
       "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
+        "valueRef": { "$ref": "#/$defs/configValueReference" },
         "type": { "const": "boolean" }, "title": { "type": "string" }, "description": { "type": "string" },
         "default": { "type": "boolean" }, "required": { "type": "boolean" }, "sensitive": false,
         "choices": { "$ref": "#/$defs/configBooleanChoices" }
@@ -507,6 +530,7 @@
     "configStringChildField": {
       "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
+        "valueRef": { "$ref": "#/$defs/configValueReference" },
         "type": { "const": "string" }, "title": { "type": "string" }, "description": { "type": "string" },
         "required": { "type": "boolean" }, "sensitive": false,
         "choices": { "$ref": "#/$defs/configStringChoices" }, "validation": { "$ref": "#/$defs/configStringValidation" }
@@ -515,6 +539,7 @@
     "configNumberChildField": {
       "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
+        "valueRef": { "$ref": "#/$defs/configValueReference" },
         "type": { "const": "number" }, "title": { "type": "string" }, "description": { "type": "string" },
         "required": { "type": "boolean" }, "sensitive": false,
         "choices": { "$ref": "#/$defs/configNumberChoices" }, "validation": { "$ref": "#/$defs/configNumberValidation" }
@@ -523,6 +548,7 @@
     "configBooleanChildField": {
       "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
+        "valueRef": { "$ref": "#/$defs/configValueReference" },
         "type": { "const": "boolean" }, "title": { "type": "string" }, "description": { "type": "string" },
         "required": { "type": "boolean" }, "sensitive": false,
         "choices": { "$ref": "#/$defs/configBooleanChoices" }
@@ -536,6 +562,7 @@
     "configStringDynamicField": {
       "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
+        "valueRef": { "$ref": "#/$defs/configValueReference" },
         "type": { "const": "string" }, "title": { "type": "string" }, "description": { "type": "string" },
         "sensitive": false, "choices": { "$ref": "#/$defs/configStringChoices" },
         "validation": { "$ref": "#/$defs/configStringValidation" }
@@ -544,6 +571,7 @@
     "configNumberDynamicField": {
       "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
+        "valueRef": { "$ref": "#/$defs/configValueReference" },
         "type": { "const": "number" }, "title": { "type": "string" }, "description": { "type": "string" },
         "sensitive": false, "choices": { "$ref": "#/$defs/configNumberChoices" },
         "validation": { "$ref": "#/$defs/configNumberValidation" }
@@ -552,6 +580,7 @@
     "configBooleanDynamicField": {
       "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
+        "valueRef": { "$ref": "#/$defs/configValueReference" },
         "type": { "const": "boolean" }, "title": { "type": "string" }, "description": { "type": "string" },
         "sensitive": false, "choices": { "$ref": "#/$defs/configBooleanChoices" }
       }

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aw.dev/schemas/workflow-evaluation.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifacts", "checks", "interactions"],
+  "properties": {
+    "artifacts": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/path" } },
+    "checks": { "type": "array", "minItems": 1, "maxItems": 64, "items": {
+      "type": "object", "additionalProperties": false, "required": ["name", "criterion"],
+      "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 200 }, "criterion": { "type": "string", "minLength": 1, "maxLength": 20000 } }
+    } },
+    "interactions": { "type": "array", "maxItems": 8, "items": {
+      "type": "object", "additionalProperties": false, "required": ["id", "when", "answer", "protectedPaths"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "when": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "answer": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "protectedPaths": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/path" } },
+        "action": { "$ref": "#/$defs/action" }
+      }
+    } },
+    "setupPrompt": { "type": "string", "minLength": 1, "maxLength": 20000 },
+    "setupActions": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/action" } },
+    "finalActions": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/action" } }
+  },
+  "$defs": {
+    "path": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*\\\\)(?!.*//).+$" },
+    "action": {
+      "type": "object", "additionalProperties": false, "required": ["command", "input"],
+      "properties": {
+        "command": { "type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{ "const": "node" }, { "$ref": "#/$defs/path" }] },
+        "input": {},
+        "pathPrepend": { "type": "array", "maxItems": 8, "uniqueItems": true, "items": { "$ref": "#/$defs/path" } }
+      }
+    }
+  }
+}

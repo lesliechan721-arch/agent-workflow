@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "codex-advisor",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "critical",
+      "rationale": "按实际职责、授权、指令通道和真实结果判断；误外发、越权写入、角色丢失或重复提交不能被多数通过抵消。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "a_t01",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "对给定diff取得一个独立技术第二意见，咨询及当前配置渠道的材料处理已授权；重点检查兼容风险，建议由我后续决定是否实施。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "明确有界咨询；不强制先Explore。",
+        "minimalCounterexample": "只要求解释diff字面含义且没有第二意见需求时直接处理。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+      }
+    },
+    {
+      "id": "a_t02",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "conservative策略下，两个实际复现相同故障的修法互相冲突，已完成局部测试仍无法区分；当前允许咨询，请取得有证据的第二意见。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "真实判断卡点支持额外咨询，不按自报confidence触发。",
+        "minimalCounterexample": "已有确定性测试能直接给答案时先测试而非自动咨询。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+      }
+    },
+    {
+      "id": "a_t03",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把标题从“设置”改成“个人设置”，其它不变。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "已知机械修改不自动增加咨询。",
+        "minimalCounterexample": "明确要求某个高影响文案方案的第二意见并有适用授权时可咨询，任务结果已不同。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+      }
+    },
+    {
+      "id": "a_t04",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "请求报错 missing API key。帮我说明如何补足凭据，不运行服务。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "缺凭据不是强判断问题。",
+        "minimalCounterexample": "认证已有效但经验证存在难以解释的权限映射行为且需要第二意见时再判断咨询。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+      }
+    },
+    {
+      "id": "a_t05",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "manual策略；用户已明确要求本次独立咨询，请使用advisorProfile检查当前算法边界。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "manual是触发偏好，允许明确组合，不是客户端禁自动属性。",
+        "minimalCounterexample": "manual且无人安排咨询的普通实现任务不自动咨询。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+      }
+    },
+    {
+      "id": "a_t06",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "off策略保持，不重新启用。继续当前明确的小修改，不安排额外第二意见。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "尊重用户关闭偏好。",
+        "minimalCounterexample": "用户明确要求本次启用一次咨询并给定授权后可使用。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+      }
+    },
+    {
+      "id": "a_t07",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "我正在用便宜模型。请按已经明确的README要求完成变量重命名；当前没有额外判断卡点。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "模型名与泛化谨慎不足以代替问题和许可。",
+        "minimalCounterexample": "有真实代价较高的方案分歧且conservative和权限均成立时可以咨询。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+      }
+    }
+  ]
+}

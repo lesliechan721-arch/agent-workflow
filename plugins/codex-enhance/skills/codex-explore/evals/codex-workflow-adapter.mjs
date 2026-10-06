@@ -7,10 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const INPUT_KEYS = ['attempt', 'case', 'paths', 'phase', 'variant', 'version'];
 const ROLE_NAMES = [
-  'codex-explore-custom',
-  'codex-explore-deep',
-  'codex-explore-quick',
-  'codex-explore-standard',
+  'codex-explore',
 ];
 
 export const EXPLORE_DEVELOPER_INSTRUCTIONS = [

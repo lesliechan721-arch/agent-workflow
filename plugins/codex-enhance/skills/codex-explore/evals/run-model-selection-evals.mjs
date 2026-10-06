@@ -47,6 +47,10 @@ function validateExpected(expected, id) {
       typeof nested.root_skill_explicitly_invoked !== 'boolean' ||
       typeof nested.child_skill !== 'string' ||
       typeof nested.child_agent_type !== 'string' ||
+      (nested.grandchild_arguments !== undefined && (!nested.grandchild_arguments
+        || typeof nested.grandchild_arguments !== 'object' || Array.isArray(nested.grandchild_arguments)
+        || Object.entries(nested.grandchild_arguments).some(([key, value]) => !['model', 'reasoning_effort'].includes(key)
+          || typeof value !== 'string' || !value.trim()))) ||
       (nested.child_initial_message !== undefined &&
         (typeof nested.child_initial_message !== 'string' ||
           nested.child_initial_message.trim() === '')) ||
@@ -180,6 +184,14 @@ function evaluateNestedDelegation(run, expected) {
     : [];
   const grandchildAttempts = directChildCalls.filter((call) => call?.tool === 'spawn_agent');
   const grandchildSpawns = grandchildAttempts.filter((call) => !spawnRejected(call));
+  const observedChildSkills = (nested.expect_child_skill_loaded === false
+    ? ['codex-subagent-guide', 'codex-advisor', 'codex-explore']
+    : [nested.child_skill]).filter((skill) => directChild && commandLoadedSkill(
+      directChildCalls,
+      skill,
+      run.skill_loads,
+      directChild.thread_id,
+    ));
   const grandchildThreads = directChild
     ? (run.leaf_trace?.child_threads ?? []).filter((thread) =>
       thread.parent_thread_id === directChild.thread_id &&
@@ -202,13 +214,10 @@ function evaluateNestedDelegation(run, expected) {
     },
     {
       name: 'nested.child_skill_load',
-      passed: commandLoadedSkill(
-        directChildCalls,
-        nested.child_skill,
-        run.skill_loads,
-        directChild?.thread_id,
-      ),
-      evidence: `skill=${nested.child_skill}`,
+      passed: nested.expect_child_skill_loaded === false
+        ? observedChildSkills.length === 0
+        : observedChildSkills.includes(nested.child_skill),
+      evidence: `expected_load=${nested.expect_child_skill_loaded ?? true} observed=${JSON.stringify(observedChildSkills)}`,
     },
     {
       name: 'nested.direct_child_trace',
@@ -217,13 +226,15 @@ function evaluateNestedDelegation(run, expected) {
     },
     {
       name: 'nested.grandchild_spawn_count',
-      passed: grandchildSpawns.length >= nested.grandchild_spawn_calls.min &&
-        grandchildSpawns.length <= nested.grandchild_spawn_calls.max,
+      passed: nested.grandchild_spawn_calls.max === 0
+        ? grandchildAttempts.length === 0
+        : grandchildSpawns.length >= nested.grandchild_spawn_calls.min &&
+          grandchildSpawns.length <= nested.grandchild_spawn_calls.max,
       evidence: `expected=${nested.grandchild_spawn_calls.min}..${nested.grandchild_spawn_calls.max} successful=${grandchildSpawns.length} attempted=${grandchildAttempts.length}`,
     },
     {
       name: 'nested.grandchild_agent_type',
-      passed: grandchildSpawns.length > 0 && grandchildSpawns.every((call) =>
+      passed: (nested.grandchild_spawn_calls.min === 0 || grandchildSpawns.length > 0) && grandchildSpawns.every((call) =>
         call?.arguments?.agent_type === nested.child_agent_type),
       evidence: `expected=${nested.child_agent_type} actual=${JSON.stringify(
         grandchildSpawns.map((call) => call?.arguments?.agent_type),
@@ -241,6 +252,11 @@ function evaluateNestedDelegation(run, expected) {
       evidence: `expected=${nested.expect_child_developer_authorization} actual=${childContext?.has_codex_explore_developer_authorization}`,
     },
   ];
+  if (nested.grandchild_arguments) {
+    grandchildSpawns.forEach((call, index) => {
+      assertions.push(...evaluateArguments(call, nested.grandchild_arguments, `nested.grandchild_arguments.${index}`));
+    });
+  }
   if (nested.child_initial_message !== undefined) {
     assertions.push({
       name: 'nested.child_initial_message',

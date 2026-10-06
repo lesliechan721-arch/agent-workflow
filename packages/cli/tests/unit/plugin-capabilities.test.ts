@@ -88,6 +88,13 @@ describe('plugin capabilities command', () => {
       required: true,
       requires: 'Return exactly these declared artifacts and no other artifacts.',
     }));
+    expect(result.capabilities.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: 'rendererContext.runtimeConfig', owner: 'core', required: false }),
+      expect.objectContaining({ field: 'artifacts.targets[].runtimeConfig', owner: 'core', required: false }),
+      expect.objectContaining({ field: 'artifacts.targets[].runtimeConfig.keys', required: 'with runtimeConfig' }),
+      expect.objectContaining({ field: 'artifacts.targets[].runtimeConfig.resourceVersion', required: 'with runtimeConfig' }),
+      expect.objectContaining({ field: 'artifacts.targets[].runtimeConfig.artifactIds', required: false }),
+    ]));
   });
 
   it('renders a compact human view', async () => {

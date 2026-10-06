@@ -875,6 +875,9 @@ async function collectRuntimeClosureFiles(
     entryFiles,
     dependencies,
     devDependencies,
+    runtimeConfigSkillRoots: (plugin.manifest.artifacts?.targets ?? [])
+      .filter((target) => target.runtimeConfig !== undefined)
+      .flatMap((target) => target.sourceDirs ?? []),
   });
   if (scan.errors.length > 0) {
     throw new Error(`Invalid scripts.node runtime imports:\n${scan.errors.join('\n')}`);

@@ -5,6 +5,10 @@ const names = [
   'eval-spec',
   'eval-audit',
   'eval-result',
+  'instruction-v2-request',
+  'instruction-v2-receipt',
+  'workflow-fixture-action',
+  'workflow-evaluation',
 ]
 const canonicalRoot = new URL('../schemas/', import.meta.url)
 const outputRoot = new URL('../dist/schemas/', import.meta.url)

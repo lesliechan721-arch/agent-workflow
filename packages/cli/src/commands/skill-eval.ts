@@ -29,6 +29,8 @@ import {
 import type { PluginMeta } from '../types.js'
 import { validateSkillDirectory } from '../utils/dynamic-skill-tree.js'
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js'
+import { normalizeReviewProfileConfig } from '../review/review-profile.js'
+import type { ReviewProfileConfig } from '../review/review-types.js'
 import {
   resolveAwSourceBindingEvalProvider,
   resolveEvalProfileBindingInput,
@@ -45,6 +47,7 @@ export interface SkillEvalSelection {
   skillName: string
   suiteId?: string
   profileId?: string
+  configFile?: string
 }
 
 export interface PrepareSkillEvalOptions extends SkillEvalSelection {
@@ -95,6 +98,7 @@ interface ResolvedSelection {
   manifestPath: string
   suite: AwSkillEvalManifestV1Suite
   profile: AwSkillEvalManifestV1Profile
+  profileConfig: ReviewProfileConfig
   cases: SelectedCasesDocument
   defaults: { runs?: number; timeoutMs?: number }
   corpusPaths: string[]
@@ -207,7 +211,7 @@ async function assertAbsentSafeOutputDirectory(options: {
   return rechecked
 }
 
-async function resolveSelection(options: SkillEvalSelection): Promise<ResolvedSelection> {
+async function resolveSelection(options: PrepareSkillEvalOptions): Promise<ResolvedSelection> {
   const workspace = await readCatalogWorkspace(options.workspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS })
   const plugin = workspace.plugins.find((entry) => entry.manifest.name === options.pluginName)
   if (!plugin) throw new Error(`Plugin "${options.pluginName}" is not a canonical plugin in this Catalog Workspace.`)
@@ -232,6 +236,16 @@ async function resolveSelection(options: SkillEvalSelection): Promise<ResolvedSe
     throw new Error(`Eval suite "${suite.id}" does not support profile "${profile.id}".`)
   }
   assertNoSensitiveProfileConfig(profile, workspace.plugins)
+  let profileConfig: ReviewProfileConfig = {}
+  if (options.configFile !== undefined) {
+    const configPath = path.resolve(options.cwd, options.configFile)
+    const info = await fs.lstat(configPath)
+    if (!info.isFile() || info.isSymbolicLink()) {
+      throw new Error('Eval config file must be a regular non-symbolic-link file.')
+    }
+    profileConfig = normalizeReviewProfileConfig(await fs.readJson(configPath) as unknown)
+    resolveEvalProfileBindingInput(profile, workspace.plugins, profileConfig)
+  }
   return {
     workspaceRoot: workspace.workspaceRoot,
     workspaceIdentity: workspace.workspaceIdentity,
@@ -242,6 +256,7 @@ async function resolveSelection(options: SkillEvalSelection): Promise<ResolvedSe
     manifestPath: loaded.manifestPath,
     suite,
     profile,
+    profileConfig,
     cases: loaded.casesBySuite.get(suite.id)!,
     defaults: loaded.manifest.defaults,
     corpusPaths: loaded.manifest.suites.map((entry) => entry.cases),
@@ -289,7 +304,9 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     metadataPath: selection.metadataPath,
     plugins: selection.plugins,
   })
-  const profileBinding = resolveEvalProfileBindingInput(selection.profile, selection.plugins)
+  const profileBinding = resolveEvalProfileBindingInput(
+    selection.profile, selection.plugins, selection.profileConfig,
+  )
   const outputBoundary = {
     target: path.resolve(options.cwd, options.output),
     cwd: options.cwd,
@@ -437,6 +454,7 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     const currentProfile = resolveEvalProfileBindingInput(
       currentSelection.profile,
       currentSelection.plugins,
+      currentSelection.profileConfig,
     ).profile
     const currentProvider = await resolveAwSourceBindingEvalProvider({
       evalRoot: currentSelection.evalRoot,

@@ -18,7 +18,7 @@
         "diagnostic"
       ],
       "input": {
-        "prompt": "$codex-explore 当前没有其它可并行的本地工作。请委派 standard role，先运行只读命令 `node docs/liveness/verify-records.mjs`，等待它完成，再核验 docs/liveness/records/ 下全部记录中的 timeout 分布并给出可复核文件证据；不得绕过该校验，也不要修改文件。最终答复末尾逐行输出：`FACT records=<记录总数>`、`FACT timeout_values=<升序逗号分隔值>`。 本次任务显式指定每次响应式等待窗口为 1 分钟。",
+        "prompt": "$codex-explore 当前没有其它可并行的本地工作。请委派 standard 档探索配置，先运行只读命令 `node docs/liveness/verify-records.mjs`，等待它完成，再核验 docs/liveness/records/ 下全部记录中的 timeout 分布并给出可复核文件证据；不得绕过该校验，也不要修改文件。最终答复末尾逐行输出：`FACT records=<记录总数>`、`FACT timeout_values=<升序逗号分隔值>`。 本次任务显式指定每次响应式等待窗口为 1 分钟。",
         "codex_config": {
           "features.multi_agent_v2.enabled": true,
           "features.multi_agent_v2.hide_spawn_agent_metadata": true,
@@ -27,7 +27,7 @@
       },
       "expected": {
         "criteria": {
-          "agent_type": "codex-explore-standard",
+          "agent_type": "codex-explore",
           "final_message_includes_all": [
             "docs/liveness/records/",
             "FACT records=120",
@@ -52,7 +52,7 @@
         "diagnostic"
       ],
       "input": {
-        "prompt": "$codex-explore 当前没有其它可并行的本地工作。请委派 standard role，先运行只读命令 `node docs/liveness/verify-records.mjs`，等待它完成并核验 docs/liveness/records/ 下全部记录，再用应存在的 docs/liveness/authoritative-index.md 判断哪个 timeout 是权威值。不得绕过该校验；缺少决定性来源时不要猜，说明阻塞或证据不足并等待探索结束；不要修改文件。最终答复末尾逐行输出：`FACT records=<记录总数>`、`FACT authority_available=<true|false>`。 本次任务显式指定每次响应式等待窗口为 1 分钟。",
+        "prompt": "$codex-explore 当前没有其它可并行的本地工作。请委派 standard 档探索配置，先运行只读命令 `node docs/liveness/verify-records.mjs`，等待它完成并核验 docs/liveness/records/ 下全部记录，再用应存在的 docs/liveness/authoritative-index.md 判断哪个 timeout 是权威值。不得绕过该校验；缺少决定性来源时不要猜，说明阻塞或证据不足并等待探索结束；不要修改文件。最终答复末尾逐行输出：`FACT records=<记录总数>`、`FACT authority_available=<true|false>`。 本次任务显式指定每次响应式等待窗口为 1 分钟。",
         "codex_config": {
           "features.multi_agent_v2.enabled": true,
           "features.multi_agent_v2.hide_spawn_agent_metadata": true,
@@ -61,7 +61,7 @@
       },
       "expected": {
         "criteria": {
-          "agent_type": "codex-explore-standard",
+          "agent_type": "codex-explore",
           "final_message_includes_all": [
             "docs/liveness/authoritative-index.md",
             "FACT records=120",
@@ -86,14 +86,14 @@
         "diagnostic"
       ],
       "input": {
-        "prompt": "$codex-explore 当前没有其它可并行的本地工作。请使用 V1 委派 standard role，先运行只读命令 `node docs/liveness/verify-records.mjs`，等待它完成，再核验 docs/liveness/records/ 下全部记录中的 timeout 分布并给出可复核文件证据；不得绕过该校验，也不要修改文件。最终答复末尾逐行输出：`FACT records=<记录总数>`、`FACT timeout_values=<升序逗号分隔值>`。 本次任务显式指定每次响应式等待窗口为 1 分钟。",
+        "prompt": "$codex-explore 当前没有其它可并行的本地工作。请使用 V1 委派 standard 档探索配置，先运行只读命令 `node docs/liveness/verify-records.mjs`，等待它完成，再核验 docs/liveness/records/ 下全部记录中的 timeout 分布并给出可复核文件证据；不得绕过该校验，也不要修改文件。最终答复末尾逐行输出：`FACT records=<记录总数>`、`FACT timeout_values=<升序逗号分隔值>`。 本次任务显式指定每次响应式等待窗口为 1 分钟。",
         "codex_config": {
           "features.multi_agent_v2.enabled": false
         }
       },
       "expected": {
         "criteria": {
-          "agent_type": "codex-explore-standard",
+          "agent_type": "codex-explore",
           "final_message_includes_all": [
             "docs/liveness/records/",
             "FACT records=120",

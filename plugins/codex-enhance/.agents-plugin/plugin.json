@@ -2,7 +2,7 @@
   "schemaVersion": 3,
   "name": "codex-enhance",
   "version": "0.2.0",
-  "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
+  "description": "在 Codex 中组织已授权的通用委派、只读技术第二意见和大范围事实调查。",
   "marketplace": {
     "category": "workflow",
     "tags": [
@@ -11,7 +11,8 @@
       "explorer",
       "research",
       "reasoning",
-      "wait"
+      "wait",
+      "advisor"
     ],
     "strict": true,
     "policy": {
@@ -24,7 +25,7 @@
   },
   "interface": {
     "displayName": "Codex Enhance",
-    "shortDescription": "Codex 只读探索与通用子代理编排增强",
+    "shortDescription": "Codex 通用委派、技术第二意见与只读事实调查",
     "capabilities": [
       "Skills",
       "Agents"
@@ -49,7 +50,9 @@
         "./scripts/routing-evals.test.mjs",
         "./scripts/lifecycle-evals.test.mjs",
         "./skills/codex-explore/evals/provider-contract.test.mjs",
-        "./skills/codex-subagent-guide/evals/provider-contract.test.mjs"
+        "./skills/codex-subagent-guide/evals/provider-contract.test.mjs",
+        "./skills/codex-subagent-guide/evals/role-boundary-provider.test.mjs",
+        "./scripts/subagent-runtime.test.mjs"
       ]
     }
   },
@@ -59,6 +62,131 @@
       "agentProfile": {
         "type": "object",
         "properties": {
+          "executor": {
+            "type": "string",
+            "title": "执行器",
+            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
+            "valueRef": {
+              "field": "subagentCommands",
+              "key": "key",
+              "label": "title",
+              "include": [
+                "native"
+              ]
+            },
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "model": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "gpt-6.1-sol",
+                  "title": "gpt-6.1-sol",
+                  "value": "gpt-6.1-sol"
+                },
+                {
+                  "id": "gpt-6-luna",
+                  "title": "gpt-6-luna",
+                  "value": "gpt-6-luna"
+                },
+                {
+                  "id": "gpt-6-astra",
+                  "title": "gpt-6-astra",
+                  "value": "gpt-6-astra"
+                },
+                {
+                  "id": "gpt-6-sol",
+                  "title": "gpt-6-sol",
+                  "value": "gpt-6-sol"
+                },
+                {
+                  "id": "gpt-5.6-luna",
+                  "title": "gpt-5.6-luna",
+                  "value": "gpt-5.6-luna"
+                },
+                {
+                  "id": "gpt-5.6-terra",
+                  "title": "gpt-5.6-terra",
+                  "value": "gpt-5.6-terra"
+                },
+                {
+                  "id": "gpt-5.6-sol",
+                  "title": "gpt-5.6-sol",
+                  "value": "gpt-5.6-sol"
+                }
+              ]
+            },
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "advisorAgentProfile": {
+        "type": "object",
+        "properties": {
+          "executor": {
+            "type": "string",
+            "title": "执行器",
+            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
+            "valueRef": {
+              "field": "subagentCommands",
+              "key": "key",
+              "label": "title",
+              "include": [
+                "native"
+              ]
+            },
+            "validation": {
+              "minLength": 1
+            },
+            "required": true
+          },
           "model": {
             "type": "string",
             "required": true,
@@ -153,8 +281,9 @@
       "quickProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "Quick 探索配置",
-        "description": "quick 探索 调度的模型与推理强度偏好，仅支持 user scope。",
+        "description": "quick 探索 调度的执行器、模型与推理强度偏好，仅支持 user scope。",
         "default": {
+          "executor": "native",
           "model": "gpt-6-luna",
           "reasoningEffort": "medium"
         },
@@ -163,8 +292,9 @@
       "standardProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "Standard 探索配置",
-        "description": "standard 探索 调度的模型与推理强度偏好，仅支持 user scope。",
+        "description": "standard 探索 调度的执行器、模型与推理强度偏好，仅支持 user scope。",
         "default": {
+          "executor": "native",
           "model": "gpt-6-luna",
           "reasoningEffort": "high"
         },
@@ -173,8 +303,9 @@
       "deepProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "Deep 探索配置",
-        "description": "deep 探索 调度的模型与推理强度偏好，仅支持 user scope。",
+        "description": "deep 探索 调度的执行器、模型与推理强度偏好，仅支持 user scope。",
         "default": {
+          "executor": "native",
           "model": "gpt-6-luna",
           "reasoningEffort": "xhigh"
         },
@@ -183,8 +314,9 @@
       "simpleTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "简单任务配置",
-        "description": "简单任务 调度的模型与推理强度偏好，仅支持 user scope。",
+        "description": "简单任务 调度的执行器、模型与推理强度偏好，仅支持 user scope。",
         "default": {
+          "executor": "native",
           "model": "gpt-6-luna",
           "reasoningEffort": "max"
         },
@@ -193,8 +325,9 @@
       "generalTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "常规任务配置",
-        "description": "常规任务 调度的模型与推理强度偏好，仅支持 user scope。",
+        "description": "常规任务 调度的执行器、模型与推理强度偏好，仅支持 user scope。",
         "default": {
+          "executor": "native",
           "model": "gpt-6.1-sol",
           "reasoningEffort": "medium"
         },
@@ -203,8 +336,9 @@
       "complexTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "复杂任务配置",
-        "description": "复杂任务 调度的模型与推理强度偏好，仅支持 user scope。",
+        "description": "复杂任务 调度的执行器、模型与推理强度偏好，仅支持 user scope。",
         "default": {
+          "executor": "native",
           "model": "gpt-6.1-sol",
           "reasoningEffort": "xhigh"
         },
@@ -213,11 +347,148 @@
       "advancedTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "高难任务配置",
-        "description": "高难任务 调度的模型与推理强度偏好，仅支持 user scope。",
+        "description": "高难任务 调度的执行器、模型与推理强度偏好，仅支持 user scope。",
         "default": {
+          "executor": "native",
           "model": "gpt-6-astra",
           "reasoningEffort": "high"
         },
+        "required": true
+      },
+      "advisorProfile": {
+        "$ref": "#/config/definitions/advisorAgentProfile",
+        "title": "技术第二意见配置",
+        "description": "独立咨询执行配置；不随 advancedTaskProfile 的修改动态改变，仅支持 user scope。",
+        "default": {
+          "executor": "native",
+          "model": "gpt-6-astra",
+          "reasoningEffort": "high"
+        },
+        "required": true
+      },
+      "advisorPolicy": {
+        "type": "object",
+        "title": "咨询策略",
+        "description": "策略只控制何时咨询和同一父任务的额度，不提供委派、费用或资料外发许可。",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "manual",
+                  "title": "manual",
+                  "value": "manual"
+                },
+                {
+                  "id": "conservative",
+                  "title": "conservative",
+                  "value": "conservative"
+                },
+                {
+                  "id": "off",
+                  "title": "off",
+                  "value": "off"
+                }
+              ]
+            }
+          },
+          "maxConsultations": {
+            "type": "number",
+            "required": true,
+            "validation": {
+              "integer": true,
+              "minimum": 1
+            }
+          },
+          "focus": {
+            "type": "string",
+            "required": true
+          }
+        },
+        "additionalProperties": false,
+        "default": {
+          "mode": "conservative",
+          "maxConsultations": 2,
+          "focus": ""
+        },
+        "required": true
+      },
+      "subagentCommands": {
+        "type": "array",
+        "title": "外部执行器",
+        "description": "注册可信适配器的绝对路径；key 大小写敏感，native 为保留值。支持声明不能替代实际环境验证。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "required": true,
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "title": {
+              "type": "string",
+              "required": true,
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "mode": {
+              "type": "string",
+              "required": true,
+              "choices": {
+                "allowCustom": false,
+                "presets": [
+                  {
+                    "id": "workspace",
+                    "title": "workspace",
+                    "value": "workspace"
+                  },
+                  {
+                    "id": "bundle",
+                    "title": "bundle",
+                    "value": "bundle"
+                  }
+                ]
+              }
+            },
+            "command": {
+              "type": "string",
+              "required": true,
+              "validation": {
+                "minLength": 1,
+                "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)",
+                "maxLength": 4096
+              }
+            },
+            "entrypoint": {
+              "type": "string",
+              "validation": {
+                "minLength": 1,
+                "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)",
+                "maxLength": 4096
+              }
+            },
+            "supportsSystemInstructions": {
+              "type": "boolean"
+            },
+            "supportsReadOnly": {
+              "type": "boolean"
+            },
+            "supportsWorkspaceWrite": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "validation": {
+          "uniqueBy": "key"
+        },
+        "default": [],
         "required": true
       }
     },
@@ -241,12 +512,31 @@
             "complexTaskProfile",
             "advancedTaskProfile"
           ]
+        },
+        {
+          "id": "codex-advisor",
+          "title": "codex-advisor",
+          "fields": [
+            "advisorProfile",
+            "advisorPolicy"
+          ]
+        },
+        {
+          "id": "executors",
+          "title": "外部执行器",
+          "fields": [
+            "subagentCommands"
+          ],
+          "advanced": true
         }
       ],
       "summaries": {
         "modelAndEffort": {
           "kind": "join",
           "parts": [
+            {
+              "path": "/executor"
+            },
             {
               "path": "/model"
             },
@@ -279,6 +569,9 @@
         },
         "advancedTaskProfile": {
           "summary": "modelAndEffort"
+        },
+        "advisorProfile": {
+          "summary": "modelAndEffort"
         }
       }
     }
@@ -303,14 +596,41 @@
           "present"
         ],
         "refreshKeys": [
+          "simpleTaskProfile",
+          "generalTaskProfile",
+          "complexTaskProfile",
+          "advancedTaskProfile",
           "quickProfile",
           "standardProfile",
-          "deepProfile"
+          "deepProfile",
+          "advisorProfile",
+          "advisorPolicy",
+          "subagentCommands"
         ],
         "skillKey": "codex-explore",
         "sourceDirs": [
           "./skills/codex-explore"
-        ]
+        ],
+        "runtimeConfig": {
+          "keys": [
+            "simpleTaskProfile",
+            "generalTaskProfile",
+            "complexTaskProfile",
+            "advancedTaskProfile",
+            "quickProfile",
+            "standardProfile",
+            "deepProfile",
+            "advisorProfile",
+            "advisorPolicy",
+            "subagentCommands"
+          ],
+          "resourceVersion": "1f29cf4c7e624f713d1a4d6e8d439aa59a55f31a7b69a0a1fce4f5cf8fda41d0",
+          "artifactIds": [
+            "codex-explore-skill",
+            "codex-subagent-guide-skill",
+            "codex-advisor-skill"
+          ]
+        }
       },
       {
         "id": "codex-explore-role",
@@ -349,12 +669,38 @@
           "simpleTaskProfile",
           "generalTaskProfile",
           "complexTaskProfile",
-          "advancedTaskProfile"
+          "advancedTaskProfile",
+          "quickProfile",
+          "standardProfile",
+          "deepProfile",
+          "advisorProfile",
+          "advisorPolicy",
+          "subagentCommands"
         ],
         "skillKey": "codex-subagent-guide",
         "sourceDirs": [
           "./skills/codex-subagent-guide"
-        ]
+        ],
+        "runtimeConfig": {
+          "keys": [
+            "simpleTaskProfile",
+            "generalTaskProfile",
+            "complexTaskProfile",
+            "advancedTaskProfile",
+            "quickProfile",
+            "standardProfile",
+            "deepProfile",
+            "advisorProfile",
+            "advisorPolicy",
+            "subagentCommands"
+          ],
+          "resourceVersion": "1f29cf4c7e624f713d1a4d6e8d439aa59a55f31a7b69a0a1fce4f5cf8fda41d0",
+          "artifactIds": [
+            "codex-explore-skill",
+            "codex-subagent-guide-skill",
+            "codex-advisor-skill"
+          ]
+        }
       },
       {
         "id": "codex-subagent-role",
@@ -371,7 +717,98 @@
         "refreshKeys": [],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-subagent"
+      },
+      {
+        "id": "codex-advisor-skill",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.skill",
+        "delivery": {
+          "mode": "codex-native",
+          "identity": "shared",
+          "renderProfile": "user"
+        },
+        "projectManagedKind": "skill",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "simpleTaskProfile",
+          "generalTaskProfile",
+          "complexTaskProfile",
+          "advancedTaskProfile",
+          "quickProfile",
+          "standardProfile",
+          "deepProfile",
+          "advisorProfile",
+          "advisorPolicy",
+          "subagentCommands"
+        ],
+        "skillKey": "codex-advisor",
+        "sourceDirs": [
+          "./skills/codex-advisor"
+        ],
+        "runtimeConfig": {
+          "keys": [
+            "simpleTaskProfile",
+            "generalTaskProfile",
+            "complexTaskProfile",
+            "advancedTaskProfile",
+            "quickProfile",
+            "standardProfile",
+            "deepProfile",
+            "advisorProfile",
+            "advisorPolicy",
+            "subagentCommands"
+          ],
+          "resourceVersion": "1f29cf4c7e624f713d1a4d6e8d439aa59a55f31a7b69a0a1fce4f5cf8fda41d0",
+          "artifactIds": [
+            "codex-explore-skill",
+            "codex-subagent-guide-skill",
+            "codex-advisor-skill"
+          ]
+        }
+      },
+      {
+        "id": "codex-advisor-role",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.agentRole",
+        "projectManagedKind": "agent",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-advisor"
       }
     ]
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.plugin-config-unique-by.v1",
+        "aw.plugin-config-value-ref.v1",
+        "aw.installed-runtime-config.v1"
+      ]
+    }
+  },
+  "buildConfig": {
+    "fileRules": {
+      "codex": {
+        "include": [
+          "worker-instructions/*.md",
+          "runtime/worker-bindings.json",
+          "skills/codex-subagent-guide/evals/fixtures/*.mjs"
+        ],
+        "exclude": []
+      }
+    }
   }
 }

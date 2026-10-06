@@ -4,7 +4,8 @@ import { canonicalJson } from '@lesliechan721/agent-skill-eval'
 import {
   canonicalizePluginConfigValues,
   formatPluginConfigIssue,
-  validatePluginConfigDocument,
+  getPluginConfigDependencyKeys,
+  validatePluginConfigCandidate,
   validatePluginConfigValue,
   type PluginConfigValue,
   type PluginMeta,
@@ -134,6 +135,13 @@ export function resolveReviewPluginProfileConfig(options: {
   const fields = options.plugin.manifest.config?.fields ?? {}
   const supplied = options.config[options.plugin.manifest.name] ?? {}
   const selectedKeys = new Set(options.keys ?? Object.keys(fields))
+  const definition = options.plugin.manifest.config ?? { fields: {} }
+  let validationKeys: Set<string>
+  try {
+    validationKeys = new Set(getPluginConfigDependencyKeys(definition, [...selectedKeys]))
+  } catch (error) {
+    throw new ReviewSelectionError('invalidConfig', error instanceof Error ? error.message : 'Unknown config key.')
+  }
   const normalizedOverrides: Record<string, PluginConfigValue> = {}
 
   for (const [key, value] of Object.entries(supplied)) {
@@ -157,7 +165,7 @@ export function resolveReviewPluginProfileConfig(options: {
         `Plugin "${options.plugin.manifest.name}" config is invalid: ${formatPluginConfigIssue(issues[0]!)}`,
       )
     }
-    if (!selectedKeys.has(key)) continue
+    if (!validationKeys.has(key)) continue
     if (field.default === undefined || !sameConfigValue(field.default, value)) {
       normalizedOverrides[key] = value
     }
@@ -166,7 +174,7 @@ export function resolveReviewPluginProfileConfig(options: {
   const values: Record<string, PluginConfigValue> = {}
   const sources: Record<string, PluginConfigSource> = {}
   for (const [key, field] of Object.entries(fields)) {
-    if (!selectedKeys.has(key)) continue
+    if (!validationKeys.has(key)) continue
     if (field.default !== undefined) {
       values[key] = field.default
       sources[key] = 'default'
@@ -177,9 +185,7 @@ export function resolveReviewPluginProfileConfig(options: {
     sources[key] = options.scope
   }
 
-  const selectedFields = Object.fromEntries(Object.entries(fields)
-    .filter(([key]) => selectedKeys.has(key)))
-  const issues = validatePluginConfigDocument({ schemaVersion: 3, fields: selectedFields }, values)
+  const issues = validatePluginConfigCandidate(definition, values, [...selectedKeys])
   const missing = issues.find((issue) => issue.code === 'required')
   if (missing) {
     throw new ReviewSelectionError(
@@ -196,9 +202,10 @@ export function resolveReviewPluginProfileConfig(options: {
   }
 
   const canonicalOverrides = canonicalizePluginConfigValues(normalizedOverrides)
-  const canonicalValues = canonicalizePluginConfigValues(values)
+  const canonicalValues = canonicalizePluginConfigValues(Object.fromEntries(Object.entries(values)
+    .filter(([key]) => selectedKeys.has(key))))
   const canonicalSources = Object.fromEntries(
-    Object.entries(sources).sort(([left], [right]) => compareText(left, right)),
+    Object.entries(sources).filter(([key]) => selectedKeys.has(key)).sort(([left], [right]) => compareText(left, right)),
   )
   return {
     plugin: options.plugin,
@@ -207,7 +214,7 @@ export function resolveReviewPluginProfileConfig(options: {
     overrides: canonicalOverrides,
     values: canonicalValues,
     sources: canonicalSources,
-    digest: digestCanonical({ values: canonicalValues, sources: canonicalSources }),
+    digest: digestCanonical({ values: canonicalizePluginConfigValues(values), sources }),
   }
 }
 
@@ -237,6 +244,7 @@ export function createReviewProfile(options: {
     scope: entry.scope,
     values: entry.values,
     sources: entry.sources,
+    digest: entry.digest,
   })).sort((left, right) => compareText(
     `${left.plugin}\0${left.scope}`,
     `${right.plugin}\0${right.scope}`,

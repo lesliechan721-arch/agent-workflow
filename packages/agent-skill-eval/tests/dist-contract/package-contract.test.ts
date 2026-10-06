@@ -11,6 +11,7 @@ import {
   computeEvalResultSummary,
   getSchema,
   getSchemaDigest,
+  parseInstructionV2Receipt,
   resolveWindowsJobHelperPath,
 } from '@lesliechan721/agent-skill-eval'
 
@@ -39,7 +40,7 @@ describe('published Eval package contract', () => {
     const embeddedDigests = JSON.parse(
       await readFile(path.resolve('dist', 'schemas', 'digests.json'), 'utf8'),
     ) as Record<string, string>
-    for (const name of ['eval-spec', 'eval-audit', 'eval-result'] as const) {
+    for (const name of ['eval-spec', 'eval-audit', 'eval-result', 'instruction-v2-request', 'instruction-v2-receipt', 'workflow-fixture-action', 'workflow-evaluation'] as const) {
       const canonical = await readFile(path.resolve('schemas', `${name}.schema.json`))
       const embedded = await readFile(path.resolve('dist', 'schemas', `${name}.schema.json`))
       expect(embedded).toEqual(canonical)
@@ -48,6 +49,9 @@ describe('published Eval package contract', () => {
       expect(await getSchemaDigest(name)).toBe(`sha256:${digest}`)
       expect(embeddedDigests[name]).toBe(`sha256:${digest}`)
     }
+    expect(parseInstructionV2Receipt({
+      protocolVersion: 2, outcome: 'unknown', instructionChannel: 'developer', instructionsRevision: 'runtime-revision',
+    })).toEqual({ protocolVersion: 2, outcome: 'unknown', instructionChannel: 'developer', instructionsRevision: 'runtime-revision' })
 
     expect(computeEvalResultSummary([])).toEqual({ passed: 0, failed: 0, timeout: 0, error: 0 })
     const help = await execFileAsync(process.execPath, [path.resolve('dist/bin.js'), '--help'])

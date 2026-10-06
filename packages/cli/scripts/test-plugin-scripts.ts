@@ -331,6 +331,9 @@ async function copyTestsIntoBundle(options: {
     dependencies,
     devDependencies,
     allowDevDependencies: Boolean(options.manifest.scripts?.node?.packageRoot),
+    runtimeConfigSkillRoots: (options.manifest.artifacts?.targets ?? [])
+      .filter((target) => target.runtimeConfig !== undefined)
+      .flatMap((target) => target.sourceDirs ?? []),
   });
   if (scan.errors.length > 0) {
     throw new Error(`Invalid plugin test imports:\n${scan.errors.join('\n')}`);

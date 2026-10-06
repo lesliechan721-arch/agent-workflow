@@ -6,7 +6,7 @@ import type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js'
 export type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js'
 
 export const PLUGIN_MANIFEST_SCHEMA_VERSION = 3 as const
-export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 13
+export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 14
 
 const ajv = new Ajv2020({
   allErrors: true,
@@ -75,6 +75,7 @@ export * from './permission-command.js'
 export * from './platform-entries.js'
 export * from './platform-support.js'
 export * from './runtime-export-source.js'
+export * from './runtime-config.js'
 export * from './plugin-script-contract.js'
 export * from './plugin-authoring-capabilities.js'
 export * from './plugin-config.js'

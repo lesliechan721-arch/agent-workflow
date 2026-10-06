@@ -409,9 +409,22 @@ Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不�
 
 这些合同不接入 Codex app-server plugin/reconcile，也不保证运行中的 Codex App 自动刷新。App 的重新加载行为必须单独 qualification，不能由 CLI list 或文件变化推断。
 
+## 已安装运行配置
+
+Core 的 Config Definition v3 支持对象数组 `validation.uniqueBy` 和非敏感标量 `valueRef`。唯一约束使用一个已声明的浅标量属性；引用指向另一顶层对象数组的同类型 key，可联合保留的静态值。Core 提供统一候选与依赖闭包校验，CLI 保存、有效值解析、apply 和 installed reader 使用该合同。校验可以读取依赖字段，返回投影仍只公开请求获准的 keys。Store v5、顶层整体覆盖、既有数组和对象限值保持不变。
+
+动态 Skill 的 `runtimeConfig` 声明允许读取的 keys 与 resourceVersion，可用对称的 artifactIds 显式关联同平台、delivery、scope 和输入的 Skill。AW 根据来源、插件、平台、配置 scope、有效 schema/values/sources 及资源版本计算确定性 revision，并在 renderer context 中提供对应 target 的 revision。角色单独渲染不因此读取 Skill 配置。AW 在最终产物中注入生产 helper、非敏感生效快照和声明组成员的安全 locator；插件不能签发或覆盖这些资源。reader 从真实调用文件定位当前产物，按 AW locator 检查同组来源与 revision，不按 cwd、展示名或 sibling 目录猜身份，也不直接读取最新 config store。
+
+安装 binding 和快照是随已有产物生成的弱资源。它们提供来源、允许字段、配置与内容版本的调用检查，不形成 installed-state DB、安装 ledger 或新的 ownership 真值。保存未 apply 时继续使用旧生效快照。staging 校验失败保留旧完整投影；平台写入开始后允许部分成功，混合 revision 的新调用被拒绝。sync/reinstall 和既有 cleanup 保留恢复入口，弱资源损坏不能授权删除 foreign/shared 内容。
+
+Codex Enhance 的 Guide、Advisor、Explore 共用上述配置与执行 revision。canonical worker Markdown 同时生成 native `developer_instructions` 和外部 v2 的独立角色指令通道。Guide 处理不透明 worker/profile key，Core 和 CLI 不解释咨询或调查领域。磁盘角色一致与宿主实际加载分别验证；无法取得当前角色加载依据时要求受支持的刷新或新会话，仍无法确认则报告 unsupported。运行中的 run 固定其原执行器、指令、材料与 session；查询不发起生成，远端停止不明时保留 unknown。
+
+Guide 在继承 Engine 进程标记的执行范围中保留父进程组；这些运行受父执行器的生命周期约束。清理仍按本次 token、PID 和启动身份确认归属，只有专属进程组可整组观察，共享组不能把父执行器或无关进程纳入清理。macOS 的进程观察使用固定、root-owned 系统 `/bin/ps` 的私有同字节副本，去除 setuid 权限并在调用后清理，以兼容文件沙箱；PATH 或任务不能选择观察程序。这些检查仍不构成 OS 强隔离或远端停止保证。
+
 ## Agent Skill Eval 执行与 Runner 边界
 
 - Skill-local `evals/manifest.json` 的准备合同是 CLI 拥有的 Manifest v1。`aw skill eval prepare` 通过 Catalog Workspace 解析 canonical plugin，并按一个 plugin、Skill、suite、profile 和可选 case/split 选择生成输入完整的 `EvalSpec v1` 目录。该目录包含 runtime target、可选 previous target、筛选后的 cases、Eval-owned fixture，以及移除被测 Skill 后的完整 subject workspace。`plugins` 选择参与插件并提供公共配置；可选 `configByScope.user` 和 `configByScope.project` 只能覆盖 `plugins` 已选插件，并按顶层字段替换公共配置。未覆盖字段继承公共配置。profile 的 sensitive config 值不得进入 Spec。
+- `aw skill eval prepare --config-file <file>` 接受普通文件中的非敏感插件配置 map。它按顶层字段覆盖本次已选 profile 的公共与 scope 配置，不能新增未选插件或敏感字段。实际覆盖保存在 source binding，并在提交输出前重新读取和校验；输入变化使准备失败。该选项不写用户配置，不提供执行、费用或外发授权。
 - `prepare` 复用真实 bundle、依赖、profile config 和平台 materialization，但不启动 provider、模型或真实 native CLI。普通 target 和 role 读取 profile scope 的合并配置；共享 `codex-native` Skill 按其生产合同读取 user scope 的合并配置。物化结果保留参与插件的静态与动态 Skill、共享 native Skill、role 配置和完整 runtime tree。source binding 的 profile digest 绑定实际使用的各 scope 合并配置。它先在 staging 中验证路径、摘要和最终输入，再原子发布到 Workspace 外或 `<workspace>/.aw/evals/**` 中尚不存在的窄目录；`.aw/evals` 根、已有、过宽或含符号链接的目标 fail closed。
 - Eval 执行的唯一机器 owner 是 npm package `@lesliechan721/agent-skill-eval` 的 `aw-skill-eval` bin。公开机器合同只包括 `EvalSpec v1`、`EvalAudit v1` 和 `EvalResult v2`。Engine 提供 `spec validate`、绑定 Spec 的 `audit validate`、绑定 Spec 与 Audit 的 `result validate`，以及唯一执行入口 `aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]`；CLI 不提供第二个 `run` wrapper。成功的 `spec validate` receipt 在 `calculated.providerDigest` 公开正式 provider 摘要，Auditor 只复制该值，不实现摘要算法。
 - 单份 `EvalAudit v1` 必须与当前 Spec 的 provider、workspace、current target、可选 previous target、case digest 和全部 selected case 精确绑定，且状态为 `pass`、没有 blocked case，才准许执行。workspace 摘要绑定全部普通目录和普通文件；空目录的新增、删除或重命名会使绑定失效，符号链接和其它特殊节点被拒绝。prepare、Spec validation 和运行快照使用同一算法。`runs` 和 `timeoutMs` 改变不影响 Audit 复用；旧版使用字符串 `workspace` 的 v1 Spec 必须重新 prepare 和 Audit。`EvalResult v2` 不兼容 Result v1；它绑定 Spec、Audit、target、case 和 provider 选择，保存每次运行的状态、耗时、usage、grade 和错误，并要求顶层 `processManagement` 记录本次 managed 或已确认 unmanaged 模式。
@@ -428,8 +441,11 @@ Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不�
   - Engine 在运行期观察该合同；发现违反即失败。检查失效时 Engine fail closed：丢弃 grade 并停止 batch。用户态 macOS/Linux 无法对已逃逸且又失去检查的后代保证清理，因此不得盲杀 foreign 进程。
   - credential 递归清理只检查本次 provider 的 `outputDir`；其中的符号链接一律只 unlink，绝不跟随。subject workspace、Eval fixture 和其它 attempt 输入不扫描、不改 mode、也不删除。隔离 runtime home、HOME 和 temp 始终清理。output 脱敏失败时只尝试删除 `outputDir` 并让 attempt 失败；Engine 从已脱敏的内存结果写入 `provider-result.json`。
 - `codex-workflow` 是 Engine-owned object provider。Manifest 必须显式提供非空 `command` 和可为空的 `allowedModels`；同一 adapter command 只接收固定的 `prepare` 与 `grade` phase。Engine 使用单一 attempt deadline，先取得有界 WorkflowRequest，再启动一个由 Engine 拥有的隔离 app-server root，且只接受 root thread 的完成事件。Engine 在清理 app-server 和临时 Codex home 前读取 raw rollout，并写入脱敏的 `workflow-evidence.json`、`workflow-trace.json` 和 `model-output.txt`；`skillLoads` 同时记录原生注入的 selected Skill 和显式读取的 `SKILL.md`，并按 thread 与 Skill 去重。grade 只读取规范化 evidence，且只能返回 grade。adapter 继续使用 verified-observed containment，但其环境不含 Codex/OpenAI credential 或 proxy。Windows 在模型调用前拒绝该 provider。
+- `CodexWorkflowRequest` 可选 `transport: { type: "instruction-v2", command, request }` 和 `reasoningEffort`。command 是一个绝对 executable 和最多一个绝对 entrypoint；request 是有界 v2 封套。Engine 核对任务、完整指令、模型、权限和推理强度与 workflow 一致，再通过统一进程、凭据、deadline 和清理路径执行。外部自然语言结果与独立程序 receipt 分开读取；指令通道、摘要或服务终态不完整时保留 unknown，不能只凭退出码或文本自述通过。未声明 transport 时继续既有 app-server 路径；外部 transport 暂不支持隐藏交互或 setupPrompt。
 - Eval 的统一默认模型是 `gpt-6-luna`，运行器可通过 `AW_SKILL_EVAL_CODEX_MODEL` 覆盖。插件内 Eval adapter 不固定执行模型或推理强度，custom-process 脚本不保存模型后备值。`WorkflowRequest.model=null` 且 `multiAgent.protocol=v1` 时，Engine 使用支持 V1 的 `gpt-5.6-luna`；V2 沿用运行器模型。该兼容默认不属于 adapter 的 `allowedModels` 覆盖值。推理强度沿用用户 Codex 配置；case 中用于验证选型行为的模型和推理强度仍属于测试输入及 Oracle。
 - `WorkflowRequest v1` 可选 `evaluation`，包含有界 `artifacts`、具名 `checks`、`interactions` 和可选 `setupPrompt`。它们是 Eval-owned 输入，不写入被测者的 prompt、角色配置或工作区。每个 interaction 提供语义条件、隐藏答复和受保护产品路径；Engine 复用现有独立只读 grader，实际问题满足条件且观察到的受保护产物未提前改变时才回复对应问题。普通文本问答按相同条件续接，不按回合无条件补答。`setupPrompt` 创建真实前提轮次，测量起点单独记录，不能把导入历史或准备动作计为本轮行为。
+- `evaluation.setupActions`、`evaluation.finalActions` 和 `interactions[].action` 可运行已审核 fixture 中的固定 Node 动作，形状为 `{ command: ["node", "relative-script.mjs"], input, pathPrepend? }`。Engine 使用自己的 Node 入口；脚本与 PATH 树必须位于已绑定 fixtures 内且无 symlink。动作沿同一 attempt deadline、Abort 和进程清理执行，环境不含模型凭据，并使用独立私有 home。setup 在模型启动前执行；交互动作在真实问题匹配且受保护路径复查通过后执行；final 在 subject 停止后、独立评分前检查实际产物。动作失败保留不完整证据并停止评分。macOS 文件边界只开放本次 subject、所选 fixture 及必要运行资源。stdout 只接受有界事实 receipt，独立 grader 接收这些事实；动作不能提供 grade 或代替模型完成业务任务。
+- native workflow evidence 的 `launch` 保存 Engine 实际传入的完整 developer 指令、摘要和启动配置，并沿现有凭据脱敏边界输出。该记录证明 Engine 的输入通道；`hostRoleAdoption` 保持 unknown，不能据此认定宿主已加载磁盘上的原生角色。
 - 启用 `evaluation` 的 workflow 使用与 conversation 相同的一层 macOS OS 文件边界：阻止被测进程读取准备输入、其他运行和输出，只开放当前 subject；没有该能力时在被测者调用前拒绝，不静默退回仅按文件名隐藏。网络能力保持开启。未启用此选项的旧 workflow 请求沿用原路径。额外语义 matcher/grader 是真实模型调用，消耗同一 attempt deadline，费用和 usage 计入结果，仍受原 passing Audit 和运行授权门禁约束。
 - workflow 在构造 HOME、Codex home、临时目录和 OS 写入许可前解析临时根的真实路径，避免 macOS `/var` 与 `/private/var` 别名使运行器自身的状态写入被拒绝；宿主源码的读取边界保持。
 - workflow 允许读取被测项目父目录的路径元数据，以支持 Node 模块解析和测试文件加载；该许可只匹配父目录本身，不开放 Eval 文件内容或父目录列举。

@@ -1258,6 +1258,39 @@ describe('manifest utils', () => {
     });
   });
 
+  it('allows only the AW-injected reader inside a declared runtime-config Skill source', () => {
+    const entryFiles = ['skills/bounded/scripts/main.mjs'];
+    const files = {
+      'skills/bounded/scripts/main.mjs': "await import('./aw-runtime-config.mjs');",
+    };
+    expect(scanNodeImportContract({ entryFiles, files }).errors).toHaveLength(1);
+    expect(scanNodeImportContract({
+      entryFiles,
+      files,
+      runtimeConfigSkillRoots: ['./skills/bounded'],
+    })).toEqual({ files: entryFiles, bareSpecifiers: [], errors: [] });
+    expect(scanNodeImportContract({
+      entryFiles,
+      files: { [entryFiles[0]!]: "import './other-missing.mjs';" },
+      runtimeConfigSkillRoots: ['skills/bounded'],
+    }).errors).toHaveLength(1);
+    expect(scanNodeImportContract({
+      entryFiles,
+      files,
+      runtimeConfigSkillRoots: ['skills/other'],
+    }).errors).toHaveLength(1);
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/outside.mjs'],
+      files: { 'scripts/outside.mjs': "import '../skills/bounded/scripts/aw-runtime-config.mjs';" },
+      runtimeConfigSkillRoots: ['skills/bounded'],
+    }).errors).toHaveLength(1);
+    expect(scanNodeImportContract({
+      entryFiles,
+      files: { ...files, 'skills/bounded/scripts/aw-runtime-config.mjs': "import 'unregistered';" },
+      runtimeConfigSkillRoots: ['skills/bounded'],
+    }).errors).toHaveLength(1);
+  });
+
   it('scans Node import contracts for relative closures and undeclared bare specifiers', () => {
     expect(
       scanNodeImportContract({

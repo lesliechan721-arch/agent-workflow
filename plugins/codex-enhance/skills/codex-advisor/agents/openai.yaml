@@ -1,0 +1,6 @@
+interface:
+  display_name: "Codex Advisor"
+  short_description: "在已有判断卡点下组织有界技术第二意见并核验会改变行动的建议"
+  default_prompt: "使用 $codex-advisor 对当前有依据的判断问题取得技术第二意见。"
+policy:
+  allow_implicit_invocation: true

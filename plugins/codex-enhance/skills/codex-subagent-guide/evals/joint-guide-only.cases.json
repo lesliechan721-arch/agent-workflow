@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "codex-workflow",
+    "unitUnderTest": "codex-subagent-guide",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "critical",
+      "rationale": "按实际职责、授权、指令通道和真实结果判断；误外发、越权写入、角色丢失或重复提交不能被多数通过抵消。"
+    }
+  },
+  "cases": [
+    {
+      "id": "J15",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "qualification"
+      ],
+      "input": {
+        "prompt": "按当前有效配置完成一个已授权只读委派，当前只加载Guide。",
+        "workspaceFiles": {
+          "README.md": "a=1\nb=2\n"
+        },
+        "setup": [
+          "安装只暴露Guide作为可用协调Skill；通用profile绑定一个测试用额外worker key，给完整指令与只读上限。",
+          "该worker的名字与三项既有业务无关；不修改Guide正文或Core业务switch。",
+          "原始目标是读取README中的两个事实，真正执行并核验。"
+        ]
+      },
+      "expected": {
+        "criteria": {
+          "independence": "Guide可独立解析和启动合法绑定，无需加载Advisor/Explore。",
+          "outcome": "两个事实正确、只读、完整终态。",
+          "changeSurface": "新增binding数据与所需指令即可支持，不改Guide领域逻辑。"
+        }
+      },
+      "audit": {
+        "rationale": "用可观测功能证明基础层独立，不把没有名字字符串当唯一证据。",
+        "minimalCounterexample": "缺少合法安装binding时必须在启动前拒绝，而不是接受任意指令路径。",
+        "allowedVariance": "CLI拼写依实现正式合同；系统通道、实际证据、权限与版本关系必须成立。"
+      }
+    }
+  ]
+}

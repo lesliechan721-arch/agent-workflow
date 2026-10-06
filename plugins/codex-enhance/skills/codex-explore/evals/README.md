@@ -71,7 +71,7 @@ aw skill eval prepare codex-enhance codex-explore --suite workflow --profile pro
 
 ## 叶子输出合同
 
-`output-contract` suite 使用同一 Engine-owned workflow provider，但只评估叶子结果 handoff。grade 从 normalized leaf calls 的 V2 `FINAL_ANSWER` envelope 或 V1 `wait_agent.status.completed` 取得子代理最终文本，并记录 attempt workspace 内实际 materialized 的四个 Explore role 文件摘要。
+`output-contract` suite 使用同一 Engine-owned workflow provider，但只评估叶子结果 handoff。grade 从 normalized leaf calls 的 V2 `FINAL_ANSWER` envelope 或 V1 `wait_agent.status.completed` 取得子代理最终文本，并记录 attempt workspace 内实际 materialized 的单个 canonical Explore role 文件摘要。
 
 六个用例分别覆盖：同源多个 direct finding、单个 finding 的多来源定位、inference 的直接依据、conflict 双方证据、blocked 和 insufficient。每个用例要求初次叶子结果足够，不允许 recovery。状态、来源和证据类型是正确性门禁；叶子字符数、父 turn usage 和端到端时间只作诊断。
 
@@ -102,10 +102,10 @@ Engine evidence 按用例保留 probe、`progress` / `blocked`、duration、term
 
 `evals.json` 的真实工作流用例覆盖：
 
-- 根据任务复杂度自动选择 quick、standard 或 deep，并确认预设 role 不传 `model` / `reasoning_effort`。
-- 用户同时或逐字段显式指定时使用 custom role，只透传显式字段。
-- schema 隐藏覆盖字段时预设 role 仍可启动，用户显式字段则阻断。
-- 无效显式值不删除字段、不切换预设后重试。
+- 根据任务复杂度选择 quick、standard 或 deep profile；使用同一个 canonical `codex-explore` role，公开字段可用时显式传递该 profile 的 `model` / `reasoning_effort`。
+- 用户同时或逐字段显式指定时保留 canonical role，只透传本次显式字段。
+- schema 隐藏覆盖字段且没有硬参数要求时，canonical role 可启动；省略字段只能证明当前调用可接受，不能证明 profile 的模型档位生效。用户显式字段不可满足时则阻断。
+- 无效显式值不删除字段、不换用默认值后重试。
 
 grade 对 Engine normalized evidence 中保留的原始 `spawn_agent` arguments、output 和 status 执行机械断言：
 

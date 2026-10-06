@@ -9,6 +9,8 @@ import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  AW_RUNTIME_CONFIG_READER_PATH,
+  createRuntimeConfigSnapshot,
   getPluginAuthoringAcceptedValues as getCorePluginAuthoringAcceptedValues,
   getSkillFrontmatterCapabilityRegistry,
   normalizePluginConfigDefinition,
@@ -30,7 +32,7 @@ const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 13;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 14;
 let capabilityDiagnostic = null;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
@@ -1893,6 +1895,11 @@ function scanNodeImportContract(pluginDir, entryPaths, options) {
           continue;
         }
         if (!resolved.path) {
+          const requested = path.posix.normalize(path.posix.join(path.posix.dirname(relativePath), specifier));
+          if ((options.runtimeConfigSkillRoots ?? []).some((root) => (
+            relativePath.startsWith(`${root}/`)
+            && requested === path.posix.join(root, AW_RUNTIME_CONFIG_READER_PATH)
+          ))) continue;
           error(`${options.label}: unable to resolve relative import "${specifier}" from "${relativePath}"`);
           continue;
         }
@@ -2085,6 +2092,7 @@ function validateArtifactTargetEntry(entry, index, manifest, pluginDir) {
     'skillKey',
     'sourceDirs',
     'runtimeImports',
+    'runtimeConfig',
   ]);
 
   const id = validateArtifactId(target.id, `${fieldName}.id`);
@@ -2300,6 +2308,7 @@ function validateArtifactTargetEntry(entry, index, manifest, pluginDir) {
     roleKey,
     skillKey,
     sourceDirs,
+    runtimeConfig: target.runtimeConfig,
     runtimeImports: Array.isArray(target.runtimeImports) ? target.runtimeImports : [],
   };
 }
@@ -3027,6 +3036,43 @@ function runArtifactRendererFixture(
           : [[key, manifest.config.fields[key]]]));
       const scopedValues = Object.fromEntries(refreshKeys.flatMap((key) =>
         Object.prototype.hasOwnProperty.call(values, key) ? [[key, values[key]]] : []));
+      const runtimeConfig = {};
+      try {
+        for (const target of scopedDeclarations.filter((declaration) => declaration.runtimeConfig)) {
+          const definition = normalizePluginConfigDefinition(manifest.config);
+          const snapshot = createRuntimeConfigSnapshot({
+            installedIdentity: {
+              sourceId: 'authoring',
+              sourceIdentity: 'authoring',
+              pluginId: `authoring/${manifest.name}`,
+              pluginName: manifest.name,
+              pluginVersion: manifest.version,
+              platform: target.platform,
+              scope: target.delivery?.mode === 'codex-native' ? 'user' : scope,
+              configScope,
+              artifactId: target.id,
+              skillKey: target.skillKey,
+            },
+            declaration: target.runtimeConfig,
+            definition,
+            values,
+            sources: Object.fromEntries(Object.keys(values).map((key) => [key, 'default'])),
+            ...(target.runtimeConfig.artifactIds ? {
+              consistencyGroup: target.runtimeConfig.artifactIds.map((id) => {
+                const peer = declarations.find((candidate) => candidate.id === id
+                  && candidate.platform === target.platform
+                  && JSON.stringify([...candidate.scopes].sort()) === JSON.stringify([...target.scopes].sort()));
+                if (!peer) throw new Error('runtimeConfigInvalid: Author fixture consistency group is incomplete.');
+                return { artifactId: id, skillKey: peer.skillKey };
+              }).sort((left, right) => left.artifactId < right.artifactId ? -1 : left.artifactId > right.artifactId ? 1 : 0),
+            } : {}),
+          });
+          runtimeConfig[target.id] = { revision: snapshot.revision, resourceVersion: snapshot.resourceVersion };
+        }
+      } catch (runtimeConfigError) {
+        error(`scripts.artifacts.render fixture (${surface}/${scope}) runtime config failed: ${runtimeConfigError.message}`);
+        continue;
+      }
       fs.writeFileSync(
         contextPath,
         JSON.stringify({
@@ -3052,6 +3098,7 @@ function runArtifactRendererFixture(
           },
           changedConfigKeys: [],
           requestedArtifactIds: scopedDeclarations.map((target) => target.id),
+          runtimeConfig,
           previousArtifacts: [],
           artifactSources: scopedDeclarations.map((target) => ({
             id: target.id,
@@ -3187,6 +3234,10 @@ function validateScriptsLightweight(pluginDir, manifest) {
   const runtimeNodeEntries = [];
   let artifactRenderEntry = null;
   let packageMeta = null;
+  const runtimeConfigSkillRoots = (manifest.artifacts?.targets ?? [])
+    .filter((target) => target.runtimeConfig !== undefined)
+    .flatMap((target) => target.sourceDirs ?? [])
+    .map(normalizeRelativePath);
 
   if (scripts.helpers !== undefined) {
     const helpers = expectRecord(scripts.helpers, 'scripts.helpers');
@@ -3235,6 +3286,7 @@ function validateScriptsLightweight(pluginDir, manifest) {
             label: 'scripts.node.build import contract',
             packageMeta,
             allowDevDependencies: true,
+            runtimeConfigSkillRoots,
           });
         }
       }
@@ -3285,6 +3337,7 @@ function validateScriptsLightweight(pluginDir, manifest) {
             label: 'scripts.tests.node import contract',
             packageMeta,
             allowDevDependencies: true,
+            runtimeConfigSkillRoots,
           });
         }
       }
@@ -3298,6 +3351,7 @@ function validateScriptsLightweight(pluginDir, manifest) {
       label: 'runtime Node import contract',
       packageMeta,
       allowDevDependencies: false,
+      runtimeConfigSkillRoots,
     },
   );
 

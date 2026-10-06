@@ -435,9 +435,6 @@ function evaluateCleanContextLeafDelegation(run, expected) {
   const terminalResults = boundTerminalTexts(run.leaf_tool_calls, child?.thread_id);
   const cleanContext = spawn?.arguments?.fork_context === false ||
     spawn?.arguments?.fork_turns === 'none';
-  const noOverrides = ['model', 'reasoning_effort', 'reasoningEffort'].every(
-    (key) => !Object.hasOwn(spawn?.arguments ?? {}, key),
-  );
   return [
     {
       name: 'leaf:target_child',
@@ -446,8 +443,8 @@ function evaluateCleanContextLeafDelegation(run, expected) {
     },
     {
       name: 'leaf:clean_context',
-      passed: cleanContext && noOverrides,
-      evidence: `fork_context=${String(spawn?.arguments?.fork_context)} fork_turns=${String(spawn?.arguments?.fork_turns)} model_override=${!noOverrides}`,
+      passed: cleanContext,
+      evidence: `fork_context=${String(spawn?.arguments?.fork_context)} fork_turns=${String(spawn?.arguments?.fork_turns)}`,
     },
     {
       name: 'leaf:terminal_result',
@@ -548,7 +545,7 @@ export function evaluateWorkflowRun(run, expected) {
       name: 'leaf:role_contract',
       passed:
         /^sha256:[a-f0-9]{64}$/u.test(run.role_contract?.digest ?? '') &&
-        run.role_contract?.roles?.length === 4,
+        run.role_contract?.roles?.length === 1,
       evidence: JSON.stringify(run.role_contract ?? null),
     });
     assertions.push(...evaluateLeafOutput(run.leaf_results, expected.leaf_output).assertions);

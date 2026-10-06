@@ -54,6 +54,10 @@ import fs from 'fs-extra';
 import { fileURLToPath } from 'node:url';
 import { PassThrough } from 'node:stream';
 import {
+  AW_RUNTIME_CONFIG_BINDING_PATH,
+  type RuntimeConfigBinding,
+} from '@lesliechan721/aw-plugin-core';
+import {
   createCatalogSnapshotFixture,
   createDependencyCatalogSnapshotFixture,
   git,
@@ -15793,19 +15797,25 @@ describe('five namespaced write commands', () => {
     const marketplaceRoot = path.join(
       isolation.env.AW_HOME!, 'marketplaces', 'team', 'plugins', 'codex-enhance',
     );
-    const skillPaths = ['codex-explore', 'codex-subagent-guide'].map((skill) =>
+    const skillKeys = ['codex-explore', 'codex-subagent-guide', 'codex-advisor'];
+    const skillPaths = skillKeys.map((skill) =>
       path.join(cacheRoot, 'codex', 'skills', skill, 'SKILL.md'));
     for (const skillPath of skillPaths) await expect(fs.pathExists(skillPath)).resolves.toBe(true);
-    for (const skill of ['codex-explore', 'codex-subagent-guide']) {
+    for (const skill of skillKeys) {
       await expect(fs.pathExists(path.join(isolation.env.AW_CODEX_HOME!, 'skills', skill)))
         .resolves.toBe(false);
     }
     const initialSkillBytes = await Promise.all(skillPaths.map((skillPath) => fs.readFile(skillPath)));
+    const bindingPaths = skillKeys.map((skill) =>
+      path.join(cacheRoot, 'codex', 'skills', skill, AW_RUNTIME_CONFIG_BINDING_PATH));
+    const initialBindings: RuntimeConfigBinding[] = await Promise.all(bindingPaths.map((file) =>
+      fs.readJson(file)));
+    expect(new Set(initialBindings.map((binding) => binding.revision)).size).toBe(1);
     const initialReceipt = await fs.readJson(
       path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
     ) as CodexNativeRenderReceipt;
     expect(initialReceipt.targets.map((target) => target.skillKey)).toEqual([
-      'codex-explore', 'codex-subagent-guide',
+      'codex-advisor', 'codex-explore', 'codex-subagent-guide',
     ]);
     const userStore = await readPluginConfigStore({
       sourceId: 'team', sourceIdentity, logicalIdentity,
@@ -15828,7 +15838,18 @@ describe('five namespaced write commands', () => {
       '--apply', '--yes',
     ])).toMatchObject({ exitCode: 0 });
     await expect(fs.readFile(skillPaths[0], 'utf8')).resolves.toContain('"updated-standard"');
-    await expect(fs.readFile(skillPaths[1])).resolves.toEqual(initialSkillBytes[1]);
+    for (const [index, file] of skillPaths.entries()) {
+      await expect(fs.readFile(file)).resolves.not.toEqual(initialSkillBytes[index]);
+    }
+    const updatedBindings: RuntimeConfigBinding[] = await Promise.all(bindingPaths.map((file) =>
+      fs.readJson(file)));
+    expect(new Set(updatedBindings.map((binding) => binding.revision)).size).toBe(1);
+    for (const binding of updatedBindings) {
+      expect(binding.revision).not.toBe(initialBindings[0].revision);
+      expect(binding.effectiveValues.standardProfile).toEqual({
+        model: 'updated-standard', reasoningEffort: 'high',
+      });
+    }
     await expect(fs.readFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'agents',
       'aw-codex-enhance-codex-explore.toml',
