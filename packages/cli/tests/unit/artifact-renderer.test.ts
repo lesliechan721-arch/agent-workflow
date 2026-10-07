@@ -442,9 +442,7 @@ describe('artifact renderer runtime', () => {
     expect(userContext.context.config.issues).toEqual([]);
     expect(userContext.context.changedConfigKeys).toEqual(['explorerModel']);
     expect(userContext.context.requestedArtifactIds).toEqual(['codex-explorer-role']);
-    expect(userContext.context.artifactSources.map((source) => source.id)).toEqual([
-      'codex-explorer-role',
-    ]);
+    expect(userContext.context.artifactSources).toEqual([]);
     expect(userContext.context.previousArtifacts).toEqual([
       { id: 'lightweight-instruction', state: 'present' },
     ]);

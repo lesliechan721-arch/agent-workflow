@@ -34,7 +34,7 @@
 
 ### Module Invariants
 
-- renderer context 使用规范化的非空 `requestedArtifactIds` 精确限定本次请求；`config.schema/values/sources/issues` 和 `changedConfigKeys` 只包含这些 target 的 `refreshKeys` 并集。同一 surface/scope 同时包含 Skill target 和读取 sensitive config 的非 Skill target 时，AW 把它们放入两个请求；两个请求使用同一份不可变 `previousArtifacts`，且各自只接受与本批 ID 精确相等的 `ArtifactPlan`。context 不公开 config store 路径，且 context 中的 home 与 renderer 进程的 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 都指向本次请求的临时目录。该输入隔离不是 OS sandbox。renderer 不直接写平台文件。AW direct writer 不请求 `codex-native` target。标准 config helper 只读取 CLI 已校验的 `AW_PLUGIN_CONTEXT` effective config，不读取 config store，也不重复 schema 或 value validation；缺少 context 或请求 user/project scope 时 fail closed。
+- renderer context 使用规范化的非空 `requestedArtifactIds` 精确限定本次请求；`config.schema/values/sources/issues` 和 `changedConfigKeys` 只包含这些 target 的 `refreshKeys` 并集。`artifactSources` 提供当前 surface/scope 全部 Skill target 的真实 `sourceDirs`，供其它 target 复用声明的静态资源；这些来源不扩大配置或输出范围。同一 surface/scope 同时包含 Skill target 和读取 sensitive config 的非 Skill target 时，AW 把它们放入两个请求；两个请求使用同一份不可变 `previousArtifacts`，且各自只接受与本批 ID 精确相等的 `ArtifactPlan`。context 不公开 config store 路径，且 context 中的 home 与 renderer 进程的 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 都指向本次请求的临时目录。该输入隔离不是 OS sandbox。renderer 不直接写平台文件。AW direct writer 不请求 `codex-native` target。标准 config helper 只读取 CLI 已校验的 `AW_PLUGIN_CONTEXT` effective config，不读取 config store，也不重复 schema 或 value validation；缺少 context 或请求 user/project scope 时 fail closed。
 - renderer 输出在 JSON 解析后、envelope 和 `ArtifactPlan` 详细结构验证前，统一拒绝包含 effective sensitive config 明文或其 JSON 转义形态的普通及 Portable dynamic artifact；扫描通过后仍执行完整 envelope 和结构验证。阻断只匹配至少 8 个 Unicode code point 的 string；此阈值是减少短值误报的产物门禁，不表示 secret 强度。preApply 和 renderer 在插件执行边界清理错误与输出摘要中的原值和 JSON 转义形态，再交给 debug、文本输出或 Receipt；日志和诊断脱敏所有长度的 sensitive 值。只有 AW 已生成或按内容验证的精确 receipt path 才从扫描中排除；不得按 basename 或通配符排除。错误只公开稳定 code，不回显 sensitive 值。
 - build-generated Skill reference 必须由 `buildConfig.generatedSkillRuntimeFiles` 精确声明。源码 validation 不把声明目标误报为缺失；最终 bundle 必须生成目标并通过完整 runtime closure。
 - 写入前验证 scope、路径边界、目标身份和最终 Skill tree。
@@ -411,15 +411,19 @@ Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不�
 
 ## 已安装运行配置
 
-Core 的 Config Definition v3 支持对象数组 `validation.uniqueBy` 和非敏感标量 `valueRef`。唯一约束使用一个已声明的浅标量属性；引用指向另一顶层对象数组的同类型 key，可联合保留的静态值。Core 提供统一候选与依赖闭包校验，CLI 保存、有效值解析、apply 和 installed reader 使用该合同。校验可以读取依赖字段，返回投影仍只公开请求获准的 keys。Store v5、顶层整体覆盖、既有数组和对象限值保持不变。
+Core 的 Config Definition v3 支持对象数组 `validation.uniqueBy` 和非敏感标量 `valueRef`。唯一约束使用一个已声明的浅标量属性；引用指向另一顶层对象数组的同类型 key，可联合保留的静态值。Core 提供统一候选与依赖闭包校验，CLI 保存、有效值解析和物化使用该合同。校验可以读取依赖字段，生效资源与 reader 返回值只公开获准的 keys。Store v5、顶层整体覆盖、既有数组和对象限值保持不变。
 
-动态 Skill 的 `runtimeConfig` 声明允许读取的 keys 与 resourceVersion，可用对称的 artifactIds 显式关联同平台、delivery、scope 和输入的 Skill。AW 根据来源、插件、平台、配置 scope、有效 schema/values/sources 及资源版本计算确定性 revision，并在 renderer context 中提供对应 target 的 revision。角色单独渲染不因此读取 Skill 配置。AW 在最终产物中注入生产 helper、非敏感生效快照和声明组成员的安全 locator；插件不能签发或覆盖这些资源。reader 从真实调用文件定位当前产物，按 AW locator 检查同组来源与 revision，不按 cwd、展示名或 sibling 目录猜身份，也不直接读取最新 config store。
+动态 Skill 的 `runtimeConfig: { keys: [...] }` 要求 `aw.installed-runtime-config.v2`。keys 非空、无重复，属于该 target 的 `refreshKeys`，字段及其校验依赖闭包均不得敏感。AW 在物化时使用正式 Core 配置校验，并在最终产物中注入 `scripts/aw-runtime-config.mjs` 与 schema 2 `.aw-runtime-config.json`；插件不能签发或覆盖这些保留资源。资源只携带本产物的 installed identity、允许字段、生效值和实际需要的来源元数据，不携带字段定义、资源树摘要或执行 revision。renderer context 不提供执行 revision。
 
-安装 binding 和快照是随已有产物生成的弱资源。它们提供来源、允许字段、配置与内容版本的调用检查，不形成 installed-state DB、安装 ledger 或新的 ownership 真值。保存未 apply 时继续使用旧生效快照。staging 校验失败保留旧完整投影；平台写入开始后允许部分成功，混合 revision 的新调用被拒绝。sync/reinstall 和既有 cleanup 保留恢复入口，弱资源损坏不能授权删除 foreign/shared 内容。
+reader 从真实安装调用文件定位本产物，检查格式、版本、调用位置、来源、作用域、允许字段和安全路径；返回 `installedIdentity`、请求获准的 `effectiveValues` 和 `resourceRoot`。它不按 cwd、插件展示名或 sibling 目录猜来源，不读取最新 config store，不复制运行时 schema validator，也不读取其他 Skill 或核验角色正文。两个来源中的同名插件各自读取自己的配置。来源检查使用本产物可用的 owner 或 native materialization receipt；需要移动产物时仅携带该产物的来源回执。现有 ownership、native receipt 和 Status 自身的检查保持原合同。
 
-Codex Enhance 的 Guide、Advisor、Explore 共用上述配置与执行 revision。canonical worker Markdown 同时生成 native `developer_instructions` 和外部 v2 的独立角色指令通道。Guide 处理不透明 worker/profile key，Core 和 CLI 不解释咨询或调查领域。磁盘角色一致与宿主实际加载分别验证；无法取得当前角色加载依据时要求受支持的刷新或新会话，仍无法确认则报告 unsupported。运行中的 run 固定其原执行器、指令、材料与 session；查询不发起生成，远端停止不明时保留 unknown。
+安装配置是随已有产物生成的弱资源，不形成 installed-state DB、安装 ledger 或新的 ownership 真值。保存未 apply 时继续使用旧生效值。staging 校验失败保留旧完整投影；平台 apply 允许部分成功，可用产物按自己的实际内容工作，不要求跨 Skill 一致。真实缺文件、格式错误、身份冲突或越权仍拒绝本次外部启动，并保留修正配置、sync/reinstall 与既有 cleanup 恢复入口。弱资源损坏不能授权删除 foreign/shared 内容。旧声明的 `resourceVersion`、`artifactIds`、v1 binding 和 `expectedRevision` 不兼容，须更新作者合同并正常重建；不迁移强配置格式。
 
-Guide 在继承 Engine 进程标记的执行范围中保留父进程组；这些运行受父执行器的生命周期约束。清理仍按本次 token、PID 和启动身份确认归属，只有专属进程组可整组观察，共享组不能把父执行器或无关进程纳入清理。macOS 的进程观察使用固定、root-owned 系统 `/bin/ps` 的私有同字节副本，去除 setuid 权限并在调用后清理，以兼容文件沙箱；PATH 或任务不能选择观察程序。这些检查仍不构成 OS 强隔离或远端停止保证。
+Codex Enhance 将 profile、执行指令和本次任务分开。profile 只选择 executor、model 与 reasoning effort；Guide 沿用调用方的 profile、角色和约束，从已加载表直接使用原生角色和工具，不定义上游 Skill 的领域政策，也不要求 resolve、plan、跨 Skill revision 或宿主精确角色版本证明。角色不可用时报告真实错误；修改配置或角色后可能需要受支持的刷新或新会话。三份本职默认指令资源直接复用于 native `developer_instructions` 和调用方选择的外部指令文件；不建立 worker 注册或指令白名单。Advisor 的运行正文由 renderer 只呈现已配置的选项及当次适用的选择说明；默认只展示通用配置，不保留未配置专属字段或回退解释。配置了专属项后，匹配问题采用其完整对象，其余咨询仍使用通用配置；非法值或不可用执行器不触发回退。Core 和 CLI 不按咨询或调查名称编写业务分支。
+
+外部 `run` 使用 v3 adapter 协议，每次必填 profile、instructions file 和 prompt file。runner 读取一次安装生效配置，再读取本次指令、任务与明确材料；把实际读取的输入交给同一前台、非 detached child，使用真实独立指令通道和结构化参数。bundle 只包含显式文件并保留原路径及行号；workspace 后续工具仍读取真实工作区，不承诺全工作区同一时点快照。权限取本次授权、mode、后端真实支持和环境权限的交集；附带 Codex adapter 保持只读。preview 不启动适配器，也不绑定后续 run 的输入。调用 reference 只指导使用已配置执行器；注册、协议和附带后端实现见[适配器实现说明](codex-enhance-adapters.md)。
+
+宿主工具通过自己的 session 等待同一 child；等待窗口结束不启动第二次生成。活跃调用不重读配置或输入来改换后端。临时资源只保存本次输入副本和必要结果，正常结束后清理自己的文件；不建立后台 supervisor、持久 run store 或跨父会话恢复。真实服务完成和对应完整回答才可报告 completed；缺失或冲突的服务终态、宿主 handle 丢失、仅 wrapper 停止而远端停止未知均保留 unknown。取消只处理本次可确认归属的进程及后代，不把直接 child 退出解释为全部停止。进程归属检查不构成 OS 强隔离或远端停止保证。升级前须完成或按原工具处理已知旧后台任务，新版不扫描、接管或删除旧 run store。
 
 ## Agent Skill Eval 执行与 Runner 边界
 

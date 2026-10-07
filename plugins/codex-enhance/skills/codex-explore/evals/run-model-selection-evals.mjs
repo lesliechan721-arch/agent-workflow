@@ -69,8 +69,7 @@ function validateExpected(expected, id) {
       !Number.isInteger(nested.grandchild_spawn_calls?.max) ||
       nested.grandchild_spawn_calls.min < 0 ||
       nested.grandchild_spawn_calls.max < nested.grandchild_spawn_calls.min ||
-      typeof nested.expect_child_multi_agent_gate !== 'boolean' ||
-      typeof nested.expect_child_developer_authorization !== 'boolean'
+      typeof nested.expect_child_multi_agent_gate !== 'boolean'
     ) {
       throw new Error(`${id}.expected.nested_delegation must define the nested evidence contract.`);
     }
@@ -244,12 +243,6 @@ function evaluateNestedDelegation(run, expected) {
       name: 'nested.child_multi_agent_gate',
       passed: childContext?.has_multi_agent_mode_gate === nested.expect_child_multi_agent_gate,
       evidence: `expected=${nested.expect_child_multi_agent_gate} actual=${childContext?.has_multi_agent_mode_gate}`,
-    },
-    {
-      name: 'nested.child_developer_authorization',
-      passed: childContext?.has_codex_explore_developer_authorization ===
-        nested.expect_child_developer_authorization,
-      evidence: `expected=${nested.expect_child_developer_authorization} actual=${childContext?.has_codex_explore_developer_authorization}`,
     },
   ];
   if (nested.grandchild_arguments) {

@@ -293,9 +293,10 @@ targets?: ArtifactTarget[]
  * via the `definition` "runtimeConfig".
  */
 export interface RuntimeConfig {
-keys: string[]
-artifactIds?: string[]
-resourceVersion: string
+/**
+ * @minItems 1
+ */
+keys: [string, ...(string)[]]
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema

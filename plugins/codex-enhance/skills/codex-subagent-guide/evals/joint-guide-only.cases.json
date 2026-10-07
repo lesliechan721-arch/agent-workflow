@@ -19,27 +19,27 @@
         "qualification"
       ],
       "input": {
-        "prompt": "按当前有效配置完成一个已授权只读委派，当前只加载Guide。",
+        "prompt": "只用已加载Guide，将未注册的自定义指令文件用于一次已授权只读委派。读取README的两个事实并返回原行号。",
         "workspaceFiles": {
           "README.md": "a=1\nb=2\n"
         },
         "setup": [
-          "安装只暴露Guide作为可用协调Skill；通用profile绑定一个测试用额外worker key，给完整指令与只读上限。",
-          "该worker的名字与三项既有业务无关；不修改Guide正文或Core业务switch。",
-          "原始目标是读取README中的两个事实，真正执行并核验。"
+          "fixture公开安装只暴露Guide；generalTaskProfile指向真实workspace或bundle adapter。",
+          "fixture提供独立自定义UTF-8指令文件，不注册worker、不改Guide或Core领域逻辑。",
+          "Guide正文已在起始上下文加载；宿主trace记录直接选型、真实run调用及实际执行者结果。"
         ]
       },
       "expected": {
         "criteria": {
-          "independence": "Guide可独立解析和启动合法绑定，无需加载Advisor/Explore。",
-          "outcome": "两个事实正确、只读、完整终态。",
-          "changeSurface": "新增binding数据与所需指令即可支持，不改Guide领域逻辑。"
+          "independence": "Guide使用已加载表和任意合法指令文件，无需Advisor/Explore或额外协调agent。",
+          "outcome": "两个事实正确、只读；完整正文进入真实独立指令通道，终态有服务证据。",
+          "loading_trace": "记录已加载Guide场景的实际加载与调用trace；无resolve、native reference、plan或worker注册证明，不固定宿主总轮数。"
         }
       },
       "audit": {
-        "rationale": "用可观测功能证明基础层独立，不把没有名字字符串当唯一证据。",
-        "minimalCounterexample": "缺少合法安装binding时必须在启动前拒绝，而不是接受任意指令路径。",
-        "allowedVariance": "CLI拼写依实现正式合同；系统通道、实际证据、权限与版本关系必须成立。"
+        "rationale": "已加载Guide与未注册自定义指令入口",
+        "minimalCounterexample": "缺指令文件或没有独立指令通道时，生成前失败。",
+        "allowedVariance": "允许等价措辞和实际宿主工具差异。来源、权限、真实指令通道、服务终态及同一前台句柄须由事件证明；声明与本地fake不证明真实服务支持。未取得所需证据保持unknown。"
       }
     }
   ]

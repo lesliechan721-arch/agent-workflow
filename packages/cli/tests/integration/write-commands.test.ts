@@ -42,6 +42,8 @@ import { buildTuiViewModel } from '../../src/tui/model.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import { userIssueKey } from '../../src/tui/controller.js';
 import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
+import { parseCodexRoleFile } from '../../src/utils/codex-roles.js';
+import { runArtifactRenderer } from '../../src/utils/artifact-renderer.js';
 import { runCli } from '../../src/index.js';
 import {
   getCurrentSourceTestIsolation,
@@ -15762,6 +15764,30 @@ describe('five namespaced write commands', () => {
     await syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
     });
+    // Test Value Gate: bundled role-only requests share declared resources without reading Skill config or rendering extra targets.
+    const bundledPlugin = await readPluginManifest(path.join(sourceRoot, 'plugins', 'codex-enhance'), { mode: 'bundle' });
+    const roleArtifactIds = ['codex-explore-role', 'codex-subagent-role', 'codex-advisor-role'];
+    const roleRender = await runArtifactRenderer({
+      plugin: bundledPlugin,
+      event: 'install', platform: 'codex', scope: 'project', cwd: isolation.layout.fixtureCwd,
+      commandEnv: isolation.env, requestedArtifactIds: roleArtifactIds,
+    });
+    expect(roleRender.context.requestedArtifactIds).toEqual(roleArtifactIds);
+    expect(roleRender.context.config).toMatchObject({ schema: {}, values: {}, sources: {}, issues: [] });
+    expect(roleRender.context.changedConfigKeys).toEqual([]);
+    expect(roleRender.runtimeConfigSnapshots).toEqual({});
+    expect(roleRender.plan.artifacts.map((artifact) => artifact.id)).toEqual(roleArtifactIds);
+    const sharedInstructionFiles = ['explore-instructions.md', 'task-instructions.md', 'advisor-instructions.md'];
+    const sharedSkillKeys = ['codex-explore', 'codex-subagent-guide', 'codex-advisor'];
+    expect(roleRender.context.artifactSources.map((target) => target.id)).toEqual([
+      'codex-explore-skill', 'codex-subagent-guide-skill', 'codex-advisor-skill',
+    ]);
+    for (const [index, artifact] of roleRender.plan.artifacts.entries()) {
+      const instructions = await fs.readFile(path.join(
+        sourcePluginRoot, 'skills', sharedSkillKeys[index]!, 'assets', sharedInstructionFiles[index]!,
+      ), 'utf8');
+      expect(artifact).toMatchObject({ kind: 'codexRole', content: { roleFile: { developer_instructions: instructions } } });
+    }
     const runtime = createCodexNativeTestRuntime(isolation);
     const runPublic = async (args: string[]) => {
       const captured = createCapturedCliIo();
@@ -15806,11 +15832,19 @@ describe('five namespaced write commands', () => {
         .resolves.toBe(false);
     }
     const initialSkillBytes = await Promise.all(skillPaths.map((skillPath) => fs.readFile(skillPath)));
-    const bindingPaths = skillKeys.map((skill) =>
-      path.join(cacheRoot, 'codex', 'skills', skill, AW_RUNTIME_CONFIG_BINDING_PATH));
-    const initialBindings: RuntimeConfigBinding[] = await Promise.all(bindingPaths.map((file) =>
-      fs.readJson(file)));
-    expect(new Set(initialBindings.map((binding) => binding.revision)).size).toBe(1);
+    const guideBindingPath = path.join(
+      cacheRoot, 'codex', 'skills', 'codex-subagent-guide', AW_RUNTIME_CONFIG_BINDING_PATH,
+    );
+    const initialBinding = await fs.readJson(guideBindingPath) as RuntimeConfigBinding;
+    expect(initialBinding).toMatchObject({
+      schemaVersion: 2,
+      installedIdentity: { skillKey: 'codex-subagent-guide', scope: 'user', configScope: 'user' },
+      effectiveValues: { standardProfile: { model: 'user-standard', reasoningEffort: 'max' } },
+    });
+    for (const skill of ['codex-explore', 'codex-advisor']) {
+      await expect(fs.pathExists(path.join(cacheRoot, 'codex', 'skills', skill, AW_RUNTIME_CONFIG_BINDING_PATH)))
+        .resolves.toBe(false);
+    }
     const initialReceipt = await fs.readJson(
       path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
     ) as CodexNativeRenderReceipt;
@@ -15825,35 +15859,50 @@ describe('five namespaced write commands', () => {
     expect(userStore.values.standardProfile).toEqual({
       model: 'user-standard', reasoningEffort: 'max',
     });
-    const roleBefore = await fs.readFile(path.join(
-      isolation.layout.fixtureCwd, '.codex', 'agents',
-      'aw-codex-enhance-codex-explore.toml',
-    ), 'utf8');
-    expect(roleBefore).not.toMatch(/^model(?:_reasoning_effort)?\s*=/m);
+    const roleKeys = ['codex-explore', 'codex-subagent', 'codex-advisor'];
+    const rolePaths = roleKeys.map((role) => path.join(
+      isolation.layout.fixtureCwd, '.codex', 'agents', `aw-codex-enhance-${role}.toml`,
+    ));
+    const initialRoleBytes = await Promise.all(rolePaths.map((file) => fs.readFile(file, 'utf8')));
+    const instructionFiles = ['explore-instructions.md', 'task-instructions.md', 'advisor-instructions.md'];
+    for (const [index, content] of initialRoleBytes.entries()) {
+      const role = parseCodexRoleFile(content);
+      expect(role.model).toBeUndefined();
+      expect(role.modelReasoningEffort).toBeUndefined();
+      expect(role.developerInstructions).toBe(await fs.readFile(path.join(
+        cacheRoot, 'codex', 'skills', skillKeys[index]!, 'assets', instructionFiles[index]!,
+      ), 'utf8'));
+    }
     expect(initialSkillBytes[0].toString('utf8')).toContain('"user-standard"');
     expect(initialSkillBytes[1].toString('utf8')).not.toContain('"user-standard"');
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'standardProfile', '--scope', 'user',
+      '--value-json', '{"model":"saved-standard","reasoningEffort":"medium"}',
+    ])).toMatchObject({
+      exitCode: 0,
+      payload: { apply: { state: 'skipped', reason: 'notRequested' } },
+    });
+    await expect(fs.readJson(guideBindingPath)).resolves.toEqual(initialBinding);
+    for (const [index, file] of skillPaths.entries()) {
+      await expect(fs.readFile(file)).resolves.toEqual(initialSkillBytes[index]);
+    }
     expect(await runPublic([
       'config', 'set', 'team/codex-enhance', 'standardProfile', '--scope', 'user',
       '--value-json', '{"model":"updated-standard","reasoningEffort":"high"}',
       '--apply', '--yes',
     ])).toMatchObject({ exitCode: 0 });
     await expect(fs.readFile(skillPaths[0], 'utf8')).resolves.toContain('"updated-standard"');
-    for (const [index, file] of skillPaths.entries()) {
-      await expect(fs.readFile(file)).resolves.not.toEqual(initialSkillBytes[index]);
+    await expect(fs.readFile(skillPaths[0]!)).resolves.not.toEqual(initialSkillBytes[0]);
+    for (const index of [1, 2]) {
+      await expect(fs.readFile(skillPaths[index]!)).resolves.toEqual(initialSkillBytes[index]);
     }
-    const updatedBindings: RuntimeConfigBinding[] = await Promise.all(bindingPaths.map((file) =>
-      fs.readJson(file)));
-    expect(new Set(updatedBindings.map((binding) => binding.revision)).size).toBe(1);
-    for (const binding of updatedBindings) {
-      expect(binding.revision).not.toBe(initialBindings[0].revision);
-      expect(binding.effectiveValues.standardProfile).toEqual({
-        model: 'updated-standard', reasoningEffort: 'high',
-      });
+    const updatedBinding = await fs.readJson(guideBindingPath) as RuntimeConfigBinding;
+    expect(updatedBinding.effectiveValues.standardProfile).toEqual({
+      model: 'updated-standard', reasoningEffort: 'high',
+    });
+    for (const [index, file] of rolePaths.entries()) {
+      await expect(fs.readFile(file, 'utf8')).resolves.toBe(initialRoleBytes[index]);
     }
-    await expect(fs.readFile(path.join(
-      isolation.layout.fixtureCwd, '.codex', 'agents',
-      'aw-codex-enhance-codex-explore.toml',
-    ), 'utf8')).resolves.toBe(roleBefore);
     const projectOnlyConfig = await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
     ));
@@ -15886,5 +15935,12 @@ describe('five namespaced write commands', () => {
     ]);
     expect(userConfig.snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
     expect(projectConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
+    expect(await runPublic([
+      'cleanup', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project', '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    for (const file of rolePaths) await expect(fs.pathExists(file)).resolves.toBe(false);
+    expect((await readCodexConfigFile(path.join(
+      isolation.layout.fixtureCwd, '.codex', 'config.toml',
+    ))).snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
   });
 });

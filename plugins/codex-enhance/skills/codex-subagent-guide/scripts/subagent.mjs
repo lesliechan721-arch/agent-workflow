@@ -1,105 +1,65 @@
 #!/usr/bin/env node
-import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { RUNTIME_KEYS, fail, safeError } from './runtime/contracts.mjs';
-import { readJson, loadInstructions } from './runtime/files.mjs';
-import { resolvePlan } from './runtime/plan.mjs';
-import { prepareRun, previewResult, startRun, runStatus, collectRun, cancelRun } from './runtime/runner.mjs';
+import { selectExecution } from './runtime/plan.mjs';
+import { prepareRun, previewResult, runForeground } from './runtime/runner.mjs';
 
-export const HELP = `Guide subagent runtime (instruction protocol v2)
+export const HELP = `Guide foreground runtime (adapter protocol v3)
 Usage:
-  node subagent.mjs resolve --profile KEY [--worker KEY] [--access read-only|workspace-write] [--expected-revision REV]
-    [--model MODEL] [--reasoning-effort EFFORT]
-  node subagent.mjs run --profile KEY --workspace ABS --prompt-file FILE [--file RELATIVE]... [--preview]
-    [--worker KEY] [--access read-only|workspace-write] [--expected-revision REV]
-    [--model MODEL] [--reasoning-effort EFFORT]
-    [--require-isolation] [--allow-material-transfer] [--allow-model-cost] [--runs-dir ABS]
-  node subagent.mjs status|collect|cancel --run UUID [--runs-dir ABS]
+  node subagent.mjs run --profile KEY --instructions-file FILE --prompt-file FILE
+    [--workspace DIR] [--file RELATIVE]... [--model MODEL] [--reasoning-effort EFFORT]
+    [--access read-only|workspace-write] [--preview]
 
-resolve and preview return a JSON plan without launching any adapter or model.
-run returns a JSON run ID after launching a managed background runner.
-status and cancel return JSON. collect returns the original final Markdown.
-Permission flags carry existing task authorization. They do not grant new permission.
-Model and effort independently use explicit request, then profile preference, then an omitted backend default.
-Explicit values are hard requirements. No executor switch, model fallback, or new generation is automatic.
-Native plans require real host delegation and current loaded-role evidence; native run is unsupported here.
-Strong scope isolation and resume are unsupported. Configuration booleans do not establish qualification.
-Materials: 128 UTF-8 files; 1 MiB each; 8 MiB total. No symlinks, traversal, default secrets, or truncation.
-Task/instructions: 256 KiB each; final output: 4 MiB; diagnostics: 8 MiB; deadline: 30 minutes.
-Private run store: 0700 directories / 0600 files; 256 MiB capacity. No automatic deletion.
-Keep active, unknown, and uncollected evidence. After collection, keep evidence for at least 7 days as needed.
-External managed execution supports macOS/Linux cooperative process trees. Remote stop can remain unknown.
-stdout contains one JSON object or collected Markdown; errors use safe JSON on stderr.
-Exit codes: 0 success, 1 operation failed/unconfirmed, 2 invalid or unsupported request.
+Workspace defaults to the current directory. Access defaults to read-only.
+Preview reads and checks inputs without starting an adapter or model; it is optional.
+Native profiles use the host tools directly. Old background commands and flags are unsupported.
+Run waits in the foreground. Continue waiting on the same host session after a tool yield.
+Inputs are read once; later source changes do not replace these copies. Workspace tools read live files.
+Adapters receive independent instructions and task/material data. A user prefix is insufficient.
+Materials: 128 UTF-8 files; 1 MiB each; 8 MiB total. No traversal, symlinks, credentials, or truncation.
+Task/instructions: 256 KiB each; final text: 4 MiB; diagnostics: 8 MiB; deadline: 30 minutes.
+Temporary resources are private and removed after confirmed local completion. No run store or recovery.
+Only owned processes are stopped. Unknown remote stop remains unknown.
+stdout is JSON; safe input errors use stderr JSON. Exit codes: 0 completed/preview/help, 1 other outcomes, 2 invalid input.
 `;
 
 export function parseCommand(argv) {
-  if (argv.includes('--help') || argv.includes('-h')) return { operation: 'help' };
+  if (argv.length === 1 && ['--help', '-h'].includes(argv[0])) return { operation: 'help' };
   let parsed;
   try {
     parsed = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
-      profile: { type: 'string' }, worker: { type: 'string' }, access: { type: 'string' },
-      model: { type: 'string' }, 'reasoning-effort': { type: 'string' },
-      workspace: { type: 'string' }, 'prompt-file': { type: 'string' }, file: { type: 'string', multiple: true },
-      'expected-revision': { type: 'string' }, 'require-isolation': { type: 'boolean' },
-      'allow-material-transfer': { type: 'boolean' }, 'allow-model-cost': { type: 'boolean' },
-      preview: { type: 'boolean' }, run: { type: 'string' }, 'runs-dir': { type: 'string' },
+      profile: { type: 'string' }, 'instructions-file': { type: 'string' }, 'prompt-file': { type: 'string' },
+      workspace: { type: 'string' }, file: { type: 'string', multiple: true },
+      model: { type: 'string' }, 'reasoning-effort': { type: 'string' }, access: { type: 'string' }, preview: { type: 'boolean' },
     } });
-  } catch { fail('argumentsInvalid', 'Invalid runtime arguments. Run subagent.mjs --help.'); }
+  } catch { fail('argumentsInvalid', 'An argument is invalid or no longer supported. Run subagent.mjs --help for the v3 interface.'); }
   const [operation, ...rest] = parsed.positionals;
-  if (rest.length || !['resolve', 'run', 'status', 'collect', 'cancel'].includes(operation)) fail('operationUnsupported', 'Choose resolve, run, status, collect, or cancel. Resume is not supported.');
+  if (operation !== 'run' || rest.length) fail('operationUnsupported', 'Only run is supported. Use native tools directly, or run the foreground adapter.');
   const values = parsed.values;
-  if (values['runs-dir'] && !path.isAbsolute(values['runs-dir'])) fail('runDirectoryInvalid', 'The run directory must be absolute.');
-  const recovering = ['status', 'collect', 'cancel'].includes(operation);
-  const allowed = recovering ? new Set(['run', 'runs-dir']) : operation === 'resolve' ? new Set(['profile', 'worker', 'access', 'model', 'reasoning-effort', 'expected-revision', 'require-isolation']) : new Set(Object.keys(values).filter((key) => key !== 'run'));
-  if (Object.keys(values).some((key) => !allowed.has(key))) fail('argumentsInvalid', 'An argument does not apply to this operation.');
-  if (recovering ? !values.run : !values.profile) fail('argumentsRequired', recovering ? 'Supply an existing run UUID.' : 'Supply a declared profile key.');
-  return {
-    operation, id: values.run, runsDirectory: values['runs-dir'], preview: values.preview ?? false,
-    profile: values.profile, worker: values.worker, access: values.access,
-    model: values.model, reasoningEffort: values['reasoning-effort'],
-    expectedRevision: values['expected-revision'], requireIsolation: values['require-isolation'] ?? false,
-    workspace: values.workspace, promptFile: values['prompt-file'], files: values.file ?? [],
-    allowMaterialTransfer: values['allow-material-transfer'] ?? false, allowModelCost: values['allow-model-cost'] ?? false,
-  };
+  if (!values.profile || !values['instructions-file'] || !values['prompt-file']) fail('argumentsRequired', 'Supply --profile, --instructions-file, and --prompt-file.');
+  return { operation, profile: values.profile, instructionsFile: values['instructions-file'], promptFile: values['prompt-file'],
+    workspace: values.workspace, files: values.file ?? [], model: values.model, reasoningEffort: values['reasoning-effort'], access: values.access, preview: values.preview ?? false };
 }
-
 async function installedReader() {
   try { return (await import('./aw-runtime-config.mjs')).readRuntimeConfig; }
-  catch { fail('installedRuntimeMissing', 'The AW installed runtime helper is missing. Run this entry from a complete installed Guide Skill.', ['sync', 'reinstall']); }
+  catch { fail('installedRuntimeMissing', 'The AW runtime helper is missing. Sync or reinstall and run from the installed Guide.', ['sync', 'reinstall']); }
 }
-
-export async function loadPlan(request, readRuntimeConfig = undefined) {
-  const reader = readRuntimeConfig ?? await installedReader();
-  const snapshot = await reader({ from: import.meta.url, keys: RUNTIME_KEYS, ...(request.expectedRevision ? { expectedRevision: request.expectedRevision } : {}) });
-  const binding = await readJson(path.join(snapshot.resourceRoot, 'runtime', 'worker-bindings.json'));
-  const plan = resolvePlan(snapshot, binding, request);
-  await loadInstructions(plan);
-  return { plan, reader };
-}
-
 export async function executeCommand(request, dependencies = {}) {
   if (request.operation === 'help') return { text: HELP };
-  if (request.operation === 'status') return { json: await runStatus(request.id, request.runsDirectory) };
-  if (request.operation === 'collect') return { text: await collectRun(request.id, request.runsDirectory) };
-  if (request.operation === 'cancel') return { json: await cancelRun(request.id, request.runsDirectory) };
-  const { plan, reader } = await loadPlan(request, dependencies.readRuntimeConfig);
-  if (request.operation === 'resolve') return { json: { ok: true, plan } };
-  if (!request.promptFile) fail('taskFileRequired', 'Run and preview require --prompt-file.');
-  const prepared = await prepareRun(plan, request);
-  if (request.preview) return { json: previewResult(prepared) };
-  await reader({ from: import.meta.url, keys: RUNTIME_KEYS, expectedRevision: plan.configRevision });
-  return { json: await startRun(prepared, { runsDirectory: request.runsDirectory }) };
+  const reader = dependencies.readRuntimeConfig ?? await installedReader();
+  const snapshot = await reader({ from: import.meta.url, keys: RUNTIME_KEYS });
+  const selected = selectExecution(snapshot, request);
+  const prepared = await prepareRun(selected, request);
+  return { json: request.preview ? previewResult(prepared) : await runForeground(prepared, dependencies) };
 }
-
 async function main() {
+  process.umask(0o077);
   const result = await executeCommand(parseCommand(process.argv.slice(2)));
   if (result.text !== undefined) process.stdout.write(result.text);
-  else process.stdout.write(`${JSON.stringify(result.json)}\n`);
+  else { process.stdout.write(`${JSON.stringify(result.json)}\n`); if (!result.json.preview && result.json.state !== 'completed') process.exitCode = 1; }
 }
-
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main().catch((error) => {
   process.stderr.write(`${JSON.stringify(safeError(error))}\n`);
-  process.exitCode = /Invalid|Unsupported|Required|NotAllowed|Unknown|NotAuthorized|Missing|Mismatch|TooLarge|Exceeded|Excluded|Symlink|NotPrivate/.test(error?.code ?? '') ? 2 : 1;
+  process.exitCode = 2;
 });

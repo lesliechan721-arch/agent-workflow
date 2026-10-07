@@ -32,7 +32,7 @@ async function fixture(transitive = false) {
     artifacts: { targets: [{
       id: 'selected-skill', platform: 'codex', target: 'codex.skill', scopes: ['user'], states: ['present'],
       refreshKeys: ['selected'], skillKey: 'selected-skill', delivery: { mode: 'aw-extension' },
-      runtimeConfig: { keys: ['selected'], resourceVersion: 'instructions-v2' },
+      runtimeConfig: { keys: ['selected'] },
     }] },
   };
   await fs.outputJson(manifestPath, manifest);

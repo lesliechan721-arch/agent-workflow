@@ -16,6 +16,10 @@
 
 改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发或安装流程，或任何影响插件作者使用方式的能力时，必须同时检查公开 CLI、canonical registry 和 `aw-development-toolkit`。
 
+已安装配置读取使用 `aw.installed-runtime-config.v2`、keys-only target 声明和 schema 2 单产物资源。旧 resourceVersion/artifactIds、v1 helper 和 expectedRevision 须按[插件作者指南](plugin-authoring.md#已安装配置读取)更新。Codex Enhance 的前台外部 adapter 使用 v3；它与下文 Eval Engine 的 instruction-v2 transport 是不同合同，不能一起改号。升级后通过正常 build/sync/reinstall 生成新 helper，保留现有 ownership、native receipt、Status 和安全 cleanup 边界。
+
+Codex Enhance 的注册配置、v3 输入输出、前台生命周期、附带 Codex 后端和验证边界记录在[适配器实现说明](codex-enhance-adapters.md)。这些是维护者资料，不作为运行 Skill 的默认阅读步骤；修改调用参数或结果含义时，再同步 Guide 的外部调用 reference。
+
 `aw review publish` 是独立的不可变归档入口：只把已有的人读 `report.md`、可选 machine result、checks/evidence、独立 `release-check.json` 和 workflow scope 写入 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`。人读 Review 只拥有设计、复杂度和 findings；Release Check 只拥有机器 readiness；Publication 只拥有 target/digest 绑定和 archive。该入口不得重评、封存 Eval、更新 README 或维护可变 index。
 
 Eval 的机器真值由 `@lesliechan721/agent-skill-eval` 提供，固定流程是 Manifest v1 准备 `EvalSpec v1`，独立 Auditor 产生精确绑定 provider、workspace、current/optional previous target、case digest 和 selected cases 的 `EvalAudit v1`，Engine 产生带必需 `processManagement` 证据的 `EvalResult v2`。Result v1 不再兼容。`runs` 和 `timeoutMs` 改变不影响 Audit 复用；旧版字符串 `workspace` v1 Spec 必须重新 prepare 和 Audit。`author-agent-skill` 设计或修改 Eval assets，`audit-agent-skill-evals` 独立审核 cases 或结果；AW 格式和辅助 validator 由 `aw-skill-eval-runner` 拥有。插件不得复制 schema、digest、validator 或执行实现。

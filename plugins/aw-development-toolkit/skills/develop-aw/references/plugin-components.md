@@ -26,11 +26,12 @@
 - schema、preset 和作用域由 AW 配置合同拥有；
 - Agent 内容只记录非显然选择和项目约定；
 - helper 输出必须是确定性、可测试且最小的 runtime dependency。
+- 已安装配置 reader 由 AW 在最终 Skill 中注入；从真实调用位置读取本产物的生效值，不读取最新 store。声明与兼容要求从当前 capability 查询取得；不要自建保留文件或内容一致性门禁。
 
 ## Dynamic artifact / runtime imports
 
 - 实现 renderer 时读取 `references/aw-artifact-renderer.md`，保留请求 ID、配置隔离、敏感值和 portable surface 的边界；
-- renderer 只消费声明的 source 和 runtime imports；
+- renderer 只消费声明的 source 和 runtime imports；用 context 的 `artifactSources` 读取当前 surface/scope 的 Skill 静态资源，不猜测 bundle 私有路径，不扩大请求配置或输出；
 - platform×scope final 必须 materialize 后验证；
 - artifact 的 Skill 内容仍使用 `author-agent-skill`/`agent-content`，不要在 renderer 中复制第二套标准。
 

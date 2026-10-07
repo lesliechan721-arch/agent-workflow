@@ -21,11 +21,10 @@ const definition: PluginConfigSchema = { schemaVersion: 3, fields: {
   } } },
   selected: { type: 'string', valueRef: { field: 'channels', key: 'key', include: ['built-in'] } },
 } };
-const options = { installedIdentity: identity, declaration: { keys: ['selected'], resourceVersion: 'instructions-v2' },
-  definition, values: { selected: 'registered', channels: [{ key: 'registered' }], secret: 'private-token' },
-  sources: { selected: 'user', channels: 'user', secret: 'user' } };
+const options = { installedIdentity: identity, declaration: { keys: ['selected'] as [string] },
+  definition, values: { selected: 'registered', channels: [{ key: 'registered' }], secret: 'private-token' } };
 
-// Test Value Gate: a caller cannot bypass keys, identity, revision, or resource path checks.
+// Test Value Gate: the installed reader preserves keys, identity and resource path boundaries.
 async function installed(native = false) {
   const root = path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, 'installed',
     ...(native ? ['plugin', 'codex', 'skills'] : []), 'tool-a');
@@ -43,10 +42,10 @@ async function installed(native = false) {
 }
 
 describe('runtime config reader boundary', () => {
-  it.each([false, true])('keeps duplicate artifact IDs in their platform and scope namespace (self group: %s)', async (selfGroup) => {
+  it('keeps duplicate artifact IDs in their platform and scope namespace', async () => {
     const root = path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, 'namespaced-plugin');
     const common = { id: 'shared-id', states: ['present'], refreshKeys: ['selected'], runtimeConfig: {
-      keys: ['selected'], resourceVersion: 'namespace-v1', ...(selfGroup ? { artifactIds: ['shared-id'] } : {}),
+      keys: ['selected'],
     } };
     await fs.outputJson(path.join(root, '.agents-plugin/plugin.json'), { schemaVersion: 3, name: 'namespaced-plugin', version: '1.0.0',
       description: 'Namespaced artifact IDs', marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
@@ -66,50 +65,77 @@ describe('runtime config reader boundary', () => {
           values: { selected: 'local' }, sources: { selected: 'default' }, issues: [], stores: {} },
       });
       expect(snapshots['shared-id']!.installedIdentity).toMatchObject({ platform, scope, skillKey });
-      if (selfGroup) expect(snapshots['shared-id']!.consistencyGroup).toEqual([{ artifactId: 'shared-id', skillKey }]);
     }
   });
-  it('projects only allowed keys and shares a deterministic revision across related artifacts', async () => {
+  it('validates the dependency closure at installation and returns only requested allowed keys', async () => {
     const item = await installed();
-    expect(await readRuntimeConfig({ from: item.from, keys: ['selected'], expectedRevision: item.snapshot.revision }))
-      .toMatchObject({ effectiveValues: { selected: 'registered' }, resourceVersion: 'instructions-v2', revision: item.snapshot.revision });
-    const sibling = createRuntimeConfigSnapshot({ ...options,
-      installedIdentity: { ...identity, artifactId: 'tool-b', skillKey: 'tool-b' } });
-    expect(sibling.revision).toBe(item.snapshot.revision);
-    const movedSource = createRuntimeConfigSnapshot({ ...options,
-      installedIdentity: { ...identity, sourceIdentity: `sha256:${'2'.repeat(64)}` } });
-    expect(movedSource.revision).not.toBe(item.snapshot.revision);
+    expect(await readRuntimeConfig({ from: item.from, keys: ['selected'] }))
+      .toEqual({ installedIdentity: identity, effectiveValues: { selected: 'registered' }, resourceRoot: item.root });
+    const binding = await fs.readJson(path.join(item.root, '.aw-runtime-config.json'));
+    expect(binding).toEqual({ schemaVersion: 2, kind: 'aw-runtime-config', installedIdentity: identity,
+      allowedKeys: ['selected'], effectiveValues: { selected: 'registered' } });
     expect(() => createRuntimeConfigSnapshot({ ...options, values: { ...options.values, selected: 'dangling' } }))
       .toThrow('runtimeConfigInvalid');
+    expect(() => createRuntimeConfigSnapshot({ ...options,
+      definition: { ...definition, fields: { ...definition.fields, channels: { ...definition.fields.channels!, sensitive: true } } } as PluginConfigSchema,
+    })).toThrow('runtimeConfigKeyDenied');
     await expect(readRuntimeConfig({ from: item.from, keys: ['channels'] })).rejects.toMatchObject({ code: 'runtimeConfigKeyDenied' });
     await expect(readRuntimeConfig({ from: item.from, keys: ['secret'] })).rejects.toMatchObject({ code: 'runtimeConfigKeyDenied' });
-    await expect(readRuntimeConfig({ from: item.from, keys: ['selected'], expectedRevision: 'different' }))
-      .rejects.toMatchObject({ code: 'runtimeConfigRevisionMismatch' });
   });
 
-  it('rejects binding tampering, missing resource, unknown version, and an unbound caller', async () => {
+  it('reads each current resource without hashing unrelated content or copying a field validator', async () => {
+    const item = await installed();
+    await fs.appendFile(path.join(item.root, 'SKILL.md'), '\nchanged text\n');
+    await fs.remove(path.join(item.root, 'runtime/instructions.md'));
+    const bindingPath = path.join(item.root, '.aw-runtime-config.json');
+    const original = await fs.readJson(bindingPath);
+    await fs.writeJson(bindingPath, { ...original, effectiveValues: { selected: 'later-value' } });
+    expect(await readRuntimeConfig({ from: item.from, keys: ['selected'] }))
+      .toMatchObject({ effectiveValues: { selected: 'later-value' } });
+  });
+
+  it('rejects malformed, legacy and unknown bindings with concrete recovery', async () => {
     const item = await installed();
     const bindingPath = path.join(item.root, '.aw-runtime-config.json');
     const original = await fs.readJson(bindingPath);
-    await fs.writeJson(bindingPath, { ...original, effectiveValues: { selected: 'other' } });
+    await fs.outputFile(bindingPath, '{broken');
     await expect(readRuntimeConfig({ from: item.from, keys: ['selected'] })).rejects.toMatchObject({ code: 'runtimeConfigBindingInvalid' });
-    await fs.writeJson(bindingPath, { ...original, schemaVersion: 9 });
-    await expect(readRuntimeConfig({ from: item.from, keys: ['selected'] })).rejects.toMatchObject({ code: 'runtimeConfigVersionUnsupported' });
+    for (const schemaVersion of [1, 9]) {
+      await fs.writeJson(bindingPath, { ...original, schemaVersion });
+      await expect(readRuntimeConfig({ from: item.from, keys: ['selected'] })).rejects.toMatchObject({
+        code: 'runtimeConfigVersionUnsupported', message: expect.stringContaining('schemaVersion 2'), recoveryActions: ['sync', 'reinstall'],
+      });
+    }
+    await fs.writeJson(bindingPath, { ...original, revision: 'legacy' });
+    await expect(readRuntimeConfig({ from: item.from, keys: ['selected'] })).rejects.toMatchObject({ code: 'runtimeConfigMigrationRequired' });
+    await fs.writeJson(bindingPath, { ...original, effectiveValues: { selected: null } });
+    await expect(readRuntimeConfig({ from: item.from, keys: ['selected'] })).rejects.toMatchObject({ code: 'runtimeConfigBindingInvalid' });
+    await fs.writeJson(bindingPath, { ...original, effectiveValues: { selected: 'registered', secret: 'not-allowed' } });
+    await expect(readRuntimeConfig({ from: item.from, keys: ['selected'] })).rejects.toMatchObject({ code: 'runtimeConfigKeyDenied' });
     await fs.writeJson(bindingPath, original);
-    await fs.outputFile(path.join(item.root, 'unbound.mjs'), '// not declared\n');
-    await expect(readRuntimeConfig({ from: pathToFileURL(path.join(item.root, 'unbound.mjs')), keys: ['selected'] }))
-      .rejects.toMatchObject({ code: 'runtimeConfigIdentityMismatch' });
-    await fs.remove(path.join(item.root, 'runtime/instructions.md'));
+    await expect(readRuntimeConfig({ from: item.from, keys: ['selected'], expectedRevision: 'legacy' }))
+      .rejects.toMatchObject({ code: 'runtimeConfigMigrationRequired', message: expect.stringContaining('expectedRevision') });
+    await fs.remove(path.join(item.root, 'SKILL.md'));
     await expect(readRuntimeConfig({ from: item.from, keys: ['selected'] })).rejects.toMatchObject({ code: 'runtimeConfigResourceMissing' });
   });
 
-  it.skipIf(process.platform === 'win32')('rejects symlink resources and rejects renderer issued receipts', async () => {
+  it.each(['resourceVersion', 'artifactIds'])('gives a migration error for the removed manifest field %s', async (legacyKey) => {
+    const root = path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, 'legacy-plugin');
+    await fs.outputJson(path.join(root, '.agents-plugin/plugin.json'), { schemaVersion: 3, name: 'legacy-plugin', version: '1.0.0',
+      description: 'Old runtime config', marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } }, config: { fields: { selected: { type: 'string' } } },
+      artifacts: { targets: [{ id: 'tool-a', platform: 'codex', scopes: ['user'], target: 'codex.skill', delivery: { mode: 'aw-extension' },
+        states: ['present'], refreshKeys: ['selected'], skillKey: 'tool-a', runtimeConfig: { keys: ['selected'], [legacyKey]: legacyKey === 'artifactIds' ? ['tool-a'] : 'old-v1' } }] },
+    });
+    await expect(readPluginManifest(root)).rejects.toThrow(/runtimeConfigMigrationRequired.*aw\.installed-runtime-config\.v2/u);
+  });
+
+  it.skipIf(process.platform === 'win32')('rejects unsafe caller paths and renderer issued runtime resources', async () => {
     const item = await installed();
-    const resource = path.join(item.root, 'runtime/instructions.md');
-    const outside = path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, 'outside.md');
-    await fs.outputFile(outside, 'Bounded instructions.\n');
-    await fs.remove(resource);
-    await fs.symlink(outside, resource);
+    const outside = path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, 'outside.mjs');
+    await fs.outputFile(outside, 'export const outside = true;\n');
+    await fs.remove(path.join(item.root, 'scripts/caller.mjs'));
+    await fs.symlink(outside, path.join(item.root, 'scripts/caller.mjs'));
     await expect(readRuntimeConfig({ from: item.from, keys: ['selected'] })).rejects.toMatchObject({ code: 'runtimeConfigPathUnsafe' });
     await expect(injectInstalledRuntimeConfig(item.tree, item.snapshot)).rejects.toThrow('runtimeConfigReservedResource');
   });

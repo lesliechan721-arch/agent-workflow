@@ -28,7 +28,7 @@
       "audit": {
         "rationale": "大范围事实查找与证据核验，可从最终判断分离。",
         "minimalCounterexample": "用户只需读取一个已知函数且没有跨源需求时直接读。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -44,7 +44,7 @@
       "audit": {
         "rationale": "定向评价不自动成为事实探索。",
         "minimalCounterexample": "该diff只是入口且必须跨陌生依赖追踪事实时可分离Explore。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -60,7 +60,7 @@
       "audit": {
         "rationale": "充分有界材料可做bundle探索。",
         "minimalCounterexample": "只有一个入口片段却要求未知全仓库完整结论时应报告能力/材料缺口，不能宣称调查已完成。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -76,7 +76,7 @@
       "audit": {
         "rationale": "Explore不是建议型代理。",
         "minimalCounterexample": "若必须先定位陌生模块的引用事实，可先分离调查，但最终建议仍由父任务给。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -92,7 +92,7 @@
       "audit": {
         "rationale": "实现动作没有独立事实探索增量。",
         "minimalCounterexample": "当前Ticket资料不足且存在大范围未知来源时，可在授权内安排有界调查。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     }
   ]

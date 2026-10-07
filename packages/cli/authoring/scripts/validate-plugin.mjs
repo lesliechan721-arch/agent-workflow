@@ -32,7 +32,7 @@ const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 14;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 15;
 let capabilityDiagnostic = null;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
@@ -3036,11 +3036,10 @@ function runArtifactRendererFixture(
           : [[key, manifest.config.fields[key]]]));
       const scopedValues = Object.fromEntries(refreshKeys.flatMap((key) =>
         Object.prototype.hasOwnProperty.call(values, key) ? [[key, values[key]]] : []));
-      const runtimeConfig = {};
       try {
         for (const target of scopedDeclarations.filter((declaration) => declaration.runtimeConfig)) {
           const definition = normalizePluginConfigDefinition(manifest.config);
-          const snapshot = createRuntimeConfigSnapshot({
+          createRuntimeConfigSnapshot({
             installedIdentity: {
               sourceId: 'authoring',
               sourceIdentity: 'authoring',
@@ -3056,18 +3055,7 @@ function runArtifactRendererFixture(
             declaration: target.runtimeConfig,
             definition,
             values,
-            sources: Object.fromEntries(Object.keys(values).map((key) => [key, 'default'])),
-            ...(target.runtimeConfig.artifactIds ? {
-              consistencyGroup: target.runtimeConfig.artifactIds.map((id) => {
-                const peer = declarations.find((candidate) => candidate.id === id
-                  && candidate.platform === target.platform
-                  && JSON.stringify([...candidate.scopes].sort()) === JSON.stringify([...target.scopes].sort()));
-                if (!peer) throw new Error('runtimeConfigInvalid: Author fixture consistency group is incomplete.');
-                return { artifactId: id, skillKey: peer.skillKey };
-              }).sort((left, right) => left.artifactId < right.artifactId ? -1 : left.artifactId > right.artifactId ? 1 : 0),
-            } : {}),
           });
-          runtimeConfig[target.id] = { revision: snapshot.revision, resourceVersion: snapshot.resourceVersion };
         }
       } catch (runtimeConfigError) {
         error(`scripts.artifacts.render fixture (${surface}/${scope}) runtime config failed: ${runtimeConfigError.message}`);
@@ -3098,9 +3086,11 @@ function runArtifactRendererFixture(
           },
           changedConfigKeys: [],
           requestedArtifactIds: scopedDeclarations.map((target) => target.id),
-          runtimeConfig,
           previousArtifacts: [],
-          artifactSources: scopedDeclarations.map((target) => ({
+          artifactSources: declarations.filter((target) =>
+            (target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill')
+            && (distribution ? target.distribution === distribution : target.platform === platform)
+            && target.scopes.includes(scope)).map((target) => ({
             id: target.id,
             target: target.target,
             sourceDirs: target.sourceDirs.map((sourceDir) =>

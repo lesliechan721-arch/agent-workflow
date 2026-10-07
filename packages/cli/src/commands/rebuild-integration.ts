@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import type { RuntimeConfigSnapshot } from '@lesliechan721/aw-plugin-core';
-import { injectInstalledRuntimeConfig, carryRuntimeConfigNativeReceipt, captureRuntimeConfigPeers } from '../utils/runtime-config.js';
+import { injectInstalledRuntimeConfig, carryRuntimeConfigNativeReceipt } from '../utils/runtime-config.js';
 
 import { generateAgentArtifacts } from '../generators/agents.js';
 import {
@@ -3911,14 +3911,6 @@ export async function materializeReviewNativeSkills(options: {
     return matches[0]!;
   });
   const requiredDeclarations = [...selectedDeclarations];
-  for (const selected of selectedDeclarations) {
-    for (const id of selected.runtimeConfig?.artifactIds ?? []) {
-      const peer = declarations.find((target) => target.id === id && target.platform === options.platform
-        && target.scopes.includes(options.scope));
-      if (!peer) throw new Error('runtimeConfigResourceMissing: Declared runtime peer is unavailable.');
-      if (!requiredDeclarations.includes(peer)) requiredDeclarations.push(peer);
-    }
-  }
   const selectedNames = options.skills.map((skill) => skill.skill);
   const disabledNativeSkillNames = new Set<string>();
   if (new Set(selectedNames).size !== selectedNames.length) {
@@ -4049,22 +4041,6 @@ export async function materializeReviewNativeSkills(options: {
       await carryRuntimeConfigNativeReceipt(path.join(skillsRoot, target.skillKey!), Buffer.from(serializeCodexNativeRenderReceipt(staged.receipt)));
     }
     await fs.remove(marketplaceRoot);
-  }
-
-  const runtimeCaptureRoot = path.join(options.outputRoot, '.aw-runtime-capture');
-  if (selectedDeclarations.some((target) => target.runtimeConfig)) {
-    await fs.copy(skillsRoot, runtimeCaptureRoot, { dereference: false, errorOnExist: true, overwrite: false });
-    try {
-      for (const target of selectedDeclarations.filter((entry) => entry.runtimeConfig && !disabledNativeSkillNames.has(entry.skillKey!))) {
-        await captureRuntimeConfigPeers({ sourceSkillRoot: path.join(runtimeCaptureRoot, target.skillKey!),
-          destinationSkillRoot: path.join(skillsRoot, target.skillKey!) });
-      }
-    } finally {
-      await fs.remove(runtimeCaptureRoot);
-    }
-    for (const target of requiredDeclarations.filter((entry) => !selectedNames.includes(entry.skillKey!))) {
-      await fs.remove(path.join(skillsRoot, target.skillKey!));
-    }
   }
 
   const skills: Array<{ skill: string; path: string }> = [];

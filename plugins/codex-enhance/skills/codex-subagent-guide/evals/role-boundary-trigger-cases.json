@@ -28,7 +28,7 @@
       "audit": {
         "rationale": "局部参数不构成完整调度方法；合法委派需要guide。",
         "minimalCounterexample": "上游同时给出完整适用的启动、等待、停止与恢复方法时直接沿用，不叠加guide。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -44,7 +44,7 @@
       "audit": {
         "rationale": "概念/选择讨论不等于已获准执行。",
         "minimalCounterexample": "用户明确要求在既有许可内启动指定有界任务时进入guide。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -60,7 +60,7 @@
       "audit": {
         "rationale": "guide覆盖实际管理同一次运行而非只spawn。",
         "minimalCounterexample": "仅解释超时概念且不管理真实任务时不触发。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -76,7 +76,7 @@
       "audit": {
         "rationale": "叶子已有任务没有重新委派职责。",
         "minimalCounterexample": "另有有效授权要求该执行者分解并实际委派不同有界子任务时可使用guide。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -92,7 +92,7 @@
       "audit": {
         "rationale": "external合法路径不能因native不可用失去guide。",
         "minimalCounterexample": "未确认外发许可时仍可说明缺口，但不能启动外部处理；此对照测权限行为而非名字加载。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -108,7 +108,7 @@
       "audit": {
         "rationale": "已有完整策略应复用而非重复套guide。",
         "minimalCounterexample": "若上游只有一个role或model要求而缺生命周期，仍使用guide补齐。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     }
   ]

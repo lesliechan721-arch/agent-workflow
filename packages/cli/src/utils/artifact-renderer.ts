@@ -79,7 +79,6 @@ export interface ArtifactRendererContext {
   };
   changedConfigKeys: string[];
   requestedArtifactIds: string[];
-  runtimeConfig?: Record<string, { revision: string; resourceVersion: string }>;
   previousArtifacts: unknown[];
   artifactSources: Array<{
     id: string;
@@ -348,7 +347,11 @@ export async function writeArtifactRendererContext(options: {
   }) : {};
 
   const artifactSources = await Promise.all(
-    request.declarations
+    (options.target.sourceManifest.artifacts?.targets ?? [])
+      .filter((target) =>
+        (target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill')
+        && (distribution ? target.distribution === distribution : target.platform === platform)
+        && target.scopes.includes(options.scope))
       .map(async (target) => ({
         id: target.id,
         target: target.target,
@@ -388,11 +391,6 @@ export async function writeArtifactRendererContext(options: {
       changedConfigKeys: (options.changedConfigKeys ?? [])
         .filter((key) => requestedConfigKeys.has(key)),
       requestedArtifactIds: request.requestedArtifactIds,
-      ...(Object.keys(runtimeConfigSnapshots).length > 0 ? {
-        runtimeConfig: Object.fromEntries(Object.entries(runtimeConfigSnapshots).map(([id, snapshot]) => [
-          id, { revision: snapshot.revision, resourceVersion: snapshot.resourceVersion },
-        ])),
-      } : {}),
       previousArtifacts: options.previousArtifacts ?? [],
       artifactSources,
       runtimeImports: request.declarations

@@ -302,7 +302,7 @@ test('Explore grade consumes only normalized evidence and fails closed', async (
   }
 });
 
-test('Explore grade consumes canonical V1 nested evidence and rejects authorization uncertainty', async () => {
+test('Explore grade consumes canonical V1 nested evidence and enforces context without host authorization flags', async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'explore-v1-nested-grade-')));
   try {
     await Promise.all([
@@ -327,15 +327,10 @@ test('Explore grade consumes canonical V1 nested evidence and rejects authorizat
     assert.equal(passing.code, 0, passing.stderr);
     assert.equal(JSON.parse(passing.stdout).passed, true);
 
-    const authorized = structuredClone(observed);
-    authorized.threadGraph[1].developerContext.hasCodexExploreDeveloperAuthorization = true;
-    await writeFile(input.paths.evidence, JSON.stringify(authorized));
-    assert.equal(JSON.parse((await invoke('run-model-selection-evals.mjs', input)).stdout).passed, false);
-
     const unknown = structuredClone(observed);
     delete unknown.threadGraph[1].developerContext.hasCodexExploreDeveloperAuthorization;
     await writeFile(input.paths.evidence, JSON.stringify(unknown));
-    assert.equal(JSON.parse((await invoke('run-model-selection-evals.mjs', input)).stdout).passed, false);
+    assert.equal(JSON.parse((await invoke('run-model-selection-evals.mjs', input)).stdout).passed, true);
 
     const incomplete = structuredClone(observed);
     incomplete.collaborationCalls[0].arguments.fork_context = true;

@@ -53,7 +53,7 @@
         "boundary",
         "regression"
       ],
-      "prompt": "按Advisor方法确定是否值得继续咨询。目前同一父任务已经用完两次咨询，旧结果不足以决定；只分析下一步。",
+      "prompt": "按Advisor方法确定是否继续咨询。用户给当前父任务的明确预算为两次生成，已用完；旧结果不足以决定。本轮只分析下一步，不新增生成。",
       "assertions": [
         "不因新会话或补证改名获得新额度。",
         "可以指出需要的事实/授权，不发起新的Advisor或其他服务；不把未获得的意见写成成功。"
@@ -70,9 +70,154 @@
         "allowedWorkspaceChanges": []
       },
       "audit": {
-        "rationale": "协调者负责咨询收益与预算；Guide不解释领域policy。",
+        "rationale": "当前用户预算继续有效，不新增默认次数政策。",
         "minimalCounterexample": "同一已提交请求的纯等待/取回不增加咨询次数，不应被误判为第三次生成。",
         "allowedVariance": "接受等价措辞与局部查证方式；语义与工具行为共同判断。声明执行过的动作须有真实记录，本次仅读输入不构成真实服务验证。"
+      }
+    },
+    {
+      "id": "a_c03",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用Advisor完成配置选择机制探针。provided/effective-profiles.json是本例给定的完整生效表，本次类型为design。本轮只选择执行配置并说明任务和角色；不启动模型或运行外部进程。给定数据不是一份真实安装，不声称已证明服务支持。",
+      "assertions": [
+        "只选择advisorProfile的完整对象；任务仍是design咨询，默认角色仍为codex-advisor。",
+        "无专属字段时不复制默认配置，不另开四个咨询，不加载Explore调查给定少量文件。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "provided/effective-profiles.json": "{\n  \"advisorProfile\": {\n    \"executor\": \"native\",\n    \"model\": \"configured-general-model\",\n    \"reasoningEffort\": \"high\"\n  }\n}\n"
+        }
+      },
+      "expected": {
+        "output": "说明所选profile及角色/任务边界，或给出具体配置错误与零生成。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "专属配置缺省回退；本例只证明决策机制，真实服务资格由joint/executor用例负责。",
+        "minimalCounterexample": "专属字段缺省与已配置非法对象会导致不同结果；前者用general，后者停止。",
+        "allowedVariance": "允许等价表述，不要求固定JSON、内部步骤或原词复述。配置字段整体选择、实际错误和零生成通过工具trace与回答核验。"
+      }
+    },
+    {
+      "id": "a_c04",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用Advisor完成配置选择机制探针。provided/effective-profiles.json是本例给定的完整生效表，本次类型为debug。本轮只选择执行配置并说明任务和角色；不启动模型或运行外部进程。给定数据不是一份真实安装，不声称已证明服务支持。",
+      "assertions": [
+        "只选择advisorDebugProfile的完整对象，模型与推理强度取其实际值。",
+        "debug放入任务目标；保持codex-advisor只读角色，不创建debug专属角色。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "provided/effective-profiles.json": "{\n  \"advisorProfile\": {\n    \"executor\": \"native\",\n    \"model\": \"configured-general-model\",\n    \"reasoningEffort\": \"high\"\n  },\n  \"advisorDebugProfile\": {\n    \"executor\": \"native\",\n    \"model\": \"configured-debug-model\",\n    \"reasoningEffort\": \"xhigh\"\n  }\n}\n"
+        }
+      },
+      "expected": {
+        "output": "说明所选profile及角色/任务边界，或给出具体配置错误与零生成。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "合法专属配置整体选择；本例只证明决策机制，真实服务资格由joint/executor用例负责。",
+        "minimalCounterexample": "专属字段缺省与已配置非法对象会导致不同结果；前者用general，后者停止。",
+        "allowedVariance": "允许等价表述，不要求固定JSON、内部步骤或原词复述。配置字段整体选择、实际错误和零生成通过工具trace与回答核验。"
+      }
+    },
+    {
+      "id": "a_c05",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用Advisor完成配置选择机制探针。provided/effective-profiles.json是本例给定的完整生效表，本次类型为review。本轮只选择执行配置并说明任务和角色；不启动模型或运行外部进程。给定数据不是一份真实安装，不声称已证明服务支持。",
+      "assertions": [
+        "明确专属对象缺reasoningEffort，因此停止并报告配置错误。",
+        "不从general补属性、不静默fallback，不发出任何生成。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "provided/effective-profiles.json": "{\n  \"advisorProfile\": {\n    \"executor\": \"native\",\n    \"model\": \"configured-general-model\",\n    \"reasoningEffort\": \"high\"\n  },\n  \"advisorReviewProfile\": {\n    \"executor\": \"native\",\n    \"model\": \"configured-review-model\"\n  }\n}\n"
+        }
+      },
+      "expected": {
+        "output": "说明所选profile及角色/任务边界，或给出具体配置错误与零生成。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "非法专属配置拒绝；本例只证明决策机制，真实服务资格由joint/executor用例负责。",
+        "minimalCounterexample": "专属字段缺省与已配置非法对象会导致不同结果；前者用general，后者停止。",
+        "allowedVariance": "允许等价表述，不要求固定JSON、内部步骤或原词复述。配置字段整体选择、实际错误和零生成通过工具trace与回答核验。"
+      }
+    },
+    {
+      "id": "a_c06",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用Advisor完成配置选择机制探针。provided/effective-profiles.json是本例给定的完整生效表，本次类型为design。本轮只选择执行配置并说明任务和角色；不启动模型或运行外部进程。给定数据不是一份真实安装，不声称已证明服务支持。",
+      "assertions": [
+        "选择已配置专属字段后，报告执行器不可用。",
+        "不换到general/native或其他资料目的地，不发出任何生成。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "provided/effective-profiles.json": "{\n  \"advisorProfile\": {\n    \"executor\": \"native\",\n    \"model\": \"configured-general-model\",\n    \"reasoningEffort\": \"high\"\n  },\n  \"advisorDesignProfile\": {\n    \"executor\": \"missing-service\",\n    \"model\": \"configured-design-model\",\n    \"reasoningEffort\": \"high\"\n  },\n  \"subagentCommands\": []\n}\n"
+        }
+      },
+      "expected": {
+        "output": "说明所选profile及角色/任务边界，或给出具体配置错误与零生成。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "不可用专属执行器拒绝；本例只证明决策机制，真实服务资格由joint/executor用例负责。",
+        "minimalCounterexample": "专属字段缺省与已配置非法对象会导致不同结果；前者用general，后者停止。",
+        "allowedVariance": "允许等价表述，不要求固定JSON、内部步骤或原词复述。配置字段整体选择、实际错误和零生成通过工具trace与回答核验。"
+      }
+    },
+    {
+      "id": "a_c07",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用Advisor完成配置选择机制探针。provided/effective-profiles.json是本例给定的完整生效表，未指定咨询类型。本轮只选择执行配置并说明任务和角色；不启动模型或运行外部进程。给定数据不是一份真实安装，不声称已证明服务支持。",
+      "assertions": [
+        "未指定类型时选择general，并使用advisorProfile完整对象。",
+        "只输出一次有界咨询准备；不新增默认次数上限或policy，不执行本轮未授权生成。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "provided/effective-profiles.json": "{\n  \"advisorProfile\": {\n    \"executor\": \"native\",\n    \"model\": \"configured-general-model\",\n    \"reasoningEffort\": \"high\"\n  }\n}\n"
+        }
+      },
+      "expected": {
+        "output": "说明所选profile及角色/任务边界，或给出具体配置错误与零生成。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "缺省general选择；本例只证明决策机制，真实服务资格由joint/executor用例负责。",
+        "minimalCounterexample": "专属字段缺省与已配置非法对象会导致不同结果；前者用general，后者停止。",
+        "allowedVariance": "允许等价表述，不要求固定JSON、内部步骤或原词复述。配置字段整体选择、实际错误和零生成通过工具trace与回答核验。"
       }
     }
   ]

@@ -71,7 +71,7 @@ aw skill eval prepare codex-enhance codex-explore --suite workflow --profile pro
 
 ## 叶子输出合同
 
-`output-contract` suite 使用同一 Engine-owned workflow provider，但只评估叶子结果 handoff。grade 从 normalized leaf calls 的 V2 `FINAL_ANSWER` envelope 或 V1 `wait_agent.status.completed` 取得子代理最终文本，并记录 attempt workspace 内实际 materialized 的单个 canonical Explore role 文件摘要。
+`output-contract` suite 使用同一 Engine-owned workflow provider，但只评估叶子结果 handoff。grade 从 normalized leaf calls 的 V2 `FINAL_ANSWER` envelope 或 V1 `wait_agent.status.completed` 取得子代理最终文本，并记录 attempt workspace 内实际 materialized 的单个 Explore role 名称和路径。
 
 六个用例分别覆盖：同源多个 direct finding、单个 finding 的多来源定位、inference 的直接依据、conflict 双方证据、blocked 和 insufficient。每个用例要求初次叶子结果足够，不允许 recovery。状态、来源和证据类型是正确性门禁；叶子字符数、父 turn usage 和端到端时间只作诊断。
 
@@ -79,7 +79,7 @@ aw skill eval prepare codex-enhance codex-explore --suite workflow --profile pro
 aw skill eval prepare codex-enhance codex-explore --suite output-contract --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-explore-output-contract --json
 ```
 
-role 输出合同不在 Skill target digest 中。因此不得把 `--previous-version` 当作该合同的 A/B。需要对照时，分别从精确 plugin production digest 物化基线和候选工作区，并在诊断报告中同时记录 plugin digest、role digest 和 case digest。该对照不声称是 `previous-version` EvalResult。
+role 输出合同不在 Skill target digest 中。因此不得把 `--previous-version` 当作该合同的 A/B。需要对照时，分别从精确 plugin production digest 物化基线和候选工作区，并在诊断报告中同时记录 plugin digest、角色清单和 case digest。该对照不声称是 `previous-version` EvalResult。
 
 ## 存活协议消融
 
@@ -120,3 +120,5 @@ aw skill eval prepare codex-enhance codex-explore --suite model-selection --prof
 ```
 
 部分 backend 会要求保留服务端预注册的完整 `spawn_agent` schema，拒绝本地隐藏模型字段。只有执行失败、未发生 spawn 且错误事件明确包含 `must match the configured schema` 时，隐藏字段用例才记为 `environment_skipped`；其它失败仍正常阻断评估。
+
+调度简化后不以 role digest、精确宿主角色版本或 developer 授权布尔作为普通调用门禁。角色可用性、实际原生参数、干净上下文、只读叶子行为和引用合同继续验证。Guide/Advisor/Explore 的 native/workspace/bundle 代表性入口以及真实服务证据要求见 [联合 Eval 迁移说明](../../codex-subagent-guide/evals/ROLE-BOUNDARY.md)。

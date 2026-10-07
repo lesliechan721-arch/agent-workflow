@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -28,6 +27,7 @@ it('ships a standalone runtime reader in the CLI tarball', async () => {
   const skillRoot = path.join(root, 'installed', 'standalone-tool');
   const caller = Buffer.from("import {readRuntimeConfig} from './aw-runtime-config.mjs'; console.log(JSON.stringify(await readRuntimeConfig({from:import.meta.url,keys:['displayStyle']})));\n");
   const files = {
+    'SKILL.md': Buffer.from('---\nname: standalone-tool\ndescription: Standalone installed runtime.\n---\n'),
     'scripts/caller.mjs': caller,
     'scripts/aw-runtime-config.mjs': await fs.readFile(path.join(packRoot, 'package', helperRelative)),
   };
@@ -36,15 +36,12 @@ it('ships a standalone runtime reader in the CLI tarball', async () => {
     installedIdentity: { sourceId: 'team', sourceIdentity: `sha256:${'1'.repeat(64)}`, pluginId: 'team/standalone-plugin',
       pluginName: 'standalone-plugin', pluginVersion: '1.0.0', platform: 'codex', scope: 'user', configScope: 'user',
       artifactId: 'standalone-tool', skillKey: 'standalone-tool' },
-    declaration: { keys: ['displayStyle'], resourceVersion: 'text-v1' },
-    definition: { fields: { displayStyle: { type: 'string' } } }, values: { displayStyle: 'compact' }, sources: { displayStyle: 'user' },
+    declaration: { keys: ['displayStyle'] },
+    definition: { fields: { displayStyle: { type: 'string' } } }, values: { displayStyle: 'compact' },
   });
-  const resources = Object.fromEntries(Object.entries(files).map(([relative, bytes]) => [
-    relative, `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-  ]));
-  await fs.outputJson(path.join(skillRoot, '.aw-runtime-config.json'), createRuntimeConfigBinding(snapshot, resources));
+  await fs.outputJson(path.join(skillRoot, '.aw-runtime-config.json'), createRuntimeConfigBinding(snapshot));
   const env = { ...isolation.env };
   delete env.AW_PLUGIN_CONTEXT;
   const execution = await exec(process.execPath, [path.join(skillRoot, 'scripts/caller.mjs')], { cwd: root, env });
-  expect(JSON.parse(execution.stdout)).toMatchObject({ effectiveValues: { displayStyle: 'compact' }, revision: snapshot.revision });
+  expect(JSON.parse(execution.stdout)).toMatchObject({ effectiveValues: { displayStyle: 'compact' } });
 });

@@ -89,11 +89,12 @@ describe('plugin capabilities command', () => {
       requires: 'Return exactly these declared artifacts and no other artifacts.',
     }));
     expect(result.capabilities.artifacts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: 'rendererContext.runtimeConfig', owner: 'core', required: false }),
-      expect.objectContaining({ field: 'artifacts.targets[].runtimeConfig', owner: 'core', required: false }),
+      expect.objectContaining({ field: 'artifacts.targets[].runtimeConfig', owner: 'core', required: false,
+        requires: expect.stringContaining('aw.installed-runtime-config.v2') }),
       expect.objectContaining({ field: 'artifacts.targets[].runtimeConfig.keys', required: 'with runtimeConfig' }),
-      expect.objectContaining({ field: 'artifacts.targets[].runtimeConfig.resourceVersion', required: 'with runtimeConfig' }),
-      expect.objectContaining({ field: 'artifacts.targets[].runtimeConfig.artifactIds', required: false }),
+    ]));
+    expect(result.capabilities.artifacts.map((entry: { field: string }) => entry.field)).not.toEqual(expect.arrayContaining([
+      'rendererContext.runtimeConfig', 'artifacts.targets[].runtimeConfig.resourceVersion', 'artifacts.targets[].runtimeConfig.artifactIds',
     ]));
   });
 

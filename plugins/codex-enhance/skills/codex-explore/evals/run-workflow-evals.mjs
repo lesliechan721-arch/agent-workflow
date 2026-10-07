@@ -542,9 +542,8 @@ export function evaluateWorkflowRun(run, expected) {
   );
   if (expected.leaf_output) {
     assertions.push({
-      name: 'leaf:role_contract',
+      name: 'leaf:role_available',
       passed:
-        /^sha256:[a-f0-9]{64}$/u.test(run.role_contract?.digest ?? '') &&
         run.role_contract?.roles?.length === 1,
       evidence: JSON.stringify(run.role_contract ?? null),
     });

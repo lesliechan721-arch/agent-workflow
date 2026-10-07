@@ -97,10 +97,6 @@ const adapterFacts: Readonly<Partial<Record<
       requires: 'Return exactly these declared artifacts and no other artifacts.',
       provenance: ['CLI artifact renderer context'],
     },
-    'rendererContext.runtimeConfig': {
-      requires: 'AW computes the installed execution revision before rendering; role-only requests do not read Skill configuration.',
-      provenance: ['CLI installed runtime config snapshots'],
-    },
     'artifacts.targets': { requires: 'scripts.artifacts.render and complete static target identity.' },
     'artifacts.targets[].delivery': {
       profiles: 'CODEX dynamic Skill',
@@ -111,11 +107,8 @@ const adapterFacts: Readonly<Partial<Record<
       requires: 'Config fields referenced by codex-native targets are writable only in user scope.',
     },
     'artifacts.targets[].runtimeConfig': {
-      requires: 'aw.installed-runtime-config.v1 and a native Skill target. AW injects the reader and binding; source and renderer cannot provide reserved files.',
+      requires: 'aw.installed-runtime-config.v2 and a native Skill target. AW injects the reader and binding; source and renderer cannot provide reserved files.',
       conflicts: 'Sensitive keys or sensitive dependency closure.',
-    },
-    'artifacts.targets[].runtimeConfig.artifactIds': {
-      requires: 'All group members declare the same IDs, keys, resourceVersion, delivery and scopes. New calls reject missing or mixed-revision members.',
     },
     'artifacts.targets[].runtimeImports': {
       requires: 'A provider runtimeExports entry resolved into the consumer bundle.',

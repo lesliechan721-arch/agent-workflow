@@ -238,9 +238,9 @@
       }
     },
     {
-      "id": "worker-instructions",
+      "id": "executor-instructions",
       "kind": "codex-workflow",
-      "cases": "worker-instructions.cases.json",
+      "cases": "executor-instructions.cases.json",
       "profiles": [
         "project-default"
       ],

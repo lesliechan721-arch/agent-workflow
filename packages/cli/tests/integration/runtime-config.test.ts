@@ -12,11 +12,10 @@ import { readPluginManifest } from '../../src/utils/manifest.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-const RESOURCE_VERSION = `sha256:${'3'.repeat(64)}`;
 const sourceIdentity = (source: string) => `sha256:${(source === 'alpha' ? '1' : '2').repeat(64)}`;
 
 // Test Value Gate: public installation/save/apply, source and secret boundaries, and offline recovery.
-async function fixture(source: string, grouped = false, native = false) {
+async function fixture(source: string, withSibling = false, native = false) {
   const isolation = getCurrentSourceTestIsolation();
   const sourceRoot = path.join(isolation.layout.fixtureCwd, source, 'source');
   const manifest = {
@@ -32,15 +31,13 @@ async function fixture(source: string, grouped = false, native = false) {
     } },
     artifacts: { targets: [{ id: 'routing-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill',
       delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: ['selectedBackend', 'backendCatalog'], skillKey: 'routing-tool',
-      runtimeConfig: { keys: ['selectedBackend', 'backendCatalog'], resourceVersion: RESOURCE_VERSION },
+      runtimeConfig: { keys: ['selectedBackend', 'backendCatalog'] },
     }] },
   };
-  if (grouped) {
+  if (withSibling) {
     const first = manifest.artifacts.targets[0]!;
-    const artifactIds = ['routing-skill', 'routing-peer'];
-    Object.assign(first.runtimeConfig, { artifactIds });
     manifest.artifacts.targets.push({ ...first, id: 'routing-peer', skillKey: 'routing-peer',
-      runtimeConfig: { ...first.runtimeConfig, ...{ artifactIds } } });
+      runtimeConfig: { ...first.runtimeConfig } });
   }
   if (native) for (const target of manifest.artifacts.targets) {
     Object.assign(target, { scopes: ['user', 'project'], delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' } });
@@ -48,7 +45,7 @@ async function fixture(source: string, grouped = false, native = false) {
   await fs.outputJson(path.join(sourceRoot, '.agents-plugin/plugin.json'), manifest);
   const render = `import fs from 'node:fs';
 const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));
-const files={'SKILL.md':'---\\nname: routing-tool\\ndescription: Route a bounded task.\\n---\\n# Routing\\nRevision '+c.runtimeConfig['routing-skill'].revision+'\\n',
+const files={'SKILL.md':'---\\nname: routing-tool\\ndescription: Route a bounded task.\\n---\\n# Routing\\n',
  'README.md':'# Routing runtime\\n', 'agents/openai.yaml':'interface:\\n  display_name: Routing\\n  short_description: Route a bounded task.\\n  default_prompt: Route the current task.\\npolicy:\\n  allow_implicit_invocation: true\\n',
  'scripts/caller.mjs':${JSON.stringify("import {readRuntimeConfig} from './aw-runtime-config.mjs';\ntry { console.log(JSON.stringify(await readRuntimeConfig({from:import.meta.url,keys:process.argv.slice(2).length?process.argv.slice(2):['selectedBackend']}))); } catch(e) { console.log(JSON.stringify({code:e.code,recoveryActions:e.recoveryActions,message:e.message})); process.exitCode=1; }\n")}};
 console.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>({id,kind:'skill',platform:'codex',target:'codex.skill',state:'present',refreshKeys:['selectedBackend','backendCatalog'],skillKey:id==='routing-skill'?'routing-tool':'routing-peer',content:{files:{...files,'SKILL.md':files['SKILL.md'].replaceAll('routing-tool',id==='routing-skill'?'routing-tool':'routing-peer')}}}))}));
@@ -98,6 +95,12 @@ describe('installed runtime config', () => {
     expect(alpha.read(['accessToken'])).toMatchObject({ code: 'runtimeConfigKeyDenied', recoveryActions: ['sync', 'reinstall'] });
     expect(await fs.readFile(path.join(alpha.skillRoot, '.aw-runtime-config.json'), 'utf8')).not.toContain('private-alpha-token');
 
+    const bindingPath = path.join(alpha.skillRoot, '.aw-runtime-config.json');
+    const originalBinding = await fs.readJson(bindingPath);
+    await fs.copy(path.join(beta.skillRoot, '.aw-runtime-config.json'), bindingPath, { overwrite: true });
+    expect(alpha.read()).toMatchObject({ code: 'runtimeConfigIdentityMismatch' });
+    await fs.outputJson(bindingPath, originalBinding);
+
     await alpha.save({ backendCatalog: [{ id: 'replacement' }], selectedBackend: 'replacement' });
     expect(alpha.read()).toEqual(previous);
     await fs.outputFile(path.join(alpha.plugin.rootDir, 'scripts/render.mjs'), "throw new Error('staging failure');\n");
@@ -107,15 +110,14 @@ describe('installed runtime config', () => {
     const result = await alpha.install('sync');
     expect(result.status, JSON.stringify(result)).toBe('succeeded');
     expect(alpha.read().effectiveValues).toEqual({ selectedBackend: 'replacement' });
-    expect(alpha.read().revision).not.toBe(previous.revision);
     expect(beta.read().effectiveValues).toEqual({ selectedBackend: 'remote-b' });
   });
 
-  it('fails before consuming damaged resources and allows cleanup despite a broken binding', async () => {
+  it('accepts changed Skill text and allows cleanup despite a broken binding', async () => {
     const item = await fixture('alpha');
     expect((await item.install()).status).toBe('succeeded');
     await fs.appendFile(path.join(item.skillRoot, 'SKILL.md'), '\nchanged resource\n');
-    expect(item.read()).toMatchObject({ code: 'runtimeConfigResourceMismatch' });
+    expect(item.read()).toMatchObject({ effectiveValues: { selectedBackend: 'local' } });
     await fs.outputFile(path.join(item.skillRoot, '.aw-runtime-config.json'), '{broken');
     expect(item.read()).toMatchObject({ code: 'runtimeConfigBindingInvalid' });
     const cleanup = await item.install('cleanup');
@@ -123,7 +125,7 @@ describe('installed runtime config', () => {
     expect(await fs.pathExists(item.skillRoot)).toBe(false);
   });
 
-  it('refuses mixed revisions, missing group peers, and a same-name peer from another source', async () => {
+  it('keeps each Skill usable when a sibling is stale, replaced or missing', async () => {
     const alpha = await fixture('alpha', true);
     const beta = await fixture('beta', true);
     expect((await alpha.install()).status).toBe('succeeded');
@@ -135,15 +137,15 @@ describe('installed runtime config', () => {
     expect((await alpha.install('sync')).status).toBe('succeeded');
     await fs.remove(peerRoot);
     await fs.copy(backup, peerRoot);
-    expect(alpha.read()).toMatchObject({ code: 'runtimeConfigRevisionMismatch' });
+    expect(alpha.read()).toMatchObject({ effectiveValues: { selectedBackend: 'new-key' } });
     await fs.remove(peerRoot);
     await fs.copy(path.join(path.dirname(beta.skillRoot), 'routing-peer'), peerRoot);
-    expect(alpha.read()).toMatchObject({ code: 'runtimeConfigIdentityMismatch' });
+    expect(alpha.read()).toMatchObject({ effectiveValues: { selectedBackend: 'new-key' } });
     await fs.remove(peerRoot);
-    expect(alpha.read()).toMatchObject({ code: 'runtimeConfigResourceMissing' });
+    expect(alpha.read()).toMatchObject({ effectiveValues: { selectedBackend: 'new-key' } });
   });
 
-  it.each([['routing-tool'], ['routing-tool', 'routing-peer']])('captures movable native runtime closure for selected final %j', async (...names) => {
+  it.each([['routing-tool'], ['routing-tool', 'routing-peer']])('copies only selected native Skills with their origin receipt for final %j', async (...names) => {
     const item = await fixture('alpha', true, true);
     const isolation = getCurrentSourceTestIsolation();
     const outputRoot = path.join(isolation.layout.fixtureCwd, 'review-final');
@@ -161,9 +163,7 @@ describe('installed runtime config', () => {
     const actual = JSON.parse(execFileSync(process.execPath, [path.join(restored, 'scripts/caller.mjs')], { env, encoding: 'utf8' }));
     expect(actual).toMatchObject({ effectiveValues: { selectedBackend: 'local' }, installedIdentity: { sourceId: 'alpha', scope: 'user', configScope: 'user' } });
     expect(await fs.pathExists(path.join(restored, '.aw-runtime-native-receipt.json'))).toBe(true);
-    expect(await fs.pathExists(path.join(restored, '.aw-runtime-peers/routing-peer/.aw-runtime-config.json'))).toBe(true);
-    const peer = JSON.parse(execFileSync(process.execPath, [path.join(restored, '.aw-runtime-peers/routing-peer/scripts/caller.mjs')], { env, encoding: 'utf8' }));
-    expect(peer).toMatchObject({ effectiveValues: { selectedBackend: 'local' }, revision: actual.revision });
+    expect(await fs.pathExists(path.join(restored, '.aw-runtime-peers'))).toBe(false);
   });
 
   it('uses shared native user config when preparing a project runtime snapshot', async () => {

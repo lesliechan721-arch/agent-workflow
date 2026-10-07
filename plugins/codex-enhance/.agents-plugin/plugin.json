@@ -162,115 +162,9 @@
                   "value": "ultra"
                 }
               ]
-            }
-          }
-        },
-        "additionalProperties": false
-      },
-      "advisorAgentProfile": {
-        "type": "object",
-        "properties": {
-          "executor": {
-            "type": "string",
-            "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
-            "valueRef": {
-              "field": "subagentCommands",
-              "key": "key",
-              "label": "title",
-              "include": [
-                "native"
-              ]
             },
             "validation": {
               "minLength": 1
-            },
-            "required": true
-          },
-          "model": {
-            "type": "string",
-            "required": true,
-            "choices": {
-              "allowCustom": true,
-              "presets": [
-                {
-                  "id": "gpt-6.1-sol",
-                  "title": "gpt-6.1-sol",
-                  "value": "gpt-6.1-sol"
-                },
-                {
-                  "id": "gpt-6-luna",
-                  "title": "gpt-6-luna",
-                  "value": "gpt-6-luna"
-                },
-                {
-                  "id": "gpt-6-astra",
-                  "title": "gpt-6-astra",
-                  "value": "gpt-6-astra"
-                },
-                {
-                  "id": "gpt-6-sol",
-                  "title": "gpt-6-sol",
-                  "value": "gpt-6-sol"
-                },
-                {
-                  "id": "gpt-5.6-luna",
-                  "title": "gpt-5.6-luna",
-                  "value": "gpt-5.6-luna"
-                },
-                {
-                  "id": "gpt-5.6-terra",
-                  "title": "gpt-5.6-terra",
-                  "value": "gpt-5.6-terra"
-                },
-                {
-                  "id": "gpt-5.6-sol",
-                  "title": "gpt-5.6-sol",
-                  "value": "gpt-5.6-sol"
-                }
-              ]
-            },
-            "validation": {
-              "minLength": 1
-            }
-          },
-          "reasoningEffort": {
-            "type": "string",
-            "required": true,
-            "choices": {
-              "allowCustom": true,
-              "presets": [
-                {
-                  "id": "low",
-                  "title": "low",
-                  "value": "low"
-                },
-                {
-                  "id": "medium",
-                  "title": "medium",
-                  "value": "medium"
-                },
-                {
-                  "id": "high",
-                  "title": "high",
-                  "value": "high"
-                },
-                {
-                  "id": "xhigh",
-                  "title": "xhigh",
-                  "value": "xhigh"
-                },
-                {
-                  "id": "max",
-                  "title": "max",
-                  "value": "max"
-                },
-                {
-                  "id": "ultra",
-                  "title": "ultra",
-                  "value": "ultra"
-                }
-              ]
             }
           }
         },
@@ -356,63 +250,13 @@
         "required": true
       },
       "advisorProfile": {
-        "$ref": "#/config/definitions/advisorAgentProfile",
-        "title": "技术第二意见配置",
-        "description": "独立咨询执行配置；不随 advancedTaskProfile 的修改动态改变，仅支持 user scope。",
+        "$ref": "#/config/definitions/agentProfile",
+        "title": "General 咨询配置",
+        "description": "通用第二意见的完整执行配置；专属配置缺省时使用，仅支持 user scope。",
         "default": {
           "executor": "native",
           "model": "gpt-6-astra",
           "reasoningEffort": "high"
-        },
-        "required": true
-      },
-      "advisorPolicy": {
-        "type": "object",
-        "title": "咨询策略",
-        "description": "策略只控制何时咨询和同一父任务的额度，不提供委派、费用或资料外发许可。",
-        "properties": {
-          "mode": {
-            "type": "string",
-            "required": true,
-            "choices": {
-              "allowCustom": false,
-              "presets": [
-                {
-                  "id": "manual",
-                  "title": "manual",
-                  "value": "manual"
-                },
-                {
-                  "id": "conservative",
-                  "title": "conservative",
-                  "value": "conservative"
-                },
-                {
-                  "id": "off",
-                  "title": "off",
-                  "value": "off"
-                }
-              ]
-            }
-          },
-          "maxConsultations": {
-            "type": "number",
-            "required": true,
-            "validation": {
-              "integer": true,
-              "minimum": 1
-            }
-          },
-          "focus": {
-            "type": "string",
-            "required": true
-          }
-        },
-        "additionalProperties": false,
-        "default": {
-          "mode": "conservative",
-          "maxConsultations": 2,
-          "focus": ""
         },
         "required": true
       },
@@ -490,6 +334,21 @@
         },
         "default": [],
         "required": true
+      },
+      "advisorDesignProfile": {
+        "$ref": "#/config/definitions/agentProfile",
+        "title": "Design 设计咨询配置",
+        "description": "design 咨询的完整执行配置；缺省时使用 advisorProfile，不继承其属性，仅支持 user scope。"
+      },
+      "advisorDebugProfile": {
+        "$ref": "#/config/definitions/agentProfile",
+        "title": "Debug 诊断咨询配置",
+        "description": "debug 咨询的完整执行配置；缺省时使用 advisorProfile，不继承其属性，仅支持 user scope。"
+      },
+      "advisorReviewProfile": {
+        "$ref": "#/config/definitions/agentProfile",
+        "title": "Review 审查咨询配置",
+        "description": "review 咨询的完整执行配置；缺省时使用 advisorProfile，不继承其属性，仅支持 user scope。"
       }
     },
     "presentation": {
@@ -518,7 +377,9 @@
           "title": "codex-advisor",
           "fields": [
             "advisorProfile",
-            "advisorPolicy"
+            "advisorDesignProfile",
+            "advisorDebugProfile",
+            "advisorReviewProfile"
           ]
         },
         {
@@ -572,6 +433,15 @@
         },
         "advisorProfile": {
           "summary": "modelAndEffort"
+        },
+        "advisorDesignProfile": {
+          "summary": "modelAndEffort"
+        },
+        "advisorDebugProfile": {
+          "summary": "modelAndEffort"
+        },
+        "advisorReviewProfile": {
+          "summary": "modelAndEffort"
         }
       }
     }
@@ -596,41 +466,15 @@
           "present"
         ],
         "refreshKeys": [
-          "simpleTaskProfile",
-          "generalTaskProfile",
-          "complexTaskProfile",
-          "advancedTaskProfile",
           "quickProfile",
           "standardProfile",
           "deepProfile",
-          "advisorProfile",
-          "advisorPolicy",
           "subagentCommands"
         ],
         "skillKey": "codex-explore",
         "sourceDirs": [
           "./skills/codex-explore"
-        ],
-        "runtimeConfig": {
-          "keys": [
-            "simpleTaskProfile",
-            "generalTaskProfile",
-            "complexTaskProfile",
-            "advancedTaskProfile",
-            "quickProfile",
-            "standardProfile",
-            "deepProfile",
-            "advisorProfile",
-            "advisorPolicy",
-            "subagentCommands"
-          ],
-          "resourceVersion": "1f29cf4c7e624f713d1a4d6e8d439aa59a55f31a7b69a0a1fce4f5cf8fda41d0",
-          "artifactIds": [
-            "codex-explore-skill",
-            "codex-subagent-guide-skill",
-            "codex-advisor-skill"
-          ]
-        }
+        ]
       },
       {
         "id": "codex-explore-role",
@@ -674,7 +518,9 @@
           "standardProfile",
           "deepProfile",
           "advisorProfile",
-          "advisorPolicy",
+          "advisorDesignProfile",
+          "advisorDebugProfile",
+          "advisorReviewProfile",
           "subagentCommands"
         ],
         "skillKey": "codex-subagent-guide",
@@ -691,14 +537,10 @@
             "standardProfile",
             "deepProfile",
             "advisorProfile",
-            "advisorPolicy",
+            "advisorDesignProfile",
+            "advisorDebugProfile",
+            "advisorReviewProfile",
             "subagentCommands"
-          ],
-          "resourceVersion": "1f29cf4c7e624f713d1a4d6e8d439aa59a55f31a7b69a0a1fce4f5cf8fda41d0",
-          "artifactIds": [
-            "codex-explore-skill",
-            "codex-subagent-guide-skill",
-            "codex-advisor-skill"
           ]
         }
       },
@@ -736,41 +578,16 @@
           "present"
         ],
         "refreshKeys": [
-          "simpleTaskProfile",
-          "generalTaskProfile",
-          "complexTaskProfile",
-          "advancedTaskProfile",
-          "quickProfile",
-          "standardProfile",
-          "deepProfile",
           "advisorProfile",
-          "advisorPolicy",
+          "advisorDesignProfile",
+          "advisorDebugProfile",
+          "advisorReviewProfile",
           "subagentCommands"
         ],
         "skillKey": "codex-advisor",
         "sourceDirs": [
           "./skills/codex-advisor"
-        ],
-        "runtimeConfig": {
-          "keys": [
-            "simpleTaskProfile",
-            "generalTaskProfile",
-            "complexTaskProfile",
-            "advancedTaskProfile",
-            "quickProfile",
-            "standardProfile",
-            "deepProfile",
-            "advisorProfile",
-            "advisorPolicy",
-            "subagentCommands"
-          ],
-          "resourceVersion": "1f29cf4c7e624f713d1a4d6e8d439aa59a55f31a7b69a0a1fce4f5cf8fda41d0",
-          "artifactIds": [
-            "codex-explore-skill",
-            "codex-subagent-guide-skill",
-            "codex-advisor-skill"
-          ]
-        }
+        ]
       },
       {
         "id": "codex-advisor-role",
@@ -795,7 +612,7 @@
       "capabilities": [
         "aw.plugin-config-unique-by.v1",
         "aw.plugin-config-value-ref.v1",
-        "aw.installed-runtime-config.v1"
+        "aw.installed-runtime-config.v2"
       ]
     }
   },
@@ -803,8 +620,6 @@
     "fileRules": {
       "codex": {
         "include": [
-          "worker-instructions/*.md",
-          "runtime/worker-bindings.json",
           "skills/codex-subagent-guide/evals/fixtures/*.mjs"
         ],
         "exclude": []

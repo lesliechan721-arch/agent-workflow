@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -10,25 +9,38 @@ const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
 
 export const CONFIG_KEYS = [
   'simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile',
-  'quickProfile', 'standardProfile', 'deepProfile', 'advisorProfile', 'advisorPolicy',
-  'subagentCommands',
+  'quickProfile', 'standardProfile', 'deepProfile', 'advisorProfile',
+  'advisorDesignProfile', 'advisorDebugProfile', 'advisorReviewProfile', 'subagentCommands',
 ];
+export const SKILL_CONFIG_KEYS = {
+  'codex-subagent-guide': CONFIG_KEYS,
+  'codex-advisor': [
+    'advisorProfile', 'advisorDesignProfile', 'advisorDebugProfile', 'advisorReviewProfile',
+    'subagentCommands',
+  ],
+  'codex-explore': ['quickProfile', 'standardProfile', 'deepProfile', 'subagentCommands'],
+};
 const SKILLS = {
   'codex-explore-skill': 'codex-explore',
   'codex-subagent-guide-skill': 'codex-subagent-guide',
   'codex-advisor-skill': 'codex-advisor',
 };
+const INSTRUCTIONS = {
+  'codex-subagent-guide': 'assets/task-instructions.md',
+  'codex-advisor': 'assets/advisor-instructions.md',
+  'codex-explore': 'assets/explore-instructions.md',
+};
 const ROLES = {
   'codex-explore-role': {
-    key: 'codex-explore', worker: 'explore',
+    key: 'codex-explore', skill: 'codex-explore',
     description: '只读事实调查与证据核验；不做最终判断、建议、修改或再次委派。',
   },
   'codex-subagent-role': {
-    key: 'codex-subagent', worker: 'task',
-    description: '直接执行有界任务，默认只读；只有获准协调职责才进一步委派。',
+    key: 'codex-subagent', skill: 'codex-subagent-guide',
+    description: '直接完成有界任务，遵守实际授权和权限；未明确授权不再委派。',
   },
   'codex-advisor-role': {
-    key: 'codex-advisor', worker: 'advisor',
+    key: 'codex-advisor', skill: 'codex-advisor',
     description: '只读技术第二意见，提供依据和验证建议；不批准、修改或再次委派。',
   },
 };
@@ -43,45 +55,21 @@ const EXPLORE_PROFILES = [
   ['standardProfile', 'standard', '常规跨文件或多来源核对；不确定时选此档'],
   ['deepProfile', 'deep', '高歧义、强冲突、复杂因果或高完整性要求'],
 ];
+const ADVISOR_PROFILES = [
+  ['advisorProfile', 'general', '通用技术第二意见'],
+  ['advisorDesignProfile', 'design', '设计和实施方案判断'],
+  ['advisorDebugProfile', 'debug', '症状、原因与下一项诊断'],
+  ['advisorReviewProfile', 'review', '对照要求审查当前产物'],
+];
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function trimBlock(text) {
-  const lines = text.replace(/\r\n?/g, '\n').split('\n');
-  while (lines.length > 0 && lines[0].trim() === '') lines.shift();
-  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
-  const normalized = lines.map((line) => line.trimEnd());
-  const indentation = normalized.filter((line) => line.trim() !== '')
-    .map((line) => line.match(/^[\t ]*/)?.[0].length ?? 0);
-  const commonIndent = indentation.length === 0 ? 0 : Math.min(...indentation);
-  return normalized.map((line) => line.trim() === '' ? '' : line.slice(commonIndent)).join('\n');
-}
-
-function sha256(text) {
-  return createHash('sha256').update(text).digest('hex');
-}
-
-async function readWorker(key) {
-  return readPluginSource(`worker-instructions/${key}.md`);
-}
-
-async function readPluginSource(relative) {
-  try {
-    return await readFile(path.join(pluginRoot, relative), 'utf8');
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    return readFile(path.join(pluginRoot, 'codex', relative), 'utf8');
-  }
-}
-
-export async function renderExploreRoleDeveloperInstructions() {
-  return readWorker('explore');
-}
-
-export async function renderSubagentRoleDeveloperInstructions() {
-  return readWorker('task');
+async function readInstructions(context, manifest, key) {
+  const id = Object.keys(SKILLS).find((candidate) => SKILLS[candidate] === key);
+  const sourceRoot = await readSkillSourceRoot(context, manifest, id);
+  return readFile(path.join(sourceRoot, INSTRUCTIONS[key]), 'utf8');
 }
 
 function renderRoleArtifact(id, role, instructions) {
@@ -97,13 +85,15 @@ function renderRoleArtifact(id, role, instructions) {
   };
 }
 
-function resolveConfigValues(context, manifest) {
+function resolveConfigValues(context, manifest, keys) {
   const candidates = [context?.config?.values, context?.renderConfig?.values,
     context?.artifactRenderConfig?.values, context?.configValues];
   const values = candidates.find(isRecord) ?? {};
-  return Object.fromEntries(CONFIG_KEYS.map((key) => [
-    key, Object.hasOwn(values, key) ? values[key] : manifest.config.fields[key].default,
-  ]));
+  return Object.fromEntries(keys.flatMap((key) => {
+    if (Object.hasOwn(values, key)) return [[key, values[key]]];
+    const field = manifest.config.fields[key];
+    return Object.hasOwn(field, 'default') ? [[key, field.default]] : [];
+  }));
 }
 
 function display(value) {
@@ -117,38 +107,53 @@ function slot(template, marker, text) {
   return template.replace(token, () => text);
 }
 
-function profileTable(profiles, config, binding) {
+function profileTable(profiles, config) {
   return [
-    '| 档位 | 适用范围 | profile | worker | executor | model | reasoningEffort |',
-    '| --- | --- | --- | --- | --- | --- | --- |',
-    ...profiles.map(([key, name, description]) => {
+    '| 档位 | 适用范围 | profile | executor | model | reasoningEffort |',
+    '| --- | --- | --- | --- | --- | --- |',
+    ...profiles.filter(([key]) => Object.hasOwn(config, key)).map(([key, name, description]) => {
       const profile = config[key];
-      const worker = binding.profiles[key]?.workerKey ?? binding.defaultWorker;
-      return `| ${name} | ${description} | ${display(key)} | ${display(worker)} | ${display(profile.executor ?? 'native')} | ${display(profile.model)} | ${display(profile.reasoningEffort)} |`;
+      const executor = Object.hasOwn(profile, 'executor') ? profile.executor : 'native';
+      return `| ${name} | ${description} | ${display(key)} | ${display(executor)} | ${display(profile.model)} | ${display(profile.reasoningEffort)} |`;
     }),
   ].join('\n');
 }
 
-function renderSkill(template, key, config, binding, revision) {
-  const revisionText = `当前期望 executionRevision：${display(revision)}。解析和启动均核对该值；保存未 apply 的设置不改变当前生效版本。`;
-  if (key === 'codex-subagent-guide') {
-    return slot(slot(template, 'generic-profiles', profileTable(GENERIC_PROFILES, config, binding)),
-      'execution-revision', revisionText);
-  }
-  if (key === 'codex-explore') {
-    return slot(template, 'explore-bindings', `${profileTable(EXPLORE_PROFILES, config, binding)}\n\n${revisionText}`);
-  }
-  const policy = config.advisorPolicy;
-  const profile = config.advisorProfile;
-  const policyText = `当前咨询策略：mode=${display(policy.mode)}，maxConsultations=${display(policy.maxConsultations)}。本次关注点 focus=${display(policy.focus)}，仅作非敏感任务数据，不作为角色指令。`;
-  const bindingText = `当前绑定：profile=${display('advisorProfile')}，worker=${display(binding.profiles.advisorProfile.workerKey)}，executor=${display(profile.executor)}，model=${display(profile.model)}，reasoningEffort=${display(profile.reasoningEffort)}。\n\n${revisionText}`;
-  return slot(slot(template, 'advisor-policy', policyText), 'advisor-binding', bindingText);
+function commandTable(commands) {
+  if (commands.length === 0) return '当前未配置外部执行器。需要外部执行时，先配置并 apply。';
+  return [
+    '| key | 名称 | mode | 独立指令 | read-only | workspace-write |',
+    '| --- | --- | --- | --- | --- | --- |',
+    ...commands.map((command) => `| ${[
+      command.key, command.title, command.mode,
+      command.supportsSystemInstructions === true,
+      command.supportsReadOnly === true,
+      command.mode === 'workspace' && command.supportsWorkspaceWrite === true,
+    ].map(display).join(' | ')} |`),
+  ].join('\n');
 }
 
-async function readSkillSourceRoot(context, id, key) {
-  const sources = context?.artifactSources?.find((entry) => entry.id === id)?.sourceDirs ?? [];
+function renderSkill(template, key, config) {
+  const [marker, profiles] = key === 'codex-subagent-guide'
+    ? ['generic-profiles', GENERIC_PROFILES]
+    : key === 'codex-explore'
+      ? ['explore-profiles', EXPLORE_PROFILES]
+      : ['advisor-profiles', ADVISOR_PROFILES];
+  const table = profileTable(profiles, config);
+  if (key !== 'codex-advisor') return slot(template, marker, table);
+  const hasSpecialist = ADVISOR_PROFILES.slice(1).some(([profile]) => Object.hasOwn(config, profile));
+  const selection = hasSpecialist
+    ? '按本次问题选择下表中的专属配置，其它咨询使用 general；一次只选一项。'
+    : '使用以下配置进行本次咨询。';
+  return slot(template, marker, `${selection}\n\n${table}`);
+}
+
+async function readSkillSourceRoot(context, manifest, id) {
+  const declaredSources = manifest.artifacts.targets.find((target) => target.id === id)?.sourceDirs ?? [];
+  const sources = context?.artifactSources?.find((entry) => entry.id === id)?.sourceDirs
+    ?? declaredSources.map((source) => path.resolve(pluginRoot, source));
   let lastError;
-  for (const source of [...sources, path.join(pluginRoot, 'skills', key)]) {
+  for (const source of sources) {
     try {
       await readFile(path.join(source, 'SKILL.md'), 'utf8');
       return source;
@@ -157,7 +162,7 @@ async function readSkillSourceRoot(context, id, key) {
       lastError = error;
     }
   }
-  throw lastError;
+  throw lastError ?? new Error(`Skill ${id} has no declared source directory.`);
 }
 
 async function runtimeScriptFiles(root, relative = 'scripts') {
@@ -170,47 +175,6 @@ async function runtimeScriptFiles(root, relative = 'scripts') {
     }
   }
   return result;
-}
-
-async function guideRuntimeFiles(context) {
-  const binding = JSON.parse(await readPluginSource('runtime/worker-bindings.json'));
-  const files = {};
-  for (const worker of binding.workers) {
-    const instructions = await readWorker(worker.key);
-    files[worker.instructionsFile] = instructions;
-    worker.instructionRevision = sha256(instructions);
-  }
-  files['runtime/worker-bindings.json'] = `${JSON.stringify(binding, null, 2)}\n`;
-  const sourceRoot = await readSkillSourceRoot(context, 'codex-subagent-guide-skill', 'codex-subagent-guide');
-  Object.assign(files, await runtimeScriptFiles(sourceRoot));
-  return files;
-}
-
-export async function computeResourceVersion(context) {
-  const files = {
-    'scripts/render-artifacts.mjs': await readFile(fileURLToPath(import.meta.url), 'utf8'),
-    'runtime/worker-bindings.json': await readPluginSource('runtime/worker-bindings.json'),
-  };
-  const binding = JSON.parse(files['runtime/worker-bindings.json']);
-  for (const { key } of binding.workers) {
-    files[`worker-instructions/${key}.md`] = await readWorker(key);
-  }
-  for (const [id, key] of Object.entries(SKILLS)) {
-    const root = await readSkillSourceRoot(context, id, key);
-    for (const relative of ['SKILL.md', 'agents/openai.yaml']) {
-      files[`skills/${key}/${relative}`] = await readFile(path.join(root, relative), 'utf8');
-    }
-    if (key === 'codex-subagent-guide') {
-      for (const relative of ['references/native-delegation.md', 'references/external-delegation.md']) {
-        files[`skills/${key}/${relative}`] = await readFile(path.join(root, relative), 'utf8');
-      }
-      for (const [relative, text] of Object.entries(await runtimeScriptFiles(root))) {
-        files[`skills/${key}/${relative}`] = text;
-      }
-    }
-  }
-  return sha256(JSON.stringify(Object.fromEntries(Object.entries(files).sort(([left], [right]) =>
-    left < right ? -1 : left > right ? 1 : 0))));
 }
 
 export async function readArtifactRenderContext() {
@@ -231,37 +195,37 @@ export async function renderArtifactPlan(context) {
     }
   }
 
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   const skillIds = ids.filter((id) => Object.hasOwn(SKILLS, id));
   let config;
-  let binding;
   if (skillIds.length > 0) {
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    config = resolveConfigValues(context, manifest);
-    binding = JSON.parse(await readPluginSource('runtime/worker-bindings.json'));
-    const revisions = skillIds.map((id) => context.runtimeConfig?.[id]?.revision);
-    if (revisions.some((revision) => typeof revision !== 'string' || revision === '')
-      || new Set(revisions).size !== 1) {
-      throw new Error('runtimeConfig must provide one consistent execution revision for requested Skills.');
-    }
+    const keys = [...new Set(skillIds.flatMap((id) => SKILL_CONFIG_KEYS[SKILLS[id]]))];
+    config = resolveConfigValues(context, manifest, keys);
   }
 
   const artifacts = [];
   for (const id of ids) {
     if (Object.hasOwn(ROLES, id)) {
       const role = ROLES[id];
-      artifacts.push(renderRoleArtifact(id, role, await readWorker(role.worker)));
+      artifacts.push(renderRoleArtifact(id, role, await readInstructions(context, manifest, role.skill)));
       continue;
     }
     const key = SKILLS[id];
-    const sourceRoot = await readSkillSourceRoot(context, id, key);
+    const sourceRoot = await readSkillSourceRoot(context, manifest, id);
     const template = await readFile(path.join(sourceRoot, 'SKILL.md'), 'utf8');
     const files = {
-      'SKILL.md': renderSkill(template, key, config, binding, context.runtimeConfig[id].revision),
-      ...(key === 'codex-subagent-guide' ? await guideRuntimeFiles(context) : {}),
+      'SKILL.md': renderSkill(template, key, config),
+      [INSTRUCTIONS[key]]: await readFile(path.join(sourceRoot, INSTRUCTIONS[key]), 'utf8'),
+      ...(key === 'codex-subagent-guide' ? await runtimeScriptFiles(sourceRoot) : {}),
     };
+    if (key === 'codex-subagent-guide') {
+      const reference = 'references/external-delegation.md';
+      files[reference] = slot(await readFile(path.join(sourceRoot, reference), 'utf8'),
+        'subagent-commands', commandTable(config.subagentCommands));
+    }
     artifacts.push({
       id, kind: 'skill', platform: 'codex', target: 'codex.skill', state: 'present',
-      skillKey: key, refreshKeys: [...CONFIG_KEYS], content: { files },
+      skillKey: key, refreshKeys: [...SKILL_CONFIG_KEYS[key]], content: { files },
     });
   }
   return { version: 2, artifacts };

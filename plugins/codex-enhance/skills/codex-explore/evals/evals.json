@@ -561,7 +561,6 @@
               "max": 0
             },
             "expect_child_multi_agent_gate": false,
-            "expect_child_developer_authorization": false,
             "expect_child_skill_loaded": false
           }
         },
@@ -632,7 +631,6 @@
               "max": 0
             },
             "expect_child_multi_agent_gate": true,
-            "expect_child_developer_authorization": false,
             "expect_child_skill_loaded": false
           }
         },
@@ -700,7 +698,6 @@
               "max": 4
             },
             "expect_child_multi_agent_gate": true,
-            "expect_child_developer_authorization": false,
             "grandchild_arguments": {
               "model": "gpt-6-luna",
               "reasoning_effort": "xhigh"

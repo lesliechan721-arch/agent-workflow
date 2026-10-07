@@ -58,10 +58,12 @@ export async function processTable() {
   let stdout;
   try { ({ stdout } = await withSystemPs((executable) => execFileAsync(executable, ['-axo', 'pid=,ppid=,pgid=,lstart='], { timeout: 3000, maxBuffer: 4194304, env: observerEnvironment() }))); }
   catch { fail('processObservationFailed', 'Process ownership could not be observed.'); }
-  return stdout.split('\n').flatMap((line) => {
+  const table = stdout.split('\n').flatMap((line) => {
     const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
     return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), pgid: Number(match[3]), started: match[4] }] : [];
   });
+  if (!table.some((row) => row.pid === process.pid)) fail('processObservationFailed', 'The process observer cannot see the current process. Use an environment with process-tree observation.');
+  return table;
 }
 
 export async function ownsProcess(identity, token) {
@@ -86,7 +88,7 @@ export async function observeTree(rootPid, known, token) {
   const root = known.find((item) => item.pid === rootPid) ?? table.find((item) => item.pid === rootPid);
   for (const row of table) {
     // The root can exit before cleanup while a member of its original group remains live.
-    // A shared actor group also contains the parent and supervisor. It is not
+    // A shared actor group also contains the parent and other callers. It is not
     // the adapter's stop scope, even when those processes have our token.
     if (root && root.pid === root.pgid && row.pgid === root.pgid) candidates.add(row.pid);
   }

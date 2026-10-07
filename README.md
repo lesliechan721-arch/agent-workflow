@@ -245,12 +245,11 @@ Portable 命令必须显式传 `--scope project|user`。`aw skill install` 使�
 
 ```bash
 aw config list codex-enhance -s user
-aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-5.6-terra","reasoningEffort":"high"}'
-aw config set codex-enhance exploreMinimumInitialWaitMinutes -s user --value-json '15'
-aw config set codex-enhance subagentMinimumInitialWaitMinutes -s user --value-json '15'
+aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-6-luna","reasoningEffort":"high"}'
+aw config set codex-enhance advisorDebugProfile -s user --value-json '{"model":"gpt-6-astra","reasoningEffort":"high"}'
 ```
 
-两个等待字段只允许写入个人默认。已有可见安装时，保存但不应用会形成可恢复的 shared native render drift；`--apply --yes` 会重新生成共享 Skill，并影响所有启用该插件的项目。project profile 只改变项目 Agent role。具体配置项和真实 Codex App qualification gap 见 [`codex-enhance` README](plugins/codex-enhance/README.md)。
+profile 的 executor 缺省为 native。Advisor 的 design、debug、review 专属 profile 可缺省；缺省时使用 `advisorProfile`，显式非法配置须修正。全部 shared native profile 只支持 user 配置。保存但不应用时，外部新调用仍使用安装产物的旧生效值；`--apply --yes` 会重新生成共享 Skill，并影响启用该插件的项目。原生宿主可能需要刷新或新会话。`advisorPolicy` 已删除，旧 off 和次数设置不再生效；仍需的限制应在当前任务或上游指令中提供。具体配置项、前台外部执行和升级边界见 [`codex-enhance` README](plugins/codex-enhance/README.md)。
 
 ## 安装范围
 

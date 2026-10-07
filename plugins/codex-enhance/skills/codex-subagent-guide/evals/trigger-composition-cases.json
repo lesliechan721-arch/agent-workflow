@@ -10,7 +10,7 @@
       "optimization": "critical",
       "falseNegativeCost": "high",
       "falsePositiveCost": "critical",
-      "rationale": "漏选通用或探索 owner 会丢失专用编排；同时加载两个 owner 会重复管理同一委派和生命周期，因此错误路由不能由多数结果抵消。"
+      "rationale": "事实范围与执行方法由不同能力负责；同一父协调可以同时加载Explore和Guide。需检出的是遗漏必要能力或接管已有完整调度流程，不能把共载本身判为重复委派。"
     },
     "runtime": {
       "observeSpawnAgent": true,

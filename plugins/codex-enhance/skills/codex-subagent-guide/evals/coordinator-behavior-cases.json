@@ -21,7 +21,7 @@
         "boundary",
         "regression"
       ],
-      "prompt": "使用Guide核对本次已授权调度。当前只有一个通用请求，执行配置与worker绑定的示例在provided/；本轮仅决定下一步可否启动，不运行任何进程。用户要求固定的原生custom-audit-role和精确最近两轮继承，当前所选外部入口没有该能力。",
+      "prompt": "使用Guide核对本次已授权调度。当前只有一个通用请求，执行配置与指令文件的示例在provided/；本轮仅决定下一步可否启动，不运行任何进程。用户要求固定的原生custom-audit-role和精确最近两轮继承，当前所选外部入口没有该能力。",
       "assertions": [
         "识别当前能力不满足硬要求，明确返回缺口。",
         "不改执行器、不扩大历史、不请求读取其他领域Skill来解决普通参数问题。"
@@ -29,7 +29,7 @@
       "input": {
         "scriptedReplies": [],
         "workspaceFiles": {
-          "provided/plan.md": "mode=workspace；可用worker为task；没有native角色等价映射或精确历史继承能力。\n"
+          "provided/plan.md": "mode=workspace；调用方提供独立指令文件；后端不支持指定native角色或精确历史继承。\n"
         }
       },
       "expected": {
@@ -58,7 +58,7 @@
       "input": {
         "scriptedReplies": [],
         "workspaceFiles": {
-          "provided/run.json": "{\"id\": \"run-fixture-1\", \"executorKey\": \"service-a\", \"state\": \"unknown\", \"possibleSideEffect\": true, \"configRevision\": \"rev-original\", \"workerKey\": \"task\"}"
+          "provided/run.json": "{\"state\": \"unknown\", \"executor\": \"service-a\", \"possibleSideEffect\": true, \"hostSession\": \"session-fixture-1\", \"service\": {\"state\": \"unknown\"}}"
         }
       },
       "expected": {

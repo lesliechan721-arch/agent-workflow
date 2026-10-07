@@ -75,7 +75,7 @@ AW 只提供 `default < user < project` 两个持久写入层。所有新 namesp
 
 ### 已安装配置读取
 
-动态 Skill target 可声明 `runtimeConfig: { keys: ["<field>"], resourceVersion: "<version>", artifactIds?: ["<id>"] }`，要求 `aw.installed-runtime-config.v1`。keys 必须属于该 target 的 refresh keys，字段及其依赖闭包均不得敏感。artifactIds 可声明包含自身的一致性组；组内声明必须对称，并具有相同平台、delivery、scope、keys 和资源版本。AW 签发各成员的定位信息，reader 拒绝缺失、来源不符或混合 revision 的成员。未声明该组时不关联其它 Skill。相同配置输入与资源版本的 Skill 使用同一执行 revision；不同来源中的同名插件仍保持隔离。
+动态 Skill target 可声明 `runtimeConfig: { keys: ["<field>"] }`，要求 `aw.installed-runtime-config.v2`。keys 非空、无重复，必须属于该 target 的 refresh keys；字段及其校验依赖闭包均不得敏感。AW 在物化时使用正式 Core 配置校验，生效资源只公开允许字段。每个 Skill 独立读取本产物的配置，不声明一致性组，不绑定文件内容版本；不同来源中的同名插件仍保持隔离。
 
 AW 在最终 Skill 中生成 `scripts/aw-runtime-config.mjs` 和 `.aw-runtime-config.json`。二者是保留路径，source 和 renderer 不得提供同名文件。程序从真实安装文件调用：
 
@@ -85,11 +85,12 @@ import { readRuntimeConfig } from './aw-runtime-config.mjs';
 const runtime = await readRuntimeConfig({
   from: import.meta.url,
   keys: ['<field>'],
-  expectedRevision: '<本次加载的执行 revision>',
 });
 ```
 
-返回值包含 `installedIdentity`、`effectiveValues`、`revision`、`resourceRoot` 和 `resourceVersion`。reader 无须 `AW_PLUGIN_CONTEXT`，只读该产物的生效快照。保存但未 apply 的配置不改变返回值。缺失 binding、未知版本、越权 keys、资源损坏或 revision 不符时拒绝调用，并提供 sync/reinstall 恢复。binding 是可重建的弱资源，不能改变 ownership、status 或 cleanup 的安装判断。
+返回值包含 `installedIdentity`、请求获准的 `effectiveValues` 和 `resourceRoot`。schema 2 生效资源保存 installed identity、allowed keys、effective values 和本产物需要的来源元数据。reader 无须 `AW_PLUGIN_CONTEXT`，从真实调用位置检查本产物的格式、来源、作用域和安全路径；不读取最新 store，不遍历其他 Skill，也不核验资源树或角色正文。保存但未 apply 的配置不改变返回值；apply 部分成功时，各可用产物按自身内容工作。消费脚本仍须校验本次使用的 profile、命令和输入。
+
+缺失或损坏的本产物配置、未知格式、越权 keys、不安全路径或可观察身份冲突会拒绝调用，并提供修正配置、sync/reinstall 恢复。生效资源是可重建的弱状态，不能改变 ownership、status 或 cleanup 的安装判断。旧 `resourceVersion`、`artifactIds`、v1 binding 和 `expectedRevision` 不再兼容。作者须仅保留 keys、声明新 capability，并先使用支持 v2 的 CLI，再通过正常 build/sync/reinstall 更新已安装 helper；Manifest v3 和 Store v5 不变。
 
 字段覆盖不符合当前 schema 时，AW 保留该层值供用户修改或 unset，但 runtime 不使用低层 fallback 继续运行；fallback 只用于解释删除后的恢复结果。删除 project 覆盖后若会暴露无效 user 值，fallback 是 `invalid`，不能用 schema default 代替。结构损坏的 store 必须整层 reset。Config Mutation Receipt v7 的 `configWrite: succeeded` 说明强配置已经越过 commit point；之后的解析、target discovery、target validation 或 apply 失败使用 `overallState: partial` 和 discriminated `apply` 报告，不回滚已保存设置。每个 target 按自己的 platform 和 scope 验证，健康 target 可以继续 apply，无效 target 报告 `skipped/invalidConfig`。reset receipt 用 `absent | deletedFile | unlinkedSymlink | quarantinedDirectory` 说明实际处理结果，目录隔离只公开 basename。
 
@@ -170,7 +171,7 @@ renderer 的结构化 stdout 保持完整 JSON，最大为 16 MiB；超限时 AW
 
 AW 为 Codex native dynamic projection 生成 `.agents-plugin/aw-codex-native-render.json`，插件源码和 renderer 不得声明该保留文件。schema 1 receipt 只记录规范化 identity 和 digest，不记录原始 config；所有 `codex-native` target 的 ID 与 Skill key 在整个 shared projection 内分别全局唯一，即使 scopes 不重叠也不能复用。`configDigest` 聚合 validated artifact 的 per-target config digest，`renderInputDigest` 绑定 source、plugin version、renderer digest 和规范化 target config/artifact digest。动态 payload digest 排除该 receipt 和 AW owner marker，规范化 `.codex-plugin/plugin.json` 的 version，但绑定 renderer 产生的真实 skills projection；静态 shared native digest 继续规范化 Codex-managed skills。AW 会检查完整 user effective config 中至少 8 个 Unicode code point 的 sensitive string 原文和 JSON 转义形态；该阈值只减少短值误报，不表示 secret 强度，日志仍脱敏所有长度。receipt 只有在 AW 生成或内容验证后，才从精确路径的扫描中排除；不得按 basename 通配。命中时停止，不改变 live marketplace、Codex registration 或 activation。receipt 是可删除、可重建的现场证据，不是作者维护的 ledger。
 
-renderer context 的 `requestedArtifactIds` 是本次唯一允许返回的 target ID 集合。它非空、无重复，并按 manifest 声明顺序规范化。因此，任两个在同一 platform/distribution surface 和 scope 内可被同次请求的 target 不能使用相同 ID；不同 surface 或不重叠 scope 可复用 ID，但 `codex-native` shared projection 使用上段更严格的全局唯一规则。同一 surface/scope 同时有 Skill 和读取 sensitive config 的非 Skill target 时，AW 把它们分成两个请求；两个请求读取同一份不可变 `previousArtifacts`，每个 `ArtifactPlan` 必须精确匹配该批 ID。`config.schema/values/sources/issues` 和 `changedConfigKeys` 只含本次 target `refreshKeys` 的并集。context 不提供 config store 路径；renderer 的三个 `AW_*_HOME` 和 context home 路径都指向本次请求的临时目录。该输入隔离不是 OS sandbox。配置 helper 只支持 effective context 读取，缺少 `AW_PLUGIN_CONTEXT` 或显式 user/project 读取都会失败。renderer 必须对每个请求 ID 精确返回一个 artifact；缺失、重复或未请求输出都会失败。
+renderer context 的 `requestedArtifactIds` 是本次唯一允许返回的 target ID 集合。它非空、无重复，并按 manifest 声明顺序规范化。因此，任两个在同一 platform/distribution surface 和 scope 内可被同次请求的 target 不能使用相同 ID；不同 surface 或不重叠 scope 可复用 ID，但 `codex-native` shared projection 使用上段更严格的全局唯一规则。同一 surface/scope 同时有 Skill 和读取 sensitive config 的非 Skill target 时，AW 把它们分成两个请求；两个请求读取同一份不可变 `previousArtifacts`，每个 `ArtifactPlan` 必须精确匹配该批 ID。`config.schema/values/sources/issues` 和 `changedConfigKeys` 只含本次 target `refreshKeys` 的并集。`artifactSources` 按 manifest 顺序提供当前 surface/scope 全部 Skill target 的真实 `sourceDirs`，即使该 Skill 未在本批请求中；renderer 可用这些路径复用静态资源，但不能据此读取更多配置或返回更多产物。不要猜测 bundle 的私有目录布局。context 不提供 config store 路径；renderer 的三个 `AW_*_HOME` 和 context home 路径都指向本次请求的临时目录。该输入隔离不是 OS sandbox。配置 helper 只支持 effective context 读取，缺少 `AW_PLUGIN_CONTEXT` 或显式 user/project 读取都会失败。renderer 必须对每个请求 ID 精确返回一个 artifact；缺失、重复或未请求输出都会失败。
 
 插件可以声明 executable build/test/preApply code、hooks、MCP servers、Apps、config 和 artifacts。preApply 只用于安装前环境校验或安装外部系统工具，必须幂等；它不能替代 manifest dependencies 或 build-time Node bundle。AW 验证声明并保护 ownership；请求级临时 home 是输入隔离，不是 OS sandbox。需要 context 的 preApply 必须完整读取 stdin 后再决定结果；不需要 context 的脚本可以直接成功退出。preApply 必须在返回前等待自己的全部后代退出，不得 daemonize 或遗留后台任务；AW 会在正常退出、超时和中断后清理本次脚本进程树，清理无法确认时 preApply 失败。安装或执行前必须把 executable source 和 trust boundary 作为受信任代码评审。
 

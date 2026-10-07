@@ -1990,25 +1990,16 @@ function normalizeArtifactTargetEntry(
       throw new Error(`Invalid ${fieldName}.runtimeConfig: only native platform Skill targets support installed runtime config.`);
     }
     const runtime = assertObject(input.runtimeConfig, `${fieldName}.runtimeConfig`);
-    assertAllowedKeys(runtime, `${fieldName}.runtimeConfig`, ['keys', 'resourceVersion', 'artifactIds']);
+    assertAllowedKeys(runtime, `${fieldName}.runtimeConfig`, ['keys']);
     const keys = ensureStringArray(runtime.keys, `${fieldName}.runtimeConfig.keys`);
     if (keys.length === 0 || new Set(keys).size !== keys.length || keys.some((key) => !refreshKeys.includes(key))) {
       throw new Error(`Invalid ${fieldName}.runtimeConfig.keys: expected unique non-empty keys from refreshKeys.`);
-    }
-    const resourceVersion = ensureString(runtime.resourceVersion, `${fieldName}.runtimeConfig.resourceVersion`);
-    if (resourceVersion.length > 256 || /[\u0000-\u001f\u007f]/u.test(resourceVersion)) {
-      throw new Error(`Invalid ${fieldName}.runtimeConfig.resourceVersion: expected a safe resource version.`);
     }
     if (!schema || getPluginConfigDependencyKeys(schema, keys).some((key) =>
       !schema.fields[key] || configFieldContainsSensitiveValue(schema.fields[key]!))) {
       throw new Error(`runtimeConfigKeyDenied: Invalid ${fieldName}.runtimeConfig.keys: dependency fields must be declared and non-sensitive.`);
     }
-    const artifactIds = runtime.artifactIds === undefined ? undefined
-      : ensureStringArray(runtime.artifactIds, `${fieldName}.runtimeConfig.artifactIds`);
-    if (artifactIds && (!artifactIds.includes(id) || new Set(artifactIds).size !== artifactIds.length)) {
-      throw new Error(`Invalid ${fieldName}.runtimeConfig.artifactIds: expected unique artifact IDs including this target.`);
-    }
-    runtimeConfig = { keys, resourceVersion, ...(artifactIds ? { artifactIds } : {}) };
+    runtimeConfig = { keys: [keys[0]!, ...keys.slice(1)] };
   }
 
   return {
@@ -2106,23 +2097,6 @@ function normalizeArtifacts(
         });
       })();
 
-  for (const target of targets ?? []) {
-    const group = target.runtimeConfig?.artifactIds;
-    if (!group) continue;
-    for (const id of group) {
-      const peers = (targets ?? []).filter((peer) => peer.id === id && peer.platform === target.platform
-        && canonicalScopeSet(peer.scopes) === canonicalScopeSet(target.scopes));
-      const peer = peers[0];
-      if (peers.length !== 1 || !peer?.runtimeConfig || peer.target !== target.target
-        || peer.delivery?.mode !== target.delivery?.mode
-        || canonicalScopeSet(peer.scopes) !== canonicalScopeSet(target.scopes)
-        || peer.runtimeConfig.resourceVersion !== target.runtimeConfig!.resourceVersion
-        || JSON.stringify([...peer.runtimeConfig.keys].sort()) !== JSON.stringify([...target.runtimeConfig!.keys].sort())
-        || JSON.stringify([...(peer.runtimeConfig.artifactIds ?? [])].sort()) !== JSON.stringify([...group].sort())) {
-        throw new Error(`Invalid ${fieldName}: runtimeConfig consistency group must name compatible Skill targets with the same keys, resources, scopes and group.`);
-      }
-    }
-  }
   return { targets };
 }
 

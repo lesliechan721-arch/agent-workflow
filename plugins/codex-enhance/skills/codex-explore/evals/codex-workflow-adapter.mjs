@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -301,8 +300,6 @@ export function evidenceRun(evidence) {
           developer_message_count: thread.developerContext?.messageCount,
           has_multi_agent_mode_gate: thread.developerContext?.hasMultiAgentModeGate,
           has_nested_agent_capability: thread.developerContext?.hasNestedAgentCapability,
-          has_codex_explore_developer_authorization:
-            thread.developerContext?.hasCodexExploreDeveloperAuthorization,
         },
       })),
     },
@@ -325,20 +322,7 @@ export function evidenceRun(evidence) {
 }
 
 export async function inspectExploreRoleContract(root) {
-  const roles = await workflowRoles(root);
-  const entries = await Promise.all(roles.map(async (role) => ({
-    name: role.name,
-    path: role.configFile,
-    digest: `sha256:${createHash('sha256')
-      .update(await readFile(path.join(root, role.configFile)))
-      .digest('hex')}`,
-  })));
-  return {
-    digest: `sha256:${createHash('sha256')
-      .update(JSON.stringify(entries.map(({ name, digest }) => ({ name, digest }))))
-      .digest('hex')}`,
-    roles: entries,
-  };
+  return { roles: (await workflowRoles(root)).map(({ name, configFile }) => ({ name, path: configFile })) };
 }
 
 async function stdin() {

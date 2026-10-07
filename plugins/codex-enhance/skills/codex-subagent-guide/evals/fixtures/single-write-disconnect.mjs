@@ -6,14 +6,15 @@ export const fixtureAssetURL = import.meta.url;
 
 // Explicit failure injection, never a model or a successful worker answer.
 export async function runFailureControl(request) {
-if (request.protocolVersion !== 2 || request.instructions.workerKey !== 'task' || request.run.mode !== 'workspace'
-  || request.run.access !== 'workspace-write' || !path.isAbsolute(request.run.workspace)) throw new Error('invalidFaultControl');
-const root = request.run.workspace;
+if (request.protocolVersion !== 3 || typeof request.instructions !== 'string' || request.mode !== 'workspace'
+  || !path.isAbsolute(request.workspace)) throw new Error('invalidFaultControl');
+const root = request.workspace;
 await mkdir(path.join(root, '.role-boundary-fixture'), { recursive: true });
 const counterFile = path.join(root, '.role-boundary-fixture', 'counter.json');
 const count = await readFile(counterFile, 'utf8').then(JSON.parse).catch((error) => { if (error.code === 'ENOENT') return { submissions: 0, writes: 0 }; throw error; });
 count.submissions += 1;
 await writeFile(counterFile, JSON.stringify(count) + '\n');
+if (request.access !== 'workspace-write') throw new Error('invalidFaultControlAccess');
 await mkdir(path.join(root, 'probe'), { recursive: true });
 await writeFile(path.join(root, 'probe', 'once.txt'), 'Explicit Eval fault control wrote this partial marker once.\n', { flag: 'wx' });
 count.writes += 1;

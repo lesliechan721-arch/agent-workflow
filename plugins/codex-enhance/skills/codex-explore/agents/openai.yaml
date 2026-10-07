@@ -1,6 +1,6 @@
 interface:
   display_name: "Codex Explore"
   short_description: "为大范围或陌生资料组织只读事实调查并核对来源覆盖与证据"
-  default_prompt: "使用 $codex-explore 查找并核验当前大范围事实问题的证据。"
+  default_prompt: "使用 $codex-explore 调查当前大范围事实问题，返回可核验的来源、覆盖和缺口。"
 policy:
   allow_implicit_invocation: true

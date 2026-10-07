@@ -252,7 +252,6 @@ async function testRolloutArgumentEvidence() {
         developer_message_count: 0,
         has_multi_agent_mode_gate: false,
         has_nested_agent_capability: false,
-        has_codex_explore_developer_authorization: false,
       },
     }]);
     assert.deepEqual(
@@ -451,7 +450,6 @@ async function testV1RolloutLineageEvidence() {
         forbid_root_child_followup: true,
         grandchild_spawn_calls: { min: 1, max: 4 },
         expect_child_multi_agent_gate: false,
-        expect_child_developer_authorization: false,
       },
     });
     assert.equal(evaluation.passed, true);
@@ -538,7 +536,6 @@ function testMechanicalAssertions() {
           initial_user_message: 'plan',
           developer_context: {
             has_multi_agent_mode_gate: true,
-            has_codex_explore_developer_authorization: false,
           },
         }, {
           thread_id: 'grandchild-thread',
@@ -566,7 +563,6 @@ function testMechanicalAssertions() {
         forbid_root_child_followup: true,
         grandchild_spawn_calls: { min: 1, max: 4 },
         expect_child_multi_agent_gate: true,
-        expect_child_developer_authorization: false,
       },
     };
   const nested = evaluateModelSelectionRun(nestedRun, nestedExpected);
@@ -607,20 +603,6 @@ function testMechanicalAssertions() {
   grandchildCall.arguments.reasoning_effort = 'medium';
   assert.equal(evaluateModelSelectionRun(actualDeep, explicitDeep).passed, false);
 
-  const developerAuthorizedRun = structuredClone(nestedRun);
-  developerAuthorizedRun.leaf_trace.child_threads[0]
-    .developer_context.has_codex_explore_developer_authorization = true;
-  assert.equal(
-    evaluateModelSelectionRun(developerAuthorizedRun, nestedExpected).passed,
-    false,
-  );
-  const unknownDeveloperAuthorizationRun = structuredClone(nestedRun);
-  delete unknownDeveloperAuthorizationRun.leaf_trace.child_threads[0]
-    .developer_context.has_codex_explore_developer_authorization;
-  assert.equal(
-    evaluateModelSelectionRun(unknownDeveloperAuthorizationRun, nestedExpected).passed,
-    false,
-  );
   const nonTerminalNestedRun = structuredClone(nestedRun);
   nonTerminalNestedRun.leaf_tool_calls[1].status = null;
   assert.equal(

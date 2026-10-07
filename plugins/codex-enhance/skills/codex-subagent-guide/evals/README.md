@@ -69,13 +69,17 @@ aw skill eval prepare codex-enhance codex-subagent-guide --suite routing --profi
 
 ## 等待与清理评估
 
-lifecycle case 覆盖正常终态、部分执行后的同交付续接、新交付的最小上下文和当前版本独立重审；独立的 timeout case 验证真实超时。`lifecycle-evals.json` 的正常路径要求模型启动一个 simple 子代理，首次等待不少于 10 分钟，并且只有观察到真实终态结果才完成。`lifecycle-timeout-evals.json` 由用户请求显式指定 1 分钟窗口；子代理必须运行一个 75 秒只读 helper，使首次 wait 确定超时，然后继续处理到真实终态。结果仍未到达时必须再次等待；终态通知已经到达时不补一次无意义的等待。如果当前 schema 提供清理工具，每个清理目标必须唯一对应已启动代理，并且只在该目标自己的结果已保留后清理。grade 只从 `workflow-evidence.json` 读取 collaboration order、wait output/status、terminal result 和 Engine cleanup 确认，不用最终文案或 raw trace 代替工具证据。
+lifecycle case 覆盖正常终态、部分执行后的同交付续接、新交付的最小上下文和当前版本独立重审；独立的 timeout case 验证真实超时。`lifecycle-evals.json` 的正常路径要求模型启动一个 simple 子代理，用例显式要求首次等待 10 分钟，并且只有观察到真实终态结果才完成。`lifecycle-timeout-evals.json` 由用户请求显式指定 1 分钟窗口；子代理必须运行一个 75 秒只读 helper，使首次 wait 确定超时，然后继续处理到真实终态。结果仍未到达时必须再次等待；终态通知已经到达时不补一次无意义的等待。如果当前 schema 提供清理工具，每个清理目标必须唯一对应已启动代理，并且只在该目标自己的结果已保留后清理。grade 只从 `workflow-evidence.json` 读取 collaboration order、wait output/status、terminal result 和 Engine cleanup 确认，不用最终文案或 raw trace 代替工具证据。
 
 ```bash
 aw skill eval prepare codex-enhance codex-subagent-guide --suite lifecycle --profile project-default --runs 1 --output /tmp/aw-eval-specs/codex-subagent-guide-lifecycle --json
 aw skill eval prepare codex-enhance codex-subagent-guide --suite lifecycle-timeout --profile project-default --runs 1 --output /tmp/aw-eval-specs/codex-subagent-guide-lifecycle-timeout --json
 ```
 
-渲染单测验证 Skill 不再依赖等待配置；lifecycle suite 分别验证正常终态路径和真实 timeout 后继续处理路径。确定性 timeline 测试还覆盖缺少 timeout、timeout 后没有等待或终态、终态通知直接到达、逐目标清理、未知目标和清理其它未完成代理的情况。罕见乱序、强制取消和不存在的清理工具分支不扩展为复杂模型门禁。
+等待窗口由本次用例明确指定；lifecycle suite 分别验证正常终态路径和真实 timeout 后继续处理路径。确定性 timeline 测试还覆盖缺少 timeout、timeout 后没有等待或终态、终态通知直接到达、逐目标清理、未知目标和清理其它未完成代理的情况。罕见乱序、强制取消和不存在的清理工具分支不扩展为复杂模型门禁。
 
-续接回归使用真实 helper 先保存一次操作再报告临时服务失败，最终检查原代理续接和 `applied=1`，而非重放 start。该用例覆盖工具执行失败后的有效进度，不证明任意 API 故障或线程损坏均能恢复。独立重审先检查旧版本的一个指定问题，再要求当前完整版本审核；grader 要求读取当前源码并发现旧清单之外的缺陷，同时确认实际使用 Astra/xhigh。新交付检查第二个代理的干净上下文、实际读取和新结果。上述用例的 Oracle 修改后须独立审核；没有运行结果时只构成候选验证资产。
+续接回归使用真实 helper 先保存一次操作再报告临时服务失败，最终检查原代理续接和 `applied=1`，而非重放 start。该用例覆盖工具执行失败后的有效进度，不证明任意 API 故障或线程损坏均能恢复。独立重审先检查旧版本的一个指定问题，再要求当前完整版本审核；grader 要求读取当前源码并发现旧清单之外的缺陷，同时确认实际使用该用例明确要求的 Astra/xhigh。新交付检查第二个代理的干净上下文、实际读取和新结果。上述用例的 Oracle 修改后须独立审核；没有运行结果时只构成候选验证资产。
+
+## 前台调度与角色边界迁移
+
+`joint-workflow`、`joint-guide-only`、`executor-instructions` 保留发布必需门禁。旧 `worker-instructions` 用例按职责改名，J11/J17 从后台恢复与 revision 拒绝迁移为公开 save/apply、活跃输入固定和同一宿主 session 等待。完整逐项替代、真实支持要求及未验证项见 [ROLE-BOUNDARY.md](ROLE-BOUNDARY.md)。原生调用不经过 resolve/native reference/plan；外部使用必填 profile、instructions-file、prompt-file 的 v3 前台 run。Advisor 的预算以当前任务明确要求为准，不再使用默认 policy。

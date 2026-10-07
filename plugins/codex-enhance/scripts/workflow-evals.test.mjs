@@ -760,7 +760,7 @@ function testLifecycleAssertions() {
   assertLifecycleFailure(earlyCleanup, 'cleanup_after_result');
 }
 
-async function testRoleContractDigest() {
+async function testRoleAvailability() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-role-contract-'));
   const agentsRoot = path.join(root, '.codex', 'agents');
   try {
@@ -775,7 +775,6 @@ async function testRoleContractDigest() {
       );
     }
     const initial = await inspectExploreRoleContract(root);
-    assert.match(initial.digest, /^sha256:[a-f0-9]{64}$/u);
     assert.deepEqual(initial.roles.map((role) => role.name), [
       'codex-explore',
     ]);
@@ -784,7 +783,7 @@ async function testRoleContractDigest() {
       'name = "codex-explore"\ndescription = "standard role"\ndeveloper_instructions = "Changed."\n',
       'utf8',
     );
-    assert.notEqual((await inspectExploreRoleContract(root)).digest, initial.digest);
+    assert.deepEqual(await inspectExploreRoleContract(root), initial);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -795,7 +794,7 @@ async function main() {
   testVersionedWorkflowOracle();
   testLeafOutputAssertions();
   testLifecycleAssertions();
-  await testRoleContractDigest();
+  await testRoleAvailability();
   console.log('workflow eval tests passed');
 }
 

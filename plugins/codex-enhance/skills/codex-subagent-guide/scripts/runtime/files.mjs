@@ -1,8 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { constants, createReadStream } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { LIMITS, digest, fail } from './contracts.mjs';
+import { constants } from 'node:fs';
+import { LIMITS, fail } from './contracts.mjs';
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const excludedDirectories = new Set(['.git', '.hg', '.svn', 'node_modules', 'vendor', 'dist', 'build', 'coverage', '.next', '.nuxt', '.cache', '.aw']);
@@ -32,9 +31,16 @@ export async function readLimited(target, maximumBytes, code = 'inputTooLarge') 
     const stat = await handle.stat();
     if (!stat.isFile()) fail('pathInvalid', 'The input is not a normal file.');
     if (stat.size > maximumBytes) fail(code, `The input exceeds the ${maximumBytes} byte limit.`);
-    const bytes = await handle.readFile();
-    if (bytes.byteLength > maximumBytes) fail(code, `The input exceeds the ${maximumBytes} byte limit.`);
-    return bytes;
+    const chunks = [];
+    let total = 0;
+    while (total <= maximumBytes) {
+      const buffer = Buffer.alloc(Math.min(65536, maximumBytes + 1 - total));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (!bytesRead) return Buffer.concat(chunks, total);
+      total += bytesRead;
+      if (total > maximumBytes) fail(code, `The input exceeds the ${maximumBytes} byte limit.`);
+      chunks.push(buffer.subarray(0, bytesRead));
+    }
   } finally { await handle.close(); }
 }
 
@@ -68,32 +74,24 @@ export async function inspectMaterials(workspace, sources = []) {
     const text = textFromBytes(bytes);
     if (/-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\bsk-(?:proj-)?[A-Za-z0-9_-]{24,}|\bAKIA[A-Z0-9]{16}\b/.test(text)) fail('materialSecretDetected', 'The selected material contains a recognized credential. Remove that material or prepare a safe copy.');
     const lineCount = Math.max(1, text.split('\n').length - (text.endsWith('\n') ? 1 : 0));
-    materials.push({ source, originalPath, sha256: digest(bytes), startLine: 1, endLine: lineCount, bytes });
+    materials.push({ source, originalPath, startLine: 1, endLine: lineCount, content: text });
   }
   return { materials, totalBytes };
 }
 
-export async function loadInstructions(plan) {
-  const relative = plan.worker.instructionsFile;
-  if (path.isAbsolute(relative) || relative.split(/[\\/]/).some((part) => !part || part === '.' || part === '..')) fail('instructionPathInvalid', 'The instruction binding is not a safe resource path.', ['sync', 'reinstall']);
-  const bytes = await readLimited(path.join(plan.resourceRoot, relative), LIMITS.instructionBytes, 'instructionsTooLarge');
-  if (digest(bytes) !== plan.worker.instructionRevision) fail('instructionRevisionMismatch', 'The installed worker text does not match its binding.', ['sync', 'reinstall']);
-  const text = textFromBytes(bytes);
-  if (!text.trim()) fail('instructionsEmpty', 'The installed worker instructions are empty.', ['sync', 'reinstall']);
+export async function readText(target, maximumBytes, code) {
+  // These files are explicit caller selections, not workspace-relative bundle members.
+  const resolved = await fs.realpath(path.resolve(target)).catch(() => fail('pathMissing', 'The selected instruction or task file is missing or unreadable.'));
+  const text = textFromBytes(await readLimited(resolved, maximumBytes, code));
+  if (!text.trim()) fail('inputEmpty', 'The instruction or task file is empty.');
   return text;
 }
 
-export async function executableIdentity(command, entrypoint) {
-  const resolvedCommand = await safePath(command, 'file', { allowExecutableSymlink: true });
+export async function executablePaths(command, entrypoint) {
+  const resolvedCommand = await safePath(path.normalize(command), 'file', { allowExecutableSymlink: true });
   try { await fs.access(resolvedCommand, constants.X_OK); } catch { fail('executableNotRunnable', 'The registered command is not executable.'); }
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(resolvedCommand)) hash.update(chunk);
-  const executable = { path: resolvedCommand, sha256: hash.digest('hex') };
-  if (entrypoint !== undefined) {
-    await safePath(entrypoint);
-    executable.entrypoint = { path: entrypoint, sha256: digest(await readLimited(entrypoint, LIMITS.fileBytes)) };
-  }
-  return executable;
+  if (entrypoint !== undefined) await safePath(path.normalize(entrypoint));
+  return { command: resolvedCommand, ...(entrypoint === undefined ? {} : { entrypoint: path.normalize(entrypoint) }) };
 }
 
 export async function atomicJson(target, value) {

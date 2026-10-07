@@ -28,7 +28,7 @@
       "audit": {
         "rationale": "明确有界咨询；不强制先Explore。",
         "minimalCounterexample": "只要求解释diff字面含义且没有第二意见需求时直接处理。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -38,13 +38,13 @@
         "boundary"
       ],
       "input": {
-        "query": "conservative策略下，两个实际复现相同故障的修法互相冲突，已完成局部测试仍无法区分；当前允许咨询，请取得有证据的第二意见。",
+        "query": "两个实际复现相同故障的修法互相冲突，已完成局部测试仍无法区分；当前允许咨询，请取得有证据的第二意见。",
         "expectedLoad": true
       },
       "audit": {
         "rationale": "真实判断卡点支持额外咨询，不按自报confidence触发。",
         "minimalCounterexample": "已有确定性测试能直接给答案时先测试而非自动咨询。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -60,7 +60,7 @@
       "audit": {
         "rationale": "已知机械修改不自动增加咨询。",
         "minimalCounterexample": "明确要求某个高影响文案方案的第二意见并有适用授权时可咨询，任务结果已不同。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -76,7 +76,7 @@
       "audit": {
         "rationale": "缺凭据不是强判断问题。",
         "minimalCounterexample": "认证已有效但经验证存在难以解释的权限映射行为且需要第二意见时再判断咨询。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -86,13 +86,13 @@
         "boundary"
       ],
       "input": {
-        "query": "manual策略；用户已明确要求本次独立咨询，请使用advisorProfile检查当前算法边界。",
+        "query": "用户已明确要求本次独立咨询，请使用advisorProfile检查当前算法边界。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "manual是触发偏好，允许明确组合，不是客户端禁自动属性。",
-        "minimalCounterexample": "manual且无人安排咨询的普通实现任务不自动咨询。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "rationale": "明确咨询安排触发有界第二意见。",
+        "minimalCounterexample": "没有第二意见需求且没有影响行动的判断卡点时，不自动咨询普通实现。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -102,13 +102,13 @@
         "boundary"
       ],
       "input": {
-        "query": "off策略保持，不重新启用。继续当前明确的小修改，不安排额外第二意见。",
+        "query": "本任务明确禁止额外咨询。继续当前明确的小修改，不安排第二意见。",
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "尊重用户关闭偏好。",
+        "rationale": "当前任务的明确限制有效。",
         "minimalCounterexample": "用户明确要求本次启用一次咨询并给定授权后可使用。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     },
     {
@@ -123,8 +123,8 @@
       },
       "audit": {
         "rationale": "模型名与泛化谨慎不足以代替问题和许可。",
-        "minimalCounterexample": "有真实代价较高的方案分歧且conservative和权限均成立时可以咨询。",
-        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见worker/joint suite。"
+        "minimalCounterexample": "存在影响行动的重要方案分歧且当前任务允许咨询时，可先进行一次有界咨询。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }
     }
   ]

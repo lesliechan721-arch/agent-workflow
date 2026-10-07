@@ -1,209 +1,216 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { LIMITS, digest, fail } from './contracts.mjs';
-import { safePath, readLimited, textFromBytes, inspectMaterials, loadInstructions, executableIdentity, atomicJson, readJson } from './files.mjs';
-import { processTable, ownsProcess, stopOwnedTree } from './processes.mjs';
+import { LIMITS, STATES, fail, redact } from './contracts.mjs';
+import { safePath, readText, inspectMaterials, executablePaths, readJson } from './files.mjs';
+import { processTable, observeTree, stopOwnedTree } from './processes.mjs';
 
 export const ENVIRONMENT_ALLOWLIST = Object.freeze([
   'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR',
-  'CODEX_HOME', 'OPENAI_API_KEY', 'AW_SUBAGENT_CODEX_BINARY',
-  'AW_AGENT_SKILL_EVAL_PROCESS_MARKER', 'GIT_CONFIG_NOSYSTEM', 'GIT_TERMINAL_PROMPT', 'GIT_OPTIONAL_LOCKS',
+  'CODEX_HOME', 'OPENAI_API_KEY', 'AW_SUBAGENT_CODEX_BINARY', 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER',
 ]);
-
 export function adapterEnvironment(source = process.env) {
   return Object.fromEntries(ENVIRONMENT_ALLOWLIST.filter((key) => typeof source[key] === 'string').map((key) => [key, source[key]]));
 }
 
-export async function prepareRun(plan, request) {
-  if (plan.mode === 'native') fail('nativeHostVerificationRequired', 'Use the real host delegation tool after verifying that the current session loaded this exact role revision. The runner cannot create or verify a native handle.');
-  if (request.allowMaterialTransfer !== true) fail('materialTransferNotAuthorized', 'This external run needs existing authorization to send the task and selected materials to its service.');
-  if (request.allowModelCost !== true) fail('modelCostNotAuthorized', 'This external run needs existing authorization for the model call.');
-  if (!request.workspace || !path.isAbsolute(request.workspace)) fail('workspaceRequired', 'External runs need an absolute workspace scope.');
-  await safePath(request.workspace, 'directory');
-  const taskBytes = await readLimited(path.resolve(request.promptFile ?? ''), LIMITS.taskBytes, 'taskTooLarge');
-  const task = textFromBytes(taskBytes);
-  if (!task.trim()) fail('taskEmpty', 'The task file is empty.');
-  const instructions = await loadInstructions(plan);
-  const selected = await inspectMaterials(request.workspace, request.files ?? []);
-  const executable = await executableIdentity(plan.executor.command, plan.executor.entrypoint);
-  return { plan, workspace: request.workspace, task, instructions, executable, ...selected };
+export async function prepareRun(selected, request) {
+  if (!request.instructionsFile || !request.promptFile) fail('argumentsRequired', 'Run requires --instructions-file and --prompt-file.');
+  const workspace = await fs.realpath(path.resolve(request.workspace ?? process.cwd())).catch(() => fail('workspaceMissing', 'The workspace is missing.'));
+  await safePath(workspace, 'directory');
+  const instructions = await readText(request.instructionsFile, LIMITS.instructionBytes, 'instructionsTooLarge');
+  const task = await readText(request.promptFile, LIMITS.taskBytes, 'taskTooLarge');
+  const selectedMaterials = await inspectMaterials(workspace, request.files ?? []);
+  const executable = await executablePaths(selected.executor.command, selected.executor.entrypoint);
+  return {
+    selected, executable, originalWorkspace: workspace, totalBytes: selectedMaterials.totalBytes,
+    request: {
+      protocolVersion: 3, execution: selected.execution, mode: selected.mode, access: selected.access,
+      workspace: selected.mode === 'workspace' ? workspace : null,
+      instructions, task, materials: selectedMaterials.materials,
+    },
+  };
 }
 
 export function previewResult(prepared) {
   return {
-    ok: true,
-    preview: true,
-    plan: prepared.plan,
-    workspace: prepared.workspace,
-    taskBytes: Buffer.byteLength(prepared.task),
+    ok: true, preview: true, generationStarted: false,
+    execution: prepared.request.execution, mode: prepared.request.mode, access: prepared.request.access,
+    workspace: prepared.request.workspace,
+    instructionsBytes: Buffer.byteLength(prepared.request.instructions), taskBytes: Buffer.byteLength(prepared.request.task),
     materialBytes: prepared.totalBytes,
-    materials: prepared.materials.map(({ bytes, originalPath, ...item }) => item),
+    materials: prepared.request.materials.map(({ content, ...reference }) => reference),
     executable: prepared.executable,
-    limits: LIMITS,
-    generationStarted: false,
+    restrictions: restrictions(prepared.request), limits: LIMITS,
   };
 }
-
-export function defaultRunsDirectory() {
-  return path.join(os.homedir(), '.cache', 'aw-subagent-runs');
+function restrictions(request) {
+  return request.mode === 'bundle'
+    ? ['Only the explicitly selected UTF-8 material copies are supplied. No original workspace access is supplied.']
+    : ['Workspace tools can read the live workspace after submission. Captured inputs are not a workspace snapshot.'];
 }
 
-async function treeBytes(root) {
-  let total = 0;
-  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
-    const target = path.join(root, entry.name);
-    if (entry.isSymbolicLink() || (!entry.isFile() && !entry.isDirectory())) fail('runDirectoryUnsafe', 'The run store contains an unsafe node. Select a private clean run directory.');
-    total += entry.isDirectory() ? await treeBytes(target) : (await fs.stat(target)).size;
+export function classifyResult(result, { adapterExitCode, localTreeStopped, interrupted, access }) {
+  if (!result || result.protocolVersion !== 3 || !STATES.includes(result.state) || typeof result.generationStarted !== 'boolean' || !result.service || !STATES.includes(result.service.state) || typeof result.text !== 'string' || Buffer.byteLength(result.text) > LIMITS.outputBytes || !result.access || result.access.mode !== access || !Array.isArray(result.access.restrictions) || result.access.restrictions.some((item) => typeof item !== 'string')) return { state: 'unknown', code: 'adapterResultInvalid' };
+  if (!['system', 'developer', 'configuration'].includes(result.instructionChannel)) return { state: 'unknown', code: 'instructionChannelUnsupported' };
+  if (!localTreeStopped) return { state: 'unknown', code: 'localTreeStopUnconfirmed' };
+  if (result.state !== result.service.state) return { state: 'unknown', code: 'terminalConflict' };
+  if (result.state === 'completed') {
+    if (interrupted || adapterExitCode !== 0 || result.localExitCode !== 0 || !result.generationStarted || typeof result.service.event !== 'string' || !result.service.event.trim() || !result.text.trim()) return { state: 'unknown', code: 'completionUnconfirmed' };
+    return { state: 'completed' };
   }
-  return total;
+  if (result.state === 'cancelled') return result.remoteStopConfirmed === true && interrupted ? { state: 'cancelled' } : { state: 'unknown', code: 'remoteStopUnconfirmed' };
+  if (interrupted) return { state: 'unknown', code: 'remoteStopUnconfirmed' };
+  if (result.state === 'failed' && (result.generationStarted === false || (typeof result.service.event === 'string' && result.service.event.trim()))) return { state: 'failed' };
+  return { state: 'unknown', code: result.code ?? 'serviceTerminalMissing' };
 }
 
-export async function startRun(prepared, { runsDirectory = defaultRunsDirectory(), environment = process.env } = {}) {
+/** One foreground child and one private result file. No persistent identity or recovery store. */
+export async function runForeground(prepared, options = {}) {
+  // Fail before launching if the environment cannot observe and stop this process tree.
   await processTable();
-  await fs.mkdir(runsDirectory, { recursive: true, mode: 0o700 });
-  await safePath(runsDirectory, 'directory');
-  const rootStat = await fs.stat(runsDirectory);
-  if ((rootStat.mode & 0o077) !== 0) fail('runDirectoryNotPrivate', 'The run directory must have mode 0700.');
-  if (await treeBytes(runsDirectory) + prepared.totalBytes + LIMITS.outputBytes + LIMITS.logBytes > LIMITS.capacityBytes) fail('runCapacityExceeded', 'The private run store exceeds its capacity. Keep active, unknown, and uncollected runs; remove only completed evidence you no longer need.');
-  const id = randomUUID();
-  const runDirectory = path.join(runsDirectory, id);
-  await fs.mkdir(runDirectory, { mode: 0o700 });
-  const materialDirectory = path.join(runDirectory, 'materials');
-  await fs.mkdir(materialDirectory, { mode: 0o700 });
-  const materials = [];
-  for (const item of prepared.materials) {
-    const target = path.join(materialDirectory, ...item.source.split('/'));
-    await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-    await fs.writeFile(target, item.bytes, { mode: 0o600, flag: 'wx' });
-    const { bytes, originalPath, ...locator } = item;
-    materials.push({ ...locator, path: target });
-  }
-  const plan = prepared.plan;
-  const envelope = {
-    protocolVersion: 2,
-    run: {
-      id, mode: plan.mode, access: plan.access, configRevision: plan.configRevision,
-      workspace: plan.mode === 'bundle' ? materialDirectory : prepared.workspace,
-      ...(plan.model === undefined ? {} : { model: plan.model }),
-      ...(plan.reasoningEffort === undefined ? {} : { reasoningEffort: plan.reasoningEffort }),
-    },
-    instructions: { workerKey: plan.workerKey, revision: plan.worker.instructionRevision, text: prepared.instructions },
-    task: prepared.task,
-    materials,
-  };
-  await atomicJson(path.join(runDirectory, 'request.json'), envelope);
+  const temporaryRoot = await fs.realpath(options.temporaryRoot ?? os.tmpdir());
+  await safePath(temporaryRoot, 'directory');
+  const directory = await fs.mkdtemp(path.join(temporaryRoot, 'aw-subagent-'));
+  await fs.chmod(directory, 0o700);
+  const directoryIdentity = await fs.lstat(directory);
+  const resultFile = path.join(directory, 'result.json');
   const token = randomBytes(24).toString('hex');
-  const record = {
-    schemaVersion: 1, id, state: 'running', startedAt: new Date().toISOString(),
-    plan, executable: prepared.executable, originalWorkspace: prepared.workspace,
-    requestDigest: digest(JSON.stringify(envelope)), processToken: token,
-    processes: [], generationMayHaveStarted: false, deadlineMs: LIMITS.deadlineMs,
-    outputFile: 'output.md', resultFile: 'receipt.json', diagnosticsFile: 'diagnostics.log',
-    retention: { daysAfterCollected: LIMITS.retentionDays, automaticDeletion: false },
+  const environment = {
+    ...adapterEnvironment(options.environment ?? process.env), AW_SUBAGENT_PROCESS_TOKEN: token,
+    AW_SUBAGENT_TEMP_DIR: directory, AW_SUBAGENT_RESULT_FILE: resultFile,
   };
-  const childEnvironment = adapterEnvironment(environment);
-  if (childEnvironment.AW_SUBAGENT_CODEX_BINARY) {
-    record.backendExecutable = await executableIdentity(childEnvironment.AW_SUBAGENT_CODEX_BINARY);
-    childEnvironment.AW_SUBAGENT_CODEX_BINARY = record.backendExecutable.path;
-    childEnvironment.AW_SUBAGENT_CODEX_EXPECTED_SHA256 = record.backendExecutable.sha256;
-  }
-  await atomicJson(path.join(runDirectory, 'record.json'), record);
-  const supervisor = spawn(process.execPath, [fileURLToPath(new URL('./supervise.mjs', import.meta.url)), runDirectory], {
-    shell: false, detached: !childEnvironment.AW_AGENT_SKILL_EVAL_PROCESS_MARKER, stdio: 'ignore',
-    env: { ...childEnvironment, PATH: environment.PATH ?? '/usr/bin:/bin', HOME: environment.HOME ?? os.homedir(), AW_SUBAGENT_PROCESS_TOKEN: token },
-  });
-  supervisor.unref();
-  await new Promise((resolve, reject) => { supervisor.once('spawn', resolve); supervisor.once('error', reject); });
-  const until = Date.now() + 5000;
-  while (Date.now() < until) {
-    const latest = await readJson(path.join(runDirectory, 'record.json'));
-    if (latest.supervisor || latest.state !== 'running') return publicRecord(latest, runsDirectory);
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  return publicRecord(await readJson(path.join(runDirectory, 'record.json')), runsDirectory);
-}
-
-function runPath(runsDirectory, id) {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id ?? '')) fail('runIdInvalid', 'Supply the exact UUID of an existing run.');
-  return path.join(runsDirectory, id);
-}
-
-export function publicRecord(record, runsDirectory) {
-  return {
-    ok: true, id: record.id, state: record.state, runsDirectory,
-    profile: record.plan.profile, workerKey: record.plan.workerKey,
-    executorKey: record.plan.executorKey, configRevision: record.plan.configRevision,
-    instructionRevision: record.plan.worker.instructionRevision,
-    startedAt: record.startedAt, ...(record.endedAt ? { endedAt: record.endedAt } : {}),
-    ...(record.code ? { code: record.code } : {}),
-    ...(record.receipt ? { receipt: record.receipt } : {}),
-    ...(record.localTreeStopped === undefined ? {} : { localTreeStopped: record.localTreeStopped }),
-    ...(record.collectedAt ? { collectedAt: record.collectedAt } : {}),
-    generationMayHaveStarted: record.generationMayHaveStarted,
+  let child;
+  let tracked = [];
+  let observationFailed = false;
+  let interrupted = false;
+  let stopping;
+  let finishStop;
+  const stopCompleted = new Promise((resolve) => { finishStop = resolve; });
+  let outputBytes = 0;
+  let overflow = false;
+  const diagnostics = [];
+  let timer;
+  let monitor;
+  let monitorBusy = Promise.resolve();
+  let localTreeStopped = false;
+  let finalResult;
+  let outputClosed = false;
+  let outputCloseTimer;
+  const stop = () => {
+    interrupted = true;
+    if (!child || stopping) return;
+    child.kill('SIGTERM');
+    stopping = (async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await monitorBusy;
+      const stopped = await stopOwnedTree(child.pid, tracked, token);
+      tracked = stopped.tracked;
+      localTreeStopped = stopped.stopped;
+    })().catch(() => { observationFailed = true; }).finally(() => { finishStop({ code: child.exitCode }); });
   };
-}
-
-export async function getRecord(id, runsDirectory = defaultRunsDirectory()) {
-  const directory = runPath(runsDirectory, id);
-  await safePath(directory, 'directory');
-  let record = await readJson(path.join(directory, 'record.json'));
-  if (record.schemaVersion !== 1 || record.id !== id || !/^[a-f0-9]{48}$/.test(record.processToken ?? '') || !['running', 'completed', 'failed', 'cancelled', 'unknown'].includes(record.state)) fail('runRecordInvalid', 'The original run record is invalid. No new generation was started.');
-  if (record.state === 'running') {
-    if (!record.supervisor || !await ownsProcess(record.supervisor, record.processToken)) {
-      // The supervisor can atomically publish completion while its process is being checked.
-      // Re-read that terminal record before classifying a now-absent process as unknown.
-      const latest = await readJson(path.join(directory, 'record.json'));
-      if (latest.schemaVersion === 1 && latest.id === id && ['completed', 'failed', 'cancelled', 'unknown'].includes(latest.state)) record = latest;
-      else { record.state = 'unknown'; record.code = 'supervisorUnconfirmed'; }
-      // Status does not rewrite a concurrently active supervisor record.
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+  options.signal?.addEventListener('abort', stop, { once: true });
+  try {
+    if (options.signal?.aborted) fail('runCancelledBeforeStart', 'The invocation was stopped before the adapter started.');
+    child = spawn(prepared.executable.command, prepared.executable.entrypoint ? [prepared.executable.entrypoint] : [], {
+      cwd: prepared.request.mode === 'workspace' ? prepared.originalWorkspace : directory,
+      shell: false, detached: false, env: environment, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const exited = new Promise((resolve) => {
+      child.once('error', () => resolve({ code: null, spawnFailed: true }));
+      child.once('exit', (code, signal) => resolve({ code, signal }));
+    });
+    const closed = new Promise((resolve) => { child.once('close', () => resolve(true)); });
+    for (const stream of [child.stdout, child.stderr]) stream.on('data', (chunk) => {
+      outputBytes += chunk.length;
+      if (outputBytes > LIMITS.logBytes) { overflow = true; stop(); return; }
+      diagnostics.push(chunk);
+    });
+    child.stdin.on('error', () => {});
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); }).catch(() => fail('adapterStartFailed', 'The registered adapter could not start.'));
+    tracked = await observeTree(child.pid, [], token);
+    if (!tracked.some((row) => row.pid === child.pid)) fail('processObservationFailed', 'The adapter process is not visible to the process observer.');
+    monitor = setInterval(() => {
+      monitorBusy = monitorBusy.then(async () => { tracked = await observeTree(child.pid, tracked, token); }).catch(() => { observationFailed = true; stop(); });
+    }, 250);
+    timer = setTimeout(stop, options.deadlineMs ?? LIMITS.deadlineMs);
+    child.stdin.end(JSON.stringify(prepared.request));
+    const { code } = await Promise.race([exited, stopCompleted]);
+    clearTimeout(timer); clearInterval(monitor);
+    await monitorBusy;
+    if (stopping) await stopping;
+    if (!stopping) {
+      const stopped = await stopOwnedTree(child.pid, tracked, token).catch(() => ({ stopped: false, tracked }));
+      localTreeStopped = stopped.stopped; tracked = stopped.tracked;
+    }
+    // Descendants can retain these pipes after the adapter exits. Their lifetime
+    // must not hold this invocation open after its own stop attempt has ended.
+    outputClosed = await Promise.race([
+      closed,
+      new Promise((resolve) => { outputCloseTimer = setTimeout(() => resolve(false), 500); }),
+    ]);
+    clearTimeout(outputCloseTimer);
+    if (!outputClosed) {
+      localTreeStopped = false;
+      child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
+      child.unref();
+    }
+    let result;
+    try {
+      const stat = await fs.lstat(resultFile);
+      if (!stat.isFile() || (stat.mode & 0o077) !== 0) fail('resultNotPrivate', 'The adapter result must be a private regular file.');
+      result = await readJson(resultFile, LIMITS.resultBytes);
+    } catch { /* A wrapper exit or ordinary text cannot establish the service outcome. */ }
+    const classified = classifyResult(result, { adapterExitCode: code, localTreeStopped: localTreeStopped && !observationFailed, interrupted, access: prepared.request.access });
+    if (overflow) Object.assign(classified, { state: 'unknown', code: 'adapterOutputTooLarge' });
+    const safeResult = result?.protocolVersion === 3 ? {
+      protocolVersion: 3, generationStarted: result.generationStarted !== false,
+      instructionChannel: result.instructionChannel, service: result.service, text: typeof result.text === 'string' && Buffer.byteLength(result.text) <= LIMITS.outputBytes ? result.text : '',
+      access: result.access, localExitCode: result.localExitCode, remoteStopConfirmed: result.remoteStopConfirmed, code: result.code,
+    } : { protocolVersion: 3, generationStarted: true, service: { state: 'unknown' }, text: '', access: { mode: prepared.request.access, restrictions: [] } };
+    const final = {
+      ...safeResult, ...classified, localTreeStopped: localTreeStopped && !observationFailed,
+      adapterExitCode: code,
+      diagnostics: Buffer.concat(diagnostics).toString('utf8'),
+      restrictions: [...restrictions(prepared.request), ...(Array.isArray(result?.access?.restrictions) ? result.access.restrictions.filter((item) => typeof item === 'string') : []),
+        ...(!outputClosed ? ['Output pipes did not close after adapter exit or the stop attempt. Diagnostics can be incomplete; related local work can still be active.'] : [])],
+      ...(interrupted ? { stopRequested: true } : {}),
+      ...(!localTreeStopped ? { temporaryDirectory: directory } : {}),
+    };
+    finalResult = {
+      ...final, text: redact(final.text, environment), diagnostics: redact(final.diagnostics, environment),
+      restrictions: final.restrictions.map((item) => redact(item, environment)),
+      instructionChannel: ['system', 'developer', 'configuration'].includes(final.instructionChannel) ? final.instructionChannel : undefined,
+      code: typeof final.code === 'string' ? redact(final.code, environment) : undefined,
+      access: { mode: prepared.request.access, restrictions: (Array.isArray(final.access?.restrictions) ? final.access.restrictions : []).filter((item) => typeof item === 'string').map((item) => redact(item, environment)) },
+      service: final.service && {
+        state: STATES.includes(final.service.state) ? final.service.state : 'unknown',
+        ...(typeof final.service.event === 'string' ? { event: redact(final.service.event, environment) } : {}),
+        ...(typeof final.service.sessionId === 'string' ? { sessionId: redact(final.service.sessionId, environment) } : {}),
+        ...(typeof final.service.model === 'string' ? { model: redact(final.service.model, environment) } : {}),
+      },
+    };
+    return finalResult;
+  } finally {
+    clearTimeout(timer); clearTimeout(outputCloseTimer); clearInterval(monitor);
+    process.off('SIGINT', stop); process.off('SIGTERM', stop);
+    options.signal?.removeEventListener('abort', stop);
+    await monitorBusy;
+    if (child?.pid && !localTreeStopped && !finalResult) {
+      // The dedicated live child handle remains owned even if the process observer fails.
+      if (!child.killed && child.exitCode === null) child.kill('SIGTERM');
+      const stopped = await stopOwnedTree(child.pid, tracked, token).catch(() => ({ stopped: false }));
+      localTreeStopped = stopped.stopped;
+    }
+    const current = await fs.lstat(directory).catch(() => undefined);
+    if ((!child || localTreeStopped) && current?.dev === directoryIdentity.dev && current?.ino === directoryIdentity.ino) {
+      try { await fs.rm(directory, { recursive: true }); }
+      catch {
+        if (finalResult) { finalResult.temporaryDirectory = directory; finalResult.restrictions.push('Local execution ended, but temporary-file cleanup failed.'); }
+      }
     }
   }
-  return { record, directory };
-}
-
-export async function runStatus(id, runsDirectory) {
-  const { record } = await getRecord(id, runsDirectory);
-  return publicRecord(record, runsDirectory ?? defaultRunsDirectory());
-}
-
-export async function collectRun(id, runsDirectory) {
-  const { record, directory } = await getRecord(id, runsDirectory);
-  if (record.state !== 'completed') fail('runNotCompleted', `The original run is ${record.state}. Query or cancel this run; do not automatically submit it again.`);
-  const text = textFromBytes(await readLimited(path.join(directory, 'output.md'), LIMITS.outputBytes, 'outputTooLarge'));
-  if (!text.trim()) fail('runOutputMissing', 'The completed run has no final output.');
-  // A separate acknowledgement cannot race or overwrite lifecycle state.
-  await fs.writeFile(path.join(directory, 'collected.json'), JSON.stringify({ collectedAt: new Date().toISOString() }), { mode: 0o600 });
-  return text;
-}
-
-export async function cancelRun(id, runsDirectory) {
-  const { record, directory } = await getRecord(id, runsDirectory);
-  if (['completed', 'failed', 'cancelled'].includes(record.state)) return publicRecord(record, runsDirectory ?? defaultRunsDirectory());
-  if (!record.supervisor || !await ownsProcess(record.supervisor, record.processToken)) {
-    const known = Array.isArray(record.processes) ? record.processes : [];
-    const owned = [];
-    for (const identity of known) if (await ownsProcess(identity, record.processToken)) owned.push(identity);
-    if (!owned.length) return { ...publicRecord(record, runsDirectory ?? defaultRunsDirectory()), state: 'unknown', code: 'processOwnershipUnconfirmed', localTreeStopped: false };
-    const result = await stopOwnedTree(owned[0].pid, owned, record.processToken);
-    record.state = 'unknown';
-    record.code = 'remoteStopUnconfirmed';
-    record.localTreeStopped = result.stopped;
-    record.processes = result.tracked;
-    record.endedAt = new Date().toISOString();
-    await atomicJson(path.join(directory, 'record.json'), record);
-    return publicRecord(record, runsDirectory ?? defaultRunsDirectory());
-  }
-  await fs.writeFile(path.join(directory, 'cancel.request'), 'cancel\n', { mode: 0o600 });
-  process.kill(record.supervisor.pid, 'SIGTERM');
-  const until = Date.now() + 5000;
-  while (Date.now() < until) {
-    const latest = await readJson(path.join(directory, 'record.json'));
-    if (latest.state !== 'running') return publicRecord(latest, runsDirectory ?? defaultRunsDirectory());
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return { ...publicRecord(record, runsDirectory ?? defaultRunsDirectory()), state: 'unknown', code: 'cancelUnconfirmed' };
 }
