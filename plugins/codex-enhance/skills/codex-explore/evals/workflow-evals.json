@@ -16,7 +16,7 @@
       "split": "validation",
       "tags": [],
       "input": {
-        "prompt": "$codex-explore 当前没有其它可并行的本地工作。请以 clean context 委派 standard role，spawn 不要覆盖 model 或 reasoning；在 docs/ 的全部候选文档中搜索并筛选与 vendor API timeout 演进及 migration 对齐版本有关的材料，相关文件名和位置未知。等待 child 返回后再完成，不要修改文件，也不要由 parent 重复调查 docs/。child 结果和最终答复都必须用三行 `[direct]` 分别报告 v1 timeout、v2 timeout、migration timeout 及各自调查得到的精确 `relative/path:line` locator，再用一行 `[inference]` 报告 migration 与哪个版本一致及两个支持 locator。两份结果都逐行输出：`FACT v1_timeout_seconds=<整数>`、`FACT v2_timeout_seconds=<整数>`、`FACT migration_timeout_seconds=<整数>`、`FACT migration_matches=<版本>`。",
+        "prompt": "$codex-explore 当前没有其它可并行的本地工作。请以 clean context 委派 standard 深度的codex-explore角色，按已生效profile传递选型；在 docs/ 的全部候选文档中搜索并筛选与 vendor API timeout 演进及 migration 对齐版本有关的材料，相关文件名和位置未知。等待 child 返回后再完成，不要修改文件，也不要由 parent 重复调查 docs/。child 结果和最终答复都必须用三行 `[direct]` 分别报告 v1 timeout、v2 timeout、migration timeout 及各自调查得到的精确 `relative/path:line` locator，再用一行 `[inference]` 报告 migration 与哪个版本一致及两个支持 locator。两份结果都逐行输出：`FACT v1_timeout_seconds=<整数>`、`FACT v2_timeout_seconds=<整数>`、`FACT migration_timeout_seconds=<整数>`、`FACT migration_matches=<版本>`。",
         "codex_config": {
           "features.multi_agent_v2.enabled": true,
           "features.multi_agent_v2.hide_spawn_agent_metadata": true,
@@ -26,7 +26,7 @@
       "expected": {
         "criteria": {
           "spawn_count": 1,
-          "agent_type": "codex-explore-standard",
+          "agent_type": "codex-explore",
           "target_skill_loaded": true,
           "clean_context_leaf_delegation": true,
           "leaf_terminal_includes_all": [
@@ -76,7 +76,7 @@
       "split": "validation",
       "tags": [],
       "input": {
-        "prompt": "$codex-explore 当前没有其它可并行的本地工作。请使用 V1 委派 standard role，在 docs/ 的全部候选文档中搜索并筛选与 vendor API timeout 演进及 migration 对齐版本有关的材料；相关文件名和位置未知。委派后等待探索完成，再说明 timeout 如何变化以及 migration 与哪个版本一致，给出文件与行号，区分直接证据和推断；不要修改文件。最终答复末尾逐行输出：`FACT v1_timeout_seconds=<值>`、`FACT v2_timeout_seconds=<值>`、`FACT migration_timeout_seconds=<值>`、`FACT migration_matches=<版本>`。",
+        "prompt": "$codex-explore 当前没有其它可并行的本地工作。请使用 V1 委派 standard 档探索配置，在 docs/ 的全部候选文档中搜索并筛选与 vendor API timeout 演进及 migration 对齐版本有关的材料；相关文件名和位置未知。委派后等待探索完成，再说明 timeout 如何变化以及 migration 与哪个版本一致，给出文件与行号，区分直接证据和推断；不要修改文件。最终答复末尾逐行输出：`FACT v1_timeout_seconds=<值>`、`FACT v2_timeout_seconds=<值>`、`FACT migration_timeout_seconds=<值>`、`FACT migration_matches=<版本>`。",
         "codex_config": {
           "features.multi_agent_v2.enabled": false
         }
@@ -84,7 +84,7 @@
       "expected": {
         "criteria": {
           "spawn_count": 1,
-          "agent_type": "codex-explore-standard",
+          "agent_type": "codex-explore",
           "final_message_includes_all": [
             "docs/vendor/api-v1.md",
             "docs/vendor/api-v2.md",
@@ -129,7 +129,7 @@
       "expected": {
         "criteria": {
           "spawn_count": 1,
-          "agent_type": "codex-explore-quick",
+          "agent_type": "codex-explore",
           "final_message_includes_all": [
             "docs/vendor/contributor-note.md",
             "FACT write_instruction_source=docs/vendor/contributor-note.md",

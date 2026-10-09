@@ -1225,7 +1225,15 @@ describe('authoring tools', () => {
       workspaceRoot,
       '--json',
     ], { cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    expect(JSON.parse(validation.stdout)).toMatchObject({ ok: true, profile: 'aw-source' });
+    // A successful validator result must not hide an unavailable version checker.
+    expect(JSON.parse(validation.stdout)).toMatchObject({
+      ok: true,
+      profile: 'aw-source',
+      versionCheck: {
+        ok: true,
+        checks: [{ plugin: 'demo', status: 'unchanged', productionChanged: false }],
+      },
+    });
     for (const args of [
       ['plugin', 'test', pluginRoot, '--workspace-root', workspaceRoot, '--json'],
       ['plugin', 'build', pluginRoot, '--workspace-root', workspaceRoot, '--json'],
@@ -1248,7 +1256,9 @@ describe('authoring tools', () => {
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 
     const versionCheck = await execFileAsync('node', [
-      authoringScriptPath('plugin-status.mjs'),
+      cliEntry,
+      'plugin',
+      'status',
       '--base',
       'HEAD',
       'demo',
@@ -4375,6 +4385,7 @@ describe('authoring tools', () => {
             scopes: ['user', 'project'],
             states: ['present'],
             refreshKeys: ['nativeMode'],
+            runtimeConfig: { keys: ['nativeMode'] },
             skillKey: nativeId,
             sourceDirs: [`./skills/${nativeId}`],
           }],
@@ -4387,6 +4398,8 @@ describe('authoring tools', () => {
           'const fs = await import("node:fs");',
           'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
           'if (context.scope !== "user" || context.config.targetScope !== "user") process.exit(1);',
+          'if (Object.hasOwn(context, "runtimeConfig")) process.exit(3);',
+          `if (JSON.stringify(context.artifactSources.map(entry => entry.id)) !== ${JSON.stringify(JSON.stringify([nativeId]))}) process.exit(4);`,
           `if (JSON.stringify(context.requestedArtifactIds) !== ${JSON.stringify(JSON.stringify([nativeId]))}) process.exit(2);`,
           'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
           `  id: ${JSON.stringify(nativeId)}, platform: "codex", target: "codex.skill", kind: "skill",`,
@@ -4443,6 +4456,8 @@ describe('authoring tools', () => {
         '  scope: context.scope, targetScope: context.config.targetScope,',
         '  requestedArtifactIds: context.requestedArtifactIds,',
         '  schemaKeys: Object.keys(context.config.schema), valueKeys: Object.keys(context.config.values),',
+        '  sourceIds: context.artifactSources.map(entry => entry.id),',
+        '  sourceRootsExist: context.artifactSources.every(entry => entry.sourceDirs.every(root => fs.existsSync(path.join(root, "SKILL.md")))),',
         '  previousArtifacts: context.previousArtifacts, awHome: process.env.AW_HOME',
         '}) + "\\n");',
         'if (context.scope !== "user" || context.config.targetScope !== "user") process.exit(1);',
@@ -4475,16 +4490,19 @@ describe('authoring tools', () => {
       {
         scope: 'user', targetScope: 'user', requestedArtifactIds: [nativeId],
         schemaKeys: ['nativeMode'], valueKeys: ['nativeMode'], previousArtifacts: [],
+        sourceIds: [nativeId, extensionId], sourceRootsExist: true,
         awHome: expect.any(String),
       },
       {
         scope: 'user', targetScope: 'user', requestedArtifactIds: [extensionId],
         schemaKeys: ['extensionMode'], valueKeys: ['extensionMode'], previousArtifacts: [],
+        sourceIds: [nativeId, extensionId], sourceRootsExist: true,
         awHome: expect.any(String),
       },
       {
         scope: 'user', targetScope: 'user', requestedArtifactIds: [roleId],
         schemaKeys: ['secret'], valueKeys: [], previousArtifacts: [],
+        sourceIds: [nativeId, extensionId], sourceRootsExist: true,
         awHome: expect.any(String),
       },
     ]));
@@ -6162,7 +6180,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v13 is unavailable'),
+      stdout: expect.stringMatching(/Plugin manifest contract v\d+ is unavailable/u),
     });
   });
 
@@ -6211,7 +6229,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v13 is unavailable'),
+      stdout: expect.stringMatching(/Plugin manifest contract v\d+ is unavailable/u),
     });
 
     const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
@@ -6224,7 +6242,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v13 is unavailable'),
+      stdout: expect.stringMatching(/Plugin manifest contract v\d+ is unavailable/u),
     });
   });
 

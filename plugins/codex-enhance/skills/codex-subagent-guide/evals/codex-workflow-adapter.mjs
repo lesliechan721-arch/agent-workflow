@@ -6,10 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const INPUT_KEYS = ['attempt', 'case', 'paths', 'phase', 'variant', 'version'];
 const ROLE_NAMES = [
-  'codex-subagent-simple',
-  'codex-subagent-general',
-  'codex-subagent-complex',
-  'codex-subagent-advanced',
+  'codex-subagent',
 ];
 
 export const ROOT_DEVELOPER_INSTRUCTIONS = [

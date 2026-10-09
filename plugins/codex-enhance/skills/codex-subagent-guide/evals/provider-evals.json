@@ -29,9 +29,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-simple",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6-luna",
+              "reasoning_effort": "max",
               "fork_context": false,
               "fork_turns": null
             },
@@ -40,7 +40,10 @@
             ]
           }
         },
-        "outcome": "使用简单任务 role；V1 使用干净 fork_context，V2 使用干净 fork_turns；不传 model 或 reasoning_effort。"
+        "outcome": "使用canonical task role与本次复杂度profile的实际model/effort；保持干净上下文，不携带其它子任务的override。"
+      },
+      "audit": {
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -61,9 +64,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-simple",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6-luna",
+              "reasoning_effort": "max",
               "fork_context": null,
               "fork_turns": "none"
             },
@@ -72,7 +75,10 @@
             ]
           }
         },
-        "outcome": "使用简单任务 role；V1 使用干净 fork_context，V2 使用干净 fork_turns；不传 model 或 reasoning_effort。"
+        "outcome": "使用canonical task role与本次复杂度profile的实际model/effort；保持干净上下文，不携带其它子任务的override。"
+      },
+      "audit": {
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -93,9 +99,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-complex",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "xhigh",
               "fork_context": false,
               "fork_turns": null
             },
@@ -104,7 +110,10 @@
             ]
           }
         },
-        "outcome": "只读不自动等于简单；未知根因和跨模块因果调查使用复杂任务 role。"
+        "outcome": "使用canonical task role与本次复杂度profile的实际model/effort；保持干净上下文，不携带其它子任务的override。"
+      },
+      "audit": {
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -125,9 +134,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-complex",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "xhigh",
               "fork_context": null,
               "fork_turns": "none"
             },
@@ -136,7 +145,10 @@
             ]
           }
         },
-        "outcome": "只读不自动等于简单；未知根因和跨模块因果调查使用复杂任务 role。"
+        "outcome": "使用canonical task role与本次复杂度profile的实际model/effort；保持干净上下文，不携带其它子任务的override。"
+      },
+      "audit": {
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -157,9 +169,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-general",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "medium",
               "fork_context": false,
               "fork_turns": null
             },
@@ -168,7 +180,10 @@
             ]
           }
         },
-        "outcome": "使用通用任务 role，不直接传预设 model 或 effort。"
+        "outcome": "使用canonical task role与本次复杂度profile的实际model/effort；保持干净上下文，不携带其它子任务的override。"
+      },
+      "audit": {
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -189,9 +204,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-general",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "medium",
               "fork_context": null,
               "fork_turns": "none"
             },
@@ -200,7 +215,10 @@
             ]
           }
         },
-        "outcome": "使用通用任务 role，不直接传预设 model 或 effort。"
+        "outcome": "使用canonical task role与本次复杂度profile的实际model/effort；保持干净上下文，不携带其它子任务的override。"
+      },
+      "audit": {
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -221,9 +239,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-complex",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "xhigh",
               "fork_context": false,
               "fork_turns": null
             },
@@ -232,7 +250,10 @@
             ]
           }
         },
-        "outcome": "使用复杂任务 role，不直接传预设 model 或 effort。"
+        "outcome": "使用canonical task role与本次复杂度profile的实际model/effort；保持干净上下文，不携带其它子任务的override。"
+      },
+      "audit": {
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -253,9 +274,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-complex",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "xhigh",
               "fork_context": null,
               "fork_turns": "none"
             },
@@ -264,7 +285,10 @@
             ]
           }
         },
-        "outcome": "使用复杂任务 role，不直接传预设 model 或 effort。"
+        "outcome": "使用canonical task role与本次复杂度profile的实际model/effort；保持干净上下文，不携带其它子任务的override。"
+      },
+      "audit": {
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -285,9 +309,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-general",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "medium",
               "fork_context": false,
               "fork_turns": null
             },
@@ -296,7 +320,10 @@
             ]
           }
         },
-        "outcome": "这是范围有限的常规审核，使用通用 role。"
+        "outcome": "使用canonical task role与本次复杂度profile的实际model/effort；保持干净上下文，不携带其它子任务的override。"
+      },
+      "audit": {
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -317,9 +344,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-general",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "medium",
               "fork_context": null,
               "fork_turns": "none"
             },
@@ -328,7 +355,10 @@
             ]
           }
         },
-        "outcome": "这是范围有限的常规审核，使用通用 role。"
+        "outcome": "使用canonical task role与本次复杂度profile的实际model/effort；保持干净上下文，不携带其它子任务的override。"
+      },
+      "audit": {
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -349,7 +379,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": null,
+              "agent_type": "codex-subagent",
               "model": "gpt-5.6-terra",
               "reasoning_effort": null,
               "fork_context": false,
@@ -360,7 +390,10 @@
             ]
           }
         },
-        "outcome": "只透传 model，不注入预设 agent_type 或 effort。"
+        "outcome": "透传显式model，保留canonical task角色；未指定的effort按本例公开参数要求处理。"
+      },
+      "audit": {
+        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。"
       }
     },
     {
@@ -381,7 +414,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": null,
+              "agent_type": "codex-subagent",
               "model": "gpt-5.6-terra",
               "reasoning_effort": null,
               "fork_context": null,
@@ -392,7 +425,10 @@
             ]
           }
         },
-        "outcome": "只透传 model，不注入预设 agent_type 或 effort。"
+        "outcome": "透传显式model，保留canonical task角色；未指定的effort按本例公开参数要求处理。"
+      },
+      "audit": {
+        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。"
       }
     },
     {
@@ -402,7 +438,7 @@
       "input": {
         "sourceCaseId": "custom_effort_only",
         "runtimeProfile": "v1",
-        "prompt": "$codex-subagent-guide 已批准委派。适用 AGENTS.md 只要求 reasoning_effort=high；立即启动子代理，不补 model 或 agent_type，使用干净上下文。",
+        "prompt": "$codex-subagent-guide 已批准委派。适用 AGENTS.md 只要求 reasoning_effort=high；立即启动子代理，不补未指定model，保留解析的task角色，使用干净上下文。",
         "files": []
       },
       "expected": {
@@ -413,7 +449,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": null,
+              "agent_type": "codex-subagent",
               "model": null,
               "reasoning_effort": "high",
               "fork_context": false,
@@ -425,6 +461,9 @@
           }
         },
         "outcome": "只透传 reasoning_effort。"
+      },
+      "audit": {
+        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。"
       }
     },
     {
@@ -434,7 +473,7 @@
       "input": {
         "sourceCaseId": "custom_effort_only",
         "runtimeProfile": "v2",
-        "prompt": "$codex-subagent-guide 已批准委派。适用 AGENTS.md 只要求 reasoning_effort=high；立即启动子代理，不补 model 或 agent_type，使用干净上下文。",
+        "prompt": "$codex-subagent-guide 已批准委派。适用 AGENTS.md 只要求 reasoning_effort=high；立即启动子代理，不补未指定model，保留解析的task角色，使用干净上下文。",
         "files": []
       },
       "expected": {
@@ -445,7 +484,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": null,
+              "agent_type": "codex-subagent",
               "model": null,
               "reasoning_effort": "high",
               "fork_context": null,
@@ -457,6 +496,9 @@
           }
         },
         "outcome": "只透传 reasoning_effort。"
+      },
+      "audit": {
+        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。"
       }
     },
     {
@@ -466,7 +508,7 @@
       "input": {
         "sourceCaseId": "custom_agent_type_only",
         "runtimeProfile": "v1",
-        "prompt": "$codex-subagent-guide 委派已获准。用户明确指定 agent_type=codex-subagent-complex；立即启动，不传 model 或 effort，使用干净上下文。",
+        "prompt": "$codex-subagent-guide 委派已获准。用户明确指定 agent_type=codex-subagent；立即启动，不传 model 或 effort，使用干净上下文。",
         "files": []
       },
       "expected": {
@@ -477,7 +519,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-complex",
+              "agent_type": "codex-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -498,7 +540,7 @@
       "input": {
         "sourceCaseId": "custom_agent_type_only",
         "runtimeProfile": "v2",
-        "prompt": "$codex-subagent-guide 委派已获准。用户明确指定 agent_type=codex-subagent-complex；立即启动，不传 model 或 effort，使用干净上下文。",
+        "prompt": "$codex-subagent-guide 委派已获准。用户明确指定 agent_type=codex-subagent；立即启动，不传 model 或 effort，使用干净上下文。",
         "files": []
       },
       "expected": {
@@ -509,7 +551,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-complex",
+              "agent_type": "codex-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -530,7 +572,7 @@
       "input": {
         "sourceCaseId": "custom_model_and_effort",
         "runtimeProfile": "v1",
-        "prompt": "$codex-subagent-guide 已允许委派。另一个技能要求 model=gpt-5.6-terra 且 reasoning_effort=xhigh；立即启动，不补 agent_type，使用干净上下文。",
+        "prompt": "$codex-subagent-guide 已允许委派。另一个技能要求 model=gpt-5.6-terra 且 reasoning_effort=xhigh；立即启动，保留解析的task角色，使用干净上下文。",
         "files": []
       },
       "expected": {
@@ -541,7 +583,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": null,
+              "agent_type": "codex-subagent",
               "model": "gpt-5.6-terra",
               "reasoning_effort": "xhigh",
               "fork_context": false,
@@ -552,7 +594,10 @@
             ]
           }
         },
-        "outcome": "透传两个显式字段，不注入预设 role。"
+        "outcome": "透传两个显式字段，保留canonical task role。"
+      },
+      "audit": {
+        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。"
       }
     },
     {
@@ -562,7 +607,7 @@
       "input": {
         "sourceCaseId": "custom_model_and_effort",
         "runtimeProfile": "v2",
-        "prompt": "$codex-subagent-guide 已允许委派。另一个技能要求 model=gpt-5.6-terra 且 reasoning_effort=xhigh；立即启动，不补 agent_type，使用干净上下文。",
+        "prompt": "$codex-subagent-guide 已允许委派。另一个技能要求 model=gpt-5.6-terra 且 reasoning_effort=xhigh；立即启动，保留解析的task角色，使用干净上下文。",
         "files": []
       },
       "expected": {
@@ -573,7 +618,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": null,
+              "agent_type": "codex-subagent",
               "model": "gpt-5.6-terra",
               "reasoning_effort": "xhigh",
               "fork_context": null,
@@ -584,7 +629,10 @@
             ]
           }
         },
-        "outcome": "透传两个显式字段，不注入预设 role。"
+        "outcome": "透传两个显式字段，保留canonical task role。"
+      },
+      "audit": {
+        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。"
       }
     },
     {
@@ -607,9 +655,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-complex",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "xhigh",
               "fork_context": false,
               "fork_turns": null
             },
@@ -618,11 +666,11 @@
             ]
           }
         },
-        "outcome": "显式 override 只影响其作用域内的子任务；B 使用复杂任务 role，不携带 A 的 model。"
+        "outcome": "使用canonical task role与本次复杂度profile的实际model/effort；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "task-scoped 显式字段必须原样保留，未指定字段不得由 preset 补齐；其它子任务的 override 不得泄漏到当前 spawn。",
-        "minimalCounterexample": "把 model override 明确改为适用于当前子任务 B 后，应透传 model，并且不再选择 preset role。"
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。",
+        "minimalCounterexample": "把 model override 明确改为适用于当前子任务 B 后，应透传 model，并保留canonical task role。"
       }
     },
     {
@@ -645,9 +693,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-complex",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "xhigh",
               "fork_context": null,
               "fork_turns": "none"
             },
@@ -656,11 +704,11 @@
             ]
           }
         },
-        "outcome": "显式 override 只影响其作用域内的子任务；B 使用复杂任务 role，不携带 A 的 model。"
+        "outcome": "使用canonical task role与本次复杂度profile的实际model/effort；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "task-scoped 显式字段必须原样保留，未指定字段不得由 preset 补齐；其它子任务的 override 不得泄漏到当前 spawn。",
-        "minimalCounterexample": "把 model override 明确改为适用于当前子任务 B 后，应透传 model，并且不再选择 preset role。"
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
+        "minimalCounterexample": "把 model override 明确改为适用于当前子任务 B 后，应透传 model，并保留canonical task role。"
       }
     },
     {
@@ -712,9 +760,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-simple",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6-luna",
+              "reasoning_effort": "max",
               "fork_context": null,
               "fork_turns": "2"
             },
@@ -726,7 +774,7 @@
         "outcome": "V2 的正整数 fork 可与简单 role 组合；V1 不伪造部分历史。"
       },
       "audit": {
-        "rationale": "最近 N 轮必须用 V2 的精确 fork_turns 表达；V1 无等价字段时必须失败关闭，不能用全历史近似。",
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "把最近 N 轮要求改为完整历史后，应改用 profile 的全历史字段，而不是部分历史分支。"
       }
     },
@@ -779,7 +827,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": null,
+              "agent_type": "codex-subagent",
               "model": "gpt-5.6-terra",
               "reasoning_effort": null,
               "fork_context": null,
@@ -793,7 +841,7 @@
         "outcome": "V2 部分 fork 可与显式 model 组合；V1 停止。"
       },
       "audit": {
-        "rationale": "最近 N 轮必须用 V2 的精确 fork_turns 表达；V1 无等价字段时必须失败关闭，不能用全历史近似。",
+        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。",
         "minimalCounterexample": "把最近 N 轮要求改为完整历史后，应改用 profile 的全历史字段，而不是部分历史分支。"
       }
     },
@@ -815,7 +863,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": null,
+              "agent_type": "codex-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": true,
@@ -826,7 +874,11 @@
             ]
           }
         },
-        "outcome": "选择全历史 fork，并省略 agent_type、model、reasoning_effort。"
+        "outcome": "保持canonical task角色和指定完整历史；model/effort按当前schema保留独立显式值，互斥参数不发送。"
+      },
+      "audit": {
+        "rationale": "完整历史不改变worker角色；canonical task仍通过真实role的developer通道加载。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
+        "minimalCounterexample": "当前宿主确实缺所需角色或不支持硬要求时，启动前报告实际缺口。"
       }
     },
     {
@@ -847,7 +899,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": null,
+              "agent_type": "codex-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -858,7 +910,11 @@
             ]
           }
         },
-        "outcome": "选择全历史 fork，并省略 agent_type、model、reasoning_effort。"
+        "outcome": "保持canonical task角色和指定完整历史；model/effort按当前schema保留独立显式值，互斥参数不发送。"
+      },
+      "audit": {
+        "rationale": "完整历史不改变worker角色；canonical task仍通过真实role的developer通道加载。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
+        "minimalCounterexample": "当前宿主确实缺所需角色或不支持硬要求时，启动前报告实际缺口。"
       }
     },
     {
@@ -881,7 +937,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": null,
+              "agent_type": "codex-subagent",
               "model": "gpt-5.6-terra",
               "reasoning_effort": null,
               "fork_context": true,
@@ -892,11 +948,11 @@
             ]
           }
         },
-        "outcome": "逐字段服从 schema：V1 允许完整历史与 model override，V2 阻断互斥组合。"
+        "outcome": "保持canonical task角色和指定完整历史；model/effort按当前schema保留独立显式值，互斥参数不发送。"
       },
       "audit": {
-        "rationale": "完整历史必须按 profile 使用 fork_context=true 或 fork_turns=all；与显式 override 冲突时必须按 schema 失败关闭。",
-        "minimalCounterexample": "移除 model override 后，V1 和 V2 都应使用各自的完整历史字段启动一次。"
+        "rationale": "完整历史不改变worker角色；canonical task仍通过真实role的developer通道加载。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
+        "minimalCounterexample": "当前宿主确实缺所需角色或不支持硬要求时，启动前报告实际缺口。"
       }
     },
     {
@@ -925,7 +981,7 @@
       },
       "audit": {
         "rationale": "完整历史必须按 profile 使用 fork_context=true 或 fork_turns=all；与显式 override 冲突时必须按 schema 失败关闭。",
-        "minimalCounterexample": "移除 model override 后，V1 和 V2 都应使用各自的完整历史字段启动一次。"
+        "minimalCounterexample": "移除显式model override后，可使用canonical task角色与fork_turns=all；不移除worker角色。"
       }
     },
     {
@@ -977,9 +1033,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-simple",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6-luna",
+              "reasoning_effort": "max",
               "fork_context": null,
               "fork_turns": "2"
             },
@@ -991,7 +1047,7 @@
         "outcome": "项目规则的部分历史要求同样生效；V2 与简单 role 组合，V1 不伪造支持。"
       },
       "audit": {
-        "rationale": "最近 N 轮必须用 V2 的精确 fork_turns 表达；V1 无等价字段时必须失败关闭，不能用全历史近似。",
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "把最近 N 轮要求改为完整历史后，应改用 profile 的全历史字段，而不是部分历史分支。"
       }
     },
@@ -1013,7 +1069,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": null,
+              "agent_type": "codex-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": true,
@@ -1024,7 +1080,11 @@
             ]
           }
         },
-        "outcome": "其它已加载 skill 的完整历史要求生效，并省略与全历史 fork 不兼容的 routing override。"
+        "outcome": "保持canonical task角色和指定完整历史；model/effort按当前schema保留独立显式值，互斥参数不发送。"
+      },
+      "audit": {
+        "rationale": "完整历史不改变worker角色；canonical task仍通过真实role的developer通道加载。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
+        "minimalCounterexample": "当前宿主确实缺所需角色或不支持硬要求时，启动前报告实际缺口。"
       }
     },
     {
@@ -1045,7 +1105,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": null,
+              "agent_type": "codex-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1056,7 +1116,11 @@
             ]
           }
         },
-        "outcome": "其它已加载 skill 的完整历史要求生效，并省略与全历史 fork 不兼容的 routing override。"
+        "outcome": "保持canonical task角色和指定完整历史；model/effort按当前schema保留独立显式值，互斥参数不发送。"
+      },
+      "audit": {
+        "rationale": "完整历史不改变worker角色；canonical task仍通过真实role的developer通道加载。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
+        "minimalCounterexample": "当前宿主确实缺所需角色或不支持硬要求时，启动前报告实际缺口。"
       }
     },
     {
@@ -1068,10 +1132,10 @@
       "input": {
         "sourceCaseId": "missing_preset_role",
         "runtimeProfile": "v1",
-        "prompt": "$codex-subagent-guide 一个简单只读任务已获准委派，但当前 agent_type 列表没有 codex-subagent-simple。不要回退到 model override 或其它 role；说明阻断。",
+        "prompt": "$codex-subagent-guide 一个简单只读任务已获准委派，但当前 agent_type 列表没有 codex-subagent。不要回退到 model override 或其它 role；说明阻断。",
         "files": [],
         "omit_roles": [
-          "codex-subagent-simple"
+          "codex-subagent"
         ]
       },
       "expected": {
@@ -1084,11 +1148,11 @@
             "block_reason": "preset_role_unavailable"
           }
         },
-        "outcome": "缺失预设 role 时 fail closed。"
+        "outcome": "缺失canonical task role时阻断。"
       },
       "audit": {
         "rationale": "缺少固定 role 或 schema 声明字段冲突时必须零 spawn，并返回结构化阻断原因，不能降级。",
-        "minimalCounterexample": "恢复 codex-subagent-simple role 后，应使用该 preset 启动一次，而不是保持阻断。"
+        "minimalCounterexample": "恢复 codex-subagent role 后，应使用该 preset 启动一次，而不是保持阻断。"
       }
     },
     {
@@ -1100,10 +1164,10 @@
       "input": {
         "sourceCaseId": "missing_preset_role",
         "runtimeProfile": "v2",
-        "prompt": "$codex-subagent-guide 一个简单只读任务已获准委派，但当前 agent_type 列表没有 codex-subagent-simple。不要回退到 model override 或其它 role；说明阻断。",
+        "prompt": "$codex-subagent-guide 一个简单只读任务已获准委派，但当前 agent_type 列表没有 codex-subagent。不要回退到 model override 或其它 role；说明阻断。",
         "files": [],
         "omit_roles": [
-          "codex-subagent-simple"
+          "codex-subagent"
         ]
       },
       "expected": {
@@ -1116,11 +1180,11 @@
             "block_reason": "preset_role_unavailable"
           }
         },
-        "outcome": "缺失预设 role 时 fail closed。"
+        "outcome": "缺失canonical task role时阻断。"
       },
       "audit": {
         "rationale": "缺少固定 role 或 schema 声明字段冲突时必须零 spawn，并返回结构化阻断原因，不能降级。",
-        "minimalCounterexample": "恢复 codex-subagent-simple role 后，应使用该 preset 启动一次，而不是保持阻断。"
+        "minimalCounterexample": "恢复 codex-subagent role 后，应使用该 preset 启动一次，而不是保持阻断。"
       }
     },
     {
@@ -1132,7 +1196,7 @@
       "input": {
         "sourceCaseId": "fixed_role_custom_conflict",
         "runtimeProfile": "v1",
-        "prompt": "$codex-subagent-guide 委派已获准。当前 schema 明确说明 agent_type=codex-subagent-complex 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
+        "prompt": "$codex-subagent-guide 委派已获准。当前 schema 明确说明 agent_type=codex-subagent 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
         "files": []
       },
       "expected": {
@@ -1161,7 +1225,7 @@
       "input": {
         "sourceCaseId": "fixed_role_custom_conflict",
         "runtimeProfile": "v2",
-        "prompt": "$codex-subagent-guide 委派已获准。当前 schema 明确说明 agent_type=codex-subagent-complex 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
+        "prompt": "$codex-subagent-guide 委派已获准。当前 schema 明确说明 agent_type=codex-subagent 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
         "files": []
       },
       "expected": {
@@ -1201,9 +1265,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-simple",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6-luna",
+              "reasoning_effort": "max",
               "fork_context": null,
               "fork_turns": "none"
             },
@@ -1215,7 +1279,7 @@
         "outcome": "根据明确的难度条件选择 simple role，不由交付名称改变档位。"
       },
       "audit": {
-        "rationale": "同一难度描述只改变交付名称，路由仍应按歧义、耦合和验证难度选择。",
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
       }
     },
@@ -1239,9 +1303,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-simple",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6-luna",
+              "reasoning_effort": "max",
               "fork_context": null,
               "fork_turns": "none"
             },
@@ -1253,7 +1317,7 @@
         "outcome": "根据明确的难度条件选择 simple role，不由交付名称改变档位。"
       },
       "audit": {
-        "rationale": "同一难度描述只改变交付名称，路由仍应按歧义、耦合和验证难度选择。",
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
       }
     },
@@ -1277,9 +1341,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-simple",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6-luna",
+              "reasoning_effort": "max",
               "fork_context": null,
               "fork_turns": "none"
             },
@@ -1291,7 +1355,7 @@
         "outcome": "根据明确的难度条件选择 simple role，不由交付名称改变档位。"
       },
       "audit": {
-        "rationale": "同一难度描述只改变交付名称，路由仍应按歧义、耦合和验证难度选择。",
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
       }
     },
@@ -1315,9 +1379,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-complex",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "xhigh",
               "fork_context": null,
               "fork_turns": "none"
             },
@@ -1329,7 +1393,7 @@
         "outcome": "根据明确的难度条件选择 complex role，不由交付名称改变档位。"
       },
       "audit": {
-        "rationale": "同一难度描述只改变交付名称，路由仍应按歧义、耦合和验证难度选择。",
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
       }
     },
@@ -1353,9 +1417,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-complex",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "xhigh",
               "fork_context": null,
               "fork_turns": "none"
             },
@@ -1367,7 +1431,7 @@
         "outcome": "根据明确的难度条件选择 complex role，不由交付名称改变档位。"
       },
       "audit": {
-        "rationale": "同一难度描述只改变交付名称，路由仍应按歧义、耦合和验证难度选择。",
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
       }
     },
@@ -1391,9 +1455,9 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "codex-subagent-complex",
-              "model": null,
-              "reasoning_effort": null,
+              "agent_type": "codex-subagent",
+              "model": "gpt-6.1-sol",
+              "reasoning_effort": "xhigh",
               "fork_context": null,
               "fork_turns": "none"
             },
@@ -1405,7 +1469,7 @@
         "outcome": "根据明确的难度条件选择 complex role，不由交付名称改变档位。"
       },
       "audit": {
-        "rationale": "同一难度描述只改变交付名称，路由仍应按歧义、耦合和验证难度选择。",
+        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
       }
     }

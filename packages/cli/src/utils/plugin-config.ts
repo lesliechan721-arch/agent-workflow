@@ -6,9 +6,11 @@ import fs from 'fs-extra';
 import {
   canonicalizePluginConfigValues,
   formatPluginConfigIssue,
+  getPluginConfigDependencyKeys,
   matchPluginConfigPreset,
   redactPluginConfigValue,
   stablePluginConfigStringify,
+  validatePluginConfigCandidate,
   validatePluginConfigDocument,
   validatePluginConfigValue as validateCorePluginConfigValue,
 } from '@lesliechan721/aw-plugin-core/manifest';
@@ -699,7 +701,17 @@ function isPluginConfigScalar(value: unknown): value is string | number | boolea
 
 function isPluginConfigObject(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  return Object.values(value).every(isPluginConfigScalar);
+  return Object.values(value).every((property) => {
+    if (isPluginConfigScalar(property)) return true;
+    if (Array.isArray(property)) {
+      const elementType = typeof property[0];
+      return Object.keys(property).length === property.length
+        && property.every((item, index) => Object.hasOwn(property, index)
+          && typeof item === elementType
+          && isPluginConfigScalar(item));
+    }
+    return isRecord(property) && Object.values(property).every(isPluginConfigScalar);
+  });
 }
 
 function isPluginConfigValue(value: unknown): value is PluginConfigValue {
@@ -1778,7 +1790,7 @@ export async function resolveEffectivePluginConfigFromStores(options: {
     const plainEntries = getStoreEntries(store.values);
     const source = sourceForStoreLayer(scope);
     const dangerousIssues = new Map(validatePluginConfigDocument(
-      { schemaVersion: 3, fields: schema },
+      options.manifest.config!,
       plainEntries,
     ).filter((issue) => issue.code === 'dangerousKey')
       .map((issue) => [issue.path.field, issue] as const));
@@ -1821,9 +1833,69 @@ export async function resolveEffectivePluginConfigFromStores(options: {
     });
   }
 
+  const candidateValues: Record<string, unknown> = {};
+  for (const [key, field] of Object.entries(schema)) {
+    const source = sources[key];
+    if (source === 'default') candidateValues[key] = field.default;
+    if (source === 'user') candidateValues[key] = ownStoreValue(userStore.values, key);
+    if (source === 'project' && projectStore) candidateValues[key] = ownStoreValue(projectStore.values, key);
+  }
+  const referenceIssues = validatePluginConfigCandidate(
+    options.manifest.config!, candidateValues,
+  ).filter((issue) => issue.code === 'valueRef' || issue.code === 'valueRefSource' || issue.code === 'valueRefReserved');
+  const missingReferenceIssues: PluginConfigIssue[] = [];
+  for (const issue of referenceIssues) {
+    const key = issue.path.field;
+    const source = sources[key]!;
+    const state = fieldStates[key];
+    const configIssue: PluginConfigIssue = {
+      type: 'invalid-config', code: issue.code, key, source,
+      message: formatPluginConfigIssue(issue),
+    };
+    if (source === 'missing') {
+      missingReferenceIssues.push(configIssue);
+      continue;
+    }
+    delete values[key];
+    delete redactedValues[key];
+    fieldStates[key] = {
+      invalidOverride: { source, issues: [...(state?.invalidOverride?.issues ?? []), configIssue] },
+      ...(state?.fallback ? { fallback: state.fallback } : {}),
+    };
+  }
+
+  // Consumers must retain dependency failures after invalid source values are omitted.
+  const invalidKeys = new Set([
+    ...Object.entries(fieldStates).filter(([, state]) => state.invalidOverride !== undefined).map(([key]) => key),
+    ...missingReferenceIssues.map((issue) => issue.key),
+  ]);
+  for (const key of schemaKeys) {
+    if (invalidKeys.has(key)) continue;
+    const dependency = getPluginConfigDependencyKeys(options.manifest.config!, [key])
+      .find((dependencyKey) => dependencyKey !== key && invalidKeys.has(dependencyKey));
+    if (dependency === undefined) continue;
+    const source = sources[key]!;
+    const configIssue: PluginConfigIssue = {
+      type: 'invalid-config', code: 'valueRefSource', key, source,
+      message: `Config "${key}" depends on invalid config "${dependency}". Fix the dependency before using this field.`,
+    };
+    delete values[key];
+    delete redactedValues[key];
+    if (source === 'missing') {
+      missingReferenceIssues.push(configIssue);
+    } else {
+      const state = fieldStates[key];
+      fieldStates[key] = {
+        invalidOverride: { source, issues: [configIssue] },
+        ...(state?.fallback ? { fallback: state.fallback } : {}),
+      };
+    }
+  }
+
   const issues = [
     ...Object.values(fieldStates).flatMap((state) => state.invalidOverride?.issues ?? []),
     ...dangerousKeyIssues,
+    ...missingReferenceIssues,
   ];
   for (const [key, field] of Object.entries(schema)) {
     if (field.required && values[key] === undefined && !fieldStates[key]?.invalidOverride) {
@@ -1852,6 +1924,53 @@ export async function resolveEffectivePluginConfigFromStores(options: {
       ...(projectStore ? { project: projectStore } : {}),
     },
   };
+}
+
+function ownStoreValue(values: Record<string, PluginConfigValue>, key: string): unknown {
+  return Object.hasOwn(values, key) ? values[key] : undefined;
+}
+
+/** Check cross-field relations before saving one complete layer candidate. */
+export async function assertPluginConfigMutationCandidate(options: {
+  sourceId?: string;
+  sourceIdentity?: string;
+  logicalIdentity?: string;
+  pluginName: string;
+  manifest: NormalizedPluginManifest;
+  scope: Scope;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  updates: Record<string, PluginConfigValue>;
+  removeKeys: readonly string[];
+}): Promise<void> {
+  const user = await readPluginConfigStore({ ...options, scope: 'user' });
+  const project = options.scope === 'project'
+    ? await readPluginConfigStore({ ...options, scope: 'project' })
+    : undefined;
+  assertReadyPluginConfigStore(user);
+  if (project) assertReadyPluginConfigStore(project);
+  const edited = options.scope === 'user' ? user : project!;
+  const values = { ...edited.values };
+  for (const key of options.removeKeys) delete values[key];
+  for (const [key, value] of Object.entries(options.updates)) values[key] = value;
+  const candidateStore = { ...edited, values };
+  const effective = await resolveEffectivePluginConfigFromStores({
+    pluginName: options.pluginName,
+    manifest: options.manifest,
+    targetScope: options.scope,
+    projectRoot: resolveAwProjectRoot(options.cwd),
+    stores: {
+      user: options.scope === 'user' ? candidateStore : user,
+      ...(project ? { project: candidateStore } : {}),
+    },
+  });
+  const issues = effective.issues.filter((issue) => issue.code === 'valueRef'
+    || issue.code === 'valueRefSource' || issue.code === 'valueRefReserved');
+  if (issues.length > 0) {
+    throw Object.assign(new Error(`configReferenceInvalid: ${issues.map((issue) => issue.message).join(' ')}`), {
+      code: 'configReferenceInvalid',
+    });
+  }
 }
 
 export async function coercePluginConfigUpdates(options: {

@@ -25,10 +25,7 @@ const sourceEvalRoot = pluginContext?.sourceRoot
   ? path.join(pluginContext.sourceRoot, 'skills', 'codex-subagent-guide', 'evals')
   : evalRoot;
 const roles = [
-  'codex-subagent-simple',
-  'codex-subagent-general',
-  'codex-subagent-complex',
-  'codex-subagent-advanced',
+  'codex-subagent',
 ];
 
 async function invoke(runner, input, env = process.env) {
@@ -108,7 +105,8 @@ function v1RoutingEvidence() {
     ordinal: 1, threadId: 'root', parentThreadId: null,
     callId: 'spawn-simple', namespace: 'collaboration', tool: 'spawn_agent', status: 'completed',
     arguments: {
-      agent_type: 'codex-subagent-simple', message: 'work', fork_context: false,
+      agent_type: 'codex-subagent', message: 'work', fork_context: false,
+      model: 'gpt-6-luna', reasoning_effort: 'max',
     },
     output: { agent_id: 'child', status: 'running' },
   };
@@ -131,7 +129,7 @@ function v1RoutingEvidence() {
       },
     }, {
       threadId: 'child', parentThreadId: 'root',
-      agentRole: 'codex-subagent-simple',
+      agentRole: 'codex-subagent',
       initialMessage: { kind: 'plaintext', text: 'work' },
       developerContext: {
         present: true, messageCount: 1, sha256: 'sha256:child',
@@ -161,7 +159,7 @@ test('all Subagent Guide commands prepare bounded requests without starting Code
     await writeFile(codex, `#!/bin/sh\necho started > ${JSON.stringify(marker)}\n`);
     await chmod(codex, 0o755);
     const env = { PATH: `${trap}${path.delimiter}${process.env.PATH ?? ''}` };
-    for (const suite of manifest.suites.filter((entry) => entry.kind === 'codex-workflow')) {
+    for (const suite of manifest.suites.filter((entry) => ['routing', 'lifecycle', 'lifecycle-timeout'].includes(entry.id))) {
       const document = JSON.parse(await readFile(path.join(sourceEvalRoot, suite.cases), 'utf8'));
       const result = await invoke(suite.provider.command[1], adapterInput('prepare', document.cases[0], root), env);
       assert.equal(result.code, 0, result.stderr);
@@ -205,12 +203,11 @@ test('routing and lifecycle grade normalized evidence and fail closed', async ()
       tool: 'spawn_agent',
       linkedThreadId: 'child',
       arguments: {
-        agent_type: 'codex-subagent-simple', model: undefined,
+        agent_type: 'codex-subagent', model: 'gpt-6-luna', reasoning_effort: 'max',
         message: 'work', task_name: 'work', fork_turns: 'none',
       },
       output: { agent_id: 'child', status: 'running' },
     };
-    delete spawn.arguments.model;
     await Promise.all([
       writeFile(input.paths.evidence, JSON.stringify(evidence([spawn]))),
       writeFile(input.paths.modelOutput, 'done\n'),

@@ -57,7 +57,7 @@ function testPositiveEarlyStopRequiresRawSpawnArguments() {
     spawnCalls: [],
   };
   assert.equal(shouldStopEarly(evalCase, observed), null);
-  observed.spawnCalls.push({ arguments: { agent_type: 'codex-explore-standard' } });
+  observed.spawnCalls.push({ arguments: { agent_type: 'codex-explore' } });
   assert.equal(shouldStopEarly(evalCase, observed), 'expected_outcome_observed');
 }
 

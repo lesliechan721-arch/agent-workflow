@@ -35,6 +35,7 @@ roleKey?: string
 skillKey?: string
 sourceDirs?: StringArray
 runtimeImports?: ArtifactRuntimeImports
+runtimeConfig?: RuntimeConfig
 } | {
 id: string
 platform?: ("codex" | "claude")
@@ -50,6 +51,7 @@ roleKey?: string
 skillKey?: string
 sourceDirs?: StringArray
 runtimeImports?: ArtifactRuntimeImports
+runtimeConfig?: RuntimeConfig
 })
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
@@ -85,7 +87,7 @@ capabilitySetDigest: string
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "config".
  */
-export type Config = (ConfigV2 | ConfigV3)
+export type Config = (ConfigV2 | ConfigV3 | ConfigV4)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configField".
@@ -98,14 +100,14 @@ export type ConfigField = (ConfigStringField | ConfigNumberField | ConfigBoolean
 export type ConfigStringField = (ConfigPlainStringField | ConfigSensitiveStringField)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "configObjectField".
- */
-export type ConfigObjectField = (ConfigFixedObjectField | ConfigKeyValueObjectField)
-/**
- * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalar".
  */
 export type ConfigScalar = (string | number | boolean)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configObjectField".
+ */
+export type ConfigObjectField = (ConfigFixedObjectField | ConfigKeyValueObjectField)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalarChildField".
@@ -136,6 +138,51 @@ export type ConfigArrayValue = (string[] | number[] | boolean[] | ConfigArrayObj
  * via the `definition` "configArrayItem".
  */
 export type ConfigArrayItem = (ConfigScalarDynamicField | ConfigArrayFixedObjectItem | ConfigArrayKeyValueObjectItem | ConfigArrayItemReference)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4Field".
+ */
+export type ConfigV4Field = (ConfigV4ScalarField | ConfigV4FixedObjectField | ConfigV4KeyValueObjectField | ConfigV4ArrayField | ConfigV4Reference)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ScalarField".
+ */
+export type ConfigV4ScalarField = (ConfigV4StringField | ConfigV4NumberField | ConfigV4BooleanField)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4StringField".
+ */
+export type ConfigV4StringField = (ConfigV4PlainStringField | ConfigSensitiveStringField)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configScalarArrayValue".
+ */
+export type ConfigScalarArrayValue = (string[] | number[] | boolean[])
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4PropertyField".
+ */
+export type ConfigV4PropertyField = (ConfigV4ScalarChildField | ConfigV4LeafArrayField | ConfigV4LeafObjectField | ConfigChildReference)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ScalarChildField".
+ */
+export type ConfigV4ScalarChildField = (ConfigV4StringChildField | ConfigV4NumberChildField | ConfigV4BooleanChildField)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ScalarDynamicField".
+ */
+export type ConfigV4ScalarDynamicField = (ConfigV4StringDynamicField | ConfigV4NumberDynamicField | ConfigV4BooleanDynamicField)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ArrayValue".
+ */
+export type ConfigV4ArrayValue = (string[] | number[] | boolean[] | ConfigV4ObjectValue[])
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ArrayItem".
+ */
+export type ConfigV4ArrayItem = (ConfigV4ScalarDynamicField | ConfigV4ArrayFixedObjectItem | ConfigV4ArrayKeyValueObjectItem | ConfigArrayItemReference)
 
 export interface PluginManifestSourceV3 {
 schemaVersion: 3
@@ -288,6 +335,16 @@ targets?: ArtifactTarget[]
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "runtimeConfig".
+ */
+export interface RuntimeConfig {
+/**
+ * @minItems 1
+ */
+keys: [string, ...(string)[]]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "buildConfig".
  */
 export interface BuildConfig {
@@ -431,6 +488,7 @@ advanced?: boolean
  * via the `definition` "configPlainStringField".
  */
 export interface ConfigPlainStringField {
+valueRef?: ConfigValueReference
 type: "string"
 title?: string
 description?: string
@@ -439,6 +497,19 @@ required?: boolean
 sensitive?: false
 choices?: ConfigStringChoices
 validation?: ConfigStringValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configValueReference".
+ */
+export interface ConfigValueReference {
+field: string
+key: string
+label?: string
+/**
+ * @maxItems 128
+ */
+include?: ConfigScalar[]
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
@@ -486,6 +557,7 @@ validation?: ConfigStringValidation
  * via the `definition` "configNumberField".
  */
 export interface ConfigNumberField {
+valueRef?: ConfigValueReference
 type: "number"
 title?: string
 description?: string
@@ -529,6 +601,7 @@ multipleOf?: number
  * via the `definition` "configBooleanField".
  */
 export interface ConfigBooleanField {
+valueRef?: ConfigValueReference
 type: "boolean"
 title?: string
 description?: string
@@ -602,6 +675,7 @@ recommended?: true
  * via the `definition` "configStringChildField".
  */
 export interface ConfigStringChildField {
+valueRef?: ConfigValueReference
 type: "string"
 title?: string
 description?: string
@@ -615,6 +689,7 @@ validation?: ConfigStringValidation
  * via the `definition` "configNumberChildField".
  */
 export interface ConfigNumberChildField {
+valueRef?: ConfigValueReference
 type: "number"
 title?: string
 description?: string
@@ -628,6 +703,7 @@ validation?: ConfigNumberValidation
  * via the `definition` "configBooleanChildField".
  */
 export interface ConfigBooleanChildField {
+valueRef?: ConfigValueReference
 type: "boolean"
 title?: string
 description?: string
@@ -666,6 +742,7 @@ validation?: ConfigObjectValidation
  * via the `definition` "configStringDynamicField".
  */
 export interface ConfigStringDynamicField {
+valueRef?: ConfigValueReference
 type: "string"
 title?: string
 description?: string
@@ -678,6 +755,7 @@ validation?: ConfigStringValidation
  * via the `definition` "configNumberDynamicField".
  */
 export interface ConfigNumberDynamicField {
+valueRef?: ConfigValueReference
 type: "number"
 title?: string
 description?: string
@@ -690,6 +768,7 @@ validation?: ConfigNumberValidation
  * via the `definition` "configBooleanDynamicField".
  */
 export interface ConfigBooleanDynamicField {
+valueRef?: ConfigValueReference
 type: "boolean"
 title?: string
 description?: string
@@ -871,6 +950,7 @@ export interface ConfigArrayValidation {
 minItems?: number
 maxItems?: number
 uniqueItems?: boolean
+uniqueBy?: string
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
@@ -897,4 +977,377 @@ format?: ("raw" | "choiceTitle")
 }[]
 separator: string
 missing: string
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4".
+ */
+export interface ConfigV4 {
+fields: {
+[k: string]: ConfigV4Field
+}
+presentation?: {
+groups?: {
+id: string
+title: string
+description?: string
+fields: StringArray
+advanced?: boolean
+}[]
+summaries?: {
+[k: string]: ConfigJoinSummary
+}
+fieldViews?: {
+[k: string]: ({
+summary: string
+} | {
+itemSummary: string
+})
+}
+}
+schemaVersion: 4
+definitions?: {
+[k: string]: ConfigV4Field
+}
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4PlainStringField".
+ */
+export interface ConfigV4PlainStringField {
+valueRef?: ConfigValueReference
+type: "string"
+title?: string
+description?: string
+default?: string
+required?: boolean
+sensitive?: false
+choices?: ConfigStringChoices
+validation?: ConfigStringValidation
+const?: string
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4NumberField".
+ */
+export interface ConfigV4NumberField {
+valueRef?: ConfigValueReference
+type: "number"
+title?: string
+description?: string
+default?: number
+required?: boolean
+sensitive?: never
+choices?: ConfigNumberChoices
+validation?: ConfigNumberValidation
+const?: number
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4BooleanField".
+ */
+export interface ConfigV4BooleanField {
+valueRef?: ConfigValueReference
+type: "boolean"
+title?: string
+description?: string
+default?: boolean
+required?: boolean
+sensitive?: never
+choices?: ConfigBooleanChoices
+const?: boolean
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4FixedObjectField".
+ */
+export interface ConfigV4FixedObjectField {
+type: "object"
+title?: string
+description?: string
+default?: ConfigV4ObjectValue
+required?: boolean
+sensitive?: never
+choices?: ConfigV4ObjectChoices
+properties: {
+[k: string]: ConfigV4PropertyField
+}
+additionalProperties?: false
+validation?: ConfigObjectValidation
+variants?: ConfigV4ObjectVariants
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ObjectValue".
+ */
+export interface ConfigV4ObjectValue {
+[k: string]: (ConfigScalar | ConfigScalarArrayValue | ConfigArrayObjectValue)
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ObjectChoices".
+ */
+export interface ConfigV4ObjectChoices {
+allowCustom: boolean
+presets: ConfigV4ObjectPreset[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ObjectPreset".
+ */
+export interface ConfigV4ObjectPreset {
+id: string
+title: string
+description?: string
+value: ConfigV4ObjectValue
+recommended?: true
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4StringChildField".
+ */
+export interface ConfigV4StringChildField {
+valueRef?: ConfigValueReference
+type: "string"
+title?: string
+description?: string
+required?: boolean
+sensitive?: never
+choices?: ConfigStringChoices
+validation?: ConfigStringValidation
+const?: string
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4NumberChildField".
+ */
+export interface ConfigV4NumberChildField {
+valueRef?: ConfigValueReference
+type: "number"
+title?: string
+description?: string
+required?: boolean
+sensitive?: never
+choices?: ConfigNumberChoices
+validation?: ConfigNumberValidation
+const?: number
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4BooleanChildField".
+ */
+export interface ConfigV4BooleanChildField {
+valueRef?: ConfigValueReference
+type: "boolean"
+title?: string
+description?: string
+required?: boolean
+sensitive?: never
+choices?: ConfigBooleanChoices
+const?: boolean
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4LeafArrayField".
+ */
+export interface ConfigV4LeafArrayField {
+type: "array"
+title?: string
+description?: string
+required?: boolean
+sensitive?: never
+items: (ConfigV4ScalarDynamicField | ConfigDynamicReference)
+choices?: ConfigScalarArrayChoices
+validation?: {
+minItems?: number
+maxItems?: number
+uniqueItems?: boolean
+}
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4StringDynamicField".
+ */
+export interface ConfigV4StringDynamicField {
+valueRef?: ConfigValueReference
+type: "string"
+title?: string
+description?: string
+sensitive?: never
+choices?: ConfigStringChoices
+validation?: ConfigStringValidation
+const?: string
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4NumberDynamicField".
+ */
+export interface ConfigV4NumberDynamicField {
+valueRef?: ConfigValueReference
+type: "number"
+title?: string
+description?: string
+sensitive?: never
+choices?: ConfigNumberChoices
+validation?: ConfigNumberValidation
+const?: number
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4BooleanDynamicField".
+ */
+export interface ConfigV4BooleanDynamicField {
+valueRef?: ConfigValueReference
+type: "boolean"
+title?: string
+description?: string
+sensitive?: never
+choices?: ConfigBooleanChoices
+const?: boolean
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configScalarArrayChoices".
+ */
+export interface ConfigScalarArrayChoices {
+allowCustom: boolean
+presets: ConfigScalarArrayPreset[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configScalarArrayPreset".
+ */
+export interface ConfigScalarArrayPreset {
+id: string
+title: string
+description?: string
+value: ConfigScalarArrayValue
+recommended?: true
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4LeafObjectField".
+ */
+export interface ConfigV4LeafObjectField {
+type: "object"
+title?: string
+description?: string
+required?: boolean
+sensitive?: never
+choices?: ConfigObjectChoices
+additionalProperties: (ConfigV4ScalarDynamicField | ConfigDynamicReference)
+validation?: ConfigObjectValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ObjectVariants".
+ */
+export interface ConfigV4ObjectVariants {
+discriminator: string
+cases: {
+[k: string]: ConfigV4ObjectVariant
+}
+missing?: string
+otherwise?: ConfigV4ObjectVariant
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ObjectVariant".
+ */
+export interface ConfigV4ObjectVariant {
+properties: {
+[k: string]: ConfigV4PropertyField
+}
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4KeyValueObjectField".
+ */
+export interface ConfigV4KeyValueObjectField {
+type: "object"
+title?: string
+description?: string
+default?: {
+[k: string]: ConfigScalar
+}
+required?: boolean
+sensitive?: never
+choices?: ConfigObjectChoices
+additionalProperties: (ConfigV4ScalarDynamicField | ConfigDynamicReference)
+validation?: ConfigObjectValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ArrayField".
+ */
+export interface ConfigV4ArrayField {
+type: "array"
+title?: string
+description?: string
+default?: ConfigV4ArrayValue
+required?: boolean
+sensitive?: never
+items: ConfigV4ArrayItem
+choices?: ConfigV4ArrayChoices
+validation?: ConfigArrayValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ArrayFixedObjectItem".
+ */
+export interface ConfigV4ArrayFixedObjectItem {
+type: "object"
+title?: string
+description?: string
+sensitive?: never
+choices?: ConfigV4ObjectChoices
+properties: {
+[k: string]: ConfigV4PropertyField
+}
+additionalProperties?: false
+validation?: ConfigObjectValidation
+variants?: ConfigV4ObjectVariants
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ArrayKeyValueObjectItem".
+ */
+export interface ConfigV4ArrayKeyValueObjectItem {
+type: "object"
+title?: string
+description?: string
+sensitive?: never
+choices?: ConfigObjectChoices
+additionalProperties: (ConfigV4ScalarDynamicField | ConfigDynamicReference)
+validation?: ConfigObjectValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ArrayChoices".
+ */
+export interface ConfigV4ArrayChoices {
+allowCustom: boolean
+presets: ConfigV4ArrayPreset[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4ArrayPreset".
+ */
+export interface ConfigV4ArrayPreset {
+id: string
+title: string
+description?: string
+value: ConfigV4ArrayValue
+recommended?: true
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV4Reference".
+ */
+export interface ConfigV4Reference {
+$ref: string
+title?: string
+description?: string
+default?: (ConfigScalar | ConfigV4ArrayValue | ConfigV4ObjectValue)
+required?: boolean
 }

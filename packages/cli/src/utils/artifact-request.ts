@@ -19,11 +19,7 @@ function isSkillTarget(target: PluginArtifactTargetDefinition): boolean {
 
 function sensitiveConfigKeys(manifest: NormalizedPluginManifest): Set<string> {
   return new Set(Object.entries(manifest.config?.fields ?? {})
-    .filter(([, field]) => field.sensitive === true
-      || (field.type === 'object'
-        && (Object.values(field.properties ?? {}).some((child) => child.sensitive === true)
-          || (field.additionalProperties !== false
-            && field.additionalProperties?.sensitive === true))))
+    .filter(([, field]) => field.sensitive === true)
     .map(([key]) => key));
 }
 

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aw.dev/schemas/instruction-v2-request.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "run", "instructions", "task", "materials"],
+  "properties": {
+    "protocolVersion": { "const": 2 },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "mode", "access", "configRevision"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "mode": { "enum": ["workspace", "bundle"] },
+        "access": { "enum": ["read-only", "workspace-write"] },
+        "configRevision": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "reasoningEffort": { "enum": ["minimal", "low", "medium", "high", "xhigh", "max"] },
+        "requiredIsolation": { "type": "boolean" },
+        "workspace": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      },
+      "allOf": [{ "if": { "properties": { "mode": { "const": "bundle" } } }, "then": { "properties": { "access": { "const": "read-only" } } } }]
+    },
+    "instructions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workerKey", "revision", "text"],
+      "properties": {
+        "workerKey": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "revision": { "type": "string", "pattern": "^(sha256:)?[a-f0-9]{64}$" },
+        "text": { "type": "string", "minLength": 1, "maxLength": 200000 }
+      }
+    },
+    "task": { "type": "string", "minLength": 1, "maxLength": 200000 },
+    "materials": {
+      "type": "array", "maxItems": 128,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["source", "path", "sha256", "startLine", "endLine"],
+        "properties": {
+          "source": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "sha256": { "type": "string", "pattern": "^(sha256:)?[a-f0-9]{64}$" },
+          "startLine": { "type": "integer", "minimum": 1 },
+          "endLine": { "type": "integer", "minimum": 1 }
+        }
+      }
+    }
+  }
+}

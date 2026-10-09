@@ -11,7 +11,7 @@ import {
 } from './aw-capabilities.js'
 import { resolvePlatformHookDefinitions } from './hooks-contract.js'
 import { resolveSupportedPlatforms } from './platform-support.js'
-import type { NormalizedPluginManifest, PluginManifestSource } from './types.js'
+import type { NormalizedPluginManifest, PluginConfigSchemaField, PluginManifestSource } from './types.js'
 
 export interface PluginRequirementObservation {
   code: 'aw-command-detected' | 'aw-command-unmapped' | 'aw-command-dynamic'
@@ -49,11 +49,34 @@ export function deriveAwCapabilitiesFromManifest(
   if (manifest.skills) capabilities.push('aw.plugin-skills.v1')
   if (manifest.buildConfig) capabilities.push('aw.plugin-build-config.v1')
   if (manifest.config) capabilities.push('aw.plugin-config.v2')
-  if (manifest.config && 'schemaVersion' in manifest.config && manifest.config.schemaVersion === 3) {
+  if (manifest.config && 'schemaVersion' in manifest.config
+    && (manifest.config.schemaVersion === 3 || manifest.config.schemaVersion === 4)) {
     capabilities.push('aw.plugin-config.v3')
-    if (Object.values(normalizePluginConfigDefinition(manifest.config).fields).some((field) => field.type === 'array')) {
+    if (manifest.config.schemaVersion === 4) capabilities.push('aw.plugin-config.v4')
+    const configFields: PluginConfigSchemaField[] = Object.values(normalizePluginConfigDefinition(manifest.config).fields)
+    const hasArray = (field: PluginConfigSchemaField): boolean => {
+      if (field.type === 'array') return true
+      if (field.type !== 'object' || field.properties === undefined) return false
+      return [field.properties, ...Object.values(field.variants?.cases ?? {}).map((variant) => variant.properties),
+        ...(field.variants?.otherwise === undefined ? [] : [field.variants.otherwise.properties])]
+        .some((properties) => Object.values(properties).some((property) => hasArray(property as PluginConfigSchemaField)))
+    }
+    if (configFields.some(hasArray)) {
       capabilities.push('aw.plugin-config-array.v1')
     }
+    if (configFields.some((field) => field.type === 'array' && field.validation?.uniqueBy !== undefined)) {
+      capabilities.push('aw.plugin-config-unique-by.v1')
+    }
+    const hasValueRef = (field: typeof configFields[number]): boolean => {
+      if (field.type === 'array') return hasValueRef(field.items as typeof configFields[number])
+      if (field.type !== 'object') return 'valueRef' in field && field.valueRef !== undefined
+      return field.properties === undefined
+        ? hasValueRef(field.additionalProperties as typeof configFields[number])
+        : [field.properties, ...Object.values(field.variants?.cases ?? {}).map((variant) => variant.properties),
+          ...(field.variants?.otherwise === undefined ? [] : [field.variants.otherwise.properties])]
+          .some((properties) => Object.values(properties).some((property) => hasValueRef(property as typeof configFields[number])))
+    }
+    if (configFields.some(hasValueRef)) capabilities.push('aw.plugin-config-value-ref.v1')
     const presentation = manifest.config.presentation
     if (presentation && (('summaries' in presentation && presentation.summaries)
       || ('fieldViews' in presentation && presentation.fieldViews))) {
@@ -62,6 +85,9 @@ export function deriveAwCapabilitiesFromManifest(
   }
   if (manifest.scripts?.preApply) capabilities.push('aw.plugin-pre-apply.v1')
   if ((manifest.artifacts?.targets?.length ?? 0) > 0) capabilities.push('aw.dynamic-artifacts.v2')
+  if ((manifest.artifacts?.targets ?? []).some((target) => target.runtimeConfig !== undefined)) {
+    capabilities.push('aw.installed-runtime-config.v2')
+  }
   if (manifest.distributions?.agentSkills) capabilities.push('aw.portable-skills.v1')
   if (hasRuntimeImports(manifest)) capabilities.push('aw.runtime-imports.v1')
   return normalizeAwCapabilities(capabilities)

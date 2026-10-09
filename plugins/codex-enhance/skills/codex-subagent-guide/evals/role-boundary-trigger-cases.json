@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "codex-subagent-guide",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "critical",
+      "rationale": "按实际职责、授权、指令通道和真实结果判断；误外发、越权写入、角色丢失或重复提交不能被多数通过抵消。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "g_t01",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "当前任务已批准委派一个只读执行者，范围和验收已给定；上游仅指定模型及角色。请补齐并执行所需调度。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "局部参数不构成完整调度方法；合法委派需要guide。",
+        "minimalCounterexample": "上游同时给出完整适用的启动、等待、停止与恢复方法时直接沿用，不叠加guide。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
+      }
+    },
+    {
+      "id": "g_t02",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "这个任务值得开子代理吗？只讨论利弊，不启动或续接执行。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "概念/选择讨论不等于已获准执行。",
+        "minimalCounterexample": "用户明确要求在既有许可内启动指定有界任务时进入guide。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
+      }
+    },
+    {
+      "id": "g_t03",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "已有运行 handle，任务仍在等待；请按有效委派策略继续取回这次结果，上游没有提供等待方法。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "guide覆盖实际管理同一次运行而非只spawn。",
+        "minimalCounterexample": "仅解释超时概念且不管理真实任务时不触发。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
+      }
+    },
+    {
+      "id": "g_t04",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "你已作为只读worker收到文件片段，任务只要求列出其中的三个函数名；直接交回结果。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "叶子已有任务没有重新委派职责。",
+        "minimalCounterexample": "另有有效授权要求该执行者分解并实际委派不同有界子任务时可使用guide。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
+      }
+    },
+    {
+      "id": "g_t05",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "我们已批准用配置的workspace执行器处理本次调查；无需原生角色，请按现有profile安排执行并取回结果。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "external合法路径不能因native不可用失去guide。",
+        "minimalCounterexample": "未确认外发许可时仍可说明缺口，但不能启动外部处理；此对照测权限行为而非名字加载。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
+      }
+    },
+    {
+      "id": "g_t06",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "上层已提供与当前工具和执行器匹配的完整参数、上下文、等待、取消及恢复策略，按那套策略执行，不添加第二套调度。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "已有完整策略应复用而非重复套guide。",
+        "minimalCounterexample": "若上游只有一个role或model要求而缺生命周期，仍使用guide补齐。",
+        "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
+      }
+    }
+  ]
+}

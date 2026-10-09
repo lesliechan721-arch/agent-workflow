@@ -1,6 +1,8 @@
 import { builtinModules } from 'node:module';
 import path from 'node:path';
 
+import { AW_RUNTIME_CONFIG_READER_PATH } from './runtime-config.js';
+
 export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 300_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 1_800_000;
@@ -399,6 +401,7 @@ export interface NodeImportContractScanOptions {
   dependencies?: readonly string[];
   devDependencies?: readonly string[];
   allowDevDependencies?: boolean;
+  runtimeConfigSkillRoots?: readonly string[];
 }
 
 export interface NodeImportContractScanResult {
@@ -564,6 +567,7 @@ export function scanNodeImportContract(
   const visited = new Set<string>();
   const bareSpecifiers = new Set<string>();
   const errors: string[] = [];
+  const runtimeConfigSkillRoots = (options.runtimeConfigSkillRoots ?? []).map(normalizePluginFilePath);
 
   while (queue.length > 0) {
     const file = queue.shift();
@@ -612,6 +616,14 @@ export function scanNodeImportContract(
         }
         const resolved = resolution.file;
         if (!resolved) {
+          const requested = path.posix.normalize(path.posix.join(path.posix.dirname(file), specifier));
+          if (runtimeConfigSkillRoots.some((root) => (
+            file.startsWith(`${root}/`)
+            && requested === path.posix.join(root, AW_RUNTIME_CONFIG_READER_PATH)
+          ))) {
+            // AW injects this exact reader into the final Skill; it is absent from author source.
+            continue;
+          }
           errors.push(`Unable to resolve relative import "${specifier}" from "${file}".`);
           continue;
         }

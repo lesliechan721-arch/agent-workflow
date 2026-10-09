@@ -44,6 +44,7 @@ import {
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { stubCodexFileSelectionForNativeFixture } from '../helpers/codex-enhance-native-fixture.js';
 import {
   resolveClaudePaths,
   resolveClaudeProjectKey,
@@ -71,6 +72,7 @@ import {
   parseCodexNativeRenderReceipt,
 } from '../../src/utils/codex-native-render-receipt.js';
 import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
+import { parseCodexRoleFile } from '../../src/utils/codex-roles.js';
 import { createCodexSkillStagingTreeContentDigest } from '../../src/utils/codex-skill-staging.js';
 import {
   AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH,
@@ -125,6 +127,7 @@ async function snapshotRegularTree(root: string): Promise<Record<string, string>
 async function createSyntheticCatalog(options: {
   root: string;
   pluginRoots: string[];
+  stubCodexFileSelection?: boolean;
 }): Promise<string> {
   const sourceRoot = path.join(options.root, `catalog-source-${crypto.randomUUID()}`);
   await fs.ensureDir(path.join(sourceRoot, 'plugins'));
@@ -133,7 +136,11 @@ async function createSyntheticCatalog(options: {
     path.join(sourceRoot, 'plugins', 'marketplace-source.json'),
   );
   for (const pluginRoot of options.pluginRoots) {
-    await fs.copy(pluginRoot, path.join(sourceRoot, 'plugins', path.basename(pluginRoot)));
+    const copiedRoot = path.join(sourceRoot, 'plugins', path.basename(pluginRoot));
+    await fs.copy(pluginRoot, copiedRoot);
+    if (options.stubCodexFileSelection && path.basename(pluginRoot) === 'codex-enhance') {
+      await stubCodexFileSelectionForNativeFixture(copiedRoot);
+    }
   }
   return createSyntheticEmbeddedRoot(sourceRoot);
 }
@@ -3002,11 +3009,18 @@ describe('rebuild adapter integration', () => {
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
         pluginRoots: [path.join(repositoryRoot, 'plugins', pluginName)],
+        stubCodexFileSelection: true,
       });
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', pluginName), {
         mode: 'bundle',
       });
-      plugin.manifest.config = { fields: { token: { type: 'string', sensitive: true } } };
+      plugin.manifest.config = {
+        ...plugin.manifest.config,
+        fields: {
+          ...plugin.manifest.config?.fields,
+          token: { type: 'string', sensitive: true },
+        },
+      };
       await writePluginConfigStore({
         sourceId: plugin.sourceId,
         sourceIdentity: plugin.sourceIdentity,
@@ -3015,7 +3029,7 @@ describe('rebuild adapter integration', () => {
         scope: 'user',
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
-        values: { token: `team/${pluginName}` },
+        values: { token: `test-sensitive-value-for-${pluginName}` },
       });
       const dynamicTarget = plugin.manifest.artifacts?.targets.find((target) =>
         target.platform === 'codex'
@@ -3142,7 +3156,7 @@ describe('rebuild adapter integration', () => {
         .filter((artifact) => artifact.target === 'codex.agentRole')
         .map((artifact) => artifact.roleKey)
         .sort())
-        .toEqual(['codex-explore', 'codex-subagent']);
+        .toEqual(['codex-advisor', 'codex-explore', 'codex-subagent']);
       const cacheRoot = path.join(
         isolation.layout.codexHomeDir,
         'plugins',
@@ -3151,7 +3165,7 @@ describe('rebuild adapter integration', () => {
         pluginName,
         plugin.manifest.version,
       );
-      for (const skillKey of ['codex-explore', 'codex-subagent-guide']) {
+      for (const skillKey of ['codex-explore', 'codex-subagent-guide', 'codex-advisor']) {
         expect(await fs.pathExists(path.join(
           cacheRoot,
           'codex',
@@ -3168,6 +3182,7 @@ describe('rebuild adapter integration', () => {
       await expect(fs.readJson(path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH)))
         .resolves.toMatchObject({
           targets: [
+            { id: 'codex-advisor-skill', skillKey: 'codex-advisor' },
             { id: 'codex-explore-skill', skillKey: 'codex-explore' },
             { id: 'codex-subagent-guide-skill', skillKey: 'codex-subagent-guide' },
           ],
@@ -4209,6 +4224,7 @@ describe('rebuild adapter integration', () => {
         path.join(repositoryRoot, 'plugins', 'git-toolkit'),
         path.join(repositoryRoot, 'plugins', 'decision-kit'),
       ],
+      stubCodexFileSelection: true,
     });
     const pluginA = await readPluginManifest(path.join(catalogRoot, 'plugins', 'codex-enhance'), {
       mode: 'bundle',
@@ -4738,7 +4754,7 @@ describe('rebuild adapter integration', () => {
       root: isolation.layout.rootDir,
       name: 'role-reinstall',
       roleKey: 'reinstall-role',
-      roleInstructions: 'Version one instructions.',
+      roleInstructions: '  Version one instructions.\n',
     });
     const installTarget = await integration.buildTarget({
       plugin: v1, platform: 'codex', scope: 'project', cwd,
@@ -4753,7 +4769,7 @@ describe('rebuild adapter integration', () => {
       root: isolation.layout.rootDir,
       name: 'role-reinstall',
       roleKey: 'reinstall-role',
-      roleInstructions: 'Version two instructions.',
+      roleInstructions: '  Version two instructions.\n',
     });
     const reinstallTarget = await integration.buildTarget({
       plugin: v2, platform: 'codex', scope: 'project', cwd,
@@ -4769,6 +4785,7 @@ describe('rebuild adapter integration', () => {
     const rolePath = path.resolve(path.dirname(configPath), registration!.configFile!);
     const roleContent = await fs.readFile(rolePath, 'utf8');
     expect(roleContent).toContain('Version two instructions.');
+    expect(parseCodexRoleFile(roleContent).developerInstructions).toBe('  Version two instructions.\n');
     expect(parseOwnedTextHeader(roleContent)?.identity.plugin).toBe('role-reinstall');
 
     const protectedTarget = await integration.buildTarget({
@@ -4893,6 +4910,7 @@ describe('rebuild adapter integration', () => {
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
       pluginRoots: firstPartyNames.map((name) => path.join(repositoryRoot, 'plugins', name)),
+      stubCodexFileSelection: true,
     });
     const integration = createRebuildIntegration({
       context: createCommandExecutionContext({

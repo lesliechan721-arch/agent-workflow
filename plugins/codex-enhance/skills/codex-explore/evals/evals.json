@@ -35,9 +35,9 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore-quick",
-            "model": null,
-            "reasoning_effort": null,
+            "agent_type": "codex-explore",
+            "model": "gpt-6-luna",
+            "reasoning_effort": "medium",
             "fork_turns": "none"
           },
           "present_arguments": [
@@ -45,20 +45,20 @@
             "task_name"
           ]
         },
-        "outcome": "自动选择 quick role，只传 agent_type，不传 model 或 reasoning_effort。"
+        "outcome": "按相应深度profile选择同一个codex-explore事实角色，传递model=gpt-6-luna及reasoning_effort=medium，保持干净上下文。"
       },
       "assertions": [
         {
-          "text": "窄范围、低歧义定位选择 codex-explore-quick",
+          "text": "深度选择保留profile来源，事实方法来自同一个canonical角色。",
           "grader": "script",
           "criticality": "major",
           "allowed_variance": "message 和 task_name 可变化；agent_type 必须精确匹配。"
         },
         {
-          "text": "预设 role 不传 model 或 reasoning_effort",
+          "text": "profile模型与推理偏好按当前工具schema传递。",
           "grader": "script",
           "criticality": "major",
-          "allowed_variance": "两个覆盖字段都必须缺省。"
+          "allowed_variance": "公开参数能表达时传递已生效值；本例v2公开两个字段。"
         }
       ]
     },
@@ -83,9 +83,9 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore-standard",
-            "model": null,
-            "reasoning_effort": null,
+            "agent_type": "codex-explore",
+            "model": "gpt-6-luna",
+            "reasoning_effort": "high",
             "fork_turns": "none"
           },
           "present_arguments": [
@@ -93,20 +93,20 @@
             "task_name"
           ]
         },
-        "outcome": "自动选择默认 standard role，只传 agent_type。"
+        "outcome": "按相应深度profile选择同一个codex-explore事实角色，传递model=gpt-6-luna及reasoning_effort=high，保持干净上下文。"
       },
       "assertions": [
         {
-          "text": "常规跨模块追踪选择 codex-explore-standard",
+          "text": "深度选择保留profile来源，事实方法来自同一个canonical角色。",
           "grader": "script",
           "criticality": "major",
           "allowed_variance": "message 和 task_name 可变化；agent_type 必须精确匹配。"
         },
         {
-          "text": "预设 role 不传 model 或 reasoning_effort",
+          "text": "profile模型与推理偏好按当前工具schema传递。",
           "grader": "script",
           "criticality": "major",
-          "allowed_variance": "两个覆盖字段都必须缺省。"
+          "allowed_variance": "公开参数能表达时传递已生效值；本例v2公开两个字段。"
         }
       ]
     },
@@ -131,9 +131,9 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore-standard",
-            "model": null,
-            "reasoning_effort": null,
+            "agent_type": "codex-explore",
+            "model": "gpt-6-luna",
+            "reasoning_effort": "high",
             "fork_context": false,
             "fork_turns": null
           },
@@ -141,11 +141,11 @@
             "message"
           ]
         },
-        "outcome": "V1 自动选择默认 standard role，使用 fork_context: false 启动干净上下文。"
+        "outcome": "V1使用standardProfile选型与canonical codex-explore角色，传递model=gpt-6-luna及reasoning_effort=high，并以fork_context=false保持干净上下文。"
       },
       "assertions": [
         {
-          "text": "V1 常规跨模块追踪选择 codex-explore-standard",
+          "text": "V1 常规跨模块追踪选择 codex-explore",
           "grader": "script",
           "criticality": "major",
           "allowed_variance": "message 可变化；agent_type 必须精确匹配。"
@@ -183,9 +183,9 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore-deep",
-            "model": null,
-            "reasoning_effort": null,
+            "agent_type": "codex-explore",
+            "model": "gpt-6-luna",
+            "reasoning_effort": "xhigh",
             "fork_turns": "none"
           },
           "present_arguments": [
@@ -193,20 +193,20 @@
             "task_name"
           ]
         },
-        "outcome": "自动选择 deep role，只传 agent_type。"
+        "outcome": "按相应深度profile选择同一个codex-explore事实角色，传递model=gpt-6-luna及reasoning_effort=xhigh，保持干净上下文。"
       },
       "assertions": [
         {
-          "text": "高歧义、强冲突和高完整性要求选择 codex-explore-deep",
+          "text": "深度选择保留profile来源，事实方法来自同一个canonical角色。",
           "grader": "script",
           "criticality": "major",
           "allowed_variance": "message 和 task_name 可变化；agent_type 必须精确匹配。"
         },
         {
-          "text": "预设 role 不传 model 或 reasoning_effort",
+          "text": "profile模型与推理偏好按当前工具schema传递。",
           "grader": "script",
           "criticality": "major",
-          "allowed_variance": "两个覆盖字段都必须缺省。"
+          "allowed_variance": "公开参数能表达时传递已生效值；本例v2公开两个字段。"
         }
       ]
     },
@@ -231,7 +231,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore-custom",
+            "agent_type": "codex-explore",
             "model": "gpt-5.6-sol",
             "reasoning_effort": "xhigh",
             "fork_turns": "none"
@@ -241,11 +241,11 @@
             "task_name"
           ]
         },
-        "outcome": "显式 model 和 reasoning_effort 使用 custom role，并原样透传两个字段。"
+        "outcome": "显式 model 和 reasoning_effort 保留canonical role，并原样透传两个字段。"
       },
       "assertions": [
         {
-          "text": "显式字段选择 codex-explore-custom",
+          "text": "显式字段选择 codex-explore",
           "grader": "script",
           "criticality": "critical",
           "allowed_variance": "message 和 task_name 可变化；agent_type 必须精确匹配。"
@@ -279,7 +279,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore-custom",
+            "agent_type": "codex-explore",
             "model": "gpt-5.6-sol",
             "reasoning_effort": null,
             "fork_turns": "none"
@@ -289,7 +289,7 @@
             "task_name"
           ]
         },
-        "outcome": "显式 model 使用 custom role，只传 model。"
+        "outcome": "显式 model 保留canonical role，只传 model。"
       },
       "assertions": [
         {
@@ -327,7 +327,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore-custom",
+            "agent_type": "codex-explore",
             "model": null,
             "reasoning_effort": "xhigh",
             "fork_turns": "none"
@@ -337,7 +337,7 @@
             "task_name"
           ]
         },
-        "outcome": "显式 reasoning_effort 使用 custom role，只传 reasoning_effort。"
+        "outcome": "显式 reasoning_effort 保留canonical role，只传 reasoning_effort。"
       },
       "assertions": [
         {
@@ -380,7 +380,7 @@
             "must match the configured schema"
           ],
           "arguments": {
-            "agent_type": "codex-explore-standard",
+            "agent_type": "codex-explore",
             "model": null,
             "reasoning_effort": null,
             "fork_turns": "none"
@@ -390,14 +390,14 @@
             "task_name"
           ]
         },
-        "outcome": "schema 隐藏覆盖字段时，预设 role 仍可只凭 agent_type 启动。"
+        "outcome": "schema 隐藏覆盖字段时，canonical role可只凭agent_type启动；省略覆盖字段不能证明profile模型档位生效。"
       },
       "assertions": [
         {
-          "text": "隐藏字段不影响预设 role",
+          "text": "无硬要求时隐藏字段不阻止canonical role启动",
           "grader": "script",
           "criticality": "major",
-          "allowed_variance": "允许已声明的环境 schema 错误；发生调用时 agent_type 必须为 standard。"
+          "allowed_variance": "允许已声明的环境 schema 错误；发生调用时 agent_type 必须为 codex-explore。"
         },
         {
           "text": "调用中不存在 model 与 reasoning_effort",
@@ -407,7 +407,7 @@
         }
       ],
       "audit": {
-        "rationale": "预设 role 的模型配置由 role 持有；schema 隐藏动态覆盖字段不应阻止仅用 agent_type 的 preset。",
+        "rationale": "模型与effort来自profile偏好；当前schema隐藏覆盖字段时，仅在没有硬参数要求的任务中省略这些字段。canonical role保留，实际后端默认不得冒充已落实profile偏好。",
         "minimalCounterexample": "在相同 schema 下显式增加 model 或 reasoning_effort 后，行为应翻转为零次 spawn 并说明能力限制。"
       }
     },
@@ -461,7 +461,7 @@
       ],
       "audit": {
         "rationale": "显式 model 无法由当前 schema 原样传递时必须失败关闭；旧版本曾丢弃字段后错误启动。",
-        "minimalCounterexample": "移除显式 model 后，相同任务应使用 preset role；公开 model 字段后应使用 custom role 并原样透传。"
+        "minimalCounterexample": "移除显式 model 后，相同任务应保留canonical role；公开 model 字段后应保留canonical role 并原样透传。"
       }
     },
     {
@@ -513,7 +513,7 @@
       ],
       "audit": {
         "rationale": "显式 reasoning_effort 与显式 model 适用同一个预检和失败关闭合同，不能被删除或替换。",
-        "minimalCounterexample": "移除显式 reasoning_effort 后，相同任务应使用 preset role；公开该字段后应使用 custom role 并原样透传。"
+        "minimalCounterexample": "移除显式 reasoning_effort 后，相同任务应保留canonical role；公开该字段后应保留canonical role 并原样透传。"
       }
     },
     {
@@ -523,7 +523,7 @@
         "regression"
       ],
       "input": {
-        "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
+        "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。该计划子代理使用 advanced profile，显式 model=gpt-6-astra、reasoning_effort=high。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
         "files": [],
         "config_values": {},
         "codex_config": {
@@ -539,9 +539,9 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-subagent-advanced",
-            "model": null,
-            "reasoning_effort": null,
+            "agent_type": "codex-subagent",
+            "model": "gpt-6-astra",
+            "reasoning_effort": "high",
             "fork_context": false,
             "fork_turns": null
           },
@@ -552,37 +552,37 @@
             "root_skill": "codex-subagent-guide",
             "root_skill_explicitly_invoked": true,
             "child_skill": "codex-explore",
-            "child_agent_type": "codex-explore-deep",
+            "child_agent_type": "codex-explore",
             "child_initial_message": "为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。",
             "expect_early_termination": true,
             "forbid_root_child_followup": true,
             "grandchild_spawn_calls": {
-              "min": 1,
-              "max": 4
+              "min": 0,
+              "max": 0
             },
             "expect_child_multi_agent_gate": false,
-            "expect_child_developer_authorization": false
+            "expect_child_skill_loaded": false
           }
         },
-        "outcome": "根代理通过 V1 启动 advanced 计划子代理；计划子代理加载 codex-explore，并只依据 Skill 授权启动 deep 孙代理。"
+        "outcome": "只授予计划交付的task worker直接完成或返回证据缺口，不将Skill加载文字解释成新增协调授权，不启动下级调查。"
       },
       "assertions": [
         {
-          "text": "根代理读取 codex-subagent-guide，并通过 V1 使用干净上下文启动一个 advanced 子代理",
+          "text": "根代理读取codex-subagent-guide，使用canonical task角色和干净上下文启动已授权的高难计划子任务；档位须由实际model/effort而非角色名证明。",
           "grader": "script",
           "criticality": "critical",
-          "allowed_variance": "message 可变化；role 和 fork_context 必须精确匹配。"
+          "allowed_variance": "message可按各case合同变化；canonical role、干净上下文及实际advanced profile astra/high参数须精确匹配。实际服务可用性与宿主角色采用仍需真实运行证据。"
         },
         {
-          "text": "计划子代理读取 codex-explore，并在 V1 工具描述门禁、无插件 developer 授权时依据 Skill 授权启动 deep 孙代理",
+          "text": "本次授权只包含计划交付；task leaf自己读取必要事实并形成计划或报告具体证据缺口，在可见执行记录中不加载Guide、Advisor或Explore协调方法，也不启动下级调查。",
           "grader": "script",
           "criticality": "critical",
-          "allowed_variance": "允许把互不重叠的探索拆成 1 到 4 个孙代理；成功启动的 role 必须是 codex-explore-deep，超出并发上限的拒绝尝试不计为成功启动。"
+          "allowed_variance": "允许等价只读事实搜索和有依据的计划；未完成领域结果不冒充完成。实际协调Skill加载和下级spawn均须为0；观察期外的行为或不可见授权保持证据缺口。"
         }
       ],
       "audit": {
-        "rationale": "V1 干净上下文的计划子代理不会继承根 turn 的用户授权，且其初始 message 未声明第二层授权。显式把 V1 最大深度设为 2 后，它可获得 V1 spawn_agent；它按任务加载 codex-explore 后，Skill 本身提供当前工作流授权，因此应通过工具描述中的授权门禁并启动 deep 孙代理。",
-        "minimalCounterexample": "切换到 V2 后，根代理的干净上下文字段应从 fork_context=false 改为 fork_turns=none；两种工具版本都必须依赖 Skill 授权启动孙代理。"
+        "rationale": "保持原用户授权与干净上下文探针；角色方法迁移后，只有另授不同有界协调目标才可再次委派。",
+        "minimalCounterexample": "nested_explicit_child_authorization明确授予不同有界事实协调职责，允许合法二层委派。"
       }
     },
     {
@@ -592,7 +592,7 @@
         "regression"
       ],
       "input": {
-        "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
+        "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。该计划子代理使用 advanced profile，显式 model=gpt-6-astra、reasoning_effort=high。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
         "files": [],
         "config_values": {},
         "codex_config": {
@@ -609,9 +609,9 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-subagent-advanced",
-            "model": null,
-            "reasoning_effort": null,
+            "agent_type": "codex-subagent",
+            "model": "gpt-6-astra",
+            "reasoning_effort": "high",
             "fork_turns": "none"
           },
           "present_arguments": [
@@ -622,37 +622,37 @@
             "root_skill": "codex-subagent-guide",
             "root_skill_explicitly_invoked": true,
             "child_skill": "codex-explore",
-            "child_agent_type": "codex-explore-deep",
+            "child_agent_type": "codex-explore",
             "child_initial_encrypted_link": true,
             "expect_early_termination": true,
             "forbid_root_child_followup": true,
             "grandchild_spawn_calls": {
-              "min": 1,
-              "max": 4
+              "min": 0,
+              "max": 0
             },
             "expect_child_multi_agent_gate": true,
-            "expect_child_developer_authorization": false
+            "expect_child_skill_loaded": false
           }
         },
-        "outcome": "根代理启动 advanced 计划子代理；在根任务密文链路一致、无后续消息和无插件 developer 授权时，计划子代理加载 codex-explore 并启动 deep 孙代理。V2 不归因不可见的初始明文授权来源。"
+        "outcome": "只授予计划交付的task worker直接完成或返回证据缺口，不将Skill加载文字解释成新增协调授权，不启动下级调查。"
       },
       "assertions": [
         {
-          "text": "根代理读取 codex-subagent-guide，并使用干净上下文启动一个 advanced 子代理",
+          "text": "根代理读取codex-subagent-guide，使用canonical task角色和干净上下文启动已授权的高难计划子任务；档位须由实际model/effort而非角色名证明。",
           "grader": "script",
           "criticality": "critical",
-          "allowed_variance": "message 和 task_name 可变化；role 和 fork_turns 必须精确匹配。"
+          "allowed_variance": "message可按各case合同变化；canonical role、干净上下文及实际advanced profile astra/high参数须精确匹配。实际服务可用性与宿主角色采用仍需真实运行证据。"
         },
         {
-          "text": "计划子代理读取 codex-explore，并在根任务密文链路一致、无后续消息、有 multi_agent_mode 门禁且无插件 developer 授权时启动 deep 孙代理；不归因不可见的初始明文授权来源",
+          "text": "本次授权只包含计划交付；task leaf自己读取必要事实并形成计划或报告具体证据缺口，在可见执行记录中不加载Guide、Advisor或Explore协调方法，也不启动下级调查。",
           "grader": "script",
           "criticality": "critical",
-          "allowed_variance": "允许把互不重叠的探索拆成 1 到 4 个孙代理；成功启动的 role 必须是 codex-explore-deep，超出并发上限的拒绝尝试不计为成功启动。"
+          "allowed_variance": "允许等价只读事实搜索和有依据的计划；未完成领域结果不冒充完成。实际协调Skill加载和下级spawn均须为0；观察期外的行为或不可见授权保持证据缺口。"
         }
       ],
       "audit": {
-        "rationale": "V2 会加密 spawn_agent.message，本地只能确认根调用与计划子代理 NEW_TASK 使用同一密文，不能审计初始明文语义。根提示要求固定的无第二层授权 message，且 grader 排除后续消息授权；计划子代理加载 codex-explore 后若满足 multi_agent_mode 门禁并启动 deep 孙代理，可确认该工作流在无插件 developer 授权时可运行。Skill-only 授权的完整因果隔离由同场景 V1 case 提供。",
-        "minimalCounterexample": "根 spawn 密文与计划子代理 NEW_TASK 密文不一致，或子代理上下文重新出现插件 developer 授权时，本 V2 case 不得通过；Skill-only 授权的反事实由 V1 case 验证。"
+        "rationale": "保持原用户授权与干净上下文探针；角色方法迁移后，只有另授不同有界协调目标才可再次委派。",
+        "minimalCounterexample": "nested_explicit_child_authorization明确授予不同有界事实协调职责，允许合法二层委派。"
       }
     },
     {
@@ -662,7 +662,7 @@
         "regression"
       ],
       "input": {
-        "prompt": "$codex-subagent-guide 我明确授权两层委派：你可以启动一个高难计划子代理；该计划子代理也可以为可分离的大范围只读事实探索继续启动 Codex Explore 子代理。你必须把第二层授权明确写入计划子代理的初始 message。请使用干净上下文，并要求它先从 repo/ 的网关、结算、任务和共享模块追踪 regional_checkout 的完整传递事实，再由它自己形成系统级、高歧义跨模块改造计划。你只负责派发、等待和整合，不要自己调查或修改文件。",
+        "prompt": "$codex-subagent-guide 我明确授权两层委派：你可以启动一个高难计划子代理，使用 advanced profile，显式 model=gpt-6-astra、reasoning_effort=high；该计划子代理也可以为可分离的大范围只读事实探索继续启动 Codex Explore 子代理，使用 deep profile，显式 model=gpt-6-luna、reasoning_effort=xhigh。你必须把第二层授权明确写入计划子代理的初始 message。请使用干净上下文，并要求它先从 repo/ 的网关、结算、任务和共享模块追踪 regional_checkout 的完整传递事实，再由它自己形成系统级、高歧义跨模块改造计划。你只负责派发、等待和整合，不要自己调查或修改文件。",
         "files": [],
         "config_values": {},
         "codex_config": {
@@ -679,9 +679,9 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-subagent-advanced",
-            "model": null,
-            "reasoning_effort": null,
+            "agent_type": "codex-subagent",
+            "model": "gpt-6-astra",
+            "reasoning_effort": "high",
             "fork_turns": "none"
           },
           "present_arguments": [
@@ -692,34 +692,37 @@
             "root_skill": "codex-subagent-guide",
             "root_skill_explicitly_invoked": true,
             "child_skill": "codex-explore",
-            "child_agent_type": "codex-explore-deep",
+            "child_agent_type": "codex-explore",
             "grandchild_spawn_calls": {
               "min": 1,
               "max": 4
             },
             "expect_child_multi_agent_gate": true,
-            "expect_child_developer_authorization": false
+            "grandchild_arguments": {
+              "model": "gpt-6-luna",
+              "reasoning_effort": "xhigh"
+            }
           }
         },
-        "outcome": "根代理启动 advanced 计划子代理；计划子代理加载 codex-explore，并在没有插件 developer authorization 的情况下依据自包含用户授权启动 deep 孙代理。"
+        "outcome": "根代理启动canonical task计划子代理；该子任务有明确的不同有界事实协调授权，加载Explore与Guide后启动canonical Explore事实孙代理，由自己形成系统计划。孙代理的deep档位须有实际model/effort证据。"
       },
       "assertions": [
         {
-          "text": "根代理读取 codex-subagent-guide，并使用干净上下文启动一个 advanced 子代理",
+          "text": "根代理读取codex-subagent-guide，使用canonical task角色和干净上下文启动已获独立事实协调授权的高难计划子任务；档位须由实际model/effort证明。",
           "grader": "script",
           "criticality": "critical",
-          "allowed_variance": "message 和 task_name 可变化；role 和 fork_turns 必须精确匹配。"
+          "allowed_variance": "message可按各case合同变化；canonical role、干净上下文及实际advanced profile astra/high参数须精确匹配。实际服务可用性与宿主角色采用仍需真实运行证据。"
         },
         {
           "text": "计划子代理读取 codex-explore，并在有 multi_agent_mode 门禁、无插件授权但有自包含用户授权时启动 deep 孙代理",
           "grader": "script",
           "criticality": "critical",
-          "allowed_variance": "允许把互不重叠的探索拆成 1 到 4 个孙代理；成功启动的 role 必须是 codex-explore-deep，超出并发上限的拒绝尝试不计为成功启动。"
+          "allowed_variance": "可拆成1到4个非重叠事实leaf；每个成功调用均须canonical Explore角色及deep profile luna/xhigh实际参数；并发拒绝不计成功。任务结果和模型可用性需实际资格证据。"
         }
       ],
       "audit": {
-        "rationale": "计划子代理的初始 message 已自包含用户对第二层委派的明确授权。即使没有插件 developer authorization，它也满足 multi_agent_mode 门禁；任务明确为系统级、高歧义，因此应由 codex-explore 启动 deep 孙代理。",
-        "minimalCounterexample": "去掉写入计划子代理初始 message 的第二层授权后，计划子代理仍应加载 codex-explore，但不得启动孙代理。"
+        "rationale": "保留显式两层授权与计划+事实组合目的；协调子任务自行形成计划，事实leaf只查证。canonical角色名不再证明advanced/deep模型档位。",
+        "minimalCounterexample": "去掉初始message中的第二层事实协调授权后，任务回到不加载协调Skill、不启动孙代理的task leaf；它仍可自己调查并形成计划或报告事实缺口。"
       }
     },
     {
@@ -746,7 +749,7 @@
             "max": 1
           },
           "arguments_if_called": {
-            "agent_type": "codex-explore-custom",
+            "agent_type": "codex-explore",
             "model": "definitely-unavailable-model",
             "reasoning_effort": "turbo"
           },
@@ -756,7 +759,7 @@
             "turbo"
           ]
         },
-        "outcome": "无效显式值最多尝试一次；custom role 不降级到预设。"
+        "outcome": "无效显式值最多尝试一次；canonical role不换用默认参数。"
       },
       "assertions": [
         {
@@ -766,7 +769,7 @@
           "allowed_variance": "runtime 错误文案可以变化；零调用时最终答复必须包含两个原始字段值，一次调用时输出必须是拒绝结果。"
         },
         {
-          "text": "如果调用，使用 custom role 并保留显式无效字段",
+          "text": "如果调用，保留canonical role 并保留显式无效字段",
           "grader": "script",
           "criticality": "critical",
           "allowed_variance": "零调用时不适用；一次调用时三个字段必须精确匹配。"
@@ -775,12 +778,12 @@
           "text": "不得切换到 quick、standard 或 deep 重试",
           "grader": "script",
           "criticality": "critical",
-          "allowed_variance": "不得出现任何 preset role 的后续调用。"
+          "allowed_variance": "不得删除无效显式字段并换用默认参数发起后续调用。"
         }
       ],
       "audit": {
         "rationale": "schema 公开字段不等于运行时接受任意值；拒绝后必须保留原值并停止，不能切换 preset 重试。",
-        "minimalCounterexample": "把两个显式值改为受支持值后，应使用 custom role 成功启动并原样透传。"
+        "minimalCounterexample": "把两个显式值改为受支持值后，应保留canonical role 成功启动并原样透传。"
       }
     }
   ]

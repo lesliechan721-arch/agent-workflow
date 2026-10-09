@@ -245,12 +245,13 @@ Portable 命令必须显式传 `--scope project|user`。`aw skill install` 使�
 
 ```bash
 aw config list codex-enhance -s user
-aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-5.6-terra","reasoningEffort":"high"}'
-aw config set codex-enhance exploreMinimumInitialWaitMinutes -s user --value-json '15'
-aw config set codex-enhance subagentMinimumInitialWaitMinutes -s user --value-json '15'
+aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-6-luna","reasoningEffort":"high"}'
+aw config set codex-enhance advisorDebugProfile -s user --value-json '{"model":"gpt-6-astra","reasoningEffort":"high"}'
 ```
 
-两个等待字段只允许写入个人默认。已有可见安装时，保存但不应用会形成可恢复的 shared native render drift；`--apply --yes` 会重新生成共享 Skill，并影响所有启用该插件的项目。project profile 只改变项目 Agent role。具体配置项和真实 Codex App qualification gap 见 [`codex-enhance` README](plugins/codex-enhance/README.md)。
+profile 的 executor 缺省为 native。Advisor 的 design、debug、review 专属 profile 可缺省；缺省时使用 `advisorProfile`，显式非法配置须修正。全部 shared native profile 只支持 user 配置。保存但不应用时，外部新调用仍使用安装产物的旧生效值；`--apply --yes` 会重新生成共享 Skill，并影响启用该插件的项目。原生宿主可能需要刷新或新会话。`advisorPolicy` 已删除，旧 off 和次数设置不再生效；仍需的限制应在当前任务或上游指令中提供。具体配置项、前台外部执行和升级边界见 [`codex-enhance` README](plugins/codex-enhance/README.md)。
+
+外部执行器可选 Codex、Claude Code、Oracle 或自定义 Adapter v4，支持后端参数、普通环境值和宿主环境引用。外部 profile 可省略模型与推理级别。配置需要支持 `aw.plugin-config.v4` 的 CLI；从旧协议升级时先更新执行器配置，再 sync 或 reinstall。命令使用 `--prompt TEXT` 或 `--prompt -`，指令文件可选；bundle 可用 `--file` 选择材料，workspace 模式在任务正文中说明关注路径。
 
 ## 安装范围
 
@@ -284,6 +285,8 @@ aw install aw-development-toolkit -p both
 远端 Catalog 发布先运行 `aw catalog publish plan`，确认 Workspace identity、source HEAD、remote identity、branch、parent、tag、snapshot digest、`expectedCommit` 和 `planDigest`。`planDigest` 绑定 canonical `{ descriptor, expectedCommit }`。确认后再使用 `aw catalog publish apply --expected-plan-digest <digest> --yes`。apply 用 digest 唯一定位 schema v2 `.aw/publish/<version>/journal.json`，不依赖当前 metadata version。相同 plan 可在当前 HEAD 或 dirty state 改变后对账或续跑；Workspace identity、remote identity 和 branch 仍必须相同。不同 plan 必须提高 Catalog version。
 
 Skill-local Eval 作者合同使用 Manifest v1。profile 的 `plugins` 提供公共非敏感配置；可选 `configByScope.user/project` 为已选插件提供顶层字段覆盖。`aw skill eval prepare` 按 plugin、Skill、suite、profile 和 case 选择，以隔离配置物化静态、动态和共享 Codex native Skill，并生成输入完整的 `EvalSpec v1`，但不安装插件或运行模型。`@lesliechan721/agent-skill-eval` 是 `EvalSpec v1 → EvalAudit v1 → EvalResult v2` 的唯一机器 owner；Result v2 要求 `processManagement` 证据，不兼容 Result v1。执行前必须有精确绑定 provider、workspace、current/optional previous target、case digest 和全部 selected cases 的 passing Audit，并运行 `aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]`。所有真实 run 在 output 和模型前检查 permission、macOS Codex 可执行入口与 keychain，以及进程管理能力。默认 managed 模式要求 Full Access 语义和可用的进程树检查；单次提权不等于 Full Access。只有用户明确接受本次风险时，才可增加一次性的 unmanaged flag；该模式只尽力终止直接 child，不保证后代清理，也不能绕过 cmux Codex wrapper 或 keychain 检查。完整边界见[架构说明](docs/architecture.md)。普通成功路径不运行 `aw skill eval doctor --json` 或 `aw-skill-eval inspect-result <result.json> --spec <spec.json> --audit <audit.json>`，clean success 不要求 triage；只有安装或升级、用户明确请求诊断、模型已启动后的 run 失败，或结果异常及将驱动生产 Skill 修改时，才进入相应高级诊断或独立 result-triage。
+
+Eval 准备可加 `--config-file <file>`，为已选插件提供本次非敏感配置覆盖，例如已安装 adapter 的绝对路径。实际输入保存在 source binding。workflow provider 可使用公共 instruction-v2 transport，以及有界的 fixture setup、交互和收尾动作；这些动作只建立真实前提或检查实际产物，模型执行与独立评分仍由 Eval Engine 管理。配置、协议和动作边界见[架构说明](docs/architecture.md#agent-skill-eval-执行与-runner-边界)。
 
 ### 本仓库维护与官方发版
 

@@ -71,7 +71,7 @@ aw skill eval prepare codex-enhance codex-explore --suite workflow --profile pro
 
 ## 叶子输出合同
 
-`output-contract` suite 使用同一 Engine-owned workflow provider，但只评估叶子结果 handoff。grade 从 normalized leaf calls 的 V2 `FINAL_ANSWER` envelope 或 V1 `wait_agent.status.completed` 取得子代理最终文本，并记录 attempt workspace 内实际 materialized 的四个 Explore role 文件摘要。
+`output-contract` suite 使用同一 Engine-owned workflow provider，但只评估叶子结果 handoff。grade 从 normalized leaf calls 的 V2 `FINAL_ANSWER` envelope 或 V1 `wait_agent.status.completed` 取得子代理最终文本，并记录 attempt workspace 内实际 materialized 的单个 Explore role 名称和路径。
 
 六个用例分别覆盖：同源多个 direct finding、单个 finding 的多来源定位、inference 的直接依据、conflict 双方证据、blocked 和 insufficient。每个用例要求初次叶子结果足够，不允许 recovery。状态、来源和证据类型是正确性门禁；叶子字符数、父 turn usage 和端到端时间只作诊断。
 
@@ -79,7 +79,7 @@ aw skill eval prepare codex-enhance codex-explore --suite workflow --profile pro
 aw skill eval prepare codex-enhance codex-explore --suite output-contract --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-explore-output-contract --json
 ```
 
-role 输出合同不在 Skill target digest 中。因此不得把 `--previous-version` 当作该合同的 A/B。需要对照时，分别从精确 plugin production digest 物化基线和候选工作区，并在诊断报告中同时记录 plugin digest、role digest 和 case digest。该对照不声称是 `previous-version` EvalResult。
+role 输出合同不在 Skill target digest 中。因此不得把 `--previous-version` 当作该合同的 A/B。需要对照时，分别从精确 plugin production digest 物化基线和候选工作区，并在诊断报告中同时记录 plugin digest、角色清单和 case digest。该对照不声称是 `previous-version` EvalResult。
 
 ## 存活协议消融
 
@@ -102,10 +102,10 @@ Engine evidence 按用例保留 probe、`progress` / `blocked`、duration、term
 
 `evals.json` 的真实工作流用例覆盖：
 
-- 根据任务复杂度自动选择 quick、standard 或 deep，并确认预设 role 不传 `model` / `reasoning_effort`。
-- 用户同时或逐字段显式指定时使用 custom role，只透传显式字段。
-- schema 隐藏覆盖字段时预设 role 仍可启动，用户显式字段则阻断。
-- 无效显式值不删除字段、不切换预设后重试。
+- 根据任务复杂度选择 quick、standard 或 deep profile；使用同一个 canonical `codex-explore` role，公开字段可用时显式传递该 profile 的 `model` / `reasoning_effort`。
+- 用户同时或逐字段显式指定时保留 canonical role，只透传本次显式字段。
+- schema 隐藏覆盖字段且没有硬参数要求时，canonical role 可启动；省略字段只能证明当前调用可接受，不能证明 profile 的模型档位生效。用户显式字段不可满足时则阻断。
+- 无效显式值不删除字段、不换用默认值后重试。
 
 grade 对 Engine normalized evidence 中保留的原始 `spawn_agent` arguments、output 和 status 执行机械断言：
 
@@ -120,3 +120,5 @@ aw skill eval prepare codex-enhance codex-explore --suite model-selection --prof
 ```
 
 部分 backend 会要求保留服务端预注册的完整 `spawn_agent` schema，拒绝本地隐藏模型字段。只有执行失败、未发生 spawn 且错误事件明确包含 `must match the configured schema` 时，隐藏字段用例才记为 `environment_skipped`；其它失败仍正常阻断评估。
+
+调度简化后不以 role digest、精确宿主角色版本或 developer 授权布尔作为普通调用门禁。角色可用性、实际原生参数、干净上下文、只读叶子行为和引用合同继续验证。Guide/Advisor/Explore 的 native/workspace/bundle 代表性入口以及真实服务证据要求见 [联合 Eval 迁移说明](../../codex-subagent-guide/evals/ROLE-BOUNDARY.md)。

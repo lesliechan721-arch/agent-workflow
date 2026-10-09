@@ -6,7 +6,7 @@ import type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js'
 export type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js'
 
 export const PLUGIN_MANIFEST_SCHEMA_VERSION = 3 as const
-export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 13
+export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 16
 
 const ajv = new Ajv2020({
   allErrors: true,
@@ -51,6 +51,14 @@ export function assertPluginManifestStructure(
   }
   if (!validateV3(value)) {
     const issues = validateV3.errors ?? []
+    if (issues.some((issue) => issue.instancePath.endsWith('/runtimeConfig')
+      && issue.keyword === 'additionalProperties'
+      && ['resourceVersion', 'artifactIds'].includes(issue.params.additionalProperty))) {
+      throw new PluginManifestStructureError(
+        'runtimeConfigMigrationRequired: Remove runtimeConfig.resourceVersion and runtimeConfig.artifactIds; keep only keys and require aw.installed-runtime-config.v2. Rebuild, then sync or reinstall.',
+        issues,
+      )
+    }
     throw new PluginManifestStructureError(
       `Invalid plugin manifest structure: ${issues.map(formatIssue).join('; ')}`,
       issues,
@@ -75,6 +83,7 @@ export * from './permission-command.js'
 export * from './platform-entries.js'
 export * from './platform-support.js'
 export * from './runtime-export-source.js'
+export * from './runtime-config.js'
 export * from './plugin-script-contract.js'
 export * from './plugin-authoring-capabilities.js'
 export * from './plugin-config.js'

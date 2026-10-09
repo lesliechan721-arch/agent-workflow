@@ -164,6 +164,103 @@
         ],
         "allowedModels": []
       }
+    },
+    {
+      "id": "role-boundary-trigger",
+      "kind": "trigger",
+      "cases": "role-boundary-trigger-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": false
+    },
+    {
+      "id": "coordinator-behavior",
+      "kind": "conversation",
+      "cases": "coordinator-behavior-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000,
+      "requiredForRelease": true
+    },
+    {
+      "id": "joint-workflow",
+      "kind": "codex-workflow",
+      "cases": "joint-workflow.cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000,
+      "requiredForRelease": true,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "run-role-boundary-evals.mjs"
+        ],
+        "allowedModels": [
+          "gpt-6-luna",
+          "gpt-6.1-sol",
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-5.6-sol"
+        ]
+      }
+    },
+    {
+      "id": "joint-guide-only",
+      "kind": "codex-workflow",
+      "cases": "joint-guide-only.cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000,
+      "requiredForRelease": true,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "run-role-boundary-evals.mjs"
+        ],
+        "allowedModels": [
+          "gpt-6-luna",
+          "gpt-6.1-sol",
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-5.6-sol"
+        ]
+      }
+    },
+    {
+      "id": "executor-instructions",
+      "kind": "codex-workflow",
+      "cases": "executor-instructions.cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000,
+      "requiredForRelease": true,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "run-role-boundary-evals.mjs"
+        ],
+        "allowedModels": [
+          "gpt-6-luna",
+          "gpt-6.1-sol",
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-5.6-sol"
+        ]
+      }
     }
   ]
 }

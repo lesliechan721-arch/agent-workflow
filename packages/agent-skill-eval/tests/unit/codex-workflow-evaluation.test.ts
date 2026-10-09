@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { getSchema, validateJsonSchema } from '../../src/index.js'
 
 import {
   WorkflowEvaluation,
@@ -35,6 +36,69 @@ async function fixture() {
 }
 
 describe('workflow decision and evidence boundary', () => {
+  it.each([false, true])('runs final actions before independent grading and blocks failed completion (%s)', async (failed) => {
+    const root = await fixture()
+    const action = { command: ['node', 'verify.mjs'] as const, input: { operation: 'verify-selection' } }
+    const request = { ...config, interactions: [], finalActions: [action] }
+    expect(parseWorkflowEvaluation(request)).toEqual(request)
+    expect(validateJsonSchema(await getSchema('workflow-evaluation'), request)).toEqual([])
+    const actor = vi.fn(async () => {
+      if (failed) throw new Error('Actual independent probe failed.')
+      await writeFile(path.join(root, 'verification.json'), '{"tenant":true}')
+      return { receipt: { version: 1 as const, completed: true as const, artifacts: ['verification.json'], evidence: { tenant: true } }, scriptSha256: '1'.repeat(64) }
+    })
+    const judge = vi.fn(async () => {
+      expect(readWorkflowArtifacts(root, ['verification.json'])[0]!.text).toBe('{"tenant":true}')
+      return { passed: true, score: 1, details: { checks: [{ name: 'choice', verdict: 'pass', evidence: 'Actual verification file.' }] } }
+    })
+    const evaluation = new WorkflowEvaluation(request, root, judge, actor)
+    const completion = evaluation.finish({ completion: { status: 'completed' } }, [])
+    if (failed) {
+      await expect(completion).rejects.toThrow('Actual independent probe failed')
+      expect(judge).not.toHaveBeenCalled()
+    } else {
+      const result = await completion
+      expect(result.fixtureActions).toEqual(evaluation.fixtureActions)
+      expect(evaluation.fixtureActions[0]).toMatchObject({ phase: 'final', result: { receipt: { evidence: { tenant: true } } } })
+      expect(judge).toHaveBeenCalledOnce()
+    }
+    expect(actor).toHaveBeenCalledOnce()
+    expect(() => parseWorkflowEvaluation({ ...request, finalActions: Array(9).fill(action) })).toThrow('at most 8')
+  })
+
+  it('releases a fixed fixture action only after the independent question match and records its actual files', async () => {
+    const root = await fixture()
+    const action = { command: ['node', 'release.mjs'] as const, input: { operation: 'release' } }
+    const actor = vi.fn(async () => {
+      await writeFile(path.join(root, 'later.md'), 'Actual follow-up evidence.')
+      return { receipt: { version: 1 as const, completed: true as const, artifacts: ['later.md'], evidence: { filesWritten: 1 } }, scriptSha256: '1'.repeat(64) }
+    })
+    const request = { ...config, artifacts: [...config.artifacts, 'later.md'], interactions: [{ ...config.interactions[0]!, action }] }
+    const judge = vi.fn(async () => ({ passed: true, score: 1, details: { questionId: 'text' } }))
+    const evaluation = new WorkflowEvaluation(request, root, judge, actor)
+    expect(readWorkflowArtifacts(root, ['later.md'])[0]!.kind).toBe('absent')
+    expect(await evaluation.reply({ text: 'Which collection?' }, 1)).not.toBeNull()
+    expect(actor).toHaveBeenCalledOnce()
+    expect(evaluation.fixtureActions[0]).toMatchObject({ phase: 'interaction:scope', result: { receipt: { artifacts: ['later.md'] } } })
+    expect(evaluation.snapshots.at(-1)!.find((file) => file.path === 'later.md')?.text).toBe('Actual follow-up evidence.')
+    const rejected = new WorkflowEvaluation(request, root, async () => ({ passed: false, score: 0 }), actor)
+    expect(await rejected.reply({ text: 'I finished.' }, 1)).toBeNull()
+    expect(actor).toHaveBeenCalledOnce()
+  })
+
+  it('stops without an answer when a trusted fixture action fails, and marks setup actions outside measurement', async () => {
+    const root = await fixture()
+    const action = { command: ['node', 'setup.mjs'] as const, input: null }
+    const request = { ...config, setupActions: [action], interactions: [{ ...config.interactions[0]!, action }] }
+    const actor = vi.fn(async () => ({ receipt: { version: 1 as const, completed: true as const, artifacts: [], evidence: { actual: true } }, scriptSha256: '1'.repeat(64) }))
+    const evaluation = new WorkflowEvaluation(request, root, async () => ({ passed: true, score: 1, details: { questionId: 'text' } }), actor)
+    await evaluation.runSetupActions()
+    expect(evaluation.measurementStart).toBeGreaterThan(evaluation.fixtureActions[0]!.ordinal)
+    actor.mockRejectedValueOnce(new Error('Actual fixture failure.'))
+    await expect(evaluation.reply({ text: 'Which collection?' }, 3)).rejects.toThrow('Actual fixture failure')
+    expect(evaluation.decisions[0]).not.toHaveProperty('answer')
+  })
+
   it('grades complete normalized calls and attributed messages without duplicating the raw rollout', async () => {
     const root = await fixture()
     const judge = vi.fn(async () => ({ passed: false, score: 0, details: {

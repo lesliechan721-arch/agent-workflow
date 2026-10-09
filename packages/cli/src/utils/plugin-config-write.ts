@@ -27,6 +27,7 @@ import {
 import { getDefaultNativeCliRunner, type NativeCliRunner } from './native-cli.js';
 import {
   assertReadyPluginConfigStore,
+  assertPluginConfigMutationCandidate,
   assertSafePluginConfigSegment,
   codexNativeRefreshKeys,
   coercePluginConfigUpdates,
@@ -1005,6 +1006,16 @@ async function applyPluginConfigWriteUnlocked(
     },
   });
   const updates = await coercePluginConfigUpdates({ schema, updates: requestedUpdates, cwd: options.cwd });
+  await assertPluginConfigMutationCandidate({
+    ...configIdentity,
+    pluginName,
+    manifest: schemaPlugin.manifest,
+    scope: options.scope,
+    cwd: options.cwd,
+    env: options.env,
+    updates,
+    removeKeys: requestedRemoveKeys,
+  });
   const warnings: string[] = [];
   const { updatedKeys, removedKeys, staleRemovedKeys } = impact;
   let preApplyUnavailableReason: 'sourceUnavailable' | 'targetDiscoveryFailed' | undefined;

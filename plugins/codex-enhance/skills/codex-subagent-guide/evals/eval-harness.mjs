@@ -9,10 +9,7 @@ import {
 
 const SKILL_KEY = 'codex-subagent-guide';
 const GUIDE_ROLE_NAMES = [
-  'codex-subagent-simple',
-  'codex-subagent-general',
-  'codex-subagent-complex',
-  'codex-subagent-advanced',
+  'codex-subagent',
 ];
 
 function parseTomlString(source, key, file) {

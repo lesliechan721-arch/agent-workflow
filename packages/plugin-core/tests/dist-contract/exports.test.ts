@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_CATALOG_WORKSPACE_VERSION,
   getAwCapabilityRegistry,
+  resolvePluginConfigObjectProperties,
+  type PluginConfigObjectField,
 } from '@lesliechan721/aw-plugin-core'
 import {
   computeAwCapabilitySetDigest,
@@ -25,6 +27,28 @@ import {
 const require = createRequire(import.meta.url)
 
 describe('public package exports', () => {
+  it('ships the v4 schema, capability and shared branch resolver through public exports', () => {
+    const config = { schemaVersion: 4, fields: { backend: { type: 'object', properties: {
+      adapter: { type: 'string' }, args: { type: 'array', items: { type: 'string' } },
+      env: { type: 'object', additionalProperties: { type: 'string' } },
+    }, variants: { discriminator: 'adapter', cases: {
+      builtin: { properties: { mode: { type: 'string', const: 'workspace' } } },
+      custom: { properties: { command: { type: 'string', required: true } } },
+    } } } } }
+    const manifest = { schemaVersion: 3, name: 'v4-reader', version: '1.0.0', description: 'Public contract',
+      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } }, config }
+    assertPluginManifestStructure(manifest)
+    const compiled = normalizePluginConfigDefinition(config)
+    const backend = compiled.fields.backend as PluginConfigObjectField
+    expect(resolvePluginConfigObjectProperties(backend, { adapter: 'builtin' }).properties.mode).toMatchObject({ const: 'workspace' })
+    expect(validatePluginConfigValue(backend, { adapter: 'builtin', args: [''], env: { PATH: '' } })).toEqual([])
+    expect(validatePluginConfigValue(backend, { adapter: 'builtin', command: '/tmp/command' })).toMatchObject([{ code: 'additionalProperty' }])
+    expect(() => assertPluginManifestStructure({ ...manifest, config: { ...config, schemaVersion: 3 } })).toThrow()
+    expect(getAwCapabilityRegistry()).toContain('aw.plugin-config.v4')
+    expect(getPluginAuthoringCapabilitySurface('config').entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: 'config.schemaVersion', acceptedValues: [3, 4] }),
+    ]))
+  })
   it('publishes the v3 reader, schema and budget constants through package exports', () => {
     const config = { schemaVersion: 3, definitions: { text: { type: 'string', validation: { minLength: 2 } } }, fields: { label: { $ref: '#/config/definitions/text', default: 'valid' } } };
     const manifest = { schemaVersion: 3, name: 'public-reader', version: '0.1.0', description: 'Public contract', marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } }, config };

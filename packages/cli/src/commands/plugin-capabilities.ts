@@ -106,6 +106,10 @@ const adapterFacts: Readonly<Partial<Record<
     'artifacts.targets[].refreshKeys': {
       requires: 'Config fields referenced by codex-native targets are writable only in user scope.',
     },
+    'artifacts.targets[].runtimeConfig': {
+      requires: 'aw.installed-runtime-config.v2 and a native Skill target. AW injects the reader and binding; source and renderer cannot provide reserved files.',
+      conflicts: 'Sensitive keys or sensitive dependency closure.',
+    },
     'artifacts.targets[].runtimeImports': {
       requires: 'A provider runtimeExports entry resolved into the consumer bundle.',
       conflicts: 'Using the reuse edge as an installation dependency.',

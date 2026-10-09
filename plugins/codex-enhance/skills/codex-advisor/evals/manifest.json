@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "defaults": {
+    "profile": "project-default"
+  },
+  "profiles": {
+    "project-default": {
+      "scope": "project",
+      "plugins": {
+        "codex-enhance": {}
+      }
+    },
+    "user-default": {
+      "scope": "user",
+      "plugins": {
+        "codex-enhance": {}
+      }
+    }
+  },
+  "suites": [
+    {
+      "id": "role-boundary-trigger",
+      "kind": "trigger",
+      "cases": "role-boundary-trigger-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true
+    },
+    {
+      "id": "coordinator-behavior",
+      "kind": "conversation",
+      "cases": "coordinator-behavior-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000,
+      "requiredForRelease": true
+    }
+  ]
+}

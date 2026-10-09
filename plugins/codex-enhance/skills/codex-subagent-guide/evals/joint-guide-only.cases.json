@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "codex-workflow",
+    "unitUnderTest": "codex-subagent-guide",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "critical",
+      "rationale": "按实际职责、授权、指令通道和真实结果判断；误外发、越权写入、角色丢失或重复提交不能被多数通过抵消。"
+    }
+  },
+  "cases": [
+    {
+      "id": "J15",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "qualification"
+      ],
+      "input": {
+        "prompt": "只用已加载Guide，将未注册的自定义指令文件用于一次已授权只读委派。读取README的两个事实并返回原行号。",
+        "workspaceFiles": {
+          "README.md": "a=1\nb=2\n"
+        },
+        "setup": [
+          "fixture公开安装只暴露Guide；generalTaskProfile指向真实workspace或bundle adapter。",
+          "fixture提供独立自定义UTF-8指令文件，不注册worker、不改Guide或Core领域逻辑。",
+          "Guide正文已在起始上下文加载；宿主trace记录直接选型、真实run调用及实际执行者结果。"
+        ]
+      },
+      "expected": {
+        "criteria": {
+          "independence": "Guide使用已加载表和任意合法指令文件，无需Advisor/Explore或额外协调agent。",
+          "outcome": "两个事实正确、只读；完整显式指令和任务进入external真实合成prompt，终态有服务证据。",
+          "loading_trace": "记录已加载Guide场景的实际加载与调用trace；无resolve、native reference、plan或worker注册证明，不固定宿主总轮数。"
+        }
+      },
+      "audit": {
+        "rationale": "已加载Guide与未注册自定义指令入口",
+        "minimalCounterexample": "显式指令文件缺失或无效时在生成前失败；省略文件且prompt已完整表达职责时可以启动。",
+        "allowedVariance": "允许等价措辞和实际宿主工具差异。来源、权限、native真实指令通道或external完整prompt、服务终态及同一前台句柄须由事件证明；声明与本地fake不证明真实服务支持。未取得所需证据保持unknown。"
+      }
+    }
+  ]
+}

@@ -252,7 +252,7 @@ describe('plugin config atomic writes', () => {
         sourceId: 'official',
         binding: { kind: 'source', sourceIdentity: `sha256:${'f'.repeat(64)}` },
         pluginName: 'invalid-projection',
-        values: { mode: { nested: { rejected: true } } },
+        values: { mode: { nested: { deeper: { rejected: true } } } },
       }),
     },
   ])('projects $code without rewriting the invalid store', async ({ code, content }) => {
