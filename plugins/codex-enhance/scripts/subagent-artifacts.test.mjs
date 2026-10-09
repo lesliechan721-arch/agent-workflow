@@ -66,6 +66,11 @@ test('shares one profile definition, preserves defaults and declares exact consu
   assert.deepEqual(Object.keys(profile.properties), ['executor']);
   assert.equal(profile.variants.discriminator, 'executor');
   assert.equal(profile.variants.missing, 'native');
+  const effort = manifest.config.definitions?.agentReasoningEffort ?? profile.variants.otherwise.properties.reasoningEffort;
+  assert.deepEqual(effort.choices.presets.find((preset) => preset.id === 'pro'), { id: 'pro', title: 'pro', value: 'pro' });
+  const engine = manifest.config.fields.subagentCommands.items.variants.cases.oracle.properties.oracleEngine;
+  assert.equal(engine.choices.presets.find((preset) => preset.value === 'browser').recommended, true);
+  assert.equal(Object.hasOwn(engine, 'default'), false);
   assert.deepEqual(profile.properties.executor.valueRef, {
     field: 'subagentCommands', key: 'key', label: 'title', include: ['native'],
   });

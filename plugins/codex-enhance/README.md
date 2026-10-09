@@ -40,6 +40,8 @@ Advisor 和 Explore 通过 Guide 委派；已有完整调度与生命周期方�
 
 添加外部执行器时可选内建 Codex、Claude Code、Oracle，或 custom。内建入口无需手填 command/entrypoint；Codex 和 Claude Code 固定 workspace，Oracle 固定 bundle。custom 使用自己的绝对程序入口和明确模式。args 定制实际后端参数，env 保存普通环境值，envFrom 引用宿主变量；密钥不要写入普通可分发配置。
 
+Oracle 可直接选择 oracleEngine=browser/api，界面推荐 browser；省略引擎时继续沿用 Oracle，但设置 reasoningEffort 后必须明确选择。浏览器将 low/medium/high/xhigh 转换为 light/standard/extended/extra-high，并支持新增的 pro 预设；max/ultra 没有浏览器映射。浏览器登录和实际档位由 Oracle 管理。Codex 可填写 codexProfile，直接使用已有的 Codex --profile；AW 显式模型和 effort 仍优先。专用字段与 args 中的同类参数重复时会提示修正。
+
 外部 profile 可省略 model 和 reasoningEffort，表示使用后端默认。显式要求不支持时报错，不静默替换模型或服务。native 保留已有配置要求。专属咨询配置仅在已设置时显示，选中后整体使用；无效配置不会触发回退。
 
 外部任务可以直接写进 --prompt，长任务或已有文件可以从 stdin 输入。--instructions-file 可选，可以复用已有角色文件；不传时不会自动补入默认指令。顾问和调查的职责约束仍需明确传达。回答以文字状态和 Markdown 正文返回，不要求用户阅读内部 JSON。

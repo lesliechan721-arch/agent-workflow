@@ -9,9 +9,9 @@ function configKey(value) {
   return key.replace(/^'(.*)'$/s, '$1');
 }
 
-export function codexArguments(request, outputFile) {
+export function checkCodexArguments(request, owned = []) {
   checkArguments(request.args, {
-    owned: ['--json', '--output-last-message', '-o', '--cd', '-C', '--worktree', '--help', '-h', '--version', '-V'],
+    owned: ['--json', '--output-last-message', '-o', '--cd', '-C', '--worktree', '--help', '-h', '--version', '-V', ...owned],
     commands: ['exec', 'resume', 'fork', 'review', 'help'],
     short: { '-c': 'value', '-m': 'value', '-p': 'value', '-s': 'value', '-i': 'value' },
     values: ['--config', '--model', '--profile', '--sandbox', '--enable', '--disable', '--local-provider', '--add-dir', '--thread-source', '--cyber-access-program', '--output-schema', '--color'],
@@ -22,6 +22,10 @@ export function codexArguments(request, outputFile) {
       if (request.execution.reasoningEffort !== undefined && ['--config', '-c'].includes(option) && configKey(value) === 'model_reasoning_effort') rejectOption(option);
     },
   });
+}
+
+export function codexArguments(request, outputFile) {
+  checkCodexArguments(request);
   const args = ['exec', '--json', '--output-last-message', outputFile, ...request.args];
   if (request.execution.model !== undefined) args.push('--model', request.execution.model);
   if (request.execution.reasoningEffort !== undefined) args.push('--config', `model_reasoning_effort=${JSON.stringify(request.execution.reasoningEffort)}`);

@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { PROFILE_KEYS, cleanString, fail } from './contracts.mjs';
+import { checkCodexArguments } from '../adapters/codex-v4.mjs';
+import { checkOracleArguments } from '../adapters/oracle-arguments.mjs';
 
 export const ADAPTERS = Object.freeze({
   codex: { mode: 'workspace', entrypoint: 'codex-v4.mjs' },
@@ -39,8 +41,11 @@ export function selectExecution(snapshot, request) {
   const matches = commands.filter((entry) => entry?.key === executorKey);
   if (matches.length !== 1) fail('executorUnknown', 'The selected executor is missing or ambiguous. Correct the registry and sync.', ['config', 'sync']);
   const executor = matches[0];
-  const allowed = ['key', 'title', 'adapter', 'mode', 'command', 'entrypoint', 'args', 'env', 'envFrom'];
+  const allowed = ['key', 'title', 'adapter', 'mode', 'command', 'entrypoint', 'args', 'env', 'envFrom', 'oracleEngine', 'codexProfile'];
   if (Object.keys(executor).some((key) => !allowed.includes(key)) || !cleanString(executor.title) || !['codex', 'claude-code', 'oracle', 'custom'].includes(executor.adapter)) fail('executorInvalid', 'Update the executor to the v4 adapter configuration and sync.', ['config', 'sync']);
+  if (Object.hasOwn(executor, 'oracleEngine') && (executor.adapter !== 'oracle' || !['api', 'browser'].includes(executor.oracleEngine))) fail('executorInvalid', 'oracleEngine is only available for Oracle and must be api or browser.', ['config', 'sync']);
+  const codexProfile = executor.codexProfile;
+  if (Object.hasOwn(executor, 'codexProfile') && (executor.adapter !== 'codex' || typeof codexProfile !== 'string' || !codexProfile.trim() || codexProfile.includes('\0') || !codexProfile.isWellFormed() || [...codexProfile].length > 4096)) fail('executorInvalid', 'codexProfile is only available for Codex and must be a nonempty profile name of at most 4096 characters.', ['config', 'sync']);
   const descriptor = ADAPTERS[executor.adapter];
   let mode, command, entrypoint;
   if (descriptor) {
@@ -53,5 +58,14 @@ export function selectExecution(snapshot, request) {
   }
   if (executor.args !== undefined && (!Array.isArray(executor.args) || executor.args.some((value) => typeof value !== 'string' || value.includes('\0') || !value.isWellFormed()))) fail('argumentsInvalid', 'Executor args must be a string array without NUL.');
   validateEnvironmentConfig(executor);
-  return { execution, mode, resourceRoot: snapshot.resourceRoot, executor: { ...executor, args: [...(executor.args ?? [])] }, command, entrypoint };
+  const args = [...(executor.args ?? [])];
+  if (executor.oracleEngine !== undefined) {
+    checkOracleArguments({ args, execution }, ['--engine', '--mode', '-e', '--browser']);
+    args.push('--engine', executor.oracleEngine);
+  }
+  if (executor.codexProfile !== undefined) {
+    checkCodexArguments({ args, execution }, ['--profile', '-p']);
+    args.push('--profile', executor.codexProfile);
+  }
+  return { execution, mode, resourceRoot: snapshot.resourceRoot, executor: { ...executor, args }, command, entrypoint };
 }

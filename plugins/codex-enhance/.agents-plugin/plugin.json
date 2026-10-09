@@ -198,12 +198,18 @@
               "id": "ultra",
               "title": "ultra",
               "value": "ultra"
+            },
+            {
+              "id": "pro",
+              "title": "pro",
+              "value": "pro"
             }
           ]
         },
         "validation": {
           "minLength": 1
-        }
+        },
+        "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。"
       }
     },
     "fields": {
@@ -400,6 +406,16 @@
                   "mode": {
                     "type": "string",
                     "const": "workspace"
+                  },
+                  "codexProfile": {
+                    "type": "string",
+                    "title": "Codex 配置 Profile",
+                    "description": "已有 Codex profile 的名称，传入 --profile；留空使用后端默认。AW 显式 model/effort 仍优先。",
+                    "validation": {
+                      "minLength": 1,
+                      "pattern": "^[^\\x00]*[^\\s\\x00][^\\x00]*$",
+                      "maxLength": 4096
+                    }
                   }
                 }
               },
@@ -416,6 +432,27 @@
                   "mode": {
                     "type": "string",
                     "const": "bundle"
+                  },
+                  "oracleEngine": {
+                    "type": "string",
+                    "title": "Oracle 引擎",
+                    "description": "browser 使用已登录浏览器会话，api 使用服务 API。留空跟随 Oracle；设置 reasoningEffort 时须明确选择引擎。安装和登录由 Oracle 管理。",
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "browser",
+                          "title": "浏览器",
+                          "value": "browser",
+                          "recommended": true
+                        },
+                        {
+                          "id": "api",
+                          "title": "API",
+                          "value": "api"
+                        }
+                      ]
+                    }
                   }
                 }
               },

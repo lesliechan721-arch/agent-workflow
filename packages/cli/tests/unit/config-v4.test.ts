@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
+import { normalizePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { PluginMeta } from '../../src/types.js';
 import {
@@ -42,6 +43,41 @@ function fixture() {
 }
 
 describe('Config Definition v4 CLI boundaries', () => {
+  // Test Value Gate: use the shipped plugin schema, writer and runtime snapshot so
+  // convenience fields cannot be accepted in the wrong branch or lost on apply.
+  it('saves Codex Enhance engine/profile options and pro into installed runtime values', async () => {
+    const { store, plugin, save } = fixture();
+    const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/codex-enhance/.agents-plugin/plugin.json'));
+    plugin.manifest.config = normalizePluginConfigDefinition(source.config);
+    const commands = [
+      { key: 'oracle-web', title: 'Browser', adapter: 'oracle', oracleEngine: 'browser' },
+      { key: 'oracle-default', title: 'Default', adapter: 'oracle' },
+      { key: 'codex-review', title: 'Review', adapter: 'codex', codexProfile: 'review profile' },
+      { key: 'codex-default', title: 'Default', adapter: 'codex' },
+    ];
+    const advisorProfile = { executor: 'oracle-web', reasoningEffort: 'pro' };
+    await save({ subagentCommands: commands, advisorProfile });
+    const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
+    expect(config.values).toMatchObject({ subagentCommands: commands, advisorProfile });
+    plugin.manifest.artifacts = { targets: [{ id: 'runtime', platform: 'codex', target: 'codex.skill', delivery: { mode: 'aw-extension' },
+      scopes: ['user'], states: ['present'], skillKey: 'runtime', refreshKeys: ['advisorProfile', 'subagentCommands'],
+      runtimeConfig: { keys: ['advisorProfile', 'subagentCommands'] } }] };
+    const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
+      logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['runtime'],
+      config: { ...config, mode: 'artifact-render', targetScope: 'user' } });
+    expect(snapshots.runtime!.effectiveValues).toEqual({ subagentCommands: commands, advisorProfile });
+    const file = resolvePluginConfigStorePath(store);
+    const before = await fs.readFile(file);
+    for (const invalid of [
+      { ...commands[0], oracleEngine: 'auto' }, { ...commands[0], adapter: 'codex' },
+      { ...commands[2], adapter: 'oracle' }, { ...commands[2], adapter: 'claude-code' },
+      ...['', '  ', '\0', 'x'.repeat(4097)].map((codexProfile) => ({ ...commands[2], codexProfile })),
+    ]) {
+      await expect(save({ subagentCommands: [commands[0], { ...invalid, key: 'invalid' }] })).rejects.toThrow();
+      expect(await fs.readFile(file)).toEqual(before);
+    }
+  });
+
   // Test Value Gate: the store accepts only the finite v4 value shape, before a schema is available.
   it('round trips finite leaf containers and preserves bytes when deeper or mixed containers are rejected', async () => {
     const isolation = getCurrentSourceTestIsolation();

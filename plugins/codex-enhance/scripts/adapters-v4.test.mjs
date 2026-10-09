@@ -8,6 +8,8 @@ import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
+import { selectExecution } from '../skills/codex-subagent-guide/scripts/runtime/plan.mjs';
+import { oracleArguments } from '../skills/codex-subagent-guide/scripts/adapters/oracle-arguments.mjs';
 
 const require = createRequire(import.meta.url);
 const sourceScripts = path.dirname(require.resolve('../skills/codex-subagent-guide/scripts/resolve-files.mjs'));
@@ -163,7 +165,7 @@ for (const backend of ['codex', 'claude', 'oracle']) {
 const conflicts = {
   codex: [['-oother.md'], ['--json=false'], ['--cd', '/other'], ['resume'], ['--help'], ['--model=other'], ['-c', '"model_reasoning_effort"="low"']],
   claude: [['-pother'], ['--output-format=stream-json'], ['-rprevious'], ['--input-format', 'stream-json'], ['--model', 'other'], ['--effort=low'], ['--cloud'], ['--cloud', 'session_fixture'], ['--cloud=session_fixture'], ['--remote', 'session_fixture'], ['--remote=session_fixture'], ['--environment', 'ccpool_fixture'], ['--environment=ccpool_fixture'], ['--teleport'], ['--teleport', 'session_fixture'], ['--teleport=session_fixture']],
-  oracle: [['-fmain.ts'], ['--include=main.ts'], ['--files', 'main.ts'], ['--path=main.ts'], ['--paths=main.ts'], ['--message=other'], ['--no-wait'], ['--models', 'a,b'], ['--browser-follow-up', 'another prompt'], ['--browser-tab', 'current'], ['--render'], ['--followup', 'old'], ['--model=other'], ['--reasoning-effort=low']],
+  oracle: [['-fmain.ts'], ['--include=main.ts'], ['--files', 'main.ts'], ['--path=main.ts'], ['--paths=main.ts'], ['--message=other'], ['--no-wait'], ['--models', 'a,b'], ['--browser-follow-up', 'another prompt'], ['--browser-tab', 'current'], ['--render'], ['--followup', 'old'], ['--model=other'], ['--reasoning-effort=low'], ['--browser-thinking-time=pro']],
 };
 for (const [backend, values] of Object.entries(conflicts)) {
   test(`${backend}: owned controls and aliases fail before backend startup`, { skip: !supported }, async (t) => {
@@ -179,11 +181,113 @@ for (const [backend, values] of Object.entries(conflicts)) {
   });
 }
 
-test('Oracle browser effort is rejected without changing engine', { skip: !supported }, async (t) => {
-  const f = await fixture(t, 'oracle');
-  f.request.args = ['--engine', 'browser']; f.request.execution.reasoningEffort = 'high';
+// Test Value Gate: configured convenience fields must reach the real backend argv
+// without changing the Adapter v4 execution selection or its omitted defaults.
+function selectExecutor(executor, execution = {}) {
+  const profile = 'generalTaskProfile';
+  return selectExecution({ installedIdentity: {}, resourceRoot: sourceScripts,
+    effectiveValues: { [profile]: { executor: 'fixture', ...execution },
+      subagentCommands: [{ key: 'fixture', title: 'Fixture', ...executor }] },
+  }, { profile });
+}
+
+test('executor fields compile to backend arguments and reject duplicate controls', () => {
+  assert.deepEqual(selectExecutor({ adapter: 'oracle', oracleEngine: 'browser' }).executor.args, ['--engine', 'browser']);
+  assert.deepEqual(selectExecutor({ adapter: 'codex', codexProfile: 'review profile' }).executor.args, ['--profile', 'review profile']);
+  for (const adapter of ['oracle', 'codex']) assert.deepEqual(selectExecutor({ adapter }).executor.args, []);
+  for (const [adapter, fields, options] of [
+    ['oracle', { oracleEngine: 'browser' }, [['--engine', 'browser'], ['--engine=api'], ['-ebrowser'], ['--mode=browser'], ['--browser']]],
+    ['codex', { codexProfile: 'review' }, [['--profile', 'review'], ['--profile=review'], ['-preview'], ['-p', 'review']]],
+  ]) for (const args of options) {
+    assert.throws(() => selectExecutor({ adapter, ...fields, args }), { code: 'adapterArgumentConflict' });
+  }
+  for (const executor of [
+    { adapter: 'codex', oracleEngine: 'browser' }, { adapter: 'oracle', codexProfile: 'review' },
+    { adapter: 'claude-code', oracleEngine: 'api' }, { adapter: 'oracle', oracleEngine: 'auto' },
+    ...['', '  ', '\0', 'x'.repeat(4097)].map((codexProfile) => ({ adapter: 'codex', codexProfile })),
+  ]) assert.throws(() => selectExecutor(executor), { code: 'executorInvalid' });
+  assert.deepEqual(selectExecutor({ adapter: 'codex', codexProfile: 'review', args: ['--config', '--profile'] }).executor.args,
+    ['--config', '--profile', '--profile', 'review']);
+});
+
+test('Codex profile reaches the backend with explicit AW model and effort', { skip: !supported }, async (t) => {
+  const f = await fixture(t);
+  const plan = selectExecutor({ adapter: 'codex', codexProfile: 'review profile' }, { model: 'fixture-model', reasoningEffort: 'high' });
+  Object.assign(f.request, { args: plan.executor.args, execution: plan.execution });
   const { result, capture } = await run(f);
-  assert.equal(result.state, 'failed'); assert.equal(result.code, 'parameterUnavailable'); assert.equal(result.generationStarted, false); assert.equal(capture, undefined);
+  assert.equal(result.state, 'completed');
+  assert.deepEqual(capture.args.slice(4), ['--profile', 'review profile', '--model', 'fixture-model', '--config', 'model_reasoning_effort="high"', '-']);
+  assert.equal(f.request.execution.profile, 'generalTaskProfile');
+});
+
+// Required Oracle option values may begin with '-'; they must not select an
+// engine or conflict with AW-owned controls when the backend consumes a value.
+test('Oracle required option values do not become adapter controls', () => {
+  const args = ['--slug', '--browser', '--browser-chrome-profile', '--model', '--perf-trace-path', '--reasoning-effort'];
+  const plan = selectExecutor({ adapter: 'oracle', oracleEngine: 'api', args }, { model: 'fixture-model', reasoningEffort: 'high' });
+  const request = { args: plan.executor.args, execution: plan.execution, fileSelectors: [] };
+  assert.deepEqual(oracleArguments(request, '/answer.md'), ['--prompt', '-', '--wait', '--write-output', '/answer.md',
+    ...args, '--engine', 'api', '--model', 'fixture-model', '--reasoning-effort', 'high']);
+  const legacy = ['--slug', '--browser', '--engine', 'api'];
+  assert.deepEqual(oracleArguments({ args: legacy, execution: {}, fileSelectors: [] }, '/answer.md').slice(5), legacy);
+  assert.throws(() => oracleArguments({ ...request, args: ['--slug', '--browser'] }, '/answer.md'), { code: 'parameterUnavailable' });
+  assert.throws(() => selectExecutor({ adapter: 'oracle', oracleEngine: 'api', args: [...args, '--browser'] }), { code: 'adapterArgumentConflict' });
+  assert.throws(() => oracleArguments({ ...request, args: [...request.args, '--reasoning-effort', 'low'] }, '/answer.md'), { code: 'adapterArgumentConflict' });
+});
+
+test('Oracle browser maps effort values and aliases without an API effort', { skip: !supported }, async (t) => {
+  const mappings = { low: 'light', medium: 'standard', high: 'extended', xhigh: 'extra-high', pro: 'pro', heavy: 'heavy',
+    light: 'light', standard: 'standard', extended: 'extended', 'extra-high': 'extra-high', instant: 'light',
+    ' EXTRA_HIGH ': 'extra-high', extrahigh: 'extra-high', 'extra high': 'extra-high' };
+  const selectors = [['--engine', 'browser'], ['--engine=browser'], ['-ebrowser'], ['--mode', 'browser'], ['--browser']];
+  for (const [index, [reasoningEffort, expected]] of Object.entries(mappings).entries()) {
+    const f = await fixture(t, 'oracle');
+    f.request.args = index === 0 ? selectExecutor({ adapter: 'oracle', oracleEngine: 'browser' }).executor.args : selectors[index % selectors.length];
+    f.request.execution.reasoningEffort = reasoningEffort;
+    const { result, capture } = await run(f);
+    assert.equal(result.state, 'completed', reasoningEffort);
+    assert.deepEqual(capture.args.slice(-2), ['--browser-thinking-time', expected]);
+    assert.equal(capture.args.includes('--reasoning-effort'), false);
+  }
+});
+
+test('Oracle unsupported effort and ambiguous engine fail before any backend starts', { skip: !supported }, async (t) => {
+  const cases = [
+    { args: [], environment: { ORACLE_ENGINE: 'browser' } }, { args: [], environment: { ORACLE_ENGINE: 'api' } },
+    ...['max', 'ultra', 'unknown'].map((reasoningEffort) => ({ args: ['--engine=browser'], reasoningEffort })),
+    { args: ['--browser'], model: 'Gemini-3.1-pro' },
+    ...[['--model', 'gemini-3.1-pro'], ['--model=gemini-3.1-pro'], ['-mgemini-3.1-pro']].map((args) => ({ args: ['--browser', ...args] })),
+  ];
+  for (const value of cases) {
+    const f = await fixture(t, 'oracle');
+    f.request.args = value.args;
+    f.request.execution.reasoningEffort = value.reasoningEffort ?? 'high';
+    if (value.model) f.request.execution.model = value.model;
+    Object.assign(f.environment, value.environment);
+    const { result, capture } = await run(f);
+    assert.equal(result.state, 'failed'); assert.equal(result.code, 'parameterUnavailable');
+    assert.equal(result.generationStarted, false); assert.equal(capture, undefined);
+    await assert.rejects(fs.readFile(f.calls), { code: 'ENOENT' });
+  }
+});
+
+test('Oracle preserves omitted effort and API values, and refuses conflicting engine selectors', { skip: !supported }, async (t) => {
+  for (const args of [['--engine=api', '--browser'], ['-eapi', '--mode=browser'], ['--engine', 'browser', '--engine', 'api']]) {
+    const f = await fixture(t, 'oracle'); f.request.args = args;
+    const { result, capture } = await run(f);
+    assert.equal(result.code, 'adapterArgumentConflict'); assert.equal(result.generationStarted, false); assert.equal(capture, undefined);
+  }
+  for (const args of [[], ['--browser', '-mgemini-3.1-pro'], ['--browser', '--browser-thinking-time=pro'], ['--engine=browser', '--mode=browser']]) {
+    const f = await fixture(t, 'oracle'); f.request.args = args; f.environment.ORACLE_ENGINE = 'browser';
+    const { result, capture } = await run(f);
+    assert.equal(result.state, 'completed'); assert.deepEqual(capture.args.slice(5), args);
+  }
+  const f = await fixture(t, 'oracle');
+  f.request.args = selectExecutor({ adapter: 'oracle', oracleEngine: 'api' }).executor.args;
+  f.request.execution.reasoningEffort = 'pro';
+  const { result, capture } = await run(f);
+  assert.equal(result.state, 'completed'); assert.deepEqual(capture.args.slice(-2), ['--reasoning-effort', 'pro']);
+  assert.equal(capture.args.includes('--reasoning-mode'), false);
 });
 
 for (const [backend, scenarios] of Object.entries({ codex: ['no terminal', 'mismatch', 'conflicting terminal', 'nonzero', 'answer overflow', 'diagnostic overflow'], claude: ['invalid terminal', 'empty answer', 'nonzero'], oracle: ['no terminal', 'nonzero'] })) {
