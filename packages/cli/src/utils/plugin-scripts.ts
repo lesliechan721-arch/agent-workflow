@@ -29,12 +29,12 @@ const OUTPUT_LIMIT = 64 * 1024;
 const WINDOWS_JOB_CLOSE_TIMEOUT_MS = 4_500;
 
 export interface PluginScriptInvocation { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin?: string }
-export interface PluginProcessResult { exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean }
+export interface PluginProcessResult { exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean; stdoutTruncated?: boolean }
 export interface PluginProcessRunner {
-  run(invocation: PluginScriptInvocation, options: { timeoutMs: number; signal?: AbortSignal }): Promise<PluginProcessResult>;
+  run(invocation: PluginScriptInvocation, options: { timeoutMs: number; signal?: AbortSignal; maxStdoutBytes?: number }): Promise<PluginProcessResult>;
 }
 
-interface DefaultPluginProcessRunOptions { timeoutMs: number; signal?: AbortSignal; sensitiveValues?: readonly string[] }
+interface DefaultPluginProcessRunOptions { timeoutMs: number; signal?: AbortSignal; sensitiveValues?: readonly string[]; maxStdoutBytes?: number }
 
 class PluginProcessInputError extends Error {
   constructor(cause: unknown) {
@@ -308,6 +308,7 @@ export function createDefaultPluginProcessRunner(
         : undefined;
       const child = spawnImpl(windowsJobInvocation?.command ?? invocation.command, windowsJobInvocation?.args ?? invocation.args, { cwd: invocation.cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
       let stdout = ''; let stderr = ''; let timedOut = false; let aborted = false; let settled = false; let terminating = false;
+      let stdoutBytes = 0; let stdoutTruncated = false;
       let inputCompleted = child.stdin === null; let inputError: unknown;
       let childExited = false; let cleanupCompleted = false;
       let completedExitCode: number | null = null; let completedSignal: NodeJS.Signals | null = null;
@@ -317,7 +318,7 @@ export function createDefaultPluginProcessRunner(
       const timer = setTimeout(() => { timedOut = true; terminate(); }, options.timeoutMs);
       const abort = (): void => { aborted = true; terminate(); };
       const cleanup = (): void => { clearTimeout(timer); if (windowsJobCloseTimer) clearTimeout(windowsJobCloseTimer); options.signal?.removeEventListener('abort', abort); observation?.dispose(); };
-      const result = (): PluginProcessResult => ({ exitCode: completedExitCode, signal: completedSignal, stdout, stderr, timedOut });
+      const result = (): PluginProcessResult => ({ exitCode: completedExitCode, signal: completedSignal, stdout, stderr, timedOut, ...(stdoutTruncated ? { stdoutTruncated: true } : {}) });
       const settleImmediately = (error: unknown): void => {
         if (settled) return;
         settled = true;
@@ -385,7 +386,20 @@ export function createDefaultPluginProcessRunner(
         );
       }
       child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
-      child.stdout?.on('data', (chunk: string) => { if (stdout.length < outputCaptureLimit) stdout += chunk.slice(0, outputCaptureLimit - stdout.length); });
+      child.stdout?.on('data', (chunk: string) => {
+        if (options.maxStdoutBytes === undefined) {
+          if (stdout.length < outputCaptureLimit) stdout += chunk.slice(0, outputCaptureLimit - stdout.length);
+          return;
+        }
+        const bytes = Buffer.from(chunk, 'utf8');
+        const remaining = Math.max(0, options.maxStdoutBytes - stdoutBytes);
+        stdout += bytes.subarray(0, remaining).toString('utf8');
+        stdoutBytes += bytes.length;
+        if (stdoutBytes > options.maxStdoutBytes) {
+          stdoutTruncated = true;
+          terminate(true);
+        }
+      });
       child.stderr?.on('data', (chunk: string) => { if (stderr.length < outputCaptureLimit) stderr += chunk.slice(0, outputCaptureLimit - stderr.length); });
       child.on('error', (error) => { if (!settled && (!terminating || windowsJobInvocation)) settleImmediately(error); });
       const complete = (exitCode: number | null, signal: NodeJS.Signals | null): void => {

@@ -51,6 +51,8 @@ describe('AW capability contracts', () => {
     expect(registry).not.toContain('aw.project-recovery.v1')
     expect(registry).not.toContain('aw.review-inspection.v1')
     expect(registry).not.toContain('aw.catalog-context.v1')
+    expect(registry).toContain('aw.installed-runtime-config.v2')
+    expect(registry).not.toContain('aw.installed-runtime-config.v1')
     expect(normalizeAwCapabilities([
       'aw.plugin-skills.v1', 'aw.plugin-config.v2', 'aw.plugin-skills.v1',
     ])).toEqual(['aw.plugin-config.v2', 'aw.plugin-skills.v1'])
@@ -107,6 +109,21 @@ describe('AW capability contracts', () => {
       'aw.portable-skills.v1',
       'aw.runtime-imports.v1',
     ])
+  })
+
+  // Test Value Gate: a v2 runtime consumer requires a CLI with the new reader contract.
+  it('derives v2 installed runtime capability and rejects v1-only support', () => {
+    const capabilities = deriveAwCapabilitiesFromManifest(manifest({
+      config: { fields: { displayStyle: { type: 'string' } } },
+      artifacts: { targets: [{ id: 'tool', scopes: ['user'], platform: 'codex', target: 'codex.skill',
+        delivery: { mode: 'aw-extension' }, skillKey: 'tool', states: ['present'], refreshKeys: ['displayStyle'],
+        runtimeConfig: { keys: ['displayStyle'] },
+      }] },
+    }))
+    expect(capabilities).toContain('aw.installed-runtime-config.v2')
+    expect(capabilities).not.toContain('aw.installed-runtime-config.v1')
+    expect(checkAwCapabilitySupport(capabilities, capabilities.filter((capability) => capability !== 'aw.installed-runtime-config.v2')
+      .concat(['aw.installed-runtime-config.v1']))).toEqual({ supported: false, missing: ['aw.installed-runtime-config.v2'] })
   })
 
   it('scans only shell fences in actual Skill mains and static Manifest executables', async () => {

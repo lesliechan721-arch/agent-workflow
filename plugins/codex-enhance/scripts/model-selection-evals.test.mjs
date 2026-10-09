@@ -113,7 +113,7 @@ async function testRolloutArgumentEvidence() {
         name: 'spawn_agent',
         namespace: 'collaboration',
         arguments: JSON.stringify({
-          agent_type: 'codex-explore-custom',
+          agent_type: 'codex-explore',
           message: 'trace the evidence',
           task_name: 'trace_evidence',
           model: 'gpt-5.6-sol',
@@ -135,7 +135,7 @@ async function testRolloutArgumentEvidence() {
             thread_spawn: {
               parent_thread_id: 'parent-thread',
             agent_path: '/root/trace_evidence',
-            agent_role: 'codex-explore-standard',
+            agent_role: 'codex-explore',
             },
           },
         },
@@ -233,7 +233,7 @@ async function testRolloutArgumentEvidence() {
     const calls = await readSpawnCallsFromRollouts(codexHome);
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0].arguments, {
-      agent_type: 'codex-explore-custom',
+      agent_type: 'codex-explore',
       message: 'trace the evidence',
       task_name: 'trace_evidence',
       model: 'gpt-5.6-sol',
@@ -245,14 +245,13 @@ async function testRolloutArgumentEvidence() {
       thread_id: 'child-thread',
       parent_thread_id: 'parent-thread',
       agent_path: '/root/trace_evidence',
-      agent_role: 'codex-explore-standard',
+      agent_role: 'codex-explore',
       initial_user_message: null,
       initial_encrypted_message: 'enc-task',
       developer_context: {
         developer_message_count: 0,
         has_multi_agent_mode_gate: false,
         has_nested_agent_capability: false,
-        has_codex_explore_developer_authorization: false,
       },
     }]);
     assert.deepEqual(
@@ -274,7 +273,7 @@ async function testRolloutArgumentEvidence() {
         namespace: 'multi_agent_v1',
         tool: 'spawn_agent',
         arguments: {
-          agent_type: 'codex-explore-standard',
+          agent_type: 'codex-explore',
           fork_context: false,
           message: 'trace the evidence',
         },
@@ -340,7 +339,7 @@ async function testV1RolloutLineageEvidence() {
               thread_spawn: {
                 parent_thread_id: 'v1-root',
                 agent_path: '/root/plan',
-                agent_role: 'codex-subagent-advanced',
+                agent_role: 'codex-subagent',
               },
             },
           },
@@ -379,7 +378,7 @@ async function testV1RolloutLineageEvidence() {
               thread_spawn: {
                 parent_thread_id: 'v1-plan',
                 agent_path: '/root/plan/trace',
-                agent_role: 'codex-explore-deep',
+                agent_role: 'codex-explore',
               },
             },
           },
@@ -404,7 +403,7 @@ async function testV1RolloutLineageEvidence() {
       call_id: 'lineage-spawn:v1-grandchild',
       namespace: 'multi_agent_v1',
       tool: 'spawn_agent',
-      arguments: { agent_type: 'codex-explore-deep' },
+      arguments: { agent_type: 'codex-explore' },
       output: { agent_id: 'v1-grandchild' },
       rollout_file: path.join('sessions', '2026', '08', '26', 'rollout-grandchild.jsonl'),
       line_number: null,
@@ -423,7 +422,7 @@ async function testV1RolloutLineageEvidence() {
       descendant_cleanup_confirmed: true,
       spawn_calls: [{
         arguments: {
-          agent_type: 'codex-subagent-advanced',
+          agent_type: 'codex-subagent',
           message: 'plan',
           fork_context: false,
         },
@@ -434,7 +433,7 @@ async function testV1RolloutLineageEvidence() {
     }, {
       spawn_calls: { min: 1, max: 1 },
       arguments: {
-        agent_type: 'codex-subagent-advanced',
+        agent_type: 'codex-subagent',
         model: null,
         reasoning_effort: null,
         fork_context: false,
@@ -445,13 +444,12 @@ async function testV1RolloutLineageEvidence() {
         root_skill: 'codex-subagent-guide',
         root_skill_explicitly_invoked: true,
         child_skill: 'codex-explore',
-        child_agent_type: 'codex-explore-deep',
+        child_agent_type: 'codex-explore',
         child_initial_message: 'plan',
         expect_early_termination: true,
         forbid_root_child_followup: true,
         grandchild_spawn_calls: { min: 1, max: 4 },
         expect_child_multi_agent_gate: false,
-        expect_child_developer_authorization: false,
       },
     });
     assert.equal(evaluation.passed, true);
@@ -468,7 +466,7 @@ function testMechanicalAssertions() {
       exit_code: null,
       spawn_calls: [{
         arguments: {
-          agent_type: 'codex-explore-standard',
+          agent_type: 'codex-explore',
           message: 'trace',
           task_name: 'trace',
           fork_turns: 'none',
@@ -478,7 +476,7 @@ function testMechanicalAssertions() {
     {
       spawn_calls: { min: 1, max: 1 },
       arguments: {
-        agent_type: 'codex-explore-standard',
+        agent_type: 'codex-explore',
         model: null,
         reasoning_effort: null,
         fork_turns: 'none',
@@ -498,7 +496,7 @@ function testMechanicalAssertions() {
         call_id: 'spawn-plan',
         status: 'completed',
         arguments: {
-          agent_type: 'codex-subagent-advanced',
+          agent_type: 'codex-subagent',
           message: 'plan with nested delegation authorized',
           task_name: 'plan',
           fork_turns: 'none',
@@ -519,13 +517,13 @@ function testMechanicalAssertions() {
           thread_id: 'plan-thread',
           tool: 'spawn_agent',
           status: 'completed',
-          arguments: { agent_type: 'codex-explore-deep' },
+          arguments: { agent_type: 'codex-explore' },
           output: { agent_id: 'grandchild-thread' },
         },
         {
           thread_id: 'plan-thread',
           tool: 'spawn_agent',
-          arguments: { agent_type: 'codex-explore-deep' },
+          arguments: { agent_type: 'codex-explore' },
           output: 'collab spawn failed: agent thread limit reached',
         },
       ],
@@ -534,23 +532,22 @@ function testMechanicalAssertions() {
         child_threads: [{
           thread_id: 'plan-thread',
           parent_thread_id: 'root-thread',
-          agent_role: 'codex-subagent-advanced',
+          agent_role: 'codex-subagent',
           initial_user_message: 'plan',
           developer_context: {
             has_multi_agent_mode_gate: true,
-            has_codex_explore_developer_authorization: false,
           },
         }, {
           thread_id: 'grandchild-thread',
           parent_thread_id: 'plan-thread',
-          agent_role: 'codex-explore-deep',
+          agent_role: 'codex-explore',
         }],
       },
     };
   const nestedExpected = {
       spawn_calls: { min: 1, max: 1 },
       arguments: {
-        agent_type: 'codex-subagent-advanced',
+        agent_type: 'codex-subagent',
         model: null,
         reasoning_effort: null,
         fork_turns: 'none',
@@ -560,32 +557,52 @@ function testMechanicalAssertions() {
         root_skill: 'codex-subagent-guide',
         root_skill_explicitly_invoked: true,
         child_skill: 'codex-explore',
-        child_agent_type: 'codex-explore-deep',
+        child_agent_type: 'codex-explore',
         child_initial_message: 'plan',
         expect_early_termination: true,
         forbid_root_child_followup: true,
         grandchild_spawn_calls: { min: 1, max: 4 },
         expect_child_multi_agent_gate: true,
-        expect_child_developer_authorization: false,
       },
     };
   const nested = evaluateModelSelectionRun(nestedRun, nestedExpected);
   assert.equal(nested.passed, true);
 
-  const developerAuthorizedRun = structuredClone(nestedRun);
-  developerAuthorizedRun.leaf_trace.child_threads[0]
-    .developer_context.has_codex_explore_developer_authorization = true;
-  assert.equal(
-    evaluateModelSelectionRun(developerAuthorizedRun, nestedExpected).passed,
-    false,
-  );
-  const unknownDeveloperAuthorizationRun = structuredClone(nestedRun);
-  delete unknownDeveloperAuthorizationRun.leaf_trace.child_threads[0]
-    .developer_context.has_codex_explore_developer_authorization;
-  assert.equal(
-    evaluateModelSelectionRun(unknownDeveloperAuthorizationRun, nestedExpected).passed,
-    false,
-  );
+  const leafExpected = structuredClone(nestedExpected);
+  leafExpected.nested_delegation.grandchild_spawn_calls = { min: 0, max: 0 };
+  leafExpected.nested_delegation.expect_child_skill_loaded = false;
+  const leafRun = structuredClone(nestedRun);
+  leafRun.leaf_tool_calls = [];
+  leafRun.leaf_trace.child_threads = leafRun.leaf_trace.child_threads.slice(0, 1);
+  assert.equal(evaluateModelSelectionRun(leafRun, leafExpected).passed, true);
+  const rejectedLeafSpawn = structuredClone(leafRun);
+  rejectedLeafSpawn.leaf_tool_calls.push({
+    thread_id: 'plan-thread', tool: 'spawn_agent', status: 'failed',
+    arguments: { agent_type: 'codex-explore' },
+    output: 'collab spawn failed: agent thread limit reached',
+  });
+  assert.equal(evaluateModelSelectionRun(rejectedLeafSpawn, leafExpected).passed, false);
+  for (const skill of ['codex-subagent-guide', 'codex-advisor', 'codex-explore']) {
+    const loadedLeaf = structuredClone(leafRun);
+    loadedLeaf.leaf_tool_calls.push({
+      thread_id: 'plan-thread', tool: 'exec_command',
+      arguments: { cmd: `cat .agents/skills/${skill}/SKILL.md` },
+    });
+    assert.equal(evaluateModelSelectionRun(loadedLeaf, leafExpected).passed, false);
+    const observedLoad = structuredClone(leafRun);
+    observedLoad.skill_loads = [{ skill, threadId: 'plan-thread' }];
+    assert.equal(evaluateModelSelectionRun(observedLoad, leafExpected).passed, false);
+  }
+
+  const explicitDeep = structuredClone(nestedExpected);
+  explicitDeep.nested_delegation.grandchild_arguments = { model: 'gpt-6-luna', reasoning_effort: 'xhigh' };
+  const actualDeep = structuredClone(nestedRun);
+  const grandchildCall = actualDeep.leaf_tool_calls.find((call) => call.tool === 'spawn_agent');
+  grandchildCall.arguments.model = 'gpt-6-luna'; grandchildCall.arguments.reasoning_effort = 'xhigh';
+  assert.equal(evaluateModelSelectionRun(actualDeep, explicitDeep).passed, true);
+  grandchildCall.arguments.reasoning_effort = 'medium';
+  assert.equal(evaluateModelSelectionRun(actualDeep, explicitDeep).passed, false);
+
   const nonTerminalNestedRun = structuredClone(nestedRun);
   nonTerminalNestedRun.leaf_tool_calls[1].status = null;
   assert.equal(
@@ -651,7 +668,7 @@ function testMechanicalAssertions() {
   wrongLayerRun.leaf_tool_calls.push({
     thread_id: 'grandchild-thread',
     tool: 'spawn_agent',
-    arguments: { agent_type: 'codex-explore-deep' },
+    arguments: { agent_type: 'codex-explore' },
     output: { task_name: '/root/plan/trace/deeper' },
   });
   const wrongLayer = evaluateModelSelectionRun(wrongLayerRun, nestedExpected);
@@ -665,7 +682,7 @@ function testMechanicalAssertions() {
   wrongRoleRun.leaf_tool_calls.push({
     thread_id: 'plan-thread',
     tool: 'spawn_agent',
-    arguments: { agent_type: 'codex-explore-quick' },
+    arguments: { agent_type: 'codex-advisor' },
     output: { task_name: '/root/plan/quick' },
   });
   const wrongRole = evaluateModelSelectionRun(wrongRoleRun, nestedExpected);
@@ -682,8 +699,10 @@ function testMechanicalAssertions() {
       exit_code: null,
       spawn_calls: [{
         arguments: {
-          agent_type: 'codex-explore-standard',
+          agent_type: 'codex-explore',
           message: 'trace',
+          model: 'gpt-6-luna',
+          reasoning_effort: 'high',
           fork_context: false,
         },
       }],
@@ -691,9 +710,9 @@ function testMechanicalAssertions() {
     {
       spawn_calls: { min: 1, max: 1 },
       arguments: {
-        agent_type: 'codex-explore-standard',
-        model: null,
-        reasoning_effort: null,
+        agent_type: 'codex-explore',
+        model: 'gpt-6-luna',
+        reasoning_effort: 'high',
         fork_context: false,
         fork_turns: null,
       },
@@ -709,7 +728,7 @@ function testMechanicalAssertions() {
       exit_code: null,
       spawn_calls: [{
         arguments: {
-          agent_type: 'codex-explore-standard',
+          agent_type: 'codex-explore',
           model: 'gpt-5.6-luna',
           reasoning_effort: 'high',
         },
@@ -718,9 +737,9 @@ function testMechanicalAssertions() {
     {
       spawn_calls: { min: 1, max: 1 },
       arguments: {
-        agent_type: 'codex-explore-standard',
-        model: null,
-        reasoning_effort: null,
+        agent_type: 'codex-explore',
+        model: 'gpt-6-luna',
+        reasoning_effort: 'high',
       },
     },
   );
@@ -734,14 +753,14 @@ function testMechanicalAssertions() {
       spawn_calls: [
         {
           arguments: {
-            agent_type: 'codex-explore-custom',
+            agent_type: 'codex-explore',
             model: 'definitely-unavailable-model',
             reasoning_effort: 'turbo',
           },
           output: 'runtime rejected the model',
         },
         {
-          arguments: { agent_type: 'codex-explore-deep' },
+          arguments: { agent_type: 'codex-explore' },
           output: { task_name: '/root/retry' },
         },
       ],
@@ -749,7 +768,7 @@ function testMechanicalAssertions() {
     {
       spawn_calls: { min: 1, max: 1 },
       arguments_if_called: {
-        agent_type: 'codex-explore-custom',
+        agent_type: 'codex-explore',
         model: 'definitely-unavailable-model',
         reasoning_effort: 'turbo',
       },
@@ -766,7 +785,7 @@ function testMechanicalAssertions() {
       final_message: '调度器拒绝了这个参数。',
       spawn_calls: [{
         arguments: {
-          agent_type: 'codex-explore-custom',
+          agent_type: 'codex-explore',
           model: 'definitely-unavailable-model',
           reasoning_effort: 'turbo',
         },
@@ -776,7 +795,7 @@ function testMechanicalAssertions() {
     {
       spawn_calls: { min: 1, max: 1 },
       arguments_if_called: {
-        agent_type: 'codex-explore-custom',
+        agent_type: 'codex-explore',
         model: 'definitely-unavailable-model',
         reasoning_effort: 'turbo',
       },
@@ -825,7 +844,7 @@ function testMechanicalAssertions() {
       final_message: '启动失败。',
       spawn_calls: [{
         arguments: {
-          agent_type: 'codex-explore-custom',
+          agent_type: 'codex-explore',
           model: 'definitely-unavailable-model',
           reasoning_effort: 'turbo',
         },
@@ -835,7 +854,7 @@ function testMechanicalAssertions() {
     {
       spawn_calls: { min: 1, max: 1 },
       arguments_if_called: {
-        agent_type: 'codex-explore-custom',
+        agent_type: 'codex-explore',
         model: 'definitely-unavailable-model',
         reasoning_effort: 'turbo',
       },

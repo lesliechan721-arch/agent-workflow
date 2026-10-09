@@ -1388,6 +1388,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('<skill>', 'owner Skill name')
     .option('--suite <suite>', 'Eval suite ID')
     .option('--profile <profile>', 'Eval profile ID')
+    .option('--config-file <path>', 'non-sensitive plugin config overrides for the Eval profile')
     .option('--workspace-root <root>', 'Catalog Workspace root')
     .option('--split <split>', 'case split filter')
     .option('--case <id>', 'case ID filter')
@@ -1401,6 +1402,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (pluginName: string, skillName: string, rawOptions: {
       suite?: string;
       profile?: string;
+      configFile?: string;
       workspaceRoot?: string;
       split?: string;
       case?: string;
@@ -1431,6 +1433,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           skillName,
           ...(rawOptions.suite === undefined ? {} : { suiteId: rawOptions.suite }),
           ...(rawOptions.profile === undefined ? {} : { profileId: rawOptions.profile }),
+          ...(rawOptions.configFile === undefined ? {} : { configFile: path.resolve(cwd, rawOptions.configFile) }),
           output: rawOptions.output,
           cwd,
           env,

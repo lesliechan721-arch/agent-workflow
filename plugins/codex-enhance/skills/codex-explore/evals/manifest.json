@@ -146,6 +146,28 @@
         ],
         "allowedModels": []
       }
+    },
+    {
+      "id": "role-boundary-trigger",
+      "kind": "trigger",
+      "cases": "role-boundary-trigger-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": false
+    },
+    {
+      "id": "coordinator-behavior",
+      "kind": "conversation",
+      "cases": "coordinator-behavior-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000,
+      "requiredForRelease": true
     }
   ]
 }

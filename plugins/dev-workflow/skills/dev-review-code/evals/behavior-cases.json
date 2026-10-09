@@ -85,7 +85,7 @@
       ],
       "prompt": "以 Standard 保障重新正式审查已修复并通过测试的当前实现，覆盖 docs/dev/invite-expiry/code-review.md。不要修改代码。",
       "assertions": [
-        "完整结果由两个合格独立上下文分轴形成。当前若是独立审查上下文，可自行先完成一轴并补另一轴，也可只协调两个 reviewer；已有本轮安排可复用，轴 reviewer 加载本 Skill 后直接执行分配范围。本次完整重评使用本轮干净上下文；已为本轮安排者不因加载复审 reference 再新建。",
+        "完整结果由两个合格独立上下文分轴形成。当前若是独立审查上下文，可自行先完成一轴并补另一轴，也可只协调两个 reviewer；已有本轮安排可复用，轴 reviewer 加载本 Skill 后直接执行分配范围。本例旧报告缺少原版本、覆盖与合格独立性，不能作为可沿用双轴证据；补足本轮缺失的独立判断，已安排者不因加载复审 reference 再新建。",
         "reviewer 重新覆盖 Spec fidelity 与 Engineering quality，而不是只验证旧 finding",
         "ExpiryPolicy 或其它更优抽象偏好不升级为 blocker",
         "报告比较已解决、仍存在和新发现，分别说明两轴当前结论和覆盖限制。",
@@ -104,7 +104,7 @@
         }
       },
       "expected": {
-        "output": "重新审查当前完整实现，并记录旧问题关闭证据和两轴结论。两个独立 reviewer 完成且覆盖充分时可报告无阻塞；独立能力不足时报告覆盖限制。按请求覆盖指定报告，不自行决定交付。",
+        "output": "重新审查当前完整实现，并记录旧问题关闭证据和两轴结论。两轴有效独立证据齐全且覆盖充分时可报告无阻塞；独立能力不足时报告覆盖限制。按请求覆盖指定报告，不自行决定交付。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/dev/invite-expiry/code-review.md"

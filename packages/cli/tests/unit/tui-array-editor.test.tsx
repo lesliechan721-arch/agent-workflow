@@ -12,6 +12,7 @@ import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '.
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { createConfigV4Definition } from '../helpers/config-v4-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const mocks = vi.hoisted(() => ({ status: vi.fn() }));
@@ -37,8 +38,9 @@ const esc = '\u001b';
 async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
   const isolation = getCurrentSourceTestIsolation();
   const sourceRoot = path.join(isolation.layout.fixtureCwd, 'array-source');
+  const v4 = fieldKey === 'subagentCommands' || fieldKey === 'advisorProfile';
   await createCatalogSnapshotFixture(sourceRoot, 'arrays', [], 'array fixture', (manifest) => {
-    manifest.config = { schemaVersion: 3, fields: {
+    manifest.config = { schemaVersion: v4 ? 4 : 3, fields: {
       labels: { type: 'array', title: '检查标签', items: { type: 'string', validation: { minLength: 1 } }, default: ['security', 'tests'], validation: { minItems: 1, uniqueItems: true } },
       pipeline: { type: 'array', title: '模型顺序', items: { type: 'object', properties: {
         model: { type: 'string', title: '模型', required: true },
@@ -54,6 +56,19 @@ async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
       summaries: { profile: { kind: 'join', parts: [{ path: '/model' }, { path: '/effort' }], separator: '/', missing: '未设置' } },
       fieldViews: { pipeline: { itemSummary: 'profile' } },
     } };
+    if (v4) {
+      const definition = createConfigV4Definition();
+      const commands = definition.fields.subagentCommands!;
+      if (commands.type !== 'array') throw new Error('Expected array fixture');
+      definition.fields.subagentCommands = { ...commands, title: '执行器', default: [{
+        key: 'demo', title: '演示', adapter: 'custom', mode: 'bundle', command: '/bin/example', entrypoint: '/tmp/entry.mjs',
+        args: ['--engine', 'api'], env: { EMPTY: '' }, envFrom: { TOKEN: 'HOST_TOKEN' },
+      }] };
+      const profile = definition.fields.advisorProfile!;
+      if (profile.type !== 'object') throw new Error('Expected object fixture');
+      definition.fields.advisorProfile = { ...profile, title: '角色', default: { executor: 'demo' } };
+      manifest.config = definition;
+    }
   });
   const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env: isolation.env });
@@ -71,11 +86,12 @@ async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
   const controller = new TuiController(dependencies);
   await controller.load();
   controller.push({ name: 'configFields', pluginId: 'team/arrays', layer: { scope: 'effective' } });
-  controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { scope: 'effective' }, fieldKey, editor: 'array', ...(fieldKey === 'fixed' ? { mode: 'choices' as const } : {}) });
+  controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { scope: 'effective' }, fieldKey, editor: fieldKey === 'advisorProfile' ? 'object' : 'array', ...(fieldKey === 'fixed' ? { mode: 'choices' as const } : {}) });
   const ui = render(<ConsoleAppV4 controller={controller} size={size} />);
-  await vi.waitFor(() => expect(ui.lastFrame()).toContain(fieldKey === 'fixed' ? '第一方案' : '添加一项'), { timeout: 5000 });
+  await vi.waitFor(() => expect(ui.lastFrame()).toContain(fieldKey === 'fixed' ? '第一方案' : fieldKey === 'advisorProfile' ? '使用此完整对象' : '添加一项'), { timeout: 5000 });
   const store = async (scope: 'user' | 'project') => {
-    const evidence = await dependencies.captureEvidence({ kind: 'configSaveBatch', pluginId: 'team/arrays', apply: false, groups: [{ scope, updates: { labels: ['safe'] } }] });
+    const evidence = await dependencies.captureEvidence({ kind: 'configSaveBatch', pluginId: 'team/arrays', apply: false,
+      groups: [{ scope, updates: v4 ? { subagentCommands: [] } : { labels: ['safe'] } }] });
     return readPluginConfigStore({ sourceId: 'team', sourceIdentity: evidence.source!.sourceIdentity, logicalIdentity: evidence.source!.logicalIdentity, pluginName: 'arrays', scope, cwd: isolation.layout.fixtureCwd, env: isolation.env });
   };
   const record = async (name: string) => {
@@ -89,6 +105,106 @@ async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
 }
 
 describe('array editor with real config runtime', () => {
+  it('previews branch removals, cancels a switch and saves a builtin without injecting its fixed mode', async () => {
+    const { ui, controller, captured, store } = await setup('subagentCommands', { columns: 80, rows: 24 });
+    await keys(ui, '\r', down, down, '\r', '\r', '\r');
+    expect(ui.lastFrame()).toContain('确认分支切换');
+    expect(ui.lastFrame()).toContain('mode = "bundle"');
+    expect(ui.lastFrame()).toContain('command = "/bin/example"');
+    expect((await store('project')).exists).toBe(false);
+    await keys(ui, esc);
+    expect(controller.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', editor: 'object' });
+    await keys(ui, '\r', '\r', '\r', '\r');
+    expect(controller.snapshot.router.current.route).toMatchObject({ editor: 'object' });
+    await keys(ui, down, down, down, down);
+    expect(ui.lastFrame()).toContain('workspace');
+    await keys(ui, '\r');
+    expect(controller.snapshot.router.current.route).toMatchObject({ editor: 'array' });
+    await keys(ui, 'c', '\r');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'), { timeout: 5000 });
+    await keys(ui, 's');
+    await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('review'), { timeout: 5000 });
+    const intent = captured.at(-1)!;
+    expect(intent).toMatchObject({ groups: [{ updates: { subagentCommands: [{
+      key: 'demo', title: '演示', adapter: 'codex', args: ['--engine', 'api'], env: { EMPTY: '' }, envFrom: { TOKEN: 'HOST_TOKEN' },
+    }] } }] });
+    if (intent.kind !== 'configSaveBatch') throw new Error('Expected config batch');
+    expect(intent.groups[0]!.updates!.subagentCommands).toEqual([{
+      key: 'demo', title: '演示', adapter: 'codex', args: ['--engine', 'api'], env: { EMPTY: '' }, envFrom: { TOKEN: 'HOST_TOKEN' },
+    }]);
+    expect(intent.groups[0]!.changes![0]!.after).toContain('"args":["--engine","api"]');
+    expect((await store('project')).exists).toBe(false);
+    await keys(ui, '\r');
+    await vi.waitFor(() => expect(controller.snapshot.result).toMatchObject({ state: 'succeeded' }), { timeout: 5000 });
+    expect((await store('project')).values.subagentCommands).toEqual(intent.groups[0]!.updates!.subagentCommands);
+  });
+
+  it.each([{ columns: 60, rows: 18 }, { columns: 80, rows: 24 }])('edits argv and environment entries as typed containers and saves whole values at $columns x $rows', async (size) => {
+    const { ui, controller, store } = await setup('subagentCommands', size);
+    await keys(ui, '\r', down, down, down, '\r', '\r');
+    expect(ui.lastFrame()).toContain('实际后端 argv');
+    await keys(ui, '\r', '\u0015', '  --literal=${VALUE}  ', '\r', 'a', '\r', '\r');
+    expect(ui.lastFrame()).toContain('空字符串');
+    await keys(ui, 'c', down, '\r', '\r', '\r', 'literal-value', '\r', 'a', '\r', 'NEW_ENV', '\r', '\r', 'c');
+    expect(controller.snapshot.router.current.route, ui.lastFrame()).toMatchObject({ name: 'configFieldEditor', editor: 'object' });
+    await keys(ui, down, '\r', '\r', '\r', '\u0015', 'NEW_HOST_TOKEN', '\r', 'c', 'c', 'c', '\r');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'), { timeout: 5000 });
+    await keys(ui, 's');
+    await vi.waitFor(() => expect(controller.snapshot.router.current.route.name, ui.lastFrame()).toBe('review'), { timeout: 5000 });
+    expect((await store('project')).exists).toBe(false);
+    await keys(ui, '\r');
+    await vi.waitFor(() => expect(controller.snapshot.result).toMatchObject({ state: 'succeeded' }), { timeout: 5000 });
+    const saved = await store('project');
+    expect(saved.values.subagentCommands).toEqual([{
+      key: 'demo', title: '演示', adapter: 'custom', mode: 'bundle', command: '/bin/example', entrypoint: '/tmp/entry.mjs',
+      args: ['  --literal=${VALUE}  ', 'api', ''], env: { EMPTY: 'literal-value', NEW_ENV: '' }, envFrom: { TOKEN: 'NEW_HOST_TOKEN' },
+    }]);
+    expect((await fs.readJson(saved.path)).schemaVersion).toBe(5);
+  });
+
+  it('cancels row, nested container, parent object and complete-array working copies independently', async () => {
+    const { ui, controller, store } = await setup('subagentCommands');
+    await keys(ui, '\r', down, down, down, '\r', '\r', '\r', '\u0015', 'discard-row', esc);
+    expect(ui.lastFrame()).toContain('--engine');
+    await keys(ui, '\r', '\u0015', 'discard-property', '\r', esc);
+    expect(controller.snapshot.router.current.route).toMatchObject({ editor: 'object' });
+    await keys(ui, '\r', '\r');
+    expect(ui.lastFrame()).toContain('--engine');
+    expect(ui.lastFrame()).not.toContain('discard-property');
+    await keys(ui, '\r', '\u0015', 'discard-object', '\r', 'c', esc, '\r', down, down, down, '\r', '\r');
+    expect(ui.lastFrame()).toContain('--engine');
+    expect(ui.lastFrame()).not.toContain('discard-object');
+    await keys(ui, '\r', '\u0015', 'discard-array', '\r', 'c', 'c', esc);
+    expect(controller.snapshot.router.current.route.name).toBe('configFields');
+    expect(controller.externalDrafts).toHaveLength(0);
+    expect((await store('project')).exists).toBe(false);
+  });
+
+  it('rejects an invalid environment key in the real KV editor before it enters the parent draft', async () => {
+    const { ui, controller } = await setup('subagentCommands');
+    await keys(ui, '\r', down, down, down, down, down, '\r', '\r', 'a', '\r', 'BAD-NAME', '\r');
+    expect(ui.lastFrame()).toContain('输入新键名');
+    expect(ui.lastFrame()).toContain('BAD-NAME');
+    await keys(ui, esc, 'c');
+    expect(controller.snapshot.router.current.route).toMatchObject({ editor: 'object' });
+  });
+
+  it('uses missing/native and otherwise/external branches to change required profile fields', async () => {
+    const { ui, controller } = await setup('advisorProfile');
+    expect(ui.lastFrame()).not.toContain('必填');
+    await keys(ui, '\r', '\r', '\u0015', 'native', '\r');
+    expect(ui.lastFrame()).toContain('确认分支切换');
+    await keys(ui, '\r', 'c');
+    expect(controller.snapshot.router.current.route).toMatchObject({ editor: 'object' });
+    expect(ui.lastFrame()).toContain('model');
+    expect(ui.lastFrame()).toContain('必填');
+    await keys(ui, '\r', down, '\r');
+    expect(ui.lastFrame()).toContain('确认分支切换');
+    await keys(ui, '\r', 'c');
+    expect(controller.snapshot.router.current.route).toMatchObject({ editor: 'object' });
+    expect(ui.lastFrame()).toContain('必填');
+  });
+
   it('does not create a draft by opening an unset list, but can explicitly stage an empty list', async () => {
     const { ui, controller } = await setup('empty');
     expect(controller.externalDrafts).toHaveLength(0);

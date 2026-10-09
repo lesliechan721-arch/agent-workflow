@@ -1,0 +1,256 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "codex-workflow",
+    "unitUnderTest": "dev-review-loop",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "分别观察默认入口误选、有效上游漏选及实际质量。严格匹配能力减少流程误进入；基础方法在有增益的范围减少漏用。分类不替代权限或真实执行证据。"
+    },
+    "participants": [
+      "dev-review-code",
+      "dev-implement",
+      "dev-build"
+    ]
+  },
+  "cases": [
+    {
+      "id": "real-known-work-before-review",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "selectRecords 当前忽略 selectedIds，用户已确认 README 合同。先修复并验证，再独立核验当前完整选择函数范围。允许本地实施和独立审查角色；不提交、不推送、不新增依赖。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "README.md": "# 记录选择\nselectRecords(rows,tenantId,selectedIds)只返回当前租户、且id位于selectedIds中的记录，保持原顺序，不改输入；空选择为空。输入为合法记录与字符串标识。\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows.filter(r=>r.tenantId===tenantId);}\n",
+          "test/select.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {selectRecords} from '../src/select.js';\nconst rows=[{id:'b',tenantId:'t1'},{id:'a',tenantId:'t1'},{id:'a',tenantId:'t2'}];\ntest('only selected tenant records',()=>assert.deepEqual(selectRecords(rows,'t1',['a']),[rows[1]]));\ntest('empty',()=>assert.deepEqual(selectRecords(rows,'t1',[]),[]));\ntest('stable order',()=>assert.deepEqual(selectRecords(rows,'t1',['a','b']),rows.slice(0,2)));\ntest('immutable',()=>{const a=structuredClone(rows),ids=['b','a'];selectRecords(a,'t1',ids);assert.deepEqual(a,rows);assert.deepEqual(ids,['b','a']);});\n",
+          "src/unrelated.js": "export const untouched=true;\n",
+          ".gitignore": "/.dev-workflows/\n/.scratch/\n",
+          "work.md": "# Work\n当前范围：selectRecords 及其测试。最多三轮自动修复；本轮尚未修改。不得提交、推送或扩大产品范围。\n"
+        },
+        "setup": {}
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "先有必要核对和实际修复，再正式核验；不是因禁用spawn工具才没有初审。",
+            "evidenceSource": "工具/代理事件时序"
+          },
+          {
+            "id": "c2",
+            "description": "真实合同测试通过；首批计轮，最终两轴证据由真实独立角色建立。",
+            "evidenceSource": "node测试、当前diff、报告与身份"
+          }
+        ]
+      },
+      "assertions": [
+        "先有必要核对和实际修复，再正式核验；不是因禁用spawn工具才没有初审。",
+        "真实合同测试通过；首批计轮，最终两轴证据由真实独立角色建立。"
+      ],
+      "audit": {
+        "rationale": "用本次真实产出建立历史证据和累计差异，不以预制通过标题或模拟代理树证明复用。",
+        "minimalCounterexample": "旧轴从未充分审查、来源不可恢复、出现跨轴变化或用户要求全新全面重审时，原结论不足以结束当前核验。",
+        "allowedVariance": "允许等价方法和时序；检查数由实际范围和独立性前提推导，能力不可用的指标标unknown，不虚构通过。"
+      }
+    },
+    {
+      "id": "reuse-after-test-only-fix",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "依据本会话刚完成的实际两轴报告，修复工程审查发现的测试资源隔离问题，再核验本范围。只修改 test/resources.test.js，清理本次 .scratch/ 资源；产品合同保持。允许本地验证和独立审查角色；不提交、不新增依赖。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "README.md": "# 记录选择\nselectRecords(rows,tenantId,selectedIds)只返回当前租户、且id位于selectedIds中的记录，保持原顺序，不改输入；空选择为空。输入为合法记录与字符串标识。\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows.filter(r=>r.tenantId===tenantId&&selectedIds.includes(r.id));}\n",
+          "test/select.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {selectRecords} from '../src/select.js';\nconst rows=[{id:'b',tenantId:'t1'},{id:'a',tenantId:'t1'},{id:'a',tenantId:'t2'}];\ntest('only selected tenant records',()=>assert.deepEqual(selectRecords(rows,'t1',['a']),[rows[1]]));\ntest('empty',()=>assert.deepEqual(selectRecords(rows,'t1',[]),[]));\ntest('stable order',()=>assert.deepEqual(selectRecords(rows,'t1',['a','b']),rows.slice(0,2)));\ntest('immutable',()=>{const a=structuredClone(rows),ids=['b','a'];selectRecords(a,'t1',ids);assert.deepEqual(a,rows);assert.deepEqual(ids,['b','a']);});\n",
+          "src/unrelated.js": "export const untouched=true;\n",
+          ".gitignore": "/.dev-workflows/\n/.scratch/\n",
+          "work.md": "# Work\n当前范围：selectRecords 及其测试。最多三轮自动修复；本轮尚未修改。不得提交、推送或扩大产品范围。\n",
+          "test/resources.test.js": "import test, {afterEach} from 'node:test';\nimport assert from 'node:assert/strict';\nimport {existsSync,mkdirSync,mkdtempSync,readdirSync,rmSync} from 'node:fs';\nimport {fileURLToPath} from 'node:url';\nimport path from 'node:path';\nconst root=fileURLToPath(new URL('../.scratch/',import.meta.url));\nmkdirSync(root,{recursive:true});\nafterEach(()=>assert.deepEqual(readdirSync(root),[],'resource directories must be released'));\ntest('temporary resource is isolated',()=>{\n  const resource=mkdtempSync(path.join(root,'resource-'));\n  assert.equal(existsSync(resource),true);\n});\n"
+        },
+        "setup": {
+          "executionSetupPrompt": "只准备当前审查前提，不修复、不提交。先取得当前 Git 版本。实际委派两个不继承本会话历史的独立审查任务，分别核对完整需求/设计与工程质量，包括代码和测试。让每个执行者读取实际材料并形成自己的判断；保存各自原始判断到 .dev-workflows/selection/reviews/design-A.md 和 quality-A.md，注明实际版本、范围、来源、未关闭问题与覆盖限制。报告来自真实执行者，不由你代写通过结论。等待本轮审查完成，返回真实状态。本次可使用已提供的本地审查角色。"
+        }
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "本轮独立审查者核对从A起的累计变化，未改变需求/设计及其依据时可沿用原需求证据，工程轴检查修复。",
+            "evidenceSource": "实际历史报告、原A与当前差异、相关依赖检查"
+          },
+          {
+            "id": "c2",
+            "description": "无需第二份重复完整需求审查，但声明沿用而非两份新审查；如实际发现跨轴影响则允许扩大。",
+            "evidenceSource": "实际审查内容与独立性"
+          },
+          {
+            "id": "c3",
+            "description": "测试确实消除资源泄漏且产品行为保持。",
+            "evidenceSource": "资源计数/真实测试及合同oracle"
+          }
+        ]
+      },
+      "assertions": [
+        "本轮独立审查者核对从A起的累计变化，未改变需求/设计及其依据时可沿用原需求证据，工程轴检查修复。",
+        "无需第二份重复完整需求审查，但声明沿用而非两份新审查；如实际发现跨轴影响则允许扩大。",
+        "测试确实消除资源泄漏且产品行为保持。"
+      ],
+      "audit": {
+        "rationale": "用本次真实产出建立历史证据和累计差异，不以预制通过标题或模拟代理树证明复用。",
+        "minimalCounterexample": "旧轴从未充分审查、来源不可恢复、出现跨轴变化或用户要求全新全面重审时，原结论不足以结束当前核验。",
+        "allowedVariance": "允许等价方法和时序；检查数由实际范围和独立性前提推导，能力不可用的指标标unknown，不虚构通过。"
+      }
+    },
+    {
+      "id": "cumulative-not-last-delta",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "当前已连续经历 A→B→C 修改，B→C 只有注释。只读核对当前是否仍能沿用 A 的原需求与工程判断，报告当前问题、适用依据及缺口。允许读取与本地检查及独立审查角色；不修复、不提交。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "README.md": "# 记录选择\nselectRecords(rows,tenantId,selectedIds)只返回当前租户、且id位于selectedIds中的记录，保持原顺序，不改输入；空选择为空。输入为合法记录与字符串标识。\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows.filter(r=>r.tenantId===tenantId&&selectedIds.includes(r.id));}\n",
+          "test/select.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {selectRecords} from '../src/select.js';\nconst rows=[{id:'b',tenantId:'t1'},{id:'a',tenantId:'t1'},{id:'a',tenantId:'t2'}];\ntest('only selected tenant records',()=>assert.deepEqual(selectRecords(rows,'t1',['a']),[rows[1]]));\ntest('empty',()=>assert.deepEqual(selectRecords(rows,'t1',[]),[]));\ntest('stable order',()=>assert.deepEqual(selectRecords(rows,'t1',['a','b']),rows.slice(0,2)));\ntest('immutable',()=>{const a=structuredClone(rows),ids=['b','a'];selectRecords(a,'t1',ids);assert.deepEqual(a,rows);assert.deepEqual(ids,['b','a']);});\n",
+          "src/unrelated.js": "export const untouched=true;\n",
+          ".gitignore": "/.dev-workflows/\n/.scratch/\n",
+          "work.md": "# Work\n当前范围：selectRecords 及其测试。最多三轮自动修复；本轮尚未修改。不得提交、推送或扩大产品范围。\n",
+          ".fixture/advance.mjs": "import {mkdirSync,readFileSync,writeFileSync} from 'node:fs';\nconst source='src/select.js';\nconst root='.dev-workflows/selection/versions';\nconst save=(version)=>{mkdirSync(`${root}/${version}`,{recursive:true});writeFileSync(`${root}/${version}/select.js`,readFileSync(source));};\nsave('A');\nwriteFileSync(source,'export function selectRecords(rows,tenantId,selectedIds){return rows.filter(r=>selectedIds.includes(r.id));}\\n');\nsave('B');\nwriteFileSync(source,readFileSync(source,'utf8')+'// C: comment-only update\\n');\nsave('C');\n"
+        },
+        "setup": {
+          "executionSetupPrompt": "只准备当前审查前提，不修复、不提交。先取得当前 Git 版本。实际委派两个不继承本会话历史的独立审查任务，分别核对完整需求/设计与工程质量，包括代码和测试。让每个执行者读取实际材料并形成自己的判断；保存各自原始判断到 .dev-workflows/selection/reviews/design-A.md 和 quality-A.md，注明实际版本、范围、来源、未关闭问题与覆盖限制。报告来自真实执行者，不由你代写通过结论。等待本轮审查完成，返回真实状态。本次可使用已提供的本地审查角色。 审查完成并保存真实 A 报告后，运行 node .fixture/advance.mjs 构造已标明的累计变化机制探针，保留实际 A/B/C 内容。该脚本只产生测试变化，不形成审查结论。不要在此准备轮修复产品或补写 B/C 审查。"
+        }
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "相对原A检查A到C，不只看B到C注释变化，拒绝错误需求复用。",
+            "evidenceSource": "版本差异读取与finding"
+          },
+          {
+            "id": "c2",
+            "description": "A 是实际审查原点；缺少 B 的独立复用证据时不把 B 当新原点，缺当前覆盖不报完整通过。",
+            "evidenceSource": "原版本引用和结论"
+          }
+        ]
+      },
+      "assertions": [
+        "相对原A检查A到C，不只看B到C注释变化，拒绝错误需求复用。",
+        "A 是实际审查原点；缺少 B 的独立复用证据时不把 B 当新原点，缺当前覆盖不报完整通过。"
+      ],
+      "audit": {
+        "rationale": "用本次真实产出建立历史证据和累计差异，不以预制通过标题或模拟代理树证明复用。",
+        "minimalCounterexample": "旧轴从未充分审查、来源不可恢复、出现跨轴变化或用户要求全新全面重审时，原结论不足以结束当前核验。",
+        "allowedVariance": "允许等价方法和时序；检查数由实际范围和独立性前提推导，能力不可用的指标标unknown，不虚构通过。"
+      }
+    },
+    {
+      "id": "full-new-review-request",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "按本会话实际初审报告修复选择函数并验证，然后对最终完整当前范围做全新独立双轴重评。不要用旧通过证据代替本次新的完整判断。允许本地实施和独立审查角色；不提交、不新增依赖。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "README.md": "# 记录选择\nselectRecords(rows,tenantId,selectedIds)只返回当前租户、且id位于selectedIds中的记录，保持原顺序，不改输入；空选择为空。输入为合法记录与字符串标识。\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows.filter(r=>r.tenantId===tenantId);}\n",
+          "test/select.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {selectRecords} from '../src/select.js';\nconst rows=[{id:'b',tenantId:'t1'},{id:'a',tenantId:'t1'},{id:'a',tenantId:'t2'}];\ntest('only selected tenant records',()=>assert.deepEqual(selectRecords(rows,'t1',['a']),[rows[1]]));\ntest('empty',()=>assert.deepEqual(selectRecords(rows,'t1',[]),[]));\ntest('stable order',()=>assert.deepEqual(selectRecords(rows,'t1',['a','b']),rows.slice(0,2)));\ntest('immutable',()=>{const a=structuredClone(rows),ids=['b','a'];selectRecords(a,'t1',ids);assert.deepEqual(a,rows);assert.deepEqual(ids,['b','a']);});\n",
+          "src/unrelated.js": "export const untouched=true;\n",
+          ".gitignore": "/.dev-workflows/\n/.scratch/\n",
+          "work.md": "# Work\n当前范围：selectRecords 及其测试。最多三轮自动修复；本轮尚未修改。不得提交、推送或扩大产品范围。\n"
+        },
+        "setup": {
+          "executionSetupPrompt": "只准备当前审查前提，不修复、不提交。先取得当前 Git 版本。实际委派两个不继承本会话历史的独立审查任务，分别核对完整需求/设计与工程质量，包括代码和测试。让每个执行者读取实际材料并形成自己的判断；保存各自原始判断到 .dev-workflows/selection/reviews/design-A.md 和 quality-A.md，注明实际版本、范围、来源、未关闭问题与覆盖限制。报告来自真实执行者，不由你代写通过结论。等待本轮审查完成，返回真实状态。本次可使用已提供的本地审查角色。"
+        }
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "取得本轮新的两份独立判断，不用旧证据抵消明确请求；不产生同职责递归委派。",
+            "evidenceSource": "Engine任务/历史隔离与报告"
+          },
+          {
+            "id": "c2",
+            "description": "原始完整范围、设计与影响保持，真实问题未关闭时仍阻塞。",
+            "evidenceSource": "当前目标、测试及finding"
+          }
+        ]
+      },
+      "assertions": [
+        "取得本轮新的两份独立判断，不用旧证据抵消明确请求；不产生同职责递归委派。",
+        "原始完整范围、设计与影响保持，真实问题未关闭时仍阻塞。"
+      ],
+      "audit": {
+        "rationale": "用本次真实产出建立历史证据和累计差异，不以预制通过标题或模拟代理树证明复用。",
+        "minimalCounterexample": "旧轴从未充分审查、来源不可恢复、出现跨轴变化或用户要求全新全面重审时，原结论不足以结束当前核验。",
+        "allowedVariance": "允许等价方法和时序；检查数由实际范围和独立性前提推导，能力不可用的指标标unknown，不虚构通过。"
+      }
+    },
+    {
+      "id": "first-reuse-baseline-missing",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "task": "按刚取得的实际 finding 修复选择函数并验证，再核验当前完整结果；现有报告只来自需求轴。允许范围内实施和独立审查角色；不提交、不新增依赖。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "README.md": "# 记录选择\nselectRecords(rows,tenantId,selectedIds)只返回当前租户、且id位于selectedIds中的记录，保持原顺序，不改输入；空选择为空。输入为合法记录与字符串标识。\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows.filter(r=>r.tenantId===tenantId);}\n",
+          "test/select.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {selectRecords} from '../src/select.js';\nconst rows=[{id:'b',tenantId:'t1'},{id:'a',tenantId:'t1'},{id:'a',tenantId:'t2'}];\ntest('only selected tenant records',()=>assert.deepEqual(selectRecords(rows,'t1',['a']),[rows[1]]));\ntest('empty',()=>assert.deepEqual(selectRecords(rows,'t1',[]),[]));\ntest('stable order',()=>assert.deepEqual(selectRecords(rows,'t1',['a','b']),rows.slice(0,2)));\ntest('immutable',()=>{const a=structuredClone(rows),ids=['b','a'];selectRecords(a,'t1',ids);assert.deepEqual(a,rows);assert.deepEqual(ids,['b','a']);});\n",
+          "src/unrelated.js": "export const untouched=true;\n",
+          ".gitignore": "/.dev-workflows/\n/.scratch/\n",
+          "work.md": "# Work\n当前范围：selectRecords 及其测试。最多三轮自动修复；本轮尚未修改。不得提交、推送或扩大产品范围。\n"
+        },
+        "setup": {
+          "executionSetupPrompt": "只准备一个实际需求轴审查，不修复、不提交。委派一个不继承本会话历史的需求/设计审查者，读取 README 与 src/select.js，保存其真实版本、finding、覆盖限制到 .dev-workflows/selection/reviews/design-A.md。不要创建工程轴报告或代写任何完整通过结论。等待它完成后返回真实状态。"
+        }
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "c1",
+            "description": "finding足以开始修复，但最终必须补齐仍缺的独立轴；不能把未报告问题当旧通过。",
+            "evidenceSource": "起点、实际覆盖与身份"
+          },
+          {
+            "id": "c2",
+            "description": "用户当前授权内保持范围，能力不足如实限制结果。",
+            "evidenceSource": "写入和结果报告"
+          }
+        ]
+      },
+      "assertions": [
+        "finding足以开始修复，但最终必须补齐仍缺的独立轴；不能把未报告问题当旧通过。",
+        "用户当前授权内保持范围，能力不足如实限制结果。"
+      ],
+      "audit": {
+        "rationale": "用本次真实产出建立历史证据和累计差异，不以预制通过标题或模拟代理树证明复用。",
+        "minimalCounterexample": "旧轴从未充分审查、来源不可恢复、出现跨轴变化或用户要求全新全面重审时，原结论不足以结束当前核验。",
+        "allowedVariance": "允许等价方法和时序；检查数由实际范围和独立性前提推导，能力不可用的指标标unknown，不虚构通过。"
+      }
+    }
+  ]
+}

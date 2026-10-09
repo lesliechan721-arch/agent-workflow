@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-review-loop",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按用户授权、当前范围、真实结果与独立性评价，兼顾漏修和误触发/范围扩张；方法精简效果须与固定基线比较。"
+    },
+    "participants": [
+      "dev-build",
+      "dev-implement",
+      "dev-review-code",
+      "dev-design"
+    ],
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "repair_natural_request",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "检查当前记录选择改动，发现影响当前合同的问题就修好，运行验证并复审后给我结果。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "用户要求完整审查修复闭环。",
+        "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
+        "minimalCounterexample": "仅要求指出问题且只读时不默认选择Repair。"
+      }
+    },
+    {
+      "id": "build_assigned_range",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "当前Build已完成共享查询milestone，委托你在现有修复授权和剩余额度内核验当前累计范围，必要时修复并复审。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "调用方明确授予局部闭环责任。",
+        "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
+        "minimalCounterexample": "仅分配实现一个修复函数时应使用Implement，不能让每个worker重建Repair。"
+      }
+    },
+    {
+      "id": "explicit_repair",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-review-loop 检查当前模块并修复本范围问题，保留当前授权和预算。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "显式选择且请求在能力范围内。",
+        "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
+        "minimalCounterexample": "用户只讨论是否值得使用该方法，不启动执行。"
+      }
+    },
+    {
+      "id": "existing_review_followthrough",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "根据当前Review修复这些实质问题，再对整个已指定模块复审，直到满足要求或达到现有停止条件。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "已有报告仍需验证和闭环。",
+        "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
+        "minimalCounterexample": "只需要解释一条finding时不启动修改。"
+      }
+    },
+    {
+      "id": "readonly_near_miss",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只读审查当前diff并列出问题，先不要修复。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "只读结果由Code Review完成，避免自动升级写权限。",
+        "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
+        "minimalCounterexample": "明确要求审查后修好并复审时可采用Repair。"
+      }
+    },
+    {
+      "id": "single_edit_near_miss",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把已确认边界判断的 > 改成 >=，只改这一处并运行现有测试。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "单项明确修改不需要自动重建完整核验循环。",
+        "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
+        "minimalCounterexample": "要求独立审查整个模块并修复剩余问题时适用Repair。"
+      }
+    },
+    {
+      "id": "advice_only",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "比较Review后一次修复和三轮上限各有什么代价，当前不要调用执行工具。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "仅分析方法，不执行。",
+        "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
+        "minimalCounterexample": "实际授予当前代码有界修复任务时可使用。"
+      }
+    }
+  ]
+}

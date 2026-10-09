@@ -4,6 +4,7 @@ import path from 'node:path'
 
 import type { EvalProviderGrade } from './custom-process.js'
 import { createConversationGraderPrompt } from './providers.js'
+import { parseWorkflowFixtureAction, type WorkflowFixtureAction, type WorkflowFixtureReceipt } from './codex-workflow-fixtures.js'
 
 export interface WorkflowCheck {
   name: string
@@ -15,6 +16,7 @@ export interface WorkflowInteraction {
   when: string
   answer: string
   protectedPaths: string[]
+  action?: WorkflowFixtureAction
 }
 
 /** Eval-owned input. This object is never added to the subject's prompt/config. */
@@ -23,6 +25,8 @@ export interface WorkflowEvaluationRequest {
   checks: WorkflowCheck[]
   interactions: WorkflowInteraction[]
   setupPrompt?: string
+  setupActions?: WorkflowFixtureAction[]
+  finalActions?: WorkflowFixtureAction[]
 }
 
 export interface WorkflowCheckResult {
@@ -97,7 +101,7 @@ function array(value: unknown, label: string, max: number): unknown[] {
 
 export function parseWorkflowEvaluation(value: unknown): WorkflowEvaluationRequest {
   const input = object(value, 'evaluation')
-  keys(input, ['artifacts', 'checks', 'interactions', 'setupPrompt'], 'evaluation')
+  keys(input, ['artifacts', 'checks', 'interactions', 'setupPrompt', 'setupActions', 'finalActions'], 'evaluation')
   const artifacts = array(input.artifacts, 'evaluation.artifacts', 64).map(relative)
   const checks = array(input.checks, 'evaluation.checks', 64).map((entry): WorkflowCheck => {
     const check = object(entry, 'evaluation check')
@@ -106,7 +110,7 @@ export function parseWorkflowEvaluation(value: unknown): WorkflowEvaluationReque
   })
   const interactions = array(input.interactions, 'evaluation.interactions', 8).map((entry): WorkflowInteraction => {
     const step = object(entry, 'evaluation interaction')
-    keys(step, ['id', 'when', 'answer', 'protectedPaths'], 'evaluation interaction')
+    keys(step, ['id', 'when', 'answer', 'protectedPaths', 'action'], 'evaluation interaction')
     const protectedPaths = array(step.protectedPaths, 'protectedPaths', 64).map(relative)
     if (protectedPaths.some((file) => !artifacts.includes(file))) {
       throw new Error('protectedPaths must be included in evaluation.artifacts.')
@@ -116,6 +120,7 @@ export function parseWorkflowEvaluation(value: unknown): WorkflowEvaluationReque
       when: text(step.when, 'interaction.when'),
       answer: text(step.answer, 'interaction.answer'),
       protectedPaths,
+      ...(step.action === undefined ? {} : { action: parseWorkflowFixtureAction(step.action) }),
     }
   })
   for (const [label, values] of [
@@ -128,6 +133,8 @@ export function parseWorkflowEvaluation(value: unknown): WorkflowEvaluationReque
   return {
     artifacts, checks, interactions,
     ...(input.setupPrompt === undefined ? {} : { setupPrompt: text(input.setupPrompt, 'evaluation.setupPrompt') }),
+    ...(input.setupActions === undefined ? {} : { setupActions: array(input.setupActions, 'evaluation.setupActions', 8).map(parseWorkflowFixtureAction) }),
+    ...(input.finalActions === undefined ? {} : { finalActions: array(input.finalActions, 'evaluation.finalActions', 8).map(parseWorkflowFixtureAction) }),
   }
 }
 
@@ -192,6 +199,7 @@ export class WorkflowEvaluation {
   readonly observations: Observation[] = []
   readonly snapshots: Artifact[][] = []
   readonly decisions: UserDecision[] = []
+  readonly fixtureActions: Array<{ phase: string; result: unknown; ordinal: number }> = []
   measurementStart = 0
   private ordinal = 0
   private step = 0
@@ -202,6 +210,7 @@ export class WorkflowEvaluation {
     readonly request: WorkflowEvaluationRequest,
     private readonly workspace: string,
     private readonly judge: WorkflowJudge,
+    private readonly runAction?: (action: WorkflowFixtureAction) => Promise<{ receipt: WorkflowFixtureReceipt; scriptSha256: string }>,
   ) {
     this.capture()
   }
@@ -229,6 +238,18 @@ export class WorkflowEvaluation {
 
   get hasPendingDecision(): boolean {
     return !this.stopped && this.step < this.request.interactions.length
+  }
+
+  async runSetupActions(): Promise<void> {
+    for (const action of this.request.setupActions ?? []) await this.executeAction(action, 'setup')
+    if (this.request.setupActions?.length) this.measurementStart = this.observe({ method: 'evaluation/measurementStart' }, null)
+  }
+
+  private async executeAction(action: WorkflowFixtureAction, phase: string): Promise<void> {
+    if (!this.runAction) throw new Error('workflow fixture action execution is unavailable.')
+    const result = await this.runAction(action)
+    const ordinal = this.observe({ method: 'evaluation/fixtureAction', phase, command: action.command, ...result }, null)
+    this.fixtureActions.push({ phase, result, ordinal })
   }
 
   async reply(question: unknown, questionOrdinal: number): Promise<{ text: string; questionId: string } | null> {
@@ -282,6 +303,16 @@ export class WorkflowEvaluation {
       this.stopped = true
       return null
     }
+    if (step.action) {
+      try {
+        await this.executeAction(step.action, `interaction:${step.id}`)
+      } catch (error) {
+        this.stopped = true
+        decision.status = 'unknown'
+        decision.reason = 'Fixture action did not complete; no hidden answer was released.'
+        throw error
+      }
+    }
     decision.status = 'delivered'
     decision.reason = 'Independent semantic match; answer supplied by Engine, not subject output.'
     decision.answer = step.answer
@@ -292,6 +323,16 @@ export class WorkflowEvaluation {
 
   async finish(evidence: unknown, transcript: unknown): Promise<Record<string, unknown>> {
     this.capture()
+    for (const action of this.request.finalActions ?? []) await this.executeAction(action, 'final')
+    // Calls and outputs already have normalized identity/order in the evidence.
+    // Keep source messages; the full rollout remains in the archived trace.
+    const messages = Array.isArray(transcript) ? transcript.filter((event) => {
+      if (!event || typeof event !== 'object') return false
+      const entry = event as Record<string, unknown>
+      if (entry.type !== 'response_item' || !entry.payload || typeof entry.payload !== 'object') return false
+      return ['message', 'agent_message'].includes(String((entry.payload as Record<string, unknown>).type))
+    }) : transcript
+    const { leafCalls: _leafCalls, ...graderEvidence } = object(evidence, 'workflow evidence')
     const grade = await this.judge(createConversationGraderPrompt({
       assertions: [
         ...this.request.checks.map((check) => `${check.name}: ${check.criterion}`),
@@ -300,12 +341,14 @@ export class WorkflowEvaluation {
         'Treat subject statements as claims, not proof. Require actual independent judgments and role/participation/order evidence, not two headings.',
         'A snapshot proves only observed content at that event. If hidden intermediate writes, task receipt, current scope, or ordering cannot be established, use unknown.',
         'Setup/imported history is not a measured action. Grader conclusions do not replace subject Review. Preserve failures alongside missing coverage.',
+        'Fixture action receipts describe Eval-owned setup effects. They are not subject actions, independent model judgments, or an Oracle verdict.',
+        'Engine launch evidence records submitted instructions and parameters. It does not prove that the host adopted a named role or used the requested model.',
         'An independent root may form one axis before observing the other; two clean children are also valid. A participant in authoring cannot count as an independent reviewer.',
       ],
-      modelOutput: JSON.stringify(transcript),
+      modelOutput: JSON.stringify(messages),
       mechanicalEvidence: {
-        evidence, observations: this.observations, snapshots: this.snapshots,
-        decisions: this.decisions, measurementStart: this.measurementStart,
+        evidence: graderEvidence, observations: this.observations, snapshots: this.snapshots,
+        decisions: this.decisions, fixtureActions: this.fixtureActions, measurementStart: this.measurementStart,
       },
     }))
     const checks = normalizeWorkflowChecks(this.request.checks, grade)
@@ -320,7 +363,7 @@ export class WorkflowEvaluation {
     return {
       complete: checks.every((check) => check.verdict !== 'unknown'),
       checks, decisions: this.decisions, observations: this.observations,
-      snapshots: this.snapshots, measurementStart: this.measurementStart,
+      snapshots: this.snapshots, fixtureActions: this.fixtureActions, measurementStart: this.measurementStart,
     }
   }
 }

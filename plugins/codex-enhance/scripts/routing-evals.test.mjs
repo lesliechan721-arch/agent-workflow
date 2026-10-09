@@ -13,7 +13,7 @@ import routingCorpusDocument from '../skills/codex-subagent-guide/evals/provider
 async function testProviderManifestComposition() {
   const manifest = routingManifestDocument;
   assert.equal(manifest.version, 1);
-  const workflowSuites = manifest.suites.filter((suite) => suite.kind === 'codex-workflow');
+  const workflowSuites = manifest.suites.filter((suite) => ['routing', 'lifecycle', 'lifecycle-timeout'].includes(suite.id));
   assert.deepEqual(
     workflowSuites.map((suite) => suite.id),
     ['routing', 'lifecycle', 'lifecycle-timeout'],
@@ -91,7 +91,7 @@ async function testRolloutArgumentEvidence() {
         name: 'spawn_agent',
         namespace: 'collaboration',
         arguments: JSON.stringify({
-          agent_type: 'codex-subagent-simple',
+          agent_type: 'codex-subagent',
           message: 'verify facts',
           fork_turns: '2',
         }),
@@ -112,7 +112,7 @@ async function testRolloutArgumentEvidence() {
               executed_tool_calls: [{
                 name: 'collaboration__spawn_agent',
                 arguments: {
-                  agent_type: 'codex-subagent-complex',
+                  agent_type: 'codex-subagent',
                   message: 'investigate',
                   fork_turns: 'none',
                 },
@@ -128,7 +128,7 @@ async function testRolloutArgumentEvidence() {
             call_id: 'exec-call-1',
             input: [
               'const result = await tools.multi_agent_v1__spawn_agent({',
-              '  agent_type: "codex-subagent-simple",',
+              '  agent_type: "codex-subagent",',
               '  fork_context: false,',
               '  message: "verify { left: 1, right: 2 }",',
               '  items: [{ type: "text", text: "nested evidence" }],',
@@ -146,7 +146,7 @@ async function testRolloutArgumentEvidence() {
               executed_tool_calls: [{
                 name: 'multi_agent_v1__spawn_agent',
                 arguments: {
-                  agent_type: 'codex-subagent-simple',
+                  agent_type: 'codex-subagent',
                   fork_context: false,
                   message: 'verify { left: 1, right: 2 }',
                   items: [{ type: 'text', text: 'nested evidence' }],
@@ -173,7 +173,7 @@ async function testRolloutArgumentEvidence() {
               executed_tool_calls: [{
                 name: 'multi_agent_v1__spawn_agent',
                 arguments: {
-                  agent_type: 'codex-subagent-general',
+                  agent_type: 'codex-subagent',
                   message: 'metadata fallback',
                   fork_context: false,
                 },
@@ -188,23 +188,23 @@ async function testRolloutArgumentEvidence() {
     const calls = await readSpawnCallsFromRollouts(codexHome);
     assert.equal(calls.length, 4);
     assert.deepEqual(calls[0].arguments, {
-      agent_type: 'codex-subagent-simple',
+      agent_type: 'codex-subagent',
       message: 'verify facts',
       fork_turns: '2',
     });
     assert.deepEqual(calls[1].arguments, {
-      agent_type: 'codex-subagent-complex',
+      agent_type: 'codex-subagent',
       message: 'investigate',
       fork_turns: 'none',
     });
     assert.deepEqual(calls[2].arguments, {
-      agent_type: 'codex-subagent-simple',
+      agent_type: 'codex-subagent',
       fork_context: false,
       message: 'verify { left: 1, right: 2 }',
       items: [{ type: 'text', text: 'nested evidence' }],
     });
     assert.deepEqual(calls[3].arguments, {
-      agent_type: 'codex-subagent-general',
+      agent_type: 'codex-subagent',
       message: 'metadata fallback',
       fork_context: false,
     });
@@ -239,7 +239,7 @@ function testMechanicalAssertions() {
   const expected = {
     spawn_calls: { min: 1, max: 1 },
     arguments: {
-      agent_type: 'codex-subagent-simple',
+      agent_type: 'codex-subagent',
       model: null,
       reasoning_effort: null,
       fork_turns: '2',
@@ -254,7 +254,7 @@ function testMechanicalAssertions() {
     exit_code: null,
     spawn_calls: [{
       arguments: {
-        agent_type: 'codex-subagent-simple',
+        agent_type: 'codex-subagent',
         message: 'verify',
         fork_turns: '2',
       },

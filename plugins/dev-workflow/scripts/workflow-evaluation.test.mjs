@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -11,6 +11,7 @@ import { prepareExecutionWorkflow, gradeExecutionWorkflow, interactionSteps } fr
 import { verifyExport, verifyCurrentPage, semanticChecks } from '../skills/dev-build/evals/workflow-results.mjs';
 import { stageCheckpointCheck, stageProductChecks, verifyExportChoice } from '../skills/dev-build/evals/stage-and-fidelity.mjs';
 import { syncWorkflowEvals } from './sync-workflow-evals.mjs';
+import { coverageProductChecks } from '../skills/dev-build/evals/adaptive-coverage.mjs';
 
 const execute = promisify(execFile);
 const localRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,6 +27,7 @@ const files = [
   'skills/dev-build/evals/alignment-execution-cases.json',
   'skills/dev-workflow/evals/continuous-alignment-cases.json',
   'skills/dev-workflow/evals/stage-and-fidelity-workflow.cases.json',
+  'skills/dev-review-loop/evals/adaptive-coverage-workflow.cases.json',
 ];
 
 async function fixture() {
@@ -63,6 +65,53 @@ test('all execution cases prepare real isolated fixtures without running a model
       } finally {
         await rm(state.directory, { recursive: true, force: true });
       }
+    }
+  }
+});
+
+test('prepares a subject baseline from an empty materialization Git directory inside another repository', async () => {
+  const document = await json(path.join(root, 'skills/dev-review-loop/evals/adaptive-coverage-workflow.cases.json'));
+  const state = await fixture();
+  try {
+    await git(state.directory, ['init', '--initial-branch=outer']);
+    const outerHead = await readFile(path.join(state.directory, '.git/HEAD'), 'utf8');
+    await mkdir(path.join(state.paths.workspace, '.git'));
+    await prepareExecutionWorkflow({ case: document.cases[0], paths: state.paths });
+    assert.equal(await realpath(await git(state.paths.workspace, ['rev-parse', '--show-toplevel'])), await realpath(state.paths.workspace));
+    const baseline = await json(path.join(state.paths.output, 'fixture-baseline.json'));
+    assert.equal(await git(state.paths.workspace, ['rev-parse', 'HEAD']), baseline.head);
+    assert.equal(await readFile(path.join(state.directory, '.git/HEAD'), 'utf8'), outerHead);
+  } finally {
+    await rm(state.directory, { recursive: true, force: true });
+  }
+});
+
+test('rejects existing Git repositories, nonempty metadata, files and links without changing their contents', async () => {
+  const document = await json(path.join(root, 'skills/dev-review-loop/evals/adaptive-coverage-workflow.cases.json'));
+  for (const kind of ['repository', 'directory', 'file', 'link']) {
+    const state = await fixture();
+    try {
+      const gitPath = path.join(state.paths.workspace, '.git');
+      let protectedFile;
+      if (kind === 'repository') {
+        await git(state.paths.workspace, ['init', '--initial-branch=existing']);
+        protectedFile = path.join(gitPath, 'HEAD');
+      } else if (kind === 'file') {
+        await writeFile(gitPath, 'gitdir: ../foreign-git\n');
+        protectedFile = gitPath;
+      } else {
+        const directory = kind === 'link' ? path.join(state.directory, 'foreign-git') : gitPath;
+        await mkdir(directory);
+        protectedFile = path.join(directory, 'keep');
+        await writeFile(protectedFile, 'preserve Git metadata\n');
+        if (kind === 'link') await symlink(directory, gitPath, 'junction');
+      }
+      const content = await readFile(protectedFile, 'utf8');
+      await assert.rejects(prepareExecutionWorkflow({ case: document.cases[0], paths: state.paths }),
+        /Eval fixture must not reuse an existing Git repository/u);
+      assert.equal(await readFile(protectedFile, 'utf8'), content);
+    } finally {
+      await rm(state.directory, { recursive: true, force: true });
     }
   }
 });
@@ -292,5 +341,73 @@ test('product correctness and model approval labels cannot fill missing user/Rev
 });
 
 test('Eval-local generated closure remains synchronized with the canonical provider', async () => {
-  assert.deepEqual(await syncWorkflowEvals({ pluginRoot: root }), { ok: true, checked: 7, drift: [] });
+  assert.deepEqual(await syncWorkflowEvals({ pluginRoot: root }), { ok: true, checked: 16, drift: [] });
+});
+
+test('coverage product oracle rejects selection regressions independently of Review labels', async () => {
+  const document = await json(path.join(root, 'skills/dev-review-loop/evals/adaptive-coverage-workflow.cases.json'));
+  const selected = document.cases.find((item) => item.id === 'real-known-work-before-review');
+  const state = await fixture();
+  try {
+    await prepareExecutionWorkflow({ case: selected, paths: state.paths });
+    const bad = await coverageProductChecks(selected, state.paths.workspace);
+    assert.equal(bad.find((item) => item.name === 'selection-contract').verdict, 'fail');
+    await writeFile(path.join(state.paths.workspace, 'src/select.js'), 'export const selectRecords=(rows,tenantId,selectedIds)=>rows.filter(row=>row.tenantId===tenantId&&selectedIds.includes(row.id));\n');
+    const good = await coverageProductChecks(selected, state.paths.workspace);
+    assert.equal(good.every((item) => item.verdict === 'pass'), true);
+    await writeFile(state.paths.evidence, JSON.stringify({
+      rootThreadId: 'root', workspaceDiff: { added: [], modified: ['src/select.js'], removed: [] },
+      termination: { appServerProcessTreeCleanupConfirmed: true }, cleanup: { isolatedCodexHomeRemoved: true },
+      finalMessage: 'Both axes clean; reuse approved.',
+    }));
+    const result = await gradeExecutionWorkflow({ case: selected, paths: state.paths });
+    assert.equal(result.passed, false);
+    assert.equal(result.details.checks.find((item) => item.name === 'semantic:coverage-history-and-budget').verdict, 'unknown');
+  } finally { await rm(state.directory, { recursive: true, force: true }); }
+});
+
+test('coverage fixture exposes a real test resource leak and verifies release without changing the product', async () => {
+  const document = await json(path.join(root, 'skills/dev-review-loop/evals/adaptive-coverage-workflow.cases.json'));
+  const selected = document.cases.find((item) => item.id === 'reuse-after-test-only-fix');
+  const state = await fixture();
+  try {
+    await prepareExecutionWorkflow({ case: selected, paths: state.paths });
+    const bad = await coverageProductChecks(selected, state.paths.workspace);
+    assert.equal(bad.find((item) => item.name === 'selection-contract').verdict, 'pass');
+    assert.equal(bad.find((item) => item.name === 'test-resource-cleanup').verdict, 'fail');
+    await rm(path.join(state.paths.workspace, '.scratch'), { recursive: true, force: true });
+    const resource = selected.input.workspaceFiles['test/resources.test.js'].replace(
+      '  assert.equal(existsSync(resource),true);',
+      '  try { assert.equal(existsSync(resource),true); } finally { rmSync(resource,{recursive:true,force:true}); }',
+    );
+    await writeFile(path.join(state.paths.workspace, 'test/resources.test.js'), resource);
+    const good = await coverageProductChecks(selected, state.paths.workspace);
+    assert.equal(good.every((item) => item.verdict === 'pass'), true, JSON.stringify(good));
+    await writeFile(path.join(state.paths.workspace, 'test/resources.test.js'), resource.replace(
+      "afterEach(()=>assert.deepEqual(readdirSync(root),[],'resource directories must be released'));",
+      'afterEach(()=>rmSync(root,{recursive:true,force:true}));',
+    ));
+    const removedRoot = await coverageProductChecks(selected, state.paths.workspace);
+    assert.equal(removedRoot.every((item) => item.verdict === 'pass'), true, JSON.stringify(removedRoot));
+    await writeFile(path.join(state.paths.workspace, 'src/select.js'), 'export const selectRecords=()=>[];\n');
+    const changed = await coverageProductChecks(selected, state.paths.workspace);
+    assert.equal(changed.find((item) => item.name === 'source:src/select.js').verdict, 'fail');
+  } finally { await rm(state.directory, { recursive: true, force: true }); }
+});
+
+test('cumulative fixture preserves actual A to C regression despite a comment-only final delta', async () => {
+  const document = await json(path.join(root, 'skills/dev-review-loop/evals/adaptive-coverage-workflow.cases.json'));
+  const selected = document.cases.find((item) => item.id === 'cumulative-not-last-delta');
+  const state = await fixture();
+  try {
+    await prepareExecutionWorkflow({ case: selected, paths: state.paths });
+    const missing = await coverageProductChecks(selected, state.paths.workspace);
+    assert.equal(missing.find((item) => item.name === 'cumulative-probe').verdict, 'fail');
+    await execute(process.execPath, ['.fixture/advance.mjs'], { cwd: state.paths.workspace });
+    const probe = await coverageProductChecks(selected, state.paths.workspace);
+    assert.equal(probe.every((item) => item.verdict === 'pass'), true);
+    await writeFile(path.join(state.paths.workspace, '.dev-workflows/selection/versions/A/select.js'), 'export const selectRecords=()=>[];\n');
+    const overwritten = await coverageProductChecks(selected, state.paths.workspace);
+    assert.equal(overwritten.find((item) => item.name === 'cumulative-probe').verdict, 'fail');
+  } finally { await rm(state.directory, { recursive: true, force: true }); }
 });

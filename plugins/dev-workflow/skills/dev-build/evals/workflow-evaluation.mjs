@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -12,10 +12,12 @@ import {
   verifyExport, verifyCurrentPage, verifyNormalization,
 } from './workflow-results.mjs';
 import { STAGE_CASES, STAGE_CHECKPOINT_CASES, stageSemanticChecks, stageProductChecks, stageCheckpointCheck } from './stage-and-fidelity.mjs';
+import { COVERAGE_CASES, coverageArtifacts, coverageSemanticChecks, coverageProductChecks } from './adaptive-coverage.mjs';
 
 const execute = promisify(execFile);
 const CASES = new Set([
   ...STAGE_CASES,
+  ...COVERAGE_CASES,
   'default-sequential-delegation', 'milestone-verified-commit-before-review',
   'milestone-no-commit-explicit', 'milestone-blocker-repair-append', 'checkpoint-hook-and-index-boundary',
   'spec-real-second-revision', 'independent-root-two-legal-arrangements', 'resume-existing-review-assignments',
@@ -82,7 +84,9 @@ async function git(workspace, args) {
 }
 
 async function prepareGit(selected, workspace) {
-  if (await lstat(path.join(workspace, '.git')).catch(() => null)) {
+  const gitDirectory = path.join(workspace, '.git');
+  const existing = await lstat(gitDirectory).catch(() => null);
+  if (existing && (!existing.isDirectory() || (await readdir(gitDirectory)).length > 0)) {
     throw new Error('Eval fixture must not reuse an existing Git repository.');
   }
   await git(workspace, ['init', '--initial-branch=eval']);
@@ -138,10 +142,12 @@ export async function prepareExecutionWorkflow(input) {
     ...(selected.id === 'resume-existing-review-assignments' ? {
       setupPrompt: '准备下一轮审查恢复场景：在当前仓库中实际委派两个干净的审查任务，分别负责需求设计和工程质量。告知它们先读取资料；保留实际任务以供下一轮继续。不要伪造任务ID，不写产品。本轮只完成真实任务启动并返回实际状态。',
     } : {}),
-    ...(STAGE_CASES.has(selected.id) && selected.input.setup.executionSetupPrompt
+    ...((STAGE_CASES.has(selected.id) || COVERAGE_CASES.has(selected.id)) && selected.input.setup.executionSetupPrompt
       ? { setupPrompt: selected.input.setup.executionSetupPrompt } : {}),
   });
   evaluation.checks.push(...stageSemanticChecks(selected));
+  evaluation.checks.push(...coverageSemanticChecks(selected));
+  evaluation.artifacts.push(...coverageArtifacts(selected));
   if (baseline.personalPath) evaluation.artifacts.push(baseline.personalPath);
   evaluation.checks.push({ name: 'git-scope-and-order', criterion:
     '按原始请求核对实际Git授权、基线、提交范围、验证与Review顺序。初始fixture commit不计模型保存。阶段未通过不能释放相关依赖；在途任务或累计阶段范围无法观测时为unknown。' });
@@ -166,7 +172,7 @@ export async function gradeExecutionWorkflow(input) {
   const evidence = JSON.parse(await regularText(input.paths.output, 'workflow-evidence.json', 64 * 1024 * 1024));
   const baseline = JSON.parse(await regularText(input.paths.output, 'fixture-baseline.json'));
   const checks = semanticChecks(selected, evidence);
-  for (const name of ['git-scope-and-order', ...(selected.input.setup?.branch ? ['single-paired-branch'] : []), ...stageSemanticChecks(selected).map((item) => item.name)]) {
+  for (const name of ['git-scope-and-order', ...(selected.input.setup?.branch ? ['single-paired-branch'] : []), ...stageSemanticChecks(selected).map((item) => item.name), ...coverageSemanticChecks(selected).map((item) => item.name)]) {
     const results = evidence.evaluation?.checks?.filter((entry) => entry.name === name) ?? [];
     checks.push(results.length === 1 && ['pass', 'fail', 'unknown'].includes(results[0].verdict)
       && typeof results[0].evidence === 'string' && results[0].evidence.trim() ? { ...results[0], name: `semantic:${name}` }
@@ -178,7 +184,9 @@ export async function gradeExecutionWorkflow(input) {
     && decisions[index]?.answer === step.answer && decisions[index]?.answerOrdinal > decisions[index]?.questionOrdinal);
   if (steps.length) checks.push(check('actual-user-answers', delivered ? 'pass' : 'fail', 'Compare Engine-delivered events with this case response branch, not subject statements.'));
   const id = selected.id;
-  if (STAGE_CASES.has(id)) {
+  if (COVERAGE_CASES.has(id)) {
+    checks.push(...await coverageProductChecks(selected, input.paths.workspace));
+  } else if (STAGE_CASES.has(id)) {
     checks.push(...await stageProductChecks(selected, input.paths.workspace, evidence));
   } else if (id.startsWith('unprompted-export-choice') || id.startsWith('same-request-two-real-user-answers')) {
     checks.push(delivered ? await verifyExport(input.paths.workspace, selected.input.setup?.branch?.afterAnswerOracle ?? (id.endsWith('-all') ? 'all' : 'filtered'))

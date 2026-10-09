@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { normalizePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 
 const mocks = vi.hoisted(() => ({
   visible: new Set<string>(),
@@ -302,6 +303,72 @@ describe('config write full reinstall apply', () => {
     expect(reinstall).not.toHaveBeenCalled();
   });
 
+  it('checks cross-field candidate updates and preserves the store when referenced keys are removed', async () => {
+    const fixture = await createFixture('reference-config', { codexProjectManaged: false });
+    fixture.plugin.sourceId = 'reference-source';
+    fixture.plugin.sourceIdentity = `sha256:${'a'.repeat(64)}`;
+    fixture.plugin.catalogLogicalIdentity = 'reference/source';
+    fixture.plugin.manifest.config = normalizePluginConfigDefinition({ schemaVersion: 3, fields: {
+      registry: { type: 'array', default: [], validation: { uniqueBy: 'id' }, items: {
+        type: 'object', properties: { id: { type: 'string', required: true }, title: { type: 'string', required: true } },
+        additionalProperties: false,
+      } },
+      selected: { type: 'object', default: {}, properties: {
+        backend: { type: 'string', valueRef: { field: 'registry', key: 'id', label: 'title', include: ['local'] } },
+      }, additionalProperties: false },
+    } });
+    const options = { plugin: fixture.plugin, scope: 'user' as const, cwd: fixture.cwd, env: fixture.env, apply: false };
+    const storePath = resolvePluginConfigStorePath({ sourceId: fixture.plugin.sourceId, pluginName: fixture.plugin.manifest.name, ...options });
+    await expect(applyPluginConfigWrite({ ...options, request: { updates: { selected: { backend: 'missing' } } } }))
+      .rejects.toMatchObject({ code: 'configReferenceInvalid' });
+    expect(await fs.pathExists(storePath)).toBe(false);
+    await applyPluginConfigWrite({ ...options, request: { updates: {
+      registry: [{ id: 'remote', title: 'Remote' }], selected: { backend: 'remote' },
+    } } });
+    const before = await fs.readFile(storePath);
+    await expect(applyPluginConfigWrite({ ...options, request: { updates: { registry: [] } } }))
+      .rejects.toThrow(/selected\.backend/u);
+    await expect(applyPluginConfigWrite({ ...options, request: { removeKeys: ['registry'] } }))
+      .rejects.toMatchObject({ code: 'configReferenceInvalid' });
+    expect(await fs.readFile(storePath)).toEqual(before);
+    await applyPluginConfigWrite({ ...options, request: { updates: {
+      registry: [{ id: 'renamed', title: 'Same label' }], selected: { backend: 'renamed' },
+    } } });
+    expect((await resolveEffectivePluginConfig({ ...options, sourceId: fixture.plugin.sourceId,
+      sourceIdentity: fixture.plugin.sourceIdentity, logicalIdentity: fixture.plugin.catalogLogicalIdentity,
+      manifest: fixture.plugin.manifest, targetScope: 'user' })).values)
+      .toEqual({ registry: [{ id: 'renamed', title: 'Same label' }], selected: { backend: 'renamed' } });
+    expect(JSON.parse((await fs.readFile(storePath)).toString()).schemaVersion).toBe(5);
+  });
+
+  it('validates an overridden profile against its inherited registry before exposing effective values', async () => {
+    const fixture = await createFixture('reference-layer-config', { codexProjectManaged: false });
+    fixture.plugin.manifest.config = normalizePluginConfigDefinition({ schemaVersion: 3, fields: {
+      registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
+        type: 'object', properties: { key: { type: 'string', required: true }, label: { type: 'string', required: true } },
+        additionalProperties: false,
+      } },
+      profile: { type: 'object', default: { model: 'default' }, properties: {
+        model: { type: 'string', required: true },
+        executor: { type: 'string', valueRef: { field: 'registry', key: 'key', include: ['builtin'] } },
+      }, additionalProperties: false },
+    } });
+    const options = { plugin: fixture.plugin, cwd: fixture.cwd, env: fixture.env, apply: false };
+    await applyPluginConfigWrite({ ...options, scope: 'user', request: { updates: { registry: [{ key: 'remote', label: 'Remote' }] } } });
+    await applyPluginConfigWrite({ ...options, scope: 'project', request: { updates: { profile: { model: 'project', executor: 'remote' } } } });
+    const valid = await resolveEffectivePluginConfig({ ...options, manifest: fixture.plugin.manifest, targetScope: 'project' });
+    expect(valid.values.profile).toEqual({ model: 'project', executor: 'remote' });
+    // A manual edit must fail on read without silently falling back or writing a repair.
+    const storePath = resolvePluginConfigStorePath({ ...options, pluginName: fixture.plugin.manifest.name, scope: 'user' });
+    const envelope = await fs.readJson(storePath);
+    envelope.registry = [{ key: 'other', label: 'Other' }];
+    await fs.writeJson(storePath, envelope);
+    const before = await fs.readFile(storePath);
+    const invalid = await resolveEffectivePluginConfig({ ...options, manifest: fixture.plugin.manifest, targetScope: 'project' });
+    expect(invalid.values.profile).toBeUndefined();
+    expect(invalid.issues).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'profile', code: 'valueRef' })]));
+    expect(await fs.readFile(storePath)).toEqual(before);
+  });
   it('keeps closed boolean choices in the legacy prompt enum projection', () => {
     expect(toCliConfigPromptSchema({
       enabled: {

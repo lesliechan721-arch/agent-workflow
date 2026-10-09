@@ -148,6 +148,20 @@ export type {
   CodexWorkflowTransport,
   CodexWorkflowTransportInput,
 } from './codex-workflow.js'
+export {
+  parseInstructionV2ReasoningEffort,
+  parseInstructionV2Receipt,
+  parseInstructionV2Transport,
+} from './instruction-v2.js'
+export type {
+  InstructionV2ReasoningEffort,
+  InstructionV2Receipt,
+  InstructionV2Request,
+  InstructionV2Transport,
+} from './instruction-v2.js'
+export { parseWorkflowFixtureAction, validateWorkflowFixtureActions } from './codex-workflow-fixtures.js'
+export type { WorkflowFixtureAction, WorkflowFixtureReceipt, WorkflowFixtureValue } from './codex-workflow-fixtures.js'
+export type { WorkflowEvaluationRequest, WorkflowCheck, WorkflowInteraction } from './codex-workflow-evaluation.js'
 export type {
   CustomProcessExecutorOptions,
   CustomProcessInput,

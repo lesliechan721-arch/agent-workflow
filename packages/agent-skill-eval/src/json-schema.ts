@@ -87,6 +87,8 @@ function validateNode(
     return
   }
   if (typeof value === 'string') {
+    if (typeof schema.maxLength === 'number' && value.length > schema.maxLength)
+      errors.push(`${pointer}: must have length <= ${schema.maxLength}`)
     if (typeof schema.minLength === 'number' && value.length < schema.minLength)
       errors.push(`${pointer}: must have length >= ${schema.minLength}`)
     if (typeof schema.pattern === 'string' && !new RegExp(schema.pattern, 'u').test(value))
@@ -105,12 +107,17 @@ function validateNode(
     ) errors.push(`${pointer}: must be a multiple of ${schema.multipleOf}`)
   }
   if (Array.isArray(value)) {
+    if (typeof schema.maxItems === 'number' && value.length > schema.maxItems)
+      errors.push(`${pointer}: must contain at most ${schema.maxItems} items`)
     if (typeof schema.minItems === 'number' && value.length < schema.minItems)
       errors.push(`${pointer}: must contain at least ${schema.minItems} items`)
     if (schema.uniqueItems === true && new Set(value.map((entry) => JSON.stringify(entry))).size !== value.length)
       errors.push(`${pointer}: must contain unique items`)
     if (schema.items && typeof schema.items === 'object')
       value.forEach((entry, index) => validateNode(schema.items as JsonSchema, entry, `${pointer}/${index}`, errors, root))
+    if (Array.isArray(schema.prefixItems)) schema.prefixItems.forEach((entry, index) => {
+      if (index < value.length && entry && typeof entry === 'object') validateNode(entry as JsonSchema, value[index], `${pointer}/${index}`, errors, root)
+    })
   }
   if (matchesType(value, 'object')) {
     const object = value as Record<string, unknown>

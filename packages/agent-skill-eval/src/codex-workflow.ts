@@ -20,6 +20,14 @@ import {
   type CodexEvalRuntimeConfig,
 } from './codex-eval-runtime-config.js'
 import { applyCodexEvalGitIsolation } from './codex-eval-isolation.js'
+import {
+  parseInstructionV2ReasoningEffort,
+  parseInstructionV2Receipt,
+  parseInstructionV2Transport,
+  type InstructionV2ReasoningEffort,
+  type InstructionV2Receipt,
+  type InstructionV2Transport,
+} from './instruction-v2.js'
 import type { ProcessTreeDependencies } from './process-tree.js'
 import { runProviderProcess } from './process.js'
 import { assertProviderRunPaths } from './run-paths.js'
@@ -36,6 +44,7 @@ import {
   WorkflowEvaluation,
   type WorkflowEvaluationRequest,
 } from './codex-workflow-evaluation.js'
+import { runWorkflowFixtureAction, validateWorkflowFixtureActions, type WorkflowFixtureAction } from './codex-workflow-fixtures.js'
 
 const MAX_ADAPTER_OUTPUT_BYTES = 4 * 1024 * 1024
 const MAX_REQUEST_TEXT_BYTES = 200_000
@@ -69,9 +78,11 @@ export interface CodexWorkflowRequest {
   prompt: string
   sandbox: 'read-only' | 'workspace-write'
   model: string | null
+  reasoningEffort?: InstructionV2ReasoningEffort
   developerInstructions: string
   roles: CodexWorkflowRole[]
   evaluation?: WorkflowEvaluationRequest
+  transport?: InstructionV2Transport
   multiAgent: {
     protocol: 'v1' | 'v2'
     maxDepth: number
@@ -121,13 +132,14 @@ export interface CodexWorkflowEvidence {
   version: 1
   rootThreadId: string
   completion: {
-    status: 'completed'
+    status: 'completed' | 'failed' | 'cancelled' | 'unknown'
     turnStatus: string
     durationMs: number
   }
   termination: {
-    reason: 'completed'
-    appServerProcessTreeCleanupConfirmed: true
+    reason: 'completed' | 'failed' | 'cancelled' | 'unknown'
+    appServerProcessTreeCleanupConfirmed?: true
+    providerProcessCleanupConfirmed?: boolean
   }
   usage: unknown
   finalMessage: string
@@ -160,6 +172,29 @@ export interface CodexWorkflowEvidence {
     isolatedCodexHomeRemoved: true
   }
   evaluation?: Record<string, unknown>
+  launch?: {
+    instructionChannel: 'developer'
+    developerInstructions: string
+    instructionsRevision: string
+    model: string | null
+    reasoningEffort: InstructionV2ReasoningEffort | null
+    sandbox: CodexWorkflowRequest['sandbox']
+    roles: CodexWorkflowRole[]
+    configOverrides: string[]
+    hostRoleAdoption: 'unknown'
+  }
+  transport?: {
+    type: 'instruction-v2'
+    request: InstructionV2Transport['request']
+    command: readonly string[]
+    receipt: InstructionV2Receipt | null
+    traceAvailable: boolean
+    observationLimits: string[]
+    diagnostic: string | null
+    exitCode: number | null
+    signal: NodeJS.Signals | null
+    stderr: string
+  }
 }
 
 export interface CodexWorkflowExecutionResult {
@@ -178,6 +213,7 @@ export interface CodexWorkflowTransportInput {
   sourceEnv: NodeJS.ProcessEnv
   timeoutMs: number
   processManagement: CodexEvalProcessManagementEvidence
+  processTree?: ProcessTreeDependencies
   protectedEvalRoots?: readonly string[]
   signal?: AbortSignal
 }
@@ -258,12 +294,13 @@ export async function parseCodexWorkflowRequest(
   value: unknown,
   allowedModels: readonly string[],
   workspace: string,
+  fixtures?: string,
 ): Promise<CodexWorkflowRequest> {
   if (!isRecord(value)) throw new Error('workflow prepare stdout must be one JSON object.')
   exactKeys(
     value,
     ['version', 'prompt', 'sandbox', 'model', 'developerInstructions', 'roles', 'multiAgent'],
-    ['evaluation'],
+    ['evaluation', 'transport', 'reasoningEffort'],
     'workflow prepare stdout',
   )
   if (value.version !== 1) throw new Error('workflow prepare stdout version must be 1.')
@@ -324,11 +361,12 @@ export async function parseCodexWorkflowRequest(
     multiAgent.protocol === 'v1'
     && (multiAgent.hideSpawnAgentMetadata || multiAgent.exposeSpawnAgentModelOverrides)
   ) throw new Error('workflow request V1 metadata fields must be false.')
-  return {
+  const request: CodexWorkflowRequest = {
     version: 1,
     prompt: boundedString(value.prompt, 'workflow request prompt', MAX_REQUEST_TEXT_BYTES),
     sandbox: value.sandbox,
     model: value.model as string | null,
+    ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: parseInstructionV2ReasoningEffort(value.reasoningEffort) }),
     developerInstructions: boundedString(
       value.developerInstructions,
       'workflow request developerInstructions',
@@ -336,6 +374,7 @@ export async function parseCodexWorkflowRequest(
     ),
     roles,
     ...(value.evaluation === undefined ? {} : { evaluation: parseWorkflowEvaluation(value.evaluation) }),
+    ...(value.transport === undefined ? {} : { transport: await parseInstructionV2Transport(value.transport, workspace) }),
     multiAgent: {
       protocol: multiAgent.protocol,
       maxDepth: multiAgent.maxDepth as number,
@@ -343,6 +382,27 @@ export async function parseCodexWorkflowRequest(
       exposeSpawnAgentModelOverrides: multiAgent.exposeSpawnAgentModelOverrides,
     },
   }
+  if (request.transport) {
+    const external = request.transport.request
+    if (external.instructions.text !== request.developerInstructions || external.task !== request.prompt
+      || external.run.access !== request.sandbox || (external.run.model ?? null) !== request.model
+      || external.run.reasoningEffort !== request.reasoningEffort) {
+      throw new Error('instruction-v2 request must match workflow instructions, task, access, model, and reasoningEffort.')
+    }
+    if (request.evaluation?.interactions.length || request.evaluation?.setupPrompt !== undefined) {
+      throw new Error('instruction-v2 transport does not support evaluation interactions or setupPrompt.')
+    }
+  }
+  const actions = [
+    ...(request.evaluation?.setupActions ?? []),
+    ...(request.evaluation?.finalActions ?? []),
+    ...(request.evaluation?.interactions.flatMap((interaction) => interaction.action ? [interaction.action] : []) ?? []),
+  ]
+  if (actions.length) {
+    if (!fixtures) throw new Error('workflow fixture actions require the Eval-owned fixture root.')
+    await validateWorkflowFixtureActions(actions, fixtures)
+  }
+  return request
 }
 
 function parseJsonObject(stdout: string, label: string): Record<string, unknown> {
@@ -529,6 +589,7 @@ function workflowConfig(request: CodexWorkflowRequest, workspace: string): strin
     )}`,
     `agents.max_depth=${request.multiAgent.maxDepth}`,
     `developer_instructions=${configValue(request.developerInstructions)}`,
+    ...(request.reasoningEffort ? [`model_reasoning_effort=${configValue(request.reasoningEffort)}`] : []),
     ...request.roles.flatMap((role) => [
       `agents.${role.name}.description=${configValue(role.description)}`,
       `agents.${role.name}.config_file=${configValue(path.join(workspace, role.configFile))}`,
@@ -1827,7 +1888,7 @@ export async function normalizeCodexWorkflowRollouts(options: {
       || (call.linkedThreadId !== undefined && descendants.has(call.linkedThreadId))),
     skillLoads,
     trace: selected.flatMap((record) => record.trace.map((event) => sanitizeTraceValue(
-      event,
+      isRecord(event) ? { ...event, threadId: record.threadId, parentThreadId: record.parentThreadId } : event,
       options.runtime,
       [
         ...isolatedPaths,
@@ -1854,6 +1915,195 @@ function sandboxPolicy(request: CodexWorkflowRequest): Record<string, unknown> {
       }
 }
 
+function workflowFixtureRunner(input: CodexWorkflowTransportInput, control: CodexEvalAttemptControl) {
+  return (action: WorkflowFixtureAction) => runWorkflowFixtureAction({
+    action, workspace: input.input.workspacePath, fixtures: input.input.fixturesPath,
+    output: input.input.outputDir, evalRoot: input.evalRoot, sourceEnv: input.sourceEnv, runtime: input.codexRuntime,
+    timeoutMs: control.remaining('workflow fixture action'), signal: control.signal,
+    processManagement: input.processManagement,
+    ...(input.processTree ? { processTree: input.processTree } : {}),
+    ...(input.protectedEvalRoots ? { protectedEvalRoots: input.protectedEvalRoots } : {}),
+  })
+}
+
+async function readInstructionV2File(root: string, relative: string, limit: number): Promise<string> {
+  relativeWorkspacePath(relative, 'instruction-v2 capture path')
+  let target = root
+  for (const part of relative.split('/')) {
+    target = path.join(target, part)
+    if ((await fs.lstat(target)).isSymbolicLink()) throw new Error('instruction-v2 capture must not contain symbolic links.')
+  }
+  const stat = await fs.lstat(target)
+  if (!stat.isFile() || stat.size > limit) throw new Error('instruction-v2 capture is not a bounded regular file.')
+  return fs.readFile(target, 'utf8')
+}
+
+const instructionV2Transport: CodexWorkflowTransport = {
+  async run(input): Promise<CodexWorkflowExecutionResult> {
+    const selected = input.request.transport!
+    if (!path.isAbsolute(input.codexBin)) throw new Error('instruction-v2 requires the Engine-resolved absolute Codex executable.')
+    const control = new CodexEvalAttemptControl({
+      label: 'instruction-v2 workflow', timeoutMs: input.timeoutMs,
+      ...(input.signal ? { signal: input.signal } : {}),
+    })
+    const temporaryRoot = await createCodexEvalTemporaryRoot('instruction-v2-workflow-')
+    const runtimeRoot = await fs.realpath(temporaryRoot.root)
+    const codexHome = path.join(runtimeRoot, 'codex-home')
+    const runDirectory = path.join(runtimeRoot, 'run')
+    const env: NodeJS.ProcessEnv = {
+      ...buildEngineEnvironment(input.sourceEnv, runtimeRoot, codexHome, input.codexRuntime),
+      AW_SUBAGENT_RUN_DIR: runDirectory,
+      AW_SUBAGENT_RESULT_FILE: path.join(runDirectory, 'result.json'),
+      AW_SUBAGENT_TRACE_FILE: path.join(runDirectory, 'codex-events.jsonl'),
+      AW_SUBAGENT_CODEX_BINARY: input.codexBin,
+    }
+    const startedAt = Date.now()
+    let cleaned = false
+    let judgeNumber = 0
+    const judgeUsage: unknown[] = []
+    const grader = input.request.evaluation ? createCodexGrader({
+      sourceEnv: input.sourceEnv, codexRuntime: input.codexRuntime, codexBin: input.codexBin,
+      ...(input.request.model ? { model: input.request.model } : {}), processManagement: input.processManagement,
+    }) : undefined
+    const evaluation = input.request.evaluation ? new WorkflowEvaluation(input.request.evaluation, input.input.workspacePath, async (prompt) => {
+      const outputDir = path.join(input.input.outputDir, 'workflow-judges', String(++judgeNumber))
+      await fs.ensureDir(outputDir)
+      const result = await grader!({ prompt, outputDir, timeoutMs: control.remaining('external semantic check'), signal: control.signal })
+      if (!result.mechanicalPassed) throw new Error('external workflow semantic grader did not complete its read-only checks.')
+      judgeUsage.push(result.usage)
+      return parseConversationGraderOutput(result.output)
+    }, workflowFixtureRunner(input, control)) : undefined
+    try {
+      await Promise.all([
+        fs.ensureDir(env.HOME!), fs.ensureDir(env.TMPDIR!), fs.mkdir(runDirectory, { mode: 0o700 }),
+        materializeCodexEvalRuntimeHome(input.codexRuntime, codexHome, { trustedProject: input.input.workspacePath }),
+      ])
+      await evaluation?.runSetupActions()
+      const before = await snapshotWorkspace(input.input.workspacePath)
+      let containment: string | undefined
+      if (input.request.evaluation) {
+        containment = hostReadContainmentProfile({
+          forbiddenHostRoots: [input.input.fixturesPath, input.input.outputDir],
+          writableRoots: [runtimeRoot, input.input.workspacePath],
+          unwritableRoots: input.request.sandbox === 'read-only' ? [input.input.workspacePath] : [],
+        }) + '\n' + [...new Set([input.evalRoot, ...(input.protectedEvalRoots ?? [])])].map((root) =>
+          `(deny file-read* (require-all (subpath ${JSON.stringify(root)}) (require-not (subpath ${JSON.stringify(input.input.workspacePath)}))))`,
+        ).join('\n')
+        for (let ancestor = path.dirname(input.input.workspacePath);
+          ancestor !== path.dirname(ancestor); ancestor = path.dirname(ancestor)) {
+          containment += `\n(allow file-read-metadata (literal ${JSON.stringify(ancestor)}))`
+        }
+        await assertHostReadContainmentAvailable(containment)
+      }
+      evaluation?.observe({ method: 'evaluation/externalSubmission', runId: selected.request.run.id }, null)
+      const processResult = await runProviderProcess({
+        executable: containment ? '/usr/bin/sandbox-exec' : selected.command[0],
+        args: containment ? ['-p', containment, ...selected.command] : [...selected.command.slice(1)],
+        cwd: input.input.workspacePath, env, stdin: JSON.stringify(selected.request),
+        timeoutMs: control.remaining('external execution'), maxBufferBytes: MAX_ADAPTER_OUTPUT_BYTES,
+        signal: control.signal,
+      }, {}, {
+        containment: input.processManagement.mode === 'unmanaged-confirmed' ? 'unmanaged-confirmed' : 'verified-observed',
+        ...(input.processManagement.mode === 'unmanaged-confirmed' ? {} : { processTree: input.processTree }),
+      })
+      let receipt: InstructionV2Receipt | null = null
+      let diagnostic: string | null = null
+      try {
+        receipt = parseInstructionV2Receipt(JSON.parse(await readInstructionV2File(runDirectory, 'result.json', 64 * 1024)))
+      } catch (error) {
+        diagnostic = `External result receipt unavailable: ${(error as Error).message}`
+      }
+      const trace: unknown[] = []
+      if (receipt?.traceFile) {
+        try {
+          const raw = await readInstructionV2File(runDirectory, receipt.traceFile, 8 * 1024 * 1024)
+          const lines = raw.split(/\r?\n/u).filter((line) => line.trim())
+          if (lines.length > 5_000) throw new Error('instruction-v2 trace event limit exceeded.')
+          for (const line of lines) trace.push(JSON.parse(line))
+        } catch (error) {
+          diagnostic ??= `External trace unavailable: ${(error as Error).message}`
+          trace.length = 0
+        }
+      }
+      const completed = receipt?.outcome === 'completed' && receipt.providerTerminal === 'turn.completed'
+        && receipt.instructionChannel !== 'user-prefix'
+        && receipt.instructionsRevision === selected.request.instructions.revision
+        && processResult.exitCode === 0 && processResult.signal === null
+        && !processResult.timedOut && !processResult.cancelled && !processResult.maxBufferExceeded
+        && receipt.generationStarted !== false && receipt.scopeViolation !== true
+        && (receipt.localExitCode === undefined || receipt.localExitCode === 0)
+        && (input.processManagement.mode === 'unmanaged-confirmed' || processResult.gradingEvidenceAccepted)
+        && processResult.stdout.trim() !== ''
+      const status = completed ? 'completed' : receipt?.outcome === 'failed'
+        && (receipt.providerTerminal === 'turn.failed' || receipt.generationStarted === false) ? 'failed' : 'unknown'
+      if (!completed) diagnostic ??= 'External execution lacks compatible channel, instruction revision, terminal, normal exit, or final text evidence.'
+      const after = await snapshotWorkspace(input.input.workspacePath)
+      await temporaryRoot.cleanup()
+      cleaned = true
+      const usage = standardUsage(receipt?.usage)
+      const evidence: CodexWorkflowEvidence = {
+        version: 1, rootThreadId: receipt?.providerSessionId ?? selected.request.run.id,
+        completion: { status, turnStatus: receipt?.providerTerminal ?? 'unknown', durationMs: Date.now() - startedAt },
+        termination: {
+          reason: status,
+          providerProcessCleanupConfirmed: input.processManagement.mode !== 'unmanaged-confirmed'
+            && processResult.gradingEvidenceAccepted,
+        },
+        usage, finalMessage: processResult.stdout, workspaceDiff: workspaceDiff(before, after),
+        skillLoads: [], threadGraph: [], collaborationCalls: [], leafCalls: [],
+        cleanup: { isolatedCodexHomeRemoved: true },
+        transport: {
+          type: 'instruction-v2', request: selected.request, command: selected.command, receipt,
+          traceAvailable: trace.length > 0,
+          observationLimits: [
+            'Provider JSONL events are captured as supplied; complete file-access attribution and nested delegation coverage are not established.',
+            'A file diff proves observed final content, not absence of intermediate writes. Model statements do not prove read-only behavior, independent history, or OS isolation.',
+            'Provider trace is read after process exit. Artifact snapshots measure before submission and after cleanup; replayed event order does not supply intermediate snapshots.',
+          ],
+          diagnostic, exitCode: processResult.exitCode, signal: processResult.signal, stderr: processResult.stderr,
+        },
+      }
+      if (completed && evaluation) {
+        for (const frame of trace) evaluation.observe({ method: 'evaluation/externalTraceCapture', capturedAfterExit: true, frame }, evidence.rootThreadId)
+        const messages = [
+          { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: selected.request.task }] } },
+          ...trace,
+          { type: 'response_item', payload: { type: 'agent_message', text: processResult.stdout } },
+        ]
+        try {
+          evidence.evaluation = await evaluation.finish(evidence, messages)
+          if (!trace.length) {
+            evidence.evaluation.complete = false
+            evidence.evaluation.checks = evaluation.request.checks.map(({ name }) => ({
+              name, verdict: 'unknown', evidence: 'External provider tool trace is unavailable; behavior assertions cannot be established from final text.',
+            }))
+          }
+        } catch (error) {
+          evidence.evaluation = {
+            complete: false, checks: [], observations: evaluation.observations,
+            snapshots: evaluation.snapshots, decisions: evaluation.decisions,
+            fixtureActions: evaluation.fixtureActions, measurementStart: evaluation.measurementStart,
+          }
+          await writeWorkflowArtifacts(input.input.outputDir, redactCodexEvalValue({ evidence, trace, modelOutput: processResult.stdout, usage }, input.codexRuntime))
+          throw error
+        }
+        const totals = [usage, ...judgeUsage].map(standardUsage)
+        evidence.usage = totals.every((value) => value !== null) ? {
+          inputTokens: totals.reduce((sum, value) => sum + value!.inputTokens, 0),
+          outputTokens: totals.reduce((sum, value) => sum + value!.outputTokens, 0),
+        } : null
+      }
+      return redactCodexEvalValue({ evidence, trace, modelOutput: processResult.stdout, usage: evidence.usage }, input.codexRuntime)
+    } finally {
+      try {
+        if (!cleaned) await temporaryRoot.cleanup()
+      } finally {
+        control.dispose()
+      }
+    }
+  },
+}
+
 const defaultTransport: CodexWorkflowTransport = {
   async run(input): Promise<CodexWorkflowExecutionResult> {
     const control = new CodexEvalAttemptControl({
@@ -1862,13 +2112,15 @@ const defaultTransport: CodexWorkflowTransport = {
       ...(input.signal ? { signal: input.signal } : {}),
     })
     const temporaryRoot = await createCodexEvalTemporaryRoot('codex-workflow-')
-    const codexHome = path.join(temporaryRoot.root, 'codex-home')
+    const runtimeRoot = await fs.realpath(temporaryRoot.root)
+    const codexHome = path.join(runtimeRoot, 'codex-home')
     const env = buildEngineEnvironment(
       input.sourceEnv,
-      temporaryRoot.root,
+      runtimeRoot,
       codexHome,
       input.codexRuntime,
     )
+    env.AW_SUBAGENT_CODEX_BINARY = input.codexBin
     let session: EvalAppServerSession | undefined
     let cleanupConfirmed = false
     let codexHomeRemoved = false
@@ -1896,6 +2148,7 @@ const defaultTransport: CodexWorkflowTransport = {
         judgeUsage.push(result.usage)
         return parseConversationGraderOutput(result.output)
       },
+      workflowFixtureRunner(input, control),
     ) : undefined
     let removeHandler: (() => void) | undefined
     let removeFailureHandler: (() => void) | undefined
@@ -1907,18 +2160,24 @@ const defaultTransport: CodexWorkflowTransport = {
           trustedProject: input.input.workspacePath,
         }),
       ])
+      await evaluation?.runSetupActions()
       const before = await snapshotWorkspace(input.input.workspacePath)
       let containment: string | undefined
       if (evaluation) {
         containment = hostReadContainmentProfile({
           forbiddenHostRoots: [input.input.fixturesPath, input.input.outputDir],
-          writableRoots: [temporaryRoot.root, input.input.workspacePath],
+          writableRoots: [runtimeRoot, input.input.workspacePath],
           unwritableRoots: input.request.sandbox === 'read-only' ? [input.input.workspacePath] : [],
         }) + '\n' + [...new Set([input.evalRoot, ...(input.protectedEvalRoots ?? [])])].map((root) =>
           `(deny file-read* (require-all (subpath ${JSON.stringify(root)}) (require-not (subpath ${JSON.stringify(input.input.workspacePath)}))))`,
         ).join('\n')
+        for (let ancestor = path.dirname(input.input.workspacePath);
+          ancestor !== path.dirname(ancestor); ancestor = path.dirname(ancestor)) {
+          containment += `\n(allow file-read-metadata (literal ${JSON.stringify(ancestor)}))`
+        }
         await assertHostReadContainmentAvailable(containment)
       }
+      const configOverrides = workflowConfig(input.request, input.input.workspacePath)
       session = new EvalAppServerSession({
         codexBin: input.codexBin,
         cwd: input.input.workspacePath,
@@ -1927,7 +2186,7 @@ const defaultTransport: CodexWorkflowTransport = {
         sensitiveEnvironmentNames: input.codexRuntime.sensitiveEnvironmentNames,
         isolation: 'standard',
         processManagement: input.processManagement,
-        configOverrides: workflowConfig(input.request, input.input.workspacePath),
+        configOverrides,
         ...(containment ? { hostReadContainmentProfile: containment } : {}),
       })
       await session.initialize(control.rpcTimeout('initialize'))
@@ -1951,7 +2210,7 @@ const defaultTransport: CodexWorkflowTransport = {
         const isolatedPaths = [
           { path: codexHome, marker: '[codex-home]' },
           { path: env.HOME!, marker: '[isolated-home]' },
-          { path: temporaryRoot.root, marker: '[runtime-root]' },
+          { path: runtimeRoot, marker: '[runtime-root]' },
         ]
         frames.push(sanitizeTraceValue(
           frame,
@@ -2067,7 +2326,7 @@ const defaultTransport: CodexWorkflowTransport = {
       const isolatedPaths = [
         { path: codexHome, marker: '[codex-home]' },
         { path: env.HOME!, marker: '[isolated-home]' },
-        { path: temporaryRoot.root, marker: '[runtime-root]' },
+        { path: runtimeRoot, marker: '[runtime-root]' },
       ]
       const rollout = await normalizeCodexWorkflowRollouts({
         codexHome,
@@ -2106,10 +2365,33 @@ const defaultTransport: CodexWorkflowTransport = {
         collaborationCalls: rollout.collaborationCalls,
         leafCalls: rollout.leafCalls,
         cleanup: { isolatedCodexHomeRemoved: true },
+        launch: {
+          instructionChannel: 'developer', developerInstructions: input.request.developerInstructions,
+          instructionsRevision: createHash('sha256').update(input.request.developerInstructions).digest('hex'),
+          model: input.request.model, reasoningEffort: input.request.reasoningEffort ?? null,
+          sandbox: input.request.sandbox, roles: input.request.roles, configOverrides,
+          hostRoleAdoption: 'unknown',
+        },
       }
       if (evaluation) {
         // Subject processes are stopped before final snapshots and independent grading.
-        evidence.evaluation = await evaluation.finish(evidence, rollout.trace)
+        try {
+          evidence.evaluation = await evaluation.finish(evidence, rollout.trace)
+        } catch (error) {
+          evidence.evaluation = {
+            complete: false, checks: [], observations: evaluation.observations,
+            snapshots: evaluation.snapshots, decisions: evaluation.decisions,
+            fixtureActions: evaluation.fixtureActions,
+            measurementStart: evaluation.measurementStart,
+          }
+          await writeWorkflowArtifacts(input.input.outputDir, {
+            evidence: session.scrub(redactCodexEvalValue(evidence, input.codexRuntime)),
+            trace: session.scrub(redactCodexEvalValue([...frames, ...rollout.trace], input.codexRuntime)),
+            modelOutput: redactCodexEvalValue(finalMessage!, input.codexRuntime),
+            usage: redactCodexEvalValue(evidence.usage, input.codexRuntime),
+          })
+          throw error
+        }
         const totals = [usage, ...judgeUsage].map(standardUsage)
         if (totals.some((value) => value === null)) throw new Error('workflow evaluation lacks required judge usage evidence.')
         evidence.usage = {
@@ -2266,13 +2548,14 @@ export async function executeCodexWorkflowProvider(
       prepared,
       options.provider.allowedModels,
       paths.workspacePath,
+      paths.fixturesPath,
     )
-    if (request.model === null && request.multiAgent.protocol === 'v1') {
+    if (!request.transport && request.model === null && request.multiAgent.protocol === 'v1') {
       request.model = 'gpt-5.6-luna'
     }
     let execution: CodexWorkflowExecutionResult
     try {
-      execution = await (options.transport ?? defaultTransport).run({
+      execution = await (options.transport ?? (request.transport ? instructionV2Transport : defaultTransport)).run({
         request,
         input: { ...options.input, ...paths, timeoutMs: control.remaining('Codex execution') },
         evalRoot: paths.evalRoot,
@@ -2281,6 +2564,7 @@ export async function executeCodexWorkflowProvider(
         sourceEnv,
         timeoutMs: control.remaining('Codex execution'),
         processManagement,
+        ...(options.processTree ? { processTree: options.processTree } : {}),
         ...(options.protectedEvalRoots ? { protectedEvalRoots: options.protectedEvalRoots } : {}),
         signal: control.signal,
       })
@@ -2288,13 +2572,16 @@ export async function executeCodexWorkflowProvider(
       control.throwIfStopped('Codex execution')
       throw error
     }
-    control.throwIfStopped('evidence collection')
     const sanitized = redactCodexEvalValue(execution, options.codexRuntime)
     const usage = standardUsage(sanitized.usage)
-    if (!usage || !standardUsage(sanitized.evidence.usage)) {
+    if (!request.transport && (!usage || !standardUsage(sanitized.evidence.usage))) {
       throw new Error('codex-workflow completed without required token usage evidence.')
     }
     await writeWorkflowArtifacts(paths.outputDir, sanitized)
+    control.throwIfStopped('evidence collection')
+    if (sanitized.evidence.completion.status !== 'completed') {
+      throw new Error(`instruction-v2 workflow execution is ${sanitized.evidence.completion.status}; no grade was accepted.`)
+    }
     const beforeGrade = await artifactDigests(paths.outputDir)
     let gradeValue: Record<string, unknown>
     try {

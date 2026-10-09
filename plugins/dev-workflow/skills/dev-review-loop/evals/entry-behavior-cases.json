@@ -1,0 +1,241 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-review-loop",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "分别观察默认入口误选、有效上游漏选及实际质量。严格匹配能力减少流程误进入；基础方法在有增益的范围减少漏用。分类不替代权限或真实执行证据。"
+    },
+    "participants": [
+      "dev-implement",
+      "dev-review-code"
+    ],
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "known-finding-fix-first",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用 dev-review-loop。Review指出当前选择函数没有执行selectedIds过滤。先修复它并测试，再核验当前函数的完整合同；只允许修改src/select.js。",
+      "assertions": [
+        "先直接核对当前代码/合同及必要复现，然后首次修改；不在前面重新组织完整双轴初审。",
+        "修复后取得当前范围必要独立证据；提供finding不等于已完成完整双轴。",
+        "首批修改计入原有预算，测试通过且无无关文件变化。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "README.md": "# 记录选择\nselectRecords(rows,tenantId,selectedIds)只返回当前租户、且id位于selectedIds中的记录，保持原顺序，不改输入；空选择为空。输入为合法记录与字符串标识。\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows.filter(r=>r.tenantId===tenantId);}\n",
+          "test/select.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {selectRecords} from '../src/select.js';\nconst rows=[{id:'b',tenantId:'t1'},{id:'a',tenantId:'t1'},{id:'a',tenantId:'t2'}];\ntest('only selected tenant records',()=>assert.deepEqual(selectRecords(rows,'t1',['a']),[rows[1]]));\ntest('empty',()=>assert.deepEqual(selectRecords(rows,'t1',[]),[]));\ntest('stable order',()=>assert.deepEqual(selectRecords(rows,'t1',['a','b']),rows.slice(0,2)));\ntest('immutable',()=>{const a=structuredClone(rows),ids=['b','a'];selectRecords(a,'t1',ids);assert.deepEqual(a,rows);assert.deepEqual(ids,['b','a']);});\n",
+          "src/unrelated.js": "export const untouched=true;\n"
+        }
+      },
+      "expected": {
+        "output": "先修并验证，再独立核验；完整证据不足如实说明。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/select.js"
+        ],
+        "artifacts": [
+          {
+            "path": "src/select.js",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "区分进入顺序、范围、证据与实际执行；合成历史声明只能构成此用例输入前提，独立性和跨轮机制须另用实际Engine证明。",
+        "minimalCounterexample": "改变为只读授权、失效finding、缺少原始审查基线或明确新全面重审时，应改变对应修改/复用动作。",
+        "allowedVariance": "允许等价代码、措辞、工具与合理辅助；不强制固定标题、报告字段或子代理名字。"
+      }
+    },
+    {
+      "id": "known-finding-no-longer-present",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用 dev-review-loop，先处理报告中的selectedIds过滤缺失，再核验。报告针对旧实现，当前可能已更新；只允许修改src/select.js。",
+      "assertions": [
+        "实际核对finding，当前已满足时不重复修改或为了消除finding重构。",
+        "旧报告不能直接作为当前通过依据；采用真实代码测试与所需独立检查。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "README.md": "# 记录选择\nselectRecords(rows,tenantId,selectedIds)只返回当前租户、且id位于selectedIds中的记录，保持原顺序，不改输入；空选择为空。输入为合法记录与字符串标识。\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){const ids=new Set(selectedIds);return rows.filter(r=>r.tenantId===tenantId && ids.has(r.id));}\n",
+          "test/select.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {selectRecords} from '../src/select.js';\nconst rows=[{id:'b',tenantId:'t1'},{id:'a',tenantId:'t1'},{id:'a',tenantId:'t2'}];\ntest('only selected tenant records',()=>assert.deepEqual(selectRecords(rows,'t1',['a']),[rows[1]]));\ntest('empty',()=>assert.deepEqual(selectRecords(rows,'t1',[]),[]));\ntest('stable order',()=>assert.deepEqual(selectRecords(rows,'t1',['a','b']),rows.slice(0,2)));\ntest('immutable',()=>{const a=structuredClone(rows),ids=['b','a'];selectRecords(a,'t1',ids);assert.deepEqual(a,rows);assert.deepEqual(ids,['b','a']);});\n",
+          "src/unrelated.js": "export const untouched=true;\n",
+          "prior-review.md": "旧版没有selectedIds过滤；当前提交尚未检查。\n"
+        }
+      },
+      "expected": {
+        "output": "无真实缺陷时不制造修改，继续实际核验。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "区分进入顺序、范围、证据与实际执行；合成历史声明只能构成此用例输入前提，独立性和跨轮机制须另用实际Engine证明。",
+        "minimalCounterexample": "改变为只读授权、失效finding、缺少原始审查基线或明确新全面重审时，应改变对应修改/复用动作。",
+        "allowedVariance": "允许等价代码、措辞、工具与合理辅助；不强制固定标题、报告字段或子代理名字。"
+      }
+    },
+    {
+      "id": "readonly-explicit-invocation",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用 dev-review-loop 看当前问题，但本轮只允许读取、验证和报告。",
+      "assertions": [
+        "保持源码和测试不变，显式调用不扩权。",
+        "可以采用独立审查，准确报告所见缺陷和限制，不自动修复。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "README.md": "# 记录选择\nselectRecords(rows,tenantId,selectedIds)只返回当前租户、且id位于selectedIds中的记录，保持原顺序，不改输入；空选择为空。输入为合法记录与字符串标识。\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows.filter(r=>r.tenantId===tenantId);}\n",
+          "test/select.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {selectRecords} from '../src/select.js';\nconst rows=[{id:'b',tenantId:'t1'},{id:'a',tenantId:'t1'},{id:'a',tenantId:'t2'}];\ntest('only selected tenant records',()=>assert.deepEqual(selectRecords(rows,'t1',['a']),[rows[1]]));\ntest('empty',()=>assert.deepEqual(selectRecords(rows,'t1',[]),[]));\ntest('stable order',()=>assert.deepEqual(selectRecords(rows,'t1',['a','b']),rows.slice(0,2)));\ntest('immutable',()=>{const a=structuredClone(rows),ids=['b','a'];selectRecords(a,'t1',ids);assert.deepEqual(a,rows);assert.deepEqual(ids,['b','a']);});\n",
+          "src/unrelated.js": "export const untouched=true;\n"
+        }
+      },
+      "expected": {
+        "output": "只读核验和当前问题。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "区分进入顺序、范围、证据与实际执行；合成历史声明只能构成此用例输入前提，独立性和跨轮机制须另用实际Engine证明。",
+        "minimalCounterexample": "改变为只读授权、失效finding、缺少原始审查基线或明确新全面重审时，应改变对应修改/复用动作。",
+        "allowedVariance": "允许等价代码、措辞、工具与合理辅助；不强制固定标题、报告字段或子代理名字。"
+      }
+    },
+    {
+      "id": "budget-known-work-first-counts",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用 dev-review-loop 先修selectedIds问题并核验；沿用现有预算，不增加额度。",
+      "assertions": [
+        "先修的本批从2计到3，不能把它称为不计数准备，再获得额外三轮。",
+        "本批修复和测试后更新实际独立核验；仍有问题时停止产品修改而不降低标准。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "README.md": "# 记录选择\nselectRecords(rows,tenantId,selectedIds)只返回当前租户、且id位于selectedIds中的记录，保持原顺序，不改输入；空选择为空。输入为合法记录与字符串标识。\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows.filter(r=>r.tenantId===tenantId);}\n",
+          "test/select.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {selectRecords} from '../src/select.js';\nconst rows=[{id:'b',tenantId:'t1'},{id:'a',tenantId:'t1'},{id:'a',tenantId:'t2'}];\ntest('only selected tenant records',()=>assert.deepEqual(selectRecords(rows,'t1',['a']),[rows[1]]));\ntest('empty',()=>assert.deepEqual(selectRecords(rows,'t1',[]),[]));\ntest('stable order',()=>assert.deepEqual(selectRecords(rows,'t1',['a','b']),rows.slice(0,2)));\ntest('immutable',()=>{const a=structuredClone(rows),ids=['b','a'];selectRecords(a,'t1',ids);assert.deepEqual(a,rows);assert.deepEqual(ids,['b','a']);});\n",
+          "src/unrelated.js": "export const untouched=true;\n",
+          ".dev-workflows/selection/work.md": "同一选择函数范围最多3轮，已用2轮。第2轮已占用，即使复审未完成也计入。\n"
+        }
+      },
+      "expected": {
+        "output": "正确累计本次修复与剩余限制。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/select.js",
+          ".dev-workflows/selection/work.md"
+        ],
+        "artifacts": [
+          {
+            "path": "src/select.js",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "区分进入顺序、范围、证据与实际执行；合成历史声明只能构成此用例输入前提，独立性和跨轮机制须另用实际Engine证明。",
+        "minimalCounterexample": "改变为只读授权、失效finding、缺少原始审查基线或明确新全面重审时，应改变对应修改/复用动作。",
+        "allowedVariance": "允许等价代码、措辞、工具与合理辅助；不强制固定标题、报告字段或子代理名字。"
+      }
+    },
+    {
+      "id": "old-name-stop-survives",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "继续 dev-review-loop 查看未完成问题，本轮不增加任何修复预算。",
+      "assertions": [
+        "将旧名记录识别为同一授权历史，保持停止点与已用预算。",
+        "只读查证可以进行，不重命名记录来刷新预算，不扩大授权。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "README.md": "# 记录选择\nselectRecords(rows,tenantId,selectedIds)只返回当前租户、且id位于selectedIds中的记录，保持原顺序，不改输入；空选择为空。输入为合法记录与字符串标识。\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows.filter(r=>r.tenantId===tenantId);}\n",
+          "test/select.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {selectRecords} from '../src/select.js';\nconst rows=[{id:'b',tenantId:'t1'},{id:'a',tenantId:'t1'},{id:'a',tenantId:'t2'}];\ntest('only selected tenant records',()=>assert.deepEqual(selectRecords(rows,'t1',['a']),[rows[1]]));\ntest('empty',()=>assert.deepEqual(selectRecords(rows,'t1',[]),[]));\ntest('stable order',()=>assert.deepEqual(selectRecords(rows,'t1',['a','b']),rows.slice(0,2)));\ntest('immutable',()=>{const a=structuredClone(rows),ids=['b','a'];selectRecords(a,'t1',ids);assert.deepEqual(a,rows);assert.deepEqual(ids,['b','a']);});\n",
+          "src/unrelated.js": "export const untouched=true;\n",
+          ".dev-workflows/selection/work.md": "dev-repair：相同目标与范围，最多1轮，已用1轮；用户要求停止产品修改。\n"
+        }
+      },
+      "expected": {
+        "output": "名称迁移不产生新修复额度。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "区分进入顺序、范围、证据与实际执行；合成历史声明只能构成此用例输入前提，独立性和跨轮机制须另用实际Engine证明。",
+        "minimalCounterexample": "改变为只读授权、失效finding、缺少原始审查基线或明确新全面重审时，应改变对应修改/复用动作。",
+        "allowedVariance": "允许等价代码、措辞、工具与合理辅助；不强制固定标题、报告字段或子代理名字。"
+      }
+    },
+    {
+      "id": "author-cannot-assert-other-axis-valid",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "独立审核当前修复及作者的复用建议；两轴旧报告针对history/A，实际合同和代码如工作区。不要修复。",
+      "assertions": [
+        "读取累计差异，发现tenant过滤丢失是需求/安全跨轴影响，不能按作者标签只查风格。",
+        "指出旧需求结论对当前版本失效，补所需范围或说明缺独立轴；不冒称双轴已完整通过。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "README.md": "# 记录选择\nselectRecords(rows,tenantId,selectedIds)只返回当前租户、且id位于selectedIds中的记录，保持原顺序，不改输入；空选择为空。输入为合法记录与字符串标识。\n",
+          "history/A/select.js": "export function selectRecords(rows,tenantId,selectedIds){const ids=new Set(selectedIds);return rows.filter(r=>r.tenantId===tenantId && ids.has(r.id));}\n",
+          "src/select.js": "export function selectRecords(rows,tenantId,selectedIds){return rows.filter(r=>selectedIds.includes(r.id));}\n",
+          "author-note.md": "这是工程重构，只需审工程轴，需求轴上轮通过可以沿用。\n",
+          "old-review.md": "输入前提：上一轮独立两轴核对A完整范围；租户与selectedIds限制均成立。真实隔离与报告来源由对应runtime测试另证。\n"
+        }
+      },
+      "expected": {
+        "output": "基于实际变化拒绝错误复用。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "区分进入顺序、范围、证据与实际执行；合成历史声明只能构成此用例输入前提，独立性和跨轮机制须另用实际Engine证明。",
+        "minimalCounterexample": "改变为只读授权、失效finding、缺少原始审查基线或明确新全面重审时，应改变对应修改/复用动作。",
+        "allowedVariance": "允许等价代码、措辞、工具与合理辅助；不强制固定标题、报告字段或子代理名字。"
+      }
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aw.dev/schemas/instruction-v2-receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "outcome", "instructionChannel", "instructionsRevision"],
+  "properties": {
+    "protocolVersion": { "const": 2 },
+    "outcome": { "enum": ["completed", "failed", "cancelled", "unknown"] },
+    "instructionChannel": { "enum": ["system", "developer", "equivalent-config", "user-prefix"] },
+    "instructionsRevision": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "providerSessionId": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "actualModel": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "providerTerminal": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "traceFile": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "adapter": { "type": "object" },
+    "usage": {},
+    "generationStarted": { "type": "boolean" },
+    "localExitCode": { "type": ["integer", "null"], "minimum": 0 },
+    "code": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "scopeViolation": { "type": "boolean" },
+    "remoteStopConfirmed": { "const": false }
+  }
+}

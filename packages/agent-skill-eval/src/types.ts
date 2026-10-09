@@ -68,3 +68,7 @@ export type SchemaName =
   | 'eval-spec'
   | 'eval-audit'
   | 'eval-result'
+  | 'instruction-v2-request'
+  | 'instruction-v2-receipt'
+  | 'workflow-fixture-action'
+  | 'workflow-evaluation'

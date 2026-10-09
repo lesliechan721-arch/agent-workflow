@@ -15,16 +15,10 @@ import releaseCorpusDocument from '../skills/codex-subagent-guide/evals/trigger-
 import compositionCorpusDocument from '../skills/codex-subagent-guide/evals/trigger-composition-cases.json' with { type: 'json' };
 
 const GUIDE_ROLE_NAMES = [
-  'codex-subagent-simple',
-  'codex-subagent-general',
-  'codex-subagent-complex',
-  'codex-subagent-advanced',
+  'codex-subagent',
 ];
 const EXPLORE_ROLE_NAMES = [
-  'codex-explore-quick',
-  'codex-explore-standard',
-  'codex-explore-deep',
-  'codex-explore-custom',
+  'codex-explore',
 ];
 const ROLE_NAMES = [...GUIDE_ROLE_NAMES, ...EXPLORE_ROLE_NAMES];
 
@@ -72,7 +66,7 @@ async function testEvalCorpus() {
   assert.deepEqual(compositionDocument.suite.participants, ['codex-explore']);
   assert.equal(compositionDocument.suite.runtime.isolation, 'standard');
   assert.deepEqual(compositionDocument.suite.runtime.strictNegativeSplits, ['validation', 'sanity']);
-  assert.equal(compositionDocument.suite.runtime.forbidMultipleSkillLoads, true);
+  assert.equal(compositionDocument.suite.runtime.forbidMultipleSkillLoads, false);
   assert.equal(releaseCases.length > 0, true);
   assert.equal(compositionCases.length > 0, true);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
@@ -285,12 +279,12 @@ async function testCustomProviderWorkspaceUsesRuntimeSnapshot() {
 async function testGuideRoleValidation() {
   const cases = [
     {
-      options: { omitRole: 'codex-subagent-simple' },
-      expected: /role codex-subagent-simple exactly once, got 0/,
+      options: { omitRole: 'codex-subagent' },
+      expected: /role codex-subagent exactly once, got 0/,
     },
     {
-      options: { duplicateRole: 'codex-subagent-general' },
-      expected: /role codex-subagent-general exactly once, got 2/,
+      options: { duplicateRole: 'codex-subagent' },
+      expected: /role codex-subagent exactly once, got 2/,
     },
   ];
   for (const entry of cases) {

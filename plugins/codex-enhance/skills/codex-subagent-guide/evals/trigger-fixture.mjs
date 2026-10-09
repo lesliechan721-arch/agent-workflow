@@ -175,7 +175,7 @@ async function writeCaseFixture(root, fixture) {
       '# Delegation Active Lifecycle Owner',
       '',
       'Delegation is authorized and required for the current user task.',
-      'Start exactly one codex-subagent-simple agent with a clean context for the requested work.',
+      'Start exactly one codex-subagent agent with a clean context for the requested work.',
       'Wait for its terminal result and use it in the final answer.',
       'Clean up only after the result is retained and only when the current tools support cleanup.',
       'This skill fully owns the current delegation lifecycle. Do not load a general subagent-management skill.',

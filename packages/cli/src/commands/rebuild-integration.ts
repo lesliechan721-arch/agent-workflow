@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import type { RuntimeConfigSnapshot } from '@lesliechan721/aw-plugin-core';
+import { injectInstalledRuntimeConfig, carryRuntimeConfigNativeReceipt } from '../utils/runtime-config.js';
 
 import { generateAgentArtifacts } from '../generators/agents.js';
 import {
@@ -1410,7 +1412,7 @@ function renderCodexRole(options: {
   return [
     `name = ${stringValue(options.roleKey)}`,
     `description = ${stringValue(options.description)}`,
-    `developer_instructions = ${stringValue(options.developerInstructions)}`,
+    `developer_instructions = ${JSON.stringify(options.developerInstructions)}`,
     ...(options.model ? [`model = ${stringValue(options.model)}`] : []),
     ...(options.modelReasoningEffort
       ? [`model_reasoning_effort = ${stringValue(options.modelReasoningEffort)}`]
@@ -1434,6 +1436,7 @@ async function resolveDynamicArtifacts(options: {
   artifacts: ValidatedArtifactPlanArtifact[];
   sourceDirs(artifact: ValidatedArtifactPlanArtifact): string[];
   sensitiveValues: string[];
+  runtimeConfigSnapshots?: Record<string, RuntimeConfigSnapshot>;
 }> {
   const requestBatches = options.requestedArtifactIds
     ? [options.requestedArtifactIds]
@@ -1490,6 +1493,7 @@ async function resolveDynamicArtifacts(options: {
   }
   return {
     artifacts,
+    runtimeConfigSnapshots: Object.assign({}, ...renders.map((render) => render.runtimeConfigSnapshots)),
     sourceDirs: (artifact) => sourceDirsByArtifact.get(`${artifact.id}\0${artifact.target}`) ?? [],
     sensitiveValues: collectSensitivePluginConfigValues(options.plugin.manifest, config.values),
   };
@@ -1609,6 +1613,7 @@ async function buildClaudeWrites(options: {
       requirementsReceipt: requirementsReceipt(options.plugin),
       sourceRequirementsReceiptPolicy: 'allow',
     });
+    await injectInstalledRuntimeConfig(tree, dynamic.runtimeConfigSnapshots?.[artifact.id]);
     assertNoSensitiveConfigInFiles(
       withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
       dynamic.sensitiveValues,
@@ -1705,6 +1710,7 @@ async function buildCodexWrites(options: {
       requirementsReceipt: requirementsReceipt(options.plugin),
       sourceRequirementsReceiptPolicy: 'allow',
     });
+    await injectInstalledRuntimeConfig(tree, dynamic.runtimeConfigSnapshots?.[artifact.id]);
     assertNoSensitiveConfigInFiles(
       withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
       dynamic.sensitiveValues,
@@ -3559,11 +3565,7 @@ async function resolveSensitiveUserConfigValues(
   env: NodeJS.ProcessEnv,
 ): Promise<string[]> {
   const hasSensitiveFields = Object.values(plugin.manifest.config?.fields ?? {}).some((field) =>
-    field.sensitive === true
-    || (field.type === 'object'
-      && (Object.values(field.properties ?? {}).some((child) => child.sensitive === true)
-        || (field.additionalProperties !== false
-          && field.additionalProperties?.sensitive === true))));
+    field.sensitive === true);
   if (!hasSensitiveFields) return [];
   const config = await resolveArtifactRenderConfig({
     sourceId: plugin.sourceId,
@@ -3685,6 +3687,8 @@ async function prepareCodexNativeRender(options: {
     byScope.set(requestScope, group);
   }
 
+  const skillsRelativeRoot = await resolveCodexSkillsRelativeRoot(options.plugin);
+  const nativeReceiptPath = `${'../'.repeat(skillsRelativeRoot.split('/').length + 1)}${CODEX_NATIVE_RENDER_RECEIPT_PATH}`;
   const renderedArtifacts: PreparedCodexNativeRender['renderedArtifacts'] = [];
   const receiptTargets: PreparedCodexNativeRender['receiptTargets'] = [];
   const presentSkillKeys: string[] = [];
@@ -3729,6 +3733,7 @@ async function prepareCodexNativeRender(options: {
         requirementsReceipt: requirementsReceipt(options.plugin),
         sourceRequirementsReceiptPolicy: 'allow',
       });
+      await injectInstalledRuntimeConfig(tree, rendered.runtimeConfigSnapshots[artifact.id], { nativeReceiptPath });
       assertNoSensitiveConfigInFiles(
         withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
         collectSensitivePluginConfigValues(
@@ -3756,7 +3761,6 @@ async function prepareCodexNativeRender(options: {
     throw new Error('Codex native renderer did not produce the complete declared target set.');
   }
 
-  const skillsRelativeRoot = await resolveCodexSkillsRelativeRoot(options.plugin);
   const logicalPluginId = options.plugin.pluginId
     ?? (options.plugin.sourceId ? `${options.plugin.sourceId}/${options.plugin.manifest.name}` : undefined);
   if (!logicalPluginId || !options.plugin.sourceIdentity) {
@@ -3909,6 +3913,7 @@ export async function materializeReviewNativeSkills(options: {
     }
     return matches[0]!;
   });
+  const requiredDeclarations = [...selectedDeclarations];
   const selectedNames = options.skills.map((skill) => skill.skill);
   const disabledNativeSkillNames = new Set<string>();
   if (new Set(selectedNames).size !== selectedNames.length) {
@@ -3925,7 +3930,7 @@ export async function materializeReviewNativeSkills(options: {
     });
   }
 
-  const directTargetIds = selectedDeclarations
+  const directTargetIds = requiredDeclarations
     .filter((target) => target.delivery?.mode !== 'codex-native')
     .map((target) => target.id);
   if (directTargetIds.length > 0) {
@@ -3967,6 +3972,7 @@ export async function materializeReviewNativeSkills(options: {
       } else {
         throw new Error(`Selected target "${artifact.id}" is not a Skill.`);
       }
+      await injectInstalledRuntimeConfig(tree, dynamic.runtimeConfigSnapshots?.[artifact.id]);
       assertNoSensitiveConfigInFiles(
         withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
         dynamic.sensitiveValues,
@@ -3976,7 +3982,7 @@ export async function materializeReviewNativeSkills(options: {
     }
   }
 
-  const nativeTargetIds = selectedDeclarations
+  const nativeTargetIds = requiredDeclarations
     .filter((target) => target.delivery?.mode === 'codex-native')
     .map((target) => target.id);
   if (nativeTargetIds.length > 0) {
@@ -4018,12 +4024,12 @@ export async function materializeReviewNativeSkills(options: {
     });
     const presentSkillKeys = new Set(staged.presentSkillKeys);
     if (options.allowDisabledNativeSkills) {
-      for (const target of selectedDeclarations.filter((entry) =>
+      for (const target of requiredDeclarations.filter((entry) =>
         entry.delivery?.mode === 'codex-native' && !presentSkillKeys.has(entry.skillKey!))) {
         disabledNativeSkillNames.add(target.skillKey!);
       }
     }
-    for (const target of selectedDeclarations.filter((entry) =>
+    for (const target of requiredDeclarations.filter((entry) =>
       entry.delivery?.mode === 'codex-native' && presentSkillKeys.has(entry.skillKey!))) {
       const sourceRoot = path.join(
         payloadRoot,
@@ -4035,6 +4041,7 @@ export async function materializeReviewNativeSkills(options: {
         errorOnExist: true,
         dereference: false,
       });
+      await carryRuntimeConfigNativeReceipt(path.join(skillsRoot, target.skillKey!), Buffer.from(serializeCodexNativeRenderReceipt(staged.receipt)));
     }
     await fs.remove(marketplaceRoot);
   }

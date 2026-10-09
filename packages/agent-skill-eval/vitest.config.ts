@@ -8,6 +8,7 @@ const processTests = [
   'tests/unit/codex-eval-app-server.test.ts',
   'tests/unit/codex-eval-isolation.test.ts',
   'tests/unit/codex-workflow.test.ts',
+  'tests/unit/codex-workflow-fixtures.test.ts',
   'tests/unit/core.test.ts',
   'tests/unit/phase3-run.test.ts',
   'tests/unit/process.test.ts',

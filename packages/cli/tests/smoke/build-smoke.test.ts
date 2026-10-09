@@ -40,6 +40,7 @@ const EXPECTED_PLUGIN_PLATFORMS = {
   'codex-enhance': ['codex'],
   'dev-workflow': ['claude', 'codex'],
   'git-toolkit': ['claude', 'codex'],
+  'human-content': ['claude', 'codex'],
 } as const;
 
 function repoRoot(): string {
@@ -415,6 +416,7 @@ describe('build smoke', () => {
       'decision-kit',
       'dev-workflow',
       'git-toolkit',
+      'human-content',
     ]);
     expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'agent-content-toolkit',
@@ -426,6 +428,7 @@ describe('build smoke', () => {
       'decision-kit',
       'dev-workflow',
       'git-toolkit',
+      'human-content',
     ]);
     for (const [pluginName, platforms] of Object.entries(EXPECTED_PLUGIN_PLATFORMS)) {
       for (const platform of ['claude', 'codex'] as const) {

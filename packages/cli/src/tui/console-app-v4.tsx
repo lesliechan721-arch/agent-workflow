@@ -1,10 +1,12 @@
 import { arrayDraftChanged, arrayDraftValue, createConfigArrayDraft, editConfigArrayDraft, type ConfigArrayDraft, type ConfigArrayEdit } from './config-array-draft.js';
 import { PLUGIN_CONFIG_ARRAY_MAX_ITEMS } from '@lesliechan721/aw-plugin-core';
 import { presentConfigValue, safeConfigText } from './config-value-presentation.js';
+import { ConfigLeafEditor } from './config-leaf-editor.js';
 import { Box, Text, useInput, useWindowSize } from 'ink';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import path from 'node:path';
 import {
+  resolvePluginConfigObjectProperties,
   validatePluginConfigValue,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
@@ -1623,6 +1625,12 @@ export function ConsoleAppV4(props: {
   const [objectDrafts, setObjectDrafts] = useState<Record<string, PluginConfigObject>>({});
   const [changedObjectDraftKeys, setChangedObjectDraftKeys] = useState<string[]>([]);
   const [objectError, setObjectError] = useState<string>();
+  const [nestedPropertyRevision, setNestedPropertyRevision] = useState<string>();
+  const [objectVariantPreview, setObjectVariantPreview] = useState<{
+    routeKey: string;
+    value: PluginConfigObject;
+    removed: Array<{ property: string; value: PluginConfigObject[string] }>;
+  }>();
   const [inputValue, setInputValue] = useState('');
   const [inputError, setInputError] = useState<string>();
   const [configActionError, setConfigActionError] = useState<string>();
@@ -1675,7 +1683,7 @@ export function ConsoleAppV4(props: {
   const dependencyGraphContexts = useRef(new Map<string, DependencyGraphSessionContext>());
   const externalDraftRevision = useRef({ config: 0, source: 0, batch: 0 });
   const previousExternalDraftValues = useRef({
-    configDrafts, configCandidate, arrayDrafts, objectDrafts, changedObjectDraftKeys, sourceDraft, batchDraft,
+    configDrafts, configCandidate, arrayDrafts, objectDrafts, changedObjectDraftKeys, nestedPropertyRevision, objectVariantPreview, sourceDraft, batchDraft,
   });
   const externalDraftFlowIds = useRef(new Map<string, string>());
   const configOverviewAnchors = useRef(new Map<string, { overviewFrameId: string; flowId?: string }>());
@@ -1921,13 +1929,15 @@ export function ConsoleAppV4(props: {
       || previous.configCandidate !== configCandidate
       || previous.arrayDrafts !== arrayDrafts
       || previous.objectDrafts !== objectDrafts
-      || previous.changedObjectDraftKeys !== changedObjectDraftKeys) {
+      || previous.changedObjectDraftKeys !== changedObjectDraftKeys
+      || previous.nestedPropertyRevision !== nestedPropertyRevision
+      || previous.objectVariantPreview !== objectVariantPreview) {
       externalDraftRevision.current.config += 1;
     }
     if (previous.sourceDraft !== sourceDraft) externalDraftRevision.current.source += 1;
     if (previous.batchDraft !== batchDraft) externalDraftRevision.current.batch += 1;
     previousExternalDraftValues.current = {
-      configDrafts, configCandidate, arrayDrafts, objectDrafts, changedObjectDraftKeys, sourceDraft, batchDraft,
+      configDrafts, configCandidate, arrayDrafts, objectDrafts, changedObjectDraftKeys, nestedPropertyRevision, objectVariantPreview, sourceDraft, batchDraft,
     };
     const currentFlowId = snapshot.router.currentFlowId;
     if (currentFlowId && configRouteOwner) {
@@ -1935,7 +1945,7 @@ export function ConsoleAppV4(props: {
     }
     if (currentFlowId && sourceDraft) externalDraftFlowIds.current.set(sourceDraft.owner, currentFlowId);
     const drafts: ExternalDraftState[] = [];
-    if ((dirty || configCandidate || Object.values(arrayDrafts).some((draft) =>
+    if ((dirty || configCandidate || nestedPropertyRevision || objectVariantPreview || Object.values(arrayDrafts).some((draft) =>
       draft.initial === undefined ? draft.rows.length > 0 : arrayDraftChanged(draft)) || changedObjectDraftKeys.length > 0) && draftOwner) {
       const flowId = externalDraftFlowIds.current.get(draftOwner);
       drafts.push({
@@ -1959,7 +1969,7 @@ export function ConsoleAppV4(props: {
     props.controller.setExternalDraftState(drafts);
   }, [
     props.controller, batchDraft, changedObjectDraftKeys, configRouteOwner, dirty, draftOwner,
-    configDrafts, configCandidate, arrayDrafts, objectDrafts, route.name, snapshot.router.currentFlowId, sourceDraft,
+    configDrafts, configCandidate, arrayDrafts, objectDrafts, nestedPropertyRevision, objectVariantPreview, route.name, snapshot.router.currentFlowId, sourceDraft,
   ]);
   useEffect(() => () => props.controller.setExternalDraftState(), [props.controller]);
   const currentConfigPage = configPageMatches(configPage, configRoute) ? configPage : undefined;
@@ -2336,15 +2346,24 @@ export function ConsoleAppV4(props: {
   const activeObjectDraft = activeObjectKey
     ? objectDrafts[activeObjectKey] ?? objectValueFromCandidate ?? objectValueFromUpdate ?? objectValueFromField ?? {}
     : undefined;
+  const activeObjectProperties = activeField?.definition.type === 'object' && activeObjectDraft
+    ? resolvePluginConfigObjectProperties(activeField.definition, activeObjectDraft, activeField.key).properties
+    : undefined;
   const activePropertyDefinition = route.name === 'configObjectPropertyEditor'
     && activeField?.definition.type === 'object' && route.propertyKey !== undefined
-    ? activeField.definition.properties?.[route.propertyKey]
+    ? activeObjectProperties?.[route.propertyKey]
       ?? (activeField.definition.additionalProperties === false
         ? undefined
         : activeField.definition.additionalProperties)
     : undefined;
+  const activeVariantPreview = objectVariantPreview?.routeKey === routeKey ? objectVariantPreview : undefined;
+  const nestedPropertyEditor = route.name === 'configObjectPropertyEditor' && route.stage === 'custom'
+    && !activeVariantPreview && (activePropertyDefinition?.type === 'array' || activePropertyDefinition?.type === 'object');
+  useEffect(() => { setObjectVariantPreview(undefined); }, [routeKey]);
   const activePropertySensitive = activeField?.sensitive === true
     || activePropertyDefinition?.sensitive === true;
+  const activeFieldIsConst = activeField && 'const' in activeField.definition && activeField.definition.const !== undefined;
+  const activePropertyIsConst = activePropertyDefinition && 'const' in activePropertyDefinition && activePropertyDefinition.const !== undefined;
   useEffect(() => {
     if (route.name !== 'configFieldEditor' || !activeField) return;
     const candidate = configCandidate?.mutations[activeField.key];
@@ -2448,7 +2467,7 @@ export function ConsoleAppV4(props: {
     || Boolean(route.name === 'configUnavailable' && plugin)
     || Boolean(route.name === 'result' && snapshot.result && 'operationKind' in snapshot.result
       && snapshot.result.operationKind === 'portableInstall'));
-  const characterInput = isCharacterInputMode(route, searchFocus)
+  const characterInput = !activeVariantPreview && !activeFieldIsConst && !activePropertyIsConst && isCharacterInputMode(route, searchFocus)
     || route.name === 'operationReportPreview' && reportSaveMode;
   const canOpenHelp = !tooSmall && !characterInput && !preparationRunning;
   useEffect(() => {
@@ -3822,7 +3841,8 @@ export function ConsoleAppV4(props: {
     const itemDefinition = activeTopField?.definition.type === 'array' ? activeTopField.definition.items : undefined;
     const property = issue.path.property;
     const label = property && itemDefinition?.type === 'object'
-      ? itemDefinition.properties?.[property]?.title ?? property : property ?? activeField?.title ?? issue.path.field;
+      ? activeObjectProperties?.[property]?.title ?? itemDefinition.properties?.[property]?.title ?? property
+      : property ? activeObjectProperties?.[property]?.title ?? property : activeField?.title ?? issue.path.field;
     return `${index === undefined ? '' : `第 ${Number(index) + 1} 项／`}${label}：${issue.message}`;
   };
   const commitObjectDraft = (): void => {
@@ -3843,11 +3863,11 @@ export function ConsoleAppV4(props: {
     definition.type === 'boolean' || definition.choices ? 'choices' : 'custom';
   const openObjectProperty = (propertyKey: string, dynamic: boolean): void => {
     if (!activeField || activeField.definition.type !== 'object') return;
-    const definition = activeField.definition.properties?.[propertyKey]
+    const definition = activeObjectProperties?.[propertyKey]
       ?? (activeField.definition.additionalProperties === false
         ? undefined
         : activeField.definition.additionalProperties);
-    if (!definition) return;
+    if (!definition || 'const' in definition && definition.const !== undefined) return;
     const exists = activeObjectDraft && Object.hasOwn(activeObjectDraft, propertyKey);
     go({
       name: 'configObjectPropertyEditor',
@@ -3860,16 +3880,39 @@ export function ConsoleAppV4(props: {
       ...(arrayItem ? { arrayItem } : {}),
     });
   };
-  const updateObjectProperty = (propertyKey: string, value: PluginConfigScalar): boolean => {
+  const updateObjectProperty = (propertyKey: string, value: PluginConfigObject[string] | undefined): boolean => {
     if (!activeField || activeField.definition.type !== 'object' || !activeObjectDraft) return false;
     const candidate = { ...activeObjectDraft, [propertyKey]: value };
+    if (value === undefined) delete candidate[propertyKey];
     const issues = validatePluginConfigValue(activeField.definition, candidate, activeField.key)
       .filter((issue) => issue.path.property === propertyKey);
     if (issues.length > 0) {
       setInputError(issues.slice(0, 2).map(objectIssueText).join('；'));
       return false;
     }
-    updateObjectDraft(candidate);
+    const variants = activeField.definition.variants;
+    if (variants?.discriminator === propertyKey && activeObjectDraft[propertyKey] !== value) {
+      const resolved = resolvePluginConfigObjectProperties(activeField.definition, candidate, activeField.key);
+      if (resolved.issues.length) {
+        setInputError(resolved.issues.slice(0, 2).map(objectIssueText).join('；'));
+        return false;
+      }
+      const removed: NonNullable<typeof objectVariantPreview>['removed'] = [];
+      for (const property of Object.keys(candidate)) {
+        const definition = resolved.properties[property];
+        if (activeObjectProperties?.[property] && !definition
+          || definition && 'const' in definition && definition.const !== undefined
+            && Object.hasOwn(candidate, property) && candidate[property] !== definition.const) {
+          removed.push({ property, value: candidate[property]! });
+          delete candidate[property];
+        }
+      }
+      setObjectVariantPreview({ routeKey, value: candidate as PluginConfigObject, removed });
+      setFocus(0);
+      setBatchTargetOffset(0);
+      return false;
+    }
+    updateObjectDraft(candidate as PluginConfigObject);
     return true;
   };
   const configFieldTarget = (page: ConfigPageViewModel, key: string | undefined): {
@@ -4008,16 +4051,16 @@ export function ConsoleAppV4(props: {
         const updatedValue = draft.updates[key];
         const afterObject = field?.definition.type === 'object'
           && typeof updatedValue === 'object' && !Array.isArray(updatedValue) ? updatedValue : undefined;
-        const childSummary = (property: string, value: PluginConfigScalar | undefined): string => {
+        const childSummary = (property: string, value: PluginConfigObject[string] | undefined, object: PluginConfigObject): string => {
           if (value === undefined) return '未设置';
           if (field.sensitive || field.definition.type !== 'object') return '已设置';
-          const definition = field.definition.properties?.[property]
+          const definition = resolvePluginConfigObjectProperties(field.definition, object).properties[property]
             ?? (field.definition.additionalProperties === false
               ? undefined
               : field.definition.additionalProperties);
           if (definition?.sensitive) return '已设置';
-          if (typeof value === 'boolean') return value ? '开启' : '关闭';
-          return value === '' ? '（空字符串）' : safeConfigText(String(value));
+          return definition ? presentConfigValue({ definition, value, full: true }).text
+            : safeConfigText(JSON.stringify(value));
         };
         const updatedChildren = beforeObject && afterObject
           ? [...new Set([...Object.keys(beforeObject), ...Object.keys(afterObject)])]
@@ -4033,7 +4076,7 @@ export function ConsoleAppV4(props: {
                 }
                 return left.localeCompare(right, 'en');
               })
-              .filter((property) => beforeObject[property] !== afterObject[property])
+              .filter((property) => !configValuesEqual(beforeObject[property], afterObject[property]))
               .map((property) => {
                 const definition = field.definition.type === 'object'
                   ? field.definition.properties?.[property]
@@ -4043,8 +4086,8 @@ export function ConsoleAppV4(props: {
                   : undefined;
                 return {
                   property,
-                  before: childSummary(property, beforeObject[property]),
-                  after: childSummary(property, afterObject[property]),
+                  before: childSummary(property, beforeObject[property], beforeObject),
+                  after: childSummary(property, afterObject[property], afterObject),
                   ...(field.sensitive || definition?.sensitive ? { private: true } : {}),
                 };
               })
@@ -7123,6 +7166,14 @@ export function ConsoleAppV4(props: {
       actions = canUnset ? [{ label: '删除此覆盖并恢复继承', run: () => removeDraft(activeField.key) }] : [];
       content = <Box flexDirection="column"><StatusCard status="warning" title="仅可删除旧值" description={description} />
         <SemanticRows actions={actions} focus={focus} kind="action" compact /></Box>;
+    } else if ('const' in activeField.definition && activeField.definition.const !== undefined) {
+      title = activeField.title;
+      description = '这个值由插件固定，不能编辑。';
+      const constant = activeField.definition.const;
+      actions = activeField.definition.required && activeField.value === undefined
+        ? [{ label: '写入此固定值', run: () => updateDraft(activeField.key, constant) }] : [];
+      content = <Box flexDirection="column"><StaticRow title={`固定值 · ${presentConfigValue({ definition: activeField.definition, value: constant }).text}`} compact />
+        <SemanticRows actions={actions} focus={focus} kind="action" compact /></Box>;
     } else if (showChoices) {
       title = `选择${activeField.title}`;
       description = activeField.type !== 'boolean' && activeField.allowCustom
@@ -7204,7 +7255,7 @@ export function ConsoleAppV4(props: {
         : '草稿来自当前完整有效对象；保存后会在此层写入完整对象并覆盖继承对象。';
       if (objectError) description = objectError;
       help = '↑↓ 移动 · Enter 编辑 · Esc 取消';
-      const fixedEntries = Object.entries(objectDefinition.properties ?? {});
+      const fixedEntries = Object.entries(activeObjectProperties ?? {});
       const fixedKeys = new Set(fixedEntries.map(([property]) => property));
       const dynamicKeys = Object.keys(activeObjectDraft)
         .filter((property) => !fixedKeys.has(property))
@@ -7213,6 +7264,10 @@ export function ConsoleAppV4(props: {
         property: string,
         definition: PluginConfigObjectPropertyField | PluginConfigAdditionalPropertiesField,
       ): string => {
+        if ('const' in definition && definition.const !== undefined) {
+          const text = presentConfigValue({ definition, value: definition.const }).text;
+          return `${'required' in definition && definition.required && !Object.hasOwn(activeObjectDraft, property) ? '必填 · ' : ''}固定值 · ${text}`;
+        }
         const presentation = presentConfigValue({ definition,
           value: activeObjectDraft[property], privateValue: activeField.sensitive,
           configured: Object.hasOwn(activeObjectDraft, property),
@@ -7225,15 +7280,25 @@ export function ConsoleAppV4(props: {
           label: definition.title ?? property,
           description: definition.description,
           meta: propertySummary(property, definition),
-          run: () => openObjectProperty(property, false),
+          disabled: 'const' in definition && definition.const !== undefined
+            && !(definition.required && !Object.hasOwn(activeObjectDraft, property)) ? '插件固定值，不能编辑' : undefined,
+          run: () => {
+            if ('const' in definition && definition.const !== undefined) {
+              updateObjectDraft({ ...activeObjectDraft, [property]: definition.const });
+            } else openObjectProperty(property, false);
+          },
         })),
         ...dynamicKeys.map((property) => ({
           label: property,
-          meta: propertySummary(
-            property,
-            objectDefinition.additionalProperties as PluginConfigAdditionalPropertiesField,
-          ),
-          run: () => openObjectProperty(property, true),
+          meta: objectDefinition.additionalProperties === false
+            ? `不适用 · ${safeConfigText(JSON.stringify(activeObjectDraft[property]))}`
+            : propertySummary(property, objectDefinition.additionalProperties!),
+          run: () => {
+            if (objectDefinition.additionalProperties !== false) openObjectProperty(property, true);
+            else {
+              const next = { ...activeObjectDraft }; delete next[property]; updateObjectDraft(next);
+            }
+          },
         })),
       ];
       const objectOperationActions: ActionItem[] = [
@@ -7322,7 +7387,30 @@ export function ConsoleAppV4(props: {
     const definition = activePropertyDefinition;
     const propertyTitle = definition && property ? definition.title ?? property : '动态键';
     breadcrumb = `${plugin.displayName} / 设置 / ${activeField.title} / ${propertyTitle}`;
-    if (route.stage === 'key') {
+    if (activeVariantPreview) {
+      title = '确认分支切换';
+      description = '确认后仅更新当前对象草稿；完整设置仍需 Review 后保存。';
+      const candidateIssues = validatePluginConfigValue(activeField.definition, activeVariantPreview.value, activeField.key);
+      readingText = [
+        activeVariantPreview.removed.length ? '将移除这些旧值：' : '没有需要移除的旧值。',
+        ...activeVariantPreview.removed.map((entry) => `${entry.property} = ${safeConfigText(JSON.stringify(entry.value))}`),
+        '切换后的实际配置：', safeConfigText(JSON.stringify(activeVariantPreview.value, null, 2)),
+        ...(candidateIssues.length ? ['需要补充或修正：', ...candidateIssues.map(objectIssueText)] : []),
+      ].join('\n');
+      actions = [{ label: '使用此候选草稿', run: () => {
+        updateObjectDraft(activeVariantPreview.value);
+        if (candidateIssues.length) setObjectError(candidateIssues.slice(0, 2).map(objectIssueText).join('；'));
+        setObjectVariantPreview(undefined); back();
+      } }, { label: '取消切换', run: () => { setObjectVariantPreview(undefined); back(); } }];
+      content = <Box flexDirection="column">
+        {readingPage(readingText, size.columns - 2, Math.max(1, pageActionBudget(4)))}
+        <SemanticRows actions={actions} focus={focus} kind="action" compact />
+      </Box>;
+    } else if (property !== undefined && definition && 'const' in definition && definition.const !== undefined) {
+      title = propertyTitle;
+      description = '这个值由插件固定，不能编辑。';
+      content = <StaticRow title={`固定值 · ${presentConfigValue({ definition, value: definition.const }).text}`} compact />;
+    } else if (route.stage === 'key') {
       title = '输入新键名';
       description = inputError ?? '键名和属性数量会按插件规则检查。';
       help = '输入 · Enter 继续 · Ctrl-U 清空输入 · Esc 取消';
@@ -7346,6 +7434,10 @@ export function ConsoleAppV4(props: {
           label: route.dynamic ? '删除动态键' : '删除属性',
           status: 'error',
           run: () => {
+            if (activeField.definition.type === 'object' && activeField.definition.variants?.discriminator === property) {
+              if (updateObjectProperty(property, undefined)) back();
+              return;
+            }
             const next = { ...activeObjectDraft };
             delete next[property];
             updateObjectDraft(next);
@@ -7389,7 +7481,7 @@ export function ConsoleAppV4(props: {
             ...(definition.choices?.presets ?? []).map((preset) => ({
               label: `${preset.title}${preset.recommended ? '（推荐）' : ''}`,
               description: preset.description,
-              selected: !activePropertySensitive && current === preset.value,
+              selected: !activePropertySensitive && configValuesEqual(current, preset.value),
               run: () => { if (updateObjectProperty(property, preset.value)) back(); },
             })),
             ...(definition.choices?.allowCustom ? [{
@@ -7401,6 +7493,15 @@ export function ConsoleAppV4(props: {
             }] : []),
           ];
       content = <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
+    } else if (property !== undefined && definition && (definition.type === 'array' || definition.type === 'object')) {
+      title = `编辑${propertyTitle}`;
+      description = '确认后更新当前对象草稿；Esc 取消此属性的全部修改。';
+      help = '↑↓ 移动 · Enter 编辑 · a 操作 · c 使用 · Esc 取消';
+      content = <ConfigLeafEditor key={`${snapshot.router.currentFrameId}:${property}`}
+        definition={definition} value={activeObjectDraft[property]} propertyKey={property}
+        columns={size.columns} rowBudget={pageActionBudget(1)} active={!overlay && !tooSmall && !busy}
+        error={inputError} onDraftChange={setNestedPropertyRevision}
+        onCancel={back} onConfirm={(value) => { if (!updateObjectProperty(property, value)) return false; back(); return true; }} />;
     } else if (property !== undefined && definition) {
       title = activePropertySensitive ? '输入敏感值' : `输入${propertyTitle}`;
       description = inputError ?? (activePropertySensitive ? '输入已隐藏。' : definition.description ?? '按 Enter 使用输入值。');
@@ -10832,6 +10933,10 @@ export function ConsoleAppV4(props: {
       }
       return;
     }
+    if (nestedPropertyEditor && !overlay) {
+      if (key.ctrl && input.toLowerCase() === 'c') requestConfirmedExit();
+      return;
+    }
     if (arrayToolsOpen && activeArrayDraft) {
       if (key.escape) setArrayToolsOpen(false);
       else if (key.upArrow) setArrayToolFocus((value) => Math.max(0, value - 1));
@@ -11339,6 +11444,7 @@ export function ConsoleAppV4(props: {
       return;
     }
     if (route.name === 'configFieldEditor'
+      && !activeFieldIsConst
       && (route.editor === 'string' || route.editor === 'number')
       && ((activeField?.choices?.length ?? 0) === 0 || route.mode === 'custom')
       && (['project', 'user'] as const).some((scope) => configLayerPages[scope]?.groups.flatMap((group) => group.fields)
@@ -11382,6 +11488,8 @@ export function ConsoleAppV4(props: {
     }
     if (route.name === 'configObjectPropertyEditor'
       && (route.stage === 'key' || route.stage === 'custom')
+      && !activeVariantPreview
+      && !activePropertyIsConst
       && activeField?.definition.type === 'object'
       && activeObjectDraft) {
       if (key.escape) {

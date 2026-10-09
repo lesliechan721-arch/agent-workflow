@@ -172,7 +172,10 @@ describe('Skills CLI adapter', () => {
   it('preserves the pnpm default NODE_PATH prefix and an existing Windows environment value', async () => {
     const fake = await windowsSkills('pnpm');
     const runner = vi.fn<SkillsCliRunner>(async () => ({ stdout: '1.5.23', stderr: '' }));
-    await probeSkillsCli({ ...fake, env: { ...fake.env, Node_Path: 'C:\\existing modules' }, platform: 'win32', runner });
+    const env = { ...fake.env, Node_Path: 'C:\\existing modules' };
+    // Keep this fixture independent of NODE_PATH injected by nested pnpm scripts.
+    delete env.NODE_PATH;
+    await probeSkillsCli({ ...fake, env, platform: 'win32', runner });
     expect(runner.mock.calls[0]?.[2].env).toMatchObject({
       NODE_PATH: 'C:\\pnpm home\\global\\5\\node_modules\\.pnpm\\node_modules;C:\\existing modules',
     });

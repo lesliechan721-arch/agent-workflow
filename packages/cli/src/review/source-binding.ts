@@ -12,6 +12,8 @@ import {
   calculateCatalogWorkspaceSourceIdentity,
   GENERATED_OUTPUT_MARKER_FILENAME,
   readCatalogWorkspace,
+  formatPluginConfigIssue,
+  validatePluginConfigCandidate,
   type CatalogWorkspace,
 } from '@lesliechan721/aw-plugin-core'
 import fs from 'fs-extra'
@@ -32,9 +34,9 @@ import {
   resolveEvalSourceBindingInput,
   type AwSourceBindingEvalInput,
 } from './eval-source-input.js'
-import { parseReviewProfile } from './review-profile.js'
+import { normalizeReviewProfileConfig, parseReviewProfile } from './review-profile.js'
 import { resolveReviewSelection } from './review-selection.js'
-import type { ReviewProfile } from './review-types.js'
+import type { ReviewProfile, ReviewProfileConfig } from './review-types.js'
 
 export {
   computeAwSourceBindingSelectedCasesDigest,
@@ -79,7 +81,7 @@ export interface AwSourceBindingSubject {
 }
 
 export type AwSourceBindingProfile =
-  | { kind: 'eval'; id: string; scope: Scope; inputDigest: string }
+  | { kind: 'eval'; id: string; scope: Scope; inputDigest: string; config?: ReviewProfileConfig }
   | { kind: 'portable'; id: `agent-skills-${Scope}`; scope: Scope; inputDigest: string }
   | ReviewProfile
 
@@ -272,12 +274,16 @@ function normalizeProfile(value: unknown): AwSourceBindingProfile {
   const row = value as Record<string, unknown>
   if (row?.kind === 'review') return parseReviewProfile(value)
   if (
-    !strictRecord(row, ['kind', 'id', 'scope', 'inputDigest'])
+    !strictRecord(row, ['kind', 'id', 'scope', 'inputDigest',
+      ...(row?.kind === 'eval' && row.config !== undefined ? ['config'] : [])])
     || !scopeValue(row.scope)
     || !digestString(row.inputDigest)
   ) throw new Error('Source binding profile is invalid.')
   if (row.kind === 'eval' && safeId(row.id)) {
-    return { kind: 'eval', id: row.id, scope: row.scope, inputDigest: row.inputDigest }
+    return {
+      kind: 'eval', id: row.id, scope: row.scope, inputDigest: row.inputDigest,
+      ...(row.config === undefined ? {} : { config: normalizeReviewProfileConfig(row.config) }),
+    }
   }
   if (row.kind === 'portable' && row.id === `agent-skills-${row.scope}`) {
     return {
@@ -487,8 +493,21 @@ export async function resolveCatalogSnapshotBindingSource(
 export function resolveEvalProfileBindingInput(
   profile: AwSkillEvalManifestV1Profile,
   plugins: readonly PluginMeta[],
+  configOverrides: ReviewProfileConfig = {},
 ): EvalProfileBindingInput {
   assertNoSensitiveProfileConfig(profile, plugins)
+  const normalizedConfig = normalizeReviewProfileConfig(configOverrides)
+  const selectedPlugins = new Set(profile.plugins.map((entry) => entry.name))
+  if (Object.keys(normalizedConfig).some((name) => !selectedPlugins.has(name))) {
+    throw new Error('Eval config overrides must name plugins in the selected profile.')
+  }
+  assertNoSensitiveProfileConfig({
+    ...profile,
+    plugins: profile.plugins.map((entry) => ({
+      ...entry,
+      config: { ...entry.config, ...(normalizedConfig[entry.name] ?? {}) },
+    })),
+  }, plugins)
   const explicitConfig = new Map(profile.plugins.map((entry) => [entry.name, entry.config]))
   const overrides = new Map(Object.entries(profile.configByScope ?? {}).map(([scope, entries]) => [
     scope as Scope,
@@ -517,6 +536,7 @@ export function resolveEvalProfileBindingInput(
         {
           ...(explicitConfig.get(plugin.manifest.name) ?? {}),
           ...(overrides.get(scope)?.get(plugin.manifest.name) ?? {}),
+          ...(normalizedConfig[plugin.manifest.name] ?? {}),
         },
       ])),
     })),
@@ -532,6 +552,14 @@ export function resolveEvalProfileBindingInput(
           )
         }
       }
+      if (plugin.manifest.config) {
+        const defaults = Object.fromEntries(Object.entries(plugin.manifest.config.fields)
+          .flatMap(([key, field]) => field.default === undefined ? [] : [[key, field.default]]))
+        const issues = validatePluginConfigCandidate(plugin.manifest.config, { ...defaults, ...config })
+        if (issues.length > 0) {
+          throw new Error(`Eval profile "${profile.id}" has invalid config for plugin "${plugin.manifest.name}" in ${scope} scope: ${formatPluginConfigIssue(issues[0]!)}`)
+        }
+      }
     }
   }
   return {
@@ -541,6 +569,7 @@ export function resolveEvalProfileBindingInput(
       id: profile.id,
       scope: profile.scope,
       inputDigest: digestCanonical(materializationProfile),
+      ...(Object.keys(normalizedConfig).length === 0 ? {} : { config: normalizedConfig }),
     },
   }
 }
@@ -621,7 +650,9 @@ async function currentWorkspaceProfile(options: {
     if (!suite || !profile || suite.profiles && !suite.profiles.includes(profile.id)) {
       throw new Error('The bound Eval suite or profile is not present in the current Workspace.')
     }
-    return resolveEvalProfileBindingInput(profile, options.workspace.plugins).profile
+    return resolveEvalProfileBindingInput(
+      profile, options.workspace.plugins, options.binding.profile.config,
+    ).profile
   }
   if (options.binding.profile.kind === 'review') {
     const skills = options.binding.artifacts.flatMap((artifact) =>

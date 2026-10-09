@@ -11,7 +11,7 @@ import {
   PLUGIN_MANIFEST_SCHEMA_VERSION,
   SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION,
 } from './manifest.js';
-import { normalizePluginConfigDefinition } from './plugin-config.js';
+import { getPluginConfigDependencyKeys, normalizePluginConfigDefinition } from './plugin-config.js';
 
 import type {
   CatalogMarketplaceIdentity,
@@ -1847,6 +1847,7 @@ function normalizeArtifactTargetEntry(
     'sourceDirs',
     'distribution',
     'runtimeImports',
+    'runtimeConfig',
   ]);
 
   const id = ensureString(input.id, `${fieldName}.id`);
@@ -1983,6 +1984,24 @@ function normalizeArtifactTargetEntry(
     fieldName: `${fieldName}.refreshKeys`,
   });
 
+  let runtimeConfig: PluginArtifactTargetDefinition['runtimeConfig'];
+  if (input.runtimeConfig !== undefined) {
+    if (target !== 'codex.skill' && target !== 'claude.skill') {
+      throw new Error(`Invalid ${fieldName}.runtimeConfig: only native platform Skill targets support installed runtime config.`);
+    }
+    const runtime = assertObject(input.runtimeConfig, `${fieldName}.runtimeConfig`);
+    assertAllowedKeys(runtime, `${fieldName}.runtimeConfig`, ['keys']);
+    const keys = ensureStringArray(runtime.keys, `${fieldName}.runtimeConfig.keys`);
+    if (keys.length === 0 || new Set(keys).size !== keys.length || keys.some((key) => !refreshKeys.includes(key))) {
+      throw new Error(`Invalid ${fieldName}.runtimeConfig.keys: expected unique non-empty keys from refreshKeys.`);
+    }
+    if (!schema || getPluginConfigDependencyKeys(schema, keys).some((key) =>
+      !schema.fields[key] || configFieldContainsSensitiveValue(schema.fields[key]!))) {
+      throw new Error(`runtimeConfigKeyDenied: Invalid ${fieldName}.runtimeConfig.keys: dependency fields must be declared and non-sensitive.`);
+    }
+    runtimeConfig = { keys: [keys[0]!, ...keys.slice(1)] };
+  }
+
   return {
     id,
     platform,
@@ -2000,6 +2019,7 @@ function normalizeArtifactTargetEntry(
         : ensureBoolean(input.requiresCodexProjectConfig, `${fieldName}.requiresCodexProjectConfig`),
     roleKey,
     skillKey,
+    runtimeConfig,
     sourceDirs,
     runtimeImports: normalizeArtifactRuntimeImports(
       input.runtimeImports,

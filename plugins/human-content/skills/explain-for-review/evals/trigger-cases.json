@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "explain-for-review",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "分别检查实际对齐、完整语义和可用阅读路径；页面数量、长度和视觉装饰不是质量通过依据。"
+    }
+  },
+  "cases": [
+    {
+      "id": "complex_existing_material",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "这份ACK协议我读不明白。先让我看清流程、会失败的情况和我还要决定什么，再给能查原文的位置。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "已有复杂材料且需要理解/查证，不是从零设计。",
+        "minimalCounterexample": "只问ACK这个缩写含义时普通解释即可。",
+        "allowedVariance": "正例无需点名Skill；负例指首次主入口，之后有独立呈现目的的辅助使用按实际上下文判断。"
+      }
+    },
+    {
+      "id": "readable_interactive_view",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把已有规格做成我能逐段展开和评论的本地阅读网页。保留原文状态和所有重要风险。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "明确要求阅读工件而非产品原型。",
+        "minimalCounterexample": "要搭建生产配置页面时属于产品实现。",
+        "allowedVariance": "正例无需点名Skill；负例指首次主入口，之后有独立呈现目的的辅助使用按实际上下文判断。"
+      }
+    },
+    {
+      "id": "caller_explanation",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "当前设计已经列出待确认的取舍，请把这些已有内容呈现成适合用户判断的阅读视图，决定仍由当前协调者取得。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "合法上游把既有材料呈现交给本能力。",
+        "minimalCounterexample": "要求重新决定应采用哪种架构，属于设计而非单纯呈现。",
+        "allowedVariance": "正例无需点名Skill；负例指首次主入口，之后有独立呈现目的的辅助使用按实际上下文判断。"
+      }
+    },
+    {
+      "id": "simple_definition",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "ACK在通信里是什么意思？一句话解释。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "普通短解释没有额外呈现收益。",
+        "minimalCounterexample": "需理解复杂交付/确认/权限关系并核对来源时进入该能力。",
+        "allowedVariance": "正例无需点名Skill；负例指首次主入口，之后有独立呈现目的的辅助使用按实际上下文判断。"
+      }
+    },
+    {
+      "id": "independent_judgment",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只读审查这个规格，判断是否有安全遗漏，给出finding。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "独立质量裁决是Reviewer结果。",
+        "minimalCounterexample": "已有报告难以理解、要求变换呈现时可以辅助使用。",
+        "allowedVariance": "正例无需点名Skill；负例指首次主入口，之后有独立呈现目的的辅助使用按实际上下文判断。"
+      }
+    },
+    {
+      "id": "make_product_prototype",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "做两个真实可点击的结算页候选，让我比较交互方案。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "这里要通过新原型形成决定，不是解释既有材料。",
+        "minimalCounterexample": "已有两份方案说明需要清楚的后果对照时可以使用呈现能力。",
+        "allowedVariance": "正例无需点名Skill；负例指首次主入口，之后有独立呈现目的的辅助使用按实际上下文判断。"
+      }
+    }
+  ]
+}

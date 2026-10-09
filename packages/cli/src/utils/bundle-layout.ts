@@ -621,6 +621,14 @@ async function validateAwRuntimeLayout(
     entryFiles: [...nodeEntries],
     dependencies,
     devDependencies,
+    runtimeConfigSkillRoots: (manifest.artifacts?.targets ?? [])
+      .filter((target) => target.runtimeConfig !== undefined)
+      .flatMap((target) => (target.sourceDirs ?? []).map((_, index) => getArtifactSourceBundleRelativePath({
+        platform: target.platform,
+        distribution: target.distribution,
+        artifactId: target.id,
+        index,
+      }))),
   });
   if (scan.errors.length > 0) {
     throw new Error(`Invalid scripts.node runtime imports:\n${scan.errors.join('\n')}`);

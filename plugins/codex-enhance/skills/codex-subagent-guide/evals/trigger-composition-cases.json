@@ -10,7 +10,7 @@
       "optimization": "critical",
       "falseNegativeCost": "high",
       "falsePositiveCost": "critical",
-      "rationale": "漏选通用或探索 owner 会丢失专用编排；同时加载两个 owner 会重复管理同一委派和生命周期，因此错误路由不能由多数结果抵消。"
+      "rationale": "事实范围与执行方法由不同能力负责；同一父协调可以同时加载Explore和Guide。需检出的是遗漏必要能力或接管已有完整调度流程，不能把共载本身判为重复委派。"
     },
     "runtime": {
       "observeSpawnAgent": true,
@@ -19,7 +19,7 @@
         "validation",
         "sanity"
       ],
-      "forbidMultipleSkillLoads": true,
+      "forbidMultipleSkillLoads": false,
       "fixture": "trigger-fixture.mjs"
     }
   },
@@ -149,14 +149,15 @@
         "query": "我授权在这个任务中使用子代理。这个陌生 monorepo 文件很多。请跨网关、结算、任务和共享配置搜索 regional_checkout 的完整传递路径，只返回可核验文件证据，不做最终缺陷判断，也不要修改代码。",
         "expected": {
           "loadedSkills": [
-            "codex-explore"
+            "codex-explore",
+            "codex-subagent-guide"
           ]
         },
         "shouldSpawnAgent": true,
         "workspaceFixture": "explore_route"
       },
       "audit": {
-        "rationale": "任务是陌生大型代码库中的可分离事实探索，codex-explore 是专用 owner；codex-subagent-guide 明确不得接管已有专用 Skill 管理的委派。",
+        "rationale": "Explore拥有事实范围与接纳，Guide补足执行和生命周期；同一次父协调可加载二者，不创建Guide领域代理。",
         "minimalCounterexample": "保持相同用户授权，只把大范围事实探索改为边界清楚的常规文档实现后，应加载 codex-subagent-guide，而不是 codex-explore。"
       }
     },

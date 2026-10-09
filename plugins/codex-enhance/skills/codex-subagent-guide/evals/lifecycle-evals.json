@@ -19,7 +19,7 @@
         "profiles": [
           "project-default"
         ],
-        "prompt": "$codex-subagent-guide 委派已获准。请启动一个 simple 子代理，只读读取 src/simple.ts 并报告 retryLimit 的值。当前没有其它本地工作。你必须等待子代理的真实终态结果后再回答；超时不等于失败。只有当前 schema 提供清理工具时，才在结果已保留后清理。不要修改文件。"
+        "prompt": "$codex-subagent-guide 委派已获准。请启动一个 simple 子代理，只读读取 src/simple.ts 并报告 retryLimit 的值。当前没有其它本地工作。你必须等待子代理的真实终态结果后再回答；超时不等于失败。只有当前 schema 提供清理工具时，才在结果已保留后清理。不要修改文件。 本例显式指定每次响应式等待窗口为10分钟；遵守当前宿主工具上限，工具不支持该要求时报告限制。"
       },
       "expected": {
         "criteria": {
@@ -36,7 +36,7 @@
         "regression"
       ],
       "input": {
-        "prompt": "$codex-subagent-guide 委派已获准。委派一个 simple 子代理执行 scripts/recoverable.mjs 的 start 阶段；这一阶段无论成功或失败都先返回结果和已落地进度，不自行进入 finish。start 会先落地一次操作再调用临时服务；finish 可在服务失败后继续，已落地的操作不得重复。收到子代理报告后，父代理继续完成这项尚未完成的交付，保留有效进度。父代理只编排，不直接执行 helper 或修改 results/；结果完成后报告。",
+        "prompt": "$codex-subagent-guide 委派已获准。委派一个 simple 子代理执行 scripts/recoverable.mjs 的 start 阶段；这一阶段无论成功或失败都先返回结果和已落地进度，不自行进入 finish。start 会先落地一次操作再调用临时服务；finish 可在服务失败后继续，已落地的操作不得重复。收到子代理报告后，父代理继续完成这项尚未完成的交付，保留有效进度。父代理只编排，不直接执行 helper 或修改 results/；结果完成后报告。 本例显式指定每次响应式等待窗口为10分钟；遵守当前宿主工具上限，工具不支持该要求时报告限制。",
         "lifecycle_fixture": "recovery"
       },
       "expected": {
@@ -66,7 +66,7 @@
         "regression"
       ],
       "input": {
-        "prompt": "$codex-subagent-guide 委派已获准。先委派一个 advanced 子代理，只审核 src/publish-v1.mjs 是否在缺少 repo 时重建已占用版本，并等待它返回。随后对当前完整版本 src/publish-v2.mjs 做一次独立全面审核；以 docs/publication-contract.md 的全部要求为验收范围，不能把上一轮问题作为完整检查清单。父代理不直接审核源码。最终用 JSON 报告当前实现是否违反三条要求，字段为 missingRepoDefect、uncertainRetryDefect、publishedTagReuseDefect，值为布尔值，并附关键源码定位。不要修改文件。",
+        "prompt": "$codex-subagent-guide 委派已获准。先委派一个 advanced 子代理，只审核 src/publish-v1.mjs 是否在缺少 repo 时重建已占用版本，并等待它返回。随后对当前完整版本 src/publish-v2.mjs 做一次独立全面审核；以 docs/publication-contract.md 的全部要求为验收范围，不能把上一轮问题作为完整检查清单。父代理不直接审核源码。最终用 JSON 报告当前实现是否违反三条要求，字段为 missingRepoDefect、uncertainRetryDefect、publishedTagReuseDefect，值为布尔值，并附关键源码定位。不要修改文件。 本例显式指定每次响应式等待窗口为10分钟；遵守当前宿主工具上限，工具不支持该要求时报告限制。 当前完整版本审核明确使用gpt-6-astra与xhigh推理强度。",
         "lifecycle_fixture": "review"
       },
       "expected": {
@@ -98,7 +98,7 @@
         "regression"
       ],
       "input": {
-        "prompt": "$codex-subagent-guide 委派已获准。先委派一个 simple 子代理读取 src/simple.ts，确认 retryLimit，并等待这项交付完成。随后有一项新的独立交付：委派子代理读取 src/new-task.ts，报告 maxRetries。父代理不直接读取这两个文件。第二项任务只需当前文件与问题，最终用 JSON 报告 maxRetries。不要修改文件。",
+        "prompt": "$codex-subagent-guide 委派已获准。先委派一个 simple 子代理读取 src/simple.ts，确认 retryLimit，并等待这项交付完成。随后有一项新的独立交付：委派子代理读取 src/new-task.ts，报告 maxRetries。父代理不直接读取这两个文件。第二项任务只需当前文件与问题，最终用 JSON 报告 maxRetries。不要修改文件。 本例显式指定每次响应式等待窗口为10分钟；遵守当前宿主工具上限，工具不支持该要求时报告限制。",
         "lifecycle_fixture": "new-delivery"
       },
       "expected": {

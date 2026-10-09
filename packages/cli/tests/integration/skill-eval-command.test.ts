@@ -177,6 +177,84 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.remove(root)))
 })
 describe('aw skill eval commands', () => {
+  it('binds explicit non-sensitive config overrides and rejects changes before commit', async () => {
+    // Protect the public prepare boundary: actual paths can be supplied without editing
+    // a profile or signing a runtime receipt, and the same values can be revalidated.
+    const fixture = await createWorkspace()
+    const manifestPath = path.join(fixture.ownerRoot, '.agents-plugin', 'plugin.json')
+    const pluginManifest = await fs.readJson(manifestPath)
+    pluginManifest.artifacts = { targets: [{
+      id: 'configured', platform: 'codex', scopes: ['project', 'user'],
+      target: 'codex.skill', delivery: { mode: 'aw-extension' },
+      states: ['present'], refreshKeys: ['mode'], skillKey: 'configured-skill',
+    }] }
+    pluginManifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } }
+    await fs.writeJson(manifestPath, pluginManifest, { spaces: 2 })
+    await fs.outputFile(path.join(fixture.ownerRoot, 'scripts', 'render.mjs'), [
+      "import { readFile } from 'node:fs/promises';",
+      'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+      '  id: "configured", kind: "skill", platform: "codex", target: "codex.skill",',
+      '  state: "present", skillKey: "configured-skill", refreshKeys: ["mode"],',
+      '  content: { files: {',
+      '    "SKILL.md": "---\\nname: configured-skill\\ndescription: Inspect deterministic configured content.\\n---\\nRead render.json.\\n",',
+      '    "README.md": "Inspect deterministic configured content.\\n",',
+      '    "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n",',
+      '    "render.json": JSON.stringify({ mode: context.config.values.mode }),',
+      '  } },',
+      '}]}));',
+    ].join('\n'))
+    await fs.writeFile(path.join(fixture.skillRoot, 'SKILL.md'),
+      (await fs.readFile(path.join(fixture.skillRoot, 'SKILL.md'), 'utf8')).replaceAll('TODO', 'Fixture instruction'))
+    await fs.writeJson(path.join(fixture.evalRoot, 'cases.json'), {
+      version: 1,
+      suite: { kind: 'trigger', unitUnderTest: 'owner-skill', participants: ['configured-skill'] },
+      cases: [{ id: 'configured', split: 'validation', tags: [], input: { query: 'Inspect configuration.', expectedLoad: true } }],
+    })
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
+      version: 1,
+      defaults: { profile: 'local' },
+      profiles: { local: { scope: 'project', plugins: { 'eval-owner': { mode: 'profile-value' } } } },
+      suites: [{ id: 'configured', kind: 'trigger', cases: 'cases.json' }],
+    })
+    const configFile = path.join(fixture.outputRoot, 'config.json')
+    await fs.writeJson(configFile, { 'eval-owner': { mode: 'explicit-value' } })
+    const output = path.join(fixture.outputRoot, 'configured')
+    const io = capture()
+    const args = [
+      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      '--workspace-root', fixture.root, '--config-file', configFile, '--output', output, '--json',
+    ]
+    expect(await runCli(args, { cwd: fixture.root, env: fixture.env, io: io.io }), io.stdout()).toBe(0)
+    expect(await fs.readJson(path.join(output, 'workspace', 'subject', '.agents', 'skills', 'configured-skill', 'render.json')))
+      .toEqual({ mode: 'explicit-value' })
+    const sourceBindingPath = JSON.parse(io.stdout()).sourceBindingPath as string
+    expect((await fs.readJson(sourceBindingPath)).profile.config).toEqual({ 'eval-owner': { mode: 'explicit-value' } })
+    const workspaceContext = await createAwSourceBindingWorkspaceValidationContext(fixture.root)
+    expect((await validateAwSourceBindingForWorkspace({
+      bindingPath: sourceBindingPath, cwd: fixture.root, context: workspaceContext,
+      expectedSubject: { plugin: 'eval-owner', skill: 'owner-skill', suite: 'configured' },
+    })).state).toBe('verified')
+
+    await fs.writeJson(configFile, { 'eval-owner': { token: 'never-expose-this-token' } })
+    const sensitive = capture()
+    expect(await runCli(args.map((arg) => arg === output ? `${output}-secret` : arg), {
+      cwd: fixture.root, env: fixture.env, io: sensitive.io,
+    })).toBe(1)
+    expect(`${sensitive.stdout()}${sensitive.stderr()}`).not.toContain('never-expose-this-token')
+    expect(await fs.pathExists(`${output}-secret`)).toBe(false)
+
+    await fs.writeJson(configFile, { 'eval-owner': { mode: 'before-change' } })
+    setSkillEvalCommandTestHooksForTests({ beforePrepareCommit: async () => {
+      await fs.writeJson(configFile, { 'eval-owner': { mode: 'after-change' } })
+    } })
+    const drifted = capture()
+    expect(await runCli(args.map((arg) => arg === output ? `${output}-drifted` : arg), {
+      cwd: fixture.root, env: fixture.env, io: drifted.io,
+    })).toBe(1)
+    expect(await fs.pathExists(`${output}-drifted`)).toBe(false)
+  }, 30_000)
+
   it('prepares mixed static, dynamic, and shared native Codex content with scoped config', async () => {
     const fixture = await createWorkspace()
     const providerInit = capture()
