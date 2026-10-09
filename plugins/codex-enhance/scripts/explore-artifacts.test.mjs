@@ -36,7 +36,7 @@ function artifact(plan, id) {
 
 // Test Value Gate: the real process entry verifies structured artifact delivery and
 // complete default instruction transport to the native developer channel.
-test('real renderer emits six artifacts with shared source instructions for native and external use', async () => {
+test('real renderer keeps shared instructions and adds local rules only to native specialist roles', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'codex-enhance-render-'));
   try {
     const input = path.join(temporary, 'context.json');
@@ -58,7 +58,23 @@ test('real renderer emits six artifacts with shared source instructions for nati
       const role = artifact(plan, roleId);
       assert.equal(role.roleKey, roleKey);
       assert.equal(role.content.roleFile.name, roleKey);
-      assert.equal(role.content.roleFile.developer_instructions, canonical);
+      const delivered = role.content.roleFile.developer_instructions;
+      if (roleKey === 'codex-subagent') {
+        assert.equal(delivered, canonical);
+      } else {
+        const prefix = `${canonical.trimEnd()}\n\n`;
+        assert.equal(delivered.startsWith(prefix), true);
+        const local = delivered.slice(prefix.length);
+        // The Codex developer channel consumes this local prohibition. These
+        // checks protect its scope; they do not prove model compliance.
+        assert.equal(local.split(roleKey).length - 1, 1);
+        assert.match(local, new RegExp(`不要通过 ${roleKey} 将同一`));
+        for (const other of ['codex-advisor', 'codex-explore'].filter((key) => key !== roleKey)) {
+          assert.equal(local.includes(other), false);
+        }
+      }
+      assert.equal(role.content.registration.description, role.content.roleFile.description);
+      assert.doesNotMatch(role.content.roleFile.description, /再次委派|不再委派/);
       assert.equal(artifact(plan, skillId).content.files[file], canonical);
       assert.equal(Object.hasOwn(role.content.roleFile, 'model'), false);
       assert.equal(Object.hasOwn(role.content.roleFile, 'model_reasoning_effort'), false);

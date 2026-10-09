@@ -251,6 +251,8 @@ aw config set codex-enhance advisorDebugProfile -s user --value-json '{"model":"
 
 profile 的 executor 缺省为 native。Advisor 的 design、debug、review 专属 profile 可缺省；缺省时使用 `advisorProfile`，显式非法配置须修正。全部 shared native profile 只支持 user 配置。保存但不应用时，外部新调用仍使用安装产物的旧生效值；`--apply --yes` 会重新生成共享 Skill，并影响启用该插件的项目。原生宿主可能需要刷新或新会话。`advisorPolicy` 已删除，旧 off 和次数设置不再生效；仍需的限制应在当前任务或上游指令中提供。具体配置项、前台外部执行和升级边界见 [`codex-enhance` README](plugins/codex-enhance/README.md)。
 
+外部执行器可选 Codex、Claude Code、Oracle 或自定义 Adapter v4，支持后端参数、普通环境值和宿主环境引用。外部 profile 可省略模型与推理级别。配置需要支持 `aw.plugin-config.v4` 的 CLI；从旧协议升级时先更新执行器配置，再 sync 或 reinstall。命令使用 `--prompt TEXT` 或 `--prompt -`，指令文件可选；bundle 可用 `--file` 选择材料，workspace 模式在任务正文中说明关注路径。
+
 ## 安装范围
 
 - **User scope**：为当前用户安装，适合跨项目复用。

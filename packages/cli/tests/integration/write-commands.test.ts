@@ -65,6 +65,7 @@ import {
   git,
 } from '../helpers/catalog-source-fixture.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { stubCodexFileSelectionForNativeFixture } from '../helpers/codex-enhance-native-fixture.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
@@ -15741,7 +15742,9 @@ describe('five namespaced write commands', () => {
       path.join(repositoryRoot, 'plugins', 'marketplace-source.json'),
       path.join(authoringRoot, 'plugins', 'marketplace-source.json'),
     );
-    await fs.copy(sourcePluginRoot, path.join(authoringRoot, 'plugins', 'codex-enhance'));
+    const copiedPluginRoot = path.join(authoringRoot, 'plugins', 'codex-enhance');
+    await fs.copy(sourcePluginRoot, copiedPluginRoot);
+    await stubCodexFileSelectionForNativeFixture(copiedPluginRoot);
     const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
     await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), {
       schemaVersion: 1,
@@ -15779,6 +15782,26 @@ describe('five namespaced write commands', () => {
     expect(roleRender.plan.artifacts.map((artifact) => artifact.id)).toEqual(roleArtifactIds);
     const sharedInstructionFiles = ['explore-instructions.md', 'task-instructions.md', 'advisor-instructions.md'];
     const sharedSkillKeys = ['codex-explore', 'codex-subagent-guide', 'codex-advisor'];
+    const roleKeys = ['codex-explore', 'codex-subagent', 'codex-advisor'];
+    const assertRoleInstructions = (roleKey: string, delivered: string | undefined, shared: string) => {
+      if (typeof delivered !== 'string') throw new Error('Expected native role developer instructions.');
+      if (roleKey === 'codex-subagent') {
+        expect(delivered).toBe(shared);
+        return;
+      }
+      const prefix = `${shared.trimEnd()}\n\n`;
+      expect(delivered.startsWith(prefix)).toBe(true);
+      const local = delivered.slice(prefix.length);
+      // Check the native developer-channel scope; this does not prove model compliance.
+      expect(local.split(roleKey)).toHaveLength(2);
+      const task = roleKey === 'codex-advisor' ? '咨询' : '调查';
+      expect(local).toContain(`不要通过 ${roleKey} 将同一${task}重新委派`);
+      expect(local).toContain(`只限制重复父级${task}编排`);
+      expect(local).toContain('不禁止为不同有界子目标采用本次任务允许的协作方法');
+      for (const other of ['codex-advisor', 'codex-explore'].filter((key) => key !== roleKey)) {
+        expect(local).not.toContain(other);
+      }
+    };
     expect(roleRender.context.artifactSources.map((target) => target.id)).toEqual([
       'codex-explore-skill', 'codex-subagent-guide-skill', 'codex-advisor-skill',
     ]);
@@ -15786,7 +15809,10 @@ describe('five namespaced write commands', () => {
       const instructions = await fs.readFile(path.join(
         sourcePluginRoot, 'skills', sharedSkillKeys[index]!, 'assets', sharedInstructionFiles[index]!,
       ), 'utf8');
-      expect(artifact).toMatchObject({ kind: 'codexRole', content: { roleFile: { developer_instructions: instructions } } });
+      expect(artifact).toMatchObject({ kind: 'codexRole', roleKey: roleKeys[index],
+        content: { roleFile: { name: roleKeys[index] } } });
+      if (artifact.kind !== 'codexRole') throw new Error('Expected a Codex role artifact.');
+      assertRoleInstructions(roleKeys[index]!, artifact.content?.roleFile?.developer_instructions, instructions);
     }
     const runtime = createCodexNativeTestRuntime(isolation);
     const runPublic = async (args: string[]) => {
@@ -15859,7 +15885,6 @@ describe('five namespaced write commands', () => {
     expect(userStore.values.standardProfile).toEqual({
       model: 'user-standard', reasoningEffort: 'max',
     });
-    const roleKeys = ['codex-explore', 'codex-subagent', 'codex-advisor'];
     const rolePaths = roleKeys.map((role) => path.join(
       isolation.layout.fixtureCwd, '.codex', 'agents', `aw-codex-enhance-${role}.toml`,
     ));
@@ -15869,9 +15894,10 @@ describe('five namespaced write commands', () => {
       const role = parseCodexRoleFile(content);
       expect(role.model).toBeUndefined();
       expect(role.modelReasoningEffort).toBeUndefined();
-      expect(role.developerInstructions).toBe(await fs.readFile(path.join(
+      const sharedInstructions = await fs.readFile(path.join(
         cacheRoot, 'codex', 'skills', skillKeys[index]!, 'assets', instructionFiles[index]!,
-      ), 'utf8'));
+      ), 'utf8');
+      assertRoleInstructions(roleKeys[index]!, role.developerInstructions, sharedInstructions);
     }
     expect(initialSkillBytes[0].toString('utf8')).toContain('"user-standard"');
     expect(initialSkillBytes[1].toString('utf8')).not.toContain('"user-standard"');

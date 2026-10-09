@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { copyPublicAwFixture, gradeRoleBoundaryEvidence, materializeRoleBoundaryFiles, parseRoleBoundaryCase, prepareRoleBoundary } from './run-role-boundary-evals.mjs';
-import { executeFixtureAction, fixtureRendererSource, observeInstalledRuntimeConfig } from './fixtures/role-boundary-actions.mjs';
+import { executeFixtureAction, fixtureRendererSource, observeInstalledRuntimeConfig, parseGuideObservation } from './fixtures/role-boundary-actions.mjs';
 import { fixtureAssetURL as faultAssetURL } from './fixtures/single-write-disconnect.mjs';
 import { prepareRun } from '../scripts/runtime/runner.mjs';
 import { selectExecution } from '../scripts/runtime/plan.mjs';
@@ -35,8 +35,7 @@ async function fixture({ mode = 'native' } = {}) {
     generalTaskProfile: { model: 'gpt-6.1-sol', reasoningEffort: 'medium' }, subagentCommands: [],
   } };
   if (mode !== 'native') {
-    snapshot.effectiveValues.subagentCommands.push({ key: 'fixture-external', title: 'Test boundary only', mode,
-      command: process.execPath, entrypoint: path.join(root, 'adapter.mjs'), supportsSystemInstructions: true, supportsReadOnly: true, supportsWorkspaceWrite: false });
+    snapshot.effectiveValues.subagentCommands.push({ key: 'fixture-external', title: 'Test boundary only', adapter: 'custom', mode, command: process.execPath, entrypoint: path.join(root, 'adapter.mjs') });
     await writeFile(path.join(root, 'adapter.mjs'), `throw new Error('prepare must not execute an adapter');\n`);
   }
   await Promise.all([
@@ -113,18 +112,21 @@ test('Eval resource observations project declared fields without pretending to v
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test('external prepare uses a native workflow and explicit v3 run inputs, without executing its adapter', async () => {
+test('external prepare uses a native workflow and explicit v4 prompt inputs, without executing its adapter', async () => {
   const f = await fixture({ mode: 'bundle' });
   try {
     const request = await prepareRoleBoundary({ ...f.input, case: { ...selected, input: { ...selected.input, requiredMode: 'bundle' } } });
     const contract = await contractOf(f);
     assert.equal(request.transport, undefined); assert.equal(request.model, null);
     assert.equal(contract.mode, 'bundle'); assert.equal(contract.execution.profile, 'advisorProfile');
-    assert.equal(contract.resultFile, 'provided/executor-result.json');
+    assert.equal(contract.resultFile, 'provided/executor-result.txt');
     assert.equal(await readFile(path.join(f.workspace, 'provided', 'executor-task.md'), 'utf8'), selected.input.prompt);
     assert.ok(request.evaluation.checks.some(({ name }) => name === 'external-service'));
-    const writable = structuredClone(selected); writable.input.requestedAccess = 'workspace-write';
-    await assert.rejects(prepareRoleBoundary({ ...f.input, case: writable }), /no demonstrated workspace write/u);
+    const writable = structuredClone(selected); writable.input.requestedAccess = 'workspace-write'; writable.input.requiredMode = 'workspace';
+    await assert.rejects(prepareRoleBoundary({ ...f.input, case: writable }), /requires workspace/u);
+    const optional = structuredClone(selected); delete optional.input.instructionsFile; optional.input.prompt += ' Stay read-only and give only this assigned second opinion.';
+    await prepareRoleBoundary({ ...f.input, case: optional });
+    assert.equal((await contractOf(f)).instructions, undefined);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -146,21 +148,16 @@ for (const caseId of ['W06-explore-bundle-scope', 'W04-explore-versions', 'J07']
       await prepareRoleBoundary({ ...f.input, case: selectedCase });
       const contract = await contractOf(f);
       const sources = contract.selectedBundleMaterials ?? Object.keys(selectedCase.input.workspaceFiles);
-      const promptFile = path.join(f.root, 'bundle-question.md');
-      await writeFile(promptFile, selectedCase.input.prompt);
       const request = { profile, instructionsFile: path.join(f.workspace, '.agents', 'skills', 'codex-explore', 'assets', 'explore-instructions.md'),
-        promptFile, workspace: f.workspace, files: sources, access: 'read-only' };
+        prompt: selectedCase.input.prompt, workspace: f.workspace, files: sources };
       const prepared = await prepareRun(selectExecution(snapshot, request), request);
-      assert.equal(prepared.request.mode, 'bundle'); assert.equal(prepared.request.workspace, null);
-      assert.equal(prepared.request.instructions, f.text); assert.equal(prepared.request.task, selectedCase.input.prompt);
-      assert.deepEqual(prepared.request.materials.map(({ source }) => source), sources);
-      for (const material of prepared.request.materials) {
-        assert.equal(material.originalPath, path.join(f.workspace, material.source));
-        assert.equal(material.content, selectedCase.input.workspaceFiles[material.source]);
-        assert.equal(material.startLine, 1);
-        assert.equal(material.endLine, ['src/select.js', 'docs/notes/source-data.md'].includes(material.source) ? 3 : 2);
-      }
-      if (caseId === 'J07') assert.equal(prepared.request.materials.length, 2);
+      assert.equal(prepared.request.protocolVersion, 4);
+      assert.equal(prepared.request.mode, 'bundle'); assert.equal(prepared.request.workspace, f.workspace);
+      assert.equal(prepared.request.prompt, `执行指令：\n${f.text}\n\n本次任务：\n${selectedCase.input.prompt}`);
+      assert.deepEqual(prepared.request.fileSelectors, sources);
+      assert.deepEqual(prepared.request.fileResolver, { command: process.execPath, args: [path.join(f.skill, 'scripts', 'resolve-files.mjs')] });
+      for (const source of sources) assert.equal(await readFile(path.join(f.workspace, source), 'utf8'), selectedCase.input.workspaceFiles[source]);
+      if (caseId === 'J07') assert.equal(prepared.request.fileSelectors.length, 2);
       await assert.rejects(readFile(marker), { code: 'ENOENT' });
     } finally { await rm(f.root, { recursive: true, force: true }); }
   });
@@ -179,7 +176,7 @@ test('joint prepare materializes withheld facts only after interaction and recor
     assert.equal(j17.evaluation.setupActions[0].input.operation, 'instruction-update-install');
     assert.equal(j17.evaluation.interactions[0].action.input.operation, 'apply-instructions');
     assert.deepEqual(j17.evaluation.finalActions[0].input, { operation: 'verify-foreground' });
-    assert.ok(j17.evaluation.artifacts.includes('provided/new-result.json'));
+    assert.ok(j17.evaluation.artifacts.includes('provided/new-result.txt'));
     const j15 = await prepareRoleBoundary({ ...f.input, case: guideOnly.cases[0] });
     assert.equal((await contractOf(f)).guideAlreadyLoaded, true); assert.deepEqual(j15.roles, []);
   } finally { await rm(f.root, { recursive: true, force: true }); }
@@ -318,15 +315,33 @@ test('explicit public AW fixture copies its regular package tree and preserves e
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('v3 local failure fixture writes exactly one partial marker and returns no service receipt', async () => {
+test('v4 local failure fixture writes exactly one partial marker and returns no service receipt', async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'foreground-fault-')));
   try {
     const child = spawn(process.execPath, [fileURLToPath(faultAssetURL)], { cwd: root, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
     const output = []; child.stdout.on('data', (bytes) => output.push(bytes));
-    child.stdin.end(JSON.stringify({ protocolVersion: 3, mode: 'workspace', access: 'workspace-write', workspace: root, instructions: 'Authorized one-file write control.', task: 'write one marker', materials: [] }));
+    child.stdin.end(JSON.stringify({ protocolVersion: 4, execution: { profile: 'generalTaskProfile', executor: 'fixture' }, mode: 'workspace', workspace: root, prompt: 'Authorized one-file write control. Write one marker.', args: [] }));
     assert.equal(await new Promise((resolve, reject) => { child.once('close', resolve); child.once('error', reject); }), 0);
     assert.deepEqual(JSON.parse(await readFile(path.join(root, '.role-boundary-fixture', 'counter.json'), 'utf8')), { submissions: 1, writes: 1 });
     assert.ok((await readFile(path.join(root, 'probe', 'once.txt'))).length > 0);
     assert.throws(() => JSON.parse(Buffer.concat(output).toString('utf8')));
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+// Test Value Gate: public text consumers cannot treat a body line or raw JSON as a terminal,
+// and J16 requires real input rejection plus a zero-start setup observation.
+test('v4 text observations and J16 zero-start evidence preserve uncertainty', async () => {
+  const observation = parseGuideObservation('COMPLETED · advisorProfile → fixture · bundle\n\nFAILED in quoted source', '', 0);
+  assert.equal(observation.state, 'completed'); assert.equal(observation.exitCode, 0);
+  assert.equal(parseGuideObservation('{"state":"completed"}', '', 0).state, 'unknown');
+  assert.equal(parseGuideObservation('', 'filesNotAllowedInWorkspace: rejected\n', 2).code, 'filesNotAllowedInWorkspace');
+  const selectedCase = joint.cases.find(({ id }) => id === 'J16');
+  const contract = { caseId: 'J16', target: 'joint', checks: ['reject'] };
+  const evidence = { evaluation: { checks: [{ name: 'reject', verdict: 'pass', evidence: 'Independent check.' }], fixtureActions: [] } };
+  assert.equal(gradeRoleBoundaryEvidence(parseRoleBoundaryCase(selectedCase), evidence, contract).details.complete, false);
+  const counted = { operation: 'invalid-workspace-files', preflight: { code: 'filesNotAllowedInWorkspace', exitCode: 2 }, adapterExecutionCounter: null };
+  evidence.evaluation.fixtureActions.push({ phase: 'setup', result: { receipt: { evidence: counted } } });
+  assert.equal(gradeRoleBoundaryEvidence(parseRoleBoundaryCase(selectedCase), evidence, contract).passed, true);
+  counted.adapterExecutionCounter = { submissions: 1, writes: 0 };
+  assert.equal(gradeRoleBoundaryEvidence(parseRoleBoundaryCase(selectedCase), evidence, contract).passed, false);
 });

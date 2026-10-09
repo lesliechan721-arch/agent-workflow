@@ -96,8 +96,10 @@ export interface PluginScriptsConfig {
 }
 
 export type PluginConfigScalar = string | number | boolean;
-export type PluginConfigObject = Record<string, PluginConfigScalar>;
-export type PluginConfigArray = string[] | number[] | boolean[] | PluginConfigObject[];
+export type PluginConfigScalarArray = string[] | number[] | boolean[];
+export type PluginConfigScalarObject = Record<string, PluginConfigScalar>;
+export type PluginConfigObject = Record<string, PluginConfigScalar | PluginConfigScalarArray | PluginConfigScalarObject>;
+export type PluginConfigArray = PluginConfigScalarArray | PluginConfigObject[];
 export type PluginConfigValue = PluginConfigScalar | PluginConfigObject | PluginConfigArray;
 export type PluginConfigFieldType = 'string' | 'number' | 'boolean' | 'object' | 'array';
 export type PluginConfigStringFormat =
@@ -156,6 +158,7 @@ export interface PluginConfigFieldBase<Value extends PluginConfigValue> {
 }
 interface PluginConfigPlainStringField extends Omit<PluginConfigFieldBase<string>, 'sensitive'> {
   type: 'string';
+  const?: string;
   sensitive?: false;
   valueRef?: PluginConfigValueReference;
   choices?: PluginConfigChoices<string>;
@@ -166,6 +169,7 @@ interface PluginConfigSensitiveStringField extends Omit<PluginConfigFieldBase<st
   sensitive: true;
   default?: never;
   choices?: never;
+  const?: never;
   validation?: PluginConfigStringValidation;
 }
 export type PluginConfigStringField =
@@ -173,12 +177,14 @@ export type PluginConfigStringField =
   | PluginConfigSensitiveStringField;
 export interface PluginConfigNumberField extends PluginConfigFieldBase<number> {
   type: 'number';
+  const?: number;
   valueRef?: PluginConfigValueReference;
   choices?: PluginConfigChoices<number>;
   validation?: PluginConfigNumberValidation;
 }
 export interface PluginConfigBooleanField extends PluginConfigFieldBase<boolean> {
   type: 'boolean';
+  const?: boolean;
   valueRef?: PluginConfigValueReference;
   choices?: PluginConfigChoices<boolean>;
 }
@@ -192,10 +198,27 @@ type PluginConfigNonSensitiveScalarField =
   | PluginConfigPlainStringField
   | PluginConfigNumberField
   | PluginConfigBooleanField;
-export type PluginConfigObjectPropertyField = DistributiveOmit<
+export type PluginConfigScalarPropertyField = DistributiveOmit<
   PluginConfigNonSensitiveScalarField,
   'default' | 'sensitive'
 > & { sensitive?: never };
+export interface PluginConfigLeafArrayField extends Omit<PluginConfigFieldBase<PluginConfigScalarArray>, 'default'> {
+  type: 'array';
+  items: PluginConfigAdditionalPropertiesField;
+  choices?: PluginConfigChoices<PluginConfigScalarArray>;
+  validation?: Omit<PluginConfigArrayValidation, 'uniqueBy'>;
+}
+export interface PluginConfigLeafObjectField extends Omit<PluginConfigFieldBase<PluginConfigScalarObject>, 'default'> {
+  type: 'object';
+  properties?: never;
+  additionalProperties: PluginConfigAdditionalPropertiesField;
+  choices?: PluginConfigChoices<PluginConfigScalarObject>;
+  validation?: PluginConfigObjectValidation;
+}
+export type PluginConfigObjectPropertyField =
+  | PluginConfigScalarPropertyField
+  | PluginConfigLeafArrayField
+  | PluginConfigLeafObjectField;
 export type PluginConfigAdditionalPropertiesField = DistributiveOmit<
   PluginConfigNonSensitiveScalarField,
   'default' | 'required' | 'sensitive'
@@ -208,9 +231,22 @@ interface PluginConfigObjectFieldBase extends PluginConfigFieldBase<PluginConfig
 export interface PluginConfigFixedObjectField extends PluginConfigObjectFieldBase {
   properties: Record<string, PluginConfigObjectPropertyField>;
   additionalProperties?: false;
+  variants?: PluginConfigObjectVariants;
+}
+export interface PluginConfigObjectVariant {
+  properties: Record<string, PluginConfigObjectPropertyField>;
+}
+export interface PluginConfigObjectVariants {
+  discriminator: string;
+  cases: Record<string, PluginConfigObjectVariant>;
+  missing?: string;
+  otherwise?: PluginConfigObjectVariant;
 }
 export interface PluginConfigKeyValueObjectField extends PluginConfigObjectFieldBase {
+  default?: PluginConfigScalarObject;
+  choices?: PluginConfigChoices<PluginConfigScalarObject>;
   properties?: never;
+  variants?: never;
   additionalProperties: PluginConfigAdditionalPropertiesField;
 }
 export type PluginConfigObjectField =
@@ -245,14 +281,39 @@ export interface PluginConfigPresentation {
   fieldViews?: Record<string, { summary: string; itemSummary?: never } | { itemSummary: string; summary?: never }>;
   groups?: PluginConfigPresentationGroup[];
 }
+type PluginConfigLegacyScalarField = DistributiveOmit<PluginConfigScalarField, 'const'>;
+type PluginConfigLegacyScalarPropertyField = DistributiveOmit<PluginConfigScalarPropertyField, 'const'>;
+type PluginConfigLegacyAdditionalPropertiesField = DistributiveOmit<PluginConfigAdditionalPropertiesField, 'const'>;
+type PluginConfigLegacyObjectField =
+  | (Omit<PluginConfigFixedObjectField, 'properties' | 'variants' | 'default' | 'choices'> & {
+      properties: Record<string, PluginConfigLegacyScalarPropertyField>;
+      default?: PluginConfigScalarObject;
+      choices?: PluginConfigChoices<PluginConfigScalarObject>;
+    })
+  | (Omit<PluginConfigKeyValueObjectField, 'additionalProperties'> & {
+      additionalProperties: PluginConfigLegacyAdditionalPropertiesField;
+    });
+type PluginConfigLegacyArray = PluginConfigScalarArray | PluginConfigScalarObject[];
+type PluginConfigLegacyArrayField = Omit<PluginConfigArrayField, 'default' | 'choices' | 'items'> & {
+  default?: PluginConfigLegacyArray;
+  choices?: PluginConfigChoices<PluginConfigLegacyArray>;
+  items: DistributiveOmit<PluginConfigLegacyScalarField | PluginConfigLegacyObjectField, 'default' | 'required' | 'sensitive'> & {
+    default?: never; required?: never; sensitive?: never;
+  };
+};
 export type PluginConfigDefinition =
   | {
       schemaVersion?: never;
-      fields: Record<string, PluginConfigScalarField | PluginConfigObjectField>;
+      fields: Record<string, PluginConfigLegacyScalarField | PluginConfigLegacyObjectField>;
       presentation?: Pick<PluginConfigPresentation, 'groups'>;
     }
   | {
       schemaVersion: 3;
+      fields: Record<string, PluginConfigLegacyScalarField | PluginConfigLegacyObjectField | PluginConfigLegacyArrayField>;
+      presentation?: PluginConfigPresentation;
+    }
+  | {
+      schemaVersion: 4;
       fields: Record<string, PluginConfigSchemaField>;
       presentation?: PluginConfigPresentation;
     };

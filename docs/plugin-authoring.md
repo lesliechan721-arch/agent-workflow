@@ -30,7 +30,7 @@ aw plugin capabilities --surface manifest --json
 
 其它 surface 以当前 CLI 帮助为准。不要从 development plugin 文档缓存字段表。
 
-## Config Definition v2 / v3 合同
+## Config Definition v2 / v3 / v4 合同
 
 Manifest 配置使用 `config.fields` 定义字段，并可用 `config.presentation.groups` 定义字段分组。v2 字段类型允许 `string`、`number`、`boolean` 和浅层 `object`；v3 另支持顶层一维 `array`，元素为同一 schema 定义的标量或浅层对象。`null`、嵌套对象、嵌套数组和混合标量数组无效。旧的 `config.schema`、`enum`、`file`、`directory`、`presentation.fields`、`presentation.presets`、`valueLabels` 和 `recommendedValue` 都无效。
 
@@ -42,7 +42,7 @@ v3 的 `presentation.summaries.<name>` 只支持 `{ kind: "join", parts: [{ path
 
 摘要最多 4 段，separator 最多 8 个 Unicode code point，path 最多 128 个字符，显示摘要最多 256 个 Unicode code point。Core 的 `PLUGIN_CONFIG_SUMMARY_MAX_*` 常量公开这些上限。终端呈现清除 ANSI、OSC、C0/C1 和危险双向控制字符。过长摘要或未选中的属性使 `ValuePresentation.complete` 为 false，完整值仍可读取；dirty、preset 匹配、Review diff 和 hash 不使用摘要。没有摘要声明时，界面显示真实属性值，并保留完整读取入口。
 
-先发布支持 `aw.plugin-config.v3` 和 `aw.plugin-config-summary.v1` 的 reader CLI，再分发使用这些能力的插件。Core 从 v3 标记及摘要 metadata 派生对应能力；编译 bundle 保留要求，Catalog index 只携带 requirements 与 digest，不复制 config。数组字段还派生 `aw.plugin-config-array.v1`。Store v5 保存原字段名与 JSON 值，不存 ref、summary、preset ID 或编辑 rowId。v4 及更旧配置不读取、不自动迁移或删除；显式 reset 后重新配置，不提供降级导出。展示 metadata 变化仍改变 schema identity、manifest/bundle digest 和 Review 证据。
+先发布支持 `aw.plugin-config.v3` 和 `aw.plugin-config-summary.v1` 的 reader CLI，再分发使用这些能力的插件。Core 从 v3 标记及摘要 metadata 派生对应能力；编译 bundle 保留要求，Catalog index 只携带 requirements 与 digest，不复制 config。数组字段还派生 `aw.plugin-config-array.v1`。Store v5 保存原字段名与 JSON 值，不存 ref、summary、preset ID 或编辑 rowId。Store envelope v4 及更旧格式不读取、不自动迁移或删除；显式 reset 后重新配置，不提供降级导出。展示 metadata 变化仍改变 schema identity、manifest/bundle digest 和 Review 证据。
 
 ```json
 {
@@ -72,6 +72,16 @@ v3 的 `type: "array"` 必须给出单一 `items` schema，允许 string、numbe
 v3 的对象数组可以用 `validation.uniqueBy` 指定一个已声明的标量属性。重复属性值会使整个候选无效，属性值保持原类型和大小写。非敏感标量可以声明 `valueRef: { field, key, label?, include? }`：`field` 是另一顶层对象数组，`key` 是同类型标量属性，`label` 是可选展示属性，`include` 是允许的静态内置值。静态值同时保留，源数组不能使用同值的 key。引用只使用固定字段和一层属性；保存、有效配置读取与 apply 都校验依赖闭包。删除仍被引用的 key 会失败，可先新增 key，再切换引用，最后删除旧 key。调用者得到的字段仍受原允许 keys 限制。两项能力分别要求 `aw.plugin-config-unique-by.v1` 和 `aw.plugin-config-value-ref.v1`。
 
 AW 只提供 `default < user < project` 两个持久写入层。所有新 namespaced Store 使用 schemaVersion 5，包括只含标量、对象或空 values 的配置；旧格式显示 schemaVersionUnsupported 并保留原文件。user 配置绑定 source identity；project 配置绑定 Catalog logical identity，所以 Git URL、SSH/HTTPS transport 或 path source 的变化不改变同一 Catalog 的项目配置身份。sensitive 字段只允许 user scope。project 写入若无法由 Git 验证可共享性，会返回 `projectConfigShareabilityUnverified` warning；明确被 ignore 时以 `projectConfigIgnored` 拒绝写入。object 和 array 值按顶层字段完整覆盖，不深合并或拼接列表。字符串 validation format 只支持 `identifier`、`slug`、`semver`、`url`、`hostname` 和 `email`；Config 不提供文件系统 path、file 或 directory format，也不解析 realpath 或建立 project artifact path boundary。CLI 写入使用 `aw config set <plugin> <field> --scope <user|project> (--value-json <json> | --value-stdin | --preset <id>)`。sensitive 字段拒绝 `--value-json` 和 `--preset`；非交互或 JSON 模式必须使用 `--scope user --value-stdin`，并按 EOF 原样读取 UTF-8。preset 只用于选择 manifest 中的实际值，store 不保存 preset ID。作者脚本使用 scaffolding 生成的 `scripts/aw-config.mjs` 读取 CLI 已校验的 `AW_PLUGIN_CONTEXT` effective config；helper 保持敏感值脱敏，不读取持久 store，也不维护第二份字段 validator。user/project 层诊断使用 `aw config get/list --scope ...`。
+
+### Config Definition v4
+
+声明 `config.schemaVersion: 4` 后，固定对象可使用有限 `variants`，非敏感标量可声明 `const`，固定对象的属性可使用叶级标量数组或标量 KV 对象。顶层对象数组的固定元素同样支持这些属性。v4 沿用 definitions、局部引用、choices、valueRef、uniqueBy、presentation、scope 和既有限值；不开放任意递归容器。v2/v3 的接受范围保持不变。
+
+`variants.discriminator` 指向当前对象 common properties 中已声明的 own string 属性。`cases` 将字符串映射到 `{ properties }` 分支；分支不能覆盖 common 属性。可选 `missing` 指向一个已有 case，只在选择字段缺失时使用；可选 `otherwise` 为其它合法值提供 `{ properties }`。选择值仍须通过 choices 和 valueRef 校验。没有匹配分支时拒绝候选，不猜测默认值；所有分支在 schema 读取时都必须有效。
+
+`const` 必须匹配标量类型及校验条件。显式值不同则报错；省略时可显示常量，但不会将它写入强配置。`required` 仍独立生效。TUI 从相同分支合同显示属性和固定值；叶级数组与 KV 使用结构化编辑。切换分支只改变草稿，保存 Review 显示移除的属性和实际保留值；取消保留原配置。无交互写入不清理错误字段，而是拒绝整个候选。
+
+v4 要求 `aw.plugin-config.v4`。先交付支持该 capability 的 CLI，再分发使用它的插件。Manifest v3、Store v5、Catalog v7 和 installed-runtime-config v2 保持原版本。Store 保存完整原始顶层值，不保存 UI rowId、派生命令路径或环境引用的解析值。分支、常量和呈现元数据均属于 schema identity，变化后需重新取得 Review 证据。
 
 ### 已安装配置读取
 

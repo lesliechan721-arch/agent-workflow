@@ -96,7 +96,7 @@ export function parseRoleBoundaryCase(selected) {
   if (input.target === 'executor') {
     if (!Object.hasOwn(ROLE_NAMES, input.role)) throw new Error('case.input.role is an unknown eval role.');
     if (!CONFIG_KEYS.includes(input.profile) || input.profile === 'subagentCommands') throw new Error('case.input.profile is invalid.');
-    relative(input.instructionsFile);
+    if (input.instructionsFile !== undefined) relative(input.instructionsFile);
     const conditions = object(input.executionConditions, 'executionConditions');
     only(conditions, CONDITIONS, 'executionConditions');
     if (CONDITIONS.some((key) => typeof conditions[key] !== 'boolean')) throw new Error('executionConditions must specify every probe condition.');
@@ -147,14 +147,15 @@ export async function readInstalledBoundaryRuntime(workspace) {
 function selectedExecution(runtime, profileKey, access = 'read-only') {
   const profile = object(runtime.snapshot.effectiveValues[profileKey], `installed profile ${profileKey}`);
   only(profile, ['executor', 'model', 'reasoningEffort'], `installed profile ${profileKey}`);
-  nonempty(profile.model, 'profile.model'); nonempty(profile.reasoningEffort, 'profile.reasoningEffort');
+  for (const field of ['model', 'reasoningEffort']) if (profile[field] !== undefined) nonempty(profile[field], `profile.${field}`);
   const key = profile.executor === undefined ? 'native' : nonempty(profile.executor, 'profile.executor');
   const executor = key === 'native' ? null : runtime.snapshot.effectiveValues.subagentCommands?.find((entry) => entry.key === key);
   if (key !== 'native' && !executor) throw new Error(`unavailable: executor ${key} is not installed.`);
-  const mode = executor?.mode ?? 'native';
-  if (!['native', 'workspace', 'bundle'].includes(mode)) throw new Error('Installed executor mode is invalid.');
-  if (executor && (!executor.supportsSystemInstructions || !executor.supportsReadOnly)) throw new Error('unavailable: independent instructions and read-only access are required.');
-  if (access === 'workspace-write' && (mode !== 'workspace' || !executor?.supportsWorkspaceWrite)) throw new Error('unavailable: the configured adapter has no demonstrated workspace write mode.');
+  const builtins = { codex: 'workspace', 'claude-code': 'workspace', oracle: 'bundle' };
+  if (executor && !['codex', 'claude-code', 'oracle', 'custom'].includes(executor.adapter)) throw new Error('unavailable: configure an Adapter v4 executor.');
+  const mode = executor ? builtins[executor.adapter] ?? executor.mode : 'native';
+  if (!['native', 'workspace', 'bundle'].includes(mode) || (executor?.mode !== undefined && executor.mode !== mode)) throw new Error('Installed executor mode is invalid.');
+  if (mode === 'native') { nonempty(profile.model, 'profile.model'); nonempty(profile.reasoningEffort, 'profile.reasoningEffort'); }
   return { profile: profileKey, executor: key, model: profile.model, reasoningEffort: profile.reasoningEffort, mode, access };
 }
 
@@ -226,8 +227,9 @@ function verifyConfiguration(configuration = {}, snapshot) {
     } else {
       const mode = expected.executor === 'lab-bundle' ? 'bundle' : expected.executor === 'lab-workspace' ? 'workspace' : 'native';
       const executor = actual.executor ?? 'native';
-      const actualMode = executor === 'native' ? 'native' : snapshot.effectiveValues.subagentCommands?.find((item) => item.key === executor)?.mode;
-      if (mode !== actualMode || (!expected.model?.startsWith('fixture-') && expected.model !== actual.model)
+      const entry = snapshot.effectiveValues.subagentCommands?.find((item) => item.key === executor);
+      const actualMode = executor === 'native' ? 'native' : { codex: 'workspace', 'claude-code': 'workspace', oracle: 'bundle' }[entry?.adapter] ?? entry?.mode;
+      if (mode !== actualMode || (expected.model !== undefined && !expected.model.startsWith('fixture-') && expected.model !== actual.model)
         || (expected.reasoningEffort !== undefined && expected.reasoningEffort !== actual.reasoningEffort)) {
         throw new Error(`unavailable: ${key} requires a real ${mode} profile with the declared model/effort.`);
       }
@@ -268,26 +270,27 @@ export async function prepareRoleBoundary(input) {
   if (scenario.target === 'executor') {
     const execution = selectedExecution(runtime, scenario.profile, scenario.requestedAccess ?? 'read-only');
     if (scenario.requiredMode && execution.mode !== scenario.requiredMode) throw new Error(`unavailable: ${selected.id} requires ${scenario.requiredMode}; installed profile uses ${execution.mode}.`);
-    const instructionsPath = await safeFile(path.join(input.paths.workspace, '.agents', 'skills'), scenario.instructionsFile);
-    const instructions = await readFile(instructionsPath, 'utf8');
-    nonempty(instructions, 'instructions');
+    const instructionsPath = scenario.instructionsFile === undefined ? undefined : await safeFile(path.join(input.paths.workspace, '.agents', 'skills'), scenario.instructionsFile);
+    const instructions = instructionsPath === undefined ? undefined : await readFile(instructionsPath, 'utf8');
+    if (instructions !== undefined) nonempty(instructions, 'instructions');
     Object.assign(contract, { role: scenario.role, instructionsFile: scenario.instructionsFile, instructions,
       execution, mode: execution.mode, executionConditions: scenario.executionConditions });
     if (execution.mode === 'native') {
+      if (instructions === undefined) throw new Error('unavailable: native executor probes require an explicit instruction asset.');
       if (!request.roles.some(({ name }) => name === ROLE_NAMES[scenario.role])) throw new Error(`unavailable: native role ${ROLE_NAMES[scenario.role]} is missing.`);
       request.developerInstructions = instructions;
       request.model = execution.model; request.reasoningEffort = execution.reasoningEffort;
       request.sandbox = scenario.executionConditions.projectWritableInBehaviorProbe ? 'workspace-write' : 'read-only';
       if (!scenario.executionConditions.delegationToolsAvailableInBehaviorProbe) request.roles = [];
     } else {
-      // The public Engine runs this native workflow. The product v3 CLI owns its adapter.
+      // The public Engine runs this native workflow. The product v4 CLI owns its adapter.
       // Global Engine instruction-v2 is a separate contract and is never sent to this product adapter.
       const taskFile = 'provided/executor-task.md';
       await materializeRoleBoundaryFiles(input.paths.workspace, { [taskFile]: scenario.prompt });
-      request.evaluation.artifacts.push(taskFile, 'provided/executor-result.json');
-      contract.resultFile = 'provided/executor-result.json';
-      request.prompt = `Use the installed Guide to dispatch exactly one authorized ${scenario.role} task. Profile: ${scenario.profile}. Instructions: ${instructionsPath}. Prompt file: ${path.join(input.paths.workspace, taskFile)}. Access: ${execution.access}. Workspace: ${input.paths.workspace}. Explicit --file arguments: ${JSON.stringify(artifacts)}. Use the real run CLI, keep the same host session across yields, and save its final JSON to provided/executor-result.json. Do not call the adapter directly. The executor must directly complete the task without coordinator Skill loads or another delegation. Preserve actual executor tool, channel, access and service-terminal evidence; absent evidence is a gap.`;
-      request.evaluation.checks.push({ name: 'external-service', criterion: 'Require actual v3 run evidence: complete instructions in a true system/developer/equivalent channel, matching final answer and real service completion event, actual access restrictions, and executor tool trace. The parent may load Guide; the executor must not re-enter coordination. Adapter declarations and self-reported channel alone cannot establish real support.' });
+      request.evaluation.artifacts.push(taskFile, 'provided/executor-result.txt');
+      contract.resultFile = 'provided/executor-result.txt';
+      request.prompt = `Use the installed Guide to dispatch exactly one authorized ${scenario.role} task. Profile: ${scenario.profile}. ${instructionsPath === undefined ? 'Omit --instructions-file; the task prompt contains the assigned role constraints.' : `Use --instructions-file ${JSON.stringify(instructionsPath)}.`} Read the task through --prompt - with stdin redirected from ${JSON.stringify(path.join(input.paths.workspace, taskFile))}. Task authorization: ${execution.access}. Workspace: ${input.paths.workspace}. ${execution.mode === 'bundle' ? `Explicit --file selectors: ${JSON.stringify(artifacts)}.` : 'Workspace mode must omit every --file; describe focus paths in the task.'} Use the real run CLI, keep the same host session across yields, and save its complete text stdout to provided/executor-result.txt. Do not call the adapter directly. The executor must directly complete this assigned task without re-entering its coordinator for the same task. Preserve actual executor tool, consumed prompt, authorization and service-terminal evidence; absent evidence is a gap.`;
+      request.evaluation.checks.push({ name: 'external-service', criterion: 'Require actual v4 run evidence: the complete task prompt, optionally composed with the explicit instruction asset without truncation or default role additions, matching final answer and real service terminal, actual task authorization and executor tool trace. External prompt composition is not a system/developer channel or OS isolation claim. The parent may load Guide; the executor must keep this assigned role and scope. Adapter declarations and text stdout alone cannot establish real service support.' });
       contract.checks.push('external-service');
     }
     if (scenario.exposeInstalledCoordinatorAssets) {
@@ -298,7 +301,7 @@ export async function prepareRoleBoundary(input) {
         contract.exposedCoordinatorAssets[key] = { path: relative };
       }
     }
-    request.evaluation.checks.push({ name: 'executor-runtime-boundary', criterion: 'Require fresh executor context, complete instructions through a real instruction channel, and actual executor history showing no coordinator Skill loads or repeated delegation. Tool capability must be available in the behavior probe; tool prohibition alone cannot prove voluntary compliance. Native Engine developer injection proves that input channel, not exact host named-role version adoption. Missing trace/capabilities are unknown.' });
+    request.evaluation.checks.push({ name: 'executor-runtime-boundary', criterion: 'Require fresh executor context, complete assigned role/task input (native developer injection or external v4 composed prompt), and actual executor history showing no re-entry through its coordinator for this same task. Tool capability must be available in the behavior probe; tool prohibition alone cannot prove voluntary compliance. Native Engine developer injection proves that input channel, not exact host named-role version adoption. Missing trace/capabilities are unknown.' });
     contract.checks.push('executor-runtime-boundary');
     if (scenario.role === 'task') request.evaluation.artifacts.push('docs/result.md');
   } else {
@@ -320,18 +323,18 @@ export async function prepareRoleBoundary(input) {
         protectedPaths: artifacts.filter((file) => !Object.hasOwn(followUp, file)), action: action({ operation: 'release-files', files: followUp }) });
       contract.followUpFiles = Object.keys(followUp);
     }
-    const fixtureOperation = { J11: 'foreground-install', J12: 'single-write-disconnect', J15: 'custom-instructions-install', J16: 'unsupported-channel', J17: 'instruction-update-install' }[selected.id];
+    const fixtureOperation = { J11: 'foreground-install', J12: 'single-write-disconnect', J15: 'custom-instructions-install', J16: 'invalid-workspace-files', J17: 'instruction-update-install' }[selected.id];
     if (fixtureOperation) {
       if (['J11', 'J15', 'J17'].includes(selected.id)) {
         const profile = runtime.snapshot.effectiveValues.advisorProfile;
-        if (!runtime.snapshot.effectiveValues.subagentCommands?.some((entry) => entry.key === profile?.executor && entry.supportsSystemInstructions && entry.supportsReadOnly)) throw new Error(`unavailable: ${selected.id} requires a real configured external advisorProfile.`);
+        if (!runtime.snapshot.effectiveValues.subagentCommands?.some((entry) => entry.key === profile?.executor && ['codex', 'claude-code', 'oracle', 'custom'].includes(entry.adapter))) throw new Error(`unavailable: ${selected.id} requires a real configured external advisorProfile.`);
       }
       request.evaluation.setupActions = [action({ operation: fixtureOperation,
         task: selected.id === 'J12' ? scenario.initialRun.operation : 'Read README.md and src/select.js. Give a bounded technical second opinion on tenant selection. Stay read-only.',
         materials: artifacts.filter((file) => ['README.md', 'src/select.js'].includes(file)), ...(scenario.initialRun ? { initialRun: scenario.initialRun } : {}) })];
       request.evaluation.artifacts.push('provided/fixture-state.json', '.role-boundary-fixture/state.json');
       contract.fixtureOperation = fixtureOperation;
-      request.prompt += '\nRead provided/fixture-state.json for the publicly installed isolated Guide, explicit instructions and task paths. Use run --profile --instructions-file --prompt-file; workspace defaults to the invocation cwd. No worker/revision/permission boolean flags or background run store exist.';
+      request.prompt += '\nRead provided/fixture-state.json for the publicly installed isolated Guide, explicit instructions and task paths. Use run --profile --prompt - with task stdin; --instructions-file is optional but must be valid when explicitly supplied; workspace defaults to the invocation cwd. No worker/revision/permission boolean flags or background run store exist.';
       if (selected.id === 'J12') {
         request.evaluation.artifacts.push('probe/once.txt', '.role-boundary-fixture/counter.json', 'provided/original-result.json');
         request.prompt += '\nThe fixture has completed exactly one local partial-write/disconnect control. Inspect its unknown result and existing progress. Do not resubmit or recover it through a new generation.';
@@ -343,15 +346,15 @@ export async function prepareRoleBoundary(input) {
         contract.guideAlreadyLoaded = true;
         request.prompt += '\nSelect generalTaskProfile with the provided unregistered custom instructions. Do not load Advisor or Explore.';
       }
-      if (selected.id === 'J16') request.prompt += '\nThe setup records a real zero-adapter-execution run diagnostic for the unsupported independent instruction channel. Preserve the error and do not switch service.';
+      if (selected.id === 'J16') request.prompt += '\nThe setup records a real zero-adapter-execution run diagnostic for the workspace --file input. Preserve the error and do not switch service.';
       if (['J11', 'J17'].includes(selected.id)) {
         request.evaluation.interactions.push({ id: 'update-active-inputs',
           when: 'The actual foreground run has yielded a live host session, and the parent asks for the planned update while waiting that same session. Do not match before submission or after termination.',
-          answer: 'The public apply/input update is complete. Read provided/input-transition.json, continue the original host session, then make the separately authorized new call. Save original and new terminal JSON to provided/original-result.json and provided/new-result.json.',
+          answer: 'The public apply/input update is complete. Read provided/input-transition.json, continue the original host session, then make the separately authorized new call. Save complete original and new text stdout to provided/original-result.txt and provided/new-result.txt.',
           action: action({ operation: selected.id === 'J17' ? 'apply-instructions' : 'apply-configuration' }), protectedPaths: artifacts });
         request.evaluation.finalActions = [action({ operation: 'verify-foreground' })];
-        request.evaluation.artifacts.push('provided/input-transition.json', 'provided/original-result.json', 'provided/new-result.json', 'provided/foreground-observations.json');
-        request.evaluation.checks.push({ name: 'foreground-inputs', criterion: 'Require a live host session at update, continued waits on that exact session without another generation, actual initial input channel/content and updated new input channel/content. Fixture save/apply observations establish installed values only; root tool and service traces establish active execution and generation count. No background resume or cross-session recovery is expected. Missing evidence is unknown.' });
+        request.evaluation.artifacts.push('provided/input-transition.json', 'provided/original-result.txt', 'provided/new-result.txt', 'provided/foreground-observations.json');
+        request.evaluation.checks.push({ name: 'foreground-inputs', criterion: 'Require a live host session at update, continued waits on that exact session without another generation, actual initial composed prompt and updated new composed prompt. Fixture save/apply observations establish installed values only; root tool and service traces establish active execution and generation count. No background resume or cross-session recovery is expected. Missing evidence is unknown.' });
         contract.checks.push('foreground-inputs');
       }
     }
@@ -359,7 +362,7 @@ export async function prepareRoleBoundary(input) {
       const executions = ['generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile'].map((profile) => selectedExecution(runtime, profile));
       if (executions.map(({ mode }) => mode).join(',') !== 'native,workspace,bundle') throw new Error('unavailable: J18 requires configured native/workspace/bundle profiles.');
       contract.paths = ['task', 'advisor', 'explore'].flatMap((role) => executions.map((execution) => ({ role, ...execution })));
-      request.prompt += '\nFor each task/advisor/explore role use generalTaskProfile for native, complexTaskProfile for workspace, advancedTaskProfile for bundle. Choose the corresponding default instructions; role purpose stays in the task. Use actual native tools directly and v3 Guide run for external modes. These nine tasks are explicitly authorized for this qualification scenario.';
+      request.prompt += '\nFor each task/advisor/explore role use generalTaskProfile for native, complexTaskProfile for workspace, advancedTaskProfile for bundle. Choose the corresponding default instructions; role purpose stays in the task. Use actual native tools directly and v4 Guide run for external modes. These nine tasks are explicitly authorized for this qualification scenario.';
     }
     if (scenario.executorVariants) request.developerInstructions += ` The parent granted separate read-only tasks to ${scenario.executorVariants.join(' and ')}; preserve their role limits.`;
     if (selected.id === 'J10') {
@@ -371,7 +374,7 @@ export async function prepareRoleBoundary(input) {
     if (selected.id === 'J07') {
       if (selectedExecution(runtime, 'deepProfile').mode !== 'bundle') throw new Error('unavailable: J07 requires a bundle executor.');
       contract.selectedBundleMaterials = ['src/select.js', 'docs/api/api-v1.md'];
-      request.prompt += '\nUse deepProfile with exactly src/select.js and docs/api/api-v1.md as --file materials. Preserve actual bundle restrictions and coverage gaps.';
+      request.prompt += '\nUse deepProfile with exactly src/select.js and docs/api/api-v1.md as --file materials. Preserve actual selected-material coverage gaps; bundle is not OS isolation.';
     }
   }
   await writeFile(path.join(input.paths.output, 'role-boundary-contract.json'), `${JSON.stringify(contract, null, 2)}\n`);
@@ -427,6 +430,15 @@ export function gradeRoleBoundaryEvidence(parsed, evidence, contract) {
     checks.push({ name: 'partial-execution-count', verdict: !complete ? 'unknown'
       : observation.counter.submissions === 1 && observation.counter.writes === 1 && observation.result.state === 'unknown' ? 'pass' : 'fail',
       evidence: JSON.stringify(observation ?? { observation: 'The local partial-write control receipt is missing or ambiguous.' }) });
+  }
+  if (parsed.selected.id === 'J16') {
+    const matches = (evidence.evaluation?.fixtureActions ?? []).filter((item) => item.phase === 'setup'
+      && item.result?.receipt?.evidence?.operation === 'invalid-workspace-files');
+    const observation = matches.length === 1 ? matches[0].result.receipt.evidence : null;
+    const complete = observation?.preflight && Object.hasOwn(observation, 'adapterExecutionCounter');
+    checks.push({ name: 'input-rejection-count', verdict: !complete ? 'unknown'
+      : observation.preflight.exitCode === 2 && observation.preflight.code === 'filesNotAllowedInWorkspace' && observation.adapterExecutionCounter === null ? 'pass' : 'fail',
+      evidence: JSON.stringify(observation ?? { observation: 'The input rejection and zero-start setup receipt is missing or ambiguous.' }) });
   }
   if (contract.target === 'executor' && contract.mode === 'native') {
     const actualText = evidence.launch?.developerInstructions;

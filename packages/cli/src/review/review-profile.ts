@@ -7,6 +7,10 @@ import {
   getPluginConfigDependencyKeys,
   validatePluginConfigCandidate,
   validatePluginConfigValue,
+  type PluginConfigObject,
+  type PluginConfigScalar,
+  type PluginConfigScalarArray,
+  type PluginConfigScalarObject,
   type PluginConfigValue,
   type PluginMeta,
   type Scope,
@@ -43,11 +47,38 @@ function sameConfigValue(left: PluginConfigValue, right: PluginConfigValue): boo
   return canonicalJson(left) === canonicalJson(right)
 }
 
+function isConfigScalar(value: unknown): value is PluginConfigScalar {
+  return typeof value === 'string' || typeof value === 'boolean'
+    || (typeof value === 'number' && Number.isFinite(value))
+}
+
+function assertConfigScalarArray(value: unknown[], field: string): PluginConfigScalarArray {
+  const keys = Object.keys(value)
+  if (keys.length === value.length && keys.every((key, index) => key === String(index))) {
+    if (value.every((item): item is string => typeof item === 'string')) return value
+    if (value.every((item): item is boolean => typeof item === 'boolean')) return value
+    if (value.every((item): item is number => typeof item === 'number' && Number.isFinite(item))) return value
+  }
+  throw new Error(`Review profile config field "${field}" has an invalid array value.`)
+}
+
+function assertConfigScalarObject(value: Record<string, unknown>, field: string): PluginConfigScalarObject {
+  const result: PluginConfigScalarObject = {}
+  for (const [key, child] of Object.entries(value)) {
+    if (dangerousConfigKeys.has(key) || !isConfigScalar(child)) {
+      throw new Error(`Review profile config field "${field}" has an invalid object value.`)
+    }
+    result[key] = child
+  }
+  return Object.fromEntries(Object.entries(result).sort(([left], [right]) => compareText(left, right)))
+}
+
 function assertConfigValueShape(value: unknown, field: string): PluginConfigValue {
   if (typeof value === 'string' || typeof value === 'boolean') return value
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (Array.isArray(value)) {
-    if (Object.keys(value).length !== value.length) {
+    const keys = Object.keys(value)
+    if (keys.length !== value.length || keys.some((key, index) => key !== String(index))) {
       throw new Error(`Review profile config field "${field}" has an invalid array value.`)
     }
     const items = value.map((item) => {
@@ -65,17 +96,15 @@ function assertConfigValueShape(value: unknown, field: string): PluginConfigValu
   if (!isRecord(value)) {
     throw new Error(`Review profile config field "${field}" has an invalid value.`)
   }
-  const result: Record<string, string | number | boolean> = {}
+  const result: PluginConfigObject = {}
   for (const [key, child] of Object.entries(value)) {
-    if (
-      dangerousConfigKeys.has(key)
-      || !(
-        typeof child === 'string'
-        || typeof child === 'boolean'
-        || (typeof child === 'number' && Number.isFinite(child))
-      )
-    ) throw new Error(`Review profile config field "${field}" has an invalid object value.`)
-    result[key] = child
+    if (dangerousConfigKeys.has(key)) {
+      throw new Error(`Review profile config field "${field}" has an invalid object value.`)
+    }
+    if (isConfigScalar(child)) result[key] = child
+    else if (Array.isArray(child)) result[key] = assertConfigScalarArray(child, field)
+    else if (isRecord(child)) result[key] = assertConfigScalarObject(child, field)
+    else throw new Error(`Review profile config field "${field}" has an invalid object value.`)
   }
   return Object.fromEntries(Object.entries(result).sort(([left], [right]) => compareText(left, right)))
 }

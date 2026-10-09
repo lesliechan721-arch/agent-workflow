@@ -33,7 +33,7 @@ function profiles(text) {
     .map((line) => {
       const cells = line.split('|').map((cell) => cell.trim());
       return [cells[1], Object.fromEntries(['profile', 'executor', 'model', 'reasoningEffort']
-        .map((key, i) => [key, JSON.parse(cells[i + 3].slice(1, -1))]))];
+        .map((key, i) => [key, cells[i + 3].startsWith('`') ? JSON.parse(cells[i + 3].slice(1, -1)) : cells[i + 3]]))];
     }));
 }
 
@@ -41,31 +41,50 @@ function externalRows(plan) {
   const text = plan.artifacts.find((item) => item.id === 'codex-subagent-guide-skill')
     .content.files['references/external-delegation.md'];
   assert.equal(typeof text, 'string');
-  return text.split('\n').filter((line) => /^\| `/.test(line)).map((line) => {
-    const cells = line.split('|').slice(1, -1).map((cell) => cell.trim());
-    // Other tables describe CLI options and terminal states, not executor data.
-    if (cells.length !== 6) return undefined;
-    return cells.map((cell) => JSON.parse(cell.slice(1, -1)));
-  }).filter(Boolean);
+  const lines = text.split('\n');
+  const header = lines.findIndex((line) => line.startsWith('| key |'));
+  if (header < 0) return [];
+  const rows = [];
+  for (const line of lines.slice(header + 2)) {
+    if (!line.startsWith('|')) break;
+    rows.push(line.split('|').slice(1, -1).map((cell) => JSON.parse(cell.trim().slice(1, -1))));
+  }
+  return rows;
 }
 
 // Test Value Gate: manifest JSON is the public configuration and delivery contract.
 test('shares one profile definition, preserves defaults and declares exact consumer inputs', async () => {
   const manifest = JSON.parse(await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'));
   assert.equal(manifest.schemaVersion, 3);
-  assert.equal(manifest.config.schemaVersion, 3);
+  assert.equal(manifest.config.schemaVersion, 4);
   assert.deepEqual(new Set(Object.keys(manifest.config.fields)), new Set(CONFIG_KEYS));
   const profile = manifest.config.definitions?.agentProfile ?? manifest.config.fields.advisorProfile;
-  if (manifest.config.definitions) assert.deepEqual(Object.keys(manifest.config.definitions), ['agentProfile']);
+  if (manifest.config.definitions) {
+    assert.deepEqual(new Set(Object.keys(manifest.config.definitions)), new Set(['agentProfile', 'agentModel', 'agentReasoningEffort']));
+  }
   assert.equal(profile.additionalProperties, false);
-  assert.deepEqual(Object.keys(profile.properties), ['executor', 'model', 'reasoningEffort']);
+  assert.deepEqual(Object.keys(profile.properties), ['executor']);
+  assert.equal(profile.variants.discriminator, 'executor');
+  assert.equal(profile.variants.missing, 'native');
   assert.deepEqual(profile.properties.executor.valueRef, {
     field: 'subagentCommands', key: 'key', label: 'title', include: ['native'],
   });
   assert.notEqual(profile.properties.executor.required, true);
-  assert.equal(profile.properties.model.required, true);
-  assert.equal(profile.properties.reasoningEffort.required, true);
-  for (const property of Object.values(profile.properties)) assert.equal(property.validation.minLength, 1);
+  for (const property of ['model', 'reasoningEffort']) {
+    const native = profile.variants.cases.native.properties[property];
+    const external = profile.variants.otherwise.properties[property];
+    assert.equal(native.required, true);
+    assert.equal(external.required, undefined);
+    if (manifest.config.definitions) {
+      assert.equal(native.$ref, external.$ref);
+    } else {
+      // Production manifests expand source references into the same scalar
+      // contract while retaining the native branch's required property.
+      assert.equal(native.type, 'string');
+      const { required, ...nativeValue } = native;
+      assert.deepEqual(nativeValue, external);
+    }
+  }
   const defaults = {
     simpleTaskProfile: ['gpt-6-luna', 'max'], generalTaskProfile: ['gpt-6.1-sol', 'medium'],
     complexTaskProfile: ['gpt-6.1-sol', 'xhigh'], advancedTaskProfile: ['gpt-6-astra', 'high'],
@@ -80,6 +99,7 @@ test('shares one profile definition, preserves defaults and declares exact consu
       assert.equal(field.type, 'object');
       assert.equal(field.additionalProperties, false);
       assert.deepEqual(field.properties, profile.properties);
+      assert.deepEqual(field.variants, profile.variants);
     }
     if (Object.hasOwn(defaults, key)) {
       const [model, reasoningEffort] = defaults[key];
@@ -96,6 +116,7 @@ test('shares one profile definition, preserves defaults and declares exact consu
   assert.equal(manifest.config.fields.subagentCommands.validation.uniqueBy, 'key');
   assert.deepEqual(manifest.marketplace.policy.products, ['CODEX']);
   assert.ok(manifest.requires.aw.capabilities.includes('aw.installed-runtime-config.v2'));
+  assert.ok(manifest.requires.aw.capabilities.includes('aw.plugin-config.v4'));
   assert.equal(manifest.requires.aw.capabilities.includes('aw.installed-runtime-config.v1'), false);
   assert.deepEqual(manifest.artifacts.targets.map((item) => item.id), ids);
   for (const target of manifest.artifacts.targets) {
@@ -123,7 +144,7 @@ test('renders four task profiles, three exploration profiles and only configured
     advancedTaskProfile: { model: 'advanced-specialist', reasoningEffort: 'ultra' },
     advisorProfile: { model: 'general-consultant', reasoningEffort: 'medium' },
     advisorDebugProfile: { executor: 'external-debug', model: 'debug-specialist', reasoningEffort: 'max' },
-    subagentCommands: [{ key: 'external-debug', title: 'Debug', mode: 'workspace', command: '/adapter' }],
+    subagentCommands: [{ key: 'external-debug', title: 'Debug', adapter: 'custom', mode: 'workspace', command: '/adapter' }],
   };
   const configured = await renderArtifactPlan(context(values));
   assert.deepEqual(profiles(skill(configured, 'codex-subagent-guide-skill')).advanced,
@@ -154,20 +175,20 @@ test('advertises only configured advisor profile keys throughout the rendered Sk
   }
 });
 
-// Test Value Gate: the external caller needs the actual mode and declared capabilities
-// without a preview process. The public renderer must preserve every configured key.
-test('renders executor modes and capabilities only in the Guide external reference', async () => {
+// Test Value Gate: delivered executor data must agree with fixed builtin modes,
+// preserve custom modes and omit private commands and environment values.
+test('renders adapter modes only in the Guide external reference', async () => {
   const subagentCommands = [
-    { key: 'service-A', title: '材料服务', mode: 'bundle', command: '/not-invoked/adapter',
-      supportsSystemInstructions: true, supportsReadOnly: true, supportsWorkspaceWrite: true },
-    { key: 'service-a', title: '工程服务', mode: 'workspace', command: '/not-invoked/adapter',
-      supportsSystemInstructions: true, supportsReadOnly: true, supportsWorkspaceWrite: true },
-    { key: 'limited', title: '未声明能力', mode: 'workspace', command: '/not-invoked/adapter' },
+    { key: 'codex', title: '工程服务', adapter: 'codex', env: { PUBLIC_VALUE: 'literal-value' } },
+    { key: 'claude', title: '本地服务', adapter: 'claude-code', mode: 'workspace' },
+    { key: 'oracle', title: '材料服务', adapter: 'oracle', envFrom: { SECRET: 'HOST_SECRET' } },
+    { key: 'custom', title: '自定义服务', adapter: 'custom', mode: 'bundle', command: '/not-invoked/adapter' },
   ];
   const expected = [
-    ['service-A', '材料服务', 'bundle', true, true, false],
-    ['service-a', '工程服务', 'workspace', true, true, true],
-    ['limited', '未声明能力', 'workspace', false, false, false],
+    ['codex', '工程服务', 'codex', 'workspace'],
+    ['claude', '本地服务', 'claude-code', 'workspace'],
+    ['oracle', '材料服务', 'oracle', 'bundle'],
+    ['custom', '自定义服务', 'custom', 'bundle'],
   ];
   for (const scope of ['user', 'project']) {
     const baseline = await renderArtifactPlan({ ...context(), scope, requestedArtifactIds: ids });
@@ -178,37 +199,54 @@ test('renders executor modes and capabilities only in the Guide external referen
     for (const id of ids.filter((id) => id !== 'codex-subagent-guide-skill')) {
       assert.deepEqual(plan.artifacts.find((item) => item.id === id), baseline.artifacts.find((item) => item.id === id));
     }
+    const reference = plan.artifacts.find((item) => item.id === 'codex-subagent-guide-skill')
+      .content.files['references/external-delegation.md'];
+    for (const privateValue of ['literal-value', 'HOST_SECRET', '/not-invoked/adapter']) {
+      assert.equal(reference.includes(privateValue), false);
+    }
   }
 });
 
-// Test Value Gate: refreshed references must not retain removed commands or obsolete modes.
+// Test Value Gate: refreshed artifacts must remove old executor data and mode.
 test('refreshes executor data from each render request and handles an empty registry', async () => {
-  const initial = { key: 'service', title: '已配置服务', mode: 'bundle', command: '/not-invoked/adapter',
-    supportsSystemInstructions: true, supportsReadOnly: true };
+  const initial = { key: 'service', title: '已配置服务', adapter: 'custom', mode: 'bundle', command: '/not-invoked/adapter' };
   const render = (subagentCommands) => renderArtifactPlan({
     ...context({ subagentCommands }), requestedArtifactIds: ['codex-subagent-guide-skill'],
   });
-  const before = await render([initial]);
-  const after = await render([{ ...initial, mode: 'workspace', supportsWorkspaceWrite: true }]);
-  assert.deepEqual(externalRows(before), [['service', '已配置服务', 'bundle', true, true, false]]);
-  assert.deepEqual(externalRows(after), [['service', '已配置服务', 'workspace', true, true, true]]);
+  assert.deepEqual(externalRows(await render([initial])), [['service', '已配置服务', 'custom', 'bundle']]);
+  assert.deepEqual(externalRows(await render([{ ...initial, mode: 'workspace' }])), [['service', '已配置服务', 'custom', 'workspace']]);
   assert.deepEqual(externalRows(await render([])), []);
   assert.deepEqual(externalRows(await renderArtifactPlan(context())), []);
 });
 
-// Test Value Gate: configuration text must remain data, not inject Markdown rows or instructions.
+// Test Value Gate: configured values must not inject Markdown columns or markup.
 test('escapes executor keys and titles without losing their configured values', async () => {
   const key = 'service|`<alias>';
   const title = '服务|`$&\n下一行<!-- data -->';
   const plan = await renderArtifactPlan({ ...context({ subagentCommands: [
-    { key, title, mode: 'bundle', command: '/not-invoked/adapter',
-      supportsSystemInstructions: true, supportsReadOnly: true },
+    { key, title, adapter: 'custom', mode: 'bundle', command: '/not-invoked/adapter' },
   ] }), requestedArtifactIds: ['codex-subagent-guide-skill'] });
-  assert.deepEqual(externalRows(plan), [[key, title, 'bundle', true, true, false]]);
+  assert.deepEqual(externalRows(plan), [[key, title, 'custom', 'bundle']]);
 });
 
-// Test Value Gate: malformed whole objects cannot silently become a general/default profile.
-test('does not fill missing properties in configured profile objects', async () => {
+// Test Value Gate: external omitted values must survive as backend defaults;
+// one explicitly configured property must not fill the other from a native default.
+test('renders omitted external model and effort without inventing configured values', async () => {
+  const plan = await renderArtifactPlan(context({
+    generalTaskProfile: { executor: 'external' },
+    complexTaskProfile: { executor: 'external', model: 'backend-model' },
+    advisorDebugProfile: { executor: 'external', reasoningEffort: 'high' },
+  }));
+  assert.deepEqual(profiles(skill(plan, 'codex-subagent-guide-skill')).general,
+    { profile: 'generalTaskProfile', executor: 'external', model: '后端默认', reasoningEffort: '后端默认' });
+  assert.deepEqual(profiles(skill(plan, 'codex-subagent-guide-skill')).complex,
+    { profile: 'complexTaskProfile', executor: 'external', model: 'backend-model', reasoningEffort: '后端默认' });
+  assert.deepEqual(profiles(skill(plan, 'codex-advisor-skill')).debug,
+    { profile: 'advisorDebugProfile', executor: 'external', model: '后端默认', reasoningEffort: 'high' });
+});
+
+// Test Value Gate: malformed native profiles must not advertise backend defaults.
+test('does not fill missing properties in configured native profile objects', async () => {
   for (const advisorDebugProfile of [{}, { model: 'incomplete' }, null]) {
     await assert.rejects(renderArtifactPlan(context({ advisorDebugProfile })));
   }

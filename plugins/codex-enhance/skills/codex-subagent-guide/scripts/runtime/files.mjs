@@ -4,7 +4,6 @@ import { constants } from 'node:fs';
 import { LIMITS, fail } from './contracts.mjs';
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
-const excludedDirectories = new Set(['.git', '.hg', '.svn', 'node_modules', 'vendor', 'dist', 'build', 'coverage', '.next', '.nuxt', '.cache', '.aw']);
 
 export async function safePath(target, kind = 'file', { allowExecutableSymlink = false } = {}) {
   if (!path.isAbsolute(target) || target.includes('\0') || path.normalize(target) !== target) fail('pathInvalid', 'A runtime path must be absolute and normalized.');
@@ -15,7 +14,7 @@ export async function safePath(target, kind = 'file', { allowExecutableSymlink =
     try { stat = await fs.lstat(current); } catch { fail('pathMissing', 'A required runtime path is missing or unreadable.'); }
     if (stat.isSymbolicLink()) {
       if (allowExecutableSymlink) return safePath(await fs.realpath(target), kind);
-      fail('pathSymlink', 'Symbolic links are not allowed in runtime materials or resources.');
+      fail('pathSymlink', 'Symbolic links are not allowed in private runtime resources.');
     }
     if (current !== target && !stat.isDirectory()) fail('pathInvalid', 'A path parent is not a normal directory.');
   }
@@ -45,45 +44,33 @@ export async function readLimited(target, maximumBytes, code = 'inputTooLarge') 
 }
 
 export function textFromBytes(bytes) {
-  if (bytes.includes(0)) fail('binaryUnsupported', 'This adapter supports UTF-8 text materials only.');
-  try { return decoder.decode(bytes); } catch { fail('binaryUnsupported', 'This adapter supports UTF-8 text materials only.'); }
+  if (bytes.includes(0)) fail('binaryUnsupported', 'The input must be valid UTF-8 text without NUL.');
+  try { return decoder.decode(bytes); } catch { fail('binaryUnsupported', 'The input must be valid UTF-8 text without NUL.'); }
 }
 
-export function materialSource(source) {
-  if (typeof source !== 'string' || !source || path.isAbsolute(source) || /[\u0000-\u001f\u007f\\]/u.test(source)) fail('materialPathInvalid', 'Material paths must be clean workspace-relative paths.');
-  const segments = source.split('/');
-  if (segments.some((part) => !part || part === '.' || part === '..')) fail('materialPathInvalid', 'Material paths cannot traverse directories.');
-  if (segments.some((part) => excludedDirectories.has(part))) fail('materialExcluded', 'The material is in a default excluded dependency or generated directory.');
-  const name = segments.at(-1);
-  if (/^(?:\.env(?:\..*)?|\.npmrc|\.netrc|\.pypirc|auth\.json|credentials(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\..*)?)$/i.test(name) || /\.(?:pem|p12|pfx|key|keystore)$/i.test(name) || segments.includes('.ssh') || segments.includes('.aws') || segments.includes('.codex')) fail('materialSecretExcluded', 'The material is a default excluded credential or secret file.');
-  return source;
-}
-
-export async function inspectMaterials(workspace, sources = []) {
-  await safePath(workspace, 'directory');
-  if (sources.length > LIMITS.files) fail('materialCountExceeded', `The selection exceeds the ${LIMITS.files} file limit.`);
-  if (new Set(sources).size !== sources.length) fail('materialDuplicate', 'The same material path was selected more than once.');
-  let totalBytes = 0;
-  const materials = [];
-  for (const source of sources) {
-    materialSource(source);
-    const originalPath = path.join(workspace, ...source.split('/'));
-    const bytes = await readLimited(originalPath, LIMITS.fileBytes, 'materialFileTooLarge');
-    totalBytes += bytes.length;
-    if (totalBytes > LIMITS.materialBytes) fail('materialTotalTooLarge', `The materials exceed the ${LIMITS.materialBytes} byte total limit.`);
-    const text = textFromBytes(bytes);
-    if (/-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\bsk-(?:proj-)?[A-Za-z0-9_-]{24,}|\bAKIA[A-Z0-9]{16}\b/.test(text)) fail('materialSecretDetected', 'The selected material contains a recognized credential. Remove that material or prepare a safe copy.');
-    const lineCount = Math.max(1, text.split('\n').length - (text.endsWith('\n') ? 1 : 0));
-    materials.push({ source, originalPath, startLine: 1, endLine: lineCount, content: text });
+export async function readStdin(stream = process.stdin, maximumBytes = LIMITS.taskBytes, code = 'taskTooLarge') {
+  if (stream.isTTY) fail('stdinInteractive', 'Use --prompt - with redirected noninteractive stdin.');
+  const chunks = [];
+  let total = 0;
+  try {
+    for await (const chunk of stream) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += bytes.length;
+      if (total > maximumBytes) fail(code, `The input exceeds the ${maximumBytes} byte limit.`);
+      chunks.push(bytes);
+    }
+  } catch (error) {
+    if (error?.code === code) throw error;
+    fail('stdinUnreadable', 'The redirected prompt could not be read.');
   }
-  return { materials, totalBytes };
+  return textFromBytes(Buffer.concat(chunks, total));
 }
 
 export async function readText(target, maximumBytes, code) {
   // These files are explicit caller selections, not workspace-relative bundle members.
-  const resolved = await fs.realpath(path.resolve(target)).catch(() => fail('pathMissing', 'The selected instruction or task file is missing or unreadable.'));
+  const resolved = await fs.realpath(path.resolve(target)).catch(() => fail('pathMissing', 'The selected instruction file is missing or unreadable.'));
   const text = textFromBytes(await readLimited(resolved, maximumBytes, code));
-  if (!text.trim()) fail('inputEmpty', 'The instruction or task file is empty.');
+  if (!text.trim()) fail('inputEmpty', 'The instruction file is empty.');
   return text;
 }
 
@@ -100,7 +87,7 @@ export async function atomicJson(target, value) {
   await fs.rename(temporary, target);
 }
 
-export async function readJson(target, maximumBytes = LIMITS.fileBytes) {
+export async function readJson(target, maximumBytes = LIMITS.resultBytes) {
   const bytes = await readLimited(target, maximumBytes);
   try { return JSON.parse(textFromBytes(bytes)); } catch (error) {
     if (error?.code) throw error;

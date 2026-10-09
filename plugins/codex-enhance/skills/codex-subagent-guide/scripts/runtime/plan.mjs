@@ -1,28 +1,57 @@
 import path from 'node:path';
 import { PROFILE_KEYS, cleanString, fail } from './contracts.mjs';
 
-/** Select the caller's exact key. No advisor classification or fallback occurs here. */
+export const ADAPTERS = Object.freeze({
+  codex: { mode: 'workspace', entrypoint: 'codex-v4.mjs' },
+  'claude-code': { mode: 'workspace', entrypoint: 'claude-code-v4.mjs' },
+  oracle: { mode: 'bundle', entrypoint: 'oracle-v4.mjs' },
+});
+const variableName = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const protectedVariable = (key) => key.startsWith('AW_PLUGIN_') || key.startsWith('AW_SUBAGENT_') || key === 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
+const plainObject = (value) => value && typeof value === 'object' && !Array.isArray(value);
+
+export function validateEnvironmentConfig(executor) {
+  for (const field of ['env', 'envFrom']) {
+    const values = Object.hasOwn(executor, field) ? executor[field] : {};
+    if (!plainObject(values) || Object.entries(values).some(([key, value]) => !variableName.test(key) || protectedVariable(key) || typeof value !== 'string' || value.includes('\0') || !value.isWellFormed() || (field === 'envFrom' && (!variableName.test(value) || protectedVariable(value))))) fail('environmentInvalid', 'Use valid ordinary environment names and host references; AW control variables cannot be customized.');
+  }
+  if (Object.keys(executor.env ?? {}).some((key) => Object.hasOwn(executor.envFrom ?? {}, key))) fail('environmentConflict', 'A target variable cannot occur in both env and envFrom.');
+}
+
+/** Select the caller's exact key. No role classification or fallback occurs here. */
 export function selectExecution(snapshot, request) {
   if (!snapshot?.installedIdentity || !path.isAbsolute(snapshot.resourceRoot ?? '')) fail('runtimeSnapshotInvalid', 'The installed runtime is incomplete. Sync or reinstall the Guide.', ['sync', 'reinstall']);
   if (!PROFILE_KEYS.includes(request.profile)) fail('profileUnknown', 'Select a supported profile key.');
   const profile = snapshot.effectiveValues?.[request.profile];
   if (profile === undefined) fail('profileUnconfigured', 'The selected profile is not configured. Select the intended configured key.');
-  if (!profile || typeof profile !== 'object' || Array.isArray(profile) || Object.keys(profile).some((key) => !['executor', 'model', 'reasoningEffort'].includes(key)) || !cleanString(profile.model) || !cleanString(profile.reasoningEffort)) fail('profileInvalid', 'The profile requires model and reasoningEffort, with optional executor.', ['config', 'sync']);
+  if (!plainObject(profile) || Object.keys(profile).some((key) => !['executor', 'model', 'reasoningEffort'].includes(key)) || ['model', 'reasoningEffort'].some((key) => Object.hasOwn(profile, key) && !cleanString(profile[key]))) fail('profileInvalid', 'The installed profile is invalid. Update the profile and sync.', ['config', 'sync']);
   const executorKey = Object.hasOwn(profile, 'executor') ? profile.executor : 'native';
   if (!cleanString(executorKey)) fail('executorInvalid', 'The executor key must be a nonempty string.');
-  const access = request.access ?? 'read-only';
-  if (!['read-only', 'workspace-write'].includes(access)) fail('accessInvalid', 'Access must be read-only or workspace-write.');
   for (const key of ['model', 'reasoningEffort']) if (request[key] !== undefined && !cleanString(request[key])) fail('parameterInvalid', 'Explicit model and effort must be nonempty strings.');
-  const execution = { profile: request.profile, executor: executorKey, model: request.model ?? profile.model, reasoningEffort: request.reasoningEffort ?? profile.reasoningEffort };
-  if (executorKey === 'native') fail('nativeUnsupported', 'Use the native host tools directly for a native profile.');
+  if (executorKey === 'native') {
+    if (!cleanString(profile.model) || !cleanString(profile.reasoningEffort)) fail('profileInvalid', 'Native profiles require model and reasoningEffort.', ['config', 'sync']);
+    fail('nativeUnsupported', 'Use the native host tools directly for a native profile.');
+  }
+  const execution = { profile: request.profile, executor: executorKey };
+  for (const key of ['model', 'reasoningEffort']) if ((request[key] ?? profile[key]) !== undefined) execution[key] = request[key] ?? profile[key];
   const commands = snapshot.effectiveValues.subagentCommands;
   if (!Array.isArray(commands)) fail('registryInvalid', 'The installed command registry is invalid.', ['config', 'sync']);
   const matches = commands.filter((entry) => entry?.key === executorKey);
   if (matches.length !== 1) fail('executorUnknown', 'The selected executor is missing or ambiguous. Correct the registry and sync.', ['config', 'sync']);
   const executor = matches[0];
-  if (!cleanString(executor.title) || !['workspace', 'bundle'].includes(executor.mode) || !cleanString(executor.command) || !path.isAbsolute(executor.command) || (executor.entrypoint !== undefined && (!cleanString(executor.entrypoint) || !path.isAbsolute(executor.entrypoint)))) fail('executorInvalid', 'The executor needs a title, supported mode, and absolute command and entrypoint paths.');
-  if (executor.supportsSystemInstructions !== true) fail('instructionChannelUnsupported', 'The executor must support an independent system, developer, or equivalent instruction channel. A user prefix is insufficient.');
-  if (executor.mode === 'bundle' && access !== 'read-only') fail('accessUnsupported', 'Bundle execution cannot write to the original workspace.');
-  if (access === 'read-only' ? executor.supportsReadOnly !== true : executor.supportsWorkspaceWrite !== true) fail('accessUnsupported', 'The executor does not support the requested access mode.');
-  return { execution, mode: executor.mode, access, executor: { ...executor } };
+  const allowed = ['key', 'title', 'adapter', 'mode', 'command', 'entrypoint', 'args', 'env', 'envFrom'];
+  if (Object.keys(executor).some((key) => !allowed.includes(key)) || !cleanString(executor.title) || !['codex', 'claude-code', 'oracle', 'custom'].includes(executor.adapter)) fail('executorInvalid', 'Update the executor to the v4 adapter configuration and sync.', ['config', 'sync']);
+  const descriptor = ADAPTERS[executor.adapter];
+  let mode, command, entrypoint;
+  if (descriptor) {
+    if (Object.hasOwn(executor, 'command') || Object.hasOwn(executor, 'entrypoint') || (Object.hasOwn(executor, 'mode') && executor.mode !== descriptor.mode)) fail('executorInvalid', 'Built-in adapters use their installed entrypoint and fixed mode.', ['config', 'sync']);
+    mode = descriptor.mode; command = process.execPath;
+    entrypoint = path.join(snapshot.resourceRoot, 'scripts', 'adapters', descriptor.entrypoint);
+  } else {
+    if (!['workspace', 'bundle'].includes(executor.mode) || !cleanString(executor.command) || !path.isAbsolute(executor.command) || (Object.hasOwn(executor, 'entrypoint') && (!cleanString(executor.entrypoint) || !path.isAbsolute(executor.entrypoint)))) fail('executorInvalid', 'Custom adapters require a mode and absolute command and optional entrypoint paths.');
+    mode = executor.mode; command = executor.command; entrypoint = executor.entrypoint;
+  }
+  if (executor.args !== undefined && (!Array.isArray(executor.args) || executor.args.some((value) => typeof value !== 'string' || value.includes('\0') || !value.isWellFormed()))) fail('argumentsInvalid', 'Executor args must be a string array without NUL.');
+  validateEnvironmentConfig(executor);
+  return { execution, mode, resourceRoot: snapshot.resourceRoot, executor: { ...executor, args: [...(executor.args ?? [])] }, command, entrypoint };
 }

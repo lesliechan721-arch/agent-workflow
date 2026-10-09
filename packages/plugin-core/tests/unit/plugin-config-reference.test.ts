@@ -68,6 +68,26 @@ describe('Config v3 scalar references and property uniqueness', () => {
       .toEqual(expect.arrayContaining(['required', 'valueRefSource']))
   })
 
+  // Preserve actionable item locations through the public candidate validator.
+  it.each([3, 4])('retains scalar and object array reference item paths in Config v%s', schemaVersion => {
+    const definition = normalizePluginConfigDefinition({ schemaVersion, fields: {
+      backends: registry,
+      selected: { type: 'array', items: { type: 'string', valueRef: reference } },
+      rows: { type: 'array', items: { type: 'object', properties: {
+        backend: { type: 'string', valueRef: reference },
+      } } },
+    } })
+    const issues = validatePluginConfigCandidate(definition, {
+      backends: [{ id: 'valid', caption: 'Valid' }],
+      selected: ['valid', 'unknown'],
+      rows: [{ backend: 'valid' }, { backend: 'unknown' }],
+    }, ['selected', 'rows'])
+    expect(issues).toMatchObject([
+      { code: 'valueRef', path: { field: 'selected', segments: ['selected', 1] } },
+      { code: 'valueRef', path: { field: 'rows', property: 'backend', segments: ['rows', 1, 'backend'] } },
+    ])
+  })
+
   it('rejects invalid source fields, shallow properties, types and declarations', () => {
     for (const valueRef of [
       { ...reference, field: 'missing' }, { ...reference, key: 'missing' },

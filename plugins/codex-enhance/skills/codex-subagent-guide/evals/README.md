@@ -82,4 +82,10 @@ aw skill eval prepare codex-enhance codex-subagent-guide --suite lifecycle-timeo
 
 ## 前台调度与角色边界迁移
 
-`joint-workflow`、`joint-guide-only`、`executor-instructions` 保留发布必需门禁。旧 `worker-instructions` 用例按职责改名，J11/J17 从后台恢复与 revision 拒绝迁移为公开 save/apply、活跃输入固定和同一宿主 session 等待。完整逐项替代、真实支持要求及未验证项见 [ROLE-BOUNDARY.md](ROLE-BOUNDARY.md)。原生调用不经过 resolve/native reference/plan；外部使用必填 profile、instructions-file、prompt-file 的 v3 前台 run。Advisor 的预算以当前任务明确要求为准，不再使用默认 policy。
+`joint-workflow`、`joint-guide-only`、`executor-instructions` 保留发布必需门禁。旧 `worker-instructions` 用例按职责改名，J11/J17 从后台恢复与 revision 拒绝迁移为公开 save/apply、活跃输入固定和同一宿主 session 等待。完整逐项替代、真实支持要求及未验证项见 [ROLE-BOUNDARY.md](ROLE-BOUNDARY.md)。原生调用不经过 resolve/native reference/plan；外部使用必填 profile、prompt 的 v4 前台 run；支持 stdin，显式 instructions-file 可选。外部单 prompt 不证明独立指令通道或 OS 隔离。J16 验证 workspace 拒绝空 --file 和零 adapter 启动。因输入及 Oracle 已改变，必须重新进行独立 EvalAudit 和模型 Eval，旧模型成绩不能沿用。Advisor 的预算以当前任务明确要求为准，不再使用默认 policy。
+
+公开 synthetic fixture 合同可用以下命令作确定性验证。它要求已编译的 CLI 和插件构建依赖；在临时 staging 准备 Guide，然后使用临时 PATH `aw`、隔离 home 和本地假 Adapter 执行 validate/build/source/install、save 后通过 sync 应用、纯文本消费、J16 输入拒绝和 J12 单次写入。该脚本不 build 全局 CLI，不调用模型，不证明 native 宿主、远端服务或打包分发资格。
+
+```bash
+node plugins/codex-enhance/skills/codex-subagent-guide/evals/role-boundary-public-contract.mjs --cli packages/cli/dist/index.js
+```

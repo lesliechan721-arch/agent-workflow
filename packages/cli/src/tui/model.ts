@@ -1,7 +1,8 @@
-import { configObjectHasSensitiveChild, presentConfigValue } from './config-value-presentation.js';
+import { configObjectHasSensitiveChild, presentConfigValue, safeConfigText } from './config-value-presentation.js';
 export { configObjectHasSensitiveChild } from './config-value-presentation.js';
 import {
   matchPluginConfigPreset,
+  resolvePluginConfigObjectProperties,
   stablePluginConfigStringify,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
@@ -10,7 +11,6 @@ import type {
   PluginConfigFieldType,
   PluginConfigObject,
   PluginConfigPreset,
-  PluginConfigScalar,
   PluginConfigSchemaField,
   PluginConfigJoinSummary,
   PluginConfigSchema,
@@ -2405,14 +2405,15 @@ function configObjectChildChanges(
   before: PluginConfigObject,
   after: PluginConfigObject | undefined,
 ): NonNullable<ConfigFieldViewModel['fallbackObjectChanges']> {
-  const fixed = Object.keys(field.properties ?? {});
-  const summary = (property: string, value: PluginConfigScalar | undefined): string => {
+  const properties = { ...resolvePluginConfigObjectProperties(field, before).properties,
+    ...resolvePluginConfigObjectProperties(field, after ?? {}).properties };
+  const fixed = Object.keys(properties);
+  const summary = (property: string, value: PluginConfigObject[string] | undefined, object: PluginConfigObject): string => {
     if (value === undefined) return '未设置';
-    const definition = field.properties?.[property]
+    const definition = resolvePluginConfigObjectProperties(field, object).properties[property]
       ?? (field.additionalProperties === false ? undefined : field.additionalProperties);
     if (field.sensitive || definition?.sensitive) return '已设置';
-    if (typeof value === 'boolean') return value ? '开启' : '关闭';
-    return String(value);
+    return definition ? presentConfigValue({ definition, value, full: true }).text : safeConfigText(JSON.stringify(value));
   };
   return [...new Set([...Object.keys(before), ...Object.keys(after ?? {})])]
     .sort((left, right) => {
@@ -2425,14 +2426,14 @@ function configObjectChildChanges(
       }
       return left.localeCompare(right, 'en');
     })
-    .filter((property) => before[property] !== after?.[property])
+    .filter((property) => !configValuesEqual(before[property], after?.[property]))
     .map((property) => {
-      const definition = field.properties?.[property]
+      const definition = properties[property]
         ?? (field.additionalProperties === false ? undefined : field.additionalProperties);
       return {
         property,
-        before: summary(property, before[property]),
-        after: summary(property, after?.[property]),
+        before: summary(property, before[property], before),
+        after: summary(property, after?.[property], after ?? {}),
         ...(field.sensitive || definition?.sensitive ? { private: true } : {}),
       };
     });

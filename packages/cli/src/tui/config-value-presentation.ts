@@ -4,6 +4,7 @@ import {
   validatePluginConfigValue,
   decodePluginConfigSummaryPath,
   matchPluginConfigPreset,
+  resolvePluginConfigObjectProperties,
   PLUGIN_CONFIG_SUMMARY_MAX_CODE_POINTS,
   type PluginConfigJoinSummary,
   type PluginConfigArray,
@@ -64,7 +65,10 @@ export function presentConfigValue(options: {
   if (options.privateValue || definition.sensitive === true || configObjectHasSensitiveChild(definition)) {
     return { text: configured ? '已设置' : '未设置', state: 'sensitive', complete: true };
   }
-  if (!configured && !options.invalid) return { text: '未设置', state: 'unset', complete: true };
+  if (!configured && !options.invalid) {
+    if ('const' in definition && definition.const !== undefined) return boundedValue(scalarText(definition.const));
+    return { text: '未设置', state: 'unset', complete: true };
+  }
   if (options.invalid || validatePluginConfigValue(definition, value).length > 0) {
     return { text: '需修正', state: 'invalid', complete: true };
   }
@@ -90,28 +94,36 @@ export function presentConfigValue(options: {
   if (definition.type !== 'object') return boundedValue(scalarText(value as PluginConfigScalar));
 
   const object = value as PluginConfigObject;
+  const properties = resolvePluginConfigObjectProperties(definition, object).properties;
   if (options.summary && definition.properties) {
     const selected = new Set<string>();
     const text = options.summary.parts.map((part) => {
       const property = decodePluginConfigSummaryPath(part.path);
       selected.add(property);
-      if (!Object.hasOwn(definition.properties!, property) || !Object.hasOwn(object, property)) {
+      const child = properties[property];
+      if (!child || !Object.hasOwn(object, property) && !('const' in child && child.const !== undefined)) {
         return safeConfigText(options.summary!.missing);
       }
-      const child = definition.properties![property]!;
-      const value = object[property]!;
+      const value = object[property] ?? ('const' in child ? child.const : undefined);
       const title = part.format === 'choiceTitle' ? matchPluginConfigPreset(child, value)?.title : undefined;
-      return title === undefined ? scalarText(value) : safeConfigText(title);
+      return title === undefined ? presentConfigValue({ definition: child, value }).text : safeConfigText(title);
     }).join(safeConfigText(options.summary.separator));
     return boundedValue(text, Object.keys(object).filter((key) => !selected.has(key)));
   }
   const keys = definition.properties
-    ? Object.keys(definition.properties).filter((key) => Object.hasOwn(object, key))
+    ? Object.keys(properties).filter((key) => {
+      const child = properties[key]!;
+      return Object.hasOwn(object, key) || 'const' in child && child.const !== undefined;
+    })
     : Object.keys(object).sort((left, right) => left.localeCompare(right, 'en'));
   if (keys.length === 0) return boundedValue('（空对象）');
-  const text = keys.slice(0, 2).map((key) => {
-    const title = definition.properties?.[key]?.title ?? key;
-    return `${safeConfigText(title)}=${scalarText(object[key]!)}`;
-  }).join(' · ');
-  return boundedValue(text, keys.slice(2));
+  const previews = keys.slice(0, 2).map((key) => {
+    const child = properties[key] ?? (definition.additionalProperties === false ? undefined : definition.additionalProperties);
+    const title = child?.title ?? key;
+    const preview = child ? presentConfigValue({ definition: child, value: object[key] })
+      : { text: safeConfigText(JSON.stringify(object[key])), complete: true };
+    return { text: `${safeConfigText(title)}=${preview.text}`, complete: preview.complete };
+  });
+  const result = boundedValue(previews.map((preview) => preview.text).join(' · '), keys.slice(2));
+  return { ...result, complete: result.complete && previews.every((preview) => preview.complete) };
 }

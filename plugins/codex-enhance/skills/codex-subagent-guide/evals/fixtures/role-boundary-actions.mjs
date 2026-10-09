@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { fixtureAssetURL as selectionAssetURL } from './selection-observations.mjs';
 
@@ -39,13 +40,13 @@ async function put(root, relative, bytes) {
 async function processResult(command, args, options = {}) {
   const child = spawn(command, args, { cwd: options.cwd, env: options.env, shell: false, stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
   if (options.input !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(options.input); }
-  const chunks = []; const errors = []; let size = 0;
+  const chunks = []; const errors = []; let size = 0; let outputOverflow = false;
   const timer = setTimeout(() => child.kill('SIGTERM'), options.timeout ?? 60000);
-  child.stdout.on('data', (bytes) => { size += bytes.length; if (size > 4 * 1024 * 1024) child.kill('SIGTERM'); else chunks.push(bytes); });
+  child.stdout.on('data', (bytes) => { size += bytes.length; if (size > 4 * 1024 * 1024 + 65536) { outputOverflow = true; child.kill('SIGTERM'); } else chunks.push(bytes); });
   child.stderr.on('data', (bytes) => { if (errors.reduce((total, item) => total + item.length, 0) < 256 * 1024) errors.push(bytes); });
   try {
     const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
-    return { code, stdout: Buffer.concat(chunks).toString('utf8'), stderr: Buffer.concat(errors).toString('utf8') };
+    return { code, stdout: Buffer.concat(chunks).toString('utf8'), stderr: Buffer.concat(errors).toString('utf8'), outputOverflow };
   } finally { clearTimeout(timer); }
 }
 async function jsonCommand(command, args, options) {
@@ -67,7 +68,7 @@ function labEnvironment(workspace) {
 }
 async function awAvailable(env, cwd) {
   const describe = await jsonCommand('aw', ['self', 'describe', '--json'], { env, cwd });
-  const required = ['aw.installed-runtime-config.v2', 'aw.dynamic-artifacts.v2', 'aw.plugin-config.v3', 'aw.plugin-config-unique-by.v1', 'aw.plugin-config-value-ref.v1'];
+  const required = ['aw.installed-runtime-config.v2', 'aw.dynamic-artifacts.v2', 'aw.plugin-config.v4', 'aw.plugin-config-unique-by.v1', 'aw.plugin-config-value-ref.v1'];
   const missing = required.filter((item) => !describe.capabilities?.includes(item));
   if (missing.length) throw new Error(`fixtureEnvironmentUnsupported: PATH aw lacks ${missing.join(', ')}`);
   return describe;
@@ -84,12 +85,20 @@ async function tree(root, prefix = '') {
   }
   return result;
 }
-async function guide(workspace, args, { root, env = process.env, allowFailure = false }) {
+/** Public text observations are not backend terminal or process-containment evidence. */
+export function parseGuideObservation(stdout, stderr = '', exitCode = null) {
+  const terminal = stdout.match(/^(COMPLETED|FAILED|CANCELLED|UNKNOWN) · [^\n]+\n/);
+  const code = stderr.match(/^([A-Za-z][A-Za-z0-9]*):/)?.[1];
+  const state = terminal ? terminal[1] === 'COMPLETED' && exitCode !== null && exitCode !== 0 ? 'unknown' : terminal[1].toLowerCase() : exitCode === 2 && code ? 'failed' : 'unknown';
+  return { state, exitCode, stdout, stderr,
+    ...(code ? { code } : !terminal ? { code: 'guideOutputUnrecognized' } : {}) };
+}
+async function guide(workspace, args, { root, env = process.env, allowFailure = false, input }) {
   const entry = await file(root, 'scripts/subagent.mjs');
-  const result = await processResult(process.execPath, [entry, ...args], { cwd: workspace, env });
-  let value;
-  try { value = JSON.parse(result.stdout || result.stderr); } catch { value = { code: 'nonJsonGuideResult' }; }
-  if (result.code !== 0 && !allowFailure) throw new Error(`fixtureGuideFailed:${value.error?.code ?? value.code ?? 'failed'}`);
+  const result = await processResult(process.execPath, [entry, ...args], { cwd: workspace, env, input });
+  const value = parseGuideObservation(result.stdout, result.stderr, result.code);
+  if (result.outputOverflow) { value.state = 'unknown'; value.code = 'guideOutputTooLarge'; }
+  if (result.code !== 0 && !allowFailure) throw new Error(`fixtureGuideFailed:${value.code ?? 'failed'}`);
   return { exitCode: result.code, value };
 }
 /** Eval-only data observation. The product reader validates provenance before every real run. */
@@ -139,15 +148,20 @@ function fixtureConfig(values) {
   const fields = {};
   for (const key of KEYS) {
     if (key === 'subagentCommands') continue;
-    fields[key] = { type: 'object', properties: {
-      executor: { type: 'string' }, model: { type: 'string', required: true },
-      reasoningEffort: { type: 'string', required: true } }, additionalProperties: false,
+    fields[key] = { type: 'object', properties: { executor: { type: 'string' } }, additionalProperties: false,
+      variants: { discriminator: 'executor', missing: 'native', cases: { native: { properties: {
+        model: { type: 'string', required: true }, reasoningEffort: { type: 'string', required: true } } } },
+      otherwise: { properties: { model: { type: 'string' }, reasoningEffort: { type: 'string' } } } },
       ...(Object.hasOwn(values, key) ? { default: values[key] } : {}) };
   }
-  const properties = Object.fromEntries(['key', 'title', 'mode', 'command', 'entrypoint'].map((key) => [key, { type: 'string' }]));
-  for (const key of ['supportsSystemInstructions', 'supportsReadOnly', 'supportsWorkspaceWrite', 'supportsModel', 'supportsReasoningEffort']) properties[key] = { type: 'boolean' };
-  fields.subagentCommands = { type: 'array', items: { type: 'object', properties, additionalProperties: false }, default: values.subagentCommands };
-  return { schemaVersion: 3, fields };
+  const string = { type: 'string' };
+  const properties = { key: { ...string, required: true }, title: { ...string, required: true },
+    adapter: { ...string, required: true, choices: { allowCustom: false, presets: ['codex', 'claude-code', 'oracle', 'custom'].map((value) => ({ id: value, title: value, value })) } },
+    args: { type: 'array', items: string }, env: { type: 'object', additionalProperties: string }, envFrom: { type: 'object', additionalProperties: string } };
+  const cases = Object.fromEntries([['codex', 'workspace'], ['claude-code', 'workspace'], ['oracle', 'bundle']].map(([adapter, mode]) => [adapter, { properties: { mode: { ...string, const: mode } } }]));
+  cases.custom = { properties: { mode: { ...string, required: true }, command: { ...string, required: true }, entrypoint: string } };
+  fields.subagentCommands = { type: 'array', items: { type: 'object', properties, variants: { discriminator: 'adapter', cases }, additionalProperties: false }, default: values.subagentCommands };
+  return { schemaVersion: 4, fields };
 }
 /** A public synthetic installation proves source/apply behavior, never model support. */
 async function installLab(workspace, fixtures, operation) {
@@ -162,18 +176,21 @@ async function installLab(workspace, fixtures, operation) {
   const files = await tree(sourceGuide);
   delete files['scripts/aw-runtime-config.mjs']; delete files['aw-plugin-requirements.json'];
   const commands = values.subagentCommands ?? [];
-  if (['single-write-disconnect', 'unsupported-channel'].includes(operation)) {
+  if (['single-write-disconnect', 'invalid-workspace-files'].includes(operation)) {
     const entrypoint = await file(fixtures, 'fixtures/single-write-disconnect.mjs');
-    commands.push({ key: 'fixture-control', title: 'Explicit local failure control', mode: 'workspace', command: process.execPath,
-      entrypoint, supportsSystemInstructions: operation !== 'unsupported-channel', supportsReadOnly: true, supportsWorkspaceWrite: true });
+    commands.push({ key: 'fixture-control', title: 'Explicit local failure control', adapter: 'custom', mode: 'workspace', command: process.execPath, entrypoint });
     values.generalTaskProfile = { executor: 'fixture-control', model: values.generalTaskProfile.model, reasoningEffort: 'high' };
   } else {
     const profile = values.advisorProfile;
-    if (!commands.some((item) => item.key === profile?.executor && item.supportsSystemInstructions && item.supportsReadOnly)) throw new Error('fixtureEnvironmentUnsupported: real external advisorProfile required');
+    if (!commands.some((item) => item.key === profile?.executor && ['codex', 'claude-code', 'oracle', 'custom'].includes(item.adapter))) throw new Error('fixtureEnvironmentUnsupported: real external advisorProfile required');
     if (operation === 'custom-instructions-install') values.generalTaskProfile = structuredClone(profile);
   }
   values.subagentCommands = commands;
-  const unrelatedFiles = operation === 'instruction-update-install' ? { 'SKILL.md': '---\nname: fixture-unrelated\ndescription: Unrelated fixture Skill, only used to observe independent source changes.\n---\n\nReturn the requested local fact.\n', 'README.md': '# Unrelated fixture Skill\n' } : null;
+  const unrelatedFiles = operation === 'instruction-update-install' ? {
+    'SKILL.md': '---\nname: fixture-unrelated\ndescription: Unrelated fixture Skill, only used to observe independent source changes.\n---\n\nReturn the requested local fact.\n',
+    'README.md': '# Unrelated fixture Skill\n',
+    'agents/openai.yaml': 'interface:\n  display_name: "Unrelated fixture"\n  short_description: "Observe one independent local fixture source change."\n  default_prompt: "Use $fixture-unrelated to observe this local source only."\npolicy:\n  allow_implicit_invocation: false\n',
+  } : null;
   const data = { keys: KEYS, files, values, unrelatedFiles };
   await jsonCommand('aw', ['catalog', 'init', '--workspace-root', catalog, '--owner-name', 'Foreground Eval', '--owner-url', 'https://example.invalid/foreground-eval', '--display-name', 'Isolated Foreground Eval', '--json'], { env, cwd: project });
   await successfulCommand('aw', ['plugin', 'init', 'role-boundary-lab', '--workspace-root', catalog, '--description', 'Explicit isolated Eval fixture', '--no-skills'], { env, cwd: project });
@@ -183,7 +200,7 @@ async function installLab(workspace, fixtures, operation) {
   for (const [relative, text] of Object.entries(files)) await put(plugin, `skills/codex-subagent-guide/${relative}`, text);
   const manifest = { schemaVersion: 3, name: 'role-boundary-lab', version: '0.1.0', description: 'Explicit isolated Eval fixture',
     marketplace: scaffold.marketplace, ...(scaffold.interface ? { interface: scaffold.interface } : {}),
-    requires: { aw: { capabilities: ['aw.installed-runtime-config.v2'] } }, config: fixtureConfig(values),
+    requires: { aw: { capabilities: ['aw.installed-runtime-config.v2', 'aw.plugin-config.v4'] } }, config: fixtureConfig(values),
     buildConfig: { fileRules: { codex: { include: ['fixture-data.json'], exclude: [] } } },
     scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
     artifacts: { targets: [{ id: 'codex-subagent-guide-skill', platform: 'codex', scopes: ['project'], target: 'codex.skill',
@@ -223,10 +240,12 @@ async function applyChange(workspace, instructions = false) {
   const commands = structuredClone(before.effectiveValues.subagentCommands).map((item) => ({ ...item, title: item.title + ' (updated)' }));
   await jsonCommand('aw', ['config', 'set', state.pluginId, 'subagentCommands', '--scope', 'project', '--value-json', JSON.stringify(commands), '--yes', '--json'], { env, cwd: state.project });
   const saved = await readInstalled(state.project, state.guideRoot);
-  if (JSON.stringify(saved.effectiveValues) !== JSON.stringify(before.effectiveValues)) throw new Error('fixtureSaveUnexpectedlyApplied');
-  await jsonCommand('aw', ['config', 'set', state.pluginId, 'subagentCommands', '--scope', 'project', '--value-json', JSON.stringify(commands), '--apply', '--yes', '--json'], { env, cwd: state.project });
+  if (!isDeepStrictEqual(saved.effectiveValues, before.effectiveValues)) throw new Error('fixtureSaveUnexpectedlyApplied');
+  // Repeating the same config set --apply has no store change and does not
+  // refresh outputs. Public sync applies this already saved configuration.
+  await jsonCommand('aw', ['sync', state.pluginId, '--scope', 'project', '--platform', 'codex', '--yes', '--json'], { env, cwd: state.project });
   const after = await readInstalled(state.project, state.guideRoot);
-  if (JSON.stringify(after.effectiveValues.subagentCommands) !== JSON.stringify(commands)) throw new Error('fixtureApplyDidNotUpdateValues');
+  if (!isDeepStrictEqual(after.effectiveValues.subagentCommands, commands)) throw new Error('fixtureApplyDidNotUpdateValues');
   if (instructions) {
     await writeFile(state.instructionsFile, state.originalInstructions + '\nSeparate facts from assumptions. Include the still missing validation.\n');
     // This unrelated source is deliberately changed; there is no peer digest gate.
@@ -247,9 +266,9 @@ async function foregroundObservations(workspace) {
     const state = await stateOf(workspace);
     evidence.transition = state.transition ?? null;
     evidence.results = {};
-    for (const name of ['original', 'new']) evidence.results[name] = JSON.parse(await readFile(await file(workspace, `provided/${name}-result.json`), 'utf8'));
+    for (const name of ['original', 'new']) evidence.results[name] = parseGuideObservation(await readFile(await file(workspace, `provided/${name}-result.txt`), 'utf8'));
     evidence.observation = 'captured';
-    evidence.observationScope = 'Recorded result objects only; service support, active-session continuity, instruction input and generation count require actual trace. No background recovery is attempted.';
+    evidence.observationScope = 'Recorded public text only; service support, active-session continuity, instruction input and generation count require actual trace. No background recovery is attempted.';
   } catch (error) { evidence.diagnostic = String(error.message).slice(0, 2048); }
   return { version: 1, completed: true, artifacts: [await put(workspace, 'provided/foreground-observations.json', JSON.stringify(evidence, null, 2))], evidence };
 }
@@ -279,18 +298,19 @@ export async function executeFixtureAction(payload) {
   }
   if (input.operation === 'verify-foreground') return foregroundObservations(workspace);
   if (['apply-configuration', 'apply-instructions'].includes(input.operation)) return { version: 1, completed: true, ...await applyChange(workspace, input.operation === 'apply-instructions') };
-  if (!['custom-instructions-install', 'foreground-install', 'instruction-update-install', 'single-write-disconnect', 'unsupported-channel'].includes(input.operation)) throw new Error('fixtureOperationUnsupported');
+  if (!['custom-instructions-install', 'foreground-install', 'instruction-update-install', 'single-write-disconnect', 'invalid-workspace-files'].includes(input.operation)) throw new Error('fixtureOperationUnsupported');
   const { state, env } = await installLab(workspace, fixtures, input.operation);
   const evidence = { operation: input.operation, installedIdentity: state.installedIdentity, guideRoot: state.guideRoot,
     instructionsFile: state.instructionsFile, promptFile: state.promptFile, publicAwCapabilityDigest: state.publicAwCapabilityDigest };
   const artifacts = [];
-  if (input.operation === 'unsupported-channel') {
+  if (input.operation === 'invalid-workspace-files') {
+    const prompt = await readFile(state.promptFile, 'utf8');
     const rejected = await guide(state.project, ['run', '--profile', 'generalTaskProfile', '--instructions-file', state.instructionsFile,
-      '--prompt-file', state.promptFile], { root: state.guideRoot, env, allowFailure: true });
-    if (rejected.exitCode === 0 || (rejected.value.code ?? rejected.value.error?.code) !== 'instructionChannelUnsupported') throw new Error('fixtureChannelRejectionMissing');
+      '--prompt', '-', '--file', ''], { root: state.guideRoot, env, allowFailure: true, input: prompt });
+    if (rejected.exitCode !== 2 || rejected.value.code !== 'filesNotAllowedInWorkspace') throw new Error('fixtureInputRejectionMissing');
     evidence.preflight = rejected.value;
     evidence.adapterExecutionCounter = await readFile(path.join(state.project, LAB, 'counter.json'), 'utf8').then(JSON.parse).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
-    if (evidence.adapterExecutionCounter !== null) throw new Error('fixtureUnsupportedChannelExecuted');
+    if (evidence.adapterExecutionCounter !== null) throw new Error('fixtureRejectedInputExecuted');
   }
   if (input.operation === 'single-write-disconnect') {
     const initial = input.initialRun;
@@ -298,8 +318,7 @@ export async function executeFixtureAction(payload) {
       || initial.operation !== input.task || typeof initial.counterOwner !== 'string') throw new Error('fixtureInitialRunInvalid');
     await writeFile(state.promptFile, input.task);
     const run = await guide(workspace, ['run', '--profile', 'generalTaskProfile', '--instructions-file', state.instructionsFile,
-      '--prompt-file', state.promptFile, '--access', 'workspace-write', '--workspace', workspace,
-      ...(input.materials ?? []).flatMap((relative) => ['--file', rel(relative)])], { root: state.guideRoot, env, allowFailure: true });
+      '--prompt', '-', '--workspace', workspace], { root: state.guideRoot, env, allowFailure: true, input: input.task });
     if (run.value.state !== 'unknown') throw new Error('fixtureFaultDidNotProduceUnknown');
     const counter = JSON.parse(await readFile(await file(workspace, `${LAB}/counter.json`), 'utf8'));
     if (counter.submissions !== 1 || counter.writes !== 1) throw new Error('fixtureFaultCountInvalid');

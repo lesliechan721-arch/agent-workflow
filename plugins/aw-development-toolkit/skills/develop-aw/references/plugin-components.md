@@ -24,6 +24,7 @@
 ## Config / helper
 
 - schema、preset 和作用域由 AW 配置合同拥有；
+- 需要条件对象字段、固定标量或对象内叶级数组/KV 时，查询当前 CLI 的 Config Definition v4 capability；保存、呈现和运行资源共用该合同，不另写插件专属校验或将容器改存为 JSON 字符串；
 - Agent 内容只记录非显然选择和项目约定；
 - helper 输出必须是确定性、可测试且最小的 runtime dependency。
 - 已安装配置 reader 由 AW 在最终 Skill 中注入；从真实调用位置读取本产物的生效值，不读取最新 store。声明与兼容要求从当前 capability 查询取得；不要自建保留文件或内容一致性门禁。

@@ -10,6 +10,7 @@ import type {
   PlatformName,
   PluginArtifactRenderScriptEntry,
   PluginConfigSchema,
+  PluginConfigSchemaField,
   NormalizedPluginManifest,
   PluginMeta,
   Scope,
@@ -330,7 +331,7 @@ export async function writeArtifactRendererContext(options: {
     targetScope: config.targetScope,
     schema: config.schema === undefined
       ? undefined
-      : selectConfigKeys(config.schema, requestedConfigKeys),
+      : selectConfigKeys<PluginConfigSchemaField>(config.schema, requestedConfigKeys),
     values: selectConfigKeys(config.values, requestedConfigKeys),
     sources: selectConfigKeys(config.sources, requestedConfigKeys),
     issues: config.issues.filter((issue) => requestedConfigKeys.has(issue.key)),

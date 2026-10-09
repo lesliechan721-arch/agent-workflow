@@ -701,7 +701,17 @@ function isPluginConfigScalar(value: unknown): value is string | number | boolea
 
 function isPluginConfigObject(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  return Object.values(value).every(isPluginConfigScalar);
+  return Object.values(value).every((property) => {
+    if (isPluginConfigScalar(property)) return true;
+    if (Array.isArray(property)) {
+      const elementType = typeof property[0];
+      return Object.keys(property).length === property.length
+        && property.every((item, index) => Object.hasOwn(property, index)
+          && typeof item === elementType
+          && isPluginConfigScalar(item));
+    }
+    return isRecord(property) && Object.values(property).every(isPluginConfigScalar);
+  });
 }
 
 function isPluginConfigValue(value: unknown): value is PluginConfigValue {
@@ -1780,7 +1790,7 @@ export async function resolveEffectivePluginConfigFromStores(options: {
     const plainEntries = getStoreEntries(store.values);
     const source = sourceForStoreLayer(scope);
     const dangerousIssues = new Map(validatePluginConfigDocument(
-      { schemaVersion: 3, fields: schema },
+      options.manifest.config!,
       plainEntries,
     ).filter((issue) => issue.code === 'dangerousKey')
       .map((issue) => [issue.path.field, issue] as const));

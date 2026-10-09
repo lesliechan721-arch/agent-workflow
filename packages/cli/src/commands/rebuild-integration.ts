@@ -3561,11 +3561,7 @@ async function resolveSensitiveUserConfigValues(
   env: NodeJS.ProcessEnv,
 ): Promise<string[]> {
   const hasSensitiveFields = Object.values(plugin.manifest.config?.fields ?? {}).some((field) =>
-    field.sensitive === true
-    || (field.type === 'object'
-      && (Object.values(field.properties ?? {}).some((child) => child.sensitive === true)
-        || (field.additionalProperties !== false
-          && field.additionalProperties?.sensitive === true))));
+    field.sensitive === true);
   if (!hasSensitiveFields) return [];
   const config = await resolveArtifactRenderConfig({
     sourceId: plugin.sourceId,

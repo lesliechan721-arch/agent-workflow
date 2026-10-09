@@ -1,0 +1,486 @@
+{
+  "kind": "oracle-file-selection-reference-observation",
+  "oracleVersion": "0.21.4",
+  "platform": "darwin",
+  "sourceHead": "eaa84fcbc5d90650689badfa72cdfcf4ad5ad884",
+  "scope": "Synthetic local selection only; no model, CLI consultation, material contents or backend size policy tested.",
+  "sources": [
+    {
+      "file": "dist/src/oracle/files.js",
+      "sha256": "03f4343ef69d5a4e84837c2136f0f528d6afc1e02635232e41e5489c612b0484"
+    },
+    {
+      "file": "dist/src/cli/options.js",
+      "sha256": "45df77cfafabdb07c21236763fb4888fa7957de82c3d139d4afda25229eb2835"
+    }
+  ],
+  "fixtures": {
+    "src/main.ts": "export const main = 1;\n",
+    "src/main.test.ts": "test fixture\n",
+    "src/util.js": "export const util = 1;\n",
+    "src/view.tsx": "jsx fixture\n",
+    "src/[id]/page.ts": "route fixture\n",
+    "src/name,part.ts": "comma fixture\n",
+    "docs/a.md": "A\n",
+    "docs/b.md": "B\n",
+    ".env": "SYNTHETIC_ONLY=not-a-secret\n",
+    ".hidden/note.md": "hidden directory fixture\n",
+    ".gitignore": "ignored/\n*.secret\n!keep.secret\n",
+    "ignored/no.ts": "ignored fixture\n",
+    "keep.secret": "fixture\n",
+    "discard.secret": "fixture\n",
+    "dist/out.js": "default ignored directory with marker\n",
+    "dist/.gitignore": "# marker\n",
+    "build/out.js": "default ignored directory\n",
+    "node_modules/pkg/a.js": "fixture\n"
+  },
+  "symlinks": {
+    "linked.ts": "src/main.ts",
+    "linked-dir": "src"
+  },
+  "observations": [
+    {
+      "id": "no-selectors",
+      "raw": [],
+      "selectors": [],
+      "status": "resolved",
+      "files": [],
+      "logs": []
+    },
+    {
+      "id": "glob-exclusion",
+      "raw": [
+        "src/**/*.ts",
+        "!**/*.test.ts"
+      ],
+      "selectors": [
+        "src/**/*.ts",
+        "!**/*.test.ts"
+      ],
+      "status": "resolved",
+      "files": [
+        "src/[id]/page.ts",
+        "src/main.ts",
+        "src/name,part.ts"
+      ],
+      "logs": []
+    },
+    {
+      "id": "exclusion-before-positive",
+      "raw": [
+        "!**/*.test.ts",
+        "src/**/*.ts"
+      ],
+      "selectors": [
+        "!**/*.test.ts",
+        "src/**/*.ts"
+      ],
+      "status": "resolved",
+      "files": [
+        "src/[id]/page.ts",
+        "src/main.ts",
+        "src/name,part.ts"
+      ],
+      "logs": []
+    },
+    {
+      "id": "literal-file",
+      "raw": [
+        "src/main.ts"
+      ],
+      "selectors": [
+        "src/main.ts"
+      ],
+      "status": "resolved",
+      "files": [
+        "src/main.ts"
+      ],
+      "logs": []
+    },
+    {
+      "id": "directory",
+      "raw": [
+        "src"
+      ],
+      "selectors": [
+        "src"
+      ],
+      "status": "resolved",
+      "files": [
+        "src/[id]/page.ts",
+        "src/main.test.ts",
+        "src/main.ts",
+        "src/name,part.ts",
+        "src/util.js",
+        "src/view.tsx"
+      ],
+      "logs": []
+    },
+    {
+      "id": "all",
+      "raw": [
+        "**/*"
+      ],
+      "selectors": [
+        "**/*"
+      ],
+      "status": "resolved",
+      "files": [
+        ".hidden/note.md",
+        "dist/out.js",
+        "docs/a.md",
+        "docs/b.md",
+        "src/[id]/page.ts",
+        "src/main.test.ts",
+        "src/main.ts",
+        "src/name,part.ts",
+        "src/util.js",
+        "src/view.tsx"
+      ],
+      "logs": [
+        "Skipping default-ignored path: build/out.js (matches build)",
+        "Skipping default-ignored path: node_modules/pkg/a.js (matches node_modules)"
+      ]
+    },
+    {
+      "id": "dot-opt-in",
+      "raw": [
+        "**/*",
+        ".env"
+      ],
+      "selectors": [
+        "**/*",
+        ".env"
+      ],
+      "status": "resolved",
+      "files": [
+        ".env",
+        ".gitignore",
+        ".hidden/note.md",
+        "dist/.gitignore",
+        "dist/out.js",
+        "docs/a.md",
+        "docs/b.md",
+        "src/[id]/page.ts",
+        "src/main.test.ts",
+        "src/main.ts",
+        "src/name,part.ts",
+        "src/util.js",
+        "src/view.tsx"
+      ],
+      "logs": [
+        "Skipping default-ignored path: build/out.js (matches build)",
+        "Skipping default-ignored path: node_modules/pkg/a.js (matches node_modules)"
+      ]
+    },
+    {
+      "id": "literal-dotfile",
+      "raw": [
+        ".env"
+      ],
+      "selectors": [
+        ".env"
+      ],
+      "status": "resolved",
+      "files": [
+        ".env"
+      ],
+      "logs": []
+    },
+    {
+      "id": "literal-gitignored",
+      "raw": [
+        "ignored/no.ts"
+      ],
+      "selectors": [
+        "ignored/no.ts"
+      ],
+      "status": "resolved",
+      "files": [
+        "ignored/no.ts"
+      ],
+      "logs": []
+    },
+    {
+      "id": "mixed-gitignored",
+      "raw": [
+        "ignored/no.ts",
+        "docs/*.md"
+      ],
+      "selectors": [
+        "ignored/no.ts",
+        "docs/*.md"
+      ],
+      "status": "resolved",
+      "files": [
+        "docs/a.md",
+        "docs/b.md"
+      ],
+      "logs": []
+    },
+    {
+      "id": "default-ignored-file",
+      "raw": [
+        "build/out.js"
+      ],
+      "selectors": [
+        "build/out.js"
+      ],
+      "status": "resolved",
+      "files": [
+        "build/out.js"
+      ],
+      "logs": []
+    },
+    {
+      "id": "default-ignored-directory",
+      "raw": [
+        "build"
+      ],
+      "selectors": [
+        "build"
+      ],
+      "status": "resolved",
+      "files": [
+        "build/out.js"
+      ],
+      "logs": []
+    },
+    {
+      "id": "default-ignore-with-gitignore-marker",
+      "raw": [
+        "dist"
+      ],
+      "selectors": [
+        "dist"
+      ],
+      "status": "resolved",
+      "files": [
+        "dist/out.js"
+      ],
+      "logs": []
+    },
+    {
+      "id": "only-exclusion",
+      "raw": [
+        "!**/*.test.ts"
+      ],
+      "selectors": [
+        "!**/*.test.ts"
+      ],
+      "status": "error",
+      "message": "No files matched the provided --file patterns.",
+      "logs": []
+    },
+    {
+      "id": "unmatched",
+      "raw": [
+        "missing/**/*.ts"
+      ],
+      "selectors": [
+        "missing/**/*.ts"
+      ],
+      "status": "error",
+      "message": "No files matched the provided --file patterns.",
+      "logs": []
+    },
+    {
+      "id": "partly-unmatched",
+      "raw": [
+        "docs/*.md",
+        "missing/**/*.ts"
+      ],
+      "selectors": [
+        "docs/*.md",
+        "missing/**/*.ts"
+      ],
+      "status": "resolved",
+      "files": [
+        "docs/a.md",
+        "docs/b.md"
+      ],
+      "logs": []
+    },
+    {
+      "id": "missing-literal",
+      "raw": [
+        "docs/*.md",
+        "absent.txt"
+      ],
+      "selectors": [
+        "docs/*.md",
+        "absent.txt"
+      ],
+      "status": "error",
+      "message": "Missing file or directory: absent.txt",
+      "logs": []
+    },
+    {
+      "id": "comma-separated",
+      "raw": [
+        "src/main.ts,docs/a.md"
+      ],
+      "selectors": [
+        "src/main.ts",
+        "docs/a.md"
+      ],
+      "status": "resolved",
+      "files": [
+        "docs/a.md",
+        "src/main.ts"
+      ],
+      "logs": []
+    },
+    {
+      "id": "brace-comma",
+      "raw": [
+        "src/*.{ts,js}"
+      ],
+      "selectors": [
+        "src/*.{ts",
+        "js}"
+      ],
+      "status": "error",
+      "message": "Missing file or directory: js}",
+      "logs": []
+    },
+    {
+      "id": "comma-literal",
+      "raw": [
+        "src/name,part.ts"
+      ],
+      "selectors": [
+        "src/name",
+        "part.ts"
+      ],
+      "status": "error",
+      "message": "Missing file or directory: src/name",
+      "logs": []
+    },
+    {
+      "id": "literal-brackets",
+      "raw": [
+        "src/[id]/page.ts"
+      ],
+      "selectors": [
+        "src/[id]/page.ts"
+      ],
+      "status": "resolved",
+      "files": [
+        "src/[id]/page.ts"
+      ],
+      "logs": []
+    },
+    {
+      "id": "escaped-brackets",
+      "raw": [
+        "src/[[]id[]]/page.ts"
+      ],
+      "selectors": [
+        "src/[[]id[]]/page.ts"
+      ],
+      "status": "resolved",
+      "files": [
+        "src/[id]/page.ts"
+      ],
+      "logs": []
+    },
+    {
+      "id": "linked-file",
+      "raw": [
+        "linked.ts"
+      ],
+      "selectors": [
+        "linked.ts"
+      ],
+      "status": "resolved",
+      "files": [
+        "linked.ts"
+      ],
+      "logs": []
+    },
+    {
+      "id": "linked-directory",
+      "raw": [
+        "linked-dir"
+      ],
+      "selectors": [
+        "linked-dir"
+      ],
+      "status": "resolved",
+      "files": [
+        "linked-dir/[id]/page.ts",
+        "linked-dir/main.test.ts",
+        "linked-dir/main.ts",
+        "linked-dir/name,part.ts",
+        "linked-dir/util.js",
+        "linked-dir/view.tsx"
+      ],
+      "logs": []
+    },
+    {
+      "id": "parent-file",
+      "raw": [
+        "../outside.txt"
+      ],
+      "selectors": [
+        "../outside.txt"
+      ],
+      "status": "resolved",
+      "files": [
+        "../outside.txt"
+      ],
+      "logs": []
+    },
+    {
+      "id": "duplicate",
+      "raw": [
+        "src/main.ts",
+        "src/main.ts"
+      ],
+      "selectors": [
+        "src/main.ts",
+        "src/main.ts"
+      ],
+      "status": "resolved",
+      "files": [
+        "src/main.ts"
+      ],
+      "logs": []
+    },
+    {
+      "id": "glob-gitignore-negation",
+      "raw": [
+        "*.secret"
+      ],
+      "selectors": [
+        "*.secret"
+      ],
+      "status": "error",
+      "message": "No files matched the provided --file patterns.",
+      "logs": []
+    },
+    {
+      "id": "blank-selector",
+      "raw": [
+        "   "
+      ],
+      "selectors": [],
+      "status": "resolved",
+      "files": [],
+      "logs": []
+    },
+    {
+      "id": "empty-exclusion",
+      "raw": [
+        "!"
+      ],
+      "selectors": [
+        "!"
+      ],
+      "status": "error",
+      "message": "No files matched the provided --file patterns.",
+      "logs": []
+    }
+  ]
+}

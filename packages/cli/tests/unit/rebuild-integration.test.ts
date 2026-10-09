@@ -44,6 +44,7 @@ import {
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { stubCodexFileSelectionForNativeFixture } from '../helpers/codex-enhance-native-fixture.js';
 import {
   resolveClaudePaths,
   resolveClaudeProjectKey,
@@ -126,6 +127,7 @@ async function snapshotRegularTree(root: string): Promise<Record<string, string>
 async function createSyntheticCatalog(options: {
   root: string;
   pluginRoots: string[];
+  stubCodexFileSelection?: boolean;
 }): Promise<string> {
   const sourceRoot = path.join(options.root, `catalog-source-${crypto.randomUUID()}`);
   await fs.ensureDir(path.join(sourceRoot, 'plugins'));
@@ -134,7 +136,11 @@ async function createSyntheticCatalog(options: {
     path.join(sourceRoot, 'plugins', 'marketplace-source.json'),
   );
   for (const pluginRoot of options.pluginRoots) {
-    await fs.copy(pluginRoot, path.join(sourceRoot, 'plugins', path.basename(pluginRoot)));
+    const copiedRoot = path.join(sourceRoot, 'plugins', path.basename(pluginRoot));
+    await fs.copy(pluginRoot, copiedRoot);
+    if (options.stubCodexFileSelection && path.basename(pluginRoot) === 'codex-enhance') {
+      await stubCodexFileSelectionForNativeFixture(copiedRoot);
+    }
   }
   return createSyntheticEmbeddedRoot(sourceRoot);
 }
@@ -3003,6 +3009,7 @@ describe('rebuild adapter integration', () => {
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
         pluginRoots: [path.join(repositoryRoot, 'plugins', pluginName)],
+        stubCodexFileSelection: true,
       });
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', pluginName), {
         mode: 'bundle',
@@ -4217,6 +4224,7 @@ describe('rebuild adapter integration', () => {
         path.join(repositoryRoot, 'plugins', 'git-toolkit'),
         path.join(repositoryRoot, 'plugins', 'decision-kit'),
       ],
+      stubCodexFileSelection: true,
     });
     const pluginA = await readPluginManifest(path.join(catalogRoot, 'plugins', 'codex-enhance'), {
       mode: 'bundle',
@@ -4902,6 +4910,7 @@ describe('rebuild adapter integration', () => {
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
       pluginRoots: firstPartyNames.map((name) => path.join(repositoryRoot, 'plugins', name)),
+      stubCodexFileSelection: true,
     });
     const integration = createRebuildIntegration({
       context: createCommandExecutionContext({

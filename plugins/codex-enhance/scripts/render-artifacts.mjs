@@ -33,15 +33,17 @@ const INSTRUCTIONS = {
 const ROLES = {
   'codex-explore-role': {
     key: 'codex-explore', skill: 'codex-explore',
-    description: '只读事实调查与证据核验；不做最终判断、建议、修改或再次委派。',
+    description: '只读事实调查与证据核验，直接完成分配的调查；不作最终判断或修改被查项目。',
+    localInstructions: '你已经是本次调查的执行者。直接完成当前分配的调查，不要通过 codex-explore 将同一调查重新委派。这只限制重复父级调查编排，不禁止为不同有界子目标采用本次任务允许的协作方法。',
   },
   'codex-subagent-role': {
     key: 'codex-subagent', skill: 'codex-subagent-guide',
-    description: '直接完成有界任务，遵守实际授权和权限；未明确授权不再委派。',
+    description: '完成有界任务，遵守实际任务授权和权限。',
   },
   'codex-advisor-role': {
     key: 'codex-advisor', skill: 'codex-advisor',
-    description: '只读技术第二意见，提供依据和验证建议；不批准、修改或再次委派。',
+    description: '只读技术第二意见，直接完成分配的咨询；不批准或修改被审项目。',
+    localInstructions: '你已经是本次咨询的执行者。直接完成当前分配的咨询，不要通过 codex-advisor 将同一咨询重新委派。这只限制重复父级咨询编排，不禁止为不同有界子目标采用本次任务允许的协作方法。',
   },
 };
 const GENERIC_PROFILES = [
@@ -79,7 +81,9 @@ function renderRoleArtifact(id, role, instructions) {
     content: {
       registration: { description: role.description },
       roleFile: {
-        name: role.key, description: role.description, developer_instructions: instructions,
+        name: role.key, description: role.description,
+        developer_instructions: role.localInstructions
+          ? `${instructions.trimEnd()}\n\n${role.localInstructions}\n` : instructions,
       },
     },
   };
@@ -113,8 +117,13 @@ function profileTable(profiles, config) {
     '| --- | --- | --- | --- | --- | --- |',
     ...profiles.filter(([key]) => Object.hasOwn(config, key)).map(([key, name, description]) => {
       const profile = config[key];
+      if (!isRecord(profile)) throw new Error(`Invalid profile: ${key}`);
       const executor = Object.hasOwn(profile, 'executor') ? profile.executor : 'native';
-      return `| ${name} | ${description} | ${display(key)} | ${display(executor)} | ${display(profile.model)} | ${display(profile.reasoningEffort)} |`;
+      if (executor === 'native' && (typeof profile.model !== 'string'
+          || typeof profile.reasoningEffort !== 'string')) throw new Error(`Incomplete native profile: ${key}`);
+      const model = Object.hasOwn(profile, 'model') ? display(profile.model) : '后端默认';
+      const effort = Object.hasOwn(profile, 'reasoningEffort') ? display(profile.reasoningEffort) : '后端默认';
+      return `| ${name} | ${description} | ${display(key)} | ${display(executor)} | ${model} | ${effort} |`;
     }),
   ].join('\n');
 }
@@ -122,13 +131,12 @@ function profileTable(profiles, config) {
 function commandTable(commands) {
   if (commands.length === 0) return '当前未配置外部执行器。需要外部执行时，先配置并 apply。';
   return [
-    '| key | 名称 | mode | 独立指令 | read-only | workspace-write |',
-    '| --- | --- | --- | --- | --- | --- |',
+    '| key | 名称 | adapter | mode |',
+    '| --- | --- | --- | --- |',
     ...commands.map((command) => `| ${[
-      command.key, command.title, command.mode,
-      command.supportsSystemInstructions === true,
-      command.supportsReadOnly === true,
-      command.mode === 'workspace' && command.supportsWorkspaceWrite === true,
+      command.key, command.title, command.adapter,
+      command.adapter === 'oracle' ? 'bundle'
+        : command.adapter === 'codex' || command.adapter === 'claude-code' ? 'workspace' : command.mode,
     ].map(display).join(' | ')} |`),
   ].join('\n');
 }

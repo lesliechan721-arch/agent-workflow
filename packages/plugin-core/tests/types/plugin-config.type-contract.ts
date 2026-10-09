@@ -165,3 +165,43 @@ export const compiledConfigHasNoRefs: import('../../src/types.js').PluginConfigD
     },
   },
 }
+
+export const sourceConfigV4: NonNullable<PluginManifestSourceV3['config']> = {
+  schemaVersion: 4,
+  fields: { commands: { type: 'array', items: { type: 'object', properties: {
+    adapter: { type: 'string' },
+    args: { type: 'array', items: { type: 'string' } },
+    env: { type: 'object', additionalProperties: { type: 'string' } },
+  }, variants: { discriminator: 'adapter', cases: {
+    builtin: { properties: { mode: { type: 'string', const: 'workspace' } } },
+    custom: { properties: { command: { type: 'string', required: true } } },
+  } } }, default: [{ adapter: 'builtin', args: ['--flag'], env: { NAME: 'value' } }] } },
+}
+
+export const scalarLeafArray: import('../../src/types.js').PluginConfigLeafArrayField = {
+  type: 'array', items: { type: 'string' }, required: true,
+}
+export const leafArrayRejectsObjects: import('../../src/types.js').PluginConfigLeafArrayField = {
+  type: 'array',
+  // @ts-expect-error Leaf arrays only have scalar items.
+  items: { type: 'object', additionalProperties: { type: 'string' } },
+}
+export const leafKvRejectsContainers: import('../../src/types.js').PluginConfigLeafObjectField = {
+  type: 'object',
+  // @ts-expect-error Leaf KV values are scalar.
+  additionalProperties: { type: 'array', items: { type: 'string' } },
+}
+export const compiledV3RejectsConst: import('../../src/types.js').PluginConfigDefinition = {
+  schemaVersion: 3, fields: {
+    text: {
+      type: 'string',
+      // @ts-expect-error Constants require Config Definition v4.
+      const: 'value',
+    },
+  },
+}
+// @ts-expect-error Sensitive fields cannot publish constants.
+export const sensitiveFieldRejectsConst: PluginConfigScalarField = {
+  type: 'string', sensitive: true,
+  const: 'secret',
+}

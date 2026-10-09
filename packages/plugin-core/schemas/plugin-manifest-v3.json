@@ -875,7 +875,1237 @@
         }
       }
     },
-    "config": {"oneOf": [{"$ref": "#/$defs/configV2"}, {"$ref": "#/$defs/configV3"}]},
+    "config": {"oneOf": [{"$ref": "#/$defs/configV2"}, {"$ref": "#/$defs/configV3"}, {"$ref": "#/$defs/configV4"}]},
+    "configV4PlainStringField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "valueRef": {
+          "$ref": "#/$defs/configValueReference"
+        },
+        "type": {
+          "const": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "default": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": {
+          "const": false
+        },
+        "choices": {
+          "$ref": "#/$defs/configStringChoices"
+        },
+        "validation": {
+          "$ref": "#/$defs/configStringValidation"
+        },
+        "const": {
+          "type": "string"
+        }
+      }
+    },
+    "configV4StringChildField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "valueRef": {
+          "$ref": "#/$defs/configValueReference"
+        },
+        "type": {
+          "const": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configStringChoices"
+        },
+        "validation": {
+          "$ref": "#/$defs/configStringValidation"
+        },
+        "const": {
+          "type": "string"
+        }
+      }
+    },
+    "configV4StringDynamicField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "valueRef": {
+          "$ref": "#/$defs/configValueReference"
+        },
+        "type": {
+          "const": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configStringChoices"
+        },
+        "validation": {
+          "$ref": "#/$defs/configStringValidation"
+        },
+        "const": {
+          "type": "string"
+        }
+      }
+    },
+    "configV4NumberField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "valueRef": {
+          "$ref": "#/$defs/configValueReference"
+        },
+        "type": {
+          "const": "number"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "default": {
+          "type": "number"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configNumberChoices"
+        },
+        "validation": {
+          "$ref": "#/$defs/configNumberValidation"
+        },
+        "const": {
+          "type": "number"
+        }
+      }
+    },
+    "configV4NumberChildField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "valueRef": {
+          "$ref": "#/$defs/configValueReference"
+        },
+        "type": {
+          "const": "number"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configNumberChoices"
+        },
+        "validation": {
+          "$ref": "#/$defs/configNumberValidation"
+        },
+        "const": {
+          "type": "number"
+        }
+      }
+    },
+    "configV4NumberDynamicField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "valueRef": {
+          "$ref": "#/$defs/configValueReference"
+        },
+        "type": {
+          "const": "number"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configNumberChoices"
+        },
+        "validation": {
+          "$ref": "#/$defs/configNumberValidation"
+        },
+        "const": {
+          "type": "number"
+        }
+      }
+    },
+    "configV4BooleanField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "valueRef": {
+          "$ref": "#/$defs/configValueReference"
+        },
+        "type": {
+          "const": "boolean"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "default": {
+          "type": "boolean"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configBooleanChoices"
+        },
+        "const": {
+          "type": "boolean"
+        }
+      }
+    },
+    "configV4BooleanChildField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "valueRef": {
+          "$ref": "#/$defs/configValueReference"
+        },
+        "type": {
+          "const": "boolean"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configBooleanChoices"
+        },
+        "const": {
+          "type": "boolean"
+        }
+      }
+    },
+    "configV4BooleanDynamicField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "valueRef": {
+          "$ref": "#/$defs/configValueReference"
+        },
+        "type": {
+          "const": "boolean"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configBooleanChoices"
+        },
+        "const": {
+          "type": "boolean"
+        }
+      }
+    },
+    "configV4StringField": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/configV4PlainStringField"
+        },
+        {
+          "$ref": "#/$defs/configSensitiveStringField"
+        }
+      ]
+    },
+    "configV4ScalarField": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/configV4StringField"
+        },
+        {
+          "$ref": "#/$defs/configV4NumberField"
+        },
+        {
+          "$ref": "#/$defs/configV4BooleanField"
+        }
+      ]
+    },
+    "configV4ScalarChildField": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/configV4StringChildField"
+        },
+        {
+          "$ref": "#/$defs/configV4NumberChildField"
+        },
+        {
+          "$ref": "#/$defs/configV4BooleanChildField"
+        }
+      ]
+    },
+    "configV4ScalarDynamicField": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/configV4StringDynamicField"
+        },
+        {
+          "$ref": "#/$defs/configV4NumberDynamicField"
+        },
+        {
+          "$ref": "#/$defs/configV4BooleanDynamicField"
+        }
+      ]
+    },
+    "configScalarArrayValue": {
+      "anyOf": [
+        {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "number"
+          }
+        },
+        {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "boolean"
+          }
+        }
+      ]
+    },
+    "configV4ObjectValue": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "not": {
+          "enum": [
+            "__proto__",
+            "constructor",
+            "prototype"
+          ]
+        }
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/configScalar"
+          },
+          {
+            "$ref": "#/$defs/configScalarArrayValue"
+          },
+          {
+            "$ref": "#/$defs/configArrayObjectValue"
+          }
+        ]
+      }
+    },
+    "configV4ObjectPreset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "value"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "$ref": "#/$defs/configV4ObjectValue"
+        },
+        "recommended": {
+          "const": true
+        }
+      }
+    },
+    "configV4ArrayPreset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "value"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "$ref": "#/$defs/configV4ArrayValue"
+        },
+        "recommended": {
+          "const": true
+        }
+      }
+    },
+    "configScalarArrayPreset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "value"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "$ref": "#/$defs/configScalarArrayValue"
+        },
+        "recommended": {
+          "const": true
+        }
+      }
+    },
+    "configV4ObjectChoices": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowCustom",
+        "presets"
+      ],
+      "not": {
+        "properties": {
+          "allowCustom": {
+            "const": false
+          },
+          "presets": {
+            "type": "array",
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "allowCustom",
+          "presets"
+        ]
+      },
+      "properties": {
+        "allowCustom": {
+          "type": "boolean"
+        },
+        "presets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/configV4ObjectPreset"
+          }
+        }
+      }
+    },
+    "configV4ArrayChoices": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowCustom",
+        "presets"
+      ],
+      "not": {
+        "properties": {
+          "allowCustom": {
+            "const": false
+          },
+          "presets": {
+            "type": "array",
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "allowCustom",
+          "presets"
+        ]
+      },
+      "properties": {
+        "allowCustom": {
+          "type": "boolean"
+        },
+        "presets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/configV4ArrayPreset"
+          }
+        }
+      }
+    },
+    "configScalarArrayChoices": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowCustom",
+        "presets"
+      ],
+      "not": {
+        "properties": {
+          "allowCustom": {
+            "const": false
+          },
+          "presets": {
+            "type": "array",
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "allowCustom",
+          "presets"
+        ]
+      },
+      "properties": {
+        "allowCustom": {
+          "type": "boolean"
+        },
+        "presets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/configScalarArrayPreset"
+          }
+        }
+      }
+    },
+    "configV4ArrayValue": {
+      "anyOf": [
+        {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "number"
+          }
+        },
+        {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "boolean"
+          }
+        },
+        {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/configV4ObjectValue"
+          }
+        }
+      ]
+    },
+    "configV4Reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "$ref"
+      ],
+      "properties": {
+        "$ref": {
+          "type": "string",
+          "pattern": "^#/config/definitions/[A-Za-z][A-Za-z0-9_]*$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "default": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/configScalar"
+            },
+            {
+              "$ref": "#/$defs/configV4ArrayValue"
+            },
+            {
+              "$ref": "#/$defs/configV4ObjectValue"
+            }
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "configV4LeafArrayField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "items"
+      ],
+      "properties": {
+        "type": {
+          "const": "array"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": false,
+        "items": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/configV4ScalarDynamicField"
+            },
+            {
+              "$ref": "#/$defs/configDynamicReference"
+            }
+          ]
+        },
+        "choices": {
+          "$ref": "#/$defs/configScalarArrayChoices"
+        },
+        "validation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "minItems": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 128
+            },
+            "maxItems": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 128
+            },
+            "uniqueItems": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "configV4LeafObjectField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "additionalProperties"
+      ],
+      "properties": {
+        "type": {
+          "const": "object"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configObjectChoices"
+        },
+        "additionalProperties": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/configV4ScalarDynamicField"
+            },
+            {
+              "$ref": "#/$defs/configDynamicReference"
+            }
+          ]
+        },
+        "validation": {
+          "$ref": "#/$defs/configObjectValidation"
+        }
+      }
+    },
+    "configV4PropertyField": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/configV4ScalarChildField"
+        },
+        {
+          "$ref": "#/$defs/configV4LeafArrayField"
+        },
+        {
+          "$ref": "#/$defs/configV4LeafObjectField"
+        },
+        {
+          "$ref": "#/$defs/configChildReference"
+        }
+      ]
+    },
+    "configV4ObjectVariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "properties"
+      ],
+      "properties": {
+        "properties": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "__proto__",
+                "constructor",
+                "prototype"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/configV4PropertyField"
+          }
+        }
+      }
+    },
+    "configV4ObjectVariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "discriminator",
+        "cases"
+      ],
+      "properties": {
+        "discriminator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cases": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 32,
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "__proto__",
+                "constructor",
+                "prototype"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/configV4ObjectVariant"
+          }
+        },
+        "missing": {
+          "type": "string",
+          "minLength": 1
+        },
+        "otherwise": {
+          "$ref": "#/$defs/configV4ObjectVariant"
+        }
+      }
+    },
+    "configV4FixedObjectField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "properties"
+      ],
+      "properties": {
+        "type": {
+          "const": "object"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "default": {
+          "$ref": "#/$defs/configV4ObjectValue"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configV4ObjectChoices"
+        },
+        "properties": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "__proto__",
+                "constructor",
+                "prototype"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/configV4PropertyField"
+          }
+        },
+        "additionalProperties": {
+          "const": false
+        },
+        "validation": {
+          "$ref": "#/$defs/configObjectValidation"
+        },
+        "variants": {
+          "$ref": "#/$defs/configV4ObjectVariants"
+        }
+      }
+    },
+    "configV4KeyValueObjectField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "additionalProperties"
+      ],
+      "properties": {
+        "type": {
+          "const": "object"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "default": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "__proto__",
+                "constructor",
+                "prototype"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/configScalar"
+          }
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configObjectChoices"
+        },
+        "additionalProperties": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/configV4ScalarDynamicField"
+            },
+            {
+              "$ref": "#/$defs/configDynamicReference"
+            }
+          ]
+        },
+        "validation": {
+          "$ref": "#/$defs/configObjectValidation"
+        }
+      }
+    },
+    "configV4ArrayFixedObjectItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "properties"
+      ],
+      "properties": {
+        "type": {
+          "const": "object"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configV4ObjectChoices"
+        },
+        "properties": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "__proto__",
+                "constructor",
+                "prototype"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/configV4PropertyField"
+          }
+        },
+        "additionalProperties": {
+          "const": false
+        },
+        "validation": {
+          "$ref": "#/$defs/configObjectValidation"
+        },
+        "variants": {
+          "$ref": "#/$defs/configV4ObjectVariants"
+        }
+      }
+    },
+    "configV4ArrayKeyValueObjectItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "additionalProperties"
+      ],
+      "properties": {
+        "type": {
+          "const": "object"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configObjectChoices"
+        },
+        "additionalProperties": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/configV4ScalarDynamicField"
+            },
+            {
+              "$ref": "#/$defs/configDynamicReference"
+            }
+          ]
+        },
+        "validation": {
+          "$ref": "#/$defs/configObjectValidation"
+        }
+      }
+    },
+    "configV4ArrayItem": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/configV4ScalarDynamicField"
+        },
+        {
+          "$ref": "#/$defs/configV4ArrayFixedObjectItem"
+        },
+        {
+          "$ref": "#/$defs/configV4ArrayKeyValueObjectItem"
+        },
+        {
+          "$ref": "#/$defs/configArrayItemReference"
+        }
+      ]
+    },
+    "configV4ArrayField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "items"
+      ],
+      "properties": {
+        "type": {
+          "const": "array"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "default": {
+          "$ref": "#/$defs/configV4ArrayValue"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": false,
+        "items": {
+          "$ref": "#/$defs/configV4ArrayItem"
+        },
+        "choices": {
+          "$ref": "#/$defs/configV4ArrayChoices"
+        },
+        "validation": {
+          "$ref": "#/$defs/configArrayValidation"
+        }
+      }
+    },
+    "configV4Field": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/configV4ScalarField"
+        },
+        {
+          "$ref": "#/$defs/configV4FixedObjectField"
+        },
+        {
+          "$ref": "#/$defs/configV4KeyValueObjectField"
+        },
+        {
+          "$ref": "#/$defs/configV4ArrayField"
+        },
+        {
+          "$ref": "#/$defs/configV4Reference"
+        }
+      ]
+    },
+    "configV4": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "fields"
+      ],
+      "properties": {
+        "fields": {
+          "type": "object",
+          "maxProperties": 256,
+          "propertyNames": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+            "not": {
+              "enum": [
+                "__proto__",
+                "constructor",
+                "prototype"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/configV4Field"
+          }
+        },
+        "presentation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "title",
+                  "fields"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "fields": {
+                    "$ref": "#/$defs/stringArray"
+                  },
+                  "advanced": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "summaries": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+                "not": {
+                  "enum": [
+                    "__proto__",
+                    "constructor",
+                    "prototype"
+                  ]
+                }
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/configJoinSummary"
+              }
+            },
+            "fieldViews": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+                "not": {
+                  "enum": [
+                    "__proto__",
+                    "constructor",
+                    "prototype"
+                  ]
+                }
+              },
+              "additionalProperties": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "summary"
+                    ],
+                    "properties": {
+                      "summary": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "itemSummary"
+                    ],
+                    "properties": {
+                      "itemSummary": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "schemaVersion": {
+          "const": 4
+        },
+        "definitions": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+            "not": {
+              "enum": [
+                "__proto__",
+                "constructor",
+                "prototype"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/configV4Field"
+          }
+        }
+      }
+    },
     "interface": {
       "type": "object",
       "additionalProperties": false,
