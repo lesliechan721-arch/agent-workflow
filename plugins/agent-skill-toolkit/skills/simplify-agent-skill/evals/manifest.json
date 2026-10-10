@@ -66,6 +66,20 @@
       "releaseSplits": [
         "validation"
       ]
+    },
+    {
+      "id": "redesign-behavior",
+      "kind": "conversation",
+      "cases": "redesign-behavior-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 600000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }

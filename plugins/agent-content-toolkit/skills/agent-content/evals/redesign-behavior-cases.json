@@ -1,0 +1,245 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "agent-content",
+    "runtime": {
+      "isolation": "strict"
+    },
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "同时检查完成用户任务和不过度修改；源推理、工具隔离与模型证据分别解释。"
+    }
+  },
+  "cases": [
+    {
+      "id": "inline_common_method_keep_conditional_branch",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "重组 guide.md 与 references 中给 Agent 读取的说明。所有任务都需要 common.md，单独读取没有条件收益；只在用户要求按币种分组时需要 grouping.md。将共同方法内联，保留分支读取和全部业务含义。只编辑这些说明，不执行示例。",
+      "assertions": [
+        "入口包含共同方法，不再要求每次跳转读取 common.md；旧副本可删除或移除重复正文，不保留第二份可分别维护的共同规则。",
+        "按币种分组仍为条件分支，必要规则可达；保留缺值与零、不同币种的区别。",
+        "编辑范围正确，不声称已测量 token 或模型效果。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "guide.md": "任何摘要先读 references/common.md。要求分组时再读 references/grouping.md。\n",
+          "references/common.md": "只使用用户给定记录。缺值标未知，不当作零。输出记录数量和缺失项；缺记录时请求输入。\n",
+          "references/grouping.md": "只有用户要求按币种分组时读取。各币种分别计数，不跨币种合计金额。\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "guide.md",
+          "references/**"
+        ],
+        "artifacts": [
+          {
+            "path": "guide.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "覆盖必读方法外置导致的必要读取跳转，检验共同与条件知识的保留，不以字数评分。",
+        "minimalCounterexample": "common 仅用于一个少见任务分支时，不应要求所有任务都内联其全部细节。",
+        "allowedVariance": "允许不同版式、措辞和条件资料布局；核对可达方法与实际变更，不要求固定标题。"
+      }
+    },
+    {
+      "id": "tool_guides_follow_actual_consumers",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "重组 author.md、reviewer.md 和 tools.md。作者只创建，评审者只检查；两者不应为自己的任务读取另一个工具的说明。可编辑这三个文件并按需要在 references 下拆文档，保留完整用法。不执行命令或创建脚本。",
+      "assertions": [
+        "作者入口可直接找到 create 的条件、参数和目标冲突含义，评审入口可找到 inspect 的输入和结果解释。",
+        "评审入口不要求读取 create 用法，作者入口不要求读取 inspect 用法；允许内联或按单工具拆分，不强制共享。",
+        "没有改变工具行为或执行工具，也没有用缺少脚本实现掩盖文档组织任务。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "author.md": "新建材料时读取 tools.md 的完整工具说明。\n",
+          "reviewer.md": "只读检查材料时读取 tools.md 的完整工具说明。\n",
+          "tools.md": "create <new-directory> 创建新的材料目录；目录已存在则报告冲突并保持内容。inspect <directory> 只读检查已提供目录，输出文件问题和未检查范围；无问题不代表业务内容正确。\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "author.md",
+          "reviewer.md",
+          "tools.md",
+          "references/**"
+        ],
+        "artifacts": [
+          {
+            "path": "author.md",
+            "exists": true
+          },
+          {
+            "path": "reviewer.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "检验工具说明的真实消费者与读取边界，而非只检查文件拆分数量。",
+        "minimalCounterexample": "同一任务必须先创建再检查时，该任务可以同时读取两个用法。",
+        "allowedVariance": "允许分别内联或建立 focused reference；以每条任务路径的必要知识与无关读取判断。"
+      }
+    },
+    {
+      "id": "rules_to_usable_method",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "根据 accepted.md 重写 steps.md，让后续 Agent 能按给定资料完成数据摘要。只改 steps.md，不运行数据处理。",
+      "assertions": [
+        "给出从读取输入、按类别分组到检查数量和未知项的可执行方法。",
+        "保留缺值与零、不同币种的区别，不增设审批、字段或输出协议。",
+        "说明只改写方法，没有声称运行质量已验证。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "accepted.md": "输入是用户已给的记录。缺值标为未知；不能把缺值当零。按 category 分组，保留原币种，不合计不同币种。用户只要每组数量和未知项。\n",
+          "steps.md": "仔细处理数据。输出准确结果。使用最佳实践。\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "steps.md"
+        ],
+        "artifacts": [
+          {
+            "path": "steps.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证明确任务的方法、产物和证据边界，不以内部阶段或固定术语评分。",
+        "minimalCounterexample": "原说明已完整表达同样方法时，只需局部改善，不强制重写。",
+        "allowedVariance": "允许等价措辞、代码和组织；机械结果按文件/调用核验，语义按任务目标核验。源设计不等于已执行。"
+      }
+    },
+    {
+      "id": "separate_diagnostic_and_write_paths",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "整理 guide.md 及 references 下资料，使普通排查只读，确有授权的导出才进入写入分支。可改这些文件，不执行其方法。",
+      "assertions": [
+        "入口明确两条读取条件，排查不强制进入导出。",
+        "每条路径保留输入、实际动作、失败边界和完成依据；允许合并短文档但原权限不变。",
+        "没有实际执行排查或导出，未将此次编辑授权当成部署或导出授权。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "guide.md": "依次读取全部 reference 并开始工作。\n",
+          "references/inspect.md": "排查只读取用户给定文件。缺日志时说明未知，不重启。\n",
+          "references/export.md": "用户明确要求导出到指定新目录时才写文件。已有目标不覆盖，说明冲突。\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "guide.md",
+          "references/**"
+        ],
+        "artifacts": [
+          {
+            "path": "guide.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证明确任务的方法、产物和证据边界，不以内部阶段或固定术语评分。",
+        "minimalCounterexample": "请求本来包含明确导出授权时，读取导出方法合理。",
+        "allowedVariance": "允许等价措辞、代码和组织；机械结果按文件/调用核验，语义按任务目标核验。源设计不等于已执行。"
+      }
+    },
+    {
+      "id": "needed_reference_is_not_word_count_failure",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读评价 instructions.md 是否应该为缩短而去掉字段解释。以 field-rules.md 为业务来源，不执行。",
+      "assertions": [
+        "认可必要字段、时间和空数据语义的保留价值，不以更短为唯一标准。",
+        "核对指针和来源即可，不要求复制全部规则或固定创建新 reference。",
+        "不从静态材料声称模型成本或效果已测量。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "instructions.md": "读取 field-rules.md，将给定记录整理为用户摘要。其字段规则是必要依据。\n",
+          "field-rules.md": "missing 表示未提供数据；empty 表示已查询但无结果，两者不能替换。timestamp 使用 UTC。摘要保留用户请求的时间窗口及未知；不从空数据推断系统健康。\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "验证明确任务的方法、产物和证据边界，不以内部阶段或固定术语评分。",
+        "minimalCounterexample": "逐字重复而不增加含义的规则可成为删减候选。",
+        "allowedVariance": "允许等价措辞、代码和组织；机械结果按文件/调用核验，语义按任务目标核验。源设计不等于已执行。"
+      }
+    },
+    {
+      "id": "completion_preserves_coverage_and_decisive_semantics",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "根据 migration-rules.md 改写 guide.md，使后续 Agent 知道字段迁移怎样才算完成。只改 guide.md，不执行迁移，不增加审批或新产物。",
+      "assertions": [
+        "说明逐项核对全部源字段的去向，未迁移字段也有依据和说明；不能用给出一份清单代替覆盖检查。",
+        "保留金额单位、UTC 日期与缺值不能当零的语义；完成条件能区分漏字段与全部处理。",
+        "不以已理解或保证完整作为唯一完成依据，不引入额外审批或无用途报告。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "guide.md": "读取资料，理解迁移要求。生成映射表，然后汇报完成。\n",
+          "migration-rules.md": "输出就是字段映射表，无需其它文件。源字段 total_minor 是最小货币单位整数，目标 amount_minor 保持原值；occurred_at 的日期按 UTC 解释并映射为 occurred_at_utc；memo 可缺失，缺失保留未知，不能当零。每个源字段都要有目标或不迁移的明确理由。交付前核对所有源字段，不允许用部分示例代表全部完成。\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "guide.md"
+        ],
+        "artifacts": [
+          {
+            "path": "guide.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "同时检验完成界限和覆盖程度，并保留决定性的业务语义；不按复述术语评分。",
+        "minimalCounterexample": "原说明已逐字段定义目标或不迁移理由并完整保留单位与缺值语义时，不需要再增加流程。",
+        "allowedVariance": "允许自然段、表格和步骤等组织；不用出现 clarity 或 demand 等术语。"
+      }
+    }
+  ]
+}

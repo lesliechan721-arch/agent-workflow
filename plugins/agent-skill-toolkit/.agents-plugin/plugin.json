@@ -30,7 +30,7 @@
     "skillRuntimeFiles": [
       {
         "skill": "author-agent-skill",
-        "target": "references/invocation-and-description.md",
+        "target": "references/skill-invocation.md",
         "source": "./references/skill-invocation.md"
       },
       {
@@ -45,7 +45,7 @@
       },
       {
         "skill": "author-agent-skill",
-        "target": "references/composition-audit.md",
+        "target": "references/skill-composition.md",
         "source": "./references/skill-composition.md"
       },
       {
@@ -64,14 +64,61 @@
         "source": "./references/skill-composition.md"
       },
       {
+        "skill": "author-agent-skill",
+        "target": "references/skill-format.md",
+        "source": "./references/skill-format.md"
+      },
+      {
         "skill": "review-agent-skill",
-        "target": "scripts/audit-output-contracts.mjs",
-        "source": "./scripts/audit-output-contracts.mjs"
+        "target": "references/skill-format.md",
+        "source": "./references/skill-format.md"
+      },
+      {
+        "skill": "simplify-agent-skill",
+        "target": "references/skill-format.md",
+        "source": "./references/skill-format.md"
+      }
+    ],
+    "generatedSkillRuntimeFiles": [
+      {
+        "skill": "author-agent-skill",
+        "target": "scripts/init-skill.mjs"
+      },
+      {
+        "skill": "author-agent-skill",
+        "target": "scripts/check-skill.mjs"
+      },
+      {
+        "skill": "review-agent-skill",
+        "target": "scripts/check-skill.mjs"
+      },
+      {
+        "skill": "simplify-agent-skill",
+        "target": "scripts/check-skill.mjs"
+      },
+      {
+        "skill": "review-agent-skill",
+        "target": "scripts/audit-output-contracts.mjs"
       },
       {
         "skill": "review-agent-architecture",
-        "target": "scripts/audit-output-contracts.mjs",
-        "source": "./scripts/audit-output-contracts.mjs"
+        "target": "scripts/audit-output-contracts.mjs"
+      },
+      {
+        "skill": "author-agent-skill",
+        "target": "assets/tooling-NOTICE.txt"
+      },
+      {
+        "skill": "review-agent-architecture",
+        "target": "assets/tooling-NOTICE.txt"
+      },
+      {
+        "skill": "review-agent-skill",
+        "target": "assets/tooling-NOTICE.txt"
+      },
+      {
+        "skill": "simplify-agent-skill",
+        "target": "assets/tooling-NOTICE.txt"
       }
     ]
   },
@@ -79,8 +126,16 @@
     "tests": {
       "node": [
         "./scripts/contract.test.mjs",
-        "./scripts/output-contract-audit.test.mjs"
+        "./scripts/output-contract-audit.test.mjs",
+        "./scripts/tooling.test.mjs"
       ]
+    },
+    "node": {
+      "packageRoot": "./tooling",
+      "build": {
+        "runner": "node",
+        "path": "./scripts/build-tools.mjs"
+      }
     }
   }
 }

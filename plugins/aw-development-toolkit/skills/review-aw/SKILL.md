@@ -29,7 +29,7 @@ metadata:
 | 公开能力组合 | `references/portfolio-review.md` + `review-agent-architecture` |
 | 大型内容 / Eval Oracle 或结果 | 按需使用 `agent-content` / `audit-agent-skill-evals` |
 
-完整性针对实际运行包；源码、build 声明及源 Eval 是带明确用途的辅助材料。相同 production digest 且 profile、权限、适用规范等价时可复用内容分析，环境适配仍逐项核验。发现位置与可修复的源码/provider/build 位置分别记录；缺少映射时保留 owner 未确认。
+完整性针对实际运行包；源码、build 声明及源 Eval 是带明确用途的辅助材料。通用 Reviewer 可对收到的 final 使用独立 checker；AW 来源绑定仍由本入口提供，不将普通包检查作为来源真实性证据，也不让 leaf 自行 prepare 或操作真实安装。相同 production digest 且 profile、权限、适用规范等价时可复用内容分析，环境适配仍逐项核验。发现位置与可修复的源码/provider/build 位置分别记录；缺少映射时保留 owner 未确认。
 
 ## 输出与证据
 

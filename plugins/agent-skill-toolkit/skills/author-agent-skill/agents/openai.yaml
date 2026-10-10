@@ -1,7 +1,7 @@
 interface:
   display_name: "Author Agent Skill"
-  short_description: "创建或变更最小、可组合、可验证的 Agent Skill"
-  default_prompt: "使用 $author-agent-skill 处理当前 Skill 创建或变更请求。"
+  short_description: "设计、创建和维护可独立使用的 Agent Skill，并核对实际交付"
+  default_prompt: "使用 $author-agent-skill 处理当前已授权范围，并报告真实结果与关键未知。"
 
 policy:
   allow_implicit_invocation: true

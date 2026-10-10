@@ -8,6 +8,8 @@ Selected Cases 外层、Manifest、Spec/Audit/Result 的最终权威是实际安
 
 底层 provider 支持某能力，不代表外层 Selected Cases 已公开它。
 
+Author 的完整开发分支可在有效授权和预算内交接实际候选与用例。交接保留当前产物、比较条件、已用预算和修复后的重验目标；本 Runner 仍负责准备、准入和执行，结果返回该次真实候选。通用源设计或源审核不要求先生成 AW Spec，也不因此启动模型。
+
 ## Selected Cases v1
 
 根对象只含 `version: 1`、`suite`、`cases`。suite 使用 `kind`、`unitUnderTest`，按需带 `participants`、`policy`、`runtime`。kind 是该基线支持的 `trigger`、`conversation`、`custom-process` 或 `codex-workflow`。本文不是所有 kind 的完整 schema；未知字段用真实 parser 核验，不能靠猜。
