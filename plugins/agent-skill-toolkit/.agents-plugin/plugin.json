@@ -27,6 +27,7 @@
     ]
   },
   "buildConfig": {
+    "cacheable": true,
     "skillRuntimeFiles": [
       {
         "skill": "author-agent-skill",

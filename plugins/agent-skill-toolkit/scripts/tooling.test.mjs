@@ -303,20 +303,33 @@ test('independent build delivers six runnable script copies and four complete no
   await assert.rejects(buildTools(output), { code: 'target-exists' });
 });
 
-test('AW wrapper refuses source and only generates declared staging targets', async t => {
+test('AW wrapper refuses source and generates identical declared targets in separate staging trees', async t => {
   const parent = await fixture(t);
   const wrapper = path.join(pluginRoot, 'scripts/build-tools.mjs');
   await assert.rejects(buildStagedTools, /只允许写 AW staging/);
-  const staging = path.join(parent, 'aw-plugin-staging-test', 'plugin');
-  await put(staging, '.agents-plugin/plugin.json', JSON.stringify({ name: 'agent-skill-toolkit', scripts: { node: { packageRoot: './tooling' } },
-    buildConfig: { generatedSkillRuntimeFiles: GENERATED_FILES.map(([skill, target]) => ({ skill, target })) } }));
-  for (const name of new Set(GENERATED_FILES.map(([name]) => name))) await put(staging, `skills/${name}/SKILL.md`, skill(name));
-  await mkdir(path.join(staging, 'scripts'));
-  await copyFile(wrapper, path.join(staging, 'scripts/build-tools.mjs'));
-  await cp(path.join(pluginRoot, 'tooling'), path.join(staging, 'tooling'), { recursive: true, filter: source => path.basename(source) !== 'node_modules' });
-  await symlink(path.join(pluginRoot, 'tooling/node_modules'), path.join(staging, 'tooling/node_modules'));
-  const result = await run(path.join(staging, 'scripts/build-tools.mjs'), [], { cwd: parent });
-  assert.equal(result.code, 0, result.stderr);
-  for (const [name, relative] of GENERATED_FILES) assert.ok((await lstat(path.join(staging, 'skills', name, relative))).isFile());
-  assert.equal((await run(path.join(staging, 'scripts/build-tools.mjs'), [], { cwd: parent })).code, 1);
+  // Test Value Gate: cacheable builds must not embed temporary staging paths
+  // or produce different runtime bytes or modes for unchanged source inputs.
+  const outputs = new Map();
+  for (const suffix of ['first', 'second']) {
+    const staging = path.join(parent, `aw-plugin-staging-${suffix}`, 'plugin');
+    await put(staging, '.agents-plugin/plugin.json', JSON.stringify({ name: 'agent-skill-toolkit', scripts: { node: { packageRoot: './tooling' } },
+      buildConfig: { generatedSkillRuntimeFiles: GENERATED_FILES.map(([skill, target]) => ({ skill, target })) } }));
+    for (const name of new Set(GENERATED_FILES.map(([name]) => name))) await put(staging, `skills/${name}/SKILL.md`, skill(name));
+    await mkdir(path.join(staging, 'scripts'));
+    await copyFile(wrapper, path.join(staging, 'scripts/build-tools.mjs'));
+    await cp(path.join(pluginRoot, 'tooling'), path.join(staging, 'tooling'), { recursive: true, filter: source => path.basename(source) !== 'node_modules' });
+    await symlink(path.join(pluginRoot, 'tooling/node_modules'), path.join(staging, 'tooling/node_modules'));
+    const result = await run(path.join(staging, 'scripts/build-tools.mjs'), [], { cwd: parent });
+    assert.equal(result.code, 0, result.stderr);
+    for (const [name, relative] of GENERATED_FILES) {
+      const target = path.join(staging, 'skills', name, relative);
+      const stats = await lstat(target);
+      assert.ok(stats.isFile());
+      const output = { bytes: await readFile(target), mode: stats.mode & 0o777 };
+      const key = `${name}/${relative}`;
+      if (outputs.has(key)) assert.deepEqual(output, outputs.get(key), key);
+      else outputs.set(key, output);
+    }
+    assert.equal((await run(path.join(staging, 'scripts/build-tools.mjs'), [], { cwd: parent })).code, 1);
+  }
 });
