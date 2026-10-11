@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "audit-agent-skill-evals",
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "normal_fixture_does_not_match_name",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读审核 cases.json 的源资格，format.md 是本次目标格式。不要 prepare、运行或签机器准入。",
+      "assertions": [
+        "识别正常完整包前提与 skill/summarize 名称不符，Oracle 无权禁止报告真实格式问题。",
+        "先修 fixture/Oracle，不给生产 Skill 加忽略格式的规则。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "cases.json": "{\"version\": 1, \"suite\": {\"kind\": \"conversation\", \"unitUnderTest\": \"summarize\"}, \"cases\": [{\"id\": \"normal\", \"split\": \"validation\", \"tags\": [], \"prompt\": \"这里是完整合法的普通 Skill；直接检查方法。\", \"assertions\": [\"不得报告任何格式问题。\"], \"input\": {\"workspaceFiles\": {\"skill/SKILL.md\": \"---\\nname: summarize\\ndescription: Summarize supplied text.\\n---\\n\\nUse only supplied facts.\\n\"}}, \"expected\": {\"workspaceUnchanged\": true}}]}",
+          "format.md": "当前普通 Skill 作者基线要求 name 与父目录名一致。真实执行尚未发生。\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "检验方法与证据是否支持当前结果，保留正确反例和允许差异。",
+        "minimalCounterexample": "目录改为 summarize 且其它必要条件成立时，该格式前提可以成立。",
+        "allowedVariance": "允许等价措辞、组织与实现；未运行不冒称运行通过，静态源条件不代替真实执行。"
+      }
+    },
+    {
+      "id": "valid_generic_cases_allow_equivalent_methods",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "按 contract.md 只读审核 cases.jsonl 与 skill.md。没有指定 AW Runner，本次只审源标签。",
+      "assertions": [
+        "两条标签与给定合同一致，允许多种正确输出和方法。",
+        "不要求 AW 字段或 Spec 才能做源审核，不称已执行或正式准入。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "contract.md": "每行 query 与 expected 两字段，expected 表示可使用本能力。允许等价措辞，不观察内部阶段。\n",
+          "skill.md": "只摘要已经提供的状态文本；不查询服务。保留未知，不从未提到错误推出健康。\n",
+          "cases.jsonl": "{\"query\":\"摘要已给文本：实例A正常，实例B状态未知。\",\"expected\":true}\n{\"query\":\"登录远端查询所有实例的当前状态。\",\"expected\":false}\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "检验方法与证据是否支持当前结果，保留正确反例和允许差异。",
+        "minimalCounterexample": "把第二例标为 true 时，应按在线查询边界重新审查。",
+        "allowedVariance": "允许等价措辞、组织与实现；未运行不冒称运行通过，静态源条件不代替真实执行。"
+      }
+    },
+    {
+      "id": "consumer_claim_exceeds_scanner_evidence",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "审计 study.md 的 Eval 结论和 Oracle。只做源设计审核，检查消费者能力是否被正确验证。",
+      "assertions": [
+        "指出关键词存在不证明产物被消费，现有 Oracle 不能支持业务消费者主张。",
+        "建议实际产物→读取→业务用途的有效案例和未消费对照；未运行不声称生产已失败。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "study.md": "计划把扫描器看到 execute 字符串作为业务消费者检出成功。用例允许只读取脚本，不要求追踪值是否使用；没有运行记录。拟声称真实消费已验证。\n",
+          "consumer.mjs": "const label = \"execute\";\nconst unused = {status:\"ready\"};\nconsole.log(label);\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "检验方法与证据是否支持当前结果，保留正确反例和允许差异。",
+        "minimalCounterexample": "真实代码读取本次产物并按其字段作业务决定时，可提供相应静态或运行证据。",
+        "allowedVariance": "允许等价措辞、组织与实现；未运行不冒称运行通过，静态源条件不代替真实执行。"
+      }
+    }
+  ]
+}

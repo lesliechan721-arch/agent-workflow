@@ -8,6 +8,12 @@
         "agent-content-toolkit": {},
         "agent-skill-toolkit": {}
       }
+    },
+    "content-only": {
+      "scope": "project",
+      "plugins": {
+        "agent-content-toolkit": {}
+      }
     }
   },
   "suites": [
@@ -45,6 +51,20 @@
       "cases": "source-fidelity-cases.json",
       "profiles": [
         "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 600000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
+    },
+    {
+      "id": "redesign-behavior",
+      "kind": "conversation",
+      "cases": "redesign-behavior-cases.json",
+      "profiles": [
+        "content-only"
       ],
       "runs": 1,
       "timeoutMs": 600000,

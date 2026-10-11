@@ -1,33 +1,26 @@
 # agent-content Eval
 
-本测试资产使用 AW Selected Cases v1 / Manifest v1，由当前项目公开 parser 核验格式。适配字段的权威说明在 Runner 的 `references/aw-eval-profile.md`，真实 parser 高于本包辅助校验器。
+本目录是完整源测试资产，使用当前项目 Selected Cases v1 / Manifest v1。它们是测试适配，不是通用运行期依赖。独立源码审核可在没有 AW CLI 时进行；真实 parser、独立 Oracle 审核和模型运行是不同证据。
 
-内容层只验证通用文档方法；Skill 机制与 AW 格式不是本 Skill 的教学标准。此测试目录使用 AW 是验证基础设施选择，不是运行时依赖。
+共 27 个 case。既有 case ID 与 requiredForRelease 保留；新增 redesign-behavior 初始非必需，但不能据此跳过新能力的验收。实际源格式检查以本次设计 evidence 为准，全部模型状态为 NOT_RUN。
 
-Trigger 只检查任意加载；不以不是顶层 owner 禁止合法下游组合。发布候选与 diagnostic 按 manifest 区分；标为 required 不等于已通过。全体模型运行状态为 NOT_RUN。
+| Suite | 用例文件 | 数量 | Profile | 发布必需 | 模型状态 |
+| --- | --- | ---: | --- | --- | --- |
+| `trigger` | [trigger-cases.json](trigger-cases.json) | 8 | project-default | 是 | NOT_RUN |
+| `behavior` | [behavior-cases.json](behavior-cases.json) | 9 | project-default | 是 | NOT_RUN |
+| `source-fidelity` | [source-fidelity-cases.json](source-fidelity-cases.json) | 4 | project-default | 否 | NOT_RUN |
+| `redesign-behavior` | [redesign-behavior-cases.json](redesign-behavior-cases.json) | 6 | content-only | 否 | NOT_RUN |
 
-| Case | 层 | 观测依据 | 模型状态 |
-| --- | --- | --- | --- |
-| `agents_edit` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `prompt_review` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `reference_reorganize` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `role_write` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `human_readme` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `explain_only` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `run_script` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `normal_code` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `readonly_content_review` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
-| `redundant_human_report_format` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
-| `reference_split_real_branches` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
-| `real_file_consumer_kept` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
-| `do_not_invent_project_facts` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
-| `positive_guidance_preserves_safety` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
-| `user_format_without_existing_parser` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
-| `human_choice_is_not_waste` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
-| `weak_pointer_before_whole_inline` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
+## 测什么与不测什么
 
-## 运行与审定
+Trigger 的 expectedLoad 只观察任意加载，不表示首次入口，不禁止合理辅助能力。Conversation 的业务语义来自真实输入、允许差异与可观察断言；workspaceFiles、允许写入和 artifacts 分别约束输入与输出，不靠“已验证”的文字制造前提。
 
-先用实际 parser 和独立 Oracle 审核确认用例可执行。源行为有真实文件；CLI deny fixture 只证明拒绝边界，不证明产品成功、安全权限或远端发布。额外模型运行遵守现有预算和授权。
+新 redesign suite 使用 content-only profile；只提供本内容能力，不依赖 Skill 领域方法。该声明本身不证明已运行的客户端隔离。
 
-一般格式示例属于测试输入，不要求模型采用 AW 作为所有消费者格式；未知外部事实不由 prompt 自称证明。真实集成责任与未验证项见[迁移记录](../../../../../docs/skill-toolkit-migration.md)。
+## 运行前与结果使用
+
+先用当前项目公开 parser 检查外形，再独立审核 Oracle、fixture 和可达性。写入 case 核对允许路径与实际产物；只读效果不能只靠禁写 sandbox 证明。工具正常输出、错误、stdout/stderr、退出码和依赖闭包使用确定性检查；模型读取与任务质量用语义验证，不匹配文档固定措辞。
+
+新运行前由实际 Runner 形成正确目标、workspace、provider 和 case 绑定，并取得独立准入及预算。源码格式通过不等于可执行准入，NOT_RUN 不等于生产 Skill 已失败；失败先排除用例、fixture、grader、环境与方差。不能为了通过测试改变用户目标。
+
+当前方法入口：[SKILL.md](../SKILL.md)。本目录不依赖已删除的迁移记录，也不保存伪造的通过凭据。
