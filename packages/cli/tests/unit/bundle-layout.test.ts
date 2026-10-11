@@ -8,6 +8,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { validatePluginManifest, validatePluginConfigValue } from '@lesliechan721/aw-plugin-core';
+import type { PluginManifest } from '@lesliechan721/aw-plugin-core';
 
 import type { PluginStagingRunner } from '../../src/generators/local-plugin.js';
 import { validateBundleLayout } from '../../src/utils/bundle-layout.js';
@@ -1323,7 +1324,7 @@ describe('runtime Skill resource closure', () => {
     return skillRoot;
   }
 
-  it('allows current manifest-declared runtime reference projections in source Skills', async () => {
+  it('allows current manifest-declared projected and generated runtime files in source Skills', async () => {
     const pluginsRoot = path.resolve(import.meta.dirname, '../../../../plugins');
     const entries = await fs.readdir(pluginsRoot, { withFileTypes: true });
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
@@ -1336,13 +1337,12 @@ describe('runtime Skill resource closure', () => {
         entry.name,
         '.agents-plugin',
         'plugin.json',
-      )) as {
-        buildConfig?: {
-          skillRuntimeFiles?: Array<{ skill: string; target: string }>;
-        };
-      };
+      )) as PluginManifest;
       const declaredTargets = new Map<string, Set<string>>();
-      for (const runtimeFile of manifest.buildConfig?.skillRuntimeFiles ?? []) {
+      for (const runtimeFile of [
+        ...(manifest.buildConfig?.skillRuntimeFiles ?? []),
+        ...(manifest.buildConfig?.generatedSkillRuntimeFiles ?? []),
+      ]) {
         const targets = declaredTargets.get(runtimeFile.skill) ?? new Set<string>();
         targets.add(runtimeFile.target);
         declaredTargets.set(runtimeFile.skill, targets);
