@@ -4,7 +4,7 @@
 
 创建插件用 `aw plugin init`，不要预建空目录。字段、组件面与参数从当前 `aw plugin capabilities --json` 及公开帮助读取。只改 source truth，不直接改 generated runtime、snapshot、ledger 或 digest。Plugin version 按项目发版约定维护源码 manifest 的稳定版本；Catalog version 使用公开 `aw catalog version`，两者分开。
 
-Plugin 内 Skill 创建或常规变更使用 `author-agent-skill`，只传用户目标、允许路径和验收条件；明确要求简化时读取 `skill-simplification.md`，由 `simplify-agent-skill` 负责候选对照。Agent 文本使用 `agent-content`。
+Plugin 内 Skill 创建或常规变更使用 `author-agent-skill`，提供用户目标、源目录、构建/注入约束、允许路径和验收条件；普通创建和包检查使用 Author 的独立工具，已有适配上下文直接复用。manifest 注册与 AW-specific validate/test/build 仍由本 Skill 负责。明确要求简化时读取 `skill-simplification.md`，由 `simplify-agent-skill` 负责候选对照。Agent 文本使用 `agent-content`。
 
 requirements 的 declared/derived/detected/effective 由 CLI 计算；动态能力无法静态发现时才补声明。具体组件涉及 hooks、MCP、renderer、preApply 等时读取 `references/plugin-components.md`。
 

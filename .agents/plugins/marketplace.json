@@ -121,10 +121,10 @@
     {
       "name": "codex-enhance",
       "source": "./plugins/codex-enhance",
-      "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
+      "description": "在 Codex 中组织已授权的通用委派、只读技术第二意见和大范围事实调查。",
       "interface": {
         "displayName": "Codex Enhance",
-        "shortDescription": "Codex 只读探索与通用子代理编排增强",
+        "shortDescription": "Codex 通用委派、技术第二意见与只读事实调查",
         "capabilities": [
           "Skills",
           "Agents"
@@ -137,7 +137,8 @@
         "explorer",
         "research",
         "reasoning",
-        "wait"
+        "wait",
+        "advisor"
       ],
       "strict": true,
       "policy": {

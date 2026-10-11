@@ -1,10 +1,10 @@
 {
   "name": "codex-enhance",
-  "version": "0.2.0-beta.8",
-  "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
+  "version": "0.2.0-beta.9",
+  "description": "在 Codex 中组织已授权的通用委派、只读技术第二意见和大范围事实调查。",
   "interface": {
     "displayName": "Codex Enhance",
-    "shortDescription": "Codex 只读探索与通用子代理编排增强",
+    "shortDescription": "Codex 通用委派、技术第二意见与只读事实调查",
     "capabilities": [
       "Skills",
       "Agents"

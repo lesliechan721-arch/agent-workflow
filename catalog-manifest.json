@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.37",
+  "catalogVersion": "0.1.0-beta.38",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "b98f17d4262ae604e843d23f969dda53f48f7cbb"
+    "sourceHead": "b885b074fb1b5249fdf9a75b94107b7f57937b99"
   },
   "entries": [
     {
@@ -44,7 +44,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.4",
+      "version": "0.1.0-beta.5",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -54,9 +54,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:a3a109ae1acfde73a38188fe8862878ea72956f62befe8628b56e69cd715027a",
-      "manifestDigest": "sha256:11161931204317729698436f4b05a94691066a6ee85badfd5456dbc00c51a11e",
-      "contentDigest": "sha256:dbc9a091bb2c0ed7ae1ee2fa9dedef0b821a83450bc4b5942b42888c4597e542"
+      "artifactDigest": "sha256:74d93e3fc1157e4984ed42881e89efcc61a2137553c75d968c003ae8127ced11",
+      "manifestDigest": "sha256:7bef04c7a4c9e50154fa8acade94ef4e3c4fb4edbccf4422f8785391eb34393f",
+      "contentDigest": "sha256:443d46763c38d60d75456b65cf6ddbd1954857215d79df9b2ce676c956ac43f3"
     },
     {
       "name": "agent-skill-toolkit",
@@ -79,7 +79,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.8",
+      "version": "0.1.0-beta.9",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -92,9 +92,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:30973446f30c1d496c2a98938785a458eaf2e6968665614801482a56b6dfa0f8",
-      "manifestDigest": "sha256:35df3b781b4bcf3f83951aac4c739a1feca10f243eaef21c2b6733389741e6cc",
-      "contentDigest": "sha256:ed33358b161dfdfaa07cec34e08dde5e47dd0c60d76fd3048933f3e0eeb9c973"
+      "artifactDigest": "sha256:c0ee83f9761387aa0b9dd7108161dd3ba36bebb18bc9d6a6ece4c272be84e9c9",
+      "manifestDigest": "sha256:d92f974f0dc6461ddf53c2eab8aeda6d6f571542121d05a517bafd65890039a6",
+      "contentDigest": "sha256:7cab15d35ec1fb40b52e7f4f320942099c8e8ecb1561e5c71ff826062a08451a"
     },
     {
       "name": "aw-development-toolkit",
@@ -117,7 +117,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.5",
+      "version": "0.1.0-beta.6",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -141,9 +141,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:d44c364736eed787b534a82b91ddf0d3cc3e44848011b6d27662b8668e5524ea",
-      "manifestDigest": "sha256:45607294700da3021937a14f175cd714d589a41cc96fb94e9df787051d4aa697",
-      "contentDigest": "sha256:57c917624b8e6ef49cc2d82f7a884564069942b24d3db3cffbef9a44dfb3557e"
+      "artifactDigest": "sha256:75351807b64adb9818028d6971cb3b85b316a59e24b8daed78c13d54ad604be8",
+      "manifestDigest": "sha256:486f995af4fe3e7c32b37ca62da2072349ba67b26e4d8c8fad51d06f88e19d05",
+      "contentDigest": "sha256:94cac11ef8306546fb0f368a38554d0c6232f8b7ed9d12fd2116cdaf48ced18c"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -166,7 +166,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.3",
+      "version": "0.1.0-beta.4",
       "dependencies": [
         "agent-skill-toolkit"
       ],
@@ -179,9 +179,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:da216248405b112e8985a53e3e754624c9d513efc789ca31e9818f512721511a",
-      "manifestDigest": "sha256:8096d7526535fe4b78ca1374c1a6b5919aa3a42f21834ddcc2d30c81f385bebb",
-      "contentDigest": "sha256:18cf18c9dd943660af5a74be32b946b980f6416c685b7952fbd997417e8592a1"
+      "artifactDigest": "sha256:6014b77df6005a5d309a479d1bd653dbcf622a189f5e954dcd5b14b104dd3c0b",
+      "manifestDigest": "sha256:9276b4f7a0d9d396673c6c2d436169ac5cd0bb57f95cb6669ab57f259c25f5b1",
+      "contentDigest": "sha256:a787e7d4f21aeb66cc59102041d8e3a38a3807447d9adaabcd29c0252bd65939"
     },
     {
       "name": "browser-use",
@@ -222,10 +222,10 @@
     {
       "name": "codex-enhance",
       "source": "./plugins/codex-enhance",
-      "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
+      "description": "在 Codex 中组织已授权的通用委派、只读技术第二意见和大范围事实调查。",
       "interface": {
         "displayName": "Codex Enhance",
-        "shortDescription": "Codex 只读探索与通用子代理编排增强",
+        "shortDescription": "Codex 通用委派、技术第二意见与只读事实调查",
         "capabilities": [
           "Skills",
           "Agents"
@@ -238,7 +238,8 @@
         "explorer",
         "research",
         "reasoning",
-        "wait"
+        "wait",
+        "advisor"
       ],
       "strict": true,
       "policy": {
@@ -248,22 +249,28 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.8",
+      "version": "0.2.0-beta.9",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
             "aw.dynamic-artifacts.v2",
+            "aw.installed-runtime-config.v2",
+            "aw.plugin-build-config.v1",
+            "aw.plugin-config-array.v1",
             "aw.plugin-config-summary.v1",
+            "aw.plugin-config-unique-by.v1",
+            "aw.plugin-config-value-ref.v1",
             "aw.plugin-config.v2",
             "aw.plugin-config.v3",
+            "aw.plugin-config.v4",
             "aw.plugin-manifest.v3"
           ]
         }
       },
-      "artifactDigest": "sha256:20280c1e5fca2ef97103d08e4efe97d4b9922d9c2c9144032861b4669b791d8d",
-      "manifestDigest": "sha256:e1e47c66231f868ae3548b8a2beb31f0b8250b5d6807e2b84e0aed27e8cbdbae",
-      "contentDigest": "sha256:0b882efdb0bb6f302209371ac6ffc49c0843cab576095e03050cdd4c64765ec9"
+      "artifactDigest": "sha256:ccb21365cfebc0e63848f9b6e8fd24179fde5257ddc359111970101877780af9",
+      "manifestDigest": "sha256:6be4adb89e039e828fd23c213ea63ceb8fcbbf3d2aea4edc5d97bc1039b80f1f",
+      "contentDigest": "sha256:a963124c6cbbf62efe350f167f654d29ac9167734bdaf237861123c04a027c5c"
     },
     {
       "name": "decision-kit",

@@ -1,7 +1,7 @@
 interface:
   display_name: "Audit Agent Skill Evals"
-  short_description: "独立审核 Skill Eval 准入并归因异常结果"
-  default_prompt: "使用 $audit-agent-skill-evals 审核当前 Eval 或归因其结果。"
+  short_description: "审核 Agent Skill 用例的前提、Oracle 和结果证据"
+  default_prompt: "使用 $audit-agent-skill-evals 处理当前已授权范围，并报告真实结果与关键未知。"
 
 policy:
   allow_implicit_invocation: true

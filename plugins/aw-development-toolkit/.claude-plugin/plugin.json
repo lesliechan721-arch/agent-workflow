@@ -1,6 +1,6 @@
 {
   "name": "aw-development-toolkit",
-  "version": "0.1.0-beta.5",
+  "version": "0.1.0-beta.6",
   "description": "创建和维护 AW Catalog/Plugin，按对象分支只读评审 AW 项目，并通过 manual-only 入口发布 Catalog。",
   "interface": {
     "displayName": "AW Development Toolkit",
