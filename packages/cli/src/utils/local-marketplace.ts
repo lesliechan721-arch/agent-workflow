@@ -418,10 +418,9 @@ async function preserveCodexNativeProjection(options: {
   const receiptPath = path.join(sourcePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH);
   const receiptStats = await inspectMarketplacePath(options.sourceRoot, receiptPath, 'file');
   if (!receiptStats) throw new CodexNativeProjectionNotReusableError();
-  let receiptContent: string;
   let receipt: ReturnType<typeof parseCodexNativeRenderReceipt>;
   try {
-    receiptContent = await fs.readFile(receiptPath, 'utf8');
+    const receiptContent = await fs.readFile(receiptPath, 'utf8');
     receipt = parseCodexNativeRenderReceipt(receiptContent);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code) throw error;
@@ -435,32 +434,22 @@ async function preserveCodexNativeProjection(options: {
     throw new CodexNativeProjectionNotReusableError();
   }
   await assertRegularProjectionTree(stagingPluginRoot);
-  const [stagingManifest, stagingCodexManifest] = await Promise.all([
-    readProjectionJson(options.stagingRoot, path.join(stagingPluginRoot, '.agents-plugin', 'plugin.json')),
-    readProjectionJson(options.stagingRoot, path.join(stagingPluginRoot, '.codex-plugin', 'plugin.json')),
-  ]);
-  if (stagingManifest.name !== options.pluginName || stagingCodexManifest.name !== options.pluginName) {
+  const stagingManifest = await readProjectionJson(
+    options.stagingRoot,
+    path.join(stagingPluginRoot, '.agents-plugin', 'plugin.json'),
+  );
+  if (stagingManifest.name !== options.pluginName) {
     throw new Error('codexNativeProjectionIdentityMismatch: plugin identity does not match its marketplace path.');
   }
   if (sourceManifest.version !== receipt.pluginVersion
-    || stagingManifest.version !== receipt.pluginVersion
-    || sourceCodexManifest.version !== receipt.pluginVersion
-    || stagingCodexManifest.version !== receipt.pluginVersion) {
+    || sourceCodexManifest.version !== receipt.pluginVersion) {
     throw new CodexNativeProjectionNotReusableError();
   }
   const receiptTargetIdentity = receipt.targets.map(({ id, skillKey }) => ({ id, skillKey }));
-  if (JSON.stringify(sourceTargets) !== JSON.stringify(receiptTargetIdentity)
-    || JSON.stringify(nativeCodexTargets(stagingManifest)) !== JSON.stringify(receiptTargetIdentity)) {
+  if (JSON.stringify(sourceTargets) !== JSON.stringify(receiptTargetIdentity)) {
     throw new CodexNativeProjectionNotReusableError();
   }
 
-  const stagingSkillsRelative = normalizePluginRelativeDirectory(
-    stagingCodexManifest.skills,
-    'codex/skills',
-  );
-  if (!stagingSkillsRelative) {
-    throw new Error('codexNativeProjectionUnsafe: Codex Skills root is unsafe.');
-  }
   const sourceSkillsRoot = path.join(sourcePluginRoot, ...sourceSkillsRelative.split('/'));
   const emptyArtifactDigest = createCodexSkillStagingTreeContentDigest({ skillKey: 'empty', files: {} });
   for (const target of receipt.targets) {
@@ -486,28 +475,8 @@ async function preserveCodexNativeProjection(options: {
   const temporaryRoot = await fs.mkdtemp(path.join(options.stagingRoot, '.native-projection-'));
   const candidateRoot = path.join(temporaryRoot, options.pluginName);
   try {
-    await fs.copy(stagingPluginRoot, candidateRoot, { dereference: false });
-    const candidateCodexManifestPath = path.join(candidateRoot, '.codex-plugin', 'plugin.json');
-    const candidateCodexManifest = await readProjectionJson(
-      temporaryRoot,
-      candidateCodexManifestPath,
-    );
-    if (Object.hasOwn(sourceCodexManifest, 'skills')) {
-      candidateCodexManifest.skills = sourceCodexManifest.skills;
-    } else {
-      delete candidateCodexManifest.skills;
-    }
-    await fs.writeJson(candidateCodexManifestPath, candidateCodexManifest, { spaces: 2 });
-    const candidateSkillsRoot = path.join(candidateRoot, ...sourceSkillsRelative.split('/'));
-    for (const target of receipt.targets) {
-      const sourceSkillRoot = path.join(sourceSkillsRoot, target.skillKey);
-      const candidateSkillRoot = path.join(candidateSkillsRoot, target.skillKey);
-      await fs.remove(candidateSkillRoot);
-      if (await fs.pathExists(sourceSkillRoot)) {
-        await fs.copy(sourceSkillRoot, candidateSkillRoot, { dereference: false });
-      }
-    }
-    await fs.outputFile(path.join(candidateRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH), receiptContent, 'utf8');
+    // An unrelated operation must retain the installed version and its render inputs together.
+    await fs.copy(sourcePluginRoot, candidateRoot, { dereference: false });
     if (await calculateCodexNativeRenderPayloadDigest(candidateRoot) !== receipt.payloadDigest) {
       throw new CodexNativeProjectionNotReusableError();
     }
@@ -520,7 +489,8 @@ async function preserveCodexNativeProjection(options: {
 
 /**
  * Replays complete receipt-backed Codex native projections into a fresh Catalog generation.
- * Invalid or incompatible weak projections are skipped so their owning plugin can recover by sync.
+ * Retains their installed payload even when the new Catalog changes its version or render inputs.
+ * Damaged weak projections are skipped so their owning plugin can recover by sync.
  */
 export async function replayNamespacedCodexNativeRenderProjections(options: {
   sourceRoot: string;

@@ -4058,7 +4058,7 @@ async function mirrorCatalog(
   target?: Pick<RebuildTargetIdentity, 'sourceId' | 'sourceIdentity' | 'marketplaceName' | 'marketplaceRoot'>,
   logicalIdentity?: string,
   prepareStaging?: (stagingRoot: string) => Promise<void>,
-  rematerializedCodexNativePluginIds: ReadonlySet<string> = new Set(),
+  rematerializedPluginIds: ReadonlySet<string> = new Set(),
 ): Promise<{
   rootDir: string;
   commit(): Promise<void>;
@@ -4135,7 +4135,7 @@ async function mirrorCatalog(
         sourceId: target.sourceId,
         sourceIdentity: target.sourceIdentity!,
         marketplaceName,
-        rematerializedPluginIds: rematerializedCodexNativePluginIds,
+        rematerializedPluginIds,
       });
     }
     await prepareStaging?.(staging);
@@ -4467,12 +4467,8 @@ function createNativeDriver(options: {
               }
             }
           } : undefined,
-          new Set(first.identity.platform === 'codex'
-            ? materializationTargets.flatMap((candidate) =>
-                pluginHasCodexNativeSkillSurface(candidate.plugin)
-                  ? [candidate.identity.pluginId ?? `${candidate.identity.sourceId}/${candidate.identity.pluginName}`]
-                  : [])
-            : []),
+          new Set(materializationTargets.map((candidate) =>
+            candidate.identity.pluginId ?? `${candidate.identity.sourceId}/${candidate.identity.pluginName}`)),
         );
         try {
           await transaction.commit();

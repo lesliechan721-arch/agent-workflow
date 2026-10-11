@@ -4302,7 +4302,7 @@ describe('rebuild adapter integration', () => {
       }
       return { exitCode: 0, stdout: '', stderr: '' };
     };
-    const install = async (plugin: PluginMeta) => {
+    const install = async (plugin: PluginMeta, command: 'install' | 'reinstall' = 'install') => {
       const integration = createRebuildIntegration({
         context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner: runner }),
       });
@@ -4311,12 +4311,12 @@ describe('rebuild adapter integration', () => {
         platform: 'codex',
         scope: 'user',
         cwd: isolation.layout.fixtureCwd,
-        command: 'install',
+        command,
         catalog: { rootDir: catalogRoot, source: 'local' },
         marketplaceName: 'aw-team',
         marketplaceRoot,
       });
-      return executeRebuildOperation({ command: 'install', target, driver: integration.driver });
+      return executeRebuildOperation({ command, target, driver: integration.driver });
     };
 
     const first = await install(pluginA);
@@ -4352,6 +4352,22 @@ describe('rebuild adapter integration', () => {
     ]);
     await expect(fs.readFile(receiptPath, 'utf8')).resolves.toBe(receiptContent);
     await expect(fs.readFile(retainedSkillPath, 'utf8')).resolves.toBe(retainedSkillContent);
+
+    // A newer Catalog must not upgrade A while another plugin is rebuilt.
+    for (const relativePath of ['.agents-plugin/plugin.json', '.codex-plugin/plugin.json']) {
+      const manifestPath = path.join(catalogRoot, 'plugins', 'codex-enhance', relativePath);
+      const manifest = await fs.readJson(manifestPath);
+      await fs.writeJson(manifestPath, { ...manifest, version: '99.0.0' });
+    }
+    await fs.outputFile(path.join(catalogRoot, 'plugins', 'codex-enhance', 'new-render-input.txt'), 'new input\n');
+    const updatedCatalogResult = await install(pluginB, 'reinstall');
+    expect(updatedCatalogResult.status, JSON.stringify(updatedCatalogResult.failures)).toBe('succeeded');
+    await expect(fs.readFile(receiptPath, 'utf8')).resolves.toBe(receiptContent);
+    await expect(fs.readFile(retainedSkillPath, 'utf8')).resolves.toBe(retainedSkillContent);
+    await expect(fs.readJson(path.join(marketplaceRoot, 'plugins', 'codex-enhance', '.agents-plugin', 'plugin.json')))
+      .resolves.toMatchObject({ version: pluginA.manifest.version });
+    await expect(fs.pathExists(path.join(marketplaceRoot, 'plugins', 'codex-enhance', 'new-render-input.txt')))
+      .resolves.toBe(false);
 
     const claudePaths = resolveClaudePaths(isolation.layout.fixtureCwd, 'user', isolation.env);
     const claudeRunner: NativeCliRunner = async (invocation) => {

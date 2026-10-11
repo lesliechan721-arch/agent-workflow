@@ -1056,7 +1056,7 @@ describe('namespaced marketplace root', () => {
     ['render input changed', async (root: string) => {
       await fs.outputFile(path.join(root, 'plugins', 'native-projection', 'changed-input.txt'), 'changed\n');
     }],
-  ] as const)('does not reuse a projection when %s', async (_label, changeStaging) => {
+  ] as const)('keeps the complete old projection when the Catalog %s', async (_label, changeStaging) => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
     const stagingRoot = path.join(isolation.layout.rootDir, `changed-native-projection-${_label.replaceAll(' ', '-')}`);
@@ -1070,10 +1070,39 @@ describe('namespaced marketplace root', () => {
 
     await expect(fs.pathExists(path.join(
       stagingRoot, 'plugins', 'native-projection', 'codex', 'skills', fixture.skillKey,
-    ))).resolves.toBe(false);
-    await expect(fs.pathExists(path.join(
+    ))).resolves.toBe(true);
+    await expect(fs.readFile(path.join(
       stagingRoot, 'plugins', 'native-projection', '.agents-plugin', 'aw-codex-native-render.json',
-    ))).resolves.toBe(false);
+    ), 'utf8')).resolves.toBe(fixture.receiptContent);
+    const sourcePluginRoot = path.join(sourceRoot, 'plugins', 'native-projection');
+    const stagingPluginRoot = path.join(stagingRoot, 'plugins', 'native-projection');
+    await expect(calculateCodexNativeRenderPayloadDigest(stagingPluginRoot))
+      .resolves.toBe(await calculateCodexNativeRenderPayloadDigest(sourcePluginRoot));
+    await expect(fs.readJson(path.join(stagingPluginRoot, '.agents-plugin', 'plugin.json')))
+      .resolves.toEqual(await fs.readJson(path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json')));
+  });
+
+  it('leaves the new Catalog payload for a plugin selected for rematerialization', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const stagingRoot = path.join(isolation.layout.rootDir, 'selected-native-projection');
+    await createMarketplaceRoot(sourceRoot);
+    const fixture = await createNativeProjectionFixture({ sourceRoot, stagingRoot });
+    const stagingPluginRoot = path.join(stagingRoot, 'plugins', 'native-projection');
+    const manifestPath = path.join(stagingPluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    await fs.writeJson(manifestPath, { ...manifest, version: '2.0.0' });
+
+    await replayNamespacedCodexNativeRenderProjections({
+      sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+      rematerializedPluginIds: new Set(['official/native-projection']),
+    });
+
+    await expect(fs.readJson(manifestPath)).resolves.toMatchObject({ version: '2.0.0' });
+    await expect(fs.pathExists(path.join(stagingPluginRoot, 'codex', 'skills', fixture.skillKey)))
+      .resolves.toBe(false);
+    await expect(fs.pathExists(path.join(stagingPluginRoot, '.agents-plugin', 'aw-codex-native-render.json')))
+      .resolves.toBe(false);
   });
 
   it.each(['receipt', 'payload'] as const)(
