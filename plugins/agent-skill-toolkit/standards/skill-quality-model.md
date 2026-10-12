@@ -4,18 +4,28 @@
 
 | ID | 权威正文 owner（相对插件根；跨插件注明） | 使用方 |
 | --- | --- | --- |
-| CONTENT.FACT / LOAD / POINTER / CONTROL / OUTPUT / VALIDATION | agent-content-toolkit/skills/agent-content/references/agent-content-standard.md | 通用内容、Skill 作者与审稿 |
+| CONTENT.FACT / LOAD / POINTER / CONTROL / OUTPUT / VALIDATION | agent-content-toolkit/skills/agent-content/SKILL.md | 共同内容方法内联；通用内容、Skill 作者与审稿 |
 | CONTENT.REFERENCE | agent-content-toolkit/skills/agent-content/references/reference-design.md | 创建与评价参考材料 |
 | SKILL.INVOCATION | references/skill-invocation.md | Author、Skill Review、Architecture；构建时投影 |
-| SKILL.COMPOSITION | references/skill-composition.md | Author、Skill Review、Architecture；构建时投影 |
+| SKILL.COMPOSITION | references/skill-composition.md | Author、Skill Review、Simplifier、Architecture；构建时投影 |
 | SKILL.DESIGN | skills/author-agent-skill/references/design-and-validation.md | 作者方法，不作独立裁决 |
 | REVIEW.METHOD / EVIDENCE / SCORE | skills/review-agent-skill/references/review-standard.md、evidence-and-severity.md、review-dimensions.md | 只读问题判断、证据与评分 |
 | EVAL.DESIGN | skills/author-agent-skill/references/eval-design.md | 通用 case 写作，不拥有 runner 方言 |
-| EVAL.AUDIT | skills/audit-agent-skill-evals/references/eval-audit-standard.md | 源审核、独立准入、结果解释 |
-| AW.EVAL.PROFILE | aw-skill-eval-runner/skills/run-aw-skill-evals/references/aw-eval-profile.md | AW 调用方、适配和正式 Audit；按条件提供 |
+| EVAL.AUDIT | skills/audit-agent-skill-evals/references/eval-audit-standard.md | 用例资格、对照与结果解释 |
+| EVAL.ADMISSION | skills/audit-agent-skill-evals/references/formal-admission.md | 实际运行器要求的正式独立准入 |
 | SIMPLIFY.ACCEPT | skills/simplify-agent-skill/references/ablation-acceptance.md | 有限预算下的对照接受 |
 | ARCH.PORTFOLIO | skills/review-agent-architecture/references/public-surface-review.md | 公开入口、依赖及用户选择成本 |
 
-上述两份共享规则只维护插件根下的源码。manifest 的 `buildConfig.skillRuntimeFiles` 在 AW build 时投影到 Author 和两个 Reviewer 的本地 references；不维护派生源码，也不要求 Review 激活 Author。通用 Reviewer 交付内容与证据；可选 AW 归档由顶层 AW 调用方使用自己的归档能力完成，不投影到通用 Reviewer。
+共享格式、调用和组合规则只维护一处，按 manifest 以相同文件名投影到实际消费者：`skill-format.md`、`skill-invocation.md`、`skill-composition.md`。Author 不另设别名；本地作者方法不要求 Reviewer 激活 Author。运行器格式由当前运行器提供。
 
-内容层的两种负担是跨文档概念；Skill 数量、手动宏、caller/leaf 与插件依赖是领域应用。AW 字段/模板/脚本属于 Runner；通用插件测试采用 AW 格式不等于它的运行规范也依赖 AW。
+## 新增共享资源
+
+| 权威正文 | 使用方 | 用途 |
+| --- | --- | --- |
+| references/skill-format.md | Author、Skill Review、Simplifier | 普通包与作者检查基线 |
+| skills/author-agent-skill/references/trigger-development.md | Author | 发现、调用、description 与执行问题分层；重复观察、训练/验证与候选选择 |
+| skills/author-agent-skill/references/development-iteration.md | Author | 授权内持续开发及有界验证 |
+
+统一格式以标准字段为主，只收录常用调用差异。共享资料按问题读取，投影不意味着每次全部加载。
+
+工具调用片段共置在拥有对应脚本的 Skill 主文件中。完整接口由工具 help 和实现合同维护。正式 Eval 准入方法由 `skills/audit-agent-skill-evals/references/formal-admission.md` 条件提供。

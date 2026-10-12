@@ -1,0 +1,17 @@
+{
+  "name": "agent-skill-toolkit-tools",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test ../scripts/tooling.test.mjs ../scripts/output-contract-audit.test.mjs",
+    "test:isolated": "node --test isolation.test.mjs"
+  },
+  "dependencies": {
+    "marked": "18.1.0",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": { "esbuild": "0.28.2" },
+  "pnpm": { "onlyBuiltDependencies": ["esbuild"] }
+}

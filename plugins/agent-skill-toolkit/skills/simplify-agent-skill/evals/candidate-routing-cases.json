@@ -24,7 +24,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "简化 skill/SKILL.md 中逐字重复的句子。它是独立标准 Agent Skill，没有 AW manifest、provider 或 renderer。你已获准只写 candidate/SKILL.md；不要修改原文件，也不要运行模型 Eval。",
+      "prompt": "简化 skills/summarize/SKILL.md 中逐字重复的句子。它是独立标准 Agent Skill，没有 AW manifest、provider 或 renderer。你已获准只写 candidate/summarize/SKILL.md；不要修改原文件，也不要运行模型 Eval。",
       "assertions": [
         "直接从完整可消费 Skill 建立隔离 candidate，只删除逐字重复并保持原文件不变。",
         "不要求 AW Workspace、manifest、review prepare 或项目适配器，不把通用简化方法绑定到 AW 命令。",
@@ -32,18 +32,18 @@
       ],
       "input": {
         "workspaceFiles": {
-          "skill/SKILL.md": "---\nname: summarize\ndescription: Summarize supplied text.\n---\n\n# Summarize\n\nUse supplied text only. Use supplied text only.\nPreserve unknowns.\n"
+          "skills/summarize/SKILL.md": "---\nname: summarize\ndescription: Summarize supplied text.\n---\n\n# Summarize\n\nUse supplied text only. Use supplied text only.\nPreserve unknowns.\n"
         }
       },
       "expected": {
         "output": "交付独立标准 Skill 的未验证隔离 candidate，不引入 AW 构建路径。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
-          "candidate/**"
+          "candidate/summarize/**"
         ],
         "artifacts": [
           {
-            "path": "candidate/SKILL.md",
+            "path": "candidate/summarize/SKILL.md",
             "exists": true,
             "contains": [
               "Use supplied text only.",

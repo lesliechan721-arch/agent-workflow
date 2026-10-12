@@ -1,7 +1,7 @@
 interface:
   display_name: "Review Agent Architecture"
-  short_description: "评审跨 Skill workflow 与插件 public surface 架构"
-  default_prompt: "使用 $review-agent-architecture 只读评审当前 Agent 工作流或能力组合。"
+  short_description: "沿用户结果核对 Agent Skill 组合、依赖和真实交接"
+  default_prompt: "使用 $review-agent-architecture 处理当前已授权范围，并报告真实结果与关键未知。"
 
 policy:
   allow_implicit_invocation: true

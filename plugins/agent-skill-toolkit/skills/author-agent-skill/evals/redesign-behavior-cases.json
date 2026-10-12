@@ -1,0 +1,354 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "author-agent-skill",
+    "participants": [
+      "agent-content"
+    ],
+    "runtime": {
+      "isolation": "strict"
+    },
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "同时检查完成用户任务和不过度修改；源推理、工具隔离与模型证据分别解释。"
+    }
+  },
+  "cases": [
+    {
+      "id": "standard_fields_preserve_common_invocation",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只整理 skills/note/SKILL.md 的字段：description 保留原文，去掉与它重复的 when_to_use，保留 metadata 版本 1 但使用标准字符串类型，把 allowed-tools 改成标准字符串。保留两平台当前仅显式调用的行为、现有 UI 和完整正文，不运行客户端或改全局配置。",
+      "assertions": [
+        "标准 description 原文保留，冗余 when_to_use 移除，metadata.version 为字符串 1，allowed-tools 为等价的空格分隔字符串。",
+        "Claude 的 disable-model-invocation=true 保留；Codex openai.yaml 完全不变；正文不变。",
+        "没有按平台分别生成另一份 Skill、安装资料或调用协议；只报告字段修改与实际静态检查，不宣称客户端行为已经观察。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skills/note/SKILL.md": "---\nname: note\ndescription: Summarize the supplied note.\nwhen_to_use: Summarize the supplied note.\nmetadata:\n  version: 1\nallowed-tools: [Read, Grep]\ndisable-model-invocation: true\n---\n\nSummarize only the note supplied by the user. Preserve unknown facts.\n",
+          "skills/note/agents/openai.yaml": "interface:\n  display_name: \"Note\"\n  short_description: \"Summarize the supplied note\"\npolicy:\n  allow_implicit_invocation: false\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/note/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/note/SKILL.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证标准字段优先，同时保留标准没有等价表达的调用开关。字段修正是明确任务，不把原输入当合法包来测试加载。",
+        "minimalCounterexample": "用户明确改变调用行为时才能修改相应开关；未知扩展若有独立业务用途不能因不在标准中就删除。",
+        "allowedVariance": "允许 YAML 等价排版；依据解析后的类型、语义和未改范围核对，不按完整输出字节评分。"
+      }
+    },
+    {
+      "id": "create_ordinary_domain_skill",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "依据 requirements.md 新建普通 Skill skills/status-brief，只从用户给定状态文本提取结果。不要 AW 项目、脚本、Eval、安装或模型运行。只允许写该 Skill 目录。",
+      "assertions": [
+        "交付 name=status-brief 且与目录一致的完整 SKILL.md，方法能处理正常、无错误和缺输入。",
+        "新包不创建无用途脚本、Eval、AW manifest 或设计 JSON。",
+        "使用已有自带工具时如实说明结果；无工具结果不冒称检查或模型运行通过。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skills/.keep": "",
+          "requirements.md": "输出三句：当前状态、明确错误、未知信息。只依据已提供文本，没有文本时索取，不连接服务。没有错误时如实说明未给出错误，不发明健康证据。\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/status-brief/**"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/status-brief/SKILL.md",
+            "exists": true,
+            "contains": [
+              "name: status-brief"
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证明确任务的方法、产物和证据边界，不以内部阶段或固定术语评分。",
+        "minimalCounterexample": "只有源码注入型项目时才需要现有项目适配，普通包不需要 AW。",
+        "allowedVariance": "允许等价措辞、代码和组织；机械结果按文件/调用核验，语义按任务目标核验。源设计不等于已执行。"
+      }
+    },
+    {
+      "id": "codex_manual_keeps_ui_and_body",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "仅修改 skills/note/agents/openai.yaml，让 Codex 不隐式调用 note，但保留显式调用。保留 UI 和正文，不执行 note，不改全局配置。",
+      "assertions": [
+        "将 allow_implicit_invocation 改为布尔 false，原 UI 保留。",
+        "不修改 SKILL.md，不把禁用隐式调用写成禁用整个 Skill。",
+        "静态字段变化不声称真实客户端行为已观察。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skills/note/SKILL.md": "---\nname: note\ndescription: Summarize supplied notes.\n---\n\nUse only the note supplied by the user.\n",
+          "skills/note/agents/openai.yaml": "interface:\n  display_name: \"My Note\"\n  short_description: \"Summarize a supplied note without investigation\"\npolicy:\n  allow_implicit_invocation: true\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/note/agents/openai.yaml"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/note/agents/openai.yaml",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证明确任务的方法、产物和证据边界，不以内部阶段或固定术语评分。",
+        "minimalCounterexample": "用户要求禁用整个 Skill 时，应另核对启用配置，而不是只改隐式开关。",
+        "allowedVariance": "允许等价措辞、代码和组织；机械结果按文件/调用核验，语义按任务目标核验。源设计不等于已执行。"
+      }
+    },
+    {
+      "id": "claude_model_only_keeps_model_access",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "修改 skills/conventions/SKILL.md，让 Claude Code 仅由模型采用该背景知识，用户不应通过菜单或 /name 直接启动。只改调用字段，保留描述和正文，不运行客户端。",
+      "assertions": [
+        "user-invocable=false；disable-model-invocation 保持 false 或移除缺省值，不关闭模型调用。",
+        "其它内容保持，说明实际修改与未运行范围。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skills/conventions/SKILL.md": "---\nname: conventions\ndescription: Apply the supplied project naming conventions.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\nUse the naming rules provided for the current project.\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/conventions/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/conventions/SKILL.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证明确任务的方法、产物和证据边界，不以内部阶段或固定术语评分。",
+        "minimalCounterexample": "用户要手动专用时应关闭模型自行启动，而不是隐藏用户入口。",
+        "allowedVariance": "允许等价措辞、代码和组织；机械结果按文件/调用核验，语义按任务目标核验。源设计不等于已执行。"
+      }
+    },
+    {
+      "id": "create_deterministic_json_counter",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "按 task.md 创建 skills/count-records，包括确有用途的 Node 脚本和正文。在本地执行正常、空数组、非数组、非法 JSON 与 --help 检查；只写该目录，不安装、不创建模型 Eval、不联网。",
+      "assertions": [
+        "脚本实际输出满足指定合同，具有输入上限、帮助和可诊断错误。",
+        "SKILL.md 指明何时及怎样执行脚本，不把纯语义规则伪装确定性计算。",
+        "沿交付 SKILL.md 声明的实际包内入口核对脚本存在、引用正确及实际运行结果；允许不同脚本文件名，不能只凭正文声称有脚本就通过。",
+        "实际执行记录与交付产物可核对；未执行的检查明确说明，不签模型或独立 Audit。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skills/.keep": "",
+          "task.md": "用户提供 JSON 数组，输出 JSON 对象 {\"count\":元素数}。从 stdin 读，最多 1 MiB。正常退出 0；无效 JSON/非数组/超限退出 2，stderr 有诊断且 stdout 无成功结果。--help 成功且不等 stdin。正文说明输入和错误解释。\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/count-records/**"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/count-records/SKILL.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证明确任务的方法、产物和证据边界，不以内部阶段或固定术语评分。",
+        "minimalCounterexample": "删除正文所指的真实脚本、使引用指向不存在的文件，或改变计数和错误行为后应失败；仅更换脚本名称并同步正文引用不改变预期。",
+        "allowedVariance": "允许等价措辞、代码、组织和脚本命名，例如 count.mjs 与 count-records.mjs；按实际入口、文件及执行结果核验，不固定任务未规定的文件名。缺失产物、断链或行为错误不能通过。源设计不等于已执行。"
+      }
+    },
+    {
+      "id": "fix_execution_method_not_description",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "根据 trace.md 和 rules.md 修正 skills/errors/SKILL.md。只修执行方法，description 保持原文。不要运行模型或访问日志服务器。",
+      "assertions": [
+        "归因加载后方法错误，修正 ERROR/INFO 分类与空结果，不堆触发词。",
+        "保留 description 与授权范围，不从摘要宣称已验证所有环境。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skills/errors/SKILL.md": "---\nname: errors\ndescription: Summarize errors in the supplied log.\n---\n\nRead the supplied log. Report all lines as errors.\n",
+          "trace.md": "本次提供的观察记录：errors 已被加载；输入包含 INFO 与 ERROR，输出把所有行都列为错误。没有客户端发现故障证据。\n",
+          "rules.md": "只有明确 ERROR 标记的行是错误；INFO 作为背景，不转为错误。没有 ERROR 时报告未见该标记；缺原日志时不能推导服务健康。\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/errors/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/errors/SKILL.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证明确任务的方法、产物和证据边界，不以内部阶段或固定术语评分。",
+        "minimalCounterexample": "实际未被发现时，应先调查路径和启用状态。",
+        "allowedVariance": "允许等价措辞、代码和组织；机械结果按文件/调用核验，语义按任务目标核验。源设计不等于已执行。"
+      }
+    },
+    {
+      "id": "existing_target_stays_unchanged",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "计划创建 skills/report。若该目录已存在，只报告冲突并保留全部内容，不另选目录、不执行初始化。",
+      "assertions": [
+        "识别目标已存在，未覆盖或重新初始化，不创建其它目录。",
+        "说明可以保留现有包，未把创建请求解释为覆盖授权。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skills/report/SKILL.md": "---\nname: report\ndescription: Summarize the supplied report.\n---\n\nPreserve supported facts.\n",
+          "skills/report/keep.txt": "user-owned-sentinel\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "验证明确任务的方法、产物和证据边界，不以内部阶段或固定术语评分。",
+        "minimalCounterexample": "新目录不存在且获得创建授权时可以初始化。",
+        "allowedVariance": "允许等价措辞、代码和组织；机械结果按文件/调用核验，语义按任务目标核验。源设计不等于已执行。"
+      }
+    },
+    {
+      "id": "document_existing_script_without_programming_tutorial",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "为 skills/invoice-summary 补齐 SKILL.md。按 requirements.md 使用已经提供的 total.mjs；可以运行 --help 核对接口。只编辑 SKILL.md，不修改或复制脚本，不执行业务数据处理，不安装依赖。无需重复既有运行环境要求。",
+      "assertions": [
+        "在处理用户发票记录的分支给出 scripts/total.mjs 的相对路径调用、输入来源和结果用途；缺输入先取得输入。",
+        "区分 totals 的分币种最小货币单位与 unresolved 的待确认记录，不能合计不同币种或把未解决记录当零。",
+        "不抄完整脚本、基础编程教程或完整 help；不另建使用手册、环境检查步骤和新脚本。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "requirements.md": "用户提供 JSON 数组，每条有 currency 和 amountMinor。用现有工具汇总。totals 的各值仍是该币种最小货币单位；unresolved 是未纳入汇总的从零开始记录序号，需要向用户说明并确认。数据缺失时索取，不猜测金额，不合计不同币种。运行环境已经满足。\n",
+          "skills/invoice-summary/SKILL.md": "---\nname: invoice-summary\ndescription: Summarize invoice records supplied by the user.\n---\n\nSummarize the supplied invoices.\n",
+          "skills/invoice-summary/scripts/total.mjs": "import fs from 'node:fs';\nconst args = process.argv.slice(2);\nif (args.length === 1 && args[0] === '--help') {\n  console.log('Usage: node total.mjs <input.json>\\nOutput: {totals:{currency:minorUnits},unresolved:[recordIndex]}. Exit: 0 success; 2 invalid input.');\n} else {\n  try {\n    if (args.length !== 1) throw new Error('provide one JSON input file; use --help');\n    const rows = JSON.parse(fs.readFileSync(args[0], 'utf8'));\n    if (!Array.isArray(rows)) throw new Error('expected an array');\n    const sums = new Map(), unresolved = [];\n    rows.forEach((row, i) => {\n      if (!row || typeof row.currency !== 'string' || !/^[A-Z]{3}$/.test(row.currency) || !Number.isSafeInteger(row.amountMinor)) { unresolved.push(i); return; }\n      const total = (sums.get(row.currency) ?? 0) + row.amountMinor;\n      if (!Number.isSafeInteger(total)) { unresolved.push(i); return; }\n      sums.set(row.currency, total);\n    });\n    console.log(JSON.stringify({totals:Object.fromEntries(sums),unresolved}));\n  } catch (e) { console.error(e.message); process.exitCode = 2; }\n}\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/invoice-summary/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/invoice-summary/SKILL.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "现成可运行工具与明确业务含义已提供，观察作者能否只补调用与结果使用，而非重新教授实现。",
+        "minimalCounterexample": "工具尚不存在或其接口不足以解释结果时，任务需要先补工具或接口，不能只给虚构调用。",
+        "allowedVariance": "允许等价命令展示与组织；不要求复述工具全部参数或指定段落数量。"
+      }
+    },
+    {
+      "id": "synthesize_method_from_source_topics",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "依据 sources 中的领域资料，为后续 Agent 创建 skills/window-digest，处理给定事件的窗口摘要及归档来源比较。生成可复用 Skill 包，只写该目录；本次不执行业务处理或模型实验。",
+      "assertions": [
+        "保留半开 UTC 窗口、按事件时间筛选、无时区不猜测，以及记录有效性和待确认序号。",
+        "保留先核对全输入再筛窗口、同 ID 同值去重、冲突全组排除及接收顺序不代表正确性的理由。",
+        "区分没有输入与零事件，不能从零推断健康；归档分组仅在对应请求进入，缺 source 的记录仍计数。",
+        "后续执行者凭交付包及输入可找到必要规则，不依赖作者会话或包外不可达资料；允许充分内联或明确包内指针。",
+        "不把样例写成固定答案，不用新审批、环境检测和泛用教程代替方法；只报告真实检查。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "sources/window.md": "# 时间窗口\n输入为用户给定的 JSON 数组。记录包含非空字符串 eventId、带 Z 或明确偏移的 eventAt、非空字符串 category；不合法记录按零起始序号列为待确认，不计数。按 eventAt 而非接收顺序筛选。start/end 是 UTC，窗口为 start <= eventAt < end，避免相邻窗口重复计数。缺少时区不能假定为本地或 UTC。\n",
+          "sources/replay.md": "# 重放与冲突\n先核对整个输入的合法记录，再筛窗口。同 eventId 的 eventAt 和 category 原字符串都相同时只计一次。字段不同则为冲突：该 ID 全部记录不计数，报告冲突 ID，请用户确认，不自动取最后一条。接收顺序不能证明哪版正确。\n",
+          "sources/result.md": "# 结果与依据\n按 category 输出窗口内有效事件数量，并列出不合法记录序号和冲突 ID。完整输入为空或无命中时报告零；没有输入文件时索取，不能报告零。零事件不能推出服务健康。\n",
+          "sources/archive.md": "# 归档模式\n仅当用户要求归档来源比较时，按 source/category 分组。source 缺失的合法记录仍计入未注明来源组；其它有效性、去重和窗口规则不变。普通摘要不要求或检查 source。\n",
+          "skills/.keep": ""
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/window-digest/**"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/window-digest/SKILL.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "给来源和目标，不给目标正文、预定资源布局或纠正答案；测综合而非按提示删内容。领域资料是合成 fixture。",
+        "minimalCounterexample": "局部改字段时不要求全主题重建；目标正文已作为依赖提供时，结果不证明独立综合。",
+        "allowedVariance": "允许等价措辞、版式和资源布局；按含义、可达依据和范围判断，不按文件数或固定术语评分。合成源用例，未执行模型。"
+      }
+    }
+  ]
+}
