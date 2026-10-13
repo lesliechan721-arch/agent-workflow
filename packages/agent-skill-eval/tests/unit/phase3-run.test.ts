@@ -1379,6 +1379,45 @@ describe('EvalSpec v1 execution', () => {
     })
   })
 
+  it('preserves explicit deny-all authorization with writable conversation tools', () => {
+    const document = parseSelectedCases({
+      version: 1,
+      suite: { kind: 'conversation', unitUnderTest: 'fixture-skill' },
+      cases: [{
+        id: 'no-write', split: 'validation', tags: [], prompt: 'Inspect without editing.',
+        assertions: ['Does not attempt a write.'],
+        expected: { workspaceUnchanged: false, allowedWorkspaceChanges: [] },
+      }],
+    })
+    const adapted = adaptConversationProviderCase(document, document.cases[0]!)
+    const value = adapted.value as Record<string, unknown>
+    const normalize = (candidate: Record<string, unknown>) => normalizeConversationProviderCase({
+      value: candidate, expectedSkill: 'fixture-skill', fixtureRoot: process.cwd(),
+    })
+    expect(value).toMatchObject({
+      sandbox: 'workspace-write',
+      review: { workspace_unchanged: false, allowed_workspace_changes: [] },
+    })
+    expect(normalize(value)).toMatchObject({
+      sandbox: 'workspace-write', workspaceUnchanged: false,
+      allowedWorkspaceChanges: [], artifacts: [],
+    })
+
+    const review = value.review as Record<string, unknown>
+    const { allowed_workspace_changes: _allowlist, ...missingAllowlist } = review
+    expect(() => normalize({ ...value, review: missingAllowlist })).toThrow('requires explicit')
+    expect(() => normalize({
+      ...value, review: { ...review, allowed_workspace_changes: ['out/**'] },
+    })).toThrow('requires non-empty review.artifacts')
+    expect(() => normalize({
+      ...value,
+      review: {
+        ...review, allowed_workspace_changes: ['out/**'],
+        artifacts: [{ path: 'outside.txt', exists: true }],
+      },
+    })).toThrow('outside review.allowed_workspace_changes')
+  })
+
   it('normalizes every registered conversation corpus through the actual adapter', async () => {
     const repositoryRoot = path.resolve('../..')
     const manifests = await evalManifestPaths(path.join(repositoryRoot, 'plugins'))

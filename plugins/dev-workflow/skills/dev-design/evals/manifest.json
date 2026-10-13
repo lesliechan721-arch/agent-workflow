@@ -6,11 +6,21 @@
       "scope": "project",
       "plugins": {
         "dev-workflow": {},
-        "decision-kit": {}
+        "decision-kit": {},
+        "human-content": {}
       }
     }
   },
   "suites": [
+    {
+      "id": "alignment-handoff",
+      "kind": "conversation",
+      "cases": "alignment-handoff-cases.json",
+      "profiles": ["project-default"],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
+    },
     {
       "id": "trigger",
       "kind": "trigger",

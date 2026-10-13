@@ -20,6 +20,33 @@
   },
   "cases": [
     {
+      "id": "early_layout_alignment",
+      "split": "validation",
+      "tags": ["regression", "boundary"],
+      "input": {
+        "query": "正在对齐新的审批提交页，风险说明与提交入口的信息层级尚未选定，需要让我判断桌面和窄屏实际看到的结果。先确定体验，不做生产实现。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "早期体验选择不应等待用户点名原型技能或反复声明文字无效。",
+        "minimalCounterexample": "同一布局已经实际接受，当前只把决定记入规格时无需重新原型。",
+        "allowedVariance": "可以作为当前对齐的辅助方法采用；不要求它是首个入口，实际任务完成另由conversation核对。"
+      }
+    },
+    {
+      "id": "accepted_layout_simple_copy",
+      "split": "validation",
+      "tags": ["regression", "boundary"],
+      "input": {
+        "query": "桌面和窄屏布局已确认且不变，现在只把按钮文字从“提交申请”改为“发送申请”，含义和行为不变。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "放宽早期体验入口不能让明确文案修改产生无用原型。",
+        "minimalCounterexample": "按钮的位置、主次关系或操作结果尚未确定且需具体候选比较时，应采用原型。"
+      }
+    },
+    {
       "id": "prototype_clickable_ui",
       "split": "validation",
       "tags": [

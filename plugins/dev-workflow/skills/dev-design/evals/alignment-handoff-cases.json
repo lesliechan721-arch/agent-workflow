@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-design",
+    "participants": ["decision-shape", "decision-grill", "decision-prototype", "project-context", "dev-spec", "dev-review-spec", "explain-for-review"],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "沿当前实际决定、知识与原型到规格的消费路径检查保真；来源不能被摘要替换，设计不能擅自进入实施。"
+    },
+    "runtime": { "isolation": "strict" }
+  },
+  "cases": [
+    {
+      "id": "generated-alignment-reaches-current-spec",
+      "split": "validation",
+      "tags": ["regression", "boundary", "composition"],
+      "prompt": "使用 dev-design 设计组织审批页并交付正式本地规格。当前确认：一个登录账号能加入多个组织，离开组织只结束成员关系；审批人只能处理所属组织的申请，提交者可撤回尚未审批的申请，审计不记录token。信息层级尚未选择，需要让我判断桌面和窄屏的实际效果，再形成规格。可原位维护 docs/domain.md；临时设计材料仅写 .dev-workflows/approval/，可查看候选用 prototypes/layout/artifact/index.html，最终规格用 spec.md。用当前对话反馈，不启动网页Review服务，只设计，不修改产品或执行Git操作。",
+      "assertions": [
+        "Shape组织完整主题覆盖、实际体验证据与知识维护；当前创建的领域定义和候选被后续规格实际消费，而不是用预置的两端样本或声称已调用替代交接。",
+        "本次候选可查看后才取得用户选择，verdict记录桌面、窄屏、失败行为和允许变化的实际接受范围，不能把旧反馈冒称本次接受。",
+        "最终Spec保留多组织关系、权限、可撤回状态、审计限制、用户新确认的超时行为和布局关系，并引用本次实际原型、接受记录与知识位置。",
+        "正式规格安排独立审查或如实说明能力缺口；作者自检不冒充独立审查，展示完整设计后才消费批准，批准也不新增实施授权。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "接受你刚展示的第一个候选。桌面风险说明紧邻提交操作，窄屏先风险再操作；请求超时保留草稿并提示结果未确认，不自动重试。内部模块和DOM结构交给实施者选择，其他业务边界不变。",
+          "当前完整规格准确表达我的要求和刚才的接受范围。我确认这一版设计；审查如有能力限制应如实保留，本次仍不实施。"
+        ],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "docs/domain.md": "# 领域\n组织是协作及数据隔离主体。Account代表组织使用者，尚未区分登录账号与成员关系。\n",
+          "src/approval.js": "export function canApprove(request, member) { return request.organizationId === member.organizationId; }\n",
+          "facts.md": "# 合成项目事实\n审批请求超时不能证明操作未生效。没有已接受的页面布局。现有生产实现保持不变。\n"
+        }
+      },
+      "expected": {
+        "output": "当前真实对齐、知识与原型接受进入完整规格，设计与实施边界保持。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["docs/domain.md", ".dev-workflows/approval/**"],
+        "artifacts": [
+          { "path": "docs/domain.md", "exists": true },
+          { "path": ".dev-workflows/approval/prototypes/layout/artifact/index.html", "exists": true },
+          { "path": ".dev-workflows/approval/prototypes/layout/verdict.md", "exists": true },
+          { "path": ".dev-workflows/approval/spec.md", "exists": true }
+        ]
+      },
+      "audit": {
+        "rationale": "同时覆盖需求广度、主动知识维护、早期原型及同一次运行的Spec交接；只分别测试两端不能关闭这条路径。",
+        "minimalCounterexample": "已有完整有效的原型与知识时可以复用，不必再次生成；没有正式规格请求的小任务可在对话交付。",
+        "allowedVariance": "允许候选数量、页面实现、呈现方式和合理方法组合变化；读取、写入与答复顺序以真实轨迹为准，独立性只能由实际执行证据证明。"
+      }
+    },
+    {
+      "id": "original-requirements-survive-summary-handoff",
+      "split": "validation",
+      "tags": ["regression", "boundary"],
+      "prompt": "使用 dev-design 根据 request.md、decisions.md 和现有项目资料整理正式规格，写到 .dev-workflows/export/spec.md，当前有效用户答复以 request.md 为准。交付当前规范及实际审查状态后结束，不实施。",
+      "assertions": [
+        "读取原始要求，不把既有对齐摘要作为唯一来源；512仍为建议且可配置，不能变成用户已批准的硬限制。",
+        "保留当前租户、选择范围、空选择零条、原顺序、输入不变、审计记录但不记录token的全部实质条件。",
+        "不为纠正摘要而重问已经明确的有效答复，不制作无关原型或强制ADR；不声称未经执行的独立审查已经通过。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "request.md": "# 当前有效用户答复\n只导出当前租户内选中的记录，空选择为零条；保持输入顺序且不改变输入。采用可配置上限，512只是建议。删除请求必须留审计记录，但token不能出现在日志或导出文件。内部集合与模块组织委托实施者选择。当前只设计。\n",
+          "decisions.md": "# 对齐记录\n导出选中记录，限制512条。支持删除。\n",
+          "src/export.js": "export const exportRows = rows => rows;\n"
+        }
+      },
+      "expected": {
+        "output": "以原始有效答复形成保真规格，说明相对当前记录的实际语义变化。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [".dev-workflows/export/**"],
+        "artifacts": [{ "path": ".dev-workflows/export/spec.md", "exists": true }]
+      },
+      "audit": {
+        "rationale": "Shape的交接不免除Design和Spec读取完整来源，旧摘要不能静默删掉或加强用户要求。",
+        "minimalCounterexample": "当前记录已完整忠实表达有效答复时可以直接复用，不为整理增加新选择。",
+        "allowedVariance": "允许正文或可达规范附件承载要求；不固定标题、字数、读取顺序或内部文件组织。"
+      }
+    }
+  ]
+}

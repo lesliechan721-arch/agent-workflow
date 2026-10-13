@@ -478,6 +478,8 @@ workspace 不接受 --file，关注路径写入任务，CLI 及 Adapter v4 都�
 - macOS conversation provider 只使用一层 outer Seatbelt。它阻止宿主源码读取，并按 case 精确实施 workspace 只读或可写边界；turn 使用 `externalSandbox`，因为嵌套 Seatbelt 不可靠。app-server control-plane 和工具执行网络都保持可用，provider capabilities 和每次 evidence 必须公开这个限制。
 - Oracle preflight 和 result triage 属于独立 Auditor，而不是 Engine。运行前没有 passing Audit 时不得启动模型。clean success 不要求 triage；只有 execution/grade 失败、current 结果混合、相对 baseline 回归，或结果将驱动生产 Skill 修改时，才在全新上下文做 result-triage。triage 默认返回聊天结论，且不是 Release Check 的机器输入。
 
+- Conversation 的 `expected.workspaceUnchanged: false` 选择可写运行环境，必须显式提供 `allowedWorkspaceChanges`。非空集合授权相应最终文件变化，并要求实际 artifact；空集合 `[]` 用于测试工具可写时模型主动不写，允许没有 artifact，但任何最终文件变化都由机械门禁拒绝。适配器保留显式空集合，缺失集合仍拒绝；写入尝试及写后恢复另由 Oracle 根据真实轨迹判断。工具能力不等于用户写入授权。
+
 ## AW Review 准备、只读取证与来源绑定
 
 `aw review inspect <target> [--workspace-root <root>] [--materialization <receipt>]... [--view review|release] [--json]` 为源 Skill、Plugin 或 Catalog 取得当前来源和产物事实，由 `aw.review-inspection.v2` 表示能力。默认 review 视图直接返回必要 source 路径及每个 Skill 的 source、profile、final、digest、证据位置和缺口；不展开内部 join 表或计算无关的 required Eval。release 视图保留完整 subjects、requiredFinals、finalMappings、requiredEvals 和 verified bindings，供 Release Checker 消费。两种视图使用相同的来源核验与产物解析；不保留 inspection v1 输出。

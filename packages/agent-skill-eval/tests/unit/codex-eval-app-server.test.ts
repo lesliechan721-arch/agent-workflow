@@ -105,6 +105,82 @@ describe('Codex provider app-server process boundary', () => {
     },
   )
 
+  it.skipIf(process.platform !== 'darwin').each(['none', 'modify', 'create', 'delete', 'directory'])(
+    'enforces an empty write allowlist against actual workspace changes (%s)', async (mutation) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eval-deny-all-'))
+      try {
+        const subjectRoot = path.join(root, 'subject')
+        const codexBin = path.join(root, 'fake-codex.mjs')
+        await fs.ensureDir(subjectRoot)
+        await fs.writeFile(codexBin, [
+          '#!/usr/bin/env node',
+          "import fs from 'node:fs'",
+          "import path from 'node:path'",
+          `const mutation = ${JSON.stringify(mutation)}`,
+          "let buffer = ''",
+          "const emit = frame => process.stdout.write(JSON.stringify(frame) + '\\n')",
+          "process.stdin.setEncoding('utf8')",
+          "process.stdin.on('data', chunk => {",
+          '  buffer += chunk',
+          "  let newline = buffer.indexOf('\\n')",
+          '  while (newline >= 0) {',
+          '    const frame = JSON.parse(buffer.slice(0, newline))',
+          '    buffer = buffer.slice(newline + 1)',
+          "    if (frame.method === 'initialize') emit({ id: frame.id, result: {} })",
+          "    if (frame.method === 'thread/start') emit({ id: frame.id, result: { thread: { id: 'root' } } })",
+          "    if (frame.method === 'turn/start') {",
+          "      const file = path.join(frame.params.cwd, 'note.md')",
+          "      if (mutation === 'modify') fs.writeFileSync(file, 'changed')",
+          "      if (mutation === 'create') fs.writeFileSync(path.join(frame.params.cwd, 'new.md'), 'new')",
+          "      if (mutation === 'delete') fs.unlinkSync(file)",
+          "      if (mutation === 'directory') fs.mkdirSync(path.join(frame.params.cwd, 'new-directory'))",
+          "      emit({ method: 'test/mutationCompleted', params: { mutation } })",
+          '      emit({ id: frame.id, result: {} })',
+          "      emit({ method: 'turn/completed', params: { threadId: 'root', turn: { status: 'completed' } } })",
+          '    }',
+          "    newline = buffer.indexOf('\\n')",
+          '  }',
+          '})',
+          'setTimeout(() => process.exit(124), 30_000)',
+        ].join('\n'))
+        await fs.chmod(codexBin, 0o755)
+        const evidence = await runCodexConversationProviderCase({
+          evalCase: {
+            id: 'deny-all', prompt: 'Inspect without editing.', scriptedReplies: [],
+            expectedOutput: 'No changes.', checks: ['Does not write files.'],
+            workspaceFiles: { 'note.md': 'original\n' },
+            workspaceUnchanged: false, sandbox: 'workspace-write', allowedWorkspaceChanges: [],
+            artifacts: [], environmentPathPrepend: [],
+          },
+          sourceProjectRoot: subjectRoot, skillMode: 'without-skill',
+          skillName: 'unused', skillNames: [], codexBin,
+          codexRuntime: {
+            inherited: false, model: null, modelProvider: 'openai',
+            credentialSource: 'environment', configToml: 'model_provider = "openai"\n',
+            providerEnvironment: { OPENAI_API_KEY: 'fake-key' },
+            sourceCodexHome: root, copyOpenAiAuth: false,
+            sensitiveEnvironmentNames: ['OPENAI_API_KEY'], sensitiveValues: ['fake-key'],
+            evidenceDigest: 'sha256:test',
+          },
+          timeoutMs: 5_000, sourceEnv: { PATH: process.env.PATH },
+          isolation: 'standard', environmentFixtures: [],
+        })
+        expect(evidence.complete).toBe(true)
+        expect(evidence.eventTrace).toContainEqual({
+          method: 'test/mutationCompleted', params: { mutation },
+        })
+        expect(evidence.mechanicalPassed).toBe(mutation === 'none')
+        if (mutation === 'none') expect(evidence.workspaceChanges).toEqual([])
+        else {
+          expect(evidence.workspaceChanges.length).toBeGreaterThan(0)
+          expect(evidence.diagnostics.join('\n')).toContain('outside the allowed paths')
+        }
+      } finally {
+        await fs.remove(root)
+      }
+    },
+  )
+
   it('keeps the attempt budget separate from the 30 second RPC cap', () => {
     vi.useFakeTimers({ now: new Date('2026-08-31T00:00:00.000Z') })
     try {

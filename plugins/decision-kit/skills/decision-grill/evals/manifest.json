@@ -5,13 +5,15 @@
     "project-default": {
       "scope": "project",
       "plugins": {
-        "decision-kit": {}
+        "decision-kit": {},
+        "human-content": {}
       }
     },
     "user-default": {
       "scope": "user",
       "plugins": {
-        "decision-kit": {}
+        "decision-kit": {},
+        "human-content": {}
       }
     }
   },
@@ -119,6 +121,17 @@
       ],
       "runs": 1,
       "timeoutMs": 180000,
+      "requiredForRelease": false
+    },
+    {
+      "id": "presentation-handoff",
+      "kind": "conversation",
+      "cases": "presentation-handoff-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
       "requiredForRelease": false
     }
   ]

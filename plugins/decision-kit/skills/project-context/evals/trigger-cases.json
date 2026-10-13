@@ -20,6 +20,33 @@
   },
   "cases": [
     {
+      "id": "clarify_relationship_before_spec",
+      "split": "validation",
+      "tags": ["regression", "boundary"],
+      "input": {
+        "query": "我们说的“成员退出”可能指解除组织成员关系，也可能指注销登录账号。这会影响后续所有权限讨论，先用具体场景把主体和关系弄清。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "领域模型澄清不以用户明确要求维护词汇表为前提。",
+        "minimalCounterexample": "词义及关系已经明确，只需读取并按现有要求实施时，不必采用建模维护能力。",
+        "allowedVariance": "可独立处理或作为主题对齐的辅助能力；加载不证明已经取得产品决定或更新知识。"
+      }
+    },
+    {
+      "id": "consume_existing_terms_only",
+      "split": "validation",
+      "tags": ["regression", "boundary"],
+      "input": {
+        "query": "读取现有领域文档中已经清楚定义的登录账号和成员关系，按这些定义解释当前函数；本次没有词义变更，也不需要维护知识。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "读取已有知识不是修改领域模型，主动维护不能强制产生文件。",
+        "minimalCounterexample": "实际发现关系冲突或需要重新定义主体时，可以采用建模能力说明差异。"
+      }
+    },
+    {
       "id": "domain_language_maintenance",
       "split": "validation",
       "tags": [

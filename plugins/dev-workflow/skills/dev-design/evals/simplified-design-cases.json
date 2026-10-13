@@ -12,8 +12,11 @@
     "participants": [
       "decision-shape",
       "decision-grill",
+      "decision-prototype",
+      "project-context",
       "dev-spec",
-      "dev-review-spec"
+      "dev-review-spec",
+      "explain-for-review"
     ],
     "runtime": {
       "isolation": "strict"
