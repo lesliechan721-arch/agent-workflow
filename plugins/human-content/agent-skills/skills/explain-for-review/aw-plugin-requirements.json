@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "kind": "aw-plugin-requirements",
+  "plugin": {
+    "name": "human-content",
+    "version": "0.1.0-beta.2"
+  },
+  "requiredCapabilities": [
+    "aw.plugin-manifest.v3",
+    "aw.plugin-skills.v1",
+    "aw.portable-skills.v1"
+  ],
+  "digest": "sha256:0b60d532e34080a08d893b4228854c6e97801a2c3990f553b377f8b813d83b3a"
+}

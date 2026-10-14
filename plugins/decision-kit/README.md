@@ -1,8 +1,8 @@
 # Decision Kit
 
-通过主题编排、有依据的问答或可体验原型，为重要决定建立准确的共享理解，并按需维护项目领域词汇与长期重要决定。
+先看清需求全貌，再通过问答、可体验原型和领域知识维护，为重要决定建立准确的共享理解，减少遗漏和反复确认。
 
-Decision Kit 先调查可以确认的事实，再按任务范围选择完整塑形、独立访谈或最低成本原型。
+Decision Kit 先调查可查事实，保留原始要求和开放问题，再按任务范围选择主题对齐、独立访谈、最低成本原型或知识维护。
 
 ## 安装
 
@@ -10,18 +10,20 @@ Decision Kit 先调查可以确认的事实，再按任务范围选择完整塑�
 aw install decision-kit -p both
 ```
 
+安装会同时满足 `human-content` 依赖，为复杂材料提供 `explain-for-review`。普通短问题仍直接说明，不强制制作阅读页。
+
 ## 包含的 Skill
 
 | Skill | 什么时候使用 |
 | --- | --- |
-| [`decision-shape`](skills/decision-shape/) | 建立、恢复或修订一个主题的共享理解；受委托的对齐也可通过一轮澄清完成 |
+| [`decision-shape`](skills/decision-shape/) | 检查需求整体覆盖，组织问答、原型与知识维护，交付当前共识及剩余缺口 |
 | [`decision-grill`](skills/decision-grill/) | 需要通过有依据的问答确认材料选择，一问或多轮均可 |
-| [`decision-prototype`](skills/decision-prototype/) | 一个明确决定必须看到、运行、操作、实验或测量候选结果后才能作出 |
-| [`project-context`](skills/project-context/) | 澄清项目特有词汇，维护已确认的重要决定、适用条件和必要理由 |
+| [`decision-prototype`](skills/decision-prototype/) | 用早期候选、操作演示或实验校准布局、行为、状态关系及可行性 |
+| [`project-context`](skills/project-context/) | 澄清领域概念与关系，及时维护已确认词义和重要决定的理由 |
 
-四个 Skill 都可以直接调用。`decision-shape` 恢复当前主题与已确认方向，协调 `decision-grill` 的材料问答和 `decision-prototype` 的证据反馈。方向变化时，它只重新打开受影响的决定。访谈和原型两个叶子 Skill 不互相调用，也不依赖 `decision-shape`。`project-context` 独立维护项目知识，不管理开发阶段；完整开发设计可使用 dev-workflow 插件的 `dev-design`。
+四个 Skill 都可以直接调用。`decision-shape` 负责整体需求覆盖、方法选择与对齐完成判断，协调问答、原型和知识维护，并按需使用 `explain-for-review` 呈现已有复杂材料。方向变化时只重新打开受影响的决定；范围内尚未展开的主题不会被当成已经排除。三个叶子能力可独立完成本职工作，不反向依赖 Shape。完整开发设计可使用 dev-workflow 插件的 `dev-design`，由它衔接对齐、规格和审查。
 
-`decision-prototype` 按主要不确定性选择逻辑演示、界面候选或技术实验，再选择反馈方式。Review Shell 负责呈现证据和收集输入。Shape 只吸收当前答案、成立条件、必要风险和证据指针。
+`decision-prototype` 按主要不确定性选择逻辑演示、界面候选或技术实验，再选择反馈方式，不必等文字讨论失败。Review Shell 负责呈现证据和收集输入。Shape 保留当前答案、接受范围、成立条件、必要风险和证据指针；Context 将确需长期保留且已确认的知识更新到既有位置。
 
 ## 典型用法
 
@@ -43,10 +45,10 @@ aw install decision-kit -p both
 
 ## 四个 Skill 怎么选
 
-- “建立或恢复这个主题的共识，按需澄清、访谈或制作原型” → `decision-shape`
+- “检查需求有没有遗漏，建立或恢复共识并按需问答、试原型、维护知识” → `decision-shape`
 - “我需要通过问答把一个材料决定想清楚” → `decision-grill`
-- “只靠说无法判断，我需要看到、操作或测量候选结果” → `decision-prototype`
-- “维护项目特有词汇，或为重要决定保留长期理由与边界” → `project-context`
+- “用具体候选或实验校准这一处体验、行为或技术选择” → `decision-prototype`
+- “澄清项目概念、关系，或维护已确认的重要词义与决定” → `project-context`
 
 ## 边界
 
@@ -60,7 +62,7 @@ aw install decision-kit -p both
 
 ## Portable Agent Skills
 
-四个 Skill 也可通过 portable-agent-skills 分发。使用 `aw skill install decision-kit --scope <project|user>` 安装，或使用 `aw skill materialize decision-kit --scope <project|user> --out <dir>` 导出。
+四个 Skill 也可通过 portable-agent-skills 分发；完整依赖闭包同时提供 Human Content 的 `explain-for-review`。使用 `aw skill install decision-kit --scope <project|user>` 安装，或使用 `aw skill materialize decision-kit --scope <project|user> --out <dir>` 导出。
 
 ## Review 默认期限
 

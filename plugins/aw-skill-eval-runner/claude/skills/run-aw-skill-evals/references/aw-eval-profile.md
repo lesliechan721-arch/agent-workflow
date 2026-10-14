@@ -36,7 +36,9 @@ case 使用 `prompt` 和非空可观察 `assertions`。按需使用：
 - `input.pathPrepend`：已存在且明确受控的 CLI fixture；
 - `expected.output`、`workspaceUnchanged`、`allowedWorkspaceChanges`、`artifacts`。
 
-写入用例明确 `workspaceUnchanged: false`、允许路径和至少一个实际 artifact。artifact 可用 path/exists/contains/notContains/json；路径不能越界或修改测试控制目录。空工作区不证明不存在的仓库、Spec、target 或授权状态。
+需要可写工具时使用 `workspaceUnchanged: false`，并明确提供 `allowedWorkspaceChanges`。允许文件变化时，列出允许路径和至少一个实际 artifact；测试模型主动不写时使用空集合 `[]`，无需创建产物，任何最终文件变化仍判为越界。另从实际轨迹检查写入尝试，不能把写后恢复当作主动不写。`false` 选择运行环境，不赋予用户写入授权。
+
+artifact 可用 path/exists/contains/notContains/json；路径不能越界或修改测试控制目录。空工作区不证明不存在的仓库、Spec、target 或授权状态。
 
 ### 条件 audit metadata
 

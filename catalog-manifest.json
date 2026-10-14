@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.38",
+  "catalogVersion": "0.1.0-beta.39",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "b885b074fb1b5249fdf9a75b94107b7f57937b99"
+    "sourceHead": "e953f0cc4d30e8995079e7564eb8d03c1235bd84"
   },
   "entries": [
     {
@@ -166,7 +166,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.4",
+      "version": "0.1.0-beta.5",
       "dependencies": [
         "agent-skill-toolkit"
       ],
@@ -179,9 +179,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:6014b77df6005a5d309a479d1bd653dbcf622a189f5e954dcd5b14b104dd3c0b",
-      "manifestDigest": "sha256:9276b4f7a0d9d396673c6c2d436169ac5cd0bb57f95cb6669ab57f259c25f5b1",
-      "contentDigest": "sha256:a787e7d4f21aeb66cc59102041d8e3a38a3807447d9adaabcd29c0252bd65939"
+      "artifactDigest": "sha256:6207bb60f1808307924789446ecb3e95aec17df75eb251b6910210f9cccf36a8",
+      "manifestDigest": "sha256:1c6c13e2508272a9be34751302bdc9d8bb75696b1bf2981cffae7fdda9b49952",
+      "contentDigest": "sha256:b5ad9ac9aa14fa144105c48af0d65b721454883d48033d20ddb7e36e97a288f0"
     },
     {
       "name": "browser-use",
@@ -289,8 +289,10 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.4",
-      "dependencies": [],
+      "version": "0.1.0-beta.5",
+      "dependencies": [
+        "human-content"
+      ],
       "requires": {
         "aw": {
           "capabilities": [
@@ -300,9 +302,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:238703df1b23a36b77864f51e5fcff96172582b72ce3315e4406e8a7b0d2b778",
-      "manifestDigest": "sha256:d4c6852bf48544e132ac804520d03a81d6462cc6c71b4dbb4452126b17715824",
-      "contentDigest": "sha256:aec0592c29975609d0074208ec66cf5de5d6c617a24708d5a2f4bc24c6a7a3a7"
+      "artifactDigest": "sha256:dd78dcd1ef818d520516f920906a03262f84c5b4cc163fe314abc8833b999fe4",
+      "manifestDigest": "sha256:591c5dca435a23d5795210711f3769dd60e4f2eed9c0598db190137a22f80e6e",
+      "contentDigest": "sha256:d6a995636402f36a91f6c5175cbac614375d98c9ee059fc7bb830c929eb25be0"
     },
     {
       "name": "dev-workflow",
@@ -327,7 +329,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.13",
+      "version": "0.1.0-beta.14",
       "dependencies": [
         "decision-kit",
         "human-content"
@@ -341,9 +343,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:b7d6224ad2fff029639d68d38c7574b492f064c29e2f00e2546a1e3fba03defd",
-      "manifestDigest": "sha256:dd969453c632a47644131dee0c0938e4f15f3cd6b769c14e4a542056cc7ff2d3",
-      "contentDigest": "sha256:f508b544c355581f0cbaf916660fa652f8a3997f1411a0552595ed4414df1d07"
+      "artifactDigest": "sha256:723902ec9418e0b9bf8db294a138067536f594bd91b5d05b5dc631fb2c850b8a",
+      "manifestDigest": "sha256:834da992751d03fe1f5ac0d1d8199229f88877c695feab30b9d5302758bf6ca4",
+      "contentDigest": "sha256:6dd777d63eb181243a3407cd56ecb762cf355568c3745fa0965cb5fbe917a943"
     },
     {
       "name": "git-toolkit",
@@ -405,19 +407,20 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.1",
+      "version": "0.1.0-beta.2",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
             "aw.plugin-manifest.v3",
-            "aw.plugin-skills.v1"
+            "aw.plugin-skills.v1",
+            "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:1993d24938b8c6c1f3da2812f88b4c96ae8f52b25a6f96fcb5a8256f6dc550ef",
-      "manifestDigest": "sha256:23edc6a6ff71eaf525dd9f79c4abce46c024276b8892b32c9e0f80bb369afe65",
-      "contentDigest": "sha256:d568ee1444002ea460c36685573f83c990270d36e8e1b8822c02027c20828b9d"
+      "artifactDigest": "sha256:4c09997c80a6380348e5aaa1109b8ad1433b9c7ca6a3063976b6b97e6309df97",
+      "manifestDigest": "sha256:c317d337a2119b1e7cbbff3b28c3df0bcbf5299b82ed5e6c7aca13d8d226fc08",
+      "contentDigest": "sha256:a9c2a36e8fa99ca8c83833d30856ae5f6fcbdcf1fae8afc9145cc42213a77d5e"
     }
   ]
 }

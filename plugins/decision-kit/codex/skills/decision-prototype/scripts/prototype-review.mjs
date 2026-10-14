@@ -50,7 +50,7 @@ function globalHelp() {
   return `Usage:
   prototype-review.mjs start --prototype <prototype.json> [--ttl 30m] [--new-session]
   prototype-review.mjs open --session <session.json> [--timeout 10s] [--retry]
-  prototype-review.mjs wait --session <session.json> [--timeout 5m]
+  prototype-review.mjs wait --session <session.json> [--timeout 30m]
   prototype-review.mjs status --session <session.json>
   prototype-review.mjs stop --session <session.json>
 
@@ -66,7 +66,8 @@ Options:
   --new-session preserves an unknown old session; it does not stop it or renew a healthy session.
   open --timeout limits only the page-connection wait; it does not wait for feedback.
   open --retry requests the browser again after the previous request has finished.
-  wait --timeout should use a long window within the calling tool limits; avoid short polling.
+  wait defaults to 30 minutes. Allow at least 30 minutes for user feedback; avoid short polling.
+  Explicit shorter wait timeouts remain available for diagnostics and tests.
   submitted receipts include validated feedbackData and the feedback file path.`;
 }
 
@@ -80,7 +81,7 @@ Without --ttl, start uses 30 minutes.
 
 --timeout limits only the page-connection wait; it does not wait for feedback.
 --retry requests the browser again after the previous request has finished.`,
-    wait: 'Usage: prototype-review.mjs wait --session <session.json> [--timeout 5m]',
+    wait: 'Usage: prototype-review.mjs wait --session <session.json> [--timeout 30m]',
     status: 'Usage: prototype-review.mjs status --session <session.json>',
     stop: 'Usage: prototype-review.mjs stop --session <session.json>',
   };
@@ -129,7 +130,7 @@ function parseCommand(argv) {
   return values;
 }
 
-function parseTimeout(value = '5m') {
+function parseTimeout(value = '30m') {
   const match = /^(\d+)(ms|s|m|h)?$/.exec(value);
   if (!match) throw new UsageError(`Invalid timeout: ${value}`);
   const multipliers = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
