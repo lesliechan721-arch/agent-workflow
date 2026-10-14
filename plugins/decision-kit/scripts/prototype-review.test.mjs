@@ -415,7 +415,7 @@ test('Prototype Review scripts expose the bounded command contract', async () =>
   assert.match(general.stdout, /start --prototype/);
   assert.match(general.stdout, /--ttl 30m/);
   assert.match(general.stdout, /--new-session/);
-  assert.match(general.stdout, /--timeout 5m/);
+  assert.match(general.stdout, /--timeout 30m/);
   for (const command of ['start', 'open', 'wait', 'status', 'stop']) {
     const result = await runRuntime([command, '--help']);
     assert.match(result.stdout, new RegExp(`prototype-review\\.mjs ${command}`));
@@ -427,6 +427,46 @@ test('Prototype Review scripts expose the bounded command contract', async () =>
     status: 'usage',
     error: 'start requires --prototype',
   });
+});
+
+test('wait keeps its default window open through 25 minutes and times out at 30 minutes', async () => {
+  const root = path.join(testRoot, 'default-wait-window');
+  const session = await writeUnreachableSession(root, prototypeConfig('default-wait-window'), { schemaVersion: 1 });
+  const descriptor = await readJson(session);
+  const origin = new URL(descriptor.url).origin;
+  const clockPath = path.join(root, 'clock.txt');
+  const preloadPath = path.join(root, 'clock.mjs');
+  const startedAt = Date.now();
+  await writeFile(clockPath, String(startedAt));
+  // Advance only the CLI clock; the authenticated peer replies without real delays.
+  await writeFile(preloadPath, `import { readFileSync } from 'node:fs';
+Date.now = () => Number(readFileSync(${JSON.stringify(clockPath)}, 'utf8'));
+`);
+  const elapsedMinutes = [5, 25, 30];
+  let requests = 0;
+  const server = http.createServer(async (request, response) => {
+    assert.equal(request.headers.origin, origin);
+    assert.equal(request.headers['x-prototype-review-token'], descriptor.token);
+    assert.ok(request.url.startsWith('/api/wait?'));
+    const elapsed = elapsedMinutes[requests++] ?? 60;
+    await writeFile(clockPath, String(startedAt + elapsed * 60_000));
+    response.writeHead(200, { 'content-type': 'application/json', connection: 'close' });
+    response.end(JSON.stringify({ ok: true, status: 'ready' }));
+  });
+  await new Promise((resolve) => server.listen(Number(new URL(origin).port), '127.0.0.1', resolve));
+  try {
+    const result = await execFileAsync(process.execPath, [
+      '--import', preloadPath, runtimeScript, 'wait', '--session', session,
+    ], { env: runtimeEnv, timeout: 10_000 });
+    assert.equal(parseReceipt(result.stdout).status, 'timeout');
+    assert.equal(requests, 3);
+    assert.equal(result.stderr, '');
+    await access(session);
+    await assert.rejects(access(path.join(path.dirname(session), 'terminal.json')), /ENOENT/);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });
 
 test('Prototype and feedback validation enforce progressive verdict rules', async () => {
@@ -535,7 +575,7 @@ test('start, authenticated HTTP, submission, status, and wait form one real sess
   assert.equal(status.status, 'submitted');
   assert.equal(status.verdict, 'accepted');
   assert.equal('feedbackDigest' in status, false);
-  const waited = parseReceipt((await runRuntime(['wait', '--session', started.session, '--timeout', '2s'])).stdout);
+  const waited = parseReceipt((await runRuntime(['wait', '--session', started.session])).stdout);
   activeSessions.delete(started.session);
   assert.equal(waited.status, 'submitted');
   assert.equal(waited.feedback, await realpath(path.join(root, 'feedback.json')));
