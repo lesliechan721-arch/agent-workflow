@@ -15,7 +15,8 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const localPluginRoot = path.resolve(scriptDir, '..');
 const requiredSkills = ['decision-grill', 'decision-prototype', 'decision-shape', 'project-context'];
 const leafSkills = ['decision-grill', 'decision-prototype'];
-const decisionSkills = [...leafSkills, 'decision-shape'];
+const decisionSkills = [...leafSkills, 'decision-shape', 'project-context'];
+const alignmentSkills = [...decisionSkills, 'explain-for-review'];
 
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'));
@@ -124,7 +125,7 @@ test('source package contains the four public Skills and native metadata', async
 });
 
 test('eval manifests point to parseable case documents with valid participant names', async () => {
-  const participants = new Set(requiredSkills);
+  const participants = new Set(alignmentSkills);
   for (const skillName of requiredSkills) {
     const evalRoot = path.join(context.sourceRoot, 'skills', skillName, 'evals');
     const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
@@ -829,7 +830,7 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
   }
 });
 
-test('leaf behavior stays independent and decision-shape owns composition', async () => {
+test('leaf scopes stay independent and composition suites expose their methods', async () => {
   for (const skillName of leafSkills) {
     const manifest = await readJson(
       path.join(context.sourceRoot, 'skills', skillName, 'evals', 'manifest.json'),
@@ -849,7 +850,14 @@ test('leaf behavior stays independent and decision-shape owns composition', asyn
         context.sourceRoot, 'skills', skillName, 'evals', suite.cases,
       ));
       assert.equal(corpus.suite.unitUnderTest, skillName);
-      assert.deepEqual(corpus.suite.participants ?? [], []);
+      const expectedParticipants = skillName === 'decision-grill'
+        && suite.id === 'presentation-handoff' ? ['explain-for-review'] : [];
+      assert.deepEqual(corpus.suite.participants ?? [], expectedParticipants);
+      if (expectedParticipants.length > 0) {
+        for (const profileId of suite.profiles) {
+          assert.ok(Object.hasOwn(manifest.profiles[profileId].plugins, 'human-content'));
+        }
+      }
     }
   }
 
@@ -861,16 +869,17 @@ test('leaf behavior stays independent and decision-shape owns composition', asyn
   const shapeRouterCorpus = await readJson(path.join(shapeEvalRoot, shapeRouter.cases));
   assert.deepEqual(
     [shapeRouterCorpus.suite.unitUnderTest, ...(shapeRouterCorpus.suite.participants ?? [])].sort(),
-    [...decisionSkills].sort(),
+    [...alignmentSkills].sort(),
   );
   assert.equal(shapeRouterCorpus.suite.runtime.forbidMultipleSkillLoads, false);
-  for (const id of ['behavior', 'shared-frame', 'prototype-evidence']) {
+  // Isolated composition suites must expose every declared method to their consumer.
+  for (const id of ['behavior', 'shared-frame', 'prototype-evidence', 'alignment-coverage']) {
     const suite = shapeManifest.suites.find((entry) => entry.id === id);
     assert.ok(suite);
     const corpus = await readJson(path.join(shapeEvalRoot, suite.cases));
     assert.deepEqual(
       [corpus.suite.unitUnderTest, ...(corpus.suite.participants ?? [])].sort(),
-      [...decisionSkills].sort(),
+      [...alignmentSkills].sort(),
     );
   }
   const sharedFrameSuite = shapeManifest.suites.find((suite) => suite.id === 'shared-frame');
@@ -976,14 +985,11 @@ test('prepared bundle renders the four static Skills', async () => {
     assert.equal(skill.includes('{{questionTool}}'), false);
   }
 
-  await access(path.join(
-    context.bundleRoot,
-    context.platform,
-    'skills',
-    'decision-grill',
-    'references',
-    'decision-presentation.md',
+  const bundleManifest = await readJson(path.join(
+    context.bundleRoot, '.agents-plugin', 'plugin.json',
   ));
+  // Dependency resolution consumes the published manifest, not prose calls.
+  assert.ok(bundleManifest.dependencies.includes('human-content'));
 
   const prototypeBundleRoot = path.join(
     context.bundleRoot,

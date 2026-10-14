@@ -1,6 +1,6 @@
 interface:
   display_name: decision-prototype
-  short_description: "用最低足够的可体验证据帮助用户决定，并可靠取得原型反馈"
+  short_description: "用早期候选或最小实验校准体验、行为与技术选择，保留真实接受范围"
   default_prompt: "使用 $decision-prototype 完成当前原型任务；按实际分工组织用户决定，或直接构建并验证被分配的产物。"
 policy:
   allow_implicit_invocation: true

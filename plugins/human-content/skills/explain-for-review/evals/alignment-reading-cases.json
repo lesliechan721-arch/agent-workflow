@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "explain-for-review",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "多主题阅读必须保留全部待决定事项及状态，不因呈现突出重点而替用户排除其他需求。"
+    },
+    "runtime": { "isolation": "strict" }
+  },
+  "cases": [
+    {
+      "id": "reading-keeps-all-open-themes",
+      "split": "validation",
+      "tags": ["regression", "boundary"],
+      "prompt": "使用 explain-for-review 把 design.md 做成 reading.html，帮助我理解并反馈当前方案。原文不改，不替我决定产品行为。",
+      "assertions": [
+        "三个主题各有可到达入口，完整来源与快照状态明确；离线凭据风险、仍未确定的超时行为和范围内待展开的窄屏体验均可见。",
+        "演示或图示不暗示已经选择自动重试或接受窄屏布局，不在阅读页里制造产品实现或批准动作。",
+        "只写阅读视图，原文保持不变；缺少的决定返回读者或调用者，不因排版而变成范围外。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "design.md": "# 候选设计，尚未批准\n## 离线查看\n方案A把访问凭据放进下载文件，转发文件会泄漏凭据。方案B只支持联网查看，需要网络。尚未选择。\n## 请求超时\n超时不代表未生效；自动重试可能重复提交，是否重试尚未决定。\n## 窄屏使用\n属于本次范围；风险与操作区域的顺序尚未展开，也没有接受过的界面。\n"
+        }
+      },
+      "expected": {
+        "output": "可审阅的多主题阅读视图，保留原始风险和未决状态。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["reading.html"],
+        "artifacts": [{ "path": "reading.html", "exists": true }]
+      },
+      "audit": {
+        "rationale": "覆盖广度不能在最终阅读视图中再次丢失；视图不是对齐或原型的替代物。",
+        "minimalCounterexample": "只有一个已确定短主题时，普通文字即可，不应强制多主题页面。",
+        "allowedVariance": "允许不同导航、图表和视觉组织；按实际可达内容、来源语义和写入范围核对，不按页面数量或美观判断。"
+      }
+    }
+  ]
+}

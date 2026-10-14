@@ -11,6 +11,15 @@
   },
   "suites": [
     {
+      "id": "alignment-reading",
+      "kind": "conversation",
+      "cases": "alignment-reading-cases.json",
+      "profiles": ["project-default"],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
+    },
+    {
       "id": "trigger",
       "kind": "trigger",
       "cases": "trigger-cases.json",

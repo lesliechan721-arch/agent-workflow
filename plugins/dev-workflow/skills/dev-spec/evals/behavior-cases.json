@@ -11,7 +11,10 @@
     },
     "runtime": {
       "isolation": "strict"
-    }
+    },
+    "participants": [
+      "explain-for-review"
+    ]
   },
   "cases": [
     {
@@ -26,12 +29,14 @@
         "只综合输入中已经确认的决定，不重新发起需求访谈或发明兼容承诺",
         "把服务端拒绝、旧邀请语义和用户提示写成材料决定或可观察行为",
         "明确保留文件组织、缓存方式和测试组织的实现自由",
-        "没有逐文件任务清单、精确命令序列或自然语言状态机"
+        "不把无来源的文件级步骤、命令序列或状态机制写成要求；允许用流程或状态关系解释已确认的用户行为。",
+        "保留连续7×24小时及服务端毫秒时间戳语义，恰好到期时拒绝，不把边界验收仅写成测试名称。"
       ],
       "input": {
         "scriptedReplies": [],
         "workspaceFiles": {
-          "decisions/invitation-expiry.md": "# 已确认决定\n\n- 团队邀请创建后 7 天过期。\n- 服务端接受邀请时必须拒绝过期邀请。\n- 旧邀请沿用创建时间计算，不做批量迁移。\n- 用户看到明确的过期提示，并可以重新邀请。\n- 验收：第 7 天前可接受，第 7 天后拒绝。\n- 文件组织、缓存方式和测试目录交给实现者。\n"
+          "decisions/invitation-expiry.md": "# 已确认决定\n团队邀请创建后7×24小时过期。createdAt、now都是同一服务端时钟的毫秒时间戳；now >= createdAt + 604800000时拒绝，此前接受。旧邀请沿用创建时间计算，不做批量迁移。用户看到明确的过期提示，并可另外发起重新邀请。验收覆盖过期前、恰好到期和到期后。文件组织、缓存方式和测试目录由实施者决定。\n",
+          ".gitignore": "/docs/specs/\n"
         }
       },
       "expected": {
@@ -43,20 +48,14 @@
         "artifacts": [
           {
             "path": "docs/specs/invitation-expiry.md",
-            "exists": true,
-            "contains": [
-              "7 天",
-              "服务端",
-              "过期提示",
-              "验收"
-            ],
-            "notContains": [
-              "## 实施步骤",
-              "第一步",
-              "第二步"
-            ]
+            "exists": true
           }
         ]
+      },
+      "audit": {
+        "rationale": "用明确当前决定评价规范产物；不以固定标题、中文措辞或段落词命中代替语义。",
+        "allowedVariance": "允许等价语言、关系图及主题组织；保留精确时间、边界和实现自由，不能纳入未接受机制。",
+        "minimalCounterexample": "关键边界未决定时应保留缺口，不强制生成完整正式规格。"
       }
     },
     {
@@ -76,7 +75,8 @@
       "input": {
         "scriptedReplies": [],
         "workspaceFiles": {
-          "decisions/session-expiry.md": "# Session expiry 决定\n\n## 中间讨论\n\n曾考虑新增 `SessionStateMachine`，按 `pending -> checking -> retrying -> expired` 持久化状态；该方案没有进入最终决定。\n\n## 最终决定\n\n- 每次请求根据 `expiresAt` 与当前时间判断是否过期。\n- 过期后服务端拒绝并返回明确错误；未过期请求保持现有行为。\n- 不新增持久化迁移。\n- 验收覆盖过期前、边界时刻和过期后。\n- 文件、函数和测试组织由实现者决定。\n"
+          "decisions/session-expiry.md": "# Session expiry 决定\n\n## 中间讨论\n\n曾考虑新增 `SessionStateMachine`，按 `pending -> checking -> retrying -> expired` 持久化状态；该方案没有进入最终决定。\n\n## 最终决定\n\n- 每次请求比较同一服务端时钟的毫秒时间戳 now 与 expiresAt；now >= expiresAt 时过期，now < expiresAt 时未过期。\n- 过期后服务端拒绝并返回明确错误；未过期请求保持现有行为。\n- 不新增持久化迁移。\n- 验收覆盖过期前、边界时刻和过期后。\n- 文件、函数和测试组织由实现者决定。\n",
+          ".gitignore": "/docs/specs/\n"
         }
       },
       "expected": {
@@ -88,21 +88,14 @@
         "artifacts": [
           {
             "path": "docs/specs/session-expiry.md",
-            "exists": true,
-            "contains": [
-              "expiresAt",
-              "过期",
-              "验收"
-            ],
-            "notContains": [
-              "SessionStateMachine",
-              "pending -> checking",
-              "被替代",
-              "中间讨论",
-              "不要使用"
-            ]
+            "exists": true
           }
         ]
+      },
+      "audit": {
+        "rationale": "用明确当前决定评价规范产物；不以固定标题、中文措辞或段落词命中代替语义。",
+        "allowedVariance": "允许等价语言、关系图及主题组织；保留精确时间、边界和实现自由，不能纳入未接受机制。",
+        "minimalCounterexample": "关键边界未决定时应保留缺口，不强制生成完整正式规格。"
       }
     },
     {
@@ -117,7 +110,8 @@
         "识别会材料性改变用户行为和验收的开放决定",
         "不创建 docs/specs/invitation-expiry-open.md",
         "不替用户选择服务端拒绝或自动补发",
-        "清楚说明关闭缺口所需的决定"
+        "清楚说明关闭缺口所需的决定",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -127,7 +121,8 @@
       },
       "expected": {
         "output": "识别过期处理仍未决定，停止写 Spec，并向用户说明需要确认服务端拒绝还是自动补发。",
-        "workspaceUnchanged": true
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": []
       },
       "audit": {
         "rationale": "服务端拒绝还是自动补发会材料性改变用户行为和验收；决定未确认时不得写 Spec 或代替用户选择。",
@@ -147,7 +142,8 @@
         "识别材料证据缺口",
         "不创建 docs/specs/search-latency.md",
         "不发明基准结果或 p95 阈值",
-        "说明继续写 Spec 前需要的证据"
+        "说明继续写 Spec 前需要的证据",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -157,7 +153,8 @@
       },
       "expected": {
         "output": "识别缺少基准结果，停止写 Spec，并说明需要取得证据后才能确认 p95 验收阈值。",
-        "workspaceUnchanged": true
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": []
       },
       "audit": {
         "rationale": "输入明确要求用尚不存在的基准证据确定材料阈值；Spec 作者不能发明测量结果或阈值。",

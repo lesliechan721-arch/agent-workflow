@@ -80,6 +80,8 @@ import {
 } from '../../src/utils/dynamic-skill-tree.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+const decisionKitPluginRoots = ['decision-kit', 'human-content']
+  .map((name) => path.join(repositoryRoot, 'plugins', name));
 const TEST_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
 
 async function readPluginManifest(
@@ -693,7 +695,7 @@ describe('rebuild adapter integration', () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
+      pluginRoots: decisionKitPluginRoots,
     });
     const catalog = { rootDir: catalogRoot, source: 'local' } as CatalogResolution;
     await prewarmActiveMarketplace(catalog.rootDir, isolation.layout.awHomeDir);
@@ -1557,7 +1559,7 @@ describe('rebuild adapter integration', () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
+      pluginRoots: decisionKitPluginRoots,
     });
     const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
     const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
@@ -1592,7 +1594,7 @@ describe('rebuild adapter integration', () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
+      pluginRoots: decisionKitPluginRoots,
     });
     const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
     const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
@@ -1623,8 +1625,12 @@ describe('rebuild adapter integration', () => {
       const claudeManifest = await fs.readJson(
         path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
       ) as { plugins: Array<{ policy: { products?: string[] } }> };
-      expect(codexManifest.plugins.map((entry) => entry.policy.products)).toEqual([['CODEX']]);
-      expect(claudeManifest.plugins.map((entry) => entry.policy.products)).toEqual([['CLAUDE']]);
+      for (const [manifest, product] of [[codexManifest, 'CODEX'], [claudeManifest, 'CLAUDE']] as const) {
+        expect(manifest.plugins.length).toBeGreaterThan(0);
+        for (const entry of manifest.plugins) {
+          expect(entry.policy.products).toEqual([product]);
+        }
+      }
       installed = true;
       throw new Error('projection observed');
     };
@@ -1674,7 +1680,7 @@ describe('rebuild adapter integration', () => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
+        pluginRoots: decisionKitPluginRoots,
       });
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), {
         mode: 'bundle',
@@ -1743,7 +1749,7 @@ describe('rebuild adapter integration', () => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
+        pluginRoots: decisionKitPluginRoots,
       });
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
       const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
@@ -1806,7 +1812,7 @@ describe('rebuild adapter integration', () => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
+        pluginRoots: decisionKitPluginRoots,
       });
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
       const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
@@ -1869,7 +1875,7 @@ describe('rebuild adapter integration', () => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
+        pluginRoots: decisionKitPluginRoots,
       });
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
       const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
@@ -1955,7 +1961,7 @@ describe('rebuild adapter integration', () => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
+        pluginRoots: decisionKitPluginRoots,
       });
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
       const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
@@ -3708,7 +3714,7 @@ describe('rebuild adapter integration', () => {
       const cwd = await fs.realpath(isolation.layout.fixtureCwd);
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
+        pluginRoots: decisionKitPluginRoots,
       });
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), {
         mode: 'bundle',
@@ -4222,7 +4228,7 @@ describe('rebuild adapter integration', () => {
       pluginRoots: [
         path.join(repositoryRoot, 'plugins', 'codex-enhance'),
         path.join(repositoryRoot, 'plugins', 'git-toolkit'),
-        path.join(repositoryRoot, 'plugins', 'decision-kit'),
+        ...decisionKitPluginRoots,
       ],
       stubCodexFileSelection: true,
     });
@@ -4925,7 +4931,7 @@ describe('rebuild adapter integration', () => {
     const firstPartyNames = ['git-toolkit', 'decision-kit', 'codex-enhance'];
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: firstPartyNames.map((name) => path.join(repositoryRoot, 'plugins', name)),
+      pluginRoots: [...firstPartyNames, 'human-content'].map((name) => path.join(repositoryRoot, 'plugins', name)),
       stubCodexFileSelection: true,
     });
     const integration = createRebuildIntegration({
@@ -5696,7 +5702,7 @@ describe('rebuild adapter integration', () => {
     const cwd = isolation.layout.fixtureCwd;
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
+      pluginRoots: decisionKitPluginRoots,
     });
     const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), {
       mode: 'bundle',
@@ -5822,7 +5828,7 @@ describe('rebuild adapter integration', () => {
     const cwd = isolation.layout.fixtureCwd;
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'decision-kit')],
+      pluginRoots: decisionKitPluginRoots,
     });
     const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'decision-kit'), { mode: 'bundle' });
     const paths = resolveClaudePaths(cwd, 'user', isolation.env);

@@ -5,7 +5,9 @@
     "unitUnderTest": "decision-shape",
     "participants": [
       "decision-grill",
-      "decision-prototype"
+      "decision-prototype",
+      "project-context",
+      "explain-for-review"
     ],
     "policy": {
       "optimization": "balanced",

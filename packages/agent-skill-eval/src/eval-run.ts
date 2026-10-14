@@ -246,6 +246,7 @@ export function adaptConversationProviderCase(
         checks: assertions,
         workspace_unchanged: workspaceUnchanged,
         ...(allowedWorkspaceChanges.length > 0
+          || (workspaceUnchanged === false && Array.isArray(expected.allowedWorkspaceChanges))
           ? { allowed_workspace_changes: allowedWorkspaceChanges }
           : {}),
         ...(artifacts.length > 0 ? { artifacts } : {}),

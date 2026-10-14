@@ -11,7 +11,9 @@
     },
     "participants": [
       "decision-grill",
-      "decision-prototype"
+      "decision-prototype",
+      "project-context",
+      "explain-for-review"
     ],
     "runtime": {
       "isolation": "strict"

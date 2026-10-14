@@ -14,7 +14,11 @@
       "isolation": "strict",
       "strictNegativeSplits": [],
       "forbidMultipleSkillLoads": false
-    }
+    },
+    "participants": [
+      "explain-for-review",
+      "decision-grill"
+    ]
   },
   "cases": [
     {

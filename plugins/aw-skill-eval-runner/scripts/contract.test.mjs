@@ -1,10 +1,47 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 const root = process.env.AW_PLUGIN_ROOT;
+
+test('case checker distinguishes writable tools from authorized file changes', (t) => {
+  const temporary = mkdtempSync(path.join(tmpdir(), 'aw-eval-no-write-'));
+  t.after(() => rmSync(temporary, { recursive: true, force: true }));
+  const checker = realpathSync(path.join(root, 'codex', 'skills', 'run-aw-skill-evals', 'scripts', 'validate-eval-cases.mjs'));
+  const cases = [
+    { expected: { workspaceUnchanged: false, allowedWorkspaceChanges: [] }, valid: true },
+    { expected: { workspaceUnchanged: false }, valid: false },
+    { expected: { workspaceUnchanged: false, allowedWorkspaceChanges: ['out/**'] }, valid: false },
+    { expected: {
+      workspaceUnchanged: false, allowedWorkspaceChanges: ['out/**'],
+      artifacts: [{ path: 'out/result.md', exists: true }],
+    }, valid: true },
+  ];
+  for (const [index, entry] of cases.entries()) {
+    const file = path.join(temporary, `case-${index}.json`);
+    writeFileSync(file, JSON.stringify({
+      version: 1,
+      suite: {
+        kind: 'conversation', unitUnderTest: 'fixture-skill',
+        policy: {
+          optimization: 'balanced', falseNegativeCost: 'high', falsePositiveCost: 'high',
+          rationale: 'Keep tool capability separate from allowed file changes.',
+        },
+      },
+      cases: [{
+        id: 'bounded', split: 'validation', tags: [], prompt: 'Follow the stated scope.',
+        assertions: ['Preserves the requested write boundary.'], expected: entry.expected,
+      }],
+    }));
+    const result = spawnSync(process.execPath, [checker, file, '--strict', '--format', 'json'], { encoding: 'utf8' });
+    assert.ok(result.stdout.trim(), result.stderr || `Checker returned no JSON (exit ${result.status}).`);
+    assert.equal(JSON.parse(result.stdout).valid, entry.valid, result.stderr || result.stdout);
+    assert.equal(result.status === 0, entry.valid, result.stderr || result.stdout);
+  }
+});
 
 test('publishes one model-callable Skill with the Eval capability', () => {
   const manifest = JSON.parse(readFileSync(path.join(root, '.agents-plugin', 'plugin.json'), 'utf8'));

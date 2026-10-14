@@ -11,7 +11,10 @@
     },
     "runtime": {
       "isolation": "strict"
-    }
+    },
+    "participants": [
+      "explain-for-review"
+    ]
   },
   "cases": [
     {
@@ -61,7 +64,7 @@
         "boundary",
         "regression"
       ],
-      "prompt": "将当前决定整理成便于阅读的规格，写到 .dev-workflows/labels/spec.md。",
+      "prompt": "将当前决定保存为便于阅读的规格草稿，写到 .dev-workflows/labels/spec.md。上限值仍未决定，请保留开放事项，本次不要求定稿。",
       "assertions": [
         "保留必须有上限与512建议的区别及单位；未决阈值不变成已批准常量。",
         "accepted与下游处理保持差别；旧测试不改为新接口已验证。",
@@ -131,6 +134,167 @@
         "rationale": "阅读层次不应成为第二权威。",
         "minimalCounterexample": "用户要求同步改变已确认公共合同并授权时应在其位置维护。",
         "allowedVariance": "允许等价语言、主题组织和相称媒介；按实际行为、来源语义与用户回答判定，不强制模板标题或固定字数。真实独立性另需Engine证据。"
+      }
+    },
+    {
+      "id": "main-spec-supports-product-decision",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "使用 dev-spec 将当前已确认材料整理为 .dev-workflows/current/spec.md，供产品负责人审阅并交给后续实施者。只编写规格。",
+      "assertions": [
+        "主 Spec 本身说明范围、正常与失败行为、数据去向、确认状态和验收，不依赖额外阅读页或历史日志。",
+        "保留租户、选择顺序、空选择、列名、不交付部分文件及不上传和不持久化要求；完整定义在正文或可达的规范附件中。",
+        "后台提案和历史试验不变成已确认机制或本次验证；内部组织保留自主。",
+        "在首次实质规格写入前实际取得 explain-for-review 的方法，并用于本次主文组织和来源核对；读取或可核验的已加载内容才是依据，口头声称使用不算。",
+        "独立 Spec 路径直接采用 Explain，不经 Design 获取方法，不因方法组合另启需求访谈、独立审查或产品实施。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "decisions.md": "# 已确认决定\n只导出当前租户内已选记录，列为 name、email，顺序沿选择顺序。无选择时提示先选择，不产生下载。生成失败时显示明确错误，不交付部分文件。数据只在当前浏览器处理，不上传外部服务，不新增持久副本。字段扩展不属于本次，内部函数组织自主。\n",
+          "project.md": "# 当前项目\n页面已取得记录及当前租户身份，CSV生成器由浏览器调用。新功能尚未实现。\n",
+          "history.md": "# 过程\n曾讨论后台生成，但提案未接受。旧试验只验证列分隔符。\n"
+        }
+      },
+      "expected": {
+        "output": "交付可直接人审且完整可实施的当前规格。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/current/**"
+        ],
+        "artifacts": [
+          {
+            "path": ".dev-workflows/current/spec.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "分别核对独立入口的方法采用、实际人审规格与语义保真；加载记录不代替产物检查。",
+        "allowedVariance": "允许等价结构、必要附件及局部实现自由。",
+        "minimalCounterexample": "用户明确要求额外阅读页时可以派生，但它不替代主规格。"
+      }
+    },
+    {
+      "id": "current-consumer-does-not-require-recovery-system",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "使用 dev-spec 依据 request.md 和 project.md 编写 .dev-workflows/current/spec.md。具体工程组织由你决定，本次只交付规格。",
+      "assertions": [
+        "规格足够实施和验证租户筛选、输入顺序、不修改输入及空选择行为，不能只给简化建议。",
+        "按同步内存计算的当前用途选择相称设计，不固定无消费者或风险依据的持久恢复系统及通用扩展框架。",
+        "内部函数和文件拆分不变成无依据的要求。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "request.md": "# 当前确认\n提供同步函数 selectedNames(rows, selectedIds, tenantId)，只返回当前租户中被选中记录的 name，保持输入顺序，不修改输入；空选择返回空数组。当前最多50条内存记录。\n",
+          "project.md": "# 当前用途\n调用者是本地页面的同步预览。无文件、数据库或网络写入，重新调用即可恢复预览，没有跨进程恢复要求。只有一个调用者，未来消费者尚无计划。\n"
+        }
+      },
+      "expected": {
+        "output": "满足当前用途的最小完整规格，保留必要约束与工程自由。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/current/**"
+        ],
+        "artifacts": [
+          {
+            "path": ".dev-workflows/current/spec.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "给具体消费者和风险边界，不在请求中预先指定应删的机制。",
+        "allowedVariance": "允许等价算法和主题组织，不锁定架构或字数。",
+        "minimalCounterexample": "有真实外部副作用和已确认恢复要求时应保留相应机制。"
+      }
+    },
+    {
+      "id": "accepted-recovery-requirement-is-preserved",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "用 dev-spec 将 decisions.md 和 evidence.md 整理为 .dev-workflows/current/spec.md，保留当前确认，只编写规格。",
+      "assertions": [
+        "保留已确认的去重、持久提交状态、结果不明停止自动重试与核对渠道，不能因简化而删除。",
+        "主文解释停止及核对的用户后果；完整定义可达，局部存储组织保持自主。",
+        "不承诺外部回滚或新功能已验证；简化建议不静默改变已确认合同。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "decisions.md": "# 用户确认\n导入会产生不可重复的外部写入，必须用 operationId 去重，并在再次请求前恢复持久的提交状态。结果不明时停止自动重试，交由核对。该机制已确认，局部存储实现自主。\n",
+          "evidence.md": "# 已确认事故说明\n外部服务写入成功后可能断开连接，此前直接重试曾造成重复导入。外部查询可核对 operationId，但没有自动回滚能力。这是既有事故说明，不是新实现验证。\n"
+        }
+      },
+      "expected": {
+        "output": "必要恢复要求及其人审后果完整保留。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/current/**"
+        ],
+        "artifacts": [
+          {
+            "path": ".dev-workflows/current/spec.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "与纯内存预览形成正确对照，防止将防过度设计变成一律删除恢复机制。",
+        "allowedVariance": "允许等价表述和必要附件，不要求固定存储技术。",
+        "minimalCounterexample": "未经确认且没有当前风险的持久状态不应被引入纯计算任务。"
+      }
+    },
+    {
+      "id": "local-wording-change-keeps-scope",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用 dev-spec，只将 .dev-workflows/current/spec.md 中按钮文案“执行”改成“生成CSV”，其余要求已经确认且不变。本次只做这一处文案修订。",
+      "assertions": [
+        "只修改明确的按钮文案，保留空选择、租户及不上传约束，说明实际局部变更。",
+        "不因局部修词重走完整 Explain 呈现、Design 对齐或 Review 循环，不创建阅读页、附件或实现。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          ".dev-workflows/current/spec.md": "# 当前导出规格\n已确认：按钮文案为“执行”。只导出当前租户已选记录；空选择提示先选择且不下载。数据不上传。验收核对按钮文字、范围和空选择行为。\n"
+        }
+      },
+      "expected": {
+        "output": "在既有规格上完成局部文案修订，无额外流程或产物。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/current/spec.md"
+        ],
+        "artifacts": [
+          {
+            "path": ".dev-workflows/current/spec.md",
+            "exists": true,
+            "contains": [
+              "按钮文案为“生成CSV”"
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "与新写人审规格构成分支对照；精确文案由用户明确指定，其他约束用语义核对。",
+        "allowedVariance": "允许选择相称的编辑工具；不固定回复标题或内部思考步骤。",
+        "minimalCounterexample": "用户要求实质重组复杂人审规格时，应在组织正文前采用 Explain。"
       }
     }
   ]

@@ -1,6 +1,6 @@
 interface:
   display_name: project-context
-  short_description: "维护项目特有词汇与重要决定，保留适用边界和可达依据"
+  short_description: "澄清项目领域概念与关系，及时维护已确认词义和重要决定的依据"
   default_prompt: "使用 $project-context 处理当前请求，遵循实际范围、已有资料和授权。"
 policy:
   allow_implicit_invocation: true

@@ -15,6 +15,37 @@
   },
   "cases": [
     {
+      "id": "review-preserves-necessary-recovery",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "当前是未参与起草的独立审查会话。使用 dev-review-spec 对照 decisions.md 审查 spec.md；只报告，不修改。",
+      "assertions": [
+        "按已有事故与确认核对恢复机制的必要性，不仅因使用持久状态而要求删除。",
+        "检查停止重试的用户后果、验收与实施自由；不宣称已经运行产品验证。",
+        "没有实质问题时允许当前范围通过，不新增架构偏好要求。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "decisions.md": "# 已确认\n导入有不可重复的外部写入。此前成功后断连导致重试时重复导入，因此用户确认按 operationId 去重并持久保存提交状态；结果不明时停止自动重试，通过外部查询核对。存储组织自主，没有自动回滚能力。\n",
+          "spec.md": "# 导入\n按 operationId 去重，持久保存提交状态，再次请求前恢复该状态。结果不明时停止自动重试并查询核对，用户需要等待核对结果。不承诺自动回滚。验收覆盖正常成功、成功后断连、同ID再次请求与核对后恢复。新实现尚未验证，存储技术自主。来源见 decisions.md。\n"
+        }
+      },
+      "expected": {
+        "output": "保留有当前依据的必要恢复设计，避免过度简化误报。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "必要机制的正确对照，不以机制名称判错。",
+        "allowedVariance": "允许合理建议和证据限制；角色前提不证明运行器隔离。",
+        "minimalCounterexample": "无外部副作用且无恢复要求的纯内存任务，不应强加持久恢复系统。"
+      }
+    },
+    {
       "id": "review-annex-hidden-material-change",
       "split": "validation",
       "tags": [
@@ -24,7 +55,8 @@
       "assertions": [
         "读取附件；明确90天和外部发送是材料变化，不是自动授权的技术选择。",
         "不以附件权威高就覆盖原始确认；给出来源、影响和关闭条件。",
-        "默认只读且不自行作风险批准。"
+        "默认只读且不自行作风险批准。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -36,7 +68,7 @@
       },
       "expected": {
         "output": "发现附件新增保留期和外部发送违背共识，不能只看主文无问题。",
-        "workspaceUnchanged": true,
+        "workspaceUnchanged": false,
         "allowedWorkspaceChanges": []
       },
       "audit": {
@@ -54,7 +86,8 @@
       "prompt": "独立审查当前完整规格是否保留用户要求且便于审核。精确字段就是现有公开合同，不要求你选不同架构。",
       "assertions": [
         "检查身份和隔离语义、人审风险及自主空间；不以篇幅或技术内容本身作blocker。",
-        "有实际证据缺口可披露，不能声称已执行生产环境验证。"
+        "有实际证据缺口可披露，不能声称已执行生产环境验证。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -67,7 +100,7 @@
       },
       "expected": {
         "output": "按必要语义评审，不能因精确合同或附件存在就要求删细节。",
-        "workspaceUnchanged": true,
+        "workspaceUnchanged": false,
         "allowedWorkspaceChanges": []
       },
       "audit": {
@@ -85,7 +118,8 @@
       "prompt": "请独立审查 proposed.md 是否忠实于 confirmed.md，保持只读。",
       "assertions": [
         "具体指出约束强度和自主范围变化，而不是仅说表述不同。",
-        "关闭条件保留固定上限要求同时恢复建议和调用者参数边界。"
+        "关闭条件保留固定上限要求同时恢复建议和调用者参数边界。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -96,13 +130,78 @@
       },
       "expected": {
         "output": "指出建议升格并删除可配置自由的语义变化。",
-        "workspaceUnchanged": true,
+        "workspaceUnchanged": false,
         "allowedWorkspaceChanges": []
       },
       "audit": {
         "rationale": "同样保留数字也可能改变原决定。",
         "allowedVariance": "允许等价表述、主题组织和局部实现；依据真实含义、可访问资料、行为与实际权限判定，不强制内部阶段字段或固定篇幅。",
         "minimalCounterexample": "来源明确规定不可配置512时，proposed可以成立。"
+      }
+    },
+    {
+      "id": "main-spec-not-replaced-by-reading-view",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "当前是未参与设计或起草的独立审查会话。使用 dev-review-spec 对照 decisions.md 及项目资料审查 spec.md。只报告，不修改文件。",
+      "assertions": [
+        "读取完整规范及来源，区分含义完整与主文不便审核两个问题。",
+        "指出主 Spec 只给代号与跳转，产品负责人不能直接判断关闭页面丢失编辑的后果；额外阅读页不免除主文职责。",
+        "建议在主文表达相关场景与后果并保留完整定义，不要求删除必要字段或附件。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "decisions.md": "# 已确认\n用户关闭自动保存后仍可手动保存。手动保存失败保留当前编辑，用户可重试；关闭页面会丢失未保存内容，主规格需要供产品负责人审核这一后果。\n",
+          "spec.md": "# 编辑器\nA0/M1/E1/T0。页面分支遵守 details.md。阅读 reading.md 后确认。\n",
+          "details.md": "# 完整定义\nA0表示关闭自动保存，M1允许手动保存，E1在手动失败时保留编辑并允许重试，T0在关闭页面时丢弃未保存内容。验收覆盖这四种行为。\n",
+          "reading.md": "# 用户阅读页\n关闭自动保存后可以手动保存；失败不丢当前编辑，可重试。关闭页面会丢失未保存内容。\n"
+        }
+      },
+      "expected": {
+        "output": "说明具体人审障碍及最小修复，不把附件存在本身当作问题。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "按实际来源和读者任务评价，不因篇幅、术语或附件本身判错。",
+        "allowedVariance": "允许等价表述及合理证据限制，不要求固定问题等级；角色前提用于方法测试，不证明真实上下文隔离。",
+        "minimalCounterexample": "主文已清楚呈现行为与重要后果，附件只是完整字段定义时可接受。"
+      }
+    },
+    {
+      "id": "unnecessary-persistent-preview-design",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "当前是未参与设计或起草的独立审查会话。使用 dev-review-spec 对照 decisions.md 及项目资料审查 spec.md。只报告，不修改文件。",
+      "assertions": [
+        "核对当前消费者与恢复需求，指出持久账本、两阶段提交和后台扩展缺少当前必要性及其新增代价。",
+        "比较直接同步计算的可行性，保留租户和输入不变等必要约束。",
+        "不只因术语复杂判错，不要求用另一套架构替换，不修改规格。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "decisions.md": "# 当前确认\n提供同步内存预览，筛选当前租户已选记录，空选择返回空数组，保持顺序且不修改输入。当前最多50条记录，内部组织自主。\n",
+          "project.md": "# 当前项目\n只有一个本地页面调用者。没有文件、数据库、网络写入或跨进程恢复需要，重新调用可恢复预览。\n",
+          "spec.md": "# 预览\n实现已确认筛选、租户、顺序及空输入行为，并分别验收。所有调用必须先写入持久预览账本，再完成跨进程两阶段提交；另须实现通用后端插件注册和后台恢复服务，以便未来可能的扩展。\n"
+        }
+      },
+      "expected": {
+        "output": "定位没有当前依据的机制及最小简化方向。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "按实际来源和读者任务评价，不因篇幅、术语或附件本身判错。",
+        "allowedVariance": "允许等价表述及合理证据限制，不要求固定问题等级；角色前提用于方法测试，不证明真实上下文隔离。",
+        "minimalCounterexample": "外部写入及已确认恢复要求使持久状态必要时，不应要求一律删除。"
       }
     }
   ]

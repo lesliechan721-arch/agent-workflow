@@ -11,9 +11,12 @@
     },
     "participants": [
       "decision-shape",
+      "decision-grill",
+      "decision-prototype",
       "project-context",
       "dev-spec",
-      "dev-review-spec"
+      "dev-review-spec",
+      "explain-for-review"
     ],
     "runtime": {
       "isolation": "strict"
@@ -54,7 +57,10 @@
           ".dev-workflows/**"
         ],
         "artifacts": [
-          { "path": "docs/design/export.md", "exists": true }
+          {
+            "path": "docs/design/export.md",
+            "exists": true
+          }
         ]
       },
       "audit": {
@@ -73,7 +79,8 @@
       "prompt": "使用dev-design设计到期处理，形成项目规范；过期是自动补发还是拒绝请求，我尚未决定。",
       "assertions": [
         "使用Shape取得决定或明确保持待定，不自行写成硬合同。",
-        "未得到答复前允许调查/明确假设的原型，但不把提案写成已确认产品要求。"
+        "未得到答复前允许调查/明确假设的原型，但不把提案写成已确认产品要求。",
+        "在收到实际答复后，将服务端拒绝过期请求、用户可另行重新邀请及对应验收写入 docs/design/invitations.md；不能只提出问题或保留原空白规范。"
       ],
       "input": {
         "scriptedReplies": [
@@ -92,7 +99,10 @@
           ".dev-workflows/**"
         ],
         "artifacts": [
-          { "path": "docs/design/invitations.md", "exists": true }
+          {
+            "path": "docs/design/invitations.md",
+            "exists": true
+          }
         ]
       },
       "audit": {
@@ -133,7 +143,10 @@
           ".dev-workflows/**"
         ],
         "artifacts": [
-          { "path": "docs/design/export.md", "exists": true }
+          {
+            "path": "docs/design/export.md",
+            "exists": true
+          }
         ]
       },
       "audit": {

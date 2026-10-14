@@ -16,4 +16,6 @@ aw install human-content -p both
 
 本插件可独立用于方案、协议、研究说明和审查报告，也可被设计工作流调用。它不接管产品决定、规范编写或独立审查；派生视图不是第二份事实源。默认采用低成本且本地的形式，外部服务、发布和音视频生成依当前明确请求、工具及授权。
 
+也支持 Portable Agent Skills。可用 `aw skill materialize human-content --scope <project|user> --out <dir>` 导出，或通过 `aw skill install human-content --scope <project|user>` 安装。作为 Decision Kit 的依赖时，仍只负责已有材料的解释与反馈。
+
 公开入口：[explain-for-review](skills/explain-for-review/SKILL.md)。

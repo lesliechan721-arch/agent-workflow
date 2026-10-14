@@ -113,9 +113,12 @@ export function validateDocument(doc, strict=false) {
           if(a.exists!==undefined)need(typeof a.exists==='boolean','artifact','exists boolean required',id);
           for(const k of ['contains','notContains'])if(a[k]!==undefined)need(strings(a[k])&&a[k].length>0,'artifact',`${k} invalid`,id);
           if(a.json!==undefined)need(rec(a.json),'artifact','json assertion object required',id);
-          if(e.workspaceUnchanged===false)need(allowed.some(p=>within(a.path,p)),'artifact','artifact outside allowed write scope',id);
+          if(e.workspaceUnchanged===false&&allowed.length>0)need(allowed.some(p=>within(a.path,p)),'artifact','artifact outside allowed write scope',id);
         }
-        if(e.workspaceUnchanged===false){need(allowed.length>0,'write','write case needs allowed paths',id);need(Array.isArray(e.artifacts)&&e.artifacts.length>0,'write','provider write case needs actual artifact assertions',id);}
+        if(e.workspaceUnchanged===false){
+          need(Array.isArray(e.allowedWorkspaceChanges),'write','writable case needs explicit allowed paths; [] permits no changes',id);
+          if(allowed.length>0)need(Array.isArray(e.artifacts)&&e.artifacts.length>0,'write','provider write case needs actual artifact assertions',id);
+        }
       }
     }
   }
