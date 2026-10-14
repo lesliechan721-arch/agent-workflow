@@ -54,7 +54,10 @@
           ".dev-workflows/**"
         ],
         "artifacts": [
-          { "path": ".dev-workflows/selection/spec.md", "exists": true }
+          {
+            "path": ".dev-workflows/selection/spec.md",
+            "exists": true
+          }
         ]
       },
       "audit": {
@@ -96,7 +99,10 @@
           ".dev-workflows/**"
         ],
         "artifacts": [
-          { "path": "docs/api/selection.md", "exists": true }
+          {
+            "path": "docs/api/selection.md",
+            "exists": true
+          }
         ]
       },
       "audit": {
@@ -112,7 +118,7 @@
         "regression",
         "boundary"
       ],
-      "prompt": "只对齐并记录本次范围：这次只接一个上游；未来是否多上游尚未决定。任务名为upstream，保存本地任务说明即可，不实施。",
+      "prompt": "只对齐并记录本次范围：这次只接一个上游；未来是否多上游尚未决定。任务名为upstream，保存本地任务说明即可，不实施。 本地任务说明写到 .dev-workflows/upstream/spec.md。",
       "assertions": [
         "本次单上游范围按任务记录，不改成永久架构禁令。",
         "不为这个单次非目标强制新增ADR或design规范；后续未决仍未决。"
@@ -133,7 +139,10 @@
           ".dev-workflows/**"
         ],
         "artifacts": [
-          { "path": ".dev-workflows/upstream/spec.md", "exists": true }
+          {
+            "path": ".dev-workflows/upstream/spec.md",
+            "exists": true
+          }
         ]
       },
       "audit": {

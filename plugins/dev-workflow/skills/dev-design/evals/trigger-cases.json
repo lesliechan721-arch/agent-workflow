@@ -12,7 +12,9 @@
     "participants": [
       "decision-shape",
       "dev-build",
-      "dev-spec"
+      "dev-spec",
+      "decision-grill",
+      "dev-implement"
     ],
     "runtime": {
       "observeSpawnAgent": false,

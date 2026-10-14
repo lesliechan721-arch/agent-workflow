@@ -1,6 +1,6 @@
 interface:
   display_name: dev-design
-  short_description: "协调需求对齐、规格与独立审查，交付完整设计而不启动实施"
+  short_description: "协调需求对齐、人审规格和有界修订，交付设计而不启动实施"
   default_prompt: "使用 $dev-design 处理当前请求，遵循实际范围、已有资料和授权。"
 policy:
   allow_implicit_invocation: true

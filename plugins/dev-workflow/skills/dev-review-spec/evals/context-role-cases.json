@@ -25,7 +25,8 @@
       "assertions": [
         "当前合格的独立上下文直接审查，不仅因加载 Skill 再创建同职责 reviewer。",
         "指出 now > expiresAt 与 now >= expiresAt 在等值时刻的实质冲突，给出来源和关闭条件。",
-        "源码及规格保持只读；没有 spawn 工具也不应因独立性已满足而错误报告无法审查。"
+        "源码及规格保持只读；没有 spawn 工具也不应因独立性已满足而错误报告无法审查。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -36,7 +37,7 @@
       },
       "expected": {
         "output": "在当前上下文发现等值边界冲突并报告，当前独立性成立，无需额外转交。",
-        "workspaceUnchanged": true,
+        "workspaceUnchanged": false,
         "allowedWorkspaceChanges": []
       },
       "audit": {
@@ -56,7 +57,8 @@
       "assertions": [
         "读取复审方法后在本轮已经具备的独立上下文执行，不再创建下一层 Spec reviewer。",
         "核对当前完整 Spec 及兼容来源，不只回答旧 finding 改过没有。",
-        "实际指出当前等值边界冲突，报告已核对范围，保持目标不变。"
+        "实际指出当前等值边界冲突，报告已核对范围，保持目标不变。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -69,13 +71,82 @@
       },
       "expected": {
         "output": "本轮已分配 reviewer 直接完成全面复审，发现当前真实边界问题。",
-        "workspaceUnchanged": true,
+        "workspaceUnchanged": false,
         "allowedWorkspaceChanges": []
       },
       "audit": {
         "rationale": "本轮 fresh 条件由已建立的执行者满足，不需要每次加载再次隔离。",
         "allowedVariance": "接受等价措辞、合理检查工具和实现方式；按当前角色、实际读写、真实来源与可验证结果判断，不强制复述角色字段。",
         "minimalCounterexample": "只是旧 reviewer 补证据时，不应宣称取得了新的全面独立重评。"
+      }
+    },
+    {
+      "id": "local-rereview-reuses-applicable-evidence",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "role-context"
+      ],
+      "prompt": "你是原独立审查者的续接会话，未参与修订，也未继承作者推导。使用 dev-review-spec 复核当前 spec.md。已有原版本、完整旧报告和需求；用户没有要求新的全面重评。只报告。",
+      "assertions": [
+        "读取旧报告、原版本、当前版本及需求，实际核对空选择修订和其它范围的持续适用性。",
+        "可由当前仍独立的审查者局部复核，不因加载复审方法默认重复委派全面审查。",
+        "区分本轮查证和沿用的 v1 范围及理由；资料齐备时可以形成当前整体结论，但不能只凭没有新 finding 宣称通过。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "requirements.md": "# 当前确认\n只返回当前 tenantId 内 selectedIds 命中的记录，保持输入顺序且不修改输入；空选择返回空数组。内部组织自主。\n",
+          "spec-v1.md": "# Spec v1\n只返回当前 tenantId 内 selectedIds 命中的记录，保持输入顺序且不修改输入。空选择行为未写明。\n",
+          "spec.md": "# Spec v2\n只返回当前 tenantId 内 selectedIds 命中的记录，保持输入顺序且不修改输入。空选择返回空数组。\n",
+          "prior-review.md": "# 原独立审查记录\n目标为 spec-v1.md 的 v1，已完整核对 requirements.md。租户边界、输入顺序和不修改输入充分；唯一未关闭问题是空选择缺少定义。审查者未参与设计、编写或修订。\n"
+        }
+      },
+      "expected": {
+        "output": "复核修订并说明未变证据的适用性，不机械重开全面审查。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "用原审查版本、后续版本和真实差异测试范围选择；fixture角色前提不充当实际隔离证据。",
+        "allowedVariance": "允许等价表述及相称工具核对，不要求重复角色字段；实际执行独立性仍需运行器证据。",
+        "minimalCounterexample": "用户明确要求全新全面重评，或当前参与过修订时不能沿用当前执行者。"
+      }
+    },
+    {
+      "id": "cumulative-rereview-detects-earlier-regression",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "role-context"
+      ],
+      "prompt": "当前是未参与作者工作的独立审查者。用 dev-review-spec 复审 spec.md。上一份审查针对 v1，本轮最新修改是 v2 到 v3 的空选择补充；请给出当前完整范围的判断。保持只读。",
+      "assertions": [
+        "从旧结论实际审查的 v1 比较到当前 v3，而非只比较最后一次 v2 到 v3。",
+        "指出 v2 已扩大到所有租户，当前仍违背要求，不能沿用 v1 的租户通过结论。",
+        "空选择问题可关闭，但当前整体仍有租户问题；报告范围及关闭条件，不让另一项修复覆盖它。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "requirements.md": "# 当前确认\n只返回当前 tenantId 内 selectedIds 命中的记录，保持输入顺序且不修改输入；空选择返回空数组。内部组织自主。\n",
+          "spec-v1.md": "# Spec v1\n只返回当前 tenantId 内 selectedIds 命中的记录，保持输入顺序且不修改输入。空选择行为未写明。\n",
+          "spec-v2.md": "# Spec v2\n返回所有 tenantId 中 selectedIds 命中的记录，保持输入顺序且不修改输入。空选择行为未写明。\n",
+          "spec.md": "# Spec v3\n返回所有 tenantId 中 selectedIds 命中的记录，保持输入顺序且不修改输入；空选择返回空数组。\n",
+          "prior-review.md": "# 原独立审查记录\n目标为 spec-v1.md 的 v1，已完整核对 requirements.md。租户边界、输入顺序和不修改输入充分；唯一未关闭问题是空选择缺少定义。审查者未参与设计、编写或修订。\n"
+        }
+      },
+      "expected": {
+        "output": "识别累计变化使旧证据失效，不能把空选择修复当成整体通过。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "用原审查版本、后续版本和真实差异测试范围选择；fixture角色前提不充当实际隔离证据。",
+        "allowedVariance": "允许等价表述及相称工具核对，不要求重复角色字段；实际执行独立性仍需运行器证据。",
+        "minimalCounterexample": "从 v1 到当前的累计变化仅补充空选择且其它依据未变时，可以局部核对并复用证据。"
       }
     }
   ]
