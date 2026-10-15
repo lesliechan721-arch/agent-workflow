@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
+import { realpath } from 'node:fs/promises';
 import { createElement } from 'react';
 import { render } from 'ink-testing-library';
 
@@ -15256,8 +15257,13 @@ describe('five namespaced write commands', () => {
         context: { plugin: { rootDir: string }; config: { schema: object; values: object } };
       });
     expect(firstRenderEvents).toHaveLength(1);
-    expect(firstRenderEvents[0]!.cwd).toBe(firstRenderEvents[0]!.context.plugin.rootDir);
-    expect(firstRenderEvents[0]!.cwd).not.toBe(isolation.layout.fixtureCwd);
+    const [rendererCwd, rendererPluginRoot, projectCwd] = await Promise.all([
+      realpath(firstRenderEvents[0]!.cwd),
+      realpath(firstRenderEvents[0]!.context.plugin.rootDir),
+      realpath(isolation.layout.fixtureCwd),
+    ]);
+    expect(rendererCwd).toBe(rendererPluginRoot);
+    expect(rendererCwd).not.toBe(projectCwd);
     expect(firstRenderEvents[0]!.context.config.schema).not.toHaveProperty('projectMode');
     expect(firstRenderEvents[0]!.context.config.values).not.toHaveProperty('projectMode');
 

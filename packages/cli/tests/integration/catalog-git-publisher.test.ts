@@ -3,9 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
+import { preparePublishedCatalogWorkspace } from '@lesliechan721/aw-plugin-core';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { bundleLocalPlugin, createCatalogRuntimeImportResolver } from '../../scripts/plugin-staging.js';
 import {
   applyCatalogPublicationPlan,
   catalogPublicationPlanDigest,
@@ -23,6 +25,7 @@ import {
   prepareCatalogPublicationInspection,
 } from '../../src/commands/catalog-publication-inspection.js';
 import { runCli } from '../../src/index.js';
+import { CLI_RESERVED_IMPORTS } from '../../src/utils/manifest.js';
 import { prepareCatalogRelease } from '../../../../scripts/release/catalog-publication.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -135,7 +138,9 @@ async function addHistoryKeeperPlugin(root: string): Promise<void> {
   ], { cwd: root, io: quietIo() });
 }
 
-async function publishedPluginVersion(publication: CatalogPublishPlanReceipt): Promise<string | undefined> {
+async function publishedPluginVersion(
+  publication: Pick<CatalogPublishPlanReceipt, 'repositoryPath'>,
+): Promise<string | undefined> {
   const manifest = await fs.readJson(
     path.join(publication.repositoryPath!, 'catalog-manifest.json'),
   ) as { entries: Array<{ name: string; version: string }> };
@@ -144,13 +149,56 @@ async function publishedPluginVersion(publication: CatalogPublishPlanReceipt): P
 
 async function pushPreparedRef(
   publication: CatalogPublishPlanReceipt,
-  ref: 'branch' | 'tag',
+  ref: 'branch' | 'tag' | 'both',
 ): Promise<void> {
   const repository = publication.repositoryPath!;
-  const source = ref === 'branch'
-    ? `${publication.expectedCommit}:refs/heads/${publication.branch}`
-    : `refs/tags/${publication.tag}:refs/tags/${publication.tag}`;
-  await execFileAsync('git', ['push', '--quiet', publication.pushUrl, source], { cwd: repository });
+  const branch = `${publication.expectedCommit}:refs/heads/${publication.branch}`;
+  const tag = `refs/tags/${publication.tag}:refs/tags/${publication.tag}`;
+  const refs = ref === 'both' ? [branch, tag] : [ref === 'branch' ? branch : tag];
+  await git(repository, ['push', '--quiet', '--atomic', publication.pushUrl, ...refs]);
+}
+
+// History tests need valid published snapshots and Git ancestry, without repeating journal apply coverage.
+async function publishHistoryFixture(options: {
+  root: string;
+  remote: string;
+  branch?: string;
+  previous?: { repositoryPath: string; commit: string };
+  parent?: string;
+}): Promise<{ repositoryPath: string; commit: string }> {
+  const prepared = await preparePublishedCatalogWorkspace({
+    workspaceRoot: options.root,
+    sourceHead: await git(options.root, ['rev-parse', 'HEAD']),
+    previousSnapshotRoot: options.previous?.repositoryPath,
+    reservedImports: CLI_RESERVED_IMPORTS,
+    adapter: {
+      async build(build) {
+        await bundleLocalPlugin(build.plugin, build.outputRoot, {
+          buildMode: 'staging',
+          runtimeResolver: createCatalogRuntimeImportResolver(build.plugins),
+        });
+      },
+    },
+  });
+  const repository = await temporaryRoot('aw-catalog-history-fixture-');
+  await git(repository, ['init', '--quiet']);
+  const parent = options.parent ?? options.previous?.commit;
+  if (parent !== undefined) {
+    await git(repository, ['fetch', '--quiet', '--no-tags', options.remote, parent]);
+    await git(repository, ['reset', '--soft', 'FETCH_HEAD']);
+  }
+  await fs.copy(prepared.outputRoot, repository);
+  await git(repository, ['-c', 'core.autocrlf=false', '-c', 'core.eol=lf', 'add', '--all']);
+  const identity = ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid'];
+  await git(repository, [...identity, 'commit', '--quiet', '-m', `Catalog history ${prepared.catalogVersion}`]);
+  const tag = `catalog-v${prepared.catalogVersion}`;
+  await git(repository, [...identity, 'tag', '--annotate', tag, '--message', tag]);
+  await git(repository, [
+    'push', '--quiet', '--atomic', options.remote,
+    `HEAD:refs/heads/${options.branch ?? 'catalog/latest'}`,
+    `refs/tags/${tag}:refs/tags/${tag}`,
+  ]);
+  return { repositoryPath: prepared.outputRoot, commit: await git(repository, ['rev-parse', 'HEAD']) };
 }
 
 describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () => {
@@ -878,13 +926,11 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const pluginBackup = path.join(backupRoot, 'journal-test');
     await fs.copy(pluginRoot, pluginBackup);
 
-    const first = await plan(root);
-    await apply(root, first);
+    const first = await publishHistoryFixture({ root, remote });
     await fs.remove(pluginRoot);
     await setCatalogVersion(root, '1.1.0');
     await commitAll(root, 'remove plugin');
-    const removed = await plan(root);
-    await apply(root, removed);
+    await publishHistoryFixture({ root, remote, previous: first });
 
     await fs.copy(pluginBackup, pluginRoot);
     await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Different\n');
@@ -904,7 +950,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
   });
 
   it('continues beta Plugin identity after deletion and reuses unchanged historical content', async () => {
-    const { root } = await createWorkspace('1.0.0-beta.1');
+    const { root, remote } = await createWorkspace('1.0.0-beta.1');
     const pluginRoot = path.join(root, 'plugins', 'journal-test');
     await addHistoryKeeperPlugin(root);
     await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Original\n');
@@ -913,27 +959,26 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const pluginBackup = path.join(backupRoot, 'journal-test');
     await fs.copy(pluginRoot, pluginBackup);
 
-    const first = await plan(root, 'catalog/beta');
+    const first = await publishHistoryFixture({ root, remote, branch: 'catalog/beta' });
     expect(await publishedPluginVersion(first)).toBe('0.1.0-beta.1');
-    await apply(root, first);
     await fs.remove(pluginRoot);
     await setCatalogVersion(root, '1.0.0-beta.2');
     await commitAll(root, 'remove beta plugin');
-    const removed = await plan(root, 'catalog/beta');
-    await apply(root, removed);
+    const removed = await publishHistoryFixture({ root, remote, branch: 'catalog/beta', previous: first });
 
     await fs.copy(pluginBackup, pluginRoot);
     await setCatalogVersion(root, '1.0.0-beta.3');
     await commitAll(root, 'readd unchanged beta plugin');
     const unchanged = await plan(root, 'catalog/beta');
     expect(await publishedPluginVersion(unchanged)).toBe('0.1.0-beta.1');
-    await apply(root, unchanged);
+    await pushPreparedRef(unchanged, 'both');
 
     await fs.remove(pluginRoot);
     await setCatalogVersion(root, '1.0.0-beta.4');
     await commitAll(root, 'remove beta plugin again');
-    const removedAgain = await plan(root, 'catalog/beta');
-    await apply(root, removedAgain);
+    await publishHistoryFixture({
+      root, remote, branch: 'catalog/beta', previous: removed, parent: unchanged.expectedCommit!,
+    });
 
     await fs.copy(pluginBackup, pluginRoot);
     await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Different\n');
@@ -941,7 +986,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     await commitAll(root, 'readd changed beta plugin');
     const changed = await plan(root, 'catalog/beta');
     expect(await publishedPluginVersion(changed)).toBe('0.1.0-beta.2');
-    await apply(root, changed);
+    await expect(apply(root, changed)).resolves.toMatchObject({ state: 'published' });
   });
 
   it('rejects a regular historical manifest blob with a non-canonical Plugin source before formal or remote writes', async () => {
