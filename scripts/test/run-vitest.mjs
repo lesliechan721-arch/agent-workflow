@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 import { runProcessTree } from '../perf/process-tree.mjs';
+import { formatTestWorkers, vitestWorkerInvocation } from '../../packages/cli/scripts/test-workers.mjs';
 
 const TEST_RUNNER_PROCESS_TREE_ENV = 'AW_TEST_RUNNER_PROCESS_TREE';
 const TEST_RUN_ID_ENV = 'AW_TEST_RUN_ID';
@@ -21,6 +22,8 @@ function resolveVitestEntry(cwd) {
 }
 
 export async function runVitest(args = process.argv.slice(2)) {
+  const workers = vitestWorkerInvocation(args);
+  process.stderr.write(formatTestWorkers('vitest', workers));
   const startedAt = performance.now();
   const correlationRunId = process.env[TEST_RUN_ID_ENV] || undefined;
   const runId = randomUUID();

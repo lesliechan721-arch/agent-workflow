@@ -115,6 +115,7 @@ function publishOptions(fixture: Awaited<ReturnType<typeof publicationFixture>>)
     assertPackageVersions: async () => ({ targetVersion: targets.cli }),
     withSnapshot: async (callback: (snapshot: typeof build) => unknown) => callback(build),
     readPackageVersions: async () => [],
+    readPackageChannelVersion: async () => null,
     resolveCandidates: async () => fixture.descriptor.candidates,
     assertCliTagAvailable: async () => undefined,
     publishCliTag: async () => undefined,
@@ -365,11 +366,15 @@ describe('local prepared release', () => {
         catalogVersion: '2.3.0-beta.2',
         channel: 'beta',
       }));
+      const readCatalogPublicationPluginHistory = vi.fn(async () => {
+        throw new Error('History is unavailable after this plan was prepared.');
+      });
 
       await expect(readReusableCatalogAttempt('beta', '2.3.0-beta.2', {
         repoRoot: root,
-        catalogPublicationService: { prepareCatalogPublicationPlan },
+        catalogPublicationService: { prepareCatalogPublicationPlan, readCatalogPublicationPluginHistory },
       })).resolves.toBe('2.3.0-beta.2');
+      expect(readCatalogPublicationPluginHistory).not.toHaveBeenCalled();
       expect(prepareCatalogPublicationPlan).toHaveBeenCalledWith(expect.objectContaining({
         workspaceRoot: root,
         branch: 'catalog/beta',
@@ -388,6 +393,7 @@ describe('local prepared release', () => {
     await expect(readReusableCatalogAttempt('stable', '2.3.0', {
       repoRoot: root,
       catalogPublicationService: {
+        readCatalogPublicationPluginHistory: async () => [],
         prepareCatalogPublicationPlan: async () => ({
           state: 'published', catalogVersion: '2.3.0', channel: 'latest',
         }),
@@ -403,6 +409,7 @@ describe('local prepared release', () => {
       repoRoot: root,
       readCatalogVersions: async () => [],
       catalogPublicationService: {
+        readCatalogPublicationPluginHistory: async () => [],
         prepareCatalogPublicationPlan: async () => {
           throw new Error(
             'Catalog publication identity changed. Increase the Catalog version and create a new plan.',
@@ -730,6 +737,9 @@ describe('local prepared release', () => {
       readPackageVersions: async (name: string) => published.has(name)
         ? [fixture.descriptor.candidates.cli]
         : [],
+      readPackageChannelVersion: async (name: string) => published.has(name)
+        ? fixture.descriptor.candidates.cli
+        : '1.1.9',
       assertPublishedPackageMatches: async (name: string) => {
         expect(published.has(name)).toBe(true);
         verified.push(name);
@@ -771,6 +781,72 @@ describe('local prepared release', () => {
       runNpmCommand,
     })).rejects.toThrow('different package files');
     expect(runNpmCommand).not.toHaveBeenCalled();
+  });
+
+  // Test Value Gate: an older partial candidate must not move beta/latest back after a newer release.
+  it.each([
+    ['beta', '1.2.0-beta.7', '1.2.0-beta.8', 'beta'],
+    ['stable', '1.2.0', '1.2.1', 'latest'],
+  ] as const)('refuses an older %s repair before any npm publish when the channel has advanced', async (channel, candidate, newer, tag) => {
+    const fixture = await publicationFixture({ cli: true, catalog: false });
+    fixture.descriptor.channel = channel;
+    fixture.descriptor.candidates.cli = candidate;
+    fixture.descriptor.npm!.version = candidate;
+    const attemptPath = path.join(fixture.root, 'attempted.json');
+    const attemptBytes = JSON.stringify({
+      schemaVersion: 1,
+      targetsDigest: fixture.descriptor.source.targetsDigest,
+      candidates: { cli: candidate },
+      descriptorDigest: calculateCanonicalDigest(fixture.descriptor),
+    });
+    await fs.writeFile(attemptPath, attemptBytes);
+    const channelReads: string[] = [];
+    const runNpmCommand = vi.fn();
+    await expect(repairPreparedCliRelease({
+      ...publishOptions(fixture),
+      readPackageVersions: undefined,
+      readPackageChannelVersion: undefined,
+      captureCommand: async (_command: string, args: string[]) => {
+        if (args[2] === 'versions') {
+          return { stdout: JSON.stringify(args[1] === '@lesliechan721/aw' ? [newer] : [candidate, newer]) };
+        }
+        expect(args[1]).toMatch(new RegExp(`@${tag}$`, 'u'));
+        channelReads.push(args[1]!);
+        return { stdout: JSON.stringify(newer) };
+      },
+      assertPublishedPackageMatches: async () => undefined,
+      runNpmCommand,
+    })).rejects.toThrow('newer');
+    expect(channelReads).toHaveLength(5);
+    expect(runNpmCommand).not.toHaveBeenCalled();
+    expect(await fs.readFile(attemptPath, 'utf8')).toBe(attemptBytes);
+  });
+
+  it.each(['publish', 'repair'] as const)('stops remaining %s writes when another package channel advances', async (mode) => {
+    const fixture = await publicationFixture({ cli: true, catalog: false });
+    if (mode === 'repair') {
+      await fs.writeFile(path.join(fixture.root, 'attempted.json'), JSON.stringify({
+        schemaVersion: 1,
+        targetsDigest: fixture.descriptor.source.targetsDigest,
+        candidates: { cli: fixture.descriptor.candidates.cli },
+        descriptorDigest: calculateCanonicalDigest(fixture.descriptor),
+      }));
+    }
+    let channelAdvanced = false;
+    const runNpmCommand = vi.fn(async () => { channelAdvanced = true; });
+    const publishCliTag = vi.fn();
+    const invoke = mode === 'repair' ? repairPreparedCliRelease : publishPreparedRelease;
+    await expect(invoke({
+      ...publishOptions(fixture),
+      readPackageChannelVersion: async (name: string) => channelAdvanced && name === '@lesliechan721/aw'
+        ? '1.2.1'
+        : '1.1.9',
+      assertPublishedPackageMatches: async () => undefined,
+      runNpmCommand,
+      publishCliTag,
+    })).rejects.toThrow('newer');
+    expect(runNpmCommand).toHaveBeenCalledTimes(1);
+    expect(publishCliTag).not.toHaveBeenCalled();
   });
 
   it('rejects a new descriptor that reuses the attempted CLI candidate', async () => {

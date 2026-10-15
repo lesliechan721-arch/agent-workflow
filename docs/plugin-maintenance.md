@@ -67,7 +67,9 @@ manifest `dependencies` 声明安装或升级某插件时必须同时满足的�
 - `pnpm release` 是本 monorepo 对 Eval、Core、CLI npm packages、CLI tag 和可选 Catalog publication 的 Product Release 编排。它不是第二套 Catalog schema、publisher 或恢复合同。
 - 本仓库官方 `pnpm build` 使用 `--strict-requirements` 语义；`release:verify:catalog:core` 通过该 build 覆盖 strict 门禁。第三方公开 `aw catalog build` 默认只 advisory。
 - 选择 Catalog 轴时，`pnpm release` 通过公共 `aw catalog version` mutation 选择 metadata beta，并最终调用与第三方 Workspace 相同的 Catalog publish plan/apply、publication journal、tag 和失败恢复合同。具体 Catalog 行为以[Catalog 作者指南](catalog-authoring.md)和 Core validator 为准。
-- 正常产品发布只使用 `pnpm release`。它只提交指定的发布元数据，并从已提交的 source HEAD 生成和消费 immutable prepared state；npm repair 仍只属于 CLI package 轴。
+- 官方 Actions 使用独立 CLI/Catalog 源码 tag，main CI 成功后按生产内容自动准备 beta；手动 `source` 准备精确正式版。候选分支只包含允许的版本修改，main 不接收自动版本 commit。操作和外部配置见 [README](../README.md#本仓库维护与官方发版)。`pnpm release` 保留本地维护用途。
+- 官方编排向 Core 唯一版本 owner 提供 latest/beta 的完整 first-parent 成功历史。未变化插件保留完整 stable/beta 版本，变化插件独立 patch 或递增 beta；不把 Catalog 版本赋给全部插件。删除重加保留历史，同版本不同内容阻断。第三方未提供官方历史时继续使用原 channel 合同。
+- Actions 六平台只消费同一候选 tar，发布前保存 CLI attempt 或 Catalog pending journal/repository，发布和恢复继续使用公共 publisher。缺失或损坏的已尝试恢复包必须提升版本；npm repair 仍只属于 CLI package 轴。
 - 新工作流的 generated standards、schemas 和 handoff contracts 必须通过 check-only contract test；CI 不自动改写生成文件。
 - CLI 作者 validator 的 JavaScript import scanner 是唯一实现；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。
 - 三层插件应分别验证，并增加同时安装三个插件的组合测试。

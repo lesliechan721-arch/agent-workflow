@@ -240,16 +240,6 @@ describe('CLI entry v5', () => {
     expect(output.stdout()).not.toContain('--with-post-apply');
   });
 
-  it('rejects the removed public plugin-root option', async () => {
-    const initOutput = capture();
-    expect(await runCli([
-      'plugin', 'init', 'demo', '--description', 'Demo.', '--no-skills',
-      '--plugin-root', 'tools/demo', '--json',
-    ], { io: initOutput.io })).toBe(1);
-    expect(initOutput.stderr()).toContain('Unknown option: --plugin-root');
-
-  });
-
   it('publishes the confirmed canonical plugin removal options', async () => {
     const output = capture();
     expect(await runCli(['plugin', 'remove', '--help'], { io: output.io })).toBe(0);

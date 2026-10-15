@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import {
   GENERATED_OUTPUT_MARKER_FILENAME,
   validatePublishedCatalogSnapshot,
+  type CatalogManifestV7Entry,
 } from '@lesliechan721/aw-plugin-core';
 
 import {
@@ -744,7 +745,10 @@ export async function persistCatalogPublicationPlan(options: {
 }
 
 export async function prepareCatalogPublicationPlan(
-  options: PublicationTargetOptions & ReceiptResolution & PersistPlanHooks,
+  options: PublicationTargetOptions & ReceiptResolution & PersistPlanHooks & {
+    officialPluginHistory?: readonly CatalogManifestV7Entry[];
+    sourcePluginVersionsAtBaseline?: Readonly<Record<string, string>>;
+  },
 ): Promise<CatalogPublishPlanReceipt> {
   const context = await inspectCatalogPublicationLiveContext(options);
   const existing = await readExistingPlan(context, options);

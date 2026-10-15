@@ -6,6 +6,11 @@
   "engines": {
     "node": ">=22"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lesliechan721-arch/agent-workflow.git",
+    "directory": "packages/cli"
+  },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -20,9 +25,9 @@
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node dist/scripts/bundle-plugins.js",
     "build:dev:typescript": "tsc -p tsconfig.dev.json",
     "test": "pnpm run test:unit && pnpm run test:integration",
-    "test:unit": "node ../../scripts/test/run-vitest.mjs run --project pure --maxWorkers=2 tests/unit && node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated --maxWorkers=2 tests/unit && node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/unit",
+    "test:unit": "node ../../scripts/test/run-vitest.mjs run --project pure tests/unit && node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated tests/unit && node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/unit",
     "test:unit:fast": "node ../../scripts/test/run-vitest.mjs run --config vitest.fast.config.ts",
-    "test:integration": "node ../../scripts/test/run-vitest.mjs run --project integration --maxWorkers=2 tests/integration && node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration",
+    "test:integration": "node ../../scripts/test/run-vitest.mjs run --project integration tests/integration && node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration",
     "test:coverage": "node ../../scripts/test/run-vitest.mjs run --coverage",
     "test:perf": "node ../../scripts/test/run-vitest.mjs run --config vitest.perf.config.ts",
     "test:dist": "node ../../scripts/test/run-vitest.mjs run --config vitest.dist.config.ts",

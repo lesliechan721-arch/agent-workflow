@@ -41,6 +41,9 @@ import {
 } from './cli-git-tag.mjs';
 import { calculateCanonicalDigest } from './release-model.mjs';
 import { assertVersionTargetsMatchHead, readVersionTargets } from './release-target.mjs';
+import { assertPortablePreparedBinding } from './prepared-transfer.mjs';
+
+export { exportPreparedRelease, importPreparedRelease } from './prepared-transfer.mjs';
 
 export const preparedReleaseRoot = path.join(releaseRoot, 'prepared');
 export const preparedDescriptorPath = path.join(preparedReleaseRoot, 'descriptor.json');
@@ -117,17 +120,7 @@ export async function assertPreparedCliAttempt(descriptor, options = {}) {
   }
 }
 
-async function consumePreparedCandidate(descriptor, axis, options = {}) {
-  const attempt = await readAttempt(options);
-  const marker = {
-    schemaVersion: 1,
-    targetsDigest: descriptor.source.targetsDigest,
-    candidates: {
-      ...attemptedCandidates(attempt?.candidates),
-      [axis]: descriptor.candidates[axis],
-    },
-    descriptorDigest: calculateCanonicalDigest(descriptor),
-  };
+async function writeAttempt(marker, options = {}) {
   const destination = attemptedPath(options);
   await fs.mkdir(path.dirname(destination), { recursive: true });
   const temporary = `${destination}.${process.pid}.${crypto.randomUUID()}.tmp`;
@@ -140,6 +133,40 @@ async function consumePreparedCandidate(descriptor, axis, options = {}) {
   } finally {
     await fs.rm(temporary, { force: true });
   }
+}
+
+async function consumePreparedCandidate(descriptor, axis, options = {}) {
+  const attempt = await readAttempt(options);
+  const marker = {
+    schemaVersion: 1,
+    targetsDigest: descriptor.source.targetsDigest,
+    candidates: {
+      ...attemptedCandidates(attempt?.candidates),
+      [axis]: descriptor.candidates[axis],
+    },
+    descriptorDigest: calculateCanonicalDigest(descriptor),
+    publicationStarted: true,
+  };
+  await writeAttempt(marker, options);
+}
+
+export async function markPreparedCliAttempt(options = {}) {
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const { root, descriptor } = await (options.readDescriptor ?? readPreparedDescriptor)(options);
+  if (!descriptor.axes.cli) throw new Error('The prepared release does not contain a CLI candidate.');
+  await assertLiveSourceBinding(descriptor, repoRoot, options);
+  await assertPreparedBuildBinding(root, descriptor, repoRoot, options);
+  await assertPreparedCliArtifacts(root, descriptor, options);
+  await assertCandidateNotAttempted(descriptor.source.targetsDigest, descriptor.candidates, options);
+  const attempt = {
+    schemaVersion: 1,
+    targetsDigest: descriptor.source.targetsDigest,
+    candidates: { cli: descriptor.candidates.cli },
+    descriptorDigest: calculateCanonicalDigest(descriptor),
+    publicationStarted: false,
+  };
+  await writeAttempt(attempt, options);
+  return { attempt, intentDigest: calculateCanonicalDigest(attempt) };
 }
 
 export async function assertTrackedHeadClean(repoRoot = defaultRepoRoot, options = {}) {
@@ -383,9 +410,24 @@ export async function prepareLocalRelease(channel, options = {}) {
   if (axes.cli && versions.targetVersion !== targets.cli) {
     throw new Error('CLI package versions do not match release targets.');
   }
-  const candidates = await (options.resolveCandidates ?? resolvePreparedCandidates)(channel, targets, {
-    ...options, repoRoot, axes,
-  });
+  const candidates = options.exactCandidates === undefined
+    ? await (options.resolveCandidates ?? resolvePreparedCandidates)(channel, targets, {
+        ...options, repoRoot, axes,
+      })
+    : { ...options.exactCandidates };
+  if (options.exactCandidates !== undefined) {
+    for (const axis of ['cli', 'catalog']) {
+      if ((axes[axis] && typeof candidates[axis] !== 'string')
+        || (!axes[axis] && candidates[axis] !== null)) {
+        throw new Error('Exact release candidates must match the selected axes.');
+      }
+    }
+  }
+  assertPreparedChannelCandidates({ channel, candidates });
+  if (options.exactCandidates && axes.cli
+    && candidates.cli.replace(/-beta\.[1-9]\d*$/u, '') !== targets.cli) {
+    throw new Error('Exact CLI candidate must use the committed stable target.');
+  }
   assertSelectedCandidates(axes, candidates);
   const targetsDigest = targets === null ? null : calculateCanonicalDigest(targets);
   await assertCandidateNotAttempted(targetsDigest, candidates, { ...options, releaseRoot: localReleaseRoot });
@@ -470,6 +512,7 @@ export async function prepareLocalRelease(channel, options = {}) {
         channel,
         axes: { cli: candidates.cli !== null, catalog: candidates.catalog !== null },
         candidates,
+        ...(options.exactCandidates ? { selection: 'exact' } : {}),
         build: {
           generationId: snapshot.generationId,
           inputDigest: snapshot.inputDigest,
@@ -492,7 +535,7 @@ export async function prepareLocalRelease(channel, options = {}) {
 }
 
 export async function readPreparedDescriptor(options = {}) {
-  const root = options.preparedRoot ?? preparedReleaseRoot;
+  const root = options.preparedRoot ?? path.join(options.releaseRoot ?? releaseRoot, 'prepared');
   let descriptor;
   try {
     const [rootStats, descriptorStats] = await Promise.all([
@@ -512,6 +555,7 @@ export async function readPreparedDescriptor(options = {}) {
   }
   if (
     !['beta', 'stable'].includes(descriptor.channel)
+    || (descriptor.selection !== undefined && descriptor.selection !== 'exact')
     || typeof descriptor.axes.cli !== 'boolean'
     || typeof descriptor.axes.catalog !== 'boolean'
     || (descriptor.axes.cli !== (typeof descriptor.candidates?.cli === 'string'))
@@ -535,7 +579,7 @@ export async function readPreparedDescriptor(options = {}) {
 
 function assertPreparedChannelCandidates(descriptor) {
   const matches = (candidate) => descriptor.channel === 'beta'
-    ? /-beta\.[1-9]\d*$/u.test(candidate)
+    ? /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-beta\.[1-9]\d*$/u.test(candidate)
     : /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(candidate);
   for (const candidate of [descriptor.candidates?.cli, descriptor.candidates?.catalog]) {
     if (candidate !== null && candidate !== undefined && !matches(candidate)) {
@@ -602,6 +646,16 @@ async function assertCandidatesUnavailable(descriptor, options = {}) {
 
 async function assertRemoteCandidateGate(descriptor, targets, options = {}) {
   if (!descriptor.axes.cli) return;
+  if (descriptor.selection === 'exact') {
+    const readVersions = options.readPackageVersions ?? readPackageVersions;
+    const readChannelVersion = options.readPackageChannelVersion ?? readPackageChannelVersion;
+    const [versions, channels] = await Promise.all([
+      Promise.all(CLI_PACKAGES.map((name) => readVersions(name, options))),
+      Promise.all(CLI_PACKAGES.map((name) => readChannelVersion(name, descriptor.channel, options))),
+    ]);
+    assertCandidateAbovePublished(descriptor.candidates.cli, versions, channels, 'CLI train');
+    return;
+  }
   const live = await (options.resolveCandidates ?? resolvePreparedCandidates)(
     descriptor.channel,
     targets,
@@ -612,6 +666,21 @@ async function assertRemoteCandidateGate(descriptor, targets, options = {}) {
   }
 }
 
+async function assertCliChannelNotNewer(descriptor, options = {}) {
+  const readChannelVersion = options.readPackageChannelVersion ?? readPackageChannelVersion;
+  const channels = await Promise.all(CLI_PACKAGES.map((name) =>
+    readChannelVersion(name, descriptor.channel, options)));
+  for (const [index, current] of channels.entries()) {
+    if (current !== null && compareReleaseSemVer(current, descriptor.candidates.cli) > 0) {
+      const tag = descriptor.channel === 'stable' ? 'latest' : 'beta';
+      throw new Error(
+        `Cannot publish the prepared CLI candidate: ${CLI_PACKAGES[index]}@${tag} ` +
+        `has newer version ${current}. Publish a new CLI version instead.`,
+      );
+    }
+  }
+}
+
 async function publishNpm(packageName, tarballPath, version, channel, options = {}) {
   await options.beforeRemoteWrite?.(packageName);
   const registryUrl = options.registryUrl ?? await resolveRegistryUrl(
@@ -619,7 +688,9 @@ async function publishNpm(packageName, tarballPath, version, channel, options = 
     options.env ?? process.env,
   );
   try {
-    await (options.runNpmCommand ?? options.runCommand ?? (await import('./common.mjs')).runCommand)('pnpm', [
+    const command = options.npmCommand ?? 'pnpm';
+    if (!['npm', 'pnpm'].includes(command)) throw new Error('npmCommand must be npm or pnpm.');
+    await (options.runNpmCommand ?? options.runCommand ?? (await import('./common.mjs')).runCommand)(command, [
       'publish', tarballPath, '--ignore-scripts', '--access', 'public',
       '--tag', channel === 'stable' ? 'latest' : 'beta',
       '--registry', registryUrl,
@@ -663,7 +734,11 @@ async function assertLiveSourceBinding(descriptor, repoRoot, options = {}) {
   }
 }
 
-async function assertPreparedBuildBinding(descriptor, repoRoot, options = {}) {
+async function assertPreparedBuildBinding(root, descriptor, repoRoot, options = {}) {
+  if (options.portable) {
+    assertPortablePreparedBinding(root, descriptor, options);
+    return;
+  }
   await (options.withSnapshot ?? withReleaseBuildSnapshot)(async (snapshot) => {
     for (const field of ['generationId', 'inputDigest', 'outputDigest', 'cliPackageDigest']) {
       if (snapshot[field] !== descriptor.build[field]) {
@@ -693,7 +768,7 @@ export async function repairPreparedCliRelease(options = {}) {
   }
   await (options.assertPreparedCliAttempt ?? assertPreparedCliAttempt)(descriptor, options);
   await assertLiveSourceBinding(descriptor, repoRoot, options);
-  await assertPreparedBuildBinding(descriptor, repoRoot, options);
+  await assertPreparedBuildBinding(root, descriptor, repoRoot, options);
   await assertPreparedCliArtifacts(root, descriptor, options);
 
   const publicationOptions = {
@@ -707,6 +782,7 @@ export async function repairPreparedCliRelease(options = {}) {
   for (const [index, artifact] of descriptor.npm.packages.entries()) {
     const versions = await readVersions(artifact.name, options);
     if (!versions.includes(descriptor.candidates.cli)) {
+      await assertCliChannelNotNewer(descriptor, options);
       try {
         await publishNpm(
           artifact.name,
@@ -745,20 +821,29 @@ export async function publishPreparedRelease(options = {}) {
   const { root, descriptor } = await (options.readDescriptor ?? readPreparedDescriptor)(options);
   assertPreparedChannelCandidates(descriptor);
   await assertLiveSourceBinding(descriptor, repoRoot, options);
-  await assertPreparedBuildBinding(descriptor, repoRoot, options);
+  await assertPreparedBuildBinding(root, descriptor, repoRoot, options);
   await assertPreparedCliArtifacts(root, descriptor, options);
+  if (descriptor.axes.cli && options.initialAttemptDigest !== undefined) {
+    await assertPreparedCliAttempt(descriptor, options);
+    const attempt = await readAttempt(options);
+    if (attempt.publicationStarted !== false
+      || calculateCanonicalDigest(attempt) !== options.initialAttemptDigest) {
+      throw new Error('The saved CLI write intent is not eligible for an initial publication; use explicit CLI repair.');
+    }
+  } else {
+    await assertCandidateNotAttempted(descriptor.source.targetsDigest, descriptor.candidates, options);
+  }
   const targets = descriptor.axes.cli
     ? await (options.readTargets ?? readVersionTargets)(repoRoot)
     : null;
-  await assertRemoteCandidateGate(descriptor, targets, { ...options, repoRoot });
+  await assertRemoteCandidateGate(descriptor, targets, {
+    ...options,
+    repoRoot,
+    ...(options.initialAttemptDigest !== undefined ? { readAttempt: async () => null } : {}),
+  });
   await assertCandidatesUnavailable(descriptor, { ...options, repoRoot });
   await assertLiveSourceBinding(descriptor, repoRoot, options);
 
-  await assertCandidateNotAttempted(
-    descriptor.source.targetsDigest,
-    descriptor.candidates,
-    options,
-  );
   const publicationOptions = {
     ...options,
     beforeRemoteWrite: async (target) => {
@@ -770,6 +855,7 @@ export async function publishPreparedRelease(options = {}) {
   if (descriptor.axes.cli) {
     await (options.consumeCandidate ?? consumePreparedCandidate)(descriptor, 'cli', options);
     for (const artifact of descriptor.npm.packages) {
+      await assertCliChannelNotNewer(descriptor, options);
       await publishNpm(artifact.name, resolvePreparedPath(root, artifact.path),
         descriptor.candidates.cli, descriptor.channel, publicationOptions);
     }

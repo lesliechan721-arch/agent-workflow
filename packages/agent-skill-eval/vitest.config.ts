@@ -1,3 +1,5 @@
+import { vitestWorkerOptions } from '../cli/scripts/test-workers.mjs';
+
 import { defineConfig } from 'vitest/config'
 
 const pureTests = [
@@ -22,8 +24,7 @@ const common = {
 
 export default defineConfig({
   test: {
-    maxWorkers: 2,
-    minWorkers: 1,
+    ...vitestWorkerOptions(),
     projects: [
       {
         test: {

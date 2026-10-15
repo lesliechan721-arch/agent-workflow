@@ -93,6 +93,16 @@ export function bumpStableVersion(version, bump) {
   return `${major}.${minor}.${patch + 1n}`;
 }
 
+export function synchronizeCliLockfile(contents, currentVersion, nextVersion) {
+  normalizeStableTargetVersion(currentVersion);
+  normalizeStableTargetVersion(nextVersion);
+  const specifier = new RegExp(`^([ \\t]*specifier: workspace:)${currentVersion.replaceAll('.', '\\.')}(?=\\r?$)`, 'gm');
+  if ([...contents.matchAll(specifier)].length !== 4) {
+    throw new Error(`pnpm-lock.yaml must contain four exact specifier: workspace:${currentVersion} entries.`);
+  }
+  return contents.replace(specifier, (_match, prefix) => `${prefix}${nextVersion}`);
+}
+
 export function parseTargetArgs(argv) {
   const args = [...argv];
   while (args[0] === '--') args.shift();
@@ -204,8 +214,30 @@ async function writeAtomically(changes, fileSystem = fs) {
 }
 
 export async function updateReleaseTargets(argv, options = {}) {
+  return applyReleaseTargets(parseTargetArgs(argv), options);
+}
+
+export async function setReleaseTargets(targets, options = {}) {
+  assertObject(targets, 'exact release targets');
+  assertKeys(targets, 'exact release targets', ['cli', 'plugins']);
+  const plugins = assertObject(targets.plugins ?? {}, 'exact plugin targets');
+  const requested = {
+    cli: targets.cli === undefined || targets.cli === null
+      ? null
+      : normalizeStableTargetVersion(targets.cli, 'exact CLI target'),
+    plugins: new Map(Object.entries(plugins).map(([name, version]) => [
+      name,
+      normalizeStableTargetVersion(version, `${name} exact plugin target`),
+    ])),
+  };
+  if (requested.cli === null && requested.plugins.size === 0) {
+    throw new Error('Exact release targets require at least one target.');
+  }
+  return applyReleaseTargets(requested, options, true);
+}
+
+async function applyReleaseTargets(requested, options, exact = false) {
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
-  const requested = parseTargetArgs(argv);
   const current = requested.cli ? await readVersionTargets(repoRoot) : null;
   const cliPackages = requested.cli ? await Promise.all([
     readCliPackage(
@@ -278,11 +310,11 @@ export async function updateReleaseTargets(argv, options = {}) {
   }
   const next = current === null ? null : {
     ...current,
-    cli: bumpStableVersion(current.cli, requested.cli),
+    cli: exact ? requested.cli : bumpStableVersion(current.cli, requested.cli),
   };
   const pluginChanges = await Promise.all([...requested.plugins].map(async ([name, bump]) => {
     const plugin = await readPluginManifest(repoRoot, name);
-    const version = bumpStableVersion(plugin.manifest.version, bump);
+    const version = exact ? bump : bumpStableVersion(plugin.manifest.version, bump);
     return {
       name,
       version,
@@ -331,13 +363,9 @@ export async function updateReleaseTargets(argv, options = {}) {
     }
     const lockPath = await assertRegularPathChain(repoRoot, 'pnpm-lock.yaml');
     const lockContents = await fs.readFile(lockPath, 'utf8');
-    const currentSpecifier = `specifier: workspace:${current.cli}`;
-    if (lockContents.split(currentSpecifier).length !== 5) {
-      throw new Error(`pnpm-lock.yaml must contain four exact ${currentSpecifier} entries.`);
-    }
     changes.push({
       path: lockPath,
-      contents: lockContents.replaceAll(currentSpecifier, `specifier: workspace:${next.cli}`),
+      contents: synchronizeCliLockfile(lockContents, current.cli, next.cli),
       mode: (await fs.stat(lockPath)).mode & 0o777,
     });
   }

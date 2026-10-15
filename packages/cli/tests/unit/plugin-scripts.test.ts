@@ -134,6 +134,7 @@ describe('preApply script', () => {
       ].join('\n'));
       const host = spawn(process.execPath, [
         viteNodePath,
+        '--config', 'vitest.config.ts',
         interruptHostPath,
         plugin.rootDir,
         awHome,
@@ -176,6 +177,7 @@ describe('preApply script', () => {
       const readyPath = path.join(plugin.rootDir, 'runner-ready');
       const host = spawn(process.execPath, [
         viteNodePath,
+        '--config', 'vitest.config.ts',
         interruptHostPath,
         plugin.rootDir,
         awHome,

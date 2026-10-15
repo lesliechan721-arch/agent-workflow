@@ -475,6 +475,8 @@ export async function prepareCatalogPublicationInspection(options: {
   remote?: string;
   remoteUrl?: string;
   branch?: string;
+  officialPluginHistory?: readonly CatalogManifestV7Entry[];
+  sourcePluginVersionsAtBaseline?: Readonly<Record<string, string>>;
   env: NodeJS.ProcessEnv;
 }): Promise<CatalogPublicationPreparation> {
   if (options.remote !== undefined && options.remoteUrl !== undefined) {
@@ -650,6 +652,8 @@ export async function prepareCatalogPublicationInspection(options: {
         sourceHead,
         previousSnapshotRoot,
         historicalPluginEntries,
+        officialPluginHistory: options.officialPluginHistory,
+        sourcePluginVersionsAtBaseline: options.sourcePluginVersionsAtBaseline,
         adapter: publicationBuildAdapter,
         reservedImports: CLI_RESERVED_IMPORTS,
       });
@@ -1076,6 +1080,75 @@ export async function listCatalogPublicationVersions(options: {
     return [...refs.keys()]
       .filter((ref) => ref.startsWith('refs/tags/catalog-v'))
       .map((ref) => ref.slice('refs/tags/catalog-v'.length));
+  } finally {
+    await fs.remove(temporaryRoot);
+  }
+}
+
+export async function readCatalogPublicationPluginHistory(options: {
+  workspaceRoot: string;
+  remote?: string;
+  remoteUrl?: string;
+  branches: readonly string[];
+  env: NodeJS.ProcessEnv;
+}): Promise<CatalogManifestV7Entry[]> {
+  const marker = await readCatalogWorkspaceMarker(options.workspaceRoot);
+  const resolved = await resolveRemoteUrlForInspection(options);
+  const branchRefs = [...new Set(options.branches.map((branch) =>
+    `refs/heads/${assertSafeBranchValue(branch)}`))];
+  if (branchRefs.length === 0) throw new Error('Catalog Plugin history requires at least one branch.');
+  const sensitiveValues = remoteSensitiveValues(resolved.remoteUrl);
+  const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-plugin-history-'));
+  try {
+    await publicationGit(temporaryRoot, ['init', '--quiet'], resolved.env, 'temporaryRepositoryFailed', 'Could not create the Catalog history repository.');
+    await publicationGit(temporaryRoot, ['remote', 'add', 'publish', resolved.remoteUrl], resolved.env, 'temporaryRepositoryFailed', 'Could not configure the Catalog history remote.');
+    const refs = parseRemoteRefs(await publicationGit(temporaryRoot, [
+      'ls-remote', 'publish', ...branchRefs,
+    ], resolved.env, 'remoteReadFailed', 'Could not inspect published Catalog history.', sensitiveValues));
+    const visited = new Set<string>();
+    const entries: CatalogManifestV7Entry[] = [];
+    const metadataRoot = path.join(temporaryRoot, 'history-metadata');
+    for (const [index, branchRef] of branchRefs.entries()) {
+      const tip = refs.get(branchRef);
+      if (!tip) continue;
+      const localRef = `refs/aw/catalog-history-${index}`;
+      await publicationGit(temporaryRoot, [
+        'fetch', '--quiet', '--no-tags', 'publish', `${branchRef}:${localRef}`,
+      ], resolved.env, 'remoteBranchInvalid', 'Could not fetch published Catalog history.', sensitiveValues);
+      const fetchedTip = await publicationGit(temporaryRoot, ['rev-parse', localRef], resolved.env, 'remoteBranchInvalid', 'Could not inspect published Catalog history.');
+      if (fetchedTip !== tip) {
+        throw new CatalogPublicationInspectionError('remoteDrift', 'Catalog history changed during inspection. Retry preparation.');
+      }
+      const commits = (await publicationGit(temporaryRoot, [
+        'rev-list', '--first-parent', tip,
+      ], resolved.env, 'remoteBranchInvalid', 'Could not inspect published Catalog history.')).split('\n').filter(Boolean);
+      for (const commit of commits) {
+        if (visited.has(commit)) continue;
+        visited.add(commit);
+        await materializePublishedCatalogMetadata({
+          repositoryRoot: temporaryRoot,
+          commit,
+          outputRoot: metadataRoot,
+          env: resolved.env,
+        });
+        try {
+          const metadata = await validatePublishedCatalogSnapshotMetadata(metadataRoot);
+          if (metadata.workspaceIdentity !== marker.workspaceIdentity) {
+            throw new Error('Published Catalog snapshot belongs to a different Workspace identity.');
+          }
+          entries.push(...metadata.manifest.entries);
+        } catch (error) {
+          throw inspectionError('remoteSnapshotInvalid', error);
+        }
+      }
+    }
+    const finalRefs = parseRemoteRefs(await publicationGit(temporaryRoot, [
+      'ls-remote', 'publish', ...branchRefs,
+    ], resolved.env, 'remoteReadFailed', 'Could not recheck published Catalog history.', sensitiveValues));
+    if (branchRefs.some((ref) => refs.get(ref) !== finalRefs.get(ref))) {
+      throw new CatalogPublicationInspectionError('remoteDrift', 'Catalog history changed during inspection. Retry preparation.');
+    }
+    return entries;
   } finally {
     await fs.remove(temporaryRoot);
   }

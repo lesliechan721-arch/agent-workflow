@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel old PR checks. A main run can already be preparing a release candidate.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  node22:
+    name: Linux x64 / Node 22
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+      - run: pnpm test:types
+
+  release-verification:
+    name: Linux x64 / Node 24 / release verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Read the exact Go toolchain
+        id: go
+        run: node --input-type=module -e 'import fs from "node:fs"; const manifest = JSON.parse(fs.readFileSync("packages/agent-skill-eval/native/windows/manifest.json", "utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${manifest.build.goVersion.replace(/^go/, "")}\n`);'
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          cache: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # This includes the strict Catalog build, reproducibility, types and perf gate.
+      - run: pnpm release:verify
+      - run: pnpm plugin:test --all
+
+  platform:
+    name: ${{ matrix.os }} ${{ matrix.arch }} / Node 24
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+          - runner: windows-2025
+            os: win32
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+      EXPECTED_OS: ${{ matrix.os }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - name: Check the native runtime
+        run: node -e 'if (process.platform !== process.env.EXPECTED_OS || process.arch !== process.env.EXPECTED_ARCH) throw new Error("Unexpected runner architecture"); console.log(process.platform, process.arch, process.version);'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test:integration
+      - run: pnpm test:smoke:pack:cli
+
+  beta:
+    needs: [node22, release-verification, platform]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/beta.yml
+    with:
+      source: ${{ github.sha }}
+    secrets:
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

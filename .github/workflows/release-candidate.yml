@@ -1,0 +1,221 @@
+name: Verify an immutable release candidate
+
+on:
+  workflow_call:
+    inputs:
+      product:
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+    outputs:
+      completed:
+        value: ${{ jobs.prepare.outputs.completed }}
+      artifact_id:
+        value: ${{ jobs.prepare.outputs.artifact_id }}
+      artifact_run:
+        value: ${{ jobs.prepare.outputs.artifact_run }}
+      archive_name:
+        value: ${{ jobs.prepare.outputs.archive_name }}
+      bundle_digest:
+        value: ${{ jobs.prepare.outputs.bundle_digest }}
+      version:
+        value: ${{ jobs.prepare.outputs.version }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      completed: ${{ steps.inspect.outputs.completed }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id || steps.inspect.outputs.recovery_artifact }}
+      artifact_run: ${{ steps.upload.outputs.artifact-id && github.run_id || steps.inspect.outputs.recovery_run }}
+      archive_name: ${{ steps.inspect.outputs.recovery_archive || 'candidate.tar' }}
+      bundle_digest: ${{ steps.prepare.outputs.bundle_digest || steps.inspect.outputs.recovery_digest }}
+      version: ${{ steps.inspect.outputs.version }}
+    env:
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+      RELEASE_PRODUCT: ${{ inputs.product }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GIT_TERMINAL_PROMPT: '0'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Set temporary HTTPS authentication
+        run: |
+          cat > "$RUNNER_TEMP/aw-release-askpass" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GH_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          SH
+          chmod 700 "$RUNNER_TEMP/aw-release-askpass"
+          echo "GIT_ASKPASS=$RUNNER_TEMP/aw-release-askpass" >> "$GITHUB_ENV"
+      - name: Inspect source, earlier runs, exact artifacts and remote state
+        id: inspect
+        run: node scripts/release/actions-release.mjs inspect --product "$RELEASE_PRODUCT" --tag "$RELEASE_TAG"
+      - name: Download the saved candidate by exact run and artifact ID
+        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact != ''
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.inspect.outputs.recovery_artifact }}
+          run-id: ${{ steps.inspect.outputs.recovery_run }}
+          github-token: ${{ github.token }}
+          path: .release/actions/recovery
+      - name: Verify the saved archive
+        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact != ''
+        run: node scripts/release/actions-release.mjs unpack --archive ".release/actions/recovery/$ARCHIVE_NAME" --digest "$CANDIDATE_DIGEST"
+        env:
+          CANDIDATE_DIGEST: ${{ steps.inspect.outputs.recovery_digest }}
+          ARCHIVE_NAME: ${{ steps.inspect.outputs.recovery_archive }}
+      - name: Read the exact Go toolchain
+        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == ''
+        id: go
+        run: node --input-type=module -e 'import fs from "node:fs"; const manifest = JSON.parse(fs.readFileSync("packages/agent-skill-eval/native/windows/manifest.json", "utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${manifest.build.goVersion.replace(/^go/, "")}\n`);'
+      - uses: actions/setup-go@v6
+        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == ''
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          cache: false
+      - name: Verify the selected product before preparation
+        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == ''
+        run: |
+          case "$RELEASE_PRODUCT" in
+            cli) pnpm release:verify:cli ;;
+            catalog) pnpm release:verify:catalog ;;
+            *) exit 1 ;;
+          esac
+      - name: Prepare once and save the write intent
+        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == ''
+        id: prepare
+        run: pnpm release:actions prepare --product "$RELEASE_PRODUCT" --tag "$RELEASE_TAG"
+      # The tar contains only the candidate allowlist, including pending .git and modes.
+      # No publisher can run unless this upload and every smoke job succeed.
+      - name: Save the immutable recovery candidate before any remote write
+        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == ''
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-${{ inputs.product }}-${{ steps.inspect.outputs.version }}
+          path: |
+            .release/actions/candidate.tar
+            .release/actions/digest.txt
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Record the recovery limit
+        if: steps.inspect.outputs.completed != 'true'
+        run: |
+          printf 'Candidate `%s`: `%s`\n\n' "$RELEASE_TAG" "$CANDIDATE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Recovery artifacts expire after 30 days. Missing or damaged recovery evidence requires a new version.\n' >> "$GITHUB_STEP_SUMMARY"
+        env:
+          CANDIDATE_DIGEST: ${{ steps.prepare.outputs.bundle_digest || steps.inspect.outputs.recovery_digest }}
+      - name: Remove temporary authentication
+        if: always()
+        run: rm -f "$RUNNER_TEMP/aw-release-askpass"
+
+  smoke:
+    needs: prepare
+    if: needs.prepare.outputs.completed != 'true'
+    name: ${{ matrix.os }} ${{ matrix.arch }} / Node 24 candidate smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            os: linux
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            os: linux
+            arch: arm64
+          - runner: macos-15-intel
+            os: darwin
+            arch: x64
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+          - runner: windows-2025
+            os: win32
+            arch: x64
+          - runner: windows-11-arm
+            os: win32
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      AW_TEST_WORKERS: '1'
+      RELEASE_PRODUCT: ${{ inputs.product }}
+      CANDIDATE_DIGEST: ${{ needs.prepare.outputs.bundle_digest }}
+      ARCHIVE_NAME: ${{ needs.prepare.outputs.archive_name }}
+      EXPECTED_OS: ${{ matrix.os }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.arch }}
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.artifact_id }}
+          run-id: ${{ needs.prepare.outputs.artifact_run }}
+          github-token: ${{ github.token }}
+          path: .release/actions/download
+      - run: node scripts/release/actions-release.mjs unpack --archive ".release/actions/download/$ARCHIVE_NAME" --digest "$CANDIDATE_DIGEST"
+      - name: Consume the same candidate on the native OS and CPU
+        run: node scripts/release/candidate-smoke.mjs --bundle-root .release/actions/candidate --product "$RELEASE_PRODUCT" --os "$EXPECTED_OS" --arch "$EXPECTED_ARCH" --candidate-digest "$CANDIDATE_DIGEST"
+
+  minimum-node:
+    needs: prepare
+    if: needs.prepare.outputs.completed != 'true'
+    name: Linux x64 / Node 22.0.0 minimum candidate smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      AW_TEST_WORKERS: '1'
+      RELEASE_PRODUCT: ${{ inputs.product }}
+      CANDIDATE_DIGEST: ${{ needs.prepare.outputs.bundle_digest }}
+      ARCHIVE_NAME: ${{ needs.prepare.outputs.archive_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22.0.0'
+          architecture: x64
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.artifact_id }}
+          run-id: ${{ needs.prepare.outputs.artifact_run }}
+          github-token: ${{ github.token }}
+          path: .release/actions/download
+      - run: node scripts/release/actions-release.mjs unpack --archive ".release/actions/download/$ARCHIVE_NAME" --digest "$CANDIDATE_DIGEST"
+      - run: node scripts/release/candidate-smoke.mjs --bundle-root .release/actions/candidate --product "$RELEASE_PRODUCT" --os linux --arch x64 --minimum-node --candidate-digest "$CANDIDATE_DIGEST"

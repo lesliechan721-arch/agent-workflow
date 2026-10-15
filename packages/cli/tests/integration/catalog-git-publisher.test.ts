@@ -18,9 +18,11 @@ import {
   CatalogPublicationInspectionError,
   disposeCatalogPublicationInspection,
   listCatalogPublicationVersions,
+  readCatalogPublicationPluginHistory,
   prepareCatalogPublicationInspection,
 } from '../../src/commands/catalog-publication-inspection.js';
 import { runCli } from '../../src/index.js';
+import { prepareCatalogRelease } from '../../../../scripts/release/catalog-publication.mjs';
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
@@ -151,6 +153,71 @@ async function pushPreparedRef(
 }
 
 describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () => {
+  it('uses both official channel histories without changing the publication parent', async () => {
+    const { root, remote } = await createWorkspace();
+    await addHistoryKeeperPlugin(root);
+    await setPluginVersion(root, '1.0.0');
+    await commitAll(root, 'prepare official stable plugins');
+    const service = { prepareCatalogPublicationPlan, readCatalogPublicationPluginHistory };
+    async function officialPlan(mode: 'latest' | 'beta') {
+      return prepareCatalogRelease(mode, {
+        repoRoot: root, remoteUrl: remote, catalogPublicationService: service,
+      }) as Promise<CatalogPublishPlanReceipt>;
+    }
+    async function changePlugin(name: string, description: string) {
+      const manifestPath = path.join(root, 'plugins', name, '.agents-plugin', 'plugin.json');
+      const manifest = await fs.readJson(manifestPath);
+      await fs.writeJson(manifestPath, { ...manifest, description }, { spaces: 2 });
+    }
+    const stable = await officialPlan('latest');
+    await apply(root, stable);
+
+    await setCatalogVersion(root, '1.0.1-beta.1');
+    await changePlugin('history-keeper', 'Changed Q after first stable.');
+    await commitAll(root, 'change only Q');
+    const firstBeta = await officialPlan('beta');
+    expect(firstBeta.parent).toBeNull();
+    expect(await publishedPluginVersion(firstBeta)).toBe('1.0.0');
+    await apply(root, firstBeta);
+
+    await setCatalogVersion(root, '1.0.1-beta.2');
+    await changePlugin('journal-test', 'Changed P after first stable.');
+    await commitAll(root, 'change P');
+    const changedP = await officialPlan('beta');
+    expect(changedP.parent).toBe(firstBeta.expectedCommit);
+    expect(await publishedPluginVersion(changedP)).toBe('1.0.1-beta.1');
+    await apply(root, changedP);
+
+    await setCatalogVersion(root, '1.0.1');
+    await commitAll(root, 'promote official plugins');
+    const promoted = await officialPlan('latest');
+    expect(promoted.parent).toBe(stable.expectedCommit);
+    expect(await publishedPluginVersion(promoted)).toBe('1.0.1');
+    await apply(root, promoted);
+
+    await setCatalogVersion(root, '1.0.2-beta.1');
+    await changePlugin('history-keeper', 'Changed Q after promotion.');
+    await commitAll(root, 'change only Q after promotion');
+    const laterBeta = await officialPlan('beta');
+    expect(laterBeta.parent).toBe(changedP.expectedCommit);
+    expect(await publishedPluginVersion(laterBeta)).toBe('1.0.1');
+    await apply(root, laterBeta);
+
+    const backup = path.join(await temporaryRoot('aw-official-plugin-backup-'), 'journal-test');
+    await fs.copy(path.join(root, 'plugins', 'journal-test'), backup);
+    await fs.remove(path.join(root, 'plugins', 'journal-test'));
+    await setCatalogVersion(root, '1.0.2-beta.2');
+    await commitAll(root, 'remove P');
+    const removed = await officialPlan('beta');
+    await apply(root, removed);
+    await fs.copy(backup, path.join(root, 'plugins', 'journal-test'));
+    await setCatalogVersion(root, '1.0.2-beta.3');
+    await commitAll(root, 'restore unchanged P');
+    const restored = await officialPlan('beta');
+    expect(restored.parent).toBe(removed.expectedCommit);
+    expect(await publishedPluginVersion(restored)).toBe('1.0.1');
+  }, 90_000);
+
   it('shows bounded safe Git details for release Catalog version inspection', async () => {
     const root = await temporaryRoot('aw-catalog-version-inspection-');
     const sshFailure = path.join(root, 'ssh-failure.mjs');
@@ -888,6 +955,9 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const remoteBefore = await git(remote, ['show-ref']);
 
     await expect(plan(root)).rejects.toThrow(/source.*does not match its plugin bundle/u);
+    await expect(readCatalogPublicationPluginHistory({
+      workspaceRoot: root, remoteUrl: remote, branches: ['catalog/latest', 'catalog/beta'], env: process.env,
+    })).rejects.toThrow(/source.*does not match its plugin bundle/u);
     await expect(fs.pathExists(path.join(root, '.aw', 'publish', '1.2.0'))).resolves.toBe(false);
     await expect(git(remote, ['show-ref'])).resolves.toBe(remoteBefore);
   });
@@ -940,6 +1010,11 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const readded = await plan(root);
     expect(readded.parent).toBe(mergeCommit);
     expect(await publishedPluginVersion(readded)).toBe('0.2.0');
+    const officialHistory = await readCatalogPublicationPluginHistory({
+      workspaceRoot: root, remoteUrl: remote, branches: ['catalog/latest', 'catalog/beta'], env: process.env,
+    });
+    expect(officialHistory.filter((entry) => entry.name === 'journal-test').map((entry) => entry.version))
+      .toEqual(['0.2.0']);
     await apply(root, readded);
-  });
+  }, 90_000);
 });

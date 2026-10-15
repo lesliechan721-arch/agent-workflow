@@ -1,0 +1,77 @@
+name: Automatic beta candidates
+
+on:
+  workflow_call:
+    inputs:
+      source:
+        description: Exact main commit that passed all CI jobs
+        type: string
+        required: true
+    secrets:
+      RELEASE_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-beta-planning
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  candidates:
+    # workflow_call retains its caller's event and SHA.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.source == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+      SOURCE_HEAD: ${{ inputs.source }}
+      GIT_AUTHOR_NAME: aw-release[bot]
+      GIT_AUTHOR_EMAIL: aw-release[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: aw-release[bot]
+      GIT_COMMITTER_EMAIL: aw-release[bot]@users.noreply.github.com
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Create a token for candidate refs
+        uses: actions/create-github-app-token@v3
+        id: app
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - name: Set temporary HTTPS authentication
+        run: |
+          cat > "$RUNNER_TEMP/aw-release-askpass" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GH_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          SH
+          chmod 700 "$RUNNER_TEMP/aw-release-askpass"
+          echo "GIT_ASKPASS=$RUNNER_TEMP/aw-release-askpass" >> "$GITHUB_ENV"
+      - name: Plan and create independent product candidates
+        run: pnpm release:actions beta --source "$SOURCE_HEAD"
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GIT_TERMINAL_PROMPT: '0'
+      - name: Remove temporary authentication
+        if: always()
+        run: rm -f "$RUNNER_TEMP/aw-release-askpass"
