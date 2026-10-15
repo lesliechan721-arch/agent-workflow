@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 
 import {
   createWindowsJobInvocation,
@@ -779,7 +780,9 @@ export function createExecFileNativeCliRunner(
         windowsJobInvocation?.command ?? executableCommand,
         windowsJobInvocation?.args ?? executableArgs,
         {
-          cwd: invocation.cwd,
+          cwd: platform === 'win32' && invocation.cwd !== undefined
+            ? path.win32.toNamespacedPath(invocation.cwd)
+            : invocation.cwd,
           env: {
             ...(invocation.env ?? process.env),
             [NATIVE_CLI_PROCESS_MARKER_ENV]: processMarker,

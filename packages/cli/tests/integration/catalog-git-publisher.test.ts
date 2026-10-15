@@ -18,6 +18,7 @@ import {
   CatalogPublicationInspectionError,
   disposeCatalogPublicationInspection,
   listCatalogPublicationVersions,
+  readCatalogPublicationBranchState,
   readCatalogPublicationPluginHistory,
   prepareCatalogPublicationInspection,
 } from '../../src/commands/catalog-publication-inspection.js';
@@ -153,6 +154,36 @@ async function pushPreparedRef(
 }
 
 describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () => {
+  it('preserves snapshot bytes when user Git settings enable CRLF conversion', async () => {
+    await fs.ensureDir(process.env.HOME!);
+    await execFileAsync('git', ['config', '--global', 'core.autocrlf', 'true']);
+    const { root } = await createWorkspace();
+    const manifestPath = path.join(root, 'plugins', 'journal-test', '.agents-plugin', 'plugin.json');
+    await fs.remove(manifestPath);
+    await git(root, ['checkout', 'HEAD', '--', 'plugins/journal-test/.agents-plugin/plugin.json']);
+    expect(await fs.readFile(manifestPath, 'utf8')).toContain('\r\n');
+    const publication = await plan(root);
+    await expect(apply(root, publication)).resolves.toMatchObject({ state: 'published' });
+    await expect(readCatalogPublicationBranchState({
+      workspaceRoot: root,
+      remote: 'origin',
+      branch: publication.branch,
+      env: process.env,
+    })).resolves.toMatchObject({
+      commit: publication.expectedCommit,
+      snapshotDigest: publication.snapshotDigest,
+    });
+    await expect(readCatalogPublicationPluginHistory({
+      workspaceRoot: root,
+      remote: 'origin',
+      branches: [publication.branch],
+      env: process.env,
+    })).resolves.toMatchObject([{ name: 'journal-test', version: '0.1.0' }]);
+    await setCatalogVersion(root, '1.0.1');
+    await commitAll(root, 'advance Catalog under CRLF checkout settings');
+    await expect(plan(root)).resolves.toMatchObject({ parent: publication.expectedCommit });
+  });
+
   it('uses both official channel histories without changing the publication parent', async () => {
     const { root, remote } = await createWorkspace();
     await addHistoryKeeperPlugin(root);

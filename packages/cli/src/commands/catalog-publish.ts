@@ -267,16 +267,19 @@ async function createPublicationCommit(
   await assertSnapshotBinding(snapshotRoot, descriptor, display);
   if (parent) {
     await publicationGit(repositoryRoot, [
+      '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
       'checkout', '--quiet', '--detach', 'refs/aw/catalog-parent',
     ], env, 'publicationCommitFailed', 'Could not select the publication parent.');
   } else {
     await publicationGit(repositoryRoot, [
+      '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
       'checkout', '--quiet', '--orphan', 'catalog-publication',
     ], env, 'publicationCommitFailed', 'Could not create the initial Catalog publication.');
   }
   await clearWorktree(repositoryRoot);
   await fs.copy(snapshotRoot, repositoryRoot, { dereference: false });
   await publicationGit(repositoryRoot, [
+    '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
     'add', '--force', '--all',
   ], env, 'publicationCommitFailed', 'Could not stage the Catalog publication tree.');
   await publicationGit(repositoryRoot, [
@@ -298,6 +301,7 @@ async function createPublicationCommit(
   const verificationRoot = path.join(preparation.temporaryRoot, 'verification');
   await fs.ensureDir(verificationRoot);
   await publicationGit(repositoryRoot, [
+    '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
     '--work-tree', verificationRoot, 'checkout', '--quiet', commit, '--', '.',
   ], env, 'publicationCommitFailed', 'Could not verify the Catalog publication commit tree.');
   await assertSnapshotBinding(verificationRoot, descriptor, display);
@@ -484,6 +488,7 @@ async function validatePersistentRepository(
     try {
       await fs.ensureDir(verificationRoot);
       await publicationGit(repositoryRoot, [
+        '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
         '--work-tree', verificationRoot, 'checkout', '--quiet', journal.expectedCommit, '--', '.',
       ], env, 'pendingRepositoryInvalid', 'Pending Catalog publication commit tree is damaged.');
       await assertSnapshotBinding(verificationRoot, journal.descriptor, journal.display);

@@ -24,6 +24,19 @@ describe('performance gate summaries', () => {
       .toThrow(/duplicates=path-source-resolution-warm/u);
   });
 
+  it('reads summaries after Vitest color resets and rejects decorated duplicate or malformed records', () => {
+    const decoratedSummary = (name: string): string =>
+      `\u001B[90mstdout\u001B[2m | performance budget\n\u001B[22m\u001B[39m${summary(name)}`;
+    const output = EXPECTED_PERF_SUMMARY_NAMES.map(decoratedSummary).join('\n');
+    expect(() => assertExpectedPerfSummaries(output)).not.toThrow();
+    expect(() => assertExpectedPerfSummaries(
+      `${output}\n${decoratedSummary(EXPECTED_PERF_SUMMARY_NAMES[0]!)}`,
+    )).toThrow(/duplicates=path-source-resolution-warm/u);
+    expect(() => assertExpectedPerfSummaries(
+      `${output}\n\u001B[22m\u001B[39mAW_PERF_SUMMARY {invalid}`,
+    )).toThrow(/invalid AW_PERF_SUMMARY line/u);
+  });
+
   it('runs the fast unit lane directly under the performance gate process owner', async () => {
     const calls: Array<{ label: string; args: string[]; timeoutMs: number; env: NodeJS.ProcessEnv }> = [];
     const times = [100, 125];

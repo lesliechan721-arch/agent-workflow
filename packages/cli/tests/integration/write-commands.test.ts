@@ -11987,11 +11987,9 @@ describe('five namespaced write commands', () => {
         env: isolation.env,
         nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
       };
-      await expect(installWriteCommand(['team/leaf'], {
-        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
-      }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
       await expect(installWriteCommand(['team/root'], {
         cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+        dependencyScopeOverrides: [{ pluginId: 'team/leaf', platform: 'codex', scope: 'user' }],
       }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
       if (command === 'uninstall') {
         const result = await uninstallWriteCommand(['team/root', 'team/leaf'], {
@@ -14675,6 +14673,10 @@ describe('five namespaced write commands', () => {
     'blocks sensitive config in native %s before live Codex mutations',
     async (leakPath, pluginName) => {
       const isolation = getCurrentSourceTestIsolation();
+      const env = {
+        ...isolation.env,
+        AW_HOME: path.join(isolation.env.AW_HOME!, 'renderer-process-long-working-directory'),
+      };
       const sourceRoot = path.join(isolation.layout.fixtureCwd, `${pluginName}-source`);
       const rendererPath = path.join(sourceRoot, 'plugins', pluginName, 'scripts', 'render.mjs');
       const secret = `secret-${pluginName}-value`;
@@ -14684,8 +14686,11 @@ describe('five namespaced write commands', () => {
           ? `, "references/secret.md": ${JSON.stringify(secret)}`
           : '';
         await fs.outputFile(rendererPath, [
-          'import { readFile } from "node:fs/promises";',
+          'import assert from "node:assert/strict";',
+          'import { readFile, realpath } from "node:fs/promises";',
           'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+          'assert.ok(context.plugin.rootDir.length >= 260);',
+          'assert.equal(await realpath(process.cwd()), await realpath(context.plugin.rootDir));',
           'console.log(JSON.stringify({ version: 2, artifacts: context.requestedArtifactIds.map((id) => ({',
           '  id, kind: "skill", platform: "codex", target: "codex.skill", state: "present",',
           `  skillKey: ${JSON.stringify(pluginName)}, refreshKeys: [], content: { files: {`,
@@ -14725,14 +14730,14 @@ describe('five namespaced write commands', () => {
 
       await writeRenderer(false);
       await createFixture();
-      const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+      const before = await readCatalogSourcesConfigSnapshot(env);
       await replaceCatalogSourcesConfig({
         config: {
           schemaVersion: 2,
           sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
         },
         expectedDigest: before.digest,
-        env: isolation.env,
+        env,
       });
       await writePluginConfigStore({
         sourceId: 'team',
@@ -14742,10 +14747,10 @@ describe('five namespaced write commands', () => {
         pluginName,
         scope: 'user',
         cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
+        env,
         values: { secret },
       });
-      const runtime = await createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime({ ...isolation, env });
       const installed = await installWriteCommand([`team/${pluginName}`], {
         cwd: isolation.layout.fixtureCwd,
         platform: 'codex',
@@ -14754,11 +14759,11 @@ describe('five namespaced write commands', () => {
       expect(installed, JSON.stringify(installed, null, 2))
         .toMatchObject({ overallState: 'succeeded' });
 
-      const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+      const marketplaceRoot = path.join(env.AW_HOME, 'marketplaces', 'team');
       const pluginId = `${pluginName}@aw`;
       const marketplaceBefore = await snapshotRegularTree(marketplaceRoot);
       const installedBefore = new Set(runtime.installed);
-      const configPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+      const configPath = path.join(env.AW_CODEX_HOME!, 'config.toml');
       const configBefore = await fs.readFile(configPath);
       const projectConfigPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
       const projectConfigBefore = await fs.readFile(projectConfigPath).catch(() => undefined);
@@ -14766,7 +14771,7 @@ describe('five namespaced write commands', () => {
       await writeRenderer(true);
       await createFixture();
       await syncCatalogSourceGeneration({
-        sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+        sourceId: 'team', cliVersion: '1.0.0', env,
       });
       const callsBeforeSync = runtime.nativeCliRunner.mock.calls.length;
       const result = await syncWriteCommand([`team/${pluginName}`], {

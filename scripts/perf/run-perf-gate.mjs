@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 
 import { runProcessTree } from './process-tree.mjs';
 
@@ -54,7 +55,7 @@ function runChild(label, args, timeoutMs, env) {
 }
 
 export function assertExpectedPerfSummaries(output) {
-  const names = output
+  const names = stripVTControlCharacters(output)
     .split(/\r?\n/u)
     .filter((line) => line.startsWith(SUMMARY_PREFIX))
     .map((line) => {

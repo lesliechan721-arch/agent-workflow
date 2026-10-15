@@ -441,7 +441,11 @@ async function materializeCommit(options: {
   try {
     await runGit({
       gitDir: options.objectsDir,
-      args: ['archive', '--format=tar', `--output=${archivePath}`, treeish],
+      // Archive applies checkout conversion; Catalog digests bind the committed bytes.
+      args: [
+        '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
+        'archive', '--format=tar', `--output=${archivePath}`, treeish,
+      ],
       env: options.env,
       deadline: options.deadline,
     });

@@ -235,7 +235,8 @@ export async function publicationGit(
   sensitiveValues: readonly string[] = [],
 ): Promise<string> {
   try {
-    const result = await execFileAsync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+    // Pending repositories and verification trees can exceed Windows MAX_PATH.
+    const result = await execFileAsync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.longpaths=true', ...args], {
       cwd,
       env,
       encoding: 'utf8',
@@ -271,7 +272,7 @@ export async function publicationGitExit(
   env: NodeJS.ProcessEnv,
 ): Promise<boolean> {
   try {
-    await execFileAsync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+    await execFileAsync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.longpaths=true', ...args], {
       cwd,
       env,
       encoding: 'utf8',
@@ -299,6 +300,7 @@ export async function materializeSourceHead(options: {
   const archivePath = path.join(options.temporaryRoot, 'source-head.tar');
   await fs.ensureDir(options.outputRoot);
   await publicationGit(options.repoRoot, [
+    '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
     'archive', '--format=tar', `--output=${archivePath}`, options.sourceHead,
   ], options.env, 'sourceArchiveFailed', 'Could not archive the committed source HEAD.');
   const tarEnv = { ...options.env };
@@ -630,6 +632,7 @@ export async function prepareCatalogPublicationInspection(options: {
       previousSnapshotRoot = path.join(temporaryRoot, 'previous');
       await fs.ensureDir(previousSnapshotRoot);
       await publicationGit(repositoryRoot, [
+        '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
         '--work-tree', previousSnapshotRoot, 'checkout', '--quiet', 'refs/aw/catalog-parent', '--', '.',
       ], env, 'remoteBranchInvalid', 'Could not read the published Catalog snapshot.');
       const previous = await validatePublishedCatalogSnapshotForWorkspace(
@@ -1195,6 +1198,7 @@ export async function readCatalogPublicationBranchState(options: {
     const snapshotRoot = path.join(temporaryRoot, 'snapshot');
     await fs.ensureDir(snapshotRoot);
     await publicationGit(temporaryRoot, [
+      '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
       '--work-tree', snapshotRoot, 'checkout', '--quiet', 'refs/aw/catalog-parent', '--', '.',
     ], resolved.env, 'remoteBranchInvalid', 'Could not read the published Catalog snapshot.');
     const validation = await validatePublishedCatalogSnapshotForWorkspace(
