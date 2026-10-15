@@ -21,14 +21,14 @@
   },
   "cases": [
     {
-      "id": "standalone-build-uses-shape",
+      "id": "standalone-build-returns-material-gap",
       "split": "validation",
       "tags": [
         "regression"
       ],
       "prompt": "使用 dev-build 继续已批准的导出任务。先核查 api-facts.md 对现有同步方案的影响；尚未授权改变用户体验。",
       "assertions": [
-        "当前Build独立负责用户协作，使用Shape处理完整结果与同步体验的冲突。",
+        "当前Build返回原要求、实际完成状态、同步接口限制、未满足范围与待决定问题，不自行启动Design或Shape。",
         "没有答复前不截断数据、不自改异步体验或Spec；可保留问题与依据。",
         "现有一轮已用预算保持，重新对齐不会产生新配额。"
       ],
@@ -42,7 +42,7 @@
         }
       },
       "expected": {
-        "output": "解释同步限制与选择，取得用户决定后恢复。",
+        "output": "交付同步限制、完成现状与待决定选择，保留已有停止点。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "work.md"
@@ -55,7 +55,7 @@
         ]
       },
       "audit": {
-        "rationale": "统一入口覆盖中途对齐，不只开发开始前。",
+        "rationale": "Build拥有实施推进，不因出现缺口自动取得新设计或产品取舍权限。",
         "allowedVariance": "允许同义表达与合理布局；读写与实际答案为证据。当前或外层同一主代理可继续加载方法，不强制新建子代理。",
         "minimalCounterexample": "内部可分页且体验/成本保持原要求时可自主等价实现。"
       }
@@ -69,7 +69,7 @@
       "prompt": "你是外层工作流已委派的实施协调者，目前不拥有用户交互职责。核查 api-facts.md，返回阻碍导出任务的材料问题和证据；外层协调者负责对齐。",
       "assertions": [
         "返回原决定、新事实、用户后果和必要选择，不另起一套用户访谈。",
-        "说明由外层协调者使用Shape，相关产品修改保持暂停。",
+        "由外层用户协调者按实际授权决定后续设计；相关产品修改保持暂停，Build不另起Design或Shape。",
         "真实独立任务可继续的判断不扩大当前调用范围；预算和已有停止点保持。"
       ],
       "input": {
@@ -89,7 +89,7 @@
       "audit": {
         "rationale": "单一用户对齐owner防止父子各开一个Shape循环。",
         "allowedVariance": "允许同义表达与合理布局；读写与实际答案为证据。当前或外层同一主代理可继续加载方法，不强制新建子代理。",
-        "minimalCounterexample": "独立使用Build且无外层用户协调者时应自行加载Shape询问。"
+        "minimalCounterexample": "外层已明确授权设计工作时可由外层采用Design；委派Build本身不扩大权限。"
       }
     }
   ]

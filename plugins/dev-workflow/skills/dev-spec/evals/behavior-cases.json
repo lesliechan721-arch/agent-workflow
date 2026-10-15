@@ -161,6 +161,48 @@
         "allowedVariance": "可以请求基准结果或让调用者返回 Shape；不得创建目标 Spec 或发明阈值。",
         "minimalCounterexample": "如果输入包含基准结果和已经确认的 p95 阈值，则可以把该证据与阈值写入 Spec。"
       }
+    },
+    {
+      "id": "delivered-spec-followup-preserves-history",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "原分页任务已经完成并交付。现在我确认新需求：每页改为50条，其余排序、租户、筛选和超出末页行为保持。使用 dev-spec 将关联后续任务写到 .dev-workflows/paging-v2/spec.md，只写新规格，不修改旧任务、现行公共合同或代码。",
+      "assertions": [
+        "新规格明确每页50条，保留排序、租户隔离、筛选、空页合同和验收。",
+        "引用旧规格和交付状态作为历史依据，不覆盖旧记录，不把旧代码说成已实现50条。",
+        "只写指定后续规格，不复制整套旧任务，不启动实施或修改现行公共合同。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          ".dev-workflows/paging-v1/spec.md": "# 分页规格 v1\n每页20条，按创建时间升序；只显示当前租户且符合筛选条件的记录。请求超出末页时返回空页，不改写数据。\n",
+          ".dev-workflows/paging-v1/result.md": "# 已交付结果\n每页20条，排序、租户、筛选与空页边界已经验证。\n",
+          "src/paging.js": "export const pageSize=20;\n",
+          "docs/paging-contract.md": "# 分页规格 v1\n每页20条，按创建时间升序；只显示当前租户且符合筛选条件的记录。请求超出末页时返回空页，不改写数据。\n"
+        }
+      },
+      "expected": {
+        "output": "交付后续规格，说明确认变化、历史来源与尚未实施状态。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/paging-v2/spec.md"
+        ],
+        "artifacts": [
+          {
+            "path": ".dev-workflows/paging-v2/spec.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "新需求进入后续规格，不倒改已交付任务。",
+        "minimalCounterexample": "仍在执行且获准修订的任务可维护当前规格，但需保留原确认依据。",
+        "allowedVariance": "允许等价结构与引用，不强制新日志、版本系统或状态字段。"
+      }
     }
   ]
 }
