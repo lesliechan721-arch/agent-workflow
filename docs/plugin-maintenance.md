@@ -11,6 +11,7 @@
 - Catalog 生成和消费只使用 snapshot schema 7；Catalog source config 只使用 schema 2。旧 manifest、Catalog 或 source schema 只可作为拒绝 fixture 或历史记录，不是受支持作者合同。
 - 创建或修改插件能力时只维护源码层；平台产物由 CLI、adapter 和发布流程生成。
 - 插件和 Skill 的 production README 使用[插件与 Skill README 规范](readme-standard.md)。
+- Frontend Design 的作者依据见[来源与取舍](frontend-design-sources.md)；该记录不进入插件运行包。
 
 ## 同步规则
 
