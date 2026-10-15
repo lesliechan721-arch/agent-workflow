@@ -226,8 +226,9 @@ async function catalogProductionContent(root, manifest) {
     const target = path.join(root, relativePath);
     const stat = await fs.lstat(target);
     if (!stat.isFile()) throw new Error('Catalog marketplace projection must be a regular file.');
-    projections.push({ path: relativePath, mode: stat.mode & 0o111,
-      value: JSON.parse(await fs.readFile(target, 'utf8')) });
+    const value = JSON.parse(await fs.readFile(target, 'utf8'));
+    value.plugins.sort((left, right) => left.name.localeCompare(right.name));
+    projections.push({ path: relativePath, mode: stat.mode & 0o111, value });
   }
   return calculateCanonicalDigest({ manifest: normalized, projections });
 }

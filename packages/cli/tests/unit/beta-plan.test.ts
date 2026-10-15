@@ -15,7 +15,10 @@ import { computePackageTarballTreeDigest } from '../../../../scripts/release/com
 import { readCatalogPublicationPluginHistory } from '../../src/commands/catalog-publication-inspection.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
-import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import {
+  createCatalogSnapshotFixture,
+  createDependencyCatalogSnapshotFixture,
+} from '../helpers/catalog-source-fixture.js';
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
@@ -245,6 +248,33 @@ describe('automatic beta product planning', () => {
     expect(await git(f.repoRoot, 'rev-parse', 'HEAD')).toBe(source);
     expect(await git(f.repoRoot, 'status', '--porcelain')).toBe('');
     expect(await git(f.repoRoot, 'show-ref')).toBe(refs);
+  });
+
+  it('ignores marketplace plugin order when all production content is unchanged', async () => {
+    const f = await fixture(false);
+    await writeJson(path.join(f.repoRoot, 'plugins', 'extra', '.agents-plugin', 'plugin.json'), {
+      schemaVersion: 3, name: 'extra', version: '1.0.0',
+    });
+    const source = await f.change();
+    const baseline = path.join(f.root, 'ordered-catalog');
+    for (const directory of [baseline, f.catalogRoot]) {
+      await createDependencyCatalogSnapshotFixture(directory, [{ name: 'demo' }, { name: 'extra' }]);
+      const markerPath = path.join(directory, '.aw-generated.json');
+      await writeJson(markerPath, { ...await readJson(markerPath), workspaceIdentity: 'fixture:automatic-beta' });
+    }
+    await f.publishCli('1.0.0', source, 'export const value = 1;\n');
+    await f.publishCatalog('1.0.0', source, baseline);
+    for (const relative of ['.agents/plugins/marketplace.json', '.claude-plugin/marketplace.json']) {
+      const marketplacePath = path.join(f.catalogRoot, relative);
+      const marketplace = await readJson(marketplacePath);
+      marketplace.plugins.reverse();
+      await writeJson(marketplacePath, marketplace);
+    }
+
+    const result = await planAutomaticBeta(f.options);
+    expect(result.products.catalog).toMatchObject({ changed: false, version: null,
+      baselineSource: source, affectedPlugins: [] });
+    expect(result.products.catalog).not.toHaveProperty('error');
   });
 
   it('detects marketplace metadata changes even when all plugin entries are unchanged', async () => {
