@@ -86,14 +86,15 @@ function withoutVersionFields(value, relativePath) {
   return normalized;
 }
 
-async function assertVersionOnlyDiff(repoRoot, sourceHead, candidateHead, product) {
+async function assertVersionOnlyDiff(repoRoot, sourceHead, candidateHead, product, allowLegacyHistory) {
   const { stdout } = await git(repoRoot, [
     'diff', '--no-renames', '--name-only', '-z', sourceHead, candidateHead, '--',
   ]);
   for (const relativePath of stdout.split('\0').filter(Boolean)) {
-    const allowed = product === 'cli'
-      ? [CLI_TARGETS, 'pnpm-lock.yaml', ...CLI_PACKAGES.map((entry) => entry.path)].includes(relativePath)
-      : relativePath === CATALOG_METADATA || /^plugins\/[a-z0-9]+(?:-[a-z0-9]+)*\/\.agents-plugin\/plugin\.json$/.test(relativePath);
+    const cliPath = [CLI_TARGETS, 'pnpm-lock.yaml', ...CLI_PACKAGES.map((entry) => entry.path)].includes(relativePath);
+    const catalogPath = relativePath === CATALOG_METADATA
+      || /^plugins\/[a-z0-9]+(?:-[a-z0-9]+)*\/\.agents-plugin\/plugin\.json$/.test(relativePath);
+    const allowed = allowLegacyHistory ? cliPath || catalogPath : product === 'cli' ? cliPath : catalogPath;
     if (!allowed) throw new Error(`Source candidate changes a non-version path: ${relativePath}.`);
     const [before, after] = await Promise.all([
       readBlob(repoRoot, sourceHead, relativePath),
@@ -127,6 +128,7 @@ async function assertVersionOnlyDiff(repoRoot, sourceHead, candidateHead, produc
 
 // Legacy completion tags can precede the source-tag contract. Their complete
 // version-only tree difference still has to prove one unambiguous main source.
+// Older releases could synchronize both products in the same source commit.
 export async function resolveMainSource({
   repoRoot = defaultRepoRoot, candidateHead, product, mainRef = 'origin/main', allowLegacyHistory = false,
 }) {
@@ -146,7 +148,7 @@ export async function resolveMainSource({
       throw new Error('Source candidate must be main source or its direct version-only child commit.');
     }
   }
-  await assertVersionOnlyDiff(repoRoot, sourceHead, candidate, product);
+  await assertVersionOnlyDiff(repoRoot, sourceHead, candidate, product, allowLegacyHistory);
   return { sourceHead, candidateHead: candidate };
 }
 

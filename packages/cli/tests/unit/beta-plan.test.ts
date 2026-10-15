@@ -134,7 +134,7 @@ async function fixture(published = true) {
   }
 
   async function publishCatalog(version: string, source: string, snapshot: string,
-    options: { parentRef?: string; publishChannel?: boolean } = {}) {
+    options: { parentRef?: string; publishChannel?: boolean; mutateSnapshot?: (snapshot: string) => Promise<void> } = {}) {
     const manifest = await readJson(path.join(snapshot, 'catalog-manifest.json'));
     manifest.catalogVersion = version;
     manifest.channel = version.includes('-') ? 'beta' : 'latest';
@@ -164,6 +164,7 @@ async function fixture(published = true) {
       await git(snapshot, 'fetch', '--quiet', remote, `refs/heads/${options.parentRef}`);
       await git(snapshot, 'reset', '--mixed', 'FETCH_HEAD');
     }
+    await options.mutateSnapshot?.(snapshot);
     await commit(snapshot, 'published snapshot');
     await git(snapshot, 'tag', '-a', `catalog-v${version}`, '-m', 'Published snapshot');
     await git(snapshot, 'push', '--quiet', remote,
@@ -382,6 +383,69 @@ describe('automatic beta product planning', () => {
       expect(result.products.cli).not.toHaveProperty('error');
     },
   );
+
+  it('keeps an old-schema tag outside the channel out of the baseline while retaining its occupied version', async () => {
+    const f = await fixture();
+    await f.change({ catalog: true });
+    const snapshot = await catalogAt(path.join(f.root, 'legacy-tag-only'));
+    await f.publishCatalog('1.0.1-beta.7', f.baselineSource, snapshot, {
+      publishChannel: false,
+      mutateSnapshot: async (directory) => {
+        const manifestPath = path.join(directory, 'catalog-manifest.json');
+        const manifest = await readJson(manifestPath);
+        manifest.schemaVersion = 4;
+        await writeJson(manifestPath, manifest);
+      },
+    });
+
+    const result = await planAutomaticBeta(f.options);
+    expect(result.products.catalog).toMatchObject({ changed: true, version: '1.0.1-beta.8',
+      baselineSource: f.baselineSource, baselineVersion: '1.0.0' });
+    expect(result.products.catalog).not.toHaveProperty('error');
+  });
+
+  it.each([
+    { scenario: 'unsupported schema', change: { schemaVersion: 99 }, error: 'Cannot prove the published Catalog source' },
+    { scenario: 'wrong channel', change: { channel: 'latest' }, error: 'Cannot prove the published Catalog source' },
+  ])('rejects a delivered Catalog with $scenario', async ({ change, error }) => {
+    const f = await fixture();
+    const snapshot = await catalogAt(path.join(f.root, 'invalid-delivery'));
+    await f.publishCatalog('1.0.1-beta.1', f.baselineSource, snapshot, {
+      mutateSnapshot: async (directory) => {
+        const manifestPath = path.join(directory, 'catalog-manifest.json');
+        await writeJson(manifestPath, { ...await readJson(manifestPath), ...change });
+      },
+    });
+
+    const result = await planAutomaticBeta(f.options);
+    expect(result.products.catalog).toMatchObject({ changed: false, version: null,
+      error: expect.stringContaining(error) });
+    expect(result.products.cli).not.toHaveProperty('error');
+  });
+
+  it('requires the published Catalog source object and can obtain it from its release-source branch', async () => {
+    const f = await fixture();
+    const delivered = await f.change({ catalog: true });
+    await git(f.repoRoot, 'checkout', '--quiet', '--detach', delivered);
+    const metadataPath = path.join(f.repoRoot, 'plugins', 'marketplace-source.json');
+    const metadata = await readJson(metadataPath);
+    await writeJson(metadataPath, { ...metadata, catalog: { version: '1.0.1-beta.2' } });
+    const candidateSource = await commit(f.repoRoot, 'historical Catalog source version');
+    await git(f.repoRoot, 'checkout', '--quiet', 'main');
+    const snapshot = await catalogAt(path.join(f.root, 'source-branch-delivery'), '# Changed production README\n');
+    await f.publishCatalog('1.0.1-beta.2', candidateSource, snapshot);
+
+    const missing = await planAutomaticBeta(f.options);
+    expect(missing.products.catalog).toMatchObject({ changed: false, version: null,
+      error: expect.stringContaining(candidateSource) });
+    await git(f.repoRoot, 'push', '--quiet', 'origin',
+      `${candidateSource}:refs/heads/release-source/catalog/1.0.1-beta.2`);
+
+    const restored = await planAutomaticBeta(f.options);
+    expect(restored.products.catalog).toMatchObject({ changed: false, version: null,
+      baselineSource: delivered, baselineVersion: '1.0.1-beta.2' });
+    expect(restored.products.catalog).not.toHaveProperty('error');
+  });
 
   it('keeps invalid Catalog content isolated from a valid CLI production change', async () => {
     const f = await fixture();

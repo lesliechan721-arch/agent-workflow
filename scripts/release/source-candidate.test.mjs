@@ -291,6 +291,39 @@ test('new tags reject more than one candidate commit while legacy provenance can
   }), /direct version-only child/);
 });
 
+test('legacy completion sources accept both product versions while new candidates keep their product whitelist', async (t) => {
+  const { repoRoot, sourceHead } = await fixture(t);
+  await git(repoRoot, 'checkout', '-b', 'legacy');
+  await setReleaseTargets({ cli: '1.2.4' }, { repoRoot });
+  const metadataPath = 'plugins/marketplace-source.json';
+  const metadata = JSON.parse(await fs.readFile(path.join(repoRoot, metadataPath), 'utf8'));
+  await writeJson(repoRoot, metadataPath, { ...metadata, catalog: { version: '2.0.0-beta.2' } });
+  await git(repoRoot, 'add', '.');
+  await git(repoRoot, 'commit', '-m', 'legacy combined versions');
+  const candidateHead = await git(repoRoot, 'rev-parse', 'HEAD');
+  for (const product of ['cli', 'catalog']) {
+    assert.deepEqual(await resolveMainSource({ repoRoot, candidateHead, product, allowLegacyHistory: true }), {
+      sourceHead, candidateHead,
+    });
+    await assert.rejects(resolveMainSource({ repoRoot, candidateHead, product }), /non-version path/);
+  }
+  await writeJson(repoRoot, metadataPath, {
+    ...metadata, owner: { ...metadata.owner, name: 'Changed owner' }, catalog: { version: '2.0.0-beta.3' },
+  });
+  await git(repoRoot, 'add', '.');
+  await git(repoRoot, 'commit', '-m', 'production metadata drift');
+  await assert.rejects(resolveMainSource({
+    repoRoot, candidateHead: await git(repoRoot, 'rev-parse', 'HEAD'), product: 'cli', allowLegacyHistory: true,
+  }), /non-version fields/);
+  await writeJson(repoRoot, metadataPath, { ...metadata, catalog: { version: '2.0.0-beta.3' } });
+  await fs.writeFile(path.join(repoRoot, 'production.js'), 'unmerged production\n');
+  await git(repoRoot, 'add', '.');
+  await git(repoRoot, 'commit', '-m', 'production file drift');
+  await assert.rejects(resolveMainSource({
+    repoRoot, candidateHead: await git(repoRoot, 'rev-parse', 'HEAD'), product: 'cli', allowLegacyHistory: true,
+  }), /non-version path/);
+});
+
 test('unrelated Git history cannot supply a main source', async (t) => {
   const { repoRoot } = await fixture(t);
   await git(repoRoot, 'checkout', '--orphan', 'unrelated');

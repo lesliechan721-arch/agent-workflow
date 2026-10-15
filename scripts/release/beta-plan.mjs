@@ -177,18 +177,19 @@ async function releaseHistory(root, tags, selectedProduct, versionSets, env) {
     let sourceCommit = commit;
     let manifest;
     if (product === 'catalog') {
-      manifest = await jsonAt(root, commit, CATALOG_MANIFEST, env);
-      if (manifest.schemaVersion !== 7 || manifest.catalogVersion !== version
-        || !['latest', 'beta'].includes(manifest.channel)
-        || manifest.release?.state !== 'published' || !/^[0-9a-f]{40,64}$/u.test(manifest.release.sourceHead)) {
-        throw new Error(`Cannot prove the published Catalog source for ${tag}.`);
-      }
-      const channelRef = `refs/heads/catalog/${manifest.channel}`;
+      const channel = version.includes('-') ? 'beta' : 'latest';
+      const channelRef = `refs/heads/catalog/${channel}`;
       const containingRefs = (await git(root, [
         'for-each-ref', `--contains=${commit}`, '--format=%(refname)', channelRef,
       ], env)).stdout.trim().split('\n');
       // An immutable tag occupies the version even if the channel write failed.
       if (!containingRefs.includes(channelRef)) continue;
+      manifest = await jsonAt(root, commit, CATALOG_MANIFEST, env);
+      if (manifest.schemaVersion !== 7 || manifest.catalogVersion !== version
+        || manifest.channel !== channel
+        || manifest.release?.state !== 'published' || !/^[0-9a-f]{40,64}$/u.test(manifest.release.sourceHead)) {
+        throw new Error(`Cannot prove the published Catalog source for ${tag}.`);
+      }
       sourceCommit = manifest.release.sourceHead;
     }
     const source = await resolveMainSource({
@@ -367,6 +368,7 @@ export async function planAutomaticBeta({ repoRoot = defaultRepoRoot, sourceHead
     await captureCommand('git', ['init', '--quiet', '--initial-branch=aw-beta-inspection', cache], { env });
     await git(cache, ['fetch', '--no-tags', '--no-recurse-submodules', remote,
       '+refs/heads/main:refs/heads/main', '+refs/tags/*:refs/tags/*',
+      '+refs/heads/release-source/*:refs/heads/release-source/*',
       '+refs/heads/catalog/*:refs/heads/catalog/*'], env);
     const fetchedMain = (await git(cache, ['rev-parse', 'refs/heads/main'], env)).stdout.trim();
     if (fetchedMain !== sourceHead) return skipped(sourceHead, fetchedMain);
