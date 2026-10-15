@@ -86,6 +86,8 @@ function buildIsolatedEnv(
 ): NodeJS.ProcessEnv {
   return {
     ...baseEnv,
+    // Test cases select CI mode explicitly; the host must not disable fake prompts.
+    CI: 'false',
     HOME: layout.homeDir,
     USERPROFILE: layout.homeDir,
     AW_HOME: layout.awHomeDir,

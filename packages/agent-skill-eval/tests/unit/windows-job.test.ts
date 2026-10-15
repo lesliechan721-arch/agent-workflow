@@ -210,8 +210,8 @@ describe('Windows Job helper contract', () => {
       expect(attributes.get(binary)?.get('text')).toBe('unset')
       expect(attributes.get(binary)?.get('diff')).toBe('unset')
     }
-    expect(attributes.get(unrelatedSource)?.get('text')).toBe('unspecified')
-    expect(attributes.get(unrelatedSource)?.get('eol')).toBe('unspecified')
+    expect(attributes.get(unrelatedSource)?.get('text')).toBe('auto')
+    expect(attributes.get(unrelatedSource)?.get('eol')).toBe('lf')
     expect(attributes.get(unrelatedSource)?.get('diff')).toBe('unspecified')
   })
 

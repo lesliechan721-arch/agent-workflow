@@ -188,13 +188,17 @@ async function snapshotRegularTree(root: string): Promise<Record<string, string>
   return snapshot;
 }
 
-function createCodexNativeTestRuntime(
+async function createCodexNativeTestRuntime(
   isolation: {
     env: NodeJS.ProcessEnv;
     layout: { fixtureCwd: string };
   },
   codexVersion = '0.200.0',
 ) {
+  // Observation and public CLI paths inspect PATH even when mutation uses a fake manager.
+  const systemRoot = await fs.mkdtemp(path.join(isolation.layout.fixtureCwd, 'fake-codex-'));
+  const binRoot = await writeStatusSystemCodexPackage(systemRoot, codexVersion);
+  isolation.env.PATH = [binRoot, isolation.env.PATH].filter(Boolean).join(path.delimiter);
   const installed = new Set<string>();
   const installedVersions = new Map<string, string>();
   const marketplaceRoots = new Map<string, string>();
@@ -1108,7 +1112,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const nativeRuntime = createCodexNativeTestRuntime(isolation);
+    const nativeRuntime = await createCodexNativeTestRuntime(isolation);
     const runPublic = async (args: string[]) => {
       const captured = createCapturedCliIo();
       const exitCode = await runCli([...args, '--json'], {
@@ -1633,7 +1637,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const nativeRuntime = createCodexNativeTestRuntime(isolation);
+    const nativeRuntime = await createCodexNativeTestRuntime(isolation);
     const runtime = { env: isolation.env, nativeCliRunner: nativeRuntime.nativeCliRunner };
     const commandOptions = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const, yes: true };
     const installed = await installWriteCommand(['team/root', 'team/unrelated'], commandOptions, runtime);
@@ -1716,7 +1720,7 @@ describe('five namespaced write commands', () => {
       const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
       await fs.writeJson(manifestPath, { ...manifest, name: 'aw' });
     }
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -1841,7 +1845,7 @@ describe('five namespaced write commands', () => {
         expectedDigest: snapshot.digest,
         env: isolation.env,
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime(isolation);
       const initialInstall = await installWriteCommand(['team/demo'], {
         cwd: isolation.layout.fixtureCwd,
         platform: 'codex',
@@ -1988,7 +1992,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const codexOperationConsumerResolver = vi.fn(async (
       options: Parameters<NonNullable<
         RebuildCommandRuntime['codexOperationConsumerResolver']
@@ -2214,7 +2218,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const codexOperationConsumerResolver = vi.fn();
 
     const result = await installWriteCommand(['team/demo'], {
@@ -2255,7 +2259,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const listCalls = (calls: readonly [NativeCliInvocation, ...unknown[]][]) => calls.filter(
       ([invocation]) => {
         const pluginIndex = invocation.args.indexOf('plugin');
@@ -2345,7 +2349,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     let failLeafB = true;
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       const pluginIndex = invocation.args.indexOf('plugin');
@@ -2418,7 +2422,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const realCopy = fs.copy.bind(fs);
     const copy = vi.spyOn(fs, 'copy').mockImplementation(async (source, destination, options) => {
       if (path.basename(path.dirname(String(destination))).startsWith('.team-staging-')
@@ -2474,7 +2478,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/a'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -2546,7 +2550,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/a', 'team/b'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -2611,7 +2615,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       const response = await runtime.nativeCliRunner(invocation);
       const pluginIndex = invocation.args.indexOf('plugin');
@@ -3025,7 +3029,7 @@ describe('five namespaced write commands', () => {
     });
     const intentPath = path.join(cloneRoot, '.agent-workflows', 'plugin-intents.json');
     const intentBefore = await fs.readFile(intentPath);
-    const runtime = createCodexNativeTestRuntime({
+    const runtime = await createCodexNativeTestRuntime({
       env: cloneEnv,
       layout: { fixtureCwd: cloneRoot },
     }, '0.151.0');
@@ -3158,7 +3162,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const projectInstalled = await installWriteCommand(['team/root'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -3306,7 +3310,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       const pluginIndex = invocation.args.indexOf('plugin');
       const pluginArgs = pluginIndex >= 0
@@ -3394,7 +3398,7 @@ describe('five namespaced write commands', () => {
         expectedDigest: snapshot.digest,
         env: isolation.env,
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime(isolation);
       await expect(installWriteCommand(['team/demo'], {
         cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
       }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -3513,7 +3517,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user', yes: true,
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -3623,7 +3627,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -3664,7 +3668,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     let addObserved = false;
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       const pluginIndex = invocation.args.indexOf('plugin');
@@ -3733,7 +3737,7 @@ describe('five namespaced write commands', () => {
         expectedDigest: snapshot.digest,
         env: isolation.env,
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime(isolation);
       const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
         const pluginIndex = invocation.args.indexOf('plugin');
         const pluginArgs = pluginIndex >= 0
@@ -3787,7 +3791,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const installed = await installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -3975,7 +3979,7 @@ describe('five namespaced write commands', () => {
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest, env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
     for (const name of ['alpha', 'beta']) {
       const installed = await installWriteCommand([`team/${name}`], options, runtime);
@@ -4020,7 +4024,7 @@ describe('five namespaced write commands', () => {
     const cacheRoot = path.join(
       isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo', '1.0.0',
     );
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const first = await installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -4063,7 +4067,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/leaf'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -4171,7 +4175,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const installed = await installWriteCommand(['team/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
@@ -4242,7 +4246,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/root'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -4539,7 +4543,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -4609,7 +4613,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -4664,7 +4668,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const installedRuntime = createCodexNativeTestRuntime(isolation);
+    const installedRuntime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -4722,7 +4726,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const installedRuntime = createCodexNativeTestRuntime(isolation);
+    const installedRuntime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', yes: true,
     }, installedRuntime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -4811,7 +4815,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const installedRuntime = createCodexNativeTestRuntime(isolation);
+    const installedRuntime = await createCodexNativeTestRuntime(isolation);
     const selectors = ['team/alpha', 'team/beta'];
     await expect(installWriteCommand(selectors, {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', yes: true,
@@ -4917,7 +4921,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const codexRuntime = createCodexNativeTestRuntime(isolation);
+    const codexRuntime = await createCodexNativeTestRuntime(isolation);
     const preApplyPath = path.join(isolation.env.AW_HOME!, 'pre-apply-codex.txt');
     const preApplyEvents: Array<{ phase: string; outputExists: boolean }> = [];
     const reporter: NonNullable<RebuildCommandRuntime['reporter']> = {
@@ -5358,7 +5362,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const installedRuntime = createCodexNativeTestRuntime(isolation);
+    const installedRuntime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -5893,7 +5897,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -5942,7 +5946,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['official/agent-content-toolkit'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -6038,7 +6042,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, yes: true };
     await expect(installWriteCommand(['official/leaf'], {
       ...options, scope: 'user',
@@ -6086,7 +6090,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['official/leaf'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -6326,7 +6330,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const nativeCliRunner = runtime.nativeCliRunner;
     const installed = await installWriteCommand(['team/root'], {
       cwd: isolation.layout.fixtureCwd,
@@ -6568,7 +6572,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const nativeCliRunner = runtime.nativeCliRunner;
     for (const scope of ['user', 'project'] as const) {
       const installed = await installWriteCommand(['team/root'], {
@@ -8639,7 +8643,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
     await expect(installWriteCommand(['official/demo'], options, runtime))
       .resolves.toMatchObject({ overallState: 'succeeded' });
@@ -8690,7 +8694,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const cwd = isolation.layout.fixtureCwd;
     await expect(installWriteCommand(['official/demo'], {
       cwd, platform: 'codex', scope: 'user',
@@ -8803,7 +8807,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const selected = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
     await expect(installWriteCommand(['official/demo'], selected, runtime))
       .resolves.toMatchObject({ overallState: 'succeeded' });
@@ -8848,7 +8852,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const cwd = isolation.layout.fixtureCwd;
     const user = { cwd, platform: 'codex' as const, scope: 'user' as const };
     for (const pluginId of ['official/demo', 'official/other']) {
@@ -8910,7 +8914,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const selected = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
     await expect(installWriteCommand(['official/demo'], selected, runtime))
       .resolves.toMatchObject({ overallState: 'succeeded' });
@@ -9094,7 +9098,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const cwd = isolation.layout.fixtureCwd;
     await expect(installWriteCommand(['official/demo'], {
       cwd, platform: 'codex', scope: 'user',
@@ -9138,7 +9142,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const cwd = isolation.layout.fixtureCwd;
     await expect(installWriteCommand(['official/demo'], {
       cwd, platform: 'codex', scope: 'user',
@@ -9190,7 +9194,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const cwd = isolation.layout.fixtureCwd;
     await expect(installWriteCommand(['official/demo'], {
       cwd, platform: 'codex', scope: 'user',
@@ -9751,7 +9755,7 @@ describe('five namespaced write commands', () => {
         expectedDigest: initial.digest,
         env: isolation.env,
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime(isolation);
       const installed = await installWriteCommand(['team/demo'], {
         cwd: isolation.layout.fixtureCwd,
         platform: 'codex',
@@ -9890,7 +9894,7 @@ describe('five namespaced write commands', () => {
         expectedDigest: initial.digest,
         env: isolation.env,
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime(isolation);
       const installed = await installWriteCommand(['team/demo'], {
         cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
       }, runtime);
@@ -10001,7 +10005,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const installed = await installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime);
@@ -10891,7 +10895,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const installed = await installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
@@ -11519,7 +11523,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const listCallsBefore = runtime.nativeCliRunner.mock.calls.length;
     const failingManagerResolver: NonNullable<
       RebuildCommandRuntime['codexManagerResolver']
@@ -13908,7 +13912,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const installedRuntime = createCodexNativeTestRuntime(isolation);
+    const installedRuntime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -14120,7 +14124,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: before.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const runPublic = async (args: string[]) => {
       const captured = createCapturedCliIo();
       const exitCode = await runCli([...args, '--json'], {
@@ -14702,7 +14706,7 @@ describe('five namespaced write commands', () => {
         env: isolation.env,
         values: { secret },
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime(isolation);
       const installed = await installWriteCommand([`team/${pluginName}`], {
         cwd: isolation.layout.fixtureCwd,
         platform: 'codex',
@@ -14798,7 +14802,7 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
       values: { secret },
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
 
     const result = await installWriteCommand([`team/${pluginName}`], {
       cwd: isolation.layout.fixtureCwd,
@@ -14858,7 +14862,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: before.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand([`team/${pluginName}`], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -14945,7 +14949,7 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
       values: { secret: 'safe-default' },
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand([`team/${pluginName}`], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -15061,7 +15065,7 @@ describe('five namespaced write commands', () => {
       dependencyScopeOverrides: [],
       managed: { codexPluginIds: [] },
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const runPublic = async (args: string[]) => {
       const captured = createCapturedCliIo();
       const exitCode = await runCli([...args, '--json'], {
@@ -15752,7 +15756,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: before.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const installed = await installWriteCommand(['team/mixed-native'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -15867,7 +15871,7 @@ describe('five namespaced write commands', () => {
       if (artifact.kind !== 'codexRole') throw new Error('Expected a Codex role artifact.');
       assertRoleInstructions(roleKeys[index]!, artifact.content?.roleFile?.developer_instructions, instructions);
     }
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const runPublic = async (args: string[]) => {
       const captured = createCapturedCliIo();
       const exitCode = await runCli([...args, '--json'], {
