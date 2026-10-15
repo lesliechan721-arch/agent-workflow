@@ -256,7 +256,8 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
     "if (args[0] === '--version') { console.log('2.1.88'); process.exit(0); }",
     "if (!home) { console.error('AW_CLAUDE_HOME is required'); process.exit(2); }",
     "const scope = args.includes('--scope') ? args[args.indexOf('--scope') + 1] : 'user';",
-    "const projectPath = fs.realpathSync(process.cwd());",
+    // Native realpath removes Windows namespace prefixes from the child cwd.
+    "const projectPath = fs.realpathSync.native(process.cwd());",
     "const settingsPath = scope === 'project' ? path.join(projectPath, '.claude', 'settings.json') : path.join(home, 'settings.json');",
     "const knownPath = path.join(home, 'plugins', 'known_marketplaces.json');",
     "const installedPath = path.join(home, 'plugins', 'installed_plugins.json');",
@@ -334,7 +335,7 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
     "const projectTrusted = (file, cwd) => {",
     "  if (!fs.existsSync(file)) return false;",
     "  const lines = fs.readFileSync(file, 'utf8').split(/\\r?\\n/u);",
-    "  const header = `[projects.${JSON.stringify(fs.realpathSync(cwd))}]`;",
+    "  const header = `[projects.${JSON.stringify(fs.realpathSync.native(cwd))}]`;",
     "  const start = lines.indexOf(header);",
     "  if (start < 0) return false;",
     "  for (let index = start + 1; index < lines.length && !lines[index].startsWith('['); index += 1) {",
@@ -938,9 +939,13 @@ describe('pack smoke', () => {
     ].join('\n'));
     const externalInstall = await execAw([
       'install', `${developmentSourceId}/packed-build`, '-p', 'both', '--scope', 'project', '--json',
-    ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024 }).catch((error: unknown) => {
+    ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024 }).catch(async (error: unknown) => {
       const failure = error as { stdout?: string; stderr?: string };
-      throw new Error(`Packed project install failed. stdout=${failure.stdout ?? ''} stderr=${failure.stderr ?? ''}`);
+      const claudeInstalled = await fs.readJson(path.join(
+        externalAuthoringEnv.AW_CLAUDE_HOME, 'plugins', 'installed_plugins.json',
+      )).catch(() => null);
+      const projectPath = await fs.realpath(standaloneWorkspace);
+      throw new Error(`Packed project install failed. stdout=${failure.stdout ?? ''} stderr=${failure.stderr ?? ''} fixture=${JSON.stringify({ projectPath, claudeInstalled })}`);
     });
     expect(JSON.parse(externalInstall.stdout)).toMatchObject({
       ok: true,
