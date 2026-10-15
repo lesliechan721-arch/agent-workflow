@@ -266,7 +266,11 @@ describe('codex-workflow provider', () => {
 
   it.each(['structured', 'text', 'unrelated', 'setup', 'grader-error', 'fixture-action'] as const)(
     'runs the Engine-owned %s interaction loop with a deterministic RPC peer and independent matcher seam',
-    async (mode) => {
+    async (mode, context) => {
+      if (mode === 'fixture-action' && process.platform !== 'darwin') {
+        context.skip()
+        return
+      }
       const fixture = await adapterFixture()
       const nodeTestFile = path.join(fixture.workspace, 'runtime.test.mjs')
       if (mode === 'structured') {
