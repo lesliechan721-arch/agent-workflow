@@ -291,6 +291,52 @@
         "minimalCounterexample": "若消费者明确要求 AW Selected Cases v1，则应使用它的真实字段。",
         "allowedVariance": "允许等价措辞和实现；不以是否复述标准术语或固定中间步骤判定。"
       }
+    },
+    {
+      "id": "current-method-not-authoring-discussion",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用 author-agent-skill，依据 decisions.md 修订 skills/report-diff，使后续 Agent 可以独立比较用户提供的两份报告。只改该 Skill 已有的 SKILL.md 与 agents/openai.yaml，不执行报告比较，不新增工具、脚本或流程文件。",
+      "assertions": [
+        "最终调用控制符合已确认的用户手动入口：Claude 与 Codex 均关闭隐式调用，保留显式调用。",
+        "执行方法保留按原始字符串标识比较、缺值不视为零、重复标识先说明歧义的规则，并保留避免误合并的必要领域原因。",
+        "正文面向后续执行者，不复制没有执行用途的起草经过、被放弃的接入讨论或作者对本次改写的自述；不能按词语一律删除必要原因。",
+        "仅更新授权文件；不为表达取舍新增状态协议、安装步骤或运行证明。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "decisions.md": "# 报告比较\n\n## 起草讨论\n先前试写过自动挂入 Build，后来在评审讨论中改成单独入口。我们已经来回比较了两次路由；这些只是本次起草经过。\n\n## 已确认用途\n用户手动选择 report-diff 时，比较用户给出的两份报告文本，不联网。两端标识按原始字符串匹配，不做数字转换：上游编码中 001 和 1 是两个不同对象。缺少数量不视为零；同一报告有重复标识时说明歧义，不猜配对。报告差异及无法比较的项目，不创建文件。Claude 和 Codex 都保留用户调用并关闭隐式调用。\n",
+          "skills/report-diff/SKILL.md": "---\nname: report-diff\ndescription: 比较用户提供的两份报告时使用。\n---\n\n# Report Diff\n\n比较记录并输出差异。\n",
+          "skills/report-diff/agents/openai.yaml": "interface:\n  display_name: report-diff\n  short_description: \"比较用户提供的两份报告并保留精确标识、缺失数据和重复记录的歧义\"\n  default_prompt: \"使用 $report-diff 比较给定报告。\"\npolicy:\n  allow_implicit_invocation: true\n"
+        }
+      },
+      "expected": {
+        "output": "交付可独立使用的比较方法与正确调用控制，说明真实检查及限制。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/report-diff/SKILL.md",
+          "skills/report-diff/agents/openai.yaml"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/report-diff/SKILL.md",
+            "exists": true
+          },
+          {
+            "path": "skills/report-diff/agents/openai.yaml",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "同一输入同时提供起草过程、最终调用选择和必要领域原因，按后续使用价值区分，不把原因或否定措辞本身当缺陷。",
+        "minimalCounterexample": "若另有明确的设计记录交付要求，相关取舍经过应写入指定记录；若旧方案仍对应现行兼容约束，其必要理由必须保留。",
+        "allowedVariance": "允许等价措辞与布局，调用元数据按真实字段检查；不要求固定句子、禁止词表、额外 reference 或特定 Skill 加载顺序。"
+      }
     }
   ]
 }
