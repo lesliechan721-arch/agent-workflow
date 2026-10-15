@@ -79,7 +79,7 @@ const PLATFORM_MANIFEST_DIRS: Readonly<Record<PlatformName, string>> = {
   codex: '.codex-plugin',
 };
 
-const EXACT_PNPM_PACKAGE_MANAGER_PATTERN = /^pnpm@\d+\.\d+\.\d+$/u;
+const EXACT_PNPM_VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
 
 function assertLocalPluginStagingPathForTests(
   targetPath: string,
@@ -167,15 +167,18 @@ export async function validateStagingPackageManager(packageRoot: string): Promis
       'scripts.node.packageRoot.package.json',
     ),
   ]);
-  const supportedPackageManager = cliPackageJson.packageManager;
+  // pnpm pack removes packageManager, but preserves runtime dependencies.
+  const dependencies = cliPackageJson.dependencies as { pnpm?: unknown } | undefined;
+  const supportedPnpmVersion = dependencies?.pnpm;
   if (
-    typeof supportedPackageManager !== 'string'
-    || !EXACT_PNPM_PACKAGE_MANAGER_PATTERN.test(supportedPackageManager)
+    typeof supportedPnpmVersion !== 'string'
+    || !EXACT_PNPM_VERSION_PATTERN.test(supportedPnpmVersion)
   ) {
     throw new Error(
-      'Invalid @lesliechan721/aw packageManager: expected an exact "pnpm@<version>" declaration.',
+      'Invalid @lesliechan721/aw dependencies.pnpm: expected an exact "<major>.<minor>.<patch>" version.',
     );
   }
+  const supportedPackageManager = `pnpm@${supportedPnpmVersion}`;
   if (packageJson.packageManager !== supportedPackageManager) {
     throw new Error(
       'Invalid scripts.node.packageRoot.package.json.packageManager: '

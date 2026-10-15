@@ -217,7 +217,8 @@ describe('local-plugin generator', () => {
     const packageRoot = path.join(repoRoot, 'package-root');
     const cliPackageJson = await fs.readJson(
       path.join(resolveCliPackageRoot(), 'package.json'),
-    ) as { packageManager: string };
+    ) as { dependencies: { pnpm: string } };
+    const supportedPackageManager = `pnpm@${cliPackageJson.dependencies.pnpm}`;
     await fs.ensureDir(packageRoot);
     await fs.writeJson(path.join(packageRoot, 'package.json'), {
       name: 'staging-package',
@@ -225,7 +226,7 @@ describe('local-plugin generator', () => {
     });
 
     await expect(validateStagingPackageManager(packageRoot)).rejects.toThrow(
-      `expected "${cliPackageJson.packageManager}"`,
+      `expected "${supportedPackageManager}"`,
     );
 
     await fs.writeJson(path.join(packageRoot, 'package.json'), {
@@ -234,16 +235,16 @@ describe('local-plugin generator', () => {
       packageManager: 'pnpm@9.0.0',
     });
     await expect(validateStagingPackageManager(packageRoot)).rejects.toThrow(
-      `expected "${cliPackageJson.packageManager}"`,
+      `expected "${supportedPackageManager}"`,
     );
 
     await fs.writeJson(path.join(packageRoot, 'package.json'), {
       name: 'staging-package',
       version: '1.0.0',
-      packageManager: cliPackageJson.packageManager,
+      packageManager: supportedPackageManager,
     });
     await expect(validateStagingPackageManager(packageRoot)).resolves.toBe(
-      cliPackageJson.packageManager,
+      supportedPackageManager,
     );
   });
 
