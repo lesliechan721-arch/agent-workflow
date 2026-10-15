@@ -19,7 +19,7 @@ export function coverageArtifacts(selected) {
 export function coverageSemanticChecks(selected) {
   if (!COVERAGE_CASES.has(selected.id)) return [];
   return [{ name: 'coverage-history-and-budget', criterion:
-    'Use actual Engine observations, snapshots, measurementStart, thread history and judgments. Setup actions are not measured repairs. Each reused axis must have an accessible original version, full scope, real independent judgment, addressed findings and independently checked cumulative applicability; no finding is not proof of coverage. Count the first measured modification batch against the same budget. Missing setup or source evidence is unknown. Explicit new full reassessment needs new clean judgments. Assigned axis reviewers work directly without repeating the parent review.' }];
+    'Use actual Engine observations, snapshots, measurementStart, thread history and judgments. Setup actions are not measured repairs. Each reused axis must have an accessible original version, full scope, real independent judgment, addressed findings and independently checked cumulative applicability; no finding is not proof of coverage. New checks in each measured review round need fresh contexts without author or previous reviewer session history; accessible prior reports are permitted evidence, not session reuse. Fresh contexts do not require repeating unaffected full reviews. Count the first measured modification batch against the same budget. Missing setup, isolation or source evidence is unknown. Explicit new full reassessment needs new clean judgments over the full requested scope. Assigned reviewers finish their current round directly without repeating the parent review.' }];
 }
 
 export async function coverageProductChecks(selected, workspace) {

@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-simplify-code",
+    "participants": [
+      "dev-build",
+      "dev-implement",
+      "dev-review-code"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "验证手动入口可用，同时不进入普通实施链。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "explicit_simplification",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 $dev-simplify-code 简化本次选择函数，保持行为并运行测试，不提交。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "本次请求是否明确选择手动入口决定标签。",
+        "minimalCounterexample": "添加或移除用户显式选择后，标签随之改变。",
+        "allowedVariance": "只判断被测能力是否加载；其它适用能力不受限制，最终行为另测。"
+      }
+    },
+    {
+      "id": "explicit_readonly",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 $dev-simplify-code 只提供当前模块的简化建议，不写文件。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "本次请求是否明确选择手动入口决定标签。",
+        "minimalCounterexample": "添加或移除用户显式选择后，标签随之改变。",
+        "allowedVariance": "只判断被测能力是否加载；其它适用能力不受限制，最终行为另测。"
+      }
+    },
+    {
+      "id": "natural_language_is_not_manual_entry",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "简化这段代码，保持公开行为，运行现有测试。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "本次请求是否明确选择手动入口决定标签。",
+        "minimalCounterexample": "添加或移除用户显式选择后，标签随之改变。",
+        "allowedVariance": "只判断被测能力是否加载；其它适用能力不受限制，最终行为另测。"
+      }
+    },
+    {
+      "id": "ordinary_build_is_not_simplification_entry",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-build 完成已批准任务，按范围实施并核验结果。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "本次请求是否明确选择手动入口决定标签。",
+        "minimalCounterexample": "添加或移除用户显式选择后，标签随之改变。",
+        "allowedVariance": "只判断被测能力是否加载；其它适用能力不受限制，最终行为另测。"
+      }
+    }
+  ]
+}

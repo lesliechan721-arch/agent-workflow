@@ -12,9 +12,15 @@ import {
 } from '../skills/dev-build/evals/context-role-workflow.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const skills = ['dev-workflow', 'dev-design', 'dev-spec', 'dev-review-spec', 'dev-build', 'dev-review-loop', 'dev-breakdown', 'dev-implement', 'dev-review-code'];
+const skills = ['dev-workflow', 'dev-design', 'dev-spec', 'dev-review-spec', 'dev-build', 'dev-review-loop', 'dev-breakdown', 'dev-implement', 'dev-review-code', 'dev-simplify-code'];
+const manualSkills = new Set(['dev-workflow', 'dev-simplify-code']);
 const decisionSkills = ['decision-shape', 'decision-grill', 'decision-prototype', 'project-context'];
 const localWorkspaceSkills = ['dev-design', 'dev-build'];
+const sharedReferences = [
+  { file: 'local-workspace.md', skills: localWorkspaceSkills },
+  { file: 'task-changes.md', skills: ['dev-build', 'dev-design'] },
+  { file: 'engineering-quality.md', skills: ['dev-implement', 'dev-review-code', 'dev-simplify-code'] },
+];
 const allParticipants = new Set([...skills, ...decisionSkills, 'explain-for-review']);
 const read = (file) => readFile(file, 'utf8');
 const readJson = async (file) => JSON.parse(await read(file));
@@ -87,30 +93,30 @@ test('manifest exposes local Skills and declares alignment and presentation depe
     assert.equal(key in manifest, false);
   }
   assert.deepEqual(manifest.buildConfig, {
-    skillRuntimeFiles: localWorkspaceSkills.map((skill) => ({
+    skillRuntimeFiles: sharedReferences.flatMap(({ file, skills: consumers }) => consumers.map((skill) => ({
       skill,
-      target: 'references/local-workspace.md',
-      source: './references/local-workspace.md',
-    })),
+      target: `references/${file}`,
+      source: `./references/${file}`,
+    }))),
   });
   await access(path.join(target.source, 'references', 'local-workspace.md'));
 });
 
-test('source exposes nine directly usable Skills', async () => {
+test('Skills expose the declared package resources and invocation policies', async () => {
   assert.deepEqual((await readdir(path.join(target.source, 'skills'))).sort(), [...skills].sort());
   for (const name of skills) {
     const skillRoot = path.join(target.source, 'skills', name);
     const skill = await read(path.join(skillRoot, 'SKILL.md'));
     assertSkill(skill, name);
-    if (name === 'dev-workflow') {
-      // Static contract exception: users must explicitly invoke the published Skill; runtime routing alone cannot verify both platform metadata fields.
+    if (manualSkills.has(name)) {
+      // Static contract exception: published manual Skills must not enable automatic invocation; behavior test is not suitable because routing observations cannot establish both platform metadata switches.
       assert.match(skill, /^user-invocable: true$/m);
       assert.match(skill, /^disable-model-invocation: true$/m);
     }
     await read(path.join(skillRoot, 'README.md'));
     const metadata = await read(path.join(skillRoot, 'agents', 'openai.yaml'));
     assert.match(metadata, new RegExp(`\\$${name}`));
-    assert.match(metadata, new RegExp(`^policy:\\n  allow_implicit_invocation: ${name === 'dev-workflow' ? 'false' : 'true'}$`, 'm'));
+    assert.match(metadata, new RegExp(`^policy:\\n  allow_implicit_invocation: ${manualSkills.has(name) ? 'false' : 'true'}$`, 'm'));
   }
 });
 
@@ -578,20 +584,22 @@ test('runtime keeps all Skill roots and conditional references', async () => {
     );
   }
   if (target.platform) {
-    const localWorkspace = await read(path.join(target.source, 'references', 'local-workspace.md'));
-    for (const name of localWorkspaceSkills) {
-      assert.equal(
-        await read(path.join(skillsRoot, name, 'references', 'local-workspace.md')),
-        localWorkspace,
-        `${name} must receive the canonical shared reference`,
-      );
+    for (const { file, skills: consumers } of sharedReferences) {
+      const canonical = await read(path.join(target.source, 'references', file));
+      for (const name of consumers) {
+        assert.equal(
+          await read(path.join(skillsRoot, name, 'references', file)),
+          canonical,
+          `${name} must receive the canonical ${file}`,
+        );
+      }
     }
   }
   await read(path.join(skillsRoot, 'dev-review-spec', 'references', 'rereview.md'));
   await read(path.join(skillsRoot, 'dev-review-code', 'references', 'rereview.md'));
   await read(path.join(skillsRoot, 'dev-review-code', 'references', 'design-fidelity.md'));
   await read(path.join(skillsRoot, 'dev-review-loop', 'references', 'review-loop.md'));
-  for (const reference of ['coordinated-build.md', 'checkpoints.md', 'review-planning.md']) {
+  for (const reference of ['coordinated-build.md', 'review-planning.md']) {
     await read(path.join(skillsRoot, 'dev-build', 'references', reference));
   }
   await assert.rejects(

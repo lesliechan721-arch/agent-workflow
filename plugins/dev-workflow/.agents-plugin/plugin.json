@@ -50,6 +50,31 @@
         "skill": "dev-build",
         "target": "references/local-workspace.md",
         "source": "./references/local-workspace.md"
+      },
+      {
+        "skill": "dev-build",
+        "target": "references/task-changes.md",
+        "source": "./references/task-changes.md"
+      },
+      {
+        "skill": "dev-design",
+        "target": "references/task-changes.md",
+        "source": "./references/task-changes.md"
+      },
+      {
+        "skill": "dev-implement",
+        "target": "references/engineering-quality.md",
+        "source": "./references/engineering-quality.md"
+      },
+      {
+        "skill": "dev-review-code",
+        "target": "references/engineering-quality.md",
+        "source": "./references/engineering-quality.md"
+      },
+      {
+        "skill": "dev-simplify-code",
+        "target": "references/engineering-quality.md",
+        "source": "./references/engineering-quality.md"
       }
     ]
   }

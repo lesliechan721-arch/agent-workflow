@@ -1385,6 +1385,37 @@ describe('pack smoke', () => {
     });
   });
 
+  it('validates the staging package manager from the unpacked tarball runtime', async () => {
+    const { packageRoot, tempRoot } = await preparePackedCli();
+    await installDeclaredDependencyOnlyView(packageRoot, path.join(repoRoot(), 'packages', 'cli'));
+    const packageJson = await fs.readJson(path.join(packageRoot, 'package.json')) as {
+      dependencies: Record<string, string>;
+    };
+    const packageManager = `pnpm@${packageJson.dependencies.pnpm}`;
+    const stagingPackageRoot = path.join(tempRoot, 'staging-package');
+    await fs.ensureDir(stagingPackageRoot);
+    await fs.writeJson(path.join(stagingPackageRoot, 'package.json'), {
+      name: 'staging-package',
+      version: '1.0.0',
+      packageManager,
+    });
+
+    const generatorUrl = pathToFileURL(
+      path.join(packageRoot, 'dist', 'src', 'generators', 'local-plugin.js'),
+    ).href;
+    await expect(execFileAsync(process.execPath, [
+      '--input-type=module',
+      '--eval',
+      'const { validateStagingPackageManager } = await import(process.argv[1]); '
+        + 'console.log(await validateStagingPackageManager(process.argv[2]));',
+      generatorUrl,
+      stagingPackageRoot,
+    ], {
+      cwd: tempRoot,
+      env: process.env,
+    })).resolves.toMatchObject({ stdout: `${packageManager}\n`, stderr: '' });
+  });
+
   it('bundles public slashCommands correctly from the unpacked tarball runtime', async () => {
     const root = repoRoot();
     const packageRoot = path.join(root, 'packages', 'cli');

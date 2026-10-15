@@ -159,7 +159,7 @@
       "prompt": "读取 docs/session-expiry-decision.md，按最终决定完成 skills/session-expiry/SKILL.md。只更新目标 Skill，不保留中间方案或 Review 过程。",
       "assertions": [
         "最终 Skill 正面表达当前有效行为和必要约束",
-        "不复制被否决方案、Review 指令、修复历史或过程性否定表达",
+        "按当前使用价值区分必要约束与起草过程，不把无后续用途的方案讨论和 Review 往返写进执行正文；不按否定措辞本身删改内容。",
         "不增加通用状态机、兼容 fallback 或无当前消费者的配置",
         "不新增文本 snapshot、整文件 hash 或其它低价值测试",
         "只修改目标 Skill"
@@ -172,7 +172,7 @@
         }
       },
       "expected": {
-        "output": "把目标 Skill 写成只描述当前 expiresAt 判断、服务端拒绝和必要行为的正面合同，不包含被否决状态机、Review 历史或过程性否定指令。",
+        "output": "表达当前 expiresAt 判断、服务端拒绝和必要约束，不回放没有执行用途的方案讨论；说明实际检查与限制。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "skills/session-expiry/SKILL.md"
@@ -180,27 +180,64 @@
         "artifacts": [
           {
             "path": "skills/session-expiry/SKILL.md",
-            "exists": true,
-            "contains": [
-              "expiresAt",
-              "服务端",
-              "拒绝"
-            ],
-            "notContains": [
-              "SessionStateMachine",
-              "pending -> checking",
-              "不要使用自然语言状态机",
-              "上一次 Review",
-              "被否决",
-              "中间讨论"
-            ]
+            "exists": true
           }
         ]
       },
       "audit": {
-        "rationale": "最终 Skill 应正面表达当前有效的 expiresAt 合同，不把被否决的状态机、Review 指令或过程性“不要做 X”复制到生产产物。",
-        "allowedVariance": "措辞可以不同；必须保留当前行为和必要约束，不能回放被否决方案或修复历史。",
+        "rationale": "这是明确纠正用例，按来源核对当前行为与过程残留，不用固定词语或句子判断正文质量。",
+        "allowedVariance": "允许等价表达和必要的否定约束；按后续使用者需要的行为、边界与理由判断，不设禁止词表。",
         "minimalCounterexample": "如果被替代方案说明了仍有效的安全、兼容、迁移或回滚约束，则应把该必要约束作为当前合同或 Evidence 保留。"
+      }
+    },
+    {
+      "id": "consumer-content-keeps-compatibility-reason",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用 dev-implement，依据 contract.md 完成 Record 输出并同步 docs/api.md，notes.md 是先前讨论材料。只修改 src/serialize.js 与 docs/api.md，运行现有 node --test，不提交。",
+      "assertions": [
+        "实际实现完整输出，保留 id 与 name 的原始字符串，displayName 与 name 一致；输入不变，现有公开行为测试通过。",
+        "代码与 API 文档面向后续使用者，保留旧终端仍依赖 name 的必要原因，不复制先重命名后回滚等无使用价值的讨论经过。",
+        "不按出现原因、历史或否定词就删除兼容依据，不以更简单为由删除 name。",
+        "只修改授权文件，实际运行已有测试，不为已有充分覆盖新增测试框架、快照或适配层。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "contract.md": "# Record 输出合同\nserializeRecord(record) 接受合法的 id、name 字符串，输出 id、name、displayName。id 原样保留，两个名称字段均等于输入 name，不 trim、不转换、不修改输入。v1 离线终端仍只读取 name，迁移完成前必须保留此字段；当前 Web 客户端读取 displayName。文档面向 API 使用者与维护者，需要说明这两个字段和兼容原因。本次不改变终端、不新增配置或持久状态。\n",
+          "notes.md": "# 本次起草经过\n最初考虑删除 name，再做独立适配层。讨论后发现旧终端仍在使用，撤回了该草案。上一轮先重命名后回滚，这一轮改为直接返回两个字段。最终要求以 contract.md 为准。\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/serialize.js": "// v1 离线终端仍读取 name，迁移完成前保留该字段。\nexport function serializeRecord(record) {\n  return {id: record.id, name: record.name};\n}\n",
+          "docs/api.md": "# Record API\n输出 id 和 name，均保留输入字符串；v1 离线终端仍读取 name，迁移完成前保留此字段。\n",
+          "test/serialize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {serializeRecord} from '../src/serialize.js';\ntest('legacy client reads name', () => {\n  assert.equal(serializeRecord({id:'001',name:'Ada'}).name,'Ada');\n});\ntest('both clients receive the same unchanged name', () => {\n  assert.deepEqual(serializeRecord({id:'001',name:' Ada '}),{id:'001',name:' Ada ',displayName:' Ada '});\n  assert.deepEqual(serializeRecord({id:'1',name:''}),{id:'1',name:'',displayName:''});\n});\ntest('input is unchanged', () => {\n  const input=Object.freeze({id:'001',name:'Ada'});\n  serializeRecord(input);\n  assert.deepEqual(input,{id:'001',name:'Ada'});\n});\n",
+          "src/unrelated.js": "export const untouched = true;\n"
+        }
+      },
+      "expected": {
+        "output": "交付兼容现有与新客户端的输出和可用文档，报告真实验证。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/serialize.js",
+          "docs/api.md"
+        ],
+        "artifacts": [
+          {
+            "path": "src/serialize.js",
+            "exists": true
+          },
+          {
+            "path": "docs/api.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "同一材料含无后续用途的修改经过和仍有真实消费者的兼容理由；核对功能实现、内容选择与最小范围，而非禁止词。",
+        "minimalCounterexample": "如果用户要求维护迁移决策记录，相关过程可以进入该指定记录；删除 name 则须取得新合同与消费者迁移依据。",
+        "allowedVariance": "允许等价代码、注释位置与文档结构；兼容原因可放在维护者可达的位置，不要求在代码和文档重复，不限定具体语句。"
       }
     }
   ]
