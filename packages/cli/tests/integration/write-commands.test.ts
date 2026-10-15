@@ -329,6 +329,65 @@ async function createCodexNativeTestRuntime(
   };
 }
 
+async function prepareCodexEnhancePublicCommandFixture() {
+  const isolation = getCurrentSourceTestIsolation();
+  const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const sourcePluginRoot = path.join(repositoryRoot, 'plugins', 'codex-enhance');
+  const authoringRoot = path.join(isolation.layout.fixtureCwd, 'codex-enhance-authoring');
+  await fs.copy(
+    path.join(repositoryRoot, 'plugins', 'marketplace-source.json'),
+    path.join(authoringRoot, 'plugins', 'marketplace-source.json'),
+  );
+  const copiedPluginRoot = path.join(authoringRoot, 'plugins', 'codex-enhance');
+  await fs.copy(sourcePluginRoot, copiedPluginRoot);
+  await stubCodexFileSelectionForNativeFixture(copiedPluginRoot);
+  const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
+  await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), {
+    schemaVersion: 1,
+    kind: 'catalog',
+    workspaceIdentity: `fixture:${crypto.createHash('sha256').update(sourceRoot).digest('hex')}`,
+    sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${sourceRoot}`).digest('hex')}`,
+  });
+  const manifest = await fs.readJson(path.join(
+    sourceRoot, 'plugins', 'codex-enhance', '.agents-plugin', 'plugin.json',
+  ));
+  const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+  const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+  const sourceIdentity = await calculateCatalogSourceIdentity(source);
+  const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
+  await replaceCatalogSourcesConfigWithoutActive({
+    config: { schemaVersion: 2, sources: [source] },
+    expectedDigest: before.digest,
+    env: isolation.env,
+  });
+  await syncCatalogSourceGeneration({
+    sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+  });
+  const runtime = await createCodexNativeTestRuntime(isolation);
+  const runPublic = async (args: string[]) => {
+    const captured = createCapturedCliIo();
+    const exitCode = await runCli([...args, '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: captured.io,
+      interactive: false,
+      nativeCliRunner: runtime.nativeCliRunner,
+    });
+    return { exitCode, payload: JSON.parse(captured.readStdout()) as Record<string, unknown> };
+  };
+  return {
+    isolation,
+    sourcePluginRoot,
+    sourceRoot,
+    sourceIdentity,
+    logicalIdentity,
+    cacheRoot: path.join(
+      isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'codex-enhance', manifest.version,
+    ),
+    runPublic,
+  };
+}
+
 async function createClaudeNativeTestRuntime(
   isolation: { env: NodeJS.ProcessEnv; layout: { fixtureCwd: string } },
 ) {
@@ -15840,40 +15899,10 @@ describe('five namespaced write commands', () => {
 
   });
 
-  it('runs codex-enhance shared Skills and project roles through public commands', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
-    const sourcePluginRoot = path.join(repositoryRoot, 'plugins', 'codex-enhance');
-    const authoringRoot = path.join(isolation.layout.fixtureCwd, 'codex-enhance-authoring');
-    await fs.copy(
-      path.join(repositoryRoot, 'plugins', 'marketplace-source.json'),
-      path.join(authoringRoot, 'plugins', 'marketplace-source.json'),
-    );
-    const copiedPluginRoot = path.join(authoringRoot, 'plugins', 'codex-enhance');
-    await fs.copy(sourcePluginRoot, copiedPluginRoot);
-    await stubCodexFileSelectionForNativeFixture(copiedPluginRoot);
-    const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
-    await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), {
-      schemaVersion: 1,
-      kind: 'catalog',
-      workspaceIdentity: `fixture:${crypto.createHash('sha256').update(sourceRoot).digest('hex')}`,
-      sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${sourceRoot}`).digest('hex')}`,
-    });
-    const manifest = await fs.readJson(path.join(
-      sourceRoot, 'plugins', 'codex-enhance', '.agents-plugin', 'plugin.json',
-    ));
-    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
-    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
-    const sourceIdentity = await calculateCatalogSourceIdentity(source);
-    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
-    await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 2, sources: [source] },
-      expectedDigest: before.digest,
-      env: isolation.env,
-    });
-    await syncCatalogSourceGeneration({
-      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
-    });
+  it('rematerializes codex-enhance shared Skills without changing project roles through public commands', async () => {
+    // Test Value Gate: real config writes rematerialize only affected shared Skills and bindings, while project roles keep their bytes and scope.
+    const { isolation, sourcePluginRoot, sourceRoot, sourceIdentity, logicalIdentity, cacheRoot, runPublic } =
+      await prepareCodexEnhancePublicCommandFixture();
     // Test Value Gate: bundled role-only requests share declared resources without reading Skill config or rendering extra targets.
     const bundledPlugin = await readPluginManifest(path.join(sourceRoot, 'plugins', 'codex-enhance'), { mode: 'bundle' });
     const roleArtifactIds = ['codex-explore-role', 'codex-subagent-role', 'codex-advisor-role'];
@@ -15921,19 +15950,6 @@ describe('five namespaced write commands', () => {
       if (artifact.kind !== 'codexRole') throw new Error('Expected a Codex role artifact.');
       assertRoleInstructions(roleKeys[index]!, artifact.content?.roleFile?.developer_instructions, instructions);
     }
-    const runtime = await createCodexNativeTestRuntime(isolation);
-    const runPublic = async (args: string[]) => {
-      const captured = createCapturedCliIo();
-      const exitCode = await runCli([...args, '--json'], {
-        cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
-        io: captured.io,
-        interactive: false,
-        nativeCliRunner: runtime.nativeCliRunner,
-      });
-      return { exitCode, payload: JSON.parse(captured.readStdout()) as Record<string, unknown> };
-    };
-
     expect(await runPublic([
       'config', 'set', 'team/codex-enhance', 'standardProfile', '--scope', 'project',
       '--value-json', '{"model":"project-standard","reasoningEffort":"max"}',
@@ -15950,12 +15966,6 @@ describe('five namespaced write commands', () => {
     ]);
     expect(projectInstall, JSON.stringify(projectInstall, null, 2))
       .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
-    const cacheRoot = path.join(
-      isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'codex-enhance', manifest.version,
-    );
-    const marketplaceRoot = path.join(
-      isolation.env.AW_HOME!, 'marketplaces', 'team', 'plugins', 'codex-enhance',
-    );
     const skillKeys = ['codex-explore', 'codex-subagent-guide', 'codex-advisor'];
     const skillPaths = skillKeys.map((skill) =>
       path.join(cacheRoot, 'codex', 'skills', skill, 'SKILL.md'));
@@ -16036,6 +16046,35 @@ describe('five namespaced write commands', () => {
     for (const [index, file] of rolePaths.entries()) {
       await expect(fs.readFile(file, 'utf8')).resolves.toBe(initialRoleBytes[index]);
     }
+    const projectOnlyConfig = await readCodexConfigFile(path.join(
+      isolation.layout.fixtureCwd, '.codex', 'config.toml',
+    ));
+    const projectOnlyUserConfig = await readCodexConfigFile(path.join(
+      isolation.env.AW_CODEX_HOME!, 'config.toml',
+    ));
+    expect(projectOnlyConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
+    expect(projectOnlyUserConfig.snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
+    expect(await runPublic([
+      'cleanup', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project', '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    for (const file of rolePaths) await expect(fs.pathExists(file)).resolves.toBe(false);
+    expect((await readCodexConfigFile(path.join(
+      isolation.layout.fixtureCwd, '.codex', 'config.toml',
+    ))).snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
+  });
+
+  it('restores codex-enhance project activation after user scope uninstall through public commands', async () => {
+    // Test Value Gate: a real project-to-user-to-project lifecycle restores project activation and cleans its roles after user uninstall.
+    const { isolation, runPublic } = await prepareCodexEnhancePublicCommandFixture();
+    const rolePaths = ['codex-explore', 'codex-subagent', 'codex-advisor'].map((role) => path.join(
+      isolation.layout.fixtureCwd, '.codex', 'agents', `aw-codex-enhance-${role}.toml`,
+    ));
+    const projectInstall = await runPublic([
+      'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project',
+    ]);
+    expect(projectInstall, JSON.stringify(projectInstall, null, 2))
+      .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    for (const file of rolePaths) await expect(fs.pathExists(file)).resolves.toBe(true);
     const projectOnlyConfig = await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
     ));

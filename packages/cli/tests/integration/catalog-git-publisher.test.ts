@@ -31,9 +31,27 @@ import { prepareCatalogRelease } from '../../../../scripts/release/catalog-publi
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
+afterEach(async ({ task }) => {
+  const cleanup = () => Promise.all(roots.splice(0).map((root) => fs.remove(root)));
+  if (/^(allows a renamed remote alias|rejects a changed (remote identity|branch) during apply|stops when the pending )/u.test(task.name)) {
+    await publicationStages(task.name)('cleanup', cleanup);
+  } else {
+    await cleanup();
+  }
 });
+
+function publicationStages(testName: string) {
+  return async <T>(stage: string, run: () => Promise<T>): Promise<T> => {
+    const started = Date.now();
+    // Emit before awaiting so a timed-out phase still identifies where it stopped.
+    process.stderr.write(`[catalog-publisher] ${testName}: ${stage} start\n`);
+    try {
+      return await run();
+    } finally {
+      process.stderr.write(`[catalog-publisher] ${testName}: ${stage} end (${Date.now() - started}ms)\n`);
+    }
+  };
+}
 
 async function temporaryRoot(prefix: string): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -775,53 +793,72 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
       .toBe(publication.expectedCommit);
   });
 
-  it('allows a renamed remote alias when its fetch and push identity is unchanged', async () => {
-    const { root, remote } = await createWorkspace();
-    const publication = await plan(root);
-    await git(root, ['remote', 'add', 'renamed', remote]);
-    await git(root, ['remote', 'remove', 'origin']);
+  it('allows a renamed remote alias when its fetch and push identity is unchanged', async ({ task }) => {
+    const stage = publicationStages(task.name);
+    const { root, remote } = await stage('createWorkspace', () => createWorkspace());
+    const publication = await stage('plan', () => plan(root));
+    await stage('mutation', async () => {
+      await git(root, ['remote', 'add', 'renamed', remote]);
+      await git(root, ['remote', 'remove', 'origin']);
+    });
 
-    await expect(applyCatalogPublicationPlan({
-      workspaceRoot: root,
-      remote: 'renamed',
-      branch: 'catalog/latest',
-      expectedPlanDigest: publication.planDigest,
-      env: process.env,
-    })).resolves.toMatchObject({ state: 'published', remote: 'renamed' });
+    await stage('apply', async () => {
+      await expect(applyCatalogPublicationPlan({
+        workspaceRoot: root,
+        remote: 'renamed',
+        branch: 'catalog/latest',
+        expectedPlanDigest: publication.planDigest,
+        env: process.env,
+      })).resolves.toMatchObject({ state: 'published', remote: 'renamed' });
+    });
   });
 
   it.each(['remote identity', 'branch'] as const)(
     'rejects a changed %s during apply',
     async (changed) => {
-      const { root, remote } = await createWorkspace();
-      const publication = await plan(root);
-      const evilRemote = await temporaryRoot('aw-catalog-journal-changed-remote-');
-      await execFileAsync('git', ['init', '--bare', '--quiet', evilRemote]);
-      if (changed === 'remote identity') await git(root, ['remote', 'set-url', 'origin', evilRemote]);
+      const stage = publicationStages(`rejects a changed ${changed} during apply`);
+      const { root, remote } = await stage('createWorkspace', () => createWorkspace());
+      const publication = await stage('plan', () => plan(root));
+      const evilRemote = await stage('mutation', async () => {
+        if (changed !== 'remote identity') return undefined;
+        const alternative = await temporaryRoot('aw-catalog-journal-changed-remote-');
+        await execFileAsync('git', ['init', '--bare', '--quiet', alternative]);
+        await git(root, ['remote', 'set-url', 'origin', alternative]);
+        return alternative;
+      });
 
-      await expect(applyCatalogPublicationPlan({
-        workspaceRoot: root,
-        remote: 'origin',
-        branch: changed === 'branch' ? 'catalog/beta' : 'catalog/latest',
-        expectedPlanDigest: publication.planDigest,
-        env: process.env,
-      })).rejects.toThrow(/identity changed|Increase/u);
-      expect(await git(root, ['ls-remote', remote])).toBe('');
-      expect(await git(root, ['ls-remote', evilRemote])).toBe('');
+      await stage('apply', async () => {
+        await expect(applyCatalogPublicationPlan({
+          workspaceRoot: root,
+          remote: 'origin',
+          branch: changed === 'branch' ? 'catalog/beta' : 'catalog/latest',
+          expectedPlanDigest: publication.planDigest,
+          env: process.env,
+        })).rejects.toThrow(/identity changed|Increase/u);
+      });
+      await stage('verify refs', async () => {
+        expect(await git(root, ['ls-remote', remote])).toBe('');
+        if (evilRemote !== undefined) expect(await git(root, ['ls-remote', evilRemote])).toBe('');
+      });
     },
   );
 
   it.each(['journal', 'damaged journal', 'repository', 'damaged repository'] as const)(
     'stops when the pending %s is missing or damaged',
     async (missing) => {
-      const { root } = await createWorkspace();
-      const publication = await plan(root);
-      if (missing === 'journal') await fs.remove(publication.journalPath);
-      else if (missing === 'damaged journal') await fs.writeFile(publication.journalPath, '{ damaged');
-      else if (missing === 'repository') await fs.remove(publication.repositoryPath!);
-      else await fs.remove(path.join(publication.repositoryPath!, '.git', 'HEAD'));
+      const stage = publicationStages(`stops when the pending ${missing} is missing or damaged`);
+      const { root } = await stage('createWorkspace', () => createWorkspace());
+      const publication = await stage('plan', () => plan(root));
+      await stage('mutation', async () => {
+        if (missing === 'journal') await fs.remove(publication.journalPath);
+        else if (missing === 'damaged journal') await fs.writeFile(publication.journalPath, '{ damaged');
+        else if (missing === 'repository') await fs.remove(publication.repositoryPath!);
+        else await fs.remove(path.join(publication.repositoryPath!, '.git', 'HEAD'));
+      });
 
-      await expect(apply(root, publication)).rejects.toThrow(/missing|damaged|Increase/u);
+      await stage('apply', async () => {
+        await expect(apply(root, publication)).rejects.toThrow(/missing|damaged|Increase/u);
+      });
     },
   );
 
