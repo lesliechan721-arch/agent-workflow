@@ -248,8 +248,9 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
       const manifest = await fs.readJson(manifestPath);
       await fs.writeJson(manifestPath, { ...manifest, description }, { spaces: 2 });
     }
+    // Publish prepared history directly; the promotion below still exercises apply.
     const stable = await officialPlan('latest');
-    await apply(root, stable);
+    await pushPreparedRef(stable, 'both');
 
     await setCatalogVersion(root, '1.0.1-beta.1');
     await changePlugin('history-keeper', 'Changed Q after first stable.');
@@ -257,7 +258,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const firstBeta = await officialPlan('beta');
     expect(firstBeta.parent).toBeNull();
     expect(await publishedPluginVersion(firstBeta)).toBe('1.0.0');
-    await apply(root, firstBeta);
+    await pushPreparedRef(firstBeta, 'both');
 
     await setCatalogVersion(root, '1.0.1-beta.2');
     await changePlugin('journal-test', 'Changed P after first stable.');
@@ -265,7 +266,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const changedP = await officialPlan('beta');
     expect(changedP.parent).toBe(firstBeta.expectedCommit);
     expect(await publishedPluginVersion(changedP)).toBe('1.0.1-beta.1');
-    await apply(root, changedP);
+    await pushPreparedRef(changedP, 'both');
 
     await setCatalogVersion(root, '1.0.1');
     await commitAll(root, 'promote official plugins');
@@ -280,7 +281,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const laterBeta = await officialPlan('beta');
     expect(laterBeta.parent).toBe(changedP.expectedCommit);
     expect(await publishedPluginVersion(laterBeta)).toBe('1.0.1');
-    await apply(root, laterBeta);
+    await pushPreparedRef(laterBeta, 'both');
 
     const backup = path.join(await temporaryRoot('aw-official-plugin-backup-'), 'journal-test');
     await fs.copy(path.join(root, 'plugins', 'journal-test'), backup);
@@ -288,7 +289,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     await setCatalogVersion(root, '1.0.2-beta.2');
     await commitAll(root, 'remove P');
     const removed = await officialPlan('beta');
-    await apply(root, removed);
+    await pushPreparedRef(removed, 'both');
     await fs.copy(backup, path.join(root, 'plugins', 'journal-test'));
     await setCatalogVersion(root, '1.0.2-beta.3');
     await commitAll(root, 'restore unchanged P');
