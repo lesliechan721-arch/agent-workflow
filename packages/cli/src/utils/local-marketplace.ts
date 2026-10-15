@@ -384,7 +384,7 @@ async function readProjectionJson(
   }
 }
 
-async function preserveCodexNativeProjection(options: {
+async function preserveMarketplacePluginProjection(options: {
   sourceRoot: string;
   stagingRoot: string;
   pluginName: string;
@@ -398,7 +398,35 @@ async function preserveCodexNativeProjection(options: {
     path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'),
   );
   const sourceTargets = nativeCodexTargets(sourceManifest);
-  if (sourceTargets.length === 0) throw new CodexNativeProjectionNotReusableError();
+  if (sourceTargets.length === 0) {
+    await assertRegularProjectionTree(sourcePluginRoot);
+    if (sourceManifest.name !== options.pluginName) {
+      throw new Error('marketplaceProjectionIdentityMismatch: plugin identity does not match its marketplace path.');
+    }
+    if (!await inspectMarketplacePath(options.stagingRoot, stagingPluginRoot, 'directory')) {
+      throw new CodexNativeProjectionNotReusableError();
+    }
+    const stagingManifest = await readProjectionJson(
+      options.stagingRoot,
+      path.join(stagingPluginRoot, '.agents-plugin', 'plugin.json'),
+    );
+    if (stagingManifest.name !== options.pluginName) {
+      throw new Error('marketplaceProjectionIdentityMismatch: plugin identity does not match its marketplace path.');
+    }
+    for (const platform of ['codex', 'claude']) {
+      const manifestPath = path.join(sourcePluginRoot, `.${platform}-plugin`, 'plugin.json');
+      if (!await inspectMarketplacePath(options.sourceRoot, manifestPath, 'file')) continue;
+      const manifest = await readProjectionJson(options.sourceRoot, manifestPath);
+      if (manifest.name !== options.pluginName) {
+        throw new Error('marketplaceProjectionIdentityMismatch: plugin identity does not match its marketplace path.');
+      }
+      if (manifest.version !== sourceManifest.version) throw new CodexNativeProjectionNotReusableError();
+    }
+    await assertRegularProjectionTree(stagingPluginRoot);
+    await fs.remove(stagingPluginRoot);
+    await fs.copy(sourcePluginRoot, stagingPluginRoot, { dereference: false });
+    return;
+  }
   await assertRegularProjectionTree(sourcePluginRoot);
   const sourceCodexManifest = await readProjectionJson(
     options.sourceRoot,
@@ -488,11 +516,12 @@ async function preserveCodexNativeProjection(options: {
 }
 
 /**
- * Replays complete receipt-backed Codex native projections into a fresh Catalog generation.
- * Retains their installed payload even when the new Catalog changes its version or render inputs.
+ * Replays unselected plugin copies into a fresh Catalog generation.
+ * Retains their payload and marketplace entries even when the Catalog changes.
+ * Codex native dynamic projections must also retain their original validated receipt.
  * Damaged weak projections are skipped so their owning plugin can recover by sync.
  */
-export async function replayNamespacedCodexNativeRenderProjections(options: {
+export async function replayNamespacedMarketplacePluginProjections(options: {
   sourceRoot: string;
   stagingRoot: string;
   sourceId: string;
@@ -518,6 +547,7 @@ export async function replayNamespacedCodexNativeRenderProjections(options: {
     )}`);
   }
   if (!existing) return;
+  const retainedPluginNames = new Set<string>();
   const pluginsRoot = path.join(options.sourceRoot, 'plugins');
   let entries: Dirent[];
   try {
@@ -537,7 +567,8 @@ export async function replayNamespacedCodexNativeRenderProjections(options: {
     const logicalPluginId = `${options.sourceId}/${entry.name}`;
     if (options.rematerializedPluginIds?.has(logicalPluginId)) continue;
     try {
-      await preserveCodexNativeProjection({ ...options, pluginName: entry.name });
+      await preserveMarketplacePluginProjection({ ...options, pluginName: entry.name });
+      retainedPluginNames.add(entry.name);
     } catch (error) {
       if (error instanceof CodexNativeProjectionNotReusableError) continue;
       throw new Error(`marketplaceProjectionReadFailed: ${sanitizeCatalogSourceErrorMessage(
@@ -546,6 +577,32 @@ export async function replayNamespacedCodexNativeRenderProjections(options: {
         [options.sourceRoot, options.stagingRoot],
       )}`);
     }
+  }
+  for (const [sourceManifest, relativePath] of [
+    [existing.agentsManifest, '.agents/plugins/marketplace.json'],
+    [existing.claudeManifest, '.claude-plugin/marketplace.json'],
+  ] as const) {
+    const manifestPath = path.join(options.stagingRoot, relativePath);
+    const stagingManifest = await readStrictOptionalJsonObject(options.stagingRoot, manifestPath);
+    if (!stagingManifest || retainedPluginNames.size === 0) continue;
+    if (!Array.isArray(stagingManifest.plugins) || (sourceManifest && !Array.isArray(sourceManifest.plugins))) {
+      throw new Error('marketplaceProjectionInvalid: marketplace plugins must be an array.');
+    }
+    const retainedEntries = ((sourceManifest?.plugins ?? []) as unknown[]).filter(
+      (entry): entry is Record<string, unknown> => isRecord(entry)
+        && typeof entry.name === 'string' && retainedPluginNames.has(entry.name),
+    );
+    await fs.writeJson(manifestPath, {
+      ...stagingManifest,
+      plugins: [
+        ...stagingManifest.plugins.filter((entry: unknown) =>
+          !isRecord(entry) || !retainedPluginNames.has(String(entry.name))),
+        ...retainedEntries.map((entry) => ({
+          ...entry,
+          source: `./plugins/${entry.name}`,
+        })),
+      ],
+    }, { spaces: 2 });
   }
 }
 

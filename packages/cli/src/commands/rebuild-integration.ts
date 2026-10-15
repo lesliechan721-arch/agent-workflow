@@ -128,7 +128,7 @@ import {
   MarketplaceRootValidationError,
   projectMarketplaceManifestForPlatform,
   readStrictNamespacedMarketplaceRoot,
-  replayNamespacedCodexNativeRenderProjections,
+  replayNamespacedMarketplacePluginProjections,
   replayNamespacedCodexSkillOverlays,
 } from '../utils/local-marketplace.js';
 import { commitMarketplaceGenerationBackup } from '../utils/orphan-marketplace-cleanup.js';
@@ -4129,7 +4129,7 @@ async function mirrorCatalog(
         sourceIdentity: target.sourceIdentity!,
         marketplaceName,
       });
-      await replayNamespacedCodexNativeRenderProjections({
+      await replayNamespacedMarketplacePluginProjections({
         sourceRoot: destination,
         stagingRoot: staging,
         sourceId: target.sourceId,
@@ -4377,8 +4377,6 @@ function createNativeDriver(options: {
         const members = groupTargets(target);
         const materializing = members.filter((candidate) =>
           candidate.writeNativeRequired ?? candidate.requiresNative);
-        const overlayTargets = members.filter((candidate) =>
-          candidate.nativeOverlayDesired ?? candidate.requiresNative);
         if (target.identity.platform === 'codex') {
           const observationScope = codexObservationScope(
             options.context,
@@ -4413,11 +4411,11 @@ function createNativeDriver(options: {
         const first = materializing[0]!;
         if (!first.catalog) throw new Error('Missing rebuild target catalog data.');
         const catalogRoot = path.resolve(first.catalog.rootDir);
-        if (overlayTargets.some((candidate) =>
+        if (materializing.some((candidate) =>
           !candidate.catalog || path.resolve(candidate.catalog.rootDir) !== catalogRoot)) {
           throw new Error('nativeMarketplaceGroupInvalid: grouped targets do not share one Catalog root.');
         }
-        const materializationTargets = [...overlayTargets].sort((left, right) => [
+        const materializationTargets = [...materializing].sort((left, right) => [
           left.identity.pluginId ?? left.identity.pluginName,
           left.identity.scope,
           left.identity.cwd,

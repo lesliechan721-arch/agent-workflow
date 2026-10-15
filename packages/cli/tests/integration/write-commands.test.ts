@@ -1608,6 +1608,59 @@ describe('five namespaced write commands', () => {
     ]));
   });
 
+  it('updates only selected native plugins and dependencies that require materialization', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'selected-native-update-source');
+    const writeCatalog = async (version: string) => createNativeDependencyCatalog(sourceRoot, [
+      ...['changed-dependency', 'unrelated'].map((name) => ({
+        name,
+        configureManifest: (manifest: PluginMeta['manifest']) => { manifest.version = version; },
+      })),
+      { name: 'kept-dependency' },
+      {
+        name: 'root',
+        dependencies: ['changed-dependency', 'kept-dependency'],
+        configureManifest: (manifest: PluginMeta['manifest']) => { manifest.version = version; },
+      },
+    ]);
+    await writeCatalog('1.0.0');
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const nativeRuntime = createCodexNativeTestRuntime(isolation);
+    const runtime = { env: isolation.env, nativeCliRunner: nativeRuntime.nativeCliRunner };
+    const commandOptions = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const, yes: true };
+    const installed = await installWriteCommand(['team/root', 'team/unrelated'], commandOptions, runtime);
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+    for (const name of ['unrelated', 'kept-dependency']) {
+      await fs.outputFile(path.join(marketplaceRoot, 'plugins', name, 'local.txt'), `${name} retained\n`);
+    }
+    const before = await snapshotRegularTree(path.join(marketplaceRoot, 'plugins', 'unrelated'));
+
+    await writeCatalog('2.0.0');
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    const updated = await syncWriteCommand(['team/root'], commandOptions, runtime);
+
+    expect(updated.overallState, JSON.stringify(updated.rebuildResults)).toBe('succeeded');
+    expect(updated.dependencyPlan?.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/kept-dependency', action: 'keep' }),
+    ]));
+    for (const name of ['root', 'changed-dependency']) {
+      await expect(fs.readJson(path.join(marketplaceRoot, 'plugins', name, '.codex-plugin', 'plugin.json')))
+        .resolves.toMatchObject({ version: '2.0.0' });
+    }
+    expect(await snapshotRegularTree(path.join(marketplaceRoot, 'plugins', 'unrelated'))).toEqual(before);
+    await expect(fs.readFile(path.join(marketplaceRoot, 'plugins', 'kept-dependency', 'local.txt'), 'utf8'))
+      .resolves.toBe('kept-dependency retained\n');
+  });
+
   it('materializes one native marketplace generation and one Codex post snapshot for a dependency group', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-group-source');
