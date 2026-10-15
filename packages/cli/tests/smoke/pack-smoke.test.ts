@@ -488,7 +488,10 @@ describe('pack smoke', () => {
   }, 300_000);
 
   it('runs external authoring workflow from installed tarballs', async () => {
-    const { packageRoot, cliTarballPath, evalTarballPath, coreTarballPath, tempRoot } = await preparePackedCli();
+    const {
+      packageRoot, cliTarballPath, evalTarballPath, coreTarballPath,
+      windowsX64TarballPath, windowsArm64TarballPath, tempRoot,
+    } = await preparePackedCli();
     const installPrefix = path.join(tempRoot, 'install-prefix');
     registerSmokeWritableRoot(installPrefix, 'pack smoke clean npm install prefix');
     await fs.ensureDir(installPrefix);
@@ -509,6 +512,9 @@ describe('pack smoke', () => {
         evalTarballPath,
         coreTarballPath,
         cliTarballPath,
+        ...(process.platform === 'win32'
+          ? [process.arch === 'arm64' ? windowsArm64TarballPath : windowsX64TarballPath]
+          : []),
       ],
       {
         cwd: tempRoot,
