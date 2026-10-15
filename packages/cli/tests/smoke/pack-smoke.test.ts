@@ -489,10 +489,16 @@ describe('pack smoke', () => {
   }, 300_000);
 
   it('runs external authoring workflow from installed tarballs', async () => {
+    const startedAt = Date.now();
+    const markStage = (stage: string): void => {
+      process.stderr.write(`[pack-smoke] ${stage} (${Date.now() - startedAt}ms)\n`);
+    };
+    markStage('prepare tarballs start');
     const {
       packageRoot, cliTarballPath, evalTarballPath, coreTarballPath,
       windowsX64TarballPath, windowsArm64TarballPath, tempRoot,
     } = await preparePackedCli();
+    markStage('prepare tarballs end');
     const installPrefix = path.join(tempRoot, 'install-prefix');
     registerSmokeWritableRoot(installPrefix, 'pack smoke clean npm install prefix');
     await fs.ensureDir(installPrefix);
@@ -501,6 +507,7 @@ describe('pack smoke', () => {
     );
     const npmCli = await resolveNpmCli(envWithoutNodePath);
 
+    markStage('npm install tarballs start');
     await execFileAsync(
       process.execPath,
       [
@@ -523,6 +530,7 @@ describe('pack smoke', () => {
         maxBuffer: 20 * 1024 * 1024,
       },
     );
+    markStage('npm install tarballs end');
 
     const externalNativeBin = await createExternalNativeCliFixture(tempRoot);
     const inheritedPath = Object.entries(envWithoutNodePath)
@@ -559,12 +567,17 @@ describe('pack smoke', () => {
     };
     const installedAwEntry = path.resolve(installedCliRoot, installedCliManifest.bin.aw);
     await expect(fs.pathExists(awBin)).resolves.toBe(true);
-    const execAw = (args: string[], options: ExecFileOptions): Promise<{ stdout: string; stderr: string }> =>
-      execFileAsync(
+    const execAw = async (args: string[], options: ExecFileOptions): Promise<{ stdout: string; stderr: string }> => {
+      const stage = `aw ${args.slice(0, 3).join(' ')}`;
+      markStage(`${stage} start`);
+      const result = await execFileAsync(
         process.platform === 'win32' ? process.execPath : awBin,
         [...(process.platform === 'win32' ? [installedAwEntry] : []), ...args],
         { ...options, encoding: 'utf8' },
       );
+      markStage(`${stage} end`);
+      return result;
+    };
     for (const packageName of [
       '@lesliechan721/aw',
       '@lesliechan721/aw-plugin-core',
@@ -591,6 +604,7 @@ describe('pack smoke', () => {
       'dist',
       'manifest.js',
     )).href;
+    markStage('installed core config start');
     await expect(execFileAsync(process.execPath, [
       '--input-type=module',
       '--eval',
@@ -605,6 +619,7 @@ describe('pack smoke', () => {
       env: envWithoutNodePath,
       maxBuffer: 10 * 1024 * 1024,
     })).resolves.toMatchObject({ stdout: '' });
+    markStage('installed core config end');
     const installedCodexManagerImport = pathToFileURL(path.join(
       globalNodeModules,
       '@lesliechan721',
@@ -615,6 +630,7 @@ describe('pack smoke', () => {
       'codex-manager.js',
     )).href;
     const installedRuntimeHome = path.join(tempRoot, 'installed-manager-aw-home');
+    markStage('installed pnpm resolver start');
     const installedManagerProbe = await execFileAsync(
       process.execPath,
       [
@@ -650,6 +666,7 @@ describe('pack smoke', () => {
         maxBuffer: 10 * 1024 * 1024,
       },
     );
+    markStage('installed pnpm resolver end');
     const installedPnpmEntry = (JSON.parse(installedManagerProbe.stdout) as {
       pnpmEntry: string;
     }).pnpmEntry;
@@ -725,10 +742,12 @@ describe('pack smoke', () => {
       fs.ensureDir(localCodexPack),
       fs.ensureDir(path.dirname(managedRuntimeHome)),
     ]);
+    markStage('pack managed Codex fixture start');
     await execFileAsync(process.execPath, [npmCli, 'pack', '--pack-destination', localCodexPack], {
       cwd: localCodexFixture,
       env: envWithoutNodePath,
     });
+    markStage('pack managed Codex fixture end');
     const localCodexTarball = path.join(
       localCodexPack,
       (await fs.readdir(localCodexPack)).find((entry) => entry.endsWith('.tgz'))!,
@@ -736,6 +755,7 @@ describe('pack smoke', () => {
     const parentLockfileBefore = await fs.readFile(parentLockfile, 'utf8');
     const parentMarkerBefore = await fs.readFile(parentMarker, 'utf8');
     const parentNodeModulesBefore = await listFilesRecursively(parentNodeModules);
+    markStage('install managed Codex fixture start');
     const managedRuntimeResult = await execFileAsync(
       process.execPath,
       [
@@ -801,6 +821,7 @@ describe('pack smoke', () => {
         maxBuffer: 10 * 1024 * 1024,
       },
     );
+    markStage('install managed Codex fixture end');
     const managedRuntime = JSON.parse(managedRuntimeResult.stdout) as {
       manager: { kind: string; runtimeRoot: string };
       pnpmEntry: string;
@@ -1025,6 +1046,7 @@ describe('pack smoke', () => {
     await expect(fs.pathExists(path.join(standaloneWorkspace, '.aw', 'catalog'))).resolves.toBe(true);
     const packedCatalogRemote = path.join(tempRoot, 'packed-catalog.git');
     registerSmokeWritableRoot(packedCatalogRemote, 'packed CLI Catalog publication remote');
+    markStage('prepare Catalog Git remote start');
     await execFileAsync('git', ['init', '--bare', packedCatalogRemote], { env: process.env });
     await execFileAsync('git', ['init'], { cwd: standaloneWorkspace, env: process.env });
     await execFileAsync('git', ['add', '.'], { cwd: standaloneWorkspace, env: process.env });
@@ -1036,6 +1058,7 @@ describe('pack smoke', () => {
       cwd: standaloneWorkspace,
       env: process.env,
     });
+    markStage('prepare Catalog Git remote end');
     const packedPlan = await execAw([
       'catalog', 'publish', 'plan', '--workspace-root', standaloneWorkspace,
       '--remote', 'origin', '--branch', 'catalog', '--json',
@@ -1322,10 +1345,12 @@ describe('pack smoke', () => {
       path.dirname(builtHelperPath),
       're2-wasm',
     ))).resolves.toBe(false);
+    markStage('built config helper start');
     const helperHelp = await execFileAsync(process.execPath, [builtHelperPath, '--help'], {
       cwd: authorRepo,
       env: externalAuthoringEnv,
     });
+    markStage('built config helper end');
     expect(helperHelp.stdout).toContain('--scope effective');
     expect(helperHelp.stderr).toBe('');
     await execAw([
@@ -1354,6 +1379,7 @@ describe('pack smoke', () => {
       bin: { 'aw-skill-eval': string };
     };
     await expect(fs.pathExists(evalBin)).resolves.toBe(true);
+    markStage('installed Eval help start');
     const evalHelp = await execFileAsync(
       process.platform === 'win32' ? process.execPath : evalBin,
       process.platform === 'win32'
@@ -1364,6 +1390,7 @@ describe('pack smoke', () => {
         env: externalAuthoringEnv,
       },
     );
+    markStage('installed Eval help end');
     expect(evalHelp.stdout).toContain('spec validate <spec.json>');
     expect(evalHelp.stdout).toContain('audit validate <audit.json> --spec <spec.json>');
     expect(evalHelp.stdout).toContain('result validate <result.json> --spec <spec.json> --audit <audit.json>');
