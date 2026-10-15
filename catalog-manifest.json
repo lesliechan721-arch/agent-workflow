@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.40",
+  "catalogVersion": "0.1.0-beta.41",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "9f6ac27c78c66e5e346ff6037c61e73ee254b97e"
+    "sourceHead": "f9c781fba61ab0e9c84d52c635605421f8646697"
   },
   "entries": [
     {
@@ -346,6 +346,37 @@
       "artifactDigest": "sha256:af7d0fe7868cb8a77e801ced96e58f411814b9bc14716d29e1a61944f9c7991a",
       "manifestDigest": "sha256:194aafc8d400e70616f5c295d51503b1e7913afb57cc2d02cfbdea631216fba4",
       "contentDigest": "sha256:141e1d5106ff7c89f83b25133f47db3d67ef113ed3e2a1a2b82fb2064ca7f226"
+    },
+    {
+      "name": "frontend-design",
+      "source": "./plugins/frontend-design",
+      "description": "面向网页与产品界面的通用前端设计，兼顾视觉方向、交互细节和实际验证。",
+      "interface": {
+        "displayName": "Frontend Design",
+        "shortDescription": "按页面用途设计并完善可用、清晰的前端界面",
+        "capabilities": [
+          "Skills"
+        ]
+      },
+      "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "version": "0.1.0-beta.1",
+      "dependencies": [],
+      "requires": {
+        "aw": {
+          "capabilities": [
+            "aw.plugin-manifest.v3",
+            "aw.plugin-skills.v1"
+          ]
+        }
+      },
+      "artifactDigest": "sha256:9d55c9985a07d245f9e911b120de81dd23b306175f76cfeb84d491e0ef1a3479",
+      "manifestDigest": "sha256:4f41d1e65cf0df99531af79aa94d5c72892c876c33497381a9928907b8ebb59f",
+      "contentDigest": "sha256:fd059080c9cf71bf748dd3886090933e524752d5f9a594c027c92f6937fcd8ff"
     },
     {
       "name": "git-toolkit",

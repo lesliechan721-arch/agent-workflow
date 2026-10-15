@@ -1,0 +1,13 @@
+{
+  "name": "frontend-design",
+  "version": "0.1.0-beta.1",
+  "description": "面向网页与产品界面的通用前端设计，兼顾视觉方向、交互细节和实际验证。",
+  "interface": {
+    "displayName": "Frontend Design",
+    "shortDescription": "按页面用途设计并完善可用、清晰的前端界面",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "skills": "./claude/skills"
+}
