@@ -998,19 +998,17 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const pluginBackup = path.join(await temporaryRoot('aw-catalog-history-source-backup-'), 'journal-test');
     await fs.copy(pluginRoot, pluginBackup);
 
-    const first = await plan(root);
-    await apply(root, first);
+    const first = await publishHistoryFixture({ root, remote });
     await fs.remove(pluginRoot);
     await setCatalogVersion(root, '1.1.0');
     await commitAll(root, 'remove historical plugin');
-    const removed = await plan(root);
-    await apply(root, removed);
+    const removed = await publishHistoryFixture({ root, remote, previous: first });
 
     const rewrite = await temporaryRoot('aw-catalog-history-source-rewrite-');
     await git(path.dirname(rewrite), ['clone', '--quiet', remote, rewrite]);
     await git(rewrite, ['config', 'user.email', 'test@example.invalid']);
     await git(rewrite, ['config', 'user.name', 'AW Test']);
-    await git(rewrite, ['checkout', '--quiet', '--detach', first.expectedCommit]);
+    await git(rewrite, ['checkout', '--quiet', '--detach', first.commit]);
     const historyManifestPath = path.join(rewrite, 'catalog-manifest.json');
     const historyManifest = await fs.readJson(historyManifestPath) as {
       entries: Array<Record<string, unknown>>;
@@ -1022,7 +1020,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
         : entry),
     }, { spaces: 2 });
     await commitAll(rewrite, 'publish non-canonical historical metadata');
-    await git(rewrite, ['read-tree', '--reset', '-u', removed.expectedCommit]);
+    await git(rewrite, ['read-tree', '--reset', '-u', removed.commit]);
     await commitAll(rewrite, 'restore removed snapshot tree');
     await git(rewrite, ['push', '--quiet', '--force', 'origin', 'HEAD:refs/heads/catalog/latest']);
 
