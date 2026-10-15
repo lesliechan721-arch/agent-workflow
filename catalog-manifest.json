@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.39",
+  "catalogVersion": "0.1.0-beta.40",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "e953f0cc4d30e8995079e7564eb8d03c1235bd84"
+    "sourceHead": "9f6ac27c78c66e5e346ff6037c61e73ee254b97e"
   },
   "entries": [
     {
@@ -44,7 +44,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.5",
+      "version": "0.1.0-beta.6",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -54,9 +54,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:74d93e3fc1157e4984ed42881e89efcc61a2137553c75d968c003ae8127ced11",
-      "manifestDigest": "sha256:7bef04c7a4c9e50154fa8acade94ef4e3c4fb4edbccf4422f8785391eb34393f",
-      "contentDigest": "sha256:443d46763c38d60d75456b65cf6ddbd1954857215d79df9b2ce676c956ac43f3"
+      "artifactDigest": "sha256:54176421648f1b4e09dded6d29edf689e0794fc9f7dfbbf4b8eeb184210e6dec",
+      "manifestDigest": "sha256:f5f37df70f65aa7d73e102d8a29a2d316ccacde1b9af57fb6e0a539b2024fe4f",
+      "contentDigest": "sha256:1d363fd0c30e1db6b8ba4d2bf1c773b6b950d57d41939ad126fef677ba7eda13"
     },
     {
       "name": "agent-skill-toolkit",
@@ -329,7 +329,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.14",
+      "version": "0.1.0-beta.15",
       "dependencies": [
         "decision-kit",
         "human-content"
@@ -343,9 +343,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:723902ec9418e0b9bf8db294a138067536f594bd91b5d05b5dc631fb2c850b8a",
-      "manifestDigest": "sha256:834da992751d03fe1f5ac0d1d8199229f88877c695feab30b9d5302758bf6ca4",
-      "contentDigest": "sha256:6dd777d63eb181243a3407cd56ecb762cf355568c3745fa0965cb5fbe917a943"
+      "artifactDigest": "sha256:af7d0fe7868cb8a77e801ced96e58f411814b9bc14716d29e1a61944f9c7991a",
+      "manifestDigest": "sha256:194aafc8d400e70616f5c295d51503b1e7913afb57cc2d02cfbdea631216fba4",
+      "contentDigest": "sha256:141e1d5106ff7c89f83b25133f47db3d67ef113ed3e2a1a2b82fb2064ca7f226"
     },
     {
       "name": "git-toolkit",
