@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 3,
+  "name": "frontend-design",
+  "version": "0.1.0",
+  "description": "面向网页与产品界面的通用前端设计，兼顾视觉方向、交互细节和实际验证。",
+  "skills": "./skills",
+  "marketplace": {
+    "category": "workflow",
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL"
+    }
+  },
+  "interface": {
+    "displayName": "Frontend Design",
+    "shortDescription": "按页面用途设计并完善可用、清晰的前端界面",
+    "capabilities": ["Skills"]
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "defaults": {},
+  "profiles": {
+    "project-default": {
+      "scope": "project",
+      "plugins": {"frontend-design": {}}
+    }
+  },
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "cases": "trigger-cases.json",
+      "profiles": ["project-default"],
+      "runs": 1,
+      "timeoutMs": 180000,
+      "requiredForRelease": false
+    },
+    {
+      "id": "behavior",
+      "kind": "conversation",
+      "cases": "behavior-cases.json",
+      "profiles": ["project-default"],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
+    }
+  ]
+}

@@ -67,6 +67,7 @@ aw status
 | [`decision-kit`](plugins/decision-kit/) | 澄清关键歧义、逐轮推演重要决定，制作决策原型，并维护项目领域词汇与重要决定 | Codex / Claude Code |
 | [`dev-workflow`](plugins/dev-workflow/) | 独立完成设计或组织完整开发交付，组合 `decision-kit`、`human-content`、项目规范、实施与双轴 Review | Codex / Claude Code |
 | [`human-content`](plugins/human-content/) | 解释已有复杂材料，提供保留原意、状态和完整来源的文字、图表或交互阅读页 | Codex / Claude Code |
+| [`frontend-design`](plugins/frontend-design/) | 按网页用途选择视觉方向，设计与改进布局、排版、响应式和交互细节，保留已有系统约束 | Codex / Claude Code |
 | [`git-toolkit`](plugins/git-toolkit/) | 创建精确本地提交、隔离 worktree，或协调 merge 双方意图 | Codex / Claude Code |
 | [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中执行大范围只读探索，并更稳妥地编排通用子代理 | Codex |
 
