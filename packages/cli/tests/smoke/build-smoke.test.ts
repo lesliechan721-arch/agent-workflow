@@ -39,6 +39,7 @@ const EXPECTED_PLUGIN_PLATFORMS = {
   'browser-use': ['claude', 'codex'],
   'codex-enhance': ['codex'],
   'dev-workflow': ['claude', 'codex'],
+  'frontend-design': ['claude', 'codex'],
   'git-toolkit': ['claude', 'codex'],
   'human-content': ['claude', 'codex'],
 } as const;
@@ -415,6 +416,7 @@ describe('build smoke', () => {
       'browser-use',
       'decision-kit',
       'dev-workflow',
+      'frontend-design',
       'git-toolkit',
       'human-content',
     ]);
@@ -427,6 +429,7 @@ describe('build smoke', () => {
       'codex-enhance',
       'decision-kit',
       'dev-workflow',
+      'frontend-design',
       'git-toolkit',
       'human-content',
     ]);
