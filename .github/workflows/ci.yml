@@ -65,6 +65,14 @@ jobs:
       - run: pnpm build
       # This includes the strict Catalog build, reproducibility, types and perf gate.
       - run: pnpm release:verify
+      - name: Expose the built CLI for plugin contract tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/aw-cli-bin"
+          printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' \
+            "$(command -v node)" "$GITHUB_WORKSPACE/packages/cli/dist/index.js" \
+            > "$RUNNER_TEMP/aw-cli-bin/aw"
+          chmod 755 "$RUNNER_TEMP/aw-cli-bin/aw"
+          echo "$RUNNER_TEMP/aw-cli-bin" >> "$GITHUB_PATH"
       - run: pnpm plugin:test --all
 
   platform:
