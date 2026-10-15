@@ -950,7 +950,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     await expect(git(remote, ['show-ref'])).resolves.toBe(remoteBeforeDowngrade);
   });
 
-  it('continues beta Plugin identity after deletion and reuses unchanged historical content', async () => {
+  it('reuses unchanged beta Plugin identity after deletion', async () => {
     const { root, remote } = await createWorkspace('1.0.0-beta.1');
     const pluginRoot = path.join(root, 'plugins', 'journal-test');
     await addHistoryKeeperPlugin(root);
@@ -971,21 +971,52 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     await setCatalogVersion(root, '1.0.0-beta.3');
     await commitAll(root, 'readd unchanged beta plugin');
     const unchanged = await plan(root, 'catalog/beta');
+    expect(unchanged.parent).toBe(removed.commit);
     expect(await publishedPluginVersion(unchanged)).toBe('0.1.0-beta.1');
-    await pushPreparedRef(unchanged, 'both');
+    await expect(apply(root, unchanged)).resolves.toMatchObject({ state: 'published' });
+  });
+
+  it('continues beta Plugin identity after repeated deletion and restoration', async () => {
+    const { root, remote } = await createWorkspace('1.0.0-beta.1');
+    const pluginRoot = path.join(root, 'plugins', 'journal-test');
+    await addHistoryKeeperPlugin(root);
+    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Original\n');
+    await commitAll(root, 'prepare original beta plugin');
+    const backupRoot = await temporaryRoot('aw-catalog-beta-plugin-backup-');
+    const pluginBackup = path.join(backupRoot, 'journal-test');
+    await fs.copy(pluginRoot, pluginBackup);
+
+    const first = await publishHistoryFixture({ root, remote, branch: 'catalog/beta' });
+    expect(await publishedPluginVersion(first)).toBe('0.1.0-beta.1');
+    await fs.remove(pluginRoot);
+    await setCatalogVersion(root, '1.0.0-beta.2');
+    await commitAll(root, 'remove beta plugin');
+    const removed = await publishHistoryFixture({ root, remote, branch: 'catalog/beta', previous: first });
+
+    await fs.copy(pluginBackup, pluginRoot);
+    await setCatalogVersion(root, '1.0.0-beta.3');
+    await commitAll(root, 'readd unchanged beta plugin');
+    // Reuse the last present Plugin baseline while keeping the deleted snapshot as Git parent.
+    const restored = await publishHistoryFixture({
+      root, remote, branch: 'catalog/beta', previous: first, parent: removed.commit,
+    });
+    expect(await publishedPluginVersion(restored)).toBe('0.1.0-beta.1');
 
     await fs.remove(pluginRoot);
     await setCatalogVersion(root, '1.0.0-beta.4');
     await commitAll(root, 'remove beta plugin again');
-    await publishHistoryFixture({
-      root, remote, branch: 'catalog/beta', previous: removed, parent: unchanged.expectedCommit!,
+    const removedAgain = await publishHistoryFixture({
+      root, remote, branch: 'catalog/beta', previous: restored,
     });
+    expect((await git(remote, ['rev-list', '--first-parent', 'refs/heads/catalog/beta'])).split('\n'))
+      .toEqual([removedAgain.commit, restored.commit, removed.commit, first.commit]);
 
     await fs.copy(pluginBackup, pluginRoot);
     await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Different\n');
     await setCatalogVersion(root, '1.0.0-beta.5');
     await commitAll(root, 'readd changed beta plugin');
     const changed = await plan(root, 'catalog/beta');
+    expect(changed.parent).toBe(removedAgain.commit);
     expect(await publishedPluginVersion(changed)).toBe('0.1.0-beta.2');
     await expect(apply(root, changed)).resolves.toMatchObject({ state: 'published' });
   });
