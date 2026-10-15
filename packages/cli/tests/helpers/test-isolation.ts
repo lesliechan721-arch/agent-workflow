@@ -1,3 +1,4 @@
+import { realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -272,9 +273,12 @@ export function expectPathFenceViolation(
 export async function createIsolatedTestEnv(
   options: CreateIsolatedTestEnvOptions = {},
 ): Promise<IsolatedTestEnvironment> {
-  const rootDir = options.rootDir
+  const requestedRoot = options.rootDir
     ? path.resolve(options.rootDir)
     : await fs.mkdtemp(path.join(os.tmpdir(), 'aw-test-isolation-'));
+  await fs.ensureDir(requestedRoot);
+  // Match native process cwd and Git paths, including Windows 8.3 temp aliases.
+  const rootDir = await realpath(requestedRoot);
   const layout = buildIsolationLayout(rootDir);
   await ensureIsolationLayout(layout);
 

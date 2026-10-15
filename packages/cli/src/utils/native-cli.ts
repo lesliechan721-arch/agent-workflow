@@ -11,6 +11,7 @@ import {
 import type { SafeOperationErrorMetadata } from './safe-operation-diagnostic.js';
 import { getCodexHome } from './state-paths.js';
 import { resolveWindowsClaudeCommand } from './windows-claude-shim.js';
+import { resolveWindowsNpmCommand } from './windows-npm-shim.js';
 
 const NATIVE_CLI_TIMEOUT_ENV = 'AW_NATIVE_CLI_TIMEOUT_MS';
 const DEFAULT_NATIVE_CLI_TIMEOUT_MS = 60_000;
@@ -497,16 +498,25 @@ export function createExecFileNativeCliRunner(
 
     let executableCommand = invocation.command;
     let executableArgs = invocation.args;
+    const commandName = normalizeNativeCliCommandName(invocation.command);
     if (
       platform === 'win32'
       && createWindowsJobInvocationImpl
-      && normalizeNativeCliCommandName(invocation.command) === 'claude'
+      && (commandName === 'claude' || commandName === 'codex')
     ) {
-      const resolved = await resolveWindowsClaudeCommand({
+      const commandOptions = {
         command: invocation.command,
         cwd: invocation.cwd,
         env: invocation.env,
-      });
+      };
+      const resolved = commandName === 'claude'
+        ? await resolveWindowsClaudeCommand(commandOptions)
+        : await resolveWindowsNpmCommand({
+            ...commandOptions,
+            packageName: '@openai/codex',
+            binName: 'codex',
+            displayName: 'Codex',
+          });
       executableCommand = resolved.command;
       executableArgs = [...resolved.argsPrefix, ...invocation.args];
     }

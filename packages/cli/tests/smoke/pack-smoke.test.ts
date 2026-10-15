@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileOptions } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -10,6 +10,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { execPnpmForTest } from '../helpers/pnpm.js';
+import { writeSkillsCliFixture } from '../helpers/skills-cli-fixture.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import {
@@ -71,13 +72,65 @@ async function listFilesRecursively(rootDir: string): Promise<string[]> {
 async function unpackTarball(tarballPath: string, unpackDir: string): Promise<string> {
   await execFileAsync(
     'tar',
-    ['-xzf', tarballPath, '-C', unpackDir],
+    ['-xzf', path.basename(tarballPath), '-C', unpackDir.split(path.sep).join('/')],
     {
+      cwd: path.dirname(tarballPath),
       env: process.env,
       maxBuffer: 20 * 1024 * 1024,
     },
   );
   return path.join(unpackDir, 'package');
+}
+
+async function listTarballEntries(tarballPath: string): Promise<string> {
+  const { stdout } = await execFileAsync('tar', ['-tzf', path.basename(tarballPath)], {
+    cwd: path.dirname(tarballPath),
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  return stdout;
+}
+
+async function resolveNpmCli(env: NodeJS.ProcessEnv): Promise<string> {
+  const candidates = [path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')];
+  const npmExecPath = env.npm_execpath;
+  if (npmExecPath && path.basename(npmExecPath) === 'npm-cli.js') candidates.push(npmExecPath);
+  const inheritedPath = Object.entries(env).find(([key]) => key.toLowerCase() === 'path')?.[1] ?? '';
+  for (const directory of inheritedPath.split(path.delimiter)) {
+    candidates.push(path.join(directory, 'npm'), path.join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js'));
+  }
+  for (const candidate of candidates) {
+    try {
+      const resolved = await fs.realpath(candidate);
+      if (path.basename(resolved) === 'npm-cli.js') return resolved;
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    }
+  }
+  throw new Error('The Node installation must provide npm-cli.js.');
+}
+
+function npmCmdShim(target: string): string {
+  return [
+    '@ECHO off',
+    'GOTO start',
+    ':find_dp0',
+    'SET dp0=%~dp0',
+    'EXIT /b',
+    ':start',
+    'SETLOCAL',
+    'CALL :find_dp0',
+    '',
+    'IF EXIST "%dp0%\\node.exe" (',
+    '  SET "_prog=%dp0%\\node.exe"',
+    ') ELSE (',
+    '  SET "_prog=node"',
+    '  SET PATHEXT=%PATHEXT:;.JS;=;%',
+    ')',
+    '',
+    'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & ' +
+      `"%_prog%"  "%dp0%\\${target}" %*`,
+    '',
+  ].join('\r\n');
 }
 
 async function listBuildSnapshotEntries(root: string): Promise<string[]> {
@@ -345,13 +398,24 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
   if (process.platform === 'win32') {
     const codexPackageRoot = path.join(nativeBin, 'node_modules', '@openai', 'codex');
     const codexLauncher = path.join(codexPackageRoot, 'bin', 'codex.js');
-    await fs.ensureDir(path.dirname(codexLauncher));
+    const claudePackageRoot = path.join(nativeBin, 'node_modules', '@anthropic-ai', 'claude-code');
+    const claudeLauncher = path.join(claudePackageRoot, 'cli.js');
+    await Promise.all([fs.ensureDir(path.dirname(codexLauncher)), fs.ensureDir(claudePackageRoot)]);
     await Promise.all([
-      fs.writeFile(path.join(nativeBin, 'claude.cjs'), claudeScript, 'utf8'),
-      fs.writeFile(path.join(nativeBin, 'claude.cmd'), '@node "%~dp0\\claude.cjs" %*\r\n', 'utf8'),
+      fs.writeFile(claudeLauncher, `${claudeScript}\n`, 'utf8'),
+      fs.writeJson(path.join(claudePackageRoot, 'package.json'), {
+        name: '@anthropic-ai/claude-code',
+        version: '2.1.88',
+        bin: { claude: 'cli.js' },
+      }),
+      fs.writeFile(
+        path.join(nativeBin, 'claude.cmd'),
+        npmCmdShim('node_modules\\@anthropic-ai\\claude-code\\cli.js'),
+        'utf8',
+      ),
       fs.writeFile(
         path.join(nativeBin, 'codex.cmd'),
-        '@node "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n',
+        npmCmdShim('node_modules\\@openai\\codex\\bin\\codex.js'),
         'utf8',
       ),
       fs.writeJson(path.join(codexPackageRoot, 'package.json'), {
@@ -388,10 +452,10 @@ describe('pack smoke', () => {
     const x64UnpackRoot = path.join(platformUnpackRoot, 'x64');
     const arm64UnpackRoot = path.join(platformUnpackRoot, 'arm64');
     await Promise.all([fs.ensureDir(x64UnpackRoot), fs.ensureDir(arm64UnpackRoot)]);
-    const [{ stdout: evalEntries }, { stdout: x64Entries }, { stdout: arm64Entries }] = await Promise.all([
-      execFileAsync('tar', ['-tzf', evalTarballPath], { maxBuffer: 20 * 1024 * 1024 }),
-      execFileAsync('tar', ['-tzf', windowsX64TarballPath], { maxBuffer: 20 * 1024 * 1024 }),
-      execFileAsync('tar', ['-tzf', windowsArm64TarballPath], { maxBuffer: 20 * 1024 * 1024 }),
+    const [evalEntries, x64Entries, arm64Entries] = await Promise.all([
+      listTarballEntries(evalTarballPath),
+      listTarballEntries(windowsX64TarballPath),
+      listTarballEntries(windowsArm64TarballPath),
     ]);
     expect(evalEntries).not.toContain('aw-windows-job.exe');
     const expectedEntries = new Set([
@@ -428,11 +492,15 @@ describe('pack smoke', () => {
     const installPrefix = path.join(tempRoot, 'install-prefix');
     registerSmokeWritableRoot(installPrefix, 'pack smoke clean npm install prefix');
     await fs.ensureDir(installPrefix);
-    const { NODE_PATH: _ignoredNodePath, ...envWithoutNodePath } = process.env;
+    const envWithoutNodePath = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'node_path'),
+    );
+    const npmCli = await resolveNpmCli(envWithoutNodePath);
 
     await execFileAsync(
-      'npm',
+      process.execPath,
       [
+        npmCli,
         'install',
         '--global',
         '--omit=optional',
@@ -450,12 +518,14 @@ describe('pack smoke', () => {
     );
 
     const externalNativeBin = await createExternalNativeCliFixture(tempRoot);
+    const inheritedPath = Object.entries(envWithoutNodePath)
+      .find(([key]) => key.toLowerCase() === 'path')?.[1] ?? '';
     const externalAuthoringEnv = {
-      ...envWithoutNodePath,
+      ...Object.fromEntries(Object.entries(envWithoutNodePath).filter(([key]) => key.toLowerCase() !== 'path')),
       AW_HOME: path.join(tempRoot, 'external-aw-home'),
       AW_CODEX_HOME: path.join(tempRoot, 'external-codex-home'),
       AW_CLAUDE_HOME: path.join(tempRoot, 'external-claude-home'),
-      PATH: `${externalNativeBin}${path.delimiter}${process.env.PATH ?? ''}`,
+      PATH: `${externalNativeBin}${path.delimiter}${inheritedPath}`,
     };
     await Promise.all([
       fs.ensureDir(externalAuthoringEnv.AW_HOME),
@@ -476,6 +546,18 @@ describe('pack smoke', () => {
     const globalNodeModules = process.platform === 'win32'
       ? path.join(installPrefix, 'node_modules')
       : path.join(installPrefix, 'lib', 'node_modules');
+    const installedCliRoot = path.join(globalNodeModules, '@lesliechan721', 'aw');
+    const installedCliManifest = await fs.readJson(path.join(installedCliRoot, 'package.json')) as {
+      bin: { aw: string };
+    };
+    const installedAwEntry = path.resolve(installedCliRoot, installedCliManifest.bin.aw);
+    await expect(fs.pathExists(awBin)).resolves.toBe(true);
+    const execAw = (args: string[], options: ExecFileOptions): Promise<{ stdout: string; stderr: string }> =>
+      execFileAsync(
+        process.platform === 'win32' ? process.execPath : awBin,
+        [...(process.platform === 'win32' ? [installedAwEntry] : []), ...args],
+        { ...options, encoding: 'utf8' },
+      );
     for (const packageName of [
       '@lesliechan721/aw',
       '@lesliechan721/aw-plugin-core',
@@ -628,7 +710,7 @@ describe('pack smoke', () => {
       fs.ensureDir(localCodexPack),
       fs.ensureDir(path.dirname(managedRuntimeHome)),
     ]);
-    await execFileAsync('npm', ['pack', '--pack-destination', localCodexPack], {
+    await execFileAsync(process.execPath, [npmCli, 'pack', '--pack-destination', localCodexPack], {
       cwd: localCodexFixture,
       env: envWithoutNodePath,
     });
@@ -722,18 +804,18 @@ describe('pack smoke', () => {
     await expect(listFilesRecursively(parentNodeModules)).resolves.toEqual(parentNodeModulesBefore);
     await expect(fs.pathExists(workspaceAppNodeModules)).resolves.toBe(false);
 
-    await expect(execFileAsync(awBin, ['--version'], {
+    await expect(execAw(['--version'], {
       cwd: tempRoot,
       env: externalAuthoringEnv,
     })).resolves.toMatchObject({ stdout: `${cliPackageJson.version}\n`, stderr: '' });
-    await expect(execFileAsync(awBin, ['plugin', '--help'], {
+    await expect(execAw(['plugin', '--help'], {
       cwd: tempRoot,
       env: externalAuthoringEnv,
     })).resolves.toMatchObject({
       stdout: expect.stringMatching(/(?=[\s\S]*status)(?=[\s\S]*test)(?=[\s\S]*build)/u),
       stderr: '',
     });
-    await expect(execFileAsync(awBin, ['catalog', '--help'], {
+    await expect(execAw(['catalog', '--help'], {
       cwd: tempRoot,
       env: externalAuthoringEnv,
     })).resolves.toMatchObject({
@@ -746,48 +828,48 @@ describe('pack smoke', () => {
     await fs.ensureDir(standaloneWorkspace);
     await expect(fs.pathExists(path.join(standaloneWorkspace, 'node_modules'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(standaloneWorkspace, 'packages', 'cli'))).resolves.toBe(false);
-    await execFileAsync(awBin, [
+    await execAw([
       'catalog', 'init', '--workspace-root', standaloneWorkspace,
       '--owner-url', 'https://catalog.example.com/packed-build',
     ], {
       cwd: standaloneWorkspace,
       env: externalAuthoringEnv,
     });
-    await execFileAsync(awBin, [
+    await execAw([
       'plugin', 'init', 'packed-build',
       '--description', 'Packed build fixture.',
       '--no-skills', '--with-mcp',
       '--workspace-root', standaloneWorkspace,
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
     const packedPluginDirectory = path.join('plugins', 'packed-build');
-    await expect(execFileAsync(awBin, [
+    await expect(execAw([
       'plugin', 'validate', packedPluginDirectory,
       '--workspace-root', standaloneWorkspace, '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv })).resolves.toMatchObject({
       stdout: expect.stringMatching(/"ok":\s*true/u),
       stderr: '',
     });
-    await expect(execFileAsync(awBin, [
+    await expect(execAw([
       'plugin', 'test', packedPluginDirectory,
       '--workspace-root', standaloneWorkspace, '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv })).resolves.toMatchObject({
       stdout: expect.stringMatching(/"ok":\s*true/u),
       stderr: '',
     });
-    await execFileAsync(awBin, [
+    await execAw([
       'plugin', 'build', packedPluginDirectory,
       '--workspace-root', standaloneWorkspace,
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
-    await execFileAsync(awBin, [
+    await execAw([
       'catalog', 'build', '--workspace-root', standaloneWorkspace,
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
-    await expect(execFileAsync(awBin, [
+    await expect(execAw([
       'catalog', 'validate', path.join(standaloneWorkspace, '.aw', 'catalog'), '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv })).resolves.toMatchObject({
       stdout: expect.stringMatching(/"ok":\s*true/u),
       stderr: '',
     });
-    const externalPathSource = await execFileAsync(awBin, [
+    const externalPathSource = await execAw([
       'catalog', 'dev', 'activate', '--workspace-root', standaloneWorkspace, '--primary', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
     const developmentSourceReceipt = JSON.parse(externalPathSource.stdout);
@@ -797,7 +879,7 @@ describe('pack smoke', () => {
       source: { action: 'added', primary: true },
     });
     const developmentSourceId = developmentSourceReceipt.source.id as string;
-    const projectInstallBeforeTrust = await execFileAsync(awBin, [
+    const projectInstallBeforeTrust = await execAw([
       'install', `${developmentSourceId}/packed-build`, '-p', 'codex', '--scope', 'project', '--json',
     ], {
       cwd: standaloneWorkspace,
@@ -828,7 +910,7 @@ describe('pack smoke', () => {
       'trust_level = "trusted"',
       '',
     ].join('\n'));
-    const externalInstall = await execFileAsync(awBin, [
+    const externalInstall = await execAw([
       'install', `${developmentSourceId}/packed-build`, '-p', 'both', '--scope', 'project', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024 }).catch((error: unknown) => {
       const failure = error as { stdout?: string; stderr?: string };
@@ -887,7 +969,7 @@ describe('pack smoke', () => {
       scope: 'project',
       projectPath: await fs.realpath(standaloneWorkspace),
     }));
-    const developmentSourceRemoval = await execFileAsync(awBin, [
+    const developmentSourceRemoval = await execAw([
       'catalog', 'dev', 'deactivate', '--workspace-root', standaloneWorkspace, '--yes', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
     expect(JSON.parse(developmentSourceRemoval.stdout)).toMatchObject({
@@ -923,12 +1005,12 @@ describe('pack smoke', () => {
       cwd: standaloneWorkspace,
       env: process.env,
     });
-    const packedPlan = await execFileAsync(awBin, [
+    const packedPlan = await execAw([
       'catalog', 'publish', 'plan', '--workspace-root', standaloneWorkspace,
       '--remote', 'origin', '--branch', 'catalog', '--json',
     ], { cwd: standaloneWorkspace, env: process.env });
     const packedPlanDigest = JSON.parse(packedPlan.stdout).planDigest;
-    const packedPublish = await execFileAsync(awBin, [
+    const packedPublish = await execAw([
       'catalog', 'publish', 'apply', '--workspace-root', standaloneWorkspace,
       '--remote', 'origin', '--branch', 'catalog',
       '--expected-plan-digest', packedPlanDigest, '--yes', '--json',
@@ -942,15 +1024,17 @@ describe('pack smoke', () => {
       '--git-dir', packedCatalogRemote, 'rev-parse', 'refs/tags/catalog-v0.1.0^{}',
     ], { env: process.env })).stdout.trim()).toBe(packedPublishReceipt.commit);
     const packedConsumerEnv = {
-      ...process.env,
+      ...externalAuthoringEnv,
       AW_HOME: path.join(tempRoot, 'packed-catalog-consumer-home'),
+      AW_CODEX_HOME: path.join(tempRoot, 'packed-catalog-consumer-codex-home'),
+      AW_CLAUDE_HOME: path.join(tempRoot, 'packed-catalog-consumer-claude-home'),
     };
-    const sourceAdd = await execFileAsync(awBin, [
+    const sourceAdd = await execAw([
       'catalog', 'source', 'add', 'packed', '--git', packedCatalogRemote,
       '--ref', 'refs/heads/catalog', '--primary', '--json',
     ], { cwd: tempRoot, env: packedConsumerEnv });
     expect(JSON.parse(sourceAdd.stdout)).toMatchObject({ ok: true, sourceId: 'packed' });
-    const sourceSync = await execFileAsync(awBin, [
+    const sourceSync = await execAw([
       'catalog', 'source', 'sync', 'packed', '--json',
     ], { cwd: tempRoot, env: packedConsumerEnv });
     expect(JSON.parse(sourceSync.stdout)).toMatchObject({
@@ -963,22 +1047,25 @@ describe('pack smoke', () => {
       active: { snapshotDigest: expect.stringMatching(/^sha256:/u) },
     });
     expect(sourceSync.stderr).toBe('');
-    const consumedStatus = await execFileAsync(
-      awBin,
+    const consumedStatus = await execAw(
       ['status', 'packed/packed-build', '--json'],
       { cwd: tempRoot, env: packedConsumerEnv },
-    ).then(
-      () => null,
-      (error: unknown) => error as { stdout?: string },
     );
-    expect(consumedStatus).not.toBeNull();
-    expect(JSON.parse(consumedStatus?.stdout ?? '{}')).toMatchObject({
-      catalog: { sources: expect.arrayContaining([expect.objectContaining({ id: 'packed' })]) },
-      targets: expect.arrayContaining([expect.objectContaining({
-        pluginId: 'packed/packed-build',
-      })]),
+    expect(JSON.parse(consumedStatus.stdout)).toMatchObject({
+      schemaVersion: 8,
+      catalog: {
+        primarySourceId: 'packed',
+        sources: expect.arrayContaining([expect.objectContaining({ id: 'packed' })]),
+      },
+      filters: { plugins: ['packed/packed-build'] },
+      targets: expect.arrayContaining([
+        expect.objectContaining({ pluginId: 'packed/packed-build', platform: 'codex', state: 'absent' }),
+        expect.objectContaining({ pluginId: 'packed/packed-build', platform: 'claude', state: 'absent' }),
+      ]),
+      errors: [],
     });
-    const packedRemoval = await execFileAsync(awBin, [
+    expect(consumedStatus.stderr).toBe('');
+    const packedRemoval = await execAw([
       'plugin', 'remove', 'packed-build',
       '--workspace-root', standaloneWorkspace, '--yes', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
@@ -997,7 +1084,7 @@ describe('pack smoke', () => {
     const authorRepo = path.join(tempRoot, 'author-repo');
     registerSmokeWritableRoot(authorRepo, 'pack smoke plugin author repository');
     await fs.copy(fixturePath('repo-template'), authorRepo);
-    await execFileAsync(awBin, [
+    await execAw([
       'plugin',
       'init',
       'validate-fixture',
@@ -1007,7 +1094,7 @@ describe('pack smoke', () => {
       '--workspace-root',
       authorRepo,
     ], { cwd: authorRepo, env: process.env });
-    const validation = await execFileAsync(awBin, [
+    const validation = await execAw([
       'plugin',
       'validate',
       path.join(authorRepo, 'plugins', 'validate-fixture'),
@@ -1035,7 +1122,7 @@ describe('pack smoke', () => {
       path.join(portablePluginRoot, 'portable-skills', 'packed-portable', 'README.md'),
       '# Packed portable fixture\n',
     );
-    const portableValidation = await execFileAsync(awBin, [
+    const portableValidation = await execAw([
       'plugin',
       'validate',
       portablePluginRoot,
@@ -1102,34 +1189,24 @@ describe('pack smoke', () => {
         sources: [{ id: 'local', type: 'path', primary: true, path: portableCatalog }],
       }),
     ]);
-    const fakeSkills = path.join(fakeBin, process.platform === 'win32' ? 'skills.cmd' : 'skills');
-    if (process.platform === 'win32') {
-      await fs.writeFile(fakeSkills, '@node "%~dp0\\skills.cjs" %*\r\n', 'utf8');
-    }
-    const fakeSkillsScript = process.platform === 'win32'
-      ? path.join(fakeBin, 'skills.cjs')
-      : fakeSkills;
-    await fs.writeFile(fakeSkillsScript, [
-      ...(process.platform === 'win32' ? [] : ['#!/usr/bin/env node']),
-      "const fs = require('node:fs');",
+    const fakeSkills = await writeSkillsCliFixture(fakeBin, [
+      "import fs from 'node:fs';",
       "const args = process.argv.slice(2);",
       "fs.appendFileSync(process.env.FAKE_SKILLS_LOG, JSON.stringify(args) + '\\n');",
       "if (args[0] === '--version') { console.log('1.5.23'); process.exit(0); }",
       "if (args[0] === 'add') { fs.writeFileSync(process.env.FAKE_SKILLS_STATE, 'added'); process.exit(0); }",
       "if (args[0] === 'list') { console.log(fs.existsSync(process.env.FAKE_SKILLS_STATE) ? JSON.stringify([{name:'packed-portable',agents:['Codex'],scope:'project',path:'/fake/packed-portable'}]) : '[]'); process.exit(0); }",
       'process.exit(2);',
-    ].join('\n'), 'utf8');
-    if (process.platform !== 'win32') await fs.chmod(fakeSkills, 0o755);
+    ].join('\n'), externalAuthoringEnv);
     const portableEnv = {
-      ...process.env,
+      ...fakeSkills.env,
       AW_HOME: portableHome,
       AW_CODEX_HOME: path.join(tempRoot, 'portable-codex-home'),
       AW_CLAUDE_HOME: path.join(tempRoot, 'portable-claude-home'),
-      PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`,
       FAKE_SKILLS_LOG: fakeLog,
       FAKE_SKILLS_STATE: fakeState,
     };
-    const portableSourceSync = await execFileAsync(awBin, [
+    const portableSourceSync = await execAw([
       'catalog', 'source', 'sync', 'local', '--json',
     ], { cwd: portableCwd, env: portableEnv });
     expect(JSON.parse(portableSourceSync.stdout)).toMatchObject({
@@ -1142,7 +1219,7 @@ describe('pack smoke', () => {
       active: { snapshotDigest: expect.stringMatching(/^sha256:/u) },
     });
     expect(portableSourceSync.stderr).toBe('');
-    await execFileAsync(awBin, [
+    await execAw([
       'skill', 'materialize', 'local/portable-pack',
       '--scope', 'project', '--out', materializedOut,
     ], { cwd: portableCwd, env: portableEnv });
@@ -1153,7 +1230,7 @@ describe('pack smoke', () => {
         scope: 'project',
       });
 
-    const installed = await execFileAsync(awBin, [
+    const installed = await execAw([
       'skill', 'install', 'local/portable-pack', '--scope', 'project', '--yes', '--json',
     ], { cwd: portableCwd, env: portableEnv, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(installed.stdout)).toMatchObject({
@@ -1168,7 +1245,7 @@ describe('pack smoke', () => {
       'add', '--skill', 'packed-portable', '--yes',
     ]));
 
-    await execFileAsync(awBin, [
+    await execAw([
       'plugin',
       'init',
       'author-smoke',
@@ -1190,7 +1267,7 @@ describe('pack smoke', () => {
       path.dirname(helperPath),
       're2-wasm',
     ))).resolves.toBe(false);
-    await expect(execFileAsync(awBin, [
+    await expect(execAw([
       'plugin',
       'validate',
       path.join('plugins', 'author-smoke'),
@@ -1201,7 +1278,7 @@ describe('pack smoke', () => {
       stdout: expect.stringMatching(/"ok":\s*true/u),
       stderr: '',
     });
-    const buildReceipt = await execFileAsync(awBin, [
+    const buildReceipt = await execAw([
       'plugin',
       'build',
       path.join('plugins', 'author-smoke'),
@@ -1220,7 +1297,7 @@ describe('pack smoke', () => {
     });
     expect(helperHelp.stdout).toContain('--scope effective');
     expect(helperHelp.stderr).toBe('');
-    await execFileAsync(awBin, [
+    await execAw([
       'plugin',
       'add-skill',
       'author-smoke',
@@ -1241,26 +1318,28 @@ describe('pack smoke', () => {
       'second-skill',
       'SKILL.md',
     ))).resolves.toBe(true);
-    const evalHelp = await execFileAsync(evalBin, ['--help'], {
-      cwd: tempRoot,
-      env: process.env,
-    });
+    const installedEvalRoot = path.join(globalNodeModules, '@lesliechan721', 'agent-skill-eval');
+    const installedEvalManifest = await fs.readJson(path.join(installedEvalRoot, 'package.json')) as {
+      bin: { 'aw-skill-eval': string };
+    };
+    await expect(fs.pathExists(evalBin)).resolves.toBe(true);
+    const evalHelp = await execFileAsync(
+      process.platform === 'win32' ? process.execPath : evalBin,
+      process.platform === 'win32'
+        ? [path.resolve(installedEvalRoot, installedEvalManifest.bin['aw-skill-eval']), '--help']
+        : ['--help'],
+      {
+        cwd: tempRoot,
+        env: externalAuthoringEnv,
+      },
+    );
     expect(evalHelp.stdout).toContain('spec validate <spec.json>');
     expect(evalHelp.stdout).toContain('audit validate <audit.json> --spec <spec.json>');
     expect(evalHelp.stdout).toContain('result validate <result.json> --spec <spec.json> --audit <audit.json>');
     expect(evalHelp.stdout).not.toContain('capabilities');
     expect(evalHelp.stderr).toBe('');
 
-    if (process.platform !== 'win32') {
-      const installedEvalRoot = path.join(
-        installPrefix,
-        'lib',
-        'node_modules',
-        '@lesliechan721',
-        'agent-skill-eval',
-      );
-      expect((await fs.lstat(installedEvalRoot)).isSymbolicLink()).toBe(false);
-    }
+    expect((await fs.lstat(installedEvalRoot)).isSymbolicLink()).toBe(false);
   }, 300_000);
 
   it('packs the CLI tarball without the staged plugins-dist snapshot', async () => {

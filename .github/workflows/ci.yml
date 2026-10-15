@@ -109,7 +109,7 @@ jobs:
 
   beta:
     needs: [node22, release-verification, platform]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.RELEASE_APP_ID != ''
     uses: ./.github/workflows/beta.yml
     with:
       source: ${{ github.sha }}

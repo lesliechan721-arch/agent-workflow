@@ -198,7 +198,11 @@ async function createCodexNativeTestRuntime(
   // Observation and public CLI paths inspect PATH even when mutation uses a fake manager.
   const systemRoot = await fs.mkdtemp(path.join(isolation.layout.fixtureCwd, 'fake-codex-'));
   const binRoot = await writeStatusSystemCodexPackage(systemRoot, codexVersion);
-  isolation.env.PATH = [binRoot, isolation.env.PATH].filter(Boolean).join(path.delimiter);
+  const inheritedPath = Object.entries(isolation.env).find(([key]) => key.toLowerCase() === 'path')?.[1];
+  for (const key of Object.keys(isolation.env)) {
+    if (key.toLowerCase() === 'path') delete isolation.env[key];
+  }
+  isolation.env.PATH = [binRoot, inheritedPath].filter(Boolean).join(path.delimiter);
   const installed = new Set<string>();
   const installedVersions = new Map<string, string>();
   const marketplaceRoots = new Map<string, string>();
@@ -312,6 +316,7 @@ async function createCodexNativeTestRuntime(
   });
   return {
     env: isolation.env,
+    codexVersion,
     nativeCliRunner,
     codexManagerResolver: vi.fn(async () => ({
       kind: 'system' as const,
@@ -395,6 +400,30 @@ async function createClaudeNativeTestRuntime(
   return { runtime: { env: isolation.env, nativeCliRunner }, nativeCliRunner, installedPath, claudeHome, projectRoot };
 }
 
+function renderCodexNpmShim(): string {
+  return [
+    '@ECHO off',
+    'GOTO start',
+    ':find_dp0',
+    'SET dp0=%~dp0',
+    'EXIT /b',
+    ':start',
+    'SETLOCAL',
+    'CALL :find_dp0',
+    '',
+    'IF EXIST "%dp0%\\node.exe" (',
+    '  SET "_prog=%dp0%\\node.exe"',
+    ') ELSE (',
+    '  SET "_prog=node"',
+    '  SET PATHEXT=%PATHEXT:;.JS;=;%',
+    ')',
+    '',
+    'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & ' +
+      '"%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*',
+    '',
+  ].join('\r\n');
+}
+
 async function writeStatusSystemCodexPackage(
   root: string,
   version: string,
@@ -415,7 +444,7 @@ async function writeStatusSystemCodexPackage(
   await fs.chmod(launcher, 0o755);
   await fs.ensureDir(binRoot);
   if (process.platform === 'win32') {
-    await fs.outputFile(path.join(binRoot, 'codex.CMD'), '@echo off\r\n');
+    await fs.outputFile(path.join(binRoot, 'codex.CMD'), renderCodexNpmShim());
   } else {
     await fs.symlink(path.relative(binRoot, launcher), path.join(binRoot, 'codex'));
   }
@@ -446,7 +475,7 @@ async function writeIntentRoundTripCodexPackage(root: string): Promise<string> {
   if (process.platform === 'win32') {
     await fs.outputFile(
       path.join(binRoot, 'codex.CMD'),
-      '@node "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n',
+      renderCodexNpmShim(),
     );
   } else {
     await fs.symlink(path.relative(binRoot, launcher), path.join(binRoot, 'codex'));
@@ -3003,7 +3032,7 @@ describe('five namespaced write commands', () => {
     }, intent);
     await git(seedRoot, ['add', '.agent-workflows/plugin-intents.json']);
     await git(seedRoot, ['commit', '-m', 'Add shared project intent']);
-    await git(isolation.layout.fixtureCwd, ['clone', seedRoot, cloneRoot]);
+    await git(isolation.layout.fixtureCwd, ['-c', 'core.autocrlf=false', 'clone', seedRoot, cloneRoot]);
     expect(await git(cloneRoot, ['ls-files'])).toBe('.agent-workflows/plugin-intents.json');
 
     const cloneEnv = {
@@ -3342,7 +3371,7 @@ describe('five namespaced write commands', () => {
 
     const binRoot = await writeStatusSystemCodexPackage(
       path.join(isolation.layout.fixtureCwd, 'unreadable-registration-prefix'),
-      '0.151.0',
+      runtime.codexVersion,
     );
     setNativeCliRunnerOverrideForTests(nativeCliRunner);
     let status;
@@ -4186,7 +4215,7 @@ describe('five namespaced write commands', () => {
 
     const binRoot = await writeStatusSystemCodexPackage(
       path.join(isolation.layout.fixtureCwd, 'project-native-dependency-prefix'),
-      '0.151.0',
+      runtime.codexVersion,
     );
     const status = await statusCommandV8({
       plugins: ['team/root'], cwd: isolation.layout.fixtureCwd,
@@ -4343,7 +4372,7 @@ describe('five namespaced write commands', () => {
 
     const binRoot = await writeStatusSystemCodexPackage(
       path.join(isolation.layout.fixtureCwd, 'dependency-user-to-project-prefix'),
-      '0.151.0',
+      runtime.codexVersion,
     );
     const statusEnv = { ...isolation.env, PATH: binRoot };
     const status = await statusCommandV8({
@@ -4578,7 +4607,7 @@ describe('five namespaced write commands', () => {
     expect(nativeCalls).not.toContain('plugin remove demo@aw');
     const binRoot = await writeStatusSystemCodexPackage(
       path.join(isolation.layout.fixtureCwd, 'pure-native-second-scope-prefix'),
-      '0.151.0',
+      runtime.codexVersion,
     );
     setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
     let status;
@@ -5370,7 +5399,7 @@ describe('five namespaced write commands', () => {
     }, installedRuntime)).resolves.toMatchObject({ overallState: 'succeeded' });
     const binRoot = await writeStatusSystemCodexPackage(
       path.join(isolation.layout.fixtureCwd, 'status-system-prefix'),
-      '0.151.0',
+      installedRuntime.codexVersion,
     );
     const statusRunner = vi.fn(installedRuntime.nativeCliRunner);
     setNativeCliRunnerOverrideForTests(statusRunner);
@@ -5902,7 +5931,7 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
     const binRoot = await writeStatusSystemCodexPackage(
-      path.join(isolation.layout.fixtureCwd, 'user-extension-status-prefix'), '0.151.0',
+      path.join(isolation.layout.fixtureCwd, 'user-extension-status-prefix'), runtime.codexVersion,
     );
     setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
     try {
@@ -5980,7 +6009,7 @@ describe('five namespaced write commands', () => {
 
     const binRoot = await writeStatusSystemCodexPackage(
       path.join(isolation.layout.fixtureCwd, 'native-cross-scope-status-prefix'),
-      '0.151.0',
+      runtime.codexVersion,
     );
     const statusEnv = { ...isolation.env, PATH: binRoot };
     setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
@@ -12029,11 +12058,18 @@ describe('five namespaced write commands', () => {
       'agents',
       'aw-leaf-leaf-role.toml',
     );
-    await fs.chmod(leafAgent, 0o000);
+    const canonicalLeafAgent = await fs.realpath(leafAgent);
+    const readFile = fs.readFile;
+    const unreadableAgent = vi.spyOn(fs, 'readFile').mockImplementation((...args) => {
+      if ([leafAgent, canonicalLeafAgent].includes(String(args[0]))) {
+        return Promise.reject(Object.assign(new Error('Access denied'), { code: 'EACCES' }));
+      }
+      return Reflect.apply(readFile, fs, args);
+    });
     const driftedLeaf = await statusCommandV8({
       plugins: ['team/leaf'], cwd: isolation.layout.fixtureCwd, env: isolation.env,
       cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
-    }).finally(async () => fs.chmod(leafAgent, 0o644));
+    }).finally(() => unreadableAgent.mockRestore());
     expect(driftedLeaf.payload.targets).toEqual([expect.objectContaining({
       state: 'blocked',
       placements: [expect.objectContaining({
@@ -14276,7 +14312,10 @@ describe('five namespaced write commands', () => {
       'import { readFile } from "node:fs/promises";',
       'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
       'const mode = context.config.values.mode ?? "safe";',
-      'if (mode === "fail") throw new Error("renderer requested failure");',
+      'if (mode === "fail") {',
+      '  console.error("file:///C:/Users/RUNNER%7E1/AppData/Local/Temp/private-renderer/render.mjs:4:28");',
+      '  throw new Error("renderer requested failure");',
+      '}',
       'console.log(JSON.stringify({ version: 2, artifacts: [{',
       '  id: "instruction", kind: "instruction", platform: "codex",',
       '  target: "codex.developerInstructionsBlock", state: "present",',
@@ -15219,7 +15258,7 @@ describe('five namespaced write commands', () => {
 
     const statusBinRoot = await writeStatusSystemCodexPackage(
       path.join(isolation.layout.fixtureCwd, 'native-config-status-prefix'),
-      '0.151.0',
+      runtime.codexVersion,
     );
     const readNativeStatus = async () => {
       const statusRunner = vi.fn(runtime.nativeCliRunner);

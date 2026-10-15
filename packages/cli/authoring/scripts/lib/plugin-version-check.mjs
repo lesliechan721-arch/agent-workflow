@@ -255,7 +255,7 @@ export async function readGitBlobsBatch(repoRoot, objectIds, options = {}) {
   }
   if (uniqueObjectIds.length === 0) return new Map();
 
-  const child = spawn('git', ['cat-file', '--batch'], {
+  const child = spawn(options.command ?? 'git', [...(options.argsPrefix ?? []), 'cat-file', '--batch'], {
     cwd: repoRoot,
     env: options.env ?? process.env,
     stdio: ['pipe', 'pipe', 'pipe'],

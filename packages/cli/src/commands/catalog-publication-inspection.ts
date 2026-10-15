@@ -1,3 +1,4 @@
+import { realpath } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import os from 'node:os';
@@ -99,7 +100,8 @@ function directRemoteGitEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
   return {
     ...sanitizedGitEnvironment(source),
     GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: os.devNull,
+    // Git for Windows maps /dev/null itself; Node's device path is not a Git path.
+    GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_ATTR_NOSYSTEM: '1',
     GIT_TERMINAL_PROMPT: '0',
   };
@@ -233,7 +235,7 @@ export async function publicationGit(
   sensitiveValues: readonly string[] = [],
 ): Promise<string> {
   try {
-    const result = await execFileAsync('git', ['-c', `core.hooksPath=${os.devNull}`, ...args], {
+    const result = await execFileAsync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
       cwd,
       env,
       encoding: 'utf8',
@@ -269,7 +271,7 @@ export async function publicationGitExit(
   env: NodeJS.ProcessEnv,
 ): Promise<boolean> {
   try {
-    await execFileAsync('git', ['-c', `core.hooksPath=${os.devNull}`, ...args], {
+    await execFileAsync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
       cwd,
       env,
       encoding: 'utf8',
@@ -302,7 +304,11 @@ export async function materializeSourceHead(options: {
   const tarEnv = { ...options.env };
   delete tarEnv.TAR_OPTIONS;
   try {
-    await execFileAsync('tar', ['-xf', archivePath, '-C', options.outputRoot], {
+    await execFileAsync('tar', [
+      '-xf', path.relative(options.temporaryRoot, archivePath),
+      '-C', path.relative(options.temporaryRoot, options.outputRoot),
+    ], {
+      cwd: options.temporaryRoot,
       env: tarEnv,
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
@@ -498,14 +504,14 @@ export async function prepareCatalogPublicationInspection(options: {
   let safeFetchUrl = '';
   let safePushUrl = '';
   try {
-    const catalogWorkspaceRoot = await fs.realpath(path.resolve(options.workspaceRoot));
-    const repoRoot = await publicationGit(
+    const catalogWorkspaceRoot = await realpath(path.resolve(options.workspaceRoot));
+    const repoRoot = await realpath(await publicationGit(
       catalogWorkspaceRoot,
       ['rev-parse', '--show-toplevel'],
       env,
       'gitWorkspaceInvalid',
       'Catalog Workspace must be inside a real Git worktree.',
-    );
+    ));
     await publicationGit(
       repoRoot,
       ['check-ref-format', '--branch', branch],
@@ -607,7 +613,7 @@ export async function prepareCatalogPublicationInspection(options: {
     const repositoryRoot = path.join(temporaryRoot, 'repository');
     await fs.ensureDir(repositoryRoot);
     await publicationGit(repositoryRoot, ['init', '--quiet'], env, 'temporaryRepositoryFailed', 'Could not create the isolated publication repository.');
-    await publicationGit(repositoryRoot, ['config', 'core.hooksPath', os.devNull], env, 'temporaryRepositoryFailed', 'Could not disable publication hooks.');
+    await publicationGit(repositoryRoot, ['config', 'core.hooksPath', '/dev/null'], env, 'temporaryRepositoryFailed', 'Could not disable publication hooks.');
     await publicationGit(repositoryRoot, ['config', 'core.symlinks', 'true'], env, 'temporaryRepositoryFailed', 'Could not configure the isolated publication repository.');
     await publicationGit(repositoryRoot, ['remote', 'add', 'publish', pushUrl], env, 'temporaryRepositoryFailed', 'Could not configure the publication remote.');
     const initialRefs = parseRemoteRefs(await publicationGit(repositoryRoot, [
@@ -795,14 +801,14 @@ export async function inspectCatalogPublicationLiveContext(options: {
   let safeFetchUrl = '';
   let safePushUrl = '';
   try {
-    const catalogWorkspaceRoot = await fs.realpath(path.resolve(options.workspaceRoot));
-    const repoRoot = await publicationGit(
+    const catalogWorkspaceRoot = await realpath(path.resolve(options.workspaceRoot));
+    const repoRoot = await realpath(await publicationGit(
       catalogWorkspaceRoot,
       ['rev-parse', '--show-toplevel'],
       env,
       'gitWorkspaceInvalid',
       'Catalog Workspace must be inside a real Git worktree.',
-    );
+    ));
     await publicationGit(
       repoRoot,
       ['check-ref-format', '--branch', branch],
@@ -945,15 +951,15 @@ export async function inspectCatalogPublicationApplyContext(options: {
   let safeFetchUrl = '';
   let safePushUrl = '';
   try {
-    const catalogWorkspaceRoot = await fs.realpath(path.resolve(options.workspaceRoot));
+    const catalogWorkspaceRoot = await realpath(path.resolve(options.workspaceRoot));
     const marker = await readCatalogWorkspaceMarker(catalogWorkspaceRoot);
-    const repoRoot = await publicationGit(
+    const repoRoot = await realpath(await publicationGit(
       catalogWorkspaceRoot,
       ['rev-parse', '--show-toplevel'],
       env,
       'gitWorkspaceInvalid',
       'Catalog Workspace must be inside a real Git worktree.',
-    );
+    ));
     const catalogWorkspaceRelative = path.relative(repoRoot, catalogWorkspaceRoot);
     if (
       catalogWorkspaceRelative === '..'

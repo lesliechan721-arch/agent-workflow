@@ -3846,7 +3846,8 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
 
-    await input(instance, ...Array.from({ length: 199 }, () => '\u001B[B'));
+    await input(instance, '/', 'Plugin 199', '\r', '/', '\u0015', '\r', '\u001B[B');
+    expect(value.snapshot.router.current.context.query).toBe('');
     expect(instance.lastFrame()).toContain('› Plugin 200');
     expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(18);
 

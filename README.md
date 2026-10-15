@@ -341,7 +341,7 @@ pnpm release:actions source --product catalog --version 0.5.1 --source <main-sha
 
 首次启用需要以下仓库外部配置：
 
-- GitHub App 的安装范围仅为本仓库，授予 Contents write；设置变量 `RELEASE_APP_ID` 和 secret `RELEASE_APP_PRIVATE_KEY`。用 branch/tag ruleset 保护 main 和非发布 refs，App 不获得 main bypass。App token 本身不能按 ref 缩小权限；入口只推送规定的候选 refs。App 推送会触发 tag workflow，默认 GITHUB_TOKEN 不具有这一行为。见 [GitHub 触发规则](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)。
+- GitHub App 的安装范围仅为本仓库，授予 Contents write；设置变量 `RELEASE_APP_ID` 和 secret `RELEASE_APP_PRIVATE_KEY`。未设置 `RELEASE_APP_ID` 时，main CI 仍执行全部验证，但跳过自动 beta 发布；配置 App 后启用自动发布。用 branch/tag ruleset 保护 main 和非发布 refs，App 不获得 main bypass。App token 本身不能按 ref 缩小权限；入口只推送规定的候选 refs。App 推送会触发 tag workflow，默认 GITHUB_TOKEN 不具有这一行为。见 [GitHub 触发规则](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)。
 - 五个公开 npm 包分别配置 Trusted Publisher：当前仓库、`release-cli.yml`、environment `npm`。发布 job 使用 GitHub-hosted Linux、Node 24、npm 11.6.2 和 OIDC，不需要长期 npm token。见 [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)。
 - 确认六种 hosted runner 可用于本仓库，并允许 30 天 artifact 保留期。可设置 repository variable `AW_TEST_WORKERS` 调整普通测试并发；串行和性能入口保持固定约束。
 

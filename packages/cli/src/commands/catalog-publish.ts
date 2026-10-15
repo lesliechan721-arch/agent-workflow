@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -352,7 +351,7 @@ const PERSISTED_REPOSITORY_CONFIG = new Map<string, ReadonlySet<string>>([
   ['core.logallrefupdates', new Set(['true'])],
   ['core.ignorecase', new Set(['true'])],
   ['core.precomposeunicode', new Set(['true'])],
-  ['core.hookspath', new Set([os.devNull])],
+  ['core.hookspath', new Set(['/dev/null'])],
   ['core.symlinks', new Set(['true'])],
 ]);
 

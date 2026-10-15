@@ -1,3 +1,4 @@
+import { realpath } from 'node:fs/promises'
 import crypto from 'node:crypto'
 import path from 'node:path'
 
@@ -261,10 +262,10 @@ async function resolveCanonicalPluginRequirementsTarget(options: {
   if (!stat?.isDirectory() || stat.isSymbolicLink()) {
     throw new Error(`Plugin directory must be a regular non-symbolic-link directory: ${requestedPluginRoot}`)
   }
-  const canonicalPluginRoot = await fs.realpath(requestedPluginRoot)
-  const plugin = workspace.plugins.find((entry) => entry.rootDir === canonicalPluginRoot)
+  const canonicalPluginRoot = await realpath(requestedPluginRoot)
+  const plugin = workspace.plugins.find((entry) => entry.manifest.name === path.basename(canonicalPluginRoot))
   const expectedPluginRoot = plugin
-    ? path.join(workspace.workspaceRoot, 'plugins', plugin.manifest.name)
+    ? await realpath(path.join(workspace.workspaceRoot, 'plugins', plugin.manifest.name))
     : null
   if (
     !plugin
@@ -273,8 +274,8 @@ async function resolveCanonicalPluginRequirementsTarget(options: {
     throw new Error(`Plugin directory is not a canonical plugin in this Catalog Workspace: ${requestedPluginRoot}`)
   }
   return {
-    plugin,
-    workspaceRoot: workspace.workspaceRoot,
+    plugin: { ...plugin, rootDir: canonicalPluginRoot },
+    workspaceRoot: await realpath(workspaceResolution.workspaceRoot),
     workspaceRootResolvedFrom: workspaceResolution.workspaceRootResolvedFrom,
   }
 }

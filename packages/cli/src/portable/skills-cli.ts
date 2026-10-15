@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { resolveWindowsNpmCommand } from '../utils/windows-npm-shim.js';
+
 const execFileAsync = promisify(execFile);
 const MIN_VERSION = [1, 5, 23] as const;
 const MAX_VERSION = [2, 0, 0] as const;
@@ -69,7 +71,13 @@ async function invokeSkills(
   options: SkillsCliInvocationOptions,
 ): Promise<{ stdout: string; stderr: string }> {
   try {
-    const result = await execFileAsync('skills', args, {
+    const invocation = process.platform === 'win32'
+      ? await resolveWindowsNpmCommand({
+          command: 'skills', packageName: 'skills', binName: 'skills',
+          cwd: options.cwd, env: options.env,
+        })
+      : { command: 'skills', argsPrefix: [] };
+    const result = await execFileAsync(invocation.command, [...invocation.argsPrefix, ...args], {
       cwd: options.cwd,
       env: options.env,
       encoding: 'utf8',
