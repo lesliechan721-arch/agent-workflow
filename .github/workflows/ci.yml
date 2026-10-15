@@ -113,6 +113,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test:integration
+        env:
+          AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || (matrix.os == 'win32' && '1' || '') }}
       - run: pnpm test:smoke:pack:cli
 
   beta:
