@@ -575,6 +575,8 @@ async function acquireManagedCodexRuntime(options: CodexManagerOptions): Promise
         '--prod',
         '--ignore-scripts',
         '--ignore-workspace',
+        // Adoption renames staging; absolute Windows junctions would retain its old path.
+        '--config.node-linker=hoisted',
         `--registry=${MANAGED_CODEX_REGISTRY}`,
         `--store-dir=${storeRoot}`,
         `--config.userconfig=${neutralUserConfig}`,

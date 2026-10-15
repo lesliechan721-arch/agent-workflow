@@ -19,6 +19,7 @@ import {
   type CatalogWorkspaceBuildAdapter,
 } from '@lesliechan721/aw-plugin-core';
 
+import { readGitBlobsBatch } from '../../authoring/scripts/lib/plugin-version-check.mjs';
 import { bundleLocalPlugin, createCatalogRuntimeImportResolver } from '../../scripts/plugin-staging.js';
 import { redactString } from '../output/redact.js';
 import { sanitizeCatalogSourceErrorMessage } from '../utils/catalog-public-error.js';
@@ -413,21 +414,41 @@ async function materializePublishedCatalogMetadata(options: {
 }): Promise<void> {
   await fs.remove(options.outputRoot);
   await fs.ensureDir(options.outputRoot);
-  for (const relative of [GENERATED_OUTPUT_MARKER_FILENAME, CATALOG_MANIFEST_FILENAME]) {
-    const record = await publicationGit(options.repositoryRoot, [
-      'ls-tree', options.commit, '--', relative,
-    ], options.env, 'remoteBranchInvalid', 'Could not inspect published Catalog history.');
+  const metadataPaths = [GENERATED_OUTPUT_MARKER_FILENAME, CATALOG_MANIFEST_FILENAME];
+  const records = (await publicationGit(options.repositoryRoot, [
+    'ls-tree', options.commit, '--', ...metadataPaths,
+  ], options.env, 'remoteBranchInvalid', 'Could not inspect published Catalog history.')).split('\n');
+  const metadata = metadataPaths.map((relative) => {
+    const record = records.find((value) => value.endsWith(`\t${relative}`)) ?? '';
     const match = /^(100644|100755) blob ([0-9a-f]+)\t(.+)$/u.exec(record);
-    if (!match || match[3] !== relative) {
+    if (records.length !== metadataPaths.length || !match || match[3] !== relative) {
       throw new CatalogPublicationInspectionError(
         'remoteSnapshotInvalid',
         'Published Catalog history metadata must contain regular files.',
       );
     }
-    const content = await publicationGit(options.repositoryRoot, [
-      'cat-file', 'blob', match[2]!,
-    ], options.env, 'remoteBranchInvalid', 'Could not read published Catalog history.');
-    await fs.writeFile(path.join(options.outputRoot, relative), `${content}\n`);
+    return { relative, objectId: match[2]! };
+  });
+  let contents: Map<string, Buffer>;
+  try {
+    contents = await readGitBlobsBatch(options.repositoryRoot, metadata.map((entry) => entry.objectId), {
+      env: options.env,
+      argsPrefix: ['-c', 'core.hooksPath=/dev/null', '-c', 'core.longpaths=true'],
+    });
+  } catch (error) {
+    const details = sanitizeCatalogPublicationMessage(
+      error instanceof Error ? error.message : String(error),
+      options.env,
+      [options.repositoryRoot],
+    ).replace(/\s+/gu, ' ').trim();
+    throw new CatalogPublicationInspectionError(
+      'remoteBranchInvalid',
+      `Could not read published Catalog history.${details ? ` ${details.slice(0, 2_000)}` : ''}`,
+      { cause: error },
+    );
+  }
+  for (const { relative, objectId } of metadata) {
+    await fs.writeFile(path.join(options.outputRoot, relative), contents.get(objectId)!);
   }
 }
 

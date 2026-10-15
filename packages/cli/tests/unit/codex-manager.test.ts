@@ -665,6 +665,7 @@ describe('Codex manager resolver', () => {
       '--prod',
       '--ignore-scripts',
       '--ignore-workspace',
+      '--config.node-linker=hoisted',
       `--registry=${MANAGED_CODEX_REGISTRY}`,
       `--store-dir=${path.join(isolation.layout.awHomeDir, 'runtimes', '.pnpm-store')}`,
       expect.stringMatching(/^--config\.userconfig=/u),

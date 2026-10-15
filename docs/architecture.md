@@ -182,6 +182,8 @@ dependency placement 只在安装流程中选择。已安装插件不提供调�
 
 Codex manager 解析也在同一个 `AW_HOME` mutation lock 内完成，并在执行时重新探测。仅修改已有 shared native 的 project activation 不使用 native manager；project intent 若需要写入、替换或移除 shared native package，仍解析同一个 user-level manager。正常写入优先使用兼容的 system CLI；system CLI 缺失时复用有效的 AW-managed cache，只有 cache 缺失或可安全重建时才需要本次授权。直接 TTY 可在首次获取前确认；JSON 和非交互命令必须传 `--allow-managed-codex-install`。已安装但过旧、版本不可解析或探测失败的 system CLI 会阻止操作，不能用 managed runtime 绕过。manager 选择不进入 Receipt v6 或 Status v8，也不成为 `operationReviewStale` 证据。
 
+Managed Codex 在独立 staging 目录使用固定 pnpm 和 hoisted 布局安装，再通过目录 rename 采用该 runtime。hoisted 布局避免 Windows 绝对 junction 在 rename 后仍指向旧 staging 路径；安装、版本及 plugin help 检查、目录边界和 owner marker 校验继续适用。
+
 TUI preview 只读，并且只在最终计划含 Codex native 操作时探测 manager。若需要获取或重建 runtime，Review 明确显示 `@openai/codex`、固定版本和 AW-managed cache；执行该 Review 即授权本次获取，不再显示第二次确认。
 
 TUI 的依赖关系页只解释当前数据，不改变 placement。正向声明边来自当前 source 的 manifest。Controller 从 Status v8 的 dependency component 读取 dependency ID、platform、scope、project 和 state；只有声明边有效、dependency state 为 `ready`，且 consumer 有当前现场 scope evidence（复用 `hasActualScopeEvidence`，不接受纯 Intent）时，才写入内部 `availablePlacementReferences`。它不重新计算 scope 选择。反向“哪些插件依赖它”同时保留已知声明边和这些可用关系，边分别显示为未验证与已验证；无位置的声明仍可阅读，不能按 `depth` 推断一条边。默认页面把它说明为本次状态检查：只检查当前项目和个人位置，其他项目未检查；它不表示插件已被调用，也不表示历史安装关系已经确认。共享节点明确标记为同一节点；graph blocker 或环显示为无效，不能渲染为正常树。该页不恢复已安装依赖迁移，不提供绕过依赖保护的删除入口，也不改变 `getBlockingDependents`、移除或 cleanup 门禁。

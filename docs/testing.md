@@ -8,7 +8,7 @@
 
 本地和 CI 可以设置 `AW_TEST_WORKERS` 调整普通 Vitest 与插件 Node test 的文件并发。未设置或空值保留入口默认值；合法值是十进制正安全整数，例如 `1`、`2`、`4`。`0`、负数、小数、百分比、空白和非数字会在准备或启动测试前失败。普通 Vitest 的默认上限为 2，最小 worker 为 1；插件 Node test 未设置时保留 Node runner 的默认并发。`pnpm test:workers` 使用真实 Vitest 子进程验证这些边界。
 
-Windows x64 CI 的普通 integration 默认使用 1 worker，以减少并发测试的资源竞争；仓库变量 `AW_TEST_WORKERS` 的显式配置优先。其他平台保留入口默认值。
+Windows x64 CI 的普通 integration 分为三个独立 runner 的 Vitest shard，每片默认使用 1 worker；仓库变量 `AW_TEST_WORKERS` 的显式配置优先。第 3 片同时运行完整的串行 process-lifecycle 和 pack smoke，全部分片成功才满足发布门禁。其他平台保留入口默认值。
 
 定向 Vitest 命令可用 `--maxWorkers=4` 覆盖合法的环境值，`--minWorkers` 必须是正安全整数且不能超过上限。`pnpm plugin:test <plugin> --test-concurrency=4` 同样支持显式覆盖。非法环境值始终失败，即使同时提供显式值。process-lifecycle、锁/子 runner、dist contract、smoke、performance 和 qualification 保持串行；通用环境变量不能解除约束，固定串行入口拒绝大于 1 的显式 worker 请求。日志中的 `AW_TEST_WORKERS` JSON 行显示生效上限和来源。worker 只控制单个 runner 的文件并发，不改变 package 执行顺序或 Actions 矩阵数量。
 

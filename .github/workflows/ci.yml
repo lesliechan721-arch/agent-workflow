@@ -76,7 +76,7 @@ jobs:
       - run: pnpm plugin:test --all
 
   platform:
-    name: ${{ matrix.os }} ${{ matrix.arch }} / Node 24
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
@@ -84,9 +84,27 @@ jobs:
           - runner: macos-15
             os: darwin
             arch: arm64
+            name: darwin arm64 / Node 24
+            integration_shard: ''
+            runtime_smoke: true
           - runner: windows-2025
             os: win32
             arch: x64
+            name: win32 x64 / Node 24 / integration 1 of 3
+            integration_shard: 1/3
+            runtime_smoke: false
+          - runner: windows-2025
+            os: win32
+            arch: x64
+            name: win32 x64 / Node 24 / integration 2 of 3
+            integration_shard: 2/3
+            runtime_smoke: false
+          - runner: windows-2025
+            os: win32
+            arch: x64
+            name: win32 x64 / Node 24 / integration 3 of 3
+            integration_shard: 3/3
+            runtime_smoke: true
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     defaults:
@@ -113,9 +131,19 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test:integration
+        if: matrix.integration_shard == ''
+      - name: Run the Windows integration shard
+        if: matrix.integration_shard != ''
+        working-directory: packages/cli
+        run: node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --shard "${{ matrix.integration_shard }}"
         env:
-          AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || (matrix.os == 'win32' && '1' || '') }}
+          AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || '1' }}
+      - name: Run Windows process lifecycle tests
+        if: matrix.os == 'win32' && matrix.runtime_smoke
+        working-directory: packages/cli
+        run: node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration
       - run: pnpm test:smoke:pack:cli
+        if: matrix.runtime_smoke
 
   beta:
     needs: [node22, release-verification, platform]
