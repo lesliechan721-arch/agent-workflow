@@ -647,8 +647,16 @@ describe('pack smoke', () => {
       pnpmEntry: string;
     }).pnpmEntry;
     await expect(fs.pathExists(installedPnpmEntry)).resolves.toBe(true);
-    expect(path.relative(globalNodeModules, installedPnpmEntry).startsWith(`..${path.sep}`)).toBe(false);
-    expect(path.relative(repoRoot(), installedPnpmEntry).startsWith(`..${path.sep}`)).toBe(true);
+    const relativeToInstall = path.relative(globalNodeModules, installedPnpmEntry);
+    expect(path.isAbsolute(relativeToInstall)).toBe(false);
+    expect(relativeToInstall).not.toBe('..');
+    expect(relativeToInstall.startsWith(`..${path.sep}`)).toBe(false);
+    const relativeToRepo = path.relative(repoRoot(), installedPnpmEntry);
+    expect(
+      path.isAbsolute(relativeToRepo)
+      || relativeToRepo === '..'
+      || relativeToRepo.startsWith(`..${path.sep}`),
+    ).toBe(true);
     expect(installedPnpmEntry).toContain(`${path.sep}pnpm${path.sep}`);
 
     const parentWorkspace = path.join(tempRoot, 'managed-runtime-parent-workspace');
