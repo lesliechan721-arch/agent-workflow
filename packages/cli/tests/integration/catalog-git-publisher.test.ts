@@ -2,10 +2,11 @@ import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 import { preparePublishedCatalogWorkspace } from '@lesliechan721/aw-plugin-core';
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { bundleLocalPlugin, createCatalogRuntimeImportResolver } from '../../scripts/plugin-staging.js';
 import {
@@ -27,30 +28,71 @@ import {
 import { runCli } from '../../src/index.js';
 import { CLI_RESERVED_IMPORTS } from '../../src/utils/manifest.js';
 import { prepareCatalogRelease } from '../../../../scripts/release/catalog-publication.mjs';
+import { createIsolatedTestEnv } from '../helpers/test-isolation.js';
+import { TestCommandDiagnostics } from '../helpers/test-command-diagnostics.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 
-afterEach(async ({ task }) => {
-  const cleanup = () => Promise.all(roots.splice(0).map((root) => fs.remove(root)));
-  if (/^(allows a renamed remote alias|rejects a changed (remote identity|branch) during apply|stops when the pending )/u.test(task.name)) {
-    await publicationStages(task.name)('cleanup', cleanup);
-  } else {
-    await cleanup();
-  }
+const isolatedCaseEnv = 'AW_PUBLISHER_ISOLATED_CASE';
+const publisherTempBase = os.tmpdir();
+const publisherPackageRoot = fileURLToPath(new URL('../..', import.meta.url));
+const diagnosedCase = /^(allows a renamed remote alias|rejects a changed (remote identity|branch) during apply|stops when the pending )/u;
+let diagnostics: TestCommandDiagnostics | undefined;
+
+beforeEach(({ task, signal }) => {
+  diagnostics = diagnosedCase.test(task.name)
+    ? new TestCommandDiagnostics('publisher', task.name, signal)
+    : undefined;
 });
 
-function publicationStages(testName: string) {
-  return async <T>(stage: string, run: () => Promise<T>): Promise<T> => {
-    const started = Date.now();
-    // Emit before awaiting so a timed-out phase still identifies where it stopped.
-    process.stderr.write(`[catalog-publisher] ${testName}: ${stage} start\n`);
-    try {
-      return await run();
-    } finally {
-      process.stderr.write(`[catalog-publisher] ${testName}: ${stage} end (${Date.now() - started}ms)\n`);
-    }
-  };
+afterEach(async ({ task, signal }) => {
+  try {
+    await diagnostics?.finish();
+  } catch (error) {
+    // Leave unconfirmed state on disk, and do not let the next case delete it.
+    roots.splice(0);
+    throw error;
+  }
+  // The outer scope owns this entire directory and waits for the real child tree.
+  // A timed-out child must not delete paths while its uncancelled callback still runs.
+  if (process.env[isolatedCaseEnv] === task.name && signal.aborted) {
+    getCurrentSourceTestIsolation().cleanup = async () => {
+      process.stderr.write('[catalog-publisher] Retained cancelled child state for its outer process scope.\n');
+    };
+    return;
+  }
+  const cleanup = () => Promise.all(roots.splice(0).map((root) => fs.remove(root)));
+  if (diagnostics) await diagnostics.stage('cleanup', cleanup);
+  else await cleanup();
+});
+
+function publicationStages() {
+  return <T>(stage: string, run: () => Promise<T>): Promise<T> => diagnostics!.stage(stage, run);
+}
+
+async function isolatedPublisherCase(testName: string, run: () => Promise<void>): Promise<void> {
+  if (process.env[isolatedCaseEnv] === testName) return run();
+  await diagnostics!.run(async () => {
+    const childRoot = await fs.mkdtemp(path.join(publisherTempBase, 'aw-publisher-isolated-case-'));
+    roots.push(childRoot);
+    const childIsolation = await createIsolatedTestEnv({ rootDir: childRoot, baseEnv: process.env });
+    // Keep all child fixtures below a path owned by this outer case, including its isolated HOME.
+    await diagnostics!.command(process.execPath, [
+      path.resolve(publisherPackageRoot, '../../scripts/test/run-vitest.mjs'),
+      'run', '--project', 'integration', '--maxWorkers=1', '--no-file-parallelism',
+      'tests/integration/catalog-git-publisher.test.ts',
+      '-t', `^version-scoped Catalog publication journal ${testName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}$`,
+    ], {
+      cwd: publisherPackageRoot,
+      env: {
+        ...childIsolation.env,
+        [isolatedCaseEnv]: testName,
+      },
+      onStderr: (text) => process.stderr.write(text),
+    });
+  });
 }
 
 async function temporaryRoot(prefix: string): Promise<string> {
@@ -793,8 +835,8 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
       .toBe(publication.expectedCommit);
   });
 
-  it('allows a renamed remote alias when its fetch and push identity is unchanged', async ({ task }) => {
-    const stage = publicationStages(task.name);
+  it('allows a renamed remote alias when its fetch and push identity is unchanged', async ({ task }) => isolatedPublisherCase(task.name, async () => {
+    const stage = publicationStages();
     const { root, remote } = await stage('createWorkspace', () => createWorkspace());
     const publication = await stage('plan', () => plan(root));
     await stage('mutation', async () => {
@@ -811,12 +853,12 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
         env: process.env,
       })).resolves.toMatchObject({ state: 'published', remote: 'renamed' });
     });
-  });
+  }));
 
   it.each(['remote identity', 'branch'] as const)(
     'rejects a changed %s during apply',
-    async (changed) => {
-      const stage = publicationStages(`rejects a changed ${changed} during apply`);
+    async (changed) => isolatedPublisherCase(`rejects a changed ${changed} during apply`, async () => {
+      const stage = publicationStages();
       const { root, remote } = await stage('createWorkspace', () => createWorkspace());
       const publication = await stage('plan', () => plan(root));
       const evilRemote = await stage('mutation', async () => {
@@ -840,13 +882,13 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
         expect(await git(root, ['ls-remote', remote])).toBe('');
         if (evilRemote !== undefined) expect(await git(root, ['ls-remote', evilRemote])).toBe('');
       });
-    },
+    }),
   );
 
   it.each(['journal', 'damaged journal', 'repository', 'damaged repository'] as const)(
     'stops when the pending %s is missing or damaged',
-    async (missing) => {
-      const stage = publicationStages(`stops when the pending ${missing} is missing or damaged`);
+    async (missing) => isolatedPublisherCase(`stops when the pending ${missing} is missing or damaged`, async () => {
+      const stage = publicationStages();
       const { root } = await stage('createWorkspace', () => createWorkspace());
       const publication = await stage('plan', () => plan(root));
       await stage('mutation', async () => {
@@ -859,7 +901,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
       await stage('apply', async () => {
         await expect(apply(root, publication)).rejects.toThrow(/missing|damaged|Increase/u);
       });
-    },
+    }),
   );
 
   it('fails closed when the authorized digest appears in multiple schema v2 journal files', async () => {

@@ -40,6 +40,7 @@ jobs:
       version: ${{ steps.inspect.outputs.version }}
     env:
       AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+      AW_TEST_DIAGNOSTICS_DIR: ${{ runner.temp }}/aw-test-diagnostics
       RELEASE_PRODUCT: ${{ inputs.product }}
       RELEASE_TAG: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
@@ -131,6 +132,16 @@ jobs:
           printf 'Recovery artifacts expire after 30 days. Missing or damaged recovery evidence requires a new version.\n' >> "$GITHUB_STEP_SUMMARY"
         env:
           CANDIDATE_DIGEST: ${{ steps.prepare.outputs.bundle_digest || steps.inspect.outputs.recovery_digest }}
+      - name: Save failed verification diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-diagnostics-candidate-${{ inputs.product }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.AW_TEST_DIAGNOSTICS_DIR }}/publisher/**/*.json
+            ${{ env.AW_TEST_DIAGNOSTICS_DIR }}/npm/**/*.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Remove temporary authentication
         if: always()
         run: rm -f "$RUNNER_TEMP/aw-release-askpass"

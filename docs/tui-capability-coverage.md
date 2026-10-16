@@ -67,6 +67,6 @@
 - `packages/cli/tests/unit/rebuild-task-command.test.ts`
 - `packages/cli/tests/unit/tui-dependency-graph-v7.test.tsx`
 - `packages/cli/tests/unit/tui-config-experience-v7.test.tsx`
-- `packages/cli/tests/unit/tui-console-app-v5.test.tsx` 与 `packages/cli/tests/unit/tui-route-registry-v7.test.ts`
+- `packages/cli/tests/unit/tui-console-app-v5-*.test.tsx` 中的导航、插件、配置、来源、依赖和操作场景，以及 `packages/cli/tests/unit/tui-route-registry-v7.test.ts`
 
 新增或改变消费能力时，必须更新本表，说明 TUI 入口和失败恢复路径，或说明保留 CLI 的理由。新增 TUI 路由必须同时接入生产路由定义、渲染、实体失效处理和按键合同。

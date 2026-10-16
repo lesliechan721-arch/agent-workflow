@@ -1,15 +1,16 @@
 import os from 'node:os';
 import path from 'node:path';
-import { execFile, type ExecFileOptions } from 'node:child_process';
-import { promisify } from 'node:util';
+import type { ExecFileOptions } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, type TestContext } from 'vitest';
 
-import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
+import { getCurrentSourceTestIsolation, registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
-import { execPnpmForTest } from '../helpers/pnpm.js';
+import { createTestPnpmInvocation } from '../helpers/pnpm.js';
+import { TestCommandDiagnostics } from '../helpers/test-command-diagnostics.js';
+import { NativeCliError } from '../../src/utils/native-cli.js';
 import { writeSkillsCliFixture } from '../helpers/skills-cli-fixture.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
@@ -18,7 +19,49 @@ import {
   readPluginManifest,
 } from '../../src/utils/manifest.js';
 
-const execFileAsync = promisify(execFile);
+let commands: TestCommandDiagnostics;
+let npmLogSource: { directory: string; cache: string } | undefined;
+let cleanupUnconfirmed = false;
+
+beforeEach(({ task, signal }) => {
+  commands = new TestCommandDiagnostics('npm', task.name, signal);
+  npmLogSource = undefined;
+  if (cleanupUnconfirmed) throw new Error('A previous pack smoke process could not be cleaned up; its temporary state cannot be reused.');
+});
+
+afterEach(async () => {
+  try {
+    await commands.finish();
+    if (npmLogSource) await commands.npmLogs(npmLogSource.directory, npmLogSource.cache);
+  } catch (error) {
+    cleanupUnconfirmed = true;
+    packedCliPromise = null;
+    // Restore env/cwd as usual, but keep this case's HOME/TMP while a process may still use them.
+    getCurrentSourceTestIsolation().cleanup = async () => {
+      process.stderr.write('[pack-smoke] Retained this case\'s isolated HOME/TMP because process cleanup is unconfirmed.\n');
+    };
+    throw error;
+  }
+});
+
+function smokeCase(body: () => Promise<void>) {
+  return (_context: TestContext): Promise<void> => commands.run(body);
+}
+
+async function execFileAsync(command: string, args: string[], options: ExecFileOptions = {}) {
+  try {
+    return await commands.command(command, args, {
+      cwd: typeof options.cwd === 'string' ? options.cwd : undefined,
+      env: options.env,
+      timeoutMs: options.timeout,
+      maxBuffer: options.maxBuffer,
+    });
+  } catch (error) {
+    // Keep the execFile error contract used by the existing external-consumer assertions.
+    if (error instanceof NativeCliError) Object.assign(error, { code: error.exitCode });
+    throw error;
+  }
+}
 const sharedTempBase = os.tmpdir();
 const tempDirs: string[] = [];
 let packedCliPromise: Promise<{
@@ -196,8 +239,9 @@ async function preparePackedCli(): Promise<{
     const staleDistPath = path.join(packageRoot, 'dist', 'stale-build-sentinel.js');
     await fs.outputFile(staleDistPath, 'export const stale = true;\n', 'utf8');
     const snapshotEntriesBefore = await listBuildSnapshotEntries(root);
-    await execPnpmForTest(
-      ['pack:cli', '--pack-destination', packDir],
+    const packInvocation = createTestPnpmInvocation(['pack:cli', '--pack-destination', packDir]);
+    await execFileAsync(
+      packInvocation.command, packInvocation.args,
       {
         cwd: root,
         env: process.env,
@@ -239,7 +283,12 @@ async function preparePackedCli(): Promise<{
       tempRoot,
     };
   })();
-  return packedCliPromise;
+  try {
+    return await packedCliPromise;
+  } catch (error) {
+    packedCliPromise = null;
+    throw error;
+  }
 }
 
 async function createExternalNativeCliFixture(tempRoot: string): Promise<string> {
@@ -440,11 +489,12 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
 }
 
 afterAll(async () => {
+  if (cleanupUnconfirmed) throw new Error('Pack smoke process cleanup is unconfirmed; temporary state was retained.');
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('pack smoke', () => {
-  it('packs one Windows Job helper in each platform tarball and none in Eval', async () => {
+  it('packs one Windows Job helper in each platform tarball and none in Eval', smokeCase(async () => {
     const { evalTarballPath, windowsX64TarballPath, windowsArm64TarballPath } = await preparePackedCli();
     const platformUnpackRoot = await createSmokeTempRoot(
       'aw-platform-pack-smoke-',
@@ -486,9 +536,9 @@ describe('pack smoke', () => {
       expect(bytes.subarray(peOffset, peOffset + 4).toString('ascii')).toBe('PE\0\0');
       expect(bytes.readUInt16LE(peOffset + 4)).toBe(machine);
     }
-  }, 300_000);
+  }), 300_000);
 
-  it('runs external authoring workflow from installed tarballs', async () => {
+  it('runs external authoring workflow from installed tarballs', smokeCase(async () => {
     const startedAt = Date.now();
     const markStage = (stage: string): void => {
       process.stderr.write(`[pack-smoke] ${stage} (${Date.now() - startedAt}ms)\n`);
@@ -507,29 +557,44 @@ describe('pack smoke', () => {
     );
     const npmCli = await resolveNpmCli(envWithoutNodePath);
 
-    markStage('npm install tarballs start');
-    await execFileAsync(
-      process.execPath,
-      [
-        npmCli,
-        'install',
-        '--global',
-        '--omit=optional',
-        '--prefix',
-        installPrefix,
-        evalTarballPath,
-        coreTarballPath,
-        cliTarballPath,
-        ...(process.platform === 'win32'
-          ? [process.arch === 'arm64' ? windowsArm64TarballPath : windowsX64TarballPath]
-          : []),
-      ],
-      {
-        cwd: tempRoot,
-        env: envWithoutNodePath,
-        maxBuffer: 20 * 1024 * 1024,
-      },
+    const npmLogsDir = path.join(tempRoot, 'npm-logs');
+    await fs.ensureDir(npmLogsDir);
+    npmLogSource = { directory: npmLogsDir, cache: '' };
+    const npmDiagnosticsArgs = ['--timing', '--logs-dir', npmLogsDir, '--loglevel=http'];
+    const { stdout: npmCache } = await execFileAsync(
+      process.execPath, [npmCli, 'config', 'get', 'cache', ...npmDiagnosticsArgs],
+      { cwd: tempRoot, env: envWithoutNodePath },
     );
+    npmLogSource.cache = npmCache.trim();
+    markStage('npm install tarballs start');
+    try {
+      await execFileAsync(
+        process.execPath,
+        [
+          npmCli,
+          'install',
+          ...npmDiagnosticsArgs,
+          '--global',
+          '--omit=optional',
+          '--prefix',
+          installPrefix,
+          evalTarballPath,
+          coreTarballPath,
+          cliTarballPath,
+          ...(process.platform === 'win32'
+            ? [process.arch === 'arm64' ? windowsArm64TarballPath : windowsX64TarballPath]
+            : []),
+        ],
+        {
+          cwd: tempRoot,
+          env: envWithoutNodePath,
+          maxBuffer: 20 * 1024 * 1024,
+        },
+      );
+    } finally {
+      // Collect only numeric timers and cache counters before any temporary state is removed.
+      await commands.npmLogs(npmLogsDir, npmCache.trim());
+    }
     markStage('npm install tarballs end');
 
     const externalNativeBin = await createExternalNativeCliFixture(tempRoot);
@@ -743,7 +808,7 @@ describe('pack smoke', () => {
       fs.ensureDir(path.dirname(managedRuntimeHome)),
     ]);
     markStage('pack managed Codex fixture start');
-    await execFileAsync(process.execPath, [npmCli, 'pack', '--pack-destination', localCodexPack], {
+    await execFileAsync(process.execPath, [npmCli, 'pack', ...npmDiagnosticsArgs, '--pack-destination', localCodexPack], {
       cwd: localCodexFixture,
       env: envWithoutNodePath,
     });
@@ -1398,9 +1463,9 @@ describe('pack smoke', () => {
     expect(evalHelp.stderr).toBe('');
 
     expect((await fs.lstat(installedEvalRoot)).isSymbolicLink()).toBe(false);
-  }, 300_000);
+  }), 300_000);
 
-  it('packs the CLI tarball without the staged plugins-dist snapshot', async () => {
+  it('packs the CLI tarball without the staged plugins-dist snapshot', smokeCase(async () => {
     const packageRoot = path.join(repoRoot(), 'packages', 'cli');
     const { packageRoot: unpackedPackageRoot } = await preparePackedCli();
     const unpackedFiles = await listFilesRecursively(unpackedPackageRoot);
@@ -1520,9 +1585,9 @@ describe('pack smoke', () => {
       code: 1,
       stderr: expect.stringContaining('ERR_MODULE_NOT_FOUND'),
     });
-  });
+  }));
 
-  it('validates the staging package manager from the unpacked tarball runtime', async () => {
+  it('validates the staging package manager from the unpacked tarball runtime', smokeCase(async () => {
     const { packageRoot, tempRoot } = await preparePackedCli();
     await installDeclaredDependencyOnlyView(packageRoot, path.join(repoRoot(), 'packages', 'cli'));
     const packageJson = await fs.readJson(path.join(packageRoot, 'package.json')) as {
@@ -1551,9 +1616,9 @@ describe('pack smoke', () => {
       cwd: tempRoot,
       env: process.env,
     })).resolves.toMatchObject({ stdout: `${packageManager}\n`, stderr: '' });
-  });
+  }));
 
-  it('bundles public slashCommands correctly from the unpacked tarball runtime', async () => {
+  it('bundles public slashCommands correctly from the unpacked tarball runtime', smokeCase(async () => {
     const root = repoRoot();
     const packageRoot = path.join(root, 'packages', 'cli');
     const { packageRoot: unpackedPackageRoot, tempRoot } = await preparePackedCli();
@@ -1593,5 +1658,5 @@ describe('pack smoke', () => {
       pathToFileURL(path.join(unpackedPackageRoot, 'dist', 'src', 'utils', 'bundle-layout.js')).href
     )) as { validateBundleLayout: (rootDir: string) => Promise<void> };
     await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
-  });
+  }));
 });
