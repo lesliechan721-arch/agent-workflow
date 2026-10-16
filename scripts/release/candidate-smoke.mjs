@@ -103,8 +103,9 @@ export async function installCandidatePackages(bundleRoot, manifest, root, env, 
     await computePackageTarballTreeDigest(tarball);
     const unpack = path.join(root, `unpack-${index}`);
     await fs.mkdir(unpack, { recursive: true });
-    // GNU tar interprets a Windows drive prefix in the archive name as a remote host.
-    await capture('tar', ['-xzf', `./${path.basename(tarball)}`, '-C', unpack], { cwd: path.dirname(tarball), env });
+    // Keep tar's paths relative even when the candidate and temp directory use different Windows drives.
+    await fs.copyFile(tarball, path.join(unpack, 'candidate.tgz'));
+    await capture('tar', ['-xzf', 'candidate.tgz'], { cwd: unpack, env });
     const unpackedRoot = path.join(unpack, 'package');
     const metadata = JSON.parse(await fs.readFile(path.join(unpackedRoot, 'package.json'), 'utf8'));
     if (!PACKAGE_NAMES.includes(metadata.name) || packages.has(metadata.name)) throw new Error('Candidate tarballs must contain each of the five release packages once.');

@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import test from 'node:test';
 
-import { sealCandidateDirectory } from './candidate-archive.mjs';
+import { sealCandidateDirectory, verifyCandidateDirectory } from './candidate-archive.mjs';
 import {
   assertCandidateHost,
   assertRequiredChecks,
@@ -82,6 +82,7 @@ test('candidate installation consumes all five tarballs and sends only third-par
     assert.equal((await fs.lstat(installed)).isSymbolicLink(), false);
     assert.equal(await fs.readFile(path.join(installed, 'candidate-marker'), 'utf8'), name);
   }
+  await verifyCandidateDirectory(bundle);
 });
 
 test('an incomplete or modified candidate fails before package installation', async (t) => {
