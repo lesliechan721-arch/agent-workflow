@@ -7,6 +7,7 @@ import { calculateCanonicalDigest } from './release-model.mjs';
 
 const importedBindings = new WeakMap();
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
+const BUILD_DIGEST = /^[0-9a-f]{64}$/u;
 
 function assertSavedEvidence(descriptor) {
   if (!descriptor.axes.cli || descriptor.axes.catalog
@@ -16,7 +17,7 @@ function assertSavedEvidence(descriptor) {
     throw new Error('Portable prepared release must contain a complete CLI source and build binding.');
   }
   for (const field of ['inputDigest', 'outputDigest', 'cliPackageDigest']) {
-    if (!SHA256.test(descriptor.build[field] ?? '')) {
+    if (!BUILD_DIGEST.test(descriptor.build[field] ?? '')) {
       throw new Error(`Portable prepared release is missing its saved build ${field}.`);
     }
   }

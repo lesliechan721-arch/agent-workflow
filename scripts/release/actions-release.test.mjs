@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { computeBuildInputDigest, computeBuildOutputDigest, computeCliPackageDigest } from '../build/build-cache.mjs';
 import { runActionsRelease } from './actions-release.mjs';
 import { bytesDigest, extractCandidate } from './candidate-archive.mjs';
 import { captureCommand } from './common.mjs';
@@ -68,8 +69,10 @@ async function fixture(t) {
   await git(repoRoot, 'push', 'origin', 'main', `refs/tags/${tag}`);
   const sourceHead = (await git(repoRoot, 'rev-parse', 'HEAD')).stdout.trim();
   const snapshot = {
-    generationId: crypto.randomUUID(), inputDigest: bytesDigest(Buffer.from('inputs')),
-    outputDigest: bytesDigest(Buffer.from('outputs')), cliPackageDigest: bytesDigest(Buffer.from('cli')),
+    generationId: crypto.randomUUID(),
+    inputDigest: await computeBuildInputDigest(repoRoot),
+    outputDigest: await computeBuildOutputDigest(repoRoot),
+    cliPackageDigest: await computeCliPackageDigest(repoRoot),
     windowsX64PackageRoot: packageRoots[0], windowsArm64PackageRoot: packageRoots[1],
     evalPackageRoot: packageRoots[2], corePackageRoot: packageRoots[3], cliPackageRoot: packageRoots[4],
   };

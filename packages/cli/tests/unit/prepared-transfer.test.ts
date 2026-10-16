@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { computeBuildInputDigest, computeBuildOutputDigest, computeCliPackageDigest } from '../../../../scripts/build/build-cache.mjs';
 import { captureCommand } from '../../../../scripts/release/common.mjs';
 import {
   exportPreparedRelease,
@@ -41,7 +42,8 @@ async function fixture() {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-prepared-transfer-'));
   roots.push(repoRoot);
   const releaseRoot = path.join(repoRoot, '.release');
-  const packageRoots = packageDirectories.map((name) => path.join(repoRoot, 'snapshot', name));
+  const snapshotRoot = path.join(repoRoot, 'snapshot');
+  const packageRoots = packageDirectories.map((name) => path.join(snapshotRoot, 'packages', name));
   await Promise.all(packageRoots.map(async (root, index) => {
     await fs.mkdir(path.join(root, 'package'), { recursive: true });
     await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({
@@ -60,9 +62,10 @@ async function fixture() {
   }));
   const snapshot = {
     generationId: crypto.randomUUID(),
-    inputDigest: hash('saved-input'),
-    outputDigest: hash('saved-output'),
-    cliPackageDigest: hash('saved-package'),
+    // Use the build producer's actual digest format at the transfer boundary.
+    inputDigest: await computeBuildInputDigest(snapshotRoot),
+    outputDigest: await computeBuildOutputDigest(snapshotRoot),
+    cliPackageDigest: await computeCliPackageDigest(snapshotRoot),
     windowsX64PackageRoot: packageRoots[0], windowsArm64PackageRoot: packageRoots[1],
     evalPackageRoot: packageRoots[2], corePackageRoot: packageRoots[3], cliPackageRoot: packageRoots[4],
   };
@@ -212,7 +215,15 @@ describe('portable prepared CLI release', () => {
     await fs.writeFile(archivePath, archiveBytes);
     const descriptorPath = path.join(value.from, 'prepared', 'descriptor.json');
     const descriptorBytes = await fs.readFile(descriptorPath);
-    const changed = { ...value.descriptor, build: { ...value.descriptor.build, outputDigest: hash('changed-build') } };
+    for (const field of ['inputDigest', 'outputDigest', 'cliPackageDigest']) {
+      for (const invalid of [undefined, 'a'.repeat(63), hash('wrong-build-format'), 'invalid']) {
+        await fs.writeFile(descriptorPath, JSON.stringify({
+          ...value.descriptor, build: { ...value.descriptor.build, [field]: invalid },
+        }));
+        await expect(importPreparedRelease(value.importOptions)).rejects.toThrow(`saved build ${field}`);
+      }
+    }
+    const changed = { ...value.descriptor, build: { ...value.descriptor.build, outputDigest: 'b'.repeat(64) } };
     await fs.writeFile(descriptorPath, JSON.stringify(changed));
     await expect(importPreparedRelease(value.importOptions)).rejects.toThrow('descriptor digest');
     await fs.writeFile(descriptorPath, JSON.stringify({
