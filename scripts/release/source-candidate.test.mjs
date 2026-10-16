@@ -172,15 +172,17 @@ test('automatic beta inspection reuses only the recorded successful main CI atte
     id: 42, run_attempt: 2, event: 'push', head_branch: 'main', head_sha: sourceHead,
     head_repository: { full_name: 'owner/repo' },
   };
-  const jobs = [
-    'Linux x64 / Node 22', 'Linux x64 / Node 24 / release verification',
+  const requiredJobs = [
+    'Linux x64 / Node 22 / unit', 'Linux x64 / Node 22 / integration',
+    'Linux x64 / Node 24 / unit', 'Linux x64 / Node 24 / integration',
+    'Linux x64 / Node 24 / release verification',
     'Linux x64 / Node 24 / plugin tests', 'darwin arm64 / Node 24',
     'win32 x64 / Node 24 / integration 1 of 3',
     'win32 x64 / Node 24 / integration 2 of 3',
     'win32 x64 / Node 24 / integration 3 of 3',
   ].map((name) => ({ name, status: 'completed', conclusion: 'success' }));
   // The candidate is pushed before its caller's beta job finishes.
-  jobs.push({ name: 'beta / candidates', status: 'in_progress', conclusion: null });
+  const jobs = [...requiredJobs, { name: 'beta / candidates', status: 'in_progress', conclusion: null }];
   const options = {
     repoRoot, log() {},
     env: { GITHUB_REPOSITORY: 'owner/repo', GITHUB_EVENT_NAME: 'push', GITHUB_RUN_ID: '99' },
@@ -204,17 +206,20 @@ test('automatic beta inspection reuses only the recorded successful main CI atte
     assert.equal((await inspect()).reuse_main_ci, 'false', field);
     ci[field] = previous;
   }
-  for (const conclusion of ['failure', 'skipped', 'cancelled', null]) {
-    jobs[0].conclusion = conclusion;
-    assert.equal((await inspect()).reuse_main_ci, 'false', String(conclusion));
+  for (const job of requiredJobs) {
+    for (const conclusion of ['failure', 'skipped', 'cancelled', null]) {
+      job.conclusion = conclusion;
+      assert.equal(await canReuseMainCi(candidate, options), false, `${job.name}: ${conclusion}`);
+    }
+    job.conclusion = 'success';
+    job.status = 'in_progress';
+    assert.equal(await canReuseMainCi(candidate, options), false, `${job.name}: in progress`);
+    job.status = 'completed';
+    const index = jobs.indexOf(job);
+    jobs.splice(index, 1);
+    assert.equal(await canReuseMainCi(candidate, options), false, `${job.name}: missing`);
+    jobs.splice(index, 0, job);
   }
-  jobs[0].conclusion = 'success';
-  jobs[0].status = 'in_progress';
-  assert.equal((await inspect()).reuse_main_ci, 'false');
-  jobs[0].status = 'completed';
-  const missing = jobs.splice(4, 1)[0];
-  assert.equal((await inspect()).reuse_main_ci, 'false');
-  jobs.splice(4, 0, missing);
   assert.equal((await inspect({ githubRequest: async (endpoint) => {
     if (endpoint.includes('/ci.yml/')) throw new Error('API unavailable');
     return options.githubRequest(endpoint);

@@ -44,7 +44,10 @@ function repository(options) {
 // Job names come from ci.yml. A renamed or missing check requires full release
 // verification until this list is updated. The beta job itself can still run.
 const REQUIRED_MAIN_CI_JOBS = [
-  'Linux x64 / Node 22',
+  'Linux x64 / Node 22 / unit',
+  'Linux x64 / Node 22 / integration',
+  'Linux x64 / Node 24 / unit',
+  'Linux x64 / Node 24 / integration',
   'Linux x64 / Node 24 / release verification',
   'Linux x64 / Node 24 / plugin tests',
   'darwin arm64 / Node 24',
