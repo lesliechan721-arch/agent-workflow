@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import childProcess from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -49,6 +49,29 @@ export function sanitizeTestDiagnostic(value: string, env = process.env): string
     .replace(/((?:_authToken|password|token|secret)\s*[=:]\s*)[^\s,;]+/giu, '$1[secret]')
     .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\s"'<>]+/gu, '[path]')
     .replace(/(?<![A-Za-z0-9_.@/\]-])\/[^\s"'<>]+/gu, '[path]');
+}
+
+function commandFailure(error: unknown, env: NodeJS.ProcessEnv, abortReason?: unknown): Error {
+  const detail = error instanceof Error ? error.message : String(error);
+  const aborted = abortReason instanceof Error ? abortReason.message : String(abortReason);
+  const failure = new Error(sanitizeTestDiagnostic(
+    abortReason === undefined ? detail : `${aborted}; ${detail}`, env,
+  ));
+  // Vitest serializes error properties recursively. Keep only the fields used by these tests.
+  if (error instanceof NativeCliError) {
+    Object.assign(failure, {
+      exitCode: error.exitCode,
+      code: error.exitCode,
+      stdout: sanitizeTestDiagnostic(error.stdout, env),
+      stderr: sanitizeTestDiagnostic(error.stderr, env),
+    });
+  } else if (error && typeof error === 'object' && 'code' in error) {
+    if (typeof error.code === 'number') Object.assign(failure, { code: error.code });
+    else if (typeof error.code === 'string') {
+      Object.assign(failure, { code: sanitizeTestDiagnostic(error.code, env) });
+    }
+  }
+  return failure;
 }
 
 /** Only these failure-prone tests use this local scope; no process-wide runner override. */
@@ -143,8 +166,11 @@ export class TestCommandDiagnostics {
     const markerVariable = `AW_TEST_COMMAND_${randomUUID().replaceAll('-', '_')}`;
     const marker = randomUUID();
     const metrics: CommandMetrics = {};
+    const diagnosticEnv = { ...this.env, ...options.env };
     const run = this.stage(label, async () => {
-      this.controller.signal.throwIfAborted();
+      if (this.controller.signal.aborted) {
+        throw commandFailure(this.controller.signal.reason, diagnosticEnv);
+      }
       this.active.set(label, undefined);
       await this.save();
       try {
@@ -158,8 +184,10 @@ export class TestCommandDiagnostics {
             markerEnvironmentVariable: markerVariable,
           }),
           execFile(executable, argv, spawnOptions, callback) {
-            const child = execFile(executable, argv, {
+            const child = childProcess.execFile(executable, argv, {
               ...spawnOptions,
+              // npm scripts can launch cmd.exe, which rejects a namespaced cwd as UNC.
+              cwd: options.cwd,
               maxBuffer: options.maxBuffer ?? 20 * 1024 * 1024,
             }, callback);
             metrics.managedSpawnCount = 1;
@@ -184,11 +212,8 @@ export class TestCommandDiagnostics {
         const cleanupError = error instanceof NativeCliError ? error.cleanupError : error;
         metrics.cleanupFailureCount = cleanupError ? 1 : 0;
         metrics.leakedProcessCount = cleanupError ? null : 0;
-        if (this.controller.signal.aborted) {
-          throw new AggregateError([this.controller.signal.reason, error],
-            `${String(this.controller.signal.reason)}; ${String(error)}`);
-        }
-        throw error;
+        throw commandFailure(error, diagnosticEnv,
+          this.controller.signal.aborted ? this.controller.signal.reason : undefined);
       } finally {
         // A nonzero cleanup count means termination was not confirmed. Keep it visible.
         if (!metrics.cleanupFailureCount) this.active.delete(label);
@@ -262,6 +287,10 @@ export class TestCommandDiagnostics {
         cacheRevalidated: summary.cacheRevalidated,
         timingFiles: summary.timing.length,
         npmMs: summary.timing.map(({ timers }) => timers.npm).filter((value) => value !== undefined),
+        phases: summary.timing.map(({ timers }) => Object.fromEntries([
+          'command:install', 'idealTree', 'reify:loadTrees', 'reify:unpack', 'reify:build',
+        ].flatMap((stage) => timers[stage] === undefined ? [] : [[stage, timers[stage]]])))
+          .filter((phases) => Object.keys(phases).length > 0),
       })}\n`);
       if (this.outputRoot) await fs.outputJson(path.join(this.outputRoot, `${this.id}-npm.json`), summary, { spaces: 2 });
     } catch (error) {

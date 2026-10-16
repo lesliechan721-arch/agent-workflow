@@ -1,8 +1,10 @@
+import childProcess from 'node:child_process';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { sanitizeTestDiagnostic, TestCommandDiagnostics } from '../helpers/test-command-diagnostics.js';
 import { waitForProcessExit } from '../support/process-tree.js';
@@ -33,10 +35,27 @@ describe('test command diagnostics', () => {
     ].join('\n'));
     await fs.outputJson(path.join(logs, 'test-timing.json'), {
       metadata: { command: [root, 'private-test-token'] },
-      timers: { npm: 123, [`build:${root}`]: 42, 'token=private-test-token': 5 },
+      timers: {
+        npm: 123, 'command:install': 100, idealTree: 90, 'reify:loadTrees': 80,
+        'reify:unpack': 70, 'reify:build': 60,
+        [`build:${root}`]: 42, 'token=private-test-token': 5,
+      },
       unfinishedTimers: { install: [1, 2] },
     });
-    await diagnostics.npmLogs(logs, path.join(process.env.HOME!, '.npm'));
+    const stderr = vi.spyOn(process.stderr, 'write');
+    let logSummary: Record<string, unknown>;
+    try {
+      await diagnostics.npmLogs(logs, path.join(process.env.HOME!, '.npm'));
+      const line = stderr.mock.calls.map(([text]) => String(text))
+        .find((text) => text.startsWith('[pack-smoke npm] '))!;
+      logSummary = JSON.parse(line.slice('[pack-smoke npm] '.length));
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(logSummary.phases).toEqual([{
+      'command:install': 100, idealTree: 90, 'reify:loadTrees': 80,
+      'reify:unpack': 70, 'reify:build': 60,
+    }]);
     await diagnostics.finish();
     const files = await fs.readdir(path.join(root, 'diagnostics', 'npm'));
     expect(files.every((name) => name.endsWith('.json'))).toBe(true);
@@ -53,6 +72,53 @@ describe('test command diagnostics', () => {
     }
     expect(sanitizeTestDiagnostic('C:\\Users\\private\\cache https://private.example token=private-test-token'))
       .toBe('[path] [url] token=[secret]');
+  });
+
+  it('preserves the caller cwd and serializes command failures without their invocation environment', async ({ task, signal }) => {
+    const root = await fs.mkdtemp(path.join(process.env.TMPDIR!, 'aw-command cwd-'));
+    const secret = 'private-options-only-token';
+    const environmentValue = 'private-invocation-environment';
+    expect(process.env.AW_TEST_COMMAND_TOKEN).not.toBe(secret);
+    process.env.AW_TEST_DIAGNOSTICS_DIR = path.join(root, 'diagnostics');
+    const scope = new TestCommandDiagnostics('publisher', task.name, signal);
+    const spawned = vi.spyOn(childProcess, 'execFile');
+    let failure: unknown;
+    try {
+      await scope.command(process.execPath, ['-e', [
+        "console.log('visible stdout ' + process.env.AW_TEST_COMMAND_TOKEN);",
+        "console.error('visible stderr ' + process.env.AW_TEST_COMMAND_TOKEN);",
+        'process.exit(7);',
+      ].join('\n')], {
+        cwd: root,
+        env: { ...process.env, AW_TEST_COMMAND_TOKEN: secret, AW_TEST_ENV_SENTINEL: environmentValue },
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      // Inspect only cwd, so a failed assertion cannot print the captured environment.
+      const directories = spawned.mock.calls.map(([, , options]) => options?.cwd);
+      spawned.mockRestore();
+      await scope.finish();
+      expect(directories).toEqual([root]);
+    }
+    expect(Object.getPrototypeOf(failure)).toBe(Error.prototype);
+    expect(failure).toMatchObject({
+      exitCode: 7, code: 7, stdout: 'visible stdout [secret]\n', stderr: 'visible stderr [secret]\n',
+    });
+    expect(String(failure)).toContain('visible stderr [secret]');
+    const vitestRequire = createRequire(createRequire(import.meta.url).resolve('vitest/package.json'));
+    const { serializeError } = await import(pathToFileURL(vitestRequire.resolve('@vitest/utils/error')).href) as {
+      serializeError: (error: unknown) => Record<string, unknown>;
+    };
+    const serialized = serializeError(failure);
+    for (const property of ['invocation', 'env', 'cause', 'errors']) {
+      expect(serialized).not.toHaveProperty(property);
+    }
+    const archived = await fs.readFile(path.join(root, 'diagnostics', 'publisher', `${scope.id}.json`), 'utf8');
+    for (const value of [secret, environmentValue]) {
+      expect(JSON.stringify(serialized)).not.toContain(value);
+      expect(archived).not.toContain(value);
+    }
   });
 
   it('waits for real Vitest timeout cleanup before deleting fixtures and starting the next case', async ({ task, signal }) => {

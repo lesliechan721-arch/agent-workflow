@@ -10,7 +10,6 @@ import { getCurrentSourceTestIsolation, registerCurrentTestWritableStateRoot } f
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { createTestPnpmInvocation } from '../helpers/pnpm.js';
 import { TestCommandDiagnostics } from '../helpers/test-command-diagnostics.js';
-import { NativeCliError } from '../../src/utils/native-cli.js';
 import { writeSkillsCliFixture } from '../helpers/skills-cli-fixture.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
@@ -49,18 +48,12 @@ function smokeCase(body: () => Promise<void>) {
 }
 
 async function execFileAsync(command: string, args: string[], options: ExecFileOptions = {}) {
-  try {
-    return await commands.command(command, args, {
-      cwd: typeof options.cwd === 'string' ? options.cwd : undefined,
-      env: options.env,
-      timeoutMs: options.timeout,
-      maxBuffer: options.maxBuffer,
-    });
-  } catch (error) {
-    // Keep the execFile error contract used by the existing external-consumer assertions.
-    if (error instanceof NativeCliError) Object.assign(error, { code: error.exitCode });
-    throw error;
-  }
+  return commands.command(command, args, {
+    cwd: typeof options.cwd === 'string' ? options.cwd : undefined,
+    env: options.env,
+    timeoutMs: options.timeout,
+    maxBuffer: options.maxBuffer,
+  });
 }
 const sharedTempBase = os.tmpdir();
 const tempDirs: string[] = [];

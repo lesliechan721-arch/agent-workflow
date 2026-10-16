@@ -8,7 +8,7 @@
 
 本地和 CI 可以设置 `AW_TEST_WORKERS` 调整普通 Vitest 与插件 Node test 的文件并发。未设置或空值保留入口默认值；合法值是十进制正安全整数，例如 `1`、`2`、`4`。`0`、负数、小数、百分比、空白和非数字会在准备或启动测试前失败。普通 Vitest 的默认上限为 2，最小 worker 为 1；插件 Node test 未设置时保留 Node runner 的默认并发。`pnpm test:workers` 使用真实 Vitest 子进程验证这些边界。
 
-Windows x64 CI 的普通 integration 分为三个独立 runner 的 Vitest shard，每片默认使用 1 worker；仓库变量 `AW_TEST_WORKERS` 的显式配置优先。第 3 片同时运行完整的串行 process-lifecycle 和 pack smoke，全部分片成功才满足发布门禁。其他平台保留入口默认值。
+Windows x64 CI 的普通 integration 分为三个独立 runner 的 Vitest shard，每片默认使用 1 worker；仓库变量 `AW_TEST_WORKERS` 的显式配置优先。第 3 片同时运行完整的串行 integration process-lifecycle、命令诊断与超时收尾回归和 pack smoke，全部分片成功才满足发布门禁。其他平台保留入口默认值。
 
 Linux Node 24 的插件测试使用独立 job，自行构建并将本次 CLI 加入 PATH；它与完整 release verification 都是自动 beta 的必需依赖。完整 `release:verify` 通过 CLI 的 fetch smoke 执行 Catalog publish smoke，再单独运行 Catalog bootstrap，避免重复执行同一 publish smoke。独立 CLI 和 Catalog 验证入口各自保留完整覆盖。
 

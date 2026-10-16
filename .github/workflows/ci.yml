@@ -190,7 +190,7 @@ jobs:
       - name: Run Windows process lifecycle tests
         if: matrix.os == 'win32' && matrix.runtime_smoke
         working-directory: packages/cli
-        run: node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration
+        run: node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts
       - run: pnpm test:smoke:pack:cli
         if: matrix.runtime_smoke
       - name: Save failed test diagnostics
