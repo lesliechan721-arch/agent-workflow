@@ -20,8 +20,10 @@ jobs:
     timeout-minutes: 45
     env:
       AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
-      AW_TEST_DIAGNOSTICS_DIR: ${{ runner.temp }}/aw-test-diagnostics
     steps:
+      - name: Configure test diagnostics
+        shell: bash
+        run: printf 'AW_TEST_DIAGNOSTICS_DIR=%s/aw-test-diagnostics\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -42,8 +44,8 @@ jobs:
         with:
           name: test-diagnostics-node22
           path: |
-            ${{ env.AW_TEST_DIAGNOSTICS_DIR }}/publisher/**/*.json
-            ${{ env.AW_TEST_DIAGNOSTICS_DIR }}/npm/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/publisher/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/npm/**/*.json
           if-no-files-found: ignore
           retention-days: 7
 
@@ -53,8 +55,10 @@ jobs:
     timeout-minutes: 90
     env:
       AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
-      AW_TEST_DIAGNOSTICS_DIR: ${{ runner.temp }}/aw-test-diagnostics
     steps:
+      - name: Configure test diagnostics
+        shell: bash
+        run: printf 'AW_TEST_DIAGNOSTICS_DIR=%s/aw-test-diagnostics\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -83,8 +87,8 @@ jobs:
         with:
           name: test-diagnostics-release-verification
           path: |
-            ${{ env.AW_TEST_DIAGNOSTICS_DIR }}/publisher/**/*.json
-            ${{ env.AW_TEST_DIAGNOSTICS_DIR }}/npm/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/publisher/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/npm/**/*.json
           if-no-files-found: ignore
           retention-days: 7
 
@@ -154,10 +158,12 @@ jobs:
         shell: bash
     env:
       AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
-      AW_TEST_DIAGNOSTICS_DIR: ${{ runner.temp }}/aw-test-diagnostics
       EXPECTED_OS: ${{ matrix.os }}
       EXPECTED_ARCH: ${{ matrix.arch }}
     steps:
+      - name: Configure test diagnostics
+        shell: bash
+        run: printf 'AW_TEST_DIAGNOSTICS_DIR=%s/aw-test-diagnostics\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -193,8 +199,8 @@ jobs:
         with:
           name: test-diagnostics-platform-${{ strategy.job-index }}
           path: |
-            ${{ env.AW_TEST_DIAGNOSTICS_DIR }}/publisher/**/*.json
-            ${{ env.AW_TEST_DIAGNOSTICS_DIR }}/npm/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/publisher/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/npm/**/*.json
           if-no-files-found: ignore
           retention-days: 7
 

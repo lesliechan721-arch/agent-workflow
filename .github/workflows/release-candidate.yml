@@ -40,12 +40,14 @@ jobs:
       version: ${{ steps.inspect.outputs.version }}
     env:
       AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
-      AW_TEST_DIAGNOSTICS_DIR: ${{ runner.temp }}/aw-test-diagnostics
       RELEASE_PRODUCT: ${{ inputs.product }}
       RELEASE_TAG: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
       GIT_TERMINAL_PROMPT: '0'
     steps:
+      - name: Configure test diagnostics
+        shell: bash
+        run: printf 'AW_TEST_DIAGNOSTICS_DIR=%s/aw-test-diagnostics\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag }}
@@ -138,8 +140,8 @@ jobs:
         with:
           name: test-diagnostics-candidate-${{ inputs.product }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ env.AW_TEST_DIAGNOSTICS_DIR }}/publisher/**/*.json
-            ${{ env.AW_TEST_DIAGNOSTICS_DIR }}/npm/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/publisher/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/npm/**/*.json
           if-no-files-found: ignore
           retention-days: 7
       - name: Remove temporary authentication
