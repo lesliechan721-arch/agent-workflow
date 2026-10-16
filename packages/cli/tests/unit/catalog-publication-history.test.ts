@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CatalogPublicationInspectionError,
+  publicationGit,
+  publicationGitExit,
   readCatalogPublicationPluginHistory,
 } from '../../src/commands/catalog-publication-inspection.js';
 import { createCatalogManifestV7 } from '../../src/utils/catalog-manifest-v7.js';
@@ -59,6 +61,48 @@ afterEach(async () => {
 });
 
 describe('Catalog publication history Git failures', () => {
+  it('finishes fetch maintenance before returning and removing its temporary repository', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-maintenance-test-'));
+    roots.push(root);
+    const source = path.join(root, 'source');
+    await fs.ensureDir(source);
+    await execFileAsync('git', ['init', '--quiet', '--initial-branch=main'], { cwd: source });
+    // Both blobs land in Git's sampled loose-object bucket, triggering old GC and geometric maintenance.
+    for (const value of [26, 44]) {
+      const filename = `sample-${value}.txt`;
+      await fs.writeFile(path.join(source, filename), `sample-${value}\n`);
+      const blob = await execFileAsync('git', ['hash-object', filename], { cwd: source });
+      expect(blob.stdout).toMatch(/^17/u);
+    }
+    await execFileAsync('git', ['add', '--all'], { cwd: source });
+    await execFileAsync('git', [
+      '-c', 'user.name=AW Test', '-c', 'user.email=test@example.invalid',
+      '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'sampled loose objects',
+    ], { cwd: source });
+    const commit = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: source })).stdout.trim();
+
+    for (const [index, run] of [publicationGit, publicationGitExit].entries()) {
+      const repository = path.join(root, `inspection-${index}`);
+      await fs.ensureDir(repository);
+      await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+      for (const [key, value] of [
+        ['gc.auto', '1'], ['gc.autoDetach', 'true'], ['maintenance.autoDetach', 'true'],
+      ]) {
+        await execFileAsync('git', ['config', key, value], { cwd: repository });
+      }
+      const infoRefs = path.join(repository, '.git', 'info', 'refs');
+      expect(await fs.pathExists(infoRefs)).toBe(false);
+      const result = await run(repository, [
+        'fetch', '--quiet', '--no-tags', source, 'refs/heads/main:refs/heads/fetched',
+      ], process.env, 'remoteReadFailed', 'Could not fetch the fixture.');
+      expect(result).not.toBe(false);
+      // update-server-info runs during real repacking, not an empty maintenance check.
+      expect(await fs.readFile(infoRefs, 'utf8')).toBe(`${commit}\trefs/heads/fetched\n`);
+      await fs.remove(repository);
+      expect(await fs.pathExists(repository)).toBe(false);
+    }
+  });
+
   it('returns a typed and bounded sanitized failure when the blob reader fails', async () => {
     const { root, remote } = await publishedHistory();
     const original = await vi.importActual<typeof import('node:child_process')>('node:child_process');

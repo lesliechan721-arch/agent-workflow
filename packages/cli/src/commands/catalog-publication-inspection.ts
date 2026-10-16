@@ -236,8 +236,12 @@ export async function publicationGit(
   sensitiveValues: readonly string[] = [],
 ): Promise<string> {
   try {
+    // Keep maintenance in the foreground before callers remove temporary repositories.
     // Pending repositories and verification trees can exceed Windows MAX_PATH.
-    const result = await execFileAsync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.longpaths=true', ...args], {
+    const result = await execFileAsync('git', [
+      '-c', 'core.hooksPath=/dev/null', '-c', 'core.longpaths=true',
+      '-c', 'gc.autoDetach=false', '-c', 'maintenance.autoDetach=false', ...args,
+    ], {
       cwd,
       env,
       encoding: 'utf8',
@@ -273,7 +277,10 @@ export async function publicationGitExit(
   env: NodeJS.ProcessEnv,
 ): Promise<boolean> {
   try {
-    await execFileAsync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.longpaths=true', ...args], {
+    await execFileAsync('git', [
+      '-c', 'core.hooksPath=/dev/null', '-c', 'core.longpaths=true',
+      '-c', 'gc.autoDetach=false', '-c', 'maintenance.autoDetach=false', ...args,
+    ], {
       cwd,
       env,
       encoding: 'utf8',
