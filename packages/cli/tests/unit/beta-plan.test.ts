@@ -354,6 +354,43 @@ describe('automatic beta product planning', () => {
     expect(result.products.catalog).toMatchObject({ changed: true, version: '1.0.0-beta.5', baselineSource: null });
   });
 
+  it.each(['1.0.1', '1.1.0'])('plans from an intermediate release after squash while retaining its original target: %s', async (target) => {
+    const f = await fixture();
+    await git(f.repoRoot, 'checkout', '--quiet', '-b', 'delivered-feature');
+    await fs.writeFile(path.join(f.repoRoot, '.gitattributes'), '* text=auto eol=lf\n');
+    await fs.writeFile(path.join(f.repoRoot, 'packages', 'cli', 'src', 'index.ts'), 'export const value = 0;\n');
+    await writeJson(path.join(f.repoRoot, 'release', 'version-targets.json'), { schemaVersion: 2, cli: '1.0.1' });
+    const delivered = await commit(f.repoRoot, 'intermediate release');
+    await f.publishCli('1.0.1-beta.7', delivered, 'export const value = 0;\n');
+    await git(f.repoRoot, 'checkout', '--quiet', 'delivered-feature');
+    const pullHead = await f.change({ cli: true, target });
+    await git(f.repoRoot, 'checkout', '--quiet', 'main');
+    await git(f.repoRoot, 'merge', '--squash', 'delivered-feature');
+    const sourceHead = await commit(f.repoRoot, 'squashed feature with later production fix');
+    f.options.sourceHead = sourceHead;
+    await git(f.repoRoot, 'push', '--quiet', 'origin', 'main');
+
+    if (target === '1.0.1') {
+      const missing = await planAutomaticBeta(f.options);
+      expect(missing.products.cli).toMatchObject({ error: expect.stringContaining('non-version path') });
+    }
+    await git(f.repoRoot, 'push', '--quiet', 'origin', `${pullHead}:refs/pull/1/head`);
+    const result = await planAutomaticBeta(f.options);
+    const version = target === '1.0.1' ? '1.0.1-beta.8' : '1.1.0-beta.1';
+    expect(result.products.cli).toMatchObject({ changed: true, version,
+      baselineSource: delivered, baselineVersion: '1.0.1-beta.7' });
+    expect(result.products.cli).not.toHaveProperty('error');
+    expect(result.products.catalog).toMatchObject({ changed: false, version: null });
+    expect(await git(f.repoRoot, 'rev-parse', 'HEAD')).toBe(sourceHead);
+    expect(await git(f.repoRoot, 'status', '--porcelain')).toBe('');
+
+    await f.publishCli(version, sourceHead, 'export const value = 2;\n');
+    const completed = await planAutomaticBeta(f.options);
+    expect(completed.products.cli).toMatchObject({ changed: false, version: null,
+      baselineSource: sourceHead, baselineVersion: version });
+    expect(completed.products.cli).not.toHaveProperty('error');
+  });
+
   it('keeps registry failure distinct from a first release and still plans Catalog', async () => {
     const f = await fixture(false);
     const result = await planAutomaticBeta({ ...f.options,

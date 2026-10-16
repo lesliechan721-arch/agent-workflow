@@ -348,6 +348,42 @@ test('legacy completion sources resolve identical trees after a squash merge ont
   await assert.rejects(resolveMainSource({ repoRoot, candidateHead, product: 'cli' }), /non-version path/);
 });
 
+test('legacy intermediate sources require a published PR head with the exact squashed tree', async (t) => {
+  const { repoRoot, sourceHead: originalMain } = await fixture(t);
+  await git(repoRoot, 'checkout', '-b', 'delivered-feature');
+  await fs.writeFile(path.join(repoRoot, '.gitattributes'), '* text=auto eol=lf\n');
+  await fs.writeFile(path.join(repoRoot, 'production.js'), 'export const value = 2;\n');
+  await git(repoRoot, 'add', '.');
+  await git(repoRoot, 'commit', '-m', 'delivered feature');
+  const sourceHead = await git(repoRoot, 'rev-parse', 'HEAD');
+  await git(repoRoot, 'checkout', '--detach');
+  await setReleaseTargets({ cli: '1.2.4' }, { repoRoot });
+  await git(repoRoot, 'add', '.');
+  await git(repoRoot, 'commit', '-m', 'published version metadata');
+  const candidateHead = await git(repoRoot, 'rev-parse', 'HEAD');
+  await git(repoRoot, 'checkout', 'delivered-feature');
+  await fs.writeFile(path.join(repoRoot, 'production.js'), 'export const value = 3;\n');
+  await git(repoRoot, 'add', '.');
+  await git(repoRoot, 'commit', '-m', 'later production fix');
+  const pullHead = await git(repoRoot, 'rev-parse', 'HEAD');
+  await git(repoRoot, 'checkout', 'main');
+  await git(repoRoot, 'merge', '--squash', 'delivered-feature');
+  await git(repoRoot, 'commit', '-m', 'squashed feature');
+  const mainSourceHead = await git(repoRoot, 'rev-parse', 'HEAD');
+  await git(repoRoot, 'push', 'origin', 'main');
+  const options = { repoRoot, candidateHead, product: 'cli', allowLegacyHistory: true };
+  await assert.rejects(resolveMainSource(options), /non-version path/);
+
+  await git(repoRoot, 'update-ref', 'refs/aw/release-pull-heads/1', sourceHead);
+  await assert.rejects(resolveMainSource(options), /non-version path/);
+  const unrelatedHead = await git(repoRoot, 'commit-tree', `${pullHead}^{tree}`, '-p', originalMain, '-m', 'unrelated matching tree');
+  await git(repoRoot, 'update-ref', 'refs/aw/release-pull-heads/1', unrelatedHead);
+  await assert.rejects(resolveMainSource(options), /non-version path/);
+  await git(repoRoot, 'update-ref', 'refs/aw/release-pull-heads/1', pullHead);
+  assert.deepEqual(await resolveMainSource(options), { sourceHead, candidateHead, mainSourceHead });
+  await assert.rejects(resolveMainSource({ repoRoot, candidateHead, product: 'cli' }), /direct version-only child/);
+});
+
 test('unrelated Git history cannot supply a main source', async (t) => {
   const { repoRoot } = await fixture(t);
   await git(repoRoot, 'checkout', '--orphan', 'unrelated');

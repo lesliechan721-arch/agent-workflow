@@ -151,16 +151,18 @@ async function readCliAttempt(root) {
 async function latestSource(root, releases, env) {
   let latest = null;
   for (const release of releases) {
-    if (latest === null || latest.sourceHead === release.sourceHead) {
+    const latestMain = latest?.mainSourceHead ?? latest?.sourceHead;
+    const releaseMain = release.mainSourceHead ?? release.sourceHead;
+    if (latest === null || latestMain === releaseMain) {
       if (latest === null || compareReleaseSemVer(release.version, latest.version) > 0) latest = release;
       continue;
     }
-    const bases = (await git(root, ['merge-base', '--all', latest.sourceHead, release.sourceHead], env))
+    const bases = (await git(root, ['merge-base', '--all', latestMain, releaseMain], env))
       .stdout.trim().split('\n');
-    if (bases.length !== 1 || (bases[0] !== latest.sourceHead && bases[0] !== release.sourceHead)) {
+    if (bases.length !== 1 || (bases[0] !== latestMain && bases[0] !== releaseMain)) {
       throw new Error('Successful releases do not have one ordered main source history.');
     }
-    if (bases[0] === latest.sourceHead) latest = release;
+    if (bases[0] === latestMain) latest = release;
   }
   return latest;
 }
@@ -370,6 +372,7 @@ export async function planAutomaticBeta({ repoRoot = defaultRepoRoot, sourceHead
     await git(cache, ['fetch', '--no-tags', '--no-recurse-submodules', remote,
       '+refs/heads/main:refs/heads/main', '+refs/tags/*:refs/tags/*',
       '+refs/heads/release-source/*:refs/heads/release-source/*',
+      '+refs/pull/*/head:refs/aw/release-pull-heads/*',
       '+refs/heads/catalog/*:refs/heads/catalog/*'], env);
     const fetchedMain = (await git(cache, ['rev-parse', 'refs/heads/main'], env)).stdout.trim();
     if (fetchedMain !== sourceHead) return skipped(sourceHead, fetchedMain);

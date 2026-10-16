@@ -126,9 +126,35 @@ async function assertVersionOnlyDiff(repoRoot, sourceHead, candidateHead, produc
   }
 }
 
-// Legacy completion tags can precede the source-tag contract. Their complete
-// version-only tree difference still has to prove one unambiguous main source.
-// Older releases could synchronize both products in the same source commit.
+async function resolveSquashedIntermediateSource(repoRoot, candidate, commonSource, mainHistory, product) {
+  const { stdout } = await git(repoRoot, [
+    'for-each-ref', `--contains=${commonSource}`, '--format=%(objectname) %(tree)',
+    'refs/aw/release-pull-heads/',
+  ]);
+  const pullHeads = stdout.trim().split('\n').filter(Boolean).map((entry) => entry.split(' '));
+  for (const entry of mainHistory) {
+    const [mainSourceHead, tree] = entry.split(' ');
+    for (const [pullHead, pullTree] of pullHeads) {
+      if (pullTree !== tree) continue;
+      const bases = (await git(repoRoot, ['merge-base', '--all', candidate, pullHead])).stdout.trim().split('\n');
+      if (bases.length !== 1) continue;
+      const sourceHead = bases[0];
+      try {
+        // A release may add version metadata on a side branch of the PR.
+        await assertVersionOnlyDiff(repoRoot, sourceHead, candidate, product, true);
+      } catch {
+        continue;
+      }
+      // Keep the actual source for declarations and content differences. The
+      // later squash commit only orders this delivery against other main work.
+      return { sourceHead, candidateHead: candidate, mainSourceHead };
+    }
+  }
+  return null;
+}
+
+// Legacy completions can predate source tags or be intermediate PR commits.
+// New candidates still require a main source and product-only version changes.
 export async function resolveMainSource({
   repoRoot = defaultRepoRoot, candidateHead, product, mainRef = 'origin/main', allowLegacyHistory = false,
 }) {
@@ -142,10 +168,11 @@ export async function resolveMainSource({
   }
   const sourceHead = bases[0];
   if (candidate === sourceHead) return { sourceHead, candidateHead: candidate };
+  let mainHistory = [];
   if (allowLegacyHistory) {
     // Squash merges replace commit ancestry but preserve the complete source tree.
     const tree = (await git(repoRoot, ['rev-parse', `${candidate}^{tree}`])).stdout.trim();
-    const mainHistory = (await git(repoRoot, [
+    mainHistory = (await git(repoRoot, [
       'log', '--first-parent', '--format=%H %T', `${sourceHead}..${main}`,
     ])).stdout.trim().split('\n');
     const matchingSource = mainHistory.find((entry) => entry.split(' ')[1] === tree)?.split(' ')[0];
@@ -157,7 +184,15 @@ export async function resolveMainSource({
       throw new Error('Source candidate must be main source or its direct version-only child commit.');
     }
   }
-  await assertVersionOnlyDiff(repoRoot, sourceHead, candidate, product, allowLegacyHistory);
+  try {
+    await assertVersionOnlyDiff(repoRoot, sourceHead, candidate, product, allowLegacyHistory);
+  } catch (error) {
+    if (allowLegacyHistory) {
+      const squashed = await resolveSquashedIntermediateSource(repoRoot, candidate, sourceHead, mainHistory, product);
+      if (squashed) return squashed;
+    }
+    throw error;
+  }
   return { sourceHead, candidateHead: candidate };
 }
 

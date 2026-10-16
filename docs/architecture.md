@@ -542,7 +542,7 @@ Catalog composition 与 portfolio 的人读报告写入用户指定目录；它�
 
 `ci.yml` 验证 PR/main，只有同一 main SHA 的必要检查通过后才调用 `beta.yml`。规划复查该 SHA 仍为 main tip，分别比较 CLI 五包规范化生产树和 Catalog 完整生产内容。成功基线来自五包完整 npm 结果与 `cli-v*`，或 immutable Catalog snapshot 的 `release.sourceHead`；失败候选只占号。main 的旧声明不会降低已用版本线；稳定版后默认进入下一 patch beta，显式版本变更可以指定更高 base。
 
-候选位于 `release-source/<cli|catalog>/<version>`，源码触发 tag 为 `release/<cli|catalog>/v<version>`。候选 commit 是固定 main 来源本身或其仅含允许版本字段修改的直接子 commit。main 不接收自动版本 commit。严格稳定版或 `x.y.z-beta.N` tag 固定产品和版本；tag 不覆盖，完成 tag `cli-v*` 和产物 tag `catalog-v*` 保持原含义。历史交付来源若因 squash merge 失去 main 祖先关系，可通过完整 Git tree 相同的最近 main first-parent commit 证明；没有精确匹配时仍要求共同祖先上的完整差异只含允许版本字段。
+候选位于 `release-source/<cli|catalog>/<version>`，源码触发 tag 为 `release/<cli|catalog>/v<version>`。候选 commit 是固定 main 来源本身或其仅含允许版本字段修改的直接子 commit。main 不接收自动版本 commit。严格稳定版或 `x.y.z-beta.N` tag 固定产品和版本；tag 不覆盖，完成 tag `cli-v*` 和产物 tag `catalog-v*` 保持原含义。历史交付来源若因 squash merge 失去 main 祖先关系，可通过完整 Git tree 相同的最近 main first-parent commit 证明。对于发布后继续修改再 squash 的历史，规划器还获取远端 `refs/pull/*/head`：PR head 的完整 tree 必须与 main first-parent commit 相同，交付 commit 相对其与 PR head 的唯一共同祖先只能有允许的版本字段变化。历史源码保留该共同祖先，用于版本声明、插件基线和内容差异；对应 main commit 仅用于交付排序。仅本机可见的分支不提供这项证据，缺少证明时仍拒绝非版本变化。此兼容不适用于新候选，也不代替实际发布产物比较。
 
 `release-cli.yml` 与 `release-catalog.yml` 分别串行发布，同一产品 stable/beta 共用队列，不自动取消在途发布。准备后先上传白名单 tar 恢复包，再由六种 OS/CPU 的 Node 24 smoke 和精确 Node 22.0.0 最低版本 smoke 消费同一候选，全部成功后才远端写入。Windows 门禁使用候选平台包中的真实 helper；fake native runner 的 Catalog smoke 不提供真实 Codex/Claude qualification 证据。App token 用于推送候选 refs；npm 最终 job 使用 OIDC，Catalog 使用无凭据 HTTPS identity 和临时 ASKPASS。
 
