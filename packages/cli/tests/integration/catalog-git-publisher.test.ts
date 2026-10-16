@@ -75,7 +75,7 @@ function publicationStages() {
 async function isolatedPublisherCase(testName: string, run: () => Promise<void>): Promise<void> {
   if (process.env[isolatedCaseEnv] === testName) return run();
   await diagnostics!.run(async () => {
-    const childRoot = await fs.mkdtemp(path.join(publisherTempBase, 'aw-publisher-isolated-case-'));
+    const childRoot = await fs.mkdtemp(path.join(publisherTempBase, 'awp-'));
     roots.push(childRoot);
     const childIsolation = await createIsolatedTestEnv({ rootDir: childRoot, baseEnv: process.env });
     // Keep all child fixtures below a path owned by this outer case, including its isolated HOME.
@@ -96,7 +96,9 @@ async function isolatedPublisherCase(testName: string, run: () => Promise<void>)
 }
 
 async function temporaryRoot(prefix: string): Promise<string> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  // The extra isolated process layer needs shorter fixture names for Windows Git checkout.
+  const rootPrefix = process.env[isolatedCaseEnv] ? 'p-' : prefix;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), rootPrefix));
   roots.push(root);
   return root;
 }

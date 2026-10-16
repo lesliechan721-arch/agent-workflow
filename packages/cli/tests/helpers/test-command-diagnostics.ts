@@ -179,7 +179,10 @@ export class TestCommandDiagnostics {
           void this.save();
         };
         const runner = createExecFileNativeCliRunner({
-          createWindowsJobInvocation,
+          // Build/pack can delete platform package dist while this helper is running.
+          createWindowsJobInvocation: (executable, argv) => createWindowsJobInvocation(executable, argv, {
+            moduleUrl: new URL('../../../agent-skill-eval/src/windows-job.ts', import.meta.url).href,
+          }),
           observeProcessTree: (pid) => observeProcessTree(pid, marker, {
             markerEnvironmentVariable: markerVariable,
           }),

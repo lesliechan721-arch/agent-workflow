@@ -95,11 +95,15 @@ describe('test command diagnostics', () => {
     } catch (error) {
       failure = error;
     } finally {
-      // Inspect only cwd, so a failed assertion cannot print the captured environment.
+      // Inspect only executable/cwd, so a failed assertion cannot print the captured environment.
       const directories = spawned.mock.calls.map(([, , options]) => options?.cwd);
+      const executables = spawned.mock.calls.map(([executable]) => executable);
       spawned.mockRestore();
       await scope.finish();
       expect(directories).toEqual([root]);
+      expect(executables).toEqual([process.platform === 'win32'
+        ? path.resolve(packageRoot, '../agent-skill-eval/native/windows', process.arch, 'aw-windows-job.exe')
+        : process.execPath]);
     }
     expect(Object.getPrototypeOf(failure)).toBe(Error.prototype);
     expect(failure).toMatchObject({
