@@ -41,6 +41,42 @@ function repository(options) {
   return value;
 }
 
+// Job names come from ci.yml. A renamed or missing check requires full release
+// verification until this list is updated. The beta job itself can still run.
+const REQUIRED_MAIN_CI_JOBS = [
+  'Linux x64 / Node 22',
+  'Linux x64 / Node 24 / release verification',
+  'Linux x64 / Node 24 / plugin tests',
+  'darwin arm64 / Node 24',
+  'win32 x64 / Node 24 / integration 1 of 3',
+  'win32 x64 / Node 24 / integration 2 of 3',
+  'win32 x64 / Node 24 / integration 3 of 3',
+];
+
+export async function canReuseMainCi(candidate, options = {}) {
+  const env = options.env ?? process.env;
+  if (candidate.channel !== 'beta' || env.GITHUB_EVENT_NAME !== 'push') return false;
+  try {
+    const { stdout } = await (options.runGit ?? runReleaseGit)([
+      'for-each-ref', '--format=%(objecttype)%0a%(contents)', `refs/tags/${candidate.tag}`,
+    ], { ...options, cwd: options.repoRoot ?? defaultRepoRoot });
+    const identity = /^tag\nAutomatic beta\n\nAW-CI: ([1-9]\d*)\/([1-9]\d*)$/u.exec(stdout.trim());
+    if (!identity) return false;
+    const [, runId, attempt] = identity;
+    const repo = repository(options);
+    const runs = await pages(`/repos/${repo}/actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=${candidate.sourceHead}`, 'workflow_runs', options);
+    if (!runs.some((run) => String(run.id) === runId && String(run.run_attempt) === attempt
+      && run.event === 'push' && run.head_branch === 'main' && run.head_sha === candidate.sourceHead
+      && run.head_repository?.full_name === repo)) return false;
+    const jobs = await pages(`/repos/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs`, 'jobs', options);
+    return REQUIRED_MAIN_CI_JOBS.every((name) => jobs.some((job) => job.name === name
+      && job.status === 'completed' && job.conclusion === 'success'));
+  } catch {
+    (options.log ?? console.warn)('Main CI evidence is unavailable; full release verification is required.');
+    return false;
+  }
+}
+
 function candidateArtifactKind(artifact, candidate, run) {
   if (artifact.workflow_run?.head_sha !== run.head_sha) return null;
   const identity = `${candidate.product}-${candidate.version}`;

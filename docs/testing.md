@@ -12,6 +12,8 @@ Windows x64 CI 的普通 integration 分为三个独立 runner 的 Vitest shard�
 
 Linux Node 24 的插件测试使用独立 job，自行构建并将本次 CLI 加入 PATH；它与完整 release verification 都是自动 beta 的必需依赖。完整 `release:verify` 通过 CLI 的 fetch smoke 执行 Catalog publish smoke，再单独运行 Catalog bootstrap，避免重复执行同一 publish smoke。独立 CLI 和 Catalog 验证入口各自保留完整覆盖。
 
+自动 beta 的 annotated source tag 记录 main CI 的 run/attempt。候选发布查询同一 main SHA 的该次运行，仅在全部必要 CI jobs 成功时省去重复的 `release:verify:cli|catalog` 及 Go 可复现构建；精确候选仍正式 build，并通过六种 OS/CPU 和最低 Node 版本的产物 smoke。手动候选、稳定版和证据不可用时保留完整验证。发布自动化测试使用本地 bare remote 和 fake GitHub API，验证成功复用、来源或 attempt 不匹配、必要检查缺失或失败，以及查询失败时的回退。
+
 CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。测试在删除临时现场前向该目录保存脱敏 JSON；失败 job 只上传 `publisher/` 和 `npm/` 下的 JSON，保留 7 天。诊断不包含完整环境变量或原始 npm debug 日志。
 
 定向 Vitest 命令可用 `--maxWorkers=4` 覆盖合法的环境值，`--minWorkers` 必须是正安全整数且不能超过上限。`pnpm plugin:test <plugin> --test-concurrency=4` 同样支持显式覆盖。非法环境值始终失败，即使同时提供显式值。process-lifecycle、锁/子 runner、dist contract、smoke、performance 和 qualification 保持串行；通用环境变量不能解除约束，固定串行入口拒绝大于 1 的显式 worker 请求。日志中的 `AW_TEST_WORKERS` JSON 行显示生效上限和来源。worker 只控制单个 runner 的文件并发，不改变 package 执行顺序或 Actions 矩阵数量。

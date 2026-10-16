@@ -13,6 +13,8 @@ import {
   validateSourceCandidate,
 } from './source-candidate.mjs';
 import { setReleaseTargets } from './release-target.mjs';
+import { runActionsRelease } from './actions-release.mjs';
+import { canReuseMainCi } from './actions-inspection.mjs';
 
 const exec = promisify(execFile);
 const packageNames = {
@@ -156,6 +158,70 @@ test('unchanged stable base uses main commit directly and pushes immutable candi
   await assert.rejects(prepareSourceCandidate({
     repoRoot, remote, product: 'cli', version: '1.2.4', sourceHead, push: 'true',
   }), /explicit boolean/);
+});
+
+// Test Value Gate: only an automatic candidate with successful CI for its exact
+// main source may skip verification; missing or invalid evidence must run it.
+test('automatic beta inspection reuses only the recorded successful main CI attempt', async (t) => {
+  const { repoRoot, sourceHead } = await fixture(t);
+  const candidate = await prepareSourceCandidate({
+    repoRoot, product: 'cli', version: '1.2.4-beta.1', sourceHead,
+    requireMainTip: true, ciRun: '42/2', push: true,
+  });
+  const ci = {
+    id: 42, run_attempt: 2, event: 'push', head_branch: 'main', head_sha: sourceHead,
+    head_repository: { full_name: 'owner/repo' },
+  };
+  const jobs = [
+    'Linux x64 / Node 22', 'Linux x64 / Node 24 / release verification',
+    'Linux x64 / Node 24 / plugin tests', 'darwin arm64 / Node 24',
+    'win32 x64 / Node 24 / integration 1 of 3',
+    'win32 x64 / Node 24 / integration 2 of 3',
+    'win32 x64 / Node 24 / integration 3 of 3',
+  ].map((name) => ({ name, status: 'completed', conclusion: 'success' }));
+  // The candidate is pushed before its caller's beta job finishes.
+  jobs.push({ name: 'beta / candidates', status: 'in_progress', conclusion: null });
+  const options = {
+    repoRoot, log() {},
+    env: { GITHUB_REPOSITORY: 'owner/repo', GITHUB_EVENT_NAME: 'push', GITHUB_RUN_ID: '99' },
+    githubRequest: async (endpoint) => ({ json: async () => endpoint.includes('/jobs')
+      ? { jobs } : { workflow_runs: endpoint.includes('/ci.yml/') ? [ci] : [] } }),
+  };
+  const inspect = (overrides = {}) => runActionsRelease([
+    'inspect', '--product', 'cli', '--tag', candidate.tag,
+  ], { ...options, ...overrides });
+  assert.equal((await inspect()).reuse_main_ci, 'true');
+  assert.equal(await canReuseMainCi({ ...candidate, channel: 'stable' }, options), false);
+  assert.equal(await canReuseMainCi(candidate, {
+    ...options, env: { ...options.env, GITHUB_EVENT_NAME: 'workflow_dispatch' },
+  }), false);
+  for (const [field, invalid] of [
+    ['head_sha', candidate.candidateHead], ['head_branch', 'other'], ['event', 'pull_request'],
+    ['id', 43], ['run_attempt', 1], ['head_repository', { full_name: 'other/repo' }],
+  ]) {
+    const previous = ci[field];
+    ci[field] = invalid;
+    assert.equal((await inspect()).reuse_main_ci, 'false', field);
+    ci[field] = previous;
+  }
+  for (const conclusion of ['failure', 'skipped', 'cancelled', null]) {
+    jobs[0].conclusion = conclusion;
+    assert.equal((await inspect()).reuse_main_ci, 'false', String(conclusion));
+  }
+  jobs[0].conclusion = 'success';
+  jobs[0].status = 'in_progress';
+  assert.equal((await inspect()).reuse_main_ci, 'false');
+  jobs[0].status = 'completed';
+  const missing = jobs.splice(4, 1)[0];
+  assert.equal((await inspect()).reuse_main_ci, 'false');
+  jobs.splice(4, 0, missing);
+  assert.equal((await inspect({ githubRequest: async (endpoint) => {
+    if (endpoint.includes('/ci.yml/')) throw new Error('API unavailable');
+    return options.githubRequest(endpoint);
+  } })).reuse_main_ci, 'false');
+  await git(repoRoot, 'tag', '-d', candidate.tag);
+  await git(repoRoot, 'tag', candidate.tag, candidate.candidateHead);
+  assert.equal((await inspect()).reuse_main_ci, 'false');
 });
 
 test('automatic candidates reject stale main sources and recheck the tip before remote writes', async (t) => {

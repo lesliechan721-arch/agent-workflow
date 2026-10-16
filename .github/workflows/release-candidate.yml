@@ -91,18 +91,22 @@ jobs:
           CANDIDATE_DIGEST: ${{ steps.inspect.outputs.recovery_digest }}
           ARCHIVE_NAME: ${{ steps.inspect.outputs.recovery_archive }}
       - name: Read the exact Go toolchain
-        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == ''
+        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == '' && steps.inspect.outputs.reuse_main_ci != 'true'
         id: go
         run: node --input-type=module -e 'import fs from "node:fs"; const manifest = JSON.parse(fs.readFileSync("packages/agent-skill-eval/native/windows/manifest.json", "utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${manifest.build.goVersion.replace(/^go/, "")}\n`);'
       - uses: actions/setup-go@v6
-        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == ''
+        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == '' && steps.inspect.outputs.reuse_main_ci != 'true'
         with:
           go-version: ${{ steps.go.outputs.version }}
           cache: false
-      - name: Verify the selected product before preparation
+      - name: Build the exact source candidate
         if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == ''
+        run: pnpm build
+      # Automatic beta tags bind successful main CI jobs to their source SHA.
+      # Manual candidates and unavailable CI evidence require full verification.
+      - name: Verify the selected product without reusable main CI
+        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == '' && steps.inspect.outputs.reuse_main_ci != 'true'
         run: |
-          pnpm build
           case "$RELEASE_PRODUCT" in
             cli) pnpm release:verify:cli ;;
             catalog) pnpm release:verify:catalog ;;

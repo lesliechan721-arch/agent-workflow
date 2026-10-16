@@ -259,11 +259,14 @@ async function mutateCatalogVersion(repoRoot, version) {
 
 export async function prepareSourceCandidate({
   repoRoot = defaultRepoRoot, product, version, sourceHead, remote, push = false,
-  mainRef = 'origin/main', requireMainTip = false, pluginBaseVersions = {},
+  mainRef = 'origin/main', requireMainTip = false, pluginBaseVersions = {}, ciRun,
   mutateCatalogVersion: mutate = mutateCatalogVersion,
 }) {
   const tag = `release/${product}/v${version}`;
   const parsed = parseSourceTag(tag);
+  if (ciRun !== undefined && (parsed.channel !== 'beta' || !requireMainTip || !/^[1-9]\d*\/[1-9]\d*$/u.test(ciRun))) {
+    throw new Error('Automatic beta CI evidence requires a run/attempt identity and the current main tip.');
+  }
   if (typeof push !== 'boolean') throw new Error('Source candidate push must be an explicit boolean.');
   if (push || requireMainTip) {
     const requestedRemote = remote ?? 'origin';
@@ -309,7 +312,12 @@ export async function prepareSourceCandidate({
     await assertVersionOnlyDiff(checkout, source.sourceHead, candidateHead, product);
     await assertCandidateMetadata(checkout, candidateHead, parsed);
     await git(checkout, ['branch', branch, candidateHead]);
-    await git(checkout, ['-c', 'tag.gpgSign=false', 'tag', tag, candidateHead]);
+    await git(checkout, [
+      '-c', 'user.name=AW Release', '-c', 'user.email=aw-release@users.noreply.github.com',
+      '-c', 'tag.gpgSign=false', 'tag',
+      ...ciRun === undefined ? [] : ['--annotate', '--message', `Automatic beta\n\nAW-CI: ${ciRun}`],
+      tag, candidateHead,
+    ]);
     await assertRefsAvailable(repoRoot, branch, tag, pushRemote);
     await git(repoRoot, [
       'fetch', '--atomic', '--no-tags', checkout,

@@ -224,6 +224,10 @@ export async function runActionsRelease(argv = process.argv.slice(2), supplied =
     const plan = await planAutomaticBeta({ ...options, sourceHead: args.source });
     await summary(plan, options);
     if (plan.skipped) return plan;
+    const env = options.env ?? process.env;
+    const ciRun = env.GITHUB_EVENT_NAME === 'push' && env.GITHUB_REF === 'refs/heads/main'
+      && env.GITHUB_SHA === plan.sourceHead && env.GITHUB_RUN_ID && env.GITHUB_RUN_ATTEMPT
+      ? `${env.GITHUB_RUN_ID}/${env.GITHUB_RUN_ATTEMPT}` : undefined;
     const results = [];
     for (const product of ['cli', 'catalog']) {
       const selected = plan.products[product];
@@ -234,7 +238,8 @@ export async function runActionsRelease(argv = process.argv.slice(2), supplied =
       if (!selected.changed) continue;
       try {
         results.push(await prepareSourceCandidate({ ...options, product, version: selected.version,
-          sourceHead: plan.sourceHead, pluginBaseVersions: selected.pluginBaseVersions, push: true, requireMainTip: true }));
+          sourceHead: plan.sourceHead, pluginBaseVersions: selected.pluginBaseVersions,
+          ciRun, push: true, requireMainTip: true }));
       } catch (error) {
         results.push({ product, error: error.message });
       }
@@ -245,12 +250,13 @@ export async function runActionsRelease(argv = process.argv.slice(2), supplied =
   }
   const candidate = await candidateFor(args, options);
   if (args.command === 'inspect') {
-    const { readRemoteCompletion, findRecoveryArtifact } = await import('./actions-inspection.mjs');
+    const { readRemoteCompletion, findRecoveryArtifact, canReuseMainCi } = await import('./actions-inspection.mjs');
     const completed = await readRemoteCompletion(candidate, options);
     const recovery = completed ? { recovery_run: '', recovery_artifact: '', recovery_digest: '', recovery_archive: 'candidate.tar' }
       : await findRecoveryArtifact(candidate, options);
-    await summary({ ...candidate, completed, ...recovery }, options);
-    return outputs({ ...recovery, completed: String(completed), version: candidate.version }, options);
+    const reuseMainCi = !completed && recovery.recovery_artifact === '' && await canReuseMainCi(candidate, options);
+    await summary({ ...candidate, completed, ...recovery, reuseMainCi }, options);
+    return outputs({ ...recovery, completed: String(completed), version: candidate.version, reuse_main_ci: String(reuseMainCi) }, options);
   }
   if (args.command === 'prepare') return prepareCandidate(candidate, options);
   return publishCandidate(args, options);
