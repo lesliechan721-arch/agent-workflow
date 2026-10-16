@@ -152,24 +152,31 @@ async function checkSuccessfulRootCleansChild(options) {
   await waitForProcessExit(Number(match[1]))
 }
 
-async function checkNestedChildCleanup(options) {
-  const grandchild = "process.stdout.write(`pid:${process.pid}\\n`); setInterval(() => {}, 1000);"
+export function nestedCleanupFixture() {
+  // Insurance must outlast the helper startup and descendant cleanup deadlines.
+  const watchdog = `setTimeout(() => process.exit(124), ${checkTimeoutMs * 3}).unref();`
+  const grandchild = `${watchdog} process.send(process.pid); setInterval(() => {}, 1000);`
   const intermediate = [
+    watchdog,
     "const { spawn } = require('node:child_process');",
-    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });`,
-    'child.unref();',
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], windowsHide: true });`,
+    "child.once('message', (pid) => { process.send(pid); child.disconnect(); child.unref(); });",
     'setInterval(() => {}, 1000);',
   ].join('')
-  const root = [
+  return [
+    watchdog,
     "const { spawn } = require('node:child_process');",
-    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(intermediate)}], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });`,
-    'child.unref();',
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(intermediate)}], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], windowsHide: true });`,
+    "child.once('message', (pid) => { process.stdout.write(`pids:${child.pid},${pid}\\n`); child.disconnect(); child.unref(); });",
   ].join('')
-  const started = startHelper(process.execPath, ['-e', root], options)
-  const match = await waitForOutput(started, /pid:(\d+)/u)
+}
+
+export async function checkNestedChildCleanup({ startHelper: start = startHelper, ...options } = {}) {
+  const started = start(process.execPath, ['-e', nestedCleanupFixture()], options)
+  const match = await waitForOutput(started, /pids:(\d+),(\d+)/u)
   const close = await started.closed
   if (close.code !== 0) throw new Error('nestedRootExitMismatch')
-  await waitForProcessExit(Number(match[1]))
+  await Promise.all([waitForProcessExit(Number(match[1])), waitForProcessExit(Number(match[2]))])
 }
 
 async function checkForcedHelperExit(options) {
@@ -294,12 +301,13 @@ export function candidateProcessRunner({ runProviderProcess, helperPath, env = p
       maxBufferBytes: 1024 * 1024,
       signal: options.signal,
     }, {}, {
+      containment: 'verified-observed',
       createWindowsJobInvocation(executable, args) {
         const config = { schemaVersion: 1, executable, args: [...args], parentPid: process.pid }
         return { command: helperPath, args: ['--config', encodeConfig(executable, args)], config }
       },
     })
-    if (!result.descendantCleanupGuaranteed || result.containmentMode !== 'managed') {
+    if (!result.descendantCleanupGuaranteed || result.containmentMode !== 'verified-observed') {
       throw new Error('candidateManagedContainmentRequired')
     }
     if (result.cancelled && result.terminationReason === 'abort') throw options.signal.reason
