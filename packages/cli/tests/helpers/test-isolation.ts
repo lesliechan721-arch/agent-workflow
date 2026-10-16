@@ -1,4 +1,4 @@
-import { realpath } from 'node:fs/promises';
+import { realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -292,7 +292,8 @@ export async function createIsolatedTestEnv(
     layout,
     rootRegistry,
     cleanup: async () => {
-      await fs.remove(rootDir);
+      // Windows can retain cwd handles briefly after a managed process exits.
+      await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },
   };
 }

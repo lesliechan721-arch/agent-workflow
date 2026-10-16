@@ -7,6 +7,7 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import { sanitizeTestDiagnostic, TestCommandDiagnostics } from '../helpers/test-command-diagnostics.js';
+import { createIsolatedTestEnv } from '../helpers/test-isolation.js';
 import { waitForProcessExit } from '../support/process-tree.js';
 
 const packageRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -22,6 +23,25 @@ async function writeFixtureConfig(root: string, fixture: string, sourceIsolation
 }
 
 describe('test command diagnostics', () => {
+  it.skipIf(process.platform !== 'win32')('waits for a busy Windows directory to be released before completing cleanup', async () => {
+    const isolated = await createIsolatedTestEnv();
+    const previousCwd = process.cwd();
+    let release: NodeJS.Timeout | undefined;
+    try {
+      process.chdir(isolated.layout.fixtureCwd);
+      await expect(fs.rmdir(isolated.layout.fixtureCwd)).rejects.toMatchObject({ code: 'EBUSY' });
+
+      release = setTimeout(() => process.chdir(previousCwd), 250);
+      await isolated.cleanup();
+
+      await expect(fs.pathExists(isolated.layout.rootDir)).resolves.toBe(false);
+    } finally {
+      clearTimeout(release);
+      process.chdir(previousCwd);
+      await isolated.cleanup();
+    }
+  });
+
   it('archives numeric npm timing and cache evidence without paths, URLs, or credentials', async ({ task, signal }) => {
     const root = await fs.mkdtemp(path.join(process.env.TMPDIR!, 'aw-diagnostic-redaction-'));
     process.env.AW_TEST_DIAGNOSTICS_DIR = path.join(root, 'diagnostics');
