@@ -21,7 +21,7 @@ afterEach(async () => {
 describe('AW capability CLI commands', () => {
   it('emits one self describe JSON object', async () => {
     const result = await runCliEntry(['self', 'describe', '--json'])
-    expect(result.exitCode).toBe(0)
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0)
     expect(result.stderr).toBe('')
     expect(result.parseJsonStdout()).toMatchObject({
       schemaVersion: 1,
@@ -89,7 +89,7 @@ describe('AW capability CLI commands', () => {
     const result = await runCliEntry([
       'self', 'check', '--from', path.join(pluginRoot, 'skills', 'commit', 'SKILL.md'), '--json',
     ], { cwd: root })
-    expect(result.exitCode).toBe(0)
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0)
     expect(result.stderr).toBe('')
     expect(result.parseJsonStdout()).toMatchObject({
       command: 'self:check',
@@ -112,7 +112,7 @@ describe('AW capability CLI commands', () => {
     )
 
     const result = await runCliEntry(['self', 'check', '--from', pluginRoot, '--json'], { cwd: root })
-    expect(result.exitCode).toBe(0)
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0)
     expect(result.stderr).toBe('')
     expect(result.parseJsonStdout()).toMatchObject({
       command: 'self:check',
@@ -131,7 +131,7 @@ describe('AW capability CLI commands', () => {
     const result = await runCliEntry([
       'plugin', 'requirements', 'plugins/git-commit', '--workspace-root', root, '--json',
     ], { cwd: root })
-    expect(result.exitCode).toBe(0)
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0)
     expect(result.stderr).toBe('')
     expect(result.parseJsonStdout()).toMatchObject({
       schemaVersion: 1,
@@ -216,7 +216,7 @@ describe('AW capability CLI commands', () => {
       'plugin', 'requirements', 'plugins/git-commit', '--workspace-root', root,
       '--add', 'aw.future-feature.v3', '--json',
     ], { cwd: root })
-    expect(added.exitCode).toBe(0)
+    expect(added.exitCode, added.stdout + added.stderr).toBe(0)
     expect(added.parseJsonStdout()).toMatchObject({
       mutation: { action: 'add', capability: 'aw.future-feature.v3', changed: true },
       declared: ['aw.future-feature.v3'],

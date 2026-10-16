@@ -1,4 +1,4 @@
-import { builtinModules } from 'node:module';
+import { isBuiltin } from 'node:module';
 import path from 'node:path';
 
 import { AW_RUNTIME_CONFIG_READER_PATH } from './runtime-config.js';
@@ -65,8 +65,6 @@ const REGEX_AFTER_CONTROL_HEADER = new Set([
   'while',
   'with',
 ]);
-
-const NODE_BUILTIN_SPECIFIERS = new Set(builtinModules);
 
 function isJavaScriptIdentifierStart(value: string | undefined): boolean {
   return value !== undefined && /[A-Za-z_$]/u.test(value);
@@ -423,11 +421,6 @@ function isBareSpecifier(specifier: string): boolean {
   return !isRelativeSpecifier(specifier) && !specifier.startsWith('/') && !specifier.startsWith('node:');
 }
 
-function isNodeBuiltinSpecifier(specifier: string): boolean {
-  return NODE_BUILTIN_SPECIFIERS.has(specifier)
-    || (specifier.startsWith('node:') && NODE_BUILTIN_SPECIFIERS.has(specifier.slice('node:'.length)));
-}
-
 function getPackageName(specifier: string): string {
   if (specifier.startsWith('@')) {
     const [scope, name] = specifier.split('/');
@@ -598,7 +591,7 @@ export function scanNodeImportContract(
         errors.push(`Dynamic ${kind} specifier in "${file}" is not supported.`);
         continue;
       }
-      if (isNodeBuiltinSpecifier(specifier)) {
+      if (isBuiltin(specifier)) {
         continue;
       }
 

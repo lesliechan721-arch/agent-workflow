@@ -562,6 +562,16 @@ export async function computePackageTarballTreeDigest(tarballPath, options = {})
       } else if (coreDependency !== undefined) {
         throw new Error(`Packed ${packageJson.name} must not depend on ${CORE_PACKAGE_NAME}.`);
       }
+      if (packageJson.name === EVAL_PACKAGE_NAME) {
+        for (const dependency of [WINDOWS_X64_PACKAGE_NAME, WINDOWS_ARM64_PACKAGE_NAME]) {
+          if (packageJson.optionalDependencies?.[dependency] !== packageJson.version) {
+            throw new Error(
+              `Packed ${EVAL_PACKAGE_NAME} must optionally depend on ${dependency}@${packageJson.version}.`,
+            );
+          }
+          packageJson.optionalDependencies[dependency] = RELEASE_VERSION_SENTINEL;
+        }
+      }
       packageJson.version = RELEASE_VERSION_SENTINEL;
       delete packageJson.awRelease;
       normalizedContents = Buffer.from(`${JSON.stringify(packageJson, null, 2)}\n`);

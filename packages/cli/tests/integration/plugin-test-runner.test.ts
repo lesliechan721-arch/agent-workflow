@@ -191,6 +191,81 @@ afterEach(async () => {
 });
 
 describe('plugin script test runner', () => {
+  it('applies configured Node file concurrency and explicit overrides to real test processes', async () => {
+    const repoRoot = await makeTempRepo();
+    await configureTestManifest({
+      repoRoot,
+      products: ['CODEX'],
+      testEntries: ['./scripts/worker-*.test.mjs'],
+    });
+    const defaultWorkers = Math.max(1, os.availableParallelism() - 1);
+    for (const selection of [
+      { value: '', args: [], expected: Math.min(2, defaultWorkers), workers: defaultWorkers, source: 'default' },
+      { value: '1', args: [], expected: 1, workers: 1, source: 'environment' },
+      { value: '1', args: ['--test-concurrency=2'], expected: 2, workers: 2, source: 'explicit parameter' },
+    ]) {
+      const eventsPath = path.join(pluginRoot(repoRoot), 'worker-events');
+      await fs.remove(eventsPath);
+      for (let id = 0; id < 2; id += 1) {
+        await writeNodeTestFile(repoRoot, `worker-${id}.test.mjs`, [
+          'import test from "node:test";',
+          'import fs from "node:fs";',
+          'import path from "node:path";',
+          'test("records actual Node file concurrency", async () => {',
+          '  const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+          '  const events = path.join(context.sourceRoot, "worker-events");',
+          `  fs.appendFileSync(events, 'start ${id}\\n');`,
+          '  const deadline = Date.now() + 5000;',
+          `  while (fs.readFileSync(events, 'utf8').split('\\n').filter((line) => line.startsWith('start')).length < ${selection.expected}) {`,
+          '    if (Date.now() > deadline) throw new Error("Node test files did not run in parallel");',
+          '    await new Promise((resolve) => setTimeout(resolve, 10));',
+          '  }',
+          '  await new Promise((resolve) => setTimeout(resolve, 50));',
+          `  fs.appendFileSync(events, 'end ${id}\\n');`,
+          '});',
+        ].join('\n'));
+      }
+      const output = captureOutput();
+      const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'codex', ...selection.args], {
+        repoRoot,
+        env: { ...process.env, AW_TEST_WORKERS: selection.value },
+        stdout: output.stdout,
+        stderr: output.stderr,
+      });
+      expect(exitCode, `${output.readStdout()}\n${output.readStderr()}`).toBe(0);
+      const events = (await fs.readFile(eventsPath, 'utf8')).trim().split('\n');
+      let active = 0;
+      let peak = 0;
+      for (const event of events) {
+        active += event.startsWith('start') ? 1 : -1;
+        peak = Math.max(active, peak);
+      }
+      expect(peak).toBe(selection.expected);
+      expect(output.readStdout()).toContain(`"maxWorkers":${selection.workers},"source":"${selection.source}"`);
+      expect(output.readStderr()).toBe('');
+    }
+  });
+
+  it('rejects invalid worker input before preparing a plugin', async () => {
+    for (const selection of [
+      { value: '0', args: [], error: 'AW_TEST_WORKERS' },
+      { value: 'bad', args: ['--test-concurrency=2'], error: 'AW_TEST_WORKERS' },
+      { value: '2', args: ['--test-concurrency', '0'], error: 'Explicit test workers' },
+    ]) {
+      const output = captureOutput();
+      const exitCode = await runPluginScriptTests(['git-commit', ...selection.args], {
+        repoRoot: path.join(os.tmpdir(), 'missing-worker-validation-repo'),
+        env: { ...process.env, AW_TEST_WORKERS: selection.value },
+        stdout: output.stdout,
+        stderr: output.stderr,
+      });
+      expect(exitCode).toBe(1);
+      expect(output.readStdout()).toBe('');
+      expect(output.readStderr()).toContain(selection.error);
+      expect(output.readStderr()).toContain('positive safe decimal integer');
+    }
+  });
+
   it('skips plugins with no matching node test entries', async () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readManifest(repoRoot);

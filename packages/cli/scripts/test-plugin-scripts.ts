@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import { formatTestWorkers, nodeTestWorkerOptions } from './test-workers.mjs';
 import {
   buildPluginScriptSpawnEnv,
   bundleLocalPlugin,
@@ -52,6 +53,7 @@ interface ParsedArgs {
   scope: Scope;
   platform: PluginTestPlatformSelection;
   testName?: string;
+  testConcurrency?: string;
 }
 
 interface PreparedPluginTestBundle {
@@ -128,6 +130,11 @@ function parseArgs(args: string[]): ParsedArgs {
       if (!parsed.testName) {
         throw new Error('--test-name requires a pattern.');
       }
+    } else if (arg === '--test-concurrency' || arg.startsWith('--test-concurrency=')) {
+      parsed.testConcurrency = arg === '--test-concurrency' ? args[++index] : arg.slice('--test-concurrency='.length);
+      if (parsed.testConcurrency === undefined) {
+        throw new Error('--test-concurrency requires a worker count.');
+      }
     } else if (arg.startsWith('-')) {
       throw new Error(`Unknown option "${arg}".`);
     } else {
@@ -139,7 +146,7 @@ function parseArgs(args: string[]): ParsedArgs {
     throw new Error('Use either <plugin> or --all, not both.');
   }
   if (!parsed.all && positional.length !== 1) {
-    throw new Error('Usage: pnpm plugin:test <plugin> | --all [--scope user|project] [--platform codex|claude|both] [--test-name <pattern>].');
+    throw new Error('Usage: pnpm plugin:test <plugin> | --all [--scope user|project] [--platform codex|claude|both] [--test-name <pattern>] [--test-concurrency <workers>].');
   }
   if (parsed.all && positional.length !== 0) {
     throw new Error('Use either <plugin> or --all, not both.');
@@ -499,9 +506,16 @@ function runNodeTest(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   testName?: string;
+  workers: ReturnType<typeof nodeTestWorkerOptions>;
+  stdout: (text: string) => void;
 }): Promise<NodeTestResult> {
+  const workers = options.workers;
+  options.stdout(formatTestWorkers('plugin-node-test', workers));
   return new Promise((resolve, reject) => {
     const args = ['--test'];
+    if (workers.maxWorkers !== null) {
+      args.push(`--test-concurrency=${workers.maxWorkers}`);
+    }
     if (options.testName) {
       args.push('--test-name-pattern', options.testName);
     }
@@ -533,6 +547,7 @@ async function runPreparedPluginTests(options: {
   scope: Scope;
   platform: PlatformName;
   testName?: string;
+  testConcurrency?: string;
   env: NodeJS.ProcessEnv;
   testConfigValues?: Record<string, PluginConfigValue>;
   stdout: (text: string) => void;
@@ -611,6 +626,8 @@ async function runPreparedPluginTests(options: {
       cwd: canonicalProjectRoot,
       env: spawnEnv,
       testName: options.testName,
+      workers: nodeTestWorkerOptions({ env: options.env, explicit: options.testConcurrency }),
+      stdout: options.stdout,
     });
     const stdout = redactPluginScriptOutput(result.stdout, writtenContext.sensitiveValues);
     const stderr = redactPluginScriptOutput(result.stderr, writtenContext.sensitiveValues);
@@ -680,6 +697,7 @@ async function runPreparedPluginSelection(options: {
           scope: options.parsed.scope,
           platform,
           testName: options.parsed.testName,
+          testConcurrency: options.parsed.testConcurrency,
           env: options.env,
           testConfigValues: options.testConfigValues,
           stdout: options.stdout,
@@ -709,6 +727,7 @@ export async function runPluginScriptTests(
   let parsed: ParsedArgs;
   try {
     parsed = parseArgs(args);
+    nodeTestWorkerOptions({ env, explicit: parsed.testConcurrency });
   } catch (error) {
     print(stderr, error instanceof Error ? error.message : String(error));
     return 1;

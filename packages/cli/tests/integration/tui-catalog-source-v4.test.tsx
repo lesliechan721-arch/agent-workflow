@@ -548,7 +548,7 @@ describe('TUI v4 real catalog source boundary', () => {
         kind: 'sourceMutation',
         action: 'update',
         sourceId: 'current',
-        update: { type: 'path', path: currentRoot },
+        update: { type: 'path', autoCheck: false },
       });
       await expect(controller.executeOperation(nextReview.reviewToken)).resolves.toMatchObject({
         state: 'succeeded', operationKind: 'sourceMutation',

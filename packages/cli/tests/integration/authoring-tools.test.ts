@@ -1370,13 +1370,14 @@ describe('authoring tools', () => {
     });
   });
 
-  externalPluginRootTest('rejects the removed plugin-root option', async () => {
+  it('rejects the removed plugin-root option through the public CLI', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-root-escape-'));
     tempDirs.push(tempRoot);
     const workspaceRoot = path.join(tempRoot, 'workspace');
     await fs.ensureDir(workspaceRoot);
     await expect(execFileAsync('node', [
-      authoringScriptPath('init-plugin.mjs'),
+      path.join(repoRoot(), 'packages', 'cli', 'dist', 'index.js'),
+      'plugin', 'init',
       'demo',
       '--description',
       'Reject an escaped plugin root.',
@@ -1387,6 +1388,7 @@ describe('authoring tools', () => {
       '../demo',
       '--json',
     ], { cwd: workspaceRoot, env: process.env })).rejects.toMatchObject({
+      code: 1,
       stderr: expect.stringContaining('Unknown option: --plugin-root'),
     });
     await expect(fs.pathExists(path.join(tempRoot, 'demo'))).resolves.toBe(false);

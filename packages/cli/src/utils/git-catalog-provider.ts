@@ -159,6 +159,7 @@ function tarEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 async function runCatalogProcess(options: {
   command: string;
   args: string[];
+  cwd?: string;
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -168,6 +169,7 @@ async function runCatalogProcess(options: {
     return await runNativeCli({
       command: options.command,
       args: options.args,
+      cwd: options.cwd,
       env: options.env,
       signal: options.signal,
       timeoutMs: options.timeoutMs,
@@ -439,13 +441,19 @@ async function materializeCommit(options: {
   try {
     await runGit({
       gitDir: options.objectsDir,
-      args: ['archive', '--format=tar', `--output=${archivePath}`, treeish],
+      // Archive applies checkout conversion; Catalog digests bind the committed bytes.
+      args: [
+        '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
+        'archive', '--format=tar', `--output=${archivePath}`, treeish,
+      ],
       env: options.env,
       deadline: options.deadline,
     });
     await runCatalogProcess({
       command: 'tar',
-      args: ['-xf', archivePath, '-C', options.destination],
+      // GNU tar treats a Windows drive prefix in the archive path as a remote host.
+      args: ['-xf', path.basename(archivePath), '-C', path.basename(options.destination)],
+      cwd: path.dirname(options.destination),
       env: tarEnvironment(options.env),
       signal: options.deadline.signal,
       timeoutMs: options.deadline.remainingMs(),

@@ -1,3 +1,5 @@
+import { vitestWorkerOptions } from './scripts/test-workers.mjs';
+
 import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
@@ -29,7 +31,7 @@ export default defineConfig({
       'tests/unit/template-engine.test.ts',
     ],
     setupFiles: ['tests/setup/test-isolation-pure.ts'],
-    maxWorkers: 2,
+    ...vitestWorkerOptions(),
     coverage: {
       reporter: ['text', 'html'],
     },

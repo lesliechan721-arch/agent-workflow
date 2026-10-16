@@ -402,9 +402,19 @@ describe('Codex provider app-server process boundary', () => {
   it.each([
     { label: 'delayed initialize', delay: 1_000, cleanupFailure: false },
     { label: 'delayed initialize with cleanup failure', delay: 1_000, cleanupFailure: true },
+    {
+      label: 'RPC timeout before attempt deadline with cleanup failure',
+      delay: 10_000, cleanupFailure: true, rpcCapMs: 1_000, timeoutMs: 5_000,
+    },
     { label: 'completed turn with cleanup failure', delay: 0, cleanupFailure: true },
-  ])('preserves evidence for $label', async ({ delay, cleanupFailure }) => {
+  ])('preserves evidence for $label', async ({ delay, cleanupFailure, rpcCapMs, timeoutMs = 1_000 }) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-delayed-initialize-'))
+    const rpcTimeout = CodexEvalAttemptControl.prototype.rpcTimeout
+    // Keep the RPC timeout before the attempt deadline without relying on timer order.
+    const rpcTimeoutSpy = rpcCapMs === undefined ? undefined
+      : vi.spyOn(CodexEvalAttemptControl.prototype, 'rpcTimeout').mockImplementation(function (stage) {
+          return rpcTimeout.call(this, stage, rpcCapMs)
+        })
     const cleanup = EvalAppServerSession.prototype.cleanup
     const cleanupSpy = cleanupFailure
       ? vi.spyOn(EvalAppServerSession.prototype, 'cleanup').mockImplementation(async function () {
@@ -485,7 +495,7 @@ describe('Codex provider app-server process boundary', () => {
         defaultRuns: 1,
         releaseSplits: ['validation'],
         requiredForRelease: true,
-        perRunTimeoutMs: 1_000,
+        perRunTimeoutMs: timeoutMs,
       }
       const evalCase: AwSkillEvalTriggerCase = {
         id: 'case-1',
@@ -509,11 +519,14 @@ describe('Codex provider app-server process boundary', () => {
           descendantCleanupGuaranteed: false,
         },
         manageTimeout: true,
-        timeoutMs: 1_000,
+        timeoutMs,
       })
 
       expect(evidence).toMatchObject({ termination: delay ? 'timeout' : 'completed', execution_error: true })
       expect(evidence.event_trace).toContainEqual({ method: 'test/observed', params: {} })
+      if (rpcCapMs !== undefined) {
+        expect(evidence.diagnostics.join('\n')).toContain('Timed out waiting for app-server method initialize.')
+      }
       if (cleanupFailure) expect(evidence.diagnostics).toContain('Trigger eval app-server cleanup failed: synthetic cleanup failure')
       const requests = await vi.waitFor(() => fs.readFile(requestLog, 'utf8'))
       expect(requests).toContain('initialize')
@@ -536,6 +549,7 @@ describe('Codex provider app-server process boundary', () => {
         'shell_environment_policy.set.GIT_OPTIONAL_LOCKS="0"',
       ]))
     } finally {
+      rpcTimeoutSpy?.mockRestore()
       cleanupSpy?.mockRestore()
       await fs.remove(root)
     }

@@ -35,6 +35,12 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "src/select.js"
+        ],
+        "artifacts": [
+          {
+            "path": "src/select.js",
+            "exists": true
+          }
         ]
       },
       "audit": {

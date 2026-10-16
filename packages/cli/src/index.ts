@@ -1435,6 +1435,7 @@ function writeConfigApplyNotice(
 ): void {
   const sanitizeMessage = (message: string): string => redactString(message)
     .replace(/https?:\/\/\S+/giu, '[REDACTED URL]')
+    .replace(/file:\/\/\S+/giu, '[REDACTED PATH]')
     .replace(/(?:file:\/\/)?(?:\/[\w.@+-]+){2,}/gu, '[REDACTED PATH]')
     .replace(/[A-Za-z]:\\(?:[^\s\\]+\\)+[^\s\\]*/gu, '[REDACTED PATH]');
   const writeTargetFailures = (): void => {
@@ -2167,6 +2168,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         else {
           const sanitize = (value: string): string => redactString(value)
             .replace(/https?:\/\/\S+/giu, '[REDACTED URL]')
+            .replace(/file:\/\/\S+/giu, '[REDACTED PATH]')
             .replace(/(?:file:\/\/)?(?:\/[\w.@+-]+){2,}/gu, '[REDACTED PATH]')
             .replace(/[A-Za-z]:\\(?:[^\s\\]+\\)+[^\s\\]*/gu, '[REDACTED PATH]');
           const lines = new Set<string>();

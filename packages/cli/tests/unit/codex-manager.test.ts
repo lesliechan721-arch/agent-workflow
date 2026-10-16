@@ -350,7 +350,7 @@ describe('Codex manager resolver', () => {
   it('blocks a Windows .bat launcher without probing or managed fallback', async () => {
     const binRoot = path.join(isolation.layout.fixtureCwd, 'batch-prefix');
     await fs.ensureDir(binRoot);
-    await fs.writeFile(path.join(binRoot, 'codex.bat'), '@echo off\r\n');
+    await fs.writeFile(path.join(binRoot, 'codex.BAT'), '@echo off\r\n');
     const runner = vi.fn(async () => result('codex-cli 0.151.0'));
     const authorizer = vi.fn(() => true);
 
@@ -665,6 +665,7 @@ describe('Codex manager resolver', () => {
       '--prod',
       '--ignore-scripts',
       '--ignore-workspace',
+      '--config.node-linker=hoisted',
       `--registry=${MANAGED_CODEX_REGISTRY}`,
       `--store-dir=${path.join(isolation.layout.awHomeDir, 'runtimes', '.pnpm-store')}`,
       expect.stringMatching(/^--config\.userconfig=/u),

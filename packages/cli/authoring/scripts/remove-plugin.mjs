@@ -143,7 +143,7 @@ async function resolveGitWorkspace(workspaceRoot) {
   let repoRoot;
   let baseCommit;
   try {
-    repoRoot = path.resolve((await runGit(workspaceRoot, ['rev-parse', '--show-toplevel'], {
+    repoRoot = await fs.realpath((await runGit(workspaceRoot, ['rev-parse', '--show-toplevel'], {
       code: 'gitWorkspaceInvalid',
       label: 'Git repository discovery',
     })).trim());

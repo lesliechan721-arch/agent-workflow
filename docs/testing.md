@@ -2,9 +2,21 @@
 
 本文件面向仓库维护者，负责测试书写、测试层级选择和验证命令。产品行为以[架构说明](architecture.md)为准；单插件作者合同见[插件作者指南](plugin-authoring.md)，Catalog 聚合与发布合同见[Catalog 作者指南](catalog-authoring.md)。
 
-`pnpm test` 使用 package source 和默认 Vitest 多项目配置，只运行 unit 和 integration 测试，不要求预先生成 `dist/`。Performance、dist contract 和 smoke 测试使用独立命令，不包含在 `pnpm test` 中。
+`pnpm test` 使用 package source 和默认 Vitest 多项目配置，只运行 unit 和 integration 测试。CLI 作者与发布集成测试还会调用已构建的作者工具，全新 checkout 先运行 `pnpm build`；`pnpm test:unit` 不要求预先生成 `dist/`。Performance、dist contract 和 smoke 测试使用独立命令，不包含在 `pnpm test` 中。
 
-默认多项目按资源顺序运行：pure、filesystem-isolated 和 integration 使用最多 2 workers，process-lifecycle 使用 `forks`、1 worker 且关闭 file parallelism。Performance 和 smoke 各使用 1 worker；performance gate 先完成 process-lifecycle 自测，再运行业务性能预算。
+默认多项目按资源顺序运行：pure、filesystem-isolated 和 integration 默认使用最多 2 workers，process-lifecycle 使用 `forks`、1 worker 且关闭 file parallelism。Performance 和 smoke 各使用 1 worker；performance gate 先完成 process-lifecycle 自测，再运行业务性能预算。
+
+本地和 CI 可以设置 `AW_TEST_WORKERS` 调整普通 Vitest 与插件 Node test 的文件并发。未设置或空值保留入口默认值；合法值是十进制正安全整数，例如 `1`、`2`、`4`。`0`、负数、小数、百分比、空白和非数字会在准备或启动测试前失败。普通 Vitest 的默认上限为 2，最小 worker 为 1；插件 Node test 未设置时保留 Node runner 的默认并发。`pnpm test:workers` 使用真实 Vitest 子进程验证这些边界。
+
+Windows x64 CI 的普通 integration 分为三个独立 runner 的 Vitest shard，每片默认使用 1 worker；仓库变量 `AW_TEST_WORKERS` 的显式配置优先。第 3 片同时运行完整的串行 integration process-lifecycle、命令诊断与超时收尾回归和 pack smoke，全部分片成功才满足发布门禁。其他平台保留入口默认值。
+
+Linux Node 24 的插件测试使用独立 job，自行构建并将本次 CLI 加入 PATH；它与完整 release verification 都是自动 beta 的必需依赖。完整 `release:verify` 通过 CLI 的 fetch smoke 执行 Catalog publish smoke，再单独运行 Catalog bootstrap，避免重复执行同一 publish smoke。独立 CLI 和 Catalog 验证入口各自保留完整覆盖。
+
+CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。测试在删除临时现场前向该目录保存脱敏 JSON；失败 job 只上传 `publisher/` 和 `npm/` 下的 JSON，保留 7 天。诊断不包含完整环境变量或原始 npm debug 日志。
+
+定向 Vitest 命令可用 `--maxWorkers=4` 覆盖合法的环境值，`--minWorkers` 必须是正安全整数且不能超过上限。`pnpm plugin:test <plugin> --test-concurrency=4` 同样支持显式覆盖。非法环境值始终失败，即使同时提供显式值。process-lifecycle、锁/子 runner、dist contract、smoke、performance 和 qualification 保持串行；通用环境变量不能解除约束，固定串行入口拒绝大于 1 的显式 worker 请求。日志中的 `AW_TEST_WORKERS` JSON 行显示生效上限和来源。worker 只控制单个 runner 的文件并发，不改变 package 执行顺序或 Actions 矩阵数量。
+
+`pnpm test:perf:gate` 隔离通用 worker 环境值；性能测量固定 1 worker，被测 fast lane 固定 2 workers。普通 `pnpm test:unit:fast` 使用 `AW_TEST_WORKERS`，性能门禁中的同一 fast lane 使用固定基线。
 
 日常开发使用以下三个入口：
 
@@ -23,7 +35,7 @@
 | Smoke | 见下方命令表 | 真实 build、stage、pack、fetch 和插件脚本产物 |
 | Native qualification | `pnpm qualification:codex-project-native` | 显式验证精确 Codex CLI 的 shared native 与 project activation 行为；不进入普通测试或构建 |
 | Native performance qualification | `pnpm qualification:codex-native-performance` | 显式验证精确 Codex CLI 的 scoped list、隔离本地安装和中位数预算；不进入普通测试或构建 |
-| Windows Job qualification | `pnpm qualification:windows-job` | 在真实 Windows x64/arm64 主机验证 Job containment；不进入普通测试、构建或 release |
+| Windows Job qualification | `pnpm qualification:windows-job` | 在真实 Windows x64/arm64 主机验证 Job containment；tag 发布 smoke 必须运行，普通本地 test/build 不运行 |
 | Plugin test | `pnpm plugin:test <plugin>` | 插件自己的确定性 Node 测试 |
 | Model eval | 见[插件维护指南](plugin-maintenance.md) | 需要模型理解、判断、路由或完成任务的语义合同；不进入普通 CI |
 
@@ -40,6 +52,7 @@
 | `pnpm test:smoke:authoring:external` | 从三个已安装 tarball 在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → install source/plugin -p both`，并验证隔离 homes 内的 receipt 和安装结果 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
 | `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `Windows x64 → Windows arm64 → Eval → Core → CLI → CLI tag → Catalog`、显式轴和不确定远端失败 |
+| `pnpm test:release:automation` | 在已有正式 build 后验证精确 source tag、临时 bare remote、artifact 恢复与真实 smoke harness 边界；不访问官方发布目标 |
 | `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
 | `pnpm test:smoke:decision-kit-browser` | 使用 Playwright Chromium 驱动真实 `decision-prototype` Review `start/wait` 会话，校验预览、标注、反馈校验、键盘提交和会话清理 |
@@ -51,6 +64,8 @@
 | `pnpm qualification:windows-job` | 在真实 Windows 主机验证 stdio、退出码、快速成功、正常 root 退出后的后代、嵌套后代、forced helper exit、生产 timeout、生产 abort 和 parent crash 清理；mock 和非 Windows 运行不提供此证据 |
 
 首次运行 browser smoke 前，使用 `pnpm --filter @lesliechan721/aw exec playwright install chromium` 安装与当前 Playwright 版本匹配的 Chromium。browser smoke 属于完整 `pnpm test:smoke`，但不属于 `plugin:test` 或 `release:verify:cli:core`。
+
+Actions PR/main 使用 Linux x64 Node 22/24、macOS arm64 Node 24、Windows x64 Node 24；Linux Node 24 保留完整 release verification、strict Catalog build、插件确定性测试与性能门禁。每个 tag 候选另经 Linux/macOS/Windows 的 x64/arm64 六种真实架构和精确 Node 22.0.0 最低版本 smoke。矩阵下载同一 artifact ID 与 archive digest，不重编译；CPU 错误、必需检查缺失或 skip 均阻断发布。Windows 两架构必须用对应候选 helper 验证退出、timeout、abort、后代与 parent crash 清理。跨平台测试证据必须来自实际 runner；本机通过不表示整个矩阵通过。
 
 `release:verify:cli` 包含真实 plugin-scripts staging smoke，以及使用临时本地 bare Git remote 的 `test:smoke:fetch` publish/fetch/provider smoke。该 plugin smoke 固定 packageRoot 的 pnpm 版本，通过隔离 store 视图复用 workspace install 记录的 pnpm 内容，并在移除 `npm_execpath`、PATH 中的 Corepack/pnpm 和 pnpm 在线解析后运行；fetch smoke 不访问真实网络。
 

@@ -1676,7 +1676,13 @@ describe('phase 3B namespaced runtime stores', () => {
         cwd: isolation.layout.fixtureCwd,
         platform,
         scope: 'user',
-      }, { env: isolation.env, nativeCliRunner });
+      }, {
+        env: isolation.env,
+        nativeCliRunner,
+        codexManagerResolver: async () => ({
+          kind: 'system', version: '99.0.0', command: 'codex', argsPrefix: [],
+        }),
+      });
       expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
       expect(result.rebuildResults[0]?.target.marketplaceName).toBe('aw-team');
       if (platform === 'codex') {

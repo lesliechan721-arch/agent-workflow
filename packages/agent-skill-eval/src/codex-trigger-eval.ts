@@ -6,6 +6,7 @@ import { computeSkillDigest } from './runtime-skill.js';
 import fs from 'fs-extra';
 
 import {
+  AppServerRequestTimeoutError,
   CodexEvalAttemptControl,
   EvalAppServerSession,
   extractAppServerThreadId,
@@ -881,7 +882,8 @@ async function runTriggerOnce(options: {
       load_evidence: null,
       spawn_evidence: null,
       spawn_calls: [],
-      termination: control.timeoutExpired ? 'timeout' : 'setup_error',
+      termination: control.timeoutExpired || error instanceof AppServerRequestTimeoutError
+        ? 'timeout' : 'setup_error',
       exit_code: null,
       signal: null,
       execution_error: true,

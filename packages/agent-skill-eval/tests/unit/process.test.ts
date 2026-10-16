@@ -4,6 +4,8 @@ import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
+import { candidateProcessRunner } from '../../../../scripts/qualification/windows-job-containment.mjs'
+import { ProcessTreeTimeoutError } from '../../../../scripts/perf/process-tree.mjs'
 import {
   assertProcessTreeInspectionAvailable,
   observeProcessTree,
@@ -108,6 +110,46 @@ function renderMarkerScan(
 }
 
 describe('managed provider containment gate', () => {
+  it.each(['timeout', 'abort'] as const)('admits candidate Windows %s qualification through the real provider runner', async (mode) => {
+    const controller = new AbortController()
+    const abortReason = new Error('qualification abort fixture')
+    let started = false
+    let helperInvocations = 0
+    const run = candidateProcessRunner({
+      helperPath: process.execPath,
+      runProviderProcess: (
+        request: Parameters<typeof runProviderProcess>[0],
+        hooks: Parameters<typeof runProviderProcess>[1],
+        dependencies: NonNullable<Parameters<typeof runProviderProcess>[2]>,
+      ) => runProviderProcess(request, { ...hooks, onSpawn: () => { started = true } }, {
+        ...dependencies,
+        processTree: { platform: 'win32' },
+        createWindowsJobInvocation(executable, args) {
+          helperInvocations += 1
+          const invocation = dependencies.createWindowsJobInvocation!(executable, args)
+          // Substitute only the native helper. The real runner still enforces admission and termination.
+          return { ...invocation, command: executable, args: [...args] as ['--config', string] }
+        },
+      }),
+    })
+    const timer = mode === 'abort' ? setTimeout(() => controller.abort(abortReason), 100) : undefined
+    try {
+      const outcome = run({
+        label: 'candidate admission fixture',
+        command: process.execPath,
+        args: ['-e', 'setInterval(() => {}, 1000)'],
+        timeoutMs: mode === 'timeout' ? 100 : 3_000,
+        ...(mode === 'abort' ? { signal: controller.signal } : {}),
+      })
+      if (mode === 'timeout') await expect(outcome).rejects.toBeInstanceOf(ProcessTreeTimeoutError)
+      else await expect(outcome).rejects.toBe(abortReason)
+      expect(started).toBe(true)
+      expect(helperInvocations).toBe(1)
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  })
+
   it('routes a Windows provider through the Job helper before spawn', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-windows-job-'))
     const createWindowsJobInvocation = vi.fn(() => ({

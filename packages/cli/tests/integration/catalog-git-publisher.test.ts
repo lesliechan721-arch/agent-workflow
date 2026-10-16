@@ -2,10 +2,13 @@ import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
+import { preparePublishedCatalogWorkspace } from '@lesliechan721/aw-plugin-core';
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { bundleLocalPlugin, createCatalogRuntimeImportResolver } from '../../scripts/plugin-staging.js';
 import {
   applyCatalogPublicationPlan,
   catalogPublicationPlanDigest,
@@ -18,19 +21,84 @@ import {
   CatalogPublicationInspectionError,
   disposeCatalogPublicationInspection,
   listCatalogPublicationVersions,
+  readCatalogPublicationBranchState,
+  readCatalogPublicationPluginHistory,
   prepareCatalogPublicationInspection,
 } from '../../src/commands/catalog-publication-inspection.js';
 import { runCli } from '../../src/index.js';
+import { CLI_RESERVED_IMPORTS } from '../../src/utils/manifest.js';
+import { prepareCatalogRelease } from '../../../../scripts/release/catalog-publication.mjs';
+import { createIsolatedTestEnv } from '../helpers/test-isolation.js';
+import { TestCommandDiagnostics } from '../helpers/test-command-diagnostics.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
+const isolatedCaseEnv = 'AW_PUBLISHER_ISOLATED_CASE';
+const publisherTempBase = os.tmpdir();
+const publisherPackageRoot = fileURLToPath(new URL('../..', import.meta.url));
+const diagnosedCase = /^(allows a renamed remote alias|rejects a changed (remote identity|branch) during apply|stops when the pending )/u;
+let diagnostics: TestCommandDiagnostics | undefined;
+
+beforeEach(({ task, signal }) => {
+  diagnostics = diagnosedCase.test(task.name)
+    ? new TestCommandDiagnostics('publisher', task.name, signal)
+    : undefined;
 });
 
+afterEach(async ({ task, signal }) => {
+  try {
+    await diagnostics?.finish();
+  } catch (error) {
+    // Leave unconfirmed state on disk, and do not let the next case delete it.
+    roots.splice(0);
+    throw error;
+  }
+  // The outer scope owns this entire directory and waits for the real child tree.
+  // A timed-out child must not delete paths while its uncancelled callback still runs.
+  if (process.env[isolatedCaseEnv] === task.name && signal.aborted) {
+    getCurrentSourceTestIsolation().cleanup = async () => {
+      process.stderr.write('[catalog-publisher] Retained cancelled child state for its outer process scope.\n');
+    };
+    return;
+  }
+  const cleanup = () => Promise.all(roots.splice(0).map((root) => fs.remove(root)));
+  if (diagnostics) await diagnostics.stage('cleanup', cleanup);
+  else await cleanup();
+});
+
+function publicationStages() {
+  return <T>(stage: string, run: () => Promise<T>): Promise<T> => diagnostics!.stage(stage, run);
+}
+
+async function isolatedPublisherCase(testName: string, run: () => Promise<void>): Promise<void> {
+  if (process.env[isolatedCaseEnv] === testName) return run();
+  await diagnostics!.run(async () => {
+    const childRoot = await fs.mkdtemp(path.join(publisherTempBase, 'awp-'));
+    roots.push(childRoot);
+    const childIsolation = await createIsolatedTestEnv({ rootDir: childRoot, baseEnv: process.env });
+    // Keep all child fixtures below a path owned by this outer case, including its isolated HOME.
+    await diagnostics!.command(process.execPath, [
+      path.resolve(publisherPackageRoot, '../../scripts/test/run-vitest.mjs'),
+      'run', '--project', 'integration', '--maxWorkers=1', '--no-file-parallelism',
+      'tests/integration/catalog-git-publisher.test.ts',
+      '-t', `^version-scoped Catalog publication journal ${testName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}$`,
+    ], {
+      cwd: publisherPackageRoot,
+      env: {
+        ...childIsolation.env,
+        [isolatedCaseEnv]: testName,
+      },
+      onStderr: (text) => process.stderr.write(text),
+    });
+  });
+}
+
 async function temporaryRoot(prefix: string): Promise<string> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  // The extra isolated process layer needs shorter fixture names for Windows Git checkout.
+  const rootPrefix = process.env[isolatedCaseEnv] ? 'p-' : prefix;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), rootPrefix));
   roots.push(root);
   return root;
 }
@@ -132,7 +200,9 @@ async function addHistoryKeeperPlugin(root: string): Promise<void> {
   ], { cwd: root, io: quietIo() });
 }
 
-async function publishedPluginVersion(publication: CatalogPublishPlanReceipt): Promise<string | undefined> {
+async function publishedPluginVersion(
+  publication: Pick<CatalogPublishPlanReceipt, 'repositoryPath'>,
+): Promise<string | undefined> {
   const manifest = await fs.readJson(
     path.join(publication.repositoryPath!, 'catalog-manifest.json'),
   ) as { entries: Array<{ name: string; version: string }> };
@@ -141,16 +211,155 @@ async function publishedPluginVersion(publication: CatalogPublishPlanReceipt): P
 
 async function pushPreparedRef(
   publication: CatalogPublishPlanReceipt,
-  ref: 'branch' | 'tag',
+  ref: 'branch' | 'tag' | 'both',
 ): Promise<void> {
   const repository = publication.repositoryPath!;
-  const source = ref === 'branch'
-    ? `${publication.expectedCommit}:refs/heads/${publication.branch}`
-    : `refs/tags/${publication.tag}:refs/tags/${publication.tag}`;
-  await execFileAsync('git', ['push', '--quiet', publication.pushUrl, source], { cwd: repository });
+  const branch = `${publication.expectedCommit}:refs/heads/${publication.branch}`;
+  const tag = `refs/tags/${publication.tag}:refs/tags/${publication.tag}`;
+  const refs = ref === 'both' ? [branch, tag] : [ref === 'branch' ? branch : tag];
+  await git(repository, ['push', '--quiet', '--atomic', publication.pushUrl, ...refs]);
+}
+
+// History tests need valid published snapshots and Git ancestry, without repeating journal apply coverage.
+async function publishHistoryFixture(options: {
+  root: string;
+  remote: string;
+  branch?: string;
+  previous?: { repositoryPath: string; commit: string };
+  parent?: string;
+}): Promise<{ repositoryPath: string; commit: string }> {
+  const prepared = await preparePublishedCatalogWorkspace({
+    workspaceRoot: options.root,
+    sourceHead: await git(options.root, ['rev-parse', 'HEAD']),
+    previousSnapshotRoot: options.previous?.repositoryPath,
+    reservedImports: CLI_RESERVED_IMPORTS,
+    adapter: {
+      async build(build) {
+        await bundleLocalPlugin(build.plugin, build.outputRoot, {
+          buildMode: 'staging',
+          runtimeResolver: createCatalogRuntimeImportResolver(build.plugins),
+        });
+      },
+    },
+  });
+  const repository = await temporaryRoot('aw-catalog-history-fixture-');
+  await git(repository, ['init', '--quiet']);
+  const parent = options.parent ?? options.previous?.commit;
+  if (parent !== undefined) {
+    await git(repository, ['fetch', '--quiet', '--no-tags', options.remote, parent]);
+    await git(repository, ['reset', '--soft', 'FETCH_HEAD']);
+  }
+  await fs.copy(prepared.outputRoot, repository);
+  await git(repository, ['-c', 'core.autocrlf=false', '-c', 'core.eol=lf', 'add', '--all']);
+  const identity = ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid'];
+  await git(repository, [...identity, 'commit', '--quiet', '-m', `Catalog history ${prepared.catalogVersion}`]);
+  const tag = `catalog-v${prepared.catalogVersion}`;
+  await git(repository, [...identity, 'tag', '--annotate', tag, '--message', tag]);
+  await git(repository, [
+    'push', '--quiet', '--atomic', options.remote,
+    `HEAD:refs/heads/${options.branch ?? 'catalog/latest'}`,
+    `refs/tags/${tag}:refs/tags/${tag}`,
+  ]);
+  return { repositoryPath: prepared.outputRoot, commit: await git(repository, ['rev-parse', 'HEAD']) };
 }
 
 describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () => {
+  it('preserves snapshot bytes when user Git settings enable CRLF conversion', async () => {
+    await fs.ensureDir(process.env.HOME!);
+    await execFileAsync('git', ['config', '--global', 'core.autocrlf', 'true']);
+    const { root } = await createWorkspace();
+    const manifestPath = path.join(root, 'plugins', 'journal-test', '.agents-plugin', 'plugin.json');
+    await fs.remove(manifestPath);
+    await git(root, ['checkout', 'HEAD', '--', 'plugins/journal-test/.agents-plugin/plugin.json']);
+    expect(await fs.readFile(manifestPath, 'utf8')).toContain('\r\n');
+    const publication = await plan(root);
+    await expect(apply(root, publication)).resolves.toMatchObject({ state: 'published' });
+    await expect(readCatalogPublicationBranchState({
+      workspaceRoot: root,
+      remote: 'origin',
+      branch: publication.branch,
+      env: process.env,
+    })).resolves.toMatchObject({
+      commit: publication.expectedCommit,
+      snapshotDigest: publication.snapshotDigest,
+    });
+    await expect(readCatalogPublicationPluginHistory({
+      workspaceRoot: root,
+      remote: 'origin',
+      branches: [publication.branch],
+      env: process.env,
+    })).resolves.toMatchObject([{ name: 'journal-test', version: '0.1.0' }]);
+    await setCatalogVersion(root, '1.0.1');
+    await commitAll(root, 'advance Catalog under CRLF checkout settings');
+    await expect(plan(root)).resolves.toMatchObject({ parent: publication.expectedCommit });
+  });
+
+  it('uses both official channel histories without changing the publication parent', async () => {
+    const { root, remote } = await createWorkspace();
+    await addHistoryKeeperPlugin(root);
+    await setPluginVersion(root, '1.0.0');
+    await commitAll(root, 'prepare official stable plugins');
+    const service = { prepareCatalogPublicationPlan, readCatalogPublicationPluginHistory };
+    async function officialPlan(mode: 'latest' | 'beta') {
+      return prepareCatalogRelease(mode, {
+        repoRoot: root, remoteUrl: remote, catalogPublicationService: service,
+      }) as Promise<CatalogPublishPlanReceipt>;
+    }
+    async function changePlugin(name: string, description: string) {
+      const manifestPath = path.join(root, 'plugins', name, '.agents-plugin', 'plugin.json');
+      const manifest = await fs.readJson(manifestPath);
+      await fs.writeJson(manifestPath, { ...manifest, description }, { spaces: 2 });
+    }
+    // Publish prepared history directly; the promotion below still exercises apply.
+    const stable = await officialPlan('latest');
+    await pushPreparedRef(stable, 'both');
+
+    await setCatalogVersion(root, '1.0.1-beta.1');
+    await changePlugin('history-keeper', 'Changed Q after first stable.');
+    await commitAll(root, 'change only Q');
+    const firstBeta = await officialPlan('beta');
+    expect(firstBeta.parent).toBeNull();
+    expect(await publishedPluginVersion(firstBeta)).toBe('1.0.0');
+    await pushPreparedRef(firstBeta, 'both');
+
+    await setCatalogVersion(root, '1.0.1-beta.2');
+    await changePlugin('journal-test', 'Changed P after first stable.');
+    await commitAll(root, 'change P');
+    const changedP = await officialPlan('beta');
+    expect(changedP.parent).toBe(firstBeta.expectedCommit);
+    expect(await publishedPluginVersion(changedP)).toBe('1.0.1-beta.1');
+    await pushPreparedRef(changedP, 'both');
+
+    await setCatalogVersion(root, '1.0.1');
+    await commitAll(root, 'promote official plugins');
+    const promoted = await officialPlan('latest');
+    expect(promoted.parent).toBe(stable.expectedCommit);
+    expect(await publishedPluginVersion(promoted)).toBe('1.0.1');
+    await apply(root, promoted);
+
+    await setCatalogVersion(root, '1.0.2-beta.1');
+    await changePlugin('history-keeper', 'Changed Q after promotion.');
+    await commitAll(root, 'change only Q after promotion');
+    const laterBeta = await officialPlan('beta');
+    expect(laterBeta.parent).toBe(changedP.expectedCommit);
+    expect(await publishedPluginVersion(laterBeta)).toBe('1.0.1');
+    await pushPreparedRef(laterBeta, 'both');
+
+    const backup = path.join(await temporaryRoot('aw-official-plugin-backup-'), 'journal-test');
+    await fs.copy(path.join(root, 'plugins', 'journal-test'), backup);
+    await fs.remove(path.join(root, 'plugins', 'journal-test'));
+    await setCatalogVersion(root, '1.0.2-beta.2');
+    await commitAll(root, 'remove P');
+    const removed = await officialPlan('beta');
+    await pushPreparedRef(removed, 'both');
+    await fs.copy(backup, path.join(root, 'plugins', 'journal-test'));
+    await setCatalogVersion(root, '1.0.2-beta.3');
+    await commitAll(root, 'restore unchanged P');
+    const restored = await officialPlan('beta');
+    expect(restored.parent).toBe(removed.expectedCommit);
+    expect(await publishedPluginVersion(restored)).toBe('1.0.1');
+  }, 90_000);
+
   it('shows bounded safe Git details for release Catalog version inspection', async () => {
     const root = await temporaryRoot('aw-catalog-version-inspection-');
     const sshFailure = path.join(root, 'ssh-failure.mjs');
@@ -628,54 +837,73 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
       .toBe(publication.expectedCommit);
   });
 
-  it('allows a renamed remote alias when its fetch and push identity is unchanged', async () => {
-    const { root, remote } = await createWorkspace();
-    const publication = await plan(root);
-    await git(root, ['remote', 'add', 'renamed', remote]);
-    await git(root, ['remote', 'remove', 'origin']);
+  it('allows a renamed remote alias when its fetch and push identity is unchanged', async ({ task }) => isolatedPublisherCase(task.name, async () => {
+    const stage = publicationStages();
+    const { root, remote } = await stage('createWorkspace', () => createWorkspace());
+    const publication = await stage('plan', () => plan(root));
+    await stage('mutation', async () => {
+      await git(root, ['remote', 'add', 'renamed', remote]);
+      await git(root, ['remote', 'remove', 'origin']);
+    });
 
-    await expect(applyCatalogPublicationPlan({
-      workspaceRoot: root,
-      remote: 'renamed',
-      branch: 'catalog/latest',
-      expectedPlanDigest: publication.planDigest,
-      env: process.env,
-    })).resolves.toMatchObject({ state: 'published', remote: 'renamed' });
-  });
+    await stage('apply', async () => {
+      await expect(applyCatalogPublicationPlan({
+        workspaceRoot: root,
+        remote: 'renamed',
+        branch: 'catalog/latest',
+        expectedPlanDigest: publication.planDigest,
+        env: process.env,
+      })).resolves.toMatchObject({ state: 'published', remote: 'renamed' });
+    });
+  }));
 
   it.each(['remote identity', 'branch'] as const)(
     'rejects a changed %s during apply',
-    async (changed) => {
-      const { root, remote } = await createWorkspace();
-      const publication = await plan(root);
-      const evilRemote = await temporaryRoot('aw-catalog-journal-changed-remote-');
-      await execFileAsync('git', ['init', '--bare', '--quiet', evilRemote]);
-      if (changed === 'remote identity') await git(root, ['remote', 'set-url', 'origin', evilRemote]);
+    async (changed) => isolatedPublisherCase(`rejects a changed ${changed} during apply`, async () => {
+      const stage = publicationStages();
+      const { root, remote } = await stage('createWorkspace', () => createWorkspace());
+      const publication = await stage('plan', () => plan(root));
+      const evilRemote = await stage('mutation', async () => {
+        if (changed !== 'remote identity') return undefined;
+        const alternative = await temporaryRoot('aw-catalog-journal-changed-remote-');
+        await execFileAsync('git', ['init', '--bare', '--quiet', alternative]);
+        await git(root, ['remote', 'set-url', 'origin', alternative]);
+        return alternative;
+      });
 
-      await expect(applyCatalogPublicationPlan({
-        workspaceRoot: root,
-        remote: 'origin',
-        branch: changed === 'branch' ? 'catalog/beta' : 'catalog/latest',
-        expectedPlanDigest: publication.planDigest,
-        env: process.env,
-      })).rejects.toThrow(/identity changed|Increase/u);
-      expect(await git(root, ['ls-remote', remote])).toBe('');
-      expect(await git(root, ['ls-remote', evilRemote])).toBe('');
-    },
+      await stage('apply', async () => {
+        await expect(applyCatalogPublicationPlan({
+          workspaceRoot: root,
+          remote: 'origin',
+          branch: changed === 'branch' ? 'catalog/beta' : 'catalog/latest',
+          expectedPlanDigest: publication.planDigest,
+          env: process.env,
+        })).rejects.toThrow(/identity changed|Increase/u);
+      });
+      await stage('verify refs', async () => {
+        expect(await git(root, ['ls-remote', remote])).toBe('');
+        if (evilRemote !== undefined) expect(await git(root, ['ls-remote', evilRemote])).toBe('');
+      });
+    }),
   );
 
   it.each(['journal', 'damaged journal', 'repository', 'damaged repository'] as const)(
     'stops when the pending %s is missing or damaged',
-    async (missing) => {
-      const { root } = await createWorkspace();
-      const publication = await plan(root);
-      if (missing === 'journal') await fs.remove(publication.journalPath);
-      else if (missing === 'damaged journal') await fs.writeFile(publication.journalPath, '{ damaged');
-      else if (missing === 'repository') await fs.remove(publication.repositoryPath!);
-      else await fs.remove(path.join(publication.repositoryPath!, '.git', 'HEAD'));
+    async (missing) => isolatedPublisherCase(`stops when the pending ${missing} is missing or damaged`, async () => {
+      const stage = publicationStages();
+      const { root } = await stage('createWorkspace', () => createWorkspace());
+      const publication = await stage('plan', () => plan(root));
+      await stage('mutation', async () => {
+        if (missing === 'journal') await fs.remove(publication.journalPath);
+        else if (missing === 'damaged journal') await fs.writeFile(publication.journalPath, '{ damaged');
+        else if (missing === 'repository') await fs.remove(publication.repositoryPath!);
+        else await fs.remove(path.join(publication.repositoryPath!, '.git', 'HEAD'));
+      });
 
-      await expect(apply(root, publication)).rejects.toThrow(/missing|damaged|Increase/u);
-    },
+      await stage('apply', async () => {
+        await expect(apply(root, publication)).rejects.toThrow(/missing|damaged|Increase/u);
+      });
+    }),
   );
 
   it('fails closed when the authorized digest appears in multiple schema v2 journal files', async () => {
@@ -780,13 +1008,11 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const pluginBackup = path.join(backupRoot, 'journal-test');
     await fs.copy(pluginRoot, pluginBackup);
 
-    const first = await plan(root);
-    await apply(root, first);
+    const first = await publishHistoryFixture({ root, remote });
     await fs.remove(pluginRoot);
     await setCatalogVersion(root, '1.1.0');
     await commitAll(root, 'remove plugin');
-    const removed = await plan(root);
-    await apply(root, removed);
+    await publishHistoryFixture({ root, remote, previous: first });
 
     await fs.copy(pluginBackup, pluginRoot);
     await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Different\n');
@@ -805,8 +1031,8 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     await expect(git(remote, ['show-ref'])).resolves.toBe(remoteBeforeDowngrade);
   });
 
-  it('continues beta Plugin identity after deletion and reuses unchanged historical content', async () => {
-    const { root } = await createWorkspace('1.0.0-beta.1');
+  it('reuses unchanged beta Plugin identity after deletion', async () => {
+    const { root, remote } = await createWorkspace('1.0.0-beta.1');
     const pluginRoot = path.join(root, 'plugins', 'journal-test');
     await addHistoryKeeperPlugin(root);
     await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Original\n');
@@ -815,35 +1041,65 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const pluginBackup = path.join(backupRoot, 'journal-test');
     await fs.copy(pluginRoot, pluginBackup);
 
-    const first = await plan(root, 'catalog/beta');
+    const first = await publishHistoryFixture({ root, remote, branch: 'catalog/beta' });
     expect(await publishedPluginVersion(first)).toBe('0.1.0-beta.1');
-    await apply(root, first);
     await fs.remove(pluginRoot);
     await setCatalogVersion(root, '1.0.0-beta.2');
     await commitAll(root, 'remove beta plugin');
-    const removed = await plan(root, 'catalog/beta');
-    await apply(root, removed);
+    const removed = await publishHistoryFixture({ root, remote, branch: 'catalog/beta', previous: first });
 
     await fs.copy(pluginBackup, pluginRoot);
     await setCatalogVersion(root, '1.0.0-beta.3');
     await commitAll(root, 'readd unchanged beta plugin');
     const unchanged = await plan(root, 'catalog/beta');
+    expect(unchanged.parent).toBe(removed.commit);
     expect(await publishedPluginVersion(unchanged)).toBe('0.1.0-beta.1');
-    await apply(root, unchanged);
+    await expect(apply(root, unchanged)).resolves.toMatchObject({ state: 'published' });
+  });
+
+  it('continues beta Plugin identity after repeated deletion and restoration', async () => {
+    const { root, remote } = await createWorkspace('1.0.0-beta.1');
+    const pluginRoot = path.join(root, 'plugins', 'journal-test');
+    await addHistoryKeeperPlugin(root);
+    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Original\n');
+    await commitAll(root, 'prepare original beta plugin');
+    const backupRoot = await temporaryRoot('aw-catalog-beta-plugin-backup-');
+    const pluginBackup = path.join(backupRoot, 'journal-test');
+    await fs.copy(pluginRoot, pluginBackup);
+
+    const first = await publishHistoryFixture({ root, remote, branch: 'catalog/beta' });
+    expect(await publishedPluginVersion(first)).toBe('0.1.0-beta.1');
+    await fs.remove(pluginRoot);
+    await setCatalogVersion(root, '1.0.0-beta.2');
+    await commitAll(root, 'remove beta plugin');
+    const removed = await publishHistoryFixture({ root, remote, branch: 'catalog/beta', previous: first });
+
+    await fs.copy(pluginBackup, pluginRoot);
+    await setCatalogVersion(root, '1.0.0-beta.3');
+    await commitAll(root, 'readd unchanged beta plugin');
+    // Reuse the last present Plugin baseline while keeping the deleted snapshot as Git parent.
+    const restored = await publishHistoryFixture({
+      root, remote, branch: 'catalog/beta', previous: first, parent: removed.commit,
+    });
+    expect(await publishedPluginVersion(restored)).toBe('0.1.0-beta.1');
 
     await fs.remove(pluginRoot);
     await setCatalogVersion(root, '1.0.0-beta.4');
     await commitAll(root, 'remove beta plugin again');
-    const removedAgain = await plan(root, 'catalog/beta');
-    await apply(root, removedAgain);
+    const removedAgain = await publishHistoryFixture({
+      root, remote, branch: 'catalog/beta', previous: restored,
+    });
+    expect((await git(remote, ['rev-list', '--first-parent', 'refs/heads/catalog/beta'])).split('\n'))
+      .toEqual([removedAgain.commit, restored.commit, removed.commit, first.commit]);
 
     await fs.copy(pluginBackup, pluginRoot);
     await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Different\n');
     await setCatalogVersion(root, '1.0.0-beta.5');
     await commitAll(root, 'readd changed beta plugin');
     const changed = await plan(root, 'catalog/beta');
+    expect(changed.parent).toBe(removedAgain.commit);
     expect(await publishedPluginVersion(changed)).toBe('0.1.0-beta.2');
-    await apply(root, changed);
+    await expect(apply(root, changed)).resolves.toMatchObject({ state: 'published' });
   });
 
   it('rejects a regular historical manifest blob with a non-canonical Plugin source before formal or remote writes', async () => {
@@ -854,19 +1110,17 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const pluginBackup = path.join(await temporaryRoot('aw-catalog-history-source-backup-'), 'journal-test');
     await fs.copy(pluginRoot, pluginBackup);
 
-    const first = await plan(root);
-    await apply(root, first);
+    const first = await publishHistoryFixture({ root, remote });
     await fs.remove(pluginRoot);
     await setCatalogVersion(root, '1.1.0');
     await commitAll(root, 'remove historical plugin');
-    const removed = await plan(root);
-    await apply(root, removed);
+    const removed = await publishHistoryFixture({ root, remote, previous: first });
 
     const rewrite = await temporaryRoot('aw-catalog-history-source-rewrite-');
     await git(path.dirname(rewrite), ['clone', '--quiet', remote, rewrite]);
     await git(rewrite, ['config', 'user.email', 'test@example.invalid']);
     await git(rewrite, ['config', 'user.name', 'AW Test']);
-    await git(rewrite, ['checkout', '--quiet', '--detach', first.expectedCommit]);
+    await git(rewrite, ['checkout', '--quiet', '--detach', first.commit]);
     const historyManifestPath = path.join(rewrite, 'catalog-manifest.json');
     const historyManifest = await fs.readJson(historyManifestPath) as {
       entries: Array<Record<string, unknown>>;
@@ -878,7 +1132,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
         : entry),
     }, { spaces: 2 });
     await commitAll(rewrite, 'publish non-canonical historical metadata');
-    await git(rewrite, ['read-tree', '--reset', '-u', removed.expectedCommit]);
+    await git(rewrite, ['read-tree', '--reset', '-u', removed.commit]);
     await commitAll(rewrite, 'restore removed snapshot tree');
     await git(rewrite, ['push', '--quiet', '--force', 'origin', 'HEAD:refs/heads/catalog/latest']);
 
@@ -888,6 +1142,9 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const remoteBefore = await git(remote, ['show-ref']);
 
     await expect(plan(root)).rejects.toThrow(/source.*does not match its plugin bundle/u);
+    await expect(readCatalogPublicationPluginHistory({
+      workspaceRoot: root, remoteUrl: remote, branches: ['catalog/latest', 'catalog/beta'], env: process.env,
+    })).rejects.toThrow(/source.*does not match its plugin bundle/u);
     await expect(fs.pathExists(path.join(root, '.aw', 'publish', '1.2.0'))).resolves.toBe(false);
     await expect(git(remote, ['show-ref'])).resolves.toBe(remoteBefore);
   });
@@ -940,6 +1197,11 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const readded = await plan(root);
     expect(readded.parent).toBe(mergeCommit);
     expect(await publishedPluginVersion(readded)).toBe('0.2.0');
+    const officialHistory = await readCatalogPublicationPluginHistory({
+      workspaceRoot: root, remoteUrl: remote, branches: ['catalog/latest', 'catalog/beta'], env: process.env,
+    });
+    expect(officialHistory.filter((entry) => entry.name === 'journal-test').map((entry) => entry.version))
+      .toEqual(['0.2.0']);
     await apply(root, readded);
-  });
+  }, 90_000);
 });

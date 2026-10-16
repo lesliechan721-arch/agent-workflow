@@ -328,7 +328,26 @@ CODEX_QUALIFICATION_VERSION=0.153.0 CODEX_QUALIFICATION_CLI=/path/to/codex-0.153
 
 每次运行只使用临时 home、临时项目和 local marketplace，并阻断 proxy。三个版本都必须支持 marketplace-scoped JSON list；`0.153.0` 的 local scoped list 不得依赖远程 Catalog。代表性 local native install 运行五次，中位数必须低于 15 秒；精确 binary 缺失时保留未运行缺口。该 qualification 不接入 app-server plugin/reconcile，也不证明运行中的 Codex App 会自动刷新。
 
-正常发布只使用一个非交互入口。渠道必须是 `beta` 或 `release`，并显式选择 CLI、Catalog 或两者：
+官方发布使用 GitHub Actions。PR/main 自动运行 CI；main 的精确提交通过后，分别比较 CLI 五包与 Catalog 的实际生产内容。有变化的产品自动准备 beta，版本提交和源码 tag 只放在 `release-source/<product>/<version>` 分支，main 不接收自动版本提交。默认稳定版后从下一 patch beta 开始；显式修改稳定目标可指定 major/minor。CLI 和 Catalog 各自发布、各自保留成功结果。
+
+正式版在 `Release CLI` 或 `Release Catalog` 的 Actions 页面选择 `source`，填写精确稳定版本和 main 提交 SHA。入口准备候选后推送 `release/cli/v<version>` 或 `release/catalog/v<version>`，触发该产品的验证与发布。也可在已有工具构建的干净 checkout 中运行以下维护命令；它会推送候选分支和 tag：
+
+```bash
+pnpm release:actions source --product cli --version 0.2.1 --source <main-sha>
+pnpm release:actions source --product catalog --version 0.5.1 --source <main-sha>
+```
+
+每个候选只构建一次，六种 OS/CPU 的 Node 24 smoke 和精确 Node 22.0.0 最低版本 smoke 消费同一恢复包。任一门禁未通过就不发布。CLI 使用五包 npm Trusted Publisher；Catalog 消费原 snapshot/plan，不重新构建。Windows Job qualification 使用候选 helper；Catalog 的 fake native runner 不表示真实 Codex/Claude 已通过 qualification。
+
+首次启用需要以下仓库外部配置：
+
+- GitHub App 的安装范围仅为本仓库，授予 Contents write；设置变量 `RELEASE_APP_ID` 和 secret `RELEASE_APP_PRIVATE_KEY`。未设置 `RELEASE_APP_ID` 时，main CI 仍执行全部验证，但跳过自动 beta 发布；配置 App 后启用自动发布。用 branch/tag ruleset 保护 main 和非发布 refs，App 不获得 main bypass。App token 本身不能按 ref 缩小权限；入口只推送规定的候选 refs。App 推送会触发 tag workflow，默认 GITHUB_TOKEN 不具有这一行为。见 [GitHub 触发规则](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)。
+- 五个公开 npm 包分别配置 Trusted Publisher：当前仓库、`release-cli.yml`、environment `npm`。发布 job 使用 GitHub-hosted Linux、Node 24、npm 11.6.2 和 OIDC，不需要长期 npm token。见 [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)。
+- 确认六种 hosted runner 可用于本仓库，并允许 30 天 artifact 保留期。可设置 repository variable `AW_TEST_WORKERS` 调整普通测试并发；串行和性能入口保持固定约束。
+
+恢复包先于首次远端写入上传，按精确 run/artifact ID 与 digest 恢复；最终状态另存。CLI 部分成功时在 `Release CLI` 中选择 `repair-cli` 并填写原源码 tag；只缺完成 tag 使用 `repair-cli-tag`。Catalog 选择 `resume` 并填写原 tag，继续原 plan。普通 CLI 重跑不续传已尝试版本。恢复包缺失、损坏或超过 30 天保留期时使用新版本；不要删除占号 tag 或重建旧 plan。本地和 Actions 不同时操作同一候选。
+
+本地一体维护入口继续可用。渠道必须是 `beta` 或 `release`，并显式选择 CLI、Catalog 或两者：
 
 ```bash
 pnpm release -- beta --cli
@@ -354,7 +373,7 @@ aw catalog version --bump patch --workspace-root .
 
 产品源码必须先提交，且工作树必须干净。命令先选择 Catalog beta，再调用上述公共 version mutation；需要变化时创建一个精确只包含 `plugins/marketplace-source.json` 的 commit。CLI/plugin metadata 使用单独白名单 commit。没有 Catalog version 变化时不创建空 commit。随后运行所选轴的完整验证，在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 plan，并按 `Windows x64 → Windows arm64 → Eval → Core → CLI → cli-v<version> tag → Catalog` 发布启用的轴。Catalog 轴最后调用与普通 Workspace 相同的 publisher；CLI tag 只推送到 `origin`，当前分支不自动推送。
 
-Catalog beta 只比较 source metadata、`catalog-v` tag 和 publication journal。beta 已使用时，命令在同一 stable base 选择下一个未使用的 `beta.N`；stable metadata 进入 beta 渠道时也选择该 base 的 beta。stable 发布可把 beta metadata 提升为同 base stable。Plugin beta 和 stable 使用每个当前 Plugin 在目标 branch 的 first-parent 发布历史中最近的 manifest entry。tip 缺少 Plugin 时，plan 按需回溯；Plugin 移除后重加继续使用删除前的基线。beta 在历史基线缺失或 stable base 提高时为 `beta.1`，同 base 同 contentDigest 复用，同 base 内容变化递增，base 降低拒绝；stable 在 contentDigest 改变但 version 未提高或 version 降低时拒绝。Catalog-only 不查询或发布 npm package，也不创建 CLI tag 或 `.release/attempted.json`。
+本地 Catalog 候选号继续读取 source metadata、`catalog-v` tag 和 publication journal，已占用 beta 使用新序号。官方插件版本由 Core 统一分配，合并 latest/beta 的完整成功历史，未变化插件复用完整版本；稳定插件变化自动推进自身 patch，已有 beta base 内递增，显式较高 base 开新线。删除重加继续使用历史；同版本不同内容拒绝。第三方 publisher 未提供官方历史时保持其原 channel 历史行为。Catalog-only 不发布 npm package，也不创建 CLI tag 或 `.release/attempted.json`。
 
 远端 npm 发布失败或结果不确定后，不要直接重试单个 `npm publish`，也不要删除 `.release/attempted.json`。beta CLI 的普通恢复是用相同轴重新运行 `pnpm release`；工具保留稳定 target，自动选择下一个 beta，并重新发布五个包。稳定 CLI 仍需指定 `--cli-bump`。若要补发原候选中确认缺失的包，保留 prepared state 并运行 `pnpm release -- --repair-cli`；命令会核验 source、artifact 和 registry 中已存在的包，只补缺失包，最后核验整组并补 CLI tag。若五个 npm 包已经完整发布而只缺 tag，可运行 `pnpm release -- --repair-cli-tag`。Catalog 使用 schema v2 `.aw/publish/<version>/journal.json` 和 pending `repository/`。相同 journal plan 可对账或续跑，不同 plan 必须提升 Catalog version。`prepared` 或 `uncertain` 的 journal 或 repo 缺失或损坏时，停止并提升版本，不盲目重建或复用。`published` journal 缺失时，远端 immutable tag 仍占用版本。成功时先保存 published journal，再尽力删除 repo；清理失败只报告 warning。
 

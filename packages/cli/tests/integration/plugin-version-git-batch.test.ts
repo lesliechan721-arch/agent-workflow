@@ -15,12 +15,15 @@ function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 }
 
-async function createFakeGit(mode: string): Promise<NodeJS.ProcessEnv> {
+async function createFakeGit(mode: string): Promise<{
+  command: string;
+  argsPrefix: string[];
+  env: NodeJS.ProcessEnv;
+}> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-git-batch-test-'));
   tempDirs.push(root);
-  const binRoot = path.join(root, 'bin');
-  await fs.ensureDir(binRoot);
-  await fs.writeFile(path.join(binRoot, 'git'), [
+  const launcher = path.join(root, 'git.mjs');
+  await fs.writeFile(launcher, [
     '#!/usr/bin/env node',
     "const chunks = [];",
     "for await (const chunk of process.stdin) chunks.push(chunk);",
@@ -49,11 +52,10 @@ async function createFakeGit(mode: string): Promise<NodeJS.ProcessEnv> {
     "  setInterval(() => {}, 1000);",
     "}",
   ].join('\n'), 'utf8');
-  await fs.chmod(path.join(binRoot, 'git'), 0o755);
   return {
-    ...process.env,
-    AW_FAKE_GIT_BATCH_MODE: mode,
-    PATH: `${binRoot}${path.delimiter}${process.env.PATH ?? ''}`,
+    command: process.execPath,
+    argsPrefix: [launcher],
+    env: { ...process.env, AW_FAKE_GIT_BATCH_MODE: mode },
   };
 }
 
@@ -67,7 +69,7 @@ describe('Git cat-file batch authoring source reader', () => {
       firstObjectId,
       firstObjectId,
       secondObjectId,
-    ], { env: await createFakeGit('success') });
+    ], await createFakeGit('success'));
 
     expect([...result.keys()]).toEqual([firstObjectId, secondObjectId]);
     expect(result.get(firstObjectId)).toEqual(Buffer.from([0x61, 0x0a, 0x00, 0x62]));
@@ -84,11 +86,11 @@ describe('Git cat-file batch authoring source reader', () => {
     ['invalid-separator', 'invalid separator'],
     ['nonzero', 'synthetic cat-file failure'],
     ['stderr', 'synthetic stderr'],
-    ['signal', 'signal'],
+    ['signal', process.platform === 'win32' ? 'with exit code 1' : 'signal SIGTERM'],
   ])('fails closed without hanging for %s output', async (mode, message) => {
     const startedAt = Date.now();
     await expect(readGitBlobsBatch(repoRoot(), [firstObjectId], {
-      env: await createFakeGit(mode),
+      ...await createFakeGit(mode),
     })).rejects.toThrow(message);
     expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
@@ -98,7 +100,7 @@ describe('Git cat-file batch authoring source reader', () => {
     async (mode) => {
       const startedAt = Date.now();
       await expect(readGitBlobsBatch(repoRoot(), [firstObjectId], {
-        env: await createFakeGit(mode),
+        ...await createFakeGit(mode),
         operationTimeoutMs: 50,
       })).rejects.toMatchObject({
         code: 'gitFailed',

@@ -11,6 +11,7 @@ import {
   mutateCatalogWorkspaceVersion,
   preparePublishedCatalogWorkspace,
   readCatalogWorkspace,
+  resolvePublishedPluginVersions,
   resolveCatalogVersionMutation,
   resolveCatalogWorkspaceOutputPath,
   validateCatalogSnapshotComplete,
@@ -849,6 +850,111 @@ describe('AW Catalog Workspace v1', () => {
       previousSnapshotRoot: second.outputRoot,
       adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
     })).rejects.toThrow(/must not be lower than previous/u)
+  })
+
+  it.each([
+    { history: ['1.0.0'], changed: false, channel: 'beta', expected: '1.0.0' },
+    { history: ['1.0.1-beta.3', '1.0.1'], changed: false, channel: 'beta', expected: '1.0.1' },
+    { history: ['1.0.1'], changed: true, channel: 'beta', expected: '1.0.2-beta.1' },
+    { history: ['1.1.0-beta.2', '1.0.1'], changed: true, channel: 'beta', expected: '1.1.0-beta.3' },
+    { history: ['1.1.0-beta.2'], changed: false, channel: 'beta', expected: '1.1.0-beta.2' },
+    { history: ['1.1.0-beta.2'], changed: true, channel: 'beta', source: '2.0.0', expected: '2.0.0-beta.1' },
+    { history: [], changed: false, channel: 'beta', expected: '0.1.0-beta.1' },
+    { history: ['1.1.0-beta.2'], changed: false, channel: 'latest', expected: '1.1.0' },
+    { history: ['1.0.1'], changed: false, channel: 'latest', expected: '1.0.1' },
+    { history: ['1.0.1'], changed: true, channel: 'latest', expected: '1.0.2' },
+    { history: ['1.0.1'], changed: false, channel: 'latest', source: '2.0.0', expected: '2.0.0' },
+  ])('allocates official Plugin versions from full successful history: $expected', async (scenario) => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const adapter = { build: ({ outputRoot }: { outputRoot: string }) => writeBundle(outputRoot, manifest) }
+    const baseline = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '1'.repeat(40),
+      adapter,
+    })
+    const entry = (await validatePublishedCatalogSnapshot(baseline.outputRoot)).manifest.entries[0]!
+    if (scenario.source) {
+      manifest.version = scenario.source
+      await fs.writeJson(path.join(root, 'plugins', 'atomic-plugin', '.agents-plugin', 'plugin.json'), manifest)
+    }
+    await mutateCatalogWorkspaceVersion(root, {
+      version: scenario.channel === 'beta' ? '2.0.0-beta.1' : '2.0.0',
+    })
+    const candidate = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '2'.repeat(40),
+      officialPluginHistory: scenario.history.map((version) => ({ ...entry, version })),
+      adapter: {
+        async build({ outputRoot }) {
+          await adapter.build({ outputRoot })
+          if (scenario.changed) await fs.writeFile(path.join(outputRoot, 'changed.txt'), 'changed')
+        },
+      },
+    })
+    const published = await validatePublishedCatalogSnapshot(candidate.outputRoot)
+    expect(published.manifest.entries[0]?.version).toBe(scenario.expected)
+    expect(await fs.readJson(path.join(candidate.outputRoot, 'plugins', 'atomic-plugin', '.codex-plugin', 'plugin.json')))
+      .toMatchObject({ version: scenario.expected })
+  })
+
+  it('rejects conflicting content at any official historical Plugin version', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const adapter = { build: ({ outputRoot }: { outputRoot: string }) => writeBundle(outputRoot, manifest) }
+    const baseline = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '1'.repeat(40),
+      adapter,
+    })
+    const entry = (await validatePublishedCatalogSnapshot(baseline.outputRoot)).manifest.entries[0]!
+    await mutateCatalogWorkspaceVersion(root, { version: '2.0.0-beta.1' })
+    await expect(preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '2'.repeat(40),
+      officialPluginHistory: [
+        { ...entry, version: '1.1.0-beta.2' },
+        { ...entry, version: '1.0.0' },
+        { ...entry, version: '1.0.0', contentDigest: `sha256:${'f'.repeat(64)}` },
+      ],
+      adapter,
+    })).rejects.toThrow(/version 1\.0\.0 maps to different content/u)
+  })
+
+  it('distinguishes explicit Plugin targets from old main metadata and beta promotion', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const baseline = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '1'.repeat(40),
+      adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
+    })
+    const entry = (await validatePublishedCatalogSnapshot(baseline.outputRoot)).manifest.entries[0]!
+    const entries = [{ ...entry, version: '1.0.0' }]
+    const officialPluginHistory = [{ ...entry, version: '1.1.0-beta.2' }]
+    expect(resolvePublishedPluginVersions({
+      channel: 'beta', entries, officialPluginHistory,
+      sourcePluginVersionsAtBaseline: { 'atomic-plugin': '1.0.0' },
+    })).toEqual({ 'atomic-plugin': '1.1.0-beta.2' })
+    expect(() => resolvePublishedPluginVersions({
+      channel: 'beta', entries, officialPluginHistory,
+      sourcePluginVersionsAtBaseline: { 'atomic-plugin': '1.2.0' },
+    })).toThrow(/explicit source version 1\.0\.0 must not be lower/u)
+    expect(resolvePublishedPluginVersions({
+      channel: 'beta', entries, officialPluginHistory: [{ ...entry, version: '1.0.0' }],
+      sourcePluginVersionsAtBaseline: { 'atomic-plugin': '1.0.0' },
+    })).toEqual({ 'atomic-plugin': '1.0.0' })
+    expect(() => resolvePublishedPluginVersions({
+      channel: 'beta', entries, officialPluginHistory: [{ ...entry, version: '1.0.0' }],
+      sourcePluginVersionsAtBaseline: { 'atomic-plugin': '0.1.0' },
+    })).toThrow(/already published as stable/u)
+    expect(resolvePublishedPluginVersions({
+      channel: 'latest', entries, officialPluginHistory: [{ ...entry, version: '1.0.0-beta.2' }],
+      sourcePluginVersionsAtBaseline: { 'atomic-plugin': '0.1.0' },
+    })).toEqual({ 'atomic-plugin': '1.0.0' })
   })
 
   it('retains a removed Plugin history entry when it is added again', async () => {

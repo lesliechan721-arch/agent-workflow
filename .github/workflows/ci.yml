@@ -1,0 +1,214 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel old PR checks. A main run can already be preparing a release candidate.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  node22:
+    name: Linux x64 / Node 22
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+    steps:
+      - name: Configure test diagnostics
+        shell: bash
+        run: printf 'AW_TEST_DIAGNOSTICS_DIR=%s/aw-test-diagnostics\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+      - run: pnpm test:types
+      - name: Save failed test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-diagnostics-node22
+          path: |
+            ${{ runner.temp }}/aw-test-diagnostics/publisher/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/npm/**/*.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release-verification:
+    name: Linux x64 / Node 24 / release verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+    steps:
+      - name: Configure test diagnostics
+        shell: bash
+        run: printf 'AW_TEST_DIAGNOSTICS_DIR=%s/aw-test-diagnostics\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Read the exact Go toolchain
+        id: go
+        run: node --input-type=module -e 'import fs from "node:fs"; const manifest = JSON.parse(fs.readFileSync("packages/agent-skill-eval/native/windows/manifest.json", "utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${manifest.build.goVersion.replace(/^go/, "")}\n`);'
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          cache: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # This includes the strict Catalog build, reproducibility, types and perf gate.
+      - run: pnpm release:verify
+      - name: Save failed test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-diagnostics-release-verification
+          path: |
+            ${{ runner.temp }}/aw-test-diagnostics/publisher/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/npm/**/*.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  plugin-tests:
+    name: Linux x64 / Node 24 / plugin tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Expose the built CLI for plugin contract tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/aw-cli-bin"
+          printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' \
+            "$(command -v node)" "$GITHUB_WORKSPACE/packages/cli/dist/index.js" \
+            > "$RUNNER_TEMP/aw-cli-bin/aw"
+          chmod 755 "$RUNNER_TEMP/aw-cli-bin/aw"
+          echo "$RUNNER_TEMP/aw-cli-bin" >> "$GITHUB_PATH"
+      - run: pnpm plugin:test --all
+
+  platform:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+            name: darwin arm64 / Node 24
+            integration_shard: ''
+            runtime_smoke: true
+          - runner: windows-2025
+            os: win32
+            arch: x64
+            name: win32 x64 / Node 24 / integration 1 of 3
+            integration_shard: 1/3
+            runtime_smoke: false
+          - runner: windows-2025
+            os: win32
+            arch: x64
+            name: win32 x64 / Node 24 / integration 2 of 3
+            integration_shard: 2/3
+            runtime_smoke: false
+          - runner: windows-2025
+            os: win32
+            arch: x64
+            name: win32 x64 / Node 24 / integration 3 of 3
+            integration_shard: 3/3
+            runtime_smoke: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+      EXPECTED_OS: ${{ matrix.os }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Configure test diagnostics
+        shell: bash
+        run: printf 'AW_TEST_DIAGNOSTICS_DIR=%s/aw-test-diagnostics\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - name: Check the native runtime
+        run: node -e 'if (process.platform !== process.env.EXPECTED_OS || process.arch !== process.env.EXPECTED_ARCH) throw new Error("Unexpected runner architecture"); console.log(process.platform, process.arch, process.version);'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test:integration
+        if: matrix.integration_shard == ''
+      - name: Run the Windows integration shard
+        if: matrix.integration_shard != ''
+        working-directory: packages/cli
+        run: node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --shard "${{ matrix.integration_shard }}"
+        env:
+          AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || '1' }}
+      - name: Run Windows process lifecycle tests
+        if: matrix.os == 'win32' && matrix.runtime_smoke
+        working-directory: packages/cli
+        run: node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts
+      - run: pnpm test:smoke:pack:cli
+        if: matrix.runtime_smoke
+      - name: Save failed test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-diagnostics-platform-${{ strategy.job-index }}
+          path: |
+            ${{ runner.temp }}/aw-test-diagnostics/publisher/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/npm/**/*.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  beta:
+    needs: [node22, release-verification, plugin-tests, platform]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.RELEASE_APP_ID != ''
+    uses: ./.github/workflows/beta.yml
+    with:
+      source: ${{ github.sha }}
+    secrets:
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

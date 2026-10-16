@@ -2,7 +2,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { cliDistRoot, repoRoot as defaultRepoRoot } from './common.mjs';
+import {
+  assertReleaseWorktreeClean,
+  cliDistRoot,
+  repoRoot as defaultRepoRoot,
+  resolveReleaseHead,
+  withReleaseBuildSnapshot,
+} from './common.mjs';
 
 export const CATALOG_CHANNEL_BRANCHES = {
   latest: 'catalog/latest',
@@ -15,7 +21,7 @@ export const CATALOG_CHANNEL_REFS = {
 };
 
 export const OFFICIAL_CATALOG_PUBLISH_REMOTE =
-  'git@github.com:lesliechan721-arch/agent-workflow.git';
+  'https://github.com/lesliechan721-arch/agent-workflow.git';
 
 function assertSafeRemoteUrl(value) {
   if (typeof value !== 'string' || value.trim() === '' || value !== value.trim()) {
@@ -68,16 +74,75 @@ export async function prepareCatalogRelease(mode, options = {}) {
     throw new Error(`Catalog source version does not match the ${mode} release channel.`);
   }
   const service = await loadCatalogPublicationService(options);
+  const workspaceRoot = options.repoRoot ?? defaultRepoRoot;
+  const remoteUrl = resolveCatalogMaintenanceRemote(options);
+  const env = options.env ?? process.env;
+  let existingJournal = false;
+  try {
+    await fs.lstat(path.join(workspaceRoot, '.aw', 'publish', sourceVersion, 'journal.json'));
+    existingJournal = true;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const officialPluginHistory = existingJournal ? undefined
+    : await service.readCatalogPublicationPluginHistory({
+      workspaceRoot,
+      remoteUrl,
+      branches: Object.values(CATALOG_CHANNEL_BRANCHES),
+      env,
+    });
   const plan = await service.prepareCatalogPublicationPlan({
-    workspaceRoot: options.repoRoot ?? defaultRepoRoot,
-    remoteUrl: resolveCatalogMaintenanceRemote(options),
+    workspaceRoot,
+    remoteUrl,
     branch: CATALOG_CHANNEL_BRANCHES[mode],
-    env: options.env ?? process.env,
+    officialPluginHistory,
+    sourcePluginVersionsAtBaseline: options.sourcePluginVersionsAtBaseline,
+    env,
   });
   if (plan.channel !== mode) {
     throw new Error(`Catalog source version does not match the ${mode} release channel.`);
   }
   return plan;
+}
+
+export async function resolveCatalogPluginBaseVersions({ channel, ...options }) {
+  const mode = channel === 'stable' ? 'latest' : channel;
+  if (mode !== 'latest' && mode !== 'beta') throw new Error('Catalog channel must be stable or beta.');
+  const repoRoot = path.resolve(options.repoRoot ?? defaultRepoRoot);
+  const env = options.env ?? process.env;
+  await assertReleaseWorktreeClean({ cwd: repoRoot });
+  const sourceHead = await resolveReleaseHead({ cwd: repoRoot, env });
+  if (options.sourceHead !== undefined && options.sourceHead !== sourceHead) {
+    throw new Error('Catalog Plugin base preparation must use the checked out source HEAD.');
+  }
+  const result = await (options.withSnapshot ?? withReleaseBuildSnapshot)(async (snapshot) => {
+    const [core, service] = await Promise.all([
+      import(pathToFileURL(path.join(snapshot.corePackageRoot, 'dist', 'index.js')).href),
+      loadCatalogPublicationService({ ...options, cliDistRoot: snapshot.cliDistRoot }),
+    ]);
+    const current = await core.validateCatalogSnapshotComplete(snapshot.catalogOutputRoot);
+    const officialPluginHistory = await service.readCatalogPublicationPluginHistory({
+      workspaceRoot: repoRoot,
+      remoteUrl: resolveCatalogMaintenanceRemote(options),
+      branches: Object.values(CATALOG_CHANNEL_BRANCHES),
+      env,
+    });
+    const versions = core.resolvePublishedPluginVersions({
+      channel: mode,
+      entries: current.manifest.entries,
+      officialPluginHistory,
+      sourcePluginVersionsAtBaseline: options.sourcePluginVersionsAtBaseline,
+    });
+    return Object.fromEntries(current.manifest.entries.flatMap((entry) => {
+      const baseVersion = versions[entry.name].split('-', 1)[0];
+      return baseVersion === entry.version ? [] : [[entry.name, baseVersion]];
+    }));
+  }, { repoRoot });
+  await assertReleaseWorktreeClean({ cwd: repoRoot });
+  if (await resolveReleaseHead({ cwd: repoRoot, env }) !== sourceHead) {
+    throw new Error('Catalog source HEAD changed during Plugin base preparation.');
+  }
+  return result;
 }
 
 export async function publishCatalogRelease({ channel, expectedPlanDigest }, options = {}) {

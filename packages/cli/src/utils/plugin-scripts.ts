@@ -299,7 +299,9 @@ export function createDefaultPluginProcessRunner(
       const windowsJobInvocation = platform === 'win32' && createWindowsJobInvocationImpl
         ? createWindowsJobInvocationImpl(invocation.command, invocation.args)
         : undefined;
-      const child = spawnImpl(windowsJobInvocation?.command ?? invocation.command, windowsJobInvocation?.args ?? invocation.args, { cwd: invocation.cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
+      // Keep long Catalog snapshot directories accessible to libuv's Windows cwd resolution.
+      const cwd = platform === 'win32' ? path.win32.toNamespacedPath(invocation.cwd) : invocation.cwd;
+      const child = spawnImpl(windowsJobInvocation?.command ?? invocation.command, windowsJobInvocation?.args ?? invocation.args, { cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
       let stdout = ''; let stderr = ''; let timedOut = false; let aborted = false; let settled = false; let terminating = false;
       let stdoutBytes = 0; let stdoutTruncated = false;
       let inputCompleted = child.stdin === null; let inputError: unknown;

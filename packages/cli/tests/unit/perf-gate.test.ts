@@ -24,13 +24,27 @@ describe('performance gate summaries', () => {
       .toThrow(/duplicates=path-source-resolution-warm/u);
   });
 
+  it('reads summaries after Vitest color resets and rejects decorated duplicate or malformed records', () => {
+    const decoratedSummary = (name: string): string =>
+      `\u001B[90mstdout\u001B[2m | performance budget\n\u001B[22m\u001B[39m${summary(name)}`;
+    const output = EXPECTED_PERF_SUMMARY_NAMES.map(decoratedSummary).join('\n');
+    expect(() => assertExpectedPerfSummaries(output)).not.toThrow();
+    expect(() => assertExpectedPerfSummaries(
+      `${output}\n${decoratedSummary(EXPECTED_PERF_SUMMARY_NAMES[0]!)}`,
+    )).toThrow(/duplicates=path-source-resolution-warm/u);
+    expect(() => assertExpectedPerfSummaries(
+      `${output}\n\u001B[22m\u001B[39mAW_PERF_SUMMARY {invalid}`,
+    )).toThrow(/invalid AW_PERF_SUMMARY line/u);
+  });
+
   it('runs the fast unit lane directly under the performance gate process owner', async () => {
-    const calls: Array<{ label: string; args: string[]; timeoutMs: number }> = [];
+    const calls: Array<{ label: string; args: string[]; timeoutMs: number; env: NodeJS.ProcessEnv }> = [];
     const times = [100, 125];
     const logs: string[] = [];
     await runPerfGate({
-      runChild: async (label: string, args: string[], timeoutMs: number) => {
-        calls.push({ label, args, timeoutMs });
+      env: { AW_TEST_WORKERS: 'invalid' },
+      runChild: async (label: string, args: string[], timeoutMs: number, env: NodeJS.ProcessEnv) => {
+        calls.push({ label, args, timeoutMs, env });
         return {
           stdout: label === 'performance Vitest'
             ? EXPECTED_PERF_SUMMARY_NAMES.map(summary).join('\n')
@@ -51,9 +65,15 @@ describe('performance gate summaries', () => {
         'run',
         '--config',
         'vitest.fast.config.ts',
+        '--maxWorkers=2',
+        '--minWorkers=1',
       ],
+      env: { AW_TEST_WORKERS: '' },
     });
+    expect(calls[0]?.env.AW_TEST_WORKERS).toBe('');
     expect(logs).toEqual([
+      'AW_TEST_WORKERS {"runner":"performance-gate","maxWorkers":1,"source":"serial constraint"}',
+      'AW_TEST_WORKERS {"runner":"fast-unit-baseline","maxWorkers":2,"source":"performance baseline"}',
       'AW_PERF_SUMMARY {"name":"unit-fast-wall","samples":1,"p50Ms":25,"p95Ms":25,"maxMs":25,"budgetMs":30000}',
     ]);
   });

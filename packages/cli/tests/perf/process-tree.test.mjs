@@ -900,14 +900,16 @@ describe('performance gate process tree cleanup', () => {
     const newChildPid = 900_100;
     const taskkillInvocations = [];
     let snapshotCalls = 0;
+    const metrics = {};
 
     await expect(runProcessTree({
       label: 'Windows reused root fixture',
       command: process.execPath,
       args: ['-e', childSource],
       env: process.env,
-      timeoutMs: 20,
-      descendantSnapshotTimeoutMs: 500,
+      timeoutMs: null,
+      descendantSnapshotTimeoutMs: 10_000,
+      metrics,
       descendantMonitorIntervalMs: 1_000,
       terminationGraceMs: 50,
       cleanupSettleMs: 100,
@@ -916,7 +918,8 @@ describe('performance gate process tree cleanup', () => {
       platform: 'win32',
       snapshotWindowsProcessTree: async (rootPid) => {
         snapshotCalls += 1;
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        await waitForProcessesToExit([rootPid], 5_000);
+        expect(isProcessAlive(rootPid)).toBe(false);
         return parseWindowsProcessTree(rootPid, [
           { ProcessId: rootPid, ParentProcessId: 1, CreationDateTicks: '200' },
           {
@@ -930,9 +933,10 @@ describe('performance gate process tree cleanup', () => {
         taskkillInvocations.push(invocation);
         return true;
       },
-    })).rejects.toThrow('cleanup could not confirm Windows process-tree termination');
+    })).rejects.toThrow('exited, but Windows process-tree cleanup is unconfirmed.');
 
-    expect(snapshotCalls).toBeGreaterThanOrEqual(3);
+    expect(snapshotCalls).toBeGreaterThanOrEqual(1);
+    expect(metrics.peakLiveDescendants).toBe(0);
     expect(taskkillInvocations).toEqual([]);
   });
 

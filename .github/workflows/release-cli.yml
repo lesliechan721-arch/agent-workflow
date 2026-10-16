@@ -1,0 +1,148 @@
+name: Release CLI
+
+on:
+  push:
+    tags: ['release/cli/v*']
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Prepare a new source candidate or repair the saved exact candidate
+        type: choice
+        required: true
+        options: [source, repair-cli, repair-cli-tag]
+      version:
+        description: Exact version for source mode
+        type: string
+      source:
+        description: Exact main commit for source mode
+        type: string
+      tag:
+        description: Existing release/cli/v... source tag for repair modes
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-product-cli
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  source:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'source' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/source-candidate.yml
+    with:
+      product: cli
+      version: ${{ inputs.version }}
+      source: ${{ inputs.source }}
+    secrets:
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+  candidate:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'source' && github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/release-candidate.yml
+    with:
+      product: cli
+      tag: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+
+  publish:
+    needs: candidate
+    if: needs.candidate.outputs.completed != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: npm
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    env:
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+      RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+      RELEASE_MODE: ${{ inputs.mode }}
+      CANDIDATE_DIGEST: ${{ needs.candidate.outputs.bundle_digest }}
+      ARCHIVE_NAME: ${{ needs.candidate.outputs.archive_name }}
+      GH_TOKEN: ${{ github.token }}
+      GIT_TERMINAL_PROMPT: '0'
+      GIT_AUTHOR_NAME: aw-release[bot]
+      GIT_AUTHOR_EMAIL: aw-release[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: aw-release[bot]
+      GIT_COMMITTER_EMAIL: aw-release[bot]@users.noreply.github.com
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      # npm >=11.5.1 is required for OIDC. Pin this compatible publisher version.
+      - run: npm install --global npm@11.6.2
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.candidate.outputs.artifact_id }}
+          run-id: ${{ needs.candidate.outputs.artifact_run }}
+          github-token: ${{ github.token }}
+          path: .release/actions/download
+      - name: Verify the saved archive before publication
+        run: node scripts/release/actions-release.mjs unpack --archive ".release/actions/download/$ARCHIVE_NAME" --digest "$CANDIDATE_DIGEST"
+      - name: Save the write intent again before the first remote write
+        uses: actions/upload-artifact@v7
+        with:
+          name: write-intent-cli-${{ needs.candidate.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .release/actions/download/${{ needs.candidate.outputs.archive_name }}
+            .release/actions/download/digest.txt
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Set temporary HTTPS authentication
+        run: |
+          cat > "$RUNNER_TEMP/aw-release-askpass" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GH_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          SH
+          chmod 700 "$RUNNER_TEMP/aw-release-askpass"
+          echo "GIT_ASKPASS=$RUNNER_TEMP/aw-release-askpass" >> "$GITHUB_ENV"
+      - name: Publish only the verified five-package candidate
+        id: publish
+        run: |
+          args=()
+          case "$RELEASE_MODE" in
+            repair-cli) args+=(--repair-cli) ;;
+            repair-cli-tag) args+=(--repair-cli-tag) ;;
+            '') ;;
+            *) exit 1 ;;
+          esac
+          node scripts/release/actions-release.mjs publish --product cli --tag "$RELEASE_TAG" --archive ".release/actions/download/$ARCHIVE_NAME" --digest "$CANDIDATE_DIGEST" "${args[@]}"
+      - name: Stage the final archive beside its digest
+        if: always() && (steps.publish.outcome == 'success' || steps.publish.outcome == 'failure')
+        run: cp .release/actions/final.tar .release/actions/final/final.tar
+      - name: Save the final recovery record
+        if: always() && (steps.publish.outcome == 'success' || steps.publish.outcome == 'failure')
+        uses: actions/upload-artifact@v7
+        with:
+          name: final-cli-${{ needs.candidate.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .release/actions/final/final.tar
+            .release/actions/final/digest.txt
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Remove temporary authentication
+        if: always()
+        run: rm -f "$RUNNER_TEMP/aw-release-askpass"

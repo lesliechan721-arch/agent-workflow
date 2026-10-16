@@ -157,10 +157,11 @@ describe('Catalog providers', () => {
     }
   });
 
-  it('materializes and validates a local Git ref without persisting a provider snapshot', async () => {
+  it('materializes a local Git ref without applying the consumer CRLF conversion setting', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = fixturePath('git-source');
     const remoteRoot = fixturePath('git-remote.git');
+    await fs.outputFile(path.join(isolation.env.HOME!, '.gitconfig'), '[core]\n\tautocrlf = true\n');
     await createCatalogSnapshotFixture(sourceRoot);
     await execFileAsync('git', ['init'], { cwd: sourceRoot });
     await execFileAsync('git', ['add', '.'], { cwd: sourceRoot });

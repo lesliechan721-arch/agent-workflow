@@ -1103,6 +1103,7 @@ describe('Catalog Active store and state', () => {
       snapshotDigest: reviewed.candidate.snapshotDigest,
       env: isolation.env,
     });
+    let providerStagingDir: string | undefined;
 
     await expect(recoverCatalogGenerationStateAndActivate({
       sourceId: 'team',
@@ -1110,6 +1111,21 @@ describe('Catalog Active store and state', () => {
       expectedCandidate: reviewed.candidate,
       env: isolation.env,
       runtime: {
+        providers: {
+          git: async () => { throw new Error('unused'); },
+          path: async (source, options) => {
+            const resolution = await catalogPathProviderInternal.resolve(source, options);
+            providerStagingDir = resolution.rootDir;
+            return {
+              ...resolution,
+              async cleanup() {
+                // Keep cleanup pending while the missing store causes activation to reject.
+                await new Promise<void>((resolve) => { setTimeout(resolve, 100); });
+                await resolution.cleanup();
+              },
+            };
+          },
+        },
         afterRecoveryStorePublished: async () => {
           await fs.remove(location.entryDir);
         },
@@ -1118,6 +1134,8 @@ describe('Catalog Active store and state', () => {
 
     await expect(fs.readFile(statePath, 'utf8')).resolves.toBe(invalidState);
     await expect(fs.pathExists(location.entryDir)).resolves.toBe(false);
+    expect(providerStagingDir).toBeDefined();
+    await expect(fs.pathExists(providerStagingDir!)).resolves.toBe(false);
   });
 
   it('does not hold the AW_HOME mutation lock while a provider is waiting', async () => {

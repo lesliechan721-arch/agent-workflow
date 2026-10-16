@@ -48,7 +48,7 @@ function result(stdout = '', stderr = '', exitCode = 0): NativeCliResult {
   return { stdout, stderr, exitCode };
 }
 
-function renderClaudeNpmShim(target: string): string {
+function renderNpmShim(target: string): string {
   return [
     '@ECHO off',
     'GOTO start',
@@ -72,36 +72,38 @@ function renderClaudeNpmShim(target: string): string {
   ].join('\r\n');
 }
 
-async function writeWindowsClaudeNpmFixture(root: string): Promise<{
+async function writeWindowsAgentNpmFixture(root: string, agent: 'claude' | 'codex'): Promise<{
   binRoot: string;
   launcher: string;
   shim: string;
 }> {
   const binRoot = path.join(root, 'npm-prefix');
-  const packageRoot = path.join(binRoot, 'node_modules', '@anthropic-ai', 'claude-code');
-  const launcher = path.join(packageRoot, 'cli.js');
-  const shim = path.join(binRoot, 'claude.CMD');
+  const packageName = agent === 'codex' ? '@openai/codex' : '@anthropic-ai/claude-code';
+  const launcherEntry = agent === 'codex' ? 'bin/codex.js' : 'cli.js';
+  const packageRoot = path.join(binRoot, 'node_modules', ...packageName.split('/'));
+  const launcher = path.join(packageRoot, ...launcherEntry.split('/'));
+  const shim = path.join(binRoot, `${agent}.CMD`);
   await fs.ensureDir(packageRoot);
   await Promise.all([
     fs.writeJson(path.join(packageRoot, 'package.json'), {
-      name: '@anthropic-ai/claude-code',
-      version: '2.1.88',
-      bin: { claude: 'cli.js' },
+      name: packageName,
+      version: agent === 'codex' ? '0.200.0' : '2.1.88',
+      bin: { [agent]: launcherEntry },
     }),
-    fs.writeFile(launcher, '#!/usr/bin/env node\n'),
+    fs.outputFile(launcher, '#!/usr/bin/env node\n'),
     fs.writeFile(
       shim,
-      renderClaudeNpmShim('node_modules\\@anthropic-ai\\claude-code\\cli.js'),
+      renderNpmShim(`node_modules/${packageName}/${launcherEntry}`.replaceAll('/', '\\')),
     ),
   ]);
   return { binRoot, launcher, shim };
 }
 
 describe('native-cli', () => {
-  it('resolves the official Windows Claude npm shim for version probes and runner calls', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-shim-'));
+  it.each(['claude', 'codex'] as const)('resolves the official Windows %s npm shim for version probes and runner calls', async (agent) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), `aw-${agent}-shim-`));
     try {
-      const fixture = await writeWindowsClaudeNpmFixture(root);
+      const fixture = await writeWindowsAgentNpmFixture(root, agent);
       const childProcesses: Array<EventEmitter & {
         pid: number;
         exitCode: number | null;
@@ -119,7 +121,9 @@ describe('native-cli', () => {
         childProcesses.push(child);
         queueMicrotask(() => callback(
           null,
-          targetArgs.includes('--version') ? '2.1.88 (Claude Code)' : 'ok',
+          targetArgs.includes('--version')
+            ? agent === 'codex' ? 'codex-cli 0.200.0' : '2.1.88 (Claude Code)'
+            : 'ok',
           '',
         ));
         return child;
@@ -139,16 +143,16 @@ describe('native-cli', () => {
       });
       const env = { PATH: fixture.binRoot, PATHEXT: '.CMD' };
 
-      await expect(probeAgentVersion('claude', {
+      await expect(probeAgentVersion(agent, {
         cache: false,
         cwd: root,
         env,
         runner,
-      })).resolves.toMatchObject({ status: 'supported', detectedVersion: '2.1.88' });
+      })).resolves.toMatchObject({ status: 'supported', detectedVersion: agent === 'codex' ? '0.200.0' : '2.1.88' });
       await expect(runner({
-        command: 'claude',
+        command: agent,
         args: ['plugin', 'list'],
-        agentKind: 'claude',
+        agentKind: agent,
         cwd: root,
         env,
       })).resolves.toMatchObject({ exitCode: 0, stdout: 'ok' });
@@ -170,10 +174,10 @@ describe('native-cli', () => {
   });
 
   it.each([
-    ['malicious shim', async (fixture: Awaited<ReturnType<typeof writeWindowsClaudeNpmFixture>>) => {
+    ['malicious shim', async (fixture: Awaited<ReturnType<typeof writeWindowsAgentNpmFixture>>) => {
       await fs.appendFile(fixture.shim, '@calc.exe\r\n');
     }],
-    ['foreign package', async (fixture: Awaited<ReturnType<typeof writeWindowsClaudeNpmFixture>>) => {
+    ['foreign package', async (fixture: Awaited<ReturnType<typeof writeWindowsAgentNpmFixture>>) => {
       await fs.writeJson(path.join(
         fixture.binRoot,
         'node_modules',
@@ -185,7 +189,7 @@ describe('native-cli', () => {
   ] as const)('fails closed before the Windows Job helper for a %s', async (_label, mutate) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-shim-invalid-'));
     try {
-      const fixture = await writeWindowsClaudeNpmFixture(root);
+      const fixture = await writeWindowsAgentNpmFixture(root, 'claude');
       await mutate(fixture);
       const execFile = vi.fn();
       const createWindowsJobInvocation = vi.fn();
