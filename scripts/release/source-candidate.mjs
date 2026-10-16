@@ -142,6 +142,15 @@ export async function resolveMainSource({
   }
   const sourceHead = bases[0];
   if (candidate === sourceHead) return { sourceHead, candidateHead: candidate };
+  if (allowLegacyHistory) {
+    // Squash merges replace commit ancestry but preserve the complete source tree.
+    const tree = (await git(repoRoot, ['rev-parse', `${candidate}^{tree}`])).stdout.trim();
+    const mainHistory = (await git(repoRoot, [
+      'log', '--first-parent', '--format=%H %T', `${sourceHead}..${main}`,
+    ])).stdout.trim().split('\n');
+    const matchingSource = mainHistory.find((entry) => entry.split(' ')[1] === tree)?.split(' ')[0];
+    if (matchingSource) return { sourceHead: matchingSource, candidateHead: candidate };
+  }
   if (!allowLegacyHistory) {
     const parents = (await git(repoRoot, ['rev-list', '--parents', '-n', '1', candidate])).stdout.trim().split(' ');
     if (parents.length !== 2 || parents[1] !== sourceHead) {

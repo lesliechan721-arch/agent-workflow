@@ -324,6 +324,30 @@ test('legacy completion sources accept both product versions while new candidate
   }), /non-version path/);
 });
 
+test('legacy completion sources resolve identical trees after a squash merge onto main', async (t) => {
+  const { repoRoot } = await fixture(t);
+  await git(repoRoot, 'checkout', '-b', 'delivered-feature');
+  await fs.writeFile(path.join(repoRoot, '.gitattributes'), '* text=auto eol=lf\n');
+  await fs.writeFile(path.join(repoRoot, 'production.js'), 'export const value = 2;\n');
+  await git(repoRoot, 'add', '.');
+  await git(repoRoot, 'commit', '-m', 'delivered feature');
+  const candidateHead = await git(repoRoot, 'rev-parse', 'HEAD');
+  await git(repoRoot, 'checkout', 'main');
+  await git(repoRoot, 'merge', '--squash', 'delivered-feature');
+  await git(repoRoot, 'commit', '-m', 'squashed feature');
+  const sourceHead = await git(repoRoot, 'rev-parse', 'HEAD');
+  assert.notEqual(sourceHead, candidateHead);
+  await fs.writeFile(path.join(repoRoot, 'production.js'), 'export const value = 3;\n');
+  await git(repoRoot, 'add', '.');
+  await git(repoRoot, 'commit', '-m', 'later main change');
+  await git(repoRoot, 'push', 'origin', 'main');
+
+  assert.deepEqual(await resolveMainSource({
+    repoRoot, candidateHead, product: 'cli', allowLegacyHistory: true,
+  }), { sourceHead, candidateHead });
+  await assert.rejects(resolveMainSource({ repoRoot, candidateHead, product: 'cli' }), /non-version path/);
+});
+
 test('unrelated Git history cannot supply a main source', async (t) => {
   const { repoRoot } = await fixture(t);
   await git(repoRoot, 'checkout', '--orphan', 'unrelated');

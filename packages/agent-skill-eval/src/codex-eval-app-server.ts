@@ -164,6 +164,8 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+export class AppServerRequestTimeoutError extends Error {}
+
 interface AppServerFrameHandler {
   (frame: Record<string, unknown>): Promise<void> | void;
 }
@@ -811,7 +813,7 @@ export class EvalAppServerSession {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Timed out waiting for app-server method ${method}.`));
+        reject(new AppServerRequestTimeoutError(`Timed out waiting for app-server method ${method}.`));
       }, timeoutMs);
       this.pending.set(id, { method, resolve, reject, timer });
       void this.write({ id, method, params }).catch((error) => {
