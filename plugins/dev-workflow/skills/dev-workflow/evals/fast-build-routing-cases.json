@@ -42,14 +42,13 @@
         "expected": {
           "loadedSkills": [
             "dev-workflow",
-            "dev-design",
             "decision-shape",
             "decision-grill"
           ]
         }
       },
       "audit": {
-        "rationale": "单个材料选择由Design进入Shape，再使用Grill提问；允许在当前上下文一题结束，不启动实施。",
+        "rationale": "单个材料选择由Design进入Shape，再使用Grill提问；允许在当前上下文一题结束，不启动实施。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。",
         "minimalCounterexample": "选择已确认且没有新材料问题时复用共识，不重复访谈。",
         "allowedVariance": "核对到实际提问时的完整Skill加载集合；不要求子代理或完整多轮访谈，也不据此证明对齐成功。"
       }
@@ -64,13 +63,12 @@
         "query": "使用 $dev-workflow 完成这个局部 bug。结果和验证已明确，用户确认过；不需要持久流程文档。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-build"
+            "dev-workflow"
           ]
         }
       },
       "audit": {
-        "rationale": "当前要求和验证已明确，且没有持久交接需求，进入闭环 Build，不强制 Spec。",
+        "rationale": "当前要求和验证已明确，且没有持久交接需求，进入闭环 Build，不强制 Spec。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。",
         "minimalCounterexample": "未对齐时先澄清。",
         "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
       }
@@ -85,13 +83,12 @@
         "query": "使用 $dev-workflow 实现新的权限继承系统，范围、兼容、审批和回滚都没有决定。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-design"
+            "dev-workflow"
           ]
         }
       },
       "audit": {
-        "rationale": "实现意图不能跳过材料共识。",
+        "rationale": "实现意图不能跳过材料共识。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。",
         "minimalCounterexample": "已有完整批准 Spec 时进入 Build。",
         "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
       }
@@ -106,13 +103,12 @@
         "query": "使用 $dev-workflow 继续；当前 Spec 已通过正式审查并得到明确批准，尚未实施。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-build"
+            "dev-workflow"
           ]
         }
       },
       "audit": {
-        "rationale": "生命周期进入 Build，执行拓扑由 Build 决定。",
+        "rationale": "生命周期进入 Build，执行拓扑由 Build 决定。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。",
         "minimalCounterexample": "只要求实现一个切片可以直接 dev-implement。",
         "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
       }
@@ -184,7 +180,7 @@
         "boundary"
       ],
       "input": {
-        "query": "已批准 Spec，请协调多个工作项、集成验证和最终 Review；委派已获准，不要重新对齐需求。",
+        "query": "使用 $dev-build。已批准 Spec，请协调多个工作项、集成验证和最终 Review；委派已获准，不要重新对齐需求。",
         "expected": {
           "loadedSkills": [
             "dev-build"

@@ -13,13 +13,20 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const skills = ['dev-workflow', 'dev-design', 'dev-spec', 'dev-review-spec', 'dev-build', 'dev-review-loop', 'dev-breakdown', 'dev-implement', 'dev-review-code', 'dev-simplify-code'];
-const manualSkills = new Set(['dev-workflow', 'dev-simplify-code']);
+const manualSkills = new Set(['dev-workflow', 'dev-design', 'dev-build', 'dev-review-loop', 'dev-simplify-code']);
 const decisionSkills = ['decision-shape', 'decision-grill', 'decision-prototype', 'project-context'];
-const localWorkspaceSkills = ['dev-design', 'dev-build'];
-const sharedReferences = [
-  { file: 'local-workspace.md', skills: localWorkspaceSkills },
-  { file: 'task-changes.md', skills: ['dev-build', 'dev-design'] },
-  { file: 'engineering-quality.md', skills: ['dev-implement', 'dev-review-code', 'dev-simplify-code'] },
+const sharedResources = [
+  ...['local-workspace.md', 'task-changes.md'].map((name) => ({
+    file: `references/${name}`, skills: ['dev-workflow', 'dev-design', 'dev-build', 'dev-spec', 'dev-breakdown'],
+  })),
+  { file: 'references/methods/design.md', skills: ['dev-design', 'dev-workflow'] },
+  { file: 'references/methods/build.md', skills: ['dev-build', 'dev-workflow'] },
+  { file: 'references/methods/review-loop.md', skills: ['dev-review-loop', 'dev-build', 'dev-workflow'] },
+  { file: 'references/code-repair.md', skills: ['dev-review-loop', 'dev-build', 'dev-workflow'] },
+  { file: 'references/coordinated-build.md', skills: ['dev-build', 'dev-workflow'] },
+  { file: 'references/review-repair.md', skills: ['dev-design', 'dev-workflow'] },
+  { file: 'assets/work-index-template.md', skills: ['dev-build', 'dev-workflow'] },
+  { file: 'references/engineering-quality.md', skills: ['dev-implement', 'dev-review-code', 'dev-simplify-code'] },
 ];
 const allParticipants = new Set([...skills, ...decisionSkills, 'explain-for-review']);
 const read = (file) => readFile(file, 'utf8');
@@ -93,10 +100,10 @@ test('manifest exposes local Skills and declares alignment and presentation depe
     assert.equal(key in manifest, false);
   }
   assert.deepEqual(manifest.buildConfig, {
-    skillRuntimeFiles: sharedReferences.flatMap(({ file, skills: consumers }) => consumers.map((skill) => ({
+    skillRuntimeFiles: sharedResources.flatMap(({ file, skills: consumers }) => consumers.map((skill) => ({
       skill,
-      target: `references/${file}`,
-      source: `./references/${file}`,
+      target: file,
+      source: `./${file}`,
     }))),
   });
   await access(path.join(target.source, 'references', 'local-workspace.md'));
@@ -105,7 +112,9 @@ test('manifest exposes local Skills and declares alignment and presentation depe
 test('Skills expose the declared package resources and invocation policies', async () => {
   assert.deepEqual((await readdir(path.join(target.source, 'skills'))).sort(), [...skills].sort());
   for (const name of skills) {
-    const skillRoot = path.join(target.source, 'skills', name);
+    const skillRoot = target.platform
+      ? path.join(target.bundle, target.platform, 'skills', name)
+      : path.join(target.source, 'skills', name);
     const skill = await read(path.join(skillRoot, 'SKILL.md'));
     assertSkill(skill, name);
     if (manualSkills.has(name)) {
@@ -552,11 +561,11 @@ test('workflow routing Eval includes Build and decision candidates', async () =>
     'route_shape_evidence_branch_stays_in_shape',
   ]) {
     const entry = cases.find((candidate) => candidate.id === id);
-    assert.deepEqual(entry.input.expected.loadedSkills, ['dev-workflow', 'dev-design']);
+    assert.deepEqual(entry.input.expected.loadedSkills, ['dev-workflow']);
   }
   assert.deepEqual(
     cases.find((entry) => entry.id === 'route_fast_verified_to_code_review').input.expected.loadedSkills,
-    ['dev-workflow', 'dev-build'],
+    ['dev-workflow'],
   );
   const composition = assertCaseDocument(
     await readJson(path.join(evalRoot, 'composition-behavior-cases.json')),
@@ -576,32 +585,18 @@ test('runtime keeps all Skill roots and conditional references', async () => {
   for (const name of skills) {
     assertSkill(await read(path.join(skillsRoot, name, 'SKILL.md')), name);
   }
-  await read(path.join(skillsRoot, 'dev-design', 'references', 'review-repair.md'));
-  for (const reference of ['review-repair.md', 'task-artifacts.md', 'local-workspace.md']) {
-    await assert.rejects(
-      read(path.join(skillsRoot, 'dev-workflow', 'references', reference)),
-      { code: 'ENOENT' },
-    );
-  }
-  if (target.platform) {
-    for (const { file, skills: consumers } of sharedReferences) {
-      const canonical = await read(path.join(target.source, 'references', file));
-      for (const name of consumers) {
-        assert.equal(
-          await read(path.join(skillsRoot, name, 'references', file)),
-          canonical,
-          `${name} must receive the canonical ${file}`,
-        );
-      }
+  for (const { file, skills: consumers } of sharedResources) {
+    const canonical = await read(path.join(target.source, file));
+    if (!target.platform) continue;
+    for (const name of consumers) {
+      // Static contract exception: every consuming native package needs the same complete method and resource bytes; behavior test is not suitable because routing observations cannot establish byte identity for every platform projection.
+      assert.equal(await read(path.join(skillsRoot, name, file)), canonical,
+        `${name} must receive the canonical ${file}`);
     }
   }
   await read(path.join(skillsRoot, 'dev-review-spec', 'references', 'rereview.md'));
   await read(path.join(skillsRoot, 'dev-review-code', 'references', 'rereview.md'));
   await read(path.join(skillsRoot, 'dev-review-code', 'references', 'design-fidelity.md'));
-  await read(path.join(skillsRoot, 'dev-review-loop', 'references', 'review-loop.md'));
-  for (const reference of ['coordinated-build.md', 'review-planning.md']) {
-    await read(path.join(skillsRoot, 'dev-build', 'references', reference));
-  }
   await assert.rejects(
     read(path.join(skillsRoot, 'dev-build', 'references', 'review-repair.md')),
     { code: 'ENOENT' },
@@ -611,7 +606,6 @@ test('runtime keeps all Skill roots and conditional references', async () => {
     { code: 'ENOENT' },
   );
   await read(path.join(skillsRoot, 'dev-breakdown', 'assets', 'ticket-template.md'));
-  await read(path.join(skillsRoot, 'dev-build', 'assets', 'work-index-template.md'));
   await assert.rejects(
     read(path.join(skillsRoot, 'dev-implement', 'assets', 'work-template.md')),
     { code: 'ENOENT' },

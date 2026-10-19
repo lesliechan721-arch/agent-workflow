@@ -42,13 +42,12 @@
         "query": "使用 $dev-workflow 修复一个明确的低风险 bug：用户名末尾空格未去除。范围只限现有 normalizeName；非目标是不改公开接口。没有未解决材料决定，也不需要 Prototype、实验或测量。有稳定失败测试，改动可逆且一个上下文可完成。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-build"
+            "dev-workflow"
           ]
         }
       },
       "audit": {
-        "rationale": "生命周期进入 dev-build，由它协调实施、验证或最终复审；直接专业调用仍独立使用叶子 Skill。"
+        "rationale": "生命周期进入 Build 方法，由它协调实施、验证或最终复审；直接专业调用仍独立使用叶子 Skill。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。"
       }
     },
     {
@@ -59,7 +58,7 @@
         "fast-readiness"
       ],
       "audit": {
-        "rationale": "当前决定完整，但多个实施上下文需要可交接规范，最早缺少的必要结果是 Spec。",
+        "rationale": "当前决定完整，但多个实施上下文需要可交接规范，最早缺少的必要结果是 Spec。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。",
         "allowedVariance": "当前进入规格整理；允许必要辅助能力，但不能跳过交接依据直接实施。",
         "minimalCounterexample": "同一任务若当前上下文足够且没有正式审阅或持久交接需求，可以直接以一个工作项进入 Build。"
       },
@@ -67,8 +66,7 @@
         "query": "使用 $dev-workflow 修复用户名末尾空格未去除的问题。结果、范围和非目标已清楚，没有材料未决，不需要体验或实验，改动低风险、可逆且有稳定失败测试；但仓库很大，预计需要多个上下文才能完成。Shape 已完整，当前没有 Spec。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-design"
+            "dev-workflow"
           ]
         }
       }
@@ -81,16 +79,15 @@
         "fast-readiness"
       ],
       "audit": {
-        "rationale": "生命周期进入 dev-build，由它协调实施、验证或最终复审；直接专业调用仍独立使用叶子 Skill。",
-        "allowedVariance": "先进入 dev-build，由 Build 协调完整最终 Code Review，不得直接宣告 Delivery。",
+        "rationale": "生命周期进入 Build 方法，由它协调实施、验证或最终复审；直接专业调用仍独立使用叶子 Skill。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。",
+        "allowedVariance": "先进入 Build 方法，由 Build 协调完整最终 Code Review，不得直接宣告 Delivery。",
         "minimalCounterexample": "如果当前 Code Review 已为 clean，则可以进入 Delivery，不需要再次加载 Review。"
       },
       "input": {
         "query": "使用 $dev-workflow 继续这个局部任务：实现已经完成，可靠验证已经通过，当前还没有 Code Review。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-build"
+            "dev-workflow"
           ]
         }
       }
@@ -103,7 +100,7 @@
         "fast-readiness"
       ],
       "audit": {
-        "rationale": "实现意图不能代替范围、材料决定和验收；应先对齐相互关联的决定。",
+        "rationale": "实现意图不能代替范围、材料决定和验收；应先对齐相互关联的决定。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。",
         "allowedVariance": "由 decision-shape 组织对齐，允许它按问题使用访谈或原型，但不能直接进入产品实施。",
         "minimalCounterexample": "同一团队权限功能若行为、范围、材料决定和验证已明确，当前上下文足够且无需持久交接，可进入 Build。"
       },
@@ -111,8 +108,7 @@
         "query": "使用 $dev-workflow 实现一个新的团队权限功能。当前没有 Shape、Spec 或明确验收。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-design"
+            "dev-workflow"
           ]
         }
       }
@@ -128,10 +124,12 @@
         "query": "使用 $dev-workflow 组织新的权限模型；多个材料决定相互依赖。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-design"
+            "dev-workflow"
           ]
         }
+      },
+      "audit": {
+        "rationale": " 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。"
       }
     },
     {
@@ -145,10 +143,12 @@
         "query": "使用 $dev-workflow 继续：Shape 仍有一个审批页信息层级问题，必须操作候选页面后才能决定。本任务需要跨会话持续维护当前 Shape。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-design"
+            "dev-workflow"
           ]
         }
+      },
+      "audit": {
+        "rationale": " 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。"
       }
     },
     {
@@ -162,10 +162,12 @@
         "query": "使用 $dev-workflow 继续：Shape 已完整且没有开放材料决定，当前还没有 Spec。本任务需要正式规格和用户批准。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-design"
+            "dev-workflow"
           ]
         }
+      },
+      "audit": {
+        "rationale": " 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。"
       }
     },
     {
@@ -179,13 +181,12 @@
         "query": "使用 $dev-workflow 继续：Spec Review 为 clean，用户已经明确批准，当前尚未实现。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-build"
+            "dev-workflow"
           ]
         }
       },
       "audit": {
-        "rationale": "生命周期进入 dev-build，由它协调实施、验证或最终复审；直接专业调用仍独立使用叶子 Skill。"
+        "rationale": "生命周期进入 Build 方法，由它协调实施、验证或最终复审；直接专业调用仍独立使用叶子 Skill。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。"
       }
     },
     {
@@ -199,10 +200,12 @@
         "query": "使用 $dev-workflow 继续：Spec 已根据 blocked Review 修订。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-design"
+            "dev-workflow"
           ]
         }
+      },
+      "audit": {
+        "rationale": " 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。"
       }
     },
     {
@@ -216,13 +219,12 @@
         "query": "使用 $dev-workflow 处理 blocked Code Review；Spec 正确，问题是实现缺陷。用户已授权自动修复当前 blocker，现有预算尚未开始使用。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-build"
+            "dev-workflow"
           ]
         }
       },
       "audit": {
-        "rationale": "生命周期进入 dev-build，由它协调实施、验证或最终复审；直接专业调用仍独立使用叶子 Skill。"
+        "rationale": "生命周期进入 Build 方法，由它协调实施、验证或最终复审；直接专业调用仍独立使用叶子 Skill。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。"
       }
     },
     {
@@ -236,13 +238,12 @@
         "query": "使用 $dev-workflow 继续：Code Review blocker 已修复并验证。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-build"
+            "dev-workflow"
           ]
         }
       },
       "audit": {
-        "rationale": "生命周期进入 dev-build，由它协调实施、验证或最终复审；直接专业调用仍独立使用叶子 Skill。"
+        "rationale": "生命周期进入 Build 方法，由它协调实施、验证或最终复审；直接专业调用仍独立使用叶子 Skill。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。"
       }
     },
     {
@@ -256,13 +257,12 @@
         "query": "使用 $dev-workflow 处理 blocked Code Review。reviewer 发现 Spec 漏写失败行为，但用户在原始确认中已经明确“失败保留草稿并显示错误”；当前只是遗漏整理，没有新的材料选择，修订已授权。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-design"
+            "dev-workflow"
           ]
         }
       },
       "audit": {
-        "rationale": "已确认行为遗漏应保真补写Spec，不重新问同一问题。",
+        "rationale": "已确认行为遗漏应保真补写Spec，不重新问同一问题。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。",
         "allowedVariance": "允许等价表达及适用辅助能力；触发不证明实际对齐完成，后续质量另查。",
         "minimalCounterexample": "失败后重试/保留/取消从未被确认时必须先Shape。"
       }
@@ -319,13 +319,12 @@
         "query": "使用 $dev-workflow 处理 Code Review：Spec 没有约定提交失败后自动重试还是保留草稿，两者有不同副作用；原始请求与用户确认均未决定这件事。",
         "expected": {
           "loadedSkills": [
-            "dev-workflow",
-            "dev-design"
+            "dev-workflow"
           ]
         }
       },
       "audit": {
-        "rationale": "规范缺口包含新产品决定，不能由Spec作者自定。",
+        "rationale": "规范缺口包含新产品决定，不能由Spec作者自定。 显式 Workflow 自带所需方法，不再要求加载其他手动宏；本项仅检查入口，方法与产物另由行为用例检查。",
         "allowedVariance": "允许等价表达及适用辅助能力；触发不证明实际对齐完成，后续质量另查。",
         "minimalCounterexample": "原确认已经明确失败行为时属于补写规范。"
       }

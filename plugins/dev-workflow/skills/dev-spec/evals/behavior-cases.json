@@ -203,6 +203,55 @@
         "minimalCounterexample": "仍在执行且获准修订的任务可维护当前规格，但需保留原确认依据。",
         "allowedVariance": "允许等价结构与引用，不强制新日志、版本系统或状态字段。"
       }
+    },
+    {
+      "id": "same-task-current-spec-retains-ended-build-basis",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "iteration-history"
+      ],
+      "prompt": "使用 dev-spec 修订同一个 paging 任务。我现在确认每页从20改为50，其余排序、租户、空结果和末页行为不变。当前入口仍是 .dev-workflows/paging/spec.md 及其 spec/api.md。001已交付，本地资料没有Git历史；替换前保留可找回的旧批准规格及规范附件，旧引用仍须可用。不要改001、产品代码或启动新Task、Build、审查，本次只写当前完整规格与必要历史副本；历史副本存入 .dev-workflows/paging/spec-history/。",
+      "assertions": [
+        "当前主规格与附件完整一致地表达50及其余原规则，不用补丁日志代替当前规范。",
+        "保留旧批准规格和旧api.md；历史规格引用解析到20的旧附件，不指向已变为50的当前附件。",
+        "001 Work及产品代码字节不变；后续记录可说明旧依据位置，不覆盖旧交付结果。",
+        "不因原Build结束而强制另建Task；只编写规格，不启动设计、Build或审查。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          ".dev-workflows/paging/spec.md": "# 当前分页规格\n用户已批准：按[分页接口](spec/api.md)执行，按输入顺序且仅当前租户；空结果为空数组，末页不足时全部返回。\n",
+          ".dev-workflows/paging/spec/api.md": "# 分页接口\n每页20条，页码从1开始；超出末页返回空数组。\n",
+          ".dev-workflows/paging/builds/001/work.md": "# Build 001\n已交付；批准依据 ../../spec.md 及 ../../spec/api.md，每页20。原交付记录不修改。\n",
+          "src/page.js": "export const pageSize = 20;\n"
+        }
+      },
+      "expected": {
+        "output": "同一Task的当前完整规格采用新确认，旧批准依据与附件仍可定位，已结束交付和产品保持原样。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/paging/spec.md",
+          ".dev-workflows/paging/spec/api.md",
+          ".dev-workflows/paging/spec-history/**"
+        ],
+        "artifacts": [
+          {
+            "path": ".dev-workflows/paging/spec.md",
+            "exists": true
+          },
+          {
+            "path": ".dev-workflows/paging/spec/api.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "当前规范变化不能销毁已结束轮次的完整依据；Spec只维护规范，不承担Build执行。",
+        "allowedVariance": "spec-history/内的版本目录命名自由，保留完整旧文档和可达引用；真实旧版本足够时可复用。",
+        "minimalCounterexample": "已有可访问的稳定旧版本能完整恢复依据时，无需再复制全部规范。"
+      }
     }
   ]
 }
