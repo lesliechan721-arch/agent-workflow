@@ -96,7 +96,12 @@
         "allowedWorkspaceChanges": [
           "work.md"
         ],
-        "artifacts": []
+        "artifacts": [
+          {
+            "path": "work.md",
+            "exists": true
+          }
+        ]
       },
       "audit": {
         "rationale": "读取门槛是可能影响或尚不确定，不是已证明必须改变产品；与普通缺陷用例仅调查材料不同，检验条件收窄后仍能到达必要判断方法。",

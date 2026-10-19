@@ -1431,18 +1431,19 @@ describe('EvalSpec v1 execution', () => {
         if (suite.kind !== 'conversation') continue
         conversationCount += 1
         const fixtureRoot = path.dirname(manifestPath)
+        const casesPath = path.join(fixtureRoot, suite.cases!)
         const document = parseSelectedCases(JSON.parse(await readFile(
-          path.join(fixtureRoot, suite.cases!),
+          casesPath,
           'utf8',
         )))
         for (const evalCase of document.cases) {
           const adapted = adaptConversationProviderCase(document, evalCase)
-          normalizeConversationProviderCase({
+          expect(() => normalizeConversationProviderCase({
             value: adapted.value as Record<string, unknown>,
             expectedSkill: document.suite.unitUnderTest,
             fixtureRoot,
             suitePathPrepend: adapted.suitePathPrepend as string[],
-          })
+          }), `${path.relative(repositoryRoot, casesPath)}: ${evalCase.id}`).not.toThrow()
           caseCount += 1
         }
       }
