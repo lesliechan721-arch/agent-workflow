@@ -5,6 +5,13 @@ import { isDeepStrictEqual } from 'node:util';
 import fs from 'fs-extra';
 
 import {
+  catalogFileMode,
+  listCatalogBundleFiles as listBundleFiles,
+  readCatalogExecutableFiles,
+  writeCatalogExecutableFiles,
+} from './catalog-file-modes.js';
+
+import {
   assertCatalogVersion,
   assertStrictSemVer,
   compareStrictSemVer,
@@ -567,17 +574,12 @@ function generatedOutputMarker(options: {
   };
 }
 
-async function listBundleFiles(root: string, relative = ''): Promise<string[]> {
-  const result: string[] = [];
-  for (const entry of await fs.readdir(path.join(root, relative), { withFileTypes: true })) {
-    const child = relative ? path.posix.join(relative, entry.name) : entry.name;
-    if (entry.isDirectory()) result.push(...await listBundleFiles(root, child));
-    else result.push(child);
-  }
-  return result.sort();
-}
-
-async function catalogPathRecord(root: string, relative: string, versionNeutral: boolean): Promise<{
+async function catalogPathRecord(
+  root: string,
+  relative: string,
+  versionNeutral: boolean,
+  executableFiles?: ReadonlySet<string>,
+): Promise<{
   path: string;
   kind: 'file' | 'symlink';
   mode: '100644' | '100755' | '120000';
@@ -608,12 +610,14 @@ async function catalogPathRecord(root: string, relative: string, versionNeutral:
   } else {
     digest = sha256(await fs.readFile(filePath));
   }
-  return { path: relative, kind: 'file', mode: (stat.mode & 0o100) === 0 ? '100644' : '100755', digest };
+  return { path: relative, kind: 'file', mode: catalogFileMode(relative, stat.mode, executableFiles), digest };
 }
 
 async function calculateEntryDigest(root: string, versionNeutral: boolean): Promise<string> {
   const files = await listBundleFiles(root);
-  return sha256(stableStringify(await Promise.all(files.map((file) => catalogPathRecord(root, file, versionNeutral)))));
+  const executableFiles = await readCatalogExecutableFiles(root, files);
+  return sha256(stableStringify(await Promise.all(files.map((file) =>
+    catalogPathRecord(root, file, versionNeutral, executableFiles)))));
 }
 
 async function expectedCatalogEntry(plugin: PluginMeta, pluginRoot: string) {
@@ -742,6 +746,7 @@ export async function buildCatalogWorkspace(options: {
           dependencies: closure.slice(0, -1),
           outputRoot,
         });
+        await writeCatalogExecutableFiles(outputRoot);
         bundledPlugins.push(await readPluginManifest(outputRoot, { mode: 'bundle' }));
       }
       const byPlatform = (platform: 'claude' | 'codex'): PluginMeta[] => bundledPlugins

@@ -3,6 +3,12 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import {
+  catalogFileMode,
+  listCatalogBundleFiles as listFilesRecursively,
+  readCatalogExecutableFiles,
+} from '@lesliechan721/aw-plugin-core';
+
 import type { CatalogManifestEntry, PluginManifestSource } from '../types.js';
 import {
   normalizeManifestDigestInput,
@@ -30,25 +36,6 @@ function createSha256Digest(value: string): string {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
 }
 
-async function listFilesRecursively(rootDir: string): Promise<string[]> {
-  const entries = await fs.readdir(rootDir, { withFileTypes: true });
-  const files: string[] = [];
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootDir, entry.name);
-    if (entry.isDirectory()) {
-      const nestedFiles = await listFilesRecursively(entryPath);
-      files.push(
-        ...nestedFiles.map((nestedFile) => path.join(entry.name, nestedFile).split(path.sep).join('/')),
-      );
-      continue;
-    }
-    files.push(entry.name);
-  }
-
-  return files.sort();
-}
-
 interface CatalogDigestPathRecord {
   path: string;
   kind: 'file' | 'symlink';
@@ -56,7 +43,11 @@ interface CatalogDigestPathRecord {
   digest: string;
 }
 
-async function resolveCatalogDigestNode(filePath: string): Promise<{
+async function resolveCatalogDigestNode(
+  filePath: string,
+  relativePath = '',
+  executableFiles?: ReadonlySet<string>,
+): Promise<{
   kind: CatalogDigestPathRecord['kind'];
   mode: CatalogDigestPathRecord['mode'];
 }> {
@@ -69,7 +60,7 @@ async function resolveCatalogDigestNode(filePath: string): Promise<{
   }
   return {
     kind: 'file',
-    mode: (stat.mode & 0o100) === 0 ? '100644' : '100755',
+    mode: catalogFileMode(relativePath, stat.mode, executableFiles),
   };
 }
 
@@ -126,10 +117,11 @@ export async function calculateCatalogEntryArtifactDigest(
   pluginRoot: string,
 ): Promise<string> {
   const files = await listFilesRecursively(pluginRoot);
+  const executableFiles = await readCatalogExecutableFiles(pluginRoot, files);
   const fileEntries = await Promise.all(
     files.map(async (relativePath): Promise<CatalogDigestPathRecord> => {
       const filePath = path.join(pluginRoot, relativePath);
-      const node = await resolveCatalogDigestNode(filePath);
+      const node = await resolveCatalogDigestNode(filePath, relativePath, executableFiles);
       return {
         path: relativePath,
         kind: node.kind,
@@ -146,9 +138,10 @@ export async function calculateCatalogEntryContentDigest(
   pluginRoot: string,
 ): Promise<string> {
   const files = await listFilesRecursively(pluginRoot);
+  const executableFiles = await readCatalogExecutableFiles(pluginRoot, files);
   const fileEntries = await Promise.all(
     files.map(async (relativePath): Promise<CatalogDigestPathRecord> => {
-      const node = await resolveCatalogDigestNode(path.join(pluginRoot, relativePath));
+      const node = await resolveCatalogDigestNode(path.join(pluginRoot, relativePath), relativePath, executableFiles);
       return {
         path: relativePath,
         kind: node.kind,

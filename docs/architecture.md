@@ -73,6 +73,7 @@ generated schema 7 snapshot
 
 - 源码层是插件作者维护的输入。`evals/**`、正式报告和 `.DS_Store` 不进入 runtime bundle；Skill `README.md` 是 production source。第三方 workspace 和本仓库 staging 都生成 schema 7 snapshot；生成目录不手工修改。
 - snapshot v7 transport validation 验证结构、路径、摘要、marketplace projection 和 release metadata。producer、publication、发布后核验和 destructive uninstall 使用 complete validation。destructive uninstall 在提交 Intent 或删除现场内容前完整验证所选 Active snapshot；失败时不修改 Intent，也不删除现场内容。安装先计算 selected dependency closure，检查 entry capability，再只验证该 closure 的 plugin。
+- Catalog entry 的 artifact/content digest 继续绑定文件路径、节点类型、canonical Git 执行模式和内容。含可执行文件的 bundle 在生成时写入 `.agents-plugin/aw-executable-files.json`，保存按 codepoint 排序、无重复的 bundle-relative 执行文件路径；该文件本身为 `100644`，并进入 entry 和 snapshot 摘要。Windows 从该清单取得执行模式，Unix 继续核对实际执行位。Core 和 CLI 使用同一模式解析；没有清单时沿用实际模式，因此已有 Unix snapshot 的摘要合同不变。旧 snapshot 在 Windows 因执行位丢失而失败时，发布新 Catalog 版本以生成清单，不改写旧发布。
 - `aw catalog build` 和 `aw plugin build` 都在同父 staging 完整构建和验证后，才替换已证明为生成物的输出；它们拒绝 workspace 外、符号链接、`.git` 和其它受保护边界。`aw catalog init` 的合法 marker 是 schema 1、`kind: "aw-catalog-workspace"` 和稳定非空 `workspaceIdentity`；marker 不进入 snapshot digest。
 - source plugin 输入树不允许符号链接，也不能进入 `.git/` 或 `node_modules/`。Catalog complete validation 核对 source manifest、平台 projection 和 bundle 路径。
 - 每个 Catalog 命令自行从显式 `--workspace-root` 或 cwd 向上定位最近的合法 Workspace。`catalog init` 没有祖先 Workspace 时选择 Git worktree root，再回退 cwd。不存在独立的 Catalog context 命令或 context schema。`aw catalog status` 是静态命令：读取 Workspace、metadata、inventory、依赖图、可用 Git 状态和 snapshot evidence，不 build、fetch、创建 `.aw` 或运行插件代码。

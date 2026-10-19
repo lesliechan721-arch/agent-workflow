@@ -38,6 +38,8 @@ aw catalog validate "$workspace/.aw/catalog" --json
 
 snapshot v7 的 release metadata 只含 `state` 和 `sourceHead`。生成 snapshot、manifest、digest 和 marketplace projection 都不能手改。
 
+含可执行文件的插件 bundle 会生成 `.agents-plugin/aw-executable-files.json`，供 Windows 在 Unix 执行位丢失后验证同一 Catalog 摘要。该清单也受摘要保护，不手工维护。旧 Catalog 缺少清单且在 Windows 校验失败时，使用更新后的 CLI build 并发布新 Catalog 版本。
+
 ## Plugin 版本规则
 
 Catalog beta 候选只读取 source metadata、`catalog-v<version>` tag 和 publication journal。
