@@ -2,7 +2,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import fs from 'fs-extra'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildCatalogWorkspace,
@@ -446,6 +446,37 @@ describe('AW Catalog Workspace v1', () => {
     await fs.writeJson(claudePath, claude)
     await expect(validateCatalogSnapshotComplete(built.outputRoot))
       .rejects.toThrow(/Claude marketplace metadata or plugin inventory/u)
+  })
+
+  it.skipIf(process.platform === 'win32')('validates executable Catalog bundles after Windows drops Unix mode bits', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: {
+        async build({ outputRoot }) {
+          await writeBundle(outputRoot, manifest)
+          const script = path.join(outputRoot, 'runtime.mjs')
+          await fs.writeFile(script, '#!/usr/bin/env node\nconsole.log("example")\n')
+          await fs.chmod(script, 0o755)
+        },
+      },
+    })
+    const original = await validateCatalogSnapshotComplete(built.outputRoot)
+    const pluginRoot = path.join(built.outputRoot, 'plugins', String(manifest.name))
+    const script = path.join(pluginRoot, 'runtime.mjs')
+    await fs.chmod(script, 0o644)
+    await expect(validateCatalogSnapshotComplete(built.outputRoot)).rejects.toThrow(/artifactDigest/u)
+
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    try {
+      await expect(validateCatalogSnapshotComplete(built.outputRoot)).resolves.toEqual(original)
+      await fs.appendFile(script, '// changed\n')
+      await expect(validateCatalogSnapshotComplete(built.outputRoot)).rejects.toThrow(/artifactDigest/u)
+    } finally {
+      platform.mockRestore()
+    }
   })
 
   it('rejects a tampered platform projection after rebuilding its Catalog digests', async () => {
