@@ -42,6 +42,11 @@
   "buildConfig": {
     "skillRuntimeFiles": [
       {
+        "skill": "dev-workflow",
+        "target": "references/local-workspace.md",
+        "source": "./references/local-workspace.md"
+      },
+      {
         "skill": "dev-design",
         "target": "references/local-workspace.md",
         "source": "./references/local-workspace.md"
@@ -52,7 +57,17 @@
         "source": "./references/local-workspace.md"
       },
       {
-        "skill": "dev-build",
+        "skill": "dev-spec",
+        "target": "references/local-workspace.md",
+        "source": "./references/local-workspace.md"
+      },
+      {
+        "skill": "dev-breakdown",
+        "target": "references/local-workspace.md",
+        "source": "./references/local-workspace.md"
+      },
+      {
+        "skill": "dev-workflow",
         "target": "references/task-changes.md",
         "source": "./references/task-changes.md"
       },
@@ -60,6 +75,101 @@
         "skill": "dev-design",
         "target": "references/task-changes.md",
         "source": "./references/task-changes.md"
+      },
+      {
+        "skill": "dev-build",
+        "target": "references/task-changes.md",
+        "source": "./references/task-changes.md"
+      },
+      {
+        "skill": "dev-spec",
+        "target": "references/task-changes.md",
+        "source": "./references/task-changes.md"
+      },
+      {
+        "skill": "dev-breakdown",
+        "target": "references/task-changes.md",
+        "source": "./references/task-changes.md"
+      },
+      {
+        "skill": "dev-design",
+        "target": "references/methods/design.md",
+        "source": "./references/methods/design.md"
+      },
+      {
+        "skill": "dev-workflow",
+        "target": "references/methods/design.md",
+        "source": "./references/methods/design.md"
+      },
+      {
+        "skill": "dev-build",
+        "target": "references/methods/build.md",
+        "source": "./references/methods/build.md"
+      },
+      {
+        "skill": "dev-workflow",
+        "target": "references/methods/build.md",
+        "source": "./references/methods/build.md"
+      },
+      {
+        "skill": "dev-review-loop",
+        "target": "references/methods/review-loop.md",
+        "source": "./references/methods/review-loop.md"
+      },
+      {
+        "skill": "dev-build",
+        "target": "references/methods/review-loop.md",
+        "source": "./references/methods/review-loop.md"
+      },
+      {
+        "skill": "dev-workflow",
+        "target": "references/methods/review-loop.md",
+        "source": "./references/methods/review-loop.md"
+      },
+      {
+        "skill": "dev-review-loop",
+        "target": "references/code-repair.md",
+        "source": "./references/code-repair.md"
+      },
+      {
+        "skill": "dev-build",
+        "target": "references/code-repair.md",
+        "source": "./references/code-repair.md"
+      },
+      {
+        "skill": "dev-workflow",
+        "target": "references/code-repair.md",
+        "source": "./references/code-repair.md"
+      },
+      {
+        "skill": "dev-build",
+        "target": "references/coordinated-build.md",
+        "source": "./references/coordinated-build.md"
+      },
+      {
+        "skill": "dev-workflow",
+        "target": "references/coordinated-build.md",
+        "source": "./references/coordinated-build.md"
+      },
+      {
+        "skill": "dev-design",
+        "target": "references/review-repair.md",
+        "source": "./references/review-repair.md"
+      },
+      {
+        "skill": "dev-workflow",
+        "target": "references/review-repair.md",
+        "source": "./references/review-repair.md"
+      },
+      {
+        "skill": "dev-build",
+        "target": "assets/work-index-template.md",
+        "source": "./assets/work-index-template.md"
+      },
+      {
+        "skill": "dev-workflow",
+        "target": "assets/work-index-template.md",
+        "source": "./assets/work-index-template.md"
       },
       {
         "skill": "dev-implement",

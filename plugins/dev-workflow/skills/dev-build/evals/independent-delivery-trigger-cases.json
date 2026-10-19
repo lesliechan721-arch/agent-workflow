@@ -7,7 +7,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "以公开行为、已接受设计、独立证据和真实权限为依据；区分实际缺陷与等价实现。"
+      "rationale": "按显式入口与未选入口区分触发；完整工作意图或 caller 委派不能代替用户选择，实际共享方法与结果由行为用例检查。"
     },
     "runtime": {
       "observeSpawnAgent": false,
@@ -24,11 +24,11 @@
         "boundary"
       ],
       "input": {
-        "query": "按已确认规范协调各任务、集成验证和独立代码审查，交付当前结果。",
+        "query": "使用 $dev-build。按已确认规范协调各任务、集成验证和独立代码审查，交付当前结果。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "区分本能力的明确用户结果与相邻意图。",
+        "rationale": "用户显式选择本宏；是否加载与实际任务完成分开判断。",
         "minimalCounterexample": "只审查这一个PR，报告后停止。",
         "allowedVariance": "仅观测当前能力是否加载；不推断完整任务是否执行或禁止合理后续辅助能力。"
       }

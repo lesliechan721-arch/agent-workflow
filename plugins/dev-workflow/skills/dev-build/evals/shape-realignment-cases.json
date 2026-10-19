@@ -13,13 +13,102 @@
       "dev-review-loop",
       "decision-shape",
       "dev-workflow",
-      "dev-implement"
+      "dev-implement",
+      "dev-review-code"
     ],
     "runtime": {
       "isolation": "strict"
     }
   },
   "cases": [
+    {
+      "id": "contract-defect-without-task-change-read",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "conditional-reading"
+      ],
+      "prompt": "使用 $dev-build 继续本轮 names 任务。先核对 spec.md、facts.md、work.md 和实际代码，再完成已确认范围内的实现与验证。只能修改 src/normalize.js 和 work.md，不提交；独立核验条件不足时说明实际限制。",
+      "assertions": [
+        "依据当前合同、代码和调查事实确认是已授权范围内的实现缺陷，完成连续空白修复并实际通过全部现有测试。",
+        "本例没有要求、接受设计、风险或历史范围变化，不为普通合同内缺陷加载完整任务变化资料，也不启动设计或 Shape。",
+        "规格、测试和范围保持；核验使用本包方法，不调用 dev-design 或 dev-review-loop 手动入口，不把作者自检称为独立通过。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "spec.md": "# 已确认的展示名要求\nnormalizeName 接收字符串，去除首尾空白，将内部连续空白合并为一个空格；全空白返回空字符串，保持大小写。该规则用于界面展示名，不改变账户标识或外部账户匹配语义。\n",
+          "work.md": "# Names 当前实施\n本轮尚未交付。已获准完成 spec.md 的展示名要求，范围 src/normalize.js；现有实现已处理首尾空白，内部连续空白尚未通过验证。没有此前修复轮次或在途执行者。\n",
+          "src/normalize.js": "export function normalizeName(value){return value.trim();}\n",
+          "test/normalize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {normalizeName} from '../src/normalize.js';\ntest('trim',()=>assert.equal(normalizeName('  Ada  '),'Ada'));\ntest('collapse',()=>assert.equal(normalizeName(' Ada   Lovelace '),'Ada Lovelace'));\ntest('empty',()=>assert.equal(normalizeName('   '),''));\ntest('case preserved',()=>assert.equal(normalizeName(' aDa '),'aDa'));\n",
+          "facts.md": "# 当前调查\n已核对当前调用点，normalizeName 仅用于界面展示名，不参与账户标识、存储键或外部匹配。连续空白未合并是现有实现遗漏；本次修复不改变已接受设计、用户结果或风险。\n"
+        }
+      },
+      "expected": {
+        "output": "按已确认合同修复并验证，完成当前范围核验或说明证据缺口；普通缺陷不触发完整任务变化方法。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/normalize.js",
+          "work.md"
+        ],
+        "artifacts": [
+          {
+            "path": "src/normalize.js",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "与影响尚不确定的配对用例保持相同请求、规格、代码、测试和授权，仅调查事实不同；检查合同内缺陷的直接完成与条件读取，不用固定措辞代替实际结果。",
+        "minimalCounterexample": "如果新事实表明该输出可能参与外部账户匹配，且影响尚未核清，即使本地测试仍能指出遗漏，也应读取任务变化方法并处理未决影响。",
+        "allowedVariance": "允许等价代码、验证工具和交付形式；核对实际读取、文件变化与测试结果，不要求固定修复次数或报告格式。核验发现新的实质事实时，按实际触发条件读取相关方法。"
+      }
+    },
+    {
+      "id": "uncertain-impact-reads-task-changes",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "conditional-reading"
+      ],
+      "prompt": "使用 $dev-build 继续本轮 names 任务。先核对 spec.md、facts.md、work.md 和实际代码，再完成已确认范围内的实现与验证。只能修改 src/normalize.js 和 work.md，不提交；独立核验条件不足时说明实际限制。",
+      "assertions": [
+        "在改变受影响产品行为前读取任务变化资料；影响尚不确定本身就满足读取条件，不必先认定这是合法产品变化。",
+        "识别展示名要求与可能的外部账户匹配之间的未决影响，暂停受影响实现并返回原要求、当前完成情况、新事实、影响与待核实问题。",
+        "不把外部匹配风险说成已证实，也不凭本地测试失败直接更改标准化语义、规格或测试；不自行启动设计或 Shape。",
+        "源码、规格和测试保持原样；可在 work.md 或对话中记录缺口，不虚构完成、独立审查或新增修复授权。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "spec.md": "# 已确认的展示名要求\nnormalizeName 接收字符串，去除首尾空白，将内部连续空白合并为一个空格；全空白返回空字符串，保持大小写。该规则用于界面展示名，不改变账户标识或外部账户匹配语义。\n",
+          "work.md": "# Names 当前实施\n本轮尚未交付。已获准完成 spec.md 的展示名要求，范围 src/normalize.js；现有实现已处理首尾空白，内部连续空白尚未通过验证。没有此前修复轮次或在途执行者。\n",
+          "src/normalize.js": "export function normalizeName(value){return value.trim();}\n",
+          "test/normalize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {normalizeName} from '../src/normalize.js';\ntest('trim',()=>assert.equal(normalizeName('  Ada  '),'Ada'));\ntest('collapse',()=>assert.equal(normalizeName(' Ada   Lovelace '),'Ada Lovelace'));\ntest('empty',()=>assert.equal(normalizeName('   '),''));\ntest('case preserved',()=>assert.equal(normalizeName(' aDa '),'aDa'));\n",
+          "facts.md": "# 当前调查\n新接入方反馈可能将 normalizeName 的输出用于外部账户匹配，但尚未取得该调用方代码和接口合同。内部连续空白是否区分账户仍未知；合并空白可能改变匹配结果。当前材料不足以确认影响或批准账户语义变化。\n"
+        }
+      },
+      "expected": {
+        "output": "因影响尚不确定读取任务变化方法，报告需核实的外部账户匹配风险与当前缺口，暂停受影响产品修改。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "work.md"
+        ],
+        "artifacts": [
+          {
+            "path": "work.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "读取门槛是可能影响或尚不确定，不是已证明必须改变产品；与普通缺陷用例仅调查材料不同，检验条件收窄后仍能到达必要判断方法。",
+        "minimalCounterexample": "若调查已确认全部调用只用于展示名且修复不改变接受设计或风险，则应按原授权完成现有缺陷，不重复要求产品决定。",
+        "allowedVariance": "允许只读验证、补充已提供材料和不同缺口表达；在缺少调用方合同的本例中不得自行假设风险已消除。读取轨迹与实际写入决定结果，不要求固定问题数量。"
+      }
+    },
     {
       "id": "standalone-build-returns-material-gap",
       "split": "validation",
