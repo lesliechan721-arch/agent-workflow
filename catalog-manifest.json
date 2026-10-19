@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.41",
+  "catalogVersion": "0.1.0-beta.43",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "f9c781fba61ab0e9c84d52c635605421f8646697"
+    "sourceHead": "fcdf89201ac12973c5197646a796923466526aee"
   },
   "entries": [
     {
@@ -79,7 +79,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.9",
+      "version": "0.1.0-beta.10",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -92,9 +92,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:c0ee83f9761387aa0b9dd7108161dd3ba36bebb18bc9d6a6ece4c272be84e9c9",
-      "manifestDigest": "sha256:d92f974f0dc6461ddf53c2eab8aeda6d6f571542121d05a517bafd65890039a6",
-      "contentDigest": "sha256:7cab15d35ec1fb40b52e7f4f320942099c8e8ecb1561e5c71ff826062a08451a"
+      "artifactDigest": "sha256:23a6e72e591b0ac11d7fe9126407dc6b72365eb6590067dc53a455494793e294",
+      "manifestDigest": "sha256:0cea8bb83d33e67d19af0bb191489486ca9478354e70bc2a5445efdc36f15587",
+      "contentDigest": "sha256:5ac0fc6f64e294db65e2f8059e8d363e40215e78f297875c4cf07d4402850ae7"
     },
     {
       "name": "aw-development-toolkit",
@@ -117,7 +117,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.6",
+      "version": "0.1.0-beta.7",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -141,9 +141,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:75351807b64adb9818028d6971cb3b85b316a59e24b8daed78c13d54ad604be8",
-      "manifestDigest": "sha256:486f995af4fe3e7c32b37ca62da2072349ba67b26e4d8c8fad51d06f88e19d05",
-      "contentDigest": "sha256:94cac11ef8306546fb0f368a38554d0c6232f8b7ed9d12fd2116cdaf48ced18c"
+      "artifactDigest": "sha256:1dd83072471b24b819837de90c851100482aea9ddb2d0493dacb6c2fb752436d",
+      "manifestDigest": "sha256:2c7232e1631b2258b55dd892719f2211e4190521a2ea2590fb80b8ec3b819957",
+      "contentDigest": "sha256:5ca796dbe7247a2171d4852a7087a94b5f5e5dcd9655d8194254ae4e9c3a1f63"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -249,7 +249,7 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.9",
+      "version": "0.2.0-beta.10",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -268,9 +268,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:ccb21365cfebc0e63848f9b6e8fd24179fde5257ddc359111970101877780af9",
-      "manifestDigest": "sha256:6be4adb89e039e828fd23c213ea63ceb8fcbbf3d2aea4edc5d97bc1039b80f1f",
-      "contentDigest": "sha256:a963124c6cbbf62efe350f167f654d29ac9167734bdaf237861123c04a027c5c"
+      "artifactDigest": "sha256:809387b4653cce8a4ec0d1e23fa61d412abd7938ee5368aa67626c754ee4689b",
+      "manifestDigest": "sha256:1018d46df7a121da3827c0debb3d09740c35537166bc2af7b02b50a749f60491",
+      "contentDigest": "sha256:43afcd7071f0bb8e74270e07c51d927e6903dfd22cf991fecc19cc2b76af8c82"
     },
     {
       "name": "decision-kit",
@@ -329,7 +329,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.15",
+      "version": "0.1.0-beta.16",
       "dependencies": [
         "decision-kit",
         "human-content"
@@ -343,9 +343,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:af7d0fe7868cb8a77e801ced96e58f411814b9bc14716d29e1a61944f9c7991a",
-      "manifestDigest": "sha256:194aafc8d400e70616f5c295d51503b1e7913afb57cc2d02cfbdea631216fba4",
-      "contentDigest": "sha256:141e1d5106ff7c89f83b25133f47db3d67ef113ed3e2a1a2b82fb2064ca7f226"
+      "artifactDigest": "sha256:ac8d5cde02ad54755975f28c198f96e5c22a6b83c14aec7e09d502367f490879",
+      "manifestDigest": "sha256:755af94a882f7780acdbfdcc01b95e478eea34140fec0c4ac674bfa77d1c29e7",
+      "contentDigest": "sha256:f2796ab993a22e37640cb81a5d47afa2d788906e10c017ee77558790ef63d2a1"
     },
     {
       "name": "frontend-design",

@@ -10,4 +10,4 @@
 使用 dev-breakdown 把批准 Spec 拆成可独立交接的 Ticket，写到 docs/dev/invitations/tickets/，先不要实施。
 ```
 
-需要执行完整结果时使用 dev-build，直接实现明确工作项时使用 dev-implement。执行说明见 [SKILL.md](SKILL.md)。
+协作时采用调用者给定的本轮 Ticket 位置，不自行分配 Build 轮次。需要协调完整交付时由用户手动选择 `$dev-build`，直接实现明确工作项时使用 `dev-implement`。执行说明见 [SKILL.md](SKILL.md)。
