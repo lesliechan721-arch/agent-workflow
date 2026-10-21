@@ -20,7 +20,9 @@ aw-skill-eval run /tmp/aw-eval-specs/<spec-dir>/spec.json --audit /tmp/aw-eval-s
 
 `trigger-cases.json` 使用 selected cases v1 trigger 合同。`trigger-fixture.mjs` 为 train/validation 的冲突、语义合并、fast-forward、already-up-to-date、独立 clean merge、rebase/cherry-pick 冲突和相邻 commit 路由准备小型 Git 状态。运行触发评估时，每条查询至少运行三次。重点观察 fast-forward、already up to date、普通 merge 请求、rebase 和明显独立的 clean merge 是否保持不触发。
 
-`evals.json` 和 `files/` 保留源 Skill 的四个 Git 行为用例及附件。`run-merge-evals.mjs` 每次在全新工作区中运行一个由 Eval engine 选定的 case、variant 和 attempt，并机械检查只产生一个双父合并提交、测试通过、不可变外部语义探针和只读不变量。三个写用例只向内层 Codex 开放该临时仓库的 Git metadata；analysis-only 用例保持 metadata 只读。Engine 负责 variant/attempt 循环、timeout、进程树和最终 EvalResult，默认对每个 behavior case 运行 3 次。
+`evals.json` 和 `files/` 保留源 Skill 的四个 Git 行为用例及附件。`run-merge-evals.mjs` 每次在全新工作区中运行一个由 Eval engine 选定的 case、variant 和 attempt，并机械检查成功用例只产生一个双父合并提交、index 与 tracked worktree 均等于 HEAD、测试通过、不可变外部语义探针和只读不变量。未提交或只暂存的集成修正不能通过。三个写用例只向内层 Codex 开放该临时仓库的 Git metadata；analysis-only 用例保持 metadata 只读。Engine 负责 variant/attempt 循环、timeout、进程树和最终 EvalResult，默认对每个 behavior case 运行 3 次。
+
+保留策略冲突允许两种有依据的暂停：执行 merge 前保持仓库原状，或执行 merge 后保留未解决冲突。两者都必须报告真实的不兼容意图和待决问题；不允许自行决定保留策略。
 
 第四个用例开始前，记录 `HEAD`、refs、index、worktree 和 `README.md` 的本地差异；运行后应完全一致。
 
@@ -29,7 +31,7 @@ aw-skill-eval run /tmp/aw-eval-specs/<spec-dir>/spec.json --audit /tmp/aw-eval-s
 ## AW 验证
 
 ```bash
-pnpm plugin:test git
+pnpm plugin:test git-toolkit
 aw skill eval prepare git-toolkit reconciling-git-merges --suite router --profile project-default --split validation --runs 1 --output /tmp/aw-eval-specs/git-merge-router-validation --json
 aw skill eval prepare git-toolkit reconciling-git-merges --suite behavior --profile project-default --runs 3 --output /tmp/aw-eval-specs/git-merge-behavior --json
 ```

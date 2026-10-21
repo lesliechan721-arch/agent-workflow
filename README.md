@@ -109,10 +109,10 @@ aw status
 ### 创建一个只包含本次改动的提交
 
 ```text
-把刚才修改的三个文件提交，使用仓库现有提交规范。
+$git-commit 把刚才修改的三个文件提交，使用仓库现有提交规范。
 ```
 
-`git-commit` 会保护范围外的 index 和 worktree 状态，创建并验证本地提交；它不会 push。
+`git-commit` 由用户手动调用，会保护范围外的 index 和 worktree 状态，创建并验证本地提交；它不会 push，也不默认追加测试、构建或代码评审。用户或仓库明确要求的提交门禁和 Git hooks 仍会执行。
 
 ### 探索陌生代码库
 
@@ -138,7 +138,7 @@ aw status
 - **用户显式调用**：适合授权敏感或明确改变流程的能力。
 - **Slash Command**：为常用宏流程提供稳定入口；复杂逻辑仍保存在 Skill 中。
 
-`review-agent-skill`、`simplify-agent-skill` 和 `publish-aw-catalog` 由用户显式启动；Author 的日常自检不自动启动专项评审。Codex 使用 `$skill-name`，Claude Code 使用对应插件的 `/plugin-name:skill-name`。
+`git-commit`、`review-agent-skill`、`simplify-agent-skill` 和 `publish-aw-catalog` 由用户显式启动；Author 的日常自检不自动启动专项评审。Codex 使用 `$skill-name`，Claude Code 使用对应插件的 `/plugin-name:skill-name`。
 
 AW 在安装时保留 Codex 和 Claude Code 的原生调用元数据，不使用 CLI 配置覆盖 Skill 的触发策略。
 

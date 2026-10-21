@@ -7,7 +7,7 @@
       "optimization": "critical",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "漏加载会绕过提交范围和状态保护；误加载会把 message、查看、暂存、push 或历史改写任务错误升级为创建 commit。"
+      "rationale": "git-commit 仅由用户显式调用；自然语言提交及相邻请求均不得隐式加载它。"
     },
     "runtime": {
       "observeSpawnAgent": false,
@@ -21,61 +21,34 @@
   "cases": [
     {
       "id": "casual_current_changes",
-      "split": "train",
+      "split": "validation",
       "tags": [],
       "input": {
         "query": "支付超时的问题已经修好了，帮我把当前改动提交一下。",
-        "expectedLoad": true
+        "expectedLoad": false
       }
     },
     {
       "id": "staged_only",
-      "split": "train",
+      "split": "validation",
       "tags": [],
       "input": {
         "query": "我已经 git add 过了，请只把 staged changes 做成一个 commit。",
-        "expectedLoad": true
-      }
-    },
-    {
-      "id": "specific_files",
-      "split": "train",
-      "tags": [],
-      "input": {
-        "query": "只提交 README.md 和 docs/notes.md 这次文档调整，其它本地改动别动。",
-        "expectedLoad": true
-      }
-    },
-    {
-      "id": "english_commit",
-      "split": "train",
-      "tags": [],
-      "input": {
-        "query": "Commit these changes with a useful summary of what changed.",
-        "expectedLoad": true
+        "expectedLoad": false
       }
     },
     {
       "id": "commit_and_push",
-      "split": "train",
+      "split": "validation",
       "tags": [],
       "input": {
         "query": "核对一下范围，然后把这些改动提交并推送到当前分支。",
-        "expectedLoad": true
-      }
-    },
-    {
-      "id": "scoped_fix_commit",
-      "split": "train",
-      "tags": [],
-      "input": {
-        "query": "把配置加载修复创建成一个 Git commit，scope 使用 cli，body 用几条说明主要变化。",
-        "expectedLoad": true
+        "expectedLoad": false
       }
     },
     {
       "id": "draft_message_only",
-      "split": "train",
+      "split": "validation",
       "tags": [
         "boundary"
       ],
@@ -84,179 +57,8 @@
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
-      }
-    },
-    {
-      "id": "review_message_only",
-      "split": "train",
-      "tags": [
-        "boundary"
-      ],
-      "input": {
-        "query": "评审一下 `fix(cli): 修复安装失败` 这个 commit message 是否合适。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
-      }
-    },
-    {
-      "id": "status_only",
-      "split": "train",
-      "tags": [
-        "boundary"
-      ],
-      "input": {
-        "query": "看看现在 git status 是什么，解释一下哪些文件 staged 了。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
-      }
-    },
-    {
-      "id": "stage_only",
-      "split": "train",
-      "tags": [
-        "boundary"
-      ],
-      "input": {
-        "query": "只把 src/app.ts 加入暂存区，先不要创建 commit。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
-      }
-    },
-    {
-      "id": "push_existing",
-      "split": "train",
-      "tags": [
-        "boundary"
-      ],
-      "input": {
-        "query": "本地 commit 已经有了，把它 push 到 origin 当前分支。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
-      }
-    },
-    {
-      "id": "amend_history",
-      "split": "train",
-      "tags": [
-        "boundary"
-      ],
-      "input": {
-        "query": "用 amend 把漏掉的 CHANGELOG 合进上一个 commit。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
-      }
-    },
-    {
-      "id": "terse_commit",
-      "split": "validation",
-      "tags": [],
-      "input": {
-        "query": "帮我 git commti 一下，正文别只写标题。",
-        "expectedLoad": true
-      }
-    },
-    {
-      "id": "documentation_commit",
-      "split": "validation",
-      "tags": [],
-      "input": {
-        "query": "安装指南已经更新完，请把文档变更提交掉。",
-        "expectedLoad": true
-      }
-    },
-    {
-      "id": "mixed_language_staged",
-      "split": "validation",
-      "tags": [],
-      "input": {
-        "query": "pls commit 已暂存的 docs changes，别带上 workspace 里其它东西。",
-        "expectedLoad": true
-      }
-    },
-    {
-      "id": "implicit_commit_then_push",
-      "split": "validation",
-      "tags": [],
-      "input": {
-        "query": "把这批修改记录进 Git 历史，再推到当前远端分支。",
-        "expectedLoad": true
-      }
-    },
-    {
-      "id": "explain_last_commit",
-      "split": "validation",
-      "tags": [
-        "boundary"
-      ],
-      "input": {
-        "query": "最近一次 commit 改了什么？按模块解释给我。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
-      }
-    },
-    {
-      "id": "squash_history",
-      "split": "validation",
-      "tags": [
-        "boundary"
-      ],
-      "input": {
-        "query": "把最近三个 commits rebase squash 成一个，保留第一条 message。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
-      }
-    },
-    {
-      "id": "non_git_commitment",
-      "split": "validation",
-      "tags": [
-        "boundary"
-      ],
-      "input": {
-        "query": "Can you commit to the Friday deadline，并把审批表单提交给财务？这里不是 Git 操作。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
-      }
-    },
-    {
-      "id": "merge_operation",
-      "split": "validation",
-      "tags": [
-        "boundary"
-      ],
-      "input": {
-        "query": "把 feature 分支 merge 进当前分支，按 Git 默认流程处理。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
+        "rationale": "仅拟写 message，且没有显式调用；手动技能不应隐式加载。",
+        "minimalCounterexample": "将目标改为实际提交仍不应隐式加载；显式调用的提交路径由行为用例验证。"
       }
     }
   ]

@@ -83,7 +83,7 @@ async function gitMetadataWritableArgs(repo, fixtureRoot) {
   return roots.flatMap((rootPath) => ['--add-dir', rootPath]);
 }
 
-async function snapshot(root) {
+export async function snapshot(root) {
   const [head, refs, index, status, diff, retentionContent] = await Promise.all([
     git(root, ['rev-parse', 'HEAD']),
     git(root, ['show-ref']),
@@ -315,12 +315,7 @@ function retentionConflictState(content) {
 }
 
 export function ambiguousRetentionChecks(content, message) {
-  const text = typeof message === 'string' ? message : '';
   const conflict = retentionConflictState(content);
-  const statesDecisionIsOpen = /(?:(?:产品)?需求.{0,20}(?:尚未确定|未确定|待定)|(?:仓库)?(?:证据不足|没有证据|无证据)|无法决定|不能决定|需要.{0,20}(?:决定|决策|裁决|优先级)|(?:need|require|pending|cannot|insufficient|unclear).{0,50}(?:decision|priority|evidence))/isu.test(text)
-    || /请.{0,20}(?:明确|确认|选择|决定|裁决|提供|告知).{0,40}(?:7|七|90|九十|策略|方案|优先级|取舍)/su.test(text);
-  const retentionValues = [...text.matchAll(/(?:^|[^\d])(\d+)\s*(?:天|days?)(?![A-Za-z])/giu)]
-    .map((match) => match[1]);
   return [
     {
       name: 'conflict_markers_preserved',
@@ -337,6 +332,17 @@ export function ambiguousRetentionChecks(content, message) {
       passed: conflict.noAuthoredResolution,
       evidence: content,
     },
+    ...retentionDecisionChecks(message),
+  ];
+}
+
+function retentionDecisionChecks(message) {
+  const text = typeof message === 'string' ? message : '';
+  const statesDecisionIsOpen = /(?:(?:产品)?需求.{0,20}(?:尚未确定|未确定|待定)|(?:仓库)?(?:证据不足|没有证据|无证据)|无法决定|不能决定|需要.{0,20}(?:决定|决策|裁决|优先级)|(?:need|require|pending|cannot|insufficient|unclear).{0,50}(?:decision|priority|evidence))/isu.test(text)
+    || /请.{0,20}(?:明确|确认|选择|决定|裁决|提供|告知).{0,40}(?:7|七|90|九十|策略|方案|优先级|取舍)/su.test(text);
+  const retentionValues = [...text.matchAll(/(?:^|[^\d])(\d+)\s*(?:天|days?)(?![A-Za-z])/giu)]
+    .map((match) => match[1]);
+  return [
     {
       name: 'states_incompatible_windows',
       passed: /(?:7|七).*(?:90|九十)|(?:90|九十).*(?:7|七)/su.test(text),
@@ -365,6 +371,11 @@ export async function evaluateCase(evalCase, repo, before, run) {
     checks.push(...analysisMessageChecks(run.final_message));
   } else if (evalCase.id === 'ambiguous_retention') {
     add('no_new_commit', after.head === before.head, `before=${before.head.trim()} after=${after.head.trim()}`);
+    if (JSON.stringify(after) === JSON.stringify(before)) {
+      add('repository_unchanged', true, 'Paused before merge; HEAD, refs, index and worktree are unchanged.');
+      checks.push(...retentionDecisionChecks(run.final_message));
+      return { passed: checks.every((check) => check.passed), checks, before, after };
+    }
     add('conflict_left_uncommitted', after.status.includes('UU retention.py'), after.status);
     const unmerged = await git(repo, ['ls-files', '--unmerged', '--', 'retention.py']);
     const stages = new Set(unmerged.stdout.trim().split('\n').filter(Boolean)
@@ -386,6 +397,15 @@ export async function evaluateCase(evalCase, repo, before, run) {
       `first_parent_count=${commit.mainlineCount}`,
     );
     add('merge_commit', commit.parentCount === 2, `parents=${commit.parentCount}`);
+    const staged = await git(repo, ['diff', '--cached', '--quiet'], { allowFailure: true });
+    const worktree = await git(repo, ['diff', '--quiet'], { allowFailure: true });
+    add(
+      'integration_changes_committed',
+      staged.code === 0 && worktree.code === 0,
+      after.status,
+    );
+    // These fixtures start clean. A clean index and tracked worktree bind both
+    // checks below to HEAD instead of accepting an uncommitted integration fix.
     const tests = await execFile('python3', ['-m', 'unittest'], { cwd: repo, env: process.env });
     add('tests_pass', tests.code === 0, tests.stderr || tests.stdout);
     checks.push(...await semanticMergeOutcomeChecks(repo, evalCase.id));
