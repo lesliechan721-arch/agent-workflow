@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.44",
+  "catalogVersion": "0.1.0-beta.45",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "209f8caba15878d276a80dfc9c3575e6cce9519b"
+    "sourceHead": "257793df6dcacd75a6c88040f769b1210fa586ec"
   },
   "entries": [
     {
@@ -79,7 +79,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.11",
+      "version": "0.1.0-beta.12",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -92,9 +92,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:bbb74cfd5a013d477ecd27a7ade560fa7b26de66cd5850fc946af578bb35fcd2",
-      "manifestDigest": "sha256:a5b66d08ce9db759885134228f446bd95aabef04e515375bf6ba53017827858c",
-      "contentDigest": "sha256:0eebf93ea73e7552ce0736909313dbac618994471cbac164a9e9ee3a24096717"
+      "artifactDigest": "sha256:e057e731661443d55b4b2e3d6362821d457203cb90e32b7824da26f5cdc2c0d0",
+      "manifestDigest": "sha256:e0373099a9cd30290850aeb62f63f0983b0ac4a43c3fbc96d94399fc6fc392ea",
+      "contentDigest": "sha256:e5f5163e33db1bdf234e74902e69cd1596c5d85b77d3389aa4757c3dfbf88395"
     },
     {
       "name": "aw-development-toolkit",
@@ -327,7 +327,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.16",
+      "version": "0.1.0-beta.17",
       "dependencies": [
         "decision-kit",
         "human-content"
@@ -341,9 +341,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:ac8d5cde02ad54755975f28c198f96e5c22a6b83c14aec7e09d502367f490879",
-      "manifestDigest": "sha256:755af94a882f7780acdbfdcc01b95e478eea34140fec0c4ac674bfa77d1c29e7",
-      "contentDigest": "sha256:f2796ab993a22e37640cb81a5d47afa2d788906e10c017ee77558790ef63d2a1"
+      "artifactDigest": "sha256:0f0071b60d93cf7e0c995f557ff617576138ac142116c76cb2bb86517a6c5e1e",
+      "manifestDigest": "sha256:ada860a5d089a3ca40508a61afef684158b7aabc1e82dc8d64f46efdffb99c18",
+      "contentDigest": "sha256:1e9fde0a99bbb98068ed078e5fe6a851575adc5ee6630f86f914c00f83e951a8"
     },
     {
       "name": "frontend-design",
@@ -400,7 +400,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.1",
+      "version": "0.1.0-beta.2",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -410,9 +410,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:02eba122738fba35051477c6b5a2dba528853711035e93291e286c0ac7693c0e",
-      "manifestDigest": "sha256:e17477a579f42093d1f42bf68c61a033ed72f54b003e0d76b77d938e907fe733",
-      "contentDigest": "sha256:75378c8e74636f2979274641aa597a47d3a08fd57c46777b42c4493b6c2aace9"
+      "artifactDigest": "sha256:f9b8fc21952e1fa913145d274f1aa1ac489b7339be0a71581896e024e7f8e093",
+      "manifestDigest": "sha256:0b3047b4052e46015d068ff1bbd24197f0419417fd3b07636194ea0b58a98761",
+      "contentDigest": "sha256:05c9597cd83888d0f420a0d2c9c049b15c11d274613231fbcfb0d1e60decfd6f"
     },
     {
       "name": "human-content",

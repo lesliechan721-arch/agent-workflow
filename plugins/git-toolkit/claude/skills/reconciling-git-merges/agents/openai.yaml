@@ -1,5 +1,5 @@
 interface:
-  display_name: "Reconcile Git Merges"
+  display_name: reconciling-git-merges
   short_description: "协调 Git merge 双方意图，并验证文本或语义交互后的组合结果"
   default_prompt: "使用 $reconciling-git-merges 协调 Git merge 双方意图并验证组合结果。"
 

@@ -14,14 +14,14 @@ aw install git-toolkit -p both
 
 | Skill | 什么时候使用 |
 | --- | --- |
-| [`git-commit`](skills/git-commit/) | 用户明确要求创建本地提交，并希望只提交指定范围 |
+| [`git-commit`](skills/git-commit/) | 手动调用，按提交规范创建指定范围的本地提交 |
 | [`isolating-work-with-git-worktrees`](skills/isolating-work-with-git-worktrees/) | 需要保护当前工作区、并行处理另一分支或显式创建 worktree |
 | [`reconciling-git-merges`](skills/reconciling-git-merges/) | merge 双方存在文本冲突，或 clean merge 仍有语义、契约或依赖交互 |
 
 ## 典型用法
 
 ```text
-只提交这次修复涉及的文件，不要动 index 里其它内容。
+$git-commit 只提交这次修复涉及的文件，不要动 index 里其它内容。
 ```
 
 ```text
@@ -32,18 +32,17 @@ aw install git-toolkit -p both
 合并这两个分支，并检查双方行为意图是否仍然同时成立。
 ```
 
+提交示例使用 Codex 的调用方式；Claude Code 使用 `/git-toolkit:git-commit`。另外两个技能保留自动调用。
+
 ## 安全边界
 
 - 不执行 `git push`。
 - 不使用 worktree 处理不需要独立 checkout 的普通任务。
 - 提交前后都会检查目标范围和结果。
+- 提交技能不默认追加测试、构建或评审；明确的提交门禁和 Git hooks 仍须执行。
 - merge 不只处理冲突标记，也检查 clean merge 中可能出现的行为冲突。
 - 需要完整独立 refs 或对象库时，应使用独立 clone，而不是 worktree。
 
 ## 维护者
 
-Skill 指令和评测位于各 Skill 目录。确定性测试：
-
-```bash
-pnpm plugin:test git
-```
+Skill 指令和评测位于各 Skill 目录。
