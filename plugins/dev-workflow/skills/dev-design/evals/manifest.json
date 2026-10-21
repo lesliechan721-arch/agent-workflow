@@ -18,8 +18,7 @@
       "cases": "alignment-handoff-cases.json",
       "profiles": ["project-default"],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     },
     {
       "id": "trigger",
@@ -29,8 +28,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 180000,
-      "requiredForRelease": false
+      "timeoutMs": 180000
     },
     {
       "id": "conversation",
@@ -40,8 +38,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     },
     {
       "id": "task-spec-lifecycle",
@@ -51,8 +48,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     },
     {
       "id": "simplified-design",
@@ -62,8 +58,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     },
     {
       "id": "visible-alignment",
@@ -73,8 +68,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     }
   ]
 }

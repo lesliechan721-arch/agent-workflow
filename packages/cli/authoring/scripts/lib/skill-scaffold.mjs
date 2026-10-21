@@ -192,8 +192,6 @@ export function renderEvalManifest(pluginName) {
         cases: 'trigger-cases.json',
         profiles: ['project-default'],
         runs: 3,
-        releaseSplits: ['validation', 'sanity'],
-        requiredForRelease: true,
         timeoutMs: 180000,
       },
       {
@@ -202,8 +200,6 @@ export function renderEvalManifest(pluginName) {
         cases: 'behavior-cases.json',
         profiles: ['project-default'],
         runs: 1,
-        releaseSplits: [],
-        requiredForRelease: true,
         timeoutMs: 300000,
       },
     ],

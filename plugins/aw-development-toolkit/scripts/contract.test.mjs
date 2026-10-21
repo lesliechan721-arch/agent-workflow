@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
 const root = process.env.AW_PLUGIN_ROOT;
 const invocation = new Map([
   ['develop-aw', true],
-  ['review-aw', true],
   ['publish-aw-catalog', false],
 ]);
 
@@ -15,14 +14,18 @@ function runtimeSkill(platform, name) {
   return path.join(root, platform, 'skills', name);
 }
 
-test('publishes two model-callable Skills and one manual-only Publisher', () => {
+test('publishes one AW development entry and one manual-only Publisher', () => {
   const manifest = JSON.parse(readFileSync(path.join(root, '.agents-plugin', 'plugin.json'), 'utf8'));
   assert.equal(manifest.name, 'aw-development-toolkit');
   assert.ok(manifest.requires.aw.capabilities.includes('aw.review-preparation.v1'));
+  assert.ok(manifest.requires.aw.capabilities.includes('aw.portable-skills.v1'));
   assert.ok(manifest.requires.aw.capabilities.includes('aw.review-inspection.v2'));
   assert.equal(manifest.requires.aw.capabilities.includes('aw.review-inspection.v1'), false);
-  assert.ok(manifest.requires.aw.capabilities.includes('aw.review-publication.v1'));
-  assert.deepEqual(readdirSync(path.join(root, 'codex', 'skills')).sort(), [...invocation.keys()].sort());
+  assert.equal(manifest.requires.aw.capabilities.includes('aw.review-publication.v1'), false);
+  assert.equal(manifest.buildConfig?.runtimeExports?.some(entry => entry.name === 'review-publication-reference') ?? false, false);
+  for (const platform of ['codex', 'claude']) {
+    assert.deepEqual(readdirSync(path.join(root, platform, 'skills')).sort(), [...invocation.keys()].sort());
+  }
 
   for (const [skill, expected] of invocation) {
     const skillRoot = runtimeSkill('codex', skill);
@@ -43,10 +46,29 @@ test('publishes two model-callable Skills and one manual-only Publisher', () => 
   }
 });
 
-test('materializes the AW Review runtime closure on both platforms', () => {
+test('materializes complete AW methods on both platforms', () => {
   for (const platform of ['codex', 'claude']) {
-    const reviewRoot = runtimeSkill(platform, 'review-aw');
-    assert.equal(statSync(path.join(reviewRoot, 'references', 'report-publication.md')).isFile(), true);
-    assert.equal(statSync(path.join(reviewRoot, 'scripts', 'check-aw-release.mjs')).isFile(), true);
+    const skillRoot = runtimeSkill(platform, 'develop-aw');
+    for (const relative of [
+      'references/source-materialization.md',
+      'references/plugin-development.md',
+      'references/plugin-components.md',
+      'references/build-and-sharing.md',
+      'references/platform-projection.md',
+      'references/catalog-development.md',
+      'references/portable-skills.md',
+      'references/aw-domain-review.md',
+      'references/aw-artifact-renderer.md',
+      'references/aw-pre-apply.md',
+      'references/development-source.md',
+    ]) assert.equal(statSync(path.join(skillRoot, relative)).isFile(), true, `${platform}/${relative}`);
+    for (const relative of [
+      'references/plugin-removal.md',
+      'references/release-check.md',
+      'references/report-publication.md',
+      'assets/aw-review-evidence.schema.json',
+      'assets/aw-review-evidence.template.json',
+      'scripts/check-aw-release.mjs',
+    ]) assert.equal(existsSync(path.join(skillRoot, relative)), false, `${platform}/${relative}`);
   }
 });

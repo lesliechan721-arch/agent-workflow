@@ -18,7 +18,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只读 full 评审 skills/totals，requirements.md 是用户要求。判断资料是否足以执行，不运行目标。",
+      "prompt": "$review-agent-skill 只读 full 评审 skills/totals，requirements.md 是用户要求。判断资料是否足以执行，不运行目标。",
       "assertions": [
         "定位方法未传达单位、币种分组、去重与未知语义，指出具体可能错误结果。",
         "建议保留有依据的方法与来源，不仅因正文短判错。",
@@ -48,7 +48,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只读评审 skills/totals 的方法充分性；不因存在 reference 或多条规则就要求删减，不运行。",
+      "prompt": "$review-agent-skill 只读评审 skills/totals 的方法充分性；不因存在 reference 或多条规则就要求删减，不运行。",
       "assertions": [
         "认可必要方法与数据语义可达，不要求删除规则以减字。",
         "可以提出有依据的局部改进；不因未运行判生产失败，也不声称行为稳定已验证。"
@@ -77,7 +77,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只读评审 skills/note 的格式与可选调用 metadata。不安装或启动客户端。",
+      "prompt": "$review-agent-skill 只读评审 skills/note 的格式与可选调用 metadata。不安装或启动客户端。",
       "assertions": [
         "不因缺 policy 或 allow_implicit_invocation 判包必然无效。",
         "若运行 checker，只采用实际输出并解释 ruleset、覆盖范围与诊断；没有客户端运行不声称发现和触发通过。"
@@ -106,7 +106,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "依据 requirements.md 只读评审 skills/invoice-summary 的方法是否足以完成任务。工具已有实际源码可核对，本次不运行脚本、不修改文件。",
+      "prompt": "$review-agent-skill 依据 requirements.md 只读评审 skills/invoice-summary 的方法是否足以完成任务。工具已有实际源码可核对，本次不运行脚本、不修改文件。",
       "assertions": [
         "认可明确的输入、调用、分币种单位和 unresolved 处理已构成可用方法，不因缺基础代码教学而判不完整。",
         "不要求将脚本源码或完整 help 复制进正文，不要求增加无用途参考文件或重复环境说明。",
@@ -137,7 +137,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只读 full 评审 skills/window-digest。sources 是本能力采用的领域依据，判断是否足以处理声明范围。不要修改文件或运行目标。",
+      "prompt": "$review-agent-skill 只读 full 评审 skills/window-digest。sources 是本能力采用的领域依据，判断是否足以处理声明范围。不要修改文件或运行目标。",
       "assertions": [
         "识别普通窗口筛选已有方法，但重放与冲突、缺时区、零与健康结论、归档分组仍只剩术语或没有处理依据，指出受影响情况。",
         "给出补回核心关系、原因或可达来源的最小建议，不要求逐句复制或以篇幅短为证据。",
@@ -170,7 +170,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只读 full 评审 skills/window-digest。sources 是本能力采用的领域依据，判断是否足以处理声明范围。不要修改文件或运行目标。",
+      "prompt": "$review-agent-skill 只读 full 评审 skills/window-digest。sources 是本能力采用的领域依据，判断是否足以处理声明范围。不要修改文件或运行目标。",
       "assertions": [
         "认可窗口边界、时区、去重冲突、结果含义和归档分支已表达或明确可达；不因不同于来源的版式要求重写。",
         "不要求普通路径读取归档规则，不强制添加脚本、基础教程或把所有资料内联。",

@@ -20,7 +20,7 @@ aw skill eval prepare codex-enhance \
 aw-skill-eval run /tmp/aw-eval-specs/<spec-dir>/spec.json --audit /tmp/aw-eval-specs/<spec-dir>/audit.json
 ```
 
-该命令生成 `EvalResult v2`。随后运行 `aw-skill-eval result validate <result> --spec <spec> --audit <audit>`。clean success 不要求 triage。只有 execution/grade 失败、混合结果、baseline 回归，或结果将驱动生产 Skill 修改时，才由全新上下文做 result-triage；默认在聊天中返回，用户指定时可写 `triage.md`。triage 不是 Release Check 的机器输入。发布检查范围只从当前 `evals/manifest.json` 的 `requiredForRelease` 和 `releaseSplits` 派生。
+该命令生成 `EvalResult v2`。随后运行 `aw-skill-eval result validate <result> --spec <spec> --audit <audit>`。clean success 不要求 triage。只有 execution/grade 失败、混合结果、baseline 回归，或结果将驱动生产 Skill 修改时，才由全新上下文做 result-triage；默认在聊天中返回，用户指定时可写 `triage.md`。
 
 ## 触发评估
 
@@ -37,7 +37,7 @@ standard 组合性诊断语料另有 8 条，并把 `codex-subagent-guide` 与 `
 
 其中 `real_explore_owner_route` 是真实 `codex-explore` 的排除用例：要求加载 Explore 并实际委派，要求同一父协调加载 Guide 处理执行。它与 `dev_build_partial_dispatch_requires_guide` 分别覆盖领域协调与通用执行组合，以及局部工作流调度，可用 `--case` 定向准备这两个 V2 用例。
 
-每条 query 默认在干净会话运行三次。普通 trigger 以 `0.5` 为分界；trigger-composition 的精确 loaded-skill 路由要求 `1.0`，并保留用例声明的组合加载集合。strict suite 的 validation 和 sanity 禁止加载或禁止委派负例使用零容忍，任意一次误触发都失败。`$skill` 记录为宿主显式注入，隐式加载只接受成功读取 `SKILL.md` 的执行事件；spawn 还要求原始 rollout 参数证据。
+每条 query 默认在干净会话运行三次。普通 trigger 以 `0.5` 为分界；trigger-composition 的精确 loaded-skill 路由要求 `1.0`，并保留用例声明的组合加载集合。strict suite 的 validation 和 sanity 禁止加载或禁止委派负例使用零容忍，任意一次误触发都失败。`$skill` 只表示请求调用；加载证据来自正确 participant 的成功 `SKILL.md` 读取，或匹配本次线程、轮次、名称和完整路径的受信任原生注入记录。必要证据不可用时记录执行错误；spawn 还要求原始 rollout 参数证据。
 
 ```bash
 aw skill eval prepare codex-enhance codex-subagent-guide --suite trigger --profile project-default --split train --runs 3 --output /tmp/aw-eval-specs/codex-subagent-guide-trigger-train --json
@@ -82,7 +82,7 @@ aw skill eval prepare codex-enhance codex-subagent-guide --suite lifecycle-timeo
 
 ## 前台调度与角色边界迁移
 
-`joint-workflow`、`joint-guide-only`、`executor-instructions` 保留发布必需门禁。旧 `worker-instructions` 用例按职责改名，J11/J17 从后台恢复与 revision 拒绝迁移为公开 save/apply、活跃输入固定和同一宿主 session 等待。完整逐项替代、真实支持要求及未验证项见 [ROLE-BOUNDARY.md](ROLE-BOUNDARY.md)。原生调用不经过 resolve/native reference/plan；外部使用必填 profile、prompt 的 v4 前台 run；支持 stdin，显式 instructions-file 可选。外部单 prompt 不证明独立指令通道或 OS 隔离。J16 验证 workspace 拒绝空 --file 和零 adapter 启动。因输入及 Oracle 已改变，必须重新进行独立 EvalAudit 和模型 Eval，旧模型成绩不能沿用。Advisor 的预算以当前任务明确要求为准，不再使用默认 policy。
+`joint-workflow`、`joint-guide-only`、`executor-instructions` 分别覆盖联合工作流、Guide 单独可用和直接执行者。旧 `worker-instructions` 用例按职责改名，J11/J17 从后台恢复与 revision 拒绝迁移为公开 save/apply、活跃输入固定和同一宿主 session 等待。完整逐项替代、真实支持要求及未验证项见 [ROLE-BOUNDARY.md](ROLE-BOUNDARY.md)。原生调用不经过 resolve/native reference/plan；外部使用必填 profile、prompt 的 v4 前台 run；支持 stdin，显式 instructions-file 可选。外部单 prompt 不证明独立指令通道或 OS 隔离。J16 验证 workspace 拒绝空 --file 和零 adapter 启动。因输入及 Oracle 已改变，必须重新进行独立 EvalAudit 和模型 Eval，旧模型成绩不能沿用。Advisor 的预算以当前任务明确要求为准，不再使用默认 policy。
 
 公开 synthetic fixture 合同可用以下命令作确定性验证。它要求已编译的 CLI 和插件构建依赖；在临时 staging 准备 Guide，然后使用临时 PATH `aw`、隔离 home 和本地假 Adapter 执行 validate/build/source/install、save 后通过 sync 应用、纯文本消费、J16 输入拒绝和 J12 单次写入。该脚本不 build 全局 CLI，不调用模型，不证明 native 宿主、远端服务或打包分发资格。
 

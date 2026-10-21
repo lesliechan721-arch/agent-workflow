@@ -45,13 +45,18 @@ describe('review inspect CLI entry', () => {
     const root = await tempRoot()
     const outside = await tempRoot()
     const pluginRoot = path.join(root, 'plugins', 'fixture')
+    const executionMarker = path.join(root, 'build-ran')
+    const historicalReport = path.join(root, 'reports', 'reviews', 'historical', 'report.md')
+    const historicalBytes = Buffer.from('# Review\r\n原始字节\r\n', 'utf8')
     await initializeCatalogWorkspace({ workspaceRoot: root })
+    await fs.outputFile(historicalReport, historicalBytes)
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
       schemaVersion: 3,
       name: 'fixture',
       version: '0.1.0',
       description: 'Review inspection CLI fixture.',
       skills: './skills',
+      scripts: { node: { build: { runner: 'node', path: './scripts/build.mjs' } } },
       marketplace: {
         category: 'test',
         strict: true,
@@ -66,6 +71,11 @@ describe('review inspect CLI entry', () => {
       path.join(pluginRoot, 'skills', 'fixture', 'SKILL.md'),
       '---\nname: fixture\ndescription: Review fixture.\n---\n\n# Fixture\n',
     )
+    await fs.outputFile(path.join(pluginRoot, 'scripts', 'build.mjs'), [
+      "import fs from 'node:fs'",
+      `fs.writeFileSync(${JSON.stringify(executionMarker)}, 'executed')`,
+      "throw new Error('Inspection must not execute a build.')",
+    ].join('\n'))
     const output = capture()
 
     const code = await runCli(['review', 'inspect', pluginRoot, '--json'], {
@@ -96,22 +106,12 @@ describe('review inspect CLI entry', () => {
       ]),
     })
 
-    const releaseOutput = capture()
-    expect(await runCli(['review', 'inspect', pluginRoot, '--view', 'release', '--json'], {
+    const explicitReviewOutput = capture()
+    expect(await runCli(['review', 'inspect', pluginRoot, '--view', 'review', '--json'], {
       cwd: outside,
-      io: releaseOutput.io,
+      io: explicitReviewOutput.io,
     })).toBe(0)
-    expect(JSON.parse(releaseOutput.stdout())).toMatchObject({
-      schemaVersion: 2,
-      command: 'review:inspect',
-      view: 'release',
-      completeness: 'incomplete',
-      target: { kind: 'plugin', id: 'fixture', path: pluginRoot },
-      subjects: expect.any(Array),
-      requiredFinals: expect.any(Array),
-      requiredEvals: expect.any(Array),
-      materializations: expect.any(Array),
-    })
+    expect(JSON.parse(explicitReviewOutput.stdout())).toEqual(JSON.parse(output.stdout()))
 
     const repeatedSkillOutput = capture()
     expect(await runCli([
@@ -138,22 +138,48 @@ describe('review inspect CLI entry', () => {
     expect(textOutput.stderr()).toBe('')
     expect(textOutput.stdout()).toContain('Review inspection (review): ok')
     expect(textOutput.stdout()).toContain('fixture\t')
+    expect(await fs.pathExists(executionMarker)).toBe(false)
+    expect(await fs.pathExists(path.join(root, '.aw', 'catalog'))).toBe(false)
+    expect(await fs.readFile(historicalReport)).toEqual(historicalBytes)
+  })
 
-    const narrowedReleaseOutput = capture()
-    expect(await runCli([
-      'review', 'inspect', pluginRoot,
-      '--view', 'release', '--skill', 'fixture', '--json',
-    ], {
-      cwd: outside,
-      io: narrowedReleaseOutput.io,
-    })).toBe(2)
-    expect(JSON.parse(narrowedReleaseOutput.stdout())).toMatchObject({
-      schemaVersion: 2,
-      command: 'review:inspect',
-      view: 'release',
-      ok: false,
-      issues: [expect.objectContaining({ code: 'invalidArguments' })],
-    })
+  it('rejects release views and archive commands without changing historical reports', async () => {
+    const root = await tempRoot()
+    const archiveRoot = path.join(root, 'reports', 'reviews', 'historical')
+    const reportPath = path.join(archiveRoot, 'report.md')
+    const manifestPath = path.join(archiveRoot, 'manifest.json')
+    const report = Buffer.from('# Historical report\r\n原始报告\r\n', 'utf8')
+    const record = Buffer.from('{"schemaVersion":1,"opaque":true}\n', 'utf8')
+    await fs.outputFile(reportPath, report)
+    await fs.outputFile(manifestPath, record)
+
+    for (const viewArgs of [['--view', 'release'], ['--view=release']]) {
+      const output = capture()
+      expect(await runCli([
+        'review', 'inspect', root, ...viewArgs, '--json',
+      ], { cwd: root, io: output.io })).toBe(2)
+      expect(output.stderr()).toBe('')
+      expect(JSON.parse(output.stdout())).toMatchObject({
+        schemaVersion: 2,
+        command: 'review:inspect',
+        view: 'review',
+        ok: false,
+        target: null,
+        sources: [],
+        skills: [],
+        issues: [{ code: 'invalidArguments', message: expect.stringContaining('release') }],
+      })
+    }
+    for (const command of ['digest', 'publish', 'verify', 'list', 'show']) {
+      const output = capture()
+      expect(await runCli(['review', command], { cwd: root, io: output.io })).not.toBe(0)
+      expect(output.stderr()).toContain(`unknown command '${command}'`)
+    }
+
+    expect(await fs.readFile(reportPath)).toEqual(report)
+    expect(await fs.readFile(manifestPath)).toEqual(record)
+    expect(await fs.readdir(archiveRoot)).toEqual(['manifest.json', 'report.md'])
+    expect(await fs.readdir(root)).toEqual(['reports'])
   })
 
   it('keeps argument failures in the stable JSON failure shape', async () => {
@@ -337,11 +363,10 @@ describe('review inspect CLI entry', () => {
 
     const repeatedMaterializationOutput = capture()
     expect(await runCli([
-      'review', 'inspect', pluginRoot, '--view', 'release',
-      '--materialization', written.bindingPath,
-      '--materialization', written.bindingPath,
-      '--json',
+      ...args.slice(0, -1), '--materialization', written.bindingPath, '--json',
     ], { cwd: root, env: injectedEnv, io: repeatedMaterializationOutput.io })).toBe(0)
-    expect(JSON.parse(repeatedMaterializationOutput.stdout()).materializations).toHaveLength(1)
+    expect(JSON.parse(repeatedMaterializationOutput.stdout()))
+      .toEqual(JSON.parse(injectedOutput.stdout()))
+
   })
 })

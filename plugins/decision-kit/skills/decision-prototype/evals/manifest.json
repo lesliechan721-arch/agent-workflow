@@ -24,11 +24,7 @@
         "project-default"
       ],
       "runs": 3,
-      "timeoutMs": 180000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 180000
     },
     {
       "id": "router",
@@ -38,12 +34,7 @@
         "project-default"
       ],
       "runs": 10,
-      "timeoutMs": 180000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation",
-        "sanity"
-      ]
+      "timeoutMs": 180000
     },
     {
       "id": "behavior",
@@ -53,11 +44,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 300000
     },
     {
       "id": "builder-workflow",
@@ -68,10 +55,6 @@
       ],
       "runs": 1,
       "timeoutMs": 600000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ],
       "provider": {
         "type": "codex-workflow",
         "command": [
@@ -89,11 +72,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 300000
     },
     {
       "id": "review-lifecycle",
@@ -103,11 +82,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 300000
     },
     {
       "id": "prototype-method",
@@ -117,11 +92,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 300000
     },
     {
       "id": "opening-policy",
@@ -131,11 +102,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 300000
     },
     {
       "id": "independent-delivery-trigger",
@@ -145,8 +112,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 180000,
-      "requiredForRelease": false
+      "timeoutMs": 180000
     },
     {
       "id": "independent-delivery-behavior",
@@ -156,8 +122,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     },
     {
       "id": "context-role-behavior",
@@ -167,8 +132,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     }
   ]
 }

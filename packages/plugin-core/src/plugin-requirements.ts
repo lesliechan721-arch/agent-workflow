@@ -115,11 +115,6 @@ const COMMAND_CAPABILITIES: Readonly<Record<string, RegisteredAwCapabilityId>> =
   'catalog publish': 'aw.catalog-publication.v1',
   'review inspect': 'aw.review-inspection.v2',
   'review prepare': 'aw.review-preparation.v1',
-  'review publish': 'aw.review-publication.v1',
-  'review digest': 'aw.review-publication.v1',
-  'review verify': 'aw.review-publication.v1',
-  'review list': 'aw.review-publication.v1',
-  'review show': 'aw.review-publication.v1',
 }
 
 const CONFIG_CAPABILITY = 'aw.plugin-config.v2' satisfies RegisteredAwCapabilityId

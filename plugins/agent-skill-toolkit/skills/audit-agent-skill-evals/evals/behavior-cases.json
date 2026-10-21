@@ -135,10 +135,10 @@
       "tags": [
         "regression"
       ],
-      "prompt": "按 contract.md 只读审核 checks.jsonl 与 skill.md。这里没有 AW、Spec 或 CLI；只判断两个标签与目标是否一致，不运行也不签发机器准入。",
+      "prompt": "按 contract.md 只读审核 checks.jsonl 与 skill.md。这里未指定运行器或执行合同；只判断两个标签与目标是否一致，不运行也不签发机器准入。",
       "assertions": [
         "第一例标签有依据，第二例与不查询在线服务冲突",
-        "不要求 prepare 或 AW 字段才能做源审核",
+        "不要求先准备执行输入或添加运行器字段才能做源审核",
         "不改文件，不生成 passing Audit，不声称真实运行"
       ],
       "input": {

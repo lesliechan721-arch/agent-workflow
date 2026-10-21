@@ -264,12 +264,12 @@ test('checker help needs no target; parameter/root failures exit 2', async () =>
   }
 });
 
-test('independent build delivers six runnable script copies and four complete notices', async t => {
+test('independent build delivers four runnable script copies and three complete notices', async t => {
   const parent = await fixture(t);
   const output = path.join(parent, 'export');
   await buildTools(output);
   const scripts = GENERATED_FILES.filter(([, relative]) => relative.endsWith('.mjs'));
-  assert.equal(scripts.length, 6);
+  assert.equal(scripts.length, 4);
   const alias = path.join(parent, 'export-alias');
   await symlink(output, alias);
   for (const [name, relative] of scripts) {
@@ -290,9 +290,8 @@ test('independent build delivers six runnable script copies and four complete no
   const targetAlias = path.join(parent, 'input-alias');
   await symlink(target, targetAlias);
   assert.equal((await jsonRun(path.join(author, 'check-skill.mjs'), targetAlias)).code, 2);
-  assert.equal((await jsonRun(path.join(output, 'skills/review-agent-skill/scripts/audit-output-contracts.mjs'), target)).code, 0);
   const notices = GENERATED_FILES.filter(([, relative]) => relative.endsWith('.txt'));
-  assert.equal(notices.length, 4);
+  assert.equal(notices.length, 3);
   for (const [name, relative] of notices) {
     const notice = await readFile(path.join(output, 'skills', name, relative), 'utf8');
     // Static contract exception: bundled libraries must retain their license notices; behavior test is not suitable because these legal notices are consumed as distributed text.

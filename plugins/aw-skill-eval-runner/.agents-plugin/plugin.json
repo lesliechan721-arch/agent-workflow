@@ -2,7 +2,7 @@
   "schemaVersion": 3,
   "name": "aw-skill-eval-runner",
   "version": "0.1.0",
-  "description": "准备、独立审核并通过 aw-skill-eval 执行 Agent Skill Eval，验证结果并按需归因异常。",
+  "description": "准备和验证 AW Skill Eval，核验独立 Audit 与执行条件，通过 aw-skill-eval 运行并验证结果。",
   "dependencies": [
     "agent-skill-toolkit"
   ],
@@ -21,7 +21,7 @@
   },
   "interface": {
     "displayName": "AW Skill Eval Runner",
-    "shortDescription": "准备、审核并执行 Agent Skill Eval，验证结果",
+    "shortDescription": "准备 AW Skill Eval、核验独立准入、执行并验证实际结果",
     "capabilities": [
       "Skills"
     ]

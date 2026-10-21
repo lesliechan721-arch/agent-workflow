@@ -18,7 +18,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只简化 candidate/records/SKILL.md 的重复泛化提醒，baseline 保持不变。保留完整领域方法。本次可写候选但不运行模型，不应用到生产。",
+      "prompt": "$simplify-agent-skill 只简化 candidate/records/SKILL.md 的重复泛化提醒，baseline 保持不变。保留完整领域方法。本次可写候选但不运行模型，不应用到生产。",
       "assertions": [
         "只减少重复提醒，保留单位、币种、去重、未知与结果含义。",
         "候选是未验证版本，不以更短或无模型结果宣布接受/等价。"
@@ -54,7 +54,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只读比较 baseline/records 与 candidate/records。用户要求保留整数分、币种分组、eventId去重和缺值未知；不修改或运行。",
+      "prompt": "$simplify-agent-skill 只读比较 baseline/records 与 candidate/records。用户要求保留整数分、币种分组、eventId去重和缺值未知；不修改或运行。",
       "assertions": [
         "指出更短版本丢失明确保留的方法，不把简短作为接受依据。",
         "拒绝等价简化主张，无需模型实验即可识别明确语义删除；不虚构运行失败。"

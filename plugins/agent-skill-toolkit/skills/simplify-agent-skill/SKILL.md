@@ -1,7 +1,9 @@
 ---
 name: simplify-agent-skill
 description: >-
-  简化已有 Agent Skill、减少无用控制和读取负担时使用。制定计划或修改候选，通过 baseline、ablation 或 Eval 检查回归，保留必要方法、领域依据和工具。
+  用户显式调用时，简化已有 Agent Skill，减少无用控制和读取负担。制定计划或修改候选，通过 baseline、ablation 或 Eval 检查回归，保留必要方法、领域依据和工具。
+user-invocable: true
+disable-model-invocation: true
 metadata:
   short-description: 用有限对照减少 Skill 的实际使用负担，保留完成任务所需方法
 ---
@@ -14,11 +16,13 @@ metadata:
 
 读取目标、允许修改的位置、基线和已有问题。先找重复、失效内容、弱指针、错误层级或无用步骤；选择能说明预期收益的一族变化。具体候选已明确时直接处理，不重新做完整评审。
 
-需要判断删什么、怎样重组或怎样衡量收益时，使用 [简化方法](references/simplification-method.md)。涉及职责、调用或交接时采用 [组合规则](references/skill-composition.md)。保留规则存在实质争议时，可用 `review-agent-skill` 核对证据。
+需要判断删什么、怎样重组或怎样衡量收益时，使用 [简化方法](references/simplification-method.md)。涉及职责、调用或交接时采用 [组合规则](references/skill-composition.md)。保留规则存在实质争议时先核对原始依据；需要专项评审则说明问题，由用户显式启动 `review-agent-skill`。不自动调用或直接读取其正文来重放手动工作流。
 
 ## 制作并核对候选
 
 保留不可变基线，在已授权的候选中修改。变更落在权威源码；需要生成的内容，用相同环境取得基线与候选产物。仅要求计划时交付计划，不应用改动。
+
+确认实际消费的内容、对应的权威源码及允许修改的范围；需要生成时采用项目已有方法，复用当前有效材料。无法取得对应产物时说明检查范围，不把源码差异当作运行效果。
 
 逐项核对原有主体、条件、单位、权限、例外、顺序与完成要求。移动一段文字时同时修正入口，使后续执行者仍能取得必要依据。候选更短但需要猜业务语义，不是有效简化。
 

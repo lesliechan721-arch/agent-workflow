@@ -300,8 +300,6 @@ describe('built-in Eval provider registry', () => {
         forbidMultipleSkillLoads: false,
         profiles: ['project'],
         defaultRuns: 1,
-        releaseSplits: ['validation'],
-        requiredForRelease: true,
         perRunTimeoutMs: 2_000,
       },
       value: {

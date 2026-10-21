@@ -5,8 +5,7 @@
     "unitUnderTest": "review-agent-skill",
     "participants": [
       "agent-content",
-      "audit-agent-skill-evals",
-      "review-agent-architecture"
+      "audit-agent-skill-evals"
     ],
     "policy": {
       "optimization": "precision-first",
@@ -25,7 +24,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "只读审核 standard/demo-skill 这个完整独立Skill包的资源完整性；没有额外构建步骤，不修改文件。",
+      "prompt": "$review-agent-skill 只读审核 standard/demo-skill 这个完整独立Skill包的资源完整性；没有额外构建步骤，不修改文件。",
       "assertions": [
         "报告实际缺少references/policy.md，结论绑定此独立包；保持目标不变。"
       ],
@@ -54,7 +53,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "只读评价project/plugins/demo-plugin/skills/demo-skill的源码设计。Plugin manifest和shared目录一并提供；当前没有物化目录，也未授权构建。",
+      "prompt": "$review-agent-skill 只读评价project/plugins/demo-plugin/skills/demo-skill的源码设计。Plugin manifest和shared目录一并提供；当前没有物化目录，也未授权构建。",
       "assertions": [
         "只评价源码设计，说明运行包未核验；不能仅因源Skill目录缺policy.md判定最终包断链。",
         "识别manifest中的注入来源；不执行构建或修改任一source文件。"
@@ -88,7 +87,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "只读审核 supplied/demo-skill 的完整包。只评价这个已提供目录，不要求追溯或修改任何项目。",
+      "prompt": "$review-agent-skill 只读审核 supplied/demo-skill 的完整包。只评价这个已提供目录，不要求追溯或修改任何项目。",
       "assertions": [
         "直接检查给定完整包，保留必要内容原则；无需项目构建或AW准备。"
       ],
@@ -118,7 +117,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "只读评审provided-final/demo-skill，核对mapping.md及source材料。报告这个给定final的问题并定位需要核查的构建责任，不宣称它代表最新部署。",
+      "prompt": "$review-agent-skill 只读评审provided-final/demo-skill，核对mapping.md及source材料。报告这个给定final的问题并定位需要核查的构建责任，不宣称它代表最新部署。",
       "assertions": [
         "报告给定final真实缺少policy.md，并将发现位置与需要核查的source/build owner分开；不直接修改final。",
         "缺少正式currentness时限定结论，shared源存在不自动证明生产构建成功。"

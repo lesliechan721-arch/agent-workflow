@@ -13,7 +13,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
+      "rationale": "成对比较相同任务的显式调用与普通请求，保留手动时机控制；任务质量由独立的 conversation suites 判断。"
     },
     "runtime": {
       "observeSpawnAgent": false,
@@ -27,64 +27,132 @@
       "id": "simplify_plan",
       "split": "train",
       "tags": [
-        "representative"
+        "boundary",
+        "regression"
       ],
       "input": {
         "query": "为这份越来越长的 Skill 制定删减计划，先别改也别跑模型。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $simplify-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "explicit_simplify_plan",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$simplify-agent-skill 为这份越来越长的 Skill 制定删减计划，先别改也别跑模型。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "计划路径不要求运行条件。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "普通 typo 修正由 author 处理。"
+        "rationale": "用户显式选择手动入口，任务属于其对应范围。",
+        "allowedVariance": "显式注入/加载与执行质量分别判断；此用例不证明任务质量。",
+        "minimalCounterexample": "去掉显式调用而保留同一任务文字时，不应自动加载目标。"
       }
     },
     {
       "id": "ablation",
       "split": "train",
       "tags": [
-        "representative"
+        "boundary",
+        "regression"
       ],
       "input": {
         "query": "在已固定的 Eval 和预算内，对现有 Skill 做一次消融简化，保留原版。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $simplify-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "explicit_ablation",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$simplify-agent-skill 在已固定的 Eval 和预算内，对现有 Skill 做一次消融简化，保留原版。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "明确请求受限对照减法。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "只要独立只读 Review 不实际简化时不主导。"
+        "rationale": "用户显式选择手动入口，任务属于其对应范围。",
+        "allowedVariance": "显式注入/加载与执行质量分别判断；此用例不证明任务质量。",
+        "minimalCounterexample": "去掉显式调用而保留同一任务文字时，不应自动加载目标。"
       }
     },
     {
       "id": "reduce_controls",
       "split": "validation",
       "tags": [
-        "representative"
+        "boundary",
+        "regression"
       ],
       "input": {
         "query": "简化这份 Skill 的强制步骤，判断哪些是脆弱点保护，哪些可以放宽。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $simplify-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "explicit_reduce_controls",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$simplify-agent-skill 简化这份 Skill 的强制步骤，判断哪些是脆弱点保护，哪些可以放宽。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "目标是减少控制。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "新增业务能力而非简化时是 author。"
+        "rationale": "用户显式选择手动入口，任务属于其对应范围。",
+        "allowedVariance": "显式注入/加载与执行质量分别判断；此用例不证明任务质量。",
+        "minimalCounterexample": "去掉显式调用而保留同一任务文字时，不应自动加载目标。"
       }
     },
     {
       "id": "reduce_context",
       "split": "validation",
       "tags": [
-        "representative"
+        "boundary",
+        "regression"
       ],
       "input": {
         "query": "降低这个 Skill 的 active-path 文本负担，用旧版对照确认关键行为不退化。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $simplify-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "explicit_reduce_context",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$simplify-agent-skill 降低这个 Skill 的 active-path 文本负担，用旧版对照确认关键行为不退化。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "行为约束下的上下文优化。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "普通摘要文章不是 Skill 简化。"
+        "rationale": "用户显式选择手动入口，任务属于其对应范围。",
+        "allowedVariance": "显式注入/加载与执行质量分别判断；此用例不证明任务质量。",
+        "minimalCounterexample": "去掉显式调用而保留同一任务文字时，不应自动加载目标。"
       }
     },
     {
@@ -98,9 +166,9 @@
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "普通修词不是专门简化。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "目标是删减流程时使用。"
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $simplify-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
       }
     },
     {
@@ -114,9 +182,9 @@
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "功能创建不是减法优化。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "去除未使用导出功能并验证影响时使用。"
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $simplify-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
       }
     },
     {
@@ -130,9 +198,9 @@
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "Review 自有入口。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "要求实验验证删减时使用。"
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $simplify-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
       }
     },
     {
@@ -146,9 +214,9 @@
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "只运行由 Runner 拥有。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "要基于对照选择并应用简化时使用。"
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $simplify-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
       }
     }
   ]

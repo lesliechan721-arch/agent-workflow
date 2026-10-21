@@ -1,6 +1,6 @@
 # 独立交付 Eval
 
-来自 R1 独立交付设计。20 条 trigger 和 21 条 conversation 用例分别放在十个 Skill 自己的 `evals/independent-delivery-*-cases.json`，由同名 suite 注册。它们尚未取得独立 Oracle 审核或模型运行结果，`requiredForRelease` 为 false；原有 suite 及发布设置保留。
+来自 R1 独立交付设计。20 条 trigger 和 21 条 conversation 用例分别放在十个 Skill 自己的 `evals/independent-delivery-*-cases.json`，由同名 suite 注册。它们尚未取得独立 Oracle 审核或模型运行结果。
 
 项目适配另在 `dev-workflow` 的 behavior suite 补充 Spec Review 尚有实质问题和必要证据缺口时的批准边界。新用例使用公开结果和工作区差异判断，不要求固定报告标题或 `clean / blocked / incomplete` 字词。旧报告仍是合法的恢复输入。历史 case ID 保持稳定，包括名字中仍含 `one-reviewer` 的原用例；其当前判据已改为默认双轴独立审查。
 

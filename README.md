@@ -76,8 +76,8 @@ aw status
 | 插件 | 适合什么场景 | 平台 |
 | --- | --- | --- |
 | [`agent-content-toolkit`](plugins/agent-content-toolkit/) | 编写、整理或只读评审 AGENTS.md、prompt、role instructions 和 references 等 Agent-facing 内容 | Codex / Claude Code |
-| [`agent-skill-toolkit`](plugins/agent-skill-toolkit/) | 创建、评审或简化 Agent Skill；设计 Eval 用例、审核 Eval，或评审跨 Skill 架构；依赖 `agent-content-toolkit` | Codex / Claude Code |
-| [`aw-development-toolkit`](plugins/aw-development-toolkit/) | 创建或维护 AW Catalog 与 Plugin Source，并只读评审 AW Plugin、Catalog、workflow 或 portfolio；Catalog 发布只由手动入口执行 | Codex / Claude Code |
+| [`agent-skill-toolkit`](plugins/agent-skill-toolkit/) | 创建 Agent Skill、设计与审核 Eval；由用户启动单体、工作流和公开能力评审或简化；依赖 `agent-content-toolkit` | Codex / Claude Code |
+| [`aw-development-toolkit`](plugins/aw-development-toolkit/) | 创建或维护 AW Catalog 与 Plugin Source，提供来源、物化和领域工具；Catalog 发布只由手动入口执行 | Codex / Claude Code |
 | [`aw-skill-eval-runner`](plugins/aw-skill-eval-runner/) | 准备、独立审核并按授权执行 AW Skill Eval，验证结果并按需归因异常 | Codex / Claude Code |
 
 ## 使用示例
@@ -137,6 +137,8 @@ aw status
 - **模型调用**：模型根据 Skill 的名称和描述判断是否适用。
 - **用户显式调用**：适合授权敏感或明确改变流程的能力。
 - **Slash Command**：为常用宏流程提供稳定入口；复杂逻辑仍保存在 Skill 中。
+
+`review-agent-skill`、`simplify-agent-skill` 和 `publish-aw-catalog` 由用户显式启动；Author 的日常自检不自动启动专项评审。Codex 使用 `$skill-name`，Claude Code 使用对应插件的 `/plugin-name:skill-name`。
 
 AW 在安装时保留 Codex 和 Claude Code 的原生调用元数据，不使用 CLI 配置覆盖 Skill 的触发策略。
 
@@ -279,13 +281,13 @@ Codex project scope 不复制 static Skill、MCP、Hook、App 或其它 native p
 aw install aw-development-toolkit -p both
 ```
 
-使用 `develop-aw` 建立或维护 Workspace 和其中的 canonical Plugin Source。删除先检查 Workspace、插件名、inventory 和反向依赖，再使用公开 `aw plugin remove`；receipt 返回后检查剩余 inventory，空 inventory 不检查已删除对象。删除不会自动 publish。`review-aw` 先复用匹配的 final；完整审核需要准备时，说明 build/renderer 与隔离输出后运行 `aw review prepare`，随后只读审核。用户明确禁止执行时只做限定的源码审核。远端发布只由手动调用的 `publish-aw-catalog` 执行；它使用 CLI 的 Workspace、remote 和 branch 默认解析，并且只在用户授权完整 `planDigest` 后 apply。Workspace、聚合验证、publish plan/apply、失败恢复见[Catalog 作者指南](docs/catalog-authoring.md)；manifest、单插件命令和 Plugin Source 边界见[插件作者指南](docs/plugin-authoring.md)。
+涉及 AW 插件及其 Skill 的分析、创建、修改、评审协作、简化协作、验证和物化时采用 `develop-aw`，按本次结果选择源码或实际产物；也用它维护 Workspace 和 canonical Plugin Source。删除先检查 Workspace、插件名、inventory 和反向依赖，再使用公开 `aw plugin remove`；receipt 返回后检查剩余 inventory，空 inventory 不检查已删除对象。删除不会自动 publish。专项评审由用户显式启动 `review-agent-skill`；完整审核先复用匹配的 final，不足时说明 build/renderer 与隔离输出后运行 `aw review prepare`，再针对实际产物判断。标准 Agent Skills 导出另需显式 Portable 声明和 `aw skill materialize`；不把它设为普通源码分析或原生包审核的前提。用户明确禁止执行时只做限定的源码审核。远端发布只由手动调用的 `publish-aw-catalog` 执行，并只在用户授权完整 `planDigest` 后 apply。Workspace、聚合验证、publish plan/apply、失败恢复见[Catalog 作者指南](docs/catalog-authoring.md)；manifest、单插件命令和 Plugin Source 边界见[插件作者指南](docs/plugin-authoring.md)。
 
 当前作者合同固定为 Plugin Manifest v3、Catalog snapshot schema 7 和 Catalog Sources Config schema 2。Agent 作者入口先运行 `aw self check --from <skill-root> --json`，并以 capability receipt 判断兼容性；不使用 CLI version gate。每个 Catalog 命令自行定位 Workspace；静态 `aw catalog status --json` 不 build 或 fetch。Development source 使用 `aw catalog dev activate|status|deactivate --json` 管理；activate 会 build、validate、注册 managed Path source 并 sync。activate 影响现有引用或影响未知时使用 `--yes`；deactivate 检测到 installation、lifecycle、config 或 marketplace 引用，或 inventory 不完整时也使用 `--yes`，其 schema 4 receipt 返回脱敏的 inventory v2 `impact`。
 
 远端 Catalog 发布先运行 `aw catalog publish plan`，确认 Workspace identity、source HEAD、remote identity、branch、parent、tag、snapshot digest、`expectedCommit` 和 `planDigest`。`planDigest` 绑定 canonical `{ descriptor, expectedCommit }`。确认后再使用 `aw catalog publish apply --expected-plan-digest <digest> --yes`。apply 用 digest 唯一定位 schema v2 `.aw/publish/<version>/journal.json`，不依赖当前 metadata version。相同 plan 可在当前 HEAD 或 dirty state 改变后对账或续跑；Workspace identity、remote identity 和 branch 仍必须相同。不同 plan 必须提高 Catalog version。
 
-Skill-local Eval 作者合同使用 Manifest v1。profile 的 `plugins` 提供公共非敏感配置；可选 `configByScope.user/project` 为已选插件提供顶层字段覆盖。`aw skill eval prepare` 按 plugin、Skill、suite、profile 和 case 选择，以隔离配置物化静态、动态和共享 Codex native Skill，并生成输入完整的 `EvalSpec v1`，但不安装插件或运行模型。`@lesliechan721/agent-skill-eval` 是 `EvalSpec v1 → EvalAudit v1 → EvalResult v2` 的唯一机器 owner；Result v2 要求 `processManagement` 证据，不兼容 Result v1。执行前必须有精确绑定 provider、workspace、current/optional previous target、case digest 和全部 selected cases 的 passing Audit，并运行 `aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]`。所有真实 run 在 output 和模型前检查 permission、macOS Codex 可执行入口与 keychain，以及进程管理能力。默认 managed 模式要求 Full Access 语义和可用的进程树检查；单次提权不等于 Full Access。只有用户明确接受本次风险时，才可增加一次性的 unmanaged flag；该模式只尽力终止直接 child，不保证后代清理，也不能绕过 cmux Codex wrapper 或 keychain 检查。完整边界见[架构说明](docs/architecture.md)。普通成功路径不运行 `aw skill eval doctor --json` 或 `aw-skill-eval inspect-result <result.json> --spec <spec.json> --audit <audit.json>`，clean success 不要求 triage；只有安装或升级、用户明确请求诊断、模型已启动后的 run 失败，或结果异常及将驱动生产 Skill 修改时，才进入相应高级诊断或独立 result-triage。
+Skill-local Eval 作者合同使用 Manifest v1。profile 的 `plugins` 提供公共非敏感配置；可选 `configByScope.user/project` 为已选插件提供顶层字段覆盖。`aw skill eval prepare` 按 plugin、Skill、suite、profile 和 case 选择，以隔离配置物化静态、动态和共享 Codex native Skill，并生成输入完整的 `EvalSpec v1`，但不安装插件或运行模型。`@lesliechan721/agent-skill-eval` 是 `EvalSpec v1 → EvalAudit v1 → EvalResult v2` 的唯一机器 owner；Result v2 要求 `processManagement` 证据，不兼容 Result v1。执行前必须有精确绑定 provider、workspace、current/optional previous target、case digest 和全部 selected cases 的 passing Audit，并运行 `aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]`。所有真实 run 在 output 和模型前检查 permission、macOS Codex 可执行入口与 keychain，以及进程管理能力。默认 managed 模式要求 Full Access 语义和可用的进程树检查；单次提权不等于 Full Access。只有用户明确接受本次风险时，才可增加一次性的 unmanaged flag；该模式只尽力终止直接 child，不保证后代清理，也不能绕过 cmux Codex wrapper 或 keychain 检查。完整边界见[架构说明](docs/architecture.md)。普通成功路径不运行 `aw skill eval doctor --json` 或 `aw-skill-eval inspect-result <result.json> --spec <spec.json> --audit <audit.json>`。doctor 用于安装或升级、用户明确请求诊断，或模型已启动后的 run 失败；inspect-result 用于异常结果分组。执行或评分失败、current 混合、baseline 回归，或结果将驱动生产 Skill 修改时，执行独立 result-triage；其余 clean success 交付后结束。
 
 Eval 准备可加 `--config-file <file>`，为已选插件提供本次非敏感配置覆盖，例如已安装 adapter 的绝对路径。实际输入保存在 source binding。workflow provider 可使用公共 instruction-v2 transport，以及有界的 fixture setup、交互和收尾动作；这些动作只建立真实前提或检查实际产物，模型执行与独立评分仍由 Eval Engine 管理。配置、协议和动作边界见[架构说明](docs/architecture.md#agent-skill-eval-执行与-runner-边界)。
 
@@ -293,7 +295,7 @@ Eval 准备可加 `--config-file <file>`，为已选插件提供本次非敏感�
 
 本官方仓库本身也是普通 Catalog Workspace，使用与第三方相同的 marker、metadata、inventory、Core validator、publish plan/apply、publisher 和 publication journal 合同。以下 `pnpm` 命令只面向本 monorepo 维护者，用于编排 CLI/Core/npm/Product Release；它们不是第二套 Catalog contract：
 
-Review 默认只交付人读 `report.md`。用户明确要求归档时，本次请求的顶层 Reviewer 使用 `aw review publish`；下层 Reviewer 只返回材料。归档只写不可变的 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`，不重新评审、不运行或封存 Eval、也不更新 README。完整参数以 `aw review publish --help` 为准；workflow publication 还必须传入其 `scope.json`。只有用户明确要求且环境提供兼容的 AW-owned Release Checker 时，才生成独立的机器 `release-check.json`；它只是可选附件。
+Review 按当前请求在对话或指定文件中交付设计判断、findings 和未覆盖项。报告不构成插件发布门禁，也不自动更新 production README。
 
 ```bash
 make install

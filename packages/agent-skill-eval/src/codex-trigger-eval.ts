@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -19,6 +20,7 @@ import {
   applyCodexEvalProviderEnvironment,
   createCodexEvalTemporaryRoot,
   materializeCodexEvalRuntimeHome,
+  redactCodexEvalValue,
   type CodexEvalRuntimeConfig,
 } from './codex-eval-runtime-config.js';
 import {
@@ -26,6 +28,7 @@ import {
   type AwSkillEvalTriggerSuiteCaseContract,
 } from './codex-eval-cases.js';
 import { applyCodexEvalGitIsolation } from './codex-eval-isolation.js';
+import { readCodexEvalRollouts, selectedCodexSkillInstruction } from './codex-eval-rollout.js';
 import type { ProcessTreeDiagnostic } from './process-tree.js';
 
 async function createTriggerTemporaryRoot(
@@ -213,11 +216,6 @@ async function snapshotWorkspace(root: string): Promise<Record<string, string>> 
   return snapshot;
 }
 
-function explicitSkillRequested(query: string, skillName: string): boolean {
-  const escaped = skillName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-  return new RegExp(`(?:^|\\s)\\$${escaped}(?:\\s|$)`, 'u').test(query);
-}
-
 function expectedLoadedSkills(
   suite: AwSkillEvalTriggerSuiteCaseContract,
   evalCase: AwSkillEvalTriggerCase,
@@ -237,33 +235,60 @@ function routeLabel(skills: string[]): string {
   return [...skills].sort((left, right) => left.localeCompare(right)).join('+');
 }
 
-function normalizedCommandReadsSkill(command: string, skillPath: string): boolean {
-  const normalize = (value: string): string => {
-    let normalized = value.replaceAll('\\', '/').replaceAll('"', '').replaceAll("'", '');
-    for (let index = 0; index < 3; index += 1) {
-      normalized = normalized.replace(/(^|[\s/])\.\/(?=\S)/gu, '$1');
+function normalizedCommandReadsSkill(
+  command: string,
+  skillPath: string,
+  commandCwd: unknown,
+  outputProvesRead: boolean,
+): boolean | null {
+  const tokenPattern = /"[^"\r\n]*"|'[^'\r\n]*'|[^\s"';&|]+/gu;
+  const tokens = command.match(tokenPattern) ?? [];
+  const unquote = (value: string): string => /^["']/u.test(value)
+    ? value.slice(1, -1) : value;
+  const words = tokens.map(unquote);
+  if (/^(?:ba|z|da)?sh(?:\.exe)?$/iu.test(path.basename(words[0] ?? ''))
+    && /^-[a-z]*c$/u.test(words[1] ?? '') && words.length === 3) {
+    return normalizedCommandReadsSkill(words[2]!, skillPath, commandCwd, outputProvesRead);
+  }
+  const mayReadSkill = command.includes('SKILL.md')
+    && /\b(?:cat|sed|head|tail|less|more|bat|awk|grep|rg|type|get-content)\b/iu.test(command);
+  // Shell classifications and aggregate output do not prove that a conditional read ran.
+  if (command.replace(tokenPattern, '').trim() !== ''
+    || /[$`;&|<>()\r\n*?\[\]{}]/u.test(command)
+    || (process.platform !== 'win32' && command.includes('\\'))) {
+    return mayReadSkill ? null : false;
+  }
+  const executable = path.basename(words[0] ?? '').toLowerCase();
+  if (!/^(?:cat|sed|head|tail|less|more|bat|type|get-content)$/u.test(executable)) {
+    return /^(?:echo|printf|ls|dir)$/u.test(executable) ? false : mayReadSkill ? null : false;
+  }
+  const argumentsList = words.slice(1);
+  const options = argumentsList.slice(0, -1);
+  const simpleRead = (executable !== 'sed' && (options.length === 0 || (options.length === 1 && options[0] === '--')))
+    || (/^(?:head|tail)$/u.test(executable) && options.length === 2
+      && /^(?:-n|-c|--lines|--bytes)$/u.test(options[0]!) && /^[1-9]\d*$/u.test(options[1]!))
+    || (executable === 'sed' && options.length === 2 && options[0] === '-n'
+      && /^\d+(?:,\d+)?p$/u.test(options[1]!));
+  if (!simpleRead || argumentsList.length === 0) return mayReadSkill ? null : false;
+  const argument = argumentsList.at(-1)!;
+  if (!path.isAbsolute(argument)
+    && (typeof commandCwd !== 'string' || !path.isAbsolute(commandCwd))) {
+    return path.basename(argument) === 'SKILL.md' ? null : false;
+  }
+  let target = argument;
+  if (!path.isAbsolute(argument)) {
+    try {
+      if (!fs.statSync(commandCwd as string).isDirectory()) return null;
+      target = path.resolve(realpathSync(commandCwd as string), argument);
+    } catch {
+      return null;
     }
-    return normalized;
-  };
-  const normalized = normalize(command);
-  if (!/(?:^|[\s;&|/])(?:cat|sed|head|tail|less|more|bat|awk|grep|rg|type|get-content)\b/iu.test(
-    normalized,
-  )) {
+  }
+  try {
+    return realpathSync(target) === realpathSync(skillPath) && (executable === 'cat' || outputProvesRead);
+  } catch {
     return false;
   }
-  const normalizedSkillPath = normalize(skillPath);
-  const normalizedSkillDir = path.posix.dirname(normalizedSkillPath);
-  const managedSkillDir = `.agents/skills/${path.basename(path.dirname(skillPath))}`;
-  if (
-    normalized.includes(normalizedSkillPath) ||
-    normalized.includes(`${managedSkillDir}/SKILL.md`)
-  ) {
-    return true;
-  }
-  return (
-    (normalized.includes(normalizedSkillDir) || normalized.includes(managedSkillDir)) &&
-    /(?:^|[\s;&|/])SKILL\.md(?:$|[\s;&|])/u.test(normalized)
-  );
 }
 
 function commandOutputContainsSkill(
@@ -287,6 +312,7 @@ export function inspectTriggerAppServerFrame(
   turnStatus?: string;
   spawnCall?: Record<string, unknown>;
   requestUserInput?: boolean;
+  loadEvidenceUnavailable?: string;
 } {
   const method = typeof frame.method === 'string' ? frame.method : '';
   const params = isRecord(frame.params) ? frame.params : {};
@@ -294,13 +320,14 @@ export function inspectTriggerAppServerFrame(
   if (item?.type === 'commandExecution' && typeof item.command === 'string') {
     const completed = method === 'item/completed';
     const statusPassed = item.status === undefined || item.status === 'completed';
-    const exitPassed = item.exitCode === undefined || item.exitCode === 0;
+    const exitPassed = item.exitCode === 0;
     const outputProvesRead = commandOutputContainsSkill(item, skillPath);
-    if (
-      completed &&
-      ((statusPassed && exitPassed) || outputProvesRead) &&
-      normalizedCommandReadsSkill(item.command, skillPath)
-    ) {
+    if (!completed) return {};
+    const readsSkill = normalizedCommandReadsSkill(item.command, skillPath, item.cwd, outputProvesRead);
+    if (readsSkill === null) return {
+      loadEvidenceUnavailable: 'Trigger eval cannot prove a participant read from this command and its cwd.',
+    };
+    if (readsSkill && ((statusPassed && exitPassed) || outputProvesRead)) {
       return { loaded: true, loadEvidence: item.command };
     }
   }
@@ -632,16 +659,12 @@ async function runTriggerOnce(options: {
       }
     }
     const beforeState = await captureState(options.fixture, context);
-    const allLoadedSkills = options.suite.skills.filter((skillName) =>
-      explicitSkillRequested(options.evalCase.query, skillName));
-    const loadEvidenceBySkill = Object.fromEntries(allLoadedSkills.map((skillName) => [
-      skillName,
-      `explicit $${skillName} invocation`,
-    ]));
+    const allLoadedSkills: string[] = [];
+    const loadEvidenceBySkill: Record<string, string> = {};
     const observed: TriggerObservation = {
-      loaded: allLoadedSkills.includes(options.suite.skill),
+      loaded: false,
       spawned: false,
-      loadEvidence: loadEvidenceBySkill[options.suite.skill] ?? null,
+      loadEvidence: null,
       spawnEvidence: null,
     };
     let requestUserInputCalled = false;
@@ -660,6 +683,10 @@ async function runTriggerOnce(options: {
     const spawnCalls: Array<Record<string, unknown>> = [];
     const spawnCallIds = new Set<string>();
     let rootThreadId: string | undefined;
+    let rootTurnId: string | undefined;
+    const skillFrames: Record<string, unknown>[] = [];
+    let skillReadUnavailable = false;
+    const readLoads: Array<{ skill: string; evidence: string; callId: string | null }> = [];
     let turnStatus: string | undefined;
     let finishRun: (termination: string) => void = () => undefined;
     let rejectRun: (error: Error) => void = () => undefined;
@@ -677,6 +704,26 @@ async function runTriggerOnce(options: {
       };
     });
     void runDone.catch(() => undefined);
+    const inspectSkillFrame = (frame: Record<string, unknown>): void => {
+      const params = isRecord(frame.params) ? frame.params : {};
+      if (!rootTurnId || params.threadId !== rootThreadId
+        || (params.turnId !== undefined && params.turnId !== rootTurnId)) return;
+      for (const [skillName, skillPath] of skillPaths) {
+        const skillEvidence = inspectTriggerAppServerFrame(frame, skillPath);
+        if (skillEvidence.loadEvidenceUnavailable) {
+          skillReadUnavailable = true;
+          if (!diagnostics.includes(skillEvidence.loadEvidenceUnavailable)) diagnostics.push(skillEvidence.loadEvidenceUnavailable);
+        }
+        if (!skillEvidence.loaded || !skillEvidence.loadEvidence) continue;
+        const item = isRecord(params.item) ? params.item : {};
+        readLoads.push({
+          skill: skillName,
+          evidence: skillEvidence.loadEvidence,
+          callId: typeof item.id === 'string' ? item.id : null,
+        });
+        recordSkillLoad(skillName, skillEvidence.loadEvidence);
+      }
+    };
     const abort = (): void => {
       finishRun(control.timeoutExpired ? 'timeout' : 'aborted');
       void session?.cleanup().catch((error: unknown) => {
@@ -729,12 +776,8 @@ async function runTriggerOnce(options: {
         return;
       }
       const evidence = inspectTriggerAppServerFrame(frame, ownerSkillPath);
-      for (const [skillName, skillPath] of skillPaths) {
-        const skillEvidence = inspectTriggerAppServerFrame(frame, skillPath);
-        if (skillEvidence.loaded) {
-          recordSkillLoad(skillName, skillEvidence.loadEvidence);
-        }
-      }
+      skillFrames.push(frame);
+      inspectSkillFrame(frame);
       if (evidence.spawned) {
         observed.spawned = true;
         observed.spawnEvidence ??= evidence.spawnEvidence ?? null;
@@ -790,7 +833,7 @@ async function runTriggerOnce(options: {
     }, control.rpcTimeout('thread/start'));
     rootThreadId = extractAppServerThreadId(threadResult);
     control.throwIfStopped('turn/start');
-    await session.sendRequest('turn/start', {
+    const turnResult = await session.sendRequest('turn/start', {
       threadId: rootThreadId,
       input: [{ type: 'text', text: options.evalCase.query, text_elements: [] }],
       cwd: workspaceRoot,
@@ -798,6 +841,11 @@ async function runTriggerOnce(options: {
       sandboxPolicy: { type: 'readOnly', networkAccess: true },
       ...(options.model ? { model: options.model } : {}),
     }, control.rpcTimeout('turn/start'));
+    const turn = isRecord(turnResult) && isRecord(turnResult.turn) ? turnResult.turn : {};
+    rootTurnId = typeof turn.id === 'string' && turn.id !== '' ? turn.id : undefined;
+    for (const frame of skillFrames) inspectSkillFrame(frame);
+    const loadedStop = expectedEarlyStop(options.suite, options.evalCase, observed, allLoadedSkills);
+    if (loadedStop) finishRun(loadedStop);
     const termination = await runDone;
     control.throwIfStopped('turn wait');
     removeHandler();
@@ -815,6 +863,72 @@ async function runTriggerOnce(options: {
       );
     }
     if (!cleanupFailed) control.throwIfStopped('cleanup');
+    let rolloutUnavailable = false;
+    let firstLoadedSkill: string | null = allLoadedSkills[0] ?? null;
+    try {
+      if (!rootTurnId) throw new Error('app-server turn/start response is missing turn.id.');
+      const rollouts = await readCodexEvalRollouts(codexHome);
+      const roots = rollouts.filter(({ events }) => events.some((event) =>
+        event.type === 'session_meta' && isRecord(event.payload) && event.payload.id === rootThreadId));
+      if (roots.length !== 1) throw new Error('Codex rollout must contain one app-server root thread.');
+      const root = roots[0]!;
+      eventTrace.push(...root.events.map((event) => ({
+        source: 'codex_rollout', file: path.relative(codexHome, root.file), event,
+      })));
+      if (root.events.filter((event) => event.type === 'session_meta').length !== 1) {
+        throw new Error('Codex rollout contains conflicting thread identities.');
+      }
+      const turnIds = new Set(root.events.flatMap((event) => {
+        if (!isRecord(event.payload) || (event.type !== 'turn_context' && event.type !== 'event_msg')) return [];
+        return typeof event.payload.turn_id === 'string' ? [event.payload.turn_id] : [];
+      }));
+      if (turnIds.size !== 1 || !turnIds.has(rootTurnId)) {
+        throw new Error('Codex rollout cannot be associated with the app-server root turn.');
+      }
+      const orderedLoads: Array<{ skill: string; evidence: string; order: number }> = [];
+      const canonicalSkillPaths = new Map(await Promise.all([...skillPaths].map(async ([name, skillPath]) =>
+        [name, await fs.realpath(skillPath)] as const)));
+      for (const [index, event] of root.events.entries()) {
+        const selected = selectedCodexSkillInstruction(event);
+        if (!selected && event.type === 'response_item' && isRecord(event.payload)) {
+          const metadata = event.payload.internal_chat_message_metadata_passthrough;
+          if (isRecord(metadata) && Array.isArray(metadata.content_item_kinds)
+            && metadata.content_item_kinds.includes('skills.selected_skill_instructions')) {
+            throw new Error('Codex selected Skill instruction metadata has an unsupported message format.');
+          }
+        }
+        if (!selected) continue;
+        const participantPath = canonicalSkillPaths.get(selected.name);
+        const selectedPath = path.isAbsolute(selected.path)
+          ? await fs.realpath(selected.path).catch(() => null) : null;
+        if (!participantPath && ![...canonicalSkillPaths.values()].includes(selectedPath ?? '')) continue;
+        if (!participantPath || selectedPath !== participantPath) {
+          throw new Error('Codex selected Skill instructions do not match the participant name and path.');
+        }
+        orderedLoads.push({ skill: selected.name, evidence: `rollout:selected_skill_instructions:${selected.path}`, order: index });
+      }
+      for (const [index, load] of readLoads.entries()) {
+        const order = load.callId === null ? -1 : root.events.findIndex((event) =>
+          event.type === 'response_item' && isRecord(event.payload)
+          && ['function_call', 'custom_tool_call'].includes(String(event.payload.type))
+          && event.payload.call_id === load.callId);
+        orderedLoads.push({ ...load, order: order < 0 ? root.events.length + index : order });
+      }
+      const unlinkedRead = readLoads.some((load) => load.callId === null || !root.events.some((event) =>
+        event.type === 'response_item' && isRecord(event.payload) && event.payload.call_id === load.callId));
+      const hasInjection = orderedLoads.length > readLoads.length;
+      orderedLoads.sort((left, right) => left.order - right.order);
+      allLoadedSkills.length = 0;
+      for (const load of orderedLoads) recordSkillLoad(load.skill, load.evidence);
+      firstLoadedSkill = hasInjection && unlinkedRead && allLoadedSkills.length > 1
+        ? null : allLoadedSkills[0] ?? null;
+      if (firstLoadedSkill === null && allLoadedSkills.length > 0) {
+        diagnostics.push('Codex load evidence does not establish an order between injected and read Skills.');
+      }
+    } catch (error) {
+      rolloutUnavailable = true;
+      diagnostics.push(`Trigger eval rollout evidence is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const afterState = await captureState(options.fixture, context);
     let skillsUnchanged = true;
     for (const [skillName, skillPath] of skillPaths) {
@@ -846,10 +960,12 @@ async function runTriggerOnce(options: {
       termination === 'app_server_error' ||
       (!expectedStop && termination === 'completed' && turnStatus !== 'completed') ||
       !fixtureUnchanged ||
+      skillReadUnavailable ||
+      rolloutUnavailable ||
       cleanupFailed;
     evidence = {
       loaded: observed.loaded,
-      first_loaded_skill: allLoadedSkills[0] ?? null,
+      first_loaded_skill: firstLoadedSkill,
       all_loaded_skills: allLoadedSkills,
       load_evidence_by_skill: loadEvidenceBySkill,
       spawned: observed.spawned,
@@ -924,9 +1040,9 @@ async function runTriggerOnce(options: {
   if (session) {
     if (session.processTreeSnapshots.length > 0) evidence.process_tree_snapshots = session.processTreeSnapshots;
     if (session.stderr.trim()) evidence.stderr = session.stderr.trim();
-    return session.scrub(evidence);
+    return session.scrub(redactCodexEvalValue(evidence, options.codexRuntime));
   }
-  return evidence;
+  return redactCodexEvalValue(evidence, options.codexRuntime);
 }
 
 export async function runCodexTriggerProviderCase(options: {

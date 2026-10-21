@@ -6,7 +6,7 @@
     "participants": [
       "agent-content",
       "author-agent-skill",
-      "review-aw"
+      "review-agent-skill"
     ],
     "policy": {
       "optimization": "precision-first",
@@ -35,7 +35,7 @@
       "audit": {
         "rationale": "统一开发入口。",
         "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "只读审核不修改时 review-aw。"
+        "minimalCounterexample": "仅评价已提供的独立 Skill 包且不需要 AW 来源或物化时，通用评审方法足够。"
       }
     },
     {
@@ -87,17 +87,17 @@
       }
     },
     {
-      "id": "review_only",
+      "id": "explain_existing_report",
       "split": "train",
       "tags": [
         "boundary"
       ],
       "input": {
-        "query": "只读评审当前 AW Catalog 的库存和插件依赖，不 build、不改文件。",
+        "query": "只解释已提供的评审报告，不查当前 AW 项目，不核对来源或产物，不执行命令。",
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "明确只读不会进入开发。",
+        "rationale": "已有报告解释无需 AW 来源、开发或物化能力。",
         "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
         "minimalCounterexample": "要求修正库存则进入开发。"
       }
@@ -148,6 +148,22 @@
         "rationale": "非 AW 项目开发。",
         "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
         "minimalCounterexample": "目标改为 AW plugin 才使用。"
+      }
+    },
+    {
+      "id": "existing_final_navigation",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "核对现有 AW Skill 的来源与 Codex/project final 是否匹配当前输入；已有 materialization 回执，只读取证，不运行构建、模型或安装。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "明确请求 AW source/final 当前性取证，采用来源和 profile 适配方法。",
+        "minimalCounterexample": "仅解释普通文本且不需要核对 AW 来源或 final 时无需该方法。",
+        "allowedVariance": "只观察本入口是否加载，不要求它成为所有任务的首个入口。"
       }
     }
   ]

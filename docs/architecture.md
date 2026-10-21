@@ -45,7 +45,7 @@
 - live ownership 和实际平台组件是输出清理和 status 的唯一真值；Intent 只选择要取消的 desired root，不是 installed ledger。不得新增安装合同存储、第二套安装状态或持久依赖图。
 - Codex project cleanup 和 uninstall 对当前仓库的 `.agents/skills` 做单层 owner marker 扫描。扫描不依赖当前 Manifest 是否仍声明该 Skill，也不进入嵌套目录或其它项目；删除仍要求 source、plugin、platform 和 scope 的 owner identity 精确匹配。
 - 配置写入、生命周期和平台写入各自保留最小的本地恢复；它们不组成跨第三方系统的事务。
-- Config v2 与 Definition v3/v4 只允许顶层 string 字段声明 `sensitive: true`，且该字段不得声明 default 或 choices。object、object child、KV additionalProperties child、number 和 boolean 都不得声明 sensitive。sensitive 值只允许写入 user scope；writer 拒绝 project scope，因此 TUI 隐藏 project sensitive 编辑入口不能替代安全边界。`aw config set` 拒绝用 argv `--value-json` 或 `--preset` 提交 sensitive 值；非交互或 JSON 模式必须用 `--value-stdin`，交互 TTY 可用隐藏输入。stdin 按 EOF 读取原始 UTF-8，不 trim。string value 与 object key 共用同一 validation 合同和 RE2-WASM Unicode 实现；声明 pattern 时必须同时声明 `maxLength`，pattern 最多 512 个 Unicode code point，`maxLength` 范围是 `0..4096`。匹配保持非锚定；作者需要整串匹配时必须显式使用 `^` 和 `$`。
+- Config Definition v4 只允许顶层 string 字段声明 `sensitive: true`，且该字段不得声明 default 或 choices。object、object child、KV additionalProperties child、number 和 boolean 都不得声明 sensitive。sensitive 值只允许写入 user scope；writer 拒绝 project scope，因此 TUI 隐藏 project sensitive 编辑入口不能替代安全边界。`aw config set` 拒绝用 argv `--value-json` 或 `--preset` 提交 sensitive 值；非交互或 JSON 模式必须用 `--value-stdin`，交互 TTY 可用隐藏输入。stdin 按 EOF 读取原始 UTF-8，不 trim。string value 与 object key 共用同一 validation 合同和 RE2-WASM Unicode 实现；声明 pattern 时必须同时声明 `maxLength`，pattern 最多 512 个 Unicode code point，`maxLength` 范围是 `0..4096`。匹配保持非锚定；作者需要整串匹配时必须显式使用 `^` 和 `$`。
 - `aw-development-toolkit` 不在构建时绑定 CLI registry，也不分发 capability Markdown。已安装 Author 从当前 PATH 查询 `aw plugin capabilities`，因此旧 development plugin 可以使用较新的 CLI 能力合同。
 - `aw plugin remove <name> --workspace-root <root> --yes` 只删除 canonical `plugins/<name>` source root。Workspace 必须位于有有效 HEAD 的 Git worktree 中；目标必须存在于 HEAD，且当前目标 tree 的 inventory、文件 bytes 和 executable mode 必须与 HEAD 精确相同。命令拒绝目标内 tracked、staged、untracked、ignored、符号链接或额外节点，也拒绝仍由其它当前 manifest 依赖的目标。所有检查在删除前完成；缺少 `--yes` 不写入。成功不修改 Catalog version、不 commit、不 build、不 publish。删除 I/O 失败必须给出从已核验 HEAD 恢复目标的 Git 命令；命令不提供 force、backup、ledger 或补偿状态。
 
@@ -268,17 +268,17 @@ TUI 依赖关系区分三类数据。Catalog declaration 说明插件声明需�
 
 Codex native refresh key 是 user-only。遗留 project override 保留在 store，但不参与 effective value。Status v8 使用非阻断 `configLayerUnsupported` warning 提示用户删除。TUI 禁止在 project 层设置该 key，只允许删除当前 project store 中确实存在的旧值。
 
-Config Definition v3 在顶层 Manifest v3 的 `config` 中用 `schemaVersion: 3` 单独声明。它支持最多 64 个本地 `definitions`、256 个顶层字段和 8 条连续引用边；对象属性中的引用也计入引用链，内联对象不增加引用层数。引用只允许 `#/config/definitions/Name`，覆盖项限于 title、description、default 和 required；未使用的定义也必须有效。编译后不含 definitions 或 `$ref`，保留配置版本和 presentation 元数据，继续使用同一字段和值校验器。旧无版本 Config v2 继续读取，不追加 v3 的字段数量限制；v2 类型仍限于标量或一层标量对象。v3 另支持顶层一维数组，元素由单一 items schema 约束为 string、number、boolean、fixed object 或 KV object；对象元素仍只有标量属性。数组、对象的递归嵌套、混合元素类型和 null 均拒绝。items 可用本地引用，但展开后仍检查上下文；items 本身不带 default、required 或 sensitive，对象元素的固定属性仍可 required。
+Config Definition v4 在顶层 Manifest v3 的 `config` 中用 `schemaVersion: 4` 声明，并使用 `aw.plugin-config.v4`。它支持最多 64 个本地 `definitions`、256 个顶层字段和 8 条连续引用边；对象属性中的引用也计入引用链，内联对象不增加引用层数。引用只允许 `#/config/definitions/Name`，覆盖项限于 title、description、default 和 required；未使用的定义也必须有效。编译后不含 definitions 或 `$ref`，保留配置版本和 presentation 元数据，继续使用同一字段和值校验器。配置支持顶层一维数组，元素由单一 items schema 约束为 string、number、boolean、fixed object 或 KV object；固定对象元素支持标量和受约束的叶级容器属性。任意递归容器、混合元素类型和 null 均拒绝。items 可用本地引用，但展开后仍检查上下文；items 本身不带 default、required 或 sensitive，对象元素的固定属性仍可 required。
 
-Config Definition v4 通过 `aw.plugin-config.v4` 声明读取要求，在保留 v2/v3 合同的基础上，增加固定对象的有限 `variants`、非敏感标量 `const`，以及固定对象属性中的叶级标量数组/KV 对象。顶层对象数组的元素可使用相同属性，因此可以表达实际 argv 和普通环境配置；不开放任意递归容器或动态脚本条件。现有字段数、引用深度、容器、类型与敏感字段边界继续适用。
+Config Definition v4 支持固定对象的有限 `variants`、非敏感标量 `const`，以及固定对象属性中的叶级标量数组/KV 对象。顶层对象数组的元素可使用相同属性，因此可以表达实际 argv 和普通环境配置；不开放任意递归容器或动态脚本条件。现有字段数、引用深度、容器、类型与敏感字段边界继续适用。
 
 variants 的 discriminator 只读取本对象已声明的 own string 属性；choices/valueRef 约束其合法性，cases 决定适用分支。当前字段由 common properties 与 case.properties 合并，case 不覆盖 common；missing/otherwise 只决定合法值的分支，不能使非法引用通过。const 约束显式值，缺省呈现不向强配置偷偷写入派生值。CLI、effective resolver、TUI 和物化共用 Core 合同；切换分支在草稿中展示删除与校验影响，无交互写入拒绝不适用字段而非静默清理。
 
-新能力不改变 Manifest v3、Store v5、Catalog v7 或 installed-runtime-config v2。schema identity 包含分支、const 和呈现定义，旧 Review 证据在定义变化后失效。强配置仍按整个顶层字段原子覆盖；不保存 UI 状态、派生 wrapper 路径或运行时秘密。
+Manifest v3、Store v5、Catalog v7 和 installed-runtime-config v2 是独立合同。schema identity 包含分支、const 和呈现定义，旧 Review 证据在定义变化后失效。强配置仍按整个顶层字段原子覆盖；不保存 UI 状态、派生 wrapper 路径或运行时秘密。
 
 `presentation.summaries` 声明 join 摘要，`fieldViews` 将摘要绑定到固定属性对象。每段只读本对象已声明且实际存在的 own scalar property；路径为单个 JSON Pointer token，支持 `~0`/`~1`，不沿原型链或读取外部数据。raw 显示实际标量，choiceTitle 可使用匹配的 choices 标题，缺失属性使用明确占位。最多 4 段，separator 最多 8 个 Unicode code point，path 最多 128 个字符；默认摘要最多 256 个 Unicode code point。摘要省略实际属性或超长时标记不完整，完整安全原值仍可读。摘要不参与值校验、dirty、预设匹配或 whole-object overwrite；敏感与无效状态先于摘要处理，终端控制字符在显示前移除。
 
-Definition v3 通过 `aw.plugin-config.v3` 声明读取要求，配置摘要另需 `aw.plugin-config-summary.v1`。规范化 bundle 保留新合同，Catalog index 只传播 requirements 和既有摘要，不复制配置定义。先提供支持这些能力的 CLI，再分发新插件；旧读取器须明确拒绝不支持的合同。配置 schema identity 覆盖完整定义及呈现元数据，因此元数据改变也使旧 Review 证据失效。数组另外派生 `aw.plugin-config-array.v1`；对象数组的 `fieldViews.<field>.itemSummary` 将同一 join summary 应用于每个 fixed-object 元素，KV 对象数组使用安全预览。Store v5 只保存原值，不存引用、摘要、预设 ID 或 UI rowId。
+配置摘要需要 `aw.plugin-config-summary.v1`。规范化 bundle 保留新合同，Catalog index 只传播 requirements 和既有摘要，不复制配置定义。读取器明确拒绝不支持的 capability。配置 schema identity 覆盖完整定义及呈现元数据，因此元数据改变也使旧 Review 证据失效。数组另外派生 `aw.plugin-config-array.v1`；对象数组的 `fieldViews.<field>.itemSummary` 将同一 join summary 应用于每个 fixed-object 元素，KV 对象数组使用安全预览。Store v5 只保存原值，不存引用、摘要、预设 ID 或 UI rowId。
 
 数组最多 128 项，每个完整数组值的规范化紧凑 JSON UTF-8 编码最多 262144 字节，每个对象元素最多 32 个属性；default、preset、CLI 和 TUI 写入统一由 Core 校验。`validation.minItems/maxItems` 是非负整数，未声明 max 仍受 128 限制；`uniqueItems` 默认 false，true 时按规范化完整值判断重复并报错。对象 key 顺序不影响相等，数组顺序影响相等。`[]`、未设置和 unset 不等价，required 只要求存在，非空用 minItems。数组及其子项不支持 sensitive，数字必须有限且不作隐式类型转换。数组级 allowCustom=false 只能选择完整预设；数组诊断的 `path.segments` 使用字段、0-based 索引和属性的完整路径，界面显示 1-based 项号。
 
@@ -420,7 +420,7 @@ Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不�
 
 ## 已安装运行配置
 
-Core 的 Config Definition v3 支持对象数组 `validation.uniqueBy` 和非敏感标量 `valueRef`。唯一约束使用一个已声明的浅标量属性；引用指向另一顶层对象数组的同类型 key，可联合保留的静态值。Core 提供统一候选与依赖闭包校验，CLI 保存、有效值解析和物化使用该合同。校验可以读取依赖字段，生效资源与 reader 返回值只公开获准的 keys。Store v5、顶层整体覆盖、既有数组和对象限值保持不变。
+Core 的 Config Definition v4 支持对象数组 `validation.uniqueBy` 和非敏感标量 `valueRef`。唯一约束使用一个已声明的浅标量属性；引用指向另一顶层对象数组的同类型 key，可联合保留的静态值。Core 提供统一候选与依赖闭包校验，CLI 保存、有效值解析和物化使用该合同。校验可以读取依赖字段，生效资源与 reader 返回值只公开获准的 keys。Store v5、顶层整体覆盖、既有数组和对象限值保持不变。
 
 动态 Skill 的 `runtimeConfig: { keys: [...] }` 要求 `aw.installed-runtime-config.v2`。keys 非空、无重复，属于该 target 的 `refreshKeys`，字段及其校验依赖闭包均不得敏感。AW 在物化时使用正式 Core 配置校验，并在最终产物中注入 `scripts/aw-runtime-config.mjs` 与 schema 2 `.aw-runtime-config.json`；插件不能签发或覆盖这些保留资源。资源只携带本产物的 installed identity、允许字段、生效值和实际需要的来源元数据，不携带字段定义、资源树摘要或执行 revision。renderer context 不提供执行 revision。
 
@@ -455,7 +455,6 @@ workspace 不接受 --file，关注路径写入任务，CLI 及 Adapter v4 都�
 - Trigger 执行或清理失败时仍保存脱敏的 `provider-evidence.json` 和 `provider-trace.json`，但不产生成功 grade。原生 POSIX 进程检查失败时，evidence 附带首次失败和最后清理检查的相关进程元数据、触发分支与 PID；不保存进程命令、环境或 marker 值。
 - Engine 创建的隔离 HOME 不继承宿主 Git credential helper。conversation、trigger、workflow、workflow adapter 和 custom process 都禁用 Git system config 与终端认证提示；Codex 工具子进程使用相同设置。这样不会因临时 HOME 缺少默认 macOS keychain 而启动 SecurityAgent，也不会让模型运行读取或写入宿主 Git credential。
 - 只有用户明确接受本次运行可能遗留后代进程的风险时，才可在单次命令增加 `--allow-unmanaged-processes`。该授权不进入 Spec 或 Audit，不会形成静默 fallback，也不会自动重试。unmanaged-confirmed 模式跳过进程树检查，只尽力终止直接 provider child，不发现或保证清理后代进程；macOS keychain 预检仍然执行。
-- Manifest suite 可选声明 `releaseProcessManagement: "managed-only" | "allow-unmanaged-confirmed"`。省略时 Release Check 使用 `managed-only`；只有显式声明后，unmanaged-confirmed 的 Result 才可满足该 suite 的 release evidence。
 - Engine 的内置 provider registry 包含 `codex-trigger` 和 `codex-conversation`。Manifest 的 trigger 和 conversation suite 选择对应内置 provider；`custom-process` 是显式的、可信且协作式外部 provider escape hatch，不是任意外部程序 sandbox。其命令和本地资产在 prepare 时做边界检查，执行前必须单独披露未知调用成本、credential 和网络影响。
   - macOS/Linux 的 managed 模式只在进程检查可用时启动 `custom-process`。Windows spawn 必须先通过原生 Job helper；helper 缺失、架构不支持或 Job 分配失败时 fail closed，不回退到仅观察 PPID 的 managed 声明。
   - provider 及全部后代必须保留 Engine marker，并始终留在 Engine 创建的初始进程组。它们不得使用 `setsid`、`setpgid`、detached、daemonize 或 double-fork；不得遗留后台任务，且必须在输出最终 JSON 和退出前等待全部后代退出。
@@ -479,25 +478,29 @@ workspace 不接受 --file，关注路径写入任务，CLI 及 Adapter v4 都�
 - conversation 保存根线程 ID，只以根线程的完成、最终回答、问题和 usage 事件推进当前会话；子线程事件继续保留在 trace 中，不能提前完成根任务或消耗根的脚本答复。
 - 独立 conversation grader 接收脱敏的已完成命令、变更、协作活动和消息，保留事件顺序与线程归属，与候选自述分开判断；不同线程 ID 本身不证明审查独立性。`hostSourceAccessAbsent=true` 只表示未观察到禁止的宿主访问，不表示被测项目未被读取或测试。conversation 和 workflow 共用 grader 通过 `turn/start.outputSchema` 约束最终 JSON，保留 workflow 的问题匹配及逐项检查字段；原严格 JSON parser 和机械门禁继续生效。
 - macOS conversation provider 只使用一层 outer Seatbelt。它阻止宿主源码读取，并按 case 精确实施 workspace 只读或可写边界；turn 使用 `externalSandbox`，因为嵌套 Seatbelt 不可靠。app-server control-plane 和工具执行网络都保持可用，provider capabilities 和每次 evidence 必须公开这个限制。
-- Oracle preflight 和 result triage 属于独立 Auditor，而不是 Engine。运行前没有 passing Audit 时不得启动模型。clean success 不要求 triage；只有 execution/grade 失败、current 结果混合、相对 baseline 回归，或结果将驱动生产 Skill 修改时，才在全新上下文做 result-triage。triage 默认返回聊天结论，且不是 Release Check 的机器输入。
+- Oracle preflight 和 result triage 属于独立 Auditor，而不是 Engine。运行前没有 passing Audit 时不得启动模型。execution/grade 失败、current 结果混合、相对 baseline 回归，或结果将驱动生产 Skill 修改时，在全新上下文做 result-triage；其余 clean success 不要求 triage。triage 默认返回聊天结论。
 
 - Conversation 的 `expected.workspaceUnchanged: false` 选择可写运行环境，必须显式提供 `allowedWorkspaceChanges`。非空集合授权相应最终文件变化，并要求实际 artifact；空集合 `[]` 用于测试工具可写时模型主动不写，允许没有 artifact，但任何最终文件变化都由机械门禁拒绝。适配器保留显式空集合，缺失集合仍拒绝；写入尝试及写后恢复另由 Oracle 根据真实轨迹判断。工具能力不等于用户写入授权。
 
 ## AW Review 准备、只读取证与来源绑定
 
-`aw review inspect <target> [--workspace-root <root>] [--materialization <receipt>]... [--view review|release] [--json]` 为源 Skill、Plugin 或 Catalog 取得当前来源和产物事实，由 `aw.review-inspection.v2` 表示能力。默认 review 视图直接返回必要 source 路径及每个 Skill 的 source、profile、final、digest、证据位置和缺口；不展开内部 join 表或计算无关的 required Eval。release 视图保留完整 subjects、requiredFinals、finalMappings、requiredEvals 和 verified bindings，供 Release Checker 消费。两种视图使用相同的来源核验与产物解析；不保留 inspection v1 输出。
+Agent 作者工具保持内容方法、Skill 方法、AW 适配和 Eval 执行四个领域。`review-agent-skill` 以单体、工作流和公开能力组合为条件分支，与 `simplify-agent-skill` 同为用户显式入口；Author 保留自检，独立评审不能由自动下游或读取手动正文替代。共享格式、调用与组合规则保持插件级单一事实源，按需投影与复用。
 
-review 视图可用重复的 `--skill`、`--platform codex|claude|agent-skills`、`--scope user|project` 和 `--config <file>` 选择本次范围。单源 Skill 的选择不能静默扩大到 Plugin；动态源按实际 artifact/sourceDirs/renderer 映射，有歧义时明确报错。未指定的 profile 从声明枚举，不猜当前客户端。release 视图只接受完整 Plugin/Catalog 范围，拒绝这些选择参数，不能通过过滤减少 required 集合。
+`develop-aw` 适用于 AW 插件及其 Skill 的分析、创建、修改、评审协作、简化协作、验证与物化，以及 Workspace 维护。它提供 source/provider/final/profile、可重建输入和平台依据；所需证据由当前任务决定，静态分析不以构建为前提。通用方法可消费 `aw review prepare` 的完整包，Portable 分发则须显式声明并经 `aw skill materialize` 导出，二者不互相替代。候选选择、质量裁决和实验策略归相应通用方法。
 
-`ok` 表示取证是否完成，不表示质量或发布通过。review 视图完成时，缺失或陈旧 final 保留为 missing/stale，退出码为 0；损坏来源、非法参数或不支持的 profile 返回失败和退出码 2，缺少必要配置返回 3。只有当前已验证的 final 才能为 ready；产物冲突仍是 invalid 和明确问题。release 视图单独保留证据完整性，Checker 要求每个 required final 为 resolved 且有 matched final，不以 inspection 的 ok 推断发布 readiness。
+`aw review inspect <target> [--workspace-root <root>] [--materialization <receipt>]... [--view review] [--json]` 为源 Skill、Plugin 或 Catalog 取得当前来源和产物事实，由 `aw.review-inspection.v2` 表示能力。schema 2 回执的 command 为 review:inspect，view 为 review；默认省略 view 与显式选择 review 等价。回执保留 target、sources、可选 snapshot、skills 和 issues，返回必要 source 路径及每个 Skill 的 profile、final、digest、证据位置和缺口。
 
-Inspection 不运行 renderer、build、test、模型或网络命令。它复用 Core 的 Workspace/snapshot 校验，发布要求使用官方 Eval parser；不调用会执行 renderer fixture 的 `aw plugin validate`，也不通过可能 bundle 的版本或归档路径取得摘要。binding 自身有效与匹配本次选择分别检查：默认配置不被已有自定义 binding 覆盖；canonical 路径去重，同选择、同 digest 时稳定选择证据路径，不同有效 digest 时报告歧义。相同内容的不同 profile 仍是独立覆盖项。release 消费者用 `{kind}:{id}:{scope}:{inputDigest}` 区分 Eval、Portable 和 Review 的配置身份。
+可用重复的 `--skill`、`--platform codex|claude|agent-skills`、`--scope user|project` 和 `--config <file>` 选择本次范围。单源 Skill 的选择不能静默扩大到 Plugin；动态源按实际 artifact/sourceDirs/renderer 映射，有歧义时明确报错。未指定的 profile 从声明枚举，不猜当前客户端。不支持的 view 返回参数错误及退出码 2，不运行构建。
+
+`ok` 表示取证是否完成，不表示质量或发布通过。缺失或陈旧 final 保留为 missing/stale，正常取证退出码为 0；损坏来源、非法参数或不支持的 profile 返回失败和退出码 2，缺少必要配置返回 3。失败回执同样使用 schema 2。只有当前已验证的 final 才能为 ready；产物冲突保留 invalid 和明确问题。
+
+Inspection 不运行 renderer、build、test、模型或网络命令。它复用 Core 的 Workspace/snapshot 校验，不调用会执行 renderer fixture 的 `aw plugin validate`，也不通过可能 bundle 的入口取得摘要。binding 自身有效与匹配本次选择分别检查：默认配置不被已有自定义 binding 覆盖；canonical 路径去重，同选择、同 digest 时稳定选择证据路径，不同有效 digest 时报告歧义。相同内容的不同 profile 仍是独立覆盖项。
 
 `aw review prepare <plugin-or-source-skill> --platform <platform> --scope <scope> --out <new-dir> [--skill <name>]... [--config <file>] [--workspace-root <root>] [--json]` 由 `aw.review-preparation.v1` 表示能力，一次准备单插件、单 profile 的所选 Skill。它不依赖 Eval，复用 bundle/runtime imports 和所选平台的真实投影；Codex native 使用声明的 shared-user 渲染语义，Portable 必须有自己的 distribution。只请求必要 Skill target，不运行无关非 Skill renderer。配置对象采用 `{plugin: {field: value}}`，只使用 manifest 默认值和已验证的非敏感覆盖，不隐式读取真实用户配置。配置逐键遵守实际 scope：任何 Codex native target 引用的 refresh key 固定为 user，即使该键也用于普通 project Skill；其它键使用所选 Skill 的配置 scope。输入摘要绑定有效值、来源和实际渲染输入。
 
 prepare 可执行本次必要的 build/renderer，在隔离环境和 staging 中生成副本；输出必须是新的安全目录，不得覆盖源码、共享输入、已有产物或真实安装位置。全部所选 final 通过布局、metadata、资源闭包和普通节点检查，且来源及配置在准备期间未变化后，才提交 out。失败只清理自有 staging，并报告实际错误和未清理的 residue；发现 sourceChanged 时不自动回滚源码。成功回执返回实际 Skill 路径、profile、digest 和 sourceBindingPath，可直接开始本次只读审核；跨请求复用或输入改变时重新 inspect。构建/最终包失败退出 1，参数/路径/不支持能力退出 2，缺必要配置或准备期间来源变化退出 3。
 
-必需 Eval 仅来自当前 manifest 的明确声明。没有 required suite 是合法情况，动态 Skill 也不自动增加模型测试要求。Eval prepare 当前提供 Codex 目标；Review prepare 的 Claude 和 Portable final 不自动产生对应平台的 Eval 要求，也不能替代 required Eval。已有必需 suite 无法映射到受支持目标时报告缺口，不静默忽略该要求。
+Eval prepare 按当前 Manifest 的 suite、profile 和显式 case/split 选择准备输入，当前提供 Codex 目标；Review prepare 的 Claude 和 Portable final 不自动产生模型测试要求。实际模型执行仍须独立 Audit、成本与执行授权。
 
 AW Eval prepare、Skill materialize 和 Review prepare 均生成 schema 2 的 `aw-source-binding.json`，公开 receipt 返回其路径。生产者和读取器统一使用 v2；旧 v1 凭据必须通过对应 prepare/materialize 入口在新目录重新生成，不原地迁移或修改版本号。该文件位于被测 Skill 内容之外，绑定实际 Workspace source 或 Catalog snapshot 身份、规范化 profile 输入和生成的 target/相关 workspace 摘要。Review profile 保存 platform、scope、inputDigest 和已验证的非敏感配置覆盖，artifact 使用 review-skill，并按同一选择算法重新核验配置及来源归属。来源身份和内容摘要使用已有机器实现；准备期间来源变化时不发布有效绑定，不重新 build 来验证绑定。文件不保存敏感值，不改变通用 `EvalSpec`、`EvalAudit` 或 `EvalResult` 合同。
 
@@ -507,35 +510,11 @@ Portable 输出的每个 Skill 保留实际来源插件；依赖 Skill 不能归
 
 来源绑定是可删除、可重建的弱证据，供后续只读消费者重新校验，不是签名、安装 ledger 或运行授权。旧产物缺少绑定时重新 prepare/materialize；检查器不能凭同名路径、有效旧 EvalSpec 或模型填写的字段推断 currentness。检查源码漂移不需要运行被审插件代码，也不新增锁、journal 或恢复状态机。
 
-## 人读 Review、可选 Release Check 与 Review Publication
+## 人读 Review
 
-这三种合同彼此独立：
+人读 Review 按请求在对话或指定文件中交付设计判断、复杂度、findings、证据范围、未知项和最小改动。质量判断只读 source、final 与已有 Eval 证据，不计算发布准备度。
 
-- **人读 Review** 默认只报告设计、复杂度、findings、未知项和最小改动。质量判断只读 source、final 与 Eval 证据，不计算发布准备度。完整审核请求涵盖必要本地 prepare，先说明 build/renderer 和隔离输出后执行；已有匹配 final 时直接复用。明确禁止执行或仅要求静态读取时保持源码审核；必要 profile/config 未确定时先补齐输入。准备不提供源码修改、模型运行、安装或发布授权。workflow Review 还定义有界的 scope。
-- **Release Check** 是可选的 AW-owned machine consumer。只有用户明确请求且环境存在兼容 checker 时，它才对单个 Plugin 或完整 Catalog 生成 `release-check.json` 并拥有 readiness 结论。它只消费 inspection、逐 subject Review 与实际 required Eval 链；没有 required Eval suite 是合法输入，不自动补做模型 Eval。缺少实现或证据时结果为 incomplete 或 unsupported，不由人读报告手工推断 ready。
-- **Review Publication** 只归档已经存在的文件，并绑定目标和 digest。只有本次请求的顶层 Reviewer 可以发布其目标；下层 Reviewer 只返回材料，除非用户明确要求多个独立归档目标。Publication 不重新评审、不运行或封存 Eval 执行结果、不更新 README，也不维护可变 index。
-
-Release Checker 显式消费 inspection 的 release 视图并验证 schema/view；CLI 与相关插件需同步升级，不以旧能力名宣称兼容。归档入口仍为 `aw review digest|publish|verify|list|show`，由 `aw.review-publication.v1` 表示。`aw review digest <path>` 为 workflow scope component 提供 canonical production records v1 digest；它只接受仓库内普通文件或目录，并拒绝路径链、目标根或目录树中的符号链接及其它不安全节点。发布只在用户明确要求时执行；使用前先运行 `aw review publish --help` 确认当前参数。
-
-### Immutable record
-
-每条 record 位于：
-
-```text
-reports/reviews/<kind>/<encoded-target-id>/<review-id>/
-```
-
-文档把稳定编码后的中间目录抽象为 `<target-id>`；实现使用 `id-` 加 target id 的 UTF-8 base64url。`kind` 只能是 `skill`、`workflow`、`aw-plugin` 或 `aw-workflow`。`review-id` 格式为 `<YYYYMMDDTHHMMSSZ>-<target-digest-8>-<report-digest-8>`。
-
-record 最少包含 `manifest.json` 和 `report.md`。schema 1 manifest 只拥有 record identity、`publishedAt`、目标 `{ kind, id, digest }`、report/附件的路径与 digest、source `{ commit, dirty }` 和可选 `supersedes`；它不解释 report、result 或 release check 的语义。可选内容为 machine `review-result.json`、唯一 kebab-case kind 的 `checks/<kind>.json` 与 `evidence/<kind>.json`、`release-check.json`，以及 workflow 的 `scope.json`。JSON 附件必须以 canonical JSON 归档，manifest 的文件清单必须完全匹配实际普通文件。
-
-leaf `skill` 使用静态 Skill 或 `plugin/skill` id，`aw-plugin` 使用插件 production bundle digest；二者不接受 scope。`aw-plugin --target` 可使用 id 对应的默认 `plugins/<id>`，也可使用仓库内其它 plugin root；path chain、root 和 manifest 必须是非符号链接，且 manifest name 必须匹配 root 的 target id。production digest 始终从该实际 root 构建，并使用同一仓库中所需的 provider source set，因此仍绑定 build/generated runtime bytes。实际引用的 direct provider root 必须位于同一仓库内；其完整 path chain、root、`.agents-plugin` 目录和 manifest 都必须是预期的普通非符号链接节点。
-
-`workflow` 和 `aw-workflow` 必须提供 schema 1 `scope.json`，其 `kind`、`id`、用户结果、入口、非空组件和代表性路径、外部依赖及排除项共同形成 target digest；归档后的 `scope.json` 是该 target binding 的 canonical 副本。每个 component path 必须解析为仓库内现存的普通文件或目录，完整 path chain 和目录树不得包含符号链接。component digest 使用与 production tree 相同的 canonical records v1：按 codepoint 排序相对路径，绑定普通文件执行模式和文件 SHA-256；单文件使用 `.` 作为 tree-relative path。发布时必须重算并拒绝伪造或 stale digest。公开 `verify` 验证归档后的 canonical scope、component digest 声明和 target digest 绑定；它不把当前源码是否仍与历史 scope 相同混入不可变记录验证。scope target digest 仍只使用 canonical scope JSON，不混入第二个 target digest 协议。
-
-Catalog composition 与 portfolio 的人读报告写入用户指定目录；它们不伪装成 workflow，也不新增 archive kind。
-
-发布先在同一 target 父目录创建临时 record，写完并验证 inventory/digest 后原子 rename 到不可变最终目录；失败清理临时目录。相同 target digest 与 report digest 只有在 target、report、所有附件、source 和 `supersedes` 都等价时才幂等返回原 record；同一 target/report digest 的不同输入必须失败，不能覆盖。`supersedes` 必须引用一个已验证、同 kind 且同 target id 的 record；它可以引用旧 target digest。`verify` 验证一个 record 的完整 binding 和 digest；`show` 要求全仓唯一 review id；`list` 扫描固定 records 根的 manifest，按 `publishedAt`、`reviewId` 稳定排序，并可按 kind 和 target id 过滤。归档根不计入发布时的 source dirty 检查。
+完整审核请求按授权涵盖必要本地 prepare：先说明 build/renderer 和隔离输出，已有匹配 final 时直接复用。明确禁止执行或仅要求静态读取时保持源码审核；必要 profile/config 未确定时先补齐输入。准备不提供源码修改、模型运行、安装或发布授权。工作流 Review 还需明确有界范围。报告不构成插件发布门禁，也不自动更新 production README。
 
 ## Release Flow
 

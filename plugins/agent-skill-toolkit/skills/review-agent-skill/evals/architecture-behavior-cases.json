@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "review-agent-skill",
+    "participants": [
+      "agent-content",
+      "author-agent-skill"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "public_surface_fragmentation",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "$review-agent-skill 只读评审这些 Agent 能力是否需要独立入口。关注用户选择和实际调用，不新增Skill。",
+      "assertions": [
+        "区分实现分支与用户意图，考虑一个入口或CLI而非继续拆分",
+        "不因每个leaf职责清晰就宣称整体选择成本低",
+        "不修改文件，不给虚构运行稳定性结论"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skills/check-json/SKILL.md": "---\nname: check-json\ndescription: Check JSON package metadata.\n---\n\n# check-json\n\nRead package.json and report parse errors.\n",
+          "skills/check-yaml/SKILL.md": "---\nname: check-yaml\ndescription: Check YAML package metadata.\n---\n\n# check-yaml\n\nRead package.yaml and report parse errors.\n",
+          "skills/check-toml/SKILL.md": "---\nname: check-toml\ndescription: Check TOML package metadata.\n---\n\n# check-toml\n\nRead package.toml and report parse errors.\n",
+          "usage.md": "用户只会说“检查项目元数据格式”，不知道文件格式。不需要独立上下文。现有CLI可以自动选对应parser。\n"
+        }
+      },
+      "expected": {
+        "output": "依据所给材料完成请求；区分事实、推断和未验证状态。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "portfolio关注公开面，不只检查leaf。",
+        "allowedVariance": "允许同样满足用户目标的不同措辞和方法；不按内部术语、步骤数或 JSON 字段猜正确性。",
+        "minimalCounterexample": "若三者是独立受众/权限/安装依赖，可保留入口并说明取舍。"
+      }
+    },
+    {
+      "id": "manual_dependency_unreachable",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "$review-agent-skill 审核 caller 与 manual-publish 的组合。目标 harness 的 manual-only 仅由用户宏触发，模型不能主动调用。",
+      "assertions": [
+        "指出自动common path不能依赖手动宏",
+        "保留用户授权边界，建议caller结束或改为独立公开安全能力而非私自去掉manual",
+        "不新增参数/返回schema"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skills/caller/SKILL.md": "---\nname: caller\ndescription: Build a local report.\n---\n\n# caller\n\nAfter building, always use manual-publish to send it without asking the user.\n",
+          "skills/manual-publish/SKILL.md": "---\nname: manual-publish\ndescription: User-triggered publish macro.\ndisable-model-invocation: true\n---\nPublish only after a user macro request.\n"
+        }
+      },
+      "expected": {
+        "output": "依据所给材料完成请求；区分事实、推断和未验证状态。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "用户已明确harness能力，场景非推测。",
+        "allowedVariance": "允许同样满足用户目标的不同措辞和方法；不按内部术语、步骤数或 JSON 字段猜正确性。",
+        "minimalCounterexample": "下游公开model-callable且有独立授权检查时可按条件组合。"
+      }
+    },
+    {
+      "id": "validation_loop_not_consumer",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "$review-agent-skill 只读检查三个文件：这个结构是否因存在validator而有业务价值？",
+      "assertions": [
+        "不把自带schema validator当独立业务consumer",
+        "搜索范围不足时不宣称全世界无consumer，本例只对已提供明确用途下结论",
+        "建议自然语言语义结果，不造新validator替代"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skills/plan/SKILL.md": "---\nname: plan\ndescription: Clarify a decision.\n---\n\n# plan\n\nWrite decision.json and validate it. The same Agent immediately reads its own context afterwards.\n",
+          "decision.schema.json": "{\"type\":\"object\",\"required\":[\"status\"]}\n",
+          "validate.py": "# Checks JSON shape only. No tool, workflow or business action reads the result.\n"
+        }
+      },
+      "expected": {
+        "output": "依据所给材料完成请求；区分事实、推断和未验证状态。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "防止结构自证闭环。",
+        "allowedVariance": "允许同样满足用户目标的不同措辞和方法；不按内部术语、步骤数或 JSON 字段猜正确性。",
+        "minimalCounterexample": "外部脚本根据status决定是否部署时可有真实consumer。"
+      }
+    },
+    {
+      "id": "facade_proportionate_pair",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "$review-agent-skill 评审这组入口，检查是否还需要拆分。不得仅因存在两个对象分支就新增公开Skill。",
+      "assertions": [
+        "认可一个薄入口加确定性parser可以连贯，或用证据提出局部改善",
+        "不强制为三种格式各建公开Skill或结构化handoff"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skills/check-project/SKILL.md": "---\nname: check-project\ndescription: Validate the metadata format present in a project.\n---\n\nUse the existing CLI to select JSON, YAML or TOML by the input path. Report actual parse failures. Do not modify source.\n",
+          "usage.md": "用户结果只有“检查项目元数据”；一个命令完成，格式规则同一权限，无独立证据阶段。\n"
+        }
+      },
+      "expected": {
+        "output": "按实际材料完成请求，不补造前提或执行证据。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "与fragmentation为最小架构对照。",
+        "allowedVariance": "允许等价方法与措辞，不强制固定输出字段。",
+        "minimalCounterexample": "某分支需要独立发布授权或安装环境时可有分离价值。"
+      }
+    },
+    {
+      "id": "standards_placement_not_skill_count",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "$review-agent-skill 只读审核 portfolio.md 的标准归属；不新增插件或 Skill，不将打包物理副本误当为规则重复维护。",
+      "assertions": [
+        "认可三个层级的不同 owner；需要核对构建源与派生一致，但不因副本存在自动要求新注册平台",
+        "人的入口选择与模型实际读入分别评价，不自动取消手动授权",
+        "不凭此清单声称实际 CLI/模型已验证"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "portfolio.md": "内容插件用于所有 prompt/项目说明：事实、pointer、层级、必要输出。Skill 插件：公开调用与手动宏、caller/leaf。Runner：Selected Cases 字段和 Audit 模板。两份 Skill 标准源通过构建复制到只读审稿资源；不激活作者流程。\n"
+        }
+      },
+      "expected": {
+        "output": "按给定材料完成任务，区分事实、建议与未验证效果。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "对等反例验证 reviewer 不因层级名称或文件数量机械拆分。",
+        "minimalCounterexample": "如果内容插件本身强制所有文档遵守某运行器字段或手动调用配置，则出现规则 owner 错位。",
+        "allowedVariance": "允许等价措辞和实现；不以是否复述标准术语或固定中间步骤判定。"
+      }
+    }
+  ]
+}
