@@ -17,8 +17,6 @@ export interface AwSkillEvalTriggerSuite {
   forbidMultipleSkillLoads: boolean
   profiles: string[]
   defaultRuns: number
-  releaseSplits: Array<'train' | 'validation' | 'sanity' | 'all'>
-  requiredForRelease: boolean
   perRunTimeoutMs: number
 }
 
@@ -458,11 +456,6 @@ export function validateAwSkillEvalTriggerCaseDocument(
     throw new Error(
       `Trigger suite "${suite.id}" requires fixtureModule because cases declare workspace_fixture.`,
     )
-  }
-  for (const split of suite.releaseSplits) {
-    if (split !== 'all' && !cases.some((entry) => entry.split === split)) {
-      throw new Error(`Trigger suite "${suite.id}" has no cases for release split "${split}".`)
-    }
   }
   return { schemaVersion: AW_SKILL_EVAL_CASE_SCHEMA_VERSION, skill, cases }
 }

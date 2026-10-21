@@ -4,4 +4,4 @@ interface:
   default_prompt: "使用 $simplify-agent-skill 处理当前已授权范围，并报告真实结果与关键未知。"
 
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false

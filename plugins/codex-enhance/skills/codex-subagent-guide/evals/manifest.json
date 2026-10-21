@@ -79,12 +79,7 @@
         "project-default"
       ],
       "runs": 3,
-      "timeoutMs": 180000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation",
-        "sanity"
-      ]
+      "timeoutMs": 180000
     },
     {
       "id": "trigger-composition",
@@ -94,8 +89,7 @@
         "project-default"
       ],
       "runs": 3,
-      "timeoutMs": 180000,
-      "requiredForRelease": false
+      "timeoutMs": 180000
     },
     {
       "id": "trigger-dev-build",
@@ -105,8 +99,7 @@
         "project-dev-build"
       ],
       "runs": 3,
-      "timeoutMs": 180000,
-      "requiredForRelease": false
+      "timeoutMs": 180000
     },
     {
       "id": "routing",
@@ -117,7 +110,6 @@
       ],
       "runs": 3,
       "timeoutMs": 180000,
-      "requiredForRelease": true,
       "provider": {
         "type": "codex-workflow",
         "command": [
@@ -136,7 +128,6 @@
       ],
       "runs": 1,
       "timeoutMs": 900000,
-      "requiredForRelease": true,
       "provider": {
         "type": "codex-workflow",
         "command": [
@@ -155,7 +146,6 @@
       ],
       "runs": 1,
       "timeoutMs": 900000,
-      "requiredForRelease": true,
       "provider": {
         "type": "codex-workflow",
         "command": [
@@ -173,8 +163,7 @@
         "project-default"
       ],
       "runs": 3,
-      "timeoutMs": 180000,
-      "requiredForRelease": false
+      "timeoutMs": 180000
     },
     {
       "id": "coordinator-behavior",
@@ -184,8 +173,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 900000,
-      "requiredForRelease": true
+      "timeoutMs": 900000
     },
     {
       "id": "joint-workflow",
@@ -196,7 +184,6 @@
       ],
       "runs": 1,
       "timeoutMs": 900000,
-      "requiredForRelease": true,
       "provider": {
         "type": "codex-workflow",
         "command": [
@@ -221,7 +208,6 @@
       ],
       "runs": 1,
       "timeoutMs": 900000,
-      "requiredForRelease": true,
       "provider": {
         "type": "codex-workflow",
         "command": [
@@ -246,7 +232,6 @@
       ],
       "runs": 1,
       "timeoutMs": 900000,
-      "requiredForRelease": true,
       "provider": {
         "type": "codex-workflow",
         "command": [

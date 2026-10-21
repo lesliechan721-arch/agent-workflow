@@ -1493,6 +1493,7 @@ describe('pack smoke', () => {
     ))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(unpackedPackageRoot, 'plugins-dist'))).resolves.toBe(false);
     expect(unpackedFiles).not.toContain('dist/stale-build-sentinel.js');
+    expect(unpackedFiles).not.toContain('dist/src/commands/review-publication.js');
     expect(unpackedFiles.some((file) => file.startsWith('plugins-dist/'))).toBe(false);
     expect(unpackedFiles.some((file) => file === 'node_modules' || file.startsWith('node_modules/')))
       .toBe(false);
@@ -1543,6 +1544,24 @@ describe('pack smoke', () => {
       stdout: expect.stringContaining('Usage: aw'),
       stderr: '',
     });
+
+    const reviewHelp = await execFileAsync(
+      process.execPath,
+      [path.join(unpackedPackageRoot, 'dist', 'index.js'), 'review', '--help'],
+      { cwd: unpackedPackageRoot, env: process.env },
+    );
+    expect(reviewHelp.stderr).toBe('');
+    expect(reviewHelp.stdout).toMatch(/^\s+inspect(?:\s|$)/mu);
+    expect(reviewHelp.stdout).toMatch(/^\s+prepare(?:\s|$)/mu);
+    expect(reviewHelp.stdout).not.toMatch(/^\s+(?:digest|publish|verify|list|show)(?:\s|$)/mu);
+    const skillHelp = await execFileAsync(
+      process.execPath,
+      [path.join(unpackedPackageRoot, 'dist', 'index.js'), 'skill', '--help'],
+      { cwd: unpackedPackageRoot, env: process.env },
+    );
+    expect(skillHelp.stderr).toBe('');
+    expect(skillHelp.stdout).toMatch(/^\s+materialize(?:\s|$)/mu);
+    expect(skillHelp.stdout).toMatch(/^\s+eval(?:\s|$)/mu);
 
     const criticalImports = [
       path.join(unpackedPackageRoot, 'dist', 'src', 'utils', 'manifest.js'),

@@ -38,28 +38,31 @@ describe('AW capability CLI commands', () => {
     })
   })
 
-  it('returns a single failure JSON object and exit 1 for missing capabilities', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-self-check-missing-'))
-    tempDirs.push(root)
-    const capabilities = ['aw.future-feature.v3']
-    await fs.writeJson(path.join(root, 'aw-plugin-requirements.json'), {
-      schemaVersion: 1,
-      kind: 'aw-plugin-requirements',
-      plugin: { name: 'future', version: '1.0.0' },
-      requiredCapabilities: capabilities,
-      digest: computeAwCapabilitySetDigest(capabilities),
-    })
-    const result = await runCliEntry(['self', 'check', '--from', root, '--json'], { cwd: root })
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toBe('')
-    expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
-      command: 'self:check',
-      ok: false,
-      plugin: { name: 'future' },
-      missingCapabilities: capabilities,
-    })
-  })
+  it.each(['aw.future-feature.v3', 'aw.review-publication.v1'])(
+    'returns a single failure JSON object and exit 1 for unsupported %s',
+    async (capability) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-self-check-missing-'))
+      tempDirs.push(root)
+      const capabilities = [capability]
+      await fs.writeJson(path.join(root, 'aw-plugin-requirements.json'), {
+        schemaVersion: 1,
+        kind: 'aw-plugin-requirements',
+        plugin: { name: 'future', version: '1.0.0' },
+        requiredCapabilities: capabilities,
+        digest: computeAwCapabilitySetDigest(capabilities),
+      })
+      const result = await runCliEntry(['self', 'check', '--from', root, '--json'], { cwd: root })
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toBe('')
+      expect(result.parseJsonStdout()).toMatchObject({
+        schemaVersion: 1,
+        command: 'self:check',
+        ok: false,
+        plugin: { name: 'future' },
+        missingCapabilities: capabilities,
+      })
+    },
+  )
 
   it('returns a single failure JSON object when no candidate exists', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-self-check-empty-'))

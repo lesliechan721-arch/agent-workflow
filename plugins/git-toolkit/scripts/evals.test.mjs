@@ -284,7 +284,6 @@ async function testEvalCorpora(bundleRoot) {
   const commitBehaviorSuite = commitManifest.suites.find((suite) => suite.id === 'behavior');
   assert.equal(commitBehaviorSuite.kind, 'custom-process');
   assert.equal(commitBehaviorSuite.cases, 'behavior-cases.json');
-  assert.equal(commitBehaviorSuite.requiredForRelease, true);
   assert.equal(commitBehaviorSuite.runs, 3);
   assert.equal(commitBehaviorSuite.timeoutMs, 300000);
   await assertCustomProcessManifest(
@@ -367,7 +366,6 @@ async function testEvalCorpora(bundleRoot) {
   assert.equal(mergeDocument.suite.runtime.fixture, 'trigger-fixture.mjs');
   assert.equal(behaviorSuite.kind, 'custom-process');
   assert.equal(behaviorSuite.cases, 'evals.json');
-  assert.equal(behaviorSuite.requiredForRelease, true);
   assert.equal(behaviorSuite.runs, 3);
   assert.equal(behaviorSuite.timeoutMs, 300000);
   await assertCustomProcessManifest(
@@ -567,17 +565,13 @@ async function testEvalCorpora(bundleRoot) {
   assert.equal(worktreeDocument.suite.runtime.forbidMultipleSkillLoads, true);
   assert.equal(worktreeRouterSuite.cases, 'trigger-cases.json');
   assert.deepEqual(worktreeDocument.suite.runtime.strictNegativeSplits, ['validation', 'sanity']);
-  assert.deepEqual(worktreeRouterSuite.releaseSplits, ['validation', 'sanity']);
   assert.equal(worktreeDiagnosticRouterSuite.kind, 'trigger');
   assert.equal(
     worktreeDiagnosticRouterSuite.cases,
     'trigger-diagnostic-cases.json',
   );
-  assert.equal(Object.hasOwn(worktreeDiagnosticRouterSuite, 'releaseSplits'), false);
-  assert.equal(worktreeDiagnosticRouterSuite.requiredForRelease, false);
   assert.equal(worktreeBehaviorSuite.kind, 'custom-process');
   assert.equal(worktreeBehaviorSuite.cases, 'evals.json');
-  assert.equal(worktreeBehaviorSuite.requiredForRelease, true);
   assert.equal(worktreeBehaviorSuite.runs, 3);
   assert.equal(worktreeBehaviorSuite.timeoutMs, 300000);
   assert.equal(worktreeDocument.suite.runtime.fixture, 'trigger-fixture.mjs');

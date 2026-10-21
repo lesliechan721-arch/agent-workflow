@@ -101,17 +101,17 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "为 skills/local-summary 设计一条正例和一条边界负例，保存 skills/local-summary/evals/trigger-cases.json。格式以调用方提供的 runner-contract.md 为准；不要 prepare、运行或签发 Audit。",
+      "prompt": "为 skills/local-summary 设计一条正例和一条边界负例，保存 skills/local-summary/evals/trigger-cases.json。格式以调用方提供的 runner-contract.md 为准；只设计和保存用例，不运行模型或签发执行准入。",
       "assertions": [
         "生成 version/suite/cases 格式，正例单文件，负例是无已知文件的大范围探索",
         "boundary 有具体反例，不用 expectedLoad=false 表达合法的上层调用",
         "不运行模型、不写 passing Audit、不改生产 Skill",
-        "从提供的 profile 取得 AW 格式，而不是要求通用内容方法定义 AW 字段。"
+        "采用调用方提供的运行器格式，不把它提升为通用 Skill 的固定输出标准。"
       ],
       "input": {
         "workspaceFiles": {
           "skills/local-summary/SKILL.md": "---\nname: local-summary\ndescription: Summarize one supplied local text file; do not search repositories.\n---\n\n# local-summary\n\nRead only the explicitly supplied file and summarize supported facts.\n",
-          "runner-contract.md": "# AW Skill Eval 适配说明\n\n只在创建/审核 AW 格式资产或执行 AW 准入时读取。\n\n## 格式基线与权威\n\nSelected Cases 外层、Manifest、Spec/Audit/Result 的最终权威是实际安装 CLI/parser。版本不同先确认支持；只更新此 profile 和相关适配测试，不修改通用 Oracle 方法来迁就字段。\n\n底层 provider 支持某能力，不代表外层 Selected Cases 已公开它。\n\n## Selected Cases v1\n\n根对象只含 `version: 1`、`suite`、`cases`。suite 使用 `kind`、`unitUnderTest`，按需带 `participants`、`policy`、`runtime`。kind 是该基线支持的 `trigger`、`conversation`、`custom-process` 或 `codex-workflow`。本文不是所有 kind 的完整 schema；未知字段用真实 parser 核验，不能靠猜。\n\npolicy 的 `optimization`、`falseNegativeCost`、`falsePositiveCost`、`rationale` 用于说明测试政策。所有 case 使用 `id`、`split`、`tags`。Trigger ID 必须小写 snake_case，split 为 train/validation/sanity；其他 kind 按其 parser。\n\n### Trigger\n\n使用 `input.query` 和**二选一**预期：\n\n- `input.expectedLoad`：在观测期是否加载被测 Skill；false 不是“不是顶层 owner”。\n- `input.expected.loadedSkills`：精确加载集合，不是允许集合；不得排除合法的可选辅助能力。\n\n该外层没有 firstLoaded 字段。首次入口/组合使用能够提供实际材料与 trace 的行为测试，或等待明确实现的外层能力；不自行增加字段。原生 manual 宏必须用真实注入路径验收，文本出现 `$name` 不能独自证明宏已注入。\n\n仅 observer 已启用时使用 `shouldSpawnAgent`。workspaceFixture 需要对应 fixture 模块；其它 runtime 选项以 parser 为准。\n\n### Conversation\n\ncase 使用 `prompt` 和非空可观察 `assertions`。按需使用：\n\n- `input.workspaceFiles`：相对路径到真实测试内容；\n- `input.scriptedReplies`：交互回复；\n- `input.pathPrepend`：已存在且明确受控的 CLI fixture；\n- `expected.output`、`workspaceUnchanged`、`allowedWorkspaceChanges`、`artifacts`。\n\n写入用例明确 `workspaceUnchanged: false`、允许路径和至少一个实际 artifact。artifact 可用 path/exists/contains/notContains/json；路径不能越界或修改测试控制目录。空工作区不证明不存在的仓库、Spec、target 或授权状态。\n\n### 条件 audit metadata\n\n保留基线 parser 的四个字段：`rationale`、`minimalCounterexample`、`allowedVariance`、`errorCost`。boundary/regression 要前两项；high-cost/release-critical 要 errorCost（high/medium/low）；high-variance 要 allowedVariance。其余分析记在伴随说明，不向严格外层增加 oracle/version 等自定义键。\n\n`evals/manifest.json` 使用当前 Manifest v1：profiles 与 suites 绑定 cases、kind、runs、timeout、requiredForRelease 和 releaseSplits。测试被标必需不等于已经运行；不可执行成功路径留在明确集成验收清单，不伪造 passing fixture。\n\n## 格式辅助检查\n\n本 Skill 携带 `scripts/validate-eval-cases.mjs`，只检查基线字段子集；运行方式：`node <实际脚本路径> <cases.json> --strict --format json`。它是 AW profile 辅助工具，不是通用格式标准、不证明 Oracle 正确，也不替代官方 parser。项目确定性测试使用当前 `@lesliechan721/agent-skill-eval` 的公开 `parseSelectedCases` 核验格式，不依赖草案交付目录中的工具。\n\n## 正式 Spec/Audit/Result\n\nRunner 准备或验证 Spec；其 receipt 固定 workspace/provider/current/previous target/case digest 和 selected cases。只读源审核不要求 Spec，也不产生机器 pass。\n\nRunner 复用精确绑定的有效 Audit；否则在独立上下文使用 `audit-agent-skill-evals`，提供：已验证 Spec、selected cases、相关 fixture、**本 profile 的实际路径**、所需 Audit 输出路径及当前 CLI 验证命令。不能只传一句“使用 Auditor”却省略专属合同。\n\n`assets/eval-audit-template.json` 是消费者要求的 **EvalAudit v1 形状样例**。全零 digest/空批准集合不是证据；从 validated receipt 取得实际值。以当前 `aw-skill-eval audit validate <audit> --spec <spec>` 核验；case、target 或必要身份变化后重新验证，source 审核结论不替代候选绑定。\n\nAudit 的通用语义判断归 Auditor；格式、状态值、身份算法、验证和执行门禁归 CLI/Runner。消费者模板不搬回通用插件。成本授权与 Audit 是不同条件；执行和失败处理继续使用 `references/execution-and-safety.md`，不在此重复。\n"
+          "runner-contract.md": "# 本任务的运行器输入合同\n\n本场景采用 Selected Cases v1 的 trigger 输入。以下是调用方提供的格式，不是通用 Skill 标准；本次只设计用例。\n\n根对象为 version: 1、suite、cases。suite 指定 kind: trigger 与 unitUnderTest: local-summary，可选 policy（optimization、falseNegativeCost、falsePositiveCost、rationale）。\n\n每个 case 包含唯一的小写 snake_case id、split（train/validation/sanity）、tags 和 input。input.query 是真实用户请求；input.expectedLoad 是布尔值，表示观测期是否应加载目标 Skill，不表示首次入口。支持正确的辅助使用时不能标为 false。\n\nboundary 或 regression 标签要求 audit.rationale 与 audit.minimalCounterexample，解释判定依据及什么最小条件变化会翻转预期。该输入不包含 firstLoaded。允许等价措辞，不向用例加入答案提示或虚构运行结果。\n"
         }
       },
       "expected": {
@@ -256,15 +256,15 @@
       }
     },
     {
-      "id": "consumer_format_not_forced_to_aw",
+      "id": "consumer_format_is_authoritative",
       "split": "validation",
       "tags": [
         "regression"
       ],
-      "prompt": "为 skills/status 设计两个触发测试。消费方的 cases-contract.md 明确使用 JSONL，每行 query 与 expected 两个键；结果写 skills/status/evals/cases.jsonl。不要换成 AW 格式，不运行。",
+      "prompt": "为 skills/status 设计两个触发测试。消费方的 cases-contract.md 明确使用 JSONL，每行 query 与 expected 两个键；结果写 skills/status/evals/cases.jsonl。严格采用该格式，不运行。",
       "assertions": [
         "输出符合调用方明确 JSONL 约定，两例覆盖所给文本与服务器调查边界",
-        "不强制 version/suite/cases、EvalSpec 或 AW CLI",
+        "不加入消费方未要求的外层字段、执行合同或命令依赖。",
         "不改被测 Skill，不签发 Audit 或声称运行通过"
       ],
       "input": {
@@ -288,7 +288,7 @@
       },
       "audit": {
         "rationale": "通用 Eval 设计应服从已提供消费者，不把本工具包的测试框架当唯一格式。",
-        "minimalCounterexample": "若消费者明确要求 AW Selected Cases v1，则应使用它的真实字段。",
+        "minimalCounterexample": "若消费者明确要求另一种结构化格式，则应采用其实际合同。",
         "allowedVariance": "允许等价措辞和实现；不以是否复述标准术语或固定中间步骤判定。"
       }
     },
@@ -336,6 +336,130 @@
         "rationale": "同一输入同时提供起草过程、最终调用选择和必要领域原因，按后续使用价值区分，不把原因或否定措辞本身当缺陷。",
         "minimalCounterexample": "若另有明确的设计记录交付要求，相关取舍经过应写入指定记录；若旧方案仍对应现行兼容约束，其必要理由必须保留。",
         "allowedVariance": "允许等价措辞与布局，调用元数据按真实字段检查；不要求固定句子、禁止词表、额外 reference 或特定 Skill 加载顺序。"
+      }
+    },
+    {
+      "id": "scoped_author_selfcheck",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "按 requirements.md 修改 skills/summary 的方法，并完成当前可用的本地结构检查与作者自检。只修改 SKILL.md；本次不做专项评审或模型 Eval。",
+      "assertions": [
+        "修正方法为只统计 level 精确等于 ERROR 的记录，保留 INFO 不计错误、缺输入时索取和只处理给定内容的边界。",
+        "完成可用结构检查与作者自检，不自动调用或直接读取手动 Reviewer/Simplifier 来重放流程。",
+        "如实说明专项独立评审和模型 Eval 未执行，不把作者自检报告为独立通过。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "requirements.md": "只将 level 精确等于 ERROR 的记录计为错误，按原顺序保留 message。INFO 不计为错误。缺输入时索取；不联网、不推断服务健康。\n",
+          "skills/summary/SKILL.md": "---\nname: summary\ndescription: Summarize the JSON records supplied by the user.\n---\n\nRead only the supplied records. Count every record as an error and preserve its message. Request missing input; do not query servers.\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "output": "交付当前修改和真实自检结果，单独说明未进行专项独立评审及模型运行。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/summary/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/summary/SKILL.md",
+            "exists": true,
+            "contains": [
+              "ERROR"
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "创建或修改 Skill 包含当前范围的自检与修复，不扩大为专项评审或模型实验；自检不能替代独立证据。",
+        "minimalCounterexample": "若用户另行显式启动专项评审，可采用相应能力完成；这一任务由该能力负责，不成为 Author 的默认完成条件。",
+        "allowedVariance": "允许等价修订和检查方式；按实际文件、工具轨迹和结论边界判断，不固定内部步骤。"
+      }
+    },
+    {
+      "id": "local_method_default_selfcheck",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "按 requirements.md 修改 skills/summary 的方法。只修改 SKILL.md。",
+      "assertions": [
+        "修正方法为只统计 level 精确等于 ERROR 的记录，按原顺序保留 message，并保留 INFO 不计错误、缺输入时索取和只处理给定内容的边界。",
+        "用户没有额外要求自检时，仍完成当前可用的结构检查，并用代表性的 ERROR、INFO 和缺输入场景核对方法与产物；只有格式工具通过不足以证明方法已核对。",
+        "交付实际修改、检查结果和未验证项，不自动启动专项 Review 或模型 Eval，不把作者自检报告为独立通过。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "requirements.md": "只将 level 精确等于 ERROR 的记录计为错误，按原顺序保留 message。INFO 不计为错误。缺输入时索取；不联网、不推断服务健康。\n",
+          "skills/summary/SKILL.md": "---\nname: summary\ndescription: Summarize the JSON records supplied by the user.\n---\n\nRead only the supplied records. Count every record as an error and preserve its message. Request missing input; do not query servers.\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "output": "交付当前修改及真实自检结果，区分已检查内容与未验证效果。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/summary/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/summary/SKILL.md",
+            "exists": true,
+            "contains": [
+              "ERROR"
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "用与显式自检案例相同的任务材料，检查普通局部修改请求是否仍完成作者自检；请求本身不提示检查步骤。",
+        "minimalCounterexample": "如果只替换一个错字且方法未变，只需核对该编辑及受影响内容；不要求重演无关行为或完整开发流程。",
+        "allowedVariance": "允许等价方法、代表性输入和布局；以实际修改、工具轨迹及语义核对判断，不要求固定措辞、独立执行者或模型运行。"
+      }
+    },
+    {
+      "id": "existing_script_default_selfcheck",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "修正 skills/error-count/scripts/count-errors.mjs 把全部记录都计为错误的问题：只统计 level 精确等于 ERROR 的条目，空数组得到 0。保持现有参数、JSON 输出字段、帮助和错误接口；只修改这个脚本。",
+      "assertions": [
+        "实际脚本只统计 level 精确为 ERROR 的条目；INFO、仅 message 含 ERROR 或大小写不同的 level 不计入，空数组得到 errors=0。",
+        "保持命令参数和单个 JSON stdout，帮助正常退出，非法 JSON 或非数组输入仍在 stderr 报错并以 2 退出。",
+        "用户未要求自检且接口不变时，仍实际执行包含 ERROR 与 INFO 的正常输入和至少一个关键错误输入，核对 stdout、stderr 与退出码；只改文本或声称测试通过不足以满足此项。",
+        "只修改授权脚本，交付真实检查及未验证项，不自动启动专项 Review 或模型 Eval。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skills/error-count/SKILL.md": "---\nname: error-count\ndescription: Count exact ERROR levels in the JSON array supplied by the user.\n---\n\nRun `node scripts/count-errors.mjs <json-array>` from the Skill root. Return its errors count. Only records whose level is exactly ERROR count; an empty array returns 0. Use --help for usage. Invalid JSON or a non-array input reports an error on stderr and exits 2. Do not query services.\n",
+          "skills/error-count/scripts/count-errors.mjs": "const raw = process.argv[2];\nif (raw === '--help') {\n  console.log('Usage: node scripts/count-errors.mjs <json-array>');\n  process.exit(0);\n}\ntry {\n  const records = JSON.parse(raw ?? '');\n  if (!Array.isArray(records)) throw new Error('Expected a JSON array');\n  console.log(JSON.stringify({ errors: records.length }));\n} catch {\n  console.error('Expected a JSON array');\n  process.exitCode = 2;\n}\n"
+        },
+        "scriptedReplies": []
+      },
+      "expected": {
+        "output": "交付脚本修复和实际执行的检查结果，不把未运行的验证报告为通过。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "skills/error-count/scripts/count-errors.mjs"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/error-count/scripts/count-errors.mjs",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "修改已有脚本的数据处理而不改接口或引用，仍应进入脚本自检方法；fixture 只需 Node 与给定输入，不依赖网络或外部服务。",
+        "minimalCounterexample": "若任务只更正正文中的命令拼写且脚本未变，自检应与编辑影响相称，不要求修改脚本或扩大验证范围。",
+        "allowedVariance": "允许等价计数实现和正常/错误样例；按实际脚本行为、运行轨迹及输出判断，不匹配实现字符串、固定测试文件名或检查顺序。"
       }
     }
   ]

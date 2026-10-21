@@ -5,8 +5,7 @@
     "unitUnderTest": "agent-content",
     "participants": [
       "author-agent-skill",
-      "review-agent-skill",
-      "review-agent-architecture"
+      "review-agent-skill"
     ],
     "policy": {
       "optimization": "balanced",

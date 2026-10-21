@@ -649,8 +649,6 @@ describe('aw skill eval commands', () => {
         id: 'trigger-suite',
         kind: 'trigger',
         cases: 'selected-cases.json',
-        requiredForRelease: true,
-        releaseSplits: ['validation'],
       }, {
         id: 'held-out-suite',
         kind: 'trigger',

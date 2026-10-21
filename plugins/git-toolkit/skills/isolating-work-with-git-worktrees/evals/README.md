@@ -16,7 +16,7 @@ aw skill eval prepare git-toolkit \
 aw-skill-eval run /tmp/aw-eval-specs/<spec-dir>/spec.json --audit /tmp/aw-eval-specs/<spec-dir>/audit.json
 ```
 
-该命令生成 `EvalResult v2`。随后运行 `aw-skill-eval result validate <result> --spec <spec> --audit <audit>`。clean success 不要求 triage。只有 execution/grade 失败、混合结果、baseline 回归，或结果将驱动生产 Skill 修改时，才由全新上下文做 result-triage；默认在聊天中返回，用户指定时可写 `triage.md`。triage 不是 Release Check 的机器输入。发布检查范围只从当前 `evals/manifest.json` 的 `requiredForRelease` 和 `releaseSplits` 派生。
+该命令生成 `EvalResult v2`。随后运行 `aw-skill-eval result validate <result> --spec <spec> --audit <audit>`。clean success 不要求 triage。只有 execution/grade 失败、混合结果、baseline 回归，或结果将驱动生产 Skill 修改时，才由全新上下文做 result-triage；默认在聊天中返回，用户指定时可写 `triage.md`。
 
 `trigger-cases.json` 使用 selected cases v1 trigger 合同，并同时观察 Git 插件内的三个 Skill。运行触发评估时，每条查询至少运行三次。重点检查另一个独立任务需要保护当前未提交工作时会触发，而继续当前 checkout 中的同一任务不会仅因工作区 dirty 而触发；跨分支构建、测试或复现即使不修改源码也可触发。不需要独立 checkout 的只读查询和例行 worktree 管理不触发。merge 协调请求应只路由到 `reconciling-git-merges`。
 

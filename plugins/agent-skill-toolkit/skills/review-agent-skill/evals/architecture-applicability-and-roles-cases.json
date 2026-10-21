@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "review-agent-skill",
+    "participants": [
+      "agent-content"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "检验任务适用、独立角色、领域资料和证据边界；同时覆盖问题版本和合理反例，分别解释漏报与过度修正。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "architecture-same-axis-reexpanded",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "$review-agent-skill 只读审查下面的双轴Review workflow。以已给源配置评价路径，未运行代理树。",
+      "assertions": [
+        "沿角色和范围定位父已分轴、子又重复展开的风险，而非仅看名字相同。",
+        "指出叶子缺少直接执行方法，核对既有父级汇总owner，并定位子层overall verdict与既有职责冲突；建议让已分配reviewer直接处理本轴。",
+        "没有trace不声称已经无限运行；保留双轴独立证据和父级汇总要求。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "workflow.md": "# 完整任务\n作者父代理建立两个干净reviewer，分别只负责fidelity和engineering；每个都加载review-pair。父代理汇总。\n",
+          "skills/review-pair/SKILL.md": "---\nname: review-pair\ndescription: Perform the two-axis review.\n---\n\nOn every load, create two fresh reviewers for fidelity and engineering. Give both reviewers review-pair and ask them to perform the review. Then return an overall verdict.\n",
+          "roles.md": "# 委派范围\n两个子代理被分配一个轴，没有整体协调职责。当前role未定义直接执行方法或复用已存在安排。\n"
+        }
+      },
+      "expected": {
+        "output": "沿角色和范围定位父已分轴、子又重复展开的风险，而非仅看名字相同。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "检查真实组合路径中已经满足的隔离是否被重复建立。",
+        "minimalCounterexample": "同名Skill的下层处理不同有界子目标且方法清楚时可成立。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "architecture-authorized-subcoordination-is-useful",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "$review-agent-skill 只读审核 audit-tree 的分层职责是否合理。不要仅按代理层数作判断。",
+      "assertions": [
+        "认可有授权、范围缩小且有真实叶子工作的方法，不能一律禁止子代理继续委派。",
+        "区分逻辑角色设计与尚未验证的工具并发能力。",
+        "有unknown可说明，不要求为降低层数合成无边界大任务。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "workflow.md": "# 任务\n根协调者审核两个独立数据域A、B；用户授权域协调者各自把不重叠分区交给只读检查者。每层输入有具体partition集合，下层集合严格缩小，叶子执行check-row，父层只汇总其范围。\n",
+          "roles.md": "# Scope\n域协调者可以在分配域内委派不同分区；叶子只读完成数据检查并报告事实，不汇总其他域。实际运行尚未开始。\n",
+          "skills/audit-tree/SKILL.md": "---\nname: audit-tree\ndescription: Coordinate authorized checks over assigned partitions.\n---\n\nFor a leaf partition directly run the provided read-only check-row method. Otherwise dispatch bounded non-overlapping partitions under the assigned authorization. Aggregate only the assigned scope.\n"
+        }
+      },
+      "expected": {
+        "output": "认可有授权、范围缩小且有真实叶子工作的方法，不能一律禁止子代理继续委派。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "合法多层协调是防重复标准的必要反例。",
+        "minimalCounterexample": "子层仍接收原始完整目标且重复同职责时须重新审查。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "architecture-caller-overrides-narrow-leaf",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "$review-agent-skill 只读检查 facade 和 leaf 的整体默认调用是否一致。usage.md 是当前实际入口说明。",
+      "assertions": [
+        "定位caller强制路径抵消leaf已经收窄的适用范围，优先修正确owner。",
+        "保留需要资料和交接约束时调用item，不能禁止它在全部任务中出现。",
+        "比较普通执行与组合的价值假设，不单凭两层目录断言有害。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/item/SKILL.md": "---\nname: item\ndescription: Use for bounded delegated implementation requiring linked specifications.\n---\n\nRead linked scope and acceptance, implement it and return evidence. Direct mechanical editing can be done normally.\n",
+          "skills/facade/SKILL.md": "---\nname: facade\ndescription: Handle all file editing requests.\n---\n\nFor every edit, including literal typo replacements, always load item before doing any work.\n",
+          "usage.md": "# 请求\n普通用户也通过facade发起已指定文字替换。用户没有要求全部修改执行同一方法，也没有普通编辑增益记录。\n"
+        }
+      },
+      "expected": {
+        "output": "定位caller强制路径抵消leaf已经收窄的适用范围，优先修正确owner。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "收窄description不能修复强制上层调用，需整个active path核对。",
+        "minimalCounterexample": "用户有明确统一流程政策且任务价值依据成立时，应按该政策评估。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    },
+    {
+      "id": "architecture-generated-handoff-needs-real-consumption",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "$review-agent-skill 评审 portfolio.md 中的handoff有效性主张。材料齐全但没有本轮真实模型运行；只分析证据覆盖。",
+      "assertions": [
+        "说明两端各自用不同样本不能支持真实生成→消费的效果主张。",
+        "给出让worker读取实际生成任务和明确可达依据的验证方向，保留人工好任务作为对照。",
+        "不把缺组合证据称为已观察的生产失败，也不要求所有工件统一JSON。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "portfolio.md": "# 工作流\nprepare-ticket 根据Spec写任务；worker根据ticket实现。\n测试A让prepare-ticket生成一个任务，检查文件存在。测试B给worker另一个人工写好的充分任务，检查功能正确。\n报告据此声称“自动生成的ticket能让较弱worker独立实现设计要求”。\n",
+          "spec.md": "# Scope\n用户已接受同租户访问与窄屏优先预览。\n",
+          "generated-ticket.md": "# Todo\n实现页面。\n",
+          "handwritten-ticket.md": "# 实施\n同租户管理员读取；窄屏优先预览；查看spec.md；测试权限和对照两视口。\n"
+        }
+      },
+      "expected": {
+        "output": "说明两端各自用不同样本不能支持真实生成→消费的效果主张。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "区分存在、充分性、实际消费和结果。",
+        "minimalCounterexample": "真实消费同一生成物且有独立验收时可支持该路径效果。",
+        "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
+      }
+    }
+  ]
+}

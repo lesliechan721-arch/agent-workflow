@@ -24,7 +24,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只对 skills/worker/SKILL.md 做一次局部简化候选。facts.md是当前领域依据。允许改这个文件，不运行模型；说明仍需验证的效果。",
+      "prompt": "$simplify-agent-skill 只对 skills/worker/SKILL.md 做一次局部简化候选。facts.md是当前领域依据。允许改这个文件，不运行模型；说明仍需验证的效果。",
       "assertions": [
         "减少重复泛化提醒，保留或可靠定位金额、幂等、UTC、账户范围及验证语义。",
         "不因worker约束较长就把整段改成“按规格实现”。",
@@ -62,7 +62,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "为 experiment.md 中的简化做对照计划；本次仅计划，不修改任何文件或运行模型。",
+      "prompt": "$simplify-agent-skill 为 experiment.md 中的简化做对照计划；本次仅计划，不修改任何文件或运行模型。",
       "assertions": [
         "指出先修对照控制：普通基线保留相同原始资料并移除已删能力的悬空调用，记录差异。",
         "不会越权修改生产caller或运行实验；提出有界计划。",

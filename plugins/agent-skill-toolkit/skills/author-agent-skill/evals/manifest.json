@@ -19,11 +19,7 @@
         "project-default"
       ],
       "runs": 3,
-      "timeoutMs": 180000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 180000
     },
     {
       "id": "behavior",
@@ -33,11 +29,7 @@
         "project-default"
       ],
       "runs": 3,
-      "timeoutMs": 600000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 600000
     },
     {
       "id": "applicability-and-roles",
@@ -47,11 +39,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 600000,
-      "requiredForRelease": false,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 600000
     },
     {
       "id": "redesign-behavior",
@@ -61,11 +49,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 600000,
-      "requiredForRelease": false,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 600000
     }
   ]
 }

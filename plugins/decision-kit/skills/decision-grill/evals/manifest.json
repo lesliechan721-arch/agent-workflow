@@ -26,12 +26,7 @@
         "project-default"
       ],
       "runs": 3,
-      "timeoutMs": 180000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation",
-        "sanity"
-      ]
+      "timeoutMs": 180000
     },
     {
       "id": "router",
@@ -41,12 +36,7 @@
         "project-default"
       ],
       "runs": 10,
-      "timeoutMs": 180000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation",
-        "sanity"
-      ]
+      "timeoutMs": 180000
     },
     {
       "id": "behavior",
@@ -56,11 +46,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 300000
     },
     {
       "id": "decision-frame",
@@ -70,11 +56,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 300000
     },
     {
       "id": "decision-comprehension",
@@ -84,11 +66,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 300000
     },
     {
       "id": "independent-delivery-trigger",
@@ -98,8 +76,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 180000,
-      "requiredForRelease": false
+      "timeoutMs": 180000
     },
     {
       "id": "independent-delivery-behavior",
@@ -109,8 +86,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     },
     {
       "id": "bounded-question-trigger",
@@ -120,8 +96,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 180000,
-      "requiredForRelease": false
+      "timeoutMs": 180000
     },
     {
       "id": "presentation-handoff",
@@ -131,8 +106,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     }
   ]
 }

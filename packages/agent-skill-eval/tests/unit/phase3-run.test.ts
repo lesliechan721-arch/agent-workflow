@@ -121,11 +121,11 @@ async function reviewEvalFixture(): Promise<{
     'plugins',
     'aw-development-toolkit',
     'skills',
-    'review-aw',
+    'develop-aw',
     'evals',
   )
   const document = JSON.parse(await readFile(
-    path.join(evalRoot, 'materialized-review-cases.json'),
+    path.join(evalRoot, 'review-materialization-cases.json'),
     'utf8',
   )) as { cases: Array<{ id: string; input: { workspaceFiles: Record<string, string> } }> }
   const evalCase = document.cases.find((entry) => entry.id === 'reuse_current_final')
@@ -177,7 +177,7 @@ async function simplificationEvalFixture(): Promise<{
     'evals',
   )
   const document = JSON.parse(await readFile(
-    path.join(evalRoot, 'simplification-cases.json'),
+    path.join(evalRoot, 'simplify-source-cases.json'),
     'utf8',
   )) as { cases: Array<{ id: string; input: { workspaceFiles: Record<string, string> } }> }
   const evalCase = document.cases.find((entry) => entry.id === 'prepare_isolated_unverified_candidate')
@@ -1543,7 +1543,7 @@ describe('EvalSpec v1 execution', () => {
       expect(result.value.ok, args.join(' ')).toBe(false)
     }
 
-    const accepted = await runReviewFixtureCli(data, [
+    const acceptedArgs = [
       'review', 'inspect', source,
       '--workspace-root', workspace,
       '--skill', 'demo-skill',
@@ -1551,9 +1551,27 @@ describe('EvalSpec v1 execution', () => {
       '--scope', 'project',
       '--materialization', binding,
       '--json',
-    ])
+    ]
+    const accepted = await runReviewFixtureCli(data, acceptedArgs)
     expect(accepted.code).toBe(0)
-    expect(accepted.value).toMatchObject({ skills: [{ state: 'ready' }] })
+    expect(accepted.value).toMatchObject({ schemaVersion: 2, view: 'review', skills: [{ state: 'ready' }] })
+    const explicitReview = await runReviewFixtureCli(data, [...acceptedArgs, '--view', 'review'])
+    expect(explicitReview.code).toBe(0)
+    expect(explicitReview.value).toEqual(accepted.value)
+
+    for (const viewArgs of [['--view', 'release'], ['--view=release']]) {
+      const result = await runReviewFixtureCli(data, ['review', 'inspect', source, ...viewArgs, '--json'])
+      expect(result.code).toBe(2)
+      expect(result.value).toMatchObject({
+        schemaVersion: 2,
+        command: 'review:inspect',
+        view: 'review',
+        ok: false,
+        sources: expect.any(Array),
+        skills: [],
+        issues: [{ code: 'invalidArguments' }],
+      })
+    }
   })
 
   it('preserves review fixture source, provider, and supplied final bytes', async () => {

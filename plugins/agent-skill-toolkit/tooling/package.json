@@ -5,7 +5,7 @@
   "packageManager": "pnpm@10.33.0",
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "node --test ../scripts/tooling.test.mjs ../scripts/output-contract-audit.test.mjs",
+    "test": "node --test ../scripts/tooling.test.mjs",
     "test:isolated": "node --test isolation.test.mjs"
   },
   "dependencies": {

@@ -11,7 +11,7 @@ import {
   TRIGGER_WORKSPACE_FIXTURES,
 } from '../skills/codex-subagent-guide/evals/trigger-fixture.mjs';
 import manifestDocument from '../skills/codex-subagent-guide/evals/manifest.json' with { type: 'json' };
-import releaseCorpusDocument from '../skills/codex-subagent-guide/evals/trigger-cases.json' with { type: 'json' };
+import triggerCorpusDocument from '../skills/codex-subagent-guide/evals/trigger-cases.json' with { type: 'json' };
 import compositionCorpusDocument from '../skills/codex-subagent-guide/evals/trigger-composition-cases.json' with { type: 'json' };
 
 const GUIDE_ROLE_NAMES = [
@@ -24,42 +24,22 @@ const ROLE_NAMES = [...GUIDE_ROLE_NAMES, ...EXPLORE_ROLE_NAMES];
 
 async function testEvalCorpus() {
   const manifest = manifestDocument;
-  const releaseSuite = manifest.suites.find((entry) => entry.id === 'trigger');
+  const triggerSuite = manifest.suites.find((entry) => entry.id === 'trigger');
   const compositionSuite = manifest.suites.find((entry) => entry.id === 'trigger-composition');
   assert.equal(manifest.version, 1);
-  assert.deepEqual(
-    {
-      cases: releaseSuite?.cases,
-      releaseSplits: releaseSuite?.releaseSplits,
-      requiredForRelease: releaseSuite?.requiredForRelease,
-    },
-    {
-      cases: 'trigger-cases.json',
-      releaseSplits: ['validation', 'sanity'],
-      requiredForRelease: true,
-    },
-  );
-  assert.deepEqual(
-    {
-      cases: compositionSuite?.cases,
-      requiredForRelease: compositionSuite?.requiredForRelease,
-    },
-    {
-      cases: 'trigger-composition-cases.json',
-      requiredForRelease: false,
-    },
-  );
+  assert.equal(triggerSuite?.cases, 'trigger-cases.json');
+  assert.equal(compositionSuite?.cases, 'trigger-composition-cases.json');
 
-  const releaseDocument = releaseCorpusDocument;
+  const triggerDocument = triggerCorpusDocument;
   const compositionDocument = compositionCorpusDocument;
-  const releaseCases = releaseDocument.cases;
+  const triggerCases = triggerDocument.cases;
   const compositionCases = compositionDocument.cases;
-  const cases = [...releaseCases, ...compositionCases];
-  assert.equal(releaseDocument.version, 1);
-  assert.equal(releaseDocument.suite.kind, 'trigger');
-  assert.equal(releaseDocument.suite.unitUnderTest, 'codex-subagent-guide');
-  assert.equal(releaseDocument.suite.runtime.isolation, 'strict');
-  assert.deepEqual(releaseDocument.suite.runtime.strictNegativeSplits, ['validation', 'sanity']);
+  const cases = [...triggerCases, ...compositionCases];
+  assert.equal(triggerDocument.version, 1);
+  assert.equal(triggerDocument.suite.kind, 'trigger');
+  assert.equal(triggerDocument.suite.unitUnderTest, 'codex-subagent-guide');
+  assert.equal(triggerDocument.suite.runtime.isolation, 'strict');
+  assert.deepEqual(triggerDocument.suite.runtime.strictNegativeSplits, ['validation', 'sanity']);
   assert.equal(compositionDocument.version, 1);
   assert.equal(compositionDocument.suite.kind, 'trigger');
   assert.equal(compositionDocument.suite.unitUnderTest, 'codex-subagent-guide');
@@ -67,7 +47,7 @@ async function testEvalCorpus() {
   assert.equal(compositionDocument.suite.runtime.isolation, 'standard');
   assert.deepEqual(compositionDocument.suite.runtime.strictNegativeSplits, ['validation', 'sanity']);
   assert.equal(compositionDocument.suite.runtime.forbidMultipleSkillLoads, false);
-  assert.equal(releaseCases.length > 0, true);
+  assert.equal(triggerCases.length > 0, true);
   assert.equal(compositionCases.length > 0, true);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
   assert.equal(cases.every((entry) => typeof entry.input?.shouldSpawnAgent === 'boolean'), true);
@@ -78,7 +58,7 @@ async function testEvalCorpus() {
     true,
   );
   assert.equal(
-    releaseCases.every((entry) => !['authorization_skill', 'lifecycle_skill'].includes(
+    triggerCases.every((entry) => !['authorization_skill', 'lifecycle_skill'].includes(
       entry.input.workspaceFixture,
     )),
     true,
@@ -94,7 +74,7 @@ async function testEvalCorpus() {
     true,
   );
   assert.equal(
-    releaseCases.filter((entry) => entry.input.workspaceFixture === 'project_authorization')
+    triggerCases.filter((entry) => entry.input.workspaceFixture === 'project_authorization')
       .every((entry) => entry.input.useProjectRules === true),
     true,
   );

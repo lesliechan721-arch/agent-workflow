@@ -30,23 +30,23 @@ aw plugin capabilities --surface manifest --json
 
 其它 surface 以当前 CLI 帮助为准。不要从 development plugin 文档缓存字段表。
 
-## Config Definition v2 / v3 / v4 合同
+## Config Definition v4 合同
 
-Manifest 配置使用 `config.fields` 定义字段，并可用 `config.presentation.groups` 定义字段分组。v2 字段类型允许 `string`、`number`、`boolean` 和浅层 `object`；v3 另支持顶层一维 `array`，元素为同一 schema 定义的标量或浅层对象。`null`、嵌套对象、嵌套数组和混合标量数组无效。旧的 `config.schema`、`enum`、`file`、`directory`、`presentation.fields`、`presentation.presets`、`valueLabels` 和 `recommendedValue` 都无效。
+Manifest 配置在 `config` 中显式声明 `schemaVersion: 4`，使用 `config.fields` 定义字段，并可用 `config.presentation.groups` 定义字段分组。字段支持 string、number、boolean、fixed object、KV object 和受约束的一维 array；叶级容器与条件对象的规则见下文。null、混合类型数组及任意递归容器无效。
 
-未声明 `config.schemaVersion` 的 Config v2 继续兼容。声明 `config.schemaVersion: 3` 后，可使用 `definitions` 和本地 `$ref`：引用只允许 `#/config/definitions/Name`，名称遵守字段安全标识规则，拒绝 `__proto__`、`constructor`、`prototype`。引用处只可覆盖 `title`、`description`、`default`、`required`；覆盖后的 default 按完整字段约束验证。子属性可引用非敏感标量定义，但不能带 default；动态 KV child 也不能带 required。引用不增加对象嵌套能力。
+`definitions` 和本地 `$ref` 用于复用配置定义。引用只允许 `#/config/definitions/Name`，名称遵守字段安全标识规则，拒绝 `__proto__`、`constructor`、`prototype`。引用处只可覆盖 title、description、default、required；覆盖后的 default 按完整字段约束验证。子属性可引用非敏感标量定义，但不能带 default；动态 KV child 不能带 required。
 
-v3 最多 64 个定义、256 个顶层字段、8 次引用跳转。每次跟随 `$ref` 算一层，包括对象属性上的引用；内联对象不计数。例如字段到第一个定义，再经过七个引用到标量，是八层。Core 公开 `PLUGIN_CONFIG_V3_MAX_DEFINITIONS`、`PLUGIN_CONFIG_V3_MAX_FIELDS` 和 `PLUGIN_CONFIG_V3_MAX_REF_DEPTH`。未知引用、循环、未使用的坏定义及超限输入均拒绝；旧 v2 不追溯增加顶层字段上限。编译后删除 definitions 和引用，保留 `schemaVersion: 3` 与 presentation，且再次读取编译结果不改变合同。值校验和 renderer 仍消费展开后的字段。
+配置最多 64 个定义、256 个顶层字段、8 次引用跳转。每次跟随 `$ref` 算一层，包括对象属性上的引用；内联对象不计数。未知引用、循环、未使用的坏定义及超限输入均拒绝。编译后删除 definitions 和引用，保留 schemaVersion 与 presentation，值校验和 renderer 消费展开后的字段。
 
-v3 的 `presentation.summaries.<name>` 只支持 `{ kind: "join", parts: [{ path, format? }], separator, missing }`。`fieldViews.<field>.summary` 选择本地摘要。path 是一个已声明 fixed scalar 属性的 JSON Pointer token，支持 `~0` 和 `~1`，不遍历原型、其他字段或外部资源。`format` 默认为 `raw`；`choiceTitle` 优先使用匹配 preset 的 title，无匹配时显示原标量。可选属性缺失使用 missing；空串、0 和 false 保留明确表示。必填缺失或值无效显示“需修正”。摘要不适用于 KV 或 sensitive 字段。
+`presentation.summaries.<name>` 只支持 `{ kind: "join", parts: [{ path, format? }], separator, missing }`。`fieldViews.<field>.summary` 选择本地摘要。path 是一个已声明 fixed scalar 属性的 JSON Pointer token，支持 `~0` 和 `~1`，不遍历原型、其他字段或外部资源。format 默认为 raw；choiceTitle 优先使用匹配 preset 的 title，无匹配时显示原标量。可选属性缺失使用 missing；空串、0 和 false 保留明确表示。必填缺失或值无效显示“需修正”。摘要不适用于 KV 或 sensitive 字段。
 
 摘要最多 4 段，separator 最多 8 个 Unicode code point，path 最多 128 个字符，显示摘要最多 256 个 Unicode code point。Core 的 `PLUGIN_CONFIG_SUMMARY_MAX_*` 常量公开这些上限。终端呈现清除 ANSI、OSC、C0/C1 和危险双向控制字符。过长摘要或未选中的属性使 `ValuePresentation.complete` 为 false，完整值仍可读取；dirty、preset 匹配、Review diff 和 hash 不使用摘要。没有摘要声明时，界面显示真实属性值，并保留完整读取入口。
 
-先发布支持 `aw.plugin-config.v3` 和 `aw.plugin-config-summary.v1` 的 reader CLI，再分发使用这些能力的插件。Core 从 v3 标记及摘要 metadata 派生对应能力；编译 bundle 保留要求，Catalog index 只携带 requirements 与 digest，不复制 config。数组字段还派生 `aw.plugin-config-array.v1`。Store v5 保存原字段名与 JSON 值，不存 ref、summary、preset ID 或编辑 rowId。Store envelope v4 及更旧格式不读取、不自动迁移或删除；显式 reset 后重新配置，不提供降级导出。展示 metadata 变化仍改变 schema identity、manifest/bundle digest 和 Review 证据。
+配置定义要求 `aw.plugin-config.v4`；摘要另使用 `aw.plugin-config-summary.v1`，数组字段派生 `aw.plugin-config-array.v1`。编译 bundle 保留 requirements，Catalog index 只携带 requirements 与 digest。Store v5 保存原字段名与 JSON 值，不存 ref、summary、preset ID 或编辑 rowId。展示 metadata 变化也改变 schema identity、manifest/bundle digest 和 Review 证据。
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "definitions": {
     "profile": {
       "type": "object",
@@ -67,21 +67,21 @@ v3 的 `presentation.summaries.<name>` 只支持 `{ kind: "join", parts: [{ path
 
 `sensitive: true` 只用于顶层 string 字段，且 sensitive 字段不得声明 default 或 choices。number、boolean、object、array、array item、fixed object child 和 KV `additionalProperties` child 都不得声明 sensitive。`object` 必须选择一种互斥模式。fixed object 必须声明 `properties`，且 `additionalProperties` 省略或为 `false`；KV object 不得声明 `properties`，且必须用一个 scalar child schema 声明 `additionalProperties`。禁止把 fixed 与 KV 混合。固定 child 用 `required: true` 表示必填；所有 child 都不能声明 default，KV child 也不能声明 required。`validation` 支持 `minProperties`、`maxProperties` 和复用 string 校验的 `key`。对象最多有 32 个属性。Core 提供 canonical object preset 匹配和结构化校验 issue；CLI 和控制台支持标量及一层 object 的完整编辑。
 
-v3 的 `type: "array"` 必须给出单一 `items` schema，允许 string、number、boolean、fixed object 或 KV object。items 可引用本地 definitions，展开后仍禁止嵌套；items 本身不能声明 default、required、sensitive，fixed object item 的属性可 required。数组级 default 和 choices 是完整数组，allowCustom=false 禁止自定义增删改排。`validation.minItems/maxItems` 是非负整数，最大 128 项，未声明 max 也受此限制；每个数组完整值的规范化紧凑 JSON UTF-8 编码最多 262144 字节，对象元素仍最多 32 属性。`uniqueItems` 默认 false，true 时重复值报错，不静默去重；对象 key 顺序不影响相等，数组顺序影响相等。`[]` 可覆盖非空默认，unset 不等于空数组，required 不代表非空。`fieldViews.<field>.itemSummary` 可引用一个针对 fixed-object 元素的 join summary；KV 元素使用安全对象预览。CLI 用完整 JSON set/unset，TUI 在本地列表中增删改排，确认整列后选一次保存范围，不提供 index 写入命令。
+`type: "array"` 必须给出单一 `items` schema，允许 string、number、boolean、fixed object 或 KV object。items 可引用本地 definitions，展开后仍遵守叶级容器边界；items 本身不能声明 default、required、sensitive，fixed object item 的属性可 required。数组级 default 和 choices 是完整数组，allowCustom=false 禁止自定义增删改排。`validation.minItems/maxItems` 是非负整数，最大 128 项，未声明 max 也受此限制；每个数组完整值的规范化紧凑 JSON UTF-8 编码最多 262144 字节，对象元素仍最多 32 属性。`uniqueItems` 默认 false，true 时重复值报错，不静默去重；对象 key 顺序不影响相等，数组顺序影响相等。`[]` 可覆盖非空默认，unset 不等于空数组，required 不代表非空。`fieldViews.<field>.itemSummary` 可引用一个针对 fixed-object 元素的 join summary；KV 元素使用安全对象预览。CLI 用完整 JSON set/unset，TUI 在本地列表中增删改排，确认整列后选一次保存范围，不提供 index 写入命令。
 
-v3 的对象数组可以用 `validation.uniqueBy` 指定一个已声明的标量属性。重复属性值会使整个候选无效，属性值保持原类型和大小写。非敏感标量可以声明 `valueRef: { field, key, label?, include? }`：`field` 是另一顶层对象数组，`key` 是同类型标量属性，`label` 是可选展示属性，`include` 是允许的静态内置值。静态值同时保留，源数组不能使用同值的 key。引用只使用固定字段和一层属性；保存、有效配置读取与 apply 都校验依赖闭包。删除仍被引用的 key 会失败，可先新增 key，再切换引用，最后删除旧 key。调用者得到的字段仍受原允许 keys 限制。两项能力分别要求 `aw.plugin-config-unique-by.v1` 和 `aw.plugin-config-value-ref.v1`。
+对象数组可以用 `validation.uniqueBy` 指定一个已声明的标量属性。重复属性值会使整个候选无效，属性值保持原类型和大小写。非敏感标量可以声明 `valueRef: { field, key, label?, include? }`：`field` 是另一顶层对象数组，`key` 是同类型标量属性，`label` 是可选展示属性，`include` 是允许的静态内置值。静态值同时保留，源数组不能使用同值的 key。引用只使用固定字段和一层属性；保存、有效配置读取与 apply 都校验依赖闭包。删除仍被引用的 key 会失败，可先新增 key，再切换引用，最后删除旧 key。调用者得到的字段仍受原允许 keys 限制。两项能力分别要求 `aw.plugin-config-unique-by.v1` 和 `aw.plugin-config-value-ref.v1`。
 
 AW 只提供 `default < user < project` 两个持久写入层。所有新 namespaced Store 使用 schemaVersion 5，包括只含标量、对象或空 values 的配置；旧格式显示 schemaVersionUnsupported 并保留原文件。user 配置绑定 source identity；project 配置绑定 Catalog logical identity，所以 Git URL、SSH/HTTPS transport 或 path source 的变化不改变同一 Catalog 的项目配置身份。sensitive 字段只允许 user scope。project 写入若无法由 Git 验证可共享性，会返回 `projectConfigShareabilityUnverified` warning；明确被 ignore 时以 `projectConfigIgnored` 拒绝写入。object 和 array 值按顶层字段完整覆盖，不深合并或拼接列表。字符串 validation format 只支持 `identifier`、`slug`、`semver`、`url`、`hostname` 和 `email`；Config 不提供文件系统 path、file 或 directory format，也不解析 realpath 或建立 project artifact path boundary。CLI 写入使用 `aw config set <plugin> <field> --scope <user|project> (--value-json <json> | --value-stdin | --preset <id>)`。sensitive 字段拒绝 `--value-json` 和 `--preset`；非交互或 JSON 模式必须使用 `--scope user --value-stdin`，并按 EOF 原样读取 UTF-8。preset 只用于选择 manifest 中的实际值，store 不保存 preset ID。作者脚本使用 scaffolding 生成的 `scripts/aw-config.mjs` 读取 CLI 已校验的 `AW_PLUGIN_CONTEXT` effective config；helper 保持敏感值脱敏，不读取持久 store，也不维护第二份字段 validator。user/project 层诊断使用 `aw config get/list --scope ...`。
 
-### Config Definition v4
+### 条件对象与常量
 
-声明 `config.schemaVersion: 4` 后，固定对象可使用有限 `variants`，非敏感标量可声明 `const`，固定对象的属性可使用叶级标量数组或标量 KV 对象。顶层对象数组的固定元素同样支持这些属性。v4 沿用 definitions、局部引用、choices、valueRef、uniqueBy、presentation、scope 和既有限值；不开放任意递归容器。v2/v3 的接受范围保持不变。
+声明 `config.schemaVersion: 4` 后，固定对象可使用有限 `variants`，非敏感标量可声明 `const`，固定对象的属性可使用叶级标量数组或标量 KV 对象。顶层对象数组的固定元素同样支持这些属性。该合同使用 definitions、局部引用、choices、valueRef、uniqueBy、presentation、scope 和既有限值；不开放任意递归容器。
 
 `variants.discriminator` 指向当前对象 common properties 中已声明的 own string 属性。`cases` 将字符串映射到 `{ properties }` 分支；分支不能覆盖 common 属性。可选 `missing` 指向一个已有 case，只在选择字段缺失时使用；可选 `otherwise` 为其它合法值提供 `{ properties }`。选择值仍须通过 choices 和 valueRef 校验。没有匹配分支时拒绝候选，不猜测默认值；所有分支在 schema 读取时都必须有效。
 
 `const` 必须匹配标量类型及校验条件。显式值不同则报错；省略时可显示常量，但不会将它写入强配置。`required` 仍独立生效。TUI 从相同分支合同显示属性和固定值；叶级数组与 KV 使用结构化编辑。切换分支只改变草稿，保存 Review 显示移除的属性和实际保留值；取消保留原配置。无交互写入不清理错误字段，而是拒绝整个候选。
 
-v4 要求 `aw.plugin-config.v4`。先交付支持该 capability 的 CLI，再分发使用它的插件。Manifest v3、Store v5、Catalog v7 和 installed-runtime-config v2 保持原版本。Store 保存完整原始顶层值，不保存 UI rowId、派生命令路径或环境引用的解析值。分支、常量和呈现元数据均属于 schema identity，变化后需重新取得 Review 证据。
+v4 要求 `aw.plugin-config.v4`。先交付支持该 capability 的 CLI，再分发使用它的插件。Manifest v3、Store v5、Catalog v7 和 installed-runtime-config v2 是独立合同。Store 保存完整原始顶层值，不保存 UI rowId、派生命令路径或环境引用的解析值。分支、常量和呈现元数据均属于 schema identity，变化后需重新取得 Review 证据。
 
 ### 已安装配置读取
 
@@ -157,7 +157,7 @@ Workspace 必须位于有有效 HEAD 的 Git worktree 中，也可以是仓库�
 
 若其它当前 plugin manifest 的 `dependencies` 包含目标，命令列出反向依赖者并停止。所有检查在删除前完成；缺少 `--yes` 时不修改文件。成功只删除 plugin root，不修改 `catalog.version`，也不 commit、build 或 publish。命令没有 `--force`。删除阶段发生 I/O 失败时，诊断会给出从已核验 HEAD 恢复目标的 Git 命令。
 
-Agent 删除由 Catalog Author 编排：普通用户删除请求先进入 Catalog Author；它先确认用户明确给出的 Workspace 和插件名、当前 inventory 与反向依赖，再明确交接这一个命令给 Plugin Author。没有该 handoff 时 Plugin Author 停止并指向 Catalog Author。Plugin Author 通过 runtime compatibility check 后，只执行公开参数的删除命令并返回 JSON receipt；成功后不对已删除对象运行 validate、test、build 或 status。Catalog Author 重新读取 inventory 和依赖，并验证剩余插件。
+Agent 在 `develop-aw` 的 Catalog 维护路径处理删除：从用户指定的 Workspace 和插件名唯一定位 canonical 目标，确认显式删除授权、inventory、反向依赖及 Git 状态。公开 remove 要求有效 Git HEAD，目标已在 HEAD 中，且当前目标树的内容、可执行位和形状精确匹配 HEAD；目标内 staged、unstaged、untracked、ignored 或额外节点均按真实命令诊断处理。通过能力检查后，按公开帮助执行 remove 并保留 JSON receipt。保护性拒绝时报告阻碍，不丢弃用户变更或绕过删除保护。成功后重新读取 inventory 和依赖，只验证剩余受影响插件；空 inventory 只验证空 Catalog，不对已删除对象运行 validate、test、build 或 status。remove 不自动提升版本、提交或发布。
 
 ## Build、Portable 和信任边界
 
@@ -167,9 +167,9 @@ Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输
 
 Portable Agent Skills 是插件的显式增量 distribution。其 native capability 门禁、projection 和 materialization 结构以当前 `manifest`、`build-config`、`artifacts` capability surface 和 validator 为准。Consumer 使用 `aw skill materialize` 或 `aw skill install` 时会验证完整依赖闭包；`--skill` 只过滤最终选择。
 
-独立审核源 Skill 时，使用 `aw review inspect <target> --json` 取得默认的精简 review 导航；已有来源凭据通过 `--materialization <path>` 传入。需要 final 时使用 `aw review prepare <plugin-or-source-skill> --platform <codex|claude|agent-skills> --scope <user|project> --out <new-dir> --json`，可加 `--skill` 和 `--config` 选择本次输入。它无需 Eval，配置仅取 manifest 默认值与合法非敏感覆盖，在隔离环境执行必要 build/renderer，不安装插件。发布检查显式选择 `--view release`，不以普通导航推断证据覆盖。
+独立审核源 Skill 时，使用 `aw review inspect <target> --json` 取得默认的精简 review 导航；已有来源凭据通过 `--materialization <path>` 传入。需要 final 时使用 `aw review prepare <plugin-or-source-skill> --platform <codex|claude|agent-skills> --scope <user|project> --out <new-dir> --json`，可加 `--skill` 和 `--config` 选择本次输入。它无需 Eval，配置仅取 manifest 默认值与合法非敏感覆盖，在隔离环境执行必要 build/renderer，不安装插件。inspection 回执使用 schema 2，view 为 review；取证完成不代表质量或发布通过。
 
-`aw skill materialize`、`aw skill eval prepare` 和 `aw review prepare` 均返回 `sourceBindingPath`，指向被测 Skill 外的 schema 2 `aw-source-binding.json`。它把本次 source 或 Catalog snapshot、profile 输入和实际产物绑定，供后续 inspection 只读核验。该文件不替代 EvalSpec/Audit/Result，也不证明语义质量。缺失、过期或 v1 凭据均需通过对应入口在新目录重新准备，不原地迁移或手工补写 digest。inspection v2 与相关插件同步升级，不保留旧 inspection 输出。
+`aw skill materialize`、`aw skill eval prepare` 和 `aw review prepare` 均返回 `sourceBindingPath`，指向被测 Skill 外的 schema 2 `aw-source-binding.json`。它把本次 source 或 Catalog snapshot、profile 输入和实际产物绑定，供后续 inspection 只读核验。该文件不替代 EvalSpec/Audit/Result，也不证明语义质量。缺失、过期或 v1 凭据均需通过对应入口在新目录重新准备，不原地迁移或手工补写 digest。inspection v2 提供当前 source 到 final 的导航。
 
 Eval Manifest v1 profile 的 `plugins` 对象选择参与插件，并为每个插件提供公共非敏感配置。可选 `configByScope` 使用 `{ "user": { "plugin-name": {} }, "project": { "plugin-name": {} } }`；其中插件必须已在 `plugins` 中声明。每个 scope 覆盖按顶层字段替换，未写字段继承公共配置。普通 artifact 和 role 使用 profile 的 `scope`；共享 `codex-native` Skill 始终使用合并后的 user 配置。`prepare` 将这些实际输入写入隔离 config store，并把有效配置摘要绑定到 source binding；它不安装插件或启动模型。
 

@@ -975,9 +975,8 @@ describe('authoring tools', () => {
     await expect(
       fs.readFile(path.join(dualSkillRoot, 'agents', 'openai.yaml'), 'utf8'),
     ).resolves.toEqual(expect.stringContaining('allow_implicit_invocation: false'));
-    await expect(
-      fs.readJson(path.join(dualSkillRoot, 'evals', 'manifest.json')),
-    ).resolves.toMatchObject({
+    const scaffoldManifest = await fs.readJson(path.join(dualSkillRoot, 'evals', 'manifest.json'));
+    expect(scaffoldManifest).toMatchObject({
       version: 1,
       defaults: { profile: 'project-default' },
       profiles: {
@@ -986,6 +985,24 @@ describe('authoring tools', () => {
         },
       },
     });
+    expect(scaffoldManifest.suites).toEqual([
+      {
+        id: 'trigger',
+        kind: 'trigger',
+        cases: 'trigger-cases.json',
+        profiles: ['project-default'],
+        runs: 3,
+        timeoutMs: 180000,
+      },
+      {
+        id: 'behavior',
+        kind: 'conversation',
+        cases: 'behavior-cases.json',
+        profiles: ['project-default'],
+        runs: 1,
+        timeoutMs: 300000,
+      },
+    ]);
     await expect(
       fs.readJson(path.join(dualSkillRoot, 'evals', 'trigger-cases.json')),
     ).resolves.toMatchObject({
@@ -4124,8 +4141,6 @@ describe('authoring tools', () => {
         cases: 'trigger-cases.json',
         profiles: ['project-default'],
         runs: 1,
-        releaseSplits: ['validation'],
-        requiredForRelease: false,
         timeoutMs: 10_000,
       }],
     });

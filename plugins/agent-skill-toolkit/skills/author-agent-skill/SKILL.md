@@ -1,7 +1,7 @@
 ---
 name: author-agent-skill
 description: >-
-  创建或修改 Agent Skill 时使用，包括任务方法、description、调用字段、references、脚本、模板和 Eval 用例。局部修改按受影响范围完成；完整开发委托包含相应验证与修复。
+  创建或修改 Agent Skill 时使用，包括任务方法、description、调用字段、references、脚本、模板和 Eval 用例；完成当前修改所需的自检与修复。
 metadata:
   short-description: 设计、创建和维护可独立使用的 Agent Skill，并验证实际交付
 ---
@@ -24,18 +24,19 @@ metadata:
 node scripts/init-skill.mjs <new-directory> --description "说明该技能处理的用户任务" --format json
 ```
 
-补齐生成文件中的任务方法，再添加确实需要的资料、脚本或模板。维护已有 Skill 时直接改权威源码；生成文件的修改回到其来源。
+补齐生成文件中的任务方法，再添加确实需要的资料、脚本或模板。
 
 正文保留共同方法和关键陷阱。分支资料提供明确的读取条件；模板服务实际输出；脚本服务稳定复用的机械操作。按变更面采用：
 
 | 任务 | 方法 |
 | --- | --- |
 | 漏触发、误触发或调用行为改变 | [触发诊断](references/trigger-development.md) |
-| 选择脚本、设计接口或把脚本接入正文 | [脚本设计](references/script-authoring.md) |
+| 创建或修改随包脚本，以及编写调用说明 | [脚本设计](references/script-authoring.md) |
 | 创建或修改 Eval case、fixture 和断言 | [Eval 设计](references/eval-design.md) |
-| 完整开发中的评审、实验和修复 | [开发迭代](references/development-iteration.md) |
 
-## 验证与交付
+## 验证
+
+按本次修改影响完成相称自检。修改脚本时执行实际正常输入与关键错误输入，核对输出、退出码和文件影响；修改方法时用代表性任务核对资料、分支选择、相邻边界与产物。
 
 结构、字段或引用改变后检查包：
 
@@ -43,8 +44,4 @@ node scripts/init-skill.mjs <new-directory> --description "说明该技能处理
 node scripts/check-skill.mjs <skill-directory> --format json
 ```
 
-按诊断修复并重验；需要生成资源的源码，在生成后的包上检查完整性。工具参数按需查询 `--help`。
-
-脚本改动执行实际正常与错误输入，核对输出和文件影响。方法改动用代表性任务检查资料、分支选择和最终产物；格式通过不代替任务完成。明确委托的完整开发按开发迭代方法继续，局部修改不自动增加模型实验。
-
-交付文件、实际检查及关键未验证项。Eval 作者自检与独立审核分别说明。
+按诊断修复并重验；工具参数按需查询 `--help`。

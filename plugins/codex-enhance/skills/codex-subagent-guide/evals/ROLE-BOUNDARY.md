@@ -1,6 +1,6 @@
 # 调度简化后的 Eval 资产
 
-联合 workflow 保留 J01–J18，直接执行者保留 W01–W08。J15 仍在只暴露 Guide 的 `joint-guide-only` suite。旧 `worker-instructions` 改名为 `executor-instructions`，用例文件同步改名；三项 suite 仍为 `requiredForRelease: true`。角色是本次 Eval 的职责标签，不是产品中的 worker 注册项。
+联合 workflow 保留 J01–J18，直接执行者保留 W01–W08。J15 仍在只暴露 Guide 的 `joint-guide-only` suite。旧 `worker-instructions` 改名为 `executor-instructions`，用例文件同步改名。角色是本次 Eval 的职责标签，不是产品中的 worker 注册项。
 
 `run-role-boundary-evals.mjs` 实现 prepare 和 grade。准备阶段在该 Eval workspace 内从明确的 Guide 安装路径读取 keys-only v2 JSON，核对用例所需封套并仅投影允许字段；这只是配置前提观察，不证明 ownership、native receipt 或完整来源资格。实际外部生成通过产品 run，由公开 reader 唯一完成调用位置、来源和允许字段检查。准备阶段不执行动态 helper、不调用 resolve、不遍历 peer。它物化实际原始材料，选择本次指令文件。native 直接执行者探针用公共 Engine 的独立 developer 输入；不要求精确宿主角色版本证明。外部探针用 Engine 原生 workflow，让父任务调用安装 Guide 的 v4 前台 `run`，使用必填 profile 与 prompt；任务可从 stdin 输入，显式 instructions-file 可选。公共 Engine 的 `instruction-v2` transport 是另一份合同，本 suite 不把它发给产品 v4 adapter，也不修改该 Engine 合同。
 
@@ -15,7 +15,7 @@ aw skill eval prepare codex-enhance codex-subagent-guide \
 
 `subagentCommands` 明确选择 adapter；内建入口来自本次安装产物，custom 的 command 和可选 entrypoint 使用实际绝对路径。外部 model/effort 可省略，不把后端默认写成假定值。`lab-workspace`、`lab-bundle`、`fixture-*` 是用例前提标签；prepare 核对实际 mode/model/effort，不将标签当远端模型名。J18 要求 general、complex、advanced 三个 profile 分别提供 native、workspace、bundle。Guide、Advisor、Explore 每类各完成三个入口，共九个明确授权的只读任务。
 
-## 旧发布必需用例的逐项替代
+## 用例覆盖
 
 | 用例 | 保留的风险与当前 Oracle |
 | --- | --- |
@@ -46,7 +46,7 @@ aw skill eval prepare codex-enhance codex-subagent-guide \
 | W07 | 可见协调 Skill 和可用委派工具下，执行者不重新协调或委派 |
 | W08 | 明确授权的单文件写入与实际结果；在真实可执行授权写入的 workspace 后端上运行，不通过 supports 字段证明权限 |
 
-其它发布必需 suite 同样保留：Guide 的 trigger、routing、lifecycle、lifecycle-timeout、coordinator-behavior；Explore 的 trigger、model-selection、workflow、output-contract、coordinator-behavior；Advisor 的 role-boundary-trigger、coordinator-behavior。原生 lifecycle 仍验证同一有效执行者续接、独立新交付和一次生成的等待，不承诺外部后台恢复。等待窗口与重审模型要求由用例明确给出，不从默认角色指令推导。Explore 只记录角色可用清单，不以角色文件 digest 或 developer 授权布尔证明精确宿主采用。Advisor 的旧 manual/conservative/off 触发条件改为真实咨询安排、重要判断卡点及当前任务限制；明确用户预算用例仍保留。新增五个只读配置选择探针覆盖 general 缺省、design 缺省回退、合法 debug、非法 review 和不可用 design executor；这些探针不声称真实服务支持。
+其他 suite 包括：Guide 的 trigger、routing、lifecycle、lifecycle-timeout、coordinator-behavior；Explore 的 trigger、model-selection、workflow、output-contract、coordinator-behavior；Advisor 的 role-boundary-trigger、coordinator-behavior。原生 lifecycle 仍验证同一有效执行者续接、独立新交付和一次生成的等待，不承诺外部后台恢复。等待窗口与重审模型要求由用例明确给出，不从默认角色指令推导。Explore 只记录角色可用清单，不以角色文件 digest 或 developer 授权布尔证明精确宿主采用。Advisor 的旧 manual/conservative/off 触发条件改为真实咨询安排、重要判断卡点及当前任务限制；明确用户预算用例仍保留。新增五个只读配置选择探针覆盖 general 缺省、design 缺省回退、合法 debug、非法 review 和不可用 design executor；这些探针不声称真实服务支持。
 
 ## Fixture 与证据范围
 
@@ -62,4 +62,4 @@ J12 是明确标注的本地 fault control，使用产品 v4 请求，实际写�
 
 当前确定性检查验证 provider、fixture、解析和 grade 的机器合同。`role-boundary-public-contract.mjs` 还用已编译公开 CLI、临时 PATH 入口和隔离 home 实际通过 synthetic validate/build/source sync/install、save 后保持旧值、sync 应用新值、真实 installed reader、v4 stdin 与纯文本消费者、J16 零启动及 J12 单次写入 unknown。后端都是明确的本地假 Adapter；未运行真实模型、公共模型 Eval prepare 或独立 Oracle Audit，不提供发布资格。现有 EvalSpec/EvalAudit/结果绑定继续由公共专用流程管理。
 
-本轮因 Adapter v4 修改了外部输入和 J16 的 Oracle。用例 ID 和发布必需标记保留；原业务分析、来源和授权目标不变。新 Oracle 必须重新取得独立 EvalAudit，再运行模型 Eval。旧版模型成绩不适用于新输入、Oracle 或 grader；确定性测试仅证明本地合同与失败边界。真实后端、native 宿主、活跃调用连续性和打包分发仍未验证，不以本轮作者自检签发准入。
+本轮因 Adapter v4 修改了外部输入和 J16 的 Oracle。用例 ID 保持；原业务分析、来源和授权目标不变。新 Oracle 必须重新取得独立 EvalAudit，再运行模型 Eval。旧版模型成绩不适用于新输入、Oracle 或 grader；确定性测试仅证明本地合同与失败边界。真实后端、native 宿主、活跃调用连续性和打包分发仍未验证，不以本轮作者自检签发准入。

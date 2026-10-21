@@ -20,6 +20,7 @@ import {
   type CodexEvalRuntimeConfig,
 } from './codex-eval-runtime-config.js'
 import { applyCodexEvalGitIsolation } from './codex-eval-isolation.js'
+import { readCodexEvalRollouts, selectedCodexSkillInstruction } from './codex-eval-rollout.js'
 import {
   parseInstructionV2ReasoningEffort,
   parseInstructionV2Receipt,
@@ -50,8 +51,6 @@ const MAX_ADAPTER_OUTPUT_BYTES = 4 * 1024 * 1024
 const MAX_REQUEST_TEXT_BYTES = 200_000
 const MAX_ROLE_COUNT = 32
 const MAX_ROLE_DESCRIPTION_BYTES = 20_000
-const MAX_ROLLOUT_BYTES = 64 * 1024 * 1024
-const MAX_ROLLOUT_LINES = 100_000
 const MAX_V1_EXEC_INPUT_BYTES = MAX_REQUEST_TEXT_BYTES + 16_384
 const V1_CODE_MODE_SPAWN_MARKER = 'multi_agent_v1__spawn_agent'
 
@@ -1006,22 +1005,9 @@ function contentText(payload: Record<string, unknown>): string {
 }
 
 function selectedSkillName(event: unknown): string | null {
-  if (!isRecord(event)) return null
-  const payload = responseItem(event)
-  if (!payload || payload.type !== 'message' || payload.role !== 'user') return null
-  const metadata = isRecord(payload.internal_chat_message_metadata_passthrough)
-    ? payload.internal_chat_message_metadata_passthrough
-    : null
-  if (
-    !metadata
-    || !Array.isArray(metadata.content_item_kinds)
-    || !metadata.content_item_kinds.includes('skills.selected_skill_instructions')
-  ) return null
-  const text = contentText(payload).replaceAll('\\', '/')
-  const name = text.match(/<name>([^/<>]+)<\/name>/u)?.[1]
-  const skillPath = text.match(/<path>([^<>]+)<\/path>/u)?.[1]
-  if (!name || !skillPath || !skillPath.endsWith(`/.agents/skills/${name}/SKILL.md`)) return null
-  return name
+  const selected = selectedCodexSkillInstruction(event)
+  return selected?.path.endsWith(`/.agents/skills/${selected.name}/SKILL.md`)
+    ? selected.name : null
 }
 
 function encryptedContent(payload: Record<string, unknown>): string | null {
@@ -1139,23 +1125,6 @@ interface RolloutRecord {
   developerMessageCount: number
   calls: Array<Omit<CodexWorkflowCall, 'ordinal'> & { order: string }>
   trace: unknown[]
-}
-
-async function listRollouts(root: string): Promise<string[]> {
-  const result: string[] = []
-  async function visit(current: string): Promise<void> {
-    for (const entry of await fs.readdir(current, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return []
-      throw error
-    })) {
-      const target = path.join(current, entry.name)
-      if (entry.isDirectory()) await visit(target)
-      else if (entry.isFile() && target.endsWith('.jsonl')) result.push(target)
-      else if (entry.isSymbolicLink()) throw new Error('Codex rollout tree contains a symbolic link.')
-    }
-  }
-  await visit(path.join(root, 'sessions'))
-  return result.sort()
 }
 
 function rolloutIdentity(events: readonly Record<string, unknown>[]): Omit<
@@ -1681,25 +1650,7 @@ export async function normalizeCodexWorkflowRollouts(options: {
   trace: unknown[]
 }> {
   const records: RolloutRecord[] = []
-  let totalBytes = 0
-  let totalLines = 0
-  for (const file of await listRollouts(options.codexHome)) {
-    const bytes = await fs.readFile(file)
-    totalBytes += bytes.length
-    if (totalBytes > MAX_ROLLOUT_BYTES) throw new Error('Codex rollout evidence is too large.')
-    const lines = bytes.toString('utf8').split('\n').filter((line) => line.trim() !== '')
-    totalLines += lines.length
-    if (totalLines > MAX_ROLLOUT_LINES) throw new Error('Codex rollout evidence has too many events.')
-    const events = lines.map((line, index) => {
-      let value: unknown
-      try {
-        value = JSON.parse(line)
-      } catch {
-        throw new Error(`Codex rollout contains invalid JSON at line ${index + 1}.`)
-      }
-      if (!isRecord(value)) throw new Error(`Codex rollout event ${index + 1} must be an object.`)
-      return value
-    })
+  for (const { file, events } of await readCodexEvalRollouts(options.codexHome)) {
     const identity = rolloutIdentity(events)
     const messages = initialMessages(events)
     records.push({

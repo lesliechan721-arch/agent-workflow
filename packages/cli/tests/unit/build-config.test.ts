@@ -127,7 +127,7 @@ describe('buildConfig validation', () => {
         runtimeExports: [{
           name: 'frontmatter-registry', source: './registry.json',
           requires: { aw: { capabilities: [
-            'aw.review-publication.v1',
+            'aw.review-inspection.v2',
             'aw.plugin-skills.v1',
           ] } },
         }],
@@ -150,7 +150,7 @@ describe('buildConfig validation', () => {
         name: 'frontmatter-registry', source: './registry.json',
         requires: { aw: { capabilities: [
           'aw.plugin-skills.v1',
-          'aw.review-publication.v1',
+          'aw.review-inspection.v2',
         ] } },
       }],
       buildImports: [{

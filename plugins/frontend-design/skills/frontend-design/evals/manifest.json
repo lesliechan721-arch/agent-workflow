@@ -14,8 +14,7 @@
       "cases": "trigger-cases.json",
       "profiles": ["project-default"],
       "runs": 1,
-      "timeoutMs": 180000,
-      "requiredForRelease": false
+      "timeoutMs": 180000
     },
     {
       "id": "behavior",
@@ -23,8 +22,7 @@
       "cases": "behavior-cases.json",
       "profiles": ["project-default"],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     }
   ]
 }

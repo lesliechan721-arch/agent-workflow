@@ -26,8 +26,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     },
     {
       "id": "trigger",
@@ -37,12 +36,7 @@
         "project-default"
       ],
       "runs": 3,
-      "timeoutMs": 180000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation",
-        "sanity"
-      ]
+      "timeoutMs": 180000
     },
     {
       "id": "router",
@@ -52,12 +46,7 @@
         "project-default"
       ],
       "runs": 5,
-      "timeoutMs": 180000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation",
-        "sanity"
-      ]
+      "timeoutMs": 180000
     },
     {
       "id": "behavior",
@@ -67,11 +56,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 300000
     },
     {
       "id": "shared-frame",
@@ -81,11 +66,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 300000
     },
     {
       "id": "prototype-evidence",
@@ -95,11 +76,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 300000
     },
     {
       "id": "independent-delivery-trigger",
@@ -109,8 +86,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 180000,
-      "requiredForRelease": false
+      "timeoutMs": 180000
     },
     {
       "id": "independent-delivery-behavior",
@@ -120,8 +96,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     },
     {
       "id": "decision-fidelity",
@@ -131,8 +106,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     },
     {
       "id": "delegated-alignment",
@@ -142,11 +116,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 300000
     },
     {
       "id": "method-ownership",
@@ -156,8 +126,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     }
   ]
 }
