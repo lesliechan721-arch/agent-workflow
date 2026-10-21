@@ -1,10 +1,10 @@
 {
   "name": "agent-skill-toolkit",
-  "version": "0.1.0-beta.10",
-  "description": "创建、评审和简化 Agent Skill，独立审核 Skill Eval，并评审跨 Skill 工作流与公开能力架构。",
+  "version": "0.1.0-beta.11",
+  "description": "创建和维护 Agent Skill；由用户启动单体、工作流和公开能力评审或简化，并独立审核 Skill Eval。",
   "interface": {
     "displayName": "Agent Skill Toolkit",
-    "shortDescription": "创建、评审、简化 Agent Skill，并审核 Eval 与工作流架构",
+    "shortDescription": "创建 Skill、手动评审与简化，并独立审核 Eval",
     "capabilities": [
       "Skills"
     ]

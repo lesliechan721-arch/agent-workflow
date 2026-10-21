@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.43",
+  "catalogVersion": "0.1.0-beta.44",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "fcdf89201ac12973c5197646a796923466526aee"
+    "sourceHead": "209f8caba15878d276a80dfc9c3575e6cce9519b"
   },
   "entries": [
     {
@@ -61,10 +61,10 @@
     {
       "name": "agent-skill-toolkit",
       "source": "./plugins/agent-skill-toolkit",
-      "description": "创建、评审和简化 Agent Skill，独立审核 Skill Eval，并评审跨 Skill 工作流与公开能力架构。",
+      "description": "创建和维护 Agent Skill；由用户启动单体、工作流和公开能力评审或简化，并独立审核 Skill Eval。",
       "interface": {
         "displayName": "Agent Skill Toolkit",
-        "shortDescription": "创建、评审、简化 Agent Skill，并审核 Eval 与工作流架构",
+        "shortDescription": "创建 Skill、手动评审与简化，并独立审核 Eval",
         "capabilities": [
           "Skills"
         ]
@@ -79,7 +79,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.10",
+      "version": "0.1.0-beta.11",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -92,17 +92,17 @@
           ]
         }
       },
-      "artifactDigest": "sha256:23a6e72e591b0ac11d7fe9126407dc6b72365eb6590067dc53a455494793e294",
-      "manifestDigest": "sha256:0cea8bb83d33e67d19af0bb191489486ca9478354e70bc2a5445efdc36f15587",
-      "contentDigest": "sha256:5ac0fc6f64e294db65e2f8059e8d363e40215e78f297875c4cf07d4402850ae7"
+      "artifactDigest": "sha256:bbb74cfd5a013d477ecd27a7ade560fa7b26de66cd5850fc946af578bb35fcd2",
+      "manifestDigest": "sha256:a5b66d08ce9db759885134228f446bd95aabef04e515375bf6ba53017827858c",
+      "contentDigest": "sha256:0eebf93ea73e7552ce0736909313dbac618994471cbac164a9e9ee3a24096717"
     },
     {
       "name": "aw-development-toolkit",
       "source": "./plugins/aw-development-toolkit",
-      "description": "创建和维护 AW Catalog/Plugin，按对象分支只读评审 AW 项目，并通过 manual-only 入口发布 Catalog。",
+      "description": "处理 AW 插件及 Skill 的来源、开发、验证与物化，维护 Catalog，并通过手动入口发布。",
       "interface": {
         "displayName": "AW Development Toolkit",
-        "shortDescription": "开发、评审和显式发布 AW Catalog 与 Plugin",
+        "shortDescription": "处理 AW 插件与 Skill，提供来源和物化方法",
         "capabilities": [
           "Skills"
         ]
@@ -117,7 +117,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.7",
+      "version": "0.1.0-beta.8",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -129,29 +129,27 @@
             "aw.catalog-dev-source.v1",
             "aw.catalog-publication.v1",
             "aw.plugin-authoring.v1",
-            "aw.plugin-build-config.v1",
             "aw.plugin-manifest.v3",
             "aw.plugin-skills.v1",
+            "aw.portable-skills.v1",
             "aw.review-inspection.v2",
             "aw.review-preparation.v1",
-            "aw.review-publication.v1",
-            "aw.runtime-imports.v1",
             "aw.self-check.v1",
             "aw.skill-validation.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:1dd83072471b24b819837de90c851100482aea9ddb2d0493dacb6c2fb752436d",
-      "manifestDigest": "sha256:2c7232e1631b2258b55dd892719f2211e4190521a2ea2590fb80b8ec3b819957",
-      "contentDigest": "sha256:5ca796dbe7247a2171d4852a7087a94b5f5e5dcd9655d8194254ae4e9c3a1f63"
+      "artifactDigest": "sha256:356c8ab5f274c0b8ec463cbbc1c72a898d8bbd698d1a86898d3e65e3369b07fd",
+      "manifestDigest": "sha256:bc34cf251b6c3cbd8d109f0af6cfe7873ab45b180fa9024d4569ef5c96a18258",
+      "contentDigest": "sha256:309a8e6a4be0f3d172d8d2089797d93c133408d57187efe41c107fc3340265ba"
     },
     {
       "name": "aw-skill-eval-runner",
       "source": "./plugins/aw-skill-eval-runner",
-      "description": "准备、独立审核并通过 aw-skill-eval 执行 Agent Skill Eval，验证结果并按需归因异常。",
+      "description": "准备和验证 AW Skill Eval，核验独立 Audit 与执行条件，通过 aw-skill-eval 运行并验证结果。",
       "interface": {
         "displayName": "AW Skill Eval Runner",
-        "shortDescription": "准备、审核并执行 Agent Skill Eval，验证结果",
+        "shortDescription": "准备 AW Skill Eval、核验独立准入、执行并验证实际结果",
         "capabilities": [
           "Skills"
         ]
@@ -166,7 +164,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.5",
+      "version": "0.1.0-beta.6",
       "dependencies": [
         "agent-skill-toolkit"
       ],
@@ -179,9 +177,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:6207bb60f1808307924789446ecb3e95aec17df75eb251b6910210f9cccf36a8",
-      "manifestDigest": "sha256:1c6c13e2508272a9be34751302bdc9d8bb75696b1bf2981cffae7fdda9b49952",
-      "contentDigest": "sha256:b5ad9ac9aa14fa144105c48af0d65b721454883d48033d20ddb7e36e97a288f0"
+      "artifactDigest": "sha256:dda68d84b53b7d34addb10560e94285e5ed5625db9293e96930a0b7d0724e903",
+      "manifestDigest": "sha256:696f7b0802fe7d2005bbc4942e553b170b8da5fb044127d970056141040a991f",
+      "contentDigest": "sha256:c76475cc8b43bc6446d5b37f68c6da2ecc987fd5d7393a971391902199124d52"
     },
     {
       "name": "browser-use",

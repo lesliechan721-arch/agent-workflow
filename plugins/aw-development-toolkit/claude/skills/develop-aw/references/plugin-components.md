@@ -1,48 +1,42 @@
-# Plugin Component Branches
+# Plugin 组件与配置
 
-字段和可用 surface 始终来自 `aw plugin capabilities --json`、对应 `--surface` 与命令 `--help`。本文件只记录 owner 和验证原则。
+根据用户需要的结果选择组件，再查询 `aw plugin capabilities --json`、对应 `--surface` 和公开帮助。本文件提供选择与验证方法，字段及 accepted values 由当前 CLI/Core 合同负责。
 
-## Extension / hooks / permissions / agents
+## 选择组件
 
-- manifest 声明真实 capability；权限取最小集合；
-- 只修改 source，不手改平台生成文件；
-- hooks 的触发、输入和副作用必须有 deterministic test；
-- Agent/role 内容使用 `agent-content`，固定模型配置不得与调用方显式要求静默冲突。
+| 用户需要 | 选择与核对 |
+| --- | --- |
+| 可按任务采用的方法或明确指令入口 | Skill 或 slash command；按真实客户端能力设置 model-callable/manual-only，核对最终调用 metadata |
+| 常驻指令、角色或 Agent 配置 | 对应 instruction、agent/role 或 extension；Agent 内容采用 `agent-content`，模型配置服从调用方的有效约束 |
+| 在事件发生时执行动作 | Hook；写明触发、输入、副作用与失败行为，用受控事件作确定性验证 |
+| 访问工具服务或 App | MCP/App；按合同声明 command、env、auth、网络和权限，验证实际启动、健康与清理 |
+| 改变工具或 Agent 的可执行范围 | 权限声明；范围与所需动作匹配，核对目标平台的实际支持 |
+| 根据配置、scope 或状态生成内容 | 按 [平台投影](platform-projection.md) 选择投影机制；选定 renderer 后采用其 [请求与输出方法](aw-artifact-renderer.md) |
 
-## Slash command
+Slash command 的参数与副作用在用户说明中前置。安装和生成结果须保留相应平台的调用语义；不能只看 source frontmatter 就确认两端均生效。
 
-- 命令是明确用户入口；参数和副作用在命令文档中前置；
-- manual-only 与 model-callable 属性按目标客户端实际支持设置；
-- 生成的 Claude/Codex 命令必须由 materialization 测试验证。
+MCP/App 的凭据值不进入 Skill、日志或分发包。生命周期由实际 runtime/CLI 管理，文字描述不能代替成功运行或清理证据。
 
-## MCP / App
+## 声明配置
 
-- server、command、env、auth 和 network 要求由 manifest/CLI 合同拥有；
-- 不把凭据值写入 Skill、日志或物化产物；
-- 启动、健康和清理使用实际 runtime/CLI，不用 prose 模拟状态。
+插件配置使用 Config Definition v4，在 manifest 的 `config` 中声明 `schemaVersion: 4`，对应 capability 为 `aw.plugin-config.v4`。配置 schema、preset、作用域与验证使用同一合同。
 
-## Config / helper
+条件对象、固定标量和对象内叶级数组/KV 使用该合同提供的结构能力；保存、呈现和运行资源共用该合同，不另写插件专用校验，也不把容器改存成 JSON 字符串。只在 Agent 内容中说明影响任务选择的非显然规则，字段表和默认值保留在其权威声明。
 
-- schema、preset 和作用域由 AW 配置合同拥有；
-- 需要条件对象字段、固定标量或对象内叶级数组/KV 时，查询当前 CLI 的 Config Definition v4 capability；保存、呈现和运行资源共用该合同，不另写插件专属校验或将容器改存为 JSON 字符串；
-- Agent 内容只记录非显然选择和项目约定；
-- helper 输出必须是确定性、可测试且最小的 runtime dependency。
-- 已安装配置 reader 由 AW 在最终 Skill 中注入；从真实调用位置读取本产物的生效值，不读取最新 store。声明与兼容要求从当前 capability 查询取得；不要自建保留文件或内容一致性门禁。
+敏感字段沿当前合同限制为顶层 string，且不带 default 或 choices。Skill 产物和运行配置读取只使用允许的非敏感键；target 的 refreshKeys、敏感配置批次与输出隔离采用 [Artifact renderer](aw-artifact-renderer.md)。
 
-## Dynamic artifact / runtime imports
+配置 helper 只完成合同允许的辅助任务；输出应确定、可测试。不要用 helper 重建另一套配置状态或隐式安装依赖。
 
-- 实现 renderer 时读取 `references/aw-artifact-renderer.md`，保留请求 ID、配置隔离、敏感值和 portable surface 的边界；
-- renderer 只消费声明的 source 和 runtime imports；用 context 的 `artifactSources` 读取当前 surface/scope 的 Skill 静态资源，不猜测 bundle 私有路径，不扩大请求配置或输出；
-- platform×scope final 必须 materialize 后验证；
-- artifact 的 Skill 内容仍使用 `author-agent-skill`/`agent-content`，不要在 renderer 中复制第二套标准。
+## 读取本次安装生效的配置
 
-## preApply
+`runtimeConfig` 声明在 `artifacts.targets[]` 的动态 Skill target 上，不是静态 Skill 或 manifest 顶层可直接追加的通用字段。已有该 target 时直接维护其声明；静态 Skill 出现这类需求时，先决定是否采用当前支持的动态 target。采用后按 [renderer](aw-artifact-renderer.md) 实现请求与输出，正文静态不免除这些前提；未采用受支持的路径时，明确能力限制。
 
-- 当前合同是 `scripts.preApply`；实现时读取 `references/aw-pre-apply.md`；
-- 用于环境校验或安装外部系统工具，在目标 preflight 后、任何 cleanup 或 AW-owned 写入前执行；
-- 脚本必须幂等，失败阻止该 target 的写入；外部动作不承诺回滚，恢复由 CLI 合同拥有。
+对受支持的 target，查询 `runtimeConfig` 的当前声明与 capability 要求，声明所需键及其依赖闭包。runtimeConfig 键须属于该 target 声明的 refreshKeys，闭包保持非敏感。AW 在 final Skill 中注入 reader，并按本次安装的有效配置提供值。
 
-## README
+从脚本真实调用位置解析该 final 的 reader 和已安装配置。不能读“最新全局 store”替代本产物的生效配置，不能手写保留 receipt 或增加内容一致性门禁。按实际 user/project scope 验证；共享 Codex native projection 的 user 配置规则见 renderer 方法。
 
-- 只写用户可观察能力、安装/使用、权限和限制；
-- 不复制 manifest 字段全集或内部生成算法。
+## 生命周期与交付
+
+安装前环境校验或外部工具安装使用 `scripts.preApply`，读取 [preApply](aw-pre-apply.md)。它在目标 preflight 后、cleanup 或 AW-owned 写入前运行；失败阻止该目标写入，外部动作的恢复由现有合同负责。构建期 Node 依赖和插件安装依赖分别按 [构建与共享](build-and-sharing.md) 处理。
+
+实现后验证真实受影响的组件和平台 final。README 说明用户可观察能力、入口、权限和限制；不复制 manifest 字段全集或内部生成算法。

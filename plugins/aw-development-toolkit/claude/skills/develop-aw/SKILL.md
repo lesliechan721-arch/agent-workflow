@@ -1,59 +1,51 @@
 ---
 name: develop-aw
 description: >-
-  当用户要初始化或维护 AW Catalog Workspace、创建或维护 Plugin Source、简化插件内源 Skill、增删组件、维护 inventory/依赖/版本、构建 materialized 产物或激活本地 development source 时使用。按目标自动路由 Catalog 与 Plugin 分支；不做独立 Review、不运行模型 Eval、不远端发布。
+  涉及 AW 插件及其 Skill 的分析、创建、修改、评审、简化、验证或物化时使用，也用于维护 AW Catalog Workspace、依赖、版本和本地开发源。提供来源、构建共享、平台投影与 Portable Agent Skills 分发方法。
 user-invocable: true
-compatibility: 需要 Node.js 22+、PATH 中提供公开作者命令的 aw CLI、目标工作区依赖、agent-content-toolkit 和 agent-skill-toolkit。
+compatibility: 采用通用方法时依赖 agent-content-toolkit 和 agent-skill-toolkit；执行 AW 工具时需要 Node.js 22+、PATH 中提供公开作者命令的 aw CLI 及相应工作区依赖。
 metadata:
-  short-description: 创建、维护和验证 AW Catalog Workspace 与 Plugin Source
+  short-description: 处理 AW 插件与 Skill，提供来源、构建和物化方法
 ---
 
 # Develop AW
 
-本 Skill 只使用当前 PATH 中公开 `aw` 命令，不依赖私有实现作为命令入口，不手改 generated runtime、snapshot、digest、ledger 或 cache。
+确定 AW 对象、权威源码和本次所需产物，完成相应操作。Skill 创作采用 `author-agent-skill`，Agent 内容采用 `agent-content`。当前任务已采用评审、简化或 Eval 方法时，本技能提供 AW 事实与工具操作；质量判断、候选接受和实验策略由相应方法负责。
 
-## 依赖
+## 确定目标与证据
 
-- Agent-facing README、prompt、reference 或 role 内容使用 `agent-content`。
-- Eval case 设计由 `author-agent-skill` 的 Eval branch 完成；本 Skill 不审核或运行 Eval。
+从用户路径、当前文件和已有回执确认 Workspace、Plugin、源 Skill 或运行包，保留用户要求、允许修改范围和执行限制。复用仍有效的资料；目标不唯一或缺少决定性输入时再补齐。
 
-## 入口与 Workspace
-
-1. 从平台提供的 Skill locator 或当前 SKILL.md 所在根取得 `<skill-root>`，不从 cwd 猜测。首次 AW 命令：
-
-   ```bash
-   aw self check --from <skill-root> --json
-   ```
-
-   命令缺失或 receipt `ok=false` 时停止并报告 `missingCapabilities`；能力要求由 manifest 和 receipt 拥有，不在正文另维护枚举。
-2. 根据用户明确 Workspace root、canonical `<root>/plugins/<name>`、上游 handoff 或公开命令安全自动发现固定 `<workspace-root>`。歧义时停止并询问。
-3. 按下表选择分支；组合请求按依赖顺序处理。
-
-## Branch 路由
-
-| 请求 | 读取 |
+| 本次需要 | 处理方式 |
 | --- | --- |
-| 初始化/维护 Workspace、metadata、inventory、依赖、Catalog version | `references/catalog-development.md` |
-| 创建/维护 Plugin Source、manifest、组件、config、build/runtime artifact | `references/plugin-development.md`；具体组件读 `references/plugin-components.md` |
-| 安全删除 Plugin Source | `references/plugin-removal.md` |
-| Plugin 内 Skill 创建或常规变更 | `references/plugin-development.md`，并使用 `author-agent-skill` |
-| 简化 Plugin 内源 Skill | `references/skill-simplification.md`，并使用 `simplify-agent-skill` |
-| validate/test/build/materialization | `references/plugin-development.md`；Catalog 聚合读 `references/catalog-development.md` |
-| 本地 development source | `references/development-source.md` |
+| 理解或修改可见源码、职责和文字 | 使用源码及相关声明 |
+| 核对实际内容、调用 metadata 或注入资源 | 固定 platform/scope/config，复用当前 final；不足时按授权准备运行包 |
+| 导出标准 Agent Skills | 核对显式 Portable 声明，再物化所选 Skill |
 
-字段和参数需要时先调用 `aw <domain> --help` 或 `aw plugin capabilities --json`；不在 Skill 中复制字段表。
+完整运行包不以创建 Eval 为前提，源码分析不以构建或 Portable 导出为前提。
 
-## 执行原则
+## 使用 AW 工具
 
-- Catalog branch 拥有 Workspace identity、metadata、inventory、dependency composition、Catalog version 和聚合结果。
-- Plugin branch 只拥有单个 Plugin Source 内部内容和单插件验证。
-- 删除由当前 Skill 的 Catalog 分支准入并检查反向依赖，再按公开 plugin remove 命令执行；不直接 `rm`。
-- 修改 Plugin 内 Skill 时向对应通用能力提供源目录、构建/注入约束、允许路径和验收条件；返回后由本 Skill 运行 AW-specific validate/build，运行包完整性针对对应 final 检查。
-- 结构化临时文件只用于 CLI/script 输入；同一上下文的 Skill 调用不创建 AWAuthoringContext 或通用 handoff schema。
-- 远端发布不在范围内；需要发布时结束并要求用户显式调用 manual-only `$publish-aw-catalog`。
+首次调用前，从本 Skill 实际 root 运行：
 
-## 完成
+```bash
+aw self check --from <skill-root> --json
+```
 
-返回实际 source 修改、AW CLI receipts、单插件和 Catalog 聚合验证、materialized 产物、development activation 状态及未完成项。不得输出独立 Review、Eval Audit、模型 Eval 或发布成功。
+命令缺失或 `ok=false` 时说明缺少的能力，继续可完成的静态工作，停止依赖缺失能力的操作。字段和参数从当前 `aw plugin capabilities --json`、所需 `--surface` 与命令 `--help` 取得。
 
-执行 preparation/materialization 后，交付 receipts 中全部 `sourceBindingPath` 及对应 profile、产物位置和未覆盖项，供后续 Reviewer 使用。
+Workspace 使用用户明确位置、canonical `<root>/plugins/<name>` 的归属或公开 CLI 的解析结果。普通修改不隐式初始化另一个 Workspace。修改落在权威 source/provider；生成物和来源绑定由工具维护。
+
+## 按当前决定读取资料
+
+| 当前任务 | 资料 |
+| --- | --- |
+| 解析 source/final/profile、修改 owner，或准备一个和多个版本 | [来源与运行包](references/source-materialization.md) |
+| 创建、修改、注册或验证 Plugin | [Plugin 开发](references/plugin-development.md) |
+| 选择组件、配置、安装态配置读取或生命周期脚本 | [组件方法](references/plugin-components.md) |
+| 编译 Node 工具、共享文件、注入或生成 Skill 资源 | [构建与共享](references/build-and-sharing.md) |
+| 处理平台差异、模板、文件选择、动态投影或能力要求 | [平台投影](references/platform-projection.md) |
+| 维护 Workspace、inventory、依赖、版本或删除 Plugin | [Catalog 维护](references/catalog-development.md) |
+| 声明或导出 Portable Agent Skills | [Portable 分发](references/portable-skills.md) |
+| 激活、检查或停用本地开发源 | [Development source](references/development-source.md) |
+| 判断 AW 组件组合、依赖边和平台差异 | [领域依据](references/aw-domain-review.md) |

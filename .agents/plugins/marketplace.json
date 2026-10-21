@@ -33,10 +33,10 @@
     {
       "name": "agent-skill-toolkit",
       "source": "./plugins/agent-skill-toolkit",
-      "description": "创建、评审和简化 Agent Skill，独立审核 Skill Eval，并评审跨 Skill 工作流与公开能力架构。",
+      "description": "创建和维护 Agent Skill；由用户启动单体、工作流和公开能力评审或简化，并独立审核 Skill Eval。",
       "interface": {
         "displayName": "Agent Skill Toolkit",
-        "shortDescription": "创建、评审、简化 Agent Skill，并审核 Eval 与工作流架构",
+        "shortDescription": "创建 Skill、手动评审与简化，并独立审核 Eval",
         "capabilities": [
           "Skills"
         ]
@@ -55,10 +55,10 @@
     {
       "name": "aw-development-toolkit",
       "source": "./plugins/aw-development-toolkit",
-      "description": "创建和维护 AW Catalog/Plugin，按对象分支只读评审 AW 项目，并通过 manual-only 入口发布 Catalog。",
+      "description": "处理 AW 插件及 Skill 的来源、开发、验证与物化，维护 Catalog，并通过手动入口发布。",
       "interface": {
         "displayName": "AW Development Toolkit",
-        "shortDescription": "开发、评审和显式发布 AW Catalog 与 Plugin",
+        "shortDescription": "处理 AW 插件与 Skill，提供来源和物化方法",
         "capabilities": [
           "Skills"
         ]
@@ -77,10 +77,10 @@
     {
       "name": "aw-skill-eval-runner",
       "source": "./plugins/aw-skill-eval-runner",
-      "description": "准备、独立审核并通过 aw-skill-eval 执行 Agent Skill Eval，验证结果并按需归因异常。",
+      "description": "准备和验证 AW Skill Eval，核验独立 Audit 与执行条件，通过 aw-skill-eval 运行并验证结果。",
       "interface": {
         "displayName": "AW Skill Eval Runner",
-        "shortDescription": "准备、审核并执行 Agent Skill Eval，验证结果",
+        "shortDescription": "准备 AW Skill Eval、核验独立准入、执行并验证实际结果",
         "capabilities": [
           "Skills"
         ]

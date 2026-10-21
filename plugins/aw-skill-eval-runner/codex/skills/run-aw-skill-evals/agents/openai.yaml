@@ -1,6 +1,6 @@
 interface:
   display_name: "Run AW Skill Evals"
-  short_description: "准备、审核、执行并验证 AW Skill Eval"
+  short_description: "准备 AW Skill Eval、核验独立准入、执行并验证实际结果"
   default_prompt: "使用 $run-aw-skill-evals 处理当前 AW Skill Eval 请求。"
 
 policy:
