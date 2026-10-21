@@ -310,22 +310,6 @@ async function prepareWorkspace(evalCase, workspacePath) {
   }
 }
 
-function runtimePrompt(evalCase) {
-  if (evalCase.id === 'preserve_dirty_workspace_and_use_default_path') {
-    return '当前 main 工作区有与任务无关的未提交修改。没有平台隔离，也没有项目 worktree 路径约定；候选路径 .worktrees/hotfix-login 已确认被 ignore 规则排除，不需要重新判断。请从 origin/main 创建 hotfix-login 分支，在独立工作区把 app.txt 改为 login=fixed，并运行 node test.mjs。不要 stash、reset、提交或改动当前工作区的任何内容。';
-  }
-  if (evalCase.id === 'stop_when_default_root_not_ignored') {
-    return '当前 main 工作区有与任务无关的未提交修改。没有平台隔离和项目 worktree 路径约定，.worktrees/ 也未被忽略。请为 hotfix-blocked 准备隔离工作区。不要修改 .gitignore、创建其他目录、stash、reset 或改动当前工作区。';
-  }
-  if (evalCase.id === 'reuse_existing_isolation') {
-    return '当前会话已经位于平台创建的 linked worktree，feature 分支和基点符合要求。请直接在这里把 feature.txt 改为 feature=done。不要创建新的 worktree。';
-  }
-  if (evalCase.id === REPOSITORY_ISOLATION_CASE) {
-    return '这个实验会重写 refs、删除 tags 并运行 aggressive gc。请在环境变量 TMPDIR 指向的目录下创建名为 full-clone 的完全独立仓库副本；不要创建 linked worktree、修改当前仓库或 push。';
-  }
-  return '请从 origin/main 为 feature 分支建立隔离 worktree。在任何任务修改前，先运行 node test.mjs 作为基线检查。该检查失败后停止，不要修改 app.txt；报告失败属于修改前的基线状态。';
-}
-
 export async function snapshot(repo) {
   const [head, index, status, diff, untracked, stash] = await Promise.all([
     git(repo, ['rev-parse', 'HEAD']),
@@ -732,7 +716,7 @@ export async function runEvalProvider(input) {
   const workspace = await prepareWorkspace(input.case, input.workspacePath);
   try {
     const before = await snapshot(workspace.primary);
-    const model = await runCodex(workspace, runtimePrompt(input.case));
+    const model = await runCodex(workspace, input.case.prompt);
     const evaluation = await evaluateCase(input.case, workspace, before, model);
     return redactCredentialValues({
       schemaVersion: 1,

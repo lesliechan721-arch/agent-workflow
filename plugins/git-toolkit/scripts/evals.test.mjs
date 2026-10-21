@@ -31,17 +31,22 @@ import {
   setupTriggerWorkspace,
 } from '../skills/git-commit/evals/trigger-fixture.mjs';
 import {
-  commitMessageChecks,
+  commitTaskPrompt,
+  evaluateCase as evaluateCommitCase,
+  prepareWorkspace as prepareCommitWorkspace,
+  semanticAssertionChecks,
+  semanticGraderPrompt,
+  snapshot as snapshotCommitRepository,
   declaredAssertionCoverage,
-  hookFailureMessageChecks,
   inspectCommitExecTrace,
-  partialMessageExcludesUnstagedFact,
 } from '../skills/git-commit/evals/run-commit-evals.mjs';
 import {
   analysisMessageChecks,
   ambiguousRetentionChecks,
   committedControlPaths,
   mergeCommitState,
+  evaluateCase as evaluateMergeCase,
+  snapshot as snapshotMergeRepository,
   semanticMergeOutcomeChecks,
 } from '../skills/reconciling-git-merges/evals/run-merge-evals.mjs';
 import {
@@ -108,6 +113,7 @@ async function resolveTestContext() {
   if (!contextPath) {
     return {
       bundleRoot: bundledPluginRoot,
+      sourceRoot: bundledPluginRoot,
       platform: null,
     };
   }
@@ -122,6 +128,7 @@ async function resolveTestContext() {
   assert.equal(context.event, 'test');
   return {
     bundleRoot,
+    sourceRoot: path.resolve(context.sourceRoot),
     platform: context.platform,
   };
 }
@@ -163,35 +170,10 @@ async function testEvalCorpora(bundleRoot) {
   assert.equal(document.version, 1);
   assert.equal(document.suite.kind, 'trigger');
   assert.equal(document.suite.unitUnderTest, 'git-commit');
-  assert.equal(cases.length, 20);
-  assert.equal(cases.filter((entry) => entry.split === 'train').length, 12);
-  assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
-  assert.equal(cases.filter((entry) => entry.input.expectedLoad).length, 10);
-  assert.equal(cases.filter((entry) => !entry.input.expectedLoad).length, 10);
+  assert.equal(cases.length, 4);
+  assert.ok(cases.every((entry) => entry.split === 'validation' && entry.input.expectedLoad === false));
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
-
-  const expectedContracts = new Map([
-    ['english_commit', true],
-    ['commit_and_push', true],
-    ['draft_message_only', false],
-    ['stage_only', false],
-    ['mixed_language_staged', true],
-    ['squash_history', false],
-    ['non_git_commitment', false],
-    ['merge_operation', false],
-    ['scoped_fix_commit', true],
-    ['terse_commit', true],
-  ]);
-  for (const [id, shouldLoad] of expectedContracts) {
-    const entry = cases.find((candidate) => candidate.id === id);
-    assert.ok(entry, `Missing required eval case ${id}`);
-    assert.equal(entry.input.expectedLoad, shouldLoad);
-  }
   assert.equal(cases.some((entry) => entry.input.query.includes('$git-commit')), false);
-  assert.match(cases.find((entry) => entry.id === 'english_commit').input.query, /useful summary/);
-  assert.match(cases.find((entry) => entry.id === 'scoped_fix_commit').input.query, /body/);
-  assert.match(cases.find((entry) => entry.id === 'terse_commit').input.query, /commti/);
-  assert.match(cases.find((entry) => entry.id === 'specific_files').input.query, /docs\/notes\.md/);
 
   assert.equal(behaviorDocument.version, 1);
   assert.equal(behaviorDocument.suite.kind, 'custom-process');
@@ -213,7 +195,7 @@ async function testEvalCorpora(bundleRoot) {
         (assertion) =>
           typeof assertion?.text === 'string'
           && assertion.text.trim() !== ''
-          && assertion.grader === 'script'
+          && ['script', 'model'].includes(assertion.grader)
           && typeof assertion.grader_check === 'string'
           && assertion.grader_check.trim() !== ''
           && typeof assertion.allowed_variance === 'string'
@@ -248,7 +230,7 @@ async function testEvalCorpora(bundleRoot) {
     ],
     [
       'staged_only_with_unstaged_hunks',
-      ['message 只描述实际提交内容', 'message_excludes_unstaged_fact'],
+      ['标题和正文准确描述实际提交内容，不把未暂存修改写成已提交事实', 'message_excludes_unstaged_fact'],
     ],
     [
       'unrelated_staged_content',
@@ -304,8 +286,6 @@ async function testEvalCorpora(bundleRoot) {
   assert.equal(mergeCases.filter((entry) => entry.split === 'train').length, 14);
   assert.equal(mergeCases.filter((entry) => entry.split === 'validation').length, 7);
   assert.equal(new Set(mergeCases.map((entry) => entry.id)).size, mergeCases.length);
-  assert.equal(mergeCases.filter((entry) => entry.input.expected.loadedSkills.length === 1).length, 11);
-  assert.equal(mergeCases.filter((entry) => entry.input.expected.loadedSkills.length === 0).length, 10);
   for (const entry of mergeCases) {
     assert.equal(Array.isArray(entry.input.expected.loadedSkills), true);
     assert.equal(
@@ -326,7 +306,7 @@ async function testEvalCorpora(bundleRoot) {
     ['source_13', []],
     ['source_16', []],
     ['source_17', []],
-    ['ordinary_local_commit', ['git-commit']],
+    ['ordinary_local_commit', []],
   ]);
   for (const [id, expectedSkills] of expectedMergeRouting) {
     const entry = mergeCases.find((candidate) => candidate.id === id);
@@ -430,10 +410,6 @@ async function testEvalCorpora(bundleRoot) {
     ).length,
     15,
   );
-  assert.equal(
-    worktreeCases.filter((entry) => entry.input.expected.loadedSkills.length === 0).length,
-    10,
-  );
   for (const entry of worktreeCases) {
     assert.equal(Array.isArray(entry.input.expected.loadedSkills), true);
     assert.equal(
@@ -455,7 +431,7 @@ async function testEvalCorpora(bundleRoot) {
     ['source_20', []],
     ['sanity_parallel_branch', ['isolating-work-with-git-worktrees']],
     ['sanity_list_worktrees', []],
-    ['sanity_local_commit', ['git-commit']],
+    ['sanity_local_commit', []],
     ['sanity_merge_conflict', ['reconciling-git-merges']],
     ['sanity_dirty_new_task', ['isolating-work-with-git-worktrees']],
     ['sanity_parallel_test', ['isolating-work-with-git-worktrees']],
@@ -525,7 +501,7 @@ async function testEvalCorpora(bundleRoot) {
   );
   assert.deepEqual(
     [...releaseParticipants].sort(),
-    [...worktreeParticipants].sort(),
+    ['isolating-work-with-git-worktrees', 'reconciling-git-merges'],
   );
 
   const worktreeEvals = worktreeEvalDocument;
@@ -598,7 +574,7 @@ function assertRenderedSkill(skill) {
 
 function assertCoreCommitContract(skill) {
   // Static contract exception: an invoked commit Skill could push or alter unauthorized Git state; behavior test is not suitable because the installed Skill text is the safety policy consumed by the model, not executable code.
-  assert.match(skill, /本 skill 不执行 push/);
+  assert.match(skill, /不执行 push/);
   assert.match(skill, /需要暂存时仅使用精确路径/);
   assert.match(skill, /不使用 `git add \.` 或 `git add -A`/);
   assert.match(skill, /存在未解决冲突或进行中的 Git 操作时停止并报告/);
@@ -606,17 +582,17 @@ function assertCoreCommitContract(skill) {
 
 function assertCoreMergeContract(skill) {
   // Static contract exception: an analysis-only merge request could mutate repository state or publish an unrequested result; behavior test is not suitable because these prohibitions are model-consumed policy in the rendered Skill.
-  assert.match(skill, /仅分析时不得改变 refs、index 或 worktree/);
-  assert.match(skill, /只在用户要求且验证通过后完成/);
-  assert.match(skill, /不得在未被要求时推送/);
+  assert.match(skill, /仅分析时不改变 refs、index 或 worktree/);
+  assert.match(skill, /仅在用户要求、无未解决条目且验证通过后/);
+  assert.match(skill, /未被要求时不推送/);
 }
 
 function assertCoreWorktreeContract(skill) {
   // Static contract exception: isolation setup or cleanup could alter unauthorized repository state or destroy unrelated user work; behavior test is not suitable because the rendered Skill is the only executable consumer boundary for these model actions.
-  assert.match(skill, /不得创建 worktree、分支或改用其他路径/);
-  assert.match(skill, /不得 stash、reset、discard 当前无关修改/);
-  assert.match(skill, /不得用 force 抢占已有 worktree 或已检出分支/);
-  assert.match(skill, /不要直接删除目录、强制清理或顺带删除分支/);
+  assert.match(skill, /不创建 worktree 或分支、不换路径/);
+  assert.match(skill, /保护原工作区的 HEAD、index 和 tracked\/untracked 内容/);
+  assert.match(skill, /不强行占用已有 worktree 或已检出分支/);
+  assert.match(skill, /不直接删除目录、强制清理或顺带删除分支/);
 }
 
 async function testSkillRenders(context) {
@@ -641,7 +617,7 @@ async function testSkillRenders(context) {
       commitOpenai,
       /default_prompt: "使用 \$git-commit 核对当前改动，并按仓库规范完成 Git 提交。"/,
     );
-    assert.match(commitOpenai, /allow_implicit_invocation: true/);
+    assert.match(commitOpenai, /allow_implicit_invocation: false/);
     assert.match(
       mergeOpenai,
       /default_prompt: "使用 \$reconciling-git-merges 协调 Git merge 双方意图并验证组合结果。"/,
@@ -655,6 +631,8 @@ async function testSkillRenders(context) {
     assert.ok(['codex', 'claude'].includes(context.platform));
   }
 
+  assert.match(renderedCommitSkill, /^user-invocable: true$/mu);
+  assert.match(renderedCommitSkill, /^disable-model-invocation: true$/mu);
   assertCoreCommitContract(renderedCommitSkill);
   assertCoreMergeContract(renderedMergeSkill);
   assertCoreWorktreeContract(renderedWorktreeSkill);
@@ -977,388 +955,130 @@ function testCommitExecTraceAssertions() {
   );
 }
 
-function testCommitMessageAssertions() {
-  const detailed = [
-    'feat: activate the application',
-    '',
-    '- Switch the application runtime flag from false to true and align test expectations',
-    '- Mark the guide feature as enabled and bump 1.0.0 to 1.1.0',
-  ].join('\n');
-  assert.equal(
-    commitMessageChecks('detailed_body_for_nontrivial_change', detailed)
-      .every((check) => check.passed),
-    true,
-  );
-  const detailedChinese = [
-    'feat: 启用应用功能',
-    '',
-    '- 将应用开关改为启用并同步测试预期',
-    '- 更新指南中的启用状态并将版本从 1.0.0 升至 1.1.0',
-  ].join('\n');
-  assert.equal(
-    commitMessageChecks('detailed_body_for_nontrivial_change', detailedChinese)
-      .every((check) => check.passed),
-    true,
-  );
-  assert.equal(
-    commitMessageChecks(
-      'detailed_body_for_nontrivial_change',
-      `${detailedChinese}\n- 解决线上事故并关联 issue #42`,
-    ).find((check) => check.name === 'unverifiable_external_claims_absent').passed,
-    false,
-  );
-  assert.equal(
-    commitMessageChecks(
-      'detailed_body_for_nontrivial_change',
-      `${detailed}\n- Update the database schema for the application feature`,
-    ).find((check) => check.name === 'all_body_bullets_match_fixture_facts').passed,
-    false,
-  );
-  assert.equal(
-    commitMessageChecks(
-      'detailed_body_for_nontrivial_change',
-      [
-        'feat: activate the application',
-        '',
-        '- Switch the application runtime flag from false to true and align test expectations',
-        '- Mark the guide feature as enabled and bump 1.0.0 to 1.1.0',
-        '- Enable the application feature and update the database schema',
-      ].join('\n'),
-    ).find((check) => check.name === 'all_body_bullets_match_fixture_facts').passed,
-    false,
-  );
-  assert.equal(
-    commitMessageChecks(
-      'detailed_body_for_nontrivial_change',
-      `${detailed}\n- Improve security for the application feature`,
-    ).find((check) => check.name === 'unverifiable_external_claims_absent').passed,
-    false,
-  );
-  assert.equal(
-    commitMessageChecks(
-      'detailed_body_for_nontrivial_change',
-      [
-        'feat: activate the application',
-        '',
-        '- Enable the application runtime flag',
-        '- Align test expectations',
-        '- Mark the guide feature as enabled',
-        '- Bump 1.0.0 to 1.1.0',
-      ].join('\n'),
-    ).find((check) => check.name === 'body_avoids_per_file_restatement').passed,
-    false,
-  );
-  assert.equal(
-    commitMessageChecks(
-      'detailed_body_for_nontrivial_change',
-      [
-        'feat: 启用功能并同步版本',
-        '',
-        '- 将应用功能开关及对应测试期望值切换为启用状态',
-        '- 更新使用指南以反映功能已启用',
-        '- 将项目版本从 1.0.0 升级至 1.1.0',
-      ].join('\n'),
-    ).every((check) => check.passed),
-    true,
-  );
-  assert.equal(
-    commitMessageChecks(
-      'detailed_body_for_nontrivial_change',
-      [
-        'feat: 启用功能并升级版本',
-        '',
-        '- 将应用功能开关设为启用状态，并把期望值同步为 true',
-        '- 更新使用指南以反映功能已启用',
-        '- 将版本号从 1.0.0 升至 1.1.0',
-      ].join('\n'),
-    ).every((check) => check.passed),
-    true,
-  );
-  const perFileRestatement = [
-    'feat: 启用应用功能',
-    '',
-    '- 在 src/app.js 启用应用功能',
-    '- 在 tests/app.test.js 将测试预期更新为 true',
-    '- 在 docs/guide.md 说明功能已启用',
-    '- 将 VERSION 从 1.0.0 更新为 1.1.0',
-  ].join('\n');
-  assert.equal(
-    commitMessageChecks('detailed_body_for_nontrivial_change', perFileRestatement)
-      .find((check) => check.name === 'body_avoids_per_file_restatement').passed,
-    false,
-  );
-  const crossGroupedSummary = [
-    'feat: activate the application',
-    '',
-    '- Enable the application runtime flag and update guide documentation to show it enabled',
-    '- Align test expectations and bump 1.0.0 to 1.1.0',
-  ].join('\n');
-  assert.equal(
-    commitMessageChecks('detailed_body_for_nontrivial_change', crossGroupedSummary)
-      .every((check) => check.passed),
-    true,
-  );
-  const observedGroupedSummary = [
-    'feat: 启用功能并同步版本与说明',
-    '',
-    '- 将应用功能状态切换为启用，并同步测试期望值',
-    '- 更新使用指南以反映功能已启用',
-    '- 将项目版本从 1.0.0 升级至 1.1.0',
-  ].join('\n');
-  assert.equal(
-    commitMessageChecks('detailed_body_for_nontrivial_change', observedGroupedSummary)
-      .every((check) => check.passed),
-    true,
-  );
-  const naturalGroupedSummary = [
-    'feat: activate the application',
-    '',
-    '- Activate the application and align test expectations',
-    '- Update the guide to show the feature enabled',
-    '- Bump 1.0.0 to 1.1.0',
-  ].join('\n');
-  assert.equal(
-    commitMessageChecks('detailed_body_for_nontrivial_change', naturalGroupedSummary)
-      .every((check) => check.passed),
-    true,
-  );
-  const runtimeAndDocsGroupedSummary = [
-    'feat: activate the application',
-    '',
-    '- Activate the application and update the guide to show it enabled',
-    '- Align test expectations',
-    '- Bump 1.0.0 to 1.1.0',
-  ].join('\n');
-  assert.equal(
-    commitMessageChecks('detailed_body_for_nontrivial_change', runtimeAndDocsGroupedSummary)
-      .every((check) => check.passed),
-    true,
-  );
-  const coordinatedRuntimeAndDocsSummary = [
-    'feat: activate the application',
-    '',
-    '- Enable the application and document it in the guide',
-    '- Align test expectations',
-    '- Bump 1.0.0 to 1.1.0',
-  ].join('\n');
-  assert.equal(
-    commitMessageChecks('detailed_body_for_nontrivial_change', coordinatedRuntimeAndDocsSummary)
-      .every((check) => check.passed),
-    true,
-  );
-  const applicationGuideRestatement = [
-    'feat: activate the application',
-    '',
-    '- Enable the application runtime flag',
-    '- Align test expectations',
-    '- Update the application guide to show it enabled',
-    '- Bump 1.0.0 to 1.1.0',
-  ].join('\n');
-  assert.equal(
-    commitMessageChecks('detailed_body_for_nontrivial_change', applicationGuideRestatement)
-      .find((check) => check.name === 'body_avoids_per_file_restatement').passed,
-    false,
-  );
-  const imperativeGuideRestatement = [
-    'feat: activate the application',
-    '',
-    '- Enable the application runtime flag',
-    '- Align test expectations',
-    '- Enable the application feature in the guide',
-    '- Bump 1.0.0 to 1.1.0',
-  ].join('\n');
-  assert.equal(
-    commitMessageChecks('detailed_body_for_nontrivial_change', imperativeGuideRestatement)
-      .find((check) => check.name === 'body_avoids_per_file_restatement').passed,
-    false,
-  );
-  for (const docsBullet of [
-    '- 更新应用功能指南，说明功能已启用',
-    '- Update the application feature guide to show it enabled',
-  ]) {
-    const featureGuideRestatement = [
-      'feat: 启用应用功能',
-      '',
-      '- 启用应用运行时开关',
-      '- 更新测试预期为 true',
-      docsBullet,
-      '- 将版本从 1.0.0 升至 1.1.0',
-    ].join('\n');
-    assert.equal(
-      commitMessageChecks('detailed_body_for_nontrivial_change', featureGuideRestatement)
-        .find((check) => check.name === 'body_avoids_per_file_restatement').passed,
-      false,
-    );
+function testCommitSemanticGrading() {
+  const selected = commitBehaviorDocument.cases.find((entry) => entry.id === 'detailed_body_for_nontrivial_change');
+  const evalCase = { id: selected.id, prompt: selected.input.prompt, assertions: selected.assertions, expected_output: selected.expected.outcome };
+  const message = 'feat: 启用应用功能\n\n- 启用应用开关并同步测试预期\n- 更新指南并将版本提升至 1.1.0';
+  const evaluation = {
+    before: { head: 'before', diff: 'source diff' },
+    after: { head: 'after', diff: '' },
+    commit: { message, diff: 'actual committed diff' },
+    trace: { commands: ['git commit'] },
+  };
+  const payload = JSON.parse(semanticGraderPrompt(evalCase, evaluation, 'done').split('\n').at(-1));
+  assert.equal(payload.commit.message, message);
+  assert.equal(payload.commit.diff, evaluation.commit.diff);
+  assert.equal(payload.before.diff, evaluation.before.diff);
+  assert.ok(payload.assertions.every((entry) => entry.grader === 'model'));
+  const checks = payload.assertions.map((entry) => ({ name: entry.grader_check, verdict: 'pass', evidence: 'Independent fixture verdict.' }));
+  const run = (entries) => ({ code: 0, timedOut: false, final_message: JSON.stringify({ checks: entries }) });
+  assert.ok(semanticAssertionChecks(evalCase, run(checks)).every((entry) => entry.passed));
+  assert.equal(semanticAssertionChecks(evalCase, run(checks.map((entry, index) => index === 0 ? { ...entry, verdict: 'fail' } : entry))).every((entry) => entry.passed), false);
+  for (const invalid of [checks.slice(1), [...checks, checks[0]], [checks[0], ...checks.slice(0, -1)], checks.map((entry) => ({ ...entry, evidence: '' }))]) {
+    assert.ok(semanticAssertionChecks(evalCase, run(invalid)).every((entry) => entry.verdict === 'unknown' && !entry.passed));
   }
-  assert.equal(
-    hookFailureMessageChecks(
-      'pre-commit hook 失败，未创建 commit。HEAD 未变，index 仍 staged，worktree clean。',
-    ).every((check) => check.passed),
-    true,
-  );
-  assert.equal(
-    hookFailureMessageChecks(
-      'pre-commit hook failed; no commit was created. HEAD is unchanged; staged changes remain in the index; working tree is clean.',
-    ).every((check) => check.passed),
-    true,
-  );
-  assert.equal(
-    hookFailureMessageChecks(
-      'pre-commit hook failed; no commit created. HEAD unchanged; staged changes remain in the index; working tree clean.',
-    ).every((check) => check.passed),
-    true,
-  );
-  assert.equal(
-    hookFailureMessageChecks(
-      'pre-commit hook failed; no commit created. HEAD unchanged; staged changes remain in the index, working tree clean.',
-    ).every((check) => check.passed),
-    true,
-  );
-  assert.equal(
-    hookFailureMessageChecks(
-      'pre-commit hook failed; no commit created. HEAD unchanged; staged changes remain in the index; working tree is clean.',
-    ).find((check) => check.name === 'does_not_claim_commit_success').passed,
-    true,
-  );
-  assert.equal(
-    hookFailureMessageChecks(
-      'pre-commit hook 失败，没有创建提交。HEAD 未改变；已暂存修改仍保留在 index；工作树干净。',
-    ).every((check) => check.passed),
-    true,
-  );
-  assert.equal(
-    hookFailureMessageChecks(
-      'pre-commit hook 失败，未创建提交。HEAD 未变；暂存修改仍在 index；工作树干净。',
-    ).every((check) => check.passed),
-    true,
-  );
-  const observedHookFailure = [
-    '提交未创建：pre-commit hook 已拒绝提交，且未绕过 hook。',
-    '',
-    '- HEAD 仍为 `3657841 chore: initialize commit fixture`',
-    '- `src/app.js` 改动仍保持暂存状态',
-    '- 工作区没有额外未暂存改动',
-  ].join('\n');
-  assert.equal(
-    hookFailureMessageChecks(observedHookFailure, '3657841abcdef').every((check) => check.passed),
-    true,
-  );
-  const observedCurrentHead = [
-    '提交未创建：pre-commit hook 按预期拒绝了提交，且未绕过。',
-    '',
-    '- 当前 HEAD：`19742a5 chore: initialize commit fixture`',
-    '- 暂存改动仍保留：`src/app.js`',
-    '- 工作区无未暂存改动',
-  ].join('\n');
-  assert.equal(
-    hookFailureMessageChecks(observedCurrentHead, '19742a5abcdef').every(
-      (check) => check.passed,
-    ),
-    true,
-  );
-  const observedCurrentHeadWithStateVerb = [
-    '提交未创建：pre-commit hook 按预期拒绝了提交，未绕过。',
-    '',
-    '- HEAD 仍为 `0016db5`',
-    '- 暂存改动仍保留：`src/app.js`',
-    '- 工作区无未暂存改动',
-  ].join('\n');
-  assert.equal(
-    hookFailureMessageChecks(observedCurrentHeadWithStateVerb, '0016db5abcdef').every(
-      (check) => check.passed,
-    ),
-    true,
-  );
-  assert.equal(
-    hookFailureMessageChecks(
-      observedCurrentHead.replace('19742a5', 'deadbee'),
-      '19742a5abcdef',
-    ).find((check) => check.name === 'reports_actual_repository_state').passed,
-    false,
-  );
-  assert.equal(
-    hookFailureMessageChecks(
-      '提交未创建。HEAD 未变，暂存改动仍保留，工作区无未暂存改动。',
-      '19742a5abcdef',
-    ).find((check) => check.name === 'reports_actual_repository_state').passed,
-    false,
-  );
-  for (const deniedState of [
-    '提交未创建。当前 HEAD：19742a5。staged changes do not remain. working tree is not clean.',
-    '提交未创建。当前 HEAD：19742a5。暂存改动未保留，工作区不干净。',
-  ]) {
-    assert.equal(
-      hookFailureMessageChecks(deniedState, '19742a5abcdef')
-        .find((check) => check.name === 'reports_actual_repository_state').passed,
-      false,
-    );
+  assert.ok(semanticAssertionChecks(evalCase, { code: 1, final_message: '' }).every((entry) => !entry.passed));
+  assert.ok(semanticAssertionChecks(evalCase, run(checks.map((entry) => ({ ...entry, verdict: 'unknown' })))).every((entry) => !entry.passed));
+  assert.equal(commitTaskPrompt({ case: evalCase, skillMode: 'with-skill' }), evalCase.prompt);
+  assert.equal(commitTaskPrompt({ case: evalCase, skillMode: 'without-skill' }), evalCase.prompt.replace(/^\$git-commit\s+/u, ''));
+}
+
+async function testCommitMessageFormatBoundary() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'git-commit-message-grader-'));
+  await mkdir(path.join(root, '.agents'));
+  const selected = commitBehaviorDocument.cases.find((entry) => entry.id === 'detailed_body_for_nontrivial_change');
+  const evalCase = { id: selected.id, prompt: selected.input.prompt, assertions: selected.assertions };
+  const workspace = await prepareCommitWorkspace(evalCase, root);
+  try {
+    const before = await snapshotCommitRepository(workspace.repo);
+    await git(workspace.repo, ['add', '--', ...workspace.expected.paths]);
+    const message = 'feat: 启用应用功能\n\n- 启用应用开关并同步测试预期\n- 更新指南并将版本提升至 1.1.0';
+    await git(workspace.repo, ['commit', '-m', message]);
+    const result = await evaluateCommitCase(evalCase, workspace, before, { code: 0, stdout: '', final_message: 'done' });
+    assert.equal(result.passed, true);
+    assert.equal(result.commit.message.trim(), message);
+    assert.ok(evalCase.assertions.filter((entry) => entry.grader === 'model').every((entry) => !result.checks.some((check) => check.name === entry.grader_check)));
+  } finally {
+    await rm(workspace.root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
-  assert.equal(
-    hookFailureMessageChecks(
-      observedHookFailure.replace('3657841', 'deadbee'),
-      '3657841abcdef',
-    ).find((check) => check.name === 'reports_actual_repository_state').passed,
-    false,
-  );
-  assert.equal(
-    hookFailureMessageChecks('pre-commit hook 失败，但 commit 成功。')
-      .find((check) => check.name === 'does_not_claim_commit_success').passed,
-    false,
-  );
-  assert.equal(
-    partialMessageExcludesUnstagedFact('chore: 记录选定的暂存内容'),
-    true,
-  );
-  assert.equal(
-    partialMessageExcludesUnstagedFact('chore: Update the work value to the pending local setting'),
-    false,
-  );
-  assert.equal(
-    hookFailureMessageChecks(
-      'pre-commit hook 失败。HEAD advanced，index is clean，worktree is clean。',
-    ).find((check) => check.name === 'reports_actual_repository_state').passed,
-    false,
-  );
-  assert.equal(
-    commitMessageChecks(
-      'detailed_body_for_nontrivial_change',
-      'feat: enable feature\n\n- Update runtime and tests\n- Update docs to 1.1.0',
-    ).some((check) => !check.passed),
-    true,
-  );
-  assert.equal(
-    commitMessageChecks('detailed_body_for_nontrivial_change', 'x\n\n- foo\n- bar')
-      .some((check) => !check.passed),
-    true,
-  );
-  const accurateSubjects = new Map([
-    ['trivial_change_may_omit_body', 'docs: 修正 README 拼写'],
-    ['staged_only_with_unstaged_hunks', 'chore: 提交选定的暂存修改'],
-    ['unrelated_staged_content', 'chore: 更新 requested 文件'],
-    ['repository_message_convention', '[docs] 更新安装指南'],
-    ['commit_and_push_composition', 'feat: 启用应用功能'],
-  ]);
-  const genericSubjects = new Map([
-    ['trivial_change_may_omit_body', 'docs: docs'],
-    ['staged_only_with_unstaged_hunks', 'chore: staged'],
-    ['unrelated_staged_content', 'chore: requested'],
-    ['repository_message_convention', '[docs] docs'],
-    ['commit_and_push_composition', 'feat: feature'],
-  ]);
-  for (const [caseId, message] of accurateSubjects) {
-    assert.equal(commitMessageChecks(caseId, message).every((check) => check.passed), true);
-    assert.equal(commitMessageChecks(caseId, 'x').some((check) => !check.passed), true);
-    assert.equal(
-      commitMessageChecks(caseId, genericSubjects.get(caseId))
-        .some((check) => !check.passed),
-      true,
-    );
+}
+
+async function testExplicitRepositoryCommitGate() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'git-commit-required-gate-'));
+  await mkdir(path.join(root, '.agents'));
+  const selected = commitBehaviorDocument.cases.find((entry) => entry.id === 'repository_message_convention');
+  const evalCase = { id: selected.id, prompt: selected.input.prompt, assertions: selected.assertions };
+  try {
+    for (const timing of ['missing', 'before', 'after']) {
+      const workspace = await prepareCommitWorkspace(evalCase, root);
+      try {
+        const before = await snapshotCommitRepository(workspace.repo);
+        const verify = () => execFileAsync(process.execPath, ['verify.mjs'], {
+          cwd: workspace.repo, env: isolatedGitEnv(),
+        });
+        if (timing === 'before') await verify();
+        await git(workspace.repo, ['add', '--', ...workspace.expected.paths]);
+        await git(workspace.repo, ['commit', '-m', '[docs] 更新安装说明']);
+        if (timing === 'after') await verify();
+        const result = await evaluateCommitCase(evalCase, workspace, before, {
+          code: 0, stdout: '', final_message: 'done',
+        });
+        const gate = result.checks.find((check) => check.name === 'explicit_repository_gate_before_commit');
+        assert.equal(gate.passed, timing === 'before', timing);
+        assert.equal(result.passed, timing === 'before', timing);
+      } finally {
+        await rm(workspace.root, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
-  assert.equal(
-    commitMessageChecks('unrelated_staged_content', '修改 requested 文件')
-      .every((check) => check.passed),
-    true,
-  );
+}
+
+async function testMergeEvaluationFinalState(sourceRoot) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'git-merge-final-state-'));
+  // Eval attachments stay in source; the grader under test comes from the test bundle.
+  const bundle = (name) => path.join(sourceRoot, 'skills', 'reconciling-git-merges', 'evals', 'files', `${name}.bundle`);
+  const model = { code: 0, timedOut: false, stdout: '', final_message: '' };
+  const clone = async (name) => {
+    const repo = path.join(root, name);
+    await git(root, ['clone', '--quiet', bundle(name), repo]);
+    await git(repo, ['config', 'user.name', 'Merge Grader Test']);
+    await git(repo, ['config', 'user.email', 'merge-grader@example.invalid']);
+    return repo;
+  };
+  try {
+    const repo = await clone('semantic-cross-file');
+    const before = await snapshotMergeRepository(repo);
+    await git(repo, ['merge', '--no-edit', 'origin/feature']);
+    await writeFile(path.join(repo, 'invoice.py'), "from pricing import subtotal\n\ndef render_total(prices):\n    return f'${subtotal(prices) / 100:.2f}'\n");
+    const uncommitted = await evaluateMergeCase({ id: 'semantic_cross_file' }, repo, before, model);
+    assert.equal(uncommitted.passed, false);
+    assert.equal(uncommitted.checks.find((check) => check.name === 'integration_changes_committed').passed, false);
+    await git(repo, ['add', '--', 'invoice.py']);
+    const staged = await evaluateMergeCase({ id: 'semantic_cross_file' }, repo, before, model);
+    assert.equal(staged.passed, false);
+    await git(repo, ['commit', '--amend', '--no-edit']);
+    const committed = await evaluateMergeCase({ id: 'semantic_cross_file' }, repo, before, model);
+    assert.equal(committed.passed, true);
+
+    const ambiguous = await clone('ambiguous-retention');
+    const initial = await snapshotMergeRepository(ambiguous);
+    const report = { ...model, final_message: '7 天隐私保留与 90 天审计保留不兼容，仓库证据不足，需要产品决定优先级。' };
+    const pausedBefore = await evaluateMergeCase({ id: 'ambiguous_retention' }, ambiguous, initial, report);
+    assert.equal(pausedBefore.passed, true);
+    const silent = await evaluateMergeCase({ id: 'ambiguous_retention' }, ambiguous, initial, model);
+    assert.equal(silent.passed, false);
+    await assert.rejects(git(ambiguous, ['merge', '--no-commit', 'origin/feature']));
+    const pausedAfter = await evaluateMergeCase({ id: 'ambiguous_retention' }, ambiguous, initial, report);
+    assert.equal(pausedAfter.passed, true);
+    await writeFile(path.join(ambiguous, 'retention.py'), 'RETENTION_DAYS = 30\n');
+    const invented = await evaluateMergeCase({ id: 'ambiguous_retention' }, ambiguous, initial, report);
+    assert.equal(invented.passed, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 async function testEvalChildTimeout() {
@@ -1953,8 +1673,11 @@ async function main() {
   await testMergeInProgressDetection();
   await testCherryPickConflictDetection();
   await testMergeEvalAssertions();
+  await testMergeEvaluationFinalState(context.sourceRoot);
   testCommitExecTraceAssertions();
-  testCommitMessageAssertions();
+  testCommitSemanticGrading();
+  await testCommitMessageFormatBoundary();
+  await testExplicitRepositoryCommitGate();
   console.log('git skill eval and Git behavior tests passed');
 }
 

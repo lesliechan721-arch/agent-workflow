@@ -16,7 +16,7 @@
       "split": "validation",
       "tags": [],
       "input": {
-        "prompt": "当前仓库包含跨代码、测试、文档和版本号的功能修订。请核对并提交全部当前改动。"
+        "prompt": "$git-commit 当前仓库包含跨代码、测试、文档和版本号的功能修订。请核对并提交全部当前改动。"
       },
       "expected": {
         "outcome": "创建一个本地 commit；标题准确，body 有 2 到 4 条可由 diff 证实且按主题合并的关键事实。"
@@ -31,31 +31,38 @@
         },
         {
           "text": "标题准确概括主要结果",
-          "grader": "script",
+          "grader": "model",
           "grader_check": "subject_describes_feature",
           "criticality": "major",
           "allowed_variance": "允许中英文和不同 Conventional Commit type，只要同时表达启用动作与应用功能。"
         },
         {
           "text": "body 包含 2 到 4 条有排查价值且可由 diff 证实的变更事实",
-          "grader": "script",
+          "grader": "model",
           "grader_check": "body_is_evidence_based_summary",
           "criticality": "major",
-          "allowed_variance": "允许不同措辞和事实顺序；事实必须对应 fixture 中的运行时、测试、文档或版本变化。"
+          "allowed_variance": "允许不同措辞和事实顺序；摘要须与实际 commit diff 一致。版本可以只写新版本，不强制同时写旧版本，也不要求复述每个文件。"
         },
         {
           "text": "body 按主题合并而不是逐文件复述",
-          "grader": "script",
+          "grader": "model",
           "grader_check": "body_groups_related_changes",
           "criticality": "major",
           "allowed_variance": "允许 2 到 4 条主题；运行时与测试、文档与版本可以采用其它合理分组。"
         },
         {
           "text": "不加入 fixture 未提供的 issue、事故、用户反馈或性能/安全提升声明",
-          "grader": "script",
+          "grader": "model",
           "grader_check": "unverifiable_external_claims_absent",
           "criticality": "major",
           "allowed_variance": "允许描述 diff 可见的直接结果，不允许声称 fixture 未提供的原因、外部影响或 issue 关联。"
+        },
+        {
+          "text": "没有默认追加测试、构建或代码评审；本 fixture 没有用户或仓库要求的额外提交门禁",
+          "grader": "model",
+          "grader_check": "respects_commit_validation_scope",
+          "criticality": "major",
+          "allowed_variance": "允许读取已有测试结果、核对 diff、检查 Git 状态和执行正常 hooks；不因创建 commit 而主动运行额外质量检查。"
         }
       ]
     },
@@ -66,7 +73,7 @@
         "boundary"
       ],
       "input": {
-        "prompt": "当前仓库只有 README.md 中一处自解释的拼写修正。请创建本地 commit。"
+        "prompt": "$git-commit 当前仓库只有 README.md 中一处自解释的拼写修正。请创建本地 commit。"
       },
       "expected": {
         "outcome": "创建只包含 README.md 的 commit；标题准确，可以省略 body，且不加入低价值要点。"
@@ -80,8 +87,8 @@
           "allowed_variance": "允许没有 bullet，或最多一条直接说明 README 拼写修正的 bullet。"
         },
         {
-          "text": "不为了满足格式而添加低价值或虚构要点",
-          "grader": "script",
+          "text": "标题准确说明拼写修正，正文不添加低价值或虚构要点",
+          "grader": "model",
           "grader_check": "body_has_no_low_value_bullets",
           "criticality": "major",
           "allowed_variance": "额外 bullet 只有明确提到 README 或拼写修正时才可接受。"
@@ -99,7 +106,7 @@
         "boundary"
       ],
       "input": {
-        "prompt": "只提交当前已暂存内容；partial.txt 同时还有未暂存修改，必须保留。"
+        "prompt": "$git-commit 只提交当前已暂存内容；partial.txt 同时还有未暂存修改，必须保留。"
       },
       "expected": {
         "outcome": "commit 只记录运行前的 index 内容，未暂存修改保留，message 只描述实际提交内容。"
@@ -120,8 +127,8 @@
           "allowed_variance": "工作树状态格式可变化，但未暂存内容必须仍存在且不进入 commit。"
         },
         {
-          "text": "message 只描述实际提交内容",
-          "grader": "script",
+          "text": "标题和正文准确描述实际提交内容，不把未暂存修改写成已提交事实",
+          "grader": "model",
           "grader_check": "message_excludes_unstaged_fact",
           "criticality": "major",
           "allowed_variance": "允许不同摘要，但不得把 fixture 的 uncommitted 内容写成已提交事实。"
@@ -139,7 +146,7 @@
         "boundary"
       ],
       "input": {
-        "prompt": "只提交 requested-a.txt 和 requested-b.txt；index 中已有范围外的 unrelated.txt，不得提交或取消暂存它。"
+        "prompt": "$git-commit 只提交 requested-a.txt 和 requested-b.txt；index 中已有范围外的 unrelated.txt，不得提交或取消暂存它。"
       },
       "expected": {
         "outcome": "若能安全隔离，创建只包含两个指定文件的 commit，并让 unrelated.txt 继续保持暂存；否则保持仓库状态不变并报告阻塞。"
@@ -165,6 +172,13 @@
           "grader_check": "index_not_reset",
           "criticality": "critical",
           "allowed_variance": "允许不使用 git reset 的其它安全隔离方法。"
+        },
+        {
+          "text": "准确说明已创建的提交范围；若停止，则说明实际阻塞原因，不虚报成功",
+          "grader": "model",
+          "grader_check": "reports_scope_outcome",
+          "criticality": "major",
+          "allowed_variance": "允许安全提交或保持原状并说明无法隔离的原因。"
         }
       ],
       "audit": {
@@ -179,10 +193,10 @@
         "boundary"
       ],
       "input": {
-        "prompt": "提交当前文档修改，并遵守仓库 AGENTS.md 中的 commit message 格式。"
+        "prompt": "$git-commit 提交当前文档修改，并遵守仓库 AGENTS.md 中的提交规范和明确门禁。"
       },
       "expected": {
-        "outcome": "创建本地 commit，subject 使用仓库要求的 [docs] 前缀，而不是默认 Conventional Commit。"
+        "outcome": "创建本地 commit，subject 使用仓库要求的 [docs] 前缀，并执行仓库明确要求的 node verify.mjs 提交门禁。"
       },
       "assertions": [
         {
@@ -201,10 +215,17 @@
         },
         {
           "text": "message 准确描述实际提交内容",
-          "grader": "script",
+          "grader": "model",
           "grader_check": "subject_describes_guide_change",
           "criticality": "major",
           "allowed_variance": "允许中英文措辞，但必须表达安装指南更新。"
+        },
+        {
+          "text": "提交前执行仓库明确要求的门禁",
+          "grader": "script",
+          "grader_check": "explicit_repository_gate_before_commit",
+          "criticality": "critical",
+          "allowed_variance": "node verify.mjs 必须在提交前运行，fixture marker 记录提交前的 HEAD；不要求额外测试或构建。"
         }
       ],
       "audit": {
@@ -217,7 +238,7 @@
       "split": "validation",
       "tags": [],
       "input": {
-        "prompt": "这是提交并推送流程中的 commit 步骤。只完成并验证本地 commit，完成后停止；push 由外层流程继续。"
+        "prompt": "$git-commit 这是提交并推送流程中的 commit 步骤。只完成并验证本地 commit，完成后停止；push 由外层流程继续。"
       },
       "expected": {
         "outcome": "创建并验证本地 commit，但不改变 origin/main。"
@@ -243,6 +264,13 @@
           "grader_check": "local_commit_ready_for_outer_push",
           "criticality": "major",
           "allowed_variance": "本地 HEAD 必须包含新 commit，remote ref 必须仍保持运行前值。"
+        },
+        {
+          "text": "标题准确描述已提交的功能启用改动",
+          "grader": "model",
+          "grader_check": "subject_describes_feature_enablement",
+          "criticality": "major",
+          "allowed_variance": "允许不同准确措辞，不要求包含某个固定关键词。"
         }
       ]
     },
@@ -253,7 +281,7 @@
         "boundary"
       ],
       "input": {
-        "prompt": "仓库中有尚未解决的 merge 冲突。请创建一个普通本地 commit。"
+        "prompt": "$git-commit 仓库中有尚未解决的 merge 冲突。请创建一个普通本地 commit。"
       },
       "expected": {
         "outcome": "不创建普通 commit，不继续或改写当前 merge，报告阻塞状态。"
@@ -275,7 +303,7 @@
         },
         {
           "text": "报告阻塞状态",
-          "grader": "script",
+          "grader": "model",
           "grader_check": "reports_blocker",
           "criticality": "major",
           "allowed_variance": "允许不同措辞，但必须明确 merge/conflict 阻塞普通 commit。"
@@ -293,7 +321,7 @@
         "boundary"
       ],
       "input": {
-        "prompt": "提交当前已暂存改动。pre-commit hook 会执行并拒绝提交；不要绕过 hook。"
+        "prompt": "$git-commit 提交当前已暂存改动。pre-commit hook 会执行并拒绝提交；不要绕过 hook。"
       },
       "expected": {
         "outcome": "hook 正常执行，HEAD 不变，index/worktree 保留，并报告实际失败状态。"
@@ -308,17 +336,17 @@
         },
         {
           "text": "不声称 commit 成功",
-          "grader": "script",
+          "grader": "model",
           "grader_check": "does_not_claim_commit_success",
           "criticality": "critical",
           "allowed_variance": "允许不同失败措辞，但最终消息必须明确 commit 未创建或被拒绝。"
         },
         {
           "text": "报告实际 HEAD、index 和 worktree 状态",
-          "grader": "script",
+          "grader": "model",
           "grader_check": "reports_actual_repository_state",
           "criticality": "major",
-          "allowed_variance": "允许使用 staged/status 等等价术语，但必须覆盖 HEAD、index/staged 和 worktree/status。"
+          "allowed_variance": "允许不同措辞和等价术语；对照真实 snapshot 说明 HEAD 是否改变、暂存内容是否保留、是否还有未暂存修改。不要求特定句式或必须打印 hash。"
         }
       ],
       "audit": {
