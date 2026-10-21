@@ -42,6 +42,8 @@ import {
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const activeControllers = new Set<TuiController>();
+// Real Git setup and resolution need more time on slower CI runners.
+const gitTestTimeoutMs = 30_000;
 
 function trackController(controller: TuiController): TuiController {
   activeControllers.add(controller);
@@ -645,7 +647,7 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(observedHealth).toEqual(['ready']);
     expect(controller.getPluginOverview('git-local/demo')).toMatchObject({ version: '1.0.0' });
     controller.dispose();
-  });
+  }, gitTestTimeoutMs);
 
   it.each([
     ['1.0.0', 'same-version candidate'],
@@ -676,7 +678,7 @@ describe('TUI v4 real catalog source boundary', () => {
       'terminal Git freshness',
     );
     controller.dispose();
-  });
+  }, gitTestTimeoutMs);
 
   it('reuses the update overlay for Review and blocks a changed candidate at Execute', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -700,7 +702,7 @@ describe('TUI v4 real catalog source boundary', () => {
 
     expect((await readCatalogGenerationState(isolation.env)).sources['git-local']!.active).toEqual(active);
     controller.dispose();
-  });
+  }, gitTestTimeoutMs);
 
   it('blocks a rollback that appears after Review and keeps Active unchanged', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -724,7 +726,7 @@ describe('TUI v4 real catalog source boundary', () => {
     });
     expect((await readCatalogGenerationState(isolation.env)).sources['git-local']!.active).toEqual(active);
     controller.dispose();
-  });
+  }, gitTestTimeoutMs);
 
   it('allows a real ref change to explicitly switch to a reviewed lower version', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -753,7 +755,7 @@ describe('TUI v4 real catalog source boundary', () => {
       refPolicy: { type: 'explicit', ref: 'refs/heads/rollback' },
     });
     controller.dispose();
-  });
+  }, gitTestTimeoutMs);
 
   it('shows a local candidate and switches Active only after real Ink confirmation', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -1389,7 +1391,7 @@ describe('TUI v4 real catalog source boundary', () => {
     await expect(fs.pathExists(candidateEntry)).resolves.toBe(false);
     expect(controller.getCatalogGeneration('git-local')).toMatchObject({ state: 'configMismatch' });
     controller.dispose();
-  });
+  }, gitTestTimeoutMs);
 
   it('repairs a damaged old Git Active when the current candidate requires a newer AW', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -1451,7 +1453,7 @@ describe('TUI v4 real catalog source boundary', () => {
       active: { resolvedCommit: active.resolvedCommit },
     });
     controller.dispose();
-  });
+  }, gitTestTimeoutMs);
 
   it('does not offer incompatible replacement after exact repair cannot match Active', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -1500,7 +1502,7 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(instance.lastFrame()).toContain('请升级 AW 或修改来源');
     expect(instance.lastFrame()).not.toContain('使用当前候选替换损坏的 Active');
     controller.dispose();
-  });
+  }, gitTestTimeoutMs);
 
   it('blocks a different identity, digest, and lower version when all weak Active evidence is damaged', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -1625,7 +1627,7 @@ describe('TUI v4 real catalog source boundary', () => {
       state: 'ready', active: { catalogVersion: '2.0.0' },
     });
     controller.dispose();
-  });
+  }, gitTestTimeoutMs);
 
   it('saves and activates a real path source through Ink keys', async () => {
     const { controller, secondRoot } = await configuredController();
