@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: subagent-communication-${{ github.ref }}
+  group: subagent-communication-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -67,6 +67,9 @@ jobs:
         run: node --test --test-concurrency=1 plugins/codex-enhance/scripts/subagent-platform.test.mjs
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Verify the isolated Windows plugin environment
+        if: runner.os == 'Windows'
+        run: node scripts/qualification/subagent-windows-plugin-env-diagnostics.mjs
       - name: Expose the built CLI on Linux
         if: runner.os == 'Linux'
         shell: bash

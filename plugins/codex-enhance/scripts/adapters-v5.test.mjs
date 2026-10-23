@@ -13,6 +13,7 @@ import { build } from 'esbuild';
 import { protectPrivatePath } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 import { createChildBridge, invokeChildTool } from '../skills/codex-subagent-guide/scripts/runtime/adapter-channel.mjs';
 import { executeClaude } from '../skills/codex-subagent-guide/scripts/adapters/claude-code-v5.mjs';
+import { assertOracleFileSelectionSupported } from '../skills/codex-subagent-guide/scripts/adapters/oracle-arguments.mjs';
 import { deferred } from '../skills/codex-subagent-guide/scripts/adapters/common.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
@@ -188,7 +189,7 @@ for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: installed
   const f = await fixture(t, backend);
   f.request.execution = { ...f.request.execution, model: 'chosen-model', reasoningEffort: 'high' };
   f.request.args = backend === 'codex' ? ['-c', 'shell_environment_policy.inherit="all"', '--sandbox', 'workspace-write', '--ask-for-approval', 'on-request'] : backend === 'claude' ? ['--permission-mode', 'default', '--settings', '{"env":{"SETTING":"value"}}'] : ['--engine', 'api'];
-  if (backend === 'oracle') f.request.fileSelectors = ['main.ts', 'main.ts'];
+  if (backend === 'oracle' && !windows) f.request.fileSelectors = ['main.ts', 'main.ts'];
   const run = f.start(); run.send(f.request);
   assert.equal((await run.waitFor('ready')).communicationSupported, backend !== 'oracle');
   const result = await run.waitFor('result');
@@ -217,8 +218,8 @@ for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: installed
     assert.ok(prompt.startsWith(f.request.prompt)); assert.ok(captured[0].args.includes('--permission-mode')); assert.ok(captured[0].args.includes('--mcp-config'));
   } else {
     assert.equal(captured[1].input, f.request.prompt);
-    assert.equal(captured[0].args.filter((argument) => argument === '--file').length, 2);
-    assert.equal(captured[0].args.filter((argument) => argument === 'main.ts').length, 2);
+    assert.equal(captured[0].args.filter((argument) => argument === '--file').length, f.request.fileSelectors.length);
+    assert.equal(captured[0].args.filter((argument) => argument === 'main.ts').length, f.request.fileSelectors.length);
   }
   assert.equal(closed.diagnostic, '');
 });
@@ -398,6 +399,28 @@ test('Codex: approval requests cannot be silently granted', { skip: !supported, 
   assert.ok(response?.error); assert.equal(Object.hasOwn(response, 'result'), false);
 });
 
+
+// Protect pre-submission refusal of known incompatible native selection. The
+// installed wire path additionally proves no backend exit or ready is invented.
+test('Oracle: Windows file selection fails before starting the backend', { skip: !supported, timeout: testTimeoutMs }, async (t) => {
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    assert.doesNotThrow(() => assertOracleFileSelectionSupported([], platform));
+    if (platform === 'win32') assert.throws(() => assertOracleFileSelectionSupported(['main.ts'], platform), { code: 'fileSelectionUnsupported' });
+    else assert.doesNotThrow(() => assertOracleFileSelectionSupported(['main.ts', 'main.ts'], platform));
+  }
+  if (!windows) return;
+  const f = await fixture(t, 'oracle');
+  f.request.fileSelectors = ['main.ts'];
+  const run = f.start(); run.send(f.request);
+  const result = await run.waitFor('result');
+  assert.equal(result.state, 'failed');
+  assert.equal(result.code, 'fileSelectionUnsupported');
+  assert.equal(result.generationStarted, false);
+  assert.equal(result.backendExitCode, null);
+  assert.equal(run.frames.some((frame) => frame.type === 'ready'), false);
+  assert.equal((await run.exit).code, 0);
+  await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+});
 
 for (const scenario of ['no terminal', 'nonzero']) test(`Oracle: ${scenario} cannot replace the final-file and process evidence`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t, 'oracle', scenario); const run = f.start(); run.send(f.request);

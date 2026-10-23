@@ -301,7 +301,7 @@ test('synthetic installation renderer uses current values and returns only reque
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('explicit public AW fixture copies its regular package tree and preserves executable mode', async () => {
+test('explicit public AW fixture copies its regular package tree and preserves POSIX executable mode', async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'role-public-aw-')));
   try {
     const source = path.join(root, 'source'), fixtures = path.join(root, 'eval');
@@ -309,7 +309,11 @@ test('explicit public AW fixture copies its regular package tree and preserves e
     await writeFile(path.join(source, 'bin', 'aw'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     await writeFile(path.join(source, 'lib', 'package.json'), '{"name":"public package fixture"}\n');
     assert.deepEqual(await copyPublicAwFixture(source, fixtures), ['fixtures/public-aw/bin']);
-    assert.equal((await lstat(path.join(fixtures, 'fixtures', 'public-aw', 'bin', 'aw'))).mode & 0o777, 0o755);
+    const copied = path.join(fixtures, 'fixtures', 'public-aw', 'bin', 'aw');
+    assert.equal((await lstat(copied)).isFile(), true);
+    assert.equal(await readFile(copied, 'utf8'), '#!/bin/sh\nexit 0\n');
+    assert.equal(await readFile(path.join(fixtures, 'fixtures', 'public-aw', 'lib', 'package.json'), 'utf8'), '{"name":"public package fixture"}\n');
+    if (process.platform !== 'win32') assert.equal((await lstat(copied)).mode & 0o777, 0o755);
     await symlink(path.join(source, 'lib'), path.join(source, 'linked'));
     await assert.rejects(copyPublicAwFixture(source, fixtures), /regular files and directories/u);
   } finally { await rm(root, { recursive: true, force: true }); }

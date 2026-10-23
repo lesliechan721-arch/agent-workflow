@@ -1,6 +1,14 @@
 import { fail } from '../runtime/contracts.mjs';
 import { checkArguments, rejectOption } from './common.mjs';
 
+export function assertOracleFileSelectionSupported(fileSelectors, platform = process.platform) {
+  // Native Windows ignore paths do not match normalized candidate paths.
+  // Until this path satisfies v1, do not submit a task with selected material.
+  if (platform === 'win32' && fileSelectors.length > 0) {
+    fail('fileSelectionUnsupported', 'Oracle file selection does not support AW file selection v1 on Windows. Use an executor with v1 support.');
+  }
+}
+
 // Oracle normalizeThinkingTimeLevel, commit 35d8022f370dc89e962637e4e88d3d8d35618f3d.
 // Pro is a deliberate tier, not an alias for heavy, max, or ultra.
 const thinkingTimes = new Map([

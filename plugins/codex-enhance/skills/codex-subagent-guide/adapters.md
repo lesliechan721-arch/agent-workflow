@@ -139,6 +139,8 @@ runner 与 helper 共用无文件系统输入校验：类型、NUL、空白、�
 
 custom 可直接调用公共 helper，或用自己的实现通过同一标准；不再要求调用者理解其“原生差异”。Oracle 的实际选择路径也须验证；fake argv 透传只证明参数传递，不证明集合一致。已知原生能力不满足 v1 时，adapter 在模型提交前报告 fileSelectionUnsupported，或在后续实现中补足适配后重新验证；不得自动改用另一套语义、模型或后端。
 
+当前 Windows 原生 Oracle 的 ignore 行为不符合 v1；内建 adapter 对非空 fileSelectors 在扫描和提交后端前返回 fileSelectionUnsupported。未指定文件的空数组请求仍可运行。公共 helper 与 custom 的 Windows 文件选择仍按完整 v1 验证，不接受漏排文件。
+
 兼容性证据绑定实际测试的环境与实现；不增加精确 Oracle 版本白名单、每次调用 helper 对账或模型探测。新版本行为改变时修复适配器并重新验证，不修改调用 Skill 让用户规避差异。既有参考实现抑制部分 I/O 错误这一已知差异须有单独验收；尚未满足时不得把原生透传写成完整支持证明。
 
 ### 公共解析命令合同

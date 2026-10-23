@@ -42,6 +42,8 @@ Advisor 和 Explore 通过 Guide 委派；已有完整调度与生命周期方�
 
 Oracle 可直接选择 oracleEngine=browser/api，界面推荐 browser；省略引擎时继续沿用 Oracle，但设置 reasoningEffort 后必须明确选择。浏览器将 low/medium/high/xhigh 转换为 light/standard/extended/extra-high，并支持新增的 pro 预设；max/ultra 没有浏览器映射。浏览器登录和实际档位由 Oracle 管理。专用字段与 args 中的同类参数重复时会提示修正。
 
+当前 Windows 原生 Oracle 的文件选择不符合固定 v1 协议。内建 adapter 对非空文件选择在提交后端前返回 fileSelectionUnsupported；未指定文件的请求仍可运行。
+
 当前 Codex app-server 对 codexProfile（--profile/-p）和额外目录 addDirs（--add-dir）没有等价的官方映射。显式设置 codexProfile，或在 args 中使用这些选项，会在提交后端前返回 parameterUnavailable。调用方须修正显式配置后再运行；AW 不会忽略这些设置后继续执行。
 
 外部 profile 可省略 model 和 reasoningEffort，表示使用后端默认。显式要求不支持时报错，不静默替换模型或服务。native 保留已有配置要求。专属咨询配置仅在已设置时显示，选中后整体使用；无效配置不会触发回退。

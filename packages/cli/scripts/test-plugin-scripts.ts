@@ -7,6 +7,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { formatTestWorkers, nodeTestWorkerOptions } from './test-workers.mjs';
+import { preparePluginScriptDirectories } from '../src/utils/plugin-scripts.js';
 import {
   buildPluginScriptSpawnEnv,
   bundleLocalPlugin,
@@ -577,8 +578,7 @@ async function runPreparedPluginTests(options: {
     await fs.ensureDir(projectRoot);
     await fs.ensureDir(awHome);
     await fs.ensureDir(tempDir);
-    await fs.ensureDir(path.join(tempDir, 'home'));
-    await fs.ensureDir(path.join(tempDir, 'tmp'));
+    await preparePluginScriptDirectories(tempDir);
     const canonicalProjectRoot = await fs.realpath(projectRoot);
     const copiedEntries = await copyTestsIntoBundle({
       baselineRoot: options.prepared.baselineRoot,

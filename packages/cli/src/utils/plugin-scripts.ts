@@ -27,6 +27,11 @@ export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 1_800_000;
 const OUTPUT_LIMIT = 64 * 1024;
 const WINDOWS_JOB_CLOSE_TIMEOUT_MS = 4_500;
+const WINDOWS_SYSTEM_ENV_KEYS = [
+  'SystemRoot', 'windir', 'SystemDrive', 'ComSpec', 'PATHEXT',
+  'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+  'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432',
+] as const;
 
 export interface PluginScriptInvocation { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin?: string }
 export interface PluginProcessResult { exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean; stdoutTruncated?: boolean }
@@ -68,11 +73,25 @@ export function buildNodeScriptInvocation(options: { entryPath: string; cwd: str
   return { command: process.execPath, args: [options.entryPath, ...(options.args ?? [])], cwd: options.cwd, env: options.env, ...(options.stdin === undefined ? {} : { stdin: options.stdin }) };
 }
 
+export async function preparePluginScriptDirectories(tempDir: string): Promise<void> {
+  const home = path.join(tempDir, 'home');
+  await Promise.all([
+    fs.ensureDir(home),
+    fs.ensureDir(path.join(tempDir, 'tmp')),
+    ...(process.platform === 'win32' ? [
+      fs.ensureDir(path.join(home, 'AppData', 'Roaming')),
+      fs.ensureDir(path.join(home, 'AppData', 'Local')),
+    ] : []),
+  ]);
+}
+
 export function buildPluginScriptSpawnEnv(options: {
   commandEnv: NodeJS.ProcessEnv; contextPath: string; tempDir: string; plugin: { name: string; version: string };
   event: string; platform?: PlatformName; distribution?: DistributionName; scope: Scope; bundleRoot: string;
 }): NodeJS.ProcessEnv {
-  const input = options.commandEnv;
+  const input = process.platform === 'win32'
+    ? Object.fromEntries(Object.entries(options.commandEnv).map(([key, value]) => [key.toUpperCase(), value]))
+    : options.commandEnv;
   const output: NodeJS.ProcessEnv = {
     AW_HOME: resolveAwHome(input), AW_CODEX_HOME: input.AW_CODEX_HOME || path.join(resolveAwHome(input), 'isolated-codex-home'),
     AW_CLAUDE_HOME: input.AW_CLAUDE_HOME || path.join(resolveAwHome(input), 'isolated-claude-home'), PATH: input.PATH ?? input.Path ?? '',
@@ -82,8 +101,20 @@ export function buildPluginScriptSpawnEnv(options: {
   if (options.platform) output.AW_PLUGIN_PLATFORM = options.platform;
   if (options.distribution) output.AW_PLUGIN_DISTRIBUTION = options.distribution;
   if (process.platform === 'win32') {
-    output.USERPROFILE = path.join(options.tempDir, 'home'); output.TEMP = path.join(options.tempDir, 'tmp'); output.TMP = output.TEMP;
-    if (input.SystemRoot) output.SystemRoot = input.SystemRoot; if (input.ComSpec) output.ComSpec = input.ComSpec;
+    // Native Windows hosts need system installation paths to load their runtime
+    // and modules. Keep user state and module-path overrides out of this list.
+    for (const key of WINDOWS_SYSTEM_ENV_KEYS) {
+      const value = input[key.toUpperCase()];
+      if (value !== undefined) output[key] = value;
+    }
+    output.HOME = path.join(options.tempDir, 'home');
+    output.USERPROFILE = output.HOME;
+    output.HOMEDRIVE = path.parse(output.HOME).root.replace(/[\\/]$/u, '');
+    output.HOMEPATH = output.HOME.slice(output.HOMEDRIVE.length);
+    output.APPDATA = path.join(output.HOME, 'AppData', 'Roaming');
+    output.LOCALAPPDATA = path.join(output.HOME, 'AppData', 'Local');
+    output.TEMP = path.join(options.tempDir, 'tmp');
+    output.TMP = output.TEMP;
   } else { output.HOME = path.join(options.tempDir, 'home'); output.TMPDIR = path.join(options.tempDir, 'tmp'); }
   return output;
 }
@@ -486,7 +517,7 @@ export async function runPreApplyScript(options: {
     };
     const tempRoot = assertTestWritablePath(path.join(awHome, 'tmp'), 'preApply temp root'); await fs.ensureDir(tempRoot);
     tempDir = await fs.mkdtemp(path.join(tempRoot, 'plugin-pre-apply-'));
-    await fs.ensureDir(path.join(tempDir, 'home')); await fs.ensureDir(path.join(tempDir, 'tmp'));
+    await preparePluginScriptDirectories(tempDir);
     const env = buildPluginScriptSpawnEnv({ commandEnv: options.context.env, contextPath: '', tempDir, plugin: payload.plugin, event: 'preApply', platform: options.platform, scope: options.scope, bundleRoot: options.plugin.rootDir }); delete env.AW_PLUGIN_CONTEXT;
     sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values);
     const invocation = buildNodeScriptInvocation({ entryPath, cwd: options.plugin.rootDir, env, stdin: `${JSON.stringify(payload)}\n` });

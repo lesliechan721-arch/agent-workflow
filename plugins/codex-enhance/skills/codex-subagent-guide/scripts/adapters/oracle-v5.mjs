@@ -2,12 +2,13 @@
 import path from 'node:path';
 import { assertNativeSelectionReadable } from '../file-selection/scan-guard.mjs';
 import { adapterMain, finalOutput, privateOutputPath } from './common.mjs';
-import { oracleArguments } from './oracle-arguments.mjs';
+import { assertOracleFileSelectionSupported, oracleArguments } from './oracle-arguments.mjs';
 
-export { oracleArguments } from './oracle-arguments.mjs';
+export { assertOracleFileSelectionSupported, oracleArguments } from './oracle-arguments.mjs';
 
 export async function executeOracle(context) {
   const request = context.request;
+  assertOracleFileSelectionSupported(request.fileSelectors);
   const outputFile = await privateOutputPath(request.runtime.directory, path.join(request.runtime.directory, 'oracle-answer.md'));
   const args = oracleArguments(request, outputFile);
   await assertNativeSelectionReadable(request.workspace, request.fileSelectors, { isCancelled: () => context.signal.aborted });
