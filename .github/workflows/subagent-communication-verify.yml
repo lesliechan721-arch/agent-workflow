@@ -70,6 +70,9 @@ jobs:
       - name: Verify the isolated Windows plugin environment
         if: runner.os == 'Windows'
         run: node scripts/qualification/subagent-windows-plugin-env-diagnostics.mjs
+      - name: Diagnose an isolated Windows environment failure
+        if: failure() && runner.os == 'Windows'
+        run: node scripts/qualification/subagent-windows-plugin-env-phases.mjs
       - name: Expose the built CLI on Linux
         if: runner.os == 'Linux'
         shell: bash
@@ -91,6 +94,44 @@ jobs:
           '@echo off', ('"' + $nodePath + '" "' + $entryPath + '" %*') | Set-Content -Encoding utf8 (Join-Path $cliDirectory 'aw.cmd')
           $cliDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - run: pnpm plugin:test codex-enhance --test-concurrency 1
+
+  windows-file-boundaries:
+    name: win32 / cross-volume and locked-file qualification
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: node scripts/qualification/subagent-windows-file-boundaries.mjs
+
+  windows-native-environment:
+    name: win32 / contracts in the native host environment
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: pnpm --dir plugins/codex-enhance/scripts install --frozen-lockfile --ignore-workspace
+      - name: Verify native runtime contracts with synthetic backends
+        run: >-
+          node --test --test-concurrency=1
+          plugins/codex-enhance/scripts/subagent-protocol-v5.test.mjs
+          plugins/codex-enhance/scripts/subagent-bridge-v5.test.mjs
+          plugins/codex-enhance/scripts/adapters-v5.test.mjs
+          plugins/codex-enhance/scripts/file-selection.test.mjs
+          plugins/codex-enhance/scripts/subagent-platform.test.mjs
+          plugins/codex-enhance/scripts/subagent-runtime.test.mjs
 
   long-running:
     name: ${{ matrix.os }} / no deadline beyond 30 minutes
@@ -116,5 +157,5 @@ jobs:
           node-version: '24'
       - name: Check the native runtime
         run: node -e "if (process.platform !== process.env.EXPECTED_OS || process.arch !== 'x64') throw new Error('Unexpected runner'); console.log(process.platform, process.arch, process.version)"
-      - name: Keep the run alive, then send, wait, and stop
+      - name: Keep the run alive, then exchange messages and finish
         run: node --test --test-name-pattern="long-running default run" plugins/codex-enhance/scripts/subagent-runtime.test.mjs
