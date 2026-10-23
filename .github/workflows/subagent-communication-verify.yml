@@ -1,0 +1,91 @@
+name: Subagent communication verification
+
+on:
+  push:
+    branches: ['codex/subagent-communication-verify-*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: subagent-communication-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-contracts:
+    name: ${{ matrix.os }} / native plugin contracts
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            os: linux
+          - runner: windows-2025
+            os: win32
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      EXPECTED_OS: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Check the native runtime
+        run: node -e "if (process.platform !== process.env.EXPECTED_OS || process.arch !== 'x64') throw new Error('Unexpected runner'); console.log(process.platform, process.arch, process.version)"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Expose the built CLI on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/aw-cli-bin"
+          printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' \
+            "$(command -v node)" "$GITHUB_WORKSPACE/packages/cli/dist/index.js" \
+            > "$RUNNER_TEMP/aw-cli-bin/aw"
+          chmod 755 "$RUNNER_TEMP/aw-cli-bin/aw"
+          echo "$RUNNER_TEMP/aw-cli-bin" >> "$GITHUB_PATH"
+      - name: Expose the built CLI on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $cliDirectory = Join-Path $env:RUNNER_TEMP 'aw-cli-bin'
+          New-Item -ItemType Directory -Force $cliDirectory | Out-Null
+          $nodePath = (Get-Command node).Source
+          $entryPath = Join-Path $env:GITHUB_WORKSPACE 'packages/cli/dist/index.js'
+          '@echo off', ('"' + $nodePath + '" "' + $entryPath + '" %*') | Set-Content -Encoding utf8 (Join-Path $cliDirectory 'aw.cmd')
+          $cliDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - run: pnpm plugin:test codex-enhance --test-concurrency 1
+
+  long-running:
+    name: ${{ matrix.os }} / no deadline beyond 30 minutes
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            os: linux
+          - runner: windows-2025
+            os: win32
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      EXPECTED_OS: ${{ matrix.os }}
+      AW_SUBAGENT_LONG_RUN_MS: '1805000'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Check the native runtime
+        run: node -e "if (process.platform !== process.env.EXPECTED_OS || process.arch !== 'x64') throw new Error('Unexpected runner'); console.log(process.platform, process.arch, process.version)"
+      - name: Keep the run alive, then send, wait, and stop
+        run: node --test --test-name-pattern="long-running default run" plugins/codex-enhance/scripts/subagent-runtime.test.mjs

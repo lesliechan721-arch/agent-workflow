@@ -22,14 +22,16 @@ const sourceScripts = path.dirname(require.resolve('../skills/codex-subagent-gui
 const baseline = JSON.parse(await fs.readFile(fixtures.baseline, 'utf8'));
 let temporary; let guide; let helper; let selectionApi;
 
-async function execute(entry, input, { args = [], env = {}, nodeArgs = [] } = {}) {
+async function execute(entry, input, { args = [], env = {}, nodeArgs = [], keepInputOpen = false } = {}) {
   const child = spawn(process.execPath, [...nodeArgs, entry, ...args], { shell: false, detached: false,
     env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = ''; let stderr = '';
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.stderr.on('data', (chunk) => { stderr += chunk; });
   child.stdin.on('error', () => {});
-  child.stdin.end(Buffer.isBuffer(input) ? input : JSON.stringify(input));
+  const encoded = Buffer.isBuffer(input) ? input : JSON.stringify(input);
+  if (keepInputOpen) child.stdin.write(`${encoded}\n`);
+  else child.stdin.end(encoded);
   const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
   return { code, stdout, stderr };
 }
@@ -84,13 +86,15 @@ async function tree(t) {
 
 async function custom(workspace, selectors) {
   const directory = await fs.mkdtemp(path.join(temporary, 'custom-'));
-  const resultFile = path.join(directory, 'result.json');
   const boundary = path.join(directory, 'model-boundary');
   const run = await execute(fixtures.custom, {
-    protocolVersion: 4, execution: { profile: 'fixture', executor: 'fixture' }, mode: 'bundle', workspace, prompt: 'selection fixture',
+    protocolVersion: 5, type: 'start', run: { id: '0123456789abcdef0123456789abcdef', name: 'selection', deadlineAt: null }, execution: { profile: 'fixture', executor: 'fixture' }, mode: 'bundle', workspace, prompt: 'selection fixture',
     fileSelectors: selectors, fileResolver: { command: process.execPath, args: [helper] }, args: [],
-  }, { env: { AW_SUBAGENT_RESULT_FILE: resultFile, AW_TEST_SELECTION_BOUNDARY: boundary } });
-  const result = JSON.parse(await fs.readFile(resultFile, 'utf8'));
+  }, { env: { AW_TEST_SELECTION_BOUNDARY: boundary }, keepInputOpen: true });
+  const events = run.stdout.trim().split('\n').map(JSON.parse);
+  assert.deepEqual(events.map(({ type }) => type), ['ready', 'closing', 'result']);
+  assert.equal(events[0].communicationSupported, false);
+  const result = events.at(-1);
   const submitted = await fs.readFile(boundary, 'utf8').catch(() => '');
   await fs.rm(directory, { recursive: true, force: true });
   return { run, result, submitted };
@@ -106,7 +110,7 @@ async function compare(workspace, selectors, files, code) {
     assert.equal(publicRun.stdout, ''); assert.equal(JSON.parse(publicRun.stderr).code, code);
     assert.notEqual(publicRun.code, 0);
     assert.equal(customRun.result.state, 'failed'); assert.equal(customRun.result.generationStarted, false);
-    assert.equal(customRun.result.code, code); assert.equal(customRun.submitted, ''); assert.equal(customRun.run.code, 1);
+    assert.equal(customRun.result.code, code); assert.equal(customRun.submitted, ''); assert.equal(customRun.run.code, 0);
     assert.equal(nativeRun.stdout, ''); assert.equal(JSON.parse(nativeRun.stderr).code, code); assert.notEqual(nativeRun.code, 0);
   } else {
     assert.equal(publicRun.code, 0, publicRun.stderr); assert.equal(publicRun.stderr, '');

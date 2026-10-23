@@ -6,4 +6,4 @@
 
 `oracle-select.mjs` 调用该真实选择模块的 `readFiles(..., {readContents:false, maxFileSizeBytes:0})`，不调用 Oracle CLI、模型或网络。可选参数是移动后的 `selection-api.mjs` 路径，用于覆盖适配器的扫描完整性检查；它不计算第二遍选择集合。`selection-api.mjs` 与 Guide 保持已登记的相对布局，使用字面 import 读取最终物化模块，测试进程不解析计算得到的模块名。测试参考副本不证明任意已安装 Oracle 版本兼容。实际安装的离线检查证据单独记录。
 
-`custom-adapter.mjs` 消费 Adapter v4 请求内的公共入口并仅调用一次。它记录模型边界的字面路径集合，helper 失败时不记录提交。`audit-reads.mjs` 记录实际打开的文件，验证公共 helper 只读取 ignore 正文。
+`custom-adapter.mjs` 消费 Adapter v5 JSONL 的首条 start 请求，使用请求内的公共入口并仅调用一次。它输出 ready(false)、closing 和 result 事件，记录模型边界的字面路径集合；helper 失败时不记录提交。`audit-reads.mjs` 记录实际打开的文件，验证公共 helper 只读取 ignore 正文。

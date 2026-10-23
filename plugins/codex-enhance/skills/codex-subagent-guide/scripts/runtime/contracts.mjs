@@ -4,8 +4,10 @@ import { validateSelectors } from '../file-selection/contracts.mjs';
 export const LIMITS = Object.freeze({
   taskBytes: 262144, instructionBytes: 262144,
   promptBytes: 524352, requestBytes: 8388608,
-  outputBytes: 4194304, logBytes: 8388608, deadlineMs: 1800000,
+  outputBytes: 4194304, logBytes: 8388608,
   resultBytes: 33554432,
+  messageBytes: 4096, messageFrameBytes: 32768, controlFrameBytes: 4096,
+  deliveryFrameBytes: 16384, receiveMs: 600000, waitMs: 600000, maximumWaitMs: 1800000,
 });
 
 export const PROFILE_KEYS = Object.freeze([
@@ -16,29 +18,62 @@ export const PROFILE_KEYS = Object.freeze([
 export const RUNTIME_KEYS = Object.freeze([...PROFILE_KEYS, 'subagentCommands']);
 export const STATES = Object.freeze(['completed', 'failed', 'cancelled', 'unknown']);
 export const cleanString = (value) => typeof value === 'string' && value.trim().length > 0 && !/[\u0000-\u001f\u007f]/u.test(value);
-const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-const text = (value) => typeof value === 'string' && !value.includes('\0') && value.isWellFormed();
-const fields = (value, allowed) => object(value) && Object.keys(value).every((key) => allowed.includes(key));
+export const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+export const text = (value) => typeof value === 'string' && !value.includes('\0') && value.isWellFormed();
+export const fields = (value, allowed) => object(value) && Object.keys(value).every((key) => allowed.includes(key));
+export const identifier = (value) => cleanString(value) && value.isWellFormed() && [...value].length <= 256 && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value);
+export const code = (value) => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(value);
+export const messageId = (value) => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
+export const label = (value) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value);
+export const epochMs = (value) => Number.isSafeInteger(value) && value >= 0;
+export const absolutePath = (value) => text(value) && value.length > 0 && path.isAbsolute(value) && path.normalize(value) === value;
+const requiredFields = (value, required, optional = []) => fields(value, [...required, ...optional]) && required.every((key) => Object.hasOwn(value, key));
+const byteLength = (value) => Buffer.byteLength(value, 'utf8');
+
+export function validateMessageText(value) {
+  if (!text(value) || !value.trim()) fail('messageInvalid', 'Message text must be nonempty Unicode text without NUL.');
+  if (byteLength(value) > LIMITS.messageBytes) fail('messageTooLarge', 'Message text exceeds the 4096-byte limit.');
+  return value;
+}
+
+export function validateDelivery(value) {
+  if (!requiredFields(value, ['status'], ['code', 'message']) || !['submitted', 'notSubmitted', 'unknown'].includes(value.status)
+      || (Object.hasOwn(value, 'code') && !code(value.code))
+      || (value.status !== 'submitted' && !code(value.code))
+      || (Object.hasOwn(value, 'message') && (!text(value.message) || byteLength(value.message) > LIMITS.messageBytes))) {
+    fail('protocolInvalid', 'The input delivery classification is invalid.');
+  }
+  return value;
+}
 
 /** The shared wire shape does not establish a backend's terminal state. */
 export function validateRequest(request) {
-  const required = ['protocolVersion', 'execution', 'mode', 'workspace', 'prompt', 'args'];
-  if (!fields(request, [...required, 'fileSelectors', 'fileResolver']) || required.some((key) => !Object.hasOwn(request, key)) || request.protocolVersion !== 4 || !['workspace', 'bundle'].includes(request.mode)) fail('protocolInvalid', 'Use a mode-correct Adapter v4 request.');
-  if (!fields(request.execution, ['profile', 'executor', 'model', 'reasoningEffort']) || !cleanString(request.execution.profile) || !cleanString(request.execution.executor) || ['model', 'reasoningEffort'].some((key) => Object.hasOwn(request.execution, key) && !cleanString(request.execution[key]))) fail('protocolInvalid', 'The Adapter v4 execution selection is invalid.');
-  if (!text(request.workspace) || !path.isAbsolute(request.workspace) || !text(request.prompt) || !request.prompt.trim() || Buffer.byteLength(request.prompt) > LIMITS.promptBytes || !Array.isArray(request.args) || request.args.some((value) => !text(value))) fail('protocolInvalid', 'The Adapter v4 workspace, prompt, or args is invalid.');
+  const required = ['protocolVersion', 'type', 'run', 'execution', 'mode', 'workspace', 'prompt', 'args', 'runtime'];
+  if (!requiredFields(request, required, ['fileSelectors', 'fileResolver']) || request.protocolVersion !== 5 || request.type !== 'start' || !['workspace', 'bundle'].includes(request.mode)) fail('protocolInvalid', 'Use a mode-correct Adapter v5 start frame.');
+  if (!requiredFields(request.run, ['id', 'name', 'deadlineAt']) || !messageId(request.run.id) || !label(request.run.name) || !(request.run.deadlineAt === null || epochMs(request.run.deadlineAt))) fail('protocolInvalid', 'The Adapter v5 run identity or deadline is invalid.');
+  if (!requiredFields(request.execution, ['profile', 'executor'], ['model', 'reasoningEffort']) || !identifier(request.execution.profile) || !identifier(request.execution.executor) || ['model', 'reasoningEffort'].some((key) => Object.hasOwn(request.execution, key) && !identifier(request.execution[key]))) fail('protocolInvalid', 'The Adapter v5 execution selection is invalid.');
+  if (!absolutePath(request.workspace) || !text(request.prompt) || !request.prompt.trim() || byteLength(request.prompt) > LIMITS.promptBytes || !Array.isArray(request.args) || request.args.some((value) => !text(value))) fail('protocolInvalid', 'The Adapter v5 workspace, prompt, or args is invalid.');
+  if (!requiredFields(request.runtime, ['directory', 'toolkit']) || !absolutePath(request.runtime.directory) || !requiredFields(request.runtime.toolkit, ['module', 'command', 'messageScript', 'mcpScript']) || Object.values(request.runtime.toolkit).some((value) => !absolutePath(value))) fail('protocolInvalid', 'The Adapter v5 private runtime or installed toolkit is invalid.');
   if (request.mode === 'workspace') {
     if (Object.hasOwn(request, 'fileSelectors') || Object.hasOwn(request, 'fileResolver')) fail('protocolInvalid', 'Workspace requests must omit all file selection fields.');
   } else {
-    if (!Array.isArray(request.fileSelectors) || request.fileSelectors.some((value) => !text(value)) || !fields(request.fileResolver, ['command', 'args']) || !cleanString(request.fileResolver.command) || !path.isAbsolute(request.fileResolver.command) || !Array.isArray(request.fileResolver.args) || request.fileResolver.args.length !== 1 || !cleanString(request.fileResolver.args[0]) || !path.isAbsolute(request.fileResolver.args[0])) fail('protocolInvalid', 'Bundle requests require raw fileSelectors and the installed fileResolver.');
+    if (!Array.isArray(request.fileSelectors) || request.fileSelectors.some((value) => !text(value)) || !requiredFields(request.fileResolver, ['command', 'args']) || !absolutePath(request.fileResolver.command) || !Array.isArray(request.fileResolver.args) || request.fileResolver.args.length !== 1 || !absolutePath(request.fileResolver.args[0])) fail('protocolInvalid', 'Bundle requests require raw fileSelectors and the installed fileResolver.');
     try { validateSelectors(request.fileSelectors); } catch { fail('protocolInvalid', 'The bundle fileSelectors contain an invalid selection value.'); }
   }
-  if (Buffer.byteLength(JSON.stringify(request)) > LIMITS.requestBytes) fail('protocolTooLarge', 'The Adapter v4 request exceeds the 8 MiB limit.');
+  if (byteLength(JSON.stringify(request)) > LIMITS.requestBytes) fail('protocolTooLarge', 'The Adapter v5 start frame exceeds the 8 MiB limit.');
   return request;
 }
 
 export function validateResult(result) {
-  const required = ['protocolVersion', 'state', 'generationStarted', 'backendExitCode', 'text'];
-  if (!fields(result, [...required, 'code', 'message', 'sessionId', 'model', 'remoteStopConfirmed']) || required.some((key) => !Object.hasOwn(result, key)) || result.protocolVersion !== 4 || !STATES.includes(result.state) || ![true, false, null].includes(result.generationStarted) || !(result.backendExitCode === null || Number.isSafeInteger(result.backendExitCode)) || !text(result.text) || Buffer.byteLength(result.text) > LIMITS.outputBytes || ['code', 'message', 'sessionId', 'model'].some((key) => Object.hasOwn(result, key) && !text(result[key])) || (Object.hasOwn(result, 'remoteStopConfirmed') && typeof result.remoteStopConfirmed !== 'boolean')) fail('adapterResultInvalid', 'The Adapter v4 result is missing, invalid, or exceeds its limit.');
+  const required = ['protocolVersion', 'type', 'state', 'generationStarted', 'backendExitCode', 'text'];
+  if (!requiredFields(result, required, ['code', 'message', 'sessionId', 'model', 'remoteStopConfirmed']) || result.protocolVersion !== 5 || result.type !== 'result' || !STATES.includes(result.state) || ![true, false, null].includes(result.generationStarted) || !(result.backendExitCode === null || Number.isSafeInteger(result.backendExitCode)) || !text(result.text) || byteLength(result.text) > LIMITS.outputBytes
+      || (Object.hasOwn(result, 'code') && !code(result.code))
+      || (result.state !== 'completed' && !code(result.code))
+      || (Object.hasOwn(result, 'message') && (!text(result.message) || byteLength(result.message) > LIMITS.messageBytes))
+      || ['sessionId', 'model'].some((key) => Object.hasOwn(result, key) && !identifier(result[key]))
+      || (Object.hasOwn(result, 'remoteStopConfirmed') && typeof result.remoteStopConfirmed !== 'boolean')
+      || (result.state === 'completed' && (result.generationStarted !== true || result.backendExitCode !== 0 || !result.text.trim()))
+      || byteLength(JSON.stringify(result)) > LIMITS.resultBytes) fail('adapterResultInvalid', 'The Adapter v5 result is missing, invalid, or exceeds its limit.');
   return result;
 }
 

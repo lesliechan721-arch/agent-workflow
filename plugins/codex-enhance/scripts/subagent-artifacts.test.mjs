@@ -269,7 +269,8 @@ test('preserves model-callable metadata for the three platform Skills', async ()
   const plan = await renderArtifactPlan(context());
   for (const id of skillIds) {
     const artifact = plan.artifacts.find((item) => item.id === id);
-    const yaml = await readFile(path.join(sourceRoot(id), 'agents/openai.yaml'), 'utf8');
+    const yaml = artifact.content.files['agents/openai.yaml'];
+    assert.equal(typeof yaml, 'string');
     const text = artifact.content.files['SKILL.md'];
     // Static contract exception: Codex consumes invocation metadata and Skill frontmatter; behavior test is not suitable because this renderer does not run a Codex host.
     assert.match(yaml, /allow_implicit_invocation:\s*true/);
@@ -289,4 +290,47 @@ test('rejects invalid target requests and unsupported platforms', async () => {
       /requestedArtifactIds|Unknown requested artifact/);
   }
   await assert.rejects(renderArtifactPlan({ ...context(), platform: 'claude' }), /Unsupported platform: claude/);
+});
+
+// Test Value Gate: links in the actual artifact must reach delivered resources.
+// This checks the installable file graph, not document wording or model behavior.
+test('delivered Skill links resolve inside each artifact resource root', async () => {
+  const plan = await renderArtifactPlan(context());
+  for (const artifact of plan.artifacts) {
+    const files = artifact.content.files;
+    for (const [name, body] of Object.entries(files)) {
+      if (!name.endsWith('.md')) continue;
+      for (const [, reference] of body.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+        if (/^[a-z][a-z0-9+.-]*:/.test(reference) || reference.startsWith('#')) continue;
+        const target = reference.split('#', 1)[0];
+        const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(name), target));
+        assert.equal(Object.hasOwn(files, resolved), true, `${artifact.skillKey}: ${name} -> ${reference}`);
+      }
+    }
+  }
+});
+
+// Test Value Gate: an install can render successfully yet miss a worker or a
+// helper import. Inspect the delivered module graph without starting a backend.
+test('delivered Guide contains its executable entries and relative module closure', async () => {
+  const plan = await renderArtifactPlan(context());
+  const files = plan.artifacts.find((item) => item.id === 'codex-subagent-guide-skill').content.files;
+  for (const entry of ['subagent.mjs', 'worker.mjs', 'message.mjs', 'message-mcp.mjs']) {
+    assert.equal(typeof files[`scripts/${entry}`], 'string', `Missing executable entry: ${entry}`);
+  }
+  // The native helper is reached by URL at runtime and has no JavaScript import
+  // edge. It must remain a byte-preserving resource of the installed Guide.
+  assert.equal(files['scripts/runtime/windows-job.ps1'], await readFile(path.join(
+    sourceRoot('codex-subagent-guide-skill'), 'scripts/runtime/windows-job.ps1'), 'utf8'));
+  for (const [name, body] of Object.entries(files)) {
+    if (!name.endsWith('.mjs')) continue;
+    for (const [, reference] of body.matchAll(/(?:from\s*|import\s*\(\s*|import\s*)['"]([^'"\n]+)['"]/g)) {
+      if (!reference.startsWith('.')) continue;
+      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(name), reference));
+      // AW injects this reserved reader after rendering. The actual materialized
+      // artifact is checked separately; a renderer must not supply its own copy.
+      if (resolved === 'scripts/aw-runtime-config.mjs') continue;
+      assert.equal(Object.hasOwn(files, resolved), true, `${name} -> ${reference}`);
+    }
+  }
 });

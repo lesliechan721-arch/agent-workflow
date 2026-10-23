@@ -112,7 +112,7 @@ test('Eval resource observations project declared fields without pretending to v
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test('external prepare uses a native workflow and explicit v4 prompt inputs, without executing its adapter', async () => {
+test('external prepare uses a native workflow and explicit v5 prompt inputs, without executing its adapter', async () => {
   const f = await fixture({ mode: 'bundle' });
   try {
     const request = await prepareRoleBoundary({ ...f.input, case: { ...selected, input: { ...selected.input, requiredMode: 'bundle' } } });
@@ -151,9 +151,9 @@ for (const caseId of ['W06-explore-bundle-scope', 'W04-explore-versions', 'J07']
       const request = { profile, instructionsFile: path.join(f.workspace, '.agents', 'skills', 'codex-explore', 'assets', 'explore-instructions.md'),
         prompt: selectedCase.input.prompt, workspace: f.workspace, files: sources };
       const prepared = await prepareRun(selectExecution(snapshot, request), request);
-      assert.equal(prepared.request.protocolVersion, 4);
+      assert.equal(prepared.request.protocolVersion, 5);
       assert.equal(prepared.request.mode, 'bundle'); assert.equal(prepared.request.workspace, f.workspace);
-      assert.equal(prepared.request.prompt, `执行指令：\n${f.text}\n\n本次任务：\n${selectedCase.input.prompt}`);
+      assert.equal(prepared.request.prompt, `Instructions:\n${f.text}\n\nTask:\n${selectedCase.input.prompt}`);
       assert.deepEqual(prepared.request.fileSelectors, sources);
       assert.deepEqual(prepared.request.fileResolver, { command: process.execPath, args: [path.join(f.skill, 'scripts', 'resolve-files.mjs')] });
       for (const source of sources) assert.equal(await readFile(path.join(f.workspace, source), 'utf8'), selectedCase.input.workspaceFiles[source]);
@@ -315,26 +315,28 @@ test('explicit public AW fixture copies its regular package tree and preserves e
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('v4 local failure fixture writes exactly one partial marker and returns no service receipt', async () => {
+test('v5 local failure fixture writes exactly one partial marker and returns no service receipt', async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'foreground-fault-')));
   try {
     const child = spawn(process.execPath, [fileURLToPath(faultAssetURL)], { cwd: root, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
     const output = []; child.stdout.on('data', (bytes) => output.push(bytes));
-    child.stdin.end(JSON.stringify({ protocolVersion: 4, execution: { profile: 'generalTaskProfile', executor: 'fixture' }, mode: 'workspace', workspace: root, prompt: 'Authorized one-file write control. Write one marker.', args: [] }));
+    child.stdin.end(JSON.stringify({ protocolVersion: 5, type: 'start', execution: { profile: 'generalTaskProfile', executor: 'fixture' }, mode: 'workspace', workspace: root, prompt: 'Authorized one-file write control. Write one marker.', args: [] }));
     assert.equal(await new Promise((resolve, reject) => { child.once('close', resolve); child.once('error', reject); }), 0);
     assert.deepEqual(JSON.parse(await readFile(path.join(root, '.role-boundary-fixture', 'counter.json'), 'utf8')), { submissions: 1, writes: 1 });
     assert.ok((await readFile(path.join(root, 'probe', 'once.txt'))).length > 0);
-    assert.throws(() => JSON.parse(Buffer.concat(output).toString('utf8')));
+    const events = Buffer.concat(output).toString('utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(events.map(({ type }) => type), ['ready']);
+    assert.equal(events[0].communicationSupported, false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 // Test Value Gate: public text consumers cannot treat a body line or raw JSON as a terminal,
 // and J16 requires real input rejection plus a zero-start setup observation.
-test('v4 text observations and J16 zero-start evidence preserve uncertainty', async () => {
-  const observation = parseGuideObservation('COMPLETED · advisorProfile → fixture · bundle\n\nFAILED in quoted source', '', 0);
+test('v5 text observations and J16 zero-start evidence preserve uncertainty', async () => {
+  const observation = parseGuideObservation('result: read\nagent: fixture\nrun: handle\nstate: completed\nBEGIN_FINAL:1234abcd\nstate: failed\nEND_FINAL:1234abcd\n', '', 0);
   assert.equal(observation.state, 'completed'); assert.equal(observation.exitCode, 0);
   assert.equal(parseGuideObservation('{"state":"completed"}', '', 0).state, 'unknown');
-  assert.equal(parseGuideObservation('', 'filesNotAllowedInWorkspace: rejected\n', 2).code, 'filesNotAllowedInWorkspace');
+  assert.equal(parseGuideObservation('', 'diagnostic: error\ncode: filesNotAllowedInWorkspace\n', 2).code, 'filesNotAllowedInWorkspace');
   const selectedCase = joint.cases.find(({ id }) => id === 'J16');
   const contract = { caseId: 'J16', target: 'joint', checks: ['reject'] };
   const evidence = { evaluation: { checks: [{ name: 'reject', verdict: 'pass', evidence: 'Independent check.' }], fixtureActions: [] } };

@@ -1,25 +1,15 @@
 # Codex Subagent Guide
 
-为已获授权的委派选择执行配置、传递上下文并等待结果。调用方可指定 profile、角色、模型和约束；执行者直接完成任务，当前负责人核对结果。
+为已获授权的委派选择执行配置，准备独立任务上下文，并管理等待、补充输入和结果。可使用原生子代理，或连接当前安装中已配置的外部执行器。
 
-适用于需要实际委派的有界任务。只讨论是否委派，或执行者只需完成已经分配的工作时，不要使用本 Skill。已有完整调度与生命周期策略时，直接沿用，不要加载或使用本 Skill。
+适合需要实际交给执行者的任务。已有完整调度与生命周期约定时直接沿用；执行者完成已分配工作时也无需再次采用本 Skill。当前任务负责人仍负责核对结果、依据、产物和验证缺口。
 
-native 直接使用宿主可用工具与角色，默认干净上下文。外部模式可以使用内建 Codex、Claude Code、Oracle 或自定义适配器。配置或角色更新后，宿主可能需要刷新或新会话。
-
-外部短任务可以直接传入提示词。在任务目录执行，并把示例中的 Guide 路径换为实际安装路径：
-
-```bash
-node /absolute/installed/guide/scripts/subagent.mjs run \
-  --profile generalTaskProfile \
-  --prompt '检查指定模块的错误处理，说明依据；不要修改项目。'
+```text
+使用 codex-subagent-guide，把这项已授权的实现交给一个执行者，并等待实际结果。
 ```
 
-profile 需要选择已配置外部执行器。长任务可用 --prompt - 从 stdin 输入；--instructions-file 可选，不传时不会自动补入角色指令。已有通用角色可复用 [task-instructions.md](assets/task-instructions.md)。
+外部执行可能使用网络、宿主认证并产生模型费用，按任务授权与实际工具权限执行。默认无执行期限；等待采用响应式长窗口，超时后继续原句柄。支持通信时可追加输入或处理过程问题，发送成功不证明对方已读或完成要求。
 
-workspace 不接受 --file，关注路径写进任务；bundle 使用 --file 按固定的 AW 文件选择协议 v1 选择文件、目录或 glob，各适配器承担同一规则的实现责任。preview 只展示未解析选择式，不检查匹配文件或冻结后续内容。
+过程消息领取后删除；固定最终结果在终态后 1 小时内可重读。大报告可通过 `result --export` 完整输出到调用者选择的接收端。服务完成、投递缺口和业务验收分别核对；状态或停止证据不明时保留已有结果与缺口。
 
-结果包含调用状态和完整回答，当前负责人仍须核对业务完成情况。等待超时继续同一 session，不重复生成；终态或远端停止不明时报告 UNKNOWN。前台调用不保证脱离宿主或跨会话恢复。
-
-外部调用可能使用网络、认证和模型额度。项目写入、材料外发及必要临时分析写入都使用本次实际许可。模式、文件选择和只读指令不提供技术隔离保证。保存设置须 apply 后才对新调用生效；资源缺失或损坏可通过正常 sync/reinstall 恢复。
-
-执行方法见 [SKILL.md](SKILL.md) 和 [外部调用说明](references/external-delegation.md)。
+方法见 [SKILL.md](SKILL.md)。外部调用见 [外部委派](references/external-delegation.md)，追加输入和过程问题见 [通信分支](references/communication.md)，bundle 材料选择见 [文件选择](references/file-selection.md)。维护者合同见 [适配器说明](adapters.md)。
