@@ -90,6 +90,29 @@ test('native Windows package shim preserves argv and rejects injected batch text
   assert.equal(await fs.stat(path.join(directory, 'unwanted')).catch(() => null), null);
 });
 
+// Test Value Gate: the fixed Windows host must load native modules even when
+// the backend has custom module paths. The backend must retain those settings.
+test('native Windows job preserves backend module paths and their absence', { skip: process.platform !== 'win32', timeout: 120000 }, async (t) => {
+  const directory = await temporary(t);
+  await protectPrivatePath(directory, 'directory');
+  const base = Object.fromEntries(Object.entries(process.env).filter(([name]) => !['psmodulepath', 'winpsmodulepath'].includes(name.toLowerCase())));
+  for (const expected of [
+    { PSModulePath: 'C:\\fixture modules 中文;C:\\other modules', WinPSModulePath: 'C:\\saved fixture modules' },
+    {},
+  ]) {
+    const code = 'process.stdin.once("data",()=>{process.stdout.write(JSON.stringify({PSModulePath:process.env.PSModulePath,WinPSModulePath:process.env.WinPSModulePath}));process.exit(0)});';
+    const child = await safeSpawn(process.execPath, ['-e', code], { cwd: directory, resourceDirectory: directory, env: { ...base, ...expected, AW_SUBAGENT_PROCESS_TOKEN: randomBytes(24).toString('hex') }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const closed = once(child, 'close');
+    let stdout = '', stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    assert.equal((await child.identityReady)?.scope?.kind, 'windows-job');
+    child.stdin.end('go\n');
+    assert.deepEqual(await closed, [0, null], stderr);
+    assert.deepEqual(JSON.parse(stdout), expected);
+  }
+});
+
 // Test Value Gate: a persisted PID requires its original start identity.
 // Cleanup of one native scope must preserve an unrelated sibling.
 test('native ownership and tree stop preserve an unrelated sibling', { timeout: 40000 }, async (t) => {

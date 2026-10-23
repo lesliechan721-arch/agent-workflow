@@ -161,6 +161,14 @@ try {
   if ($Action -eq 'run') {
     $config = [IO.File]::ReadAllText($env:AW_SUBAGENT_JOB_CONFIG, [Text.Encoding]::UTF8) | ConvertFrom-Json
     Remove-Item -LiteralPath $env:AW_SUBAGENT_JOB_CONFIG
+    # Startup uses native Windows PowerShell modules. The backend receives the
+    # caller's original module paths, including absence, after compilation.
+    [Environment]::SetEnvironmentVariable('PSModulePath', $null, 'Process')
+    [Environment]::SetEnvironmentVariable('WinPSModulePath', $null, 'Process')
+    foreach ($entry in $config.modulePaths) {
+      if ($entry.name -notin @('PSModulePath', 'WinPSModulePath')) { throw 'The backend module path name is invalid.' }
+      [Environment]::SetEnvironmentVariable([string]$entry.name, [string]$entry.value, 'Process')
+    }
     $code = [AwSubagentJob]::Run($config.executable, [string[]]$config.args, [uint32]$config.parentPid, $config.name, $config.status)
     [Environment]::Exit([int]$code)
   } else {

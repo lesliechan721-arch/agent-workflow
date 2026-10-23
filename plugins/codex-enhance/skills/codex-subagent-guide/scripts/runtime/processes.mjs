@@ -128,7 +128,9 @@ function rootScope(rootPid, known, token) {
 
 async function taggedProcesses(token) {
   let stdout;
-  try { ({ stdout } = await observePosix(['eww', '-axo', 'pid=,ppid=,pgid=,lstart=,command='], 16 * 1024 * 1024)); }
+  // Keep selection in BSD syntax. GNU ps cannot recover its BSD -x fallback
+  // when a separate BSD eww option precedes a combined SysV -axo argument.
+  try { ({ stdout } = await observePosix(['axeww', '-o', 'pid=,ppid=,pgid=,lstart=,command='], 16 * 1024 * 1024)); }
   catch { fail('processObservationFailed', 'The remaining run process markers could not be observed.'); }
   let sawCurrent = false;
   const result = [];

@@ -20,6 +20,16 @@ function windowsPowerShell() {
 
 const windowsJobHelper = fileURLToPath(new URL('./windows-job.ps1', import.meta.url));
 
+function isPowerShellModulePath(name) {
+  return ['psmodulepath', 'winpsmodulepath'].includes(name.toLowerCase());
+}
+
+function windowsHostEnvironment(environment, input) {
+  // A Node process launched by pwsh inherits PowerShell 7 module paths. Windows
+  // PowerShell 5.1 must build its own paths to load its fixed native cmdlets.
+  return { ...Object.fromEntries(Object.entries(environment).filter(([name]) => !isPowerShellModulePath(name))), ...input };
+}
+
 // Only fixed program text reaches PowerShell. Paths, identities and arguments
 // are JSON data in an environment value, never executable command text.
 export async function windowsOperation(source, input = {}) {
@@ -33,7 +43,7 @@ export async function windowsOperation(source, input = {}) {
   try {
     const { stdout } = await execFileAsync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
       shell: false, windowsHide: true, timeout: 15000, maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, AW_SUBAGENT_PLATFORM_INPUT: Buffer.from(JSON.stringify(input)).toString('base64') },
+      env: windowsHostEnvironment(process.env, { AW_SUBAGENT_PLATFORM_INPUT: Buffer.from(JSON.stringify(input)).toString('base64') }),
     });
     return stdout.trim() ? JSON.parse(stdout) : null;
   } catch {
@@ -223,7 +233,7 @@ export async function windowsJobMembers(scope, stop = false) {
   try {
     const { stdout } = await execFileAsync(windowsPowerShell(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', windowsJobHelper, '-Action', stop ? 'stop' : 'observe'], {
       windowsHide: true, timeout: 20000, maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, AW_SUBAGENT_JOB_CONTROL: Buffer.from(JSON.stringify(scope)).toString('base64') },
+      env: windowsHostEnvironment(process.env, { AW_SUBAGENT_JOB_CONTROL: Buffer.from(JSON.stringify(scope)).toString('base64') }),
     });
     const pids = JSON.parse(stdout.trim());
     if (!Array.isArray(pids) || pids.some((pid) => !Number.isSafeInteger(pid) || pid <= 0)) throw new Error();
@@ -241,12 +251,14 @@ async function windowsJobLaunch(invocation, options) {
     const status = path.join(directory, 'ready.json');
     const owner = await currentUserIdentity();
     const scope = { kind: 'windows-job', name: `Local\\aw-subagent-${randomBytes(16).toString('hex')}`, sid: owner.sid };
-    await fs.writeFile(configuration, JSON.stringify({ executable: invocation.command, args: invocation.args, parentPid: process.pid, name: scope.name, status }), { mode: 0o600, flag: 'wx' });
+    const environment = invocation.env ?? options.env ?? process.env;
+    const modulePaths = Object.entries(environment).filter(([name]) => isPowerShellModulePath(name)).map(([name, value]) => ({ name, value }));
+    await fs.writeFile(configuration, JSON.stringify({ executable: invocation.command, args: invocation.args, parentPid: process.pid, name: scope.name, status, modulePaths }), { mode: 0o600, flag: 'wx' });
     await protectPrivatePath(configuration, 'file');
     await assertNoReparsePath(windowsJobHelper, 'file');
     return {
       command: windowsPowerShell(), args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', windowsJobHelper, '-Action', 'run'],
-      env: { ...(invocation.env ?? options.env ?? process.env), AW_SUBAGENT_JOB_CONFIG: configuration }, directory, status, scope,
+      env: windowsHostEnvironment(environment, { AW_SUBAGENT_JOB_CONFIG: configuration }), directory, status, scope,
     };
   } catch (error) { await fs.rm(directory, { recursive: true, force: true }); throw error; }
 }

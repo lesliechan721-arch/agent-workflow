@@ -63,6 +63,8 @@ jobs:
           cache: pnpm
       - name: Check the native runtime
         run: node -e "if (process.platform !== process.env.EXPECTED_OS || process.arch !== 'x64') throw new Error('Unexpected runner'); console.log(process.platform, process.arch, process.version)"
+      - name: Verify native process and file boundaries
+        run: node --test --test-concurrency=1 plugins/codex-enhance/scripts/subagent-platform.test.mjs
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Expose the built CLI on Linux

@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { openRun, storeContext } from '../skills/codex-subagent-guide/scripts/runtime/store.mjs';
+import { pathToFileURL } from 'node:url';
+import { observeRun, openRun, storeContext } from '../skills/codex-subagent-guide/scripts/runtime/store.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
 const require = createRequire(import.meta.url);
@@ -147,15 +148,20 @@ async function fixture(t, mode = 'workspace') {
   await fs.writeFile(path.join(installed, 'scripts', 'aw-runtime-config.mjs'),
     "import fs from 'node:fs/promises';export async function readRuntimeConfig(){return JSON.parse(await fs.readFile(new URL('../effective.json',import.meta.url),'utf8'));}\n");
   const entry = path.join(installed, 'scripts', path.relative(sourceScripts, sourceEntry));
-  const environment = { PATH: process.env.PATH, HOME: directory, USERPROFILE: directory, CODEX_HOME: directory,
+  const windowsSystemKeys = new Set(['systemroot', 'windir', 'comspec', 'pathext', 'systemdrive',
+    'programfiles', 'programfiles(x86)', 'programw6432',
+    'commonprogramfiles', 'commonprogramfiles(x86)', 'commonprogramw6432',
+    'processor_architecture', 'processor_identifier', 'processor_level', 'processor_revision', 'number_of_processors', 'os']);
+  const nativeEnvironment = process.platform === 'win32'
+    ? Object.fromEntries(Object.entries(process.env).filter(([key]) => windowsSystemKeys.has(key.toLowerCase()))) : {};
+  const environment = { ...nativeEnvironment, PATH: process.env.PATH, HOME: directory, USERPROFILE: directory, CODEX_HOME: directory,
     AW_HOME: directory, AW_CODEX_HOME: directory, AW_CLAUDE_HOME: directory,
-    TMPDIR: temporaryRoot, TMP: temporaryRoot, TEMP: temporaryRoot,
-    ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) };
+    TMPDIR: temporaryRoot, TMP: temporaryRoot, TEMP: temporaryRoot };
   const handles = new Set();
   let nextScenario = 0;
-  function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, timeout = 35000 } = {}) {
+  function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, timeout = 35000, nodeArgs = [] } = {}) {
     return new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [entry, ...args], { cwd, env: { ...environment, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, [...nodeArgs, entry, ...args], { cwd, env: { ...environment, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
       const output = [], diagnostics = [];
       let timedOut = false;
       const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeout);
@@ -564,6 +570,103 @@ test('export output failure does not consume unread messages', async (t) => {
   const recovered = await f.command(['result', '--run', started.run, '--export']);
   successful(recovered, 'result'); assert.deepEqual(blocks(recovered.stdout, 'MESSAGE'), messages);
   assert.deepEqual(blocks(recovered.stdout, 'FINAL'), [finalText]);
+});
+
+// Test Value Gate: a worker may commit and exit after both parent-side missing-file
+// observations. Lost-worker recovery must preserve that real final and its TTL.
+test('late worker final publication survives a parent lost-worker observation', async (t) => {
+  const f = await fixture(t);
+  const finalText = 'Saved successful answer.\r\n保留最终正文。\n';
+  const started = await f.start({ finalText });
+  successful(started, 'start');
+  const context = await storeContext({ temporaryRoot: f.temporaryRoot });
+  const run = await openRun(context, started.run);
+  const finalFile = path.join(run.directory, 'final.json');
+  const ownerFile = path.join(run.directory, 'owner.json');
+  const originalLstat = fs.lstat;
+  let missingChecks = 0, committed, observed;
+  fs.lstat = async (target, ...options) => {
+    try { return await originalLstat.call(fs, target, ...options); }
+    catch (error) {
+      if (target === finalFile && error.code === 'ENOENT' && ++missingChecks === 2) {
+        // Keep the already observed ENOENT while the real worker publishes its
+        // final and owner metadata, then exits. The parent next observes its exit.
+        await started.finish();
+        committed = await eventually(async () => {
+          try { process.kill(run.meta.worker.pid, 0); return false; }
+          catch (exitError) { if (exitError.code !== 'ESRCH') throw exitError; }
+          const owner = JSON.parse(await fs.readFile(ownerFile, 'utf8'));
+          if (owner.terminalAt === null) return false;
+          return { owner, result: JSON.parse(await fs.readFile(finalFile, 'utf8')) };
+        }, 'normal worker final publication and exit');
+        await sleep(25);
+      }
+      throw error;
+    }
+  };
+  try { observed = await observeRun(context, run); }
+  finally { fs.lstat = originalLstat; }
+  assert.ok(committed, 'The missing-file observation must overlap normal worker publication.');
+  assert.equal(committed.result.state, 'completed'); assert.equal(committed.result.text, finalText);
+  assert.deepEqual(observed.result, committed.result);
+  assert.equal(observed.meta.terminalAt, committed.owner.terminalAt);
+  assert.deepEqual(JSON.parse(await fs.readFile(finalFile, 'utf8')), committed.result);
+  assert.equal(JSON.parse(await fs.readFile(ownerFile, 'utf8')).terminalAt, committed.owner.terminalAt);
+  const result = await f.command(['result', '--run', started.run]);
+  successful(result, 'result'); assert.equal(field(result.stdout, 'state'), 'completed');
+  assert.deepEqual(blocks(result.stdout, 'FINAL'), [finalText]);
+});
+
+// Test Value Gate: a default report must reserve enough room for a late consume
+// error; preflight overflow and a failed delete must both preserve unread records.
+test('default result reserves consume-error bytes and retains messages after deletion failure', async (t) => {
+  const f = await fixture(t);
+  const message = 'z'.repeat(messageLimit);
+  const started = await f.start({ messages: [message], finalText: 'a' });
+  successful(started, 'start'); await started.published(); await started.finish();
+  await eventually(() => fs.stat(path.join(started.runDirectory, 'finished.json')), 'fixture final publication');
+  const run = await f.evidence(started.run);
+  const preload = path.join(f.directory, 'deny-event-consumption.mjs');
+  await fs.writeFile(preload, `import fs from 'node:fs/promises';import path from 'node:path';
+const unlink=fs.unlink;fs.unlink=async(target,...options)=>{
+  if(typeof target==='string'&&path.dirname(target)===process.env.FIXTURE_DENIED_DIRECTORY){
+    throw Object.assign(new Error('Fixture event deletion denied.'),{code:'EACCES'});
+  }
+  return unlink.call(fs,target,...options);
+};\n`);
+  const injected = { nodeArgs: ['--import', pathToFileURL(preload).href], env: { FIXTURE_DENIED_DIRECTORY: path.join(run.directory, 'events') } };
+  const baseline = await eventually(async () => {
+    const response = await f.command(['result', '--run', started.run], injected);
+    return field(response.stdout, 'code') !== 'resultNotReady' && response;
+  }, 'readable fixed final');
+  assert.equal(baseline.code, 1); assert.equal(field(baseline.stderr, 'code'), 'resultConsumeFailed');
+  const baselineBytes = Buffer.byteLength(baseline.stdout);
+  const finalFile = path.join(run.directory, 'final.json');
+  const originalFinal = JSON.parse(await fs.readFile(finalFile, 'utf8'));
+  async function reportSize(bytes) {
+    const finalText = 'a'.repeat(bytes - baselineBytes + 1);
+    await fs.writeFile(finalFile, JSON.stringify({ ...originalFinal, text: finalText }));
+    return finalText;
+  }
+  // Calibrate from a real public response, not from the renderer's budget helper.
+  // Token lengths and all other fields stay fixed; only the ASCII final grows.
+  await reportSize(displayLimit);
+  const tooLarge = await f.command(['result', '--run', started.run], injected);
+  assert.equal(tooLarge.code, 1);
+  bounded(tooLarge);
+  assert.equal(field(tooLarge.stdout, 'code'), 'resultTooLarge');
+  assert.equal(field(tooLarge.stdout, 'result_bytes'), String(displayLimit));
+  assert.deepEqual(blocks(tooLarge.stdout, 'MESSAGE'), []); assert.deepEqual(blocks(tooLarge.stdout, 'FINAL'), []);
+  const finalText = await reportSize(displayLimit - 128);
+  const consumeFailed = await f.command(['result', '--run', started.run], injected);
+  assert.equal(consumeFailed.code, 1); bounded(consumeFailed);
+  assert.equal(field(consumeFailed.stderr, 'code'), 'resultConsumeFailed');
+  assert.equal(Buffer.byteLength(consumeFailed.stdout), displayLimit - 128);
+  assert.deepEqual(blocks(consumeFailed.stdout, 'MESSAGE'), [message]);
+  const recovered = await f.command(['result', '--run', started.run]);
+  successful(recovered, 'result'); bounded(recovered);
+  assert.deepEqual(blocks(recovered.stdout, 'MESSAGE'), [message]); assert.deepEqual(blocks(recovered.stdout, 'FINAL'), [finalText]);
+  assert.equal((await f.command(['wait', '--run', started.run])).stdout, 'wait: settled\n');
 });
 
 // Test Value Gate: worker loss must become one fixed unknown without generating
