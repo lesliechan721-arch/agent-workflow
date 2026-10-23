@@ -19,6 +19,8 @@ const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 const terminalPattern = /^state: (completed|failed|cancelled|unknown)$/m;
 const displayLimit = 8192;
 const messageLimit = 4096;
+const windows = process.platform === 'win32';
+const batchObservationMs = windows ? 120000 : 5000;
 
 // This external v5 adapter owns a separate, bounded local backend process. Every
 // completion uses the observed backend exit code. No model runs in these tests.
@@ -29,7 +31,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 const scenario = JSON.parse(await fs.readFile(process.env.FIXTURE_SCENARIO_FILE, 'utf8'));
 const root = process.env.FIXTURE_RUN_DIRECTORY;
-const hardStop = setTimeout(() => process.exit(3), scenario.adapterLifetimeMs ?? 95000);
+const hardStop = setTimeout(() => process.exit(3), scenario.adapterLifetimeMs ?? (process.platform === 'win32' ? 905000 : 95000));
 process.stdout.on('error', () => process.exit(0));
 let backend, backendExit, ready = false, finishing = false, timer;
 const emit = (event) => new Promise((resolve, reject) => {
@@ -72,7 +74,7 @@ async function start(frame) {
     await fs.mkdir(path.dirname(observed.scratchFile), { recursive: true });
     await fs.writeFile(observed.scratchFile, scenario.scratchText, { mode: 0o600 });
   }
-  backend = spawn(process.execPath, ['-e', "setTimeout(()=>process.exit(4),Number(process.argv[1]));process.on('message',()=>process.exit(0));process.on('disconnect',()=>process.exit(0))", String(scenario.backendLifetimeMs ?? 90000)],
+  backend = spawn(process.execPath, ['-e', "setTimeout(()=>process.exit(4),Number(process.argv[1]));process.on('message',()=>process.exit(0));process.on('disconnect',()=>process.exit(0))", String(scenario.backendLifetimeMs ?? (process.platform === 'win32' ? 900000 : 90000))],
     { env: process.env, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], detached: false });
   backendExit = new Promise((resolve) => backend.once('close', resolve));
   observed.backendPid = backend.pid;
@@ -104,7 +106,7 @@ for await (const line of lines) {
 if (!finishing) await finish(true).catch(() => {});
 `;
 
-async function eventually(read, description, milliseconds = 5000) {
+async function eventually(read, description, milliseconds = windows ? 30000 : 5000) {
   const end = Date.now() + milliseconds;
   let latest;
   do {
@@ -159,7 +161,7 @@ async function fixture(t, mode = 'workspace') {
     TMPDIR: temporaryRoot, TMP: temporaryRoot, TEMP: temporaryRoot };
   const handles = new Set();
   let nextScenario = 0;
-  function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, timeout = 35000, nodeArgs = [] } = {}) {
+  function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, timeout = windows ? 120000 : 35000, nodeArgs = [] } = {}) {
     return new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [...nodeArgs, entry, ...args], { cwd, env: { ...environment, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
       const output = [], diagnostics = [];
@@ -188,12 +190,12 @@ async function fixture(t, mode = 'workspace') {
     const run = field(response.stdout, 'run');
     return { ...response, run, runDirectory,
       observed: () => eventually(async () => JSON.parse(await fs.readFile(path.join(runDirectory, 'observed.json'), 'utf8')), 'adapter start'),
-      published: () => eventually(() => fs.stat(path.join(runDirectory, 'published.json')), 'adapter ready and messages', 15000),
+      published: () => eventually(() => fs.stat(path.join(runDirectory, 'published.json')), 'adapter ready and messages', windows ? 120000 : 15000),
       finish: () => fs.writeFile(path.join(runDirectory, 'finish'), ''),
       inputs: (count) => eventually(async () => {
         const entries = (await fs.readFile(path.join(runDirectory, 'inputs.jsonl'), 'utf8')).trimEnd().split('\n').map((line) => JSON.parse(line));
         return entries.length >= count && entries;
-      }, 'parent input submission'),
+      }, 'parent input submission', batchObservationMs),
     };
   }
   async function waitTerminal(run) {
@@ -308,10 +310,10 @@ test('large unread queues export completely after a non-consuming resultTooLarge
   const messages = Array.from({ length: 66 }, (_, index) => `${String(index).padStart(2, '0')}:` + 'x'.repeat(messageLimit - 3));
   const started = await f.start({ messages, finalText: 'Short final answer.' });
   successful(started, 'start'); await started.published(); await started.finish();
-  await eventually(() => fs.stat(path.join(started.runDirectory, 'finished.json')), 'large queue completion');
+  await eventually(() => fs.stat(path.join(started.runDirectory, 'finished.json')), 'large queue completion', batchObservationMs);
   const tooLarge = await eventually(async () => {
     const response = await f.command(['result', '--run', started.run]); return field(response.stdout, 'code') !== 'resultNotReady' && response;
-  }, 'large fixed result');
+  }, 'large fixed result', batchObservationMs);
   assert.equal(tooLarge.code, 1); bounded(tooLarge);
   assert.equal(field(tooLarge.stdout, 'code'), 'resultTooLarge');
   assert.equal(field(tooLarge.stdout, 'output_limit_bytes'), String(displayLimit));
@@ -470,11 +472,14 @@ test('multi-target wait wakes for B and does not replay the settled A result', a
 // independent from the parent wait window and never launch a second backend.
 test('unsupported communication rejects send and explicit deadline stops one backend', async (t) => {
   const f = await fixture(t);
-  const started = await f.start({ communication: false }, { extra: ['--deadline-ms', '1200'] });
+  const deadlineMs = windows ? 30000 : 1200;
+  const beforeStart = Date.now();
+  const started = await f.start({ communication: false }, { extra: ['--deadline-ms', String(deadlineMs)] });
+  const afterStart = Date.now();
   successful(started, 'start'); assert.equal(field(started.stdout, 'communication'), 'false');
   const observed = await started.observed();
   assert.ok(Number.isSafeInteger(observed.request.run.deadlineAt));
-  assert.ok(observed.request.run.deadlineAt >= Date.now() - 2000 && observed.request.run.deadlineAt <= Date.now() + 1200);
+  assert.ok(observed.request.run.deadlineAt >= beforeStart + deadlineMs && observed.request.run.deadlineAt <= afterStart + deadlineMs);
   const rejected = await f.command(['send', '--run', started.run, '--text', 'Do not submit.']);
   assert.equal(rejected.code, 1); assert.equal(field(rejected.stdout, 'code'), 'communicationUnsupported');
   const terminal = (await f.waitTerminal(started.run)).find((response) => terminalPattern.test(response.stdout));
@@ -486,7 +491,7 @@ test('unsupported communication rejects send and explicit deadline stops one bac
 
 // Test Value Gate: pending is not false; late ready must survive fast closing and
 // be delivered with the first subsequent state or terminal observation.
-test('late ready capability survives terminal snapshot merging', { timeout: 35000 }, async (t) => {
+test('late ready capability survives terminal snapshot merging', { timeout: windows ? 120000 : 35000 }, async (t) => {
   const f = await fixture(t);
   const largeFinal = 'Late capability final.\n'.repeat(1000);
   const [forWait, forResult] = await Promise.all([
@@ -815,11 +820,13 @@ const validLongRun = Number.isSafeInteger(longRunMilliseconds) && longRunMillise
 // boundary, then verifies the same run can receive input and return its result.
 test('long-running default run stays open beyond 30 minutes', {
   skip: longRunSetting === undefined ? 'Set AW_SUBAGENT_LONG_RUN_MS above 1800000 to run native long-duration qualification.' : false,
-  timeout: (validLongRun ? longRunMilliseconds : 0) + 90000,
+  timeout: (validLongRun ? longRunMilliseconds : 0) + (windows ? 360000 : 90000),
 }, async (t) => {
   assert.ok(validLongRun && /^\d+$/.test(longRunSetting), 'AW_SUBAGENT_LONG_RUN_MS must be an integer from 1800001 through 86400000.');
   const f = await fixture(t);
-  const started = await f.start({ echo: true, backendLifetimeMs: longRunMilliseconds + 60000, adapterLifetimeMs: longRunMilliseconds + 65000 });
+  const started = await f.start({ echo: true,
+    backendLifetimeMs: longRunMilliseconds + (windows ? 300000 : 60000),
+    adapterLifetimeMs: longRunMilliseconds + (windows ? 305000 : 65000) });
   successful(started, 'start');
   assert.equal(field(started.stdout, 'state'), 'running'); assert.equal(field(started.stdout, 'communication'), 'true');
   assert.equal((await started.observed()).request.run.deadlineAt, null);

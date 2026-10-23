@@ -73,7 +73,7 @@ async function instrument(scripts, trace, began) {
     ['    const identity = await child.identityReady;', "    diagnosticPhase('workerIdentity', 'begin');\n    const identity = await child.identityReady;\n    diagnosticPhase('workerIdentity', 'end');"],
     ['    child.unref();', "    diagnosticPhase('launchSaved', 'end');\n    child.unref();"],
     ['  const until = Date.now() + 10000;', "  diagnosticPhase('observeWindow', 'begin');\n  const until = Date.now() + 10000;"],
-    ['    try { current = await observeRun(context, await openRun(context, run.handle)); }', "    diagnosticPhase('observe', 'begin');\n    try { current = await observeRun(context, await openRun(context, run.handle)); diagnosticPhase('observe', 'end'); }"],
+    ['    try { current = await observeRun(context, run); }', "    diagnosticPhase('observe', 'begin');\n    try { current = await observeRun(context, run); diagnosticPhase('observe', 'end'); }"],
     ['  await saveObservation(current, { terminalConsumed: false });', "  diagnosticPhase('observeWindow', 'end');\n  diagnosticPhase('saveObservation', 'begin');\n  await saveObservation(current, { terminalConsumed: false });\n  diagnosticPhase('saveObservation', 'end');\n  diagnosticPhase('start', 'end');"],
   ]) commands = replaceOnce(commands, before, after);
   await fs.writeFile(commandsFile, helper + commands);

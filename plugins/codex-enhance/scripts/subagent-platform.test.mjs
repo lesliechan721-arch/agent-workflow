@@ -8,7 +8,7 @@ import { performance } from 'node:perf_hooks';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
-import { assertNoReparsePath, currentUserIdentity, protectPrivatePath, resolveSafeCommand, safeSpawn, verifyPrivatePath } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
+import { assertNoReparsePath, currentUserIdentity, protectPrivatePath, resolveSafeCommand, safeSpawn, verifyPrivatePath, windowsOperation } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 import { observeTree, ownsProcess, processTable, stopOwnedTree } from '../skills/codex-subagent-guide/scripts/runtime/processes.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
@@ -41,11 +41,25 @@ test('native private resources verify owner access and reject links', { timeout:
   const link = path.join(directory, 'link');
   await fs.symlink(directory, link, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(assertNoReparsePath(link, 'directory'), { code: 'pathSymlink' });
+  await assert.rejects(protectPrivatePath(link, 'directory'), { code: 'pathSymlink' });
+  await assert.rejects(verifyPrivatePath(link, 'directory'), { code: 'pathSymlink' });
   if (owner.kind === 'posix') {
     await fs.chmod(file, 0o644);
     await assert.rejects(verifyPrivatePath(file, 'file'), { code: 'resourceNotPrivate' });
     await protectPrivatePath(file, 'file');
     await assert.rejects(verifyPrivatePath(file, 'file', { kind: 'posix', uid: owner.uid + 1 }), { code: 'resourceOwnerMismatch' });
+  } else {
+    await assert.rejects(verifyPrivatePath(file, 'file', { kind: 'windows', sid: 'S-1-0-0' }), { code: 'resourceOwnerMismatch' });
+    for (const mutation of [
+      '$acl.SetAccessRuleProtection($false, $true)',
+      '$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new("S-1-1-0"), [Security.AccessControl.FileSystemRights]::ReadData, [Security.AccessControl.AccessControlType]::Allow))',
+    ]) {
+      // Real unsafe ACLs must still fail after combining native operations.
+      await windowsOperation(['$acl = Get-Acl -LiteralPath $data.target', mutation, 'Set-Acl -LiteralPath $data.target -AclObject $acl', '$true | ConvertTo-Json -Compress'].join('\n'), { target: file });
+      await assert.rejects(verifyPrivatePath(file, 'file'), { code: 'platformOperationFailed' });
+      await protectPrivatePath(file, 'file');
+      assert.equal(await verifyPrivatePath(file, 'file', owner), true);
+    }
   }
 });
 

@@ -64,7 +64,44 @@ export async function currentUserIdentity() {
   return { ...await userIdentity };
 }
 
-export async function assertNoReparsePath(target, kind = 'file') {
+const windowsReparseCheck = [
+  'foreach ($item in $data.chain) {',
+  '  $entry = Get-Item -Force -LiteralPath $item',
+  "  if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'A reparse point is not allowed.' }",
+  '}',
+];
+
+const windowsPrivateAclCheck = [
+  '$acl = Get-Acl -LiteralPath $data.target',
+  '$sid = [Security.Principal.SecurityIdentifier]::new($data.sid)',
+  "if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $data.sid -or !$acl.AreAccessRulesProtected) { throw 'The resource owner or ACL is unsafe.' }",
+  '$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))',
+  '$full = [Security.AccessControl.FileSystemRights]::FullControl',
+  '$allow = $false',
+  'foreach ($rule in $rules) {',
+  "  if ($rule.IdentityReference.Value -ne $data.sid -or $rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw 'A foreign or inherited ACL rule is present.' }",
+  '  if (($rule.FileSystemRights -band $full) -eq $full) { $allow = $true }',
+  '}',
+  "if (!$allow) { throw 'The owner has no full resource access.' }",
+];
+
+const windowsPrivateAclSet = [
+  '$sid = [Security.Principal.SecurityIdentifier]::new($data.sid)',
+  'if ($data.kind -eq "directory") {',
+  '  $acl = [Security.AccessControl.DirectorySecurity]::new()',
+  '  $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit',
+  '  $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)',
+  '} else {',
+  '  $acl = [Security.AccessControl.FileSecurity]::new()',
+  '  $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow)',
+  '}',
+  '$acl.SetOwner($sid)',
+  '$acl.SetAccessRuleProtection($true, $false)',
+  '$acl.AddAccessRule($rule)',
+  'Set-Acl -LiteralPath $data.target -AclObject $acl',
+];
+
+async function checkedPathChain(target, kind) {
   if (typeof target !== 'string' || !path.isAbsolute(target) || target.includes('\0') || path.normalize(target) !== target || !['file', 'directory'].includes(kind)) fail('pathInvalid', 'A runtime path must be absolute, normalized, and have a supported node type.');
   let current = path.parse(target).root;
   const chain = [current];
@@ -74,63 +111,45 @@ export async function assertNoReparsePath(target, kind = 'file') {
     if (stat.isSymbolicLink()) fail('pathSymlink', 'Links are not allowed in private runtime resources.');
     if (item === target ? (kind === 'file' ? !stat.isFile() : !stat.isDirectory()) : !stat.isDirectory()) fail('pathInvalid', 'A runtime path has an unsupported node type.');
   }
-  if (process.platform === 'win32') await windowsOperation([
-    'foreach ($item in $data.chain) {',
-    '  $entry = Get-Item -Force -LiteralPath $item',
-    "  if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'A reparse point is not allowed.' }",
-    '}',
-    '$true | ConvertTo-Json -Compress',
-  ].join('\n'), { chain });
+  return chain;
+}
+
+export async function assertNoReparsePath(target, kind = 'file') {
+  const chain = await checkedPathChain(target, kind);
+  if (process.platform === 'win32') await windowsOperation([...windowsReparseCheck, '$true | ConvertTo-Json -Compress'].join('\n'), { chain });
   return target;
 }
 
 export async function verifyPrivatePath(target, kind = 'directory', expectedOwner) {
-  await assertNoReparsePath(target, kind);
+  const chain = await checkedPathChain(target, kind);
   const owner = await currentUserIdentity();
   if (expectedOwner !== undefined && (expectedOwner?.kind !== owner.kind || (owner.kind === 'posix' ? expectedOwner.uid !== owner.uid : expectedOwner.sid !== owner.sid))) fail('resourceOwnerMismatch', 'The runtime resource belongs to a different user.');
   if (owner.kind === 'posix') {
     const stat = await fs.lstat(target);
     if (stat.uid !== owner.uid || (stat.mode & 0o777) !== (kind === 'directory' ? 0o700 : 0o600)) fail('resourceNotPrivate', 'A runtime resource must have private owner access.');
-  } else await windowsOperation([
-    '$acl = Get-Acl -LiteralPath $data.target',
-    "$sid = [Security.Principal.SecurityIdentifier]::new($data.sid)",
-    "if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $data.sid -or !$acl.AreAccessRulesProtected) { throw 'The resource owner or ACL is unsafe.' }",
-    '$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))',
-    '$full = [Security.AccessControl.FileSystemRights]::FullControl',
-    '$allow = $false',
-    'foreach ($rule in $rules) {',
-    "  if ($rule.IdentityReference.Value -ne $data.sid -or $rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw 'A foreign or inherited ACL rule is present.' }",
-    '  if (($rule.FileSystemRights -band $full) -eq $full) { $allow = $true }',
-    '}',
-    "if (!$allow) { throw 'The owner has no full resource access.' }",
-    '$true | ConvertTo-Json -Compress',
-  ].join('\n'), { target, sid: owner.sid });
+  } else await windowsOperation([...windowsReparseCheck, ...windowsPrivateAclCheck, '$true | ConvertTo-Json -Compress'].join('\n'), { target, chain, sid: owner.sid });
   return true;
 }
 
 export async function protectPrivatePath(target, kind = 'directory') {
-  await assertNoReparsePath(target, kind);
+  const chain = await checkedPathChain(target, kind);
   const owner = await currentUserIdentity();
   if (owner.kind === 'posix') {
     if ((await fs.lstat(target)).uid !== owner.uid) fail('resourceOwnerMismatch', 'The runtime resource belongs to a different user.');
     await fs.chmod(target, kind === 'directory' ? 0o700 : 0o600);
-  } else await windowsOperation([
-    '$sid = [Security.Principal.SecurityIdentifier]::new($data.sid)',
-    'if ($data.kind -eq "directory") {',
-    '  $acl = [Security.AccessControl.DirectorySecurity]::new()',
-    '  $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit',
-    '  $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)',
-    '} else {',
-    '  $acl = [Security.AccessControl.FileSecurity]::new()',
-    '  $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow)',
-    '}',
-    '$acl.SetOwner($sid)',
-    '$acl.SetAccessRuleProtection($true, $false)',
-    '$acl.AddAccessRule($rule)',
-    'Set-Acl -LiteralPath $data.target -AclObject $acl',
-    '$true | ConvertTo-Json -Compress',
-  ].join('\n'), { target, kind, sid: owner.sid });
-  await verifyPrivatePath(target, kind, owner);
+    await verifyPrivatePath(target, kind, owner);
+  } else {
+    // One fixed native host checks the full chain before and after the ACL
+    // change, then reads the ACL back. Every private write uses this boundary.
+    await windowsOperation([
+      ...windowsReparseCheck,
+      ...windowsPrivateAclSet,
+      ...windowsReparseCheck,
+      ...windowsPrivateAclCheck,
+      '$true | ConvertTo-Json -Compress',
+    ].join('\n'), { target, chain, kind, sid: owner.sid });
+    await checkedPathChain(target, kind);
+  }
   return target;
 }
 

@@ -47,11 +47,16 @@ export async function startRun(context, prepared, request) {
   const until = Date.now() + 10000;
   let current;
   do {
-    context.table = undefined;
-    try { current = await observeRun(context, await openRun(context, run.handle)); }
+    // This call created the private run and still owns the original child
+    // handle. Its exit state proves this worker's lifetime without reopening
+    // the run or sampling every system process on each initialization check.
+    context.table = child.exitCode === null && child.signalCode === null ? [run.meta.worker] : [];
+    try { current = await observeRun(context, run); }
     catch (error) { return operationError('start', run.handle, error, run); }
     if (current.snapshot.communicationSupported !== null || current.result) break;
-    await delay(80);
+    const remaining = until - Date.now();
+    if (remaining <= 0) break;
+    await delay(Math.min(80, remaining));
   } while (Date.now() < until);
   await saveObservation(current, { terminalConsumed: false });
   const ready = current.snapshot.communicationSupported !== null;
