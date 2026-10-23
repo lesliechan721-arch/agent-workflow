@@ -23,7 +23,7 @@ jobs:
             script: subagent-posix-diagnostics.mjs
           - runner: windows-2025
             os: win32
-            script: subagent-windows-diagnostics.mjs
+            script: subagent-windows-start-diagnostics.mjs
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 8
     steps:
