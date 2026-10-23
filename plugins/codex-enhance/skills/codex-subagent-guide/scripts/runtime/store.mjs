@@ -135,9 +135,14 @@ export async function observeRun(context, run, { allowExpired = false } = {}) {
   if (!allowExpired) checkExpiry(run.meta);
   let result;
   try { result = validateResult(await readJson(path.join(run.directory, 'final.json'))); }
-  catch (error) {
+  catch {
     const exists = await fs.lstat(path.join(run.directory, 'final.json')).catch((e) => { if (e.code === 'ENOENT') return null; throw e; });
-    if (exists && await workerAlive(context, run.meta)) fail('runStateUnavailable', 'The final result is unreadable.');
+    if (exists) {
+      // Atomic publication can occur after the first missing-file read. Check
+      // the now-visible result before classifying it as damaged.
+      try { result = validateResult(await readJson(path.join(run.directory, 'final.json'))); }
+      catch { if (await workerAlive(context, run.meta)) fail('runStateUnavailable', 'The final result is unreadable.'); }
+    }
   }
   if (!result && !expired(run.meta) && !await workerAlive(context, run.meta)) {
     await fixLostTime(context, run);

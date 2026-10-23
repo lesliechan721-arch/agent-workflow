@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { observeRun, openRun, storeContext } from '../skills/codex-subagent-guide/scripts/runtime/store.mjs';
+import { observeRun, openRun, storeContext, workerAlive } from '../skills/codex-subagent-guide/scripts/runtime/store.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
 const require = createRequire(import.meta.url);
@@ -58,7 +58,9 @@ async function finish(stopped = false) {
 }
 async function start(frame) {
   await fs.appendFile(process.env.FIXTURE_GENERATIONS, 'generation\n');
-  const observed = { request: frame, pid: process.pid, argv: process.argv.slice(2), cwd: process.cwd(), environment: process.env };
+  const environment = Object.fromEntries(['SOURCE', 'SERVICE_DATA', 'EMPTY', 'EMPTY_REFERENCE', 'ORDINARY_HOST',
+    'AW_PLUGIN_CONTEXT', 'AW_SUBAGENT_TEMP_DIR'].map((key) => [key, process.env[key]]));
+  const observed = { request: frame, pid: process.pid, argv: process.argv.slice(2), cwd: process.cwd(), environment };
   if (scenario.initializationFailure) {
     await fs.writeFile(root + '/observed.json', JSON.stringify(observed));
     await emit({ type: 'result', state: 'failed', generationStarted: false, backendExitCode: null,
@@ -148,12 +150,10 @@ async function fixture(t, mode = 'workspace') {
   await fs.writeFile(path.join(installed, 'scripts', 'aw-runtime-config.mjs'),
     "import fs from 'node:fs/promises';export async function readRuntimeConfig(){return JSON.parse(await fs.readFile(new URL('../effective.json',import.meta.url),'utf8'));}\n");
   const entry = path.join(installed, 'scripts', path.relative(sourceScripts, sourceEntry));
-  const windowsSystemKeys = new Set(['systemroot', 'windir', 'comspec', 'pathext', 'systemdrive',
-    'programfiles', 'programfiles(x86)', 'programw6432',
-    'commonprogramfiles', 'commonprogramfiles(x86)', 'commonprogramw6432',
-    'processor_architecture', 'processor_identifier', 'processor_level', 'processor_revision', 'number_of_processors', 'os']);
+  // Windows native tools need their normal host environment. Normalize names so
+  // the isolated paths below replace host values without mixed-case duplicates.
   const nativeEnvironment = process.platform === 'win32'
-    ? Object.fromEntries(Object.entries(process.env).filter(([key]) => windowsSystemKeys.has(key.toLowerCase()))) : {};
+    ? Object.fromEntries(Object.entries(process.env).map(([key, value]) => [key.toUpperCase(), value])) : {};
   const environment = { ...nativeEnvironment, PATH: process.env.PATH, HOME: directory, USERPROFILE: directory, CODEX_HOME: directory,
     AW_HOME: directory, AW_CODEX_HOME: directory, AW_CLAUDE_HOME: directory,
     TMPDIR: temporaryRoot, TMP: temporaryRoot, TEMP: temporaryRoot };
@@ -570,6 +570,51 @@ test('export output failure does not consume unread messages', async (t) => {
   const recovered = await f.command(['result', '--run', started.run, '--export']);
   successful(recovered, 'result'); assert.deepEqual(blocks(recovered.stdout, 'MESSAGE'), messages);
   assert.deepEqual(blocks(recovered.stdout, 'FINAL'), [finalText]);
+});
+
+// Test Value Gate: a final published between the first missing-file read and its
+// existence check must be readable even while the cached worker identity is alive.
+test('worker final published between missing-file probes remains readable', async (t) => {
+  const f = await fixture(t);
+  const finalText = 'Committed between final-file probes.\r\n保留原文。\n';
+  const started = await f.start({ finalText });
+  successful(started, 'start');
+  const context = await storeContext({ temporaryRoot: f.temporaryRoot });
+  const run = await openRun(context, started.run);
+  assert.equal(await workerAlive(context, run.meta), true);
+  const finalFile = path.join(run.directory, 'final.json');
+  const ownerFile = path.join(run.directory, 'owner.json');
+  const originalLstat = fs.lstat;
+  let missingChecks = 0, visibleChecks = 0, committed, observed;
+  fs.lstat = async (target, ...options) => {
+    try {
+      const stat = await originalLstat.call(fs, target, ...options);
+      if (target === finalFile && committed) visibleChecks += 1;
+      return stat;
+    } catch (error) {
+      if (target === finalFile && error.code === 'ENOENT' && ++missingChecks === 1) {
+        // Preserve this real ENOENT, then let the real worker finish before the
+        // parent's existence check. Its process-table observation stays cached.
+        await started.finish();
+        committed = await eventually(async () => {
+          const owner = JSON.parse(await fs.readFile(ownerFile, 'utf8'));
+          if (owner.terminalAt === null) return false;
+          return { owner, result: JSON.parse(await fs.readFile(finalFile, 'utf8')) };
+        }, 'worker final publication between file probes');
+        assert.equal(await workerAlive(context, run.meta), true);
+      }
+      throw error;
+    }
+  };
+  try { observed = await observeRun(context, run); }
+  finally { fs.lstat = originalLstat; }
+  assert.equal(missingChecks, 1); assert.ok(visibleChecks >= 1);
+  assert.equal(committed.result.state, 'completed'); assert.equal(committed.result.text, finalText);
+  assert.deepEqual(observed.result, committed.result); assert.equal(observed.snapshot.state, 'completed');
+  assert.deepEqual(JSON.parse(await fs.readFile(finalFile, 'utf8')), committed.result);
+  assert.equal(JSON.parse(await fs.readFile(ownerFile, 'utf8')).terminalAt, committed.owner.terminalAt);
+  const result = await f.command(['result', '--run', started.run]);
+  successful(result, 'result'); assert.deepEqual(blocks(result.stdout, 'FINAL'), [finalText]);
 });
 
 // Test Value Gate: a worker may commit and exit after both parent-side missing-file

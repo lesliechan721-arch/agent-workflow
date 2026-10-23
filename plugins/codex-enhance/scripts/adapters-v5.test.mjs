@@ -142,7 +142,7 @@ input.on('line',async line=>{
 });
 input.on('close',()=>{clearTimeout(timer);setTimeout(()=>process.exit(scenario==='nonzero'?7:0),25);});
 `, { mode: 0o700 });
-  const nativeEnvironment = windows ? Object.fromEntries(Object.entries(process.env).filter(([key]) => ['systemroot', 'windir', 'comspec', 'pathext', 'systemdrive', 'programfiles', 'programfiles(x86)', 'programw6432'].includes(key.toLowerCase()))) : {};
+  const nativeEnvironment = windows ? process.env : {};
   const systemRoot = Object.entries(nativeEnvironment).find(([key]) => key.toLowerCase() === 'systemroot')?.[1];
   const nativePath = windows ? [systemRoot && path.join(systemRoot, 'System32'), systemRoot].filter(Boolean) : ['/usr/bin', '/bin'];
   const environment = {

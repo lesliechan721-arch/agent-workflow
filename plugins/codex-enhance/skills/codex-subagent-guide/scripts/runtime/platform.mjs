@@ -304,7 +304,9 @@ export async function safeSpawn(command, args = [], options = {}) {
   });
   record.ready = child.identityReady;
   if (Number.isSafeInteger(child.pid)) launches.set(child.pid, record);
-  if (managedJob) child.once('close', () => { child.identityReady.catch(() => {}).then(() => fs.rm(invocation.directory, { recursive: true, force: true })).catch(() => {}); });
+  // A caller-supplied runtime directory is removed by that caller after native
+  // tree-stop proof. Do not race its recursive cleanup with another remover.
+  if (managedJob && resourceDirectory === undefined) child.once('close', () => { child.identityReady.catch(() => {}).then(() => fs.rm(invocation.directory, { recursive: true, force: true })).catch(() => {}); });
   // Consumers still receive the original rejecting promise. This observer only
   // prevents an unhandled rejection before they have installed stream listeners.
   child.identityReady.catch(() => {});

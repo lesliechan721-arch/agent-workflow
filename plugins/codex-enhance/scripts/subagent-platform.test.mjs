@@ -20,9 +20,9 @@ const helperSource = path.join(guideRuntimeScripts(import.meta.url), 'runtime/wi
 const helperTarget = path.join(path.dirname(platformEntry), 'windows-job.ps1');
 if (helperSource !== helperTarget) await fs.copyFile(helperSource, helperTarget);
 
-async function temporary(t) {
+async function temporary(t, beforeRemove = async () => {}) {
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-subagent-platform-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  t.after(async () => { await beforeRemove(); await fs.rm(directory, { recursive: true, force: true }); });
   return directory;
 }
 
@@ -116,19 +116,17 @@ test('native Windows job preserves backend module paths and their absence', { sk
 // Test Value Gate: a persisted PID requires its original start identity.
 // Cleanup of one native scope must preserve an unrelated sibling.
 test('native ownership and tree stop preserve an unrelated sibling', { timeout: 40000 }, async (t) => {
-  const directory = await temporary(t);
+  const cleanup = [];
+  const directory = await temporary(t, async () => { for (const operation of cleanup.reverse()) await operation(); });
   const token = randomBytes(24).toString('hex');
   const environment = { ...process.env, AW_SUBAGENT_PROCESS_TOKEN: token };
   const siblingToken = randomBytes(24).toString('hex');
   const sibling = await safeSpawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { cwd: directory, env: { ...environment, AW_SUBAGENT_PROCESS_TOKEN: siblingToken }, stdio: 'ignore' });
   const siblingClosed = once(sibling, 'close');
+  cleanup.push(async () => { await stopOwnedTree(sibling.pid, [sibling.processIdentity].filter(Boolean), siblingToken); await siblingClosed; });
   const root = await safeSpawn(process.execPath, ['-e', "const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e','setTimeout(() => {}, 20000)'],{stdio:'ignore',env:process.env});process.stdout.write(JSON.stringify({pid:child.pid})+'\\n');setTimeout(() => {},20000)"], { cwd: directory, env: environment, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'ignore'] });
   const rootClosed = once(root, 'close');
-  t.after(async () => {
-    await stopOwnedTree(root.pid, [root.processIdentity].filter(Boolean), token);
-    await stopOwnedTree(sibling.pid, [sibling.processIdentity].filter(Boolean), siblingToken);
-    await Promise.all([rootClosed, siblingClosed]);
-  });
+  cleanup.push(async () => { await stopOwnedTree(root.pid, [root.processIdentity].filter(Boolean), token); await rootClosed; });
   let line = '';
   const spawned = new Promise((resolve) => root.stdout.on('data', (chunk) => { line += chunk; if (line.includes('\n')) resolve(JSON.parse(line.trim())); }));
   const descendant = await spawned;
