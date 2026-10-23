@@ -122,13 +122,13 @@ async function main() {
     await new Promise((resolve) => setImmediate(resolve));
     if (outputError) throw outputError;
   } catch {
-    await writeChunk(process.stderr, diagnostic('resultOutputFailed', 'The complete output could not be written. Unread result messages were not consumed.')).catch(() => {});
+    await writeChunk(process.stderr, diagnostic('resultOutputFailed', response.compactDiagnostics ? undefined : 'The complete output could not be written. Unread result messages were not consumed.')).catch(() => {});
     process.exitCode = 1; return;
   }
   try { await response.afterOutput?.(); }
   catch (error) {
     const safe = safeError(error);
-    await writeChunk(process.stderr, diagnostic(safe.code, safe.message)).catch(() => {});
+    await writeChunk(process.stderr, diagnostic(safe.code, response.compactDiagnostics ? undefined : safe.message)).catch(() => {});
     process.exitCode = 1; return;
   }
   if (response.diagnostic) await writeChunk(process.stderr, response.diagnostic);

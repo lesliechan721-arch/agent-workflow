@@ -97,6 +97,12 @@ export async function workerAlive(context, meta) {
 
 async function fixLostTime(context, run) {
   if (run.meta.terminalAt !== null || await workerAlive(context, run.meta)) return false;
+  // The worker can commit its clock while the parent observes its exit. Its
+  // last owner record is authoritative once that worker is no longer alive.
+  const latest = await readOwner(context, run.meta.id);
+  if (latest.meta.key !== run.meta.key || latest.meta.token !== run.meta.token) fail('runUnavailable', 'The run ownership changed.');
+  run.meta = latest.meta;
+  if (run.meta.terminalAt !== null) return false;
   run.meta.terminalAt = Date.now();
   try { await atomicJson(path.join(run.directory, 'owner.json'), run.meta); }
   catch { fail('runStateUnavailable', 'The fixed terminal time could not be saved.'); }
@@ -137,6 +143,12 @@ export async function observeRun(context, run, { allowExpired = false } = {}) {
     await fixLostTime(context, run);
     if (!allowExpired) checkExpiry(run.meta);
     if (!expired(run.meta)) {
+      // A missing first read is not proof that the worker failed to commit.
+      // Re-read after observing its exit; no worker writer remains at this point.
+      try { result = validateResult(await readJson(path.join(run.directory, 'final.json'))); }
+      catch { /* Only a still-missing or damaged result needs lost-worker recovery. */ }
+    }
+    if (!expired(run.meta) && !result) {
       try {
         for (const name of await recordFiles(run, 'outbox')) {
           const input = await readRecord(run, 'outbox', name);

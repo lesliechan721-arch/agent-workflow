@@ -97,11 +97,14 @@ export async function readResult(context, request) {
     const factory = resultReport(run, events, gaps);
     const measured = await measureReport(factory);
     const stderr = scanDiagnostic(context);
-    if (!request.export && measured.bytes + Buffer.byteLength(stderr) > OUTPUT_LIMIT) {
+    // Output happens before consumption. A later failure still needs its code
+    // on stderr, even when the successful report nearly fills the display.
+    const diagnosticBudget = Math.max(Buffer.byteLength(stderr), Buffer.byteLength(diagnostic('resultConsumeFailed')));
+    if (!request.export && measured.bytes + diagnosticBudget > OUTPUT_LIMIT) {
       return { text: `result: error\n${groupHeader(run)}code: resultTooLarge\nresult_bytes: ${measured.bytes}\noutput_limit_bytes: ${OUTPUT_LIMIT}\nmessage: ${exportHint(run.handle)}\n`, diagnostic: stderr, exitCode: 1 };
     }
     return { ...(request.export ? { report: factory, token: measured.token } : { text: await collectReport(factory, measured.token) }),
-      diagnostic: stderr, exitCode: 0, afterOutput: async () => {
+      diagnostic: stderr, compactDiagnostics: !request.export, exitCode: 0, afterOutput: async () => {
         try {
           for (const name of events) await fs.unlink(path.join(run.directory, 'events', name));
           await saveObservation(run, { terminalConsumed: true });

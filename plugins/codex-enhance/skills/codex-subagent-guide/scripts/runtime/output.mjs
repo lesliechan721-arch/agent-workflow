@@ -22,7 +22,7 @@ export function groupHeader(run, capability = false) {
 }
 
 export function diagnostic(code, message) {
-  return `diagnostic: error\ncode: ${code}\nmessage: ${message}\n`;
+  return `diagnostic: error\ncode: ${code}\n${message === undefined ? '' : `message: ${message}\n`}`;
 }
 
 function optionalDiagnostic(message, token) {

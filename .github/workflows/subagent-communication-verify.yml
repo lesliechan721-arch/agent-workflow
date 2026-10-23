@@ -12,6 +12,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  platform-diagnostics:
+    name: ${{ matrix.os }} / platform diagnostics
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            os: linux
+            script: subagent-posix-diagnostics.mjs
+          - runner: windows-2025
+            os: win32
+            script: subagent-windows-diagnostics.mjs
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Check fixed native operations without model calls
+        run: node scripts/qualification/${{ matrix.script }}
+
   native-contracts:
     name: ${{ matrix.os }} / native plugin contracts
     strategy:
