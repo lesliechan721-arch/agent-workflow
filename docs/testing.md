@@ -8,7 +8,9 @@
 
 本地和 CI 可以设置 `AW_TEST_WORKERS` 调整普通 Vitest 与插件 Node test 的文件并发。未设置或空值保留入口默认值；合法值是十进制正安全整数，例如 `1`、`2`、`4`。`0`、负数、小数、百分比、空白和非数字会在准备或启动测试前失败。普通 Vitest 的默认上限为 2，最小 worker 为 1；插件 Node test 未设置时保留 Node runner 的默认并发。`pnpm test:workers` 使用真实 Vitest 子进程验证这些边界。
 
-插件 CI 由 PR/main 和发布候选分别展开普通平台矩阵 job，使用共享的 `.github/actions/plugin-tests` 复合 action 执行测试；job 与其他测试平铺显示。任务名称以平台、架构和 Node 版本开头，以 `plugins` 标识插件测试，Windows 名称还包含分片编号。覆盖 Linux x64、macOS arm64、Windows x64 的 Node 24。Windows 通过 `pnpm plugin:test --all --test-concurrency 1 --test-shard <index/total>` 分为三片；参数直接传给 Node 的文件分片，每个插件及其所选目标平台使用同一分片编号，不按用例标题筛选。所有分片合并才是完整覆盖，单片可能没有分配到小插件的文件。非法分片参数在准备插件前拒绝。Windows 第一片额外运行 Codex Enhance 的真实文件占用与跨卷资格，真实 30 分钟用例仍保持显式启用。分片不拆分单个重型文件，因此 Windows 作业上限为 90 分钟；它是失败观察上限，不是固定等待。
+插件 CI 由 PR/main 和发布候选分别展开普通平台矩阵 job，使用共享的 `.github/actions/plugin-tests` 复合 action 执行测试；job 与其他测试平铺显示。任务名称以平台、架构和 Node 版本开头，以 `plugins` 标识插件测试，Windows 名称还包含分片编号。覆盖 Linux x64、macOS arm64、Windows x64 的 Node 24。Windows 通过 `pnpm plugin:test --all --test-concurrency 1 --test-shard <index/total>` 分为三片；参数直接传给 Node 的文件分片，每个插件及其所选目标平台使用同一分片编号，不按用例标题筛选。Windows 普通分片排除 `scripts/subagent-runtime.test.mjs`；第一片在独立的 30 分钟步骤中完整运行这个文件，并启用命令阶段和 PowerShell 调用次数、累计耗时、最大耗时诊断。所有分片合并才是完整覆盖，单片可能没有分配到小插件的文件。非法分片参数在准备插件前拒绝。Windows 第一片额外运行 Codex Enhance 的真实文件占用与跨卷资格，真实 30 分钟用例仍保持显式启用。分片不拆分单个测试文件，Windows 作业上限为 90 分钟；它是失败观察上限，不是固定等待。Runtime 普通用例在 Windows 上有 180 秒整体期限，66 次串行发送用例单独使用 10 分钟期限，已有其它更具体的期限保持；每个 fixture 的清理共用 45 秒期限。测试取消会终止当前命令子进程；真实长时资格保留自己的显式期限。所有权读取把根目录、运行目录和 owner 文件的 Windows 校验合并到一个 PowerShell 进程，每个资源仍执行完整路径、owner 和 ACL 检查；下一次读取重新验证，不跨调用缓存。
+
+插件入口实时输出 `AW_PLUGIN_TEST` 进度，包含插件、目标平台、文件、用例开始/结果、耗时及诊断；运行中每 30 秒输出心跳。进度事件在输出前脱敏。敏感值替换按字段进行，数值命中敏感值时变成脱敏字符串，事件仍为有效 JSON。原始 stdout/stderr 仍在该插件进程结束后整体脱敏输出，以保留跨写入块的敏感值保护。`--test-file <plugin-relative-path>` 只运行一个已声明文件，找不到时失败；它只接受单个插件且不能与 `--exclude-test-file` 同用。`--exclude-test-file <plugin-relative-path>` 在分片前排除该精确文件；CI 必须另行运行被排除的文件。
 
 Windows x64 CI 的普通 integration 分为三个独立 runner 的 Vitest shard，每片默认使用 1 worker；仓库变量 `AW_TEST_WORKERS` 的显式配置优先。第 3 片同时运行完整的串行 integration process-lifecycle、命令诊断与超时收尾回归和 pack smoke，全部分片成功才满足发布门禁。其他平台保留入口默认值。
 

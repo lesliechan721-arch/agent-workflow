@@ -54,7 +54,7 @@ runs:
     - name: Run the Windows plugin file shard
       if: runner.os == 'Windows'
       shell: pwsh
-      run: pnpm plugin:test --all --test-concurrency 1 --test-shard "$env:TEST_SHARD"
+      run: pnpm plugin:test --all --test-concurrency 1 --test-shard "$env:TEST_SHARD" --exclude-test-file scripts/subagent-runtime.test.mjs
     - name: Verify native Windows file locks and cross-volume operations
       if: runner.os == 'Windows' && inputs.shard == '1/3'
       shell: pwsh

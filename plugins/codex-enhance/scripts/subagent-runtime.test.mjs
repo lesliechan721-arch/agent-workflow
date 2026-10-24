@@ -14,6 +14,7 @@ const require = createRequire(import.meta.url);
 const registeredEntry = require.resolve('../skills/codex-subagent-guide/scripts/subagent.mjs');
 const registeredWorker = require.resolve('../skills/codex-subagent-guide/scripts/worker.mjs');
 const registeredClock = require.resolve('./fixtures/subagent-clock.mjs');
+const registeredDiagnostics = require.resolve('./fixtures/subagent-platform-diagnostics.mjs');
 const sourceScripts = guideRuntimeScripts(import.meta.url);
 const sourceEntry = path.join(sourceScripts, path.basename(registeredEntry));
 const sourceWorker = path.join(sourceScripts, path.basename(registeredWorker));
@@ -23,6 +24,8 @@ const displayLimit = 8192;
 const messageLimit = 4096;
 const windows = process.platform === 'win32';
 const batchObservationMs = windows ? 120000 : 5000;
+const testTimeoutMs = windows ? 180000 : 35000;
+const cleanupTimeoutMs = windows ? 45000 : 10000;
 
 // This external v5 adapter owns a separate, bounded local backend process. Every
 // completion uses the observed backend exit code. No model runs in these tests.
@@ -175,6 +178,10 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
   await fs.writeFile(adapter, fakeAdapter);
   const clockPreload = path.join(directory, 'fixture-clock.mjs');
   await fs.copyFile(registeredClock, clockPreload);
+  const diagnosticsPreload = path.join(directory, 'fixture-platform-diagnostics.mjs');
+  await fs.copyFile(registeredDiagnostics, diagnosticsPreload);
+  const diagnosticsArgs = process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1'
+    ? ['--import', pathToFileURL(diagnosticsPreload).href] : [];
   const snapshot = { installedIdentity: { source: 'fixture', plugin: 'fixture', platform: 'codex', scope: 'user' }, resourceRoot: installed,
     effectiveValues: { advisorProfile: { executor: 'fixture' }, generalTaskProfile: { executor: 'fixture' },
       subagentCommands: [{ key: 'fixture', title: 'Fixture', adapter: 'custom', mode, command: await fs.realpath(process.execPath), entrypoint: adapter }] } };
@@ -193,23 +200,35 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     TMPDIR: temporaryRoot, TMP: temporaryRoot, TEMP: temporaryRoot };
   const handles = new Set();
   let nextScenario = 0, nextClock = 0;
-  function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, timeout = windows ? 120000 : 35000, nodeArgs = [] } = {}) {
+  function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, timeout = windows ? 120000 : 35000, signal = t.signal, nodeArgs = [] } = {}) {
     return new Promise((resolve, reject) => {
+      signal.throwIfAborted();
       const began = performance.now();
       phase('commandBegin', { operation: args[0] });
-      const child = spawn(process.execPath, [...nodeArgs, entry, ...args], { cwd, env: { ...environment, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, [...diagnosticsArgs, ...nodeArgs, entry, ...args], { cwd, env: { ...environment, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
       const output = [], diagnostics = [];
+      const abort = () => child.kill('SIGKILL');
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
       let timedOut = false;
       const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeout);
-      child.once('error', (error) => { clearTimeout(timer); reject(error); });
+      child.once('error', (error) => { clearTimeout(timer); signal.removeEventListener('abort', abort); reject(error); });
       child.stdout.on('data', (chunk) => { output.push(chunk); if (breakOutput) child.stdout.destroy(); });
       child.stderr.on('data', (chunk) => diagnostics.push(chunk));
       child.once('close', (code) => {
         clearTimeout(timer);
+        signal.removeEventListener('abort', abort);
         const stdout = Buffer.concat(output).toString('utf8');
         for (const match of stdout.matchAll(/^run: ([\x21-\x7e]+)$/gm)) handles.add(match[1]);
-        const response = { code, stdout, stderr: Buffer.concat(diagnostics).toString('utf8'), elapsedMs: Math.round(performance.now() - began) };
-        phase('commandEnd', { operation: args[0], code, commandElapsedMs: response.elapsedMs, state: field(stdout, 'state'), communication: field(stdout, 'communication'), errorCode: field(stdout, 'code'), timedOut });
+        let nativeTiming;
+        const stderr = Buffer.concat(diagnostics).toString('utf8').split('\n').filter((line) => {
+          if (!line.startsWith('AW_SUBAGENT_NATIVE_TIMING ')) return true;
+          nativeTiming = JSON.parse(line.slice('AW_SUBAGENT_NATIVE_TIMING '.length));
+          return false;
+        }).join('\n');
+        const response = { code, stdout, stderr, elapsedMs: Math.round(performance.now() - began) };
+        phase('commandEnd', { operation: args[0], code, commandElapsedMs: response.elapsedMs, nativeTiming, state: field(stdout, 'state'), communication: field(stdout, 'communication'), errorCode: field(stdout, 'code'), timedOut });
+        if (signal.aborted) { reject(signal.reason); return; }
         if (timedOut) { reject(new Error(`Fixture command timed out: ${args[0]}\n${JSON.stringify(phases)}`)); return; }
         resolve(response);
       });
@@ -240,7 +259,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     };
   }
   async function initialized(started) {
-    assert.match(started.run ?? '', /^aw5-[a-f0-9]{32}-[a-f0-9]{32}$/);
+    assert.match(started.run ?? '', /^aw5-[a-f0-9]{32}-[a-f0-9]{32}$/, started.stdout + started.stderr);
     if (started.code === 0) { successful(started, 'start'); return; }
     assert.equal(started.code, 1, started.stdout + started.stderr);
     assert.match(started.stdout, /^start: notReady\n/);
@@ -289,6 +308,8 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     return openRun(await storeContext({ temporaryRoot }), run);
   }
   t.after(async () => {
+    const cleanupSignal = AbortSignal.timeout(cleanupTimeoutMs);
+    phase('cleanupBegin', { timeoutMs: cleanupTimeoutMs });
     try {
       if (diagnostics) for (const scenario of scenarios) {
         const records = await fs.readFile(path.join(scenario.directory, 'phases.jsonl'), 'utf8').catch(() => '');
@@ -296,16 +317,23 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
       }
     }
     finally {
-      try { for (const run of handles) await command(['stop', '--run', run]).catch(() => {}); }
-      finally { await fs.rm(directory, { recursive: true, force: true }); }
+      try {
+        for (const run of handles) {
+          if (cleanupSignal.aborted) throw new Error('Fixture cleanup deadline exceeded.');
+          // Crash/expiry tests can already have removed the handle. A returned
+          // failure is allowed; a command that cannot finish is a cleanup error.
+          await command(['stop', '--run', run], { signal: cleanupSignal, timeout: cleanupTimeoutMs });
+        }
+      }
+      finally { await fs.rm(directory, { recursive: true, force: true }); phase('cleanupEnd'); }
     }
-  });
+  }, { timeout: cleanupTimeoutMs + 5000 });
   return { directory, temporaryRoot, workspace, installed, generations, snapshot, config, save, command, start, initialized, clock, waitTerminal, evidence, phase };
 }
 
 // Test Value Gate: a copied installation must preserve caller text, argv, installed
 // helpers and captured configuration after the short start command exits.
-test('installed start preserves UTF-8 input, environment and one captured execution', async (t) => {
+test('installed start preserves UTF-8 input, environment and one captured execution', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t, 'bundle');
   const clock = await f.clock(['start'], { stepMs: 1000 });
   const instructions = 'Explicit fixture role.\r\n保留指令。\n';
@@ -356,7 +384,7 @@ test('installed start preserves UTF-8 input, environment and one captured execut
 
 // Test Value Gate: result must select the complete report, consume all unread
 // notifications, preserve duplicate bodies and retain only the fixed final result.
-test('result consumes every unread message once and only the fixed final result can be reread', async (t) => {
+test('result consumes every unread message once and only the fixed final result can be reread', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const messages = ['相同正文\n', '相同正文\n', 'state: completed\nBEGIN_FINAL:deadbeef\n原文\nEND_FINAL:deadbeef\n'];
   const finalText = '  完成 🧪\r\n保留最后换行。\n';
@@ -396,7 +424,7 @@ test('result consumes every unread message once and only the fixed final result 
 
 // Test Value Gate: large unread queues must not reintroduce the removed cumulative
 // byte/count quota, and default result overflow must not consume any event.
-test('large unread queues export completely after a non-consuming resultTooLarge error', async (t) => {
+test('large unread queues export completely after a non-consuming resultTooLarge error', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const messages = Array.from({ length: 66 }, (_, index) => `${String(index).padStart(2, '0')}:` + 'x'.repeat(messageLimit - 3));
   const started = await f.start({ messages, finalText: 'Short final answer.' });
@@ -421,7 +449,7 @@ test('large unread queues export completely after a non-consuming resultTooLarge
 
 // Test Value Gate: submitted parent input must not spend a cumulative count or
 // byte allowance, and repeated sends must stay within the original generation.
-test('more than 64 parent messages exceeding the old total byte quota stay accepted', async (t) => {
+test('more than 64 parent messages exceeding the old total byte quota stay accepted', { timeout: windows ? 600000 : testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const started = await f.start();
   await f.initialized(started);
@@ -434,7 +462,7 @@ test('more than 64 parent messages exceeding the old total byte quota stay accep
 
 // Test Value Gate: referenced environment values must remain redacted in final
 // output and diagnostics, including their JSON-escaped representation.
-test('referenced environment secrets stay redacted in actual parent output', async (t) => {
+test('referenced environment secrets stay redacted in actual parent output', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   f.snapshot.effectiveValues.subagentCommands[0].envFrom = { SERVICE_DATA: 'SOURCE' }; await f.save();
   const secret = 'fixture\n"quoted"\\path.[x]+';
@@ -452,7 +480,7 @@ test('referenced environment secrets stay redacted in actual parent output', asy
 
 // Test Value Gate: a result that fits the actual response budget must be included
 // in the first terminal wait, without reserving unused stderr capacity.
-test('wait includes a 7300-byte final when the complete response fits without diagnostics', async (t) => {
+test('wait includes a 7300-byte final when the complete response fits without diagnostics', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const finalText = 'x'.repeat(7300);
   const started = await f.start({ finalText, finishImmediately: true });
@@ -471,7 +499,7 @@ test('wait includes a 7300-byte final when the complete response fits without di
 
 // Test Value Gate: adapter scratch must be removed after its processes stop while
 // unread process messages and the fixed final remain available to their consumer.
-test('stopped adapter scratch is deleted while unread messages and final remain readable', async (t) => {
+test('stopped adapter scratch is deleted while unread messages and final remain readable', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const scratchText = 'Raw task copy.\r\n运行期间保存的原文 🧪\n';
   const messages = ['Unread question.\n', '未读过程消息。\r\n'];
@@ -505,7 +533,7 @@ test('stopped adapter scratch is deleted while unread messages and final remain 
 
 // Test Value Gate: wait must select whole messages within its byte budget and keep
 // unselected events readable; a large final creates one deferred notification.
-test('wait preserves whole events across batches and defers an oversized final only once', async (t) => {
+test('wait preserves whole events across batches and defers an oversized final only once', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const messages = ['甲'.repeat(1365) + 'x', 'y'.repeat(messageLimit), 'z'.repeat(messageLimit)];
   const finalText = '答案\n'.repeat(3000);
@@ -535,7 +563,7 @@ test('wait preserves whole events across batches and defers an oversized final o
 
 // Test Value Gate: one wait window must observe all targets and continue reading
 // valid targets when another handle is unavailable, without replaying old results.
-test('multi-target wait wakes for B and does not replay the settled A result', async (t) => {
+test('multi-target wait wakes for B and does not replay the settled A result', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const a = await f.start({ finishImmediately: true, finalText: 'A complete.' }, { extra: ['--name', 'duplicate'] });
   const b = await f.start({ echo: true }, { extra: ['--name', 'duplicate'] });
@@ -562,7 +590,7 @@ test('multi-target wait wakes for B and does not replay the settled A result', a
 
 // Test Value Gate: unsupported capability and an explicit deadline must remain
 // independent from the parent wait window and never launch a second backend.
-test('unsupported communication rejects send and explicit deadline stops one backend', async (t) => {
+test('unsupported communication rejects send and explicit deadline stops one backend', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const clock = await f.clock(['worker']);
   const deadlineMs = 1200;
@@ -681,7 +709,7 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
 
 // Test Value Gate: failed initialization must preserve unknown capability and a
 // readable failure, rather than treating missing ready as communication=false.
-test('initialization failure has pending capability and a readable failed final', async (t) => {
+test('initialization failure has pending capability and a readable failed final', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const started = await f.start({ initializationFailure: true });
   assert.equal(started.code, 1); assert.equal(field(started.stdout, 'communication'), 'pending');
@@ -695,7 +723,7 @@ test('initialization failure has pending capability and a readable failed final'
 
 // Test Value Gate: a completed task must retain unknown input delivery in its fixed
 // result even after a parent has consumed the corresponding process notification.
-test('completed result preserves unresolved input delivery without replaying notifications', async (t) => {
+test('completed result preserves unresolved input delivery without replaying notifications', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const started = await f.start({ delivery: 'unknown' });
   await f.initialized(started);
@@ -719,7 +747,7 @@ test('completed result preserves unresolved input delivery without replaying not
 
 // Test Value Gate: an OS-visible broken output pipe must leave unread messages
 // untouched even when export has started writing a large final report.
-test('export output failure does not consume unread messages', async (t) => {
+test('export output failure does not consume unread messages', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const messages = ['Message before a broken pipe.', 'Another unread message.'];
   const finalText = 'x'.repeat(3 * 1024 * 1024);
@@ -737,7 +765,7 @@ test('export output failure does not consume unread messages', async (t) => {
 
 // Test Value Gate: a final published between the first missing-file read and its
 // existence check must be readable even while the cached worker identity is alive.
-test('worker final published between missing-file probes remains readable', async (t) => {
+test('worker final published between missing-file probes remains readable', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const finalText = 'Committed between final-file probes.\r\n保留原文。\n';
   const started = await f.start({ finalText });
@@ -782,7 +810,7 @@ test('worker final published between missing-file probes remains readable', asyn
 
 // Test Value Gate: a worker may commit and exit after both parent-side missing-file
 // observations. Lost-worker recovery must preserve that real final and its TTL.
-test('late worker final publication survives a parent lost-worker observation', async (t) => {
+test('late worker final publication survives a parent lost-worker observation', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const finalText = 'Saved successful answer.\r\n保留最终正文。\n';
   const started = await f.start({ finalText });
@@ -826,7 +854,7 @@ test('late worker final publication survives a parent lost-worker observation', 
 
 // Test Value Gate: a default report must reserve enough room for a late consume
 // error; preflight overflow and a failed delete must both preserve unread records.
-test('default result reserves consume-error bytes and retains messages after deletion failure', async (t) => {
+test('default result reserves consume-error bytes and retains messages after deletion failure', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const message = 'z'.repeat(messageLimit);
   const started = await f.start({ messages: [message], finalText: 'a' });
@@ -878,7 +906,7 @@ const unlink=fs.unlink;fs.unlink=async(target,...options)=>{
 
 // Test Value Gate: worker loss must become one fixed unknown without generating
 // new work, and repeat observations must preserve the first expiry origin.
-test('lost worker result is fixed once and expires without regenerating work', async (t) => {
+test('lost worker result is fixed once and expires without regenerating work', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const started = await f.start({ messages: ['Saved process message.'] });
   await f.initialized(started); await started.published();
@@ -910,7 +938,7 @@ test('lost worker result is fixed once and expires without regenerating work', a
 
 // Test Value Gate: expired ownership and stopped-process evidence must permit
 // cleanup even when cached content is damaged; read-only help must not scan.
-test('ordinary calls clean expired damaged content while help and invalid flags stay read-only', async (t) => {
+test('ordinary calls clean expired damaged content while help and invalid flags stay read-only', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const started = await f.start({ finishImmediately: true });
   await f.initialized(started); await f.waitTerminal(started.run);
@@ -931,7 +959,7 @@ test('ordinary calls clean expired damaged content while help and invalid flags 
 
 // Test Value Gate: syntax validation and help must have no run/scan side effects;
 // obsolete flags and name-based addressing must not start or consume any task.
-test('invalid input rejects obsolete commands, names and malformed sizes before side effects', async (t) => {
+test('invalid input rejects obsolete commands, names and malformed sizes before side effects', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const invalid = [
     ['run'], ['poll'], ['resume'], ['cleanup'],
@@ -973,7 +1001,7 @@ test('invalid input rejects obsolete commands, names and malformed sizes before 
 
 // Test Value Gate: caller wait time must not impose a task deadline. Advance
 // separate caller/worker clocks, while keeping real messages and process exits.
-test('default run survives simulated time and a caller wait timeout', async (t) => {
+test('default run survives simulated time and a caller wait timeout', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const workerClock = await f.clock(['worker']);
   const started = await f.start({ echo: true }, { env: workerClock.environment });

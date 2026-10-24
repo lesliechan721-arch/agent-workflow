@@ -916,6 +916,83 @@ describe('plugin script test runner', () => {
     );
   });
 
+  // Test Value Gate: a running test must be identifiable before it exits, while
+  // config values split across stdout writes must remain private.
+  it('reports live test progress while retaining cross-write output redaction', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifest = await readManifest(repoRoot);
+    manifest.config = { fields: {
+      value: { type: 'string', sensitive: true },
+      shortValue: { type: 'string', sensitive: true },
+    } };
+    manifest.scripts = { tests: { node: ['./scripts/progress.test.mjs'] } };
+    await writeManifest(repoRoot, manifest);
+    const releaseFile = path.join(repoRoot, 'release');
+    const secret = 'private-progress-value';
+    await writeNodeTestFile(repoRoot, 'progress.test.mjs', [
+      'import test from "node:test";',
+      'import { access } from "node:fs/promises";',
+      'import { setTimeout } from "node:timers/promises";',
+      `test(${JSON.stringify(`live ${secret}`)}, { timeout: 5000 }, async () => {`,
+      `  process.stdout.write(${JSON.stringify(secret.slice(0, 9))});`,
+      '  await setTimeout(25);',
+      `  process.stdout.write(${JSON.stringify(secret.slice(9) + '\n')});`,
+      `  while (true) { try { await access(${JSON.stringify(releaseFile)}); break; } catch {} await setTimeout(10); }`,
+      '});',
+    ].join('\n'));
+    const output = captureOutput();
+    let live = false;
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'codex'], {
+      repoRoot,
+      testConfigValues: { value: secret, shortValue: '0' },
+      stdout(text) {
+        output.stdout(text);
+        if (text.startsWith('AW_PLUGIN_TEST ') && text.includes('"event":"dequeue"') && text.includes('live ')) {
+          live = true;
+          fs.writeFileSync(releaseFile, 'continue');
+        }
+      },
+      stderr: output.stderr,
+    });
+    expect(exitCode, output.readStderr()).toBe(0);
+    expect(live).toBe(true);
+    expect(output.readStdout()).toContain('live [REDACTED]');
+    expect(output.readStdout()).not.toContain(secret);
+    const progress = output.readStdout().split('\n').filter((line) => line.startsWith('AW_PLUGIN_TEST '))
+      .map((line) => JSON.parse(line.slice('AW_PLUGIN_TEST '.length)));
+    expect(progress.some((event) => event.file === 'scripts/progress.test.mjs' && event.event === 'pass')).toBe(true);
+  });
+
+  // Test Value Gate: isolating a heavy file must preserve full coverage across
+  // the dedicated run and all remaining shards, with no silent missing target.
+  it('covers selected files and the remaining shards without overlap', async () => {
+    const repoRoot = await makeTempRepo();
+    const files = ['a', 'b', 'c', 'd'];
+    await configureTestManifest({ repoRoot, testEntries: files.map((name) => `./scripts/${name}.test.mjs`) });
+    for (const name of files) await writeNodeTestFile(repoRoot, `${name}.test.mjs`,
+      `import test from 'node:test'; test('file-${name}', () => {});`);
+    const seen: string[] = [];
+    for (const selection of [
+      ['--test-file', './scripts/b.test.mjs'],
+      ...['1/3', '2/3', '3/3'].map((shard) => ['--exclude-test-file', 'scripts/b.test.mjs', '--test-shard', shard]),
+    ]) {
+      const output = captureOutput();
+      expect(await runPluginScriptTests(['git-commit', '--platform', 'codex', ...selection], {
+        repoRoot, stdout: output.stdout, stderr: output.stderr,
+      }), output.readStderr()).toBe(0);
+      for (const line of output.readStdout().split('\n').filter((line) => line.startsWith('AW_PLUGIN_TEST '))) {
+        const event = JSON.parse(line.slice('AW_PLUGIN_TEST '.length));
+        if (event.event === 'pass' && /^file-[a-d]$/.test(event.name)) seen.push(event.name);
+      }
+    }
+    expect(seen.sort()).toEqual(files.map((name) => `file-${name}`));
+    const output = captureOutput();
+    expect(await runPluginScriptTests(['git-commit', '--test-file', 'scripts/missing.test.mjs'], {
+      repoRoot, stdout: output.stdout, stderr: output.stderr,
+    })).toBe(1);
+    expect(output.readStderr()).toContain('No declared test file matches');
+  }, 30_000);
+
   it('redacts sensitive config values from node test output and failures', async () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readManifest(repoRoot);

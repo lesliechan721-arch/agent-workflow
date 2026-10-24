@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { atomicJson, readJson, safePath } from './files.mjs';
 import { fail, STATES, validateResult } from './contracts.mjs';
-import { currentUserIdentity, protectPrivatePath, verifyPrivatePath, assertNoReparsePath, windowsOperation } from './platform.mjs';
+import { currentUserIdentity, protectPrivatePath, verifyPrivatePath, verifyPrivatePaths, assertNoReparsePath, windowsOperation } from './platform.mjs';
 import { processTable } from './processes.mjs';
 
 export const CACHE_MS = 3600000;
@@ -81,9 +81,11 @@ export async function readOwner(context, id) {
   if (!/^[a-f0-9]{32}$/.test(id)) fail('runUnavailable', 'The run is unavailable.');
   const directory = path.join(context.root, id);
   try {
-    await verifyPrivatePath(context.root, 'directory', context.owner);
-    await verifyPrivatePath(directory, 'directory', context.owner);
-    await verifyPrivatePath(path.join(directory, 'owner.json'), 'file', context.owner);
+    await verifyPrivatePaths([
+      { target: context.root, kind: 'directory' },
+      { target: directory, kind: 'directory' },
+      { target: path.join(directory, 'owner.json'), kind: 'file' },
+    ], context.owner);
     const meta = await readJson(path.join(directory, 'owner.json'), 1024 * 1024);
     if (meta.schema !== 5 || meta.id !== id || !/^[a-f0-9]{32}$/.test(meta.key ?? '') ||
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(meta.name ?? '') ||

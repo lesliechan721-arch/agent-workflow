@@ -147,13 +147,33 @@ export async function assertNoReparsePath(target, kind = 'file') {
 }
 
 export async function verifyPrivatePath(target, kind = 'directory', expectedOwner) {
-  const chain = await checkedPathChain(target, kind);
+  return verifyPrivatePaths([{ target, kind }], expectedOwner);
+}
+
+export async function verifyPrivatePaths(resources, expectedOwner) {
+  const checked = [];
+  for (const { target, kind = 'directory' } of resources) {
+    checked.push({ target, kind, chain: await checkedPathChain(target, kind) });
+  }
+  if (checked.length === 0) return true;
   const owner = await currentUserIdentity();
   if (expectedOwner !== undefined && (expectedOwner?.kind !== owner.kind || (owner.kind === 'posix' ? expectedOwner.uid !== owner.uid : expectedOwner.sid !== owner.sid))) fail('resourceOwnerMismatch', 'The runtime resource belongs to a different user.');
   if (owner.kind === 'posix') {
-    const stat = await fs.lstat(target);
-    if (stat.uid !== owner.uid || (stat.mode & 0o777) !== (kind === 'directory' ? 0o700 : 0o600)) fail('resourceNotPrivate', 'A runtime resource must have private owner access.');
-  } else await windowsOperation([...windowsReparseCheck, ...windowsPrivateAclCheck, '$true | ConvertTo-Json -Compress'].join('\n'), { target, chain, sid: owner.sid });
+    for (const { target, kind } of checked) {
+      const stat = await fs.lstat(target);
+      if (stat.uid !== owner.uid || (stat.mode & 0o777) !== (kind === 'directory' ? 0o700 : 0o600)) fail('resourceNotPrivate', 'A runtime resource must have private owner access.');
+    }
+  } else {
+    // Verify all resources for one read in one native host. Each resource keeps
+    // its complete reparse, owner and ACL checks; no evidence survives the call.
+    await windowsOperation([
+      'function Assert-PrivateResource($data) {',
+      ...windowsReparseCheck, ...windowsPrivateAclCheck,
+      '}',
+      'foreach ($resource in $data.resources) { Assert-PrivateResource $resource }',
+      '$true | ConvertTo-Json -Compress',
+    ].join('\n'), { resources: checked.map((resource) => ({ ...resource, sid: owner.sid })) });
+  }
   return true;
 }
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
 import { promisify } from 'node:util';
@@ -100,4 +101,32 @@ test('Windows host failures retain only safe execution and parse diagnostics', a
       return true;
     });
   }
+});
+
+// Test Value Gate: opening an owned run checks all private resources with one
+// native round trip, while still rejecting an unverifiable owner record.
+test('owned run reads batch native verification without caching ownership', async (t) => {
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-owner-batch-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const id = 'a'.repeat(32);
+  const directory = path.join(root, id);
+  await fs.mkdir(directory);
+  let calls = 0;
+  let reject = false;
+  const api = windowsHostFixture(t, async (_command, _args, options) => {
+    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
+    if (!input.resources) return { stdout: JSON.stringify('S-1-5-21-123-456-789-1001') };
+    calls++;
+    if (reject) throw new Error('unsafe native resource');
+    return { stdout: 'true' };
+  });
+  const owner = await api.currentUserIdentity();
+  const meta = { schema: 5, id, key: 'b'.repeat(32), name: 'fixture', token: 'c'.repeat(48), owner, processes: [], terminalAt: null };
+  await fs.writeFile(path.join(directory, 'owner.json'), JSON.stringify(meta));
+  const { readOwner } = await import('../skills/codex-subagent-guide/scripts/runtime/store.mjs');
+  assert.deepEqual((await readOwner({ root, owner }, id)).meta, meta);
+  assert.equal(calls, 1);
+  reject = true;
+  await assert.rejects(readOwner({ root, owner }, id), { code: 'runUnavailable' });
+  assert.equal(calls, 2);
 });

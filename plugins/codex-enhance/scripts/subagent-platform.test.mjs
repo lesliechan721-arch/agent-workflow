@@ -10,7 +10,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { promisify } from 'node:util';
-import { assertNoReparsePath, currentUserIdentity, protectPrivatePath, resolveSafeCommand, safeSpawn, verifyPrivatePath, windowsOperation } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
+import { assertNoReparsePath, currentUserIdentity, protectPrivatePath, resolveSafeCommand, safeSpawn, verifyPrivatePath, verifyPrivatePaths, windowsOperation } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 import { observeTree, ownsProcess, processTable, stopOwnedTree } from '../skills/codex-subagent-guide/scripts/runtime/processes.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
@@ -42,14 +42,18 @@ test('native private resources verify owner access and reject links', { timeout:
   await fs.writeFile(file, '{}\n', { mode: 0o600 });
   await protectPrivatePath(file, 'file');
   assert.equal(await verifyPrivatePath(file, 'file', owner), true);
+  const resources = [{ target: directory, kind: 'directory' }, { target: file, kind: 'file' }];
+  assert.equal(await verifyPrivatePaths(resources, owner), true);
   const link = path.join(directory, 'link');
   await fs.symlink(directory, link, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(assertNoReparsePath(link, 'directory'), { code: 'pathSymlink' });
   await assert.rejects(protectPrivatePath(link, 'directory'), { code: 'pathSymlink' });
   await assert.rejects(verifyPrivatePath(link, 'directory'), { code: 'pathSymlink' });
+  await assert.rejects(verifyPrivatePaths([...resources, { target: link, kind: 'directory' }], owner), { code: 'pathSymlink' });
   if (owner.kind === 'posix') {
     await fs.chmod(file, 0o644);
     await assert.rejects(verifyPrivatePath(file, 'file'), { code: 'resourceNotPrivate' });
+    await assert.rejects(verifyPrivatePaths(resources, owner), { code: 'resourceNotPrivate' });
     await protectPrivatePath(file, 'file');
     await assert.rejects(verifyPrivatePath(file, 'file', { kind: 'posix', uid: owner.uid + 1 }), { code: 'resourceOwnerMismatch' });
   } else {
@@ -61,6 +65,7 @@ test('native private resources verify owner access and reject links', { timeout:
       // Real unsafe ACLs must still fail after combining native operations.
       await windowsOperation(['$acl = Get-Acl -LiteralPath $data.target', mutation, 'Set-Acl -LiteralPath $data.target -AclObject $acl', '$true | ConvertTo-Json -Compress'].join('\n'), { target: file });
       await assert.rejects(verifyPrivatePath(file, 'file'), { code: 'platformOperationFailed' });
+      await assert.rejects(verifyPrivatePaths(resources, owner), { code: 'platformOperationFailed' });
       await protectPrivatePath(file, 'file');
       assert.equal(await verifyPrivatePath(file, 'file', owner), true);
     }
