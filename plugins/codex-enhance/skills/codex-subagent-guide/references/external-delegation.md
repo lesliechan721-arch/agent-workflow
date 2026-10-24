@@ -42,7 +42,7 @@ node scripts/subagent.mjs start --profile "<profile>" --instructions-file "<inst
 | `completed`、`failed`、`cancelled`、`unknown` | 已有终态；用 wait 取得未读通知，或用 result 取得固定结果与全部未读消息。unknown 不能证明原副作用或远端执行已停止。 |
 | 未收到 `run`，或启动结果不明 | 保留已有启动证据，不因非零退出或回执缺失自动重提任务。 |
 
-**按需读取通信分支：** 准备追加输入或答复过程问题且 `communication: true`，或实际收到过程消息、`INPUT`、`delivery_gaps` 时，读取 [外部任务通信](communication.md)。仅有 true 不要求预读；false/pending 时先沿基础生命周期等待。
+**按需读取通信分支：** 准备追加输入或答复过程问题且 `communication: true`，或实际收到过程消息、投递缺口时，读取 [外部任务通信](communication.md)；仅有 `communication: true` 不要求预读。
 
 ## 等待变化
 
@@ -50,7 +50,7 @@ node scripts/subagent.mjs start --profile "<profile>" --instructions-file "<inst
 node scripts/subagent.mjs wait --run "<run-a>" --run "<run-b>"
 ```
 
-`wait` 同时观察最多 16 个不同 run；任一目标出现新过程消息、状态变化或终态即提前返回，不依次等完各目标。默认等待超时时间为 **10 分钟**；显式 `--timeout-ms N` 允许 `0–1800000` 毫秒。对同一 run 的 `wait` 和 `result` 消费调用应串行进行。
+`wait` 同时观察最多 16 个不同 run；任一目标出现新过程消息、状态变化或终态即提前返回，不依次等完各目标。默认等待超时时间为 ** 10 分钟 **；显式 `--timeout-ms N` 允许 `0–1800000` 毫秒。对同一 run 的 `wait` 和 `result` 消费调用应串行进行。
 
 | wait 回执中的信息 | 含义与后续动作 |
 | --- | --- |
@@ -61,7 +61,7 @@ node scripts/subagent.mjs wait --run "<run-a>" --run "<run-b>"
 | `wait: settled` | 所选 run 均已终态且没有未读事件；仍须检查是否有 deferred 的完整结果尚未取得。 |
 | 部分目标读取失败 | 同次回执可包含其他 run 的有效结果；保留它们，分别处理失败目标的缺口。 |
 
-`wait` 与未加 `--export` 的 `result`，每次 stdout 与 stderr 合计最多 **8 KiB**。调用前采用能完整承载回执的工具路径；工具裁剪意味着交付不完整，已消费的过程消息无法保证重读。维护者的调用预算与链路验收见 [适配器说明](../adapters.md#调用工具合同)。
+`wait` 与未加 `--export` 的 `result`，每次 stdout 与 stderr 合计最多 **8 KiB**；调用前使用能完整接收回执的工具路径。
 
 ## 读取最终结果
 
@@ -72,7 +72,7 @@ node scripts/subagent.mjs result --run "<run>" --export
 
 `result` 只接受一个 `--run`，且 run 已终态、未过期。它按接收顺序把**所有未读过程消息**与最终结果作为一次完整报告输出；随后消费这些过程消息。再次 `result` 只重读最终结果。`wait` 已消费的消息也不在报告中重复。
 
-返回 `resultNotReady` 时继续等待原 run。返回 `resultTooLarge` 时，表示全部未读消息与固定最终结果组成的完整报告超限；本次不消费内容。`--export` 是无参数标志，把完整报告写到 stdout，只取消脚本显示上限，调用工具仍可能裁剪。调用前选择完整接收 stdout 的文件、管道或其他接收端，再按需读取；不能先取得被裁剪的字符串再保存并声称完整。
+返回 `resultNotReady` 时继续等待原 run。返回 `resultTooLarge` 时，表示完整报告超过输出上限；需要使用无参数标志 `--export` 将完整报告输出到 stdout，由调用者选择文件、管道或其他接收端，再按需读取。`--export` 不提高调用工具的输出上限。
 
 检查退出码和诊断，不能仅以 `result: read` 判断整次调用成功。脚本输出失败时不开始消费；`resultConsumeFailed` 表示报告已输出，但消息删除或观察位置更新失败，再读可能出现已输出但尚未删除的消息。工具回执丢失、裁剪或下游保存失败时，若脚本已消费，过程消息无法重读；只可从已经完整保存的副本继续处理。
 

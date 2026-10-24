@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Explicit fake-only native diagnosis. Original assertions and receive,
-// response, process, and late-ready windows remain unchanged.
+// Explicit fake-only native diagnosis. Copies preserve the source assertions
+// and windows; phase instrumentation does not alter production sources.
 const prefix = 'AW_SUBAGENT_WINDOWS_COMMUNICATION_DIAGNOSTICS';
 const emit = (value) => process.stdout.write(`${prefix} ${JSON.stringify(value)}\n`);
 const source = fileURLToPath(new URL('../../plugins/codex-enhance/', import.meta.url));
@@ -16,6 +16,7 @@ const phases = new Set([
   'bridge.responseSaved', 'tool.begin', 'tool.bindingVerified', 'tool.requestSaved', 'tool.responseRead',
   'mcp.handle', 'mcp.writeQueued', 'mcp.writeCompleted', 'store.contextBegin', 'store.contextReady',
   'store.mkdirBegin', 'store.mkdirCreated', 'store.directoryProtected', 'store.directoryError',
+  'store.rootStageCreated', 'store.rootStageProtected', 'store.rootPublishBegin', 'store.rootPublished', 'store.rootPublishError',
   'store.rootVerifyBegin', 'store.rootVerifyEnd', 'store.rootVerifyError', 'cli.error',
 ]);
 
@@ -83,7 +84,11 @@ async function instrument(scripts) {
     diagnosticPhase('store.directoryProtected', { resource });
   } catch (error) { diagnosticPhase('store.directoryError', { resource, code: error?.code }); throw error; }
 }`);
-  store = replaceOnce(store, "  await verifyPrivatePath(context.root, 'directory', context.owner);\n  const id = randomBytes(16).toString('hex');", "  diagnosticPhase('store.rootVerifyBegin');\n  try { await verifyPrivatePath(context.root, 'directory', context.owner); diagnosticPhase('store.rootVerifyEnd'); }\n  catch (error) { diagnosticPhase('store.rootVerifyError', { code: error?.code }); throw error; }\n  const id = randomBytes(16).toString('hex');");
+  store = replaceOnce(store, '      const staging = await fs.mkdtemp(`${context.root}-`);', "      const staging = await fs.mkdtemp(`${context.root}-`);\n      diagnosticPhase('store.rootStageCreated');");
+  store = replaceOnce(store, "        await protectPrivatePath(staging, 'directory');", "        await protectPrivatePath(staging, 'directory');\n        diagnosticPhase('store.rootStageProtected');");
+  store = replaceOnce(store, '        try { await fs.rename(staging, context.root); }', "        try { diagnosticPhase('store.rootPublishBegin'); await fs.rename(staging, context.root); diagnosticPhase('store.rootPublished'); }");
+  store = replaceOnce(store, '          const published = await fs.lstat(context.root)', "          diagnosticPhase('store.rootPublishError', { code: error?.code });\n          const published = await fs.lstat(context.root)");
+  store = replaceOnce(store, "\n  await verifyPrivatePath(context.root, 'directory', context.owner);\n}", "\n  diagnosticPhase('store.rootVerifyBegin');\n  try { await verifyPrivatePath(context.root, 'directory', context.owner); diagnosticPhase('store.rootVerifyEnd'); }\n  catch (error) { diagnosticPhase('store.rootVerifyError', { code: error?.code }); throw error; }\n}");
   await fs.writeFile(storeFile, withHelper(store));
 
   const entryFile = path.join(scripts, 'subagent.mjs');
@@ -127,7 +132,7 @@ async function runCase(plugin, directory, testCase) {
       const child = spawn(process.execPath, ['--test', '--test-reporter=spec', '--test-concurrency=1', `--test-name-pattern=^${testCase.pattern}$`, path.join(plugin, 'scripts', testCase.file)],
         { env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
       let timedOut = false, outputBytes = 0;
-      const watchdog = setTimeout(() => { timedOut = true; child.kill(); }, testCase.file.includes('runtime') ? 420000 : 90000);
+      const watchdog = setTimeout(() => { timedOut = true; child.kill(); }, testCase.watchdogMs ?? (testCase.file.includes('runtime') ? 420000 : 90000));
       const output = (stream, bytes) => {
         outputBytes += bytes.length;
         if (outputBytes <= 262144) stream.write(bytes);
@@ -175,6 +180,7 @@ async function main() {
     const cases = [
       { name: 'receive-allocation', file: 'subagent-bridge-v5.test.mjs', pattern: 'explicit receive and automatic input share allocation without replay' },
       { name: 'mcp-concurrency', file: 'subagent-bridge-v5.test.mjs', pattern: 'generated MCP process supports concurrent receive/send and rejects extra tool identity' },
+      { name: 'root-publication-collisions', file: 'subagent-runtime.test.mjs', pattern: 'Windows root publication preserves a competing existing directory or file', watchdogMs: 150000 },
       ...[1, 2, 3].map((attempt) => ({ name: `late-ready-${attempt}`, file: 'subagent-runtime.test.mjs', pattern: 'late ready capability survives terminal snapshot merging' })),
     ];
     const results = [];

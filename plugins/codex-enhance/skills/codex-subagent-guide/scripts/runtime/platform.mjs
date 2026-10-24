@@ -26,7 +26,7 @@ function isPowerShellModulePath(name) {
 
 function windowsHostEnvironment(environment, input) {
   // A Node process launched by pwsh inherits PowerShell 7 module paths. Windows
-  // PowerShell 5.1 must build its own paths to load its fixed native cmdlets.
+  // PowerShell 5.1 uses only its fixed system modules for native operations.
   return { ...Object.fromEntries(Object.entries(environment).filter(([name]) => !isPowerShellModulePath(name))), ...input };
 }
 
@@ -36,6 +36,7 @@ export async function windowsOperation(source, input = {}) {
   const executable = windowsPowerShell();
   const script = [
     "$ErrorActionPreference = 'Stop'",
+    '[Environment]::SetEnvironmentVariable("PSModulePath", [IO.Path]::Combine($PSHOME, "Modules"), "Process")',
     '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)',
     "$data = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:AW_SUBAGENT_PLATFORM_INPUT)) | ConvertFrom-Json",
     source,

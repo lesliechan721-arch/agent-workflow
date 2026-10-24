@@ -13,10 +13,11 @@ const require = createRequire(import.meta.url);
 const messageScript = require.resolve('../skills/codex-subagent-guide/scripts/message.mjs');
 const mcpScript = require.resolve('../skills/codex-subagent-guide/scripts/message-mcp.mjs');
 const scripts = path.dirname(messageScript);
+const windows = process.platform === 'win32';
 const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const id = (value) => value.toString(16).padStart(32, '0');
-async function until(predicate) {
-  const expires = Date.now() + 3000;
+async function until(predicate, milliseconds = 3000) {
+  const expires = Date.now() + milliseconds;
   while (!await predicate()) { if (Date.now() >= expires) throw new Error('The fixture condition was not reached.'); await pause(10); }
 }
 
@@ -115,20 +116,24 @@ test('explicit receive and automatic input share allocation without replay', asy
   await until(() => automatic.length === 1);
   assert.equal(f.bridge.hasPendingInput(), true);
   assert.equal((await f.invoke('receive', { timeoutMs: 0 })).outcome, 'timeout');
-  diagnostic.note('firstReceiveInvoked', { timeoutMs: 1000 });
-  const receiving = f.invoke('receive', { timeoutMs: 1000 });
-  let firstResponse, firstError;
-  void receiving.then((response) => { firstResponse = response; diagnostic.note('firstReceiveResolved', { response }); },
-    (error) => { firstError = { code: error.code ?? null, name: error.name }; diagnostic.note('firstReceiveRejected', firstError); });
-  await until(async () => (await fs.readdir(path.dirname(f.bindingFile))).some((name) => name.endsWith('.request.json')));
-  diagnostic.note('requestFileVisible');
-  await pause(25);
-  diagnostic.note('duplicateReceiveInvoked');
-  const duplicate = await f.invoke('receive', { timeoutMs: 0 });
-  diagnostic.note('duplicateReceiveResolved', { response: duplicate, firstSettled: firstResponse !== undefined || firstError !== undefined });
-  assert.equal(duplicate.code, 'receiveAlreadyPending', diagnostic.snapshot({ duplicate, firstResponse, firstError }));
+  // Native Windows tool round trips measured 3.8 seconds. Keep both calls
+  // overlapping, and use the public duplicate response to identify the waiter.
+  const timeoutMs = windows ? 10000 : 1000;
+  const responses = new Map();
+  const receivers = [0, 1].map((index) => {
+    diagnostic.note('receiveInvoked', { index, timeoutMs });
+    return f.invoke('receive', { timeoutMs }).then((response) => {
+      responses.set(index, response); diagnostic.note('receiveResolved', { index, response });
+      return { index, response };
+    });
+  });
+  const duplicate = await Promise.race(receivers);
+  assert.equal(duplicate.response.code, 'receiveAlreadyPending', diagnostic.snapshot({ responses: [...responses] }));
+  const receivingIndex = 1 - duplicate.index;
+  assert.equal(responses.has(receivingIndex), false, diagnostic.snapshot({ responses: [...responses] }));
   const second = f.bridge.acceptInput({ id: id(2), text: 'explicit only' });
-  assert.equal((await receiving).text, 'explicit only'); assert.deepEqual(await second, { status: 'submitted' });
+  const received = (await receivers[receivingIndex]).response;
+  assert.equal(received.outcome, 'received'); assert.equal(received.text, 'explicit only'); assert.deepEqual(await second, { status: 'submitted' });
   finishSubmission({ status: 'unknown', code: 'backendUncertain' });
   assert.deepEqual(await first, { status: 'unknown', code: 'backendUncertain' });
   assert.equal(automatic.length, 1); assert.equal(f.bridge.hasPendingInput(), false);
@@ -206,7 +211,8 @@ test('generated MCP process supports concurrent receive/send and rejects extra t
   diagnostic.note('fixtureReady');
   const child = spawn(f.bridge.mcpServer.command, f.bridge.mcpServer.args, { shell: false, cwd: f.root, env: f.env, stdio: ['pipe', 'pipe', 'pipe'] });
   const responses = new Map(); let buffer = ''; let diagnostics = '';
-  const timer = setTimeout(() => { diagnostic.note('mcpWatchdogExpired'); child.kill(); }, 8000);
+  const responseWindow = windows ? 10000 : 3000;
+  const timer = setTimeout(() => { diagnostic.note('mcpWatchdogExpired'); child.kill(); }, windows ? 30000 : 8000);
   t.after(() => { clearTimeout(timer); child.kill(); });
   child.once('exit', (code, signal) => diagnostic.note('mcpExited', { code, signal }));
   child.stderr.setEncoding('utf8'); child.stderr.on('data', (data) => { diagnostics += data; });
@@ -217,21 +223,21 @@ test('generated MCP process supports concurrent receive/send and rejects extra t
   });
   const request = (id, method, params) => { diagnostic.note('mcpRequest', { id, method, tool: params?.name }); return child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`); };
   request(1, 'initialize', { protocolVersion: '2025-03-26' }); request(2, 'tools/list', {});
-  await until(() => responses.has(1) && responses.has(2));
+  await until(() => responses.has(1) && responses.has(2), responseWindow);
   assert.equal(responses.get(1).result.protocolVersion, '2025-03-26');
   assert.deepEqual(responses.get(2).result.tools.map((tool) => tool.name), ['send_parent', 'receive_parent']);
   request(3, 'tools/call', { name: 'receive_parent', arguments: {} });
   request(4, 'tools/call', { name: 'send_parent', arguments: { text: '子问题😀' } });
-  try { await until(() => responses.has(4)); }
+  try { await until(() => responses.has(4), responseWindow); }
   catch (error) {
     diagnostic.note('sendResponseWaitFailed', { childExitCode: child.exitCode, childSignal: child.signalCode, diagnostics });
     throw new Error(`${error.message}\n${diagnostic.snapshot({ responses: [...responses.values()], messages: f.messages, diagnostics })}`, { cause: error });
   }
   assert.equal(responses.has(3), false); assert.deepEqual(f.messages, ['子问题😀']);
   request(5, 'tools/call', { name: 'send_parent', arguments: { text: 'wrong', from: 'other' } });
-  await until(() => responses.has(5)); assert.equal(responses.get(5).result.isError, true); assert.equal(f.messages.length, 1);
+  await until(() => responses.has(5), responseWindow); assert.equal(responses.get(5).result.isError, true); assert.equal(f.messages.length, 1);
   const delivered = f.bridge.acceptInput({ id: id(1), text: '父答复\r\n😀' });
-  await until(() => responses.has(3)); assert.match(responses.get(3).result.content[0].text, /^receive_parent: received\n/); assert.match(responses.get(3).result.content[0].text, /父答复\r\n😀/);
+  await until(() => responses.has(3), responseWindow); assert.match(responses.get(3).result.content[0].text, /^receive_parent: received\n/); assert.match(responses.get(3).result.content[0].text, /父答复\r\n😀/);
   assert.deepEqual(await delivered, { status: 'submitted' });
   request(6, 'tools/call', { name: 'receive_parent', arguments: {} });
   const exited = once(child, 'exit'); child.stdin.end();

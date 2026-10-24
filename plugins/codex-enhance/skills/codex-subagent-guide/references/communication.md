@@ -6,9 +6,9 @@
 node scripts/subagent.mjs send --run "<run>" --text "<msg>"
 ```
 
-较长输入可用 `--text -` 从 stdin 输入。单条消息最多 **4 KiB**；超出单条上限时重新组织必要信息，不自动截断或拆分。
+较长输入可用 `--text -` 从 stdin 输入。 单条消息最多 **4 KiB**；超出单条上限时重新组织必要信息，不自动截断或拆分。
 
-`send` 回执及后续投递通知中的 `delivery` 描述这条输入的投递情况，与 run 的 `state` 分开判断：
+`send` 回执中的 `delivery` 描述这条输入的投递情况，与 run 的 `state` 分开判断：
 
 | 投递情况 | 含义与后续动作 |
 | --- | --- |
@@ -25,3 +25,12 @@ node scripts/subagent.mjs send --run "<run>" --text "<msg>"
 `state: completed` 仍可能有 `delivery_gaps`。即使运行期间已经显示，最终结果里的每条未解决 `notSubmitted` 或 `unknown` 父输入仍要单独核对并随结果交回；不能把成功终态推导成所有追加要求都已提交。
 
 过程消息与通知的**一次消费**、终态后的 `result` 全量领取、`--export` 完整接收和失败后的可重读范围，都按 [外部委派](external-delegation.md) 的等待、结果与回执完整性规则处理；本分支不另设 history 或重传协议。
+
+
+## 收取消息和核对投递缺口
+
+沿用外部委派中的响应式 `wait` 接收消息。
+
+收到 `INPUT` 或 `delivery_gaps` 时，按块外投递状态判断哪些父输入没有得到可靠提交。`state: completed` 仍可能带有 `delivery_gaps`，不能据此认为所有追加要求都已提交。
+
+过程消息只**一次消费**，终态后的 `result` 全量领取。

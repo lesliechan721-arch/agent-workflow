@@ -1,5 +1,6 @@
 param([ValidateSet('run', 'observe', 'stop')][string]$Action = 'run')
 $ErrorActionPreference = 'Stop'
+[Environment]::SetEnvironmentVariable("PSModulePath", [IO.Path]::Combine($PSHOME, "Modules"), "Process")
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 
 # Compile fixed system calls with the Windows .NET runtime. No task text is

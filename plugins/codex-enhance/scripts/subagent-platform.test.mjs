@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -8,6 +9,7 @@ import { performance } from 'node:perf_hooks';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
+import { promisify } from 'node:util';
 import { assertNoReparsePath, currentUserIdentity, protectPrivatePath, resolveSafeCommand, safeSpawn, verifyPrivatePath, windowsOperation } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 import { observeTree, ownsProcess, processTable, stopOwnedTree } from '../skills/codex-subagent-guide/scripts/runtime/processes.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
@@ -125,6 +127,89 @@ test('native Windows job preserves backend module paths and their absence', { sk
     assert.deepEqual(await closed, [0, null], stderr);
     assert.deepEqual(JSON.parse(stdout), expected);
   }
+});
+
+// Test Value Gate: a fresh plugin home has no host module-analysis cache. The
+// real identity, private ACL and Job boundary must initialize in that state.
+test('native Windows isolated home loads platform and job APIs without a host cache', { skip: process.platform !== 'win32', timeout: 120000 }, async (t) => {
+  const directory = await temporary(t);
+  const home = path.join(directory, 'home');
+  const temp = path.join(directory, 'tmp');
+  const appData = path.join(home, 'AppData', 'Roaming');
+  const localAppData = path.join(home, 'AppData', 'Local');
+  const probe = path.join(directory, 'private-probe');
+  await Promise.all([home, temp, appData, localAppData, probe].map((entry) => fs.mkdir(entry, { recursive: true })));
+  const systemKeys = new Set([
+    'systemroot', 'windir', 'systemdrive', 'comspec', 'pathext', 'path',
+    'programfiles', 'programfiles(x86)', 'programw6432',
+    'commonprogramfiles', 'commonprogramfiles(x86)', 'commonprogramw6432',
+  ]);
+  const drive = path.parse(home).root.replace(/[\\/]$/, '');
+  const environment = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([name]) => systemKeys.has(name.toLowerCase()))),
+    HOME: home, USERPROFILE: home, HOMEDRIVE: drive, HOMEPATH: home.slice(drive.length),
+    APPDATA: appData, LOCALAPPDATA: localAppData, TEMP: temp, TMP: temp,
+    AW_SUBAGENT_PROCESS_TOKEN: randomBytes(24).toString('hex'),
+  };
+  const safeCodes = [
+    'platformUnavailable', 'platformOperationFailed', 'userIdentityUnavailable',
+    'pathInvalid', 'pathMissing', 'pathSymlink', 'resourceOwnerMismatch',
+    'resourceNotPrivate', 'executableNotFound', 'executableInvalid',
+    'processScopeUnavailable', 'ERR_ASSERTION', 'unexpectedFailure',
+  ];
+  const safePhases = ['import', 'identity', 'protect', 'verify', 'jobSpawn', 'jobIdentity', 'backendExit', 'backendEnvironment'];
+  const source = [
+    'import assert from "node:assert/strict";',
+    'import { once } from "node:events";',
+    'let phase = "import"; let backendExitCode = null;',
+    'try {',
+    'const api = await import(process.argv[1]);',
+    'phase = "identity";',
+    'const owner = await api.currentUserIdentity();',
+    'assert.equal(owner.kind, "windows");',
+    'phase = "protect";',
+    'await api.protectPrivatePath(process.argv[2]);',
+    'phase = "verify";',
+    'assert.equal(await api.verifyPrivatePath(process.argv[2], "directory", owner), true);',
+    `const backend = ${JSON.stringify('process.stdin.once("data",()=>{process.stdout.write(JSON.stringify({PSModulePath:process.env.PSModulePath,WinPSModulePath:process.env.WinPSModulePath}));process.exit(0)});')};`,
+    'phase = "jobSpawn";',
+    'const child = await api.safeSpawn(process.execPath, ["-e", backend], { cwd: process.argv[2], resourceDirectory: process.argv[2], env: process.env, stdio: ["pipe", "pipe", "pipe"] });',
+    'const closed = once(child, "close");',
+    'let stdout = ""; child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });',
+    'child.stderr.resume();',
+    'phase = "jobIdentity";',
+    'assert.equal((await child.identityReady)?.scope?.kind, "windows-job");',
+    'child.stdin.end("go\\n");',
+    'phase = "backendExit";',
+    'const exit = await closed; backendExitCode = Number.isInteger(exit[0]) ? exit[0] : null;',
+    'assert.deepEqual(exit, [0, null]);',
+    'phase = "backendEnvironment";',
+    'assert.deepEqual(JSON.parse(stdout), {});',
+    'process.stdout.write(JSON.stringify({ identity: true, privateAcl: true, job: true, backendEnvironment: true }));',
+    '} catch (error) {',
+    `const code = ${JSON.stringify(safeCodes)}.includes(error.code) ? error.code : "unexpectedFailure";`,
+    'process.stdout.write(JSON.stringify({ phase, code, backendExitCode }), () => process.exit(1));',
+    '}',
+  ].join('\n');
+  let receipt;
+  try {
+    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', source, pathToFileURL(platformEntry).href, probe], {
+      cwd: directory, env: environment, shell: false, windowsHide: true,
+      timeout: 90000, maxBuffer: 64 * 1024,
+    });
+    receipt = JSON.parse(stdout);
+  } catch (error) {
+    let failure;
+    try { failure = JSON.parse(error.stdout ?? ''); } catch {}
+    const diagnostic = {
+      phase: safePhases.includes(failure?.phase) ? failure.phase : 'launchOrReceipt',
+      code: safeCodes.includes(failure?.code) ? failure.code : (error.killed === true ? 'timeout' : 'unexpectedFailure'),
+      exitCode: Number.isInteger(error.code) ? error.code : null,
+      backendExitCode: Number.isInteger(failure?.backendExitCode) ? failure.backendExitCode : null,
+    };
+    assert.fail(`The native isolated platform and Job probe failed: ${JSON.stringify(diagnostic)}`);
+  }
+  assert.deepEqual(receipt, { identity: true, privateAcl: true, job: true, backendEnvironment: true });
 });
 
 // Test Value Gate: a persisted PID requires its original start identity.

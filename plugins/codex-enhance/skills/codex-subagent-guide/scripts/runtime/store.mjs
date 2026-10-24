@@ -32,10 +32,34 @@ async function privateDirectory(directory) {
   await protectPrivatePath(directory, 'directory');
 }
 
-export async function createRun(context, name, workspace) {
-  try { await privateDirectory(context.root); }
-  catch (error) { if (error.code !== 'EEXIST') throw error; }
+async function prepareRoot(context) {
+  if (process.platform === 'win32') {
+    const existing = await fs.lstat(context.root).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
+    if (!existing) {
+      const staging = await fs.mkdtemp(`${context.root}-`);
+      try {
+        await protectPrivatePath(staging, 'directory');
+        // Windows MoveFileEx refuses an existing destination directory. Publish
+        // only after protection, so another start cannot observe an unsafe root.
+        try { await fs.rename(staging, context.root); }
+        catch (error) {
+          const published = await fs.lstat(context.root).catch((probe) => { if (probe.code === 'ENOENT') return null; throw probe; });
+          if (!published) throw error;
+        }
+      } finally {
+        // Only this invocation's empty staging directory may be removed.
+        await fs.rmdir(staging).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+      }
+    }
+  } else {
+    try { await privateDirectory(context.root); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+  }
   await verifyPrivatePath(context.root, 'directory', context.owner);
+}
+
+export async function createRun(context, name, workspace) {
+  await prepareRoot(context);
   const id = randomBytes(16).toString('hex');
   const key = randomBytes(16).toString('hex');
   const handle = `aw5-${id}-${key}`;
