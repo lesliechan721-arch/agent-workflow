@@ -23,7 +23,8 @@ concurrency:
 
 jobs:
   # Pushes run only the outstanding native regressions. Use [subagent full] in
-  # the final candidate commit to run every test name in exactly one group.
+  # the final candidate commit to partition named tests without omissions.
+  # Top-level file checks still run when each group loads the test files.
   # Groups use the existing formal runner; each runner remains serial.
   native-contracts:
     name: ${{ matrix.os }} / ${{ matrix.group }}
