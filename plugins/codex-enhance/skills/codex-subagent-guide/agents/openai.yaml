@@ -1,6 +1,6 @@
 interface:
   display_name: "Codex Subagent Guide"
-  short_description: "选择执行配置、组织任务上下文并管理子代理生命周期"
+  short_description: "选择执行配置、组织任务上下文并管理子代理的生命周期"
   default_prompt: "使用 $codex-subagent-guide 完成当前委派，沿用已确定的目标、角色、范围和限制。"
 policy:
   allow_implicit_invocation: true

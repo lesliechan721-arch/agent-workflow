@@ -3,7 +3,7 @@ name: codex-subagent-guide
 description: 实际委派、沟通、等待或续接子代理时使用，补足执行配置、上下文隔离和调度约定，包括其它技能要求委派的情况。已有完整调度与生命周期约定、仅讨论是否委派，或执行者只需完成已分配任务时不使用。
 compatibility: Codex 宿主及所选执行器；外部执行需要已安装的 AW 生效配置和对应后端。
 metadata:
-  short-description: 选择执行配置、组织任务上下文并管理子代理生命周期
+  short-description: 选择执行配置、组织任务上下文并管理子代理的生命周期
 ---
 
 # Codex Subagent Guide
