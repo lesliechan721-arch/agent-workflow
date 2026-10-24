@@ -103,33 +103,10 @@ jobs:
           retention-days: 7
 
   plugin-tests:
-    name: Linux x64 / Node 24 / plugin tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      - name: Expose the built CLI for plugin contract tests
-        run: |
-          mkdir -p "$RUNNER_TEMP/aw-cli-bin"
-          printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' \
-            "$(command -v node)" "$GITHUB_WORKSPACE/packages/cli/dist/index.js" \
-            > "$RUNNER_TEMP/aw-cli-bin/aw"
-          chmod 755 "$RUNNER_TEMP/aw-cli-bin/aw"
-          echo "$RUNNER_TEMP/aw-cli-bin" >> "$GITHUB_PATH"
-      - run: pnpm plugin:test --all
+    name: Plugin tests
+    uses: ./.github/workflows/plugin-tests.yml
+    with:
+      ref: ${{ github.sha }}
 
   platform:
     name: ${{ matrix.name }}

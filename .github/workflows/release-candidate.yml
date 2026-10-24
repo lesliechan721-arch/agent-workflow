@@ -33,6 +33,7 @@ jobs:
     timeout-minutes: 90
     outputs:
       completed: ${{ steps.inspect.outputs.completed }}
+      reuse_main_ci: ${{ steps.inspect.outputs.reuse_main_ci }}
       artifact_id: ${{ steps.upload.outputs.artifact-id || steps.inspect.outputs.recovery_artifact }}
       artifact_run: ${{ steps.upload.outputs.artifact-id && github.run_id || steps.inspect.outputs.recovery_run }}
       archive_name: ${{ steps.inspect.outputs.recovery_archive || 'candidate.tar' }}
@@ -151,6 +152,14 @@ jobs:
       - name: Remove temporary authentication
         if: always()
         run: rm -f "$RUNNER_TEMP/aw-release-askpass"
+
+  plugin-tests:
+    needs: prepare
+    if: needs.prepare.outputs.completed != 'true' && needs.prepare.outputs.reuse_main_ci != 'true'
+    name: Plugin tests
+    uses: ./.github/workflows/plugin-tests.yml
+    with:
+      ref: ${{ inputs.tag }}
 
   smoke:
     needs: prepare

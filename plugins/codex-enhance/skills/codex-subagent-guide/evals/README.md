@@ -80,12 +80,14 @@ aw skill eval prepare codex-enhance codex-subagent-guide --suite lifecycle-timeo
 
 续接回归使用真实 helper 先保存一次操作再报告临时服务失败，最终检查原代理续接和 `applied=1`，而非重放 start。该用例覆盖工具执行失败后的有效进度，不证明任意 API 故障或线程损坏均能恢复。独立重审先检查旧版本的一个指定问题，再要求当前完整版本审核；grader 要求读取当前源码并发现旧清单之外的缺陷，同时确认实际使用该用例明确要求的 Astra/xhigh。新交付检查第二个代理的干净上下文、实际读取和新结果。上述用例的 Oracle 修改后须独立审核；没有运行结果时只构成候选验证资产。
 
-## 前台调度与角色边界迁移
+## 运行调度与角色边界迁移
 
-`joint-workflow`、`joint-guide-only`、`executor-instructions` 分别覆盖联合工作流、Guide 单独可用和直接执行者。旧 `worker-instructions` 用例按职责改名，J11/J17 从后台恢复与 revision 拒绝迁移为公开 save/apply、活跃输入固定和同一宿主 session 等待。完整逐项替代、真实支持要求及未验证项见 [ROLE-BOUNDARY.md](ROLE-BOUNDARY.md)。原生调用不经过 resolve/native reference/plan；外部使用必填 profile、prompt 的 v4 前台 run；支持 stdin，显式 instructions-file 可选。外部单 prompt 不证明独立指令通道或 OS 隔离。J16 验证 workspace 拒绝空 --file 和零 adapter 启动。因输入及 Oracle 已改变，必须重新进行独立 EvalAudit 和模型 Eval，旧模型成绩不能沿用。Advisor 的预算以当前任务明确要求为准，不再使用默认 policy。
+`joint-workflow`、`joint-guide-only`、`executor-instructions` 分别覆盖联合工作流、Guide 单独可用和直接执行者。旧 `worker-instructions` 用例按职责改名，J11/J17 从后台恢复与 revision 拒绝迁移为公开 save/apply、活跃输入固定和同一运行句柄 等待。完整逐项替代、真实支持要求及未验证项见 [ROLE-BOUNDARY.md](ROLE-BOUNDARY.md)。原生调用不经过 resolve/native reference/plan；外部使用必填 profile、prompt 的 v5 start/wait/result；支持 stdin，显式 instructions-file 可选。外部单 prompt 不证明独立指令通道或 OS 隔离。J16 验证 workspace 拒绝空 --file 和零 adapter 启动。因输入及 Oracle 已改变，必须重新进行独立 EvalAudit 和模型 Eval，旧模型成绩不能沿用。Advisor 的预算以当前任务明确要求为准，不再使用默认 policy。
 
 公开 synthetic fixture 合同可用以下命令作确定性验证。它要求已编译的 CLI 和插件构建依赖；在临时 staging 准备 Guide，然后使用临时 PATH `aw`、隔离 home 和本地假 Adapter 执行 validate/build/source/install、save 后通过 sync 应用、纯文本消费、J16 输入拒绝和 J12 单次写入。该脚本不 build 全局 CLI，不调用模型，不证明 native 宿主、远端服务或打包分发资格。
 
 ```bash
 node plugins/codex-enhance/skills/codex-subagent-guide/evals/role-boundary-public-contract.mjs --cli packages/cli/dist/index.js
 ```
+
+外部运行材料已迁移到 v5 start/send/wait/result/stop；此次只更新确定性消费者和运行前提，不提供新的模型效果证据。修改后的用例须重新 prepare 并取得独立 EvalAudit，旧模型成绩不适用。

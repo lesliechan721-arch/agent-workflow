@@ -1,5 +1,6 @@
 import { readFiles } from './oracle-reference/files.js';
 import { publicError, validateSelectors } from '../../../skills/codex-subagent-guide/scripts/file-selection/contracts.mjs';
+import { assertOracleFileSelectionSupported } from '../../../skills/codex-subagent-guide/scripts/adapters/oracle-arguments.mjs';
 import { spawn } from 'node:child_process';
 
 // Run the original published Oracle selection module without any CLI session,
@@ -11,6 +12,7 @@ try {
   const request = JSON.parse(input);
   validateSelectors(request.selectors);
   if (process.argv[2]) {
+    assertOracleFileSelectionSupported(request.selectors);
     const guard = spawn(process.execPath, [process.argv[2]], { shell: false, detached: false, stdio: ['pipe', 'ignore', 'pipe'] });
     let diagnostics = '';
     guard.stderr.on('data', (chunk) => { diagnostics += chunk; });
@@ -24,7 +26,8 @@ try {
   process.stdout.write(`${JSON.stringify({ protocolVersion: 1, files: [...new Set(result.map((file) => file.path))].sort() })}\n`);
 } catch (error) {
   let failure;
-  if (error?.code) failure = publicError(error);
+  if (error?.code === 'fileSelectionUnsupported') failure = { code: error.code, exitCode: 1 };
+  else if (error?.code) failure = publicError(error);
   else if (error?.message?.startsWith('Missing file or directory:')) failure = { code: 'fileSelectionPathMissing', exitCode: 2 };
   else if (error?.message === 'No files matched the provided --file patterns.') failure = { code: 'fileSelectionEmpty', exitCode: 2 };
   else failure = { code: 'fileSelectionFailed', exitCode: 1 };

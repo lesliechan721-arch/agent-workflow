@@ -8,6 +8,8 @@
 
 本地和 CI 可以设置 `AW_TEST_WORKERS` 调整普通 Vitest 与插件 Node test 的文件并发。未设置或空值保留入口默认值；合法值是十进制正安全整数，例如 `1`、`2`、`4`。`0`、负数、小数、百分比、空白和非数字会在准备或启动测试前失败。普通 Vitest 的默认上限为 2，最小 worker 为 1；插件 Node test 未设置时保留 Node runner 的默认并发。`pnpm test:workers` 使用真实 Vitest 子进程验证这些边界。
 
+插件 CI 由 `plugin-tests.yml` 同时供 PR/main 和发布候选调用，覆盖 Linux x64、macOS arm64、Windows x64 的 Node 24。Windows 通过 `pnpm plugin:test --all --test-concurrency 1 --test-shard <index/total>` 分为三片；参数直接传给 Node 的文件分片，每个插件及其所选目标平台使用同一分片编号，不按用例标题筛选。所有分片合并才是完整覆盖，单片可能没有分配到小插件的文件。非法分片参数在准备插件前拒绝。Windows 第一片额外运行 Codex Enhance 的真实文件占用与跨卷资格，真实 30 分钟用例仍保持显式启用。分片不拆分单个重型文件，因此 Windows 作业上限为 90 分钟；它是失败观察上限，不是固定等待。
+
 Windows x64 CI 的普通 integration 分为三个独立 runner 的 Vitest shard，每片默认使用 1 worker；仓库变量 `AW_TEST_WORKERS` 的显式配置优先。第 3 片同时运行完整的串行 integration process-lifecycle、命令诊断与超时收尾回归和 pack smoke，全部分片成功才满足发布门禁。其他平台保留入口默认值。
 
 Linux Node 22/24 的普通测试按 Node 版本和 unit/integration 分为四个独立 runner。每个 runner 正式 build 后运行对应入口；unit 入口包含三个 package 的单元测试及 `test:workers`，随后运行 `test:types`；integration 入口包含普通 integration 和串行 process-lifecycle。各入口保留原有 worker 约束。
