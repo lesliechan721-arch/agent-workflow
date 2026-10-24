@@ -56,6 +56,7 @@
         "./scripts/subagent-protocol-v5.test.mjs",
         "./scripts/subagent-bridge-v5.test.mjs",
         "./scripts/subagent-platform.test.mjs",
+        "./scripts/subagent-platform-failures.test.mjs",
         "./scripts/file-selection.test.mjs",
         "./scripts/adapters-v5.test.mjs"
       ]

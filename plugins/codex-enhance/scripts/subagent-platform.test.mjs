@@ -32,7 +32,9 @@ async function temporary(t, beforeRemove = async () => {}) {
 // run state. Windows executes the ACL implementation, never a chmod substitute.
 test('native private resources verify owner access and reject links', { timeout: 40000 }, async (t) => {
   const directory = await temporary(t);
+  const identityStarted = performance.now();
   const owner = await currentUserIdentity();
+  if (process.platform === 'win32') t.diagnostic(`Windows identity query: ${Math.round(performance.now() - identityStarted)} ms (inherited home)`);
   assert.equal(owner.kind, process.platform === 'win32' ? 'windows' : 'posix');
   await protectPrivatePath(directory);
   assert.equal(await verifyPrivatePath(directory, 'directory', owner), true);
@@ -161,11 +163,15 @@ test('native Windows isolated home loads platform and job APIs without a host ca
   const source = [
     'import assert from "node:assert/strict";',
     'import { once } from "node:events";',
+    'const { safeError } = await import(new URL("./contracts.mjs", process.argv[1]));',
     'let phase = "import"; let backendExitCode = null;',
+    'let identityElapsedMs = null;',
     'try {',
     'const api = await import(process.argv[1]);',
     'phase = "identity";',
+    'const identityStarted = performance.now();',
     'const owner = await api.currentUserIdentity();',
+    'identityElapsedMs = Math.round(performance.now() - identityStarted);',
     'assert.equal(owner.kind, "windows");',
     'phase = "protect";',
     'await api.protectPrivatePath(process.argv[2]);',
@@ -185,10 +191,11 @@ test('native Windows isolated home loads platform and job APIs without a host ca
     'assert.deepEqual(exit, [0, null]);',
     'phase = "backendEnvironment";',
     'assert.deepEqual(JSON.parse(stdout), {});',
-    'process.stdout.write(JSON.stringify({ identity: true, privateAcl: true, job: true, backendEnvironment: true }));',
+    'process.stdout.write(JSON.stringify({ identity: true, privateAcl: true, job: true, backendEnvironment: true, identityElapsedMs }));',
     '} catch (error) {',
     `const code = ${JSON.stringify(safeCodes)}.includes(error.code) ? error.code : "unexpectedFailure";`,
-    'process.stdout.write(JSON.stringify({ phase, code, backendExitCode }), () => process.exit(1));',
+    'const message = code === "platformOperationFailed" ? safeError(error).message : undefined;',
+    'process.stdout.write(JSON.stringify({ phase, code, backendExitCode, message }), () => process.exit(1));',
     '}',
   ].join('\n');
   let receipt;
@@ -206,10 +213,14 @@ test('native Windows isolated home loads platform and job APIs without a host ca
       code: safeCodes.includes(failure?.code) ? failure.code : (error.killed === true ? 'timeout' : 'unexpectedFailure'),
       exitCode: Number.isInteger(error.code) ? error.code : null,
       backendExitCode: Number.isInteger(failure?.backendExitCode) ? failure.backendExitCode : null,
+      message: typeof failure?.message === 'string' && Buffer.byteLength(failure.message) <= 768 ? failure.message : undefined,
     };
     assert.fail(`The native isolated platform and Job probe failed: ${JSON.stringify(diagnostic)}`);
   }
-  assert.deepEqual(receipt, { identity: true, privateAcl: true, job: true, backendEnvironment: true });
+  const { identityElapsedMs, ...checks } = receipt;
+  assert.deepEqual(checks, { identity: true, privateAcl: true, job: true, backendEnvironment: true });
+  assert.ok(Number.isSafeInteger(identityElapsedMs) && identityElapsedMs >= 0);
+  t.diagnostic(`Windows identity query: ${identityElapsedMs} ms (isolated home)`);
 });
 
 // Test Value Gate: a persisted PID requires its original start identity.

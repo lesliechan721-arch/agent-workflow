@@ -34,6 +34,9 @@ function windowsHostEnvironment(environment, input) {
 // are JSON data in an environment value, never executable command text.
 export async function windowsOperation(source, input = {}) {
   const executable = windowsPowerShell();
+  const timeoutMs = 15000;
+  const started = performance.now();
+  let phase = 'execute';
   const script = [
     "$ErrorActionPreference = 'Stop'",
     '[Environment]::SetEnvironmentVariable("PSModulePath", [IO.Path]::Combine($PSHOME, "Modules"), "Process")',
@@ -43,12 +46,29 @@ export async function windowsOperation(source, input = {}) {
   ].join('\n');
   try {
     const { stdout } = await execFileAsync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
-      shell: false, windowsHide: true, timeout: 15000, maxBuffer: 8 * 1024 * 1024,
+      shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024,
       env: windowsHostEnvironment(process.env, { AW_SUBAGENT_PLATFORM_INPUT: Buffer.from(JSON.stringify(input)).toString('base64') }),
     });
+    phase = 'parse';
     return stdout.trim() ? JSON.parse(stdout) : null;
-  } catch {
-    fail('platformOperationFailed', 'A native Windows identity, access-control, or process operation failed.');
+  } catch (error) {
+    const systemCode = ['ENOENT', 'EACCES', 'EPERM', 'ENOMEM', 'EAGAIN', 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'].includes(error.code) ? error.code : null;
+    const reason = phase === 'parse' ? 'invalidJson'
+      : systemCode === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'outputLimit'
+        : error.killed === true ? 'timeout'
+          : systemCode !== null ? 'launchFailed'
+            : Number.isSafeInteger(error.code) ? 'processExit' : 'executionFailed';
+    // Native errors contain the encoded command, input and raw output. Keep only
+    // fixed categories and scalar process evidence in the public error message.
+    const diagnostic = {
+      operation: 'windowsOperation', phase, reason,
+      elapsedMs: Math.round(performance.now() - started), timeoutMs,
+      exitCode: Number.isSafeInteger(error.code) ? error.code : null,
+      systemCode,
+      signal: ['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGABRT', 'SIGBREAK'].includes(error.signal) ? error.signal : null,
+      killed: error.killed === true,
+    };
+    fail('platformOperationFailed', `A native Windows identity, access-control, or process operation failed. ${JSON.stringify(diagnostic)}`);
   }
 }
 
@@ -61,7 +81,12 @@ export async function currentUserIdentity() {
     }
     if (!['darwin', 'linux'].includes(process.platform) || typeof process.getuid !== 'function') fail('platformUnsupported', 'External runs require macOS, Linux, or native Windows.');
     return { kind: 'posix', uid: process.getuid() };
-  })();
+  })().catch((error) => {
+    // Share an in-flight read and cache success, but let a later caller recover
+    // from a failed native query. The original callers still receive the error.
+    userIdentity = undefined;
+    throw error;
+  });
   return { ...await userIdentity };
 }
 
