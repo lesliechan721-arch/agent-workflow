@@ -1,12 +1,12 @@
 import path from 'node:path';
 import { PROFILE_KEYS, cleanString, fail } from './contracts.mjs';
-import { checkCodexArguments } from '../adapters/codex-v4.mjs';
+import { checkCodexArguments } from '../adapters/codex-v5.mjs';
 import { checkOracleArguments } from '../adapters/oracle-arguments.mjs';
 
 export const ADAPTERS = Object.freeze({
-  codex: { mode: 'workspace', entrypoint: 'codex-v4.mjs' },
-  'claude-code': { mode: 'workspace', entrypoint: 'claude-code-v4.mjs' },
-  oracle: { mode: 'bundle', entrypoint: 'oracle-v4.mjs' },
+  codex: { mode: 'workspace', entrypoint: 'codex-v5.mjs' },
+  'claude-code': { mode: 'workspace', entrypoint: 'claude-code-v5.mjs' },
+  oracle: { mode: 'bundle', entrypoint: 'oracle-v5.mjs' },
 });
 const variableName = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const protectedVariable = (key) => key.startsWith('AW_PLUGIN_') || key.startsWith('AW_SUBAGENT_') || key === 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
@@ -42,7 +42,7 @@ export function selectExecution(snapshot, request) {
   if (matches.length !== 1) fail('executorUnknown', 'The selected executor is missing or ambiguous. Correct the registry and sync.', ['config', 'sync']);
   const executor = matches[0];
   const allowed = ['key', 'title', 'adapter', 'mode', 'command', 'entrypoint', 'args', 'env', 'envFrom', 'oracleEngine', 'codexProfile'];
-  if (Object.keys(executor).some((key) => !allowed.includes(key)) || !cleanString(executor.title) || !['codex', 'claude-code', 'oracle', 'custom'].includes(executor.adapter)) fail('executorInvalid', 'Update the executor to the v4 adapter configuration and sync.', ['config', 'sync']);
+  if (Object.keys(executor).some((key) => !allowed.includes(key)) || !cleanString(executor.title) || !['codex', 'claude-code', 'oracle', 'custom'].includes(executor.adapter)) fail('executorInvalid', 'Update the executor to the current adapter configuration and sync.', ['config', 'sync']);
   if (Object.hasOwn(executor, 'oracleEngine') && (executor.adapter !== 'oracle' || !['api', 'browser'].includes(executor.oracleEngine))) fail('executorInvalid', 'oracleEngine is only available for Oracle and must be api or browser.', ['config', 'sync']);
   const codexProfile = executor.codexProfile;
   if (Object.hasOwn(executor, 'codexProfile') && (executor.adapter !== 'codex' || typeof codexProfile !== 'string' || !codexProfile.trim() || codexProfile.includes('\0') || !codexProfile.isWellFormed() || [...codexProfile].length > 4096)) fail('executorInvalid', 'codexProfile is only available for Codex and must be a nonempty profile name of at most 4096 characters.', ['config', 'sync']);

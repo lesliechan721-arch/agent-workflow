@@ -1,9 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { constants } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { LIMITS, fail } from './contracts.mjs';
+import { protectPrivatePaths } from './platform.mjs';
 
-const decoder = new TextDecoder('utf-8', { fatal: true });
+const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 export async function safePath(target, kind = 'file', { allowExecutableSymlink = false } = {}) {
   if (!path.isAbsolute(target) || target.includes('\0') || path.normalize(target) !== target) fail('pathInvalid', 'A runtime path must be absolute and normalized.');
@@ -82,9 +84,26 @@ export async function executablePaths(command, entrypoint) {
 }
 
 export async function atomicJson(target, value) {
-  const temporary = `${target}.${process.pid}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-  await fs.rename(temporary, target);
+  await atomicJsonFiles([{ target, value }]);
+}
+
+export async function atomicJsonFiles(entries) {
+  const created = [];
+  try {
+    for (const { target, value } of entries) {
+      const temporary = `${target}.${randomBytes(8).toString('hex')}.tmp`;
+      const handle = await fs.open(temporary, 'wx', 0o600);
+      created.push({ target, temporary });
+      try { await handle.writeFile(`${JSON.stringify(value)}\n`); }
+      finally { await handle.close(); }
+    }
+    await protectPrivatePaths(created.map(({ temporary }) => ({ target: temporary, kind: 'file' })));
+    // Publication remains atomic per file. A later rename failure does not
+    // roll back files that were already published successfully.
+    for (const { target, temporary } of created) await fs.rename(temporary, target);
+  } finally {
+    await Promise.all(created.map(({ temporary }) => fs.unlink(temporary).catch((error) => { if (error.code !== 'ENOENT') throw error; })));
+  }
 }
 
 export async function readJson(target, maximumBytes = LIMITS.resultBytes) {

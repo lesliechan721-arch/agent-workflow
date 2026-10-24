@@ -6518,7 +6518,7 @@ async function resolve(input, context) {
     const ignores = await ignoreSets(input.workspace, context);
     candidates = await collect(selection.patterns, selection.excludes, input.workspace, context);
     const dot = selection.patterns.some((pattern) => pattern.split("/").some((segment) => segment.startsWith(".") && segment.length > 1));
-    candidates = candidates.filter((file) => !ignores.some(({ directory, patterns }) => file.startsWith(directory) && patterns.some((rule) => ignoreRuleMatches(path2.relative(directory, file) || path2.basename(file), rule)))).filter((file) => dot || !path2.basename(file).startsWith("."));
+    candidates = candidates.filter((file) => !ignores.some(({ directory, patterns }) => file.startsWith(directory) && patterns.some((rule) => ignoreRuleMatches((path2.relative(directory, file) || path2.basename(file)).split(path2.sep).join("/"), rule)))).filter((file) => dot || !path2.basename(file).startsWith("."));
   }
   const allowed = [...selection.files, ...selection.directories.filter((directory) => defaults.has(path2.basename(directory)))];
   const markers = /* @__PURE__ */ new Map();

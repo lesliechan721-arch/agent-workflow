@@ -1,6 +1,6 @@
 ---
 name: codex-advisor
-description: 需要组织技术第二意见时使用：用户或上游明确安排咨询，或已授权任务出现会影响行动的重要判断卡点。限定问题、取得只读意见并核验重要建议；普通定位、小修改和可直接验证的事实不要使用。通过 codex-subagent-guide 委派咨询。
+description: 需要组织技术第二意见时使用：用户或上游明确安排咨询，或已授权任务出现会影响行动的重要判断卡点。限定问题、取得只读意见并核验重要建议；普通定位、小修改和可直接验证的事实不要使用。使用 codex-subagent-guide 委派咨询。
 compatibility: Codex 宿主，依赖可用的 codex-subagent-guide 和当前安装的咨询配置及执行角色。
 metadata:
   short-description: 在已有判断卡点下组织有界技术第二意见并核验会改变行动的建议
@@ -20,7 +20,7 @@ metadata:
 
 ## 咨询与采用
 
-使用 codex-subagent-guide 委派咨询。executor 为 native 使用 `codex-advisor` 角色（已附加角色指令，不要重复添加）；不是 native 使用角色指令 `assets/advisor-instructions.md`。
+委派时使用 `codex-subagent-guide` 的约定。native 使用 `codex-advisor` 角色，已有角色指令不重复附加；外部执行使用 [顾问指令](assets/advisor-instructions.md)。
 
 对会改变行动的重要建议查证其材料、版本和依据，并在父任务授权内安排相称验证。明确采用、不采用或仍需补证的部分；建议代码和候选 patch 只有实际应用并验证后才能作为完成结果。
 

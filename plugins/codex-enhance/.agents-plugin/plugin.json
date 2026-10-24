@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "codex-enhance",
-  "version": "0.2.0-beta.10",
+  "version": "0.2.0-beta.11",
   "description": "在 Codex 中组织已授权的通用委派、只读技术第二意见和大范围事实调查。",
   "marketplace": {
     "category": "workflow",
