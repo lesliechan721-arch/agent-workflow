@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { atomicJson, readJson, safePath } from './files.mjs';
 import { fail, STATES, validateResult } from './contracts.mjs';
-import { currentUserIdentity, protectPrivatePath, verifyPrivatePath, assertNoReparsePath } from './platform.mjs';
+import { currentUserIdentity, protectPrivatePath, verifyPrivatePath, assertNoReparsePath, windowsOperation } from './platform.mjs';
 import { processTable } from './processes.mjs';
 
 export const CACHE_MS = 3600000;
@@ -39,10 +39,11 @@ async function prepareRoot(context) {
       const staging = await fs.mkdtemp(`${context.root}-`);
       try {
         await protectPrivatePath(staging, 'directory');
-        // Windows MoveFileEx refuses an existing destination directory. Publish
-        // only after protection, so another start cannot observe an unsafe root.
-        try { await fs.rename(staging, context.root); }
-        catch (error) {
+        // .NET Framework Directory.Move uses MoveFile without replacement.
+        // Publish the protected root only if no file or directory occupies it.
+        try {
+          await windowsOperation('[IO.Directory]::Move($data.source, $data.destination); $true | ConvertTo-Json -Compress', { source: staging, destination: context.root });
+        } catch (error) {
           const published = await fs.lstat(context.root).catch((probe) => { if (probe.code === 'ENOENT') return null; throw probe; });
           if (!published) throw error;
         }

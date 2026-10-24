@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { createRun, observeRun, openRun, storeContext, workerAlive } from '../skills/codex-subagent-guide/scripts/runtime/store.mjs';
-import { protectPrivatePath } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
+import { protectPrivatePath, verifyPrivatePath } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
 const require = createRequire(import.meta.url);
@@ -493,7 +493,7 @@ test('unsupported communication rejects send and explicit deadline stops one bac
 
 // Test Value Gate: atomic Windows root publication must not replace a competing
 // private directory, alter an unsafe directory, or delete a foreign file. Run
-// the real native rename at the collision boundary; POSIX rename differs here.
+// the real native move at the collision boundary; POSIX rename differs here.
 test('Windows root publication preserves a competing existing directory or file', { skip: !windows, timeout: 120000 }, async (t) => {
   const temporary = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-root-publication-test-'));
   t.after(() => fs.rm(temporary, { recursive: true, force: true }));
@@ -501,35 +501,46 @@ test('Windows root publication preserves a competing existing directory or file'
     const isolated = path.join(temporary, kind);
     await fs.mkdir(isolated);
     const context = await storeContext({ temporaryRoot: isolated });
-    const rename = fs.rename;
-    let inserted, nativeFailure;
-    fs.rename = async (source, destination, ...options) => {
-      if (destination !== context.root) return rename(source, destination, ...options);
+    const mkdtemp = fs.mkdtemp; const rmdir = fs.rmdir;
+    let staging, inserted, sourceRetained = false;
+    fs.mkdtemp = async (prefix, ...options) => {
+      const created = await mkdtemp(prefix, ...options);
+      if (prefix !== `${context.root}-`) return created;
       assert.equal(inserted, undefined);
-      if (kind === 'file') await fs.writeFile(destination, 'Foreign fixture content.');
+      staging = created;
+      if (kind === 'file') await fs.writeFile(context.root, 'Foreign fixture content.');
       else {
-        await fs.mkdir(destination);
-        if (kind === 'privateDirectory') await protectPrivatePath(destination, 'directory');
+        await fs.mkdir(context.root);
+        if (kind === 'privateDirectory') await protectPrivatePath(context.root, 'directory');
       }
-      inserted = await fs.lstat(destination, { bigint: true });
-      try { return await rename(source, destination, ...options); }
-      catch (error) { nativeFailure = error.code; throw error; }
+      inserted = await fs.lstat(context.root, { bigint: true });
+      return created;
+    };
+    fs.rmdir = async (directory, ...options) => {
+      if (directory === staging) {
+        const unpublished = await fs.lstat(directory).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
+        sourceRetained = unpublished?.isDirectory() === true;
+      }
+      return rmdir(directory, ...options);
     };
     try {
       if (kind === 'privateDirectory') {
         const run = await createRun(context, 'competing-root', temporary);
         assert.equal(run.meta.name, 'competing-root');
       } else await assert.rejects(createRun(context, 'foreign-root', temporary));
-    } finally { fs.rename = rename; }
+    } finally { fs.mkdtemp = mkdtemp; fs.rmdir = rmdir; }
     assert.ok(inserted, 'The publication collision was not exercised.');
-    assert.equal(typeof nativeFailure, 'string', 'Native rename replaced an existing resource.');
+    assert.equal(sourceRetained, true, 'Native publication moved the source over an existing resource.');
     const preserved = await fs.lstat(context.root, { bigint: true });
     assert.equal(preserved.dev, inserted.dev); assert.equal(preserved.ino, inserted.ino);
     if (kind === 'file') assert.equal(await fs.readFile(context.root, 'utf8'), 'Foreign fixture content.');
-    if (kind === 'inheritedDirectory') assert.deepEqual(await fs.readdir(context.root), []);
+    if (kind === 'inheritedDirectory') {
+      assert.deepEqual(await fs.readdir(context.root), []);
+      await assert.rejects(verifyPrivatePath(context.root, 'directory', context.owner), 'An unsafe existing directory was taken over.');
+    }
     assert.deepEqual(await fs.readdir(isolated), [path.basename(context.root)], 'An unpublished staging directory was left behind.');
     if (process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1') {
-      t.diagnostic(`AW_SUBAGENT_COMMUNICATION_TEST ${JSON.stringify({ phase: 'rootPublicationCollision', kind, nativeFailure, preserved: true })}`);
+      t.diagnostic(`AW_SUBAGENT_COMMUNICATION_TEST ${JSON.stringify({ phase: 'rootPublicationCollision', kind, publicationRefused: sourceRetained, preserved: true })}`);
     }
   }
 });
