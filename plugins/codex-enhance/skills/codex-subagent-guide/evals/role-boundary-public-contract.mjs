@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { parseGuideObservation } from './fixtures/role-boundary-actions.mjs';
+import { guide } from './fixtures/role-boundary-actions.mjs';
 
 // Test Value Gate: the unit fixture cannot prove that the public AW validator,
 // installer, installed reader and text consumer agree on the migrated contract.
@@ -67,19 +67,25 @@ async function fixture(root, name, baseEnv, preparedGuide) {
   await mkdir(workspace, { recursive: true });
   await cp(preparedGuide, guide, { recursive: true });
   const capture = path.join(location, 'adapter-calls.jsonl'), entrypoint = path.join(location, 'adapter.mjs');
-  await writeFile(entrypoint, `import { appendFile, writeFile, rename } from 'node:fs/promises';
-const chunks=[];for await(const chunk of process.stdin)chunks.push(chunk);
-const request=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  await writeFile(entrypoint, `import { appendFile } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
+const lines=createInterface({input:process.stdin});
+lines.once('line',async(line)=>{
+const request=JSON.parse(line);
 await appendFile(${JSON.stringify(capture)},JSON.stringify({request,environmentValue:process.env.FIXTURE_TARGET})+'\\n');
-const result={protocolVersion:4,state:'completed',generationStarted:true,backendExitCode:0,text:'# Local fixture result\\n\\nThe public v4 contract reached one local fake Adapter.\\n'};
-const target=process.env.AW_SUBAGENT_RESULT_FILE;await writeFile(target+'.new',JSON.stringify(result));await rename(target+'.new',target);
+const emit=(event)=>process.stdout.write(JSON.stringify({protocolVersion:5,...event})+'\\n');
+emit({type:'ready',communicationSupported:false});
+emit({type:'closing',reason:'completed'});
+emit({type:'result',state:'completed',generationStarted:true,backendExitCode:0,text:'# Local fixture result\\n\\nThe public v5 contract reached one local fake Adapter.\\n'});
+process.exit(0);
+});
 `);
   const native = { executor: 'native', model: 'fixture-native-model', reasoningEffort: 'medium' };
   const values = Object.fromEntries(keys.filter((key) => key !== 'subagentCommands').map((key) => [key, { ...native }]));
   values.advisorProfile = { executor: 'fixture-external' }; // Omission must reach backend defaults unchanged.
   values.subagentCommands = [{ key: 'fixture-external', title: 'Explicit local contract Adapter', adapter: 'custom', mode: 'workspace',
     command: process.execPath, entrypoint, envFrom: { FIXTURE_TARGET: 'PUBLIC_FIXTURE_VALUE' } },
-  { key: 'fixture-builtin', title: 'Preview only builtin', adapter: 'codex' }];
+  { key: 'fixture-builtin', title: 'Registered builtin', adapter: 'codex' }];
   await writeFile(path.join(guide, '.aw-runtime-config.json'), JSON.stringify({ schemaVersion: 2, kind: 'aw-runtime-config',
     installedIdentity: { pluginId: 'explicit-local-fixture/codex-enhance' }, allowedKeys: keys, resourceRoot: guide, effectiveValues: values }));
   const advisor = path.join(workspace, '.agents', 'skills', 'codex-advisor', 'assets');
@@ -89,9 +95,9 @@ const target=process.env.AW_SUBAGENT_RESULT_FILE;await writeFile(target+'.new',J
 }
 async function installedRun(fixture, args, input) {
   const installed = await state(fixture);
-  const result = await run(process.execPath, [path.join(installed.guideRoot, 'scripts', 'subagent.mjs'), 'run', ...args],
-    { env: fixture.env, cwd: installed.project, input });
-  return { ...result, observed: parseGuideObservation(result.stdout, result.stderr, result.exitCode) };
+  const result = await guide(installed.project, ['start', ...args],
+    { root: installed.guideRoot, env: fixture.env, input });
+  return { exitCode: result.exitCode, stdout: result.value.stdout, stderr: result.value.stderr, observed: result.value };
 }
 
 async function main() {
@@ -118,18 +124,18 @@ async function main() {
     assert.equal(schema.config.schemaVersion, 4);
     assert.deepEqual(installed.effectiveValues.advisorProfile, { executor: 'fixture-external' });
     assert.equal(installed.effectiveValues.subagentCommands.find((item) => item.adapter === 'codex').mode, undefined);
-    checks.push('public v4 validate/build/source/install; optional external model and fixed builtin mode');
+    checks.push('public Config Definition v4 validate/build/source/install; optional external model and fixed builtin mode');
 
     const prompt = 'The complete task-only prompt.\n';
     const original = await installedRun(updated, ['--profile', 'advisorProfile', '--prompt', '-'], prompt);
     assert.equal(original.exitCode, 0, original.stderr); assert.equal(original.observed.state, 'completed');
-    assert.match(original.stdout, /^COMPLETED · /); assert.match(original.stdout, /# Local fixture result/); assert.equal(original.stderr, '');
+    assert.match(original.stdout, /^result: read\n/); assert.match(original.stdout, /# Local fixture result/); assert.equal(original.stderr, '');
     let observed = await calls(updated);
-    assert.equal(observed.length, 1); assert.equal(observed[0].request.protocolVersion, 4);
+    assert.equal(observed.length, 1); assert.equal(observed[0].request.protocolVersion, 5);
     assert.equal(observed[0].request.prompt, prompt); assert.equal(observed[0].request.execution.model, undefined);
     assert.equal(observed[0].request.execution.reasoningEffort, undefined); assert.equal(observed[0].environmentValue, 'explicit-local-value');
     assert.equal(observed[0].request.fileSelectors, undefined); assert.equal(observed[0].request.fileResolver, undefined);
-    checks.push('installed provenance reader, stdin and pure text consumer reach one fake v4 Adapter');
+    checks.push('installed provenance reader, stdin and framed text consumer reach one fake v5 Adapter');
 
     const transitioned = await action(updated, { operation: 'apply-instructions' });
     assert.deepEqual(transitioned.evidence.before, transitioned.evidence.saved);
@@ -139,7 +145,7 @@ async function main() {
     assert.equal(fresh.exitCode, 0, fresh.stderr);
     observed = await calls(updated); assert.equal(observed.length, 2);
     assert.equal(observed[0].request.prompt, prompt);
-    assert.equal(observed[1].request.prompt, `执行指令：\n${transitioned.evidence.instructionsAfter}\n\n本次任务：\n${prompt}`);
+    assert.equal(observed[1].request.prompt, `Instructions:\n${transitioned.evidence.instructionsAfter}\n\nTask:\n${prompt}`);
     await mkdir(path.join(updated.workspace, 'provided'), { recursive: true });
     await writeFile(path.join(updated.workspace, 'provided', 'original-result.txt'), original.stdout);
     await writeFile(path.join(updated.workspace, 'provided', 'new-result.txt'), fresh.stdout);
@@ -147,7 +153,7 @@ async function main() {
     assert.equal(foreground.evidence.observation, 'captured');
     assert.equal(foreground.evidence.results.original.state, 'completed');
     assert.equal(foreground.evidence.results.new.state, 'completed');
-    checks.push('public save leaves active values unchanged; apply updates next prompt; foreground text artifacts are readable');
+    checks.push('public save leaves active values unchanged; apply updates next prompt; run result artifacts are readable');
 
     const invalid = await fixture(root, 'invalid-input', env, preparedGuide);
     const rejected = await action(invalid, { operation: 'invalid-workspace-files' });
@@ -160,7 +166,7 @@ async function main() {
     const task = 'Write probe/once.txt once, then stop with an unknown completion state.';
     const partial = await action(fault, { operation: 'single-write-disconnect', task,
       initialRun: { access: 'workspace-write', allowedWorkspaceChanges: ['probe/once.txt'], operation: task, counterOwner: 'explicit-local-contract' } });
-    assert.equal(partial.evidence.result.state, 'unknown'); assert.equal(partial.evidence.result.exitCode, 1);
+    assert.equal(partial.evidence.result.state, 'unknown'); assert.equal(partial.evidence.result.exitCode, 0);
     assert.deepEqual(partial.evidence.counter, { submissions: 1, writes: 1 }); assert.deepEqual(await calls(fault), []);
     checks.push('J12 public fault control performs one write and text consumer preserves unknown');
     await assert.rejects(readFile(forbidden), { code: 'ENOENT' });

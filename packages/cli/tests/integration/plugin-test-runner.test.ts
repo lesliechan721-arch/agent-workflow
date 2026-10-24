@@ -191,6 +191,86 @@ afterEach(async () => {
 });
 
 describe('plugin script test runner', () => {
+  // Test Value Gate: CI file shards must cover every installed test exactly
+  // once, including non-ASCII names, and preserve a selected test's failure.
+  it('runs disjoint Node file shards without omissions and propagates failures', async () => {
+    const repoRoot = await makeTempRepo();
+    await configureTestManifest({
+      repoRoot,
+      products: ['CODEX'],
+      testEntries: ['./scripts/shard-*.test.mjs'],
+    });
+    const marker = path.join(pluginRoot(repoRoot), 'shard-events');
+    for (let id = 0; id < 5; id += 1) {
+      await writeNodeTestFile(repoRoot, `shard-${id}.test.mjs`, [
+        'import test from "node:test";',
+        'import fs from "node:fs";',
+        'import path from "node:path";',
+        `test("中文与标点 / case ${id}", () => {`,
+        '  const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        `  fs.appendFileSync(path.join(context.sourceRoot, "shard-events"), "${id}\\n");`,
+        `  if (${id} === 0 && fs.existsSync(path.join(context.sourceRoot, "fail-selected"))) throw new Error("selected shard failure");`,
+        '});',
+      ].join('\n'));
+    }
+    for (const fail of [false, true]) {
+      await fs.remove(marker);
+      if (fail) await fs.writeFile(path.join(pluginRoot(repoRoot), 'fail-selected'), '');
+      let failures = 0;
+      let completed = 0;
+      for (let index = 1; index <= 3; index += 1) {
+        const output = captureOutput();
+        const args = index === 1 ? ['--test-shard', '1/3'] : [`--test-shard=${index}/3`];
+        const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'codex', ...args], {
+          repoRoot,
+          env: { ...process.env, AW_TEST_WORKERS: '1' },
+          stdout: output.stdout,
+          stderr: output.stderr,
+        });
+        if (exitCode !== 0) {
+          failures += 1;
+          expect(output.readStdout()).toContain('selected shard failure');
+        } else {
+          expect(output.readStdout()).toContain(`passed (test shard ${index}/3)`);
+        }
+        const events = (await fs.readFile(marker, 'utf8')).trim().split('\n');
+        expect(events.length).toBeGreaterThan(completed);
+        completed = events.length;
+      }
+      expect(failures).toBe(fail ? 1 : 0);
+      expect((await fs.readFile(marker, 'utf8')).trim().split('\n').sort()).toEqual(['0', '1', '2', '3', '4']);
+    }
+    // --all includes plugins with fewer files than shards. An empty shard must
+    // not fall back to executing their full suite or report full-file coverage.
+    await fs.remove(marker);
+    for (let id = 1; id < 5; id += 1) await fs.remove(pluginScriptPath(repoRoot, `shard-${id}.test.mjs`));
+    const output = captureOutput();
+    expect(await runPluginScriptTests(['git-commit', '--platform', 'codex', '--test-shard', '3/3'], {
+      repoRoot,
+      env: { ...process.env, AW_TEST_WORKERS: '1' },
+      stdout: output.stdout,
+      stderr: output.stderr,
+    })).toBe(0);
+    expect(await fs.pathExists(marker)).toBe(false);
+    expect(output.readStdout()).toContain('passed (test shard 3/3)');
+  });
+
+  it('rejects malformed file shards before preparing a plugin', async () => {
+    for (const value of [undefined, '', '0/3', '1/0', '4/3', '1.5/3', '1', '01/3', '1/9007199254740992']) {
+      const output = captureOutput();
+      const args = value === undefined ? ['--test-shard'] : ['--test-shard', value];
+      const exitCode = await runPluginScriptTests(['git-commit', ...args], {
+        repoRoot: path.join(os.tmpdir(), 'missing-shard-validation-repo'),
+        env: { ...process.env, AW_TEST_WORKERS: '1' },
+        stdout: output.stdout,
+        stderr: output.stderr,
+      });
+      expect(exitCode).toBe(1);
+      expect(output.readStdout()).toBe('');
+      expect(output.readStderr()).toContain('--test-shard must be index/total');
+    }
+  });
+
   it('applies configured Node file concurrency and explicit overrides to real test processes', async () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({

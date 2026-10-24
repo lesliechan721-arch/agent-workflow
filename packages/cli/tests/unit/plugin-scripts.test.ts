@@ -12,6 +12,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import type { PluginMeta } from '../../src/types.js';
 import {
+  buildPluginScriptSpawnEnv,
+  preparePluginScriptDirectories,
   redactPluginScriptOutput,
   createDefaultPluginProcessRunner,
   runPreApplyScript,
@@ -107,6 +109,87 @@ afterEach(async () => {
 });
 
 describe('preApply script', () => {
+  it('preserves case-insensitive Windows system paths while preparing isolated writable homes and filtering secrets', async () => {
+    const plugin = await createPlugin();
+    const tempDir = path.join(plugin.rootDir, 'isolated');
+    const hostHome = path.join(plugin.rootDir, 'host-profile');
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    try {
+      const env = buildPluginScriptSpawnEnv({
+        commandEnv: {
+          AW_HOME: path.join(tempDir, 'aw-home'),
+          path: 'system-executable-path',
+          SYSTEMROOT: 'C:\\Windows',
+          windir: 'C:\\Windows',
+          systemdrive: 'C:',
+          COMSPEC: 'C:\\Windows\\System32\\cmd.exe',
+          pathext: '.COM;.EXE;.BAT;.CMD',
+          programfiles: 'C:\\Program Files',
+          'PROGRAMFILES(X86)': 'C:\\Program Files (x86)',
+          ProgramW6432: 'C:\\Program Files',
+          COMMONPROGRAMFILES: 'C:\\Program Files\\Common Files',
+          'CommonProgramFiles(x86)': 'C:\\Program Files (x86)\\Common Files',
+          CommonProgramW6432: 'C:\\Program Files\\Common Files',
+          HOME: hostHome,
+          USERPROFILE: hostHome,
+          HOMEDRIVE: 'Z:',
+          HOMEPATH: '\\host-profile',
+          APPDATA: path.join(hostHome, 'Roaming'),
+          LOCALAPPDATA: path.join(hostHome, 'Local'),
+          TEMP: path.join(hostHome, 'temp'),
+          TMP: path.join(hostHome, 'tmp'),
+          OPENAI_API_KEY: 'credential-must-not-leak',
+          GITHUB_TOKEN: 'credential-must-not-leak',
+          npm_config_registry: 'credential-must-not-leak',
+          PSModulePath: path.join(hostHome, 'PowerShell', 'Modules'),
+          WinPSModulePath: path.join(hostHome, 'WindowsPowerShell', 'Modules'),
+          NODE_OPTIONS: '--require=host-module',
+        },
+        contextPath: path.join(tempDir, 'context.json'),
+        tempDir,
+        plugin: { name: 'demo', version: '1.0.0' },
+        event: 'test',
+        platform: 'codex',
+        scope: 'user',
+        bundleRoot: plugin.rootDir,
+      });
+
+      expect(env).toMatchObject({
+        PATH: 'system-executable-path',
+        SystemRoot: 'C:\\Windows',
+        windir: 'C:\\Windows',
+        SystemDrive: 'C:',
+        ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+        PATHEXT: '.COM;.EXE;.BAT;.CMD',
+        ProgramFiles: 'C:\\Program Files',
+        'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+        ProgramW6432: 'C:\\Program Files',
+        CommonProgramFiles: 'C:\\Program Files\\Common Files',
+        'CommonProgramFiles(x86)': 'C:\\Program Files (x86)\\Common Files',
+        CommonProgramW6432: 'C:\\Program Files\\Common Files',
+        HOME: path.join(tempDir, 'home'),
+        USERPROFILE: path.join(tempDir, 'home'),
+        APPDATA: path.join(tempDir, 'home', 'AppData', 'Roaming'),
+        LOCALAPPDATA: path.join(tempDir, 'home', 'AppData', 'Local'),
+        TEMP: path.join(tempDir, 'tmp'),
+        TMP: path.join(tempDir, 'tmp'),
+      });
+      expect(`${env.HOMEDRIVE}${env.HOMEPATH}`).toBe(env.USERPROFILE);
+      const outputKeys = Object.keys(env).map((key) => key.toLowerCase());
+      for (const key of ['openai_api_key', 'github_token', 'npm_config_registry', 'psmodulepath', 'winpsmodulepath', 'node_options']) {
+        expect(outputKeys).not.toContain(key);
+      }
+      expect(Object.values(env)).not.toContain('credential-must-not-leak');
+      expect(Object.values(env)).not.toContain(hostHome);
+      await preparePluginScriptDirectories(tempDir);
+      for (const key of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP'] as const) {
+        expect((await fs.stat(env[key]!)).isDirectory()).toBe(true);
+      }
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
   it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable).each([
     'SIGINT',
     'SIGTERM',

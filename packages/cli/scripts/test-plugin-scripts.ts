@@ -7,6 +7,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { formatTestWorkers, nodeTestWorkerOptions } from './test-workers.mjs';
+import { preparePluginScriptDirectories } from '../src/utils/plugin-scripts.js';
 import {
   buildPluginScriptSpawnEnv,
   bundleLocalPlugin,
@@ -54,6 +55,7 @@ interface ParsedArgs {
   platform: PluginTestPlatformSelection;
   testName?: string;
   testConcurrency?: string;
+  testShard?: string;
 }
 
 interface PreparedPluginTestBundle {
@@ -135,6 +137,15 @@ function parseArgs(args: string[]): ParsedArgs {
       if (parsed.testConcurrency === undefined) {
         throw new Error('--test-concurrency requires a worker count.');
       }
+    } else if (arg === '--test-shard' || arg.startsWith('--test-shard=')) {
+      const value = arg === '--test-shard' ? args[++index] : arg.slice('--test-shard='.length);
+      const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(value ?? '');
+      const shardIndex = Number(match?.[1]);
+      const total = Number(match?.[2]);
+      if (!match || !Number.isSafeInteger(shardIndex) || !Number.isSafeInteger(total) || shardIndex > total) {
+        throw new Error('--test-shard must be index/total with positive safe integers and index <= total.');
+      }
+      parsed.testShard = value;
     } else if (arg.startsWith('-')) {
       throw new Error(`Unknown option "${arg}".`);
     } else {
@@ -146,7 +157,7 @@ function parseArgs(args: string[]): ParsedArgs {
     throw new Error('Use either <plugin> or --all, not both.');
   }
   if (!parsed.all && positional.length !== 1) {
-    throw new Error('Usage: pnpm plugin:test <plugin> | --all [--scope user|project] [--platform codex|claude|both] [--test-name <pattern>] [--test-concurrency <workers>].');
+    throw new Error('Usage: pnpm plugin:test <plugin> | --all [--scope user|project] [--platform codex|claude|both] [--test-name <pattern>] [--test-concurrency <workers>] [--test-shard <index/total>].');
   }
   if (parsed.all && positional.length !== 0) {
     throw new Error('Use either <plugin> or --all, not both.');
@@ -506,6 +517,7 @@ function runNodeTest(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   testName?: string;
+  testShard?: string;
   workers: ReturnType<typeof nodeTestWorkerOptions>;
   stdout: (text: string) => void;
 }): Promise<NodeTestResult> {
@@ -518,6 +530,9 @@ function runNodeTest(options: {
     }
     if (options.testName) {
       args.push('--test-name-pattern', options.testName);
+    }
+    if (options.testShard) {
+      args.push(`--test-shard=${options.testShard}`);
     }
     args.push(...options.testFiles);
     const child = spawn(process.execPath, args, {
@@ -548,6 +563,7 @@ async function runPreparedPluginTests(options: {
   platform: PlatformName;
   testName?: string;
   testConcurrency?: string;
+  testShard?: string;
   env: NodeJS.ProcessEnv;
   testConfigValues?: Record<string, PluginConfigValue>;
   stdout: (text: string) => void;
@@ -577,8 +593,7 @@ async function runPreparedPluginTests(options: {
     await fs.ensureDir(projectRoot);
     await fs.ensureDir(awHome);
     await fs.ensureDir(tempDir);
-    await fs.ensureDir(path.join(tempDir, 'home'));
-    await fs.ensureDir(path.join(tempDir, 'tmp'));
+    await preparePluginScriptDirectories(tempDir);
     const canonicalProjectRoot = await fs.realpath(projectRoot);
     const copiedEntries = await copyTestsIntoBundle({
       baselineRoot: options.prepared.baselineRoot,
@@ -626,6 +641,7 @@ async function runPreparedPluginTests(options: {
       cwd: canonicalProjectRoot,
       env: spawnEnv,
       testName: options.testName,
+      testShard: options.testShard,
       workers: nodeTestWorkerOptions({ env: options.env, explicit: options.testConcurrency }),
       stdout: options.stdout,
     });
@@ -638,7 +654,10 @@ async function runPreparedPluginTests(options: {
       options.stderr(stderr);
     }
     if (result.exitCode === 0) {
-      print(options.stdout, `${options.prepared.pluginName} / ${options.platform}: passed (${entries.length} test file${entries.length === 1 ? '' : 's'})`);
+      const coverage = options.testShard
+        ? `test shard ${options.testShard}`
+        : `${entries.length} test file${entries.length === 1 ? '' : 's'}`;
+      print(options.stdout, `${options.prepared.pluginName} / ${options.platform}: passed (${coverage})`);
       return 0;
     }
     print(options.stderr, `${options.prepared.pluginName} / ${options.platform}: failed`);
@@ -698,6 +717,7 @@ async function runPreparedPluginSelection(options: {
           platform,
           testName: options.parsed.testName,
           testConcurrency: options.parsed.testConcurrency,
+          testShard: options.parsed.testShard,
           env: options.env,
           testConfigValues: options.testConfigValues,
           stdout: options.stdout,

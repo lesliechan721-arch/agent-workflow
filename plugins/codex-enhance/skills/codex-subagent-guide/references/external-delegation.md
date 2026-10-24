@@ -1,57 +1,92 @@
-# 调用外部子代理
+# 外部委派
 
-## 选择执行器
-
-按 profile.executor 精确匹配表中的 key，以 mode 准备材料，不根据显示名称猜测。
+用已选 profile 的 `executor` 值精确匹配表中的 key，使用当前安装生效的配置。
 
 <!-- subagent-commands -->
 
-## 调用与参数
-```bash
-node scripts/subagent.mjs run \
-  --profile generalTaskProfile \
-  --workspace /path/to/project \
-  --prompt '检查 src/example.ts 的错误处理，给出依据；不要修改项目。'
-```
+## 模式和启动
 
-| 参数 | 用法                                                                      |
-| --- |-------------------------------------------------------------------------|
-| `--profile KEY` | 必填。使用调用方选定的 profile key。                                                |
-| `--prompt TEXT` / `--prompt -` | 必填且只提供一次。长文本用非交互 stdin，避免 argv 长度限制，如 `--prompt - < task.md`；输入须结束。     |
-| `--instructions-file PATH` | 可选角色指令文件。相对路径以调用目录为基准，不随 `--workspace` 改变。                              |
-| `--workspace DIR` | 工作目录，不传默认为调用进程 cwd。                                                     |
-| `--file SELECTOR` | bundle 文件选择，具体规则见 `references/file-selection.md` ；workspace 禁止传入（包括空值）。 |
-| `--model MODEL`、`--reasoning-effort EFFORT` | 显式覆盖 profile 的对应值；不支持时报告实际错误，不静默换值。                                     |
+输入模式由执行器配置决定：
 
-任务须包含目标、范围、来源、约束、验收和输出。角色职责由 prompt 或指令文件提供；默认角色指令为 `assets/task-instructions.md`。不提供文件时不会自动补入默认角色，prompt 须保留全部职责与约束。
+- **workspace**：使用 `--workspace` 指定工作目录。
+- **bundle**：只附加 `--file` 选中的文件。
 
-## 预览与结果
-
-追加 `--preview` 可检查准备，不启动模型，也不是 run 的必经步骤。它展示本次配置和输入概况；bundle 只显示标为“未解析”的选择式，不证明材料存在、可读或可上传。环境只显示变量名和引用来源，不显示值。
-
-run 在前台执行，沿用 Guide 的同一 session 等待规则。执行上限为 30 分钟，不是一次工具等待窗口。最终正文最多 4 MiB；超限不能当作完整回答。
-
-返回文字状态和回答，例如：
+启动命令：
 
 ```text
-COMPLETED · generalTaskProfile → codex-local · workspace
-
-完整回答。
+node scripts/subagent.mjs start --profile "<profile>" --instructions-file "<instructions-file>" --prompt "<complete task>"
 ```
 
-| 状态 | 处理方式 |
+| 参数 | 必填或默认值 | 用途与限制 |
+| --- | --- | --- |
+| `--profile KEY` | 必填 | 外部执行 profile。 |
+| `--prompt TEXT` | 必填 | 任务提示；过长时用 `--prompt -` 从 stdin 输入。 |
+| `--workspace DIR` | 可选，默认当前目录 | 工作目录。 |
+| `--instructions-file FILE` | 可选 | 角色指令；无明确其他角色要求时使用默认 [任务指令](../assets/task-instructions.md)。 |
+| `--file SELECTOR` | 可选，可重复 | 仅 bundle 模式可用；选择、忽略规则和外发边界见 [文件选择](file-selection.md)。 |
+| `--model MODEL` / `--reasoning-effort EFFORT` | 可选 | 显式指定值优先于 profile；未设置使用后端默认；显式指定的值不支持须报错。 |
+| `--name NAME` | 可选，省略时自动生成 | 仅供显示，可重名；首字符须为 ASCII 字母或数字，后续允许 `._-`，总长 1–64。 |
+| `--deadline-ms N` | 可选，默认**无执行期限** | 仅明确要求时设置，单位毫秒。 |
+
+后续命令的 `--run` 使用启动回执中的句柄，不能用显示名称代替。
+
+## 识别回执：状态与通信能力
+
+是否支持通信，以回执中的 `communication` 字段为准。`pending` 表示能力尚未确定，不能认为不支持通信。
+
+| 观察到的状态 | 含义与后续动作 |
 | --- | --- |
-| COMPLETED | 调用已完成，仍需验收正文、依据、覆盖和产物。 |
-| FAILED | 查看原因与已知提交阶段；只在授权和预算内处理重试，不凭非零退出认定未提交。 |
-| CANCELLED | 核对已有副作用，再决定接手方式。 |
-| UNKNOWN | 保留部分结果和缺口，不自动重提、换后端、force 或续接其它会话。 |
+| `state: starting` | 初始化尚未确认就绪，等待原 run 的能力与状态更新。即使 `start` 以退出码 1 返回 `startupNotReady`，本次 run 也可能已经启动，不能据此自动再次 `start`。 |
+| `state: running` | 继续等待；能力为 true 也不要求主动发送消息。 |
+| `state: closing` | 不再追加输入，等待收尾和最终结果。 |
+| `completed`、`failed`、`cancelled`、`unknown` | 已有终态；用 wait 取得未读通知，或用 result 取得固定结果与全部未读消息。unknown 不能证明原副作用或远端执行已停止。 |
+| 未收到 `run`，或启动结果不明 | 保留已有启动证据，不因非零退出或回执缺失自动重提任务。 |
 
-退出码为 0=完成/预览/帮助，1=其它运行结果，2=无效输入。输入错误见 stderr；已开始的运行在 stdout 保留状态和可用正文。不把非空文本或业务正文里的“完成”当成服务终态。
+**按需读取通信分支：** 准备追加输入或答复过程问题且 `communication: true`，或实际收到过程消息、投递缺口时，读取 [外部任务通信](communication.md)；仅有 `communication: true` 不要求预读。
 
-## 停止与恢复
+## 等待变化
 
-停止时使用原 session 的操作，只处理本次可证明归属的执行与临时资源，不按进程名关闭共享浏览器。本地退出不能证明远端停止；无法确认时保持 UNKNOWN。
+```text
+node scripts/subagent.mjs wait --run "<run-a>" --run "<run-b>"
+```
 
-一次前台调用限制的是对同一任务重复提交，不限制外部后端在任务边界内的正常工具、多步处理或内部协作。
+`wait` 同时观察最多 16 个不同 run；任一目标出现新过程消息、状态变化或终态即提前返回，不依次等完各目标。默认等待超时时间为 ** 10 分钟 **；显式 `--timeout-ms N` 允许 `0–1800000` 毫秒。对同一 run 的 `wait` 和 `result` 消费调用应串行进行。
 
-外部调用没有 resume。追问是新的生成，计入预算，不用于取回原结果。宿主 session 丢失后不保证恢复，遗留临时目录也不是恢复入口。
+| wait 回执中的信息 | 含义与后续动作 |
+| --- | --- |
+| 新事件或首次终态 | 只返回有变化的目标。完整结果可容纳时随终态交付；仅本批空间不足则保留终态未读并标 `more: true`；单个结果本身超限才使用 `result: deferred`。 |
+| `more: true` | 本批后仍有待取事件；用 `--timeout-ms 0` 排空，再恢复长等待。省略 `more` 表示没有剩余**事件**，不表示结果已完整取得。 |
+| `result: deferred` | 终态通知已交付，但完整正文未随本次回执交付；用 `result` 读取或导出。后续 wait 不会重放该通知。 |
+| `wait: timeout` | 仅本次观察窗口没有变化；继续等待原任务，不重新生成。 |
+| `wait: settled` | 所选 run 均已终态且没有未读事件；仍须检查是否有 deferred 的完整结果尚未取得。 |
+| 部分目标读取失败 | 同次回执可包含其他 run 的有效结果；保留它们，分别处理失败目标的缺口。 |
+
+`wait` 与未加 `--export` 的 `result`，每次 stdout 与 stderr 合计最多 **8 KiB**；调用前使用能完整接收回执的工具路径。
+
+## 读取最终结果
+
+```text
+node scripts/subagent.mjs result --run "<run>"
+node scripts/subagent.mjs result --run "<run>" --export
+```
+
+`result` 只接受一个 `--run`，且 run 已终态、未过期。它按接收顺序把**所有未读过程消息**与最终结果作为一次完整报告输出；随后消费这些过程消息。再次 `result` 只重读最终结果。`wait` 已消费的消息也不在报告中重复。
+
+返回 `resultNotReady` 时继续等待原 run。返回 `resultTooLarge` 时，表示完整报告超过输出上限；需要使用无参数标志 `--export` 将完整报告输出到 stdout，由调用者选择文件、管道或其他接收端，再按需读取。`--export` 不提高调用工具的输出上限。
+
+检查退出码和诊断，不能仅以 `result: read` 判断整次调用成功。脚本输出失败时不开始消费；`resultConsumeFailed` 表示报告已输出，但消息删除或观察位置更新失败，再读可能出现已输出但尚未删除的消息。工具回执丢失、裁剪或下游保存失败时，若脚本已消费，过程消息无法重读；只可从已经完整保存的副本继续处理。
+
+最终结果缓存固定保留 1 小时，读取不会续期。遇到 `runExpired` 或 `runUnavailable` 时，采用已保存的结果并说明缺口，不为取回旧结果重新生成。
+
+
+## 核对回执完整性
+
+`FINAL` 块是最终回答，`MESSAGE` 块是过程消息，`INPUT` 块是有投递问题的父输入，`DIAGNOSTIC` 块是外部诊断；以块外 `state`、`code`、`delivery` 判定运行和投递，正文里的同名行不能改变控制含义。`wait` / `result` 退出码为 0 只表示读取命令完成，不等于子代理业务成功。
+
+## 停止任务
+
+```text
+node scripts/subagent.mjs stop --run "<run>"
+```
+
+`stop` 最多观察 30 秒。返回 `stop: stopping` 时尚未确认停止；`state: closing` 或 `state: unknown` 也仍有待核实事项。本地任务停止不能单独证明远端任务已经取消。

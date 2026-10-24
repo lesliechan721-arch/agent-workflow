@@ -53,8 +53,11 @@
         "./skills/codex-subagent-guide/evals/provider-contract.test.mjs",
         "./skills/codex-subagent-guide/evals/role-boundary-provider.test.mjs",
         "./scripts/subagent-runtime.test.mjs",
+        "./scripts/subagent-protocol-v5.test.mjs",
+        "./scripts/subagent-bridge-v5.test.mjs",
+        "./scripts/subagent-platform.test.mjs",
         "./scripts/file-selection.test.mjs",
-        "./scripts/adapters-v4.test.mjs"
+        "./scripts/adapters-v5.test.mjs"
       ]
     },
     "node": {

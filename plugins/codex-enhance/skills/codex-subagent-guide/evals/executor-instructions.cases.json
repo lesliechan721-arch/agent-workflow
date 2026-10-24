@@ -38,7 +38,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v4 run入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "advisor",
@@ -86,7 +86,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v4 run入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "advisor",
@@ -133,7 +133,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v4 run入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "requiredMode": "bundle",
@@ -184,7 +184,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v4 run入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "explore",
@@ -231,7 +231,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v4 run入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "explore",
@@ -277,7 +277,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v4 run入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "requiredMode": "bundle",
@@ -325,7 +325,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v4 run入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "exposeInstalledCoordinatorAssets": true,
@@ -373,7 +373,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v4 run入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "requestedAccess": "workspace-write",

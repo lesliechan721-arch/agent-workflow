@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 const root = process.env.AW_PLUGIN_ROOT;
+const windows = process.platform === 'win32';
 
 function codexSkill(name) {
   return path.join(root, 'codex', 'skills', name);
@@ -24,12 +25,20 @@ test('publishes one model-callable Skill with valid public metadata', () => {
   assert.deepEqual(readdirSync(path.join(root, 'codex', 'skills')).sort(), ['agent-content']);
   invocationPolicy('agent-content');
 
-  const result = spawnSync('aw', [
-    'skill', 'validate', codexSkill('agent-content'),
+  const skillRoot = codexSkill('agent-content');
+  const args = [
+    'skill', 'validate', windows ? '"%AW_TEST_SKILL_ROOT%"' : skillRoot,
     '--frontmatter-profile', 'portable-agent-skills',
     '--codex-metadata', 'required',
     '--json',
-  ], { encoding: 'utf8' });
+  ];
+  // Windows npm/CI launchers need cmd; only fixed tokens enter its command text.
+  const result = windows
+    ? spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/v:off', '/s', '/c', `aw ${args.join(' ')}`], {
+      encoding: 'utf8', windowsVerbatimArguments: true,
+      env: { ...process.env, AW_TEST_SKILL_ROOT: skillRoot },
+    })
+    : spawnSync('aw', args, { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(JSON.parse(result.stdout).ok, true);
 });

@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 const root = process.env.AW_PLUGIN_ROOT;
+const windows = process.platform === 'win32';
 const invocation = new Map([
   ['develop-aw', true],
   ['publish-aw-catalog', false],
@@ -35,12 +36,19 @@ test('publishes one AW development entry and one manual-only Publisher', () => {
       .filter((line) => line.startsWith('allow_implicit_invocation:'));
     assert.deepEqual(policyLines, [`allow_implicit_invocation: ${expected}`], skill);
 
-    const result = spawnSync('aw', [
-      'skill', 'validate', skillRoot,
+    const args = [
+      'skill', 'validate', windows ? '"%AW_TEST_SKILL_ROOT%"' : skillRoot,
       '--frontmatter-profile', 'claude-current',
       '--codex-metadata', 'required',
       '--json',
-    ], { encoding: 'utf8' });
+    ];
+    // Windows npm/CI launchers need cmd; only fixed tokens enter its command text.
+    const result = windows
+      ? spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/v:off', '/s', '/c', `aw ${args.join(' ')}`], {
+        encoding: 'utf8', windowsVerbatimArguments: true,
+        env: { ...process.env, AW_TEST_SKILL_ROOT: skillRoot },
+      })
+      : spawnSync('aw', args, { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.equal(JSON.parse(result.stdout).ok, true);
   }

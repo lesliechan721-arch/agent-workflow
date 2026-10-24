@@ -1,9 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { constants } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { LIMITS, fail } from './contracts.mjs';
+import { protectPrivatePath } from './platform.mjs';
 
-const decoder = new TextDecoder('utf-8', { fatal: true });
+const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 export async function safePath(target, kind = 'file', { allowExecutableSymlink = false } = {}) {
   if (!path.isAbsolute(target) || target.includes('\0') || path.normalize(target) !== target) fail('pathInvalid', 'A runtime path must be absolute and normalized.');
@@ -82,9 +84,12 @@ export async function executablePaths(command, entrypoint) {
 }
 
 export async function atomicJson(target, value) {
-  const temporary = `${target}.${process.pid}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-  await fs.rename(temporary, target);
+  const temporary = `${target}.${randomBytes(8).toString('hex')}.tmp`;
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600, flag: 'wx' });
+    await protectPrivatePath(temporary, 'file');
+    await fs.rename(temporary, target);
+  } finally { await fs.unlink(temporary).catch((error) => { if (error.code !== 'ENOENT') throw error; }); }
 }
 
 export async function readJson(target, maximumBytes = LIMITS.resultBytes) {

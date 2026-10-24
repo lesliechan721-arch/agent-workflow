@@ -39,7 +39,7 @@
       "audit": {
         "rationale": "已加载Guide与未注册自定义指令入口",
         "minimalCounterexample": "显式指令文件缺失或无效时在生成前失败；省略文件且prompt已完整表达职责时可以启动。",
-        "allowedVariance": "允许等价措辞和实际宿主工具差异。来源、权限、native真实指令通道或external完整prompt、服务终态及同一前台句柄须由事件证明；声明与本地fake不证明真实服务支持。未取得所需证据保持unknown。"
+        "allowedVariance": "允许等价措辞和实际宿主工具差异。来源、权限、native真实指令通道或external完整prompt、服务终态及同一运行句柄须由事件证明；声明与本地fake不证明真实服务支持。未取得所需证据保持unknown。"
       }
     }
   ]

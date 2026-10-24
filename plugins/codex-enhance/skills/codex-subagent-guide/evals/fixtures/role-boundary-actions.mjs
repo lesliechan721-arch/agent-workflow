@@ -86,16 +86,44 @@ async function tree(root, prefix = '') {
   return result;
 }
 /** Public text observations are not backend terminal or process-containment evidence. */
-export function parseGuideObservation(stdout, stderr = '', exitCode = null) {
-  const terminal = stdout.match(/^(COMPLETED|FAILED|CANCELLED|UNKNOWN) · [^\n]+\n/);
-  const code = stderr.match(/^([A-Za-z][A-Za-z0-9]*):/)?.[1];
-  const state = terminal ? terminal[1] === 'COMPLETED' && exitCode !== null && exitCode !== 0 ? 'unknown' : terminal[1].toLowerCase() : exitCode === 2 && code ? 'failed' : 'unknown';
-  return { state, exitCode, stdout, stderr,
-    ...(code ? { code } : !terminal ? { code: 'guideOutputUnrecognized' } : {}) };
+function controlLines(text) {
+  const controls = [];
+  let boundary;
+  for (const line of text.split('\n')) {
+    if (boundary) {
+      if (line === boundary) boundary = undefined;
+      continue;
+    }
+    const begin = line.match(/^BEGIN_(MESSAGE|INPUT|FINAL|DIAGNOSTIC):([a-f0-9]{8})$/);
+    if (begin) boundary = `END_${begin[1]}:${begin[2]}`;
+    else controls.push(line);
+  }
+  return controls;
 }
-async function guide(workspace, args, { root, env = process.env, allowFailure = false, input }) {
+export function parseGuideObservation(stdout, stderr = '', exitCode = null) {
+  const lines = controlLines(stdout);
+  const recognized = /^(start|wait|result|stop): (ready|notReady|error|changed|settled|read|stopped|stopping)$/.test(lines[0] ?? '');
+  const reported = recognized ? lines.find((line) => /^state: (starting|running|closing|completed|failed|cancelled|unknown)$/.test(line))?.slice(7) : undefined;
+  const code = [...controlLines(stderr), ...lines].find((line) => /^code: [A-Za-z][A-Za-z0-9]*$/.test(line))?.slice(6);
+  const state = reported === 'completed' && exitCode !== null && exitCode !== 0 ? 'unknown'
+    : reported ?? (exitCode === 2 && code ? 'failed' : 'unknown');
+  return { state, exitCode, stdout, stderr,
+    ...(code ? { code } : !recognized ? { code: 'guideOutputUnrecognized' } : {}) };
+}
+export async function guide(workspace, args, { root, env = process.env, allowFailure = false, input }) {
   const entry = await file(root, 'scripts/subagent.mjs');
-  const result = await processResult(process.execPath, [entry, ...args], { cwd: workspace, env, input });
+  let result = await processResult(process.execPath, [entry, ...args], { cwd: workspace, env, input });
+  const handle = args[0] === 'start' ? controlLines(result.stdout).find((line) => line.startsWith('run: '))?.slice(5) : undefined;
+  if (handle) {
+    let observed = parseGuideObservation(result.stdout, result.stderr, result.code);
+    while (['starting', 'running', 'closing'].includes(observed.state)) {
+      result = await processResult(process.execPath, [entry, 'wait', '--run', handle], { cwd: workspace, env, timeout: 610000 });
+      observed = parseGuideObservation(result.stdout, result.stderr, result.code);
+      if (result.outputOverflow || result.code !== 0) break;
+      if (result.stdout === 'wait: timeout\n') observed.state = 'running';
+    }
+    result = await processResult(process.execPath, [entry, 'result', '--run', handle], { cwd: workspace, env });
+  }
   const value = parseGuideObservation(result.stdout, result.stderr, result.code);
   if (result.outputOverflow) { value.state = 'unknown'; value.code = 'guideOutputTooLarge'; }
   if (result.code !== 0 && !allowFailure) throw new Error(`fixtureGuideFailed:${value.code ?? 'failed'}`);
@@ -305,7 +333,7 @@ export async function executeFixtureAction(payload) {
   const artifacts = [];
   if (input.operation === 'invalid-workspace-files') {
     const prompt = await readFile(state.promptFile, 'utf8');
-    const rejected = await guide(state.project, ['run', '--profile', 'generalTaskProfile', '--instructions-file', state.instructionsFile,
+    const rejected = await guide(state.project, ['start', '--profile', 'generalTaskProfile', '--instructions-file', state.instructionsFile,
       '--prompt', '-', '--file', ''], { root: state.guideRoot, env, allowFailure: true, input: prompt });
     if (rejected.exitCode !== 2 || rejected.value.code !== 'filesNotAllowedInWorkspace') throw new Error('fixtureInputRejectionMissing');
     evidence.preflight = rejected.value;
@@ -317,7 +345,7 @@ export async function executeFixtureAction(payload) {
     if (initial?.access !== 'workspace-write' || initial.allowedWorkspaceChanges?.join(',') !== 'probe/once.txt'
       || initial.operation !== input.task || typeof initial.counterOwner !== 'string') throw new Error('fixtureInitialRunInvalid');
     await writeFile(state.promptFile, input.task);
-    const run = await guide(workspace, ['run', '--profile', 'generalTaskProfile', '--instructions-file', state.instructionsFile,
+    const run = await guide(workspace, ['start', '--profile', 'generalTaskProfile', '--instructions-file', state.instructionsFile,
       '--prompt', '-', '--workspace', workspace], { root: state.guideRoot, env, allowFailure: true, input: input.task });
     if (run.value.state !== 'unknown') throw new Error('fixtureFaultDidNotProduceUnknown');
     const counter = JSON.parse(await readFile(await file(workspace, `${LAB}/counter.json`), 'utf8'));

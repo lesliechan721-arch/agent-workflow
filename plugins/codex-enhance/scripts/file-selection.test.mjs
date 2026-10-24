@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { build } from 'esbuild';
@@ -22,14 +22,16 @@ const sourceScripts = path.dirname(require.resolve('../skills/codex-subagent-gui
 const baseline = JSON.parse(await fs.readFile(fixtures.baseline, 'utf8'));
 let temporary; let guide; let helper; let selectionApi;
 
-async function execute(entry, input, { args = [], env = {}, nodeArgs = [] } = {}) {
+async function execute(entry, input, { args = [], env = {}, nodeArgs = [], keepInputOpen = false } = {}) {
   const child = spawn(process.execPath, [...nodeArgs, entry, ...args], { shell: false, detached: false,
     env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = ''; let stderr = '';
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.stderr.on('data', (chunk) => { stderr += chunk; });
   child.stdin.on('error', () => {});
-  child.stdin.end(Buffer.isBuffer(input) ? input : JSON.stringify(input));
+  const encoded = Buffer.isBuffer(input) ? input : JSON.stringify(input);
+  if (keepInputOpen) child.stdin.write(`${encoded}\n`);
+  else child.stdin.end(encoded);
   const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
   return { code, stdout, stderr };
 }
@@ -84,13 +86,15 @@ async function tree(t) {
 
 async function custom(workspace, selectors) {
   const directory = await fs.mkdtemp(path.join(temporary, 'custom-'));
-  const resultFile = path.join(directory, 'result.json');
   const boundary = path.join(directory, 'model-boundary');
   const run = await execute(fixtures.custom, {
-    protocolVersion: 4, execution: { profile: 'fixture', executor: 'fixture' }, mode: 'bundle', workspace, prompt: 'selection fixture',
+    protocolVersion: 5, type: 'start', run: { id: '0123456789abcdef0123456789abcdef', name: 'selection', deadlineAt: null }, execution: { profile: 'fixture', executor: 'fixture' }, mode: 'bundle', workspace, prompt: 'selection fixture',
     fileSelectors: selectors, fileResolver: { command: process.execPath, args: [helper] }, args: [],
-  }, { env: { AW_SUBAGENT_RESULT_FILE: resultFile, AW_TEST_SELECTION_BOUNDARY: boundary } });
-  const result = JSON.parse(await fs.readFile(resultFile, 'utf8'));
+  }, { env: { AW_TEST_SELECTION_BOUNDARY: boundary }, keepInputOpen: true });
+  const events = run.stdout.trim().split('\n').map(JSON.parse);
+  assert.deepEqual(events.map(({ type }) => type), ['ready', 'closing', 'result']);
+  assert.equal(events[0].communicationSupported, false);
+  const result = events.at(-1);
   const submitted = await fs.readFile(boundary, 'utf8').catch(() => '');
   await fs.rm(directory, { recursive: true, force: true });
   return { run, result, submitted };
@@ -102,24 +106,31 @@ async function compare(workspace, selectors, files, code) {
   const publicRun = await execute(helper, request);
   const customRun = await custom(workspace, selectors);
   const nativeRun = await execute(fixtures.oracle, request, { args: [selectionApi] });
+  const nativeCode = process.platform === 'win32' && selectors.length > 0 && code !== 'fileSelectionInputInvalid'
+    ? 'fileSelectionUnsupported' : code;
   if (code) {
     assert.equal(publicRun.stdout, ''); assert.equal(JSON.parse(publicRun.stderr).code, code);
     assert.notEqual(publicRun.code, 0);
     assert.equal(customRun.result.state, 'failed'); assert.equal(customRun.result.generationStarted, false);
-    assert.equal(customRun.result.code, code); assert.equal(customRun.submitted, ''); assert.equal(customRun.run.code, 1);
-    assert.equal(nativeRun.stdout, ''); assert.equal(JSON.parse(nativeRun.stderr).code, code); assert.notEqual(nativeRun.code, 0);
+    assert.equal(customRun.result.code, code); assert.equal(customRun.submitted, ''); assert.equal(customRun.run.code, 0);
   } else {
     assert.equal(publicRun.code, 0, publicRun.stderr); assert.equal(publicRun.stderr, '');
     assert.deepEqual(JSON.parse(publicRun.stdout), { protocolVersion: 1, files: expected });
     assert.equal(customRun.run.code, 0, customRun.run.stderr); assert.equal(customRun.result.state, 'completed');
     assert.deepEqual(JSON.parse(customRun.result.text).files, expected); assert.deepEqual(JSON.parse(customRun.submitted), expected);
+  }
+  if (nativeCode) {
+    assert.equal(nativeRun.stdout, ''); assert.equal(JSON.parse(nativeRun.stderr).code, nativeCode); assert.notEqual(nativeRun.code, 0);
+  } else {
     assert.equal(nativeRun.code, 0, nativeRun.stderr); assert.deepEqual(JSON.parse(nativeRun.stdout).files, expected);
   }
 }
 
 // Test Value Gate: a moved runtime, a real helper consumer and unmodified Oracle
 // selection code protect the common observable set, including baseline exceptions.
-test('v1 conformance: helper, moved custom consumer and real Oracle selection share the baseline', async (t) => {
+// Windows keeps complete helper/custom coverage and checks the real Oracle
+// support guard before its known incompatible native selection can run.
+test('v1 conformance: helper, moved custom consumer and guarded Oracle preserve the baseline or reject unsupported selection', async (t) => {
   const { workspace } = await tree(t);
   for (const observation of baseline.observations) await t.test(observation.id, async () => {
     let code;
@@ -127,6 +138,22 @@ test('v1 conformance: helper, moved custom consumer and real Oracle selection sh
     else if (observation.status === 'error') code = observation.message.startsWith('Missing file or directory:') ? 'fileSelectionPathMissing' : 'fileSelectionEmpty';
     await compare(workspace, observation.raw, observation.files, code);
   });
+});
+
+// Test Value Gate: the unmodified reference has a known Windows ignore mismatch.
+// Observe it separately so it cannot redefine the helper/custom selection set.
+test('Windows raw Oracle reference exposes its known ignore mismatch', { skip: process.platform !== 'win32' }, async (t) => {
+  const { workspace } = await tree(t);
+  await fs.writeFile(path.join(workspace, 'docs/.gitignore'), 'a.md\n');
+  for (const [selectors, files] of [
+    [['docs/*.md'], ['docs/a.md', 'docs/b.md']],
+    [['*.secret'], ['discard.secret', 'keep.secret']],
+  ]) {
+    const raw = await execute(fixtures.oracle, { protocolVersion: 1, workspace, selectors });
+    assert.equal(raw.code, 0, raw.stderr);
+    assert.equal(raw.stderr, '');
+    assert.deepEqual(JSON.parse(raw.stdout).files, files.map((file) => path.join(workspace, file)).sort());
+  }
 });
 
 test('absolute paths, global exclusions, alias identity and special names remain literal', async (t) => {
@@ -185,7 +212,7 @@ test('ignore prefix identity, outside globs and dot opt-in preserve the fixed ex
 test('helper reads ignore bodies only and empty selectors do not open files', async (t) => {
   const { workspace } = await tree(t);
   const audit = path.join(temporary, 'read-audit');
-  const nodeArgs = ['--import', fixtures.audit];
+  const nodeArgs = ['--import', pathToFileURL(fixtures.audit).href];
   const result = await execute(helper, { protocolVersion: 1, workspace, selectors: ['**/*'] }, { nodeArgs, env: { AW_TEST_READ_AUDIT: audit } });
   assert.equal(result.code, 0, result.stderr);
   const opened = (await fs.readFile(audit, 'utf8')).trim().split('\n').map(JSON.parse);

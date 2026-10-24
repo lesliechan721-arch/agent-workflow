@@ -173,12 +173,12 @@ async function readSkillSourceRoot(context, manifest, id) {
   throw lastError ?? new Error(`Skill ${id} has no declared source directory.`);
 }
 
-async function runtimeScriptFiles(root, relative = 'scripts') {
+async function runtimeResourceFiles(root, relative) {
   const result = {};
   for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
     const name = `${relative}/${entry.name}`;
-    if (entry.isDirectory()) Object.assign(result, await runtimeScriptFiles(root, name));
-    else if (entry.isFile() && entry.name.endsWith('.mjs') && !entry.name.endsWith('.test.mjs')) {
+    if (entry.isDirectory()) Object.assign(result, await runtimeResourceFiles(root, name));
+    else if (entry.isFile() && !entry.name.endsWith('.test.mjs')) {
       result[name] = await readFile(path.join(root, name), 'utf8');
     }
   }
@@ -224,7 +224,13 @@ export async function renderArtifactPlan(context) {
     const files = {
       'SKILL.md': renderSkill(template, key, config),
       [INSTRUCTIONS[key]]: await readFile(path.join(sourceRoot, INSTRUCTIONS[key]), 'utf8'),
-      ...(key === 'codex-subagent-guide' ? await runtimeScriptFiles(sourceRoot) : {}),
+      ...(await runtimeResourceFiles(sourceRoot, 'assets')),
+      ...(await runtimeResourceFiles(sourceRoot, 'agents')),
+      ...(key === 'codex-subagent-guide' ? {
+        ...(await runtimeResourceFiles(sourceRoot, 'scripts')),
+        ...(await runtimeResourceFiles(sourceRoot, 'references')),
+        'adapters.md': await readFile(path.join(sourceRoot, 'adapters.md'), 'utf8'),
+      } : {}),
     };
     if (key === 'codex-subagent-guide') {
       const reference = 'references/external-delegation.md';

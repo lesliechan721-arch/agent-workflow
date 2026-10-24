@@ -7,6 +7,7 @@ import test from 'node:test';
 // The macOS test harness may expose /var, an alias of /private/var. The tool
 // deliberately rejects symlink target chains, so validate the real bundle root.
 const root = realpathSync(process.env.AW_PLUGIN_ROOT);
+const windows = process.platform === 'win32';
 const skills = [
   'author-agent-skill',
   'review-agent-skill',
@@ -42,12 +43,19 @@ test('publishes four Skills with explicit review and simplification policies', (
       .filter((line) => line.startsWith('allow_implicit_invocation:'));
     assert.deepEqual(policyLines, [`allow_implicit_invocation: ${!manualSkills.has(skill)}`], skill);
 
-    const result = spawnSync('aw', [
-      'skill', 'validate', skillRoot,
+    const args = [
+      'skill', 'validate', windows ? '"%AW_TEST_SKILL_ROOT%"' : skillRoot,
       '--frontmatter-profile', manualSkills.has(skill) ? 'claude-current' : 'portable-agent-skills',
       '--codex-metadata', 'required',
       '--json',
-    ], { encoding: 'utf8' });
+    ];
+    // Windows npm/CI launchers need cmd; only fixed tokens enter its command text.
+    const result = windows
+      ? spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/v:off', '/s', '/c', `aw ${args.join(' ')}`], {
+        encoding: 'utf8', windowsVerbatimArguments: true,
+        env: { ...process.env, AW_TEST_SKILL_ROOT: skillRoot },
+      })
+      : spawnSync('aw', args, { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.equal(JSON.parse(result.stdout).ok, true);
   }
