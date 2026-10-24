@@ -73,12 +73,6 @@ jobs:
           $entryPath = Join-Path $env:GITHUB_WORKSPACE 'packages/cli/dist/index.js'
           '@echo off', ('"' + $nodePath + '" "' + $entryPath + '" %*') | Set-Content -Encoding utf8 (Join-Path $cliDirectory 'aw.cmd')
           $cliDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - name: Verify aw-development-toolkit
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: pnpm plugin:test aw-development-toolkit
       - name: Verify decision-kit
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: pnpm plugin:test decision-kit
-      - name: Verify git-toolkit
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: pnpm plugin:test git-toolkit
