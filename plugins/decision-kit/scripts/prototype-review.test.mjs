@@ -101,7 +101,7 @@ const serverScript = path.join(skillRoot, 'scripts', 'review-server.mjs');
 const testRoot = await mkdtemp(path.join(os.tmpdir(), 'decision-kit-prototype-review-v2-'));
 const runtimeTmp = path.join(testRoot, 'tmp');
 await mkdir(runtimeTmp);
-const runtimeEnv = { ...process.env, TMPDIR: runtimeTmp };
+const runtimeEnv = { ...process.env, TMPDIR: runtimeTmp, TMP: runtimeTmp, TEMP: runtimeTmp };
 const activeSessions = new Set();
 const ownedServers = new Set();
 

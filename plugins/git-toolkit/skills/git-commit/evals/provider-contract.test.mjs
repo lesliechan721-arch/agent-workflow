@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
-  chmod,
   cp,
   mkdir,
   mkdtemp,
@@ -13,7 +12,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const commitEvalRoot = path.dirname(fileURLToPath(import.meta.url));
 const skillsRoot = path.resolve(commitEvalRoot, '..', '..');
@@ -113,11 +112,14 @@ test('Git custom-process commands run one selected case without exposing secrets
   const root = await mkdtemp(path.join(os.tmpdir(), 'git-provider-contract-'));
   const invocationLog = path.join(root, 'invocations.log');
   const fakeCodex = path.join(root, 'fake-codex.mjs');
+  // Use the native Node executable on every OS. The preload handles only the
+  // provider's `codex exec` child; the provider and its other children run normally.
   await writeFile(fakeCodex, [
-    '#!/usr/bin/env node',
     "import { appendFile } from 'node:fs/promises';",
     "import fs from 'node:fs';",
     "import path from 'node:path';",
+    "if (path.basename(process.argv[1] ?? '') === 'exec') {",
+    `process.argv.splice(1, 1, ${JSON.stringify(fakeCodex)}, 'exec');`,
     `await appendFile(${JSON.stringify(invocationLog)}, JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2) }) + '\\n');`,
     "let message = '.worktrees 未被忽略，停止并需要确认。';",
     "if (fs.existsSync(path.join(process.cwd(), '.git', 'MERGE_HEAD'))) message = 'merge conflict 冲突阻塞，未创建提交。';",
@@ -130,11 +132,14 @@ test('Git custom-process commands run one selected case without exposing secrets
     "process.stderr.write(\`stderr api=\${process.env.OPENAI_API_KEY} proxy=\${process.env.HTTPS_PROXY}\\n\`);",
     "process.stdout.write(\`\${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: message } })}\\n\`);",
     "process.stdout.write(\`\${JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 7, output_tokens: 3 } })}\\n\`);",
+    "await Promise.all([process.stdout, process.stderr].map(stream => new Promise(resolve => stream.write('', resolve))));",
+    'process.exit(0);',
+    '}',
   ].join('\n'));
-  await chmod(fakeCodex, 0o755);
   const env = {
     ...process.env,
-    AW_SKILL_EVAL_CODEX_BIN: fakeCodex,
+    AW_SKILL_EVAL_CODEX_BIN: process.execPath,
+    NODE_OPTIONS: `--import=${pathToFileURL(fakeCodex).href}`,
     AW_PLUGIN_CONTEXT: path.join(root, 'author-source-must-not-be-read.json'),
     OPENAI_API_KEY: secrets[0],
     HTTPS_PROXY: secrets[1],

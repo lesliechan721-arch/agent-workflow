@@ -29,7 +29,22 @@ function fixture(t, selected) {
   const env = { ...process.env, AW_HOME: path.join(root, '_homes/aw'), AW_CODEX_HOME: path.join(root, '_homes/codex'),
     AW_CLAUDE_HOME: path.join(root, '_homes/claude'), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(root, '_empty-git-config') };
   const run = (bin, args, cwd = root, expected = 0) => {
-    const result = spawnSync(bin, args, { cwd, env, encoding: 'utf8', timeout: 30000 });
+    const options = { cwd, env, encoding: 'utf8', timeout: 30000 };
+    let result;
+    if (process.platform === 'win32' && bin === 'aw') {
+      // aw.cmd needs cmd; pass fixture paths as quoted environment values.
+      const commandEnv = { ...env };
+      const commandArgs = args.map((value, index) => {
+        const name = `AW_TEST_ARGUMENT_${index}`;
+        commandEnv[name] = value;
+        return `"%${name}%"`;
+      });
+      result = spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/v:off', '/s', '/c', `aw ${commandArgs.join(' ')}`], {
+        ...options, env: commandEnv, windowsVerbatimArguments: true,
+      });
+    } else {
+      result = spawnSync(bin, args, options);
+    }
     assert.equal(result.status, expected, result.stderr || result.stdout || result.error?.message);
     return result.stdout;
   };
