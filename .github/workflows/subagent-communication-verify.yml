@@ -24,6 +24,9 @@ concurrency:
 jobs:
   # Pushes run only the outstanding native regressions. Use [subagent full] in
   # the final candidate commit to partition named tests without omissions.
+  # [subagent remaining] verifies the six groups split from the two groups
+  # cancelled at 25 minutes in run 40060164732; its passing groups are reusable
+  # only while their test, runtime, and formal runner inputs remain unchanged.
   # Top-level file checks still run when each group loads the test files.
   # Groups use the existing formal runner; each runner remains serial.
   native-contracts:
@@ -32,7 +35,7 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON((contains(github.event.head_commit.message, '[subagent full]') || inputs.full_contracts) && '[{"runner":"ubuntu-24.04","os":"linux","group":"all contracts","pattern":".*"},{"runner":"windows-2025","os":"win32","group":"contracts A-F","pattern":"/^[a-f]/i"},{"runner":"windows-2025","os":"win32","group":"contracts G-L","pattern":"/^[g-l]/i"},{"runner":"windows-2025","os":"win32","group":"contracts M-R","pattern":"/^[m-r]/i"},{"runner":"windows-2025","os":"win32","group":"contracts S-Z and other","pattern":"/^(?:[s-z]|[^a-z])/i"}]' || '[{"runner":"windows-2025","os":"win32","group":"bridge regressions","pattern":"^(generated script|close wakes|an abandoned receive|caller and scanner|single-message byte boundary|fixed explicit deadline|default receive timeout|invalid backend readiness)"},{"runner":"windows-2025","os":"win32","group":"parent startup regressions","pattern":"^(installed start preserves|late ready capability)"},{"runner":"windows-2025","os":"win32","group":"adapter child tool regression","pattern":"^Codex: installed child tools"}]') }}
+          ${{ fromJSON(contains(github.event.head_commit.message, '[subagent remaining]') && '[{"runner":"windows-2025","os":"win32","group":"contracts M","pattern":"/^m/i"},{"runner":"windows-2025","os":"win32","group":"contracts N-Q","pattern":"/^[n-q]/i"},{"runner":"windows-2025","os":"win32","group":"contracts R","pattern":"/^r/i"},{"runner":"windows-2025","os":"win32","group":"contracts S-T","pattern":"/^[s-t]/i"},{"runner":"windows-2025","os":"win32","group":"contracts U-V","pattern":"/^[u-v]/i"},{"runner":"windows-2025","os":"win32","group":"contracts W-Z and other","pattern":"/^(?:[w-z]|[^a-z])/i"}]' || (contains(github.event.head_commit.message, '[subagent full]') || inputs.full_contracts) && '[{"runner":"ubuntu-24.04","os":"linux","group":"all contracts","pattern":".*"},{"runner":"windows-2025","os":"win32","group":"contracts A-F","pattern":"/^[a-f]/i"},{"runner":"windows-2025","os":"win32","group":"contracts G-L","pattern":"/^[g-l]/i"},{"runner":"windows-2025","os":"win32","group":"contracts M","pattern":"/^m/i"},{"runner":"windows-2025","os":"win32","group":"contracts N-Q","pattern":"/^[n-q]/i"},{"runner":"windows-2025","os":"win32","group":"contracts R","pattern":"/^r/i"},{"runner":"windows-2025","os":"win32","group":"contracts S-T","pattern":"/^[s-t]/i"},{"runner":"windows-2025","os":"win32","group":"contracts U-V","pattern":"/^[u-v]/i"},{"runner":"windows-2025","os":"win32","group":"contracts W-Z and other","pattern":"/^(?:[w-z]|[^a-z])/i"}]' || '[{"runner":"windows-2025","os":"win32","group":"bridge regressions","pattern":"^(generated script|close wakes|an abandoned receive|caller and scanner|single-message byte boundary|fixed explicit deadline|default receive timeout|invalid backend readiness)"},{"runner":"windows-2025","os":"win32","group":"parent startup regressions","pattern":"^(installed start preserves|late ready capability)"},{"runner":"windows-2025","os":"win32","group":"adapter child tool regression","pattern":"^Codex: installed child tools"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     env:
@@ -75,9 +78,10 @@ jobs:
           $cliDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Verify formal plugin contracts in this group
         shell: bash
-        run: pnpm plugin:test codex-enhance --test-concurrency 1 --test-name "$TEST_NAME_PATTERN"
+        run: node scripts/qualification/subagent-plugin-progress.mjs codex-enhance --test-concurrency 1 --test-name "$TEST_NAME_PATTERN"
 
   windows-bridge-host:
+    if: ${{ !contains(github.event.head_commit.message, '[subagent remaining]') }}
     name: win32 / bridge in native host environment
     runs-on: windows-2025
     timeout-minutes: 12
