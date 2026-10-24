@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, codex/plugin-ci-native-verify-20261024]
 
 permissions:
   contents: read
