@@ -20,6 +20,18 @@ async function until(predicate) {
   while (!await predicate()) { if (Date.now() >= expires) throw new Error('The fixture condition was not reached.'); await pause(10); }
 }
 
+function caseDiagnostics(t) {
+  const began = performance.now(); const events = [];
+  return {
+    note(phase, values = {}) {
+      const event = { phase, elapsedMs: Math.round(performance.now() - began), ...values };
+      events.push(event);
+      if (process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1') t.diagnostic(`AW_SUBAGENT_COMMUNICATION_TEST ${JSON.stringify(event)}`);
+    },
+    snapshot(values = {}) { return JSON.stringify({ events, ...values }); },
+  };
+}
+
 // Test Value Gate: run installed helper entrypoints in private temporary resources.
 // Observe messages and deliveries to protect one scheduler across MCP, scripts,
 // automatic submission, cancellation, and resource cleanup without real models.
@@ -95,17 +107,26 @@ test('single-message byte boundary and queues remain usable beyond 64 inputs and
 });
 
 test('explicit receive and automatic input share allocation without replay', async (t) => {
+  const diagnostic = caseDiagnostics(t);
   const automatic = []; let finishSubmission;
-  const f = await fixture(t, { submitInput: (message) => new Promise((resolve) => { automatic.push(message); finishSubmission = resolve; }) });
+  const f = await fixture(t, { submitInput: (message) => new Promise((resolve) => { automatic.push(message); finishSubmission = resolve; diagnostic.note('automaticSubmissionStarted'); }) });
+  diagnostic.note('fixtureReady');
   const first = f.bridge.acceptInput({ id: id(1), text: 'automatic only' });
   await until(() => automatic.length === 1);
   assert.equal(f.bridge.hasPendingInput(), true);
   assert.equal((await f.invoke('receive', { timeoutMs: 0 })).outcome, 'timeout');
+  diagnostic.note('firstReceiveInvoked', { timeoutMs: 1000 });
   const receiving = f.invoke('receive', { timeoutMs: 1000 });
+  let firstResponse, firstError;
+  void receiving.then((response) => { firstResponse = response; diagnostic.note('firstReceiveResolved', { response }); },
+    (error) => { firstError = { code: error.code ?? null, name: error.name }; diagnostic.note('firstReceiveRejected', firstError); });
   await until(async () => (await fs.readdir(path.dirname(f.bindingFile))).some((name) => name.endsWith('.request.json')));
+  diagnostic.note('requestFileVisible');
   await pause(25);
+  diagnostic.note('duplicateReceiveInvoked');
   const duplicate = await f.invoke('receive', { timeoutMs: 0 });
-  assert.equal(duplicate.code, 'receiveAlreadyPending');
+  diagnostic.note('duplicateReceiveResolved', { response: duplicate, firstSettled: firstResponse !== undefined || firstError !== undefined });
+  assert.equal(duplicate.code, 'receiveAlreadyPending', diagnostic.snapshot({ duplicate, firstResponse, firstError }));
   const second = f.bridge.acceptInput({ id: id(2), text: 'explicit only' });
   assert.equal((await receiving).text, 'explicit only'); assert.deepEqual(await second, { status: 'submitted' });
   finishSubmission({ status: 'unknown', code: 'backendUncertain' });
@@ -180,25 +201,33 @@ test('an abandoned receive releases the shared receiver instead of blocking late
 });
 
 test('generated MCP process supports concurrent receive/send and rejects extra tool identity', async (t) => {
+  const diagnostic = caseDiagnostics(t);
   const f = await fixture(t);
+  diagnostic.note('fixtureReady');
   const child = spawn(f.bridge.mcpServer.command, f.bridge.mcpServer.args, { shell: false, cwd: f.root, env: f.env, stdio: ['pipe', 'pipe', 'pipe'] });
   const responses = new Map(); let buffer = ''; let diagnostics = '';
-  const timer = setTimeout(() => child.kill(), 8000);
+  const timer = setTimeout(() => { diagnostic.note('mcpWatchdogExpired'); child.kill(); }, 8000);
   t.after(() => { clearTimeout(timer); child.kill(); });
+  child.once('exit', (code, signal) => diagnostic.note('mcpExited', { code, signal }));
   child.stderr.setEncoding('utf8'); child.stderr.on('data', (data) => { diagnostics += data; });
   child.stdout.setEncoding('utf8'); child.stdout.on('data', (data) => {
     buffer += data;
     let newline;
-    while ((newline = buffer.indexOf('\n')) >= 0) { const response = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1); responses.set(response.id, response); }
+    while ((newline = buffer.indexOf('\n')) >= 0) { const response = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1); responses.set(response.id, response); diagnostic.note('mcpResponse', { response }); }
   });
-  const request = (id, method, params) => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+  const request = (id, method, params) => { diagnostic.note('mcpRequest', { id, method, tool: params?.name }); return child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`); };
   request(1, 'initialize', { protocolVersion: '2025-03-26' }); request(2, 'tools/list', {});
   await until(() => responses.has(1) && responses.has(2));
   assert.equal(responses.get(1).result.protocolVersion, '2025-03-26');
   assert.deepEqual(responses.get(2).result.tools.map((tool) => tool.name), ['send_parent', 'receive_parent']);
   request(3, 'tools/call', { name: 'receive_parent', arguments: {} });
   request(4, 'tools/call', { name: 'send_parent', arguments: { text: '子问题😀' } });
-  await until(() => responses.has(4)); assert.equal(responses.has(3), false); assert.deepEqual(f.messages, ['子问题😀']);
+  try { await until(() => responses.has(4)); }
+  catch (error) {
+    diagnostic.note('sendResponseWaitFailed', { childExitCode: child.exitCode, childSignal: child.signalCode, diagnostics });
+    throw new Error(`${error.message}\n${diagnostic.snapshot({ responses: [...responses.values()], messages: f.messages, diagnostics })}`, { cause: error });
+  }
+  assert.equal(responses.has(3), false); assert.deepEqual(f.messages, ['子问题😀']);
   request(5, 'tools/call', { name: 'send_parent', arguments: { text: 'wrong', from: 'other' } });
   await until(() => responses.has(5)); assert.equal(responses.get(5).result.isError, true); assert.equal(f.messages.length, 1);
   const delivered = f.bridge.acceptInput({ id: id(1), text: '父答复\r\n😀' });

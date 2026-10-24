@@ -163,6 +163,7 @@ async function fixture(t, mode = 'workspace') {
   let nextScenario = 0;
   function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, timeout = windows ? 120000 : 35000, nodeArgs = [] } = {}) {
     return new Promise((resolve, reject) => {
+      const began = performance.now();
       const child = spawn(process.execPath, [...nodeArgs, entry, ...args], { cwd, env: { ...environment, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
       const output = [], diagnostics = [];
       let timedOut = false;
@@ -175,7 +176,7 @@ async function fixture(t, mode = 'workspace') {
         const stdout = Buffer.concat(output).toString('utf8');
         for (const match of stdout.matchAll(/^run: ([\x21-\x7e]+)$/gm)) handles.add(match[1]);
         if (timedOut) { reject(new Error(`Fixture command timed out: ${args[0]}`)); return; }
-        resolve({ code, stdout, stderr: Buffer.concat(diagnostics).toString('utf8') });
+        resolve({ code, stdout, stderr: Buffer.concat(diagnostics).toString('utf8'), elapsedMs: Math.round(performance.now() - began) });
       });
       child.stdin.on('error', () => {}); child.stdin.end(stdin);
     });
@@ -498,8 +499,11 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
     f.start({ communication: false, readyDelay: 10300, finishImmediately: true }),
     f.start({ communication: true, readyDelay: 10300, finishImmediately: true, finalText: largeFinal }),
   ]);
-  for (const started of [forWait, forResult]) {
-    assert.equal(started.code, 1); assert.match(started.stdout, /^start: notReady\n/);
+  for (const [index, started] of [forWait, forResult].entries()) {
+    const diagnostic = JSON.stringify({ phase: 'lateReadyStart', case: index === 0 ? 'communicationFalse' : 'communicationTrue',
+      code: started.code, elapsedMs: started.elapsedMs, stdout: started.stdout, stderr: started.stderr });
+    if (process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1') t.diagnostic(`AW_SUBAGENT_COMMUNICATION_TEST ${diagnostic}`);
+    assert.equal(started.code, 1, diagnostic); assert.match(started.stdout, /^start: notReady\n/, diagnostic);
     assert.equal(field(started.stdout, 'state'), 'starting'); assert.equal(field(started.stdout, 'communication'), 'pending');
     assert.equal(field(started.stdout, 'code'), 'startupNotReady');
   }
