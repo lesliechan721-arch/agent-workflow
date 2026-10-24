@@ -2,9 +2,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
-import { atomicJson, readJson, safePath } from './files.mjs';
+import { atomicJson, atomicJsonFiles, readJson, safePath } from './files.mjs';
 import { fail, STATES, validateResult } from './contracts.mjs';
-import { currentUserIdentity, protectPrivatePath, verifyPrivatePath, verifyPrivatePaths, assertNoReparsePath, windowsOperation } from './platform.mjs';
+import { currentUserIdentity, protectPrivatePath, protectPrivatePaths, verifyPrivatePath, verifyPrivatePaths, assertNoReparseTree, windowsOperation } from './platform.mjs';
 import { processTable } from './processes.mjs';
 
 export const CACHE_MS = 3600000;
@@ -66,14 +66,18 @@ export async function createRun(context, name, workspace) {
   const handle = `aw5-${id}-${key}`;
   const directory = path.join(context.root, id);
   await privateDirectory(directory);
-  for (const part of ['events', 'outbox', 'gaps', 'adapter']) await privateDirectory(path.join(directory, part));
+  const children = ['events', 'outbox', 'gaps', 'adapter'].map((part) => path.join(directory, part));
+  for (const target of children) await fs.mkdir(target, { mode: 0o700 });
+  await protectPrivatePaths(children.map((target) => ({ target, kind: 'directory' })));
   const meta = { schema: 5, id, key, owner: context.owner, name: name ?? `agent-${id.slice(-8)}`,
     workspace, token: randomBytes(24).toString('hex'), worker: null, processes: [],
     createdAt: Date.now(), terminalAt: null, localTreeStopped: false };
   const snapshot = { state: 'starting', sequence: 1, communicationSupported: null, communicationSequence: 0 };
-  await atomicJson(path.join(directory, 'owner.json'), meta);
-  await atomicJson(path.join(directory, 'snapshot.json'), snapshot);
-  await atomicJson(path.join(directory, 'observed.json'), { sequence: 0, communicationSequence: 0, terminalConsumed: false });
+  await atomicJsonFiles([
+    { target: path.join(directory, 'owner.json'), value: meta },
+    { target: path.join(directory, 'snapshot.json'), value: snapshot },
+    { target: path.join(directory, 'observed.json'), value: { sequence: 0, communicationSequence: 0, terminalConsumed: false } },
+  ]);
   return { directory, handle, meta, snapshot };
 }
 
@@ -218,22 +222,13 @@ export async function saveObservation(run, { terminalConsumed = run.observed.ter
   run.observed = observed;
 }
 
-async function noLinkedDescendants(directory) {
-  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-    const target = path.join(directory, entry.name);
-    await assertNoReparsePath(target, entry.isDirectory() ? 'directory' : 'file');
-    if (entry.isDirectory()) await noLinkedDescendants(target);
-    else if (!entry.isFile()) fail('cleanupUnsafe', 'The run contains a foreign resource.');
-  }
-}
-
 export async function removeScratch(run) {
   if (!run.meta.localTreeStopped) return false;
   const directory = path.join(run.directory, 'adapter');
   const entry = await fs.lstat(directory).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
   if (!entry) return true;
   await verifyPrivatePath(directory, 'directory', run.meta.owner);
-  await noLinkedDescendants(directory);
+  await assertNoReparseTree(directory);
   await fs.rm(directory, { recursive: true });
   return true;
 }
@@ -245,7 +240,7 @@ export async function removeExpired(context, run) {
   if (!run.meta.worker?.started || identities.some((identity) => table.some((row) => row.pid === identity.pid && row.started === identity.started))) return false;
   // A recorded stopped tree is required: a missing root alone does not prove its descendants stopped.
   if (!run.meta.localTreeStopped) return false;
-  await noLinkedDescendants(run.directory);
+  await assertNoReparseTree(run.directory);
   await fs.rm(run.directory, { recursive: true });
   return true;
 }

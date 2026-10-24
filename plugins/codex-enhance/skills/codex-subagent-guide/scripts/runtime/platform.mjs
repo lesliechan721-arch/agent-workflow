@@ -146,6 +146,40 @@ export async function assertNoReparsePath(target, kind = 'file') {
   return target;
 }
 
+export async function assertNoReparseTree(directory) {
+  const chain = await checkedPathChain(directory, 'directory');
+  if (process.platform === 'win32') {
+    // Inspect each node before enumerating its children. A recursive listing
+    // could follow a reparse point before the check has a chance to reject it.
+    await windowsOperation([
+      'function Assert-Tree($data) {',
+      ...windowsReparseCheck,
+      'if ($data.kind -eq "directory") {',
+      "  if ($entry -isnot [IO.DirectoryInfo]) { throw 'A normal directory is required.' }",
+      '  foreach ($child in @(Get-ChildItem -Force -LiteralPath $entry.FullName)) {',
+      '    if ($child -is [IO.DirectoryInfo]) { $kind = "directory" }',
+      '    elseif ($child -is [IO.FileInfo]) { $kind = "file" }',
+      "    else { throw 'A foreign resource is not allowed.' }",
+      '    Assert-Tree @{ chain = @($data.chain) + @($child.FullName); kind = $kind }',
+      '  }',
+      '} elseif ($entry -isnot [IO.FileInfo]) {',
+      "  throw 'A normal file is required.'",
+      '}',
+      '}',
+      'Assert-Tree $data',
+      '$true | ConvertTo-Json -Compress',
+    ].join('\n'), { chain, kind: 'directory' });
+    await checkedPathChain(directory, 'directory');
+  } else {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      await assertNoReparsePath(target, entry.isDirectory() ? 'directory' : 'file');
+      if (entry.isDirectory()) await assertNoReparseTree(target);
+      else if (!entry.isFile()) fail('cleanupUnsafe', 'The run contains a foreign resource.');
+    }
+  }
+}
+
 export async function verifyPrivatePath(target, kind = 'directory', expectedOwner) {
   return verifyPrivatePaths([{ target, kind }], expectedOwner);
 }
@@ -182,25 +216,39 @@ export async function verifyPrivatePaths(resources, expectedOwner) {
 }
 
 export async function protectPrivatePath(target, kind = 'directory') {
-  const chain = await checkedPathChain(target, kind);
+  await protectPrivatePaths([{ target, kind }]);
+  return target;
+}
+
+export async function protectPrivatePaths(resources) {
+  const checked = [];
+  for (const { target, kind = 'directory' } of resources) {
+    checked.push({ target, kind, chain: await checkedPathChain(target, kind) });
+  }
+  if (checked.length === 0) return true;
   const owner = await currentUserIdentity();
   if (owner.kind === 'posix') {
-    if ((await fs.lstat(target)).uid !== owner.uid) fail('resourceOwnerMismatch', 'The runtime resource belongs to a different user.');
-    await fs.chmod(target, kind === 'directory' ? 0o700 : 0o600);
-    await verifyPrivatePath(target, kind, owner);
+    for (const { target, kind } of checked) {
+      if ((await fs.lstat(target)).uid !== owner.uid) fail('resourceOwnerMismatch', 'The runtime resource belongs to a different user.');
+      await fs.chmod(target, kind === 'directory' ? 0o700 : 0o600);
+      await verifyPrivatePath(target, kind, owner);
+    }
   } else {
-    // One fixed native host checks the full chain before and after the ACL
-    // change, then reads the ACL back. Every private write uses this boundary.
+    // Each resource keeps its full pre/post path checks and ACL readback.
+    // Only the native host is shared within this bounded write operation.
     await windowsOperation([
+      'function Protect-PrivateResource($data) {',
       ...windowsReparseCheck,
       ...windowsPrivateAclSet,
       ...windowsReparseCheck,
       ...windowsPrivateAclCheck,
+      '}',
+      'foreach ($resource in $data.resources) { Protect-PrivateResource $resource }',
       '$true | ConvertTo-Json -Compress',
-    ].join('\n'), { target, chain, kind, sid: owner.sid });
-    await checkedPathChain(target, kind);
+    ].join('\n'), { resources: checked.map((resource) => ({ ...resource, sid: owner.sid })) });
+    for (const { target, kind } of checked) await checkedPathChain(target, kind);
   }
-  return target;
+  return true;
 }
 
 function environmentValue(environment, name) {

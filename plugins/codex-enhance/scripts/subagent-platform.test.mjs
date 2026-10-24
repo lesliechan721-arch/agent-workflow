@@ -10,8 +10,9 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { promisify } from 'node:util';
-import { assertNoReparsePath, currentUserIdentity, protectPrivatePath, resolveSafeCommand, safeSpawn, verifyPrivatePath, verifyPrivatePaths, windowsOperation } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
+import { assertNoReparsePath, currentUserIdentity, protectPrivatePath, protectPrivatePaths, resolveSafeCommand, safeSpawn, verifyPrivatePath, verifyPrivatePaths, windowsOperation } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 import { observeTree, ownsProcess, processTable, stopOwnedTree } from '../skills/codex-subagent-guide/scripts/runtime/processes.mjs';
+import { removeScratch } from '../skills/codex-subagent-guide/scripts/runtime/store.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
 // Only this test uses the static platform-module alias directly. Other moved
@@ -40,14 +41,15 @@ test('native private resources verify owner access and reject links', { timeout:
   assert.equal(await verifyPrivatePath(directory, 'directory', owner), true);
   const file = path.join(directory, '中文 😀.json');
   await fs.writeFile(file, '{}\n', { mode: 0o600 });
-  await protectPrivatePath(file, 'file');
-  assert.equal(await verifyPrivatePath(file, 'file', owner), true);
   const resources = [{ target: directory, kind: 'directory' }, { target: file, kind: 'file' }];
+  await protectPrivatePaths(resources);
+  assert.equal(await verifyPrivatePath(file, 'file', owner), true);
   assert.equal(await verifyPrivatePaths(resources, owner), true);
   const link = path.join(directory, 'link');
   await fs.symlink(directory, link, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(assertNoReparsePath(link, 'directory'), { code: 'pathSymlink' });
   await assert.rejects(protectPrivatePath(link, 'directory'), { code: 'pathSymlink' });
+  await assert.rejects(protectPrivatePaths([...resources, { target: link, kind: 'directory' }]), { code: 'pathSymlink' });
   await assert.rejects(verifyPrivatePath(link, 'directory'), { code: 'pathSymlink' });
   await assert.rejects(verifyPrivatePaths([...resources, { target: link, kind: 'directory' }], owner), { code: 'pathSymlink' });
   if (owner.kind === 'posix') {
@@ -66,10 +68,34 @@ test('native private resources verify owner access and reject links', { timeout:
       await windowsOperation(['$acl = Get-Acl -LiteralPath $data.target', mutation, 'Set-Acl -LiteralPath $data.target -AclObject $acl', '$true | ConvertTo-Json -Compress'].join('\n'), { target: file });
       await assert.rejects(verifyPrivatePath(file, 'file'), { code: 'platformOperationFailed' });
       await assert.rejects(verifyPrivatePaths(resources, owner), { code: 'platformOperationFailed' });
-      await protectPrivatePath(file, 'file');
+      await protectPrivatePaths(resources);
       assert.equal(await verifyPrivatePath(file, 'file', owner), true);
     }
   }
+});
+
+// Test Value Gate: a native tree walk must reject a linked descendant before
+// deletion, preserve its target, and remove the same ordinary tree after repair.
+test('native scratch cleanup preserves a linked sibling and rechecks repaired descendants', { timeout: 40000 }, async (t) => {
+  const directory = await temporary(t);
+  await protectPrivatePath(directory);
+  const scratch = path.join(directory, 'adapter');
+  const nested = path.join(scratch, 'nested');
+  const sibling = path.join(directory, 'sibling');
+  for (const target of [scratch, nested, sibling]) await fs.mkdir(target, { mode: 0o700 });
+  await protectPrivatePaths([scratch, nested, sibling].map((target) => ({ target, kind: 'directory' })));
+  await fs.writeFile(path.join(nested, '中文 😀.txt'), 'scratch');
+  await fs.writeFile(path.join(sibling, 'preserved.txt'), 'preserve');
+  const linked = path.join(nested, 'linked');
+  await fs.symlink(sibling, linked, process.platform === 'win32' ? 'junction' : 'dir');
+  const run = { directory, meta: { localTreeStopped: true, owner: await currentUserIdentity() } };
+  await assert.rejects(removeScratch(run), { code: process.platform === 'win32' ? 'platformOperationFailed' : 'pathSymlink' });
+  assert.equal(await fs.readFile(path.join(nested, '中文 😀.txt'), 'utf8'), 'scratch');
+  assert.equal(await fs.readFile(path.join(sibling, 'preserved.txt'), 'utf8'), 'preserve');
+  await fs.unlink(linked);
+  assert.equal(await removeScratch(run), true);
+  assert.equal(await fs.lstat(scratch).catch(() => null), null);
+  assert.equal(await fs.readFile(path.join(sibling, 'preserved.txt'), 'utf8'), 'preserve');
 });
 
 // Test Value Gate: prompts, Unicode, shell metacharacters and embedded line

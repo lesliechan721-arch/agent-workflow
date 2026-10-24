@@ -5395,10 +5395,12 @@ describe('five namespaced write commands', () => {
     });
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
+    // Short secrets are covered by plugin-scripts tests; receipt hashes can contain them by chance.
+    const privateToken = 'config-pre-apply-private-token';
     await writePluginConfigStore({
       sourceId: 'team', sourceIdentity, logicalIdentity,
       pluginName: 'demo', scope: 'user', cwd: isolation.layout.fixtureCwd,
-      env: isolation.env, values: { token: 'abc' },
+      env: isolation.env, values: { token: privateToken },
     });
     const nativeCliRunner = vi.fn(async () => ({
       exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '',
@@ -5430,7 +5432,7 @@ describe('five namespaced write commands', () => {
     const serializedReceipt = JSON.stringify(failed.payload);
     expect(serializedReceipt).toContain('prefix[REDACTED]Suffix config preApply failed');
     for (const privateValue of [
-      'abc',
+      privateToken,
       isolation.layout.fixtureCwd,
       isolation.env.AW_HOME!,
     ]) {

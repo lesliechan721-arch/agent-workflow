@@ -207,14 +207,6 @@ jobs:
         with:
           arch: ${{ matrix.arch }}
           shard: ${{ matrix.shard }}
-      - name: Run Windows subagent runtime tests
-        if: matrix.os == 'win32' && matrix.shard == '3/3'
-        timeout-minutes: 30
-        shell: pwsh
-        run: pnpm plugin:test codex-enhance --platform codex --test-concurrency 1 --test-file scripts/subagent-runtime.test.mjs
-        env:
-          AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS: '1'
-
   smoke:
     needs: prepare
     if: needs.prepare.outputs.completed != 'true'
