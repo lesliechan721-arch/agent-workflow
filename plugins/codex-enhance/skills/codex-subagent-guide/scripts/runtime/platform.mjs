@@ -164,15 +164,19 @@ export async function verifyPrivatePaths(resources, expectedOwner) {
       if (stat.uid !== owner.uid || (stat.mode & 0o777) !== (kind === 'directory' ? 0o700 : 0o600)) fail('resourceNotPrivate', 'A runtime resource must have private owner access.');
     }
   } else {
-    // Verify all resources for one read in one native host. Each resource keeps
-    // its complete reparse, owner and ACL checks; no evidence survives the call.
+    // Shared ancestors need one reparse check in this native call. Every
+    // resource still gets its own owner/ACL check; no evidence survives the call.
     await windowsOperation([
+      ...windowsReparseCheck,
       'function Assert-PrivateResource($data) {',
-      ...windowsReparseCheck, ...windowsPrivateAclCheck,
+      ...windowsPrivateAclCheck,
       '}',
       'foreach ($resource in $data.resources) { Assert-PrivateResource $resource }',
       '$true | ConvertTo-Json -Compress',
-    ].join('\n'), { resources: checked.map((resource) => ({ ...resource, sid: owner.sid })) });
+    ].join('\n'), {
+      chain: [...new Set(checked.flatMap((resource) => resource.chain))],
+      resources: checked.map(({ target, kind }) => ({ target, kind, sid: owner.sid })),
+    });
   }
   return true;
 }

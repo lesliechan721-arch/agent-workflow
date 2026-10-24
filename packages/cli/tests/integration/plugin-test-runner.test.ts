@@ -530,6 +530,9 @@ describe('plugin script test runner', () => {
         '  assert.equal(process.env.AW_PLUGIN_SCOPE, "project");',
         '  assert.equal(context.platform, process.env.AW_PLUGIN_PLATFORM);',
         '  assert.equal(process.cwd(), context.cwd);',
+        '  assert.equal(process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS, "1");',
+        '  assert.equal(process.env.AW_TEST_UNRELATED_HOST_VALUE, undefined);',
+        '  assert.equal(process.env.AW_SUBAGENT_LONG_RUN_MS, undefined);',
         '  assert.equal(os.homedir(), path.join(testTempDir, "home"));',
         '  assert.equal(os.tmpdir(), path.join(testTempDir, "tmp"));',
         '  await writeFile(path.join(os.homedir(), "home-marker.txt"), "ok", "utf8");',
@@ -569,6 +572,9 @@ describe('plugin script test runner', () => {
         PATH: process.env.PATH ?? '',
         HOME: path.join(repoRoot, 'host-home'),
         TMPDIR: path.join(repoRoot, 'host-tmp'),
+        AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS: '1',
+        AW_TEST_UNRELATED_HOST_VALUE: 'private-host-value',
+        AW_SUBAGENT_LONG_RUN_MS: '1805000',
       } as NodeJS.ProcessEnv,
     });
 

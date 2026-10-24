@@ -33,7 +33,6 @@ const packageRoot = fileURLToPath(new URL('.', import.meta.url));
 const windows = process.platform === 'win32';
 const supported = ['darwin', 'linux', 'win32'].includes(process.platform);
 const testTimeoutMs = windows ? 120000 : 15000;
-const explicitDeadlineMs = windows ? 30000 : 500;
 const answer = 'Complete **answer**.\n第二行。';
 
 // Test Value Gate: real adapter and backend processes protect actual JSONL,
@@ -82,6 +81,7 @@ await capture({args,cwd:process.cwd(),environment:{HOME:process.env.HOME,NORMAL_
 setTimeout(()=>process.exit(9),${windows ? 90000 : 12000}).unref();
 const emit = value => process.stdout.write(JSON.stringify(value)+'\\n');
 if (backend === 'oracle') {
+ if(scenario==='hold')process.on('SIGINT',async()=>{await capture({signal:'SIGINT'});process.exit(0);});
  let input=''; for await(const chunk of process.stdin) input+=chunk;
  await capture({input});
  if(scenario==='hold') await new Promise(resolve=>setTimeout(resolve,${windows ? 75000 : 8000}));
@@ -204,7 +204,16 @@ input.on('close',()=>{clearTimeout(timer);setImmediate(()=>process.exit(scenario
     return { child, send, waitFor, frames, exit };
   };
   const captured = async () => (await fs.readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
-  return { request, start, captured, capture, workspace, home };
+  const waitForCaptured = async (predicate) => {
+    const deadline = Date.now() + (windows ? 90000 : 6000);
+    while (Date.now() < deadline) {
+      const values = await captured();
+      if (values.some(predicate)) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('The backend did not receive its initial input.');
+  };
+  return { request, start, captured, waitForCaptured, capture, workspace, home };
 }
 
 for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: installed v5 preserves input, configuration and real exit`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
@@ -354,30 +363,22 @@ for (const backend of ['codex', 'claude']) for (const scenario of ['no terminal'
   assert.equal((await run.exit).code, 0);
 });
 
-for (const backend of ['codex', 'claude']) for (const stop of ['requested', 'eof', 'deadline']) test(`${backend}: ${stop} stops a backend while generation waits`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
+// Shared stop causes and timing are covered through adapterMain's JSONL entry
+// in subagent-adapter-common.test.mjs. Each backend keeps its native stop wire.
+for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: requested stop reaches a waiting backend`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t, backend, 'hold');
-  if (stop === 'deadline') f.request.run.deadlineAt = Date.now() + explicitDeadlineMs;
-  const run = f.start(); run.send(f.request); await run.waitFor('ready');
-  if (stop === 'requested') run.send({ type: 'stop', reason: 'requested' });
-  if (stop === 'eof') run.child.stdin.end();
-  const result = await run.waitFor('result');
-  assert.notEqual(result.state, 'completed');
-  assert.equal(result.code, stop === 'deadline' ? 'adapterDeadlineExceeded' : stop === 'eof' ? 'channelClosed' : 'remoteStopUnconfirmed');
-  assert.equal((await run.exit).code, 0);
-});
-
-test('Codex: a fixed 30-day deadline stays open until an explicit stop', { skip: !supported, timeout: testTimeoutMs }, async (t) => {
-  const f = await fixture(t, 'codex', 'hold');
-  f.request.run.deadlineAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
-  const run = f.start(); run.send(f.request); await run.waitFor('ready');
-  await new Promise((resolve) => setTimeout(resolve, 150));
-  assert.equal(run.frames.some((frame) => frame.type === 'closing' || frame.type === 'result'), false);
+  const run = f.start(); run.send(f.request);
+  assert.equal((await run.waitFor('ready')).communicationSupported, backend !== 'oracle');
+  await f.waitForCaptured((value) => backend === 'codex' ? value.input?.method === 'turn/start' : backend === 'claude' ? value.input?.type === 'user' : typeof value.input === 'string');
   run.send({ type: 'stop', reason: 'requested' });
   const result = await run.waitFor('result');
+  assert.notEqual(result.state, 'completed');
   assert.equal(result.code, 'remoteStopUnconfirmed');
-  const closed = await run.exit;
-  assert.equal(closed.code, 0);
-  assert.doesNotMatch(closed.diagnostic, /TimeoutOverflowWarning/);
+  assert.equal((await run.exit).code, 0);
+  const values = await f.captured();
+  if (backend === 'codex') assert.equal(values.filter((value) => value.input?.method === 'turn/interrupt').length, 1);
+  else if (backend === 'claude') assert.equal(result.backendExitCode, 0);
+  else if (!windows) assert.equal(values.filter((value) => value.signal === 'SIGINT').length, 1);
 });
 
 test('Codex: explicit unmappable options fail before starting the backend', { skip: !supported, timeout: testTimeoutMs }, async (t) => {
@@ -455,16 +456,6 @@ for (const scenario of ['no terminal', 'nonzero']) test(`Oracle: ${scenario} can
   const f = await fixture(t, 'oracle', scenario); const run = f.start(); run.send(f.request);
   const result = await run.waitFor('result'); assert.equal(result.state, 'unknown');
   if (scenario === 'nonzero') assert.equal(result.backendExitCode, 7);
-  assert.equal((await run.exit).code, 0);
-});
-
-for (const stop of ['requested', 'eof', 'deadline']) test(`Oracle: unsupported communication still responds to ${stop}`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
-  const f = await fixture(t, 'oracle', 'hold'); if (stop === 'deadline') f.request.run.deadlineAt = Date.now() + explicitDeadlineMs;
-  const run = f.start(); run.send(f.request); assert.equal((await run.waitFor('ready')).communicationSupported, false);
-  if (stop === 'requested') run.send({ type: 'stop', reason: 'requested' });
-  if (stop === 'eof') run.child.stdin.end();
-  const result = await run.waitFor('result'); assert.notEqual(result.state, 'completed');
-  assert.equal(result.code, stop === 'deadline' ? 'adapterDeadlineExceeded' : stop === 'eof' ? 'channelClosed' : 'remoteStopUnconfirmed');
   assert.equal((await run.exit).code, 0);
 });
 

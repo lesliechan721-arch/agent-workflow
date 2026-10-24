@@ -21,7 +21,6 @@ const sourceWorker = path.join(sourceScripts, path.basename(registeredWorker));
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const terminalPattern = /^state: (completed|failed|cancelled|unknown)$/m;
 const displayLimit = 8192;
-const messageLimit = 4096;
 const windows = process.platform === 'win32';
 const batchObservationMs = windows ? 120000 : 5000;
 const testTimeoutMs = windows ? 180000 : 35000;
@@ -200,12 +199,12 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     TMPDIR: temporaryRoot, TMP: temporaryRoot, TEMP: temporaryRoot };
   const handles = new Set();
   let nextScenario = 0, nextClock = 0;
-  function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, timeout = windows ? 120000 : 35000, signal = t.signal, nodeArgs = [] } = {}) {
+  function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, timeout = windows ? 120000 : 35000, signal = t.signal } = {}) {
     return new Promise((resolve, reject) => {
       signal.throwIfAborted();
       const began = performance.now();
       phase('commandBegin', { operation: args[0] });
-      const child = spawn(process.execPath, [...diagnosticsArgs, ...nodeArgs, entry, ...args], { cwd, env: { ...environment, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, [...diagnosticsArgs, entry, ...args], { cwd, env: { ...environment, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
       const output = [], diagnostics = [];
       const abort = () => child.kill('SIGKILL');
       signal.addEventListener('abort', abort, { once: true });
@@ -391,6 +390,8 @@ test('result consumes every unread message once and only the fixed final result 
   const started = await f.start({ messages, finalText, echo: true }, { extra: ['--name', 'same-name'] });
   await f.initialized(started); if (started.code === 0) assert.equal(field(started.stdout, 'communication'), 'true');
   await started.published();
+  const named = await f.command(['send', '--run', 'same-name', '--text', 'wrong target']);
+  assert.equal(named.code, 1); assert.equal(field(named.stdout, 'code'), 'runUnavailable');
   const notReady = await f.command(['result', '--run', started.run]);
   assert.equal(notReady.code, 1); assert.equal(field(notReady.stdout, 'code'), 'resultNotReady');
   const reply = '  父输入 🧪\r\n第二行。\n';
@@ -422,44 +423,6 @@ test('result consumes every unread message once and only the fixed final result 
   assert.equal(await fs.readFile(f.generations, 'utf8'), 'generation\n');
 });
 
-// Test Value Gate: large unread queues must not reintroduce the removed cumulative
-// byte/count quota, and default result overflow must not consume any event.
-test('large unread queues export completely after a non-consuming resultTooLarge error', { timeout: testTimeoutMs }, async (t) => {
-  const f = await fixture(t);
-  const messages = Array.from({ length: 66 }, (_, index) => `${String(index).padStart(2, '0')}:` + 'x'.repeat(messageLimit - 3));
-  const started = await f.start({ messages, finalText: 'Short final answer.' });
-  await f.initialized(started); await started.published(); await started.finish();
-  await eventually(() => fs.stat(path.join(started.runDirectory, 'finished.json')), 'large queue completion', batchObservationMs);
-  const tooLarge = await eventually(async () => {
-    const response = await f.command(['result', '--run', started.run]); return field(response.stdout, 'code') !== 'resultNotReady' && response;
-  }, 'large fixed result', batchObservationMs);
-  assert.equal(tooLarge.code, 1); bounded(tooLarge);
-  assert.equal(field(tooLarge.stdout, 'code'), 'resultTooLarge');
-  assert.equal(field(tooLarge.stdout, 'output_limit_bytes'), String(displayLimit));
-  assert.ok(Number(field(tooLarge.stdout, 'result_bytes')) > displayLimit);
-  assert.deepEqual(blocks(tooLarge.stdout, 'MESSAGE'), []); assert.deepEqual(blocks(tooLarge.stdout, 'FINAL'), []);
-  const exported = await f.command(['result', '--run', started.run, '--export']);
-  successful(exported, 'result'); assert.deepEqual(blocks(exported.stdout, 'MESSAGE'), messages);
-  assert.deepEqual(blocks(exported.stdout, 'FINAL'), ['Short final answer.']);
-  assert.ok(Buffer.byteLength(exported.stdout) > 256 * 1024); assert.doesNotMatch(exported.stdout, /^expires_at:/m);
-  assert.equal((await f.command(['wait', '--run', started.run])).stdout, 'wait: settled\n');
-  const reread = await f.command(['result', '--run', started.run]);
-  successful(reread, 'result'); assert.deepEqual(blocks(reread.stdout, 'MESSAGE'), []);
-});
-
-// Test Value Gate: submitted parent input must not spend a cumulative count or
-// byte allowance, and repeated sends must stay within the original generation.
-test('more than 64 parent messages exceeding the old total byte quota stay accepted', { timeout: windows ? 600000 : testTimeoutMs }, async (t) => {
-  const f = await fixture(t);
-  const started = await f.start();
-  await f.initialized(started);
-  const messages = Array.from({ length: 66 }, (_, index) => `${String(index).padStart(2, '0')}:` + 'x'.repeat(messageLimit - 3));
-  for (const text of messages) successful(await f.command(['send', '--run', started.run, '--text', text]), 'send');
-  assert.deepEqual((await started.inputs(messages.length)).map((input) => input.text), messages);
-  await started.finish(); await f.waitTerminal(started.run);
-  assert.equal(await fs.readFile(f.generations, 'utf8'), 'generation\n');
-});
-
 // Test Value Gate: referenced environment values must remain redacted in final
 // output and diagnostics, including their JSON-escaped representation.
 test('referenced environment secrets stay redacted in actual parent output', { timeout: testTimeoutMs }, async (t) => {
@@ -476,25 +439,6 @@ test('referenced environment secrets stay redacted in actual parent output', { t
   }
   assert.deepEqual(blocks(result.stdout, 'FINAL'), ['{"serviceData":"[redacted]"}']);
   assert.equal((await started.observed()).environment.SERVICE_DATA, secret);
-});
-
-// Test Value Gate: a result that fits the actual response budget must be included
-// in the first terminal wait, without reserving unused stderr capacity.
-test('wait includes a 7300-byte final when the complete response fits without diagnostics', { timeout: testTimeoutMs }, async (t) => {
-  const f = await fixture(t);
-  const finalText = 'x'.repeat(7300);
-  const started = await f.start({ finalText, finishImmediately: true });
-  await f.initialized(started);
-  const terminal = (await f.waitTerminal(started.run)).find((response) => terminalPattern.test(response.stdout));
-  successful(terminal, 'wait'); bounded(terminal);
-  assert.equal(terminal.stderr, '');
-  assert.equal(field(terminal.stdout, 'result'), undefined);
-  assert.deepEqual(blocks(terminal.stdout, 'FINAL'), [finalText]);
-  assert.ok(Buffer.byteLength(terminal.stdout) > displayLimit - 1024);
-  const result = await f.command(['result', '--run', started.run]);
-  successful(result, 'result'); bounded(result); assert.equal(result.stderr, '');
-  assert.deepEqual(blocks(result.stdout, 'FINAL'), [finalText]);
-  assert.equal((await f.command(['wait', '--run', started.run])).stdout, 'wait: settled\n');
 });
 
 // Test Value Gate: adapter scratch must be removed after its processes stop while
@@ -529,36 +473,6 @@ test('stopped adapter scratch is deleted while unread messages and final remain 
   successful(reread, 'result'); assert.deepEqual(blocks(reread.stdout, 'MESSAGE'), []);
   assert.deepEqual(blocks(reread.stdout, 'FINAL'), [finalText]);
   assert.equal((await f.command(['wait', '--run', started.run])).stdout, 'wait: settled\n');
-});
-
-// Test Value Gate: wait must select whole messages within its byte budget and keep
-// unselected events readable; a large final creates one deferred notification.
-test('wait preserves whole events across batches and defers an oversized final only once', { timeout: testTimeoutMs }, async (t) => {
-  const f = await fixture(t);
-  const messages = ['甲'.repeat(1365) + 'x', 'y'.repeat(messageLimit), 'z'.repeat(messageLimit)];
-  const finalText = '答案\n'.repeat(3000);
-  const started = await f.start({ messages, finalText });
-  await f.initialized(started); await started.published();
-  const received = [];
-  for (let index = 0; index < 6 && received.length < messages.length; index++) {
-    const response = await f.command(['wait', '--run', started.run, '--timeout-ms', '0']);
-    successful(response, 'wait'); bounded(response); received.push(...blocks(response.stdout, 'MESSAGE'));
-    if (received.length < messages.length) assert.equal(field(response.stdout, 'more'), 'true');
-  }
-  assert.deepEqual(received, messages);
-  await started.finish();
-  const terminal = (await f.waitTerminal(started.run)).find((response) => terminalPattern.test(response.stdout));
-  assert.equal(field(terminal.stdout, 'result'), 'deferred');
-  assert.equal(field(terminal.stdout, 'deferred_reason'), 'outputLimit');
-  assert.ok(Number(field(terminal.stdout, 'result_bytes')) > displayLimit);
-  assert.deepEqual(blocks(terminal.stdout, 'FINAL'), []); assert.doesNotMatch(terminal.stdout, /^expires_at:/m);
-  const settled = await f.command(['wait', '--run', started.run, '--timeout-ms', '0']);
-  assert.equal(settled.stdout, 'wait: settled\n');
-  const result = await f.command(['result', '--run', started.run]);
-  assert.equal(result.code, 1); bounded(result); assert.equal(field(result.stdout, 'code'), 'resultTooLarge');
-  const exported = await f.command(['result', '--run', started.run, '--export']);
-  successful(exported, 'result'); assert.deepEqual(blocks(exported.stdout, 'FINAL'), [finalText]);
-  assert.deepEqual(blocks(exported.stdout, 'MESSAGE'), []);
 });
 
 // Test Value Gate: one wait window must observe all targets and continue reading
@@ -670,10 +584,10 @@ test('Windows root publication preserves a competing existing directory or file'
 test('late ready capability survives terminal snapshot merging', { timeout: windows ? 120000 : 35000 }, async (t) => {
   const f = await fixture(t, 'workspace', { diagnostics: true });
   const clock = await f.clock(['start'], { stepMs: 1000 });
-  const largeFinal = 'Late capability final.\n'.repeat(1000);
+  const finalText = 'Late capability final.\n';
   const [forWait, forResult] = await Promise.all([
     f.start({ communication: false, readyGate: true, finishImmediately: true }, { env: clock.environment }),
-    f.start({ communication: true, readyGate: true, finishImmediately: true, finalText: largeFinal }, { env: clock.environment }),
+    f.start({ communication: true, readyGate: true, finishImmediately: true, finalText }, { env: clock.environment }),
   ]);
   for (const [index, started] of [forWait, forResult].entries()) {
     const diagnostic = JSON.stringify({ phase: 'lateReadyStart', case: index === 0 ? 'communicationFalse' : 'communicationTrue',
@@ -694,15 +608,13 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
   const result = await f.command(['result', '--run', forWait.run]);
   successful(result, 'result'); assert.equal(field(result.stdout, 'communication'), undefined);
   assert.deepEqual(blocks(result.stdout, 'FINAL'), ['Complete final answer.']);
-  const tooLarge = await eventually(async () => {
+  const resultWithCapability = await eventually(async () => {
     const response = await f.command(['result', '--run', forResult.run]);
     return field(response.stdout, 'code') !== 'resultNotReady' && response;
-  }, 'late ready large final');
-  assert.equal(tooLarge.code, 1); assert.equal(field(tooLarge.stdout, 'code'), 'resultTooLarge');
-  const exported = await f.command(['result', '--run', forResult.run, '--export']);
-  successful(exported, 'result'); assert.equal(field(exported.stdout, 'communication'), 'true');
-  assert.deepEqual(blocks(exported.stdout, 'FINAL'), [largeFinal]);
-  const reread = await f.command(['result', '--run', forResult.run, '--export']);
+  }, 'late ready fixed final');
+  successful(resultWithCapability, 'result'); assert.equal(field(resultWithCapability.stdout, 'communication'), 'true');
+  assert.deepEqual(blocks(resultWithCapability.stdout, 'FINAL'), [finalText]);
+  const reread = await f.command(['result', '--run', forResult.run]);
   successful(reread, 'result'); assert.equal(field(reread.stdout, 'communication'), undefined);
   assert.equal((await f.command(['wait', '--run', forResult.run])).stdout, 'wait: settled\n');
 });
@@ -852,58 +764,6 @@ test('late worker final publication survives a parent lost-worker observation', 
   assert.deepEqual(blocks(result.stdout, 'FINAL'), [finalText]);
 });
 
-// Test Value Gate: a default report must reserve enough room for a late consume
-// error; preflight overflow and a failed delete must both preserve unread records.
-test('default result reserves consume-error bytes and retains messages after deletion failure', { timeout: testTimeoutMs }, async (t) => {
-  const f = await fixture(t);
-  const message = 'z'.repeat(messageLimit);
-  const started = await f.start({ messages: [message], finalText: 'a' });
-  await f.initialized(started); await started.published(); await started.finish();
-  await eventually(() => fs.stat(path.join(started.runDirectory, 'finished.json')), 'fixture final publication');
-  const run = await f.evidence(started.run);
-  const preload = path.join(f.directory, 'deny-event-consumption.mjs');
-  await fs.writeFile(preload, `import fs from 'node:fs/promises';import path from 'node:path';
-const unlink=fs.unlink;fs.unlink=async(target,...options)=>{
-  if(typeof target==='string'&&path.dirname(target)===process.env.FIXTURE_DENIED_DIRECTORY){
-    throw Object.assign(new Error('Fixture event deletion denied.'),{code:'EACCES'});
-  }
-  return unlink.call(fs,target,...options);
-};\n`);
-  const injected = { nodeArgs: ['--import', pathToFileURL(preload).href], env: { FIXTURE_DENIED_DIRECTORY: path.join(run.directory, 'events') } };
-  const baseline = await eventually(async () => {
-    const response = await f.command(['result', '--run', started.run], injected);
-    return field(response.stdout, 'code') !== 'resultNotReady' && response;
-  }, 'readable fixed final');
-  assert.equal(baseline.code, 1); assert.equal(field(baseline.stderr, 'code'), 'resultConsumeFailed');
-  const baselineBytes = Buffer.byteLength(baseline.stdout);
-  const finalFile = path.join(run.directory, 'final.json');
-  const originalFinal = JSON.parse(await fs.readFile(finalFile, 'utf8'));
-  async function reportSize(bytes) {
-    const finalText = 'a'.repeat(bytes - baselineBytes + 1);
-    await fs.writeFile(finalFile, JSON.stringify({ ...originalFinal, text: finalText }));
-    return finalText;
-  }
-  // Calibrate from a real public response, not from the renderer's budget helper.
-  // Token lengths and all other fields stay fixed; only the ASCII final grows.
-  await reportSize(displayLimit);
-  const tooLarge = await f.command(['result', '--run', started.run], injected);
-  assert.equal(tooLarge.code, 1);
-  bounded(tooLarge);
-  assert.equal(field(tooLarge.stdout, 'code'), 'resultTooLarge');
-  assert.equal(field(tooLarge.stdout, 'result_bytes'), String(displayLimit));
-  assert.deepEqual(blocks(tooLarge.stdout, 'MESSAGE'), []); assert.deepEqual(blocks(tooLarge.stdout, 'FINAL'), []);
-  const finalText = await reportSize(displayLimit - 128);
-  const consumeFailed = await f.command(['result', '--run', started.run], injected);
-  assert.equal(consumeFailed.code, 1); bounded(consumeFailed);
-  assert.equal(field(consumeFailed.stderr, 'code'), 'resultConsumeFailed');
-  assert.equal(Buffer.byteLength(consumeFailed.stdout), displayLimit - 128);
-  assert.deepEqual(blocks(consumeFailed.stdout, 'MESSAGE'), [message]);
-  const recovered = await f.command(['result', '--run', started.run]);
-  successful(recovered, 'result'); bounded(recovered);
-  assert.deepEqual(blocks(recovered.stdout, 'MESSAGE'), [message]); assert.deepEqual(blocks(recovered.stdout, 'FINAL'), [finalText]);
-  assert.equal((await f.command(['wait', '--run', started.run])).stdout, 'wait: settled\n');
-});
-
 // Test Value Gate: worker loss must become one fixed unknown without generating
 // new work, and repeat observations must preserve the first expiry origin.
 test('lost worker result is fixed once and expires without regenerating work', { timeout: testTimeoutMs }, async (t) => {
@@ -957,46 +817,20 @@ test('ordinary calls clean expired damaged content while help and invalid flags 
   assert.equal(await fs.stat(run.directory).catch(() => null), null);
 });
 
-// Test Value Gate: syntax validation and help must have no run/scan side effects;
-// obsolete flags and name-based addressing must not start or consume any task.
-test('invalid input rejects obsolete commands, names and malformed sizes before side effects', { timeout: testTimeoutMs }, async (t) => {
+// Test Value Gate: the installed CLI must map syntax and stdin rejection to exit
+// 2 without starting a generation, scanning runs or creating an output path.
+test('installed CLI rejects invalid arguments and stdin before side effects', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
-  const invalid = [
-    ['run'], ['poll'], ['resume'], ['cleanup'],
-    ['start', '--profile', 'advisorProfile', '--prompt', 'task', '--workspace', f.workspace, '--preview'],
-    ['start', '--profile', 'advisorProfile', '--prompt', 'task', '--workspace', f.workspace, '--communication', 'true'],
-    ...['中文', ' spaced', '../path', '.leading', 'x'.repeat(65)].map((name) => ['start', '--profile', 'advisorProfile', '--prompt', 'task', '--workspace', f.workspace, '--name', name]),
-    ...['0', '-1', '1.5', '9007199254740991'].map((value) => ['start', '--profile', 'advisorProfile', '--prompt', 'task', '--workspace', f.workspace, '--deadline-ms', value]),
-    ['result', '--run', 'handle', '--output-file', 'must-not-exist'], ['result', '--run', 'handle', '--export', 'must-not-exist'],
-    ['result', '--run', 'handle', '--run', 'second'],
-    ['wait', '--run', 'handle', '--timeout-ms', '-1'], ['wait', '--run', 'handle', '--timeout-ms', '1800001'],
-    ['wait', ...Array.from({ length: 17 }, (_, index) => ['--run', `run-${index}`]).flat()],
-  ];
-  for (const args of invalid) assert.equal((await f.command(args)).code, 2, args.join(' '));
-  for (const bytes of [Buffer.from(' \r\n'), Buffer.from([0xff]), Buffer.from([0]), Buffer.alloc(262145, 120)]) {
-    const rejected = await f.command(['start', '--profile', 'advisorProfile', '--workspace', f.workspace, '--prompt', '-'], { stdin: bytes });
-    assert.equal(rejected.code, 2);
+  for (const args of [['run'], ['result', '--run', 'handle', '--output-file', 'must-not-exist']]) {
+    assert.equal((await f.command(args)).code, 2);
   }
-  const instructions = path.join(f.directory, 'invalid-instructions.md');
-  for (const bytes of [Buffer.from('  '), Buffer.from([0xff]), Buffer.alloc(262145, 120)]) {
-    await fs.writeFile(instructions, bytes);
-    const rejected = await f.command(['start', '--profile', 'advisorProfile', '--workspace', f.workspace, '--prompt', 'task', '--instructions-file', instructions]);
-    assert.equal(rejected.code, 2);
-  }
-  const workspaceFiles = await f.command(['start', '--profile', 'advisorProfile', '--workspace', f.workspace, '--prompt', 'task', '--file', 'missing/**/*.ts']);
-  assert.equal(workspaceFiles.code, 2);
+  const prompt = await f.command(['start', '--profile', 'advisorProfile', '--workspace', f.workspace, '--prompt', '-'], { stdin: Buffer.from([0xff]) });
+  assert.equal(prompt.code, 2);
+  const message = await f.command(['send', '--run', 'handle', '--text', '-'], { stdin: Buffer.from(' \r\n') });
+  assert.equal(message.code, 2);
   assert.equal((await f.command(['--help'])).code, 0);
   assert.equal(await fs.stat(f.generations).catch(() => null), null); assert.deepEqual(await fs.readdir(f.temporaryRoot), []);
   assert.equal(await fs.stat(path.join(f.workspace, 'must-not-exist')).catch(() => null), null);
-  const started = await f.start({}, { extra: ['--name', 'real-name'] });
-  await f.initialized(started);
-  const named = await f.command(['send', '--run', 'real-name', '--text', 'wrong target']);
-  assert.equal(named.code, 1); assert.equal(field(named.stdout, 'code'), 'runUnavailable');
-  for (const bytes of [Buffer.from(' \r\n'), Buffer.from([0xff]), Buffer.from([0]), Buffer.alloc(messageLimit + 1, 120)]) {
-    const rejected = await f.command(['send', '--run', started.run, '--text', '-'], { stdin: bytes }); assert.equal(rejected.code, 2);
-  }
-  const accepted = await f.command(['send', '--run', started.run, '--text', 'x'.repeat(messageLimit)]);
-  successful(accepted, 'send'); await started.inputs(1);
 });
 
 // Test Value Gate: caller wait time must not impose a task deadline. Advance

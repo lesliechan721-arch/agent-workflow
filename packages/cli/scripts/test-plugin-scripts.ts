@@ -662,6 +662,11 @@ async function runPreparedPluginTests(options: {
       bundleRoot,
     });
     spawnEnv.NODE_PATH = '';
+    // This opt-in belongs to the test runner, not the plugin lifecycle's
+    // environment contract. Keep all other host variables isolated.
+    if (options.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1') {
+      spawnEnv.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS = '1';
+    }
 
     const testFiles = copiedEntries.map((entry) => path.join(bundleRoot, entry));
     const started = performance.now();

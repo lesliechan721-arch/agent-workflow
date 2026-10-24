@@ -103,8 +103,8 @@ test('Windows host failures retain only safe execution and parse diagnostics', a
   }
 });
 
-// Test Value Gate: opening an owned run checks all private resources with one
-// native round trip, while still rejecting an unverifiable owner record.
+// Test Value Gate: opening an owned run checks shared path segments once in
+// one native round trip, while still rejecting an unverifiable owner record.
 test('owned run reads batch native verification without caching ownership', async (t) => {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-owner-batch-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -113,10 +113,12 @@ test('owned run reads batch native verification without caching ownership', asyn
   await fs.mkdir(directory);
   let calls = 0;
   let reject = false;
+  const verifications = [];
   const api = windowsHostFixture(t, async (_command, _args, options) => {
     const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
     if (!input.resources) return { stdout: JSON.stringify('S-1-5-21-123-456-789-1001') };
     calls++;
+    verifications.push(input);
     if (reject) throw new Error('unsafe native resource');
     return { stdout: 'true' };
   });
@@ -126,7 +128,16 @@ test('owned run reads batch native verification without caching ownership', asyn
   const { readOwner } = await import('../skills/codex-subagent-guide/scripts/runtime/store.mjs');
   assert.deepEqual((await readOwner({ root, owner }, id)).meta, meta);
   assert.equal(calls, 1);
+  const expectedChain = [];
+  for (let target = path.join(directory, 'owner.json');; target = path.dirname(target)) {
+    expectedChain.unshift(target);
+    if (target === path.dirname(target)) break;
+  }
+  assert.deepEqual(verifications[0].chain, expectedChain);
+  assert.deepEqual(verifications[0].resources.map(({ target }) => target), [root, directory, path.join(directory, 'owner.json')]);
+  t.diagnostic(`Windows reparse checks per owned run read: ${3 * expectedChain.length - 3} -> ${expectedChain.length}; native hosts: 1`);
   reject = true;
   await assert.rejects(readOwner({ root, owner }, id), { code: 'runUnavailable' });
   assert.equal(calls, 2);
+  assert.deepEqual(verifications[1], verifications[0]);
 });
