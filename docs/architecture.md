@@ -528,7 +528,7 @@ Portable 输出的每个 Skill 保留实际来源插件；依赖 Skill 不能归
 
 自动 beta 的源码 tag 是 annotated tag，message 以 `Automatic beta` 开头，并包含 `AW-CI: <run-id>/<attempt>`。候选发布只在该记录指向同仓库 `ci.yml` 的 main push、SHA 等于已验证的候选 main 来源，且该次 attempt 的全部必要 CI jobs 成功时复用源码验证；此时 main 的 beta job 本身可以仍在运行。复用时仍构建精确候选、验证版本和产物，并执行完整的候选 smoke。手动候选、稳定版、记录缺失、检查失败或缺失以及 API 查询失败都运行所选产品的完整 release verify。CI job 名称变化时同步更新 `actions-inspection.mjs` 的必要检查列表；未更新会回退到完整验证。
 
-插件确定性测试使用共享的 `plugin-tests.yml`，覆盖 Linux x64、macOS arm64 和 Windows x64。Windows 的三个文件分片及其原生文件资格都属于发布前必要检查。自动 beta 复用要求全部对应作业成功；未复用 main CI 的发布候选按精确源码 tag 运行相同测试流程，失败会阻止候选工作流成功及后续发布。模型 Eval 和真实长时资格保持显式授权及启用。
+插件确定性测试由普通矩阵 job 调用共享的 `.github/actions/plugin-tests` 复合 action，与其他测试平铺显示，覆盖 Linux x64、macOS arm64 和 Windows x64。Windows 的三个文件分片及其原生文件资格都属于发布前必要检查。自动 beta 复用要求全部对应作业成功；未复用 main CI 的发布候选按精确源码 tag 运行相同测试流程，失败会阻止候选工作流成功及后续发布。模型 Eval 和真实长时资格保持显式授权及启用。
 
 候选位于 `release-source/<cli|catalog>/<version>`，源码触发 tag 为 `release/<cli|catalog>/v<version>`。候选 commit 是固定 main 来源本身或其仅含允许版本字段修改的直接子 commit。main 不接收自动版本 commit。严格稳定版或 `x.y.z-beta.N` tag 固定产品和版本；tag 不覆盖，完成 tag `cli-v*` 和产物 tag `catalog-v*` 保持原含义。历史交付来源若因 squash merge 失去 main 祖先关系，可通过完整 Git tree 相同的最近 main first-parent commit 证明。对于发布后继续修改再 squash 的历史，规划器还获取远端 `refs/pull/*/head`：PR head 的完整 tree 必须与 main first-parent commit 相同，交付 commit 相对其与 PR head 的唯一共同祖先只能有允许的版本字段变化。历史源码保留该共同祖先，用于版本声明、插件基线和内容差异；对应 main commit 仅用于交付排序。仅本机可见的分支不提供这项证据，缺少证明时仍拒绝非版本变化。此兼容不适用于新候选，也不代替实际发布产物比较。
 
