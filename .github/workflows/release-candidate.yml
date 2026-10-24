@@ -33,6 +33,7 @@ jobs:
     timeout-minutes: 90
     outputs:
       completed: ${{ steps.inspect.outputs.completed }}
+      reuse_main_ci: ${{ steps.inspect.outputs.reuse_main_ci }}
       artifact_id: ${{ steps.upload.outputs.artifact-id || steps.inspect.outputs.recovery_artifact }}
       artifact_run: ${{ steps.upload.outputs.artifact-id && github.run_id || steps.inspect.outputs.recovery_run }}
       archive_name: ${{ steps.inspect.outputs.recovery_archive || 'candidate.tar' }}
@@ -152,6 +153,60 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/aw-release-askpass"
 
+  plugin-tests:
+    needs: prepare
+    if: needs.prepare.outputs.completed != 'true' && needs.prepare.outputs.reuse_main_ci != 'true'
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            os: linux
+            arch: x64
+            name: Linux x64 / Node 24 / plugins
+            shard: ''
+            timeout: 30
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+            name: macOS arm64 / Node 24 / plugins
+            shard: ''
+            timeout: 30
+          - runner: windows-2025
+            os: win32
+            arch: x64
+            name: Windows x64 / Node 24 / plugins 1 of 3
+            shard: 1/3
+            timeout: 90
+          - runner: windows-2025
+            os: win32
+            arch: x64
+            name: Windows x64 / Node 24 / plugins 2 of 3
+            shard: 2/3
+            timeout: 90
+          - runner: windows-2025
+            os: win32
+            arch: x64
+            name: Windows x64 / Node 24 / plugins 3 of 3
+            shard: 3/3
+            timeout: 90
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    env:
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || '1' }}
+      EXPECTED_OS: ${{ matrix.os }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+      TEST_SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: ./.github/actions/plugin-tests
+        with:
+          arch: ${{ matrix.arch }}
+          shard: ${{ matrix.shard }}
   smoke:
     needs: prepare
     if: needs.prepare.outputs.completed != 'true'

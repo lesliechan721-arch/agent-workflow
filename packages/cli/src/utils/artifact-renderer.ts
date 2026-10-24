@@ -33,6 +33,7 @@ import {
   calculateFileDigest,
   collectSensitivePluginConfigValues,
   defaultPluginProcessRunner,
+  preparePluginScriptDirectories,
   redactPluginScriptOutput,
   resolveBundledPluginFilePath,
   resolvePluginScriptTimeoutMs,
@@ -578,8 +579,7 @@ export async function runArtifactRenderer(options: {
       );
     }
     await Promise.all([
-      fs.ensureDir(path.join(writtenContext.tempDir, 'home')),
-      fs.ensureDir(path.join(writtenContext.tempDir, 'tmp')),
+      preparePluginScriptDirectories(writtenContext.tempDir),
       fs.ensureDir(writtenContext.context.paths.awHome),
       fs.ensureDir(writtenContext.context.paths.codexHome),
       fs.ensureDir(writtenContext.context.paths.claudeHome),

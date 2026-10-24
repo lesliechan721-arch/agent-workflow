@@ -18,7 +18,7 @@ import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import * as sourceReviewPolicy from '../skills/decision-prototype/assets/review-shell/review-policy.mjs';
@@ -101,7 +101,7 @@ const serverScript = path.join(skillRoot, 'scripts', 'review-server.mjs');
 const testRoot = await mkdtemp(path.join(os.tmpdir(), 'decision-kit-prototype-review-v2-'));
 const runtimeTmp = path.join(testRoot, 'tmp');
 await mkdir(runtimeTmp);
-const runtimeEnv = { ...process.env, TMPDIR: runtimeTmp };
+const runtimeEnv = { ...process.env, TMPDIR: runtimeTmp, TMP: runtimeTmp, TEMP: runtimeTmp };
 const activeSessions = new Set();
 const ownedServers = new Set();
 
@@ -184,7 +184,7 @@ async function startOwnedServer(root, config, ttlMs) {
   return startOwnedServerFromPrototype(prototypePath, ttlMs);
 }
 
-async function startOwnedServerFromPrototype(prototypePath, ttlMs, startupTimeoutMs = 2_000) {
+async function startOwnedServerFromPrototype(prototypePath, ttlMs, startupTimeoutMs = 2_000, preloadPath) {
   const sessionId = randomBytes(16).toString('hex');
   const sessionDir = path.join(runtimeTmp, 'agent-workflow', 'prototype-review', sessionId);
   const launchPath = path.join(sessionDir, 'launch.json');
@@ -198,7 +198,10 @@ async function startOwnedServerFromPrototype(prototypePath, ttlMs, startupTimeou
     prototypePath,
     ttlMs,
   }));
-  const child = spawn(process.execPath, [serverScript, '--launch', launchPath], {
+  const child = spawn(process.execPath, [
+    ...(preloadPath ? ['--import', pathToFileURL(preloadPath).href] : []),
+    serverScript, '--launch', launchPath,
+  ], {
     env: runtimeEnv,
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -456,7 +459,7 @@ Date.now = () => Number(readFileSync(${JSON.stringify(clockPath)}, 'utf8'));
   await new Promise((resolve) => server.listen(Number(new URL(origin).port), '127.0.0.1', resolve));
   try {
     const result = await execFileAsync(process.execPath, [
-      '--import', preloadPath, runtimeScript, 'wait', '--session', session,
+      '--import', pathToFileURL(preloadPath).href, runtimeScript, 'wait', '--session', session,
     ], { env: runtimeEnv, timeout: 10_000 });
     assert.equal(parseReceipt(result.stdout).status, 'timeout');
     assert.equal(requests, 3);
@@ -970,26 +973,30 @@ test('the server exits by its own TTL and after feedback without a waiter', asyn
   assert.equal(parseReceipt((await runRuntime(['status', '--session', submitted.session])).stdout).status, 'submitted');
 });
 
-test('feedback that crosses the real deadline cannot create canonical feedback', async () => {
+test('feedback that crosses the deadline during commit cannot create canonical feedback', async () => {
   const root = path.join(testRoot, 'deadline-submit');
-  const sharedArtifact = 'artifact/shared.html';
-  const config = prototypeConfig('deadline-submit', {
-    options: Array.from({ length: 5_000 }, (_, index) => ({
-      id: `option-${index}`,
-      label: `Option ${index}`,
-      kind: 'html',
-      artifact: sharedArtifact,
-    })),
-  });
-  await mkdir(path.join(root, 'artifact'), { recursive: true });
-  await writeFile(path.join(root, sharedArtifact), '<!doctype html><h1>Shared</h1>\n');
-  await writeFile(path.join(root, 'brief.md'), '# Prototype brief\n');
-  const prototypePath = path.join(root, 'prototype.json');
-  await writeFile(prototypePath, `${JSON.stringify(config)}\n`);
-  const started = await startOwnedServerFromPrototype(prototypePath, 250, 5_000);
-  const descriptor = await sessionDetails(started);
-  const requestedAt = Date.now();
-  assert.ok(requestedAt < Date.parse(descriptor.expiresAt));
+  const config = prototypeConfig('deadline-submit');
+  const prototypePath = await writePrototype(root, config);
+  const preloadPath = path.join(root, 'expire-during-commit.mjs');
+  const ttlMs = 60_000;
+  // Expire only after the real temporary write, inside the tracked submission.
+  await writeFile(preloadPath, `import fs from 'node:fs/promises';
+import path from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
+let now = Date.now();
+Date.now = () => now;
+const writeFile = fs.writeFile;
+fs.writeFile = async (filePath, ...args) => {
+  const result = await writeFile(filePath, ...args);
+  if (path.dirname(filePath) === ${JSON.stringify(await realpath(root))}
+      && path.basename(filePath).startsWith('.feedback-')) {
+    now += ${ttlMs};
+  }
+  return result;
+};
+syncBuiltinESMExports();
+`);
+  const started = await startOwnedServerFromPrototype(prototypePath, ttlMs, 5_000, preloadPath);
 
   const response = await postFeedback(started, feedbackFor(config));
   assert.equal(response.status, 410);

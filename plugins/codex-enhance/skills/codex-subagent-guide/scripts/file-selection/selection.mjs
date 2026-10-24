@@ -127,7 +127,7 @@ async function resolve(input, context) {
     candidates = await collect(selection.patterns, selection.excludes, input.workspace, context);
     const dot = selection.patterns.some((pattern) => pattern.split('/').some((segment) => segment.startsWith('.') && segment.length > 1));
     candidates = candidates.filter((file) => !ignores.some(({ directory, patterns }) => file.startsWith(directory) &&
-      patterns.some((rule) => ignoreRuleMatches(path.relative(directory, file) || path.basename(file), rule))))
+      patterns.some((rule) => ignoreRuleMatches((path.relative(directory, file) || path.basename(file)).split(path.sep).join('/'), rule))))
       .filter((file) => dot || !path.basename(file).startsWith('.'));
   }
   const allowed = [...selection.files, ...selection.directories.filter((directory) => defaults.has(path.basename(directory)))];

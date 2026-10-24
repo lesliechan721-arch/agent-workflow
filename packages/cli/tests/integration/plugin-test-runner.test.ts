@@ -191,6 +191,86 @@ afterEach(async () => {
 });
 
 describe('plugin script test runner', () => {
+  // Test Value Gate: CI file shards must cover every installed test exactly
+  // once, including non-ASCII names, and preserve a selected test's failure.
+  it('runs disjoint Node file shards without omissions and propagates failures', async () => {
+    const repoRoot = await makeTempRepo();
+    await configureTestManifest({
+      repoRoot,
+      products: ['CODEX'],
+      testEntries: ['./scripts/shard-*.test.mjs'],
+    });
+    const marker = path.join(pluginRoot(repoRoot), 'shard-events');
+    for (let id = 0; id < 5; id += 1) {
+      await writeNodeTestFile(repoRoot, `shard-${id}.test.mjs`, [
+        'import test from "node:test";',
+        'import fs from "node:fs";',
+        'import path from "node:path";',
+        `test("中文与标点 / case ${id}", () => {`,
+        '  const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        `  fs.appendFileSync(path.join(context.sourceRoot, "shard-events"), "${id}\\n");`,
+        `  if (${id} === 0 && fs.existsSync(path.join(context.sourceRoot, "fail-selected"))) throw new Error("selected shard failure");`,
+        '});',
+      ].join('\n'));
+    }
+    for (const fail of [false, true]) {
+      await fs.remove(marker);
+      if (fail) await fs.writeFile(path.join(pluginRoot(repoRoot), 'fail-selected'), '');
+      let failures = 0;
+      let completed = 0;
+      for (let index = 1; index <= 3; index += 1) {
+        const output = captureOutput();
+        const args = index === 1 ? ['--test-shard', '1/3'] : [`--test-shard=${index}/3`];
+        const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'codex', ...args], {
+          repoRoot,
+          env: { ...process.env, AW_TEST_WORKERS: '1' },
+          stdout: output.stdout,
+          stderr: output.stderr,
+        });
+        if (exitCode !== 0) {
+          failures += 1;
+          expect(output.readStdout()).toContain('selected shard failure');
+        } else {
+          expect(output.readStdout()).toContain(`passed (test shard ${index}/3)`);
+        }
+        const events = (await fs.readFile(marker, 'utf8')).trim().split('\n');
+        expect(events.length).toBeGreaterThan(completed);
+        completed = events.length;
+      }
+      expect(failures).toBe(fail ? 1 : 0);
+      expect((await fs.readFile(marker, 'utf8')).trim().split('\n').sort()).toEqual(['0', '1', '2', '3', '4']);
+    }
+    // --all includes plugins with fewer files than shards. An empty shard must
+    // not fall back to executing their full suite or report full-file coverage.
+    await fs.remove(marker);
+    for (let id = 1; id < 5; id += 1) await fs.remove(pluginScriptPath(repoRoot, `shard-${id}.test.mjs`));
+    const output = captureOutput();
+    expect(await runPluginScriptTests(['git-commit', '--platform', 'codex', '--test-shard', '3/3'], {
+      repoRoot,
+      env: { ...process.env, AW_TEST_WORKERS: '1' },
+      stdout: output.stdout,
+      stderr: output.stderr,
+    })).toBe(0);
+    expect(await fs.pathExists(marker)).toBe(false);
+    expect(output.readStdout()).toContain('passed (test shard 3/3)');
+  });
+
+  it('rejects malformed file shards before preparing a plugin', async () => {
+    for (const value of [undefined, '', '0/3', '1/0', '4/3', '1.5/3', '1', '01/3', '1/9007199254740992']) {
+      const output = captureOutput();
+      const args = value === undefined ? ['--test-shard'] : ['--test-shard', value];
+      const exitCode = await runPluginScriptTests(['git-commit', ...args], {
+        repoRoot: path.join(os.tmpdir(), 'missing-shard-validation-repo'),
+        env: { ...process.env, AW_TEST_WORKERS: '1' },
+        stdout: output.stdout,
+        stderr: output.stderr,
+      });
+      expect(exitCode).toBe(1);
+      expect(output.readStdout()).toBe('');
+      expect(output.readStderr()).toContain('--test-shard must be index/total');
+    }
+  });
+
   it('applies configured Node file concurrency and explicit overrides to real test processes', async () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
@@ -450,6 +530,9 @@ describe('plugin script test runner', () => {
         '  assert.equal(process.env.AW_PLUGIN_SCOPE, "project");',
         '  assert.equal(context.platform, process.env.AW_PLUGIN_PLATFORM);',
         '  assert.equal(process.cwd(), context.cwd);',
+        '  assert.equal(process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS, "1");',
+        '  assert.equal(process.env.AW_TEST_UNRELATED_HOST_VALUE, undefined);',
+        '  assert.equal(process.env.AW_SUBAGENT_LONG_RUN_MS, undefined);',
         '  assert.equal(os.homedir(), path.join(testTempDir, "home"));',
         '  assert.equal(os.tmpdir(), path.join(testTempDir, "tmp"));',
         '  await writeFile(path.join(os.homedir(), "home-marker.txt"), "ok", "utf8");',
@@ -489,6 +572,9 @@ describe('plugin script test runner', () => {
         PATH: process.env.PATH ?? '',
         HOME: path.join(repoRoot, 'host-home'),
         TMPDIR: path.join(repoRoot, 'host-tmp'),
+        AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS: '1',
+        AW_TEST_UNRELATED_HOST_VALUE: 'private-host-value',
+        AW_SUBAGENT_LONG_RUN_MS: '1805000',
       } as NodeJS.ProcessEnv,
     });
 
@@ -835,6 +921,83 @@ describe('plugin script test runner', () => {
       'Unable to resolve relative import "./nested-main-helper" from "scripts/nested-main.test.cjs".',
     );
   });
+
+  // Test Value Gate: a running test must be identifiable before it exits, while
+  // config values split across stdout writes must remain private.
+  it('reports live test progress while retaining cross-write output redaction', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifest = await readManifest(repoRoot);
+    manifest.config = { fields: {
+      value: { type: 'string', sensitive: true },
+      shortValue: { type: 'string', sensitive: true },
+    } };
+    manifest.scripts = { tests: { node: ['./scripts/progress.test.mjs'] } };
+    await writeManifest(repoRoot, manifest);
+    const releaseFile = path.join(repoRoot, 'release');
+    const secret = 'private-progress-value';
+    await writeNodeTestFile(repoRoot, 'progress.test.mjs', [
+      'import test from "node:test";',
+      'import { access } from "node:fs/promises";',
+      'import { setTimeout } from "node:timers/promises";',
+      `test(${JSON.stringify(`live ${secret}`)}, { timeout: 5000 }, async () => {`,
+      `  process.stdout.write(${JSON.stringify(secret.slice(0, 9))});`,
+      '  await setTimeout(25);',
+      `  process.stdout.write(${JSON.stringify(secret.slice(9) + '\n')});`,
+      `  while (true) { try { await access(${JSON.stringify(releaseFile)}); break; } catch {} await setTimeout(10); }`,
+      '});',
+    ].join('\n'));
+    const output = captureOutput();
+    let live = false;
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'codex'], {
+      repoRoot,
+      testConfigValues: { value: secret, shortValue: '0' },
+      stdout(text) {
+        output.stdout(text);
+        if (text.startsWith('AW_PLUGIN_TEST ') && text.includes('"event":"dequeue"') && text.includes('live ')) {
+          live = true;
+          fs.writeFileSync(releaseFile, 'continue');
+        }
+      },
+      stderr: output.stderr,
+    });
+    expect(exitCode, output.readStderr()).toBe(0);
+    expect(live).toBe(true);
+    expect(output.readStdout()).toContain('live [REDACTED]');
+    expect(output.readStdout()).not.toContain(secret);
+    const progress = output.readStdout().split('\n').filter((line) => line.startsWith('AW_PLUGIN_TEST '))
+      .map((line) => JSON.parse(line.slice('AW_PLUGIN_TEST '.length)));
+    expect(progress.some((event) => event.file === 'scripts/progress.test.mjs' && event.event === 'pass')).toBe(true);
+  });
+
+  // Test Value Gate: isolating a heavy file must preserve full coverage across
+  // the dedicated run and all remaining shards, with no silent missing target.
+  it('covers selected files and the remaining shards without overlap', async () => {
+    const repoRoot = await makeTempRepo();
+    const files = ['a', 'b', 'c', 'd'];
+    await configureTestManifest({ repoRoot, testEntries: files.map((name) => `./scripts/${name}.test.mjs`) });
+    for (const name of files) await writeNodeTestFile(repoRoot, `${name}.test.mjs`,
+      `import test from 'node:test'; test('file-${name}', () => {});`);
+    const seen: string[] = [];
+    for (const selection of [
+      ['--test-file', './scripts/b.test.mjs'],
+      ...['1/3', '2/3', '3/3'].map((shard) => ['--exclude-test-file', 'scripts/b.test.mjs', '--test-shard', shard]),
+    ]) {
+      const output = captureOutput();
+      expect(await runPluginScriptTests(['git-commit', '--platform', 'codex', ...selection], {
+        repoRoot, stdout: output.stdout, stderr: output.stderr,
+      }), output.readStderr()).toBe(0);
+      for (const line of output.readStdout().split('\n').filter((line) => line.startsWith('AW_PLUGIN_TEST '))) {
+        const event = JSON.parse(line.slice('AW_PLUGIN_TEST '.length));
+        if (event.event === 'pass' && /^file-[a-d]$/.test(event.name)) seen.push(event.name);
+      }
+    }
+    expect(seen.sort()).toEqual(files.map((name) => `file-${name}`));
+    const output = captureOutput();
+    expect(await runPluginScriptTests(['git-commit', '--test-file', 'scripts/missing.test.mjs'], {
+      repoRoot, stdout: output.stdout, stderr: output.stderr,
+    })).toBe(1);
+    expect(output.readStderr()).toContain('No declared test file matches');
+  }, 30_000);
 
   it('redacts sensitive config values from node test output and failures', async () => {
     const repoRoot = await makeTempRepo();

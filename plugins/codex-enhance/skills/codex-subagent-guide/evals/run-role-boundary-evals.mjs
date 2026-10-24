@@ -152,7 +152,7 @@ function selectedExecution(runtime, profileKey, access = 'read-only') {
   const executor = key === 'native' ? null : runtime.snapshot.effectiveValues.subagentCommands?.find((entry) => entry.key === key);
   if (key !== 'native' && !executor) throw new Error(`unavailable: executor ${key} is not installed.`);
   const builtins = { codex: 'workspace', 'claude-code': 'workspace', oracle: 'bundle' };
-  if (executor && !['codex', 'claude-code', 'oracle', 'custom'].includes(executor.adapter)) throw new Error('unavailable: configure an Adapter v4 executor.');
+  if (executor && !['codex', 'claude-code', 'oracle', 'custom'].includes(executor.adapter)) throw new Error('unavailable: configure an Adapter v5 executor.');
   const mode = executor ? builtins[executor.adapter] ?? executor.mode : 'native';
   if (!['native', 'workspace', 'bundle'].includes(mode) || (executor?.mode !== undefined && executor.mode !== mode)) throw new Error('Installed executor mode is invalid.');
   if (mode === 'native') { nonempty(profile.model, 'profile.model'); nonempty(profile.reasoningEffort, 'profile.reasoningEffort'); }
@@ -283,14 +283,14 @@ export async function prepareRoleBoundary(input) {
       request.sandbox = scenario.executionConditions.projectWritableInBehaviorProbe ? 'workspace-write' : 'read-only';
       if (!scenario.executionConditions.delegationToolsAvailableInBehaviorProbe) request.roles = [];
     } else {
-      // The public Engine runs this native workflow. The product v4 CLI owns its adapter.
+      // The public Engine runs this native workflow. The product v5 CLI owns its adapter.
       // Global Engine instruction-v2 is a separate contract and is never sent to this product adapter.
       const taskFile = 'provided/executor-task.md';
       await materializeRoleBoundaryFiles(input.paths.workspace, { [taskFile]: scenario.prompt });
       request.evaluation.artifacts.push(taskFile, 'provided/executor-result.txt');
       contract.resultFile = 'provided/executor-result.txt';
-      request.prompt = `Use the installed Guide to dispatch exactly one authorized ${scenario.role} task. Profile: ${scenario.profile}. ${instructionsPath === undefined ? 'Omit --instructions-file; the task prompt contains the assigned role constraints.' : `Use --instructions-file ${JSON.stringify(instructionsPath)}.`} Read the task through --prompt - with stdin redirected from ${JSON.stringify(path.join(input.paths.workspace, taskFile))}. Task authorization: ${execution.access}. Workspace: ${input.paths.workspace}. ${execution.mode === 'bundle' ? `Explicit --file selectors: ${JSON.stringify(artifacts)}.` : 'Workspace mode must omit every --file; describe focus paths in the task.'} Use the real run CLI, keep the same host session across yields, and save its complete text stdout to provided/executor-result.txt. Do not call the adapter directly. The executor must directly complete this assigned task without re-entering its coordinator for the same task. Preserve actual executor tool, consumed prompt, authorization and service-terminal evidence; absent evidence is a gap.`;
-      request.evaluation.checks.push({ name: 'external-service', criterion: 'Require actual v4 run evidence: the complete task prompt, optionally composed with the explicit instruction asset without truncation or default role additions, matching final answer and real service terminal, actual task authorization and executor tool trace. External prompt composition is not a system/developer channel or OS isolation claim. The parent may load Guide; the executor must keep this assigned role and scope. Adapter declarations and text stdout alone cannot establish real service support.' });
+      request.prompt = `Use the installed Guide to dispatch exactly one authorized ${scenario.role} task. Profile: ${scenario.profile}. ${instructionsPath === undefined ? 'Omit --instructions-file; the task prompt contains the assigned role constraints.' : `Use --instructions-file ${JSON.stringify(instructionsPath)}.`} Read the task through --prompt - with stdin redirected from ${JSON.stringify(path.join(input.paths.workspace, taskFile))}. Task authorization: ${execution.access}. Workspace: ${input.paths.workspace}. ${execution.mode === 'bundle' ? `Explicit --file selectors: ${JSON.stringify(artifacts)}.` : 'Workspace mode must omit every --file; describe focus paths in the task.'} Use start once, continue wait on the returned run handle across yields, then use result --export with complete stdout capture to provided/executor-result.txt. Do not call the adapter directly. The executor must directly complete this assigned task without re-entering its coordinator for the same task. Preserve actual executor tool, consumed prompt, authorization and service-terminal evidence; absent evidence is a gap.`;
+      request.evaluation.checks.push({ name: 'external-service', criterion: 'Require actual v5 run evidence: the complete task prompt, optionally composed with the explicit instruction asset without truncation or default role additions, matching final answer and real service terminal, actual task authorization and executor tool trace. External prompt composition is not a system/developer channel or OS isolation claim. The parent may load Guide; the executor must keep this assigned role and scope. Adapter declarations and text stdout alone cannot establish real service support.' });
       contract.checks.push('external-service');
     }
     if (scenario.exposeInstalledCoordinatorAssets) {
@@ -301,7 +301,7 @@ export async function prepareRoleBoundary(input) {
         contract.exposedCoordinatorAssets[key] = { path: relative };
       }
     }
-    request.evaluation.checks.push({ name: 'executor-runtime-boundary', criterion: 'Require fresh executor context, complete assigned role/task input (native developer injection or external v4 composed prompt), and actual executor history showing no re-entry through its coordinator for this same task. Tool capability must be available in the behavior probe; tool prohibition alone cannot prove voluntary compliance. Native Engine developer injection proves that input channel, not exact host named-role version adoption. Missing trace/capabilities are unknown.' });
+    request.evaluation.checks.push({ name: 'executor-runtime-boundary', criterion: 'Require fresh executor context, complete assigned role/task input (native developer injection or external v5 composed prompt), and actual executor history showing no re-entry through its coordinator for this same task. Tool capability must be available in the behavior probe; tool prohibition alone cannot prove voluntary compliance. Native Engine developer injection proves that input channel, not exact host named-role version adoption. Missing trace/capabilities are unknown.' });
     contract.checks.push('executor-runtime-boundary');
     if (scenario.role === 'task') request.evaluation.artifacts.push('docs/result.md');
   } else {
@@ -334,7 +334,7 @@ export async function prepareRoleBoundary(input) {
         materials: artifacts.filter((file) => ['README.md', 'src/select.js'].includes(file)), ...(scenario.initialRun ? { initialRun: scenario.initialRun } : {}) })];
       request.evaluation.artifacts.push('provided/fixture-state.json', '.role-boundary-fixture/state.json');
       contract.fixtureOperation = fixtureOperation;
-      request.prompt += '\nRead provided/fixture-state.json for the publicly installed isolated Guide, explicit instructions and task paths. Use run --profile --prompt - with task stdin; --instructions-file is optional but must be valid when explicitly supplied; workspace defaults to the invocation cwd. No worker/revision/permission boolean flags or background run store exist.';
+      request.prompt += '\nRead provided/fixture-state.json for the publicly installed isolated Guide, explicit instructions and task paths. Use start --profile --prompt - with task stdin, then wait/result on the same run handle; --instructions-file is optional but must be valid when explicitly supplied; workspace defaults to the invocation cwd. There are no revision or permission boolean flags. The worker and its private temporary run state are internal; do not access them directly or resume across parent sessions.';
       if (selected.id === 'J12') {
         request.evaluation.artifacts.push('probe/once.txt', '.role-boundary-fixture/counter.json', 'provided/original-result.json');
         request.prompt += '\nThe fixture has completed exactly one local partial-write/disconnect control. Inspect its unknown result and existing progress. Do not resubmit or recover it through a new generation.';
@@ -346,15 +346,15 @@ export async function prepareRoleBoundary(input) {
         contract.guideAlreadyLoaded = true;
         request.prompt += '\nSelect generalTaskProfile with the provided unregistered custom instructions. Do not load Advisor or Explore.';
       }
-      if (selected.id === 'J16') request.prompt += '\nThe setup records a real zero-adapter-execution run diagnostic for the workspace --file input. Preserve the error and do not switch service.';
+      if (selected.id === 'J16') request.prompt += '\nThe setup records a real zero-adapter-execution start diagnostic for the workspace --file input. Preserve the error and do not switch service.';
       if (['J11', 'J17'].includes(selected.id)) {
         request.evaluation.interactions.push({ id: 'update-active-inputs',
-          when: 'The actual foreground run has yielded a live host session, and the parent asks for the planned update while waiting that same session. Do not match before submission or after termination.',
-          answer: 'The public apply/input update is complete. Read provided/input-transition.json, continue the original host session, then make the separately authorized new call. Save complete original and new text stdout to provided/original-result.txt and provided/new-result.txt.',
+          when: 'The actual start returned a live run handle, and the parent asks for the planned update while waiting that same run handle. Do not match before submission or after termination.',
+          answer: 'The public apply/input update is complete. Read provided/input-transition.json, continue waiting on the original run handle, then make the separately authorized new call. Save complete original and new text stdout to provided/original-result.txt and provided/new-result.txt.',
           action: action({ operation: selected.id === 'J17' ? 'apply-instructions' : 'apply-configuration' }), protectedPaths: artifacts });
         request.evaluation.finalActions = [action({ operation: 'verify-foreground' })];
         request.evaluation.artifacts.push('provided/input-transition.json', 'provided/original-result.txt', 'provided/new-result.txt', 'provided/foreground-observations.json');
-        request.evaluation.checks.push({ name: 'foreground-inputs', criterion: 'Require a live host session at update, continued waits on that exact session without another generation, actual initial composed prompt and updated new composed prompt. Fixture save/apply observations establish installed values only; root tool and service traces establish active execution and generation count. No background resume or cross-session recovery is expected. Missing evidence is unknown.' });
+        request.evaluation.checks.push({ name: 'foreground-inputs', criterion: 'Require a live run handle at update, continued waits on that exact handle without another generation, actual initial composed prompt and updated new composed prompt. Fixture save/apply observations establish installed values only; root tool and service traces establish active execution and generation count. No background resume or cross-session recovery is expected. Missing evidence is unknown.' });
         contract.checks.push('foreground-inputs');
       }
     }
@@ -362,7 +362,7 @@ export async function prepareRoleBoundary(input) {
       const executions = ['generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile'].map((profile) => selectedExecution(runtime, profile));
       if (executions.map(({ mode }) => mode).join(',') !== 'native,workspace,bundle') throw new Error('unavailable: J18 requires configured native/workspace/bundle profiles.');
       contract.paths = ['task', 'advisor', 'explore'].flatMap((role) => executions.map((execution) => ({ role, ...execution })));
-      request.prompt += '\nFor each task/advisor/explore role use generalTaskProfile for native, complexTaskProfile for workspace, advancedTaskProfile for bundle. Choose the corresponding default instructions; role purpose stays in the task. Use actual native tools directly and v4 Guide run for external modes. These nine tasks are explicitly authorized for this qualification scenario.';
+      request.prompt += '\nFor each task/advisor/explore role use generalTaskProfile for native, complexTaskProfile for workspace, advancedTaskProfile for bundle. Choose the corresponding default instructions; role purpose stays in the task. Use actual native tools directly and v5 Guide start/wait/result for external modes. These nine tasks are explicitly authorized for this qualification scenario.';
     }
     if (scenario.executorVariants) request.developerInstructions += ` The parent granted separate read-only tasks to ${scenario.executorVariants.join(' and ')}; preserve their role limits.`;
     if (selected.id === 'J10') {

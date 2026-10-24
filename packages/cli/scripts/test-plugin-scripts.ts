@@ -3,10 +3,13 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 
 import fs from 'fs-extra';
 
 import { formatTestWorkers, nodeTestWorkerOptions } from './test-workers.mjs';
+import { pluginTestReporterUrl } from './plugin-test-reporter.mjs';
+import { preparePluginScriptDirectories } from '../src/utils/plugin-scripts.js';
 import {
   buildPluginScriptSpawnEnv,
   bundleLocalPlugin,
@@ -54,6 +57,9 @@ interface ParsedArgs {
   platform: PluginTestPlatformSelection;
   testName?: string;
   testConcurrency?: string;
+  testShard?: string;
+  testFile?: string;
+  excludeTestFile?: string;
 }
 
 interface PreparedPluginTestBundle {
@@ -135,6 +141,22 @@ function parseArgs(args: string[]): ParsedArgs {
       if (parsed.testConcurrency === undefined) {
         throw new Error('--test-concurrency requires a worker count.');
       }
+    } else if (arg === '--test-file' || arg === '--exclude-test-file') {
+      const value = args[++index];
+      if (!value || value.startsWith('-') || path.isAbsolute(value) || value.split(/[\\/]/).includes('..')) {
+        throw new Error(`${arg} requires a plugin-relative test file path.`);
+      }
+      if (arg === '--test-file') parsed.testFile = stripDotSlash(value).replaceAll('\\', '/');
+      else parsed.excludeTestFile = stripDotSlash(value).replaceAll('\\', '/');
+    } else if (arg === '--test-shard' || arg.startsWith('--test-shard=')) {
+      const value = arg === '--test-shard' ? args[++index] : arg.slice('--test-shard='.length);
+      const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(value ?? '');
+      const shardIndex = Number(match?.[1]);
+      const total = Number(match?.[2]);
+      if (!match || !Number.isSafeInteger(shardIndex) || !Number.isSafeInteger(total) || shardIndex > total) {
+        throw new Error('--test-shard must be index/total with positive safe integers and index <= total.');
+      }
+      parsed.testShard = value;
     } else if (arg.startsWith('-')) {
       throw new Error(`Unknown option "${arg}".`);
     } else {
@@ -146,7 +168,10 @@ function parseArgs(args: string[]): ParsedArgs {
     throw new Error('Use either <plugin> or --all, not both.');
   }
   if (!parsed.all && positional.length !== 1) {
-    throw new Error('Usage: pnpm plugin:test <plugin> | --all [--scope user|project] [--platform codex|claude|both] [--test-name <pattern>] [--test-concurrency <workers>].');
+    throw new Error('Usage: pnpm plugin:test <plugin> | --all [--scope user|project] [--platform codex|claude|both] [--test-name <pattern>] [--test-concurrency <workers>] [--test-shard <index/total>] [--test-file <path> | --exclude-test-file <path>].');
+  }
+  if (parsed.testFile && (parsed.all || parsed.excludeTestFile)) {
+    throw new Error('--test-file requires one plugin and cannot be combined with --exclude-test-file.');
   }
   if (parsed.all && positional.length !== 0) {
     throw new Error('Use either <plugin> or --all, not both.');
@@ -506,33 +531,43 @@ function runNodeTest(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   testName?: string;
+  testShard?: string;
   workers: ReturnType<typeof nodeTestWorkerOptions>;
   stdout: (text: string) => void;
+  progress: (event: Record<string, unknown>) => void;
 }): Promise<NodeTestResult> {
   const workers = options.workers;
   options.stdout(formatTestWorkers('plugin-node-test', workers));
   return new Promise((resolve, reject) => {
-    const args = ['--test'];
+    const args = ['--test', '--test-reporter', pluginTestReporterUrl];
     if (workers.maxWorkers !== null) {
       args.push(`--test-concurrency=${workers.maxWorkers}`);
     }
     if (options.testName) {
       args.push('--test-name-pattern', options.testName);
     }
+    if (options.testShard) {
+      args.push(`--test-shard=${options.testShard}`);
+    }
     args.push(...options.testFiles);
     const child = spawn(process.execPath, args, {
       cwd: options.cwd,
       env: options.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
+    child.stdout!.setEncoding('utf8');
+    child.stderr!.setEncoding('utf8');
+    const progressStream = child.stdio[3] as import('node:stream').Readable;
+    const progressLines = createInterface({ input: progressStream });
+    progressLines.on('line', (line) => {
+      options.progress(JSON.parse(line) as Record<string, unknown>);
+    });
+    child.stdout!.on('data', (chunk: string) => {
       stdout += chunk;
     });
-    child.stderr.on('data', (chunk: string) => {
+    child.stderr!.on('data', (chunk: string) => {
       stderr += chunk;
     });
     child.on('error', reject);
@@ -548,15 +583,23 @@ async function runPreparedPluginTests(options: {
   platform: PlatformName;
   testName?: string;
   testConcurrency?: string;
+  testShard?: string;
+  testFile?: string;
+  excludeTestFile?: string;
   env: NodeJS.ProcessEnv;
   testConfigValues?: Record<string, PluginConfigValue>;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }): Promise<number> {
-  const entries = await matchTestEntries(
+  const matchedEntries = await matchTestEntries(
     options.prepared.baselineRoot,
     options.prepared.manifest.scripts?.tests?.node,
   );
+  if (options.testFile && !matchedEntries.includes(options.testFile)) {
+    throw new Error(`No declared test file matches ${options.testFile}.`);
+  }
+  const entries = matchedEntries.filter((entry) => (!options.testFile || entry === options.testFile)
+    && entry !== options.excludeTestFile);
   if (entries.length === 0) {
     print(options.stdout, `${options.prepared.pluginName} / ${options.platform}: skipped (no tests matched)`);
     return 0;
@@ -564,11 +607,12 @@ async function runPreparedPluginTests(options: {
 
   const runRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-test-run-'));
   try {
-    const bundleRoot = path.join(runRoot, 'bundle');
+    let bundleRoot = path.join(runRoot, 'bundle');
     const projectRoot = path.join(runRoot, 'project');
     const awHome = path.join(runRoot, 'aw-home');
     const tempDir = path.join(runRoot, 'tmp');
     await fs.copy(options.prepared.bundleRoot, bundleRoot);
+    bundleRoot = await fs.realpath(bundleRoot);
     await copyTestPackageNodeModules({
       baselineRoot: options.prepared.baselineRoot,
       bundleRoot,
@@ -577,8 +621,7 @@ async function runPreparedPluginTests(options: {
     await fs.ensureDir(projectRoot);
     await fs.ensureDir(awHome);
     await fs.ensureDir(tempDir);
-    await fs.ensureDir(path.join(tempDir, 'home'));
-    await fs.ensureDir(path.join(tempDir, 'tmp'));
+    await preparePluginScriptDirectories(tempDir);
     const canonicalProjectRoot = await fs.realpath(projectRoot);
     const copiedEntries = await copyTestsIntoBundle({
       baselineRoot: options.prepared.baselineRoot,
@@ -619,16 +662,39 @@ async function runPreparedPluginTests(options: {
       bundleRoot,
     });
     spawnEnv.NODE_PATH = '';
+    // This opt-in belongs to the test runner, not the plugin lifecycle's
+    // environment contract. Keep all other host variables isolated.
+    if (options.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1') {
+      spawnEnv.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS = '1';
+    }
 
     const testFiles = copiedEntries.map((entry) => path.join(bundleRoot, entry));
+    const started = performance.now();
+    const progress = (event: Record<string, unknown>): void => {
+      const file = typeof event.file === 'string' ? path.relative(bundleRoot, event.file).split(path.sep).join('/') : undefined;
+      const name = event.name === event.file ? file : event.name;
+      const line = JSON.stringify({
+        plugin: options.prepared.pluginName, platform: options.platform,
+        elapsedMs: Math.round(performance.now() - started), ...event, file, name,
+      }, (_key, value: unknown) => {
+        if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') return value;
+        const redacted = redactPluginScriptOutput(String(value), writtenContext.sensitiveValues);
+        return redacted === String(value) ? value : redacted;
+      });
+      options.stdout(`AW_PLUGIN_TEST ${line}\n`);
+    };
+    progress({ event: 'start', files: entries, shard: options.testShard });
+    const heartbeat = setInterval(() => progress({ event: 'running' }), 30_000);
     const result = await runNodeTest({
       testFiles,
       cwd: canonicalProjectRoot,
       env: spawnEnv,
       testName: options.testName,
+      testShard: options.testShard,
       workers: nodeTestWorkerOptions({ env: options.env, explicit: options.testConcurrency }),
       stdout: options.stdout,
-    });
+      progress,
+    }).finally(() => clearInterval(heartbeat));
     const stdout = redactPluginScriptOutput(result.stdout, writtenContext.sensitiveValues);
     const stderr = redactPluginScriptOutput(result.stderr, writtenContext.sensitiveValues);
     if (stdout.trim()) {
@@ -638,7 +704,10 @@ async function runPreparedPluginTests(options: {
       options.stderr(stderr);
     }
     if (result.exitCode === 0) {
-      print(options.stdout, `${options.prepared.pluginName} / ${options.platform}: passed (${entries.length} test file${entries.length === 1 ? '' : 's'})`);
+      const coverage = options.testShard
+        ? `test shard ${options.testShard}`
+        : `${entries.length} test file${entries.length === 1 ? '' : 's'}`;
+      print(options.stdout, `${options.prepared.pluginName} / ${options.platform}: passed (${coverage})`);
       return 0;
     }
     print(options.stderr, `${options.prepared.pluginName} / ${options.platform}: failed`);
@@ -698,6 +767,9 @@ async function runPreparedPluginSelection(options: {
           platform,
           testName: options.parsed.testName,
           testConcurrency: options.parsed.testConcurrency,
+          testShard: options.parsed.testShard,
+          testFile: options.parsed.testFile,
+          excludeTestFile: options.parsed.excludeTestFile,
           env: options.env,
           testConfigValues: options.testConfigValues,
           stdout: options.stdout,
