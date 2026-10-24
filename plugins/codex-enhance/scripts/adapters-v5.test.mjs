@@ -89,7 +89,8 @@ if (backend === 'oracle') {
  process.stdout.write('Request accepted.\\n');
  process.exit(scenario==='nonzero'?7:0);
 }
-let count=0, timer, active, parentSeen=false, steeringCount=0;
+let count=0, timer, active, steeringCount=0, releaseTool;
+const toolCompleted=new Promise(resolve=>{releaseTool=resolve;});
 const finish=()=> {
  if(scenario==='no terminal'){process.exit(0);return;}
  if(scenario==='diagnostic overflow')process.stderr.write(Buffer.alloc(8388609,120));
@@ -117,18 +118,24 @@ input.on('line',async line=>{
     const mcp=JSON.parse(spec.slice(spec.indexOf('=')+1));
     const child=spawn(process.execPath,[path.join(path.dirname(mcp[0]),'message.mjs'),...mcp.slice(1),'send','--text','Child question 父消息?'],{stdio:['ignore','pipe','pipe']});
     let output='';child.stdout.on('data',chunk=>output+=chunk);
-    await new Promise(resolve=>child.once('close',resolve));await capture({toolOutput:output});return;
+    const toolExitCode=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
+    await capture({toolOutput:output,toolExitCode});releaseTool();return;
    }
    if(scenario==='approval'){emit({id:'approval-request',method:'item/commandExecution/requestApproval',params:{}});return;}
    if(scenario==='hold'||scenario==='many inputs'&&count===1||scenario==='parent input'&&count===1||scenario==='turn race'&&count===1||scenario==='lost response'&&count===1)return;
-   timer=setTimeout(finish,80);
+   queueMicrotask(finish);
   } else if(value.method==='turn/steer') {
-   parentSeen=true;steeringCount++;
+   steeringCount++;
    if(scenario==='many inputs'&&steeringCount<80){respond({turnId:active});return;}
    if(scenario==='lost response'){process.exit(0);return;}
-   if(scenario==='turn race'){
+   if(scenario==='child tool'){
+    respond({turnId:active});
+    // A steer can be accepted while a tool is running. The turn cannot
+    // complete until that tool has returned its actual result.
+    await toolCompleted;finish();
+   }else if(scenario==='turn race'){
     finish();emit({id:value.id,error:{code:-32602,message:'no active turn to steer'}});
-   }else {respond({turnId:active});timer=setTimeout(finish,80);}
+   }else {respond({turnId:active});queueMicrotask(finish);}
   } else if(value.method==='turn/interrupt'){clearTimeout(timer);respond({});}
   else if(value.method==='thread/unsubscribe')respond({status:'unsubscribed'});
  }else{
@@ -137,11 +144,14 @@ input.on('line',async line=>{
    emit({type:'system',subtype:'init',session_id:'session-fixture',model:'model-fixture'});
    emit({type:'user',uuid:value.uuid,message:value.message,session_id:'session-fixture'});
    emit({type:'assistant',message:{role:'assistant',content:[]}});
-   if(scenario!=='hold')timer=setTimeout(finish,scenario==='parent input'&&count===1?160:80);
+   if(scenario!=='hold'){
+    if(scenario==='parent input'&&count===1)timer=setTimeout(finish,160);
+    else queueMicrotask(finish);
+   }
   }else if(value.type==='control_request'){clearTimeout(timer);emit({type:'control_response',request_id:value.request_id,response:{subtype:'success'}});}
  }
 });
-input.on('close',()=>{clearTimeout(timer);setTimeout(()=>process.exit(scenario==='nonzero'?7:0),25);});
+input.on('close',()=>{clearTimeout(timer);setImmediate(()=>process.exit(scenario==='nonzero'?7:0));});
 `, { mode: 0o700 });
   const nativeEnvironment = windows ? process.env : {};
   const systemRoot = Object.entries(nativeEnvironment).find(([key]) => key.toLowerCase() === 'systemroot')?.[1];
@@ -165,20 +175,32 @@ input.on('close',()=>{clearTimeout(timer);setTimeout(()=>process.exit(scenario==
     const child = spawn(process.execPath, [entry], { cwd: workspace, env: environment, stdio: ['pipe', 'pipe', 'pipe'], detached: !windows });
     t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
     const frames = [];
+    const frameWaiters = new Set();
+    let closed = false;
     let diagnostic = '';
     child.stderr.setEncoding('utf8'); child.stderr.on('data', (chunk) => { diagnostic += chunk; });
     const lines = createInterface({ input: child.stdout });
-    lines.on('line', (line) => frames.push(JSON.parse(line)));
-    const exit = new Promise((resolve) => child.once('close', (code) => resolve({ code, frames, diagnostic })));
+    lines.on('line', (line) => { frames.push(JSON.parse(line)); for (const notify of frameWaiters) notify(); });
+    const exit = new Promise((resolve) => child.once('close', (code) => {
+      closed = true; for (const notify of frameWaiters) notify(); resolve({ code, frames, diagnostic });
+    }));
     const send = (value) => child.stdin.write(`${JSON.stringify({ protocolVersion: 5, ...value })}\n`);
-    const waitFor = async (type, count = 1) => {
-      const stop = Date.now() + (windows ? 90000 : 6000);
-      while (frames.filter((frame) => frame.type === type).length < count) {
-        if (child.exitCode !== null || Date.now() > stop) assert.fail(`Missing ${type}; frames=${JSON.stringify(frames)}; diagnostic=${diagnostic}`);
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      return frames.filter((frame) => frame.type === type).at(-1);
-    };
+    const waitFor = (type, count = 1) => new Promise((resolve, reject) => {
+      let timer;
+      const finish = (error, frame) => {
+        clearTimeout(timer); frameWaiters.delete(check);
+        if (error) reject(error); else resolve(frame);
+      };
+      const missing = () => new Error(`Missing ${type}; frames=${JSON.stringify(frames)}; diagnostic=${diagnostic}`);
+      const check = () => {
+        const matching = frames.filter((frame) => frame.type === type);
+        if (matching.length >= count) finish(null, matching.at(-1));
+        else if (closed) finish(missing());
+      };
+      frameWaiters.add(check);
+      timer = setTimeout(() => finish(missing()), windows ? 90000 : 6000);
+      check();
+    });
     return { child, send, waitFor, frames, exit };
   };
   const captured = async () => (await fs.readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
@@ -387,9 +409,16 @@ test('Codex: installed child tools emit one parent message before automatic inpu
   assert.equal((await run.waitFor('message')).text, 'Child question 父消息?');
   run.send({ type: 'message', id: 'd'.repeat(32), text: 'Continue with the accepted scope.' });
   assert.equal((await run.waitFor('delivery')).status, 'submitted');
-  assert.equal((await run.waitFor('result')).state, 'completed'); await run.exit;
+  const result = await run.waitFor('result');
+  assert.equal(result.state, 'completed'); assert.equal(result.generationStarted, true); assert.equal(result.backendExitCode, 0);
+  assert.equal((await run.exit).code, 0);
   assert.equal(run.frames.filter((frame) => frame.type === 'message').length, 1);
-  const values = await f.captured(); assert.match(values.find((value) => value.toolOutput).toolOutput, /send_parent: submitted/);
+  assert.equal(run.frames.filter((frame) => frame.type === 'result').length, 1);
+  const values = await f.captured(); const tool = values.find((value) => value.toolOutput);
+  assert.match(tool.toolOutput, /send_parent: submitted/); assert.equal(tool.toolExitCode, 0);
+  assert.equal(values.filter((value) => value.input?.method === 'thread/start').length, 1);
+  assert.equal(values.filter((value) => value.input?.method === 'turn/start').length, 1);
+  assert.equal(values.filter((value) => value.input?.method === 'turn/steer').length, 1);
 });
 
 test('Codex: approval requests cannot be silently granted', { skip: !supported, timeout: testTimeoutMs }, async (t) => {

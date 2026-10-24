@@ -13,6 +13,7 @@ import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 const require = createRequire(import.meta.url);
 const registeredEntry = require.resolve('../skills/codex-subagent-guide/scripts/subagent.mjs');
 const registeredWorker = require.resolve('../skills/codex-subagent-guide/scripts/worker.mjs');
+const registeredClock = require.resolve('./fixtures/subagent-clock.mjs');
 const sourceScripts = guideRuntimeScripts(import.meta.url);
 const sourceEntry = path.join(sourceScripts, path.basename(registeredEntry));
 const sourceWorker = path.join(sourceScripts, path.basename(registeredWorker));
@@ -30,23 +31,40 @@ import fs from 'node:fs/promises';
 import readline from 'node:readline';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { watch } from 'node:fs';
 const scenario = JSON.parse(await fs.readFile(process.env.FIXTURE_SCENARIO_FILE, 'utf8'));
 const root = process.env.FIXTURE_RUN_DIRECTORY;
 const hardStop = setTimeout(() => process.exit(3), scenario.adapterLifetimeMs ?? (process.platform === 'win32' ? 905000 : 95000));
 process.stdout.on('error', () => process.exit(0));
-let backend, backendExit, ready = false, finishing = false, timer;
+let backend, backendExit, ready = false, finishing = false;
+const watchers = new Set();
+const phase = (name) => fs.appendFile(root + '/phases.jsonl', JSON.stringify({ phase: name, time: Date.now() }) + '\n');
+const signal = (name) => new Promise((resolve, reject) => {
+  const watcher = watch(root, () => { void check(); });
+  watchers.add(watcher);
+  const close = () => { watcher.close(); watchers.delete(watcher); };
+  async function check() {
+    try { await fs.stat(root + '/' + name); close(); resolve(); }
+    catch (error) { if (error.code !== 'ENOENT') { close(); reject(error); } }
+  }
+  watcher.once('error', (error) => { close(); reject(error); });
+  void check();
+});
 const emit = (event) => new Promise((resolve, reject) => {
   process.stdout.write(JSON.stringify({ protocolVersion: 5, ...event }) + '\n', (error) => error ? reject(error) : resolve());
 });
 async function finish(stopped = false) {
   if (finishing) return;
   finishing = true;
-  clearInterval(timer);
+  for (const watcher of watchers) watcher.close();
+  watchers.clear();
+  await phase('finishing');
   let backendExitCode = null;
   if (backend) {
     if (backend.connected) backend.send(stopped ? 'cancel' : 'finish');
     backendExitCode = await backendExit;
   }
+  await phase('backendExited');
   if (ready) await emit({ type: 'closing', reason: stopped ? 'cancelled' : 'completed' });
   const state = stopped ? 'cancelled' : scenario.state ?? 'completed';
   const finalText = scenario.secretOutput ? JSON.stringify({ serviceData: process.env.SERVICE_DATA }) : scenario.finalText ?? 'Complete final answer.';
@@ -56,10 +74,12 @@ async function finish(stopped = false) {
     ...(state === 'completed' ? {} : { code: stopped ? 'fixtureStopped' : 'fixtureFailed' }),
     ...(stopped ? { remoteStopConfirmed: true } : {}) });
   await fs.writeFile(root + '/finished.json', JSON.stringify({ backendExitCode }));
+  await phase('resultSent');
   clearTimeout(hardStop);
   process.exit(0);
 }
 async function start(frame) {
+  await phase('startReceived');
   await fs.appendFile(process.env.FIXTURE_GENERATIONS, 'generation\n');
   const environment = Object.fromEntries(['SOURCE', 'SERVICE_DATA', 'EMPTY', 'EMPTY_REFERENCE', 'ORDINARY_HOST',
     'AW_PLUGIN_CONTEXT', 'AW_SUBAGENT_TEMP_DIR'].map((key) => [key, process.env[key]]));
@@ -80,16 +100,18 @@ async function start(frame) {
   backendExit = new Promise((resolve) => backend.once('close', resolve));
   observed.backendPid = backend.pid;
   await fs.writeFile(root + '/observed.json', JSON.stringify(observed));
+  await phase('backendStarted');
+  if (scenario.readyGate) { await phase('readyGateWaiting'); await signal('ready'); }
   if (scenario.readyDelay) await new Promise((resolve) => setTimeout(resolve, scenario.readyDelay));
   if (finishing) return;
   await emit({ type: 'ready', communicationSupported: scenario.communication ?? true });
   ready = true;
+  await phase('readySent');
   for (const text of scenario.messages ?? []) await emit({ type: 'message', text });
   await fs.writeFile(root + '/published.json', '{}');
+  await phase('published');
   if (scenario.finishImmediately) { await finish(); return; }
-  timer = setInterval(async () => {
-    if (await fs.stat(root + '/finish').catch(() => false)) await finish();
-  }, 20);
+  void signal('finish').then(() => finish()).catch(() => process.exit(2));
 }
 const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 for await (const line of lines) {
@@ -133,7 +155,14 @@ function successful(result, command) {
   assert.match(result.stdout, new RegExp(`^${command}: `));
 }
 
-async function fixture(t, mode = 'workspace') {
+async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
+  const began = performance.now();
+  const phases = []; const scenarios = [];
+  function phase(name, values = {}) {
+    const value = { phase: name, elapsedMs: Math.round(performance.now() - began), ...values };
+    phases.push(value);
+    if (diagnostics || process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1') t.diagnostic(`AW_SUBAGENT_PARENT_PHASE ${JSON.stringify(value)}`);
+  }
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-parent-runtime-test-'));
   const temporaryRoot = path.join(directory, 'temporary');
   const workspace = path.join(directory, 'workspace 中文');
@@ -144,6 +173,8 @@ async function fixture(t, mode = 'workspace') {
   await fs.access(path.join(installed, 'scripts', path.relative(sourceScripts, sourceWorker)));
   const adapter = path.join(directory, 'fake-adapter.mjs');
   await fs.writeFile(adapter, fakeAdapter);
+  const clockPreload = path.join(directory, 'fixture-clock.mjs');
+  await fs.copyFile(registeredClock, clockPreload);
   const snapshot = { installedIdentity: { source: 'fixture', plugin: 'fixture', platform: 'codex', scope: 'user' }, resourceRoot: installed,
     effectiveValues: { advisorProfile: { executor: 'fixture' }, generalTaskProfile: { executor: 'fixture' },
       subagentCommands: [{ key: 'fixture', title: 'Fixture', adapter: 'custom', mode, command: await fs.realpath(process.execPath), entrypoint: adapter }] } };
@@ -161,10 +192,11 @@ async function fixture(t, mode = 'workspace') {
     AW_HOME: directory, AW_CODEX_HOME: directory, AW_CLAUDE_HOME: directory,
     TMPDIR: temporaryRoot, TMP: temporaryRoot, TEMP: temporaryRoot };
   const handles = new Set();
-  let nextScenario = 0;
+  let nextScenario = 0, nextClock = 0;
   function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, timeout = windows ? 120000 : 35000, nodeArgs = [] } = {}) {
     return new Promise((resolve, reject) => {
       const began = performance.now();
+      phase('commandBegin', { operation: args[0] });
       const child = spawn(process.execPath, [...nodeArgs, entry, ...args], { cwd, env: { ...environment, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
       const output = [], diagnostics = [];
       let timedOut = false;
@@ -176,29 +208,72 @@ async function fixture(t, mode = 'workspace') {
         clearTimeout(timer);
         const stdout = Buffer.concat(output).toString('utf8');
         for (const match of stdout.matchAll(/^run: ([\x21-\x7e]+)$/gm)) handles.add(match[1]);
-        if (timedOut) { reject(new Error(`Fixture command timed out: ${args[0]}`)); return; }
-        resolve({ code, stdout, stderr: Buffer.concat(diagnostics).toString('utf8'), elapsedMs: Math.round(performance.now() - began) });
+        const response = { code, stdout, stderr: Buffer.concat(diagnostics).toString('utf8'), elapsedMs: Math.round(performance.now() - began) };
+        phase('commandEnd', { operation: args[0], code, commandElapsedMs: response.elapsedMs, state: field(stdout, 'state'), communication: field(stdout, 'communication'), errorCode: field(stdout, 'code'), timedOut });
+        if (timedOut) { reject(new Error(`Fixture command timed out: ${args[0]}\n${JSON.stringify(phases)}`)); return; }
+        resolve(response);
       });
       child.stdin.on('error', () => {}); child.stdin.end(stdin);
     });
   }
   async function start(scenario = {}, { prompt = 'Assigned fixture task.', extra = [], env = {}, stdin, cwd } = {}) {
     const runDirectory = path.join(directory, `scenario-${++nextScenario}`);
+    const index = nextScenario;
+    scenarios.push({ index, directory: runDirectory });
     await fs.mkdir(runDirectory);
     const scenarioFile = path.join(runDirectory, 'scenario.json');
     await fs.writeFile(scenarioFile, JSON.stringify(scenario));
     const response = await command(['start', '--profile', 'advisorProfile', '--workspace', workspace, '--prompt', prompt, ...extra],
       { env: { ...env, FIXTURE_SCENARIO_FILE: scenarioFile, FIXTURE_RUN_DIRECTORY: runDirectory, FIXTURE_GENERATIONS: generations }, stdin, cwd });
     const run = field(response.stdout, 'run');
-    return { ...response, run, runDirectory,
+    phase('startReturned', { scenario: index, code: response.code, state: field(response.stdout, 'state'), communication: field(response.stdout, 'communication') });
+    return { ...response, run, runDirectory, scenario,
       observed: () => eventually(async () => JSON.parse(await fs.readFile(path.join(runDirectory, 'observed.json'), 'utf8')), 'adapter start'),
       published: () => eventually(() => fs.stat(path.join(runDirectory, 'published.json')), 'adapter ready and messages', windows ? 120000 : 15000),
-      finish: () => fs.writeFile(path.join(runDirectory, 'finish'), ''),
+      releaseReady: async () => { phase('releaseReady', { scenario: index }); await fs.writeFile(path.join(runDirectory, 'ready'), ''); },
+      finish: async () => { phase('finishRequested', { scenario: index }); await fs.writeFile(path.join(runDirectory, 'finish'), ''); },
+      finished: () => eventually(() => fs.stat(path.join(runDirectory, 'finished.json')), 'adapter final and backend exit', windows ? 120000 : 15000),
       inputs: (count) => eventually(async () => {
         const entries = (await fs.readFile(path.join(runDirectory, 'inputs.jsonl'), 'utf8')).trimEnd().split('\n').map((line) => JSON.parse(line));
         return entries.length >= count && entries;
       }, 'parent input submission', batchObservationMs),
     };
+  }
+  async function initialized(started) {
+    assert.match(started.run ?? '', /^aw5-[a-f0-9]{32}-[a-f0-9]{32}$/);
+    if (started.code === 0) { successful(started, 'start'); return; }
+    assert.equal(started.code, 1, started.stdout + started.stderr);
+    assert.match(started.stdout, /^start: notReady\n/);
+    assert.equal(field(started.stdout, 'state'), 'starting');
+    assert.equal(field(started.stdout, 'communication'), 'pending');
+    assert.equal(field(started.stdout, 'code'), 'startupNotReady');
+    t.diagnostic(`AW_SUBAGENT_PARENT_PHASE ${JSON.stringify({ phase: 'continueSamePendingRun', elapsedMs: started.elapsedMs })}`);
+    if (started.scenario.readyGate) await started.releaseReady();
+    await started.published();
+    // A resultNotReady response reports the real running state without consuming
+    // messages. Fast terminal cases retain their first original wait/result read.
+    if (!started.scenario.finishImmediately) await eventually(async () => {
+      const response = await command(['result', '--run', started.run]);
+      assert.equal(field(response.stdout, 'code'), 'resultNotReady', response.stdout + response.stderr);
+      assert.equal(response.code, 1); bounded(response);
+      const state = field(response.stdout, 'state');
+      assert.ok(['starting', 'running'].includes(state), response.stdout);
+      return state === 'running';
+    }, 'same run reaching running state', windows ? 120000 : 15000);
+    phase('pendingRunInitialized');
+  }
+  async function clock(roles, { stepMs, now = Date.now() } = {}) {
+    const file = path.join(directory, `clock-${++nextClock}.json`);
+    const origin = now; const settings = { roles, now: origin, ...(stepMs ? { stepMs } : {}) };
+    await fs.writeFile(file, JSON.stringify(settings));
+    const acknowledgements = async () => Promise.all((await fs.readdir(directory)).filter((name) => name.startsWith(path.basename(file) + '.') && name.endsWith('.ack'))
+      .map(async (name) => JSON.parse(await fs.readFile(path.join(directory, name), 'utf8'))));
+    return { origin, environment: { NODE_OPTIONS: `--no-warnings --import=${pathToFileURL(clockPreload).href}`, FIXTURE_CLOCK_FILE: file }, acknowledgements,
+      async advance(milliseconds) {
+        settings.now += milliseconds; await fs.writeFile(file, JSON.stringify(settings));
+        if (roles.includes('worker')) await eventually(async () => (await acknowledgements()).some((value) => value.role === 'worker' && value.now === settings.now), 'worker clock acknowledgement');
+        phase('simulatedClockAdvance', { simulatedElapsedMs: settings.now - origin });
+      } };
   }
   async function waitTerminal(run) {
     const results = [];
@@ -214,16 +289,25 @@ async function fixture(t, mode = 'workspace') {
     return openRun(await storeContext({ temporaryRoot }), run);
   }
   t.after(async () => {
-    try { for (const run of handles) await command(['stop', '--run', run]).catch(() => {}); }
-    finally { await fs.rm(directory, { recursive: true, force: true }); }
+    try {
+      if (diagnostics) for (const scenario of scenarios) {
+        const records = await fs.readFile(path.join(scenario.directory, 'phases.jsonl'), 'utf8').catch(() => '');
+        for (const line of records.trim().split('\n').filter(Boolean)) t.diagnostic(`AW_SUBAGENT_ADAPTER_PHASE ${JSON.stringify({ scenario: scenario.index, ...JSON.parse(line) })}`);
+      }
+    }
+    finally {
+      try { for (const run of handles) await command(['stop', '--run', run]).catch(() => {}); }
+      finally { await fs.rm(directory, { recursive: true, force: true }); }
+    }
   });
-  return { directory, temporaryRoot, workspace, installed, generations, snapshot, config, save, command, start, waitTerminal, evidence };
+  return { directory, temporaryRoot, workspace, installed, generations, snapshot, config, save, command, start, initialized, clock, waitTerminal, evidence, phase };
 }
 
 // Test Value Gate: a copied installation must preserve caller text, argv, installed
 // helpers and captured configuration after the short start command exits.
 test('installed start preserves UTF-8 input, environment and one captured execution', async (t) => {
   const f = await fixture(t, 'bundle');
+  const clock = await f.clock(['start'], { stepMs: 1000 });
   const instructions = 'Explicit fixture role.\r\n保留指令。\n';
   await fs.writeFile(path.join(f.directory, 'instructions.md'), instructions);
   Object.assign(f.snapshot.effectiveValues.subagentCommands[0], {
@@ -233,13 +317,15 @@ test('installed start preserves UTF-8 input, environment and one captured execut
   await f.save();
   const prompt = '  原始任务 🧪\r\n$(touch escaped); `literal`\n';
   const selectors = [' missing/**/*.ts , docs/absent.md ', '!**/*.test.ts', ' missing/**/*.ts , docs/absent.md '];
-  const started = await f.start({ communication: false }, { prompt: '-', stdin: Buffer.from(prompt), cwd: f.directory,
+  const started = await f.start({ communication: false, readyGate: true }, { prompt: '-', stdin: Buffer.from(prompt), cwd: f.directory,
     extra: ['--name', 'api-review_2.1', '--instructions-file', 'instructions.md', '--model', 'explicit-model', '--reasoning-effort', 'high',
       ...selectors.flatMap((selector) => ['--file', selector])],
-    env: { SOURCE: 'host-value', EMPTY_HOST: '', ORDINARY_HOST: 'inherited', AW_PLUGIN_CONTEXT: 'private', AW_SUBAGENT_TEMP_DIR: 'foreign' } });
-  successful(started, 'start');
+    env: { ...clock.environment, SOURCE: 'host-value', EMPTY_HOST: '', ORDINARY_HOST: 'inherited', AW_PLUGIN_CONTEXT: 'private', AW_SUBAGENT_TEMP_DIR: 'foreign' } });
+  await f.initialized(started);
+  const observations = await clock.acknowledgements();
+  assert.equal(observations.length, 1); assert.equal(observations[0].now - clock.origin, 10000);
   assert.equal(field(started.stdout, 'agent'), 'api-review_2.1');
-  assert.equal(field(started.stdout, 'communication'), 'false');
+  if (started.code === 0) assert.equal(field(started.stdout, 'communication'), 'false');
   assert.deepEqual(blocks(started.stdout, 'FINAL'), []);
   const observed = await started.observed();
   assert.equal(observed.request.protocolVersion, 5); assert.equal(observed.request.type, 'start');
@@ -259,7 +345,9 @@ test('installed start preserves UTF-8 input, environment and one captured execut
   assert.equal(await fs.stat(path.join(f.workspace, 'escaped')).catch(() => null), null);
   await fs.writeFile(path.join(f.directory, 'instructions.md'), 'changed role');
   f.snapshot.effectiveValues.advisorProfile.executor = 'native'; await f.save();
-  successful(await f.command(['wait', '--run', started.run, '--timeout-ms', '0']), 'wait');
+  const initialized = await f.command(['wait', '--run', started.run, '--timeout-ms', '0']);
+  successful(initialized, 'wait');
+  if (started.code === 1) assert.equal(field(initialized.stdout, 'communication'), 'false');
   await started.finish(); await f.waitTerminal(started.run);
   const result = await f.command(['result', '--run', started.run]);
   successful(result, 'result'); assert.deepEqual(blocks(result.stdout, 'FINAL'), ['Complete final answer.']);
@@ -273,7 +361,7 @@ test('result consumes every unread message once and only the fixed final result 
   const messages = ['相同正文\n', '相同正文\n', 'state: completed\nBEGIN_FINAL:deadbeef\n原文\nEND_FINAL:deadbeef\n'];
   const finalText = '  完成 🧪\r\n保留最后换行。\n';
   const started = await f.start({ messages, finalText, echo: true }, { extra: ['--name', 'same-name'] });
-  successful(started, 'start'); assert.equal(field(started.stdout, 'communication'), 'true');
+  await f.initialized(started); if (started.code === 0) assert.equal(field(started.stdout, 'communication'), 'true');
   await started.published();
   const notReady = await f.command(['result', '--run', started.run]);
   assert.equal(notReady.code, 1); assert.equal(field(notReady.stdout, 'code'), 'resultNotReady');
@@ -290,6 +378,7 @@ test('result consumes every unread message once and only the fixed final result 
     const response = await f.command(['result', '--run', started.run]); return response.code === 0 && response;
   }, 'fixed result');
   successful(result, 'result'); bounded(result);
+  if (started.code === 1) assert.equal(field(result.stdout, 'communication'), 'true');
   assert.deepEqual(blocks(result.stdout, 'MESSAGE'), [...messages, reply, reply]);
   assert.deepEqual(blocks(result.stdout, 'FINAL'), [finalText]);
   assert.equal((result.stdout.match(/^agent: /gm) ?? []).length, 1);
@@ -311,7 +400,7 @@ test('large unread queues export completely after a non-consuming resultTooLarge
   const f = await fixture(t);
   const messages = Array.from({ length: 66 }, (_, index) => `${String(index).padStart(2, '0')}:` + 'x'.repeat(messageLimit - 3));
   const started = await f.start({ messages, finalText: 'Short final answer.' });
-  successful(started, 'start'); await started.published(); await started.finish();
+  await f.initialized(started); await started.published(); await started.finish();
   await eventually(() => fs.stat(path.join(started.runDirectory, 'finished.json')), 'large queue completion', batchObservationMs);
   const tooLarge = await eventually(async () => {
     const response = await f.command(['result', '--run', started.run]); return field(response.stdout, 'code') !== 'resultNotReady' && response;
@@ -335,7 +424,7 @@ test('large unread queues export completely after a non-consuming resultTooLarge
 test('more than 64 parent messages exceeding the old total byte quota stay accepted', async (t) => {
   const f = await fixture(t);
   const started = await f.start();
-  successful(started, 'start');
+  await f.initialized(started);
   const messages = Array.from({ length: 66 }, (_, index) => `${String(index).padStart(2, '0')}:` + 'x'.repeat(messageLimit - 3));
   for (const text of messages) successful(await f.command(['send', '--run', started.run, '--text', text]), 'send');
   assert.deepEqual((await started.inputs(messages.length)).map((input) => input.text), messages);
@@ -350,7 +439,7 @@ test('referenced environment secrets stay redacted in actual parent output', asy
   f.snapshot.effectiveValues.subagentCommands[0].envFrom = { SERVICE_DATA: 'SOURCE' }; await f.save();
   const secret = 'fixture\n"quoted"\\path.[x]+';
   const started = await f.start({ secretOutput: true, state: 'failed' }, { env: { SOURCE: secret } });
-  successful(started, 'start'); await started.finish();
+  await f.initialized(started); await started.finish();
   const responses = await f.waitTerminal(started.run);
   const result = await f.command(['result', '--run', started.run]);
   successful(result, 'result');
@@ -367,7 +456,7 @@ test('wait includes a 7300-byte final when the complete response fits without di
   const f = await fixture(t);
   const finalText = 'x'.repeat(7300);
   const started = await f.start({ finalText, finishImmediately: true });
-  successful(started, 'start');
+  await f.initialized(started);
   const terminal = (await f.waitTerminal(started.run)).find((response) => terminalPattern.test(response.stdout));
   successful(terminal, 'wait'); bounded(terminal);
   assert.equal(terminal.stderr, '');
@@ -388,7 +477,7 @@ test('stopped adapter scratch is deleted while unread messages and final remain 
   const messages = ['Unread question.\n', '未读过程消息。\r\n'];
   const finalText = 'The retained final answer.\n';
   const started = await f.start({ scratchText, messages, finalText });
-  successful(started, 'start'); await started.published();
+  await f.initialized(started); await started.published();
   const observed = await started.observed();
   assert.equal(await fs.readFile(observed.scratchFile, 'utf8'), scratchText);
   await started.finish();
@@ -421,7 +510,7 @@ test('wait preserves whole events across batches and defers an oversized final o
   const messages = ['甲'.repeat(1365) + 'x', 'y'.repeat(messageLimit), 'z'.repeat(messageLimit)];
   const finalText = '答案\n'.repeat(3000);
   const started = await f.start({ messages, finalText });
-  successful(started, 'start'); await started.published();
+  await f.initialized(started); await started.published();
   const received = [];
   for (let index = 0; index < 6 && received.length < messages.length; index++) {
     const response = await f.command(['wait', '--run', started.run, '--timeout-ms', '0']);
@@ -450,9 +539,10 @@ test('multi-target wait wakes for B and does not replay the settled A result', a
   const f = await fixture(t);
   const a = await f.start({ finishImmediately: true, finalText: 'A complete.' }, { extra: ['--name', 'duplicate'] });
   const b = await f.start({ echo: true }, { extra: ['--name', 'duplicate'] });
-  successful(a, 'start'); successful(b, 'start'); await f.waitTerminal(a.run);
+  await f.initialized(a); await f.initialized(b); await f.waitTerminal(a.run);
+  const baseline = await f.command(['wait', '--run', b.run, '--timeout-ms', '0']);
+  successful(baseline, 'wait'); assert.deepEqual(blocks(baseline.stdout, 'MESSAGE'), []);
   const pendingWait = f.command(['wait', '--run', a.run, '--run', b.run]);
-  await sleep(100);
   successful(await f.command(['send', '--run', b.run, '--text', 'B changed.']), 'send');
   const changed = await pendingWait;
   successful(changed, 'wait'); bounded(changed);
@@ -474,16 +564,18 @@ test('multi-target wait wakes for B and does not replay the settled A result', a
 // independent from the parent wait window and never launch a second backend.
 test('unsupported communication rejects send and explicit deadline stops one backend', async (t) => {
   const f = await fixture(t);
-  const deadlineMs = windows ? 30000 : 1200;
-  const beforeStart = Date.now();
-  const started = await f.start({ communication: false }, { extra: ['--deadline-ms', String(deadlineMs)] });
-  const afterStart = Date.now();
-  successful(started, 'start'); assert.equal(field(started.stdout, 'communication'), 'false');
+  const clock = await f.clock(['worker']);
+  const deadlineMs = 1200;
+  const started = await f.start({ communication: false }, { extra: ['--deadline-ms', String(deadlineMs)], env: clock.environment });
+  await f.initialized(started); if (started.code === 0) assert.equal(field(started.stdout, 'communication'), 'false');
   const observed = await started.observed();
-  assert.ok(Number.isSafeInteger(observed.request.run.deadlineAt));
-  assert.ok(observed.request.run.deadlineAt >= beforeStart + deadlineMs && observed.request.run.deadlineAt <= afterStart + deadlineMs);
+  assert.equal(observed.request.run.deadlineAt, clock.origin + deadlineMs);
+  await clock.advance(deadlineMs - 1);
   const rejected = await f.command(['send', '--run', started.run, '--text', 'Do not submit.']);
   assert.equal(rejected.code, 1); assert.equal(field(rejected.stdout, 'code'), 'communicationUnsupported');
+  assert.equal(field(rejected.stdout, 'state'), 'running');
+  assert.equal((await started.observed()).request.run.deadlineAt, clock.origin + deadlineMs);
+  await clock.advance(1);
   const terminal = (await f.waitTerminal(started.run)).find((response) => terminalPattern.test(response.stdout));
   assert.equal(field(terminal.stdout, 'state'), 'cancelled');
   assert.equal(field(terminal.stdout, 'remote_stop_confirmed'), 'true');
@@ -548,11 +640,12 @@ test('Windows root publication preserves a competing existing directory or file'
 // Test Value Gate: pending is not false; late ready must survive fast closing and
 // be delivered with the first subsequent state or terminal observation.
 test('late ready capability survives terminal snapshot merging', { timeout: windows ? 120000 : 35000 }, async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, 'workspace', { diagnostics: true });
+  const clock = await f.clock(['start'], { stepMs: 1000 });
   const largeFinal = 'Late capability final.\n'.repeat(1000);
   const [forWait, forResult] = await Promise.all([
-    f.start({ communication: false, readyDelay: 10300, finishImmediately: true }),
-    f.start({ communication: true, readyDelay: 10300, finishImmediately: true, finalText: largeFinal }),
+    f.start({ communication: false, readyGate: true, finishImmediately: true }, { env: clock.environment }),
+    f.start({ communication: true, readyGate: true, finishImmediately: true, finalText: largeFinal }, { env: clock.environment }),
   ]);
   for (const [index, started] of [forWait, forResult].entries()) {
     const diagnostic = JSON.stringify({ phase: 'lateReadyStart', case: index === 0 ? 'communicationFalse' : 'communicationTrue',
@@ -562,6 +655,12 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
     assert.equal(field(started.stdout, 'state'), 'starting'); assert.equal(field(started.stdout, 'communication'), 'pending');
     assert.equal(field(started.stdout, 'code'), 'startupNotReady');
   }
+  const observations = await clock.acknowledgements();
+  assert.equal(observations.length, 2);
+  assert.ok(observations.every((value) => value.role === 'start' && value.now - clock.origin === 10000), JSON.stringify(observations));
+  f.phase('initializationWindowSimulated', { simulatedElapsedMs: 10000, runs: 2 });
+  await Promise.all([forWait.releaseReady(), forResult.releaseReady()]);
+  await Promise.all([forWait.finished(), forResult.finished()]);
   const responses = await f.waitTerminal(forWait.run);
   assert.ok(responses.some((response) => field(response.stdout, 'communication') === 'false'));
   const result = await f.command(['result', '--run', forWait.run]);
@@ -599,7 +698,7 @@ test('initialization failure has pending capability and a readable failed final'
 test('completed result preserves unresolved input delivery without replaying notifications', async (t) => {
   const f = await fixture(t);
   const started = await f.start({ delivery: 'unknown' });
-  successful(started, 'start');
+  await f.initialized(started);
   const input = '  追加检查。\r\nDo not retry automatically.\n';
   successful(await f.command(['send', '--run', started.run, '--text', '-'], { stdin: Buffer.from(input) }), 'send');
   await started.inputs(1);
@@ -625,7 +724,7 @@ test('export output failure does not consume unread messages', async (t) => {
   const messages = ['Message before a broken pipe.', 'Another unread message.'];
   const finalText = 'x'.repeat(3 * 1024 * 1024);
   const started = await f.start({ messages, finalText });
-  successful(started, 'start'); await started.published(); await started.finish();
+  await f.initialized(started); await started.published(); await started.finish();
   await eventually(() => fs.stat(path.join(started.runDirectory, 'finished.json')), 'large final completion');
   // A default read checks readiness without consuming this oversized report.
   await eventually(async () => field((await f.command(['result', '--run', started.run])).stdout, 'code') === 'resultTooLarge', 'large final cache');
@@ -642,7 +741,7 @@ test('worker final published between missing-file probes remains readable', asyn
   const f = await fixture(t);
   const finalText = 'Committed between final-file probes.\r\n保留原文。\n';
   const started = await f.start({ finalText });
-  successful(started, 'start');
+  await f.initialized(started);
   const context = await storeContext({ temporaryRoot: f.temporaryRoot });
   const run = await openRun(context, started.run);
   assert.equal(await workerAlive(context, run.meta), true);
@@ -687,7 +786,7 @@ test('late worker final publication survives a parent lost-worker observation', 
   const f = await fixture(t);
   const finalText = 'Saved successful answer.\r\n保留最终正文。\n';
   const started = await f.start({ finalText });
-  successful(started, 'start');
+  await f.initialized(started);
   const context = await storeContext({ temporaryRoot: f.temporaryRoot });
   const run = await openRun(context, started.run);
   const finalFile = path.join(run.directory, 'final.json');
@@ -708,7 +807,6 @@ test('late worker final publication survives a parent lost-worker observation', 
           if (owner.terminalAt === null) return false;
           return { owner, result: JSON.parse(await fs.readFile(finalFile, 'utf8')) };
         }, 'normal worker final publication and exit');
-        await sleep(25);
       }
       throw error;
     }
@@ -732,7 +830,7 @@ test('default result reserves consume-error bytes and retains messages after del
   const f = await fixture(t);
   const message = 'z'.repeat(messageLimit);
   const started = await f.start({ messages: [message], finalText: 'a' });
-  successful(started, 'start'); await started.published(); await started.finish();
+  await f.initialized(started); await started.published(); await started.finish();
   await eventually(() => fs.stat(path.join(started.runDirectory, 'finished.json')), 'fixture final publication');
   const run = await f.evidence(started.run);
   const preload = path.join(f.directory, 'deny-event-consumption.mjs');
@@ -783,7 +881,7 @@ const unlink=fs.unlink;fs.unlink=async(target,...options)=>{
 test('lost worker result is fixed once and expires without regenerating work', async (t) => {
   const f = await fixture(t);
   const started = await f.start({ messages: ['Saved process message.'] });
-  successful(started, 'start'); await started.published();
+  await f.initialized(started); await started.published();
   const before = await f.evidence(started.run);
   process.kill(before.meta.worker.pid, 'SIGKILL');
   const result = await eventually(async () => {
@@ -800,9 +898,12 @@ test('lost worker result is fixed once and expires without regenerating work', a
   assert.equal((await f.evidence(started.run)).meta.terminalAt, first.meta.terminalAt);
   assert.equal((await f.command(['wait', '--run', started.run])).stdout, 'wait: settled\n');
   assert.equal(await fs.readFile(f.generations, 'utf8'), 'generation\n');
-  first.meta.terminalAt = Date.now() - 3600001;
-  await fs.writeFile(path.join(first.directory, 'owner.json'), JSON.stringify(first.meta));
-  const expired = await f.command(['result', '--run', started.run, '--export']);
+  const clock = await f.clock(['result'], { now: first.meta.terminalAt });
+  await clock.advance(3599999);
+  successful(await f.command(['result', '--run', started.run], { env: clock.environment }), 'result');
+  assert.equal((await f.evidence(started.run)).meta.terminalAt, first.meta.terminalAt);
+  await clock.advance(1);
+  const expired = await f.command(['result', '--run', started.run, '--export'], { env: clock.environment });
   assert.equal(expired.code, 1); assert.match(expired.stdout, /^code: (runExpired|runUnavailable)$/m);
   assert.deepEqual(blocks(expired.stdout, 'FINAL'), []);
 });
@@ -812,18 +913,18 @@ test('lost worker result is fixed once and expires without regenerating work', a
 test('ordinary calls clean expired damaged content while help and invalid flags stay read-only', async (t) => {
   const f = await fixture(t);
   const started = await f.start({ finishImmediately: true });
-  successful(started, 'start'); await f.waitTerminal(started.run);
+  await f.initialized(started); await f.waitTerminal(started.run);
   const run = await f.evidence(started.run);
   await eventually(() => {
     try { process.kill(run.meta.worker.pid, 0); return false; }
     catch (error) { if (error.code === 'ESRCH') return true; throw error; }
   }, 'worker exit');
-  run.meta.terminalAt = Date.now() - 3600001;
-  await fs.writeFile(path.join(run.directory, 'owner.json'), JSON.stringify(run.meta));
+  const clock = await f.clock(['--help', 'result'], { now: run.meta.terminalAt });
+  await clock.advance(3600000);
   await fs.writeFile(path.join(run.directory, 'final.json'), '{damaged cached content');
-  assert.equal((await f.command(['--help'])).code, 0); await fs.stat(run.directory);
-  assert.equal((await f.command(['result', '--run', started.run, '--output-file', 'unused'])).code, 2); await fs.stat(run.directory);
-  const expired = await f.command(['result', '--run', started.run]);
+  assert.equal((await f.command(['--help'], { env: clock.environment })).code, 0); await fs.stat(run.directory);
+  assert.equal((await f.command(['result', '--run', started.run, '--output-file', 'unused'], { env: clock.environment })).code, 2); await fs.stat(run.directory);
+  const expired = await f.command(['result', '--run', started.run], { env: clock.environment });
   assert.equal(expired.code, 1); assert.deepEqual(blocks(expired.stdout, 'FINAL'), []);
   assert.equal(await fs.stat(run.directory).catch(() => null), null);
 });
@@ -860,7 +961,7 @@ test('invalid input rejects obsolete commands, names and malformed sizes before 
   assert.equal(await fs.stat(f.generations).catch(() => null), null); assert.deepEqual(await fs.readdir(f.temporaryRoot), []);
   assert.equal(await fs.stat(path.join(f.workspace, 'must-not-exist')).catch(() => null), null);
   const started = await f.start({}, { extra: ['--name', 'real-name'] });
-  successful(started, 'start');
+  await f.initialized(started);
   const named = await f.command(['send', '--run', 'real-name', '--text', 'wrong target']);
   assert.equal(named.code, 1); assert.equal(field(named.stdout, 'code'), 'runUnavailable');
   for (const bytes of [Buffer.from(' \r\n'), Buffer.from([0xff]), Buffer.from([0]), Buffer.alloc(messageLimit + 1, 120)]) {
@@ -868,6 +969,37 @@ test('invalid input rejects obsolete commands, names and malformed sizes before 
   }
   const accepted = await f.command(['send', '--run', started.run, '--text', 'x'.repeat(messageLimit)]);
   successful(accepted, 'send'); await started.inputs(1);
+});
+
+// Test Value Gate: caller wait time must not impose a task deadline. Advance
+// separate caller/worker clocks, while keeping real messages and process exits.
+test('default run survives simulated time and a caller wait timeout', async (t) => {
+  const f = await fixture(t);
+  const workerClock = await f.clock(['worker']);
+  const started = await f.start({ echo: true }, { env: workerClock.environment });
+  await f.initialized(started);
+  assert.equal((await started.observed()).request.run.deadlineAt, null);
+  successful(await f.command(['wait', '--run', started.run, '--timeout-ms', '0']), 'wait');
+  const callerClock = await f.clock(['wait'], { stepMs: 100000 });
+  const timeout = await f.command(['wait', '--run', started.run], { env: callerClock.environment });
+  assert.equal(timeout.code, 0); assert.equal(timeout.stdout, 'wait: timeout\n');
+  const [acknowledged] = await callerClock.acknowledgements();
+  assert.equal(acknowledged.now - callerClock.origin, 600000);
+  await workerClock.advance(1800001);
+  const input = 'Input after a simulated former default deadline.';
+  successful(await f.command(['send', '--run', started.run, '--text', input]), 'send');
+  const changed = await f.command(['wait', '--run', started.run]);
+  successful(changed, 'wait'); assert.equal(field(changed.stdout, 'state'), 'running');
+  assert.deepEqual(blocks(changed.stdout, 'MESSAGE'), [input]);
+  assert.deepEqual((await started.inputs(1)).map((message) => message.text), [input]);
+  const pending = await f.command(['result', '--run', started.run]);
+  assert.equal(pending.code, 1); assert.equal(field(pending.stdout, 'code'), 'resultNotReady');
+  assert.equal((await started.observed()).request.run.deadlineAt, null);
+  await started.finish(); await f.waitTerminal(started.run);
+  const result = await f.command(['result', '--run', started.run]);
+  successful(result, 'result'); assert.equal(field(result.stdout, 'state'), 'completed');
+  assert.equal(await fs.readFile(f.generations, 'utf8'), 'generation\n');
+  t.diagnostic('Simulated caller_wait_ms=600000 worker_elapsed_ms=1800001; native elapsed qualification is separate.');
 });
 
 const longRunSetting = process.env.AW_SUBAGENT_LONG_RUN_MS;
@@ -886,8 +1018,8 @@ test('long-running default run stays open beyond 30 minutes', {
   const started = await f.start({ echo: true,
     backendLifetimeMs: longRunMilliseconds + (windows ? 300000 : 60000),
     adapterLifetimeMs: longRunMilliseconds + (windows ? 305000 : 65000) });
-  successful(started, 'start');
-  assert.equal(field(started.stdout, 'state'), 'running'); assert.equal(field(started.stdout, 'communication'), 'true');
+  await f.initialized(started);
+  if (started.code === 0) { assert.equal(field(started.stdout, 'state'), 'running'); assert.equal(field(started.stdout, 'communication'), 'true'); }
   assert.equal((await started.observed()).request.run.deadlineAt, null);
   const began = performance.now();
   while (performance.now() - began < longRunMilliseconds) {

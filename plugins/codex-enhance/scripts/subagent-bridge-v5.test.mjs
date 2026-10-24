@@ -6,7 +6,9 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
-import { createChildBridge, invokeChildTool } from '../skills/codex-subagent-guide/scripts/runtime/adapter-channel.mjs';
+import { pathToFileURL } from 'node:url';
+import { channel } from 'node:diagnostics_channel';
+import { createChildBridge, createChildChannel, invokeChildTool } from '../skills/codex-subagent-guide/scripts/runtime/adapter-channel.mjs';
 import { protectPrivatePath } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 
 const require = createRequire(import.meta.url);
@@ -33,10 +35,53 @@ function caseDiagnostics(t) {
   };
 }
 
+function observeBridge(t) {
+  const diagnostic = caseDiagnostics(t); const events = []; const waiters = new Set(); const listeners = new Set();
+  const source = channel('aw.subagent.bridge');
+  const observed = (event) => {
+    if (event.phase === 'scanCompleted') return;
+    events.push(event);
+    diagnostic.note(event.phase, event);
+    for (const listener of listeners) listener(event);
+    for (const waiter of waiters) {
+      if (waiter.matches(event)) { waiters.delete(waiter); clearTimeout(waiter.timer); waiter.resolve(event); }
+      else waiter.progress();
+    }
+  };
+  source.subscribe(observed);
+  t.after(() => { source.unsubscribe(observed); for (const waiter of waiters) clearTimeout(waiter.timer); });
+  return {
+    note: diagnostic.note,
+    listen(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    wait(phase, predicate = () => true) {
+      const matches = (event) => event.phase === phase && predicate(event);
+      const event = events.find(matches);
+      if (event) return Promise.resolve(event);
+      return new Promise((resolve, reject) => {
+        const waiter = { matches, resolve, timer: null, progress() {
+          clearTimeout(waiter.timer);
+          waiter.timer = setTimeout(() => { waiters.delete(waiter); reject(new Error(`Bridge phase ${phase} made no progress. ${diagnostic.snapshot()}`)); }, windows ? 20000 : 3000);
+        } };
+        waiter.progress();
+        waiters.add(waiter);
+      });
+    },
+  };
+}
+
+// Queue limits and allocation do not require ACL or child process round trips.
+function channelFixture(t, options = {}) {
+  const messages = [];
+  const bridge = createChildChannel({ emitParentMessage: async (text) => { messages.push(text); }, ...options });
+  t.after(() => bridge.close('completed'));
+  return { bridge, messages, invoke: (operation, values = {}) => bridge.handleRequest({ operation, ...values }) };
+}
+
 // Test Value Gate: run installed helper entrypoints in private temporary resources.
 // Observe messages and deliveries to protect one scheduler across MCP, scripts,
 // automatic submission, cancellation, and resource cleanup without real models.
 async function fixture(t, options = {}) {
+  const observation = observeBridge(t);
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-child-bridge-'));
   await protectPrivatePath(root, 'directory');
   let bridge;
@@ -52,21 +97,40 @@ async function fixture(t, options = {}) {
   const bindingFile = bridge.script.args[2];
   const invoke = (operation, values = {}) => invokeChildTool({ bindingFile, operation, ...values });
   const env = { ...process.env, HOME: root, AW_HOME: root, AW_CODEX_HOME: root, AW_CLAUDE_HOME: root };
+  const preload = path.join(root, 'trace-bridge.mjs');
+  await fs.writeFile(preload, "import { channel } from 'node:diagnostics_channel'; import { writeSync } from 'node:fs'; channel('aw.subagent.bridge').subscribe((event) => writeSync(3, JSON.stringify(event) + '\\n'));\n");
   const execute = (args, input) => new Promise((resolve, reject) => {
-    const child = spawn(bridge.script.command, [...bridge.script.args, ...args], { shell: false, cwd: root, env, stdio: ['pipe', 'pipe', 'pipe'] });
-    const timer = setTimeout(() => { child.kill(); reject(new Error('The child script did not exit.')); }, 5000);
+    const child = spawn(bridge.script.command, ['--import', pathToFileURL(preload).href, ...bridge.script.args, ...args], { shell: false, cwd: root, env, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
+    let phase = 'spawned'; let trace = ''; let timer; let requestId;
+    const progress = (event) => {
+      phase = event.phase; observation.note(`script.${phase}`, { operation: args[0], pid: child.pid, ...event });
+      if (event.requestId) requestId = event.requestId;
+      clearTimeout(timer);
+      // A native ACL phase has a 15s platform bound. Allow its error to return
+      // before the fixture watchdog, and reset only on actual phase progress.
+      timer = setTimeout(() => { child.kill(); reject(new Error(`The child script stopped at ${phase}; operation=${args[0]}, pid=${child.pid}, requestId=${requestId ?? 'unpublished'}.`)); }, windows ? 17000 : 5000);
+    };
+    const stopObserving = observation.listen((event) => {
+      if (requestId && event.requestId === requestId) progress({ ...event, phase: `bridge.${event.phase}` });
+    });
+    progress({ phase });
+    child.stdio[3].setEncoding('utf8'); child.stdio[3].on('data', (data) => {
+      trace += data; let newline;
+      while ((newline = trace.indexOf('\n')) >= 0) { progress(JSON.parse(trace.slice(0, newline))); trace = trace.slice(newline + 1); }
+    });
     const stdout = []; const stderr = [];
     child.stdout.on('data', (bytes) => stdout.push(bytes)); child.stderr.on('data', (bytes) => stderr.push(bytes));
-    child.on('error', reject);
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout: Buffer.concat(stdout).toString(), stderr: Buffer.concat(stderr).toString() }); });
+    child.on('error', (error) => { clearTimeout(timer); stopObserving(); reject(error); });
+    child.on('close', (code) => { clearTimeout(timer); stopObserving(); resolve({ code, stdout: Buffer.concat(stdout).toString(), stderr: Buffer.concat(stderr).toString() }); });
     child.stdin.end(input);
   });
-  return { root, bridge, bindingFile, messages, invoke, execute, env };
+  return { root, bridge, bindingFile, messages, invoke, execute, env, observation };
 }
 
 test('generated script preserves text, rejects invalid input, and leaves no tool history', async (t) => {
   const f = await fixture(t);
-  const text = ' 父输入\r\n😀 " ` $()\nEND_MESSAGE:00000000\n';
+  const prefix = ' 父输入\r\n😀 " ` $()\nEND_MESSAGE:00000000\n';
+  const text = prefix + 'x'.repeat(4096 - Buffer.byteLength(prefix));
   const sent = await f.execute(['send', '--text', '-'], text);
   assert.equal(sent.code, 0); assert.equal(sent.stdout, 'send_parent: submitted\n'); assert.deepEqual(f.messages, [text]);
   const receipt = f.bridge.acceptInput({ id: id(1), text });
@@ -89,17 +153,62 @@ test('missing installed toolkit fails bridge setup before communication can be d
   } }), { code: 'pathMissing' });
 });
 
+test('caller and scanner never delete the same response concurrently', async (t) => {
+  const f = await fixture(t); const directory = path.dirname(f.bindingFile);
+  const unlink = fs.unlink.bind(fs); let deletingResponse = false; let collisions = 0; let failRemoval = false;
+  const removalError = Object.assign(new Error('A controlled deletion failed.'), { code: 'EACCES' });
+  let releaseScanner; const scannerReleased = new Promise((resolve) => { releaseScanner = resolve; });
+  let requestRemoved; const observedScan = new Promise((resolve) => { requestRemoved = resolve; });
+  let removedRequest = false;
+  const events = channel('aw.subagent.bridge');
+  const observed = (event) => { if (event.phase === 'scanCompleted' && removedRequest) requestRemoved(); };
+  events.subscribe(observed);
+  t.after(() => { releaseScanner(); events.unsubscribe(observed); });
+  t.mock.method(fs, 'unlink', async (target) => {
+    if (path.dirname(target) !== directory) return unlink(target);
+    if (target.endsWith('.request.json')) {
+      await unlink(target); removedRequest = true;
+      await observedScan;
+      return;
+    }
+    if (!target.endsWith('.response.json')) return unlink(target);
+    if (failRemoval) throw removalError;
+    const request = target.replace('.response.json', '.request.json');
+    const callerOwnsResponse = await fs.lstat(request).then(() => true, () => false);
+    if (callerOwnsResponse) return unlink(target);
+    if (deletingResponse) {
+      collisions++;
+      f.observation.note('controlledOverlapFailureInjected', { resourceKind: 'response', osCode: 'EBUSY' });
+      throw Object.assign(new Error('A controlled overlapping deletion failed.'), { code: 'EBUSY' });
+    }
+    deletingResponse = true; requestRemoved();
+    await scannerReleased;
+    return unlink(target);
+  });
+  f.observation.note('cleanupInvocation', { index: 0 });
+  try { assert.equal((await f.invoke('send', { text: 'cleanup ownership' })).outcome, 'submitted'); }
+  finally { releaseScanner(); }
+  assert.equal(collisions, 0);
+  failRemoval = true;
+  f.observation.note('controlledCleanupFailureInjected', { index: 1, resourceKind: 'response', osCode: 'EACCES' });
+  await assert.rejects(f.invoke('send', { text: 'report the cleanup error' }), (error) => {
+    assert.equal(error.code, 'toolResourceCleanupFailed'); assert.equal(error.resourceKind, 'response');
+    assert.equal(error.osCode, 'EACCES'); assert.equal(error.cause, removalError);
+    return true;
+  });
+});
+
 test('single-message byte boundary and queues remain usable beyond 64 inputs and sends', async (t) => {
-  const f = await fixture(t);
+  const f = channelFixture(t);
   const text = '😀'.repeat(1024);
   assert.equal((await f.invoke('send', { text })).outcome, 'submitted');
   const deliveries = [];
   for (let index = 0; index < 80; index++) deliveries.push(f.bridge.acceptInput({ id: id(index), text: index === 0 ? text : 'same text' }));
   assert.equal(f.bridge.hasPendingInput(), true);
   for (let index = 0; index < 80; index++) {
-    assert.equal((await f.invoke('send', { text: 'same text' })).outcome, 'submitted');
+    assert.equal((await f.invoke('send', { text: 'same text' })).outcome, 'submitted', `send index ${index}`);
     const received = await f.invoke('receive', { timeoutMs: 0 });
-    assert.equal(received.outcome, 'received'); assert.equal(received.text, index === 0 ? text : 'same text');
+    assert.equal(received.outcome, 'received', `receive index ${index}`); assert.equal(received.text, index === 0 ? text : 'same text', `text index ${index}`);
   }
   assert.equal((await Promise.all(deliveries)).every((delivery) => delivery.status === 'submitted'), true);
   assert.equal(f.bridge.hasPendingInput(), false); assert.equal(f.messages.length, 81);
@@ -110,15 +219,13 @@ test('single-message byte boundary and queues remain usable beyond 64 inputs and
 test('explicit receive and automatic input share allocation without replay', async (t) => {
   const diagnostic = caseDiagnostics(t);
   const automatic = []; let finishSubmission;
-  const f = await fixture(t, { submitInput: (message) => new Promise((resolve) => { automatic.push(message); finishSubmission = resolve; diagnostic.note('automaticSubmissionStarted'); }) });
+  const f = channelFixture(t, { submitInput: (message) => new Promise((resolve) => { automatic.push(message); finishSubmission = resolve; diagnostic.note('automaticSubmissionStarted'); }) });
   diagnostic.note('fixtureReady');
   const first = f.bridge.acceptInput({ id: id(1), text: 'automatic only' });
   await until(() => automatic.length === 1);
   assert.equal(f.bridge.hasPendingInput(), true);
   assert.equal((await f.invoke('receive', { timeoutMs: 0 })).outcome, 'timeout');
-  // Native Windows tool round trips measured 3.8 seconds. Keep both calls
-  // overlapping, and use the public duplicate response to identify the waiter.
-  const timeoutMs = windows ? 10000 : 1000;
+  const timeoutMs = 1000;
   const responses = new Map();
   const receivers = [0, 1].map((index) => {
     diagnostic.note('receiveInvoked', { index, timeoutMs });
@@ -141,46 +248,67 @@ test('explicit receive and automatic input share allocation without replay', asy
 
 test('parent input before receive stays available until the backend can submit immediately', async (t) => {
   let backendReady = false; const automatic = [];
-  const f = await fixture(t, {
+  const f = channelFixture(t, {
     canSubmitInput: () => backendReady,
     submitInput: async (message) => { automatic.push(message); return { status: 'submitted' }; },
   });
   const explicit = f.bridge.acceptInput({ id: id(1), text: 'early parent reply' });
-  await pause(25);
   const received = await f.invoke('receive', { timeoutMs: 200 });
   assert.equal(received.outcome, 'received'); assert.equal(received.text, 'early parent reply');
   assert.deepEqual(await explicit, { status: 'submitted' }); assert.deepEqual(automatic, []);
   const nextTurn = f.bridge.acceptInput({ id: id(2), text: 'next turn input' });
-  await pause(25); assert.equal(f.bridge.hasPendingInput(), true);
-  backendReady = true;
-  await until(() => automatic.length === 1);
+  assert.equal(f.bridge.hasPendingInput(), true);
+  backendReady = true; f.bridge.schedule();
   assert.deepEqual(await nextTurn, { status: 'submitted' });
   assert.deepEqual(automatic, [{ id: id(2), text: 'next turn input' }]);
   assert.equal((await f.invoke('receive', { timeoutMs: 0 })).outcome, 'timeout');
   backendReady = false;
   const notAttempted = f.bridge.acceptInput({ id: id(3), text: 'still queued' });
-  await pause(25); await f.bridge.close('cancelled');
+  await f.bridge.close('cancelled');
   assert.equal((await notAttempted).status, 'notSubmitted'); assert.equal(automatic.length, 1);
+});
+
+test('invalid backend readiness closes the queue and private bridge resources', async (t) => {
+  for (const canSubmitInput of [() => undefined, () => { throw new Error('Backend readiness failed.'); }]) {
+    await t.test('readiness failure', async (t) => {
+      const f = await fixture(t, { canSubmitInput, submitInput: async () => { assert.fail('No input can be submitted.'); } });
+      assert.equal((await f.bridge.acceptInput({ id: id(1), text: 'not submitted' })).status, 'notSubmitted');
+      await f.observation.wait('bridgeClosed');
+      await assert.rejects(fs.stat(path.dirname(f.bindingFile)), { code: 'ENOENT' });
+      assert.equal((await f.invoke('receive', { timeoutMs: 0 })).outcome, 'closed');
+    });
+  }
 });
 
 test('close wakes default receive, cancels submission, resolves queued inputs, and removes resources', async (t) => {
   let observedSignal;
-  const automatic = await fixture(t, { submitInput: (_message, { signal }) => { observedSignal = signal; return new Promise(() => {}); } });
+  const automatic = channelFixture(t, { submitInput: (_message, { signal }) => { observedSignal = signal; return new Promise(() => {}); } });
   const pending = automatic.bridge.acceptInput({ id: id(1), text: 'attempted' });
   const queued = automatic.bridge.acceptInput({ id: id(2), text: 'queued' });
   await until(() => observedSignal !== undefined);
-  const started = Date.now(); await automatic.bridge.close('cancelled');
-  assert.ok(Date.now() - started < 2000); assert.equal(observedSignal.aborted, true);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const closing = automatic.bridge.close('cancelled');
+  assert.equal(observedSignal.aborted, true);
+  t.mock.timers.tick(500); await closing; t.mock.timers.reset();
   assert.equal((await pending).status, 'unknown'); assert.equal((await queued).status, 'notSubmitted');
   assert.equal((await automatic.bridge.acceptInput({ id: id(3), text: 'late' })).code, 'runClosed');
   assert.equal(automatic.bridge.hasPendingInput(), false);
-  await assert.rejects(fs.stat(path.dirname(automatic.bindingFile)), { code: 'ENOENT' });
   await automatic.bridge.close('cancelled');
   const explicit = await fixture(t);
   const receiving = explicit.invoke('receive');
-  await until(async () => (await fs.readdir(path.dirname(explicit.bindingFile))).some((name) => name.endsWith('.request.json')));
+  await explicit.observation.wait('receiveWaiting');
   await explicit.bridge.close('completed');
   assert.equal((await receiving).outcome, 'closed');
+  await assert.rejects(fs.stat(path.dirname(explicit.bindingFile)), { code: 'ENOENT' });
+});
+
+test('default receive timeout uses simulated time without waiting ten minutes', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = channelFixture(t); let settled = false;
+  const receiving = f.invoke('receive').then((response) => { settled = true; return response; });
+  t.mock.timers.tick(599999); await Promise.resolve(); assert.equal(settled, false);
+  t.mock.timers.tick(1); assert.equal((await receiving).outcome, 'timeout');
+  await f.bridge.close('completed');
 });
 
 test('fixed explicit deadline wakes receive, while null leaves the bridge open', async (t) => {
@@ -194,11 +322,10 @@ test('fixed explicit deadline wakes receive, while null leaves the bridge open',
 test('an abandoned receive releases the shared receiver instead of blocking later tools', async (t) => {
   const f = await fixture(t); const controller = new AbortController();
   const abandoned = f.invoke('receive', { signal: controller.signal });
-  await until(async () => (await fs.readdir(path.dirname(f.bindingFile))).some((name) => name.endsWith('.request.json')));
-  await pause(25); controller.abort();
+  const waiting = await f.observation.wait('receiveWaiting');
+  controller.abort();
   assert.equal((await abandoned).outcome, 'closed');
-  await until(async () => (await fs.readdir(path.dirname(f.bindingFile))).length === 1);
-  await pause(25);
+  await f.observation.wait('requestHandled', (event) => event.requestId === waiting.requestId);
   assert.equal((await f.invoke('receive', { timeoutMs: 0 })).outcome, 'timeout');
   const delivered = f.bridge.acceptInput({ id: id(1), text: 'next receiver' });
   assert.equal((await f.invoke('receive', { timeoutMs: 1800000 })).text, 'next receiver');
