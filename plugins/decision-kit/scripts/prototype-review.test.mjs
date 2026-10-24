@@ -18,7 +18,7 @@ import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import * as sourceReviewPolicy from '../skills/decision-prototype/assets/review-shell/review-policy.mjs';
@@ -456,7 +456,7 @@ Date.now = () => Number(readFileSync(${JSON.stringify(clockPath)}, 'utf8'));
   await new Promise((resolve) => server.listen(Number(new URL(origin).port), '127.0.0.1', resolve));
   try {
     const result = await execFileAsync(process.execPath, [
-      '--import', preloadPath, runtimeScript, 'wait', '--session', session,
+      '--import', pathToFileURL(preloadPath).href, runtimeScript, 'wait', '--session', session,
     ], { env: runtimeEnv, timeout: 10_000 });
     assert.equal(parseReceipt(result.stdout).status, 'timeout');
     assert.equal(requests, 3);
