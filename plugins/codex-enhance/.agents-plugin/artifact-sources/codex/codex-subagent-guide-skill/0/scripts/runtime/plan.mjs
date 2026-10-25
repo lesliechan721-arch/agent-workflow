@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { PROFILE_KEYS, cleanString, fail } from './contracts.mjs';
+import { cleanString, fail } from './contracts.mjs';
 import { checkCodexArguments } from '../adapters/codex-v5.mjs';
 import { checkOracleArguments } from '../adapters/oracle-arguments.mjs';
 
@@ -23,26 +23,21 @@ export function validateEnvironmentConfig(executor) {
 /** Select the caller's exact key. No role classification or fallback occurs here. */
 export function selectExecution(snapshot, request) {
   if (!snapshot?.installedIdentity || !path.isAbsolute(snapshot.resourceRoot ?? '')) fail('runtimeSnapshotInvalid', 'The installed runtime is incomplete. Sync or reinstall the Guide.', ['sync', 'reinstall']);
-  if (!PROFILE_KEYS.includes(request.profile)) fail('profileUnknown', 'Select a supported profile key.');
-  const profile = snapshot.effectiveValues?.[request.profile];
-  if (profile === undefined) fail('profileUnconfigured', 'The selected profile is not configured. Select the intended configured key.');
-  if (!plainObject(profile) || Object.keys(profile).some((key) => !['executor', 'model', 'reasoningEffort'].includes(key)) || ['model', 'reasoningEffort'].some((key) => Object.hasOwn(profile, key) && !cleanString(profile[key]))) fail('profileInvalid', 'The installed profile is invalid. Update the profile and sync.', ['config', 'sync']);
-  const executorKey = Object.hasOwn(profile, 'executor') ? profile.executor : 'native';
+  const executorKey = request.executor;
   if (!cleanString(executorKey)) fail('executorInvalid', 'The executor key must be a nonempty string.');
-  for (const key of ['model', 'reasoningEffort']) if (request[key] !== undefined && !cleanString(request[key])) fail('parameterInvalid', 'Explicit model and effort must be nonempty strings.');
-  if (executorKey === 'native') {
-    if (!cleanString(profile.model) || !cleanString(profile.reasoningEffort)) fail('profileInvalid', 'Native profiles require model and reasoningEffort.', ['config', 'sync']);
-    fail('nativeUnsupported', 'Use the native host tools directly for a native profile.');
+  if (executorKey === 'native') fail('nativeUnsupported', 'Use the native host tools directly for native execution.');
+  const execution = { executor: executorKey };
+  for (const key of ['model', 'reasoningEffort']) {
+    if (request[key] === undefined) continue;
+    if (!cleanString(request[key])) fail('parameterInvalid', 'Explicit model and effort must be nonempty strings.');
+    execution[key] = request[key];
   }
-  const execution = { profile: request.profile, executor: executorKey };
-  for (const key of ['model', 'reasoningEffort']) if ((request[key] ?? profile[key]) !== undefined) execution[key] = request[key] ?? profile[key];
-  const commands = snapshot.effectiveValues.subagentCommands;
-  if (!Array.isArray(commands)) fail('registryInvalid', 'The installed command registry is invalid.', ['config', 'sync']);
-  const matches = commands.filter((entry) => entry?.key === executorKey);
-  if (matches.length !== 1) fail('executorUnknown', 'The selected executor is missing or ambiguous. Correct the registry and sync.', ['config', 'sync']);
-  const executor = matches[0];
-  const allowed = ['key', 'title', 'adapter', 'mode', 'command', 'entrypoint', 'args', 'env', 'envFrom', 'oracleEngine', 'codexProfile'];
-  if (Object.keys(executor).some((key) => !allowed.includes(key)) || !cleanString(executor.title) || !['codex', 'claude-code', 'oracle', 'custom'].includes(executor.adapter)) fail('executorInvalid', 'Update the executor to the current adapter configuration and sync.', ['config', 'sync']);
+  const commands = snapshot.effectiveValues?.subagentCommands;
+  if (!Array.isArray(commands) || commands.some((entry) => !plainObject(entry) || !cleanString(entry.key) || entry.key === 'native') || new Set(commands.map((entry) => entry.key)).size !== commands.length) fail('registryInvalid', 'The installed command registry has invalid or duplicate keys. Correct the registry and sync.', ['config', 'sync']);
+  const executor = commands.find((entry) => entry.key === executorKey);
+  if (!executor) fail('executorUnknown', 'The selected executor is missing. Correct the registry and sync.', ['config', 'sync']);
+  const allowed = ['key', 'adapter', 'mode', 'command', 'entrypoint', 'args', 'env', 'envFrom', 'oracleEngine', 'codexProfile'];
+  if (Object.keys(executor).some((key) => !allowed.includes(key)) || !['codex', 'claude-code', 'oracle', 'custom'].includes(executor.adapter)) fail('executorInvalid', 'Update the executor to the current adapter configuration and sync.', ['config', 'sync']);
   if (Object.hasOwn(executor, 'oracleEngine') && (executor.adapter !== 'oracle' || !['api', 'browser'].includes(executor.oracleEngine))) fail('executorInvalid', 'oracleEngine is only available for Oracle and must be api or browser.', ['config', 'sync']);
   const codexProfile = executor.codexProfile;
   if (Object.hasOwn(executor, 'codexProfile') && (executor.adapter !== 'codex' || typeof codexProfile !== 'string' || !codexProfile.trim() || codexProfile.includes('\0') || !codexProfile.isWellFormed() || [...codexProfile].length > 4096)) fail('executorInvalid', 'codexProfile is only available for Codex and must be a nonempty profile name of at most 4096 characters.', ['config', 'sync']);

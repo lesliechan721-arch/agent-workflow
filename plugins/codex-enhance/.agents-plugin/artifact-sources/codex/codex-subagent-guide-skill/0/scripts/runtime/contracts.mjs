@@ -10,12 +10,7 @@ export const LIMITS = Object.freeze({
   deliveryFrameBytes: 16384, receiveMs: 600000, waitMs: 600000, maximumWaitMs: 1800000,
 });
 
-export const PROFILE_KEYS = Object.freeze([
-  'simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile',
-  'quickProfile', 'standardProfile', 'deepProfile', 'advisorProfile',
-  'advisorDesignProfile', 'advisorDebugProfile', 'advisorReviewProfile',
-]);
-export const RUNTIME_KEYS = Object.freeze([...PROFILE_KEYS, 'subagentCommands']);
+export const RUNTIME_KEYS = Object.freeze(['subagentCommands']);
 export const STATES = Object.freeze(['completed', 'failed', 'cancelled', 'unknown']);
 export const cleanString = (value) => typeof value === 'string' && value.trim().length > 0 && !/[\u0000-\u001f\u007f]/u.test(value);
 export const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -51,7 +46,7 @@ export function validateRequest(request) {
   const required = ['protocolVersion', 'type', 'run', 'execution', 'mode', 'workspace', 'prompt', 'args', 'runtime'];
   if (!requiredFields(request, required, ['fileSelectors', 'fileResolver']) || request.protocolVersion !== 5 || request.type !== 'start' || !['workspace', 'bundle'].includes(request.mode)) fail('protocolInvalid', 'Use a mode-correct Adapter v5 start frame.');
   if (!requiredFields(request.run, ['id', 'name', 'deadlineAt']) || !messageId(request.run.id) || !label(request.run.name) || !(request.run.deadlineAt === null || epochMs(request.run.deadlineAt))) fail('protocolInvalid', 'The Adapter v5 run identity or deadline is invalid.');
-  if (!requiredFields(request.execution, ['profile', 'executor'], ['model', 'reasoningEffort']) || !identifier(request.execution.profile) || !identifier(request.execution.executor) || ['model', 'reasoningEffort'].some((key) => Object.hasOwn(request.execution, key) && !identifier(request.execution[key]))) fail('protocolInvalid', 'The Adapter v5 execution selection is invalid.');
+  if (!requiredFields(request.execution, ['executor'], ['model', 'reasoningEffort']) || !identifier(request.execution.executor) || ['model', 'reasoningEffort'].some((key) => Object.hasOwn(request.execution, key) && !identifier(request.execution[key]))) fail('protocolInvalid', 'The Adapter v5 execution selection is invalid.');
   if (!absolutePath(request.workspace) || !text(request.prompt) || !request.prompt.trim() || byteLength(request.prompt) > LIMITS.promptBytes || !Array.isArray(request.args) || request.args.some((value) => !text(value))) fail('protocolInvalid', 'The Adapter v5 workspace, prompt, or args is invalid.');
   if (!requiredFields(request.runtime, ['directory', 'toolkit']) || !absolutePath(request.runtime.directory) || !requiredFields(request.runtime.toolkit, ['module', 'command', 'messageScript', 'mcpScript']) || Object.values(request.runtime.toolkit).some((value) => !absolutePath(value))) fail('protocolInvalid', 'The Adapter v5 private runtime or installed toolkit is invalid.');
   if (request.mode === 'workspace') {

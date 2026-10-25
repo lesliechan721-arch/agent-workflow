@@ -7,19 +7,17 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptDir, '..');
 const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
 
-export const CONFIG_KEYS = [
-  'simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile',
-  'quickProfile', 'standardProfile', 'deepProfile', 'advisorProfile',
-  'advisorDesignProfile', 'advisorDebugProfile', 'advisorReviewProfile', 'subagentCommands',
-];
 export const SKILL_CONFIG_KEYS = {
-  'codex-subagent-guide': CONFIG_KEYS,
-  'codex-advisor': [
-    'advisorProfile', 'advisorDesignProfile', 'advisorDebugProfile', 'advisorReviewProfile',
-    'subagentCommands',
+  'codex-subagent-guide': [
+    'simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile',
+    'taskCustomProfiles', 'subagentCommands',
   ],
-  'codex-explore': ['quickProfile', 'standardProfile', 'deepProfile', 'subagentCommands'],
+  'codex-advisor': [
+    'advisorGeneralProfile', 'advisorAdvancedProfile', 'advisorExpertProfile', 'advisorCustomProfiles',
+  ],
+  'codex-explore': ['quickProfile', 'standardProfile', 'deepProfile', 'exploreCustomProfiles'],
 };
+export const CONFIG_KEYS = [...new Set(Object.values(SKILL_CONFIG_KEYS).flat())];
 const SKILLS = {
   'codex-explore-skill': 'codex-explore',
   'codex-subagent-guide-skill': 'codex-subagent-guide',
@@ -58,10 +56,9 @@ const EXPLORE_PROFILES = [
   ['deepProfile', 'deep', '高歧义、强冲突、复杂因果或高完整性要求'],
 ];
 const ADVISOR_PROFILES = [
-  ['advisorProfile', 'general', '通用技术第二意见'],
-  ['advisorDesignProfile', 'design', '设计和实施方案判断'],
-  ['advisorDebugProfile', 'debug', '症状、原因与下一项诊断'],
-  ['advisorReviewProfile', 'review', '对照要求审查当前产物'],
+  ['advisorGeneralProfile', '通用', '问题和边界清楚，主要涉及局部判断或少量方案比较，可用直接证据核验'],
+  ['advisorAdvancedProfile', '进阶', '多模块耦合、多个相互影响的假设或约束，需要比较取舍并核验跨边界影响'],
+  ['advisorExpertProfile', '专业', '高歧义或关键遗漏代价高，涉及复杂系统行为、全局方案或需要深入论证的专业问题'],
 ];
 
 function isRecord(value) {
@@ -111,49 +108,62 @@ function slot(template, marker, text) {
   return template.replace(token, () => text);
 }
 
+function executionCells(profile) {
+  if (!isRecord(profile)) throw new Error('Invalid execution configuration.');
+  const executor = Object.hasOwn(profile, 'executor') ? profile.executor : 'native';
+  if (executor === 'native' && (typeof profile.model !== 'string'
+      || typeof profile.reasoningEffort !== 'string')) throw new Error('Incomplete native execution configuration.');
+  return [display(executor),
+    Object.hasOwn(profile, 'model') ? display(profile.model) : '后端默认',
+    Object.hasOwn(profile, 'reasoningEffort') ? display(profile.reasoningEffort) : '后端默认'];
+}
+
 function profileTable(profiles, config) {
   return [
-    '| 档位 | 适用范围 | profile | executor | model | reasoningEffort |',
-    '| --- | --- | --- | --- | --- | --- |',
-    ...profiles.filter(([key]) => Object.hasOwn(config, key)).map(([key, name, description]) => {
-      const profile = config[key];
-      if (!isRecord(profile)) throw new Error(`Invalid profile: ${key}`);
-      const executor = Object.hasOwn(profile, 'executor') ? profile.executor : 'native';
-      if (executor === 'native' && (typeof profile.model !== 'string'
-          || typeof profile.reasoningEffort !== 'string')) throw new Error(`Incomplete native profile: ${key}`);
-      const model = Object.hasOwn(profile, 'model') ? display(profile.model) : '后端默认';
-      const effort = Object.hasOwn(profile, 'reasoningEffort') ? display(profile.reasoningEffort) : '后端默认';
-      return `| ${name} | ${description} | ${display(key)} | ${display(executor)} | ${model} | ${effort} |`;
-    }),
+    '| 档位 | 适用范围 | executor | model | reasoningEffort |',
+    '| --- | --- | --- | --- | --- |',
+    ...profiles.map(([key, name, description]) =>
+      `| ${[name, description, ...executionCells(config[key])].join(' | ')} |`),
+  ].join('\n');
+}
+
+function customProfiles(profiles) {
+  if (profiles.length === 0) return '';
+  return [
+    '先按以下数组顺序匹配适用范围，采用第一个匹配项；没有匹配项时，再按内建档位选择。',
+    '',
+    '### 自定义配置',
+    '',
+    '| 适用范围 | executor | model | reasoningEffort |',
+    '| --- | --- | --- | --- |',
+    ...profiles.map((profile) => `| ${[display(profile.applicability), ...executionCells(profile)].join(' | ')} |`),
+    '',
+    '### 内建档位',
+    '',
+    '',
   ].join('\n');
 }
 
 function commandTable(commands) {
   if (commands.length === 0) return '当前未配置外部执行器。需要外部执行时，先配置并 apply。';
   return [
-    '| key | 名称 | adapter | mode |',
-    '| --- | --- | --- | --- |',
+    '| key | mode |',
+    '| --- | --- |',
     ...commands.map((command) => `| ${[
-      command.key, command.title, command.adapter,
+      command.key,
       command.adapter === 'oracle' ? 'bundle'
         : command.adapter === 'codex' || command.adapter === 'claude-code' ? 'workspace' : command.mode,
     ].map(display).join(' | ')} |`),
   ].join('\n');
 }
 
-function renderSkill(template, key, config) {
-  const [marker, profiles] = key === 'codex-subagent-guide'
-    ? ['generic-profiles', GENERIC_PROFILES]
+function renderProfiles(template, key, config) {
+  const [marker, profiles, customKey] = key === 'codex-subagent-guide'
+    ? ['generic-profiles', GENERIC_PROFILES, 'taskCustomProfiles']
     : key === 'codex-explore'
-      ? ['explore-profiles', EXPLORE_PROFILES]
-      : ['advisor-profiles', ADVISOR_PROFILES];
-  const table = profileTable(profiles, config);
-  if (key !== 'codex-advisor') return slot(template, marker, table);
-  const hasSpecialist = ADVISOR_PROFILES.slice(1).some(([profile]) => Object.hasOwn(config, profile));
-  const selection = hasSpecialist
-    ? '按本次问题选择下表中的专属配置，其它咨询使用 general；一次只选一项。'
-    : '使用以下配置进行本次咨询。';
-  return slot(template, marker, `${selection}\n\n${table}`);
+      ? ['explore-profiles', EXPLORE_PROFILES, 'exploreCustomProfiles']
+      : ['advisor-profiles', ADVISOR_PROFILES, 'advisorCustomProfiles'];
+  return slot(template, marker, `${customProfiles(config[customKey])}${profileTable(profiles, config)}`);
 }
 
 async function readSkillSourceRoot(context, manifest, id) {
@@ -222,7 +232,7 @@ export async function renderArtifactPlan(context) {
     const sourceRoot = await readSkillSourceRoot(context, manifest, id);
     const template = await readFile(path.join(sourceRoot, 'SKILL.md'), 'utf8');
     const files = {
-      'SKILL.md': renderSkill(template, key, config),
+      'SKILL.md': key === 'codex-subagent-guide' ? template : renderProfiles(template, key, config),
       [INSTRUCTIONS[key]]: await readFile(path.join(sourceRoot, INSTRUCTIONS[key]), 'utf8'),
       ...(await runtimeResourceFiles(sourceRoot, 'assets')),
       ...(await runtimeResourceFiles(sourceRoot, 'agents')),
@@ -233,6 +243,9 @@ export async function renderArtifactPlan(context) {
       } : {}),
     };
     if (key === 'codex-subagent-guide') {
+      const profilesReference = 'references/execution-profiles.md';
+      files[profilesReference] = renderProfiles(
+        await readFile(path.join(sourceRoot, profilesReference), 'utf8'), key, config);
       const reference = 'references/external-delegation.md';
       files[reference] = slot(await readFile(path.join(sourceRoot, reference), 'utf8'),
         'subagent-commands', commandTable(config.subagentCommands));

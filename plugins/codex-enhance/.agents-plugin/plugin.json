@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "codex-enhance",
-  "version": "0.2.0-beta.11",
+  "version": "0.2.0-beta.12",
   "description": "在 Codex 中组织已授权的通用委派、只读技术第二意见和大范围事实调查。",
   "marketplace": {
     "category": "workflow",
@@ -86,11 +86,10 @@
           "executor": {
             "type": "string",
             "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
+            "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
             "valueRef": {
               "field": "subagentCommands",
               "key": "key",
-              "label": "title",
               "include": [
                 "native"
               ]
@@ -318,11 +317,10 @@
           "executor": {
             "type": "string",
             "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
+            "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
             "valueRef": {
               "field": "subagentCommands",
               "key": "key",
-              "label": "title",
               "include": [
                 "native"
               ]
@@ -550,11 +548,10 @@
           "executor": {
             "type": "string",
             "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
+            "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
             "valueRef": {
               "field": "subagentCommands",
               "key": "key",
-              "label": "title",
               "include": [
                 "native"
               ]
@@ -782,11 +779,10 @@
           "executor": {
             "type": "string",
             "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
+            "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
             "valueRef": {
               "field": "subagentCommands",
               "key": "key",
-              "label": "title",
               "include": [
                 "native"
               ]
@@ -1014,11 +1010,10 @@
           "executor": {
             "type": "string",
             "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
+            "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
             "valueRef": {
               "field": "subagentCommands",
               "key": "key",
-              "label": "title",
               "include": [
                 "native"
               ]
@@ -1246,11 +1241,10 @@
           "executor": {
             "type": "string",
             "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
+            "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
             "valueRef": {
               "field": "subagentCommands",
               "key": "key",
-              "label": "title",
               "include": [
                 "native"
               ]
@@ -1478,243 +1472,10 @@
           "executor": {
             "type": "string",
             "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
+            "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
             "valueRef": {
               "field": "subagentCommands",
               "key": "key",
-              "label": "title",
-              "include": [
-                "native"
-              ]
-            },
-            "validation": {
-              "minLength": 1
-            }
-          }
-        },
-        "additionalProperties": false,
-        "variants": {
-          "discriminator": "executor",
-          "cases": {
-            "native": {
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "required": true,
-                  "choices": {
-                    "allowCustom": true,
-                    "presets": [
-                      {
-                        "id": "gpt-6.1-sol",
-                        "title": "gpt-6.1-sol",
-                        "value": "gpt-6.1-sol"
-                      },
-                      {
-                        "id": "gpt-6-luna",
-                        "title": "gpt-6-luna",
-                        "value": "gpt-6-luna"
-                      },
-                      {
-                        "id": "gpt-6-astra",
-                        "title": "gpt-6-astra",
-                        "value": "gpt-6-astra"
-                      },
-                      {
-                        "id": "gpt-6-sol",
-                        "title": "gpt-6-sol",
-                        "value": "gpt-6-sol"
-                      },
-                      {
-                        "id": "gpt-5.6-luna",
-                        "title": "gpt-5.6-luna",
-                        "value": "gpt-5.6-luna"
-                      },
-                      {
-                        "id": "gpt-5.6-terra",
-                        "title": "gpt-5.6-terra",
-                        "value": "gpt-5.6-terra"
-                      },
-                      {
-                        "id": "gpt-5.6-sol",
-                        "title": "gpt-5.6-sol",
-                        "value": "gpt-5.6-sol"
-                      }
-                    ]
-                  },
-                  "validation": {
-                    "minLength": 1
-                  }
-                },
-                "reasoningEffort": {
-                  "type": "string",
-                  "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
-                  "required": true,
-                  "choices": {
-                    "allowCustom": true,
-                    "presets": [
-                      {
-                        "id": "low",
-                        "title": "low",
-                        "value": "low"
-                      },
-                      {
-                        "id": "medium",
-                        "title": "medium",
-                        "value": "medium"
-                      },
-                      {
-                        "id": "high",
-                        "title": "high",
-                        "value": "high"
-                      },
-                      {
-                        "id": "xhigh",
-                        "title": "xhigh",
-                        "value": "xhigh"
-                      },
-                      {
-                        "id": "max",
-                        "title": "max",
-                        "value": "max"
-                      },
-                      {
-                        "id": "ultra",
-                        "title": "ultra",
-                        "value": "ultra"
-                      },
-                      {
-                        "id": "pro",
-                        "title": "pro",
-                        "value": "pro"
-                      }
-                    ]
-                  },
-                  "validation": {
-                    "minLength": 1
-                  }
-                }
-              }
-            }
-          },
-          "missing": "native",
-          "otherwise": {
-            "properties": {
-              "model": {
-                "type": "string",
-                "choices": {
-                  "allowCustom": true,
-                  "presets": [
-                    {
-                      "id": "gpt-6.1-sol",
-                      "title": "gpt-6.1-sol",
-                      "value": "gpt-6.1-sol"
-                    },
-                    {
-                      "id": "gpt-6-luna",
-                      "title": "gpt-6-luna",
-                      "value": "gpt-6-luna"
-                    },
-                    {
-                      "id": "gpt-6-astra",
-                      "title": "gpt-6-astra",
-                      "value": "gpt-6-astra"
-                    },
-                    {
-                      "id": "gpt-6-sol",
-                      "title": "gpt-6-sol",
-                      "value": "gpt-6-sol"
-                    },
-                    {
-                      "id": "gpt-5.6-luna",
-                      "title": "gpt-5.6-luna",
-                      "value": "gpt-5.6-luna"
-                    },
-                    {
-                      "id": "gpt-5.6-terra",
-                      "title": "gpt-5.6-terra",
-                      "value": "gpt-5.6-terra"
-                    },
-                    {
-                      "id": "gpt-5.6-sol",
-                      "title": "gpt-5.6-sol",
-                      "value": "gpt-5.6-sol"
-                    }
-                  ]
-                },
-                "validation": {
-                  "minLength": 1
-                }
-              },
-              "reasoningEffort": {
-                "type": "string",
-                "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
-                "choices": {
-                  "allowCustom": true,
-                  "presets": [
-                    {
-                      "id": "low",
-                      "title": "low",
-                      "value": "low"
-                    },
-                    {
-                      "id": "medium",
-                      "title": "medium",
-                      "value": "medium"
-                    },
-                    {
-                      "id": "high",
-                      "title": "high",
-                      "value": "high"
-                    },
-                    {
-                      "id": "xhigh",
-                      "title": "xhigh",
-                      "value": "xhigh"
-                    },
-                    {
-                      "id": "max",
-                      "title": "max",
-                      "value": "max"
-                    },
-                    {
-                      "id": "ultra",
-                      "title": "ultra",
-                      "value": "ultra"
-                    },
-                    {
-                      "id": "pro",
-                      "title": "pro",
-                      "value": "pro"
-                    }
-                  ]
-                },
-                "validation": {
-                  "minLength": 1
-                }
-              }
-            }
-          }
-        }
-      },
-      "advisorProfile": {
-        "type": "object",
-        "title": "General 咨询配置",
-        "description": "通用第二意见的完整执行配置；专属配置缺省时使用，仅支持 user scope。",
-        "default": {
-          "executor": "native",
-          "model": "gpt-6-astra",
-          "reasoningEffort": "high"
-        },
-        "required": true,
-        "properties": {
-          "executor": {
-            "type": "string",
-            "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
-            "valueRef": {
-              "field": "subagentCommands",
-              "key": "key",
-              "label": "title",
               "include": [
                 "native"
               ]
@@ -1944,13 +1705,6 @@
                 "minLength": 1
               }
             },
-            "title": {
-              "type": "string",
-              "required": true,
-              "validation": {
-                "minLength": 1
-              }
-            },
             "adapter": {
               "type": "string",
               "required": true,
@@ -2132,19 +1886,24 @@
           "uniqueBy": "key"
         }
       },
-      "advisorDesignProfile": {
+      "advisorGeneralProfile": {
         "type": "object",
-        "title": "Design 设计咨询配置",
-        "description": "design 咨询的完整执行配置；缺省时使用 advisorProfile，不继承其属性，仅支持 user scope。",
+        "title": "通用咨询配置",
+        "description": "通用难度咨询的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "default": {
+          "executor": "native",
+          "model": "gpt-6-astra",
+          "reasoningEffort": "high"
+        },
+        "required": true,
         "properties": {
           "executor": {
             "type": "string",
             "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
+            "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
             "valueRef": {
               "field": "subagentCommands",
               "key": "key",
-              "label": "title",
               "include": [
                 "native"
               ]
@@ -2358,19 +2117,24 @@
           }
         }
       },
-      "advisorDebugProfile": {
+      "advisorAdvancedProfile": {
         "type": "object",
-        "title": "Debug 诊断咨询配置",
-        "description": "debug 咨询的完整执行配置；缺省时使用 advisorProfile，不继承其属性，仅支持 user scope。",
+        "title": "进阶咨询配置",
+        "description": "进阶难度咨询的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "default": {
+          "executor": "native",
+          "model": "gpt-6-astra",
+          "reasoningEffort": "xhigh"
+        },
+        "required": true,
         "properties": {
           "executor": {
             "type": "string",
             "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
+            "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
             "valueRef": {
               "field": "subagentCommands",
               "key": "key",
-              "label": "title",
               "include": [
                 "native"
               ]
@@ -2584,19 +2348,24 @@
           }
         }
       },
-      "advisorReviewProfile": {
+      "advisorExpertProfile": {
         "type": "object",
-        "title": "Review 审查咨询配置",
-        "description": "review 咨询的完整执行配置；缺省时使用 advisorProfile，不继承其属性，仅支持 user scope。",
+        "title": "专业咨询配置",
+        "description": "专业难度咨询的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "default": {
+          "executor": "native",
+          "model": "gpt-6-astra",
+          "reasoningEffort": "max"
+        },
+        "required": true,
         "properties": {
           "executor": {
             "type": "string",
             "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
+            "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
             "valueRef": {
               "field": "subagentCommands",
               "key": "key",
-              "label": "title",
               "include": [
                 "native"
               ]
@@ -2804,6 +2573,720 @@
                 },
                 "validation": {
                   "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      },
+      "taskCustomProfiles": {
+        "type": "array",
+        "title": "通用委派自定义配置",
+        "description": "按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位，仅支持 user scope。",
+        "default": [],
+        "required": true,
+        "items": {
+          "type": "object",
+          "properties": {
+            "applicability": {
+              "type": "string",
+              "title": "适用范围",
+              "required": true,
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "executor": {
+              "type": "string",
+              "title": "执行器",
+              "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
+              "valueRef": {
+                "field": "subagentCommands",
+                "key": "key",
+                "include": [
+                  "native"
+                ]
+              },
+              "validation": {
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false,
+          "variants": {
+            "discriminator": "executor",
+            "cases": {
+              "native": {
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "required": true,
+                    "choices": {
+                      "allowCustom": true,
+                      "presets": [
+                        {
+                          "id": "gpt-6.1-sol",
+                          "title": "gpt-6.1-sol",
+                          "value": "gpt-6.1-sol"
+                        },
+                        {
+                          "id": "gpt-6-luna",
+                          "title": "gpt-6-luna",
+                          "value": "gpt-6-luna"
+                        },
+                        {
+                          "id": "gpt-6-astra",
+                          "title": "gpt-6-astra",
+                          "value": "gpt-6-astra"
+                        },
+                        {
+                          "id": "gpt-6-sol",
+                          "title": "gpt-6-sol",
+                          "value": "gpt-6-sol"
+                        },
+                        {
+                          "id": "gpt-5.6-luna",
+                          "title": "gpt-5.6-luna",
+                          "value": "gpt-5.6-luna"
+                        },
+                        {
+                          "id": "gpt-5.6-terra",
+                          "title": "gpt-5.6-terra",
+                          "value": "gpt-5.6-terra"
+                        },
+                        {
+                          "id": "gpt-5.6-sol",
+                          "title": "gpt-5.6-sol",
+                          "value": "gpt-5.6-sol"
+                        }
+                      ]
+                    },
+                    "validation": {
+                      "minLength": 1
+                    }
+                  },
+                  "reasoningEffort": {
+                    "type": "string",
+                    "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                    "required": true,
+                    "choices": {
+                      "allowCustom": true,
+                      "presets": [
+                        {
+                          "id": "low",
+                          "title": "low",
+                          "value": "low"
+                        },
+                        {
+                          "id": "medium",
+                          "title": "medium",
+                          "value": "medium"
+                        },
+                        {
+                          "id": "high",
+                          "title": "high",
+                          "value": "high"
+                        },
+                        {
+                          "id": "xhigh",
+                          "title": "xhigh",
+                          "value": "xhigh"
+                        },
+                        {
+                          "id": "max",
+                          "title": "max",
+                          "value": "max"
+                        },
+                        {
+                          "id": "ultra",
+                          "title": "ultra",
+                          "value": "ultra"
+                        },
+                        {
+                          "id": "pro",
+                          "title": "pro",
+                          "value": "pro"
+                        }
+                      ]
+                    },
+                    "validation": {
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            },
+            "missing": "native",
+            "otherwise": {
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "choices": {
+                    "allowCustom": true,
+                    "presets": [
+                      {
+                        "id": "gpt-6.1-sol",
+                        "title": "gpt-6.1-sol",
+                        "value": "gpt-6.1-sol"
+                      },
+                      {
+                        "id": "gpt-6-luna",
+                        "title": "gpt-6-luna",
+                        "value": "gpt-6-luna"
+                      },
+                      {
+                        "id": "gpt-6-astra",
+                        "title": "gpt-6-astra",
+                        "value": "gpt-6-astra"
+                      },
+                      {
+                        "id": "gpt-6-sol",
+                        "title": "gpt-6-sol",
+                        "value": "gpt-6-sol"
+                      },
+                      {
+                        "id": "gpt-5.6-luna",
+                        "title": "gpt-5.6-luna",
+                        "value": "gpt-5.6-luna"
+                      },
+                      {
+                        "id": "gpt-5.6-terra",
+                        "title": "gpt-5.6-terra",
+                        "value": "gpt-5.6-terra"
+                      },
+                      {
+                        "id": "gpt-5.6-sol",
+                        "title": "gpt-5.6-sol",
+                        "value": "gpt-5.6-sol"
+                      }
+                    ]
+                  },
+                  "validation": {
+                    "minLength": 1
+                  }
+                },
+                "reasoningEffort": {
+                  "type": "string",
+                  "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                  "choices": {
+                    "allowCustom": true,
+                    "presets": [
+                      {
+                        "id": "low",
+                        "title": "low",
+                        "value": "low"
+                      },
+                      {
+                        "id": "medium",
+                        "title": "medium",
+                        "value": "medium"
+                      },
+                      {
+                        "id": "high",
+                        "title": "high",
+                        "value": "high"
+                      },
+                      {
+                        "id": "xhigh",
+                        "title": "xhigh",
+                        "value": "xhigh"
+                      },
+                      {
+                        "id": "max",
+                        "title": "max",
+                        "value": "max"
+                      },
+                      {
+                        "id": "ultra",
+                        "title": "ultra",
+                        "value": "ultra"
+                      },
+                      {
+                        "id": "pro",
+                        "title": "pro",
+                        "value": "pro"
+                      }
+                    ]
+                  },
+                  "validation": {
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "exploreCustomProfiles": {
+        "type": "array",
+        "title": "探索自定义配置",
+        "description": "按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位，仅支持 user scope。",
+        "default": [],
+        "required": true,
+        "items": {
+          "type": "object",
+          "properties": {
+            "applicability": {
+              "type": "string",
+              "title": "适用范围",
+              "required": true,
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "executor": {
+              "type": "string",
+              "title": "执行器",
+              "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
+              "valueRef": {
+                "field": "subagentCommands",
+                "key": "key",
+                "include": [
+                  "native"
+                ]
+              },
+              "validation": {
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false,
+          "variants": {
+            "discriminator": "executor",
+            "cases": {
+              "native": {
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "required": true,
+                    "choices": {
+                      "allowCustom": true,
+                      "presets": [
+                        {
+                          "id": "gpt-6.1-sol",
+                          "title": "gpt-6.1-sol",
+                          "value": "gpt-6.1-sol"
+                        },
+                        {
+                          "id": "gpt-6-luna",
+                          "title": "gpt-6-luna",
+                          "value": "gpt-6-luna"
+                        },
+                        {
+                          "id": "gpt-6-astra",
+                          "title": "gpt-6-astra",
+                          "value": "gpt-6-astra"
+                        },
+                        {
+                          "id": "gpt-6-sol",
+                          "title": "gpt-6-sol",
+                          "value": "gpt-6-sol"
+                        },
+                        {
+                          "id": "gpt-5.6-luna",
+                          "title": "gpt-5.6-luna",
+                          "value": "gpt-5.6-luna"
+                        },
+                        {
+                          "id": "gpt-5.6-terra",
+                          "title": "gpt-5.6-terra",
+                          "value": "gpt-5.6-terra"
+                        },
+                        {
+                          "id": "gpt-5.6-sol",
+                          "title": "gpt-5.6-sol",
+                          "value": "gpt-5.6-sol"
+                        }
+                      ]
+                    },
+                    "validation": {
+                      "minLength": 1
+                    }
+                  },
+                  "reasoningEffort": {
+                    "type": "string",
+                    "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                    "required": true,
+                    "choices": {
+                      "allowCustom": true,
+                      "presets": [
+                        {
+                          "id": "low",
+                          "title": "low",
+                          "value": "low"
+                        },
+                        {
+                          "id": "medium",
+                          "title": "medium",
+                          "value": "medium"
+                        },
+                        {
+                          "id": "high",
+                          "title": "high",
+                          "value": "high"
+                        },
+                        {
+                          "id": "xhigh",
+                          "title": "xhigh",
+                          "value": "xhigh"
+                        },
+                        {
+                          "id": "max",
+                          "title": "max",
+                          "value": "max"
+                        },
+                        {
+                          "id": "ultra",
+                          "title": "ultra",
+                          "value": "ultra"
+                        },
+                        {
+                          "id": "pro",
+                          "title": "pro",
+                          "value": "pro"
+                        }
+                      ]
+                    },
+                    "validation": {
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            },
+            "missing": "native",
+            "otherwise": {
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "choices": {
+                    "allowCustom": true,
+                    "presets": [
+                      {
+                        "id": "gpt-6.1-sol",
+                        "title": "gpt-6.1-sol",
+                        "value": "gpt-6.1-sol"
+                      },
+                      {
+                        "id": "gpt-6-luna",
+                        "title": "gpt-6-luna",
+                        "value": "gpt-6-luna"
+                      },
+                      {
+                        "id": "gpt-6-astra",
+                        "title": "gpt-6-astra",
+                        "value": "gpt-6-astra"
+                      },
+                      {
+                        "id": "gpt-6-sol",
+                        "title": "gpt-6-sol",
+                        "value": "gpt-6-sol"
+                      },
+                      {
+                        "id": "gpt-5.6-luna",
+                        "title": "gpt-5.6-luna",
+                        "value": "gpt-5.6-luna"
+                      },
+                      {
+                        "id": "gpt-5.6-terra",
+                        "title": "gpt-5.6-terra",
+                        "value": "gpt-5.6-terra"
+                      },
+                      {
+                        "id": "gpt-5.6-sol",
+                        "title": "gpt-5.6-sol",
+                        "value": "gpt-5.6-sol"
+                      }
+                    ]
+                  },
+                  "validation": {
+                    "minLength": 1
+                  }
+                },
+                "reasoningEffort": {
+                  "type": "string",
+                  "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                  "choices": {
+                    "allowCustom": true,
+                    "presets": [
+                      {
+                        "id": "low",
+                        "title": "low",
+                        "value": "low"
+                      },
+                      {
+                        "id": "medium",
+                        "title": "medium",
+                        "value": "medium"
+                      },
+                      {
+                        "id": "high",
+                        "title": "high",
+                        "value": "high"
+                      },
+                      {
+                        "id": "xhigh",
+                        "title": "xhigh",
+                        "value": "xhigh"
+                      },
+                      {
+                        "id": "max",
+                        "title": "max",
+                        "value": "max"
+                      },
+                      {
+                        "id": "ultra",
+                        "title": "ultra",
+                        "value": "ultra"
+                      },
+                      {
+                        "id": "pro",
+                        "title": "pro",
+                        "value": "pro"
+                      }
+                    ]
+                  },
+                  "validation": {
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "advisorCustomProfiles": {
+        "type": "array",
+        "title": "咨询自定义配置",
+        "description": "按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位，仅支持 user scope。",
+        "default": [],
+        "required": true,
+        "items": {
+          "type": "object",
+          "properties": {
+            "applicability": {
+              "type": "string",
+              "title": "适用范围",
+              "required": true,
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "executor": {
+              "type": "string",
+              "title": "执行器",
+              "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
+              "valueRef": {
+                "field": "subagentCommands",
+                "key": "key",
+                "include": [
+                  "native"
+                ]
+              },
+              "validation": {
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false,
+          "variants": {
+            "discriminator": "executor",
+            "cases": {
+              "native": {
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "required": true,
+                    "choices": {
+                      "allowCustom": true,
+                      "presets": [
+                        {
+                          "id": "gpt-6.1-sol",
+                          "title": "gpt-6.1-sol",
+                          "value": "gpt-6.1-sol"
+                        },
+                        {
+                          "id": "gpt-6-luna",
+                          "title": "gpt-6-luna",
+                          "value": "gpt-6-luna"
+                        },
+                        {
+                          "id": "gpt-6-astra",
+                          "title": "gpt-6-astra",
+                          "value": "gpt-6-astra"
+                        },
+                        {
+                          "id": "gpt-6-sol",
+                          "title": "gpt-6-sol",
+                          "value": "gpt-6-sol"
+                        },
+                        {
+                          "id": "gpt-5.6-luna",
+                          "title": "gpt-5.6-luna",
+                          "value": "gpt-5.6-luna"
+                        },
+                        {
+                          "id": "gpt-5.6-terra",
+                          "title": "gpt-5.6-terra",
+                          "value": "gpt-5.6-terra"
+                        },
+                        {
+                          "id": "gpt-5.6-sol",
+                          "title": "gpt-5.6-sol",
+                          "value": "gpt-5.6-sol"
+                        }
+                      ]
+                    },
+                    "validation": {
+                      "minLength": 1
+                    }
+                  },
+                  "reasoningEffort": {
+                    "type": "string",
+                    "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                    "required": true,
+                    "choices": {
+                      "allowCustom": true,
+                      "presets": [
+                        {
+                          "id": "low",
+                          "title": "low",
+                          "value": "low"
+                        },
+                        {
+                          "id": "medium",
+                          "title": "medium",
+                          "value": "medium"
+                        },
+                        {
+                          "id": "high",
+                          "title": "high",
+                          "value": "high"
+                        },
+                        {
+                          "id": "xhigh",
+                          "title": "xhigh",
+                          "value": "xhigh"
+                        },
+                        {
+                          "id": "max",
+                          "title": "max",
+                          "value": "max"
+                        },
+                        {
+                          "id": "ultra",
+                          "title": "ultra",
+                          "value": "ultra"
+                        },
+                        {
+                          "id": "pro",
+                          "title": "pro",
+                          "value": "pro"
+                        }
+                      ]
+                    },
+                    "validation": {
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            },
+            "missing": "native",
+            "otherwise": {
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "choices": {
+                    "allowCustom": true,
+                    "presets": [
+                      {
+                        "id": "gpt-6.1-sol",
+                        "title": "gpt-6.1-sol",
+                        "value": "gpt-6.1-sol"
+                      },
+                      {
+                        "id": "gpt-6-luna",
+                        "title": "gpt-6-luna",
+                        "value": "gpt-6-luna"
+                      },
+                      {
+                        "id": "gpt-6-astra",
+                        "title": "gpt-6-astra",
+                        "value": "gpt-6-astra"
+                      },
+                      {
+                        "id": "gpt-6-sol",
+                        "title": "gpt-6-sol",
+                        "value": "gpt-6-sol"
+                      },
+                      {
+                        "id": "gpt-5.6-luna",
+                        "title": "gpt-5.6-luna",
+                        "value": "gpt-5.6-luna"
+                      },
+                      {
+                        "id": "gpt-5.6-terra",
+                        "title": "gpt-5.6-terra",
+                        "value": "gpt-5.6-terra"
+                      },
+                      {
+                        "id": "gpt-5.6-sol",
+                        "title": "gpt-5.6-sol",
+                        "value": "gpt-5.6-sol"
+                      }
+                    ]
+                  },
+                  "validation": {
+                    "minLength": 1
+                  }
+                },
+                "reasoningEffort": {
+                  "type": "string",
+                  "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                  "choices": {
+                    "allowCustom": true,
+                    "presets": [
+                      {
+                        "id": "low",
+                        "title": "low",
+                        "value": "low"
+                      },
+                      {
+                        "id": "medium",
+                        "title": "medium",
+                        "value": "medium"
+                      },
+                      {
+                        "id": "high",
+                        "title": "high",
+                        "value": "high"
+                      },
+                      {
+                        "id": "xhigh",
+                        "title": "xhigh",
+                        "value": "xhigh"
+                      },
+                      {
+                        "id": "max",
+                        "title": "max",
+                        "value": "max"
+                      },
+                      {
+                        "id": "ultra",
+                        "title": "ultra",
+                        "value": "ultra"
+                      },
+                      {
+                        "id": "pro",
+                        "title": "pro",
+                        "value": "pro"
+                      }
+                    ]
+                  },
+                  "validation": {
+                    "minLength": 1
+                  }
                 }
               }
             }
@@ -2826,6 +3309,16 @@
             },
             {
               "path": "/reasoningEffort"
+            }
+          ]
+        },
+        "executorKey": {
+          "kind": "join",
+          "separator": "",
+          "missing": "未设置",
+          "parts": [
+            {
+              "path": "/key"
             }
           ]
         }
@@ -2852,17 +3345,17 @@
         "advancedTaskProfile": {
           "summary": "modelAndEffort"
         },
-        "advisorProfile": {
+        "advisorGeneralProfile": {
           "summary": "modelAndEffort"
         },
-        "advisorDesignProfile": {
+        "advisorAdvancedProfile": {
           "summary": "modelAndEffort"
         },
-        "advisorDebugProfile": {
+        "advisorExpertProfile": {
           "summary": "modelAndEffort"
         },
-        "advisorReviewProfile": {
-          "summary": "modelAndEffort"
+        "subagentCommands": {
+          "itemSummary": "executorKey"
         }
       },
       "groups": [
@@ -2872,7 +3365,8 @@
           "fields": [
             "quickProfile",
             "standardProfile",
-            "deepProfile"
+            "deepProfile",
+            "exploreCustomProfiles"
           ]
         },
         {
@@ -2882,17 +3376,18 @@
             "simpleTaskProfile",
             "generalTaskProfile",
             "complexTaskProfile",
-            "advancedTaskProfile"
+            "advancedTaskProfile",
+            "taskCustomProfiles"
           ]
         },
         {
           "id": "codex-advisor",
           "title": "codex-advisor",
           "fields": [
-            "advisorProfile",
-            "advisorDesignProfile",
-            "advisorDebugProfile",
-            "advisorReviewProfile"
+            "advisorGeneralProfile",
+            "advisorAdvancedProfile",
+            "advisorExpertProfile",
+            "advisorCustomProfiles"
           ]
         },
         {
@@ -2925,7 +3420,7 @@
           "quickProfile",
           "standardProfile",
           "deepProfile",
-          "subagentCommands"
+          "exploreCustomProfiles"
         ],
         "delivery": {
           "mode": "codex-native",
@@ -2972,13 +3467,7 @@
           "generalTaskProfile",
           "complexTaskProfile",
           "advancedTaskProfile",
-          "quickProfile",
-          "standardProfile",
-          "deepProfile",
-          "advisorProfile",
-          "advisorDesignProfile",
-          "advisorDebugProfile",
-          "advisorReviewProfile",
+          "taskCustomProfiles",
           "subagentCommands"
         ],
         "delivery": {
@@ -2989,17 +3478,6 @@
         "skillKey": "codex-subagent-guide",
         "runtimeConfig": {
           "keys": [
-            "simpleTaskProfile",
-            "generalTaskProfile",
-            "complexTaskProfile",
-            "advancedTaskProfile",
-            "quickProfile",
-            "standardProfile",
-            "deepProfile",
-            "advisorProfile",
-            "advisorDesignProfile",
-            "advisorDebugProfile",
-            "advisorReviewProfile",
             "subagentCommands"
           ]
         },
@@ -3038,11 +3516,10 @@
           "present"
         ],
         "refreshKeys": [
-          "advisorProfile",
-          "advisorDesignProfile",
-          "advisorDebugProfile",
-          "advisorReviewProfile",
-          "subagentCommands"
+          "advisorGeneralProfile",
+          "advisorAdvancedProfile",
+          "advisorExpertProfile",
+          "advisorCustomProfiles"
         ],
         "delivery": {
           "mode": "codex-native",
