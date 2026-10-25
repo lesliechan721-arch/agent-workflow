@@ -422,6 +422,10 @@ Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不�
 
 Core 的 Config Definition v4 支持对象数组 `validation.uniqueBy` 和非敏感标量 `valueRef`。唯一约束使用一个已声明的浅标量属性；引用指向另一顶层对象数组的同类型 key，可联合保留的静态值。Core 提供统一候选与依赖闭包校验，CLI 保存、有效值解析和物化使用该合同。校验可以读取依赖字段，生效资源与 reader 返回值只公开获准的 keys。Store v5、顶层整体覆盖、既有数组和对象限值保持不变。
 
+Core 的 `getPluginConfigReferenceChoices` 从已解析的作用域候选生成引用选项，沿用相同的完整来源、依赖闭包及标量校验。include 在前、源数组 key 在后，保持原类型、大小写与顺序；label 只用于显示，保存实际 key。来源无效或与保留值冲突时不返回部分选项。TUI 的所有受支持标量编辑位置共用此投影，const、choices 和 validation 与引用集合同时生效，不能用自定义输入绕开引用约束。
+
+含 valueRef 的根配置字段先确定合法保存层，再编辑其完整值；只有一个合法层时直接采用，确认后不重复选择层。候选与该层公共 writer 一致，只纳入该层已确认的 set/unset 草稿；个人目标不受项目覆盖约束，项目目标使用已保存的个人配置。另一层的未保存来源不能作为合法选项，实际跨层草稿依赖须先保存来源，再编辑或保存引用；恢复允许取消引用草稿后先保存来源。既有 project → user 批次顺序、部分成功和强配置原子提交保持不变，不新增跨层事务或持久候选状态。
+
 动态 Skill 的 `runtimeConfig: { keys: [...] }` 要求 `aw.installed-runtime-config.v2`。keys 非空、无重复，属于该 target 的 `refreshKeys`，字段及其校验依赖闭包均不得敏感。AW 在物化时使用正式 Core 配置校验，并在最终产物中注入 `scripts/aw-runtime-config.mjs` 与 schema 2 `.aw-runtime-config.json`；插件不能签发或覆盖这些保留资源。资源只携带本产物的 installed identity、允许字段、生效值和实际需要的来源元数据，不携带字段定义、资源树摘要或执行 revision。renderer context 不提供执行 revision。
 
 reader 从真实安装调用文件定位本产物，检查格式、版本、调用位置、来源、作用域、允许字段和安全路径；返回 `installedIdentity`、请求获准的 `effectiveValues` 和 `resourceRoot`。它不按 cwd、插件展示名或 sibling 目录猜来源，不读取最新 config store，不复制运行时 schema validator，也不读取其他 Skill 或核验角色正文。两个来源中的同名插件各自读取自己的配置。来源检查使用本产物可用的 owner 或 native materialization receipt；需要移动产物时仅携带该产物的来源回执。现有 ownership、native receipt 和 Status 自身的检查保持原合同。

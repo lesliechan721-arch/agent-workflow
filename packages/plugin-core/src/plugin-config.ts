@@ -713,6 +713,45 @@ export function validatePluginConfigCandidate(
   return validatePluginConfigDocument({ ...definition, fields: Object.fromEntries(closure.map((key) => [key, definition.fields[key]!])) } as PluginConfigDefinition, projected)
 }
 
+/** Project reference choices from an already resolved scope candidate, using the same validation as writes. */
+export function getPluginConfigReferenceChoices(
+  definition: PluginConfigDefinition,
+  scalar: PluginConfigScalarField,
+  values: Record<string, unknown>,
+): { choices: Array<{ value: PluginConfigScalar; title: string }>; issues: PluginConfigValidationIssue[] } {
+  if (!('valueRef' in scalar) || scalar.valueRef === undefined) return { choices: [], issues: [] }
+  const ref = scalar.valueRef
+  const sourceIssues = validatePluginConfigCandidate(definition, values, [ref.field])
+  if (sourceIssues.length > 0) return { choices: [], issues: sourceIssues }
+  // Other references can reserve values in the same source or its dependencies.
+  // Keep those source errors, but do not block choices on unrelated field errors.
+  const sourceKeys = new Set(getPluginConfigDependencyKeys(definition, [ref.field]))
+  const sharedSourceIssues = validatePluginConfigReferences(definition, values, Object.keys(definition.fields))
+    .filter((issue) => sourceKeys.has(issue.path.field))
+  if (sharedSourceIssues.length > 0) return { choices: [], issues: sharedSourceIssues }
+
+  // A scalar may be nested in an inactive branch or an empty array. Validate its reference
+  // independently of the current parent value, without requiring a selection to exist yet.
+  const referenceField = '$reference'
+  const referenceDefinition = { ...definition, fields: { ...definition.fields, [referenceField]: scalar } }
+  const issues = validatePluginConfigReferences(referenceDefinition as PluginConfigDefinition,
+    { ...values, [referenceField]: undefined }, [referenceField])
+  if (issues.length > 0) return { choices: [], issues }
+
+  const entries = (ownProperty(values, ref.field) ?? []) as PluginConfigObject[]
+  const candidates = [
+    ...(ref.include ?? []).map((value) => ({ value, title: String(value) })),
+    ...entries.map((entry) => {
+      const value = entry[ref.key] as PluginConfigScalar
+      const label = ref.label === undefined ? undefined : entry[ref.label]
+      const title = label === undefined || String(label).trim() === ''
+        ? String(value) : `${String(label)} (${String(value)})`
+      return { value, title }
+    }),
+  ]
+  return { choices: candidates.filter(({ value }) => validatePluginConfigValue(scalar, value).length === 0), issues: [] }
+}
+
 function assertValueReferenceSchemas(
   fields: Record<string, PluginConfigSchemaField>,
   definitions: readonly PluginConfigSchemaField[],

@@ -12,7 +12,7 @@ metadata:
 
 ## 范围、深度与拆分
 
-按定位歧义、因果复杂度、冲突及完整性选择 quick、standard 或 deep；不确定时采用 standard。
+按定位歧义、因果复杂度、冲突及完整性选择合适档位；不确定时采用 standard。
 
 <!-- explore-profiles -->
 
@@ -22,7 +22,7 @@ metadata:
 
 ## 委派与接纳
 
-委派时使用 `codex-subagent-guide` 的约定。native 使用 `codex-explore` 角色，已有角色指令不重复附加；外部执行使用 [调查指令](assets/explore-instructions.md)。
+使用已选配置并按 `codex-subagent-guide` 的约定委派子代理。native 使用 `codex-explore` 角色，已有角色指令不重复附加；外部执行使用 [调查指令](assets/explore-instructions.md)。
 
 调查活跃时，父任务不重复调查或写入同一范围。
 

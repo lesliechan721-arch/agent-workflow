@@ -6,7 +6,7 @@ import { LIMITS, validateRequest } from '../skills/codex-subagent-guide/scripts/
 
 const start = () => ({
   protocolVersion: 5, type: 'start', run: { id: '1'.repeat(32), name: 'agent-test', deadlineAt: null },
-  execution: { profile: 'generalTaskProfile', executor: 'fixture' }, mode: 'workspace', workspace: process.cwd(), prompt: '原始任务\r\n😀', args: [],
+  execution: { executor: 'fixture' }, mode: 'workspace', workspace: process.cwd(), prompt: '原始任务\r\n😀', args: [],
   runtime: { directory: process.cwd(), toolkit: { module: import.meta.filename, command: process.execPath, messageScript: import.meta.filename, mcpScript: import.meta.filename } },
 });
 const ready = (communicationSupported = true) => ({ protocolVersion: 5, type: 'ready', communicationSupported });
@@ -49,6 +49,8 @@ test('v5 shape validation rejects unknown fields, old requests, unsafe IDs, name
     (value) => { value.run.deadlineAt = -1; },
     (value) => { value.execution.model = 'bad\nmodel'; },
     (value) => { value.execution.extra = true; },
+    (value) => { value.execution.profile = 'generalTaskProfile'; },
+    (value) => { delete value.execution.executor; },
     (value) => { value.runtime.toolkit.extra = '/tmp/example'; },
     (value) => { value.fileSelectors = []; },
     (value) => { value.workspace = 'relative'; },

@@ -68,6 +68,27 @@
           }
         }
       }
+    },
+    "user-custom": {
+      "scope": "user",
+      "plugins": {
+        "codex-enhance": {
+          "taskCustomProfiles": [
+            {
+              "applicability": "数据库锁与事务语义的实现任务",
+              "executor": "native",
+              "model": "gpt-6.1-sol",
+              "reasoningEffort": "high"
+            },
+            {
+              "applicability": "涉及数据库的实现任务",
+              "executor": "native",
+              "model": "gpt-6-astra",
+              "reasoningEffort": "max"
+            }
+          ]
+        }
+      }
     }
   },
   "suites": [
@@ -246,6 +267,16 @@
           "gpt-5.6-sol"
         ]
       }
+    },
+    {
+      "id": "execution-configuration",
+      "kind": "conversation",
+      "cases": "execution-configuration-cases.json",
+      "profiles": [
+        "user-custom"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000
     }
   ]
 }

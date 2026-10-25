@@ -179,7 +179,7 @@ input.on('close',()=>{clearTimeout(timer);setImmediate(()=>process.exit(scenario
   };
   const request = {
     protocolVersion: 5, type: 'start', run: { id: randomBytes(16).toString('hex'), name: 'agent-fixture', deadlineAt: null },
-    execution: { profile: 'generalTaskProfile', executor: 'fixture' }, mode: backend === 'oracle' ? 'bundle' : 'workspace',
+    execution: { executor: 'fixture' }, mode: backend === 'oracle' ? 'bundle' : 'workspace',
     workspace, prompt: ' 原始任务\nQuotes: " ` $() \\n\n', args: [],
     runtime: { directory: runtime, toolkit: { command: process.execPath, module: path.join(installed, 'runtime/adapter-channel.mjs'), messageScript: installedEntry(sourceEntries.message), mcpScript: installedEntry(sourceEntries.mcp) } },
   };

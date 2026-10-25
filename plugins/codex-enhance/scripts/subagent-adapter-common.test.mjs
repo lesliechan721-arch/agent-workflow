@@ -100,7 +100,7 @@ async function fixture(t, { deadlineAt = null } = {}) {
   };
   send({
     type: 'start', run: { id: randomBytes(16).toString('hex'), name: 'lifecycle-fixture', deadlineAt },
-    execution: { profile: 'generalTaskProfile', executor: 'fixture' }, mode: 'workspace', workspace,
+    execution: { executor: 'fixture' }, mode: 'workspace', workspace,
     prompt: 'Wait for the lifecycle stop.', args: [],
     runtime: { directory, toolkit: {
       command: process.execPath, module: path.join(scripts, 'runtime/adapter-channel.mjs'),

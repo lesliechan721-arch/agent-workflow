@@ -180,13 +180,13 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
   const diagnosticsArgs = process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1'
     ? ['--import', pathToFileURL(diagnosticsPreload).href] : [];
   const snapshot = { installedIdentity: { source: 'fixture', plugin: 'fixture', platform: 'codex', scope: 'user' }, resourceRoot: installed,
-    effectiveValues: { advisorProfile: { executor: 'fixture' }, generalTaskProfile: { executor: 'fixture' },
-      subagentCommands: [{ key: 'fixture', title: 'Fixture', adapter: 'custom', mode, command: await fs.realpath(process.execPath), entrypoint: adapter }] } };
+    effectiveValues: {
+      subagentCommands: [{ key: 'fixture', adapter: 'custom', mode, command: await fs.realpath(process.execPath), entrypoint: adapter }] } };
   const config = path.join(installed, 'effective.json');
   const save = () => fs.writeFile(config, JSON.stringify(snapshot));
   await save();
   await fs.writeFile(path.join(installed, 'scripts', 'aw-runtime-config.mjs'),
-    "import fs from 'node:fs/promises';export async function readRuntimeConfig(){return JSON.parse(await fs.readFile(new URL('../effective.json',import.meta.url),'utf8'));}\n");
+    "import fs from 'node:fs/promises';export async function readRuntimeConfig({keys}){if(JSON.stringify(keys)!=='[\"subagentCommands\"]')throw new Error('Unexpected runtime keys');return JSON.parse(await fs.readFile(new URL('../effective.json',import.meta.url),'utf8'));}\n");
   const entry = path.join(installed, 'scripts', path.relative(sourceScripts, sourceEntry));
   // Windows native tools need their normal host environment. Normalize names so
   // the isolated paths below replace host values without mixed-case duplicates.
@@ -239,7 +239,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     await fs.mkdir(runDirectory);
     const scenarioFile = path.join(runDirectory, 'scenario.json');
     await fs.writeFile(scenarioFile, JSON.stringify(scenario));
-    const response = await command(['start', '--profile', 'advisorProfile', '--workspace', workspace, '--prompt', prompt, ...extra],
+    const response = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt', prompt, ...extra],
       { env: { ...env, FIXTURE_SCENARIO_FILE: scenarioFile, FIXTURE_RUN_DIRECTORY: runDirectory, FIXTURE_GENERATIONS: generations }, stdin, cwd });
     const run = field(response.stdout, 'run');
     phase('startReturned', { scenario: index, code: response.code, state: field(response.stdout, 'state'), communication: field(response.stdout, 'communication') });

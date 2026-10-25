@@ -26,7 +26,7 @@ export function adapterEnvironment(source = process.env, executor = {}) {
 export async function prepareRun(selected, request, options = {}) {
   const fileSelectors = request.files ?? [];
   if (selected.mode === 'workspace' && fileSelectors.length) fail('filesNotAllowedInWorkspace', 'Workspace execution does not accept --file. Describe the focus paths in the prompt.');
-  if (request.prompt === undefined) fail('argumentsRequired', 'Supply --profile and --prompt TEXT or --prompt -.');
+  if (request.prompt === undefined) fail('argumentsRequired', 'Supply --executor and --prompt TEXT or --prompt -.');
   if (selected.mode === 'bundle') validateSelectors(fileSelectors);
   const workspace = await fs.realpath(path.resolve(request.workspace ?? process.cwd())).catch(() => fail('workspaceMissing', 'The workspace is missing.'));
   await safePath(workspace, 'directory');

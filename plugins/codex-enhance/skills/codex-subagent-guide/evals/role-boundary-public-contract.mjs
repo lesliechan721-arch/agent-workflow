@@ -6,13 +6,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { guide } from './fixtures/role-boundary-actions.mjs';
+import { guide, fixtureProfileSources } from './fixtures/role-boundary-actions.mjs';
 
 // Test Value Gate: the unit fixture cannot prove that the public AW validator,
 // installer, installed reader and text consumer agree on the migrated contract.
 // All adapters here are explicit local controls. This script never calls a model.
 const keys = ['simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile',
-  'quickProfile', 'standardProfile', 'deepProfile', 'advisorProfile', 'advisorDesignProfile', 'advisorDebugProfile', 'advisorReviewProfile', 'subagentCommands'];
+  'quickProfile', 'standardProfile', 'deepProfile', 'advisorGeneralProfile', 'advisorAdvancedProfile', 'advisorExpertProfile', 'subagentCommands'];
 const evalRoot = path.dirname(fileURLToPath(import.meta.url));
 const guideSource = path.dirname(evalRoot);
 const pluginSource = path.resolve(guideSource, '..', '..');
@@ -82,15 +82,20 @@ process.exit(0);
 `);
   const native = { executor: 'native', model: 'fixture-native-model', reasoningEffort: 'medium' };
   const values = Object.fromEntries(keys.filter((key) => key !== 'subagentCommands').map((key) => [key, { ...native }]));
-  values.advisorProfile = { executor: 'fixture-external' }; // Omission must reach backend defaults unchanged.
-  values.subagentCommands = [{ key: 'fixture-external', title: 'Explicit local contract Adapter', adapter: 'custom', mode: 'workspace',
+  values.advisorGeneralProfile = { executor: 'fixture-external' }; // Omission must reach backend defaults unchanged.
+  values.subagentCommands = [{ key: 'fixture-external', adapter: 'custom', mode: 'workspace',
     command: process.execPath, entrypoint, envFrom: { FIXTURE_TARGET: 'PUBLIC_FIXTURE_VALUE' } },
-  { key: 'fixture-builtin', title: 'Registered builtin', adapter: 'codex' }];
+  { key: 'fixture-builtin', adapter: 'codex' }];
   await writeFile(path.join(guide, '.aw-runtime-config.json'), JSON.stringify({ schemaVersion: 2, kind: 'aw-runtime-config',
-    installedIdentity: { pluginId: 'explicit-local-fixture/codex-enhance' }, allowedKeys: keys, resourceRoot: guide, effectiveValues: values }));
+    installedIdentity: { pluginId: 'explicit-local-fixture/codex-enhance' }, allowedKeys: ['subagentCommands'], resourceRoot: guide, effectiveValues: { subagentCommands: values.subagentCommands } }));
   const advisor = path.join(workspace, '.agents', 'skills', 'codex-advisor', 'assets');
   await mkdir(advisor, { recursive: true });
   await writeFile(path.join(advisor, 'advisor-instructions.md'), 'Give this assigned local second opinion. Stay read-only. Do not delegate.\n');
+  for (const [relative, source] of Object.entries(fixtureProfileSources(values))) {
+    const target = path.join(workspace, '.agents', 'skills', relative);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, source);
+  }
   return { workspace, capture, env: { ...baseEnv, ...homes(path.join(workspace, '.role-boundary-fixture')), PUBLIC_FIXTURE_VALUE: 'explicit-local-value' } };
 }
 async function installedRun(fixture, args, input) {
@@ -122,12 +127,13 @@ async function main() {
     const installed = await state(updated);
     const schema = await json(path.join(installed.plugin, '.agents-plugin', 'plugin.json'));
     assert.equal(schema.config.schemaVersion, 4);
-    assert.deepEqual(installed.effectiveValues.advisorProfile, { executor: 'fixture-external' });
+    assert.deepEqual(Object.keys(installed.effectiveValues), ['subagentCommands']);
+    assert.deepEqual(installed.execution, { executor: 'fixture-external' });
     assert.equal(installed.effectiveValues.subagentCommands.find((item) => item.adapter === 'codex').mode, undefined);
     checks.push('public Config Definition v4 validate/build/source/install; optional external model and fixed builtin mode');
 
     const prompt = 'The complete task-only prompt.\n';
-    const original = await installedRun(updated, ['--profile', 'advisorProfile', '--prompt', '-'], prompt);
+    const original = await installedRun(updated, ['--executor', 'fixture-external', '--prompt', '-'], prompt);
     assert.equal(original.exitCode, 0, original.stderr); assert.equal(original.observed.state, 'completed');
     assert.match(original.stdout, /^result: read\n/); assert.match(original.stdout, /# Local fixture result/); assert.equal(original.stderr, '');
     let observed = await calls(updated);
@@ -141,7 +147,7 @@ async function main() {
     assert.deepEqual(transitioned.evidence.before, transitioned.evidence.saved);
     assert.notDeepEqual(transitioned.evidence.before.subagentCommands, transitioned.evidence.after.subagentCommands);
     assert.notEqual(transitioned.evidence.instructionsBefore, transitioned.evidence.instructionsAfter);
-    const fresh = await installedRun(updated, ['--profile', 'advisorProfile', '--prompt', '-', '--instructions-file', installed.instructionsFile], prompt);
+    const fresh = await installedRun(updated, ['--executor', 'fixture-external', '--prompt', '-', '--instructions-file', installed.instructionsFile], prompt);
     assert.equal(fresh.exitCode, 0, fresh.stderr);
     observed = await calls(updated); assert.equal(observed.length, 2);
     assert.equal(observed[0].request.prompt, prompt);

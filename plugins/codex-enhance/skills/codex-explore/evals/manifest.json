@@ -53,6 +53,35 @@
           }
         }
       }
+    },
+    "user-custom": {
+      "scope": "user",
+      "plugins": {
+        "codex-enhance": {
+          "exploreCustomProfiles": [
+            {
+              "applicability": "数据库锁与事务语义的事实调查",
+              "executor": "native",
+              "model": "gpt-6.1-sol",
+              "reasoningEffort": "high"
+            },
+            {
+              "applicability": "涉及数据库的事实调查",
+              "executor": "native",
+              "model": "gpt-6-astra",
+              "reasoningEffort": "max"
+            }
+          ],
+          "taskCustomProfiles": [
+            {
+              "applicability": "任何任务",
+              "executor": "native",
+              "model": "gpt-6-luna",
+              "reasoningEffort": "low"
+            }
+          ]
+        }
+      }
     }
   },
   "suites": [
@@ -154,6 +183,16 @@
       "cases": "coordinator-behavior-cases.json",
       "profiles": [
         "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000
+    },
+    {
+      "id": "execution-configuration",
+      "kind": "conversation",
+      "cases": "execution-configuration-cases.json",
+      "profiles": [
+        "user-custom"
       ],
       "runs": 1,
       "timeoutMs": 900000

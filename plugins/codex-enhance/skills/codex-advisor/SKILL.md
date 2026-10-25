@@ -16,11 +16,13 @@ metadata:
 
 ## 咨询配置
 
+按歧义、耦合、验证难度和遗漏代价选择足够的最低难度档。
+
 <!-- advisor-profiles -->
 
 ## 咨询与采用
 
-委派时使用 `codex-subagent-guide` 的约定。native 使用 `codex-advisor` 角色，已有角色指令不重复附加；外部执行使用 [顾问指令](assets/advisor-instructions.md)。
+使用已选配置并按 `codex-subagent-guide` 的约定委派子代理。native 使用 `codex-advisor` 角色，已有角色指令不重复附加；外部执行使用 [顾问指令](assets/advisor-instructions.md)。
 
 对会改变行动的重要建议查证其材料、版本和依据，并在父任务授权内安排相称验证。明确采用、不采用或仍需补证的部分；建议代码和候选 patch 只有实际应用并验证后才能作为完成结果。
 
