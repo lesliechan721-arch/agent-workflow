@@ -1,3 +1,4 @@
+import type { ConfigReferenceContext, ConfigReferenceDraft } from './config-references.js';
 import crypto from 'node:crypto';
 
 import type {
@@ -982,6 +983,9 @@ export interface TuiControllerDependencies {
     layer: { scope: Scope | 'effective' },
     signal: AbortSignal,
   ) => Promise<ConfigPageViewModel>;
+  getConfigReferenceContext?: (
+    pluginId: string, scope: Scope, draft: ConfigReferenceDraft, signal: AbortSignal,
+  ) => Promise<ConfigReferenceContext>;
   getConfigResetAvailability?: (
     pluginId: string,
     layer: { scope: Scope },
@@ -4197,6 +4201,17 @@ export class TuiController {
       pluginId,
       structuredClone(layer),
       combined,
+    )));
+  }
+
+  async getConfigReferenceContext(
+    pluginId: string, scope: Scope, draft: ConfigReferenceDraft, signal?: AbortSignal,
+  ): Promise<ConfigReferenceContext> {
+    this.#assertAcceptingActions();
+    if (!this.dependencies.getConfigReferenceContext) return { selections: {} };
+    const combined = signal ? AbortSignal.any([this.#abort.signal, signal]) : this.#abort.signal;
+    return cloneFrozen(await this.#trackRead(this.dependencies.getConfigReferenceContext(
+      pluginId, scope, structuredClone(draft), combined,
     )));
   }
 

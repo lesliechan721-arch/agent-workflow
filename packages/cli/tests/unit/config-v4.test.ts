@@ -45,27 +45,25 @@ function fixture() {
 describe('Config Definition v4 CLI boundaries', () => {
   // Test Value Gate: use the shipped plugin schema, writer and runtime snapshot so
   // convenience fields cannot be accepted in the wrong branch or lost on apply.
-  it('saves Codex Enhance engine/profile options and pro into installed runtime values', async () => {
+  it('saves Codex Enhance backend options and keeps profile values out of installed runtime', async () => {
     const { store, plugin, save } = fixture();
     const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/codex-enhance/.agents-plugin/plugin.json'));
     plugin.manifest.config = normalizePluginConfigDefinition(source.config);
     const commands = [
-      { key: 'oracle-web', title: 'Browser', adapter: 'oracle', oracleEngine: 'browser' },
-      { key: 'oracle-default', title: 'Default', adapter: 'oracle' },
-      { key: 'codex-review', title: 'Review', adapter: 'codex', codexProfile: 'review profile' },
-      { key: 'codex-default', title: 'Default', adapter: 'codex' },
+      { key: 'oracle-web', adapter: 'oracle', oracleEngine: 'browser' },
+      { key: 'oracle-default', adapter: 'oracle' },
+      { key: 'codex-review', adapter: 'codex', codexProfile: 'review profile' },
+      { key: 'codex-default', adapter: 'codex' },
     ];
-    const advisorProfile = { executor: 'oracle-web', reasoningEffort: 'pro' };
-    await save({ subagentCommands: commands, advisorProfile });
+    const advisorGeneralProfile = { executor: 'oracle-web', reasoningEffort: 'pro' };
+    await save({ subagentCommands: commands, advisorGeneralProfile });
     const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
-    expect(config.values).toMatchObject({ subagentCommands: commands, advisorProfile });
-    plugin.manifest.artifacts = { targets: [{ id: 'runtime', platform: 'codex', target: 'codex.skill', delivery: { mode: 'aw-extension' },
-      scopes: ['user'], states: ['present'], skillKey: 'runtime', refreshKeys: ['advisorProfile', 'subagentCommands'],
-      runtimeConfig: { keys: ['advisorProfile', 'subagentCommands'] } }] };
+    expect(config.values).toMatchObject({ subagentCommands: commands, advisorGeneralProfile });
+    plugin.manifest.artifacts = source.artifacts;
     const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
-      logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['runtime'],
+      logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['codex-subagent-guide-skill'],
       config: { ...config, mode: 'artifact-render', targetScope: 'user' } });
-    expect(snapshots.runtime!.effectiveValues).toEqual({ subagentCommands: commands, advisorProfile });
+    expect(snapshots['codex-subagent-guide-skill']!.effectiveValues).toEqual({ subagentCommands: commands });
     const file = resolvePluginConfigStorePath(store);
     const before = await fs.readFile(file);
     for (const invalid of [

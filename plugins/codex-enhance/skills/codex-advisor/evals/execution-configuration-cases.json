@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "codex-advisor",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "critical",
+      "rationale": "按实际职责、授权、指令通道和真实结果判断；误外发、越权写入、角色丢失或重复提交不能被多数通过抵消。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "provided/task.md": "本轮只选择执行配置，不执行委派，不修改项目。\n"
+        }
+      },
+      "expected": {
+        "output": "说明所选 executor、model、reasoningEffort 和角色边界。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "用实际物化的自定义配置检查顺序与内建回退；只验证选择，不声称后端支持。",
+        "minimalCounterexample": "反转两个同时匹配项的顺序，应选择新的首项；所有项不匹配时使用内建档位。",
+        "allowedVariance": "允许等价措辞；用回答和读取轨迹核验选择与 reference 读取边界，不要求固定输出格式。"
+      },
+      "id": "config_first_match",
+      "prompt": "使用 codex-advisor，为数据库锁与事务语义的咨询选择本次执行配置，并说明交给调度方的角色。已授权委派，但本轮只做选择，不启动任务。",
+      "assertions": [
+        "两个自定义项均匹配时选择数组第一项：native、gpt-6.1-sol、high；不选择后面的 gpt-6-astra max。",
+        "保持 codex-advisor 角色及本 Skill 的任务边界。",
+        "交给 Guide 的配置保持已选值；若进入 Guide，不读取其 execution-profiles.md，也不被其通用自定义项覆盖。"
+      ]
+    },
+    {
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "provided/task.md": "本轮只选择执行配置，不执行委派，不修改项目。\n"
+        }
+      },
+      "expected": {
+        "output": "说明所选 executor、model、reasoningEffort 和角色边界。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "用实际物化的自定义配置检查顺序与内建回退；只验证选择，不声称后端支持。",
+        "minimalCounterexample": "反转两个同时匹配项的顺序，应选择新的首项；所有项不匹配时使用内建档位。",
+        "allowedVariance": "允许等价措辞；用回答和读取轨迹核验选择与 reference 读取边界，不要求固定输出格式。"
+      },
+      "id": "config_no_match",
+      "prompt": "使用 codex-advisor 为下列已授权任务选择执行配置：对同一个纯函数的两个局部实现取得技术第二意见；边界和样例明确，可直接核验，不涉及数据库。本轮只选择，不启动任务。",
+      "assertions": [
+        "自定义项均不匹配，按任务难度选择内建通用档：native、gpt-6-astra、high。",
+        "不为了使用自定义配置改变任务含义或权限。"
+      ]
+    },
+    {
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "provided/task.md": "本轮只选择执行配置，不执行委派，不修改项目。\n"
+        }
+      },
+      "expected": {
+        "output": "说明所选 executor、model、reasoningEffort 和角色边界。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "用实际物化的自定义配置检查顺序与内建回退；只验证选择，不声称后端支持。",
+        "minimalCounterexample": "反转两个同时匹配项的顺序，应选择新的首项；所有项不匹配时使用内建档位。",
+        "allowedVariance": "允许等价措辞；用回答和读取轨迹核验选择与 reference 读取边界，不要求固定输出格式。"
+      },
+      "id": "config_explicit_effort",
+      "prompt": "使用 codex-advisor 为数据库锁与事务语义的咨询选择执行配置。用户明确要求 reasoningEffort=xhigh。本轮只说明选择与 Guide 交接，不启动任务。",
+      "assertions": [
+        "采用首个匹配项的 executor=native、model=gpt-6.1-sol，并以显式 xhigh 覆盖其 high。",
+        "保持 codex-advisor 角色，将选择直接交给 Guide，不按 Guide 自定义项重选。"
+      ]
+    }
+  ]
+}

@@ -12,7 +12,7 @@
 | --- | --- |
 | [subagent.mjs](scripts/subagent.mjs) | start/send/wait/result/stop 参数、安装 reader、英文文字输出和退出码。 |
 | [worker.mjs](scripts/worker.mjs) | 本次持续执行和收尾；宿主须允许 start 返回后存活。 |
-| [plan.mjs](scripts/runtime/plan.mjs) / [runner.mjs](scripts/runtime/runner.mjs) | 精确选择 profile、入口、模式、输入和环境。 |
+| [plan.mjs](scripts/runtime/plan.mjs) / [runner.mjs](scripts/runtime/runner.mjs) | 精确选择 executor、入口、模式、输入和环境。 |
 | [protocol.mjs](scripts/runtime/protocol.mjs) | 严格 v5 JSONL、大小及状态合同。 |
 | [adapter-channel.mjs](scripts/runtime/adapter-channel.mjs) | 子侧发送、显式收件和自动输入共用调度。 |
 | [message.mjs](scripts/message.mjs) / [message-mcp.mjs](scripts/message-mcp.mjs) | 脚本与 MCP 工具包装，不拥有另一份队列。 |
@@ -21,11 +21,11 @@
 | [contracts.mjs](scripts/runtime/contracts.mjs) / [files.mjs](scripts/runtime/files.mjs) | 限值、路径、原子文件及安全诊断。 |
 | 内建 `adapters/*-v5.mjs` | Codex、Claude Code、Oracle 真实后端映射。 |
 
-Guide 保留调用方角色和任务约束。profile 仅选择 executor/model/reasoningEffort；省略指令文件时不猜测默认角色。原生 Advisor/Explore 角色的局部禁止重复同一委派段落不注入共享资源或外部 prompt。
+Guide 保留调用方角色和任务约束。调用方先选定 executor/model/reasoningEffort，运行层只消费传入值；省略指令文件时不猜测默认角色。原生 Advisor/Explore 角色的局部禁止重复同一委派段落不注入共享资源或外部 prompt。
 
 ## 配置、呈现与生效
 
-配置声明由 [plugin manifest](https://github.com/lesliechan721-arch/agent-workflow/blob/main/plugins/codex-enhance/.agents-plugin/plugin.json) 拥有。subagentCommands 每项具有 key、title、adapter；key 大小写敏感、唯一，native 为保留值。profile.executor 精确引用 key，省略 executor 仍按 native 解释。
+配置声明由 [plugin manifest](https://github.com/lesliechan721-arch/agent-workflow/blob/main/plugins/codex-enhance/.agents-plugin/plugin.json) 拥有。subagentCommands 每项具有 key、adapter；key 大小写敏感、唯一，native 为保留值。配置中的 executor 精确引用 key；运行入口必须显式传入 executor。key 只在 Guide 自身的安装配置中查找，其他插件的调用不扩大注册表来源。
 
 | adapter | mode | 用户配置入口 |
 | --- | --- | --- |
@@ -39,20 +39,18 @@ Guide 保留调用方角色和任务约束。profile 仅选择 executor/model/re
 ```json
 {
   "generalTaskProfile": { "executor": "codex-local" },
-  "advisorProfile": { "executor": "oracle-review" },
+  "advisorGeneralProfile": { "executor": "oracle-review" },
   "subagentCommands": [
-    { "key": "codex-local", "title": "本地 Codex", "adapter": "codex" },
-    { "key": "claude-local", "title": "本地 Claude Code", "adapter": "claude-code" },
+    { "key": "codex-local", "adapter": "codex" },
+    { "key": "claude-local", "adapter": "claude-code" },
     {
       "key": "oracle-review",
-      "title": "Oracle 咨询",
       "adapter": "oracle",
       "args": ["--engine", "api"],
       "envFrom": { "OPENAI_API_KEY": "REVIEW_OPENAI_API_KEY" }
     },
     {
       "key": "custom-review",
-      "title": "自定义服务",
       "adapter": "custom",
       "mode": "bundle",
       "command": "/absolute/path/to/node",
@@ -63,17 +61,17 @@ Guide 保留调用方角色和任务约束。profile 仅选择 executor/model/re
 }
 ```
 
-这是字段值示例，不是完整 store。外部 profile 的 model/effort 可省略，实际选择优先级是本次显式覆盖、profile、后端默认；省略不生成空参数。native 保持已有必填要求。非法配置或不可用执行器不触发换后端或近似模型替换。
+这是字段值示例，不是完整 store。外部 profile 的 model/effort 可省略，调用方按本次显式要求、已选配置、后端默认确定参数，再传给脚本；运行层不查找 profile 或继承其模型参数；省略不生成空参数。native 保持已有必填要求。非法配置或不可用执行器不触发换后端或近似模型替换。
 
 Config Definition v4 的有限对象分支、标量 const 和叶级数组/KV 由 Core 统一实现，CLI、TUI、生效值与物化共用。Manifest v3、Store v5、Catalog v7 和 installed-runtime-config v2 不联动改号。正式字段合同见 [架构说明](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/architecture.md)，作者维护入口见 [插件维护指南](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/plugin-maintenance.md)。
 
-renderer 只在 Guide 的 external-delegation 中生成执行器表，显示 key、名称、adapter、mode；不再展示能力布尔值，不把表塞进所有 Skill 或角色。profile 表对外部省略的 model/effort 显示“后端默认”；native 不补造这样的缺省配置。Advisor 仍只显示已配置的选项。
+renderer 只在 Guide 的 external-delegation 中生成执行器表，只显示 key、mode；不再展示能力布尔值，不把表塞进所有 Skill 或角色。profile 表对外部省略的 model/effort 显示“后端默认”；native 不补造这样的缺省配置。Guide 的档位表位于按需读取的 execution-profiles reference；Advisor 固定显示三个内建难度档位。
 
-AW 在物化时注入安装态 JSON 和配置 reader（保留文件名 .aw-runtime-config.json、scripts/aw-runtime-config.mjs）；插件不伪造或覆盖保留资源。reader 从本产物返回 installedIdentity、获准的 effectiveValues 和 resourceRoot，不读最新 store 或同名 sibling。保存未 apply 时新调用继续用旧安装资源，活跃调用也不重读配置换后端。缺失或损坏通过正常 sync/reinstall 恢复。
+AW 在物化时注入安装态 JSON 和配置 reader（保留文件名 .aw-runtime-config.json、scripts/aw-runtime-config.mjs）；插件不伪造或覆盖保留资源。reader 从本产物返回 installedIdentity、获准的 effectiveValues（仅 subagentCommands）和 resourceRoot，不读最新 store 或同名 sibling。保存未 apply 时新调用继续用旧安装资源，活跃调用也不重读配置换后端。缺失或损坏通过正常 sync/reinstall 恢复。
 
 ## Prompt 与模式
 
-CLI 只有 --profile 和 --prompt 必填。任务可用 --prompt TEXT 或 --prompt -；stdin 读到 EOF，拒绝 TTY、空白、非法 UTF-8、重复 prompt 和超限。--instructions-file PATH 可选；相对路径相对调用 cwd，与 --workspace 的文件选择基准分开。
+CLI 只有 --executor 和 --prompt 必填。旧 --profile 参数按未知参数拒绝；native、未知 key、重复 key 和无效注册配置在后端启动前报错，通过 config、sync 或 reinstall 修复。任务可用 --prompt TEXT 或 --prompt -；stdin 读到 EOF，拒绝 TTY、空白、非法 UTF-8、重复 prompt 和超限。--instructions-file PATH 可选；相对路径相对调用 cwd，与 --workspace 的文件选择基准分开。
 
 不传指令文件时，协议 prompt 保留任务原文，不添加默认指令或空标题。显式传入时要求非空、可读 UTF-8 文件，runner 读取一次后组合为“执行指令”和“本次任务”两个段落。保留原文本，不截断，不向 adapter 发送指令文件路径让它再次打开。显式坏文件不能当成省略。指令与任务各最多 256 KiB，组合结果不套用单份上限。
 
@@ -220,7 +218,7 @@ args 中每项是一个真实后端 argv 值，不执行 shell split、变量插
 
 内建 wrapper 拥有启动子命令、prompt stdin、工作目录、结构化输出、bundle 文件输入和等待参数。args 与这些控制项冲突时明确拒绝，包括公开别名；不得让 args 把调用变成帮助、预览、仅入队、续接其它会话或多次生成。Oracle 的 --file/-f 及文件选择别名也不能通过 args 在 fileSelectors 之外追加来源。
 
-profile/CLI 已解析 model 或 effort 时，args 不能再次设置同一后端控制项；没有解析值时，args 可以设置或沿用后端默认。检查只覆盖 wrapper 拥有的参数，不复制完整后端 parser 或建立通用功能黑名单。显式不支持的参数报告真实错误，不忽略或重试其它模型。
+CLI 已传入 model 或 effort 时，args 不能再次设置同一后端控制项；没有解析值时，args 可以设置或沿用后端默认。检查只覆盖 wrapper 拥有的参数，不复制完整后端 parser 或建立通用功能黑名单。显式不支持的参数报告真实错误，不忽略或重试其它模型。
 
 保留后端正常配置、权限、项目指令、hooks、插件、MCP 和工具。wrapper 不自动设置只读、关闭工具或绕过审批；用户显式 args 仍必须在本次授权内。后端自己的权限与任务授权不是一回事。
 
@@ -270,7 +268,7 @@ stdout 不得透传后端日志、原始服务事件或 MCP stdout。adapter 负
 | --- | --- |
 | `Text` | 合法 Unicode 字符串，无 NUL；按 UTF-8 字节计大小。允许换行，不 trim 或规范化；需非空时还要求不是全空白 |
 | `Label` | ASCII 名称，严格匹配 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`；不 trim 或替换字符 |
-| `Identifier` | 1–256 个 Unicode code point 的单行非空字符串，无控制字符；profile/executor/model/effort 沿现有选择约束 |
+| `Identifier` | 1–256 个 Unicode code point 的单行非空字符串，无控制字符；executor/model/effort 沿现有选择约束 |
 | `RunId / MessageId` | 32 个小写十六进制字符，由运行层生成，只在本次连接或目录中使用；不是模型应填写的 ID |
 | `Code` | 匹配 `^[A-Za-z][A-Za-z0-9]{0,63}$` 的安全错误码 |
 | `AbsolutePath` | 非空 Text，在当前 OS 上是规范化绝对路径；用途对应的类型、归属、symlink 和存在性另外校验 |
@@ -311,7 +309,6 @@ stdout 不得透传后端日志、原始服务事件或 MCP stdout。adapter 负
     "deadlineAt": null
   },
   "execution": {
-    "profile": "generalTaskProfile",
     "executor": "codex-local",
     "model": "example-model",
     "reasoningEffort": "example-effort"
@@ -337,7 +334,7 @@ stdout 不得透传后端日志、原始服务事件或 MCP stdout。adapter 负
 | 字段 | 规则 |
 | --- | --- |
 | run | 只含 id、name、deadlineAt；id/name 在连接内固定。deadlineAt 必填，为 null 或 EpochMs；null 表示不设置执行期限。仅显式 start --deadline-ms N 时，由 worker 设为启动时刻加 N；任何消息、等待和轮次不得重置。不能把 null 转成 0、30 分钟或其他默认计时 |
-| execution | profile、executor 必填；model、reasoningEffort 可选且只在本次明确解析到值时出现。全部使用 Identifier；省略沿用后端默认，不生成空值 |
+| execution | executor 必填；model、reasoningEffort 可选且只在本次明确解析到值时出现；旧 execution.profile 字段必须拒绝。全部使用 Identifier；省略沿用后端默认，不生成空值 |
 | mode | 只能为 workspace 或 bundle |
 | workspace | 必须为已存在的绝对目录，是 adapter 和后端的工作目录；不赋予额外访问或写权限 |
 | prompt | 非空 Text，保留任务及显式指令合成后的完整内容；不重新打开指令文件 |
@@ -756,7 +753,7 @@ wait 的 deferred 固定结果大于 8192 字节时提示 `Use result --run <han
 3. adapter 在首次提交模型前发出一次合法 `ready`，其中只有一个 `communicationSupported` 布尔值。worker 保存它，start 返回。
 4. start 最多等待 10 秒初始化。未取得 ready 时显示 `state: starting`、原句柄、`code: startupNotReady` 和 `communication: pending`，退出 1；不能伪造 false。调用者继续 wait/stop 同一任务。
 
-`--deadline-ms` 是可选的本次执行时长，不写入 profile 或强配置。N 必须是正的安全整数，且与启动时刻相加后仍为合法 EpochMs；非法值在创建运行资源前拒绝。省略时不创建执行超时计时器，不默认填入 30 分钟，也不从 wait/receive 窗口或缓存 TTL 推导任务期限。明确期限不会被新消息、后端轮次或再次等待延长。默认无期限仍响应 stop、通道断开、协议错误和真实后端退出；后端或宿主的实际限制按真实错误报告。
+`--deadline-ms` 是可选的本次执行时长，不写入配置。N 必须是正的安全整数，且与启动时刻相加后仍为合法 EpochMs；非法值在创建运行资源前拒绝。省略时不创建执行超时计时器，不默认填入 30 分钟，也不从 wait/receive 窗口或缓存 TTL 推导任务期限。明确期限不会被新消息、后端轮次或再次等待延长。默认无期限仍响应 stop、通道断开、协议错误和真实后端退出；后端或宿主的实际限制按真实错误报告。
 
 `false` 是适配器明确选择不支持通讯。缺字段、协议错误、初始化失败和通讯配置故障不能折算为 false。支持路径的初始化失败应结束并报告实际错误；运行中通道故障进入收尾，不悄悄改为不支持。
 

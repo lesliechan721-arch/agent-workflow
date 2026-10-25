@@ -36,9 +36,9 @@ Advisor 和 Explore 通过 Guide 委派；已有完整调度与生命周期方�
 
 ## 配置与执行
 
-通用、探索和咨询 profile 选择执行器、模型和推理强度。省略 executor 表示 native，直接使用宿主原生工具与角色。subagentCommands 默认空，默认配置不会自行启动外部服务。
+通用、探索和咨询配置选择执行器、模型和推理强度。三个 Skill 各有默认空的自定义数组，按顺序使用第一个适用范围匹配项，未匹配时使用内建档位。Guide 保留调用方已选的配置；需要自行选择时才读取执行配置 reference。省略 executor 表示 native，直接使用宿主原生工具与角色。subagentCommands 默认空，默认配置不会自行启动外部服务。
 
-添加外部执行器时可选内建 Codex、Claude Code、Oracle，或 custom。内建入口无需手填 command/entrypoint；Codex 和 Claude Code 固定 workspace，Oracle 固定 bundle。custom 使用自己的绝对程序入口和明确模式。args 定制实际后端参数，env 保存普通环境值，envFrom 引用宿主变量；密钥不要写入普通可分发配置。
+subagentCommands 使用 key 作为唯一显示名称。添加外部执行器时可选内建 Codex、Claude Code、Oracle，或 custom。内建入口无需手填 command/entrypoint；Codex 和 Claude Code 固定 workspace，Oracle 固定 bundle。custom 使用自己的绝对程序入口和明确模式。args 定制实际后端参数，env 保存普通环境值，envFrom 引用宿主变量；密钥不要写入普通可分发配置。
 
 Oracle 可直接选择 oracleEngine=browser/api，界面推荐 browser；省略引擎时继续沿用 Oracle，但设置 reasoningEffort 后必须明确选择。浏览器将 low/medium/high/xhigh 转换为 light/standard/extended/extra-high，并支持新增的 pro 预设；max/ultra 没有浏览器映射。浏览器登录和实际档位由 Oracle 管理。专用字段与 args 中的同类参数重复时会提示修正。
 
@@ -46,9 +46,9 @@ Oracle 可直接选择 oracleEngine=browser/api，界面推荐 browser；省略�
 
 当前 Codex app-server 对 codexProfile（--profile/-p）和额外目录 addDirs（--add-dir）没有等价的官方映射。显式设置 codexProfile，或在 args 中使用这些选项，会在提交后端前返回 parameterUnavailable。调用方须修正显式配置后再运行；AW 不会忽略这些设置后继续执行。
 
-外部 profile 可省略 model 和 reasoningEffort，表示使用后端默认。显式要求不支持时报错，不静默替换模型或服务。native 保留已有配置要求。专属咨询配置仅在已设置时显示，选中后整体使用；无效配置不会触发回退。
+外部配置可省略 model 和 reasoningEffort，表示使用后端默认。显式要求不支持时报错，不静默替换模型或服务。native 保留已有配置要求。Advisor 固定提供通用、进阶、专业三个难度档位，默认分别为 gpt-6-astra high、xhigh、max。按问题歧义、耦合、验证难度和遗漏代价选档；无效配置不会触发回退。
 
-外部任务可以直接写进 --prompt，长任务或已有文件可以从 stdin 输入。--instructions-file 可选，可以复用已有角色文件；不传时不会自动补入默认指令。顾问和调查的职责约束仍需明确传达。使用 `start` 启动，按句柄执行 `send`、多目标 `wait`、单目标 `result` 和 `stop`。能力由本次回执报告 true/false/pending；默认无执行期限。控制字段使用英文，消息和最终回答保留原语言并放入独立原文块。内部 JSONL 不作为用户界面。
+外部启动用 `start --executor <key>` 指定执行器，不接收 AW profile 名称。外部任务可以直接写进 --prompt，长任务或已有文件可以从 stdin 输入。--instructions-file 可选，可以复用已有角色文件；不传时不会自动补入默认指令。顾问和调查的职责约束仍需明确传达。使用 `start` 启动，按句柄执行 `send`、多目标 `wait`、单目标 `result` 和 `stop`。能力由本次回执报告 true/false/pending；默认无执行期限。控制字段使用英文，消息和最终回答保留原语言并放入独立原文块。内部 JSONL 不作为用户界面。
 
 workspace 在指定目录执行任务，关注路径写入任务，不接受 --file。bundle 通过 --file 按固定的 AW 文件选择协议 v1 选择文件、目录或 glob；各适配器实现相同规则，不需要调用者按后端改写选择式。调用方法由 Guide 的 [外部委派说明](skills/codex-subagent-guide/references/external-delegation.md) 提供；适配器开发见 [适配器文档](skills/codex-subagent-guide/adapters.md)。
 

@@ -1,6 +1,6 @@
 # 外部委派
 
-用已选 profile 的 `executor` 值精确匹配表中的 key，使用当前安装生效的配置。
+用已选配置的 `executor` 值精确匹配下表中的 key。若无任何匹配则可认定配置无效并报告缺口。
 
 <!-- subagent-commands -->
 
@@ -14,17 +14,17 @@
 启动命令：
 
 ```text
-node scripts/subagent.mjs start --profile "<profile>" --instructions-file "<instructions-file>" --prompt "<complete task>"
+node scripts/subagent.mjs start --executor "<key>" --instructions-file "<instructions-file>" --prompt "<complete task>"
 ```
 
 | 参数 | 必填或默认值 | 用途与限制 |
 | --- | --- | --- |
-| `--profile KEY` | 必填 | 外部执行 profile。 |
+| `--executor KEY` | 必填 | 执行器 key。 |
 | `--prompt TEXT` | 必填 | 任务提示；过长时用 `--prompt -` 从 stdin 输入。 |
 | `--workspace DIR` | 可选，默认当前目录 | 工作目录。 |
 | `--instructions-file FILE` | 可选 | 角色指令；无明确其他角色要求时使用默认 [任务指令](../assets/task-instructions.md)。 |
 | `--file SELECTOR` | 可选，可重复 | 仅 bundle 模式可用；选择、忽略规则和外发边界见 [文件选择](file-selection.md)。 |
-| `--model MODEL` / `--reasoning-effort EFFORT` | 可选 | 显式指定值优先于 profile；未设置使用后端默认；显式指定的值不支持须报错。 |
+| `--model MODEL` / `--reasoning-effort EFFORT` | 可选 | 传入调用方已选值：明确要求优先，其次为已选配置；省略属性使用后端默认，不生成空参数；不支持的显式值须报错。 |
 | `--name NAME` | 可选，省略时自动生成 | 仅供显示，可重名；首字符须为 ASCII 字母或数字，后续允许 `._-`，总长 1–64。 |
 | `--deadline-ms N` | 可选，默认**无执行期限** | 仅明确要求时设置，单位毫秒。 |
 

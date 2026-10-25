@@ -1,3 +1,5 @@
+import { getPluginConfigReferenceChoices } from '@lesliechan721/aw-plugin-core';
+import { configReferenceKey, configReferenceScalars, type ConfigReferenceContext } from './config-references.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 
@@ -60,6 +62,8 @@ import {
   readPluginConfigStore,
   resolveConfigRead,
   resolveEffectivePluginConfig,
+  resolveEffectivePluginConfigFromStores,
+  resolveAwProjectRoot,
   resolvePluginConfigStorePath,
 } from '../utils/plugin-config.js';
 import { assertProjectSharedConfigPathVisible } from '../utils/project-boundary.js';
@@ -3306,6 +3310,56 @@ export function createTuiControllerDependencies(
               ...(projectStore ? { project: digest({ exists: projectStore.exists, rawDigest: projectStore.rawDigest }) } : {}),
             },
           } };
+        },
+      });
+    },
+    async getConfigReferenceContext(pluginId, scope, draft, signal) {
+      const packageInfo = await readCliPackageInfo();
+      return withResolvedCatalogPlugin({
+        selector: pluginId, cliVersion: packageInfo.version, env: context.env, signal,
+        ...(sessionContextForPlugin(pluginId) ? { operationContext: sessionContextForPlugin(pluginId)! } : {}),
+        consume: async ({ plugin }) => {
+          const definition = plugin.manifest.config;
+          if (!definition) throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
+          const scalars = Object.values(definition.fields).flatMap(configReferenceScalars);
+          if (!scalars.length) return { selections: {} };
+          const stores = await readConfigStoresForTui({
+            sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
+            logicalIdentity: plugin.catalogLogicalIdentity, pluginName: plugin.manifest.name,
+            schema: definition.fields, scope, signal,
+          });
+          const edited = scope === 'user' ? stores.user : stores.project!;
+          const values = { ...edited.values };
+          for (const key of draft.removes) delete values[key];
+          Object.assign(values, draft.updates);
+          const candidateStores = { ...stores, [scope]: { ...edited, values } };
+          const effective = await resolveEffectivePluginConfigFromStores({
+            manifest: plugin.manifest, targetScope: scope,
+            projectRoot: resolveAwProjectRoot(context.cwd), stores: candidateStores,
+          });
+          // Keep invalid raw sources for Core validation; effective.values omits them.
+          // Preserve active branches in other references that reserve source values.
+          // Only source choices and entry digests leave this boundary.
+          const candidate: Record<string, unknown> = {};
+          for (const key of Object.keys(definition.fields)) {
+            const source = effective.sources[key];
+            if (source === 'default') candidate[key] = definition.fields[key]!.default;
+            else if (source === 'user') candidate[key] = candidateStores.user.values[key];
+            else if (source === 'project') candidate[key] = candidateStores.project?.values[key];
+          }
+          const result: ConfigReferenceContext = { selections: {} };
+          for (const scalar of scalars) {
+            const ref = scalar.valueRef!;
+            const selection = getPluginConfigReferenceChoices(definition, scalar, candidate);
+            const entries = candidate[ref.field];
+            result.selections[configReferenceKey(scalar)] = {
+              ...selection, source: effective.sources[ref.field] ?? 'missing',
+              entries: Array.isArray(entries) ? Object.fromEntries(entries.flatMap((entry) =>
+                entry && typeof entry === 'object' && Object.hasOwn(entry, ref.key)
+                  ? [[JSON.stringify(entry[ref.key]), digest(entry)]] : [])) : {},
+            };
+          }
+          return result;
         },
       });
     },

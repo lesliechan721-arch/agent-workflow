@@ -42,7 +42,7 @@
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "advisor",
-        "profile": "advisorProfile",
+        "profile": "advisorGeneralProfile",
         "instructionsFile": "codex-advisor/assets/advisor-instructions.md"
       },
       "expected": {
@@ -90,7 +90,7 @@
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "advisor",
-        "profile": "advisorProfile",
+        "profile": "advisorGeneralProfile",
         "instructionsFile": "codex-advisor/assets/advisor-instructions.md"
       },
       "expected": {
@@ -138,7 +138,7 @@
         ],
         "requiredMode": "bundle",
         "role": "advisor",
-        "profile": "advisorProfile",
+        "profile": "advisorGeneralProfile",
         "instructionsFile": "codex-advisor/assets/advisor-instructions.md"
       },
       "expected": {
@@ -330,7 +330,7 @@
         ],
         "exposeInstalledCoordinatorAssets": true,
         "role": "advisor",
-        "profile": "advisorProfile",
+        "profile": "advisorGeneralProfile",
         "instructionsFile": "codex-advisor/assets/advisor-instructions.md"
       },
       "expected": {

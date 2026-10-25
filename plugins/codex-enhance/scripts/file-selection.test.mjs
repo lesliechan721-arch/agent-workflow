@@ -88,7 +88,7 @@ async function custom(workspace, selectors) {
   const directory = await fs.mkdtemp(path.join(temporary, 'custom-'));
   const boundary = path.join(directory, 'model-boundary');
   const run = await execute(fixtures.custom, {
-    protocolVersion: 5, type: 'start', run: { id: '0123456789abcdef0123456789abcdef', name: 'selection', deadlineAt: null }, execution: { profile: 'fixture', executor: 'fixture' }, mode: 'bundle', workspace, prompt: 'selection fixture',
+    protocolVersion: 5, type: 'start', run: { id: '0123456789abcdef0123456789abcdef', name: 'selection', deadlineAt: null }, execution: { executor: 'fixture' }, mode: 'bundle', workspace, prompt: 'selection fixture',
     fileSelectors: selectors, fileResolver: { command: process.execPath, args: [helper] }, args: [],
   }, { env: { AW_TEST_SELECTION_BOUNDARY: boundary }, keepInputOpen: true });
   const events = run.stdout.trim().split('\n').map(JSON.parse);

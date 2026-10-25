@@ -15984,8 +15984,9 @@ describe('five namespaced write commands', () => {
     expect(initialBinding).toMatchObject({
       schemaVersion: 2,
       installedIdentity: { skillKey: 'codex-subagent-guide', scope: 'user', configScope: 'user' },
-      effectiveValues: { standardProfile: { model: 'user-standard', reasoningEffort: 'max' } },
+      allowedKeys: ['subagentCommands'],
     });
+    expect(initialBinding.effectiveValues).toEqual({ subagentCommands: [] });
     for (const skill of ['codex-explore', 'codex-advisor']) {
       await expect(fs.pathExists(path.join(cacheRoot, 'codex', 'skills', skill, AW_RUNTIME_CONFIG_BINDING_PATH)))
         .resolves.toBe(false);
@@ -16042,9 +16043,7 @@ describe('five namespaced write commands', () => {
       await expect(fs.readFile(skillPaths[index]!)).resolves.toEqual(initialSkillBytes[index]);
     }
     const updatedBinding = await fs.readJson(guideBindingPath) as RuntimeConfigBinding;
-    expect(updatedBinding.effectiveValues.standardProfile).toEqual({
-      model: 'updated-standard', reasoningEffort: 'high',
-    });
+    expect(updatedBinding).toEqual(initialBinding);
     for (const [index, file] of rolePaths.entries()) {
       await expect(fs.readFile(file, 'utf8')).resolves.toBe(initialRoleBytes[index]);
     }

@@ -223,9 +223,9 @@ test('default result reserves consume-error bytes and retains messages after del
 // Test Value Gate: syntax rejection must happen before run lookup or mutation;
 // name, integer and obsolete-command boundaries belong to the public parser.
 test('parseCommand rejects obsolete commands, malformed names, sizes and duplicate options', () => {
-  const start = ['start', '--profile', 'advisorProfile', '--prompt', 'task'];
+  const start = ['start', '--executor', 'fixture', '--prompt', 'task'];
   const invalid = [
-    ['run'], ['poll'], ['resume'], ['cleanup'], [...start, '--preview'], [...start, '--communication', 'true'],
+    ['run'], ['poll'], ['resume'], ['cleanup'], ['start', '--profile', 'advisorProfile', '--prompt', 'task'], [...start, '--executor', 'other'], [...start, '--preview'], [...start, '--communication', 'true'],
     ...['中文', ' spaced', '../path', '.leading', 'x'.repeat(65)].map((name) => [...start, '--name', name]),
     ...['0', '-1', '1.5', '9007199254740991'].map((value) => [...start, '--deadline-ms', value]),
     ['result', '--run', 'handle', '--output-file', 'must-not-exist'], ['result', '--run', 'handle', '--export', 'must-not-exist'],
@@ -246,10 +246,10 @@ test('command input validation rejects invalid stdin and instruction files befor
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const temporaryRoot = path.join(directory, 'temporary'); await fs.mkdir(temporaryRoot);
   const snapshot = { installedIdentity: { plugin: 'fixture' }, resourceRoot: directory,
-    effectiveValues: { advisorProfile: { executor: 'fixture' },
-      subagentCommands: [{ key: 'fixture', title: 'Fixture', adapter: 'custom', mode: 'workspace', command: process.execPath }] } };
+    effectiveValues: {
+      subagentCommands: [{ key: 'fixture', adapter: 'custom', mode: 'workspace', command: process.execPath }] } };
   const dependencies = { temporaryRoot, readRuntimeConfig: async () => snapshot };
-  const start = ['start', '--profile', 'advisorProfile', '--workspace', directory, '--prompt', '-'];
+  const start = ['start', '--executor', 'fixture', '--workspace', directory, '--prompt', '-'];
   for (const [bytes, code] of [[Buffer.from(' \r\n'), 'inputEmpty'], [Buffer.from([0xff]), 'binaryUnsupported'],
     [Buffer.from([0]), 'binaryUnsupported'], [Buffer.alloc(262145, 120), 'taskTooLarge']]) {
     await assert.rejects(cli.executeCommand(cli.parseCommand(start), { ...dependencies, stdin: Readable.from([bytes]) }), { code });

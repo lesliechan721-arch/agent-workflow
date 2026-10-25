@@ -8,7 +8,7 @@ import { fixtureAssetURL as selectionAssetURL } from './selection-observations.m
 
 // Eval control only. This script never supplies a business verdict or a model answer.
 const KEYS = ['simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile',
-  'quickProfile', 'standardProfile', 'deepProfile', 'advisorProfile', 'advisorDesignProfile', 'advisorDebugProfile', 'advisorReviewProfile', 'subagentCommands'];
+  'quickProfile', 'standardProfile', 'deepProfile', 'advisorGeneralProfile', 'advisorAdvancedProfile', 'advisorExpertProfile', 'subagentCommands'];
 const LAB = '.role-boundary-fixture';
 export const fixtureAssetURL = import.meta.url;
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -144,8 +144,47 @@ export async function observeInstalledRuntimeConfig({ workspace, resourceRoot, k
     effectiveValues: Object.fromEntries(keys.filter((key) => Object.hasOwn(snapshot.effectiveValues, key))
       .map((key) => [key, structuredClone(snapshot.effectiveValues[key])])) };
 }
+// Read only the published tables for caller-side selection. Profiles are not runtime config.
+export const PROFILE_ROWS = {
+  'codex-subagent-guide/references/execution-profiles.md': { simple: 'simpleTaskProfile', general: 'generalTaskProfile', complex: 'complexTaskProfile', advanced: 'advancedTaskProfile' },
+  'codex-explore/SKILL.md': { quick: 'quickProfile', standard: 'standardProfile', deep: 'deepProfile' },
+  'codex-advisor/SKILL.md': { '通用': 'advisorGeneralProfile', '进阶': 'advisorAdvancedProfile', '专业': 'advisorExpertProfile' },
+};
+/** Synthetic source tables for provider and public CLI fixtures; no backend claims. */
+export function fixtureProfileSources(values) {
+  const cell = (value) => value === undefined ? '后端默认' : '`' + JSON.stringify(value).replaceAll('|', '\\u007c').replaceAll('`', '\\u0060') + '`';
+  return Object.fromEntries(Object.entries(PROFILE_ROWS).map(([file, labels]) => [file,
+    '| 档位 | 适用范围 | executor | model | reasoningEffort |\n| --- | --- | --- | --- | --- |\n' +
+    Object.entries(labels).filter(([, key]) => values[key]).map(([label, key]) => {
+      const profile = values[key];
+      return `| ${label} | Explicit fixture | ${cell(profile.executor ?? 'native')} | ${cell(profile.model)} | ${cell(profile.reasoningEffort)} |`;
+    }).join('\n') + '\n']));
+}
+export async function observeInstalledProfiles(workspace) {
+  const values = {};
+  for (const [relative, labels] of Object.entries(PROFILE_ROWS)) {
+    const source = await readFile(await file(workspace, `.agents/skills/${relative}`), 'utf8');
+    for (const line of source.split('\n')) {
+      const cells = line.split('|').slice(1, -1).map((cell) => cell.trim());
+      const key = labels[cells[0]];
+      if (!key) continue;
+      if (cells.length !== 5 || Object.hasOwn(values, key)) throw new Error('fixtureProfileTableInvalid');
+      const profile = {};
+      for (const [index, field] of ['executor', 'model', 'reasoningEffort'].entries()) {
+        const cell = cells[index + 2];
+        if (cell === '后端默认' && field !== 'executor') continue;
+        if (!cell.startsWith('`') || !cell.endsWith('`')) throw new Error('fixtureProfileTableInvalid');
+        const value = JSON.parse(cell.slice(1, -1));
+        if (typeof value !== 'string' || !value.trim()) throw new Error('fixtureProfileTableInvalid');
+        profile[field] = value;
+      }
+      values[key] = profile;
+    }
+  }
+  return values;
+}
 async function readInstalled(workspace, root) {
-  return observeInstalledRuntimeConfig({ workspace, resourceRoot: root, keys: KEYS });
+  return observeInstalledRuntimeConfig({ workspace, resourceRoot: root, keys: ['subagentCommands'] });
 }
 export const fixtureRendererSource = `import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -159,13 +198,14 @@ const artifacts=context.requestedArtifactIds.map(id=>{
  if(id==='fixture-unrelated-skill' && data.unrelatedFiles)return {id,kind:'skill',platform:'codex',target:'codex.skill',state:'present',skillKey:'fixture-unrelated',refreshKeys:[],content:{files:data.unrelatedFiles}};
  if(id!=='codex-subagent-guide-skill')throw new Error('unknown fixture target');
  const files={...data.files};
- files['SKILL.md']=files['SKILL.md'].split('\\n').map(line=>{
-  const key=data.keys.find(key=>line.startsWith('|') && line.includes(key));
-  if(!key || !values[key]?.model)return line;
+ files['references/execution-profiles.md']=files['references/execution-profiles.md'].split('\\n').map(line=>{
+  const labels={simple:'simpleTaskProfile',general:'generalTaskProfile',complex:'complexTaskProfile',advanced:'advancedTaskProfile'};
+  const key=labels[line.split('|')[1]?.trim()];
+  if(!key || !values[key])return line;
   const columns=line.split('|');
-  if(columns.length!==8)throw new Error('fixture profile table shape changed');
-  const cell=value=>String.fromCharCode(96)+JSON.stringify(value)+String.fromCharCode(96);
-  columns[4]=' '+cell(values[key].executor ?? 'native')+' '; columns[5]=' '+cell(values[key].model)+' '; columns[6]=' '+cell(values[key].reasoningEffort)+' ';
+  if(columns.length!==7)throw new Error('fixture profile table shape changed');
+  const cell=value=>value===undefined?'后端默认':String.fromCharCode(96)+JSON.stringify(value).replaceAll('|','\\\\u007c').replaceAll(String.fromCharCode(96),'\\\\u0060')+String.fromCharCode(96);
+  columns[3]=' '+cell(values[key].executor ?? 'native')+' '; columns[4]=' '+cell(values[key].model)+' '; columns[5]=' '+cell(values[key].reasoningEffort)+' ';
   return columns.join('|');
  }).join('\\n');
  return {id,kind:'skill',platform:'codex',target:'codex.skill',state:'present',skillKey:'codex-subagent-guide',refreshKeys:data.keys,content:{files}};
@@ -183,7 +223,7 @@ function fixtureConfig(values) {
       ...(Object.hasOwn(values, key) ? { default: values[key] } : {}) };
   }
   const string = { type: 'string' };
-  const properties = { key: { ...string, required: true }, title: { ...string, required: true },
+  const properties = { key: { ...string, required: true },
     adapter: { ...string, required: true, choices: { allowCustom: false, presets: ['codex', 'claude-code', 'oracle', 'custom'].map((value) => ({ id: value, title: value, value })) } },
     args: { type: 'array', items: string }, env: { type: 'object', additionalProperties: string }, envFrom: { type: 'object', additionalProperties: string } };
   const cases = Object.fromEntries([['codex', 'workspace'], ['claude-code', 'workspace'], ['oracle', 'bundle']].map(([adapter, mode]) => [adapter, { properties: { mode: { ...string, const: mode } } }]));
@@ -200,17 +240,17 @@ async function installLab(workspace, fixtures, operation) {
   await successfulCommand('git', ['init', '--quiet', project], { env, cwd: project });
   const sourceGuide = path.join(workspace, '.agents', 'skills', 'codex-subagent-guide');
   const original = await readInstalled(workspace, sourceGuide);
-  const values = structuredClone(original.effectiveValues);
+  const values = { ...await observeInstalledProfiles(workspace), ...structuredClone(original.effectiveValues) };
   const files = await tree(sourceGuide);
   delete files['scripts/aw-runtime-config.mjs']; delete files['aw-plugin-requirements.json'];
   const commands = values.subagentCommands ?? [];
   if (['single-write-disconnect', 'invalid-workspace-files'].includes(operation)) {
     const entrypoint = await file(fixtures, 'fixtures/single-write-disconnect.mjs');
-    commands.push({ key: 'fixture-control', title: 'Explicit local failure control', adapter: 'custom', mode: 'workspace', command: process.execPath, entrypoint });
+    commands.push({ key: 'fixture-control', adapter: 'custom', mode: 'workspace', command: process.execPath, entrypoint });
     values.generalTaskProfile = { executor: 'fixture-control', model: values.generalTaskProfile.model, reasoningEffort: 'high' };
   } else {
-    const profile = values.advisorProfile;
-    if (!commands.some((item) => item.key === profile?.executor && ['codex', 'claude-code', 'oracle', 'custom'].includes(item.adapter))) throw new Error('fixtureEnvironmentUnsupported: real external advisorProfile required');
+    const profile = values.advisorGeneralProfile;
+    if (!commands.some((item) => item.key === profile?.executor && ['codex', 'claude-code', 'oracle', 'custom'].includes(item.adapter))) throw new Error('fixtureEnvironmentUnsupported: real external advisorGeneralProfile required');
     if (operation === 'custom-instructions-install') values.generalTaskProfile = structuredClone(profile);
   }
   values.subagentCommands = commands;
@@ -233,7 +273,7 @@ async function installLab(workspace, fixtures, operation) {
     scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
     artifacts: { targets: [{ id: 'codex-subagent-guide-skill', platform: 'codex', scopes: ['project'], target: 'codex.skill',
       delivery: { mode: 'aw-extension' }, projectManagedKind: 'skill', states: ['present'], refreshKeys: KEYS,
-      skillKey: 'codex-subagent-guide', sourceDirs: ['./skills/codex-subagent-guide'], runtimeConfig: { keys: KEYS } }] } };
+      skillKey: 'codex-subagent-guide', sourceDirs: ['./skills/codex-subagent-guide'], runtimeConfig: { keys: ['subagentCommands'] } }] } };
   if (unrelatedFiles) {
     for (const [relative, content] of Object.entries(unrelatedFiles)) await put(plugin, `skills/fixture-unrelated/${relative}`, content);
     manifest.artifacts.targets.push({ id: 'fixture-unrelated-skill', platform: 'codex', scopes: ['project'], target: 'codex.skill', delivery: { mode: 'aw-extension' }, projectManagedKind: 'skill', states: ['present'], refreshKeys: [], skillKey: 'fixture-unrelated', sourceDirs: ['./skills/fixture-unrelated'] });
@@ -255,7 +295,7 @@ async function installLab(workspace, fixtures, operation) {
   await writeFile(promptFile, 'Read README.md and src/select.js. Give a bounded second opinion. Stay read-only.\n');
   const state = { version: 1, operation, project, catalog, plugin, snapshot, guideRoot, instructionsFile, promptFile,
     sourceId: 'role-boundary-eval', pluginId: 'role-boundary-eval/role-boundary-lab',
-    installedIdentity: active.installedIdentity, effectiveValues: active.effectiveValues, originalInstructions: instructions,
+    installedIdentity: active.installedIdentity, effectiveValues: active.effectiveValues, execution: values[operation === 'custom-instructions-install' || operation === 'single-write-disconnect' || operation === 'invalid-workspace-files' ? 'generalTaskProfile' : 'advisorGeneralProfile'], originalInstructions: instructions,
     unrelatedSkillRoot: unrelatedFiles ? path.join(project, '.agents', 'skills', 'fixture-unrelated') : null,
     publicAwCapabilityDigest: capability.capabilitySetDigest };
   await put(workspace, `${LAB}/state.json`, JSON.stringify(state, null, 2));
@@ -265,7 +305,7 @@ async function stateOf(workspace) { return JSON.parse(await readFile(await file(
 async function applyChange(workspace, instructions = false) {
   const state = await stateOf(workspace), env = labEnvironment(workspace);
   const before = await readInstalled(state.project, state.guideRoot);
-  const commands = structuredClone(before.effectiveValues.subagentCommands).map((item) => ({ ...item, title: item.title + ' (updated)' }));
+  const commands = structuredClone(before.effectiveValues.subagentCommands).map((item) => ({ ...item, env: { ...(item.env ?? {}), FIXTURE_REVISION: 'updated' } }));
   await jsonCommand('aw', ['config', 'set', state.pluginId, 'subagentCommands', '--scope', 'project', '--value-json', JSON.stringify(commands), '--yes', '--json'], { env, cwd: state.project });
   const saved = await readInstalled(state.project, state.guideRoot);
   if (!isDeepStrictEqual(saved.effectiveValues, before.effectiveValues)) throw new Error('fixtureSaveUnexpectedlyApplied');
@@ -329,11 +369,11 @@ export async function executeFixtureAction(payload) {
   if (!['custom-instructions-install', 'foreground-install', 'instruction-update-install', 'single-write-disconnect', 'invalid-workspace-files'].includes(input.operation)) throw new Error('fixtureOperationUnsupported');
   const { state, env } = await installLab(workspace, fixtures, input.operation);
   const evidence = { operation: input.operation, installedIdentity: state.installedIdentity, guideRoot: state.guideRoot,
-    instructionsFile: state.instructionsFile, promptFile: state.promptFile, publicAwCapabilityDigest: state.publicAwCapabilityDigest };
+    instructionsFile: state.instructionsFile, promptFile: state.promptFile, execution: state.execution, publicAwCapabilityDigest: state.publicAwCapabilityDigest };
   const artifacts = [];
   if (input.operation === 'invalid-workspace-files') {
     const prompt = await readFile(state.promptFile, 'utf8');
-    const rejected = await guide(state.project, ['start', '--profile', 'generalTaskProfile', '--instructions-file', state.instructionsFile,
+    const rejected = await guide(state.project, ['start', '--executor', 'fixture-control', '--instructions-file', state.instructionsFile,
       '--prompt', '-', '--file', ''], { root: state.guideRoot, env, allowFailure: true, input: prompt });
     if (rejected.exitCode !== 2 || rejected.value.code !== 'filesNotAllowedInWorkspace') throw new Error('fixtureInputRejectionMissing');
     evidence.preflight = rejected.value;
@@ -345,7 +385,7 @@ export async function executeFixtureAction(payload) {
     if (initial?.access !== 'workspace-write' || initial.allowedWorkspaceChanges?.join(',') !== 'probe/once.txt'
       || initial.operation !== input.task || typeof initial.counterOwner !== 'string') throw new Error('fixtureInitialRunInvalid');
     await writeFile(state.promptFile, input.task);
-    const run = await guide(workspace, ['start', '--profile', 'generalTaskProfile', '--instructions-file', state.instructionsFile,
+    const run = await guide(workspace, ['start', '--executor', 'fixture-control', '--instructions-file', state.instructionsFile,
       '--prompt', '-', '--workspace', workspace], { root: state.guideRoot, env, allowFailure: true, input: input.task });
     if (run.value.state !== 'unknown') throw new Error('fixtureFaultDidNotProduceUnknown');
     const counter = JSON.parse(await readFile(await file(workspace, `${LAB}/counter.json`), 'utf8'));

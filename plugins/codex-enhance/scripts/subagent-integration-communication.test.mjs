@@ -32,7 +32,7 @@ test('installed start preserves UTF-8 input, environment and one captured execut
   assert.equal(observed.request.protocolVersion, 5); assert.equal(observed.request.type, 'start');
   assert.equal(observed.request.run.deadlineAt, null); assert.equal(observed.request.run.name, 'api-review_2.1');
   assert.ok(observed.request.prompt.includes(instructions)); assert.ok(observed.request.prompt.endsWith(prompt));
-  assert.deepEqual(observed.request.execution, { profile: 'advisorProfile', executor: 'fixture', model: 'explicit-model', reasoningEffort: 'high' });
+  assert.deepEqual(observed.request.execution, { executor: 'fixture', model: 'explicit-model', reasoningEffort: 'high' });
   assert.deepEqual(observed.request.fileSelectors, selectors);
   assert.deepEqual(observed.request.fileResolver, { command: process.execPath, args: [path.join(f.installed, 'scripts/resolve-files.mjs')] });
   assert.ok(Object.values(observed.request.runtime.toolkit).every((value) => value === process.execPath || value.startsWith(f.installed + path.sep)));
@@ -45,7 +45,7 @@ test('installed start preserves UTF-8 input, environment and one captured execut
   assert.equal(JSON.stringify(observed.request).includes('host-value'), false);
   assert.equal(await fs.stat(path.join(f.workspace, 'escaped')).catch(() => null), null);
   await fs.writeFile(path.join(f.directory, 'instructions.md'), 'changed role');
-  f.snapshot.effectiveValues.advisorProfile.executor = 'native'; await f.save();
+  f.snapshot.effectiveValues.subagentCommands = []; await f.save();
   const initialized = await f.command(['wait', '--run', started.run, '--timeout-ms', '0']);
   successful(initialized, 'wait');
   if (started.code === 1) assert.equal(field(initialized.stdout, 'communication'), 'false');
@@ -91,6 +91,7 @@ test('unsupported communication rejects send and explicit deadline stops one bac
   const started = await f.start({ communication: false }, { extra: ['--deadline-ms', String(deadlineMs)], env: clock.environment });
   await f.initialized(started); if (started.code === 0) assert.equal(field(started.stdout, 'communication'), 'false');
   const observed = await started.observed();
+  assert.deepEqual(observed.request.execution, { executor: 'fixture' });
   assert.equal(observed.request.run.deadlineAt, clock.origin + deadlineMs);
   await clock.advance(deadlineMs - 1);
   const rejected = await f.command(['send', '--run', started.run, '--text', 'Do not submit.']);
@@ -136,7 +137,28 @@ test('installed CLI rejects invalid arguments and stdin before side effects', { 
   for (const args of [['run'], ['result', '--run', 'handle', '--output-file', 'must-not-exist']]) {
     assert.equal((await f.command(args)).code, 2);
   }
-  const prompt = await f.command(['start', '--profile', 'advisorProfile', '--workspace', f.workspace, '--prompt', '-'], { stdin: Buffer.from([0xff]) });
+  for (const [args, code] of [
+    [['--profile', 'advisorProfile'], 'argumentsInvalid'],
+    [['--executor', 'native'], 'nativeUnsupported'],
+    [['--executor', 'missing'], 'executorUnknown'],
+    [['--executor', 'Fixture'], 'executorUnknown'],
+    [['--executor', 'fixture', '--executor', 'fixture'], 'argumentsInvalid'],
+  ]) {
+    const rejected = await f.command(['start', ...args, '--prompt', 'must not start']);
+    assert.equal(rejected.code, 2); assert.equal(field(rejected.stderr, 'code'), code);
+  }
+  const entry = f.snapshot.effectiveValues.subagentCommands[0];
+  for (const [registry, code] of [
+    [[entry, { ...entry }], 'registryInvalid'],
+    [[{ ...entry, title: 'Legacy title' }], 'executorInvalid'],
+    [[{ ...entry, key: 'native' }, entry], 'registryInvalid'],
+  ]) {
+    f.snapshot.effectiveValues.subagentCommands = registry; await f.save();
+    const rejected = await f.command(['start', '--executor', 'fixture', '--prompt', 'must not start']);
+    assert.equal(rejected.code, 2); assert.equal(field(rejected.stderr, 'code'), code);
+  }
+  f.snapshot.effectiveValues.subagentCommands = [entry]; await f.save();
+  const prompt = await f.command(['start', '--executor', 'fixture', '--workspace', f.workspace, '--prompt', '-'], { stdin: Buffer.from([0xff]) });
   assert.equal(prompt.code, 2);
   const message = await f.command(['send', '--run', 'handle', '--text', '-'], { stdin: Buffer.from(' \r\n') });
   assert.equal(message.code, 2);

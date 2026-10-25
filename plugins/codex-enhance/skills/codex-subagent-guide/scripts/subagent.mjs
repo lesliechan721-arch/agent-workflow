@@ -11,7 +11,7 @@ import { writeChunk, diagnostic } from './runtime/output.mjs';
 
 export const HELP = `Guide external task runtime (Adapter v5)
 Usage:
-  node scripts/subagent.mjs start --profile KEY --prompt TEXT|-
+  node scripts/subagent.mjs start --executor KEY --prompt TEXT|-
     [--name NAME] [--workspace DIR] [--instructions-file FILE] [--file SELECTOR]...
     [--model MODEL] [--reasoning-effort EFFORT] [--deadline-ms N]
   node scripts/subagent.mjs send --run HANDLE --text TEXT|-
@@ -21,7 +21,7 @@ Usage:
 
 start returns a handle and communication: true, false, or pending. Initialization waits up to 10 seconds.
 NAME: 1-64 ASCII letters, digits, dot, underscore, or hyphen; first character is a letter or digit.
-Operations accept handles, never names. Names can repeat. Native profiles use the host tools directly.
+Operations accept handles, never names. Names can repeat. Native execution uses the host tools directly.
 There is no default execution deadline. --deadline-ms is a positive safe integer, fixed at worker start.
 wait accepts 1-16 distinct handles. Its default window is 600000 ms; range: 0-1800000.
 wait returns on any change. A zero window is for immediate checks or draining more: true.
@@ -45,13 +45,13 @@ Exit: 0 command completed (including wait timeout and reading a failed task), 1 
 `;
 
 const options = {
-  profile: { type: 'string' }, prompt: { type: 'string' }, name: { type: 'string' },
+  executor: { type: 'string' }, prompt: { type: 'string' }, name: { type: 'string' },
   workspace: { type: 'string' }, 'instructions-file': { type: 'string' }, file: { type: 'string', multiple: true },
   model: { type: 'string' }, 'reasoning-effort': { type: 'string' }, 'deadline-ms': { type: 'string' },
   run: { type: 'string', multiple: true }, text: { type: 'string' }, 'timeout-ms': { type: 'string' }, export: { type: 'boolean' },
 };
 const allowed = {
-  start: ['profile', 'prompt', 'name', 'workspace', 'instructions-file', 'file', 'model', 'reasoning-effort', 'deadline-ms'],
+  start: ['executor', 'prompt', 'name', 'workspace', 'instructions-file', 'file', 'model', 'reasoning-effort', 'deadline-ms'],
   send: ['run', 'text'], wait: ['run', 'timeout-ms'], result: ['run', 'export'], stop: ['run'],
 };
 function integer(value, name, minimum, maximum) {
@@ -69,9 +69,9 @@ export function parseCommand(argv) {
   if (supplied.some((key) => !allowed[operation].includes(key)) || supplied.some((key) => !['run', 'file'].includes(key) && supplied.filter((item) => item === key).length !== 1)) fail('argumentsInvalid', 'The command contains an unsupported or repeated argument.');
   const value = parsed.values;
   if (operation === 'start') {
-    if (!value.profile || !Object.hasOwn(value, 'prompt')) fail('argumentsRequired', 'Supply --profile and --prompt TEXT or --prompt -.');
+    if (!value.executor || !Object.hasOwn(value, 'prompt')) fail('argumentsRequired', 'Supply --executor and --prompt TEXT or --prompt -.');
     if (value.name !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value.name)) fail('nameInvalid', 'Use 1-64 ASCII letters, digits, dot, underscore, or hyphen; start with a letter or digit.');
-    return { operation, profile: value.profile, prompt: value.prompt, name: value.name, workspace: value.workspace,
+    return { operation, executor: value.executor, prompt: value.prompt, name: value.name, workspace: value.workspace,
       instructionsFile: value['instructions-file'], files: value.file ?? [], model: value.model, reasoningEffort: value['reasoning-effort'],
       ...(value['deadline-ms'] === undefined ? {} : { deadlineMs: integer(value['deadline-ms'], '--deadline-ms', 1, Number.MAX_SAFE_INTEGER - Date.now()) }) };
   }

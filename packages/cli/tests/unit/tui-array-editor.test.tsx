@@ -88,6 +88,10 @@ async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
   controller.push({ name: 'configFields', pluginId: 'team/arrays', layer: { scope: 'effective' } });
   controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { scope: 'effective' }, fieldKey, editor: fieldKey === 'advisorProfile' ? 'object' : 'array', ...(fieldKey === 'fixed' ? { mode: 'choices' as const } : {}) });
   const ui = render(<ConsoleAppV4 controller={controller} size={size} />);
+  if (fieldKey === 'advisorProfile') {
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('当前项目'), { timeout: 5000 });
+    await keys(ui, '\r');
+  }
   await vi.waitFor(() => expect(ui.lastFrame()).toContain(fieldKey === 'fixed' ? '第一方案' : fieldKey === 'advisorProfile' ? '使用此完整对象' : '添加一项'), { timeout: 5000 });
   const store = async (scope: 'user' | 'project') => {
     const evidence = await dependencies.captureEvidence({ kind: 'configSaveBatch', pluginId: 'team/arrays', apply: false,
@@ -192,7 +196,9 @@ describe('array editor with real config runtime', () => {
   it('uses missing/native and otherwise/external branches to change required profile fields', async () => {
     const { ui, controller } = await setup('advisorProfile');
     expect(ui.lastFrame()).not.toContain('必填');
-    await keys(ui, '\r', '\r', '\u0015', 'native', '\r');
+    await keys(ui, '\r', '\r');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('native'));
+    await keys(ui, '\r');
     expect(ui.lastFrame()).toContain('确认分支切换');
     await keys(ui, '\r', 'c');
     expect(controller.snapshot.router.current.route).toMatchObject({ editor: 'object' });

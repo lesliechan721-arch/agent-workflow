@@ -175,7 +175,7 @@ async function main() {
     const adapterFile = path.join(directory, 'fake-adapter.mjs');
     await fs.writeFile(adapterFile, adapter);
     const configuration = { installedIdentity: { source: 'fixture', plugin: 'fixture', platform: 'codex', scope: 'user' }, resourceRoot: installed,
-      effectiveValues: { advisorProfile: { executor: 'fixture' }, subagentCommands: [{ key: 'fixture', title: 'Fixture', adapter: 'custom', mode: 'workspace', command: await fs.realpath(process.execPath), entrypoint: adapterFile }] } };
+      effectiveValues: { subagentCommands: [{ key: 'fixture', adapter: 'custom', mode: 'workspace', command: await fs.realpath(process.execPath), entrypoint: adapterFile }] } };
     await fs.writeFile(path.join(installed, 'effective.json'), JSON.stringify(configuration));
     await fs.writeFile(path.join(scripts, 'aw-runtime-config.mjs'), "import fs from 'node:fs/promises';export async function readRuntimeConfig(){return JSON.parse(await fs.readFile(new URL('../effective.json',import.meta.url),'utf8'));}\n");
     const environment = { ...Object.fromEntries(Object.entries(process.env).map(([name, value]) => [name.toUpperCase(), value])), HOME: directory, USERPROFILE: directory, CODEX_HOME: directory,
@@ -208,7 +208,7 @@ async function main() {
       } while (Date.now() < deadline);
       fail('commandTimeout');
     }
-    const started = await command(['start', '--profile', 'advisorProfile', '--workspace', workspace, '--prompt', '-'], Buffer.from(prompt));
+    const started = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt', '-'], Buffer.from(prompt));
     requireTrue(!!started.handle && (started.exit === 0 || field(started.stdout, 'code') === 'startupNotReady'));
     const handle = started.handle;
     await ready(started);
@@ -237,7 +237,7 @@ async function main() {
     emit('cross-volume.result-export', true, 'ok');
     requireTrue((await command(['stop', '--run', handle])).exit === 0);
     await fs.unlink(finish);
-    const active = await command(['start', '--profile', 'advisorProfile', '--workspace', workspace, '--prompt', '-'], Buffer.from(prompt));
+    const active = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt', '-'], Buffer.from(prompt));
     requireTrue(!!active.handle && (active.exit === 0 || field(active.stdout, 'code') === 'startupNotReady'));
     await ready(active);
     const stopped = await command(['stop', '--run', active.handle]);

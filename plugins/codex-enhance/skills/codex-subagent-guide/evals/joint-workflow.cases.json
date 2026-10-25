@@ -31,7 +31,7 @@
           "data/rows.json": "[{\"id\":\"a\",\"tenantId\":\"t1\"},{\"id\":\"a\",\"tenantId\":\"t2\"},{\"id\":\"b\",\"tenantId\":\"t1\"}]\n"
         },
         "configuration": {
-          "advisorProfile": {
+          "advisorGeneralProfile": {
             "executor": "lab-bundle",
             "model": "fixture-advisor",
             "reasoningEffort": "high"
@@ -132,7 +132,7 @@
             "model": "fixture-explore",
             "reasoningEffort": "high"
           },
-          "advisorProfile": {
+          "advisorGeneralProfile": {
             "executor": "lab-bundle",
             "model": "fixture-advisor",
             "reasoningEffort": "high"
@@ -186,7 +186,7 @@
             "model": "fixture-explore-native",
             "reasoningEffort": "medium"
           },
-          "advisorProfile": {
+          "advisorGeneralProfile": {
             "executor": "native",
             "model": "fixture-advisor-native",
             "reasoningEffort": "high"
@@ -599,7 +599,7 @@
           "data/rows.json": "[{\"id\":\"a\",\"tenantId\":\"t1\"},{\"id\":\"a\",\"tenantId\":\"t2\"},{\"id\":\"b\",\"tenantId\":\"t1\"}]\n"
         },
         "configuration": {
-          "advisorProfile": {
+          "advisorGeneralProfile": {
             "executor": "lab-bundle",
             "model": "fixture-advisor",
             "reasoningEffort": "high"
@@ -681,9 +681,9 @@
             "model": "fixture-deepProfile",
             "reasoningEffort": "high"
           },
-          "advisorProfile": {
+          "advisorGeneralProfile": {
             "executor": "lab-workspace",
-            "model": "fixture-advisorProfile",
+            "model": "fixture-advisorGeneralProfile",
             "reasoningEffort": "high"
           }
         },
