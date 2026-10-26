@@ -3,9 +3,52 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { createRun, observeRun, openRun, storeContext, workerAlive } from '../skills/codex-subagent-guide/scripts/runtime/store.mjs';
 import { protectPrivatePath, verifyPrivatePath } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 import { fixture, sleep, eventually, windows, testTimeoutMs, blocks, field, bounded, successful } from './fixtures/subagent-integration.mjs';
+
+// Test Value Gate: an unrecoverable worker file error must reach the public
+// result with safe operation evidence, retain unsent input, and stop its backend.
+test('worker file failure retains safe diagnostics and unsent input in the fixed result', { timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t);
+  const preload = path.join(f.directory, 'file-failure.mjs');
+  await fs.writeFile(preload, `
+import fs from 'node:fs/promises';
+import path from 'node:path';
+if (path.basename(process.argv[1] ?? '') === 'worker.mjs') {
+  const rename = fs.rename;
+  fs.rename = async (source, destination) => {
+    if (path.basename(path.dirname(destination)) === 'outbox') {
+      throw Object.assign(new Error('PRIVATE_FILE_FAILURE'), { code: 'EPERM', syscall: 'rename', path: source, dest: destination });
+    }
+    return rename(source, destination);
+  };
+}
+`);
+  const started = await f.start({ echo: true }, { env: { NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` } });
+  await f.initialized(started);
+  const observed = await started.observed();
+  const sent = await f.command(['send', '--run', started.run, '--text', 'Retain unsent input.']);
+  successful(sent, 'send');
+  await f.waitTerminal(started.run);
+  for (let index = 0; index < 2; index++) {
+    const result = await f.command(['result', '--run', started.run]);
+    successful(result, 'result'); bounded(result);
+    assert.equal(field(result.stdout, 'state'), 'unknown');
+    assert.equal(field(result.stdout, 'code'), 'EPERM');
+    assert.equal(field(result.stdout, 'delivery'), 'notSubmitted');
+    assert.deepEqual(blocks(result.stdout, 'INPUT'), ['Retain unsent input.']);
+    assert.deepEqual(blocks(result.stdout, 'MESSAGE'), []);
+    assert.deepEqual(blocks(result.stdout, 'DIAGNOSTIC').map((text) => JSON.parse(text)), [{
+      operation: 'workerFile', syscall: 'rename', source: 'outbox/record.tmp', destination: 'outbox/record',
+    }]);
+    assert.equal(result.stdout.includes(f.directory), false);
+    assert.equal(result.stdout.includes('PRIVATE_FILE_FAILURE'), false);
+  }
+  assert.throws(() => process.kill(observed.backendPid, 0), { code: 'ESRCH' });
+  assert.equal(await fs.readFile(f.generations, 'utf8'), 'generation\n');
+});
 
 // Test Value Gate: atomic Windows root publication must not replace a competing
 // private directory, alter an unsafe directory, or delete a foreign file. Run

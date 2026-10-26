@@ -12,6 +12,8 @@
 
 Runtime 的消息数量、输出预算和消费失败边界使用真实模块与临时状态验证；CLI 保留安装闭包、通信、真实管道失败、worker 发布竞态和清理闭环。Adapter 的共享停止触发和长截止时间使用受控时间验证，每个后端仍保留真实停止接线和特有协议行为。参数组合直接验证解析与输入边界，CLI 只保留代表性退出码、stdin 和无副作用证据。降低测试层级不能删除不同队列的独立覆盖，也不能用 mock 代替原生 ACL、进程归属和跨卷资格。
 
+Windows 原子 JSON 的有界重试使用文件系统失败注入验证短暂占用恢复、持续失败保留旧文件和临时文件清理；原生文件资格同时验证持续持锁失败与首次真实 rename 冲突后释放锁的恢复。worker 文件错误通过真实 CLI 验证固定结果中的安全诊断、未发送输入和后端停止；命令阶段日志保留 DIAGNOSTIC 块，便于定位失败操作和资源类别。
+
 插件入口实时输出 `AW_PLUGIN_TEST` 进度，包含插件、目标平台、文件、用例开始/结果、耗时及诊断；运行中每 30 秒输出心跳。进度事件在输出前脱敏。测试入口只将明确为 `1` 的 `AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS` 传给子测试；该例外不开放其它宿主变量或长时资格开关。敏感值替换按字段进行，数值命中敏感值时变成脱敏字符串，事件仍为有效 JSON。原始 stdout/stderr 仍在该插件进程结束后整体脱敏输出，以保留跨写入块的敏感值保护。`--test-file <plugin-relative-path>` 只运行一个已声明文件，找不到时失败；它只接受单个插件且不能与 `--exclude-test-file` 同用。`--exclude-test-file <plugin-relative-path>` 在分片前排除该精确文件；CI 必须另行运行被排除的文件。
 
 Windows x64 CI 的普通 integration 分为三个独立 runner 的 Vitest shard，每片默认使用 1 worker；仓库变量 `AW_TEST_WORKERS` 的显式配置优先。第 3 片同时运行完整的串行 integration process-lifecycle、命令诊断与超时收尾回归和 pack smoke，全部分片成功才满足发布门禁。其他平台保留入口默认值。

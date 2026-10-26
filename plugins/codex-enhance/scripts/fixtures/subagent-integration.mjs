@@ -224,7 +224,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
           return false;
         }).join('\n');
         const response = { code, stdout, stderr, elapsedMs: Math.round(performance.now() - began) };
-        phase('commandEnd', { operation: args[0], code, commandElapsedMs: response.elapsedMs, nativeTiming, state: field(stdout, 'state'), communication: field(stdout, 'communication'), errorCode: field(stdout, 'code'), timedOut });
+        phase('commandEnd', { operation: args[0], code, commandElapsedMs: response.elapsedMs, nativeTiming, state: field(stdout, 'state'), communication: field(stdout, 'communication'), errorCode: field(stdout, 'code'), failureDiagnostics: blocks(stdout, 'DIAGNOSTIC'), timedOut });
         if (signal.aborted) { reject(signal.reason); return; }
         if (timedOut) { reject(new Error(`Fixture command timed out: ${args[0]}\n${JSON.stringify(phases)}`)); return; }
         resolve(response);

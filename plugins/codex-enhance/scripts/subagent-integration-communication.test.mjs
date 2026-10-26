@@ -68,7 +68,7 @@ test('multi-target wait wakes for B and does not replay the settled A result', {
   successful(await f.command(['send', '--run', b.run, '--text', 'B changed.']), 'send');
   const changed = await pendingWait;
   successful(changed, 'wait'); bounded(changed);
-  assert.deepEqual(blocks(changed.stdout, 'MESSAGE'), ['B changed.']);
+  assert.deepEqual(blocks(changed.stdout, 'MESSAGE'), ['B changed.'], changed.stdout + changed.stderr);
   assert.equal(field(changed.stdout, 'run'), b.run); assert.deepEqual(blocks(changed.stdout, 'FINAL'), []);
   const timeout = await f.command(['wait', '--run', a.run, '--run', b.run, '--timeout-ms', '0']);
   assert.equal(timeout.stdout, 'wait: timeout\n');

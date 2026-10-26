@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { atomicJson, readJson } from './runtime/files.mjs';
+import { atomicJson, readJson, fileFailureDiagnostic } from './runtime/files.mjs';
 import { LIMITS, redact, fail, validateResult } from './runtime/contracts.mjs';
 import { createFrameDecoder, createFrameWriter, createProtocolState } from './runtime/protocol.mjs';
 import { safeSpawn } from './runtime/platform.mjs';
@@ -35,7 +35,7 @@ export async function runWorker(directory) {
     } },
   };
   let snapshot = await readJson(path.join(directory, 'snapshot.json'), 16384);
-  let child, writer, candidate, fault, exited = false, closed = false, adapterExitCode = null;
+  let child, writer, candidate, fault, faultDiagnostic, exited = false, closed = false, adapterExitCode = null;
   let stopReason, stoppingAt, eventSequence = 0, stderrBytes = 0, writes = Promise.resolve();
   const protocol = createProtocolState();
   const sanitize = (value) => redact(value, prepared.environment, prepared.secretValues);
@@ -47,7 +47,10 @@ export async function runWorker(directory) {
     const name = `${String(++eventSequence).padStart(16, '0')}-${randomBytes(8).toString('hex')}.json`;
     await atomicJson(path.join(directory, 'events', name), value);
   };
-  const markFault = (code) => { fault ??= code; stopReason ??= 'channelError'; stoppingAt ??= Date.now(); };
+  const markFault = (code, error) => {
+    if (!fault) { fault = code; faultDiagnostic = fileFailureDiagnostic(error, directory); }
+    stopReason ??= 'channelError'; stoppingAt ??= Date.now();
+  };
   const writeFrame = async (frame) => {
     protocol.acceptWorker(frame);
     await writer.write(frame);
@@ -92,7 +95,7 @@ export async function runWorker(directory) {
     const decoder = createFrameDecoder({ direction: 'adapter', onFrame: (frame) => {
       protocol.acceptAdapter(frame);
       writes = writes.then(() => acceptEvent(frame));
-      writes.catch(() => markFault('runStateUnavailable'));
+      writes.catch((error) => markFault('runStateUnavailable', error));
     } });
     child.stdout.on('data', (bytes) => {
       child.stdout.pause();
@@ -144,7 +147,7 @@ export async function runWorker(directory) {
       if (exited && now - stoppingAt >= 250) break;
       await delay(40);
     }
-  } catch (error) { markFault(error?.code && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.code) ? error.code : 'workerFailed'); }
+  } catch (error) { markFault(error?.code && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.code) ? error.code : 'workerFailed', error); }
   await writes.catch(() => {});
   let stopped = false;
   try {
@@ -164,6 +167,7 @@ export async function runWorker(directory) {
     stopReason && candidate.generationStarted !== false && candidate.remoteStopConfirmed !== true) {
     candidate = { ...candidate, state: 'unknown', code: fault ?? (!stopped ? 'localTreeStopUnconfirmed' : 'completionUnconfirmed') };
   }
+  if (faultDiagnostic) candidate.message = faultDiagnostic;
   try { validateResult(candidate); }
   catch { candidate = { protocolVersion: 5, type: 'result', state: 'unknown', generationStarted: null, backendExitCode: null, text: '', code: 'adapterResultInvalid' }; }
   for (const name of await recordFiles(run, 'outbox')) {

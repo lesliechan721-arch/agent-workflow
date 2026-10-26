@@ -199,6 +199,80 @@ test('batched JSON publication preserves old state on protection failure and cle
   assert.deepEqual((await fs.readdir(directory)).sort(), ['first.json', 'second.json']);
 });
 
+// Test Value Gate: a temporary Windows sharing failure must not terminate a run
+// or expose a missing/partial old file while the replacement is retried.
+test('atomic JSON replacement recovers from transient Windows sharing failures', async (t) => {
+  const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-json-retry-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  windowsHostFixture(t, async (_command, _args, options) => {
+    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
+    return { stdout: Object.keys(input).length ? 'true' : JSON.stringify('S-1-5-21-123-456-789-1001') };
+  });
+  const { atomicJson } = await import('../skills/codex-subagent-guide/scripts/runtime/files.mjs');
+  const target = path.join(directory, 'owner.json');
+  const rename = fs.rename;
+  t.after(() => { fs.rename = rename; });
+  for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+    await fs.writeFile(target, '{"old":true}\n');
+    let conflicts = 0;
+    fs.rename = async (source, destination) => {
+      assert.equal(destination, target);
+      assert.deepEqual(JSON.parse(await fs.readFile(target, 'utf8')), { old: true });
+      assert.deepEqual(JSON.parse(await fs.readFile(source, 'utf8')), { replacement: code });
+      if (++conflicts <= 2) throw Object.assign(new Error('File is occupied.'), { code, syscall: 'rename', path: source, dest: destination });
+      return rename(source, destination);
+    };
+    await atomicJson(target, { replacement: code });
+    assert.deepEqual(JSON.parse(await fs.readFile(target, 'utf8')), { replacement: code });
+    assert.deepEqual(await fs.readdir(directory), ['owner.json']);
+  }
+});
+
+// Test Value Gate: retry exhaustion must preserve old state, clean staging, and
+// return the original error; unrelated failures are not retried.
+test('atomic JSON replacement bounds Windows retries and preserves permanent failures', async (t) => {
+  const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-json-failure-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  windowsHostFixture(t, async (_command, _args, options) => {
+    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
+    return { stdout: Object.keys(input).length ? 'true' : JSON.stringify('S-1-5-21-123-456-789-1001') };
+  });
+  const { atomicJson } = await import('../skills/codex-subagent-guide/scripts/runtime/files.mjs');
+  const target = path.join(directory, 'owner.json');
+  const rename = fs.rename;
+  t.after(() => { fs.rename = rename; });
+  for (const code of ['EPERM', 'ENOSPC', 'EXDEV']) {
+    await fs.writeFile(target, '{"old":true}\n');
+    const error = Object.assign(new Error('Cannot publish.'), { code });
+    let attempts = 0;
+    fs.rename = async () => { attempts++; throw error; };
+    await assert.rejects(atomicJson(target, { replacement: true }), (actual) => actual === error);
+    assert.ok(code === 'EPERM' ? attempts > 1 && attempts <= 10 : attempts === 1);
+    assert.deepEqual(JSON.parse(await fs.readFile(target, 'utf8')), { old: true });
+    assert.deepEqual(await fs.readdir(directory), ['owner.json']);
+  }
+});
+
+// Test Value Gate: file diagnostics identify an operation and runtime resource
+// without publishing host paths, arbitrary filenames, messages, or stacks.
+test('file failure diagnostics expose only allowlisted operations and resource categories', async () => {
+  const { fileFailureDiagnostic } = await import('../skills/codex-subagent-guide/scripts/runtime/files.mjs');
+  const directory = path.resolve(os.tmpdir(), 'PRIVATE_RUN');
+  const error = Object.assign(new Error('PRIVATE_MESSAGE'), {
+    code: 'EPERM', syscall: 'rename', path: path.join(directory, 'owner.json.0123456789abcdef.tmp'),
+    dest: path.join(directory, 'owner.json'), stack: 'PRIVATE_STACK',
+  });
+  assert.deepEqual(JSON.parse(fileFailureDiagnostic(error, directory)), {
+    operation: 'workerFile', syscall: 'rename', source: 'owner.json.tmp', destination: 'owner.json',
+  });
+  for (const target of [path.join(directory, 'PRIVATE_FILE'), path.join(directory, 'adapter', 'PRIVATE_FILE'), path.join(directory + '-other', 'owner.json')]) {
+    const diagnostic = fileFailureDiagnostic({ ...error, path: target, dest: target }, directory);
+    assert.equal(diagnostic.includes('PRIVATE'), false);
+    assert.ok(Buffer.byteLength(diagnostic) < 768);
+  }
+  assert.equal(fileFailureDiagnostic({ ...error, syscall: 'PRIVATE_CALL' }, directory), undefined);
+});
+
 // Test Value Gate: scratch cleanup must stop on a native tree-check failure,
 // recheck the next attempt, and use one native tree walk for nested resources.
 test('scratch cleanup batches native tree checks and retains files when verification fails', async (t) => {
