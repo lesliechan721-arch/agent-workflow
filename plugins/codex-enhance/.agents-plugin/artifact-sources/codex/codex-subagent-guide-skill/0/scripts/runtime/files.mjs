@@ -87,6 +87,36 @@ export async function atomicJson(target, value) {
   await atomicJsonFiles([{ target, value }]);
 }
 
+async function publishJson(temporary, target) {
+  for (let attempt = 0; ; attempt++) {
+    try { await fs.rename(temporary, target); return; }
+    catch (error) {
+      // Windows readers can briefly deny replacement. Retry the same protected
+      // file, never unlink the old state or repeat a backend operation.
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 5) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 20 * 2 ** attempt));
+    }
+  }
+}
+
+export function fileFailureDiagnostic(error, directory) {
+  if (!['open', 'read', 'write', 'close', 'rename', 'unlink', 'lstat', 'stat', 'scandir', 'mkdir', 'rmdir'].includes(error?.syscall)) return undefined;
+  const resource = (target) => {
+    if (typeof target !== 'string' || !path.isAbsolute(target)) return 'unavailable';
+    const relative = path.relative(directory, target).split(path.sep).join('/');
+    const temporary = /\.[a-f0-9]{16}\.tmp$/.test(relative);
+    const published = temporary ? relative.slice(0, -21) : relative;
+    const suffix = temporary ? '.tmp' : '';
+    if (/^(owner|snapshot|observed|launch|stop|final)\.json$/.test(published)) return published + suffix;
+    if (/^(outbox|events|gaps)\/[a-z0-9-]+\.json$/.test(published)) return published.split('/')[0] + '/record' + suffix;
+    return 'other';
+  };
+  // Do not retain raw messages, stacks, filenames, or absolute paths. The fixed
+  // categories are enough to identify the failed shared runtime resource.
+  return JSON.stringify({ operation: 'workerFile', syscall: error.syscall,
+    source: resource(error.path), destination: resource(error.dest) });
+}
+
 export async function atomicJsonFiles(entries) {
   const created = [];
   try {
@@ -100,7 +130,7 @@ export async function atomicJsonFiles(entries) {
     await protectPrivatePaths(created.map(({ temporary }) => ({ target: temporary, kind: 'file' })));
     // Publication remains atomic per file. A later rename failure does not
     // roll back files that were already published successfully.
-    for (const { target, temporary } of created) await fs.rename(temporary, target);
+    for (const { target, temporary } of created) await publishJson(temporary, target);
   } finally {
     await Promise.all(created.map(({ temporary }) => fs.unlink(temporary).catch((error) => { if (error.code !== 'ENOENT') throw error; })));
   }
