@@ -59,6 +59,16 @@
       "timeoutMs": 300000
     },
     {
+      "id": "sustained-interview",
+      "kind": "conversation",
+      "cases": "sustained-interview-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000
+    },
+    {
       "id": "decision-comprehension",
       "kind": "conversation",
       "cases": "decision-comprehension-cases.json",

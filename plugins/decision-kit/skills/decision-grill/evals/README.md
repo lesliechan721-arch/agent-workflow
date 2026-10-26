@@ -29,6 +29,7 @@ aw skill eval prepare decision-kit decision-grill --suite router --profile proje
 aw skill eval prepare decision-kit decision-grill --suite router --profile project-default --split sanity --runs 10 --output /tmp/aw-eval-specs/decision-grill-router-sanity --json
 aw skill eval prepare decision-kit decision-grill --suite behavior --profile project-default --output /tmp/aw-eval-specs/decision-grill-behavior --json
 aw skill eval prepare decision-kit decision-grill --suite decision-frame --profile project-default --output /tmp/aw-eval-specs/decision-grill-decision-frame --json
+aw skill eval prepare decision-kit decision-grill --suite sustained-interview --profile project-default --output /tmp/aw-eval-specs/decision-grill-sustained-interview --json
 aw skill eval prepare decision-kit decision-grill --suite decision-comprehension --profile project-default --output /tmp/aw-eval-specs/decision-grill-decision-comprehension --json
 ```
 
@@ -46,3 +47,5 @@ corpus 有 25 条用例：train 与 validation 各 10 条，另有 5 条 sanity�
 中提供已确认事实，用来验证 agent 先读项目文档、不重复询问，再把用户所有的取舍交给用户。
 
 `decision-frame-cases.json` 检查推断的共享决策方向对用户可见、方向歧义先选择、调用方方向复用，以及叶子 Skill 的独立交付。`decision-comprehension-cases.json` 检查紧凑默认呈现、非技术场景、短流程、时间线、上下文压缩和理解失败后的表现形式切换。
+
+`sustained-interview-cases.json` 检查开放主题在没有“请继续”提示时仍根据实际回答展开、单轮题数上限不丢失剩余问题、局部证据缺口不阻塞其他取舍，以及含糊方向需要具体后果核对。开放主题不预先提供依赖树；只评价实际提问与答复的先后，不把会话运行器追加的脚本答复当作主动继续的证据。批量用例的三题与两题来自用户显式要求，其他用例按用户要求每轮一题。保留已有单题、委托、暂停和无新增含义时不重复确认的回归用例。
