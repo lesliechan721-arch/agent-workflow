@@ -78,8 +78,8 @@ $fixed = ([IO.DriveInfo]::new($leftRoot).DriveType -eq [IO.DriveType]::Fixed) -a
 @{ differentRoots = $leftRoot -ine $rightRoot; differentVolumes = [QualificationVolume]::Id($data.left) -ine [QualificationVolume]::Id($data.right); fixed = $fixed } | ConvertTo-Json -Compress
 `;
 
-async function lockedAtomic(directory, platform, files) {
-  const root = path.join(directory, 'locked-atomic');
+async function lockedAtomic(directory, platform, files, transient = false) {
+  const root = path.join(directory, transient ? 'transient-atomic' : 'locked-atomic');
   await fs.mkdir(root); await platform.protectPrivatePath(root);
   const target = path.join(root, 'state.json');
   const original = { state: 'original', text: '原值\r\n完整。' };
@@ -97,24 +97,50 @@ async function lockedAtomic(directory, platform, files) {
   const closed = once(child, 'close'); closed.catch(() => {});
   child.stdin.on('error', () => {});
   const timeout = setTimeout(() => child.kill(), 30000);
-  let failed;
+  const rename = fs.rename;
+  let failed, observedConflict = false;
   try {
     let text = '';
     await Promise.race([
       new Promise((resolve) => child.stdout.on('data', (chunk) => { text += chunk.toString('utf8'); if (text.includes('locked\n') || text.includes('locked\r\n')) resolve(); })),
       closed.then(() => fail('lockUnavailable')),
     ]);
+    if (transient) {
+      // Release a real native lock only after the real rename observes it.
+      // The production retry must then publish the same protected temporary file.
+      fs.rename = async (source, destination) => {
+        try { return await rename(source, destination); }
+        catch (error) {
+          if (destination === target && !observedConflict && ['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) {
+            observedConflict = true;
+            child.stdin.end('\n');
+            const [exit, signal] = await closed;
+            requireTrue(exit === 0 && signal === null, 'lockUnavailable');
+          }
+          throw error;
+        }
+      };
+    }
     try { await files.atomicJson(target, { state: 'replacement', text: '新值' }); }
     catch (error) { failed = error; }
-    requireTrue(!!failed, 'atomicWriteDidNotFail');
-    requireTrue(['EPERM', 'EACCES', 'EBUSY'].includes(failed.code));
-    requireTrue(child.exitCode === null && child.signalCode === null, 'lockUnavailable');
+    if (transient) {
+      if (failed) throw failed;
+      requireTrue(observedConflict, 'lockUnavailable');
+      assert.deepEqual(JSON.parse(await fs.readFile(target, 'utf8')), { state: 'replacement', text: '新值' });
+      emit('atomic.transient-lock-recovered', true, 'ok');
+    } else {
+      requireTrue(!!failed, 'atomicWriteDidNotFail');
+      requireTrue(['EPERM', 'EACCES', 'EBUSY'].includes(failed.code));
+      requireTrue(child.exitCode === null && child.signalCode === null, 'lockUnavailable');
+      emit('atomic.locked-write', true, safeCode(failed));
+    }
     assert.deepEqual(await fs.readdir(root), ['state.json']);
-    emit('atomic.locked-write', true, safeCode(failed));
   } finally {
-    child.stdin.end('\n');
+    fs.rename = rename;
+    if (!child.stdin.writableEnded) child.stdin.end('\n');
     try { const [exit, signal] = await closed; requireTrue(exit === 0 && signal === null, 'lockUnavailable'); } finally { clearTimeout(timeout); }
   }
+  if (transient) return;
   assert.deepEqual(JSON.parse(await fs.readFile(target, 'utf8')), original);
   assert.deepEqual(await fs.readdir(root), ['state.json']);
   emit('atomic.original-preserved', true, 'ok');
@@ -154,6 +180,7 @@ async function main() {
   try {
     await platform.protectPrivatePath(directory);
     await lockedAtomic(directory, platform, files);
+    await lockedAtomic(directory, platform, files, true);
     const systemRoot = Object.entries(process.env).find(([name]) => name.toLowerCase() === 'systemroot')?.[1];
     for (const parent of [process.cwd(), ...(path.isAbsolute(systemRoot ?? '') ? [path.join(systemRoot, 'Temp')] : [])]) {
       let candidate;
