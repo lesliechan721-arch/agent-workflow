@@ -17,7 +17,7 @@ aw install decision-kit -p both
 | Skill | 什么时候使用 |
 | --- | --- |
 | [`decision-shape`](skills/decision-shape/) | 检查需求整体覆盖，组织问答、原型与知识维护，交付当前共识及剩余缺口 |
-| [`decision-grill`](skills/decision-grill/) | 需要通过有依据的问答确认材料选择，一问或多轮均可 |
+| [`decision-grill`](skills/decision-grill/) | 通过持续问答展开计划或重要选择，也支持明确限定的单项访谈 |
 | [`decision-prototype`](skills/decision-prototype/) | 用早期候选、操作演示或实验校准布局、行为、状态关系及可行性 |
 | [`project-context`](skills/project-context/) | 澄清领域概念与关系，及时维护已确认词义和重要决定的理由 |
 
@@ -46,7 +46,7 @@ aw install decision-kit -p both
 ## 四个 Skill 怎么选
 
 - “检查需求有没有遗漏，建立或恢复共识并按需问答、试原型、维护知识” → `decision-shape`
-- “我需要通过问答把一个材料决定想清楚” → `decision-grill`
+- “围绕这个计划逐轮追问，检查遗漏和重要后果” → `decision-grill`
 - “用具体候选或实验校准这一处体验、行为或技术选择” → `decision-prototype`
 - “澄清项目概念、关系，或维护已确认的重要词义与决定” → `project-context`
 
@@ -56,7 +56,7 @@ aw install decision-kit -p both
 - 普通实施任务中的局部歧义不会自动进入完整决策访谈。
 - `decision-shape` 只在调用者提供路径、仓库有约定或跨会话确有价值时写入 Shape。
 - 开发过程资料默认仅在本地 `.dev-workflows/<task>/` 保存，已有位置优先。长期术语与重要决定复用项目知识位置；没有等价位置且确有内容时可采用 `CONTEXT.md` 或 `docs/adr/`。只读请求不授权写入，普通文案修改无需调用知识维护能力。
-- `decision-grill` 依据实际答复确认当前问题，保存遵循授权；综合产生新材料含义时再核对，已确认且无新增含义的回答无需机械重复确认。开放问题保持可辨。
+- `decision-grill` 根据实际答复继续展开范围内的重要分支；局部缺少证据时保留缺口，用户可随时暂停。保存遵循授权；综合产生新含义时再核对，清楚的回答无需机械重复确认。
 - 持久化原型保存问题、可重放证据和结论；只有标准网页 Review 或用户明确要求时才需要 `prototype.json`。构建和迭代默认委派一个 Builder；极小新建、局部微调或子代理不可用时由主代理完成，主代理负责必要验收。
 - `decision-prototype` 可以生成清楚标记的临时原型，并按需启动仅绑定本机的 Review 会话。页面用 tabs 展示单个大预览，可按需并排比较；用户选择总体判断后，页面才显示相关评论、受控参数或 drawer 标注。页面只有一个提交动作，同一 revision 的首个有效反馈生效。Agent 优先使用用户可交互的原生预览，脚本的 `open` 操作提供本机默认浏览器兜底；脚本技术失败后由 Agent 使用系统浏览器能力打开同一 URL，均失败则输出 URL 供用户自行打开。权限拒绝不能绕过。所有 `submitted` 回执直接包含当前 revision 已校验的完整反馈和文件路径。原型不会自动成为生产实现。
 

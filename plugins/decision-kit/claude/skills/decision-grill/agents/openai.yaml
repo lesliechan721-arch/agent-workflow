@@ -1,6 +1,6 @@
 interface:
   display_name: decision-grill
-  short_description: "在当前访谈范围内检查前提与后果，依据真实答复形成决定"
-  default_prompt: "使用 $decision-grill 对齐当前材料选择，检查必要条件与后果，依据我的实际回答形成决定。"
+  short_description: "在当前范围内逐轮展开重要分支，根据真实回答推进并确认决定"
+  default_prompt: "使用 $decision-grill 围绕当前计划或重要选择逐轮访谈，主动检查遗漏、假设与后果，根据我的回答继续追问，直到当前范围内的重要决定都有明确处理。"
 policy:
   allow_implicit_invocation: true
