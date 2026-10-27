@@ -9,8 +9,6 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { channel } from 'node:diagnostics_channel';
 import { createChildBridge, createChildChannel, invokeChildTool } from '../skills/codex-subagent-guide/scripts/runtime/adapter-channel.mjs';
-import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
-import { renderCommunicationInstructions } from '../skills/codex-subagent-guide/scripts/adapters/common.mjs';
 import { protectPrivatePath } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 
 const require = createRequire(import.meta.url);
@@ -397,22 +395,4 @@ test('send-only communication hides and rejects active receive', async (t) => {
   assert.deepEqual(responses.get(1).result.tools.map((tool) => tool.name), ['send_parent']);
   assert.equal(responses.get(2).result.isError, true);
   const exited = once(child, 'exit'); child.stdin.end(); assert.deepEqual(await exited, [0, null]);
-});
-
-// Test Value Gate: command instructions must be executable by their declared
-// shell with private paths that contain spaces and quote characters.
-test('command template generates an executable private send invocation', { skip: windows }, async (t) => {
-  const f = await fixture(t, { activeReceive: false });
-  const prompt = await renderCommunicationInstructions({ status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary', activeReceive: false }, f.bridge, { shell: 'posix' }, pathToFileURL(path.join(guideRuntimeScripts(import.meta.url), '../assets/communication-instructions.md')));
-  const invocation = /```text\n([^\n]+)\n```/.exec(prompt)?.[1];
-  assert.ok(invocation);
-  const child = spawn('/bin/sh', ['-c', invocation], { cwd: f.root, env: f.env, stdio: ['pipe', 'pipe', 'pipe'] });
-  t.after(() => child.kill());
-  let stdout = ''; let stderr = '';
-  child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
-  const exited = once(child, 'exit'); child.stdin.end('Literal message: ` $(touch escaped) 父消息');
-  assert.deepEqual(await exited, [0, null]);
-  assert.equal(stderr, ''); assert.equal(stdout, 'send_parent: submitted\n');
-  assert.deepEqual(f.messages, ['Literal message: ` $(touch escaped) 父消息']);
-  assert.equal(await fs.stat(path.join(f.root, 'escaped')).catch(() => null), null);
 });

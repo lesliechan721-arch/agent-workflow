@@ -12,7 +12,7 @@ const conflict = () => fail('communicationPermissionConflict', 'Antigravity sett
 /** Only an unambiguous literal token pair is supported without a matcher probe. */
 export function antigravityPermissionRule(command, script, platform = process.platform) {
   if (!['darwin', 'linux'].includes(platform)) fail('communicationPermissionUnsupported', 'Exact Antigravity command permissions require qualification on this platform.');
-  if (![command, script].every((value) => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && /^\/[A-Za-z0-9_./:@%+=,-]+$/.test(value))) fail('communicationPermissionUnsupported', 'This installation path requires an Antigravity token quoting qualification. Use a qualified path or explicit full-access.');
+  if (![command, script].every((value) => typeof value === 'string' && path.posix.isAbsolute(value) && path.posix.normalize(value) === value && /^\/[A-Za-z0-9_./:@%+=,-]+$/.test(value))) fail('communicationPermissionUnsupported', 'This installation path requires an Antigravity token quoting qualification. Use a qualified path or explicit full-access.');
   return `command(${command} ${script})`;
 }
 

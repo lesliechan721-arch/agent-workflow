@@ -222,26 +222,30 @@ test('communication instruction bindings reject invalid text modes and MCP combi
 // script and bridge. Quoted paths and message bytes must remain literal, and
 // the default stdin form must retain the single-hyphen message use case.
 for (const [sendTextMode, message] of [
-  [undefined, "默认 'quotes' $HOME $(printf WRONG)\n第二行"],
-  ['argument', "参数 'quotes' $HOME $(printf WRONG)\n第二行"],
+  [undefined, "默认 'quotes' $HOME $(touch expanded-command) `touch expanded-backtick`\n第二行"],
+  ['argument', "参数 'quotes' $HOME $(touch expanded-command) `touch expanded-backtick`\n第二行"],
   [undefined, '-'],
 ]) test('generated communication command preserves literal bytes with '+(sendTextMode ?? 'stdin')+' input'+(message === '-' ? ' and the hyphen sentinel' : ''), { skip: process.platform === 'win32', timeout: 10000 }, async (t) => {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-command-binding-'));
+  let bridge;
+  t.after(async () => {
+    try { await bridge?.close('completed'); }
+    finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
   await protectPrivatePath(root, 'directory');
   const installed = path.join(root, "scripts 'quotes' $literal $(not-run)");
   await fs.cp(scripts, installed, { recursive: true });
   const messages = [];
-  const bridge = await createChildBridge({
+  bridge = await createChildBridge({
     directory: path.join(root, "channel 'quotes' $literal $(not-run)"), deadlineAt: null,
     toolkit: { command: process.execPath, module: path.join(installed, 'runtime/adapter-channel.mjs'), messageScript: path.join(installed, 'message.mjs'), mcpScript: path.join(installed, 'message-mcp.mjs') },
     emitParentMessage: async (text) => { messages.push(text); },
   });
-  t.after(async () => { await bridge.close('completed'); await fs.rm(root, { recursive: true, force: true }); });
   const bindings = { shell: 'posix', ...(sendTextMode ? { sendTextMode } : {}) };
   const prompt = await renderCommunicationInstructions({ status: 'enabled', transport: 'command', passiveDelivery: 'none', activeReceive: true }, bridge, bindings, pathToFileURL(path.join(scripts, '../assets/communication-instructions.md')));
   let command = prompt.match(/\x60\x60\x60text\n([^\n]+)\n\x60\x60\x60/)[1];
   if (sendTextMode === 'argument') command = command.replace("'MESSAGE_TEXT'", "'"+message.replaceAll("'", "'\\''")+"'");
-  const child = spawn('/bin/sh', ['-c', command], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn('/bin/sh', ['-c', command], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -251,6 +255,7 @@ for (const [sendTextMode, message] of [
   assert.equal(await exit, 0, stderr);
   assert.equal(stdout, 'send_parent: submitted\n');
   assert.deepEqual(messages, [message]);
+  for (const artifact of ['expanded-command', 'expanded-backtick']) await assert.rejects(fs.access(path.join(root, artifact)), { code: 'ENOENT' });
 });
 
 test('initialization diagnostics summarize field groups within the ready frame budget', () => {

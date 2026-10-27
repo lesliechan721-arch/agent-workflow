@@ -68,8 +68,16 @@ test('Antigravity adds only the missing quoted-entry rule to an existing prefix 
 
 // Permission boundary: quoted entry forms must not authorize another program,
 // Node options before the script, shell expansion, redirects or command chains.
+// Explicit POSIX targets must use the same literal paths on every host.
 test('Antigravity quoted-entry regex accepts literal arguments only', () => {
   const node = '/opt/node.v24/bin/node', script = '/opt/aw/message.mjs';
+  for (const platform of ['darwin', 'linux']) {
+    assert.equal(antigravityPermissionRule(node, script, platform), `command(${node} ${script})`);
+    for (const invalid of ['/opt/aw/../message.mjs', '/opt//message.mjs', 'C:\\aw\\message.mjs']) {
+      assert.throws(() => antigravityPermissionRule(node, invalid, platform), { code: 'communicationPermissionUnsupported' });
+    }
+  }
+  assert.throws(() => antigravityPermissionRules(node, script, 'win32'), { code: 'communicationPermissionUnsupported' });
   const rule = antigravityPermissionRules(node, script, 'darwin')[1];
   const pattern = rule.slice('command(regex:'.length, -1);
   const matcher = new RegExp(`^(?:${pattern})$`, 'u');

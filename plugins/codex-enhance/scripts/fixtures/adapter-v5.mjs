@@ -71,15 +71,16 @@ async function fixture(t, backend = 'codex', scenario = 'success') {
   await protectPrivatePath(runtime, 'directory');
   await fs.writeFile(path.join(workspace, 'main.ts'), 'export const value = 1;\n');
   const capture = path.join(directory, 'capture.jsonl');
-  const fakePackage = path.join(bin, 'node_modules', 'aw-fake-backend');
+  const packageName = backend === 'codex' ? '@openai/codex' : backend === 'claude' ? '@anthropic-ai/claude-code' : 'aw-fake-backend';
+  const fakePackage = path.join(bin, 'node_modules', packageName);
   if (windows) {
     await fs.mkdir(fakePackage, { recursive: true });
     await fs.writeFile(path.join(fakePackage, 'package.json'), JSON.stringify({
-      name: 'aw-fake-backend', private: true, type: 'module', bin: { [backend]: 'backend.mjs' },
+      name: packageName, private: true, type: 'module', bin: { [backend]: 'backend.mjs' },
     }));
     // A standard npm shim is data for resolveSafeCommand. It is never run by
     // cmd.exe; the verified package bin is passed directly to Node.
-    const target = 'node_modules\\aw-fake-backend\\backend.mjs';
+    const target = path.win32.join('node_modules', packageName, 'backend.mjs');
     const shim = ['@ECHO off', 'GOTO start', ':find_dp0', 'SET dp0=%~dp0', 'EXIT /b', ':start', 'SETLOCAL', 'CALL :find_dp0', '', 'IF EXIST "%dp0%\\node.exe" (', '  SET "_prog=%dp0%\\node.exe"', ') ELSE (', '  SET "_prog=node"', '  SET PATHEXT=%PATHEXT:;.JS;=;%', ')', '', `endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${target}" %*`, ''].join('\r\n');
     await fs.writeFile(path.join(bin, `${backend}.cmd`), shim);
   }
@@ -144,6 +145,7 @@ input.on('line',async line=>{
    queueMicrotask(finish);
   } else if(value.method==='turn/steer') {
    steeringCount++;
+   if(scenario==='hold'){respond({turnId:active});return;}
    if(scenario==='many inputs'&&steeringCount<80){respond({turnId:active});return;}
    if(scenario==='lost response'){process.exit(0);return;}
    if(scenario==='child tool'){

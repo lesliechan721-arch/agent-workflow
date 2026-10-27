@@ -60,15 +60,25 @@ for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: requested
   const f = await fixture(t, backend, 'hold');
   const run = f.start(); run.send(f.request);
   assert.equal((await run.waitFor('ready')).initialization.capabilities.communication.status, backend === 'oracle' ? 'unsupported' : 'enabled');
-  await f.waitForCaptured((value) => backend === 'codex' ? value.input?.method === 'turn/start' : backend === 'claude' ? value.input?.type === 'user' : typeof value.input === 'string');
+  if (backend === 'codex') {
+    // Delivery waits for initial turn acceptance and a real steer response.
+    // The adapter has therefore received the turn ID before stop arrives.
+    const id = 'f'.repeat(32);
+    run.send({ type: 'message', id, text: 'Keep waiting for the requested stop.' });
+    const delivery = await run.waitFor('delivery');
+    assert.equal(delivery.id, id); assert.equal(delivery.status, 'submitted');
+  } else await f.waitForCaptured((value) => backend === 'claude' ? value.input?.type === 'user' : typeof value.input === 'string');
   run.send({ type: 'stop', reason: 'requested' });
   const result = await run.waitFor('result');
   assert.notEqual(result.state, 'completed');
   assert.equal(result.code, 'remoteStopUnconfirmed');
   assert.equal((await run.exit).code, 0);
   const values = await f.captured();
-  if (backend === 'codex') assert.equal(values.filter((value) => value.input?.method === 'turn/interrupt').length, 1);
-  else if (backend === 'claude') assert.equal(result.backendExitCode, 0);
+  if (backend === 'codex') {
+    assert.equal(values.filter((value) => value.input?.method === 'turn/start').length, 1);
+    assert.equal(values.filter((value) => value.input?.method === 'turn/steer').length, 1);
+    assert.equal(values.filter((value) => value.input?.method === 'turn/interrupt').length, 1);
+  } else if (backend === 'claude') assert.equal(result.backendExitCode, 0);
   else if (!windows) assert.equal(values.filter((value) => value.signal === 'SIGINT').length, 1);
 });
 

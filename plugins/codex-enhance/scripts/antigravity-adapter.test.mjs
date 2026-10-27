@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { PassThrough } from 'node:stream';
-import { createChildBridge, invokeChildTool } from '../skills/codex-subagent-guide/scripts/runtime/adapter-channel.mjs';
+import { createChildBridge, createChildChannel, invokeChildTool } from '../skills/codex-subagent-guide/scripts/runtime/adapter-channel.mjs';
 import { executeAntigravity } from '../skills/codex-subagent-guide/scripts/adapters/antigravity-v5.mjs';
 import { deferred } from '../skills/codex-subagent-guide/scripts/adapters/common.mjs';
 import { antigravityArguments, checkAntigravityArguments } from '../skills/codex-subagent-guide/scripts/adapters/antigravity-arguments.mjs';
@@ -275,15 +275,14 @@ test('Antigravity: late auto fallback retains generation evidence and sends no r
   assert.equal((await f.exit).code, 0);
 });
 
-// The real shared bridge and private tool IPC run here; only the native agy
-// event stream is controlled. This proves one pending write and one shared
-// receive queue without starting an external model.
-async function communicationFixture(t, { secondFails = false, staleSecondStep = false } = {}) {
+// Test Value Gate: the real adapter and channel protect turn acceptance,
+// shared receive allocation and terminal failures with a controlled agy stream.
+// One separate file-bridge case covers the native transport and scanner wiring.
+async function communicationFixture(t, { secondFails = false, staleSecondStep = false, fileBridge = false } = {}) {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-agy-turns-'));
-  await protectPrivatePath(root, 'directory');
   const controller = new AbortController(), stopped = deferred(), done = deferred(), initial = deferred(), second = deferred();
   const stdout = new PassThrough(), inputs = [], messages = [];
-  let exited = false, exitCode = null, step = -1, cleanupCount = 0;
+  let exited = false, exitCode = null, step = -1, scheduler, running;
   const emit = (value) => stdout.write(`${JSON.stringify(value)}\n`);
   const backend = {
     child: { stdout }, done: done.promise,
@@ -295,7 +294,7 @@ async function communicationFixture(t, { secondFails = false, staleSecondStep = 
       (index === 1 ? initial : second).resolve();
     },
     async end() { exited = true; exitCode = 0; done.resolve(); },
-    async cleanup() { cleanupCount++; exited = true; exitCode = 0; done.resolve(); return true; },
+    async cleanup() { exited = true; exitCode = 0; done.resolve(); return true; },
   };
   const context = {
     request: { args: [], execution: {}, permissionMode: 'full-access', run: { deadlineAt: null }, runtime: { directory: root } },
@@ -303,32 +302,72 @@ async function communicationFixture(t, { secondFails = false, staleSecondStep = 
     signal: controller.signal, generationStarted: false, stopped, prompt: 'Initial task', diagnostics: [],
     abort(code) { this.errorCode = code; controller.abort(); void this.onStop?.(); },
     async prepareCommunication({ submitInput, canSubmitInput }) {
-      this.bridge = await createChildBridge({
-        directory: path.join(root, 'communication'), deadlineAt: null,
-        toolkit: { command: process.execPath, module: path.join(scripts, 'runtime/adapter-channel.mjs'), messageScript: path.join(scripts, 'message.mjs'), mcpScript: path.join(scripts, 'message-mcp.mjs') },
-        emitParentMessage: async (text) => { messages.push(text); }, submitInput, canSubmitInput,
-      });
+      const options = { emitParentMessage: async (text) => { messages.push(text); }, submitInput, canSubmitInput };
+      if (fileBridge) {
+        await protectPrivatePath(root, 'directory');
+        this.bridge = await createChildBridge({
+          directory: path.join(root, 'communication'), deadlineAt: null,
+          toolkit: { command: process.execPath, module: path.join(scripts, 'runtime/adapter-channel.mjs'), messageScript: path.join(scripts, 'message.mjs'), mcpScript: path.join(scripts, 'message-mcp.mjs') },
+          ...options,
+        });
+      } else {
+        this.bridge = createChildChannel(options);
+        // A channel caller supplies wake-ups; the file bridge owns its scanner.
+        scheduler = setInterval(() => this.bridge.schedule(), 10);
+      }
       return this.bridge;
     },
     async ready() {},
-    async beginClosing(reason) { await this.bridge.close(reason); },
+    async beginClosing(reason) { clearInterval(scheduler); await this.bridge.close(reason); },
     async spawn() {
       setImmediate(() => emit({ event: 'init', conversation_id: 'same-conversation', init: { tools: ['run_command'], permission_mode: 'always-proceed' } }));
       return backend;
     },
   };
-  const running = executeAntigravity(context);
-  t.after(async () => { if (!exited) context.abort('testCleanup'); await context.bridge?.close('cancelled'); await running; await fs.rm(root, { recursive: true, force: true }); });
-  await initial.promise;
-  const tool = (operation, options = {}) => invokeChildTool({ bindingFile: context.bridge.script.args[2], operation, ...options });
+  t.after(async () => {
+    clearInterval(scheduler);
+    controller.abort();
+    try {
+      await backend.cleanup();
+      await running;
+    } finally {
+      try { await context.bridge?.close('cancelled'); }
+      finally { stdout.destroy(); await fs.rm(root, { recursive: true, force: true }); }
+    }
+  });
+  running = executeAntigravity(context);
+  await Promise.race([initial.promise, running.then(() => { throw new Error('The adapter ended before the initial input.'); })]);
+  const tool = (operation, options = {}) => fileBridge
+    ? invokeChildTool({ bindingFile: context.bridge.script.args[2], operation, signal: controller.signal, ...options })
+    : context.bridge.handleRequest({ operation, ...options });
   return {
-    context, running, inputs, messages, initial, second, tool, cleanupCount: () => cleanupCount, backendExited: () => exited,
+    context, running, inputs, messages, second, tool, root, backendExited: () => exited,
     finish(number, overrides = {}) {
       emit({ event: 'step_update', step_update: { conversation_id: 'same-conversation', step_index: ++step, step_type: 'agent_response', state: 'DONE' } });
       emit({ event: 'result', result: { conversation_id: 'same-conversation', status: number === 2 && secondFails ? 'ERROR' : 'SUCCESS', response: number === 1 ? 'First turn answer' : secondFails ? 'Second turn failed' : 'Last confirmed answer\n完整结果', num_turns: number, ...overrides } });
     },
   };
 }
+
+// Test Value Gate: actual file scans must retain input while the adapter is
+// active, then submit it when the confirmed native turn makes the backend ready.
+test('Antigravity file bridge schedules queued input only at a confirmed turn boundary', { timeout: windows ? 90000 : 10000 }, async (t) => {
+  const f = await communicationFixture(t, { fileBridge: true });
+  const delivery = f.context.bridge.acceptInput({ id: 'a'.repeat(32), text: 'Automatic follow-up' });
+  assert.equal((await f.tool('send', { text: 'Child question during the first turn' })).outcome, 'submitted');
+  assert.equal(f.inputs.length, 1);
+  assert.equal(f.context.bridge.hasPendingInput(), true);
+  f.finish(1);
+  await f.second.promise;
+  assert.deepEqual(await delivery, { status: 'submitted' });
+  assert.equal(f.inputs.length, 2);
+  assert.match(f.inputs[1].message.content, /Automatic follow-up/);
+  f.finish(2);
+  assert.equal((await f.running).state, 'completed');
+  assert.deepEqual(f.messages, ['Child question during the first turn']);
+  assert.equal(f.backendExited(), true);
+  await assert.rejects(fs.access(path.join(f.root, 'communication')), { code: 'ENOENT' });
+});
 
 for (const secondFails of [false, true]) test(`Antigravity communication preserves active receive and automatic second turn${secondFails ? ' failure' : ''}`, { timeout: 10000 }, async (t) => {
   const f = await communicationFixture(t, { secondFails });

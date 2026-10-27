@@ -87,6 +87,7 @@ async function start(frame) {
   const observed = { request: frame, pid: process.pid, argv: process.argv.slice(2), cwd: process.cwd(), environment };
   if (scenario.initializationFailure) {
     await fs.writeFile(root + '/observed.json', JSON.stringify(observed));
+    if (scenario.readyGate) { await phase('readyGateWaiting'); await signal('ready'); }
     await emit({ type: 'result', state: 'failed', generationStarted: false, backendExitCode: null,
       text: '', code: 'fixtureInitializationFailed', message: 'Fixture initialization failed.', ...(scenario.initialization ? { initialization: scenario.initialization } : {}), ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
     process.exit(0);
