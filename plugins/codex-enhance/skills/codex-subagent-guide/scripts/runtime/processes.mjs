@@ -53,7 +53,7 @@ export async function processTable() {
       '  }',
       '})',
       'ConvertTo-Json -InputObject $rows -Compress',
-    ].join('\n'));
+    ].join('\n'), {}, 'processTable');
     if (!Array.isArray(rows) || rows.some((row) => !Number.isSafeInteger(row.pid) || !Number.isSafeInteger(row.ppid) || !/^\d+$/.test(row.started)) || !rows.some((row) => row.pid === process.pid)) fail('processObservationFailed', 'The native Windows process observer cannot verify the current process.');
     return rows;
   }
@@ -74,7 +74,7 @@ export async function processIdentity(pid) {
     '  $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
     "  if ($owner.ReturnValue -ne 0 -or $owner.Sid -ne $sid) { throw 'The process does not belong to the current user.' }",
     '  [PSCustomObject]@{ pid = [int]$item.ProcessId; ppid = [int]$item.ParentProcessId; pgid = $null; started = $item.CreationDate.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress',
-  ].join('\n'), { pid });
+  ].join('\n'), { pid }, 'processIdentity');
   let stdout;
   try { ({ stdout } = await observePosix(['-p', `${process.pid},${pid}`, '-o', 'pid=,ppid=,pgid=,lstart='], 65536)); }
   catch { fail('processObservationFailed', 'The process start identity could not be observed.'); }
@@ -205,7 +205,7 @@ async function stopWindowsProcess(identity) {
     '  if (!$native.HasExited) { $native.Kill() }',
     '  $true | ConvertTo-Json -Compress',
     '} finally { if ($null -ne $native) { $native.Dispose() } }',
-  ].join('\n'), { pid: identity.pid, started: identity.started, sid: identity.owner.sid });
+  ].join('\n'), { pid: identity.pid, started: identity.started, sid: identity.owner.sid }, 'processStop');
 }
 
 export async function stopOwnedTree(rootPid, known, token) {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fixture, eventually, terminalPattern, windows, testTimeoutMs, blocks, field, bounded, successful } from './fixtures/subagent-integration.mjs';
+import { fixture, eventually, testTimeoutMs, blocks, field, bounded, successful } from './fixtures/subagent-integration.mjs';
 
 // Test Value Gate: result must select the complete report, consume all unread
 // notifications, preserve duplicate bodies and retain only the fixed final result.
@@ -46,24 +46,6 @@ test('result consumes every unread message once and only the fixed final result 
   assert.equal(await fs.readFile(f.generations, 'utf8'), 'generation\n');
 });
 
-// Test Value Gate: referenced environment values must remain redacted in final
-// output and diagnostics, including their JSON-escaped representation.
-test('referenced environment secrets stay redacted in actual parent output', { timeout: testTimeoutMs }, async (t) => {
-  const f = await fixture(t);
-  f.snapshot.effectiveValues.subagentCommands[0].envFrom = { SERVICE_DATA: 'SOURCE' }; await f.save();
-  const secret = 'fixture\n"quoted"\\path.[x]+';
-  const started = await f.start({ secretOutput: true, state: 'failed' }, { env: { SOURCE: secret } });
-  await f.initialized(started); await started.finish();
-  const responses = await f.waitTerminal(started.run);
-  const result = await f.command(['result', '--run', started.run]);
-  successful(result, 'result');
-  for (const output of [started, ...responses, result].flatMap((response) => [response.stdout, response.stderr])) {
-    assert.equal(output.includes(secret), false); assert.equal(output.includes(JSON.stringify(secret).slice(1, -1)), false);
-  }
-  assert.deepEqual(blocks(result.stdout, 'FINAL'), ['{"serviceData":"[redacted]"}']);
-  assert.equal((await started.observed()).environment.SERVICE_DATA, secret);
-});
-
 // Test Value Gate: adapter scratch must be removed after its processes stop while
 // unread process messages and the fixed final remain available to their consumer.
 test('stopped adapter scratch is deleted while unread messages and final remain readable', { timeout: testTimeoutMs }, async (t) => {
@@ -96,60 +78,6 @@ test('stopped adapter scratch is deleted while unread messages and final remain 
   successful(reread, 'result'); assert.deepEqual(blocks(reread.stdout, 'MESSAGE'), []);
   assert.deepEqual(blocks(reread.stdout, 'FINAL'), [finalText]);
   assert.equal((await f.command(['wait', '--run', started.run])).stdout, 'wait: settled\n');
-});
-
-// Test Value Gate: pending is not false; late ready must survive fast closing and
-// be delivered with the first subsequent state or terminal observation.
-test('late ready capability survives terminal snapshot merging', { timeout: windows ? 120000 : 35000 }, async (t) => {
-  const f = await fixture(t, 'workspace', { diagnostics: true });
-  const clock = await f.clock(['start'], { stepMs: 1000 });
-  const finalText = 'Late capability final.\n';
-  const [forWait, forResult] = await Promise.all([
-    f.start({ communication: false, readyGate: true, finishImmediately: true }, { env: clock.environment }),
-    f.start({ communication: true, readyGate: true, finishImmediately: true, finalText }, { env: clock.environment }),
-  ]);
-  for (const [index, started] of [forWait, forResult].entries()) {
-    const diagnostic = JSON.stringify({ phase: 'lateReadyStart', case: index === 0 ? 'communicationFalse' : 'communicationTrue',
-      code: started.code, elapsedMs: started.elapsedMs, stdout: started.stdout, stderr: started.stderr });
-    if (process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1') t.diagnostic(`AW_SUBAGENT_COMMUNICATION_TEST ${diagnostic}`);
-    assert.equal(started.code, 1, diagnostic); assert.match(started.stdout, /^start: notReady\n/, diagnostic);
-    assert.equal(field(started.stdout, 'state'), 'starting'); assert.equal(field(started.stdout, 'communication'), 'pending');
-    assert.equal(field(started.stdout, 'code'), 'startupNotReady');
-  }
-  const observations = await clock.acknowledgements();
-  assert.equal(observations.length, 2);
-  assert.ok(observations.every((value) => value.role === 'start' && value.now - clock.origin === 10000), JSON.stringify(observations));
-  f.phase('initializationWindowSimulated', { simulatedElapsedMs: 10000, runs: 2 });
-  await Promise.all([forWait.releaseReady(), forResult.releaseReady()]);
-  await Promise.all([forWait.finished(), forResult.finished()]);
-  const responses = await f.waitTerminal(forWait.run);
-  assert.ok(responses.some((response) => field(response.stdout, 'communication') === 'false'));
-  const result = await f.command(['result', '--run', forWait.run]);
-  successful(result, 'result'); assert.equal(field(result.stdout, 'communication'), undefined);
-  assert.deepEqual(blocks(result.stdout, 'FINAL'), ['Complete final answer.']);
-  const resultWithCapability = await eventually(async () => {
-    const response = await f.command(['result', '--run', forResult.run]);
-    return field(response.stdout, 'code') !== 'resultNotReady' && response;
-  }, 'late ready fixed final');
-  successful(resultWithCapability, 'result'); assert.equal(field(resultWithCapability.stdout, 'communication'), 'true');
-  assert.deepEqual(blocks(resultWithCapability.stdout, 'FINAL'), [finalText]);
-  const reread = await f.command(['result', '--run', forResult.run]);
-  successful(reread, 'result'); assert.equal(field(reread.stdout, 'communication'), undefined);
-  assert.equal((await f.command(['wait', '--run', forResult.run])).stdout, 'wait: settled\n');
-});
-
-// Test Value Gate: failed initialization must preserve unknown capability and a
-// readable failure, rather than treating missing ready as communication=false.
-test('initialization failure has pending capability and a readable failed final', { timeout: testTimeoutMs }, async (t) => {
-  const f = await fixture(t);
-  const started = await f.start({ initializationFailure: true });
-  assert.equal(started.code, 1); assert.equal(field(started.stdout, 'communication'), 'pending');
-  const terminal = (await f.waitTerminal(started.run)).find((response) => terminalPattern.test(response.stdout));
-  assert.equal(field(terminal.stdout, 'state'), 'failed'); assert.equal(field(terminal.stdout, 'communication'), 'pending');
-  assert.equal(field(terminal.stdout, 'generation_started'), 'false');
-  const result = await f.command(['result', '--run', started.run]);
-  successful(result, 'result'); assert.equal(field(result.stdout, 'text_status'), 'missing');
-  assert.deepEqual(blocks(result.stdout, 'FINAL'), ['']);
 });
 
 // Test Value Gate: an OS-visible broken output pipe must leave unread messages

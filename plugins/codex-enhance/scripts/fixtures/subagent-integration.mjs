@@ -71,6 +71,7 @@ async function finish(stopped = false) {
   if (scenario.secretOutput) process.stderr.write(finalText);
   await emit({ type: 'result', state, generationStarted: ready, backendExitCode,
     text: stopped ? '' : finalText,
+    ...(scenario.resultDiagnostics ? { diagnostics: scenario.resultDiagnostics } : {}),
     ...(state === 'completed' ? {} : { code: stopped ? 'fixtureStopped' : 'fixtureFailed' }),
     ...(stopped ? { remoteStopConfirmed: true } : {}) });
   await fs.writeFile(root + '/finished.json', JSON.stringify({ backendExitCode }));
@@ -86,8 +87,9 @@ async function start(frame) {
   const observed = { request: frame, pid: process.pid, argv: process.argv.slice(2), cwd: process.cwd(), environment };
   if (scenario.initializationFailure) {
     await fs.writeFile(root + '/observed.json', JSON.stringify(observed));
+    if (scenario.readyGate) { await phase('readyGateWaiting'); await signal('ready'); }
     await emit({ type: 'result', state: 'failed', generationStarted: false, backendExitCode: null,
-      text: '', code: 'fixtureInitializationFailed', message: 'Fixture initialization failed.' });
+      text: '', code: 'fixtureInitializationFailed', message: 'Fixture initialization failed.', ...(scenario.initialization ? { initialization: scenario.initialization } : {}), ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
     process.exit(0);
   }
   if (scenario.scratchText) {
@@ -104,7 +106,7 @@ async function start(frame) {
   if (scenario.readyGate) { await phase('readyGateWaiting'); await signal('ready'); }
   if (scenario.readyDelay) await new Promise((resolve) => setTimeout(resolve, scenario.readyDelay));
   if (finishing) return;
-  await emit({ type: 'ready', communicationSupported: scenario.communication ?? true });
+  await emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: !frame.communication ? { status: 'disabled' } : scenario.communication === false || frame.mode === 'bundle' ? { status: 'unsupported' } : scenario.descriptor ?? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } } }, ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
   ready = true;
   await phase('readySent');
   for (const text of scenario.messages ?? []) await emit({ type: 'message', text });
@@ -170,6 +172,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
   const generations = path.join(directory, 'generations.log');
   await Promise.all([fs.mkdir(temporaryRoot), fs.mkdir(workspace), fs.mkdir(installed)]);
   await fs.cp(sourceScripts, path.join(installed, 'scripts'), { recursive: true });
+  await fs.cp(path.join(sourceScripts, '../assets'), path.join(installed, 'assets'), { recursive: true });
   await fs.access(path.join(installed, 'scripts', path.relative(sourceScripts, sourceWorker)));
   const adapter = path.join(directory, 'fake-adapter.mjs');
   await fs.writeFile(adapter, fakeAdapter);

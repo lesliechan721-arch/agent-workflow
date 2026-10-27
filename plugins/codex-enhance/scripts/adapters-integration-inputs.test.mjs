@@ -6,7 +6,7 @@ import os from 'node:os';
 import { PassThrough } from 'node:stream';
 import { protectPrivatePath } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 import { createChildBridge, invokeChildTool } from '../skills/codex-subagent-guide/scripts/runtime/adapter-channel.mjs';
-import { executeClaude } from '../skills/codex-subagent-guide/scripts/adapters/claude-code-v5.mjs';
+import { executeClaude, negotiateClaudeCommunication, claudeArguments } from '../skills/codex-subagent-guide/scripts/adapters/claude-code-v5.mjs';
 import { deferred } from '../skills/codex-subagent-guide/scripts/adapters/common.mjs';
 import { fixture, windows, supported, testTimeoutMs, answer, scripts, sourceEntries } from './fixtures/adapter-v5.mjs';
 
@@ -16,7 +16,7 @@ for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: installed
   f.request.args = backend === 'codex' ? ['-c', 'shell_environment_policy.inherit="all"', '--sandbox', 'workspace-write', '--ask-for-approval', 'on-request'] : backend === 'claude' ? ['--permission-mode', 'default', '--settings', '{"env":{"SETTING":"value"}}'] : ['--engine', 'api'];
   if (backend === 'oracle' && !windows) f.request.fileSelectors = ['main.ts', 'main.ts'];
   const run = f.start(); run.send(f.request);
-  assert.equal((await run.waitFor('ready')).communicationSupported, backend !== 'oracle');
+  assert.equal((await run.waitFor('ready')).initialization.capabilities.communication.status, backend === 'oracle' ? 'unsupported' : 'enabled');
   const result = await run.waitFor('result');
   const closed = await run.exit;
   assert.equal(closed.code, 0, closed.diagnostic);
@@ -34,10 +34,10 @@ for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: installed
   assert.equal(captured[0].environment.OPENAI_API_KEY, 'synthetic-test-key');
   if (backend === 'codex') {
     const start = captured.find((value) => value.input?.method === 'thread/start').input.params;
-    assert.equal(start.model, 'chosen-model'); assert.equal(start.sandbox, 'workspace-write'); assert.equal(start.approvalPolicy, 'on-request');
+    assert.equal(start.config.model, 'chosen-model'); assert.equal(start.config.sandbox_mode, 'workspace-write'); assert.equal(start.config.approval_policy, 'on-request');
     const turn = captured.find((value) => value.input?.method === 'turn/start').input.params;
     assert.equal(turn.effort, 'high'); assert.ok(turn.input[0].text.startsWith(f.request.prompt));
-    assert.ok(captured[0].args.includes('shell_environment_policy.inherit="all"'));
+    assert.equal(start.config.shell_environment_policy.inherit, 'all');
   } else if (backend === 'claude') {
     const prompt = captured.find((value) => value.input?.type === 'user').input.message.content[0].text;
     assert.ok(prompt.startsWith(f.request.prompt)); assert.ok(captured[0].args.includes('--permission-mode')); assert.ok(captured[0].args.includes('--mcp-config'));
@@ -88,12 +88,14 @@ for (const order of ['parent first', 'receive first']) test(`Claude: ${order} re
     async end() { this.exited = true; stdout.end(); done.resolve(); },
   };
   const context = {
+    executable: { command: 'claude', args: [] },
+    prompt: 'Ask the parent for a value.',
     request: { args: [], execution: {}, prompt: 'Ask the parent for a value.', run: { id: 'e'.repeat(32) } },
     signal: controller.signal, stopped,
     abort(code) { this.errorCode = code; controller.abort(); stopped.resolve(); },
     async ready() {},
     async beginClosing(reason) { await this.bridge.close(reason); },
-    async createBridge(submitInput, canSubmitInput) {
+    async prepareCommunication({ submitInput, canSubmitInput }) {
       this.bridge = await createChildBridge({
         directory: path.join(root, 'communication'), deadlineAt: null,
         toolkit: { module: path.join(scripts, 'runtime/adapter-channel.mjs'), command: process.execPath, messageScript: sourceEntries.message, mcpScript: sourceEntries.mcp },
@@ -136,4 +138,99 @@ test('Codex: more than 64 parent messages retain each delivery without replay', 
   assert.equal((await run.waitFor('result')).state, 'completed'); await run.exit;
   assert.equal(run.frames.filter((frame) => frame.type === 'delivery' && frame.status === 'submitted').length, 80);
   const values = await f.captured(); assert.equal(values.filter((value) => value.input?.method === 'turn/steer').length, 80);
+});
+
+// Test Value Gate: a disabled run must reach the real adapter process and backend
+// with the exact caller prompt and no AW bridge directory or tool configuration.
+for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: communication disabled preserves the ordinary task`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t, backend);
+  f.request.communication = false;
+  const run = f.start(); run.send(f.request);
+  assert.deepEqual((await run.waitFor('ready')).initialization.capabilities.communication, { status: 'disabled' });
+  const result = await run.waitFor('result');
+  assert.equal(result.state, 'completed', JSON.stringify(result));
+  assert.equal((await run.exit).code, 0);
+  const captured = await f.captured();
+  assert.equal(captured[0].communicationDirectory, false);
+  assert.equal(captured[0].args.some((value) => value === '--mcp-config' || value.includes('aw_parent_')), false);
+  const first = captured.find((value) => backend === 'codex' ? value.input?.method === 'turn/start' : backend === 'claude' ? value.input?.type === 'user' : typeof value.input === 'string');
+  const prompt = backend === 'codex' ? first.input.params.input[0].text : backend === 'claude' ? first.input.message.content[0].text : first.input;
+  assert.equal(prompt, f.request.prompt);
+});
+
+// Test Value Gate: the public negotiation method must apply documented whole
+// tool-name deny matching and parse only the actual restriction option values.
+test('Claude: explicit deny rules match required MCP names without guessing other permissions', async () => {
+  const id = 'f'.repeat(32); const server = `mcp__aw_parent_${id}`;
+  const send = `${server}__send_parent`; const receive = `${server}__receive_parent`;
+  const request = (args) => ({ args, execution: {}, run: { id }, workspace: process.cwd() });
+  for (const args of [
+    ['--disallowedTools', send], ['--disallowed-tools', receive],
+    [`--disallowedTools=${server}`], ['--disallowed-tools', `${server}__*`],
+    ['--disallowedTools', 'mcp__*'], ['--disallowedTools', '*'],
+    ['--disallowedTools', 'mcp__aw_parent_*__send_parent'],
+    ['--disallowedTools', `Read,${send},Bash(git status)`],
+    ['--disallowed-tools', `Read ${receive} Bash(git status)`],
+    ['--disallowedTools', 'Read', receive, 'Bash(git status)'],
+    ['--disallowedTools=Read', '--disallowed-tools', receive],
+  ]) {
+    const value = request(args); claudeArguments(value);
+    await assert.rejects(negotiateClaudeCommunication({ request: value }), { code: 'communicationToolDenied' });
+  }
+  for (const args of [
+    ['--disallowedTools', 'mcp__other_server__*'], ['--disallowedTools', `${send}_extra`],
+    ['--disallowedTools', `Bash(echo ${send})`], ['--disallowedTools', `${send}(text:one blocked value)`],
+    ['--allowedTools', 'Read'], ['--tools', ''], ['--append-system-prompt', `--disallowedTools ${send}`],
+  ]) {
+    const value = request(args); claudeArguments(value);
+    assert.equal((await negotiateClaudeCommunication({ request: value })).supported, true);
+  }
+});
+
+// Test Value Gate: real adapterMain must reject a known deny before backend or
+// model input, while communication=false passes the original policy unchanged.
+for (const source of ['argv', 'inline settings', 'settings file']) test(`Claude: ${source} denial fails before submission and remains valid with communication disabled`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t, 'claude');
+  const rule = `mcp__aw_parent_${f.request.run.id}__*`;
+  const settings = JSON.stringify({ permissions: { deny: [rule] }, env: { PRIVATE_VALUE: 'SYNTHETIC_VALUE_NEVER_REPORT' } });
+  if (source === 'argv') f.request.args = ['--disallowedTools', `Read,${rule}`];
+  else if (source === 'inline settings') f.request.args = [`--settings=${settings}`];
+  else {
+    await fs.writeFile(path.join(f.workspace, 'explicit settings.json'), settings);
+    f.request.args = ['--settings', 'explicit settings.json'];
+  }
+  const original = [...f.request.args];
+  const denied = f.start(); denied.send(f.request);
+  const result = await denied.waitFor('result');
+  assert.equal(result.state, 'failed'); assert.equal(result.generationStarted, false);
+  assert.equal(result.code, 'communicationToolDenied');
+  assert.equal(JSON.stringify(result).includes('SYNTHETIC_VALUE_NEVER_REPORT'), false);
+  assert.equal(denied.frames.some((frame) => frame.type === 'ready'), false);
+  assert.equal((await denied.exit).code, 0);
+  await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+  await assert.rejects(fs.access(path.join(f.request.runtime.directory, 'communication')), { code: 'ENOENT' });
+  f.request.communication = false;
+  const ordinary = f.start(); ordinary.send(f.request);
+  assert.deepEqual((await ordinary.waitFor('ready')).initialization.capabilities.communication, { status: 'disabled' });
+  assert.equal((await ordinary.waitFor('result')).state, 'completed');
+  assert.equal((await ordinary.exit).code, 0);
+  const captured = await f.captured();
+  assert.deepEqual(captured[0].args.slice(-original.length), original);
+});
+
+// Test Value Gate: a valid but foreign backend configuration must not silently
+// start a task with different settings. Check the actual adapter JSONL boundary.
+for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: rejects misplaced Codex configuration before negotiation`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t, backend);
+  if (backend === 'codex') delete f.request.codex;
+  else f.request.codex = { cliSource: 'app', bypassHookTrust: true, profile: 'unrelated' };
+  const run = f.start(); run.send(f.request);
+  const result = await run.waitFor('result');
+  assert.equal(result.state, 'failed');
+  assert.equal(result.code, 'protocolInvalid');
+  assert.equal(result.generationStarted, false);
+  assert.equal(result.initialization, undefined);
+  assert.equal(run.frames.some((frame) => frame.type === 'ready'), false);
+  await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+  assert.equal((await run.exit).code, 0);
 });

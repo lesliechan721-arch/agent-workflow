@@ -30,9 +30,20 @@ node scripts/subagent.mjs start --executor "<key>" --instructions-file "<instruc
 
 后续命令的 `--run` 使用启动回执中的句柄，不能用显示名称代替。
 
-## 识别回执：状态与通信能力
+## 识别回执：环境、状态与通信能力
 
-是否支持通信，以回执中的 `communication` 字段为准。`pending` 表示能力尚未确定，不能认为不支持通信。
+`environment` 为 pending / available / unavailable；pending 表示尚未确定。unavailable 时按 `environment_code` 修复入口或配置。
+
+是否支持通信，以本次回执为准。`communication` 为 pending / true / false；pending 表示尚未确定，不能认为不支持。关闭通讯仍可等待结果或停止任务。
+
+| 字段 | 含义 |
+| --- | --- |
+| communication_status | enabled 时可发送；disabled 表示配置关闭，unsupported 表示无可用双向能力，后两者对应 communication=false。 |
+| communication_transport | 子侧接口为 mcp 或 command；父侧仍使用下述统一命令。 |
+| communication_passive_delivery | in-turn：父输入可进入当前轮；turn-boundary：当前轮结束后进入；none：不自动输入。 |
+| communication_active_receive | 子侧是否能主动等待父侧回复。 |
+
+环境、能力或诊断未随 `start` 返回时，从后续 `wait/result` 取得。初始化失败时环境可能已确定，而通信仍为 pending。按 `DIAGNOSTIC` 的 code、字段和原因判断配置忽略、错误或 hook 信任影响；诊断可随 `result` 重读，不能仅凭任务成功就忽略它们。
 
 | 观察到的状态 | 含义与后续动作 |
 | --- | --- |

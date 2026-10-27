@@ -86,7 +86,7 @@ async function fixture(t, options = {}) {
   await protectPrivatePath(root, 'directory');
   let bridge;
   t.after(async () => { try { await bridge?.close('completed'); } finally { await fs.rm(root, { recursive: true, force: true }); } });
-  const installed = path.join(root, 'moved install', 'scripts');
+  const installed = path.join(root, "moved ' install", 'scripts');
   await fs.mkdir(path.join(installed, 'runtime'), { recursive: true });
   await fs.mkdir(path.join(installed, 'file-selection'));
   for (const name of ['runtime/adapter-channel.mjs', 'runtime/contracts.mjs', 'runtime/files.mjs', 'runtime/platform.mjs', 'file-selection/contracts.mjs']) await fs.copyFile(path.join(scripts, name), path.join(installed, name));
@@ -370,4 +370,29 @@ test('generated MCP process supports concurrent receive/send and rejects extra t
   const exited = once(child, 'exit'); child.stdin.end();
   assert.deepEqual(await exited, [0, null]);
   assert.equal(diagnostics, '');
+});
+
+// Test Value Gate: a declared send-only channel must expose no receive MCP tool,
+// reject receive through the actual command entry, and still allow child sends.
+test('send-only communication hides and rejects active receive', async (t) => {
+  const f = await fixture(t, { activeReceive: false, submitInput: async () => ({ status: 'submitted' }) });
+  const received = await f.execute(['receive', '--timeout-ms', '0']);
+  assert.equal(received.code, 1); assert.match(received.stdout, /^code: receiveUnsupported$/m);
+  const sent = await f.execute(['send', '--text', 'A question before the run closes.']);
+  assert.equal(sent.code, 0); assert.deepEqual(f.messages, ['A question before the run closes.']);
+  const child = spawn(f.bridge.mcpServer.command, f.bridge.mcpServer.args, { shell: false, cwd: f.root, env: f.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => child.kill());
+  const responses = new Map(); let buffer = '';
+  child.stdout.setEncoding('utf8'); child.stdout.on('data', (data) => {
+    buffer += data; let newline;
+    while ((newline = buffer.indexOf('\n')) >= 0) { const response = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1); responses.set(response.id, response); }
+  });
+  for (const frame of [
+    { id: 1, method: 'tools/list' },
+    { id: 2, method: 'tools/call', params: { name: 'receive_parent', arguments: {} } },
+  ]) child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...frame })}\n`);
+  await until(() => responses.size === 2, windows ? 10000 : 3000);
+  assert.deepEqual(responses.get(1).result.tools.map((tool) => tool.name), ['send_parent']);
+  assert.equal(responses.get(2).result.isError, true);
+  const exited = once(child, 'exit'); child.stdin.end(); assert.deepEqual(await exited, [0, null]);
 });

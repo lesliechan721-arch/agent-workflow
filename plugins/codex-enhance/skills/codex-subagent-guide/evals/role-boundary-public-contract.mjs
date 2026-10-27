@@ -74,7 +74,7 @@ lines.once('line',async(line)=>{
 const request=JSON.parse(line);
 await appendFile(${JSON.stringify(capture)},JSON.stringify({request,environmentValue:process.env.FIXTURE_TARGET})+'\\n');
 const emit=(event)=>process.stdout.write(JSON.stringify({protocolVersion:5,...event})+'\\n');
-emit({type:'ready',communicationSupported:false});
+emit({type:'ready',communication:{status:'unsupported'}});
 emit({type:'closing',reason:'completed'});
 emit({type:'result',state:'completed',generationStarted:true,backendExitCode:0,text:'# Local fixture result\\n\\nThe public v5 contract reached one local fake Adapter.\\n'});
 process.exit(0);

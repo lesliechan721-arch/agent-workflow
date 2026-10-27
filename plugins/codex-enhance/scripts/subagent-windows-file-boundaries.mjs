@@ -7,53 +7,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
+import { qualificationAdapter, waitForCommunication, field } from './fixtures/windows-qualification.mjs';
 
 // Explicit fake-only qualification. Product source is copied unchanged.
-const emit = (phase, pass, code) => process.stdout.write(`AW_SUBAGENT_WINDOWS_QUALIFICATION ${JSON.stringify({ phase, pass, code })}\n`);
+const emit = (phase, pass, code, details = {}) => process.stdout.write(`AW_SUBAGENT_WINDOWS_QUALIFICATION ${JSON.stringify({ phase, pass, code, ...details })}\n`);
 const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const source = guideRuntimeScripts(import.meta.url);
-const safeCodes = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOENT', 'ETIMEDOUT', 'platformOperationFailed', 'qualificationFailed', 'differentVolumeUnavailable', 'commandFailed', 'commandTimeout', 'protocolMismatch', 'treeStopUnconfirmed', 'lockUnavailable', 'atomicWriteDidNotFail']);
+const safeCodes = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOENT', 'ETIMEDOUT', 'platformOperationFailed', 'qualificationFailed', 'differentVolumeUnavailable', 'commandFailed', 'commandTimeout', 'protocolMismatch', 'treeStopUnconfirmed', 'lockUnavailable', 'atomicWriteDidNotFail', 'readinessFailed']);
 const safeCode = (error) => safeCodes.has(error?.code) ? error.code : 'qualificationFailed';
 function fail(code) { throw Object.assign(new Error(code), { code }); }
 function requireTrue(value, code = 'protocolMismatch') { if (!value) fail(code); }
-function field(text, key) { return text.match(new RegExp(`^${key}: (.*)$`, 'm'))?.[1]; }
 function blocks(text, kind) { return [...text.matchAll(/^BEGIN_(MESSAGE|FINAL):([a-f0-9]{8})\n([\s\S]*?)\nEND_\1:\2\n/gm)].filter((match) => match[1] === kind).map((match) => match[3]); }
-
-const adapter = String.raw`
-import fs from 'node:fs/promises';
-import { spawn } from 'node:child_process';
-import readline from 'node:readline';
-let backend, closed, finishing = false;
-const emit = (value) => process.stdout.write(JSON.stringify({ protocolVersion: 5, ...value }) + '\n');
-const hardStop = setTimeout(() => process.exit(4), 305000);
-let timer;
-async function finish(cancelled) {
-  if (finishing) return;
-  finishing = true; clearInterval(timer); clearTimeout(hardStop);
-  if (backend?.connected) backend.send('finish');
-  const backendExitCode = backend ? await closed : null;
-  emit({ type: 'closing', reason: cancelled ? 'cancelled' : 'completed' });
-  emit({ type: 'result', state: cancelled ? 'cancelled' : 'completed', generationStarted: !!backend, backendExitCode,
-    text: cancelled ? '' : '跨卷最终答案。\r\n第二行。\n', ...(cancelled ? { code: 'fixtureStopped', remoteStopConfirmed: true } : {}) });
-  process.exit(0);
-}
-for await (const line of readline.createInterface({ input: process.stdin })) {
-  const frame = JSON.parse(line);
-  if (frame.type === 'start') {
-    await fs.writeFile(process.env.FIXTURE_OBSERVED, JSON.stringify({ prompt: frame.prompt, workspace: frame.workspace, cwd: process.cwd() }));
-    backend = spawn(process.execPath, ['-e', "setTimeout(()=>process.exit(4),300000);process.on('message',()=>process.exit(0));process.on('disconnect',()=>process.exit(0))"],
-      { env: process.env, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], detached: false });
-    closed = new Promise((resolve) => backend.once('close', resolve));
-    emit({ type: 'ready', communicationSupported: true });
-    timer = setInterval(async () => { if (await fs.stat(process.env.FIXTURE_FINISH).catch(() => null)) await finish(false); }, 30);
-  } else if (frame.type === 'message') {
-    await fs.writeFile(process.env.FIXTURE_INPUT, JSON.stringify({ text: frame.text }));
-    emit({ type: 'delivery', id: frame.id, status: 'submitted' });
-    emit({ type: 'message', text: frame.text });
-  } else if (frame.type === 'stop') await finish(true);
-}
-if (!finishing) await finish(true);
-`;
 
 const volumeSource = String.raw`
 Add-Type -TypeDefinition @'
@@ -200,7 +164,7 @@ async function main() {
     await Promise.all([fs.mkdir(installed), fs.mkdir(temporary)]);
     await fs.cp(source, scripts, { recursive: true });
     const adapterFile = path.join(directory, 'fake-adapter.mjs');
-    await fs.writeFile(adapterFile, adapter);
+    await fs.writeFile(adapterFile, qualificationAdapter);
     const configuration = { installedIdentity: { source: 'fixture', plugin: 'fixture', platform: 'codex', scope: 'user' }, resourceRoot: installed,
       effectiveValues: { subagentCommands: [{ key: 'fixture', adapter: 'custom', mode: 'workspace', command: await fs.realpath(process.execPath), entrypoint: adapterFile }] } };
     await fs.writeFile(path.join(installed, 'effective.json'), JSON.stringify(configuration));
@@ -225,20 +189,10 @@ async function main() {
     const prompt = '跨卷任务。\r\n保留中文与换行。\n';
     const message = '父输入。\r\n第二行。\n';
     const final = '跨卷最终答案。\r\n第二行。\n';
-    async function ready(response) {
-      if (field(response.stdout, 'communication') === 'true') return;
-      const deadline = Date.now() + 60000;
-      do {
-        const value = await command(['wait', '--run', response.handle, '--timeout-ms', '1000']);
-        requireTrue(value.exit === 0);
-        if (field(value.stdout, 'communication') === 'true') return;
-      } while (Date.now() < deadline);
-      fail('commandTimeout');
-    }
     const started = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt', '-'], Buffer.from(prompt));
-    requireTrue(!!started.handle && (started.exit === 0 || field(started.stdout, 'code') === 'startupNotReady'));
+    requireTrue(!!started.handle);
     const handle = started.handle;
-    await ready(started);
+    await waitForCommunication(started, command);
     const received = JSON.parse(await fs.readFile(observed, 'utf8'));
     requireTrue(received.prompt === prompt && await fs.realpath(received.workspace) === workspace && await fs.realpath(received.cwd) === workspace);
     emit('cross-volume.start-and-text', true, 'ok');
@@ -265,8 +219,8 @@ async function main() {
     requireTrue((await command(['stop', '--run', handle])).exit === 0);
     await fs.unlink(finish);
     const active = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt', '-'], Buffer.from(prompt));
-    requireTrue(!!active.handle && (active.exit === 0 || field(active.stdout, 'code') === 'startupNotReady'));
-    await ready(active);
+    requireTrue(!!active.handle);
+    await waitForCommunication(active, command);
     const stopped = await command(['stop', '--run', active.handle]);
     requireTrue(stopped.exit === 0 && field(stopped.stdout, 'state') === 'cancelled');
     emit('cross-volume.active-stop', true, 'ok');
@@ -288,4 +242,4 @@ async function main() {
   emit('qualification.complete', completed, completed ? 'ok' : 'qualificationFailed');
 }
 
-main().catch((error) => { emit('qualification.failed', false, safeCode(error)); process.exitCode = 1; });
+main().catch((error) => { emit('qualification.failed', false, safeCode(error), error.details); process.exitCode = 1; });

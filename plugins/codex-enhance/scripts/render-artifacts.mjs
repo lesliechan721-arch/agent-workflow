@@ -56,9 +56,9 @@ const EXPLORE_PROFILES = [
   ['deepProfile', 'deep', '高歧义、强冲突、复杂因果或高完整性要求'],
 ];
 const ADVISOR_PROFILES = [
-  ['advisorGeneralProfile', '通用', '问题和边界清楚，主要涉及局部判断或少量方案比较，可用直接证据核验'],
-  ['advisorAdvancedProfile', '进阶', '多模块耦合、多个相互影响的假设或约束，需要比较取舍并核验跨边界影响'],
-  ['advisorExpertProfile', '专业', '高歧义或关键遗漏代价高，涉及复杂系统行为、全局方案或需要深入论证的专业问题'],
+  ['advisorGeneralProfile', 'general', '问题和边界清楚，主要涉及局部判断或少量方案比较，可用直接证据核验'],
+  ['advisorAdvancedProfile', 'advanced', '多模块耦合、多个相互影响的假设或约束，需要比较取舍并核验跨边界影响'],
+  ['advisorExpertProfile', 'expert', '高歧义或关键遗漏代价高，涉及复杂系统行为、全局方案或需要深入论证的专业问题'],
 ];
 
 function isRecord(value) {
@@ -152,7 +152,7 @@ function commandTable(commands) {
     ...commands.map((command) => `| ${[
       command.key,
       command.adapter === 'oracle' ? 'bundle'
-        : command.adapter === 'codex' || command.adapter === 'claude-code' ? 'workspace' : command.mode,
+        : ['codex', 'claude-code', 'antigravity'].includes(command.adapter) ? 'workspace' : command.mode,
     ].map(display).join(' | ')} |`),
   ].join('\n');
 }
@@ -239,7 +239,7 @@ export async function renderArtifactPlan(context) {
       ...(key === 'codex-subagent-guide' ? {
         ...(await runtimeResourceFiles(sourceRoot, 'scripts')),
         ...(await runtimeResourceFiles(sourceRoot, 'references')),
-        'adapters.md': await readFile(path.join(sourceRoot, 'adapters.md'), 'utf8'),
+        ...(await runtimeResourceFiles(sourceRoot, 'docs')),
       } : {}),
     };
     if (key === 'codex-subagent-guide') {

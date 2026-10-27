@@ -35,7 +35,7 @@ function profileText(plan, id) {
 }
 
 function profiles(text) {
-  return Object.fromEntries(text.split('\n').filter((line) => /^\| (simple|general|complex|advanced|quick|standard|deep|通用|进阶|专业) \|/.test(line))
+  return Object.fromEntries(text.split('\n').filter((line) => /^\| (simple|general|complex|advanced|quick|standard|deep|expert) \|/.test(line))
     .map((line) => {
       const cells = line.split('|').map((cell) => cell.trim());
       assert.equal(cells.length, 7);
@@ -165,9 +165,9 @@ test('renders complete builtin profiles and keeps Guide tables in its reference'
   assert.equal(Object.keys(profiles(skill(defaults, 'codex-subagent-guide-skill'))).length, 0);
   assert.equal(Object.keys(profiles(profileText(defaults, 'codex-explore-skill'))).length, 3);
   assert.deepEqual(profiles(profileText(defaults, 'codex-advisor-skill')), {
-    通用: { executor: 'native', model: 'gpt-6-astra', reasoningEffort: 'high' },
-    进阶: { executor: 'native', model: 'gpt-6-astra', reasoningEffort: 'xhigh' },
-    专业: { executor: 'native', model: 'gpt-6-astra', reasoningEffort: 'max' },
+    general: { executor: 'native', model: 'gpt-6-astra', reasoningEffort: 'high' },
+    advanced: { executor: 'native', model: 'gpt-6-astra', reasoningEffort: 'xhigh' },
+    expert: { executor: 'native', model: 'gpt-6-astra', reasoningEffort: 'max' },
   });
   for (const key of CONFIG_KEYS) {
     for (const id of skillIds) assert.equal(profileText(defaults, id).includes(key), false);
@@ -178,7 +178,7 @@ test('renders complete builtin profiles and keeps Guide tables in its reference'
   }));
   assert.deepEqual(profiles(profileText(configured, 'codex-subagent-guide-skill')).advanced,
     { executor: 'native', model: 'advanced-specialist', reasoningEffort: 'ultra' });
-  assert.deepEqual(profiles(profileText(configured, 'codex-advisor-skill')).进阶,
+  assert.deepEqual(profiles(profileText(configured, 'codex-advisor-skill')).advanced,
     { executor: 'external', model: 'specialist', reasoningEffort: 'max' });
 });
 
@@ -225,12 +225,14 @@ test('renders adapter modes only in the Guide external reference', async () => {
   const subagentCommands = [
     { key: 'codex', adapter: 'codex', env: { PUBLIC_VALUE: 'literal-value' } },
     { key: 'claude', adapter: 'claude-code', mode: 'workspace' },
+    { key: 'agy', adapter: 'antigravity', communication: false },
     { key: 'oracle', adapter: 'oracle', envFrom: { SECRET: 'HOST_SECRET' } },
     { key: 'custom', adapter: 'custom', mode: 'bundle', command: '/not-invoked/adapter' },
   ];
   const expected = [
     ['codex', 'workspace'],
     ['claude', 'workspace'],
+    ['agy', 'workspace'],
     ['oracle', 'bundle'],
     ['custom', 'bundle'],
   ];
@@ -284,7 +286,7 @@ test('renders omitted external model and effort without inventing configured val
     { executor: 'external', model: '后端默认', reasoningEffort: '后端默认' });
   assert.deepEqual(profiles(profileText(plan, 'codex-subagent-guide-skill')).complex,
     { executor: 'external', model: 'backend-model', reasoningEffort: '后端默认' });
-  assert.deepEqual(profiles(skill(plan, 'codex-advisor-skill')).进阶,
+  assert.deepEqual(profiles(skill(plan, 'codex-advisor-skill')).advanced,
     { executor: 'external', model: '后端默认', reasoningEffort: 'high' });
 });
 
@@ -353,7 +355,9 @@ test('delivered Skill links resolve inside each artifact resource root', async (
 test('delivered Guide contains its executable entries and relative module closure', async () => {
   const plan = await renderArtifactPlan(context());
   const files = plan.artifacts.find((item) => item.id === 'codex-subagent-guide-skill').content.files;
-  for (const entry of ['subagent.mjs', 'worker.mjs', 'message.mjs', 'message-mcp.mjs']) {
+  for (const entry of ['subagent.mjs', 'worker.mjs', 'message.mjs', 'message-mcp.mjs',
+    'adapters/codex-v5.mjs', 'adapters/codex-profile.mjs', 'adapters/claude-code-v5.mjs',
+    'adapters/antigravity-v5.mjs', 'adapters/oracle-v5.mjs']) {
     assert.equal(typeof files[`scripts/${entry}`], 'string', `Missing executable entry: ${entry}`);
   }
   // The native helper is reached by URL at runtime and has no JavaScript import

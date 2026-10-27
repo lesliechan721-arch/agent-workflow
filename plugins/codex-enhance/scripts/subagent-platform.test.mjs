@@ -37,6 +37,9 @@ test('native private resources verify owner access and reject links', { timeout:
   const owner = await currentUserIdentity();
   if (process.platform === 'win32') t.diagnostic(`Windows identity query: ${Math.round(performance.now() - identityStarted)} ms (inherited home)`);
   assert.equal(owner.kind, process.platform === 'win32' ? 'windows' : 'posix');
+  if (owner.kind === 'windows') {
+    assert.equal(owner.sid, await windowsOperation('[Security.Principal.WindowsIdentity]::GetCurrent().User.Value | ConvertTo-Json -Compress', {}, 'identity'));
+  }
   await protectPrivatePath(directory);
   assert.equal(await verifyPrivatePath(directory, 'directory', owner), true);
   const file = path.join(directory, '中文 😀.json');
@@ -113,6 +116,20 @@ test('safe native launch preserves argument bytes and observes rapid exit', { ti
   assert.deepEqual(await fs.readdir(directory), []);
   await assert.rejects(safeSpawn(process.execPath, [], { shell: true }), { code: 'unsafeLaunchOptions' });
   await assert.rejects(resolveSafeCommand(process.execPath, ['bad\0arg']), { code: 'executableInvalid' });
+});
+
+// Test Value Gate: CLI initialization must distinguish a missing command from
+// an installed non-executable file, without hiding a later executable PATH entry.
+test('PATH discovery distinguishes non-executable files and continues to a runnable entry', { skip: process.platform === 'win32' }, async (t) => {
+  const directory = await temporary(t);
+  const first = path.join(directory, 'first'); const second = path.join(directory, 'second');
+  await fs.mkdir(first); await fs.mkdir(second);
+  const blocked = path.join(first, 'fixture-cli'); const runnable = path.join(second, 'fixture-cli');
+  await fs.writeFile(blocked, '#!/bin/sh\nexit 0\n', { mode: 0o600 });
+  await fs.writeFile(runnable, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  await assert.rejects(resolveSafeCommand('missing-cli', [], { cwd: directory, env: { PATH: first } }), { code: 'executableNotFound' });
+  await assert.rejects(resolveSafeCommand('fixture-cli', [], { cwd: directory, env: { PATH: first } }), { code: 'executableNotRunnable' });
+  assert.equal((await resolveSafeCommand('fixture-cli', [], { cwd: directory, env: { PATH: [first, second].join(path.delimiter) } })).command, runnable);
 });
 
 // Test Value Gate: a package shim must select its verified bin without running

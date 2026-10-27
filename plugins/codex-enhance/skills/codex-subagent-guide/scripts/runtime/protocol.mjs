@@ -1,7 +1,8 @@
 import {
   LIMITS, fields, fail, messageId, validateDelivery, validateMessageText,
-  validateRequest, validateResult,
+  validateRequest, validateResult, validateInitialization, validateDiagnostics,
 } from './contracts.mjs';
+import { isDeepStrictEqual } from 'node:util';
 
 const required = (value, keys, optional = []) => fields(value, [...keys, ...optional]) && keys.every((key) => Object.hasOwn(value, key));
 const invalid = (message) => fail('protocolInvalid', message);
@@ -22,7 +23,9 @@ export function validateFrame(frame, direction) {
     if (!required(frame, ['protocolVersion', 'type', 'reason']) || !['requested', 'deadline', 'channelError'].includes(frame.reason)) invalid('The stop frame is invalid.');
     maximum = LIMITS.controlFrameBytes;
   } else if (direction === 'adapter' && frame.type === 'ready') {
-    if (!required(frame, ['protocolVersion', 'type', 'communicationSupported']) || typeof frame.communicationSupported !== 'boolean') invalid('The ready frame is invalid.');
+    if (!required(frame, ['protocolVersion', 'type', 'initialization'], ['diagnostics'])) invalid('The ready frame is invalid.');
+    validateInitialization(frame.initialization, { ready: true });
+    if (Object.hasOwn(frame, 'diagnostics')) validateDiagnostics(frame.diagnostics);
     maximum = LIMITS.controlFrameBytes;
   } else if (direction === 'adapter' && frame.type === 'delivery') {
     if (!required(frame, ['protocolVersion', 'type', 'id', 'status'], ['code', 'message']) || !messageId(frame.id)) invalid('The delivery frame is invalid.');
@@ -41,22 +44,29 @@ export function validateFrame(frame, direction) {
 /** One connection owns one state. Validate before committing each frame. */
 export function createProtocolState() {
   let started = false; let ready = false; let closing = false; let result = false;
-  let supported = null; let mode; let stopReason = null;
+  let initialization = null; let mode; let requestedCommunication; let stopReason = null;
   const seenInputs = new Set(); const awaitingDelivery = new Set();
+  const checkCommunication = (value) => {
+    const communication = value.capabilities.communication;
+    if (!communication) return;
+    if (mode === 'bundle' && communication.status === 'enabled') invalid('Bundle runs cannot enable communication.');
+    if (!requestedCommunication && communication.status !== 'disabled' || requestedCommunication && communication.status === 'disabled') invalid('Initialization must preserve the requested communication setting.');
+  };
   return {
     get phase() { return result ? 'terminal' : closing ? 'closing' : ready ? 'running' : started ? 'starting' : 'initial'; },
-    get communicationSupported() { return supported; },
+    get initialization() { return initialization; },
+    get communication() { return initialization?.capabilities.communication ?? null; },
     get stopReason() { return stopReason; },
     acceptWorker(frame) {
       validateFrame(frame, 'worker');
       if (result) invalid('Task input is not allowed after the result.');
       if (!started) {
         if (frame.type !== 'start') invalid('The first worker frame must be start.');
-        started = true; mode = frame.mode; return frame;
+        started = true; mode = frame.mode; requestedCommunication = frame.communication; return frame;
       }
       if (frame.type === 'start') invalid('Start must occur exactly once.');
       if (frame.type === 'stop') { stopReason ??= frame.reason; return frame; }
-      if (!ready || supported !== true) invalid('Parent messages require ready with communication enabled.');
+      if (!ready || initialization.capabilities.communication.status !== 'enabled') invalid('Parent messages require ready with communication enabled.');
       if (seenInputs.has(frame.id)) invalid('Parent message IDs must be unique in this connection.');
       seenInputs.add(frame.id); awaitingDelivery.add(frame.id); return frame;
     },
@@ -65,23 +75,28 @@ export function createProtocolState() {
       if (!started || result) invalid('Adapter events require start and cannot follow result.');
       if (frame.type === 'ready') {
         if (ready || closing) invalid('Ready must occur once before closing.');
-        if (mode === 'bundle' && frame.communicationSupported) invalid('Bundle runs cannot enable communication.');
-        ready = true; supported = frame.communicationSupported;
+        checkCommunication(frame.initialization);
+        ready = true; initialization = structuredClone(frame.initialization);
       } else if (frame.type === 'result') {
         if (!ready) {
           const provenUnsubmitted = ['failed', 'cancelled'].includes(frame.state) && frame.generationStarted === false;
           const uncertain = frame.state === 'unknown' && frame.generationStarted === null;
           if (!provenUnsubmitted && !uncertain) invalid('An initialization result must preserve actual submission evidence.');
         } else if (!closing) invalid('A result must follow closing.');
+        if (frame.initialization) {
+          checkCommunication(frame.initialization);
+          if (ready && !isDeepStrictEqual(initialization, frame.initialization)) invalid('The result must preserve the published initialization descriptor.');
+          if (!ready) initialization = structuredClone(frame.initialization);
+        }
         result = true;
       } else if (!ready) invalid('The first adapter event must be ready or an initialization result.');
       else if (frame.type === 'closing') {
         if (closing) invalid('Closing must occur exactly once.');
         closing = true;
       } else if (frame.type === 'message') {
-        if (!supported || closing) invalid('Child messages require an open communication-enabled run.');
+        if (initialization.capabilities.communication.status !== 'enabled' || closing) invalid('Child messages require an open communication-enabled run.');
       } else if (frame.type === 'delivery') {
-        if (!supported || !awaitingDelivery.delete(frame.id)) invalid('Delivery must identify one pending parent input exactly once.');
+        if (initialization.capabilities.communication.status !== 'enabled' || !awaitingDelivery.delete(frame.id)) invalid('Delivery must identify one pending parent input exactly once.');
       }
       return frame;
     },

@@ -6,7 +6,7 @@ const lines = createInterface({ input: process.stdin });
 const request = JSON.parse(await new Promise((resolve) => lines.once('line', resolve)));
 if (request.protocolVersion !== 5 || request.type !== 'start' || request.mode !== 'bundle') throw new Error('Expected an Adapter v5 bundle request.');
 const emit = (event) => process.stdout.write(JSON.stringify({ protocolVersion: 5, ...event }) + '\n');
-emit({ type: 'ready', communicationSupported: false });
+emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: request.communication ? 'unsupported' : 'disabled' } } } });
 const { command, args } = request.fileResolver;
 const helper = spawn(command, args, { cwd: request.workspace, shell: false, detached: false, stdio: ['pipe', 'pipe', 'pipe'] });
 let stdout = ''; let stderr = '';

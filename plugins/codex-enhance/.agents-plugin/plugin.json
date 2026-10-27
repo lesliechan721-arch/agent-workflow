@@ -53,9 +53,15 @@
         "./skills/codex-subagent-guide/evals/provider-contract.test.mjs",
         "./skills/codex-subagent-guide/evals/role-boundary-provider.test.mjs",
         "./scripts/subagent-integration-communication.test.mjs",
+        "./scripts/subagent-integration-initialization.test.mjs",
+        "./scripts/subagent-integration-reports.test.mjs",
         "./scripts/subagent-integration-results.test.mjs",
         "./scripts/subagent-integration-recovery.test.mjs",
         "./scripts/subagent-runtime-logic.test.mjs",
+        "./scripts/subagent-plan.test.mjs",
+        "./scripts/codex-executable.test.mjs",
+        "./scripts/codex-profile.test.mjs",
+        "./scripts/antigravity-adapter.test.mjs",
         "./scripts/subagent-adapter-common.test.mjs",
         "./scripts/subagent-protocol-v5.test.mjs",
         "./scripts/subagent-bridge-v5.test.mjs",
@@ -64,7 +70,9 @@
         "./scripts/file-selection.test.mjs",
         "./scripts/adapters-integration-inputs.test.mjs",
         "./scripts/adapters-integration-protocol.test.mjs",
-        "./scripts/adapters-integration-control.test.mjs"
+        "./scripts/adapters-integration-control.test.mjs",
+        "./scripts/adapter-permissions.test.mjs",
+        "./scripts/antigravity-permissions.test.mjs"
       ]
     },
     "node": {
@@ -333,6 +341,11 @@
                     "value": "claude-code"
                   },
                   {
+                    "id": "antigravity",
+                    "title": "antigravity",
+                    "value": "antigravity"
+                  },
+                  {
                     "id": "oracle",
                     "title": "oracle",
                     "value": "oracle"
@@ -344,6 +357,11 @@
                   }
                 ]
               }
+            },
+            "communication": {
+              "type": "boolean",
+              "title": "父子通讯",
+              "description": "省略时开启；设为 false 时不建立 AW 通讯桥，也不注入通讯工具和指令。开启仍须通过本次适配器能力检查。"
             },
             "args": {
               "type": "array",
@@ -404,11 +422,68 @@
                   "codexProfile": {
                     "type": "string",
                     "title": "Codex 配置 Profile",
-                    "description": "已有 Codex profile 的名称，传入 --profile；留空使用后端默认。AW 显式 model/effort 仍优先。",
+                    "description": "从本次有效 CODEX_HOME 读取同名 .config.toml，将支持字段转换为运行时覆盖；未支持字段提示后忽略。不保留原生用户配置层身份，可能覆盖项目配置。AW 显式 model/effort 仍优先。",
                     "validation": {
                       "minLength": 1,
                       "pattern": "^[^\\x00]*[^\\s\\x00][^\\x00]*$",
                       "maxLength": 4096
+                    }
+                  },
+                  "codexCliSource": {
+                    "type": "string",
+                    "title": "Codex CLI 来源",
+                    "description": "省略时使用 auto：先查 PATH，仅没有可执行入口时查 App 内嵌 CLI。cli 只查 PATH；app 只查 App。选定入口失败后不切换来源。",
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "auto",
+                          "title": "auto",
+                          "value": "auto",
+                          "recommended": true
+                        },
+                        {
+                          "id": "cli",
+                          "title": "cli",
+                          "value": "cli"
+                        },
+                        {
+                          "id": "app",
+                          "title": "app",
+                          "value": "app"
+                        }
+                      ]
+                    }
+                  },
+                  "codexBypassHookTrust": {
+                    "type": "boolean",
+                    "title": "跳过 Codex Hook 信任检查",
+                    "description": "省略时关闭。设为 true 会执行本次线程已启用但未受信任或内容已修改的普通 hook，范围不限于所选 profile；仍保留禁用状态和管理策略。它不授予工具审批或沙箱绕过权限。"
+                  },
+                  "permissionMode": {
+                    "type": "string",
+                    "title": "权限模式",
+                    "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "default",
+                          "title": "默认",
+                          "value": "default",
+                          "recommended": true
+                        },
+                        {
+                          "id": "auto",
+                          "title": "自动",
+                          "value": "auto"
+                        },
+                        {
+                          "id": "full-access",
+                          "title": "完整权限",
+                          "value": "full-access"
+                        }
+                      ]
                     }
                   }
                 }
@@ -418,6 +493,66 @@
                   "mode": {
                     "type": "string",
                     "const": "workspace"
+                  },
+                  "permissionMode": {
+                    "type": "string",
+                    "title": "权限模式",
+                    "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "default",
+                          "title": "默认",
+                          "value": "default",
+                          "recommended": true
+                        },
+                        {
+                          "id": "auto",
+                          "title": "自动",
+                          "value": "auto"
+                        },
+                        {
+                          "id": "full-access",
+                          "title": "完整权限",
+                          "value": "full-access"
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "antigravity": {
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "const": "workspace"
+                  },
+                  "permissionMode": {
+                    "type": "string",
+                    "title": "权限模式",
+                    "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "default",
+                          "title": "默认",
+                          "value": "default",
+                          "recommended": true
+                        },
+                        {
+                          "id": "auto",
+                          "title": "自动",
+                          "value": "auto"
+                        },
+                        {
+                          "id": "full-access",
+                          "title": "完整权限",
+                          "value": "full-access"
+                        }
+                      ]
+                    }
                   }
                 }
               },
@@ -501,8 +636,8 @@
       },
       "advisorGeneralProfile": {
         "$ref": "#/config/definitions/agentProfile",
-        "title": "通用咨询配置",
-        "description": "通用难度咨询的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "title": "general 咨询配置",
+        "description": "general 难度咨询的执行器、模型与推理强度偏好，仅支持 user scope。",
         "default": {
           "executor": "native",
           "model": "gpt-6-astra",
@@ -512,8 +647,8 @@
       },
       "advisorAdvancedProfile": {
         "$ref": "#/config/definitions/agentProfile",
-        "title": "进阶咨询配置",
-        "description": "进阶难度咨询的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "title": "advanced 咨询配置",
+        "description": "advanced 难度咨询的执行器、模型与推理强度偏好，仅支持 user scope。",
         "default": {
           "executor": "native",
           "model": "gpt-6-astra",
@@ -523,8 +658,8 @@
       },
       "advisorExpertProfile": {
         "$ref": "#/config/definitions/agentProfile",
-        "title": "专业咨询配置",
-        "description": "专业难度咨询的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "title": "expert 咨询配置",
+        "description": "expert 难度咨询的执行器、模型与推理强度偏好，仅支持 user scope。",
         "default": {
           "executor": "native",
           "model": "gpt-6-astra",

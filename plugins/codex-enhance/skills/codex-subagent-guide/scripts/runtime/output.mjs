@@ -13,12 +13,28 @@ export const textBlock = (kind, text, token) => {
   if (text.includes(token)) fail('boundaryCollision', 'The output boundary must be selected again.');
   return `BEGIN_${kind}:${token}\n${text}\nEND_${kind}:${token}\n`;
 };
-export const communication = (snapshot) => snapshot.communicationSupported === null ? 'pending' : String(snapshot.communicationSupported);
-export const needsCommunication = (run) => run.snapshot.communicationSequence > run.observed.communicationSequence ||
-  run.result && run.snapshot.communicationSupported === null && !run.observed.terminalConsumed;
+export const communication = (snapshot) => snapshot.initialization?.capabilities.communication === undefined ? 'pending' : String(snapshot.initialization.capabilities.communication.status === 'enabled');
+export const needsInitialization = (run) => run.snapshot.initializationSequence > run.observed.initializationSequence ||
+  run.result && run.snapshot.initialization === null && !run.observed.terminalConsumed;
+
+export function environmentDetails(snapshot) {
+  const value = snapshot.initialization?.environment;
+  return `environment: ${value?.status ?? 'pending'}\n${value?.status === 'unavailable' ? `environment_code: ${value.code}\n` : ''}`;
+}
+
+export function communicationDetails(snapshot) {
+  const value = snapshot.initialization?.capabilities.communication;
+  if (!value) return '';
+  return `communication_status: ${value.status}\n${value.status === 'enabled' ? `communication_transport: ${value.transport}\ncommunication_passive_delivery: ${value.passiveDelivery}\ncommunication_active_receive: ${value.activeReceive}\n` : ''}`;
+}
+
+export function initializationDiagnostics(diagnostics, token) {
+  if (!diagnostics?.length) return '';
+  return textBlock('DIAGNOSTIC', diagnostics.map((entry) => `${entry.code}${entry.field ? ` (${entry.field})` : ''}: ${entry.message}`).join('\n'), token);
+}
 
 export function groupHeader(run, capability = false) {
-  return `agent: ${run.meta.name}\nrun: ${run.handle}\nstate: ${run.snapshot.state}\n${capability ? `communication: ${communication(run.snapshot)}\n` : ''}`;
+  return `agent: ${run.meta.name}\nrun: ${run.handle}\nstate: ${run.snapshot.state}\n${capability ? `${environmentDetails(run.snapshot)}communication: ${communication(run.snapshot)}\n${communicationDetails(run.snapshot)}` : ''}`;
 }
 
 export function diagnostic(code, message) {
@@ -45,6 +61,7 @@ export async function eventText(run, name, token) {
 
 export async function* finalChunks(run, gaps, token) {
   const result = run.result;
+  yield initializationDiagnostics(result.diagnostics ?? run.snapshot.diagnostics, token);
   if (result.state !== 'completed') {
     yield `text_status: ${result.text ? 'partial' : 'missing'}\ngeneration_started: ${result.generationStarted}\nbackend_exit_code: ${result.backendExitCode}\n`;
   }
@@ -58,7 +75,7 @@ export async function* finalChunks(run, gaps, token) {
 
 export function resultReport(run, events, gaps) {
   return async function* (token) {
-    yield `result: read\n${groupHeader(run, needsCommunication(run))}`;
+    yield `result: read\n${groupHeader(run, true)}`;
     for (const name of events) yield await eventText(run, name, token);
     yield* finalChunks(run, gaps, token);
   };

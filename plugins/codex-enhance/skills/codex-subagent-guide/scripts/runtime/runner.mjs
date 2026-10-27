@@ -45,14 +45,20 @@ export async function prepareRun(selected, request, options = {}) {
     prompt = `Instructions:\n${instructions}\n\nTask:\n${task}`;
   }
   let executable;
-  try { executable = await executablePaths(selected.command, selected.entrypoint); }
+  try {
+    executable = selected.executor.adapter === 'custom'
+      ? { command: selected.command, ...(selected.entrypoint ? { entrypoint: selected.entrypoint } : {}) }
+      : await executablePaths(selected.command, selected.entrypoint);
+  }
   catch (error) {
     if (selected.executor.adapter !== 'custom') fail('installedRuntimeMissing', 'The installed adapter resource is missing or unreadable. Sync or reinstall the Guide.', ['sync', 'reinstall']);
     throw error;
   }
   const wire = {
     protocolVersion: 5, type: 'start', execution: { ...selected.execution }, mode: selected.mode,
-    workspace, prompt, args: [...selected.executor.args],
+    workspace, prompt, args: [...selected.executor.args], communication: selected.communication,
+    ...(selected.permissionMode === undefined ? {} : { permissionMode: selected.permissionMode }),
+    ...(selected.codex ? { codex: { ...selected.codex } } : {}),
     ...(selected.mode === 'bundle' ? {
       fileSelectors: [...fileSelectors],
       fileResolver: { command: process.execPath, args: [path.join(selected.resourceRoot, 'scripts', 'resolve-files.mjs')] },
