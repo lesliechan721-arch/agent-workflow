@@ -52,7 +52,7 @@ async function fixture(t) {
   // observation boundary for sendInput, which otherwise uses the real store.
   run.meta.worker = { pid: process.pid, started: 'fixture-worker' };
   context.table = [run.meta.worker];
-  run.snapshot = { state: 'running', sequence: 2, communicationSupported: true, communicationSequence: 2 };
+  run.snapshot = { state: 'running', sequence: 2, communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true }, communicationSequence: 2 };
   await files.atomicJson(path.join(run.directory, 'owner.json'), run.meta);
   await files.atomicJson(path.join(run.directory, 'snapshot.json'), run.snapshot);
   await files.atomicJson(path.join(run.directory, 'observed.json'), { sequence: 2, communicationSequence: 2, terminalConsumed: false });

@@ -166,3 +166,37 @@ test('installed CLI rejects invalid arguments and stdin before side effects', { 
   assert.equal(await fs.stat(f.generations).catch(() => null), null); assert.deepEqual(await fs.readdir(f.temporaryRoot), []);
   assert.equal(await fs.stat(path.join(f.workspace, 'must-not-exist')).catch(() => null), null);
 });
+
+// Test Value Gate: installed configuration must carry explicit false through
+// plan, runner, worker and wire while public send and lifecycle remain correct.
+test('installed communication false rejects send and preserves result and stop', { timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t);
+  f.snapshot.effectiveValues.subagentCommands[0].communication = false; await f.save();
+  const started = await f.start(); await f.initialized(started);
+  assert.equal((await started.observed()).request.communication, false);
+  const ready = started.code === 0 ? started : await f.command(['wait', '--run', started.run, '--timeout-ms', '0']);
+  assert.equal(field(ready.stdout, 'communication'), 'false');
+  assert.equal(field(ready.stdout, 'communication_status'), 'disabled');
+  assert.equal(field(ready.stdout, 'communication_transport'), undefined);
+  const rejected = await f.command(['send', '--run', started.run, '--text', 'Do not submit.']);
+  assert.equal(rejected.code, 1); assert.equal(field(rejected.stdout, 'code'), 'communicationUnsupported');
+  await started.finish(); await f.waitTerminal(started.run);
+  const result = await f.command(['result', '--run', started.run]);
+  successful(result, 'result'); assert.deepEqual(blocks(result.stdout, 'FINAL'), ['Complete final answer.']);
+  successful(await f.command(['stop', '--run', started.run]), 'stop');
+});
+
+// Test Value Gate: a send-only question must not keep a completed turn alive
+// while the parent has supplied no answer or accepted additional input.
+test('a question without active receive closes with its unresolved final result', { timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t);
+  const finalText = 'Unfinished: the required parent answer is not available.';
+  const started = await f.start({ descriptor: { status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary', activeReceive: false }, messages: ['Which target is required?'], finishImmediately: true, finalText });
+  await f.initialized(started); const terminal = await f.waitTerminal(started.run);
+  const result = await f.command(['result', '--run', started.run]);
+  successful(result, 'result'); assert.equal(field(result.stdout, 'state'), 'completed');
+  assert.deepEqual([...terminal, result].flatMap((response) => blocks(response.stdout, 'MESSAGE')), ['Which target is required?']);
+  assert.deepEqual(blocks(result.stdout, 'FINAL'), [finalText]);
+  const send = await f.command(['send', '--run', started.run, '--text', 'A late answer.']);
+  assert.equal(send.code, 1); assert.equal(field(send.stdout, 'code'), 'runClosed');
+});

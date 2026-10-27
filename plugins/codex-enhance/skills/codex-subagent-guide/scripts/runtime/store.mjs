@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { atomicJson, atomicJsonFiles, readJson, safePath } from './files.mjs';
-import { fail, STATES, validateResult } from './contracts.mjs';
+import { fail, STATES, validateResult, validateCommunication, validateDiagnostics } from './contracts.mjs';
 import { currentUserIdentity, protectPrivatePath, protectPrivatePaths, verifyPrivatePath, verifyPrivatePaths, assertNoReparseTree, windowsOperation } from './platform.mjs';
 import { processTable } from './processes.mjs';
 
@@ -72,7 +72,7 @@ export async function createRun(context, name, workspace) {
   const meta = { schema: 5, id, key, owner: context.owner, name: name ?? `agent-${id.slice(-8)}`,
     workspace, token: randomBytes(24).toString('hex'), worker: null, processes: [],
     createdAt: Date.now(), terminalAt: null, localTreeStopped: false };
-  const snapshot = { state: 'starting', sequence: 1, communicationSupported: null, communicationSequence: 0 };
+  const snapshot = { state: 'starting', sequence: 1, communication: null, communicationSequence: 0 };
   await atomicJsonFiles([
     { target: path.join(directory, 'owner.json'), value: meta },
     { target: path.join(directory, 'snapshot.json'), value: snapshot },
@@ -202,8 +202,9 @@ export async function observeRun(context, run, { allowExpired = false } = {}) {
     snapshot = await readJson(path.join(run.directory, 'snapshot.json'), 16384);
     observed = await readJson(path.join(run.directory, 'observed.json'), 4096);
     if (!['starting', 'running', 'closing', ...STATES].includes(snapshot.state) || !Number.isSafeInteger(snapshot.sequence) ||
-      ![null, true, false].includes(snapshot.communicationSupported) || !Number.isSafeInteger(snapshot.communicationSequence) ||
+      !(snapshot.communication === null || validateCommunication(snapshot.communication)) || !Number.isSafeInteger(snapshot.communicationSequence) ||
       !Number.isSafeInteger(observed.sequence) || !Number.isSafeInteger(observed.communicationSequence) || typeof observed.terminalConsumed !== 'boolean') throw new Error();
+    if (snapshot.diagnostics !== undefined) validateDiagnostics(snapshot.diagnostics);
   } catch { fail('runStateUnavailable', 'The run observation state is unreadable.'); }
   // A worker can publish final.json between the first read and this snapshot.
   // It always publishes the final before a terminal snapshot. Re-read that

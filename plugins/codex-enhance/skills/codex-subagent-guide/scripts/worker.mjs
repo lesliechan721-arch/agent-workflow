@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { atomicJson, readJson, fileFailureDiagnostic } from './runtime/files.mjs';
 import { LIMITS, redact, fail, validateResult } from './runtime/contracts.mjs';
+import { sanitizeDiagnostics, summarizeDiagnostics } from './runtime/diagnostics.mjs';
 import { createFrameDecoder, createFrameWriter, createProtocolState } from './runtime/protocol.mjs';
 import { safeSpawn } from './runtime/platform.mjs';
 import { processTable, observeTree, stopOwnedTree } from './runtime/processes.mjs';
@@ -35,7 +36,7 @@ export async function runWorker(directory) {
     } },
   };
   let snapshot = await readJson(path.join(directory, 'snapshot.json'), 16384);
-  let child, writer, candidate, fault, faultDiagnostic, exited = false, closed = false, adapterExitCode = null;
+  let child, writer, candidate, readyDiagnostics, fault, faultDiagnostic, exited = false, closed = false, adapterExitCode = null;
   let stopReason, stoppingAt, eventSequence = 0, stderrBytes = 0, writes = Promise.resolve();
   const protocol = createProtocolState();
   const sanitize = (value) => redact(value, prepared.environment, prepared.secretValues);
@@ -58,7 +59,9 @@ export async function runWorker(directory) {
   const pendingNames = new Map();
   const acceptEvent = async (frame) => {
     if (frame.type === 'ready') {
-      await state(stopReason ? 'closing' : 'running', { communicationSupported: frame.communicationSupported,
+      readyDiagnostics = frame.diagnostics ? sanitizeDiagnostics(frame.diagnostics, prepared.environment, prepared.secretValues) : undefined;
+      await state(stopReason ? 'closing' : 'running', { communication: frame.communication,
+        ...(readyDiagnostics ? { diagnostics: summarizeDiagnostics(readyDiagnostics) } : {}),
         communicationSequence: snapshot.sequence + 1 });
     } else if (frame.type === 'message') {
       const text = sanitize(frame.text);
@@ -127,7 +130,7 @@ export async function runWorker(directory) {
         await state('closing');
         if (!exited && !candidate) writeFrame({ protocolVersion: 5, type: 'stop', reason: stopReason }).catch(() => markFault('adapterInputClosed'));
       }
-      if (!stopReason && snapshot.state === 'running' && snapshot.communicationSupported === true) {
+      if (!stopReason && snapshot.state === 'running' && snapshot.communication?.status === 'enabled') {
         for (const name of await recordFiles(run, 'outbox')) {
           const input = await readRecord(run, 'outbox', name);
           if (input.phase !== 'queued' || pendingNames.has(input.id)) continue;
@@ -168,6 +171,9 @@ export async function runWorker(directory) {
     candidate = { ...candidate, state: 'unknown', code: fault ?? (!stopped ? 'localTreeStopUnconfirmed' : 'completionUnconfirmed') };
   }
   if (faultDiagnostic) candidate.message = faultDiagnostic;
+  if (candidate.diagnostics) candidate.diagnostics = sanitizeDiagnostics(candidate.diagnostics, prepared.environment, prepared.secretValues);
+  else if (readyDiagnostics?.length) candidate.diagnostics = readyDiagnostics;
+  else if (snapshot.diagnostics?.length) candidate.diagnostics = snapshot.diagnostics;
   try { validateResult(candidate); }
   catch { candidate = { protocolVersion: 5, type: 'result', state: 'unknown', generationStarted: null, backendExitCode: null, text: '', code: 'adapterResultInvalid' }; }
   for (const name of await recordFiles(run, 'outbox')) {
@@ -182,7 +188,7 @@ export async function runWorker(directory) {
   // Save the fixed clock before publishing the result. Failed writes never extend its TTL.
   await atomicJson(path.join(directory, 'owner.json'), run.meta);
   await atomicJson(path.join(directory, 'final.json'), candidate);
-  await state(candidate.state);
+  await state(candidate.state, candidate.diagnostics ? { diagnostics: summarizeDiagnostics(candidate.diagnostics) } : {});
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

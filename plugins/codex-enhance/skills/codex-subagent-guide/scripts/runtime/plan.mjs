@@ -6,6 +6,7 @@ import { checkOracleArguments } from '../adapters/oracle-arguments.mjs';
 export const ADAPTERS = Object.freeze({
   codex: { mode: 'workspace', entrypoint: 'codex-v5.mjs' },
   'claude-code': { mode: 'workspace', entrypoint: 'claude-code-v5.mjs' },
+  antigravity: { mode: 'workspace', entrypoint: 'antigravity-v5.mjs' },
   oracle: { mode: 'bundle', entrypoint: 'oracle-v5.mjs' },
 });
 const variableName = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -36,8 +37,11 @@ export function selectExecution(snapshot, request) {
   if (!Array.isArray(commands) || commands.some((entry) => !plainObject(entry) || !cleanString(entry.key) || entry.key === 'native') || new Set(commands.map((entry) => entry.key)).size !== commands.length) fail('registryInvalid', 'The installed command registry has invalid or duplicate keys. Correct the registry and sync.', ['config', 'sync']);
   const executor = commands.find((entry) => entry.key === executorKey);
   if (!executor) fail('executorUnknown', 'The selected executor is missing. Correct the registry and sync.', ['config', 'sync']);
-  const allowed = ['key', 'adapter', 'mode', 'command', 'entrypoint', 'args', 'env', 'envFrom', 'oracleEngine', 'codexProfile'];
-  if (Object.keys(executor).some((key) => !allowed.includes(key)) || !['codex', 'claude-code', 'oracle', 'custom'].includes(executor.adapter)) fail('executorInvalid', 'Update the executor to the current adapter configuration and sync.', ['config', 'sync']);
+  const allowed = ['key', 'adapter', 'mode', 'command', 'entrypoint', 'args', 'env', 'envFrom', 'communication', 'oracleEngine', 'codexProfile', 'codexCliSource', 'codexBypassHookTrust'];
+  if (Object.keys(executor).some((key) => !allowed.includes(key)) || !['codex', 'claude-code', 'antigravity', 'oracle', 'custom'].includes(executor.adapter)) fail('executorInvalid', 'Update the executor to the current adapter configuration and sync.', ['config', 'sync']);
+  if (Object.hasOwn(executor, 'communication') && typeof executor.communication !== 'boolean') fail('executorInvalid', 'communication must be a boolean.', ['config', 'sync']);
+  if (Object.hasOwn(executor, 'codexCliSource') && (executor.adapter !== 'codex' || !['auto', 'cli', 'app'].includes(executor.codexCliSource))) fail('executorInvalid', 'codexCliSource is only available for Codex and must be auto, cli or app.', ['config', 'sync']);
+  if (Object.hasOwn(executor, 'codexBypassHookTrust') && (executor.adapter !== 'codex' || typeof executor.codexBypassHookTrust !== 'boolean')) fail('executorInvalid', 'codexBypassHookTrust is only available for Codex and must be a boolean.', ['config', 'sync']);
   if (Object.hasOwn(executor, 'oracleEngine') && (executor.adapter !== 'oracle' || !['api', 'browser'].includes(executor.oracleEngine))) fail('executorInvalid', 'oracleEngine is only available for Oracle and must be api or browser.', ['config', 'sync']);
   const codexProfile = executor.codexProfile;
   if (Object.hasOwn(executor, 'codexProfile') && (executor.adapter !== 'codex' || typeof codexProfile !== 'string' || !codexProfile.trim() || codexProfile.includes('\0') || !codexProfile.isWellFormed() || [...codexProfile].length > 4096)) fail('executorInvalid', 'codexProfile is only available for Codex and must be a nonempty profile name of at most 4096 characters.', ['config', 'sync']);
@@ -60,7 +64,13 @@ export function selectExecution(snapshot, request) {
   }
   if (executor.codexProfile !== undefined) {
     checkCodexArguments({ args, execution }, ['--profile', '-p']);
-    args.push('--profile', executor.codexProfile);
   }
-  return { execution, mode, resourceRoot: snapshot.resourceRoot, executor: { ...executor, args }, command, entrypoint };
+  const codex = executor.adapter === 'codex' ? {
+    cliSource: executor.codexCliSource ?? 'auto',
+    bypassHookTrust: executor.codexBypassHookTrust ?? false,
+    ...(codexProfile === undefined ? {} : { profile: codexProfile }),
+  } : undefined;
+  return { execution, mode, communication: executor.communication ?? true,
+    ...(codex ? { codex } : {}), resourceRoot: snapshot.resourceRoot,
+    executor: { ...executor, args }, command, entrypoint };
 }

@@ -13,6 +13,7 @@ export async function executeOracle(context) {
   const args = oracleArguments(request, outputFile);
   await assertNativeSelectionReadable(request.workspace, request.fileSelectors, { isCancelled: () => context.signal.aborted });
   if (context.signal.aborted) return { state: 'cancelled', code: context.errorCode, text: '' };
+  await context.prepareCommunication();
   const backend = await context.spawn('oracle', args);
   let stdoutBytes = 0;
   backend.child.stdout.on('data', (chunk) => {
@@ -20,10 +21,10 @@ export async function executeOracle(context) {
     if (stdoutBytes > 8 * 1024 * 1024) context.abort('adapterDiagnosticTooLarge');
   });
   context.onStop = async () => { backend.child.kill('SIGINT'); await backend.end(); };
-  await context.ready(false);
+  await context.ready();
   if (context.signal.aborted) return { state: 'cancelled', code: context.errorCode, text: '' };
   context.generationStarted = null;
-  await backend.write(request.prompt);
+  await backend.write(context.prompt);
   await backend.end();
   await Promise.race([backend.done, context.stopped.promise]);
   let text = '';
@@ -36,4 +37,4 @@ export async function executeOracle(context) {
   return { state: 'completed', text };
 }
 
-adapterMain(import.meta.url, { mode: 'bundle', execute: executeOracle }, 'Oracle Adapter v5\nUsage: node oracle-v5.mjs\nReads one persistent v5 JSONL connection. Uses PATH oracle --prompt - --wait --write-output and raw --file selectors.\nCommunication is unsupported. Normal engine configuration applies. No default execution deadline or automatic retry.\n');
+adapterMain(import.meta.url, { mode: 'bundle', negotiateCommunication: () => ({ supported: false }), execute: executeOracle }, 'Oracle Adapter v5\nUsage: node oracle-v5.mjs\nReads one persistent v5 JSONL connection. Uses PATH oracle --prompt - --wait --write-output and raw --file selectors.\nCommunication is unsupported. Normal engine configuration applies. No default execution deadline or automatic retry.\n');

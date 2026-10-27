@@ -1,6 +1,6 @@
 import {
   LIMITS, fields, fail, messageId, validateDelivery, validateMessageText,
-  validateRequest, validateResult,
+  validateRequest, validateResult, validateCommunication, validateDiagnostics,
 } from './contracts.mjs';
 
 const required = (value, keys, optional = []) => fields(value, [...keys, ...optional]) && keys.every((key) => Object.hasOwn(value, key));
@@ -22,7 +22,9 @@ export function validateFrame(frame, direction) {
     if (!required(frame, ['protocolVersion', 'type', 'reason']) || !['requested', 'deadline', 'channelError'].includes(frame.reason)) invalid('The stop frame is invalid.');
     maximum = LIMITS.controlFrameBytes;
   } else if (direction === 'adapter' && frame.type === 'ready') {
-    if (!required(frame, ['protocolVersion', 'type', 'communicationSupported']) || typeof frame.communicationSupported !== 'boolean') invalid('The ready frame is invalid.');
+    if (!required(frame, ['protocolVersion', 'type', 'communication'], ['diagnostics'])) invalid('The ready frame is invalid.');
+    validateCommunication(frame.communication);
+    if (Object.hasOwn(frame, 'diagnostics')) validateDiagnostics(frame.diagnostics);
     maximum = LIMITS.controlFrameBytes;
   } else if (direction === 'adapter' && frame.type === 'delivery') {
     if (!required(frame, ['protocolVersion', 'type', 'id', 'status'], ['code', 'message']) || !messageId(frame.id)) invalid('The delivery frame is invalid.');
@@ -41,22 +43,22 @@ export function validateFrame(frame, direction) {
 /** One connection owns one state. Validate before committing each frame. */
 export function createProtocolState() {
   let started = false; let ready = false; let closing = false; let result = false;
-  let supported = null; let mode; let stopReason = null;
+  let communication = null; let mode; let requestedCommunication; let stopReason = null;
   const seenInputs = new Set(); const awaitingDelivery = new Set();
   return {
     get phase() { return result ? 'terminal' : closing ? 'closing' : ready ? 'running' : started ? 'starting' : 'initial'; },
-    get communicationSupported() { return supported; },
+    get communication() { return communication; },
     get stopReason() { return stopReason; },
     acceptWorker(frame) {
       validateFrame(frame, 'worker');
       if (result) invalid('Task input is not allowed after the result.');
       if (!started) {
         if (frame.type !== 'start') invalid('The first worker frame must be start.');
-        started = true; mode = frame.mode; return frame;
+        started = true; mode = frame.mode; requestedCommunication = frame.communication; return frame;
       }
       if (frame.type === 'start') invalid('Start must occur exactly once.');
       if (frame.type === 'stop') { stopReason ??= frame.reason; return frame; }
-      if (!ready || supported !== true) invalid('Parent messages require ready with communication enabled.');
+      if (!ready || communication.status !== 'enabled') invalid('Parent messages require ready with communication enabled.');
       if (seenInputs.has(frame.id)) invalid('Parent message IDs must be unique in this connection.');
       seenInputs.add(frame.id); awaitingDelivery.add(frame.id); return frame;
     },
@@ -65,8 +67,9 @@ export function createProtocolState() {
       if (!started || result) invalid('Adapter events require start and cannot follow result.');
       if (frame.type === 'ready') {
         if (ready || closing) invalid('Ready must occur once before closing.');
-        if (mode === 'bundle' && frame.communicationSupported) invalid('Bundle runs cannot enable communication.');
-        ready = true; supported = frame.communicationSupported;
+        if (mode === 'bundle' && frame.communication.status === 'enabled') invalid('Bundle runs cannot enable communication.');
+        if (!requestedCommunication && frame.communication.status !== 'disabled' || requestedCommunication && frame.communication.status === 'disabled') invalid('Ready must preserve the requested communication setting.');
+        ready = true; communication = frame.communication;
       } else if (frame.type === 'result') {
         if (!ready) {
           const provenUnsubmitted = ['failed', 'cancelled'].includes(frame.state) && frame.generationStarted === false;
@@ -79,9 +82,9 @@ export function createProtocolState() {
         if (closing) invalid('Closing must occur exactly once.');
         closing = true;
       } else if (frame.type === 'message') {
-        if (!supported || closing) invalid('Child messages require an open communication-enabled run.');
+        if (communication.status !== 'enabled' || closing) invalid('Child messages require an open communication-enabled run.');
       } else if (frame.type === 'delivery') {
-        if (!supported || !awaitingDelivery.delete(frame.id)) invalid('Delivery must identify one pending parent input exactly once.');
+        if (communication.status !== 'enabled' || !awaitingDelivery.delete(frame.id)) invalid('Delivery must identify one pending parent input exactly once.');
       }
       return frame;
     },

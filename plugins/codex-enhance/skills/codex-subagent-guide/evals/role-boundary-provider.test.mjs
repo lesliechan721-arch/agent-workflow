@@ -334,13 +334,13 @@ test('v5 local failure fixture writes exactly one partial marker and returns no 
   try {
     const child = spawn(process.execPath, [fileURLToPath(faultAssetURL)], { cwd: root, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
     const output = []; child.stdout.on('data', (bytes) => output.push(bytes));
-    child.stdin.end(JSON.stringify({ protocolVersion: 5, type: 'start', execution: { executor: 'fixture' }, mode: 'workspace', workspace: root, prompt: 'Authorized one-file write control. Write one marker.', args: [] }));
+    child.stdin.end(JSON.stringify({ protocolVersion: 5, type: 'start', communication: true, execution: { executor: 'fixture' }, mode: 'workspace', workspace: root, prompt: 'Authorized one-file write control. Write one marker.', args: [] }));
     assert.equal(await new Promise((resolve, reject) => { child.once('close', resolve); child.once('error', reject); }), 0);
     assert.deepEqual(JSON.parse(await readFile(path.join(root, '.role-boundary-fixture', 'counter.json'), 'utf8')), { submissions: 1, writes: 1 });
     assert.ok((await readFile(path.join(root, 'probe', 'once.txt'))).length > 0);
     const events = Buffer.concat(output).toString('utf8').trim().split('\n').map(JSON.parse);
     assert.deepEqual(events.map(({ type }) => type), ['ready']);
-    assert.equal(events[0].communicationSupported, false);
+    assert.deepEqual(events[0].communication, { status: 'unsupported' });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -8,7 +8,7 @@
 aw install codex-enhance -p codex
 ```
 
-插件安装到 Codex。项目启用复用用户级共享 Skill 配置，不产生独立的项目执行配置。外部执行可连接本机已有的 Codex、Claude Code、Oracle 或自定义服务；这不表示插件增加了 Claude 平台安装入口。
+插件安装到 Codex。项目启用复用用户级共享 Skill 配置，不产生独立的项目执行配置。外部执行可连接本机已有的 Codex、Claude Code、Oracle、Antigravity 或自定义服务；这不表示插件增加了 Claude 平台安装入口。
 
 ## 包含的 Skill
 
@@ -38,23 +38,27 @@ Advisor 和 Explore 通过 Guide 委派；已有完整调度与生命周期方�
 
 通用、探索和咨询配置选择执行器、模型和推理强度。三个 Skill 各有默认空的自定义数组，按顺序使用第一个适用范围匹配项，未匹配时使用内建档位。Guide 保留调用方已选的配置；需要自行选择时才读取执行配置 reference。省略 executor 表示 native，直接使用宿主原生工具与角色。subagentCommands 默认空，默认配置不会自行启动外部服务。
 
-subagentCommands 使用 key 作为唯一显示名称。添加外部执行器时可选内建 Codex、Claude Code、Oracle，或 custom。内建入口无需手填 command/entrypoint；Codex 和 Claude Code 固定 workspace，Oracle 固定 bundle。custom 使用自己的绝对程序入口和明确模式。args 定制实际后端参数，env 保存普通环境值，envFrom 引用宿主变量；密钥不要写入普通可分发配置。
+subagentCommands 使用 key 作为唯一显示名称。添加外部执行器时可选内建 Codex、Claude Code、Oracle、Antigravity，或 custom。内建入口无需手填 command/entrypoint；Codex、Claude Code 和 Antigravity 固定 workspace，Oracle 固定 bundle。Antigravity 使用 PATH 中的 agy。custom 使用自己的绝对程序入口和明确模式。args 定制实际后端参数，env 保存普通环境值，envFrom 引用宿主变量；密钥不要写入普通可分发配置。
+
+每个执行器的 communication 缺省 true；设置 false 后不建立 AW 通讯桥，不注入其工具、说明或自动父输入，任务、wait/result/stop 及最终结果仍可用。用户已有工具和 MCP 继续由后端管理。开启只表示意图，实际能力由本次回执确定。当前 Antigravity 通讯缺少真实命令权限和输入确认依据，communication=true 会在首次模型输入前明确失败；可设 false 运行普通任务。它不提供已验证的双向通讯或 Windows 支持承诺。
 
 Oracle 可直接选择 oracleEngine=browser/api，界面推荐 browser；省略引擎时继续沿用 Oracle，但设置 reasoningEffort 后必须明确选择。浏览器将 low/medium/high/xhigh 转换为 light/standard/extended/extra-high，并支持新增的 pro 预设；max/ultra 没有浏览器映射。浏览器登录和实际档位由 Oracle 管理。专用字段与 args 中的同类参数重复时会提示修正。
 
 当前 Windows 原生 Oracle 的文件选择不符合固定 v1 协议。内建 adapter 对非空文件选择在提交后端前返回 fileSelectionUnsupported；未指定文件的请求仍可运行。
 
-当前 Codex app-server 对 codexProfile（--profile/-p）和额外目录 addDirs（--add-dir）没有等价的官方映射。显式设置 codexProfile，或在 args 中使用这些选项，会在提交后端前返回 parameterUnavailable。调用方须修正显式配置后再运行；AW 不会忽略这些设置后继续执行。
+Codex 的 codexProfile 读取有效 CODEX_HOME 中的 `<name>.config.toml`，把支持字段转换为本次运行覆盖；未支持或无关字段提示后忽略，低层同名配置仍可能生效。转换不保留原生用户配置层身份，可能覆盖项目配置。可适配的 profile hooks 沿用已有逐项信任与禁用状态，不自动批准或写回配置。codexBypassHookTrust 缺省 false；显式 true 会让本次线程内已启用但未信任或内容已修改的普通 hook 执行，包括其它来源的适用 hook，仍遵守禁用与管理限制，不授予工具审批或沙箱绕过权限。字段范围和限制见 [Codex profile](skills/codex-subagent-guide/references/codex-profile.md)。额外目录 addDirs（--add-dir）仍明确拒绝。
 
-外部配置可省略 model 和 reasoningEffort，表示使用后端默认。显式要求不支持时报错，不静默替换模型或服务。native 保留已有配置要求。Advisor 固定提供通用、进阶、专业三个难度档位，默认分别为 gpt-6-astra high、xhigh、max。按问题歧义、耦合、验证难度和遗漏代价选档；无效配置不会触发回退。
+Codex 的 codexCliSource 可选 auto/cli/app，缺省 auto 先查 PATH，仅入口缺失时查 App；cli 只查 PATH，app 只查 App。已找到入口启动失败时不会换来源重试。App 发现面向 macOS 和 Windows，Linux 显式 app 拒绝；Windows 注册包发现和真实启动仍须 Windows 验收，不能从本机证据推断支持。
 
-外部启动用 `start --executor <key>` 指定执行器，不接收 AW profile 名称。外部任务可以直接写进 --prompt，长任务或已有文件可以从 stdin 输入。--instructions-file 可选，可以复用已有角色文件；不传时不会自动补入默认指令。顾问和调查的职责约束仍需明确传达。使用 `start` 启动，按句柄执行 `send`、多目标 `wait`、单目标 `result` 和 `stop`。能力由本次回执报告 true/false/pending；默认无执行期限。控制字段使用英文，消息和最终回答保留原语言并放入独立原文块。内部 JSONL 不作为用户界面。
+外部配置可省略 model 和 reasoningEffort，表示使用后端默认。显式要求不支持时报错，不静默替换模型或服务。native 保留已有配置要求。Advisor 固定提供 general、advanced、expert 三个难度档位，默认分别为 gpt-6-astra high、xhigh、max。按问题歧义、耦合、验证难度和遗漏代价选档；无效配置不会触发回退。
+
+外部启动用 `start --executor <key>` 指定执行器，不接收 AW profile 名称。外部任务可以直接写进 --prompt，长任务或已有文件可以从 stdin 输入。--instructions-file 可选，可以复用已有角色文件；不传时不会自动补入默认角色，已就绪的通讯说明仍由 adapter 添加。顾问和调查的职责约束仍需明确传达。使用 `start` 启动，按句柄执行 `send`、多目标 `wait`、单目标 `result` 和 `stop`。回执保留 true/false/pending，并说明 enabled/disabled/unsupported、实际通道、自动输入时点及主动收件能力；晚到信息和 profile 诊断由 wait/result 补报。默认无执行期限。控制字段使用英文，消息和最终回答保留原语言并放入独立原文块。内部 JSONL 不作为用户界面。
 
 workspace 在指定目录执行任务，关注路径写入任务，不接受 --file。bundle 通过 --file 按固定的 AW 文件选择协议 v1 选择文件、目录或 glob；各适配器实现相同规则，不需要调用者按后端改写选择式。调用方法由 Guide 的 [外部委派说明](skills/codex-subagent-guide/references/external-delegation.md) 提供；适配器开发见 [适配器文档](skills/codex-subagent-guide/adapters.md)。
 
 ## 影响与边界
 
-外部服务可能访问网络、读取材料、使用宿主认证并产生模型费用，须使用可信且已获准的服务。插件不自动改变后端权限、绕过审批或关闭正常工具。只读咨询不修改被审项目；必要临时分析写入与项目实施是不同授权。
+外部服务可能访问网络、读取材料、使用宿主认证并产生模型费用，须使用可信且已获准的服务。插件保留后端工具、权限与审批；显式 codexBypassHookTrust 的 hook 信任影响如上，不扩大任务授权。只读咨询不修改被审项目；必要临时分析写入与项目实施是不同授权。
 
 native 的 Advisor/Explore 生成角色只限制把同一任务通过相应 Skill 重新委派：Advisor 对应 codex-advisor，Explore 对应 codex-explore。公共角色资源、通用执行者和外部后端不承担这项局部限制，协作方法仍须符合任务与权限边界。
 

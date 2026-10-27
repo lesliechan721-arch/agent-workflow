@@ -69,7 +69,7 @@
       "id": "config_no_match",
       "prompt": "使用 codex-advisor 为下列已授权任务选择执行配置：对同一个纯函数的两个局部实现取得技术第二意见；边界和样例明确，可直接核验，不涉及数据库。本轮只选择，不启动任务。",
       "assertions": [
-        "自定义项均不匹配，按任务难度选择内建通用档：native、gpt-6-astra、high。",
+        "自定义项均不匹配，按任务难度选择内建 general 档：native、gpt-6-astra、high。",
         "不为了使用自定义配置改变任务含义或权限。"
       ]
     },

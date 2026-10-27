@@ -88,12 +88,12 @@ async function custom(workspace, selectors) {
   const directory = await fs.mkdtemp(path.join(temporary, 'custom-'));
   const boundary = path.join(directory, 'model-boundary');
   const run = await execute(fixtures.custom, {
-    protocolVersion: 5, type: 'start', run: { id: '0123456789abcdef0123456789abcdef', name: 'selection', deadlineAt: null }, execution: { executor: 'fixture' }, mode: 'bundle', workspace, prompt: 'selection fixture',
+    protocolVersion: 5, type: 'start', communication: true, run: { id: '0123456789abcdef0123456789abcdef', name: 'selection', deadlineAt: null }, execution: { executor: 'fixture' }, mode: 'bundle', workspace, prompt: 'selection fixture',
     fileSelectors: selectors, fileResolver: { command: process.execPath, args: [helper] }, args: [],
   }, { env: { AW_TEST_SELECTION_BOUNDARY: boundary }, keepInputOpen: true });
   const events = run.stdout.trim().split('\n').map(JSON.parse);
   assert.deepEqual(events.map(({ type }) => type), ['ready', 'closing', 'result']);
-  assert.equal(events[0].communicationSupported, false);
+  assert.deepEqual(events[0].communication, { status: 'unsupported' });
   const result = events.at(-1);
   const submitted = await fs.readFile(boundary, 'utf8').catch(() => '');
   await fs.rm(directory, { recursive: true, force: true });

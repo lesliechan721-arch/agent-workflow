@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { mock } from 'node:test';
 import { adapterMain } from '../../skills/codex-subagent-guide/scripts/adapters/common.mjs';
 
@@ -24,14 +26,23 @@ process.on('message', async ({ id, milliseconds = 0 }) => {
 
 adapterMain(import.meta.url, {
   mode: 'workspace',
+  async negotiateCommunication(context) {
+    if (context.request.args.includes('negotiationMustFail')) {
+      await fs.writeFile(path.join(context.request.runtime.directory, 'queried.json'), '{}');
+      throw Object.assign(new Error('Capability query failed.'), { code: 'communicationQueryFailed' });
+    }
+    return { supported: false };
+  },
   async execute(context) {
     active = context;
-    context.generationStarted = true;
     context.onStop = () => {
       stopCalls++;
       context.stopped.resolve();
     };
-    await context.ready(false);
+    await context.prepareCommunication();
+    await fs.writeFile(path.join(context.request.runtime.directory, 'initialization.json'), JSON.stringify({ prompt: context.prompt, communication: context.communication, bridgeCreated: !!context.bridge }));
+    await context.ready();
+    context.generationStarted = true;
     await context.stopped.promise;
     return { state: 'unknown', code: 'fixtureStopped', text: '' };
   },

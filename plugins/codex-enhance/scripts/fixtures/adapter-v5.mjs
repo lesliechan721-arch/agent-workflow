@@ -54,11 +54,12 @@ async function waitForCaptured(capture, predicate) {
 async function fixture(t, backend = 'codex', scenario = 'success') {
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-adapter-v5-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const installed = path.join(directory, 'installed');
+  const installed = path.join(directory, 'installed', 'scripts');
   await fs.cp(scripts, installed, { recursive: true });
+  await fs.cp(path.join(scripts, '../assets'), path.join(installed, '../assets'), { recursive: true });
   const installedEntry = (source) => path.join(installed, path.relative(scripts, source));
-  const selection = path.join(installed, 'file-selection/selection.mjs');
-  if (process.env.AW_PLUGIN_EVENT !== 'test') {
+  if (process.env.AW_PLUGIN_EVENT !== 'test') for (const relative of ['file-selection/selection.mjs', 'adapters/codex-profile.mjs']) {
+    const selection = path.join(installed, relative);
     const bundled = await build({ entryPoints: [selection], nodePaths: [path.join(packageRoot, 'node_modules')], bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false, legalComments: 'inline', logLevel: 'silent', banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" } });
     await fs.writeFile(selection, bundled.outputFiles[0].contents);
   }
@@ -89,9 +90,10 @@ import { createInterface } from 'node:readline';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 const args = process.argv.slice(2), scenario = process.env.FIXTURE_CASE, backend = process.env.FIXTURE_BACKEND;
+if(backend==='codex' && args.length===1 && args[0]==='--version'){process.stdout.write('codex-cli 0.153.0\\n');process.exit(0);}
 const answer = ${JSON.stringify(answer)};
 const capture = async (value) => fs.appendFile(process.env.FIXTURE_CAPTURE, JSON.stringify(value)+'\\n');
-await capture({args,cwd:process.cwd(),environment:{HOME:process.env.HOME,NORMAL_SETTING:process.env.NORMAL_SETTING,OPENAI_API_KEY:process.env.OPENAI_API_KEY,marker:process.env.AW_SUBAGENT_PROCESS_TOKEN}});
+await capture({args,cwd:process.cwd(),communicationDirectory:await fs.stat(path.join(process.env.FIXTURE_RUNTIME,'communication')).then(()=>true,()=>false),environment:{HOME:process.env.HOME,NORMAL_SETTING:process.env.NORMAL_SETTING,OPENAI_API_KEY:process.env.OPENAI_API_KEY,marker:process.env.AW_SUBAGENT_PROCESS_TOKEN}});
 setTimeout(()=>process.exit(9),${windows ? 90000 : 12000}).unref();
 const emit = value => process.stdout.write(JSON.stringify(value)+'\\n');
 if (backend === 'oracle') {
@@ -103,11 +105,13 @@ if (backend === 'oracle') {
  process.stdout.write('Request accepted.\\n');
  process.exit(scenario==='nonzero'?7:0);
 }
-let count=0, timer, active, steeringCount=0, releaseTool;
+let count=0, timer, active, steeringCount=0, releaseTool, communicationServer;
 const toolCompleted=new Promise(resolve=>{releaseTool=resolve;});
-const finish=()=> {
+const finish=async()=> {
  if(scenario==='no terminal'){process.exit(0);return;}
- if(scenario==='diagnostic overflow')process.stderr.write(Buffer.alloc(8388609,120));
+ // Complete the overflow write before publishing success. process.exit on EOF
+ // can otherwise truncate this pipe and leave the test below its threshold.
+ if(scenario==='diagnostic overflow')await new Promise(resolve=>process.stderr.write(Buffer.alloc(8388609,120),resolve));
  if(backend==='codex') {
   const turn={id:active,status:scenario==='failure'?'failed':'completed',items:[{id:'answer-'+active,type:'agentMessage',phase:'final_answer',text:answer}]};
   emit({method:'item/completed',params:{threadId:'thread-fixture',turnId:active,item:turn.items[0]}});
@@ -122,14 +126,14 @@ input.on('line',async line=>{
   const respond=result=>emit({id:value.id,result});
   if(value.method==='initialize')respond({});
   else if(value.method==='thread/start') {
+   communicationServer = Object.entries(value.params.config?.mcp_servers ?? {}).find(([key]) => key.startsWith('aw_parent_'))?.[1];
    if(scenario==='initialization failure')emit({id:value.id,error:{code:-32602,message:'invalid explicit configuration'}});
    else respond({thread:{id:'thread-fixture'},model:'model-fixture'});
   } else if(value.method==='turn/start') {
    count++;active='turn-'+count;respond({turn:{id:active,status:'inProgress',items:[]}});
    emit({method:'turn/started',params:{threadId:'thread-fixture',turn:{id:active}}});
    if(scenario==='child tool'){
-    const spec=args.find(arg=>/^mcp_servers\\..*\\.args=/.test(arg));
-    const mcp=JSON.parse(spec.slice(spec.indexOf('=')+1));
+    const mcp=communicationServer.args;
     const child=spawn(process.execPath,[path.join(path.dirname(mcp[0]),'message.mjs'),...mcp.slice(1),'send','--text','Child question 父消息?'],{stdio:['ignore','pipe','pipe']});
     let output='';child.stdout.on('data',chunk=>output+=chunk);
     const toolExitCode=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
@@ -175,10 +179,10 @@ input.on('close',()=>{clearTimeout(timer);setImmediate(()=>process.exit(scenario
     PATH: [bin, path.dirname(process.execPath), ...nativePath].join(path.delimiter), HOME: home, LANG: 'C.UTF-8',
     ...(windows ? { USERPROFILE: home, TEMP: directory, TMP: directory } : {}),
     OPENAI_API_KEY: 'synthetic-test-key', NORMAL_SETTING: 'preserved setting', AW_SUBAGENT_PROCESS_TOKEN: randomBytes(24).toString('hex'),
-    FIXTURE_CASE: scenario, FIXTURE_BACKEND: backend, FIXTURE_CAPTURE: capture,
+    FIXTURE_CASE: scenario, FIXTURE_BACKEND: backend, FIXTURE_CAPTURE: capture, FIXTURE_RUNTIME: runtime,
   };
   const request = {
-    protocolVersion: 5, type: 'start', run: { id: randomBytes(16).toString('hex'), name: 'agent-fixture', deadlineAt: null },
+    protocolVersion: 5, type: 'start', communication: true, ...(backend === 'codex' ? { codex: { cliSource: 'auto', bypassHookTrust: false } } : {}), run: { id: randomBytes(16).toString('hex'), name: 'agent-fixture', deadlineAt: null },
     execution: { executor: 'fixture' }, mode: backend === 'oracle' ? 'bundle' : 'workspace',
     workspace, prompt: ' 原始任务\nQuotes: " ` $() \\n\n', args: [],
     runtime: { directory: runtime, toolkit: { command: process.execPath, module: path.join(installed, 'runtime/adapter-channel.mjs'), messageScript: installedEntry(sourceEntries.message), mcpScript: installedEntry(sourceEntries.mcp) } },

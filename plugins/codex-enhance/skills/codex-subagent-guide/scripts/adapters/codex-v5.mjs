@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { fail, LIMITS } from '../runtime/contracts.mjs';
-import { adapterMain, backendLines, checkArguments, collaborationInput, communicationInstructions, deferred, rejectOption } from './common.mjs';
+import { mapHookState } from './codex-hooks.mjs';
+import { resolveCodexExecutable } from './codex-executable.mjs';
+import { adapterMain, backendLines, checkArguments, collaborationInput, deferred, rejectOption } from './common.mjs';
 
 export function checkCodexArguments(request, owned = []) {
   checkArguments(request.args, {
@@ -18,44 +20,59 @@ export function checkCodexArguments(request, owned = []) {
   });
 }
 
-/** Map only options whose app-server semantics are known. Reject before a turn. */
-export function codexConfiguration(request) {
+/** Profile and explicit options are merged once before choosing their phase. */
+export async function codexConfiguration(request, environment = process.env, diagnostics = []) {
   checkCodexArguments(request);
-  const argv = ['app-server'];
+  if (!request.codex || !['auto', 'cli', 'app'].includes(request.codex.cliSource) || typeof request.codex.bypassHookTrust !== 'boolean') fail('adapterProtocolInvalid', 'Codex requires an explicit CLI source and hook bypass setting.');
+  const { readCodexProfile, convertProfile, parseConfigArgument, mergeConfiguration, splitConfiguration, launchArguments } = await import('./codex-profile.mjs');
+  let profile = request.codex.profile;
+  let raw = Object.create(null);
   const thread = { cwd: request.workspace };
   const turn = {};
-  const values = new Set(['--config', '-c', '--enable', '--disable', '--model', '-m', '--sandbox', '-s', '--ask-for-approval', '-a']);
-  const owned = new Set(['--json', '--output-last-message', '-o', '--cd', '-C', '--worktree', '--help', '-h', '--version', '-V', '--listen', '--stdio']);
+  const extras = [];
+  const values = new Set(['--config', '-c', '--enable', '--disable', '--model', '-m', '--sandbox', '-s', '--ask-for-approval', '-a', '--profile', '-p']);
   for (let index = 0; index < request.args.length; index++) {
     const argument = request.args[index];
     const equals = argument.indexOf('=');
     let option = equals < 0 ? argument : argument.slice(0, equals);
     let value = equals < 0 ? undefined : argument.slice(equals + 1);
-    if (/^-[cmsa].+/.test(argument)) { option = argument.slice(0, 2); value = argument.slice(2); }
-    if (owned.has(option)) rejectOption(option);
+    if (/^-[cmpsa].+/.test(argument)) { option = argument.slice(0, 2); value = argument.slice(2); }
     if (values.has(option)) {
       value ??= request.args[++index];
-      if (typeof value !== 'string') fail('adapterArgumentsInvalid', `${option} requires a value.`);
-      if (option === '--config' || option === '-c') {
-        const key = value.split('=', 1)[0].trim().replace(/^["']|["']$/g, '');
-        if (key === 'model' && request.execution.model !== undefined || key === 'model_reasoning_effort' && request.execution.reasoningEffort !== undefined) rejectOption(option);
-        // All user configuration remains in the backend's own TOML parser.
-        argv.push('-c', value);
-      } else if (option === '--enable' || option === '--disable') argv.push(option, value);
-      else if (option === '--model' || option === '-m') {
-        if (request.execution.model !== undefined) rejectOption(option);
-        thread.model = value;
-      } else if (option === '--sandbox' || option === '-s') thread.sandbox = value;
-      else thread.approvalPolicy = value;
-    } else if (option === '--strict-config') argv.push(option);
+      if (typeof value !== 'string') fail('adapterArgumentsInvalid', 'The backend option requires a value.');
+      if (option === '--profile' || option === '-p') {
+        if (profile !== undefined) rejectOption(option);
+        profile = value;
+      } else if (option === '--config' || option === '-c') {
+        const parsed = parseConfigArgument(value);
+        if (Object.hasOwn(parsed, 'bypass_hook_trust')) fail('parameterUnavailable', 'Use the executor codexBypassHookTrust field.');
+        if (Object.hasOwn(parsed, 'model') && request.execution.model !== undefined || Object.hasOwn(parsed, 'model_reasoning_effort') && request.execution.reasoningEffort !== undefined) rejectOption(option);
+        raw = mergeConfiguration(raw, parsed);
+      } else if (option === '--enable' || option === '--disable') raw = mergeConfiguration(raw, { features: { [value]: option === '--enable' } });
+      else if (option === '--model' || option === '-m') raw.model = value;
+      else if (option === '--sandbox' || option === '-s') raw.sandbox_mode = value;
+      else raw.approval_policy = value;
+    } else if (option === '--strict-config') extras.push(option);
     else if (option === '--ephemeral') thread.ephemeral = true;
-    else if (option === '--dangerously-bypass-approvals-and-sandbox') { thread.approvalPolicy = 'never'; thread.sandbox = 'danger-full-access'; }
-    else if (option === '--full-auto') { thread.approvalPolicy = 'on-request'; thread.sandbox = 'workspace-write'; }
-    else fail('parameterUnavailable', `The Codex app-server adapter cannot preserve ${option}. Use a supported config override or remove this explicit option.`);
+    else if (option === '--dangerously-bypass-approvals-and-sandbox') { raw.approval_policy = 'never'; raw.sandbox_mode = 'danger-full-access'; }
+    else if (option === '--full-auto') { raw.approval_policy = 'on-request'; raw.sandbox_mode = 'workspace-write'; }
+    else fail('parameterUnavailable', `The Codex app-server adapter cannot preserve ${option}. Remove this explicit option.`);
   }
-  if (request.execution.model !== undefined) thread.model = request.execution.model;
-  if (request.execution.reasoningEffort !== undefined) turn.effort = request.execution.reasoningEffort;
-  return { argv, thread, turn };
+  const loaded = await readCodexProfile(profile, environment, diagnostics, request.workspace);
+  const defaults = convertProfile(loaded.document ?? {}, { diagnostics });
+  const explicit = convertProfile(raw, { diagnostics, explicit: true });
+  const merged = mergeConfiguration(defaults, explicit);
+  if (request.execution.model !== undefined) merged.model = request.execution.model;
+  if (request.execution.reasoningEffort !== undefined) {
+    merged.model_reasoning_effort = request.execution.reasoningEffort;
+    turn.effort = request.execution.reasoningEffort;
+  }
+  const split = splitConfiguration(merged);
+  thread.config = { ...split.thread, bypass_hook_trust: request.codex.bypassHookTrust };
+  if (request.codex.bypassHookTrust) diagnostics.push({ code: 'hookTrustBypassed', field: 'codexBypassHookTrust', message: 'Hook trust is bypassed for this thread, including other native hook sources. Disabled hooks and managed restrictions remain in force.' });
+  const server = `aw_parent_${request.run.id}`;
+  if (Object.hasOwn(thread.config.mcp_servers ?? {}, server)) fail('adapterArgumentsInvalid', 'The private AW MCP server is owned by the adapter.');
+  return { argv: launchArguments(split.launch, extras), thread, turn, profilePath: loaded.profilePath, profileHooks: defaults.hooks, rawHooks: explicit.hooks };
 }
 
 function createRpc(backend, context, onNotification) {
@@ -98,7 +115,7 @@ function createRpc(backend, context, onNotification) {
 }
 
 export async function executeCodex(context) {
-  const configuration = codexConfiguration(context.request);
+  const configuration = await codexConfiguration(context.request, context.environment, context.diagnostics);
   let rpc, threadId, activeTurn, model, finalText = '', terminal, initialAccepted = deferred();
   let starting = false, completeScheduled = false, failureCode;
   const terminalTurns = new Set();
@@ -112,7 +129,7 @@ export async function executeCodex(context) {
     // Allow already-readable control input and delivery continuations to run.
     setImmediate(() => {
       completeScheduled = false;
-      if (activeTurn || starting || context.bridge.hasPendingInput() || context.signal.aborted) return;
+      if (activeTurn || starting || context.bridge?.hasPendingInput() || context.signal.aborted) return;
       void context.beginClosing(terminal.status === 'completed' ? 'completed' : 'failed').then(() => completed.resolve()).catch(completed.reject);
     });
   };
@@ -133,7 +150,8 @@ export async function executeCodex(context) {
       return { status: 'unknown', code: 'backendResponseUnknown' };
     } finally { starting = false; maybeComplete(); }
   };
-  const bridge = await context.createBridge(async ({ text }, { signal }) => {
+  const server = `aw_parent_${context.request.run.id}`;
+  const bridge = await context.prepareCommunication({ instructionBindings: { sendTool: `mcp__${server}__send_parent`, receiveTool: `mcp__${server}__receive_parent` }, submitInput: async ({ text }, { signal }) => {
     await initialAccepted.promise;
     if (signal.aborted || context.signal.aborted) return { status: 'notSubmitted', code: 'runClosed' };
     if (activeTurn) {
@@ -152,14 +170,17 @@ export async function executeCodex(context) {
     const delivery = await startTurn(collaborationInput(text));
     setImmediate(maybeComplete);
     return delivery;
-  });
-  const server = `aw_parent_${context.request.run.id}`;
-  const argv = [...configuration.argv,
-    '-c', `mcp_servers.${server}.command=${JSON.stringify(bridge.mcpServer.command)}`,
-    '-c', `mcp_servers.${server}.args=${JSON.stringify(bridge.mcpServer.args)}`,
-    '-c', `mcp_servers.${server}.required=true`,
-  ];
-  const backend = await context.spawn('codex', argv);
+  } });
+  if (bridge) configuration.thread.config.mcp_servers = {
+    ...configuration.thread.config.mcp_servers,
+    [server]: { command: bridge.mcpServer.command, args: bridge.mcpServer.args, required: true },
+  };
+  let executable;
+  try { executable = await resolveCodexExecutable({ source: context.request.codex.cliSource, environment: context.environment, cwd: context.request.workspace }); }
+  catch (error) { if (error.diagnostic) context.diagnostics.push(error.diagnostic); throw error; }
+  if (executable.diagnostic) context.diagnostics.push(executable.diagnostic);
+  if (executable.env) context.environment = executable.env;
+  const backend = await context.spawn(executable.command, [...(executable.args ?? []), ...configuration.argv]);
   rpc = createRpc(backend, context, (method, params) => {
     if (params.threadId && threadId && params.threadId !== threadId) { context.abort('backendSessionMismatch'); return; }
     if (['turn/started', 'item/completed', 'turn/completed'].includes(method) && params.threadId !== threadId) { context.abort('backendSessionMismatch'); return; }
@@ -191,14 +212,20 @@ export async function executeCodex(context) {
   try {
     await rpc.call('initialize', { clientInfo: { name: 'aw-subagent', version: '5' }, capabilities: {} });
     await rpc.notify('initialized');
+    if (configuration.thread.config.hooks) {
+      let layers;
+      try { layers = await rpc.call('config/read', { cwd: context.request.workspace, includeLayers: true }); }
+      catch { fail('profileHookStateUnavailable', 'The backend could not return raw hook state layers.'); }
+      mapHookState(configuration, layers);
+    }
     const response = await rpc.call('thread/start', configuration.thread);
     threadId = response?.thread?.id;
     if (typeof threadId !== 'string' || !threadId) fail('backendOutputInvalid', 'The backend did not return a thread ID.');
     if (typeof response.model === 'string') model = response.model;
     if (context.signal.aborted) return { state: 'cancelled', code: context.errorCode, text: '' };
-    await context.ready(true);
+    await context.ready();
     context.generationStarted = null;
-    const first = await startTurn(`${context.request.prompt}\n\n${communicationInstructions}`);
+    const first = await startTurn(context.prompt);
     initialAccepted.resolve();
     if (first.status !== 'submitted') {
       if (first.status === 'notSubmitted') context.generationStarted = false;
@@ -221,4 +248,6 @@ export async function executeCodex(context) {
   }
 }
 
-adapterMain(import.meta.url, { mode: 'workspace', execute: executeCodex }, 'Codex Adapter v5\nUsage: node codex-v5.mjs\nReads one persistent v5 JSONL connection. Uses PATH codex app-server, private parent tools, and automatic input.\nNormal backend configuration and approvals apply. Unsupported explicit options fail before model submission.\nNo default execution deadline or automatic retry. Backend process exit and service terminal are required.\n');
+export async function negotiateCodexCommunication() { return { supported: true, transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true }; }
+
+adapterMain(import.meta.url, { mode: 'workspace', negotiateCommunication: negotiateCodexCommunication, execute: executeCodex }, 'Codex Adapter v5\nUsage: node codex-v5.mjs\nReads one persistent v5 JSONL connection. Uses PATH codex app-server, private parent tools, and automatic input.\nNormal backend configuration and approvals apply. Unsupported explicit options fail before model submission.\nNo default execution deadline or automatic retry. Backend process exit and service terminal are required.\n');

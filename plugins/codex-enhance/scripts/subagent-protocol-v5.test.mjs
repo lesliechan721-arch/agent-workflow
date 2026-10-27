@@ -6,10 +6,10 @@ import { LIMITS, validateRequest } from '../skills/codex-subagent-guide/scripts/
 
 const start = () => ({
   protocolVersion: 5, type: 'start', run: { id: '1'.repeat(32), name: 'agent-test', deadlineAt: null },
-  execution: { executor: 'fixture' }, mode: 'workspace', workspace: process.cwd(), prompt: '原始任务\r\n😀', args: [],
+  execution: { executor: 'fixture' }, mode: 'workspace', workspace: process.cwd(), prompt: '原始任务\r\n😀', args: [], communication: true,
   runtime: { directory: process.cwd(), toolkit: { module: import.meta.filename, command: process.execPath, messageScript: import.meta.filename, mcpScript: import.meta.filename } },
 });
-const ready = (communicationSupported = true) => ({ protocolVersion: 5, type: 'ready', communicationSupported });
+const ready = (enabled = true) => ({ protocolVersion: 5, type: 'ready', communication: enabled ? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } : { status: 'unsupported' } });
 const input = (id = '2'.repeat(32), text = '父消息😀') => ({ protocolVersion: 5, type: 'message', id, text });
 const result = () => ({ protocolVersion: 5, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text: '最终结果。' });
 
@@ -55,6 +55,8 @@ test('v5 shape validation rejects unknown fields, old requests, unsafe IDs, name
     (value) => { value.fileSelectors = []; },
     (value) => { value.workspace = 'relative'; },
     (value) => { value.prompt = '\ud800'; },
+    (value) => { delete value.communication; },
+    (value) => { value.communication = 'true'; },
   ]) {
     const frame = start(); mutate(frame); assert.throws(() => validateRequest(frame));
   }
@@ -71,6 +73,26 @@ test('v5 shape validation rejects unknown fields, old requests, unsafe IDs, name
   }
   assert.throws(() => validateFrame({ ...ready(), unexpected: true }, 'adapter'));
   assert.throws(() => validateFrame({ protocolVersion: 5, type: 'poll' }, 'worker'));
+});
+
+test('ready describes exact capabilities and rejects disabled mismatches and invalid diagnostics', () => {
+  for (const communication of [
+    { status: 'disabled', activeReceive: false }, { status: 'unsupported', transport: 'mcp' },
+    { status: 'enabled', transport: 'mcp', passiveDelivery: 'none', activeReceive: false },
+    { status: 'enabled', transport: 'stdio', passiveDelivery: 'in-turn', activeReceive: true },
+    { status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary' },
+  ]) assert.throws(() => validateFrame({ ...ready(), communication }, 'adapter'), { code: 'protocolInvalid' });
+  assert.throws(() => validateFrame({ protocolVersion: 5, type: 'ready', communicationSupported: true }, 'adapter'));
+  for (const diagnostics of [[{ code: 'warning', message: 'Safe reason.', value: 'private' }], [{ code: 'unsafe-code', message: 'Reason.' }], [{ code: 'warning', field: 'bad\nfield', message: 'Reason.' }]]) {
+    assert.throws(() => validateFrame({ ...ready(), diagnostics }, 'adapter'));
+  }
+  const diagnostics = [{ code: 'profileFieldIgnored', field: 'features.unknown', message: 'This field is not supported.' }];
+  assert.deepEqual(validateFrame({ ...ready(), diagnostics }, 'adapter').diagnostics, diagnostics);
+  const disabled = createProtocolState(); disabled.acceptWorker({ ...start(), communication: false });
+  assert.throws(() => disabled.acceptAdapter(ready()));
+  assert.throws(() => disabled.acceptAdapter(ready(false)));
+  disabled.acceptAdapter({ ...ready(), communication: { status: 'disabled' } });
+  assert.throws(() => disabled.acceptWorker(input()));
 });
 
 test('both message directions enforce 4096 UTF-8 bytes without truncating or normalizing', () => {
@@ -116,7 +138,7 @@ test('false capability and initialization exceptions preserve actual evidence', 
     { ...result(), state: 'unknown', generationStarted: null, backendExitCode: null, text: '', code: 'protocolInvalid' },
   ]) {
     const connection = createProtocolState(); connection.acceptWorker(start()); connection.acceptAdapter(frame);
-    assert.equal(connection.communicationSupported, null);
+    assert.equal(connection.communication, null);
   }
   const bundle = start(); bundle.mode = 'bundle'; bundle.fileSelectors = []; bundle.fileResolver = { command: process.execPath, args: [import.meta.filename] };
   const connection = createProtocolState(); connection.acceptWorker(bundle); assert.throws(() => connection.acceptAdapter(ready(true)));

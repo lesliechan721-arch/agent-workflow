@@ -52,7 +52,8 @@ export async function prepareRun(selected, request, options = {}) {
   }
   const wire = {
     protocolVersion: 5, type: 'start', execution: { ...selected.execution }, mode: selected.mode,
-    workspace, prompt, args: [...selected.executor.args],
+    workspace, prompt, args: [...selected.executor.args], communication: selected.communication,
+    ...(selected.codex ? { codex: { ...selected.codex } } : {}),
     ...(selected.mode === 'bundle' ? {
       fileSelectors: [...fileSelectors],
       fileResolver: { command: process.execPath, args: [path.join(selected.resourceRoot, 'scripts', 'resolve-files.mjs')] },

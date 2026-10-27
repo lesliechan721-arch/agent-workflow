@@ -59,7 +59,7 @@ test('Codex: a lost submission response stays unknown and is not replayed', { sk
 for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: requested stop reaches a waiting backend`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t, backend, 'hold');
   const run = f.start(); run.send(f.request);
-  assert.equal((await run.waitFor('ready')).communicationSupported, backend !== 'oracle');
+  assert.equal((await run.waitFor('ready')).communication.status, backend === 'oracle' ? 'unsupported' : 'enabled');
   await f.waitForCaptured((value) => backend === 'codex' ? value.input?.method === 'turn/start' : backend === 'claude' ? value.input?.type === 'user' : typeof value.input === 'string');
   run.send({ type: 'stop', reason: 'requested' });
   const result = await run.waitFor('result');
@@ -73,7 +73,7 @@ for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: requested
 });
 
 test('Codex: explicit unmappable options fail before starting the backend', { skip: !supported, timeout: testTimeoutMs }, async (t) => {
-  const f = await fixture(t); f.request.args = ['--profile', 'custom-profile'];
+  const f = await fixture(t); f.request.args = ['--dangerously-bypass-hook-trust'];
   const run = f.start(); run.send(f.request); const result = await run.waitFor('result');
   assert.equal(result.state, 'failed'); assert.equal(result.generationStarted, false); assert.equal(result.code, 'parameterUnavailable');
   assert.equal(run.frames.some((frame) => frame.type === 'ready'), false); await run.exit;

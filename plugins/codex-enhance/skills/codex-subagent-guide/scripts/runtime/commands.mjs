@@ -7,7 +7,7 @@ import { safeSpawn } from './platform.mjs';
 import { processTable, stopOwnedTree } from './processes.mjs';
 import { createRun, openRun, observeRun, recordFiles, readRecord, saveGap, saveObservation,
   workerAlive, expired, removeExpired, removeScratch, terminal, delay } from './store.mjs';
-import { OUTPUT_LIMIT, communication, needsCommunication, groupHeader, diagnostic, eventText,
+import { OUTPUT_LIMIT, communication, initializationDiagnostics, chooseBoundary, needsCommunication, groupHeader, diagnostic, eventText,
   finalChunks, resultReport, measureReport, collectReport, exportHint } from './output.mjs';
 
 const scanDiagnostic = (context) => context.scanFailed ? diagnostic('expirationScanIncomplete', 'Some expired resources could not be checked. They were retained.') : '';
@@ -53,14 +53,14 @@ export async function startRun(context, prepared, request) {
     context.table = child.exitCode === null && child.signalCode === null ? [run.meta.worker] : [];
     try { current = await observeRun(context, run); }
     catch (error) { return operationError('start', run.handle, error, run); }
-    if (current.snapshot.communicationSupported !== null || current.result) break;
+    if (current.snapshot.communication !== null || current.result) break;
     const remaining = until - Date.now();
     if (remaining <= 0) break;
     await delay(Math.min(80, remaining));
   } while (Date.now() < until);
   await saveObservation(current, { terminalConsumed: false });
-  const ready = current.snapshot.communicationSupported !== null;
-  return { text: `start: ${ready ? 'ready' : current.result ? 'error' : 'notReady'}\n${groupHeader(current, true)}${ready ? '' : `code: ${current.result?.code ?? 'startupNotReady'}\n`}`,
+  const ready = current.snapshot.communication !== null;
+  return { text: `start: ${ready ? 'ready' : current.result ? 'error' : 'notReady'}\n${groupHeader(current, true)}${initializationDiagnostics(current.snapshot.diagnostics, chooseBoundary(current.snapshot.diagnostics?.map((entry) => entry.message)))}${ready ? '' : `code: ${current.result?.code ?? 'startupNotReady'}\n`}`,
     diagnostic: scanDiagnostic(context), exitCode: ready ? 0 : 1 };
 }
 
@@ -70,7 +70,7 @@ export async function sendInput(context, request) {
     run = await observeRun(context, await openRun(context, request.runs[0]));
     if (run.snapshot.state === 'starting') fail('runNotReady', 'The run has not initialized.');
     if (run.snapshot.state !== 'running') fail('runClosed', 'The run no longer accepts input.');
-    if (run.snapshot.communicationSupported !== true) fail('communicationUnsupported', 'This run does not support communication.');
+    if (run.snapshot.communication?.status !== 'enabled') fail('communicationUnsupported', 'This run does not support communication.');
     const id = randomBytes(16).toString('hex');
     const name = `${String(Date.now()).padStart(16, '0')}-${process.hrtime.bigint()}-${id}.json`;
     await atomicJson(path.join(run.directory, 'outbox', name), { id, text: request.text, phase: 'queued' });
@@ -128,6 +128,7 @@ function waitReport(groups, more, changed) {
       if (!group.run) { yield `run: ${group.handle}\ncode: ${group.error}\n`; continue; }
       const capability = group.capability ?? (group.items.some((item) => item.kind === 'state' || item.kind === 'final' || item.kind === 'deferred') && needsCommunication(group.run));
       yield groupHeader(group.run, capability);
+      if (capability && !group.items.some((item) => item.kind === 'final')) yield initializationDiagnostics(group.run.snapshot.diagnostics, token);
       if (group.error) yield `code: ${group.error}\n`;
       for (const item of group.items) {
         if (item.kind === 'message') yield item.rendered ?? await eventText(group.run, item.name, token);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fixture, eventually, terminalPattern, windows, testTimeoutMs, blocks, field, bounded, successful } from './fixtures/subagent-integration.mjs';
+import { validateFrame } from '../skills/codex-subagent-guide/scripts/runtime/protocol.mjs';
 
 // Test Value Gate: result must select the complete report, consume all unread
 // notifications, preserve duplicate bodies and retain only the fixed final result.
@@ -64,6 +65,43 @@ test('referenced environment secrets stay redacted in actual parent output', { t
   assert.equal((await started.observed()).environment.SERVICE_DATA, secret);
 });
 
+// Test Value Gate: legal ready and result diagnostics must not invalidate a
+// completed task when a short envFrom value expands during redaction.
+test('diagnostic redaction expansion preserves completed output and readable exports', { timeout: testTimeoutMs }, async (t) => {
+  const diagnostic = { code: 'profileReadyIgnored', field: `features.base${'f'.repeat(499)}`, message: `base${'m'.repeat(2044)}` };
+  const resultDiagnostics = [{ ...diagnostic, code: 'profileResultIgnored' }, { code: 'profileFieldIgnored', field: 'features.kept', message: 'Keep this safe diagnostic.' }];
+  const finalText = 'Complete retained answer.';
+  validateFrame({ protocolVersion: 5, type: 'ready', communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true }, diagnostics: [diagnostic] }, 'adapter');
+  validateFrame({ protocolVersion: 5, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text: finalText, diagnostics: resultDiagnostics }, 'adapter');
+  const f = await fixture(t);
+  f.snapshot.effectiveValues.subagentCommands[0].envFrom = { SERVICE_DATA: 'REFERENCED_VALUE' }; await f.save();
+  const started = await f.start({ diagnostics: [diagnostic], resultDiagnostics, finalText }, { env: { REFERENCED_VALUE: 'base' } });
+  successful(started, 'start'); bounded(started);
+  assert.ok(blocks(started.stdout, 'DIAGNOSTIC').join('\n').includes(diagnostic.code));
+  await started.finish(); await started.finished();
+  const result = await eventually(async () => {
+    const response = await f.command(['result', '--run', started.run]);
+    return field(response.stdout, 'code') !== 'resultNotReady' && response;
+  }, 'completed result with expanded diagnostics');
+  successful(result, 'result'); bounded(result);
+  assert.equal(field(result.stdout, 'state'), 'completed');
+  assert.deepEqual(blocks(result.stdout, 'FINAL'), [finalText]);
+  const exported = await f.command(['result', '--run', started.run, '--export']);
+  successful(exported, 'result'); assert.equal(field(exported.stdout, 'state'), 'completed');
+  assert.deepEqual(blocks(exported.stdout, 'FINAL'), [finalText]);
+  const diagnosticText = blocks(exported.stdout, 'DIAGNOSTIC').join('\n');
+  assert.ok(diagnosticText.includes(resultDiagnostics[0].code));
+  assert.ok(diagnosticText.includes(resultDiagnostics[1].message));
+  assert.match(diagnosticText, /message omitted/); assert.match(diagnosticText, /field path omitted/);
+  const reread = await f.command(['result', '--run', started.run, '--export']);
+  successful(reread, 'result'); assert.equal(field(reread.stdout, 'state'), 'completed');
+  assert.deepEqual(blocks(reread.stdout, 'FINAL'), [finalText]);
+  assert.deepEqual(blocks(reread.stdout, 'DIAGNOSTIC'), blocks(exported.stdout, 'DIAGNOSTIC'));
+  for (const response of [started, result, exported, reread]) {
+    assert.equal((response.stdout + response.stderr).includes('base'), false);
+  }
+});
+
 // Test Value Gate: adapter scratch must be removed after its processes stop while
 // unread process messages and the fixed final remain available to their consumer.
 test('stopped adapter scratch is deleted while unread messages and final remain readable', { timeout: testTimeoutMs }, async (t) => {
@@ -104,9 +142,10 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
   const f = await fixture(t, 'workspace', { diagnostics: true });
   const clock = await f.clock(['start'], { stepMs: 1000 });
   const finalText = 'Late capability final.\n';
+  const diagnostics = [{ code: 'profileFieldIgnored', field: 'features.unknown', message: 'Unsupported override; base settings remain active.' }];
   const [forWait, forResult] = await Promise.all([
     f.start({ communication: false, readyGate: true, finishImmediately: true }, { env: clock.environment }),
-    f.start({ communication: true, readyGate: true, finishImmediately: true, finalText }, { env: clock.environment }),
+    f.start({ communication: true, readyGate: true, finishImmediately: true, finalText, diagnostics, descriptor: { status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary', activeReceive: false } }, { env: clock.environment }),
   ]);
   for (const [index, started] of [forWait, forResult].entries()) {
     const diagnostic = JSON.stringify({ phase: 'lateReadyStart', case: index === 0 ? 'communicationFalse' : 'communicationTrue',
@@ -123,7 +162,7 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
   await Promise.all([forWait.releaseReady(), forResult.releaseReady()]);
   await Promise.all([forWait.finished(), forResult.finished()]);
   const responses = await f.waitTerminal(forWait.run);
-  assert.ok(responses.some((response) => field(response.stdout, 'communication') === 'false'));
+  assert.ok(responses.some((response) => field(response.stdout, 'communication') === 'false' && field(response.stdout, 'communication_status') === 'unsupported'));
   const result = await f.command(['result', '--run', forWait.run]);
   successful(result, 'result'); assert.equal(field(result.stdout, 'communication'), undefined);
   assert.deepEqual(blocks(result.stdout, 'FINAL'), ['Complete final answer.']);
@@ -132,9 +171,15 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
     return field(response.stdout, 'code') !== 'resultNotReady' && response;
   }, 'late ready fixed final');
   successful(resultWithCapability, 'result'); assert.equal(field(resultWithCapability.stdout, 'communication'), 'true');
+  assert.equal(field(resultWithCapability.stdout, 'communication_status'), 'enabled');
+  assert.equal(field(resultWithCapability.stdout, 'communication_transport'), 'command');
+  assert.equal(field(resultWithCapability.stdout, 'communication_passive_delivery'), 'turn-boundary');
+  assert.equal(field(resultWithCapability.stdout, 'communication_active_receive'), 'false');
+  assert.equal(blocks(resultWithCapability.stdout, 'DIAGNOSTIC').length, 1);
   assert.deepEqual(blocks(resultWithCapability.stdout, 'FINAL'), [finalText]);
   const reread = await f.command(['result', '--run', forResult.run]);
   successful(reread, 'result'); assert.equal(field(reread.stdout, 'communication'), undefined);
+  assert.deepEqual(blocks(reread.stdout, 'DIAGNOSTIC'), blocks(resultWithCapability.stdout, 'DIAGNOSTIC'));
   assert.equal((await f.command(['wait', '--run', forResult.run])).stdout, 'wait: settled\n');
 });
 
@@ -142,7 +187,7 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
 // readable failure, rather than treating missing ready as communication=false.
 test('initialization failure has pending capability and a readable failed final', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
-  const started = await f.start({ initializationFailure: true });
+  const started = await f.start({ initializationFailure: true, diagnostics: [{ code: 'profileFieldIgnored', field: 'features.unknown', message: 'Unsupported override; base settings remain active.' }] });
   assert.equal(started.code, 1); assert.equal(field(started.stdout, 'communication'), 'pending');
   const terminal = (await f.waitTerminal(started.run)).find((response) => terminalPattern.test(response.stdout));
   assert.equal(field(terminal.stdout, 'state'), 'failed'); assert.equal(field(terminal.stdout, 'communication'), 'pending');
@@ -150,6 +195,44 @@ test('initialization failure has pending capability and a readable failed final'
   const result = await f.command(['result', '--run', started.run]);
   successful(result, 'result'); assert.equal(field(result.stdout, 'text_status'), 'missing');
   assert.deepEqual(blocks(result.stdout, 'FINAL'), ['']);
+  assert.equal(blocks(result.stdout, 'DIAGNOSTIC').length, 2);
+  const reread = await f.command(['result', '--run', started.run]);
+  successful(reread, 'result');
+  assert.deepEqual(blocks(reread.stdout, 'DIAGNOSTIC'), blocks(result.stdout, 'DIAGNOSTIC'));
+});
+
+// Test Value Gate: a legal custom result can exceed the snapshot budget without
+// ready. Public reads must stay bounded and export must retain every diagnostic.
+test('initialization failure with large diagnostics remains readable and exportable', { timeout: testTimeoutMs }, async (t) => {
+  const diagnostics = Array.from({ length: 20 }, (_, index) => ({ code: 'profileFieldIgnored', field: `features.item_${index}`, message: 'x'.repeat(1000) }));
+  validateFrame({ protocolVersion: 5, type: 'result', state: 'failed', generationStarted: false, backendExitCode: null,
+    text: '', code: 'fixtureInitializationFailed', diagnostics }, 'adapter');
+  const f = await fixture(t);
+  const started = await f.start({ initializationFailure: true, diagnostics });
+  bounded(started); assert.equal(started.code, 1);
+  assert.equal(field(started.stdout, 'communication'), 'pending');
+  assert.equal(field(started.stdout, 'code'), 'fixtureInitializationFailed');
+  const limited = await eventually(async () => {
+    const response = await f.command(['result', '--run', started.run]);
+    return field(response.stdout, 'code') !== 'resultNotReady' && response;
+  }, 'large initialization result');
+  bounded(limited); assert.equal(limited.code, 1);
+  assert.equal(field(limited.stdout, 'code'), 'resultTooLarge');
+  assert.ok(limited.stdout.includes(`result --run ${started.run} --export`));
+  const terminal = (await f.waitTerminal(started.run)).find((response) => terminalPattern.test(response.stdout));
+  assert.equal(field(terminal.stdout, 'state'), 'failed');
+  assert.equal(field(terminal.stdout, 'communication'), 'pending');
+  assert.equal(field(terminal.stdout, 'result'), 'deferred');
+  assert.match(blocks(terminal.stdout, 'DIAGNOSTIC').join('\n'), /diagnosticsSummarized: 20\b/);
+  const exported = await f.command(['result', '--run', started.run, '--export']);
+  successful(exported, 'result'); assert.equal(field(exported.stdout, 'state'), 'failed');
+  assert.equal(field(exported.stdout, 'generation_started'), 'false');
+  assert.equal(blocks(exported.stdout, 'DIAGNOSTIC')[0], diagnostics.map((entry) => `${entry.code} (${entry.field}): ${entry.message}`).join('\n'));
+  assert.deepEqual(blocks(exported.stdout, 'FINAL'), ['']);
+  const reread = await f.command(['result', '--run', started.run, '--export']);
+  successful(reread, 'result');
+  assert.deepEqual(blocks(reread.stdout, 'DIAGNOSTIC'), blocks(exported.stdout, 'DIAGNOSTIC'));
+  assert.equal((await f.command(['wait', '--run', started.run])).stdout, 'wait: settled\n');
 });
 
 // Test Value Gate: an OS-visible broken output pipe must leave unread messages

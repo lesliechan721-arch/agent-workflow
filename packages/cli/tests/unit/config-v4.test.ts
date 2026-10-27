@@ -54,6 +54,12 @@ describe('Config Definition v4 CLI boundaries', () => {
       { key: 'oracle-default', adapter: 'oracle' },
       { key: 'codex-review', adapter: 'codex', codexProfile: 'review profile' },
       { key: 'codex-default', adapter: 'codex' },
+      { key: 'codex-app', adapter: 'codex', codexCliSource: 'app', codexBypassHookTrust: true, communication: false },
+      { key: 'codex-cli', adapter: 'codex', codexCliSource: 'cli', codexBypassHookTrust: false, communication: true },
+      { key: 'codex-auto', adapter: 'codex', codexCliSource: 'auto', codexBypassHookTrust: true, codexProfile: 'advanced' },
+      { key: 'agy', adapter: 'antigravity', communication: false, args: ['--model', 'backend-default'],
+        env: { ORDINARY: 'literal' }, envFrom: { TOKEN: 'HOST_TOKEN' } },
+      { key: 'custom', adapter: 'custom', mode: 'workspace', command: process.execPath, communication: true },
     ];
     const advisorGeneralProfile = { executor: 'oracle-web', reasoningEffort: 'pro' };
     await save({ subagentCommands: commands, advisorGeneralProfile });
@@ -70,6 +76,19 @@ describe('Config Definition v4 CLI boundaries', () => {
       { ...commands[0], oracleEngine: 'auto' }, { ...commands[0], adapter: 'codex' },
       { ...commands[2], adapter: 'oracle' }, { ...commands[2], adapter: 'claude-code' },
       ...['', '  ', '\0', 'x'.repeat(4097)].map((codexProfile) => ({ ...commands[2], codexProfile })),
+      ...['codex', 'claude-code', 'antigravity', 'oracle', 'custom'].flatMap((adapter) =>
+        ['false', 0, null].map((communication) => ({ key: 'invalid', adapter, communication,
+          ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) }))),
+      ...['cli-path', false, null].map((codexCliSource) => ({ ...commands[4], codexCliSource })),
+      ...['false', 0, null].map((codexBypassHookTrust) => ({ ...commands[4], codexBypassHookTrust })),
+      ...['claude-code', 'antigravity', 'oracle', 'custom'].flatMap((adapter) => [
+        { key: 'foreign', adapter, codexCliSource: 'auto',
+          ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) },
+        { key: 'foreign', adapter, codexBypassHookTrust: false,
+          ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) },
+      ]),
+      { ...commands[7], mode: 'bundle' },
+      { ...commands[7], command: process.execPath },
     ]) {
       await expect(save({ subagentCommands: [commands[0], { ...invalid, key: 'invalid' }] })).rejects.toThrow();
       expect(await fs.readFile(file)).toEqual(before);
