@@ -93,7 +93,7 @@ async function custom(workspace, selectors) {
   }, { env: { AW_TEST_SELECTION_BOUNDARY: boundary }, keepInputOpen: true });
   const events = run.stdout.trim().split('\n').map(JSON.parse);
   assert.deepEqual(events.map(({ type }) => type), ['ready', 'closing', 'result']);
-  assert.deepEqual(events[0].communication, { status: 'unsupported' });
+  assert.deepEqual(events[0].initialization, { environment: { status: 'available' }, capabilities: { communication: { status: 'unsupported' } } });
   const result = events.at(-1);
   const submitted = await fs.readFile(boundary, 'utf8').catch(() => '');
   await fs.rm(directory, { recursive: true, force: true });

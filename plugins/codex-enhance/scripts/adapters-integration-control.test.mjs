@@ -59,7 +59,7 @@ test('Codex: a lost submission response stays unknown and is not replayed', { sk
 for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: requested stop reaches a waiting backend`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t, backend, 'hold');
   const run = f.start(); run.send(f.request);
-  assert.equal((await run.waitFor('ready')).communication.status, backend === 'oracle' ? 'unsupported' : 'enabled');
+  assert.equal((await run.waitFor('ready')).initialization.capabilities.communication.status, backend === 'oracle' ? 'unsupported' : 'enabled');
   await f.waitForCaptured((value) => backend === 'codex' ? value.input?.method === 'turn/start' : backend === 'claude' ? value.input?.type === 'user' : typeof value.input === 'string');
   run.send({ type: 'stop', reason: 'requested' });
   const result = await run.waitFor('result');

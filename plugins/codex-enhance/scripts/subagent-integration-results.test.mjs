@@ -71,7 +71,7 @@ test('diagnostic redaction expansion preserves completed output and readable exp
   const diagnostic = { code: 'profileReadyIgnored', field: `features.base${'f'.repeat(499)}`, message: `base${'m'.repeat(2044)}` };
   const resultDiagnostics = [{ ...diagnostic, code: 'profileResultIgnored' }, { code: 'profileFieldIgnored', field: 'features.kept', message: 'Keep this safe diagnostic.' }];
   const finalText = 'Complete retained answer.';
-  validateFrame({ protocolVersion: 5, type: 'ready', communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true }, diagnostics: [diagnostic] }, 'adapter');
+  validateFrame({ protocolVersion: 5, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } } }, diagnostics: [diagnostic] }, 'adapter');
   validateFrame({ protocolVersion: 5, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text: finalText, diagnostics: resultDiagnostics }, 'adapter');
   const f = await fixture(t);
   f.snapshot.effectiveValues.subagentCommands[0].envFrom = { SERVICE_DATA: 'REFERENCED_VALUE' }; await f.save();
@@ -162,9 +162,10 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
   await Promise.all([forWait.releaseReady(), forResult.releaseReady()]);
   await Promise.all([forWait.finished(), forResult.finished()]);
   const responses = await f.waitTerminal(forWait.run);
+  assert.ok(responses.some((response) => field(response.stdout, 'environment') === 'available'));
   assert.ok(responses.some((response) => field(response.stdout, 'communication') === 'false' && field(response.stdout, 'communication_status') === 'unsupported'));
   const result = await f.command(['result', '--run', forWait.run]);
-  successful(result, 'result'); assert.equal(field(result.stdout, 'communication'), undefined);
+  successful(result, 'result'); assert.equal(field(result.stdout, 'communication'), 'false');
   assert.deepEqual(blocks(result.stdout, 'FINAL'), ['Complete final answer.']);
   const resultWithCapability = await eventually(async () => {
     const response = await f.command(['result', '--run', forResult.run]);
@@ -178,7 +179,7 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
   assert.equal(blocks(resultWithCapability.stdout, 'DIAGNOSTIC').length, 1);
   assert.deepEqual(blocks(resultWithCapability.stdout, 'FINAL'), [finalText]);
   const reread = await f.command(['result', '--run', forResult.run]);
-  successful(reread, 'result'); assert.equal(field(reread.stdout, 'communication'), undefined);
+  successful(reread, 'result'); assert.equal(field(reread.stdout, 'communication'), 'true');
   assert.deepEqual(blocks(reread.stdout, 'DIAGNOSTIC'), blocks(resultWithCapability.stdout, 'DIAGNOSTIC'));
   assert.equal((await f.command(['wait', '--run', forResult.run])).stdout, 'wait: settled\n');
 });
@@ -199,6 +200,51 @@ test('initialization failure has pending capability and a readable failed final'
   const reread = await f.command(['result', '--run', started.run]);
   successful(reread, 'result');
   assert.deepEqual(blocks(reread.stdout, 'DIAGNOSTIC'), blocks(result.stdout, 'DIAGNOSTIC'));
+});
+
+// Test Value Gate: partial initialization must reach start and each fixed result
+// read without turning an unchecked capability into unsupported. wait consumes it once.
+for (const environment of [{ status: 'available' }, { status: 'unavailable', code: 'executableNotFound' }]) test(`initialization failure preserves ${environment.status} environment in fixed result reads`, { timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t);
+  const started = await f.start({ initializationFailure: true, initialization: { environment, capabilities: {} } });
+  assert.equal(started.code, 1);
+  assert.equal(field(started.stdout, 'environment'), environment.status);
+  assert.equal(field(started.stdout, 'environment_code'), environment.code);
+  assert.equal(field(started.stdout, 'communication'), 'pending');
+  const terminal = (await f.waitTerminal(started.run)).find((response) => terminalPattern.test(response.stdout));
+  assert.equal(field(terminal.stdout, 'environment'), undefined);
+  assert.equal(field(terminal.stdout, 'communication'), undefined);
+  assert.equal(field(terminal.stdout, 'generation_started'), 'false');
+  for (const extra of [[], [], ['--export']]) {
+    const result = await f.command(['result', '--run', started.run, ...extra]);
+    successful(result, 'result');
+    assert.equal(field(result.stdout, 'environment'), environment.status);
+    assert.equal(field(result.stdout, 'environment_code'), environment.code);
+    assert.equal(field(result.stdout, 'communication'), 'pending');
+  }
+});
+
+// Test Value Gate: a custom entry can fail before the adapter process exists.
+// The same worker result path must expose the environment without model input.
+for (const target of ['command', 'entrypoint', ...(process.platform === 'win32' ? [] : ['nonExecutable'])]) test(`custom ${target} failure has a fixed unavailable environment result`, { timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t);
+  const executor = f.snapshot.effectiveValues.subagentCommands[0];
+  if (target === 'nonExecutable') {
+    executor.command = path.join(f.directory, 'non-executable');
+    await fs.writeFile(executor.command, 'fixture', { mode: 0o600 });
+  } else executor[target] = path.join(f.directory, 'missing-custom-entry');
+  await f.save();
+  const started = await f.start();
+  assert.equal(started.code, 1);
+  assert.equal(field(started.stdout, 'environment'), 'unavailable');
+  assert.equal(field(started.stdout, 'communication'), 'pending');
+  const result = await f.command(['result', '--run', started.run]);
+  successful(result, 'result');
+  assert.equal(field(result.stdout, 'state'), 'failed');
+  assert.equal(field(result.stdout, 'generation_started'), 'false');
+  assert.equal(field(result.stdout, 'environment'), 'unavailable');
+  assert.equal(field(result.stdout, 'environment_code'), target === 'nonExecutable' ? 'executableNotRunnable' : 'pathMissing');
+  assert.equal(await fs.stat(f.generations).catch(() => null), null);
 });
 
 // Test Value Gate: a legal custom result can exceed the snapshot budget without

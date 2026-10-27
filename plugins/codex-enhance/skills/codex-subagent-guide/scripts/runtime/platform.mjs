@@ -258,13 +258,19 @@ function environmentValue(environment, name) {
 async function findCommand(command, cwd, environment) {
   if (path.isAbsolute(command) || /[/\\]/.test(command)) return path.resolve(cwd, command);
   const extensions = process.platform === 'win32' && !path.extname(command) ? ['.exe', '.com', '.cmd', '.bat'] : [''];
+  let notRunnable = false;
   for (const directory of (environmentValue(environment, 'PATH') ?? '').split(path.delimiter)) {
     if (!directory) continue;
     for (const extension of extensions) {
       const candidate = path.resolve(cwd, directory.replace(/^"|"$/g, ''), `${command}${extension}`);
-      try { if ((await fs.stat(candidate)).isFile()) { await fs.access(candidate, constants.X_OK); return candidate; } } catch { /* Try the next PATH candidate. */ }
+      try {
+        if (!(await fs.stat(candidate)).isFile()) continue;
+        try { await fs.access(candidate, constants.X_OK); return candidate; }
+        catch { notRunnable = true; }
+      } catch { /* Try the next PATH candidate. */ }
     }
   }
+  if (notRunnable) fail('executableNotRunnable', 'The selected command was found on PATH but is not executable.');
   fail('executableNotFound', 'The selected executable was not found on PATH.');
 }
 

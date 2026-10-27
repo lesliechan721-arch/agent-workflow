@@ -60,6 +60,10 @@ describe('Config Definition v4 CLI boundaries', () => {
       { key: 'agy', adapter: 'antigravity', communication: false, args: ['--model', 'backend-default'],
         env: { ORDINARY: 'literal' }, envFrom: { TOKEN: 'HOST_TOKEN' } },
       { key: 'custom', adapter: 'custom', mode: 'workspace', command: process.execPath, communication: true },
+      ...['codex', 'claude-code', 'antigravity'].flatMap((adapter) =>
+        ['default', 'auto', 'full-access'].map((permissionMode) => ({
+          key: `${adapter}-${permissionMode}-permission`, adapter, permissionMode, communication: false,
+        }))),
     ];
     const advisorGeneralProfile = { executor: 'oracle-web', reasoningEffort: 'pro' };
     await save({ subagentCommands: commands, advisorGeneralProfile });
@@ -87,6 +91,11 @@ describe('Config Definition v4 CLI boundaries', () => {
         { key: 'foreign', adapter, codexBypassHookTrust: false,
           ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) },
       ]),
+      ...['codex', 'claude-code', 'antigravity'].flatMap((adapter) =>
+        ['skip', '', false, null].map((permissionMode) => ({ key: 'invalid', adapter, permissionMode }))),
+      ...['oracle', 'custom'].flatMap((adapter) =>
+        ['default', 'auto', 'full-access'].map((permissionMode) => ({ key: 'invalid', adapter, permissionMode,
+          ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) }))),
       { ...commands[7], mode: 'bundle' },
       { ...commands[7], command: process.execPath },
     ]) {

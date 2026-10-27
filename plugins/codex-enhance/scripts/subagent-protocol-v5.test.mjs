@@ -9,7 +9,8 @@ const start = () => ({
   execution: { executor: 'fixture' }, mode: 'workspace', workspace: process.cwd(), prompt: '原始任务\r\n😀', args: [], communication: true,
   runtime: { directory: process.cwd(), toolkit: { module: import.meta.filename, command: process.execPath, messageScript: import.meta.filename, mcpScript: import.meta.filename } },
 });
-const ready = (enabled = true) => ({ protocolVersion: 5, type: 'ready', communication: enabled ? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } : { status: 'unsupported' } });
+const initialization = (communication) => ({ environment: { status: 'available' }, capabilities: { communication } });
+const ready = (enabled = true) => ({ protocolVersion: 5, type: 'ready', initialization: initialization(enabled ? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } : { status: 'unsupported' }) });
 const input = (id = '2'.repeat(32), text = '父消息😀') => ({ protocolVersion: 5, type: 'message', id, text });
 const result = () => ({ protocolVersion: 5, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text: '最终结果。' });
 
@@ -57,6 +58,7 @@ test('v5 shape validation rejects unknown fields, old requests, unsafe IDs, name
     (value) => { value.prompt = '\ud800'; },
     (value) => { delete value.communication; },
     (value) => { value.communication = 'true'; },
+    (value) => { value.permissionMode = 'skip'; },
   ]) {
     const frame = start(); mutate(frame); assert.throws(() => validateRequest(frame));
   }
@@ -75,13 +77,41 @@ test('v5 shape validation rejects unknown fields, old requests, unsafe IDs, name
   assert.throws(() => validateFrame({ protocolVersion: 5, type: 'poll' }, 'worker'));
 });
 
+// Test Value Gate: initialization is a strict public contract. Partial failures
+// must preserve unknown capabilities and cannot rewrite an earlier ready frame.
+test('initialization validates environment, named capabilities, and immutable ready evidence', () => {
+  for (const invalid of [
+    { environment: { status: 'pending' }, capabilities: {} },
+    { environment: { status: 'available', code: 'unexpected' }, capabilities: {} },
+    { environment: { status: 'unavailable' }, capabilities: {} },
+    { environment: { status: 'available' }, capabilities: { extra: {} } },
+    { environment: { status: 'available' }, capabilities: {} },
+    { environment: { status: 'unavailable', code: 'executableNotFound' }, capabilities: { communication: { status: 'unsupported' } } },
+  ]) assert.throws(() => validateFrame({ protocolVersion: 5, type: 'ready', initialization: invalid }, 'adapter'), { code: 'protocolInvalid' });
+  assert.throws(() => validateFrame({ protocolVersion: 5, type: 'ready', communication: { status: 'unsupported' } }, 'adapter'));
+  for (const environment of [{ status: 'available' }, { status: 'unavailable', code: 'executableNotFound' }]) {
+    const failed = { ...result(), state: 'failed', generationStarted: false, backendExitCode: null, text: '', code: 'initializationFailed', initialization: { environment, capabilities: {} } };
+    const state = createProtocolState(); state.acceptWorker(start()); state.acceptAdapter(failed);
+    assert.deepEqual(state.initialization, failed.initialization);
+    assert.equal(state.communication, null);
+  }
+  assert.throws(() => validateFrame({ ...result(), initialization: { environment: { status: 'unavailable', code: 'executableNotFound' }, capabilities: {} } }, 'adapter'));
+  assert.throws(() => validateFrame({ ...result(), state: 'failed', generationStarted: false, text: '', code: 'initializationFailed',
+    initialization: { environment: { status: 'unavailable', code: 'executableNotFound' }, capabilities: ready().initialization.capabilities } }, 'adapter'), { code: 'protocolInvalid' });
+  const state = createProtocolState(); state.acceptWorker(start()); state.acceptAdapter(ready());
+  state.acceptAdapter({ protocolVersion: 5, type: 'closing', reason: 'completed' });
+  assert.throws(() => state.acceptAdapter({ ...result(), initialization: initialization({ status: 'unsupported' }) }), { code: 'protocolInvalid' });
+  assert.throws(() => state.acceptAdapter({ ...result(), initialization: { environment: { status: 'available' }, capabilities: {} } }), { code: 'protocolInvalid' });
+  state.acceptAdapter({ ...result(), initialization: ready().initialization });
+});
+
 test('ready describes exact capabilities and rejects disabled mismatches and invalid diagnostics', () => {
   for (const communication of [
     { status: 'disabled', activeReceive: false }, { status: 'unsupported', transport: 'mcp' },
     { status: 'enabled', transport: 'mcp', passiveDelivery: 'none', activeReceive: false },
     { status: 'enabled', transport: 'stdio', passiveDelivery: 'in-turn', activeReceive: true },
     { status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary' },
-  ]) assert.throws(() => validateFrame({ ...ready(), communication }, 'adapter'), { code: 'protocolInvalid' });
+  ]) assert.throws(() => validateFrame({ ...ready(), initialization: initialization(communication) }, 'adapter'), { code: 'protocolInvalid' });
   assert.throws(() => validateFrame({ protocolVersion: 5, type: 'ready', communicationSupported: true }, 'adapter'));
   for (const diagnostics of [[{ code: 'warning', message: 'Safe reason.', value: 'private' }], [{ code: 'unsafe-code', message: 'Reason.' }], [{ code: 'warning', field: 'bad\nfield', message: 'Reason.' }]]) {
     assert.throws(() => validateFrame({ ...ready(), diagnostics }, 'adapter'));
@@ -91,7 +121,7 @@ test('ready describes exact capabilities and rejects disabled mismatches and inv
   const disabled = createProtocolState(); disabled.acceptWorker({ ...start(), communication: false });
   assert.throws(() => disabled.acceptAdapter(ready()));
   assert.throws(() => disabled.acceptAdapter(ready(false)));
-  disabled.acceptAdapter({ ...ready(), communication: { status: 'disabled' } });
+  disabled.acceptAdapter({ ...ready(), initialization: initialization({ status: 'disabled' }) });
   assert.throws(() => disabled.acceptWorker(input()));
 });
 

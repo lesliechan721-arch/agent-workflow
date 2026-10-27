@@ -52,10 +52,10 @@ async function fixture(t) {
   // observation boundary for sendInput, which otherwise uses the real store.
   run.meta.worker = { pid: process.pid, started: 'fixture-worker' };
   context.table = [run.meta.worker];
-  run.snapshot = { state: 'running', sequence: 2, communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true }, communicationSequence: 2 };
+  run.snapshot = { state: 'running', ready: true, sequence: 2, initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } } }, initializationSequence: 2 };
   await files.atomicJson(path.join(run.directory, 'owner.json'), run.meta);
   await files.atomicJson(path.join(run.directory, 'snapshot.json'), run.snapshot);
-  await files.atomicJson(path.join(run.directory, 'observed.json'), { sequence: 2, communicationSequence: 2, terminalConsumed: false });
+  await files.atomicJson(path.join(run.directory, 'observed.json'), { sequence: 2, initializationSequence: 2, terminalConsumed: false });
   return { context, run, request: { runs: [run.handle], timeoutMs: 0 },
     async messages(texts) {
       for (const [index, text] of texts.entries()) await files.atomicJson(path.join(run.directory, 'events', `${String(index).padStart(4, '0')}.json`), { type: 'message', text });
@@ -102,7 +102,7 @@ test('large unread queues export completely after a non-consuming resultTooLarge
   const f = await fixture(t);
   const messages = Array.from({ length: 66 }, (_, index) => `${String(index).padStart(2, '0')}:` + 'x'.repeat(messageLimit - 3));
   await f.messages(messages); await f.complete('Short final answer.');
-  await files.atomicJson(path.join(f.run.directory, 'observed.json'), { sequence: 1, communicationSequence: 0, terminalConsumed: false });
+  await files.atomicJson(path.join(f.run.directory, 'observed.json'), { sequence: 1, initializationSequence: 0, terminalConsumed: false });
   const before = await fs.readFile(path.join(f.run.directory, 'observed.json'), 'utf8');
   const tooLarge = await commands.readResult(f.context, f.request);
   assert.equal(tooLarge.exitCode, 1); bounded(tooLarge);
@@ -125,7 +125,7 @@ test('large unread queues export completely after a non-consuming resultTooLarge
   assert.equal((await commands.waitRuns(f.context, f.request)).text, 'wait: settled\n');
   const reread = await commands.readResult(f.context, f.request);
   assert.equal(reread.exitCode, 0); assert.deepEqual(blocks(reread.text, 'MESSAGE'), []);
-  assert.equal(field(reread.text, 'communication'), undefined);
+  assert.equal(field(reread.text, 'communication'), 'true');
   assert.deepEqual(blocks(reread.text, 'FINAL'), ['Short final answer.']);
 });
 
@@ -153,7 +153,7 @@ test('wait preserves whole events across batches and defers an oversized final o
   const messages = ['甲'.repeat(1365) + 'x', 'y'.repeat(messageLimit), 'z'.repeat(messageLimit)];
   const finalText = '答案\n'.repeat(3000);
   await f.messages(messages); await f.complete(finalText);
-  await files.atomicJson(path.join(f.run.directory, 'observed.json'), { sequence: 1, communicationSequence: 0, terminalConsumed: false });
+  await files.atomicJson(path.join(f.run.directory, 'observed.json'), { sequence: 1, initializationSequence: 0, terminalConsumed: false });
   const received = []; let deferred = 0;
   for (let index = 0; index < 6 && received.length < messages.length; index++) {
     const response = await commands.waitRuns(f.context, f.request);

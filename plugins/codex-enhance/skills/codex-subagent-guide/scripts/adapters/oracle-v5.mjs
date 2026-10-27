@@ -1,10 +1,16 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { assertNativeSelectionReadable } from '../file-selection/scan-guard.mjs';
-import { adapterMain, finalOutput, privateOutputPath } from './common.mjs';
+import { adapterMain, finalOutput, privateOutputPath, negotiateExecutable } from './common.mjs';
 import { assertOracleFileSelectionSupported, oracleArguments } from './oracle-arguments.mjs';
 
 export { assertOracleFileSelectionSupported, oracleArguments } from './oracle-arguments.mjs';
+
+export async function negotiateOracle(context) {
+  assertOracleFileSelectionSupported(context.request.fileSelectors);
+  const executable = await negotiateExecutable(context, 'oracle');
+  return { environment: { status: 'available' }, executable, capabilities: { communication: { supported: false } } };
+}
 
 export async function executeOracle(context) {
   const request = context.request;
@@ -14,7 +20,7 @@ export async function executeOracle(context) {
   await assertNativeSelectionReadable(request.workspace, request.fileSelectors, { isCancelled: () => context.signal.aborted });
   if (context.signal.aborted) return { state: 'cancelled', code: context.errorCode, text: '' };
   await context.prepareCommunication();
-  const backend = await context.spawn('oracle', args);
+  const backend = await context.spawn(context.executable.command, [...(context.executable.args ?? []), ...args]);
   let stdoutBytes = 0;
   backend.child.stdout.on('data', (chunk) => {
     stdoutBytes += chunk.length;
@@ -37,4 +43,4 @@ export async function executeOracle(context) {
   return { state: 'completed', text };
 }
 
-adapterMain(import.meta.url, { mode: 'bundle', negotiateCommunication: () => ({ supported: false }), execute: executeOracle }, 'Oracle Adapter v5\nUsage: node oracle-v5.mjs\nReads one persistent v5 JSONL connection. Uses PATH oracle --prompt - --wait --write-output and raw --file selectors.\nCommunication is unsupported. Normal engine configuration applies. No default execution deadline or automatic retry.\n');
+adapterMain(import.meta.url, { mode: 'bundle', negotiate: negotiateOracle, execute: executeOracle }, 'Oracle Adapter v5\nUsage: node oracle-v5.mjs\nReads one persistent v5 JSONL connection. Uses PATH oracle --prompt - --wait --write-output and raw --file selectors.\nCommunication is unsupported. Normal engine configuration applies. No default execution deadline or automatic retry.\n');

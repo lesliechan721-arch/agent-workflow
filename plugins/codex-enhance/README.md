@@ -40,7 +40,11 @@ Advisor 和 Explore 通过 Guide 委派；已有完整调度与生命周期方�
 
 subagentCommands 使用 key 作为唯一显示名称。添加外部执行器时可选内建 Codex、Claude Code、Oracle、Antigravity，或 custom。内建入口无需手填 command/entrypoint；Codex、Claude Code 和 Antigravity 固定 workspace，Oracle 固定 bundle。Antigravity 使用 PATH 中的 agy。custom 使用自己的绝对程序入口和明确模式。args 定制实际后端参数，env 保存普通环境值，envFrom 引用宿主变量；密钥不要写入普通可分发配置。
 
-每个执行器的 communication 缺省 true；设置 false 后不建立 AW 通讯桥，不注入其工具、说明或自动父输入，任务、wait/result/stop 及最终结果仍可用。用户已有工具和 MCP 继续由后端管理。开启只表示意图，实际能力由本次回执确定。当前 Antigravity 通讯缺少真实命令权限和输入确认依据，communication=true 会在首次模型输入前明确失败；可设 false 运行普通任务。它不提供已验证的双向通讯或 Windows 支持承诺。
+Codex、Claude Code、Antigravity 可设置 permissionMode：default（默认）保留用户 args 和 profile；auto 使用后端自动审批；full-access 使用官方完整权限入口。Codex 完整权限同时取消自身审批和沙箱，Claude/agy 不额外关闭终端沙箱，均不取得 OS 管理员权限。auto/full-access 高于 Codex profile 同类默认值；与 args 的同类显式控制冲突时启动前报错，模式不可用不静默回退。Oracle/custom 不接受此字段，native 使用宿主权限。权限模式、communication 和 codexBypassHookTrust 独立，完整权限不自动绕过 hook 信任。
+
+每个执行器的 communication 缺省 true；设置 false 后不建立 AW 通讯桥，不注入其工具、说明或自动父输入，仍检查所选 CLI 环境并应用权限模式，任务、wait/result/stop 及最终结果仍可用。用户已有工具和 MCP 继续由后端管理。开启只表示意图，实际能力由本次回执确定。Antigravity 在环境、桥、必要权限和原生工具准备成功后启用命令通讯；条件不满足时报告具体错误。本机消息发送证据不代表其它平台或账户均已验证。
+
+Antigravity 开启通讯且实际非完整权限时，会按需向用户的 `~/.gemini/antigravity-cli/settings.json` 追加当前 Node + 已安装通讯脚本的精确 allow。规则可跨 run 复用，重复运行去重；任务失败、停止、重装或卸载均不自动删除，旧路径规则也保留。它是用户级许可；每个 run 仍由私有 binding 隔离通道。已有配置、Ask/Deny/strict 保留，配置错误或明确拒绝时失败；不扩大为任意 Node/终端授权。用户可在 agy 权限设置中移除规则。通讯提示优先推荐单命令直接发送；组合管道或shell包装可能因额外权限要求失败，不为此扩大许可或自动切换完整权限。实际资源或沙箱访问错误仍照实报告。
 
 Oracle 可直接选择 oracleEngine=browser/api，界面推荐 browser；省略引擎时继续沿用 Oracle，但设置 reasoningEffort 后必须明确选择。浏览器将 low/medium/high/xhigh 转换为 light/standard/extended/extra-high，并支持新增的 pro 预设；max/ultra 没有浏览器映射。浏览器登录和实际档位由 Oracle 管理。专用字段与 args 中的同类参数重复时会提示修正。
 
@@ -52,13 +56,13 @@ Codex 的 codexCliSource 可选 auto/cli/app，缺省 auto 先查 PATH，仅入�
 
 外部配置可省略 model 和 reasoningEffort，表示使用后端默认。显式要求不支持时报错，不静默替换模型或服务。native 保留已有配置要求。Advisor 固定提供 general、advanced、expert 三个难度档位，默认分别为 gpt-6-astra high、xhigh、max。按问题歧义、耦合、验证难度和遗漏代价选档；无效配置不会触发回退。
 
-外部启动用 `start --executor <key>` 指定执行器，不接收 AW profile 名称。外部任务可以直接写进 --prompt，长任务或已有文件可以从 stdin 输入。--instructions-file 可选，可以复用已有角色文件；不传时不会自动补入默认角色，已就绪的通讯说明仍由 adapter 添加。顾问和调查的职责约束仍需明确传达。使用 `start` 启动，按句柄执行 `send`、多目标 `wait`、单目标 `result` 和 `stop`。回执保留 true/false/pending，并说明 enabled/disabled/unsupported、实际通道、自动输入时点及主动收件能力；晚到信息和 profile 诊断由 wait/result 补报。默认无执行期限。控制字段使用英文，消息和最终回答保留原语言并放入独立原文块。内部 JSONL 不作为用户界面。
+外部启动用 `start --executor <key>` 指定执行器，不接收 AW profile 名称。外部任务可以直接写进 --prompt，长任务或已有文件可以从 stdin 输入。--instructions-file 可选，可以复用已有角色文件；不传时不会自动补入默认角色，已就绪的通讯说明仍由 adapter 添加。顾问和调查的职责约束仍需明确传达。使用 `start` 启动，按句柄执行 `send`、多目标 `wait`、单目标 `result` 和 `stop`。回执显示 environment 的 pending/available/unavailable，不可用时给出具体原因；缺失或不可执行的 CLI 须修复安装、PATH 或执行器后重新开始。环境可用不证明登录、网络或模型资格。通讯回执保留 true/false/pending，并说明 enabled/disabled/unsupported、实际通道、自动输入时点及主动收件能力；晚到信息和 profile 诊断由 wait/result 补报。默认无执行期限。控制字段使用英文，消息和最终回答保留原语言并放入独立原文块。内部 JSONL 不作为用户界面。
 
 workspace 在指定目录执行任务，关注路径写入任务，不接受 --file。bundle 通过 --file 按固定的 AW 文件选择协议 v1 选择文件、目录或 glob；各适配器实现相同规则，不需要调用者按后端改写选择式。调用方法由 Guide 的 [外部委派说明](skills/codex-subagent-guide/references/external-delegation.md) 提供；适配器开发见 [适配器文档](skills/codex-subagent-guide/adapters.md)。
 
 ## 影响与边界
 
-外部服务可能访问网络、读取材料、使用宿主认证并产生模型费用，须使用可信且已获准的服务。插件保留后端工具、权限与审批；显式 codexBypassHookTrust 的 hook 信任影响如上，不扩大任务授权。只读咨询不修改被审项目；必要临时分析写入与项目实施是不同授权。
+外部服务可能访问网络、读取材料、使用宿主认证并产生模型费用，须使用可信且已获准的服务。插件按 permissionMode 选择权限，后端管理限制继续生效；显式 codexBypassHookTrust 的 hook 信任影响如上，不扩大任务授权。只读咨询不修改被审项目；必要临时分析写入与项目实施是不同授权。
 
 native 的 Advisor/Explore 生成角色只限制把同一任务通过相应 Skill 重新委派：Advisor 对应 codex-advisor，Explore 对应 codex-explore。公共角色资源、通用执行者和外部后端不承担这项局部限制，协作方法仍须符合任务与权限边界。
 

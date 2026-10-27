@@ -152,7 +152,8 @@ export async function resolveCodexExecutable({ source = 'auto', environment = pr
       const invocation = await resolveSafeCommand('codex', [], { env: environment, cwd, packageName: '@openai/codex', binName: 'codex' });
       return await selected(invocation, 'path', source, environment, cwd);
     } catch (error) {
-      if (error.code !== 'executableNotFound') {
+      if (error.code === 'executableNotRunnable' && source === 'cli') throw discoveryError(error.code, source, 'The PATH Codex entry is not executable. Repair its permissions or select the App source.');
+      if (!['executableNotFound', 'executableNotRunnable'].includes(error.code)) {
         throw discoveryError(error.code ?? 'codexExecutableInvalid', source, 'The PATH Codex entry could not be safely resolved. Repair its launcher or select the App source.');
       }
     }

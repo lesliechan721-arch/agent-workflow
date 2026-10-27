@@ -16,7 +16,7 @@ for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: installed
   f.request.args = backend === 'codex' ? ['-c', 'shell_environment_policy.inherit="all"', '--sandbox', 'workspace-write', '--ask-for-approval', 'on-request'] : backend === 'claude' ? ['--permission-mode', 'default', '--settings', '{"env":{"SETTING":"value"}}'] : ['--engine', 'api'];
   if (backend === 'oracle' && !windows) f.request.fileSelectors = ['main.ts', 'main.ts'];
   const run = f.start(); run.send(f.request);
-  assert.equal((await run.waitFor('ready')).communication.status, backend === 'oracle' ? 'unsupported' : 'enabled');
+  assert.equal((await run.waitFor('ready')).initialization.capabilities.communication.status, backend === 'oracle' ? 'unsupported' : 'enabled');
   const result = await run.waitFor('result');
   const closed = await run.exit;
   assert.equal(closed.code, 0, closed.diagnostic);
@@ -88,6 +88,7 @@ for (const order of ['parent first', 'receive first']) test(`Claude: ${order} re
     async end() { this.exited = true; stdout.end(); done.resolve(); },
   };
   const context = {
+    executable: { command: 'claude', args: [] },
     prompt: 'Ask the parent for a value.',
     request: { args: [], execution: {}, prompt: 'Ask the parent for a value.', run: { id: 'e'.repeat(32) } },
     signal: controller.signal, stopped,
@@ -145,7 +146,7 @@ for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: communica
   const f = await fixture(t, backend);
   f.request.communication = false;
   const run = f.start(); run.send(f.request);
-  assert.deepEqual((await run.waitFor('ready')).communication, { status: 'disabled' });
+  assert.deepEqual((await run.waitFor('ready')).initialization.capabilities.communication, { status: 'disabled' });
   const result = await run.waitFor('result');
   assert.equal(result.state, 'completed', JSON.stringify(result));
   assert.equal((await run.exit).code, 0);
@@ -210,9 +211,26 @@ for (const source of ['argv', 'inline settings', 'settings file']) test(`Claude:
   await assert.rejects(fs.access(path.join(f.request.runtime.directory, 'communication')), { code: 'ENOENT' });
   f.request.communication = false;
   const ordinary = f.start(); ordinary.send(f.request);
-  assert.deepEqual((await ordinary.waitFor('ready')).communication, { status: 'disabled' });
+  assert.deepEqual((await ordinary.waitFor('ready')).initialization.capabilities.communication, { status: 'disabled' });
   assert.equal((await ordinary.waitFor('result')).state, 'completed');
   assert.equal((await ordinary.exit).code, 0);
   const captured = await f.captured();
   assert.deepEqual(captured[0].args.slice(-original.length), original);
+});
+
+// Test Value Gate: a valid but foreign backend configuration must not silently
+// start a task with different settings. Check the actual adapter JSONL boundary.
+for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: rejects misplaced Codex configuration before negotiation`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t, backend);
+  if (backend === 'codex') delete f.request.codex;
+  else f.request.codex = { cliSource: 'app', bypassHookTrust: true, profile: 'unrelated' };
+  const run = f.start(); run.send(f.request);
+  const result = await run.waitFor('result');
+  assert.equal(result.state, 'failed');
+  assert.equal(result.code, 'protocolInvalid');
+  assert.equal(result.generationStarted, false);
+  assert.equal(result.initialization, undefined);
+  assert.equal(run.frames.some((frame) => frame.type === 'ready'), false);
+  await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+  assert.equal((await run.exit).code, 0);
 });

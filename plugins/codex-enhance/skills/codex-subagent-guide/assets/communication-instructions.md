@@ -21,6 +21,18 @@ Send one message with this command. Supply the message as UTF-8 standard input. 
 ```
 <!-- /aw:command -->
 
+<!-- aw:command-argument -->
+Send a message with this command, replacing `MESSAGE_TEXT` with its text:
+
+```text
+@@SEND@@
+```
+
+The permission covers this Node + communication script entry. Pipelines, wrappers, and combined commands may still require approval; preserve the selected permission mode on denial.
+
+`--text -` reads standard input, even when quoted. To send exactly `-`, use `@@SENDSTDIN@@` with `-` on standard input.
+<!-- /aw:command-argument -->
+
 <!-- aw:in-turn -->
 Parent input can enter the current context automatically. Input already delivered to context is consumed and is not replayed by receive. Do not poll routinely.
 <!-- /aw:in-turn -->

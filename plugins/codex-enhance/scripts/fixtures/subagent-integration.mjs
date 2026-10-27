@@ -88,7 +88,7 @@ async function start(frame) {
   if (scenario.initializationFailure) {
     await fs.writeFile(root + '/observed.json', JSON.stringify(observed));
     await emit({ type: 'result', state: 'failed', generationStarted: false, backendExitCode: null,
-      text: '', code: 'fixtureInitializationFailed', message: 'Fixture initialization failed.', ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
+      text: '', code: 'fixtureInitializationFailed', message: 'Fixture initialization failed.', ...(scenario.initialization ? { initialization: scenario.initialization } : {}), ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
     process.exit(0);
   }
   if (scenario.scratchText) {
@@ -105,7 +105,7 @@ async function start(frame) {
   if (scenario.readyGate) { await phase('readyGateWaiting'); await signal('ready'); }
   if (scenario.readyDelay) await new Promise((resolve) => setTimeout(resolve, scenario.readyDelay));
   if (finishing) return;
-  await emit({ type: 'ready', communication: !frame.communication ? { status: 'disabled' } : scenario.communication === false || frame.mode === 'bundle' ? { status: 'unsupported' } : scenario.descriptor ?? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true }, ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
+  await emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: !frame.communication ? { status: 'disabled' } : scenario.communication === false || frame.mode === 'bundle' ? { status: 'unsupported' } : scenario.descriptor ?? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } } }, ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
   ready = true;
   await phase('readySent');
   for (const text of scenario.messages ?? []) await emit({ type: 'message', text });

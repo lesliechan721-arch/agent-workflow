@@ -10,6 +10,10 @@ profile 是本次增量默认覆盖，不是 AW 执行档位，也不保留原�
 
 普通字段从低到高为：Codex 基础/项目配置 → 支持的 profile 默认覆盖 → executor args 的同类显式选项 → 任务 model/reasoningEffort。任务与 args 的显式同类冲突仍失败；profile 被更高显式值覆盖。codexProfile 与 raw --profile/-p 同时出现时拒绝；仅 raw profile 也走同一转换，不传给 app-server。管理策略及受约束字段始终生效。
 
+executor 的 permissionMode 缺省 default，保留 profile 与用户显式 args 的权限选择。auto 在首次 thread/start.config 覆盖 approval_policy=on-request、approvals_reviewer=auto_review，并保留有效沙箱；full-access 覆盖 approval_policy=never、sandbox_mode=danger-full-access。后续轮次沿用同一配置。非 default 与 raw args 的同类显式控制冲突时返回 adapterArgumentConflict；auto 可保留显式沙箱限制。具体别名与拒绝范围见 [权限模式](../adapters.md#执行器权限模式)。模式不可用或回退时报告 permissionModeUnavailable，不换模式或重发；Codex --full-auto 不能替代 auto_review。
+
+permissionMode、communication 和 codexBypassHookTrust 独立。full-access 不自动启用 hook bypass，auto 不改变信任或禁用状态；关闭通讯仍检查环境和应用权限模式。管理限制继续由后端执行。
+
 启动字段合并后用真实 TOML 序列化为 `-c key=<TOML value>`，线程字段放 `thread/start.config`。同根表按允许叶子合并后一次序列化，不能混用顺序不明的整表/叶子赋值；provider/plugin/MCP 内部点号保留为字面键。启动覆盖继续参与线程构建，不重复放在线程覆盖中。cwd 使用 thread/start 顶层并与进程 cwd 一致；模型配置走 config，任务 effort 每轮明确放 turn/start.effort，省略才沿用默认值，首轮与后续轮一致。
 
 AW 拥有 cwd、控制协议、任务及私有通讯绑定。profile 不能替换或禁用 AW MCP server；冲突失败。用户与 profile MCP 合并后，在同一最终表加 AW server；communication=false 不添加它。profile 的基础/developer 指令按 Codex 字段生效，model_instructions_file 与 inline instructions 保留后端已核验优先关系；AW 显式角色、任务和已就绪通讯说明仍在任务载荷中。拼接不提高权限。
@@ -98,7 +102,7 @@ provider 首版子字段：`name`、`base_url`、`model_catalog_url`、`env_key`
 | 搜索 | `web_search`；首版不转换 `tools.web_search` 的复杂子表，按未支持字段提示 |
 | shell | `allow_login_shell`、`shell_environment_policy` 的已定义字段 `inherit`、`ignore_default_excludes`、`exclude`、`include_only`、`set`；环境策略仅作用于后端 shell 工具，不等于进程/provider 认证环境 |
 | 工具等待 | `background_terminal_max_timeout`；不是 AW 总 deadline |
-| 审批 | `approval_policy`、`approvals_reviewer`；后端实际要求交互时沿用适配器的明确失败，不自动批准或忽略 |
+| 审批 | `approval_policy`、`approvals_reviewer`；服从上文 permissionMode 覆盖；后端仍要求交互时明确失败，不由 AW 自动批准或忽略 |
 | 基础沙箱 | `sandbox_mode`、`sandbox_workspace_write.writable_roots`、`sandbox_workspace_write.network_access`、`sandbox_workspace_write.exclude_tmpdir_env_var`、`sandbox_workspace_write.exclude_slash_tmp`；writable_roots 仅绝对路径，含不支持元素时不删个别项来改变权限 |
 | MCP | `mcp_servers.<name>` 见下表；`mcp_optional_startup_grace_ms`；保留 AW server，配置关闭时不添加它 |
 | 插件选择 | `plugins.<id>.enabled`；只选择已存在插件，不安装/下载，不支持未经核验的其它插件策略子字段 |

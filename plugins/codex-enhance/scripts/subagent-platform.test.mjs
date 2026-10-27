@@ -115,6 +115,20 @@ test('safe native launch preserves argument bytes and observes rapid exit', { ti
   await assert.rejects(resolveSafeCommand(process.execPath, ['bad\0arg']), { code: 'executableInvalid' });
 });
 
+// Test Value Gate: CLI initialization must distinguish a missing command from
+// an installed non-executable file, without hiding a later executable PATH entry.
+test('PATH discovery distinguishes non-executable files and continues to a runnable entry', { skip: process.platform === 'win32' }, async (t) => {
+  const directory = await temporary(t);
+  const first = path.join(directory, 'first'); const second = path.join(directory, 'second');
+  await fs.mkdir(first); await fs.mkdir(second);
+  const blocked = path.join(first, 'fixture-cli'); const runnable = path.join(second, 'fixture-cli');
+  await fs.writeFile(blocked, '#!/bin/sh\nexit 0\n', { mode: 0o600 });
+  await fs.writeFile(runnable, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  await assert.rejects(resolveSafeCommand('missing-cli', [], { cwd: directory, env: { PATH: first } }), { code: 'executableNotFound' });
+  await assert.rejects(resolveSafeCommand('fixture-cli', [], { cwd: directory, env: { PATH: first } }), { code: 'executableNotRunnable' });
+  assert.equal((await resolveSafeCommand('fixture-cli', [], { cwd: directory, env: { PATH: [first, second].join(path.delimiter) } })).command, runnable);
+});
+
 // Test Value Gate: a package shim must select its verified bin without running
 // batch syntax. This test supplies evidence only on native Windows.
 test('native Windows package shim preserves argv and rejects injected batch text', { skip: process.platform !== 'win32', timeout: 40000 }, async (t) => {

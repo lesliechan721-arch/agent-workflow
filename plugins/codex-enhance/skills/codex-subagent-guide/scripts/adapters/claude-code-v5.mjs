@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { LIMITS, fail } from '../runtime/contracts.mjs';
 import { readLimited } from '../runtime/files.mjs';
-import { adapterMain, backendLines, checkArguments, collaborationInput, deferred, rejectOption } from './common.mjs';
+import { adapterMain, backendLines, checkArguments, collaborationInput, deferred, rejectOption, negotiateExecutable } from './common.mjs';
+import { permissionMode, watchPermissionFallback } from './permission-mode.mjs';
 
 const valueOptions = ['--agent', '--agents', '--append-system-prompt', '--debug-file', '--effort', '--fallback-model', '--json-schema', '--max-budget-usd', '--model', '--name', '--permission-mode', '--plugin-dir', '--remote-control-session-name-prefix', '--session-id', '--setting-sources', '--settings', '--system-prompt', '--system-prompt-file', '--append-system-prompt-file'];
 
@@ -68,6 +69,7 @@ export async function negotiateClaudeCommunication(context) {
 }
 
 export function claudeArguments(request, mcpServer) {
+  const mode = permissionMode(request);
   checkArguments(request.args, {
     owned: ['--print', '-p', '--output-format', '--input-format', '--continue', '-c', '--resume', '-r', '--fork-session', '--from-pr', '--cloud', '--remote', '--environment', '--teleport', '--worktree', '-w', '--tmux', '--help', '-h', '--version', '-v', '--replay-user-messages', '--permission-prompt-tool'],
     commands: ['agents', 'auth', 'doctor', 'install', 'mcp', 'plugin', 'plugins', 'setup-token', 'update', 'upgrade'],
@@ -76,15 +78,25 @@ export function claudeArguments(request, mcpServer) {
     variadic: ['--add-dir', '--allowedTools', '--allowed-tools', '--disallowedTools', '--disallowed-tools', '--betas', '--file', '--mcp-config', '--tools'],
     booleans: ['--allow-dangerously-skip-permissions', '--bare', '--brief', '--chrome', '--dangerously-skip-permissions', '--disable-slash-commands', '--exclude-dynamic-system-prompt-sections', '--ide', '--include-hook-events', '--include-partial-messages', '--mcp-debug', '--no-chrome', '--no-session-persistence', '--strict-mcp-config', '--verbose'],
     onOption(option) {
+      if (mode !== 'default' && ['--permission-mode', '--dangerously-skip-permissions'].includes(option)) rejectOption(option);
       if (request.execution.model !== undefined && option === '--model') rejectOption(option);
       if (request.execution.reasoningEffort !== undefined && option === '--effort') rejectOption(option);
     },
   });
   const args = ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--replay-user-messages', ...request.args];
+  if (mode === 'auto') args.push('--permission-mode', 'auto');
+  else if (mode === 'full-access') args.push('--dangerously-skip-permissions');
   if (request.execution.model !== undefined) args.push('--model', request.execution.model);
   if (request.execution.reasoningEffort !== undefined) args.push('--effort', request.execution.reasoningEffort);
   if (mcpServer) args.push('--mcp-config', JSON.stringify({ mcpServers: { [`aw_parent_${request.run.id}`]: mcpServer } }));
   return args;
+}
+
+export async function negotiateClaude(context) {
+  claudeArguments(context.request);
+  const executable = await negotiateExecutable(context, 'claude', [], { packageName: '@anthropic-ai/claude-code', binName: 'claude' });
+  const communication = context.request.communication ? await negotiateClaudeCommunication(context) : { supported: false };
+  return { environment: { status: 'available' }, executable, capabilities: { communication } };
 }
 
 export async function executeClaude(context) {
@@ -124,9 +136,11 @@ export async function executeClaude(context) {
     return sendInput(collaborationInput(input), signal);
   }, canSubmitInput: () => firstSent && !active && terminal !== undefined && !context.signal.aborted,
   instructionBindings: { sendTool: `mcp__aw_parent_${context.request.run.id}__send_parent`, receiveTool: `mcp__aw_parent_${context.request.run.id}__receive_parent` } });
-  backend = await context.spawn('claude', claudeArguments(context.request, bridge?.mcpServer));
+  watchPermissionFallback(context);
+  backend = await context.spawn(context.executable.command, [...(context.executable.args ?? []), ...claudeArguments(context.request, bridge?.mcpServer)]);
   const lines = backendLines((value) => {
     if (value.type === 'system' && value.subtype === 'init') {
+      if (permissionMode(context.request) === 'auto' && value.permissionMode !== undefined && value.permissionMode !== 'auto') { context.abort('permissionModeUnavailable'); return; }
       if (typeof value.session_id === 'string') sessionId = value.session_id;
       if (typeof value.model === 'string') model = value.model;
     } else if (value.type === 'user' && acknowledgements.has(value.uuid)) {
@@ -175,4 +189,4 @@ export async function executeClaude(context) {
   return { ...common, state: 'completed' };
 }
 
-adapterMain(import.meta.url, { mode: 'workspace', negotiateCommunication: negotiateClaudeCommunication, execute: executeClaude }, 'Claude Code Adapter v5\nUsage: node claude-code-v5.mjs\nReads one persistent v5 JSONL connection. Uses PATH claude with streaming input, private parent MCP tools, and service results.\nNormal configuration and permissions apply. No implicit approval, default execution deadline, or automatic retry.\n');
+adapterMain(import.meta.url, { mode: 'workspace', permissionMode: true, negotiate: negotiateClaude, execute: executeClaude }, 'Claude Code Adapter v5\nUsage: node claude-code-v5.mjs\nReads one persistent v5 JSONL connection. Uses PATH claude with streaming input, private parent MCP tools, and service results.\nNormal configuration and permissions apply. No implicit approval, default execution deadline, or automatic retry.\n');

@@ -162,7 +162,7 @@ test('run creation batches private resources before publishing initial state', a
   assert.deepEqual(operations[2].resources.map(({ target }) => path.basename(target)), ['events', 'outbox', 'gaps', 'adapter']);
   assert.ok(operations[3].resources.every(({ target, kind }) => target.endsWith('.tmp') && kind === 'file'));
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(run.directory, 'snapshot.json'), 'utf8')), run.snapshot);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(run.directory, 'observed.json'), 'utf8')), { sequence: 0, communicationSequence: 0, terminalConsumed: false });
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(run.directory, 'observed.json'), 'utf8')), { sequence: 0, initializationSequence: 0, terminalConsumed: false });
   assert.equal((await fs.readdir(run.directory)).some((name) => name.endsWith('.tmp')), false);
   assert.deepEqual((await readOwner({ root, owner }, run.meta.id)).meta, run.meta);
   assert.equal(operations.length, 5);

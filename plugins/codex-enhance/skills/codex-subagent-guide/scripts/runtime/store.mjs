@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { atomicJson, atomicJsonFiles, readJson, safePath } from './files.mjs';
-import { fail, STATES, validateResult, validateCommunication, validateDiagnostics } from './contracts.mjs';
+import { fail, STATES, validateResult, validateInitialization, validateDiagnostics } from './contracts.mjs';
 import { currentUserIdentity, protectPrivatePath, protectPrivatePaths, verifyPrivatePath, verifyPrivatePaths, assertNoReparseTree, windowsOperation } from './platform.mjs';
 import { processTable } from './processes.mjs';
 
@@ -72,11 +72,11 @@ export async function createRun(context, name, workspace) {
   const meta = { schema: 5, id, key, owner: context.owner, name: name ?? `agent-${id.slice(-8)}`,
     workspace, token: randomBytes(24).toString('hex'), worker: null, processes: [],
     createdAt: Date.now(), terminalAt: null, localTreeStopped: false };
-  const snapshot = { state: 'starting', sequence: 1, communication: null, communicationSequence: 0 };
+  const snapshot = { state: 'starting', sequence: 1, ready: false, initialization: null, initializationSequence: 0 };
   await atomicJsonFiles([
     { target: path.join(directory, 'owner.json'), value: meta },
     { target: path.join(directory, 'snapshot.json'), value: snapshot },
-    { target: path.join(directory, 'observed.json'), value: { sequence: 0, communicationSequence: 0, terminalConsumed: false } },
+    { target: path.join(directory, 'observed.json'), value: { sequence: 0, initializationSequence: 0, terminalConsumed: false } },
   ]);
   return { directory, handle, meta, snapshot };
 }
@@ -201,9 +201,9 @@ export async function observeRun(context, run, { allowExpired = false } = {}) {
   try {
     snapshot = await readJson(path.join(run.directory, 'snapshot.json'), 16384);
     observed = await readJson(path.join(run.directory, 'observed.json'), 4096);
-    if (!['starting', 'running', 'closing', ...STATES].includes(snapshot.state) || !Number.isSafeInteger(snapshot.sequence) ||
-      !(snapshot.communication === null || validateCommunication(snapshot.communication)) || !Number.isSafeInteger(snapshot.communicationSequence) ||
-      !Number.isSafeInteger(observed.sequence) || !Number.isSafeInteger(observed.communicationSequence) || typeof observed.terminalConsumed !== 'boolean') throw new Error();
+    if (!['starting', 'running', 'closing', ...STATES].includes(snapshot.state) || !Number.isSafeInteger(snapshot.sequence) || typeof snapshot.ready !== 'boolean' ||
+      !(snapshot.initialization === null || validateInitialization(snapshot.initialization)) || !Number.isSafeInteger(snapshot.initializationSequence) ||
+      !Number.isSafeInteger(observed.sequence) || !Number.isSafeInteger(observed.initializationSequence) || typeof observed.terminalConsumed !== 'boolean') throw new Error();
     if (snapshot.diagnostics !== undefined) validateDiagnostics(snapshot.diagnostics);
   } catch { fail('runStateUnavailable', 'The run observation state is unreadable.'); }
   // A worker can publish final.json between the first read and this snapshot.
@@ -213,12 +213,14 @@ export async function observeRun(context, run, { allowExpired = false } = {}) {
     try { result = validateResult(await readJson(path.join(run.directory, 'final.json'))); }
     catch { fail('runStateUnavailable', 'The terminal result is unreadable.'); }
   }
-  if (result) snapshot = { ...snapshot, state: result.state };
+  if (result) snapshot = { ...snapshot, state: result.state,
+    ...(result.initialization ? { initialization: result.initialization,
+      initializationSequence: snapshot.initialization === null ? snapshot.sequence + 1 : snapshot.initializationSequence } : {}) };
   return { ...run, snapshot, observed, result };
 }
 
 export async function saveObservation(run, { terminalConsumed = run.observed.terminalConsumed } = {}) {
-  const observed = { sequence: run.snapshot.sequence, communicationSequence: run.snapshot.communicationSequence, terminalConsumed };
+  const observed = { sequence: run.snapshot.sequence, initializationSequence: run.snapshot.initializationSequence, terminalConsumed };
   await atomicJson(path.join(run.directory, 'observed.json'), observed);
   run.observed = observed;
 }

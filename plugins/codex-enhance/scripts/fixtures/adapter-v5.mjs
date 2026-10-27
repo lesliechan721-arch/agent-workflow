@@ -182,7 +182,7 @@ input.on('close',()=>{clearTimeout(timer);setImmediate(()=>process.exit(scenario
     FIXTURE_CASE: scenario, FIXTURE_BACKEND: backend, FIXTURE_CAPTURE: capture, FIXTURE_RUNTIME: runtime,
   };
   const request = {
-    protocolVersion: 5, type: 'start', communication: true, ...(backend === 'codex' ? { codex: { cliSource: 'auto', bypassHookTrust: false } } : {}), run: { id: randomBytes(16).toString('hex'), name: 'agent-fixture', deadlineAt: null },
+    protocolVersion: 5, type: 'start', communication: true, ...(backend !== 'oracle' ? { permissionMode: 'default' } : {}), ...(backend === 'codex' ? { codex: { cliSource: 'auto', bypassHookTrust: false } } : {}), run: { id: randomBytes(16).toString('hex'), name: 'agent-fixture', deadlineAt: null },
     execution: { executor: 'fixture' }, mode: backend === 'oracle' ? 'bundle' : 'workspace',
     workspace, prompt: ' 原始任务\nQuotes: " ` $() \\n\n', args: [],
     runtime: { directory: runtime, toolkit: { command: process.execPath, module: path.join(installed, 'runtime/adapter-channel.mjs'), messageScript: installedEntry(sourceEntries.message), mcpScript: installedEntry(sourceEntries.mcp) } },

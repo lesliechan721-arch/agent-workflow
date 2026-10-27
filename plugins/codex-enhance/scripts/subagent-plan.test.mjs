@@ -72,3 +72,29 @@ test('rejects invalid controls and duplicate dedicated/raw Codex profiles', () =
     assert.deepEqual(select({ adapter: 'codex', args }).executor.args, args);
   }
 });
+
+// Test Value Gate: installed permissions must survive into the execution plan,
+// independent of communication, without adding controls to unrelated adapters.
+test('normalizes permission modes only for the supported backend branches', () => {
+  for (const adapter of ['codex', 'claude-code', 'antigravity']) {
+    assert.equal(select({ adapter }).permissionMode, 'default');
+    for (const permissionMode of ['default', 'auto', 'full-access']) {
+      for (const communication of [false, true]) {
+        const plan = select({ adapter, permissionMode, communication });
+        assert.equal(plan.permissionMode, permissionMode);
+        assert.equal(plan.communication, communication);
+        assert.deepEqual(plan.executor.args, []);
+      }
+    }
+    for (const permissionMode of ['skip', '', false, null]) {
+      assert.throws(() => select({ adapter, permissionMode }), { code: 'executorInvalid' });
+    }
+  }
+  for (const adapter of ['oracle', 'custom']) {
+    const command = { adapter, ...(adapter === 'custom' ? { mode: 'workspace', command: process.execPath } : {}) };
+    assert.equal(Object.hasOwn(select(command), 'permissionMode'), false);
+    for (const permissionMode of ['default', 'auto', 'full-access']) {
+      assert.throws(() => select({ ...command, permissionMode }), { code: 'executorInvalid' });
+    }
+  }
+});

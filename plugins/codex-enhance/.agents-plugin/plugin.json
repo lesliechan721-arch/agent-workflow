@@ -68,7 +68,9 @@
         "./scripts/file-selection.test.mjs",
         "./scripts/adapters-integration-inputs.test.mjs",
         "./scripts/adapters-integration-protocol.test.mjs",
-        "./scripts/adapters-integration-control.test.mjs"
+        "./scripts/adapters-integration-control.test.mjs",
+        "./scripts/adapter-permissions.test.mjs",
+        "./scripts/antigravity-permissions.test.mjs"
       ]
     },
     "node": {
@@ -455,6 +457,32 @@
                     "type": "boolean",
                     "title": "跳过 Codex Hook 信任检查",
                     "description": "省略时关闭。设为 true 会执行本次线程已启用但未受信任或内容已修改的普通 hook，范围不限于所选 profile；仍保留禁用状态和管理策略。它不授予工具审批或沙箱绕过权限。"
+                  },
+                  "permissionMode": {
+                    "type": "string",
+                    "title": "权限模式",
+                    "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "default",
+                          "title": "默认",
+                          "value": "default",
+                          "recommended": true
+                        },
+                        {
+                          "id": "auto",
+                          "title": "自动",
+                          "value": "auto"
+                        },
+                        {
+                          "id": "full-access",
+                          "title": "完整权限",
+                          "value": "full-access"
+                        }
+                      ]
+                    }
                   }
                 }
               },
@@ -463,6 +491,32 @@
                   "mode": {
                     "type": "string",
                     "const": "workspace"
+                  },
+                  "permissionMode": {
+                    "type": "string",
+                    "title": "权限模式",
+                    "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "default",
+                          "title": "默认",
+                          "value": "default",
+                          "recommended": true
+                        },
+                        {
+                          "id": "auto",
+                          "title": "自动",
+                          "value": "auto"
+                        },
+                        {
+                          "id": "full-access",
+                          "title": "完整权限",
+                          "value": "full-access"
+                        }
+                      ]
+                    }
                   }
                 }
               },
@@ -471,6 +525,32 @@
                   "mode": {
                     "type": "string",
                     "const": "workspace"
+                  },
+                  "permissionMode": {
+                    "type": "string",
+                    "title": "权限模式",
+                    "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "default",
+                          "title": "默认",
+                          "value": "default",
+                          "recommended": true
+                        },
+                        {
+                          "id": "auto",
+                          "title": "自动",
+                          "value": "auto"
+                        },
+                        {
+                          "id": "full-access",
+                          "title": "完整权限",
+                          "value": "full-access"
+                        }
+                      ]
+                    }
                   }
                 }
               },

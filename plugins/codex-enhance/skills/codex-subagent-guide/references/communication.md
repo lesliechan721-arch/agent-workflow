@@ -1,6 +1,10 @@
 # 外部任务通信
 
-按本次完整能力描述行动：communication_status 必须为 enabled 才可发送；transport 指子侧 MCP/命令接口，passive_delivery 指父输入自动进入时点，active_receive 指子侧能否主动等待回复。queued 不能证明打断当前轮。
+按本次完整能力描述行动：communication_status 必须为 enabled 才可发送；transport 指子侧 MCP/命令接口，passive_delivery 指父输入自动进入时点，active_receive 指子侧能否主动等待回复。queued 不能证明打断当前轮。配置开启或协商候选都不证明已就绪；必要桥、工具及权限准备成功后才会 enabled。权限或准备失败须按实际错误处理，不能当作 unsupported 或改用完整权限。
+
+通信开关与 permissionMode 独立；关闭通讯仍检查环境和应用权限模式。agy 精确脚本许可是长期用户设置，成功写入后失败或 stop 不撤销；许可不证明沙箱访问或真实通讯资格。需要判断其写入、拒绝或不支持原因时读取 [Antigravity 合同](../adapters.md#antigravity)。
+
+agy子侧优先使用生成的单命令`send --text TEXT`，将消息作为正确引用的单个参数。组合管道、重定向和shell包装可能需要额外许可，失败时按实际权限错误处理；不自动添加其它命令allow或切换full-access。脚本的`--text -`仍为stdin入口，单独的`-`正文需按生成提示处理。实际发送以父侧通道收到消息为依据，模型正文或回执标记是否符合任务预期是另一项判断。
 
 in-turn 可自动进入当前轮；turn-boundary 只在当前轮结束后进入；none 没有自动输入。active_receive=true 时子侧可用实际收件入口保持响应式等待，默认 600000 ms、最高 1800000 ms；false 时发问不会自动暂停或保活，当前轮无已接受待办输入仍会关闭。必要答复未到时，子侧须在最终结果说明未完成部分。父代理不能期待任务结束后回复会重新打开原 run。
 

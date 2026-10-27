@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { mock } from 'node:test';
-import { adapterMain } from '../../skills/codex-subagent-guide/scripts/adapters/common.mjs';
+import { adapterMain, negotiateExecutable } from '../../skills/codex-subagent-guide/scripts/adapters/common.mjs';
 
 const realTimeout = setTimeout;
 const realClearTimeout = clearTimeout;
@@ -26,12 +26,14 @@ process.on('message', async ({ id, milliseconds = 0 }) => {
 
 adapterMain(import.meta.url, {
   mode: 'workspace',
-  async negotiateCommunication(context) {
-    if (context.request.args.includes('negotiationMustFail')) {
+  async negotiate(context) {
+    const executable = await negotiateExecutable(context, context.request.args.includes('environmentMissing') ? path.join(context.request.workspace, 'missing-cli') : process.execPath);
+    await fs.writeFile(path.join(context.request.runtime.directory, 'environment-checked.json'), '{}');
+    if (context.request.communication && context.request.args.includes('negotiationMustFail')) {
       await fs.writeFile(path.join(context.request.runtime.directory, 'queried.json'), '{}');
       throw Object.assign(new Error('Capability query failed.'), { code: 'communicationQueryFailed' });
     }
-    return { supported: false };
+    return { environment: { status: 'available' }, capabilities: { communication: context.request.args.includes('preparationMustFail') ? { supported: true, transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } : { supported: false } }, executable };
   },
   async execute(context) {
     active = context;

@@ -3,8 +3,10 @@ import { fail, LIMITS } from '../runtime/contracts.mjs';
 import { mapHookState } from './codex-hooks.mjs';
 import { resolveCodexExecutable } from './codex-executable.mjs';
 import { adapterMain, backendLines, checkArguments, collaborationInput, deferred, rejectOption } from './common.mjs';
+import { permissionMode, watchPermissionFallback } from './permission-mode.mjs';
 
 export function checkCodexArguments(request, owned = []) {
+  const mode = permissionMode(request);
   checkArguments(request.args, {
     owned: ['--json', '--output-last-message', '-o', '--cd', '-C', '--worktree', '--help', '-h', '--version', '-V', ...owned],
     commands: ['exec', 'resume', 'fork', 'review', 'help'],
@@ -14,6 +16,7 @@ export function checkCodexArguments(request, owned = []) {
     booleans: ['--oss', '--approve-for-me', '--full-auto', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust', '--skip-git-repo-check', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--strict-config'],
     onOption(option, value) {
       const key = String(value ?? '').split('=', 1)[0].trim().replace(/^["']|["']$/g, '');
+      if (mode !== 'default' && (['--ask-for-approval', '-a', '--approve-for-me', '--full-auto', '--dangerously-bypass-approvals-and-sandbox'].includes(option) || ['--config', '-c'].includes(option) && ['approval_policy', 'approvals_reviewer'].some((leaf) => key === leaf || key.startsWith(`${leaf}.`)) || mode === 'full-access' && (['--sandbox', '-s'].includes(option) || ['--config', '-c'].includes(option) && (key === 'sandbox_mode' || key.startsWith('sandbox_mode.'))))) rejectOption(option);
       if (request.execution.model !== undefined && (['--model', '-m'].includes(option) || ['--config', '-c'].includes(option) && key === 'model')) rejectOption(option);
       if (request.execution.reasoningEffort !== undefined && ['--config', '-c'].includes(option) && key === 'model_reasoning_effort') rejectOption(option);
     },
@@ -45,6 +48,7 @@ export async function codexConfiguration(request, environment = process.env, dia
         profile = value;
       } else if (option === '--config' || option === '-c') {
         const parsed = parseConfigArgument(value);
+        if (permissionMode(request) !== 'default' && (Object.hasOwn(parsed, 'approval_policy') || Object.hasOwn(parsed, 'approvals_reviewer') || permissionMode(request) === 'full-access' && Object.hasOwn(parsed, 'sandbox_mode'))) rejectOption(option);
         if (Object.hasOwn(parsed, 'bypass_hook_trust')) fail('parameterUnavailable', 'Use the executor codexBypassHookTrust field.');
         if (Object.hasOwn(parsed, 'model') && request.execution.model !== undefined || Object.hasOwn(parsed, 'model_reasoning_effort') && request.execution.reasoningEffort !== undefined) rejectOption(option);
         raw = mergeConfiguration(raw, parsed);
@@ -62,6 +66,8 @@ export async function codexConfiguration(request, environment = process.env, dia
   const defaults = convertProfile(loaded.document ?? {}, { diagnostics });
   const explicit = convertProfile(raw, { diagnostics, explicit: true });
   const merged = mergeConfiguration(defaults, explicit);
+  if (permissionMode(request) === 'auto') { merged.approval_policy = 'on-request'; merged.approvals_reviewer = 'auto_review'; }
+  else if (permissionMode(request) === 'full-access') { merged.approval_policy = 'never'; merged.sandbox_mode = 'danger-full-access'; }
   if (request.execution.model !== undefined) merged.model = request.execution.model;
   if (request.execution.reasoningEffort !== undefined) {
     merged.model_reasoning_effort = request.execution.reasoningEffort;
@@ -175,11 +181,8 @@ export async function executeCodex(context) {
     ...configuration.thread.config.mcp_servers,
     [server]: { command: bridge.mcpServer.command, args: bridge.mcpServer.args, required: true },
   };
-  let executable;
-  try { executable = await resolveCodexExecutable({ source: context.request.codex.cliSource, environment: context.environment, cwd: context.request.workspace }); }
-  catch (error) { if (error.diagnostic) context.diagnostics.push(error.diagnostic); throw error; }
-  if (executable.diagnostic) context.diagnostics.push(executable.diagnostic);
-  if (executable.env) context.environment = executable.env;
+  const executable = context.executable;
+  watchPermissionFallback(context);
   const backend = await context.spawn(executable.command, [...(executable.args ?? []), ...configuration.argv]);
   rpc = createRpc(backend, context, (method, params) => {
     if (params.threadId && threadId && params.threadId !== threadId) { context.abort('backendSessionMismatch'); return; }
@@ -250,4 +253,20 @@ export async function executeCodex(context) {
 
 export async function negotiateCodexCommunication() { return { supported: true, transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true }; }
 
-adapterMain(import.meta.url, { mode: 'workspace', negotiateCommunication: negotiateCodexCommunication, execute: executeCodex }, 'Codex Adapter v5\nUsage: node codex-v5.mjs\nReads one persistent v5 JSONL connection. Uses PATH codex app-server, private parent tools, and automatic input.\nNormal backend configuration and approvals apply. Unsupported explicit options fail before model submission.\nNo default execution deadline or automatic retry. Backend process exit and service terminal are required.\n');
+export async function negotiateCodex(context) {
+  checkCodexArguments(context.request);
+  if (!context.request.codex || !['auto', 'cli', 'app'].includes(context.request.codex.cliSource) || typeof context.request.codex.bypassHookTrust !== 'boolean') fail('adapterProtocolInvalid', 'Codex requires an explicit CLI source and hook bypass setting.');
+  let executable;
+  try { executable = await resolveCodexExecutable({ source: context.request.codex.cliSource, environment: context.environment, cwd: context.request.workspace }); }
+  catch (error) {
+    if (error.diagnostic) context.diagnostics.push(error.diagnostic);
+    context.initialization = { environment: { status: 'unavailable', code: error.code ?? 'codexExecutableInvalid' }, capabilities: {} };
+    throw error;
+  }
+  context.initialization = { environment: { status: 'available' }, capabilities: {} };
+  if (executable.diagnostic) context.diagnostics.push(executable.diagnostic);
+  const { diagnostic: _diagnostic, ...invocation } = executable;
+  return { environment: { status: 'available' }, executable: invocation, capabilities: { communication: { supported: true, transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } } };
+}
+
+adapterMain(import.meta.url, { mode: 'workspace', codex: true, permissionMode: true, negotiate: negotiateCodex, execute: executeCodex }, 'Codex Adapter v5\nUsage: node codex-v5.mjs\nReads one persistent v5 JSONL connection. Uses PATH codex app-server, private parent tools, and automatic input.\nNormal backend configuration and approvals apply. Unsupported explicit options fail before model submission.\nNo default execution deadline or automatic retry. Backend process exit and service terminal are required.\n');
