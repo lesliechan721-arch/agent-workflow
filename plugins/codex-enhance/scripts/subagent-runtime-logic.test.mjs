@@ -15,6 +15,7 @@ const originalExecFile = childProcess.execFile;
 let commands, store, files, output, cli;
 try {
   childProcess.execFile = Object.assign(() => {}, { [promisify.custom]: async (_command, _args, options) => {
+    if (path.basename(_command).toLowerCase() === 'whoami.exe') return { stdout: '"fixture","S-1-5-21-123-456-789-1001"\r\n' };
     const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString('utf8'));
     if (input.source && input.destination) await fs.rename(input.source, input.destination);
     else if (!input.target && !input.resources && Object.keys(input).length) throw new Error('Unexpected native runtime operation.');

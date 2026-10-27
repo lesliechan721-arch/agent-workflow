@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Writable } from 'node:stream';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import readline from 'node:readline';
+import { qualificationAdapter, waitForCommunication } from './fixtures/windows-qualification.mjs';
 import { createFrameDecoder, createFrameWriter, createProtocolState, validateFrame } from '../skills/codex-subagent-guide/scripts/runtime/protocol.mjs';
 import { LIMITS, validateRequest } from '../skills/codex-subagent-guide/scripts/runtime/contracts.mjs';
 
@@ -13,6 +20,55 @@ const initialization = (communication) => ({ environment: { status: 'available' 
 const ready = (enabled = true) => ({ protocolVersion: 5, type: 'ready', initialization: initialization(enabled ? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } : { status: 'unsupported' }) });
 const input = (id = '2'.repeat(32), text = '父消息😀') => ({ protocolVersion: 5, type: 'message', id, text });
 const result = () => ({ protocolVersion: 5, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text: '最终结果。' });
+
+// Test Value Gate: execute the qualification's adapter on every OS so its actual
+// ready/result frames cannot drift from the production protocol unnoticed.
+test('Windows qualification adapter emits valid v5 initialization and stops its backend', { timeout: 10000 }, async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-protocol-'));
+  const child = spawn(process.execPath, ['--input-type=module', '-e', qualificationAdapter], {
+    env: { ...process.env, FIXTURE_OBSERVED: path.join(directory, 'observed.json'), FIXTURE_FINISH: path.join(directory, 'finish') },
+    stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000,
+  });
+  const closed = once(child, 'close'); closed.catch(() => {});
+  t.after(async () => { child.kill(); await closed.catch(() => {}); await fs.rm(directory, { recursive: true, force: true }); });
+  child.stdin.on('error', () => {});
+  const frames = [];
+  child.stdin.write(JSON.stringify(start()) + '\n');
+  for await (const line of readline.createInterface({ input: child.stdout })) {
+    const frame = validateFrame(JSON.parse(line), 'adapter');
+    frames.push(frame);
+    if (frame.type === 'ready') child.stdin.write('{"protocolVersion":5,"type":"stop","reason":"requested"}\n');
+  }
+  assert.deepEqual(await closed, [0, null]);
+  assert.deepEqual(frames.map((frame) => frame.type), ['ready', 'closing', 'result']);
+  assert.deepEqual(frames[0], ready());
+  assert.equal(frames[2].state, 'cancelled');
+  assert.equal(frames[2].backendExitCode, 0);
+});
+
+// Test Value Gate: a terminal initialization failure must surface its status
+// immediately instead of being converted into a minute-long command timeout.
+test('qualification readiness follows pending runs and reports terminal failure immediately', async () => {
+  const pending = { exit: 1, handle: 'fixture', stdout: 'state: starting\ncommunication: pending\ncode: startupNotReady\n' };
+  let calls = 0;
+  await waitForCommunication(pending, async (args) => {
+    calls++; assert.equal(args[2], 'fixture');
+    return { exit: 0, stdout: 'state: running\ncommunication: true\n' };
+  });
+  assert.equal(calls, 1);
+  for (const state of ['failed', 'cancelled', 'unknown', 'completed']) {
+    calls = 0;
+    await assert.rejects(waitForCommunication(pending, async () => {
+      calls++;
+      return { exit: 0, stdout: `state: ${state}\ncommunication: true\ncode: protocolInvalid\nBEGIN_FINAL:12345678\nstate: running\nEND_FINAL:12345678\n` };
+    }), { code: 'readinessFailed', details: { state, runtimeCode: 'protocolInvalid' } });
+    assert.equal(calls, 1);
+  }
+  await assert.rejects(waitForCommunication({ exit: 1, stdout: 'state: failed\ncode: workerLost\n' }, () => assert.fail('A failed start must not poll.')), {
+    code: 'readinessFailed', details: { state: 'failed', runtimeCode: 'workerLost' },
+  });
+  await assert.rejects(waitForCommunication(pending, () => assert.fail('An expired wait must not poll.'), { timeoutMs: 0 }), { code: 'commandTimeout' });
+});
 
 // Test Value Gate: public wire helpers protect exact Unicode bytes, strict v5
 // fields, ordered lifecycle, message identity, and cancellation under backpressure.

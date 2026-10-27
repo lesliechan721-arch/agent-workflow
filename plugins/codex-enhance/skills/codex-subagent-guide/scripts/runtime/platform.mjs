@@ -12,11 +12,13 @@ const execFileAsync = promisify(execFile);
 const launches = new Map();
 let userIdentity;
 
-function windowsPowerShell() {
+function windowsSystemExecutable(...parts) {
   const root = Object.entries(process.env).find(([name]) => name.toLowerCase() === 'systemroot')?.[1];
   if (!root || !path.isAbsolute(root)) fail('platformUnavailable', 'The Windows system directory is unavailable.');
-  return path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return path.join(root, 'System32', ...parts);
 }
+
+const windowsPowerShell = () => windowsSystemExecutable('WindowsPowerShell', 'v1.0', 'powershell.exe');
 
 const windowsJobHelper = fileURLToPath(new URL('./windows-job.ps1', import.meta.url));
 
@@ -30,9 +32,27 @@ function windowsHostEnvironment(environment, input) {
   return { ...Object.fromEntries(Object.entries(environment).filter(([name]) => !isPowerShellModulePath(name))), ...input };
 }
 
+function nativeFailure(error, operation, started, timeoutMs, phase = 'execute') {
+  const systemCode = ['ENOENT', 'EACCES', 'EPERM', 'ENOMEM', 'EAGAIN', 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'].includes(error.code) ? error.code : null;
+  const reason = phase === 'parse' ? 'invalidJson'
+    : systemCode === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'outputLimit'
+      : error.killed === true ? 'timeout'
+        : systemCode !== null ? 'launchFailed'
+          : Number.isSafeInteger(error.code) ? 'processExit' : 'executionFailed';
+  // Native errors can contain commands, inputs and raw output. Expose only
+  // fixed categories and scalar process evidence.
+  const diagnostic = {
+    operation, phase, reason, elapsedMs: Math.round(performance.now() - started), timeoutMs,
+    exitCode: Number.isSafeInteger(error.code) ? error.code : null, systemCode,
+    signal: ['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGABRT', 'SIGBREAK'].includes(error.signal) ? error.signal : null,
+    killed: error.killed === true,
+  };
+  fail('platformOperationFailed', `A native Windows identity, access-control, or process operation failed. ${JSON.stringify(diagnostic)}`);
+}
+
 // Only fixed program text reaches PowerShell. Paths, identities and arguments
 // are JSON data in an environment value, never executable command text.
-export async function windowsOperation(source, input = {}) {
+export async function windowsOperation(source, input = {}, operation = 'other') {
   const executable = windowsPowerShell();
   const timeoutMs = 15000;
   const started = performance.now();
@@ -47,36 +67,33 @@ export async function windowsOperation(source, input = {}) {
   try {
     const { stdout } = await execFileAsync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
       shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024,
-      env: windowsHostEnvironment(process.env, { AW_SUBAGENT_PLATFORM_INPUT: Buffer.from(JSON.stringify(input)).toString('base64') }),
+      env: windowsHostEnvironment(process.env, { AW_SUBAGENT_PLATFORM_INPUT: Buffer.from(JSON.stringify(input)).toString('base64'), AW_SUBAGENT_NATIVE_OPERATION: operation }),
     });
     phase = 'parse';
     return stdout.trim() ? JSON.parse(stdout) : null;
   } catch (error) {
-    const systemCode = ['ENOENT', 'EACCES', 'EPERM', 'ENOMEM', 'EAGAIN', 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'].includes(error.code) ? error.code : null;
-    const reason = phase === 'parse' ? 'invalidJson'
-      : systemCode === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'outputLimit'
-        : error.killed === true ? 'timeout'
-          : systemCode !== null ? 'launchFailed'
-            : Number.isSafeInteger(error.code) ? 'processExit' : 'executionFailed';
-    // Native errors contain the encoded command, input and raw output. Keep only
-    // fixed categories and scalar process evidence in the public error message.
-    const diagnostic = {
-      operation: 'windowsOperation', phase, reason,
-      elapsedMs: Math.round(performance.now() - started), timeoutMs,
-      exitCode: Number.isSafeInteger(error.code) ? error.code : null,
-      systemCode,
-      signal: ['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGABRT', 'SIGBREAK'].includes(error.signal) ? error.signal : null,
-      killed: error.killed === true,
-    };
-    fail('platformOperationFailed', `A native Windows identity, access-control, or process operation failed. ${JSON.stringify(diagnostic)}`);
+    nativeFailure(error, 'windowsOperation', started, timeoutMs, phase);
   }
 }
 
 export async function currentUserIdentity() {
   if (!userIdentity) userIdentity = (async () => {
     if (process.platform === 'win32') {
-      const sid = await windowsOperation('[Security.Principal.WindowsIdentity]::GetCurrent().User.Value | ConvertTo-Json -Compress');
-      if (typeof sid !== 'string' || !/^S-1-\d+(?:-\d+)+$/.test(sid)) fail('userIdentityUnavailable', 'The current Windows user identity is unavailable.');
+      // whoami reads the current access token without starting PowerShell.
+      // Select the system executable directly; never trust PATH or a host SID.
+      let stdout;
+      const executable = windowsSystemExecutable('whoami.exe');
+      const started = performance.now();
+      try {
+        ({ stdout } = await execFileAsync(executable, ['/user', '/fo', 'csv', '/nh'], {
+          shell: false, windowsHide: true, timeout: 15000, maxBuffer: 65536,
+          env: { ...process.env, AW_SUBAGENT_NATIVE_OPERATION: 'identity' },
+        }));
+      } catch (error) { nativeFailure(error, 'identity', started, 15000); }
+      // The account name can use a non-UTF-8 console encoding. Only the ASCII
+      // SID column is consumed; require exactly one header-free CSV record.
+      const sid = stdout.trim().match(/^"(?:[^"\r\n]|"")*","(S-1-\d+(?:-\d+)+)"$/)?.[1];
+      if (!sid) fail('userIdentityUnavailable', 'The current Windows user identity is unavailable.');
       return { kind: 'windows', sid };
     }
     if (!['darwin', 'linux'].includes(process.platform) || typeof process.getuid !== 'function') fail('platformUnsupported', 'External runs require macOS, Linux, or native Windows.');
@@ -142,7 +159,7 @@ async function checkedPathChain(target, kind) {
 
 export async function assertNoReparsePath(target, kind = 'file') {
   const chain = await checkedPathChain(target, kind);
-  if (process.platform === 'win32') await windowsOperation([...windowsReparseCheck, '$true | ConvertTo-Json -Compress'].join('\n'), { chain });
+  if (process.platform === 'win32') await windowsOperation([...windowsReparseCheck, '$true | ConvertTo-Json -Compress'].join('\n'), { chain }, 'pathCheck');
   return target;
 }
 
@@ -168,7 +185,7 @@ export async function assertNoReparseTree(directory) {
       '}',
       'Assert-Tree $data',
       '$true | ConvertTo-Json -Compress',
-    ].join('\n'), { chain, kind: 'directory' });
+    ].join('\n'), { chain, kind: 'directory' }, 'pathTree');
     await checkedPathChain(directory, 'directory');
   } else {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
@@ -200,17 +217,34 @@ export async function verifyPrivatePaths(resources, expectedOwner) {
   } else {
     // Shared ancestors need one reparse check in this native call. Every
     // resource still gets its own owner/ACL check; no evidence survives the call.
-    await windowsOperation([
+    const source = [
       ...windowsReparseCheck,
       'function Assert-PrivateResource($data) {',
       ...windowsPrivateAclCheck,
       '}',
       'foreach ($resource in $data.resources) { Assert-PrivateResource $resource }',
       '$true | ConvertTo-Json -Compress',
-    ].join('\n'), {
-      chain: [...new Set(checked.flatMap((resource) => resource.chain))],
-      resources: checked.map(({ target, kind }) => ({ target, kind, sid: owner.sid })),
+    ].join('\n');
+    const inputFor = (resources) => ({
+      chain: [...new Set(resources.flatMap((resource) => resource.chain))],
+      resources: resources.map(({ target, kind }) => ({ target, kind, sid: owner.sid })),
     });
+    const verifyBatch = async (resources) => {
+      const input = inputFor(resources);
+      if (Buffer.byteLength(JSON.stringify(input)) > 18 * 1024) fail('platformOperationFailed', 'A native Windows path verification input is too large.');
+      await windowsOperation(source, input, 'aclVerify');
+    };
+    let batch = [];
+    for (const resource of checked) {
+      // 18 KiB of UTF-8 JSON encodes to at most 24 KiB of base64, below
+      // Windows' 32,767-character limit for a single environment variable.
+      const candidate = [...batch, resource];
+      if (batch.length && Buffer.byteLength(JSON.stringify(inputFor(candidate))) > 18 * 1024) {
+        await verifyBatch(batch);
+        batch = [resource];
+      } else batch = candidate;
+    }
+    await verifyBatch(batch);
   }
   return true;
 }
@@ -245,7 +279,7 @@ export async function protectPrivatePaths(resources) {
       '}',
       'foreach ($resource in $data.resources) { Protect-PrivateResource $resource }',
       '$true | ConvertTo-Json -Compress',
-    ].join('\n'), { resources: checked.map((resource) => ({ ...resource, sid: owner.sid })) });
+    ].join('\n'), { resources: checked.map((resource) => ({ ...resource, sid: owner.sid })) }, 'aclProtect');
     for (const { target, kind } of checked) await checkedPathChain(target, kind);
   }
   return true;
@@ -356,7 +390,7 @@ export async function windowsJobMembers(scope, stop = false) {
   try {
     const { stdout } = await execFileAsync(windowsPowerShell(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', windowsJobHelper, '-Action', stop ? 'stop' : 'observe'], {
       windowsHide: true, timeout: 20000, maxBuffer: 4 * 1024 * 1024,
-      env: windowsHostEnvironment(process.env, { AW_SUBAGENT_JOB_CONTROL: Buffer.from(JSON.stringify(scope)).toString('base64') }),
+      env: windowsHostEnvironment(process.env, { AW_SUBAGENT_JOB_CONTROL: Buffer.from(JSON.stringify(scope)).toString('base64'), AW_SUBAGENT_NATIVE_OPERATION: stop ? 'jobStop' : 'jobObserve' }),
     });
     const pids = JSON.parse(stdout.trim());
     if (!Array.isArray(pids) || pids.some((pid) => !Number.isSafeInteger(pid) || pid <= 0)) throw new Error();

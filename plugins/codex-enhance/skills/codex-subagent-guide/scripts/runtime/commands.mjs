@@ -5,7 +5,7 @@ import { atomicJson, readJson } from './files.mjs';
 import { fail, safeError } from './contracts.mjs';
 import { safeSpawn } from './platform.mjs';
 import { processTable, stopOwnedTree } from './processes.mjs';
-import { createRun, openRun, observeRun, recordFiles, readRecord, saveGap, saveObservation,
+import { createRun, openRun, openRuns, observeRun, recordFiles, readRecord, saveGap, saveObservation,
   workerAlive, expired, removeExpired, removeScratch, terminal, delay } from './store.mjs';
 import { OUTPUT_LIMIT, communication, initializationDiagnostics, chooseBoundary, needsInitialization, groupHeader, diagnostic, eventText,
   finalChunks, resultReport, measureReport, collectReport, exportHint } from './output.mjs';
@@ -150,9 +150,12 @@ export async function waitRuns(context, request) {
   for (;;) {
     context.table = undefined;
     groups = [];
+    const opened = await openRuns(context, request.runs);
     for (const handle of request.runs) {
       try {
-        const run = await observeRun(context, await openRun(context, handle));
+        const entry = opened.get(handle);
+        if (entry.error) throw entry.error;
+        const run = await observeRun(context, entry.run);
         if (run.result) await settleLateInputs(run);
         const events = await recordFiles(run, 'events');
         const items = [];

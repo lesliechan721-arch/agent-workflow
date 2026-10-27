@@ -43,10 +43,15 @@ function windowsHostFixture(t, execute) {
 test('identity initialization recovers after a shared native failure', async (t) => {
   const failure = new Error('private host diagnostic');
   let calls = 0; let rejectFirst;
-  const api = await windowsHostFixture(t, async () => {
+  let output = '"本机\\用户","S-1-5-21-123-456-789-1001"\r\n';
+  const api = await windowsHostFixture(t, async (command, args, options) => {
+    assert.equal(command, path.join(process.env[Object.keys(process.env).find((key) => key.toLowerCase() === 'systemroot')], 'System32', 'whoami.exe'));
+    assert.deepEqual(args, ['/user', '/fo', 'csv', '/nh']);
+    assert.equal(options.shell, false);
+    assert.equal(options.timeout, 15000);
     calls++;
     if (calls === 1) return new Promise((resolve, reject) => { rejectFirst = reject; });
-    return { stdout: JSON.stringify('S-1-5-21-123-456-789-1001') };
+    return { stdout: output };
   });
   const first = api.currentUserIdentity();
   const concurrent = api.currentUserIdentity();
@@ -56,11 +61,16 @@ test('identity initialization recovers after a shared native failure', async (t)
   ]);
   rejectFirst(failure);
   await rejected;
+  for (const invalid of ['', 'S-1-5-21-123-456-789-1001', '"account","not-a-sid"', `${output}${output}`]) {
+    output = invalid;
+    await assert.rejects(api.currentUserIdentity(), { code: 'userIdentityUnavailable' });
+  }
+  output = '"本机\\用户","S-1-5-21-123-456-789-1001"\r\n';
   const [owner, other] = await Promise.all([api.currentUserIdentity(), api.currentUserIdentity()]);
   assert.deepEqual(owner, { kind: 'windows', sid: 'S-1-5-21-123-456-789-1001' });
   owner.sid = 'changed';
   assert.equal((await api.currentUserIdentity()).sid, other.sid);
-  assert.equal(calls, 2);
+  assert.equal(calls, 6);
 });
 
 // Test Value Gate: native failures must retain actionable categories without
@@ -140,6 +150,136 @@ test('owned run reads batch native verification without caching ownership', asyn
   await assert.rejects(readOwner({ root, owner }, id), { code: 'runUnavailable' });
   assert.equal(calls, 2);
   assert.deepEqual(verifications[1], verifications[0]);
+});
+
+// Test Value Gate: multi-run reads and expiration scans must use a bounded
+// native batch, recheck each invocation, and retain unhealthy neighbors.
+test('multi-run reads batch verification and isolate unsafe or missing owners', async (t) => {
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-multi-owner-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  let unsafe;
+  let calls = 0;
+  const api = windowsHostFixture(t, async (_command, _args, options) => {
+    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
+    calls++;
+    if (options.env.AW_SUBAGENT_NATIVE_OPERATION === 'processTable') return { stdout: JSON.stringify([{ pid: process.pid, ppid: process.ppid, started: '1' }]) };
+    if (input.resources?.some(({ target }) => target === unsafe)) throw new Error('unsafe ACL');
+    return { stdout: 'true' };
+  });
+  const owner = await api.currentUserIdentity();
+  const { openRuns, scanExpired } = await import('../skills/codex-subagent-guide/scripts/runtime/store.mjs');
+  const handles = [];
+  for (const id of ['a', 'b', 'c'].map((value) => value.repeat(32))) {
+    await fs.mkdir(path.join(root, id));
+    const meta = { schema: 5, id, key: 'd'.repeat(32), name: 'fixture', token: 'e'.repeat(48), owner, processes: [], terminalAt: Date.now() };
+    await fs.writeFile(path.join(root, id, 'owner.json'), JSON.stringify(meta));
+    handles.push(`aw5-${id}-${meta.key}`);
+  }
+  const context = { root, owner };
+  let results = await openRuns(context, handles);
+  assert.ok(handles.every((handle) => results.get(handle).run?.handle === handle));
+  assert.equal(calls, 1);
+  results = await openRuns(context, [...handles, handles[0].slice(0, -32) + 'f'.repeat(32), 'invalid']);
+  assert.ok(handles.every((handle) => results.get(handle).run?.handle === handle));
+  assert.equal([...results.values()].filter(({ error }) => error?.code === 'runUnavailable').length, 2);
+  assert.equal(calls, 2, 'A later read must get fresh native evidence.');
+  calls = 0;
+  assert.equal(await scanExpired(context), false);
+  assert.equal(calls, 2, 'Root enumeration and all owner records require two native calls.');
+  unsafe = path.join(root, 'b'.repeat(32), 'owner.json');
+  calls = 0;
+  results = await openRuns(context, handles);
+  assert.equal(results.get(handles[1]).error.code, 'runUnavailable');
+  assert.equal(results.get(handles[0]).run.handle, handles[0]);
+  assert.equal(results.get(handles[2]).run.handle, handles[2]);
+  assert.equal(calls, 4, 'A rejected batch falls back to independent checks.');
+  assert.equal(await scanExpired(context), true);
+  assert.ok(await fs.stat(unsafe));
+  unsafe = undefined;
+  await fs.unlink(path.join(root, 'b'.repeat(32), 'owner.json'));
+  results = await openRuns(context, handles);
+  assert.equal(results.get(handles[1]).error.code, 'runUnavailable');
+  assert.ok(results.get(handles[0]).run && results.get(handles[2]).run);
+  const expiredOwner = path.join(root, 'a'.repeat(32), 'owner.json');
+  const expired = JSON.parse(await fs.readFile(expiredOwner, 'utf8'));
+  Object.assign(expired, { terminalAt: Date.now() - 3600001, worker: { pid: 2147483647, started: '2' }, localTreeStopped: true });
+  await fs.writeFile(expiredOwner, JSON.stringify(expired));
+  assert.equal(await scanExpired(context), true);
+  assert.equal(await fs.stat(path.dirname(expiredOwner)).catch(() => null), null);
+  assert.ok(await fs.stat(path.join(root, 'b'.repeat(32))));
+  assert.ok(await fs.stat(path.join(root, 'c'.repeat(32))));
+  t.diagnostic('Windows native ACL calls for 3 healthy runs: open 3 -> 1; expiration scan 4 -> 2; every read revalidates.');
+});
+
+// Test Value Gate: the full 128-run scan must stay below Windows' environment
+// variable limit with long Unicode paths instead of falling back per owner.
+test('large owner scans bound each encoded native input without losing resources', async (t) => {
+  const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-owner-input-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const root = path.join(directory, '长路径'.repeat(20));
+  await fs.mkdir(root);
+  const payloads = [];
+  const api = windowsHostFixture(t, async (_command, _args, options) => {
+    const encoded = options.env.AW_SUBAGENT_PLATFORM_INPUT;
+    assert.ok(encoded.length < 32767, 'A native input must fit the Windows environment variable.');
+    const input = JSON.parse(Buffer.from(encoded, 'base64').toString());
+    payloads.push(input);
+    return { stdout: 'true' };
+  });
+  const owner = await api.currentUserIdentity();
+  const ownerFiles = [];
+  for (let index = 0; index < 128; index++) {
+    const id = index.toString(16).padStart(32, '0');
+    await fs.mkdir(path.join(root, id));
+    const target = path.join(root, id, 'owner.json');
+    ownerFiles.push(target);
+    await fs.writeFile(target, JSON.stringify({ schema: 5, id, key: 'a'.repeat(32), name: 'fixture', token: 'b'.repeat(48), owner, processes: [], terminalAt: Date.now() }));
+  }
+  const { scanExpired } = await import('../skills/codex-subagent-guide/scripts/runtime/store.mjs');
+  assert.equal(await scanExpired({ root, owner }), false);
+  assert.ok(payloads.length > 2 && payloads.length < 32, `Expected bounded batches, received ${payloads.length} native calls.`);
+  assert.deepEqual(payloads.flatMap(({ resources }) => resources.filter(({ kind }) => kind === 'file').map(({ target }) => target)).sort(), ownerFiles.sort());
+  assert.equal((await fs.readdir(root)).length, 128);
+  t.diagnostic(`Windows native ACL calls for 128 healthy owners with long Unicode paths: 129 -> ${payloads.length}; every encoded input < 32767 characters.`);
+});
+
+// Test Value Gate: wait must revalidate after sleeping. A newly unsafe target
+// must fail independently while a healthy target's unread message is delivered.
+test('multi-target wait rechecks permissions after a polling delay', async (t) => {
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-wait-owner-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const first = 'a'.repeat(32), second = 'b'.repeat(32);
+  let batches = 0;
+  const api = windowsHostFixture(t, async (_command, _args, options) => {
+    if (options.env.AW_SUBAGENT_NATIVE_OPERATION === 'processTable') return { stdout: JSON.stringify([{ pid: process.pid, ppid: process.ppid, started: '1' }]) };
+    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
+    if (input.resources?.length === 5) {
+      batches++;
+      if (batches === 2) await fs.writeFile(path.join(root, first, 'events', 'message.json'), JSON.stringify({ type: 'message', text: 'Healthy target message.' }));
+    }
+    if (batches >= 2 && input.resources?.some(({ target }) => target === path.join(root, second, 'owner.json'))) throw new Error('changed ACL');
+    return { stdout: 'true' };
+  });
+  const owner = await api.currentUserIdentity();
+  const handles = [];
+  for (const id of [first, second]) {
+    const directory = path.join(root, id);
+    await fs.mkdir(directory);
+    await fs.mkdir(path.join(directory, 'events'));
+    const meta = { schema: 5, id, key: 'c'.repeat(32), name: 'fixture', token: 'd'.repeat(48), owner, processes: [], terminalAt: null, worker: { pid: process.pid, started: '1' } };
+    await fs.writeFile(path.join(directory, 'owner.json'), JSON.stringify(meta));
+    await fs.writeFile(path.join(directory, 'snapshot.json'), JSON.stringify({ state: 'running', sequence: 2, ready: true, initialization: null, initializationSequence: 0 }));
+    await fs.writeFile(path.join(directory, 'observed.json'), JSON.stringify({ sequence: 2, initializationSequence: 0, terminalConsumed: false }));
+    handles.push(`aw5-${id}-${meta.key}`);
+  }
+  const { waitRuns } = await import('../skills/codex-subagent-guide/scripts/runtime/commands.mjs');
+  const result = await waitRuns({ root, owner }, { runs: handles, timeoutMs: 5000 });
+  assert.equal(result.exitCode, 1);
+  assert.match(result.text, /Healthy target message\./);
+  assert.match(result.text, /code: runUnavailable\n/);
+  assert.equal(batches, 2);
+  assert.deepEqual(await fs.readdir(path.join(root, first, 'events')), []);
+  assert.ok(await fs.stat(path.join(root, second, 'owner.json')));
 });
 
 // Test Value Gate: run creation keeps every resource private while avoiding a

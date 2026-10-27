@@ -37,6 +37,9 @@ test('native private resources verify owner access and reject links', { timeout:
   const owner = await currentUserIdentity();
   if (process.platform === 'win32') t.diagnostic(`Windows identity query: ${Math.round(performance.now() - identityStarted)} ms (inherited home)`);
   assert.equal(owner.kind, process.platform === 'win32' ? 'windows' : 'posix');
+  if (owner.kind === 'windows') {
+    assert.equal(owner.sid, await windowsOperation('[Security.Principal.WindowsIdentity]::GetCurrent().User.Value | ConvertTo-Json -Compress', {}, 'identity'));
+  }
   await protectPrivatePath(directory);
   assert.equal(await verifyPrivatePath(directory, 'directory', owner), true);
   const file = path.join(directory, '中文 😀.json');

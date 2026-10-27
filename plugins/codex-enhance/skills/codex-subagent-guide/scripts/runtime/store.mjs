@@ -42,7 +42,7 @@ async function prepareRoot(context) {
         // .NET Framework Directory.Move uses MoveFile without replacement.
         // Publish the protected root only if no file or directory occupies it.
         try {
-          await windowsOperation('[IO.Directory]::Move($data.source, $data.destination); $true | ConvertTo-Json -Compress', { source: staging, destination: context.root });
+          await windowsOperation('[IO.Directory]::Move($data.source, $data.destination); $true | ConvertTo-Json -Compress', { source: staging, destination: context.root }, 'rootPublish');
         } catch (error) {
           const published = await fs.lstat(context.root).catch((probe) => { if (probe.code === 'ENOENT') return null; throw probe; });
           if (!published) throw error;
@@ -90,6 +90,13 @@ export async function readOwner(context, id) {
       { target: directory, kind: 'directory' },
       { target: path.join(directory, 'owner.json'), kind: 'file' },
     ], context.owner);
+    return await readVerifiedOwner(context, id);
+  } catch { fail('runUnavailable', 'The run ownership cannot be verified.'); }
+}
+
+async function readVerifiedOwner(context, id) {
+  const directory = path.join(context.root, id);
+  try {
     const meta = await readJson(path.join(directory, 'owner.json'), 1024 * 1024);
     if (meta.schema !== 5 || meta.id !== id || !/^[a-f0-9]{32}$/.test(meta.key ?? '') ||
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(meta.name ?? '') ||
@@ -99,6 +106,50 @@ export async function readOwner(context, id) {
     }
     return { directory, meta, handle: `aw5-${id}-${meta.key}` };
   } catch { fail('runUnavailable', 'The run ownership cannot be verified.'); }
+}
+
+async function readOwners(context, ids) {
+  const unique = [...new Set(ids)];
+  let verified = false;
+  if (unique.length > 1) {
+    try {
+      await verifyPrivatePaths([
+        { target: context.root, kind: 'directory' },
+        ...unique.flatMap((id) => [
+          { target: path.join(context.root, id), kind: 'directory' },
+          { target: path.join(context.root, id, 'owner.json'), kind: 'file' },
+        ]),
+      ], context.owner);
+      verified = true;
+    } catch { /* Isolate unsafe or missing runs with fresh individual checks. */ }
+  }
+  const results = new Map();
+  for (const id of unique) {
+    try { results.set(id, { run: await (verified ? readVerifiedOwner(context, id) : readOwner(context, id)) }); }
+    catch (error) { results.set(id, { error }); }
+  }
+  return results;
+}
+
+// Evidence belongs only to this read batch. A later poll calls this again;
+// scans never pass their evidence into a command or a destructive operation.
+export async function openRuns(context, handles) {
+  const parsed = new Map();
+  const results = new Map();
+  for (const handle of handles) {
+    try { parsed.set(handle, parseHandle(handle)); }
+    catch (error) { results.set(handle, { error }); }
+  }
+  const owners = await readOwners(context, [...parsed.values()].map(({ id }) => id));
+  for (const [handle, { id, key }] of parsed) {
+    try {
+      const { run, error } = owners.get(id);
+      if (error) throw error;
+      if (run.meta.key !== key) fail('runUnavailable', 'The run handle is unavailable.');
+      results.set(handle, { run });
+    } catch (error) { results.set(handle, { error }); }
+  }
+  return results;
 }
 
 export async function openRun(context, handle) {
@@ -258,11 +309,14 @@ export async function scanExpired(context) {
     if (error.code === 'ENOENT' || !await fs.lstat(context.root).catch(() => null)) return false;
     return true;
   }
-  for (const entry of entries.filter((item) => item.isDirectory() && /^[a-f0-9]{32}$/.test(item.name)).slice(0, 128)) {
+  const ids = entries.filter((item) => item.isDirectory() && /^[a-f0-9]{32}$/.test(item.name)).slice(0, 128).map((entry) => entry.name);
+  const owners = await readOwners(context, ids);
+  for (const id of ids) {
     try {
-      const run = await readOwner(context, entry.name);
+      const { run, error } = owners.get(id);
+      if (error) throw error;
       if (run.meta.terminalAt === null && run.meta.worker) await fixLostTime(context, run);
-      if (expired(run.meta)) await removeExpired(context, run);
+      if (expired(run.meta)) await removeExpired(context, await readOwner(context, id));
     } catch { failures += 1; }
   }
   return failures > 0;
