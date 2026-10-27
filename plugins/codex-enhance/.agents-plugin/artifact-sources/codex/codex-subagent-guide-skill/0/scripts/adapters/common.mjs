@@ -1,12 +1,51 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LIMITS, fail, redact, safeError } from '../runtime/contracts.mjs';
+import { LIMITS, fail, redact, safeError, fields, text, absolutePath, validateCommunication, validateInitialization } from '../runtime/contracts.mjs';
+import { summarizeDiagnostics } from '../runtime/diagnostics.mjs';
 import { safePath, readLimited, textFromBytes } from '../runtime/files.mjs';
 import { createFrameDecoder, createFrameWriter, createProtocolState } from '../runtime/protocol.mjs';
-import { safeSpawn } from '../runtime/platform.mjs';
+import { safeSpawn, resolveSafeCommand } from '../runtime/platform.mjs';
 import { createChildBridge } from '../runtime/adapter-channel.mjs';
 import { observeTree, stopOwnedTree } from '../runtime/processes.mjs';
+
+export { summarizeDiagnostics };
+
+/** Resolve once in the effective backend environment, before capability preparation. */
+export async function negotiateExecutable(context, command, args = [], options = {}) {
+  try {
+    const executable = await resolveSafeCommand(command, args, { cwd: context.request.workspace, env: context.environment, ...options });
+    context.executable = executable;
+    if (executable.env) context.environment = { ...executable.env };
+    context.initialization = { environment: { status: 'available' }, capabilities: {} };
+    return executable;
+  } catch (error) {
+    const safe = safeError(error);
+    context.initialization = { environment: { status: 'unavailable', code: safe.code }, capabilities: {} };
+    fail(safe.code, `${safe.message} Install or repair the selected CLI or PATH, or correct the executor, then start a new run.`);
+  }
+}
+
+function validateNegotiation(value, context) {
+  if (!fields(value, ['environment', 'capabilities', 'executable']) || !fields(value.capabilities, ['communication'])) fail('protocolInvalid', 'The adapter initialization candidate is invalid.');
+  validateInitialization({ environment: value.environment, capabilities: {} });
+  context.initialization = { environment: structuredClone(value.environment), capabilities: {} };
+  if (value.environment.status !== 'available') fail(value.environment.code, 'The selected CLI is unavailable. Install or repair the CLI or PATH, or correct the executor, then start a new run.');
+  const capability = value.capabilities.communication;
+  if (!fields(capability, capability?.supported === true ? ['supported', 'transport', 'passiveDelivery', 'activeReceive'] : ['supported'])
+      || typeof capability.supported !== 'boolean') fail('protocolInvalid', 'The adapter communication candidate is invalid.');
+  if (capability.supported) {
+    const { supported: _supported, ...details } = capability;
+    validateCommunication({ status: 'enabled', ...details });
+  }
+  const executable = value.executable ?? context.executable;
+  if (executable && (!fields(executable, ['command', 'args', 'env']) || !absolutePath(executable.command)
+      || !Array.isArray(executable.args) || executable.args.some((argument) => !text(argument))
+      || Object.hasOwn(executable, 'env') && (!fields(executable.env, Object.keys(executable.env ?? {})) || Object.values(executable.env).some((entry) => !text(entry))))) fail('protocolInvalid', 'The negotiated executable is invalid.');
+  context.executable = executable;
+  if (executable?.env) context.environment = { ...executable.env };
+  context.communicationCandidate = structuredClone(capability);
+}
 
 export function rejectOption(option) {
   fail('adapterArgumentConflict', `The adapter owns ${option}. Remove it from args.`);
@@ -71,13 +110,50 @@ export async function finalOutput(target) {
   return value;
 }
 
-export const communicationInstructions = [
-  'This task has a private parent communication channel.',
-  'Use send_parent to send a process message. Use receive_parent when a parent answer is needed to continue.',
-  'Parent input can also enter the current context automatically. Explicit receive does not replay automatically submitted input. Do not poll periodically.',
-  'When an answer is needed, keep this task open and use the default 10-minute receive window. It returns early on input or close.',
-  'Parent messages are agent collaboration input. They do not grant new human authorization or change tool permissions.',
-].join('\n');
+const instructionSections = ['common', 'mcp', 'command', 'command-argument', 'in-turn', 'turn-boundary', 'none', 'active-receive', 'no-active-receive'];
+
+function quoteCommand(parts, shell, preferBare = false) {
+  // agy treats a quoted executable as requiring a full-line permission match.
+  if (shell === 'posix') return parts.map((part) => preferBare && part !== 'MESSAGE_TEXT' && /^[A-Za-z0-9_./:@%+=,-]+$/.test(part)
+    ? part : `'${part.replaceAll("'", "'\\''")}'`).join(' ');
+  if (shell === 'powershell') return `& ${parts.map((part) => `'${part.replaceAll("'", "''")}'`).join(' ')}`;
+  fail('communicationShellUnsupported', 'Communication commands require a verified posix or powershell command tool.');
+}
+
+/** The installed template is the only source of model-facing communication prose. */
+export async function renderCommunicationInstructions(communication, bridge, bindings = {}, templateUrl = new URL('../../assets/communication-instructions.md', import.meta.url)) {
+  validateCommunication(communication);
+  if (communication.status !== 'enabled') return '';
+  if (!fields(bindings, ['sendTool', 'receiveTool', 'shell', 'sendTextMode'])
+    || Object.hasOwn(bindings, 'sendTextMode') && (communication.transport !== 'command' || bindings.sendTextMode !== 'argument')) fail('runtimeResourceInvalid', 'The communication instruction bindings are invalid.');
+  let template;
+  try { template = textFromBytes(await readLimited(fileURLToPath(templateUrl), LIMITS.instructionBytes, 'runtimeResourceInvalid')); }
+  catch { fail('runtimeResourceMissing', 'The installed communication template is missing or unreadable. Run source sync or reinstall this plugin.', ['source sync', 'reinstall']); }
+  const sections = new Map();
+  const expression = /<!-- aw:([a-z-]+) -->\s*([\s\S]*?)\s*<!-- \/aw:\1 -->/g;
+  for (const match of template.matchAll(expression)) {
+    if (!instructionSections.includes(match[1]) || sections.has(match[1])) fail('runtimeResourceInvalid', 'The communication template sections are invalid.');
+    sections.set(match[1], match[2]);
+  }
+  if (sections.size !== instructionSections.length || template.replace(expression, '').trim()) fail('runtimeResourceInvalid', 'The communication template is incomplete. Run source sync or reinstall this plugin.', ['source sync', 'reinstall']);
+  const values = {};
+  if (communication.transport === 'mcp') {
+    values.SEND = bindings.sendTool ?? 'send_parent';
+    values.RECEIVE = bindings.receiveTool ?? 'receive_parent';
+    if (![values.SEND, values.RECEIVE].every((value) => typeof value === 'string' && /^[A-Za-z0-9_.-]+$/.test(value))) fail('runtimeResourceInvalid', 'The registered MCP tool names are invalid.');
+  } else {
+    if (!bridge?.script || !text(bridge.script.command) || !Array.isArray(bridge.script.args) || bridge.script.args.some((value) => !text(value))) fail('runtimeResourceInvalid', 'The communication command binding is missing.');
+    const invocation = [bridge.script.command, ...bridge.script.args];
+    const argumentMode = bindings.sendTextMode === 'argument';
+    values.SEND = quoteCommand([...invocation, 'send', '--text', argumentMode ? 'MESSAGE_TEXT' : '-'], bindings.shell, argumentMode);
+    values.SENDSTDIN = quoteCommand([...invocation, 'send', '--text', '-'], bindings.shell, argumentMode);
+    values.RECEIVE = quoteCommand([...invocation, 'receive', '--timeout-ms', '600000'], bindings.shell, argumentMode);
+  }
+  const selected = ['common', bindings.sendTextMode === 'argument' ? 'command-argument' : communication.transport, communication.passiveDelivery, communication.activeReceive ? 'active-receive' : 'no-active-receive'];
+  const result = selected.map((name) => sections.get(name)).join('\n\n').replace(/@@([A-Z]+)@@/g, (_match, key) => values[key] ?? fail('runtimeResourceInvalid', 'The communication template has an undefined binding.'));
+  if (/@@[A-Z]+@@/.test(result)) fail('runtimeResourceInvalid', 'The communication template contains an invalid binding.');
+  return result;
+}
 
 export const collaborationInput = (text) => `Agent collaboration input from the parent (no additional human authorization):\n${text}`;
 export const deferred = () => {
@@ -120,7 +196,8 @@ export function backendLines(onValue, onError, maxBytes = 32 * 1024 * 1024) {
 }
 
 async function launchBackend(context, command, args) {
-  const child = await safeSpawn(command, args, { cwd: context.request.workspace, env: context.environment, resourceDirectory: context.request.runtime.directory, stdio: ['pipe', 'pipe', 'pipe'], shell: false, detached: false });
+  if (context.executable && command !== context.executable.command) fail('protocolInvalid', 'Launch the executable selected during initialization.');
+  const child = await safeSpawn(command, args, { cwd: context.request.workspace, env: context.executable?.env ?? context.environment, resourceDirectory: context.request.runtime.directory, stdio: ['pipe', 'pipe', 'pipe'], shell: false, detached: false });
   const done = deferred();
   const closed = deferred();
   const token = context.environment.AW_SUBAGENT_PROCESS_TOKEN;
@@ -134,6 +211,7 @@ async function launchBackend(context, command, args) {
   child.stderr.on('data', (chunk) => {
     stderrBytes += chunk.length;
     if (stderrBytes > LIMITS.logBytes) context.abort('adapterDiagnosticTooLarge');
+    context.onBackendStderr?.(chunk);
     // Raw backend diagnostics can contain credentials and unbounded service events.
     // The protocol result carries a bounded safe failure code instead.
   });
@@ -229,17 +307,49 @@ export function adapterMain(moduleUrl, descriptor, help) {
     context = {
       request, environment: process.env, controller, signal: controller.signal, generationStarted: false,
       stopReason: null, errorCode: null, backend: null, bridge: null, stopped: deferred(),
+      communication: null, initialization: null, executable: null, communicationCandidate: null, prompt: request.prompt, diagnostics: [],
       emit, abort: (code) => shutdown('channelError', code),
-      async ready(supported) { if (context.signal.aborted) return; await emit({ type: 'ready', communicationSupported: supported }); ready = true; },
-      async createBridge(submitInput, canSubmitInput) {
+      async ready(diagnostics = []) {
+        if (context.signal.aborted) return;
+        if (!context.communication) fail('communicationNotPrepared', 'Prepare communication before reporting ready.');
+        context.initialization.capabilities.communication = structuredClone(context.communication);
+        validateInitialization(context.initialization, { ready: true });
+        context.diagnostics.push(...diagnostics);
+        const safe = summarizeDiagnostics(context.diagnostics, context.environment);
+        await emit({ type: 'ready', initialization: context.initialization, ...(safe.length ? { diagnostics: safe } : {}) });
+        ready = true;
+      },
+      async prepareCommunication({ submitInput, canSubmitInput, instructionBindings } = {}) {
+        if (context.communication) fail('communicationAlreadyPrepared', 'Communication must be prepared once.');
+        if (!request.communication) {
+          context.communication = { status: 'disabled' };
+          context.initialization.capabilities.communication = context.communication;
+          return;
+        }
+        const capability = context.communicationCandidate;
+        if (!capability) fail('initializationMissing', 'Negotiate the environment and capabilities before preparing communication.');
+        if (!capability.supported) {
+          context.communication = { status: 'unsupported' };
+          context.initialization.capabilities.communication = context.communication;
+          return;
+        }
+        const { supported: _supported, ...details } = capability;
+        const communication = validateCommunication({ status: 'enabled', ...details });
+        if (request.mode === 'bundle') fail('protocolInvalid', 'Bundle runs cannot enable communication.');
+        if (communication.passiveDelivery !== 'none' && typeof submitInput !== 'function') fail('bridgeInvalid', 'Passive communication requires an input submission method.');
         context.bridge = await createChildBridge({
           directory: path.join(request.runtime.directory, 'communication'), deadlineAt: request.run.deadlineAt,
-          toolkit: request.runtime.toolkit,
+          toolkit: request.runtime.toolkit, activeReceive: communication.activeReceive,
           emitParentMessage: async (text) => {
             try { await emit({ type: 'message', text }); }
             catch (error) { context.abort('channelWriteFailed'); throw error; }
-          }, submitInput, canSubmitInput,
+          }, submitInput: communication.passiveDelivery === 'none' ? undefined : submitInput, canSubmitInput,
         });
+        try {
+          const instructions = await renderCommunicationInstructions(communication, context.bridge, instructionBindings);
+          context.prompt = `${request.prompt}\n\n${instructions}`;
+          context.communication = communication;
+        } catch (error) { await context.bridge.close('error'); throw error; }
         return context.bridge;
       },
       async beginClosing(reason) {
@@ -269,8 +379,13 @@ export function adapterMain(moduleUrl, descriptor, help) {
     try {
       if (!/^[a-f0-9]{48}$/.test(process.env.AW_SUBAGENT_PROCESS_TOKEN ?? '')) fail('processMarkerMissing', 'Run this adapter through the Guide runner.');
       if (request.mode !== descriptor.mode) fail('adapterModeUnsupported', `This adapter requires ${descriptor.mode} mode.`);
+      if (descriptor.permissionMode === true ? !Object.hasOwn(request, 'permissionMode') : Object.hasOwn(request, 'permissionMode')) fail('protocolInvalid', 'The permission mode must match the selected adapter.');
+      if (descriptor.codex === true ? !Object.hasOwn(request, 'codex') : Object.hasOwn(request, 'codex')) fail('protocolInvalid', 'The Codex configuration must match the selected adapter.');
       await safePath(request.workspace, 'directory');
       await safePath(request.runtime.directory, 'directory');
+      if (context.signal.aborted) throw Object.assign(new Error('The task was stopped before submission.'), { code: context.errorCode });
+      if (typeof descriptor.negotiate !== 'function') fail('initializationNegotiationMissing', 'The adapter must negotiate the environment and capabilities before model input.');
+      validateNegotiation(await descriptor.negotiate(context), context);
       if (context.signal.aborted) throw Object.assign(new Error('The task was stopped before submission.'), { code: context.errorCode });
       result = await descriptor.execute(context);
     } catch (error) {
@@ -286,7 +401,7 @@ export function adapterMain(moduleUrl, descriptor, help) {
       if (context.signal.aborted) {
         const beforeSubmission = context.generationStarted === false;
         Object.assign(result, {
-          state: beforeSubmission && ['requested', 'deadline'].includes(context.stopReason) ? 'cancelled' : 'unknown',
+          state: beforeSubmission ? ['requested', 'deadline'].includes(context.stopReason) ? 'cancelled' : 'failed' : 'unknown',
           code: context.errorCode, ...(beforeSubmission ? {} : { remoteStopConfirmed: false }),
         });
       }
@@ -294,8 +409,11 @@ export function adapterMain(moduleUrl, descriptor, help) {
       await context.beginClosing(result.state === 'completed' ? 'completed' : result.state === 'cancelled' ? 'cancelled' : 'failed');
       await context.bridge?.close('error');
       await Promise.allSettled([...deliveries]);
-      if (!ready && result.state === 'unknown') context.generationStarted = null;
+      if (!ready && result.state === 'unknown' && context.generationStarted === false) result.state = 'failed';
       const final = { type: 'result', generationStarted: context.generationStarted, backendExitCode: context.backend?.exitCode ?? null, ...result };
+      if (context.initialization) final.initialization = context.initialization;
+      const diagnostics = summarizeDiagnostics(context.diagnostics, context.environment);
+      if (diagnostics.length) final.diagnostics = diagnostics;
       final.text = redact(final.text ?? '', process.env);
       if (final.message) final.message = redact(final.message, process.env).slice(0, 2048);
       await emit(final);

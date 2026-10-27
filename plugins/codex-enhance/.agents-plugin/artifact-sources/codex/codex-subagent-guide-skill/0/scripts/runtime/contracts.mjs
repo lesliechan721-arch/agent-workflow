@@ -41,12 +41,48 @@ export function validateDelivery(value) {
   return value;
 }
 
+export function validateCommunication(value) {
+  if (requiredFields(value, ['status']) && ['disabled', 'unsupported'].includes(value.status)) return value;
+  if (!requiredFields(value, ['status', 'transport', 'passiveDelivery', 'activeReceive']) || value.status !== 'enabled'
+      || !['mcp', 'command'].includes(value.transport) || !['in-turn', 'turn-boundary', 'none'].includes(value.passiveDelivery)
+      || typeof value.activeReceive !== 'boolean' || value.passiveDelivery === 'none' && !value.activeReceive) {
+    fail('protocolInvalid', 'The communication descriptor is invalid.');
+  }
+  return value;
+}
+
+export function validateInitialization(value, { ready = false } = {}) {
+  if (!requiredFields(value, ['environment', 'capabilities'])
+      || !(requiredFields(value.environment, ['status']) && value.environment.status === 'available'
+        || requiredFields(value.environment, ['status', 'code']) && value.environment.status === 'unavailable' && code(value.environment.code))
+      || !fields(value.capabilities, ['communication'])
+      || ready && (value.environment.status !== 'available' || !Object.hasOwn(value.capabilities, 'communication'))) {
+    fail('protocolInvalid', 'The initialization descriptor is invalid.');
+  }
+  if (Object.hasOwn(value.capabilities, 'communication')) validateCommunication(value.capabilities.communication);
+  if (value.environment.status === 'unavailable' && value.capabilities.communication?.status === 'enabled') fail('protocolInvalid', 'An unavailable environment cannot enable communication.');
+  return value;
+}
+
+export function validateDiagnostics(value) {
+  if (!Array.isArray(value) || value.length > 64 || value.some((entry) => !requiredFields(entry, ['code', 'message'], ['field'])
+      || !code(entry.code) || !text(entry.message) || !entry.message.trim() || byteLength(entry.message) > 2048
+      || Object.hasOwn(entry, 'field') && (!cleanString(entry.field) || !entry.field.isWellFormed() || byteLength(entry.field) > 512))) {
+    fail('protocolInvalid', 'The initialization diagnostics are invalid.');
+  }
+  return value;
+}
+
 /** The shared wire shape does not establish a backend's terminal state. */
 export function validateRequest(request) {
-  const required = ['protocolVersion', 'type', 'run', 'execution', 'mode', 'workspace', 'prompt', 'args', 'runtime'];
-  if (!requiredFields(request, required, ['fileSelectors', 'fileResolver']) || request.protocolVersion !== 5 || request.type !== 'start' || !['workspace', 'bundle'].includes(request.mode)) fail('protocolInvalid', 'Use a mode-correct Adapter v5 start frame.');
+  const required = ['protocolVersion', 'type', 'run', 'execution', 'mode', 'workspace', 'prompt', 'args', 'communication', 'runtime'];
+  if (!requiredFields(request, required, ['fileSelectors', 'fileResolver', 'codex', 'permissionMode']) || request.protocolVersion !== 5 || request.type !== 'start' || !['workspace', 'bundle'].includes(request.mode) || typeof request.communication !== 'boolean'
+      || Object.hasOwn(request, 'permissionMode') && !['default', 'auto', 'full-access'].includes(request.permissionMode)) fail('protocolInvalid', 'Use a mode-correct Adapter v5 start frame.');
   if (!requiredFields(request.run, ['id', 'name', 'deadlineAt']) || !messageId(request.run.id) || !label(request.run.name) || !(request.run.deadlineAt === null || epochMs(request.run.deadlineAt))) fail('protocolInvalid', 'The Adapter v5 run identity or deadline is invalid.');
   if (!requiredFields(request.execution, ['executor'], ['model', 'reasoningEffort']) || !identifier(request.execution.executor) || ['model', 'reasoningEffort'].some((key) => Object.hasOwn(request.execution, key) && !identifier(request.execution[key]))) fail('protocolInvalid', 'The Adapter v5 execution selection is invalid.');
+  if (Object.hasOwn(request, 'codex') && (!requiredFields(request.codex, ['cliSource', 'bypassHookTrust'], ['profile'])
+      || !['auto', 'cli', 'app'].includes(request.codex.cliSource) || typeof request.codex.bypassHookTrust !== 'boolean'
+      || Object.hasOwn(request.codex, 'profile') && !identifier(request.codex.profile))) fail('protocolInvalid', 'The Codex adapter configuration is invalid.');
   if (!absolutePath(request.workspace) || !text(request.prompt) || !request.prompt.trim() || byteLength(request.prompt) > LIMITS.promptBytes || !Array.isArray(request.args) || request.args.some((value) => !text(value))) fail('protocolInvalid', 'The Adapter v5 workspace, prompt, or args is invalid.');
   if (!requiredFields(request.runtime, ['directory', 'toolkit']) || !absolutePath(request.runtime.directory) || !requiredFields(request.runtime.toolkit, ['module', 'command', 'messageScript', 'mcpScript']) || Object.values(request.runtime.toolkit).some((value) => !absolutePath(value))) fail('protocolInvalid', 'The Adapter v5 private runtime or installed toolkit is invalid.');
   if (request.mode === 'workspace') {
@@ -61,7 +97,7 @@ export function validateRequest(request) {
 
 export function validateResult(result) {
   const required = ['protocolVersion', 'type', 'state', 'generationStarted', 'backendExitCode', 'text'];
-  if (!requiredFields(result, required, ['code', 'message', 'sessionId', 'model', 'remoteStopConfirmed']) || result.protocolVersion !== 5 || result.type !== 'result' || !STATES.includes(result.state) || ![true, false, null].includes(result.generationStarted) || !(result.backendExitCode === null || Number.isSafeInteger(result.backendExitCode)) || !text(result.text) || byteLength(result.text) > LIMITS.outputBytes
+  if (!requiredFields(result, required, ['code', 'message', 'sessionId', 'model', 'remoteStopConfirmed', 'diagnostics', 'initialization']) || result.protocolVersion !== 5 || result.type !== 'result' || !STATES.includes(result.state) || ![true, false, null].includes(result.generationStarted) || !(result.backendExitCode === null || Number.isSafeInteger(result.backendExitCode)) || !text(result.text) || byteLength(result.text) > LIMITS.outputBytes
       || (Object.hasOwn(result, 'code') && !code(result.code))
       || (result.state !== 'completed' && !code(result.code))
       || (Object.hasOwn(result, 'message') && (!text(result.message) || byteLength(result.message) > LIMITS.messageBytes))
@@ -69,6 +105,11 @@ export function validateResult(result) {
       || (Object.hasOwn(result, 'remoteStopConfirmed') && typeof result.remoteStopConfirmed !== 'boolean')
       || (result.state === 'completed' && (result.generationStarted !== true || result.backendExitCode !== 0 || !result.text.trim()))
       || byteLength(JSON.stringify(result)) > LIMITS.resultBytes) fail('adapterResultInvalid', 'The Adapter v5 result is missing, invalid, or exceeds its limit.');
+  if (Object.hasOwn(result, 'diagnostics')) validateDiagnostics(result.diagnostics);
+  if (Object.hasOwn(result, 'initialization')) {
+    validateInitialization(result.initialization);
+    if (result.initialization.environment.status === 'unavailable' && (result.state !== 'failed' || result.generationStarted !== false)) fail('protocolInvalid', 'An unavailable environment requires a failed initialization without model input.');
+  }
   return result;
 }
 

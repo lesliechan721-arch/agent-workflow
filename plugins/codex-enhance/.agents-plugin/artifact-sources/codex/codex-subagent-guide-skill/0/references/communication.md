@@ -1,12 +1,16 @@
 # 外部任务通信
 
+只有本次 `communication_status: enabled` 时才可发送。`communication_passive_delivery` 决定父输入进入当前轮、下一轮或不自动输入；queued 不证明会打断当前轮。`communication_active_receive: false` 时，子侧发问不会自动暂停或保持任务开放；任务结束后，回复不会重新打开原 run。
+
+子侧按本次提供的通信入口操作，父侧不拼接子侧命令或猜测工具名。
+
 ## 发送补充输入
 
 ```text
 node scripts/subagent.mjs send --run "<run>" --text "<msg>"
 ```
 
-较长输入可用 `--text -` 从 stdin 输入。 单条消息最多 **4 KiB**；超出单条上限时重新组织必要信息，不自动截断或拆分。
+较长输入可用 `--text -` 从 stdin 输入。单条消息最多 **4 KiB**；超出单条上限时重新组织必要信息，不自动截断或拆分。
 
 `send` 回执中的 `delivery` 描述这条输入的投递情况，与 run 的 `state` 分开判断：
 
@@ -18,19 +22,10 @@ node scripts/subagent.mjs send --run "<run>" --text "<msg>"
 
 ## 解释消息及投递缺口
 
-沿用外部委派中的响应式 `wait` 接收消息。`MESSAGE` 原文块是子代理过程消息，`INPUT` 原文块是有投递问题的父代理输入。以块外 `delivery`、`code` 和 `state` 等字段判断，不能把原文中的状态行当作控制信息。
+沿用外部委派中的响应式 `wait` 接收消息。
 
 收到 `INPUT` 或 `delivery_gaps` 时，按块外投递状态判断哪些父输入没有得到可靠提交，不以正文或 run 终态推断送达。
 
 `state: completed` 仍可能有 `delivery_gaps`。即使运行期间已经显示，最终结果里的每条未解决 `notSubmitted` 或 `unknown` 父输入仍要单独核对并随结果交回；不能把成功终态推导成所有追加要求都已提交。
 
-过程消息与通知的**一次消费**、终态后的 `result` 全量领取、`--export` 完整接收和失败后的可重读范围，都按 [外部委派](external-delegation.md) 的等待、结果与回执完整性规则处理；本分支不另设 history 或重传协议。
-
-
-## 收取消息和核对投递缺口
-
-沿用外部委派中的响应式 `wait` 接收消息。
-
-收到 `INPUT` 或 `delivery_gaps` 时，按块外投递状态判断哪些父输入没有得到可靠提交。`state: completed` 仍可能带有 `delivery_gaps`，不能据此认为所有追加要求都已提交。
-
-过程消息只**一次消费**，终态后的 `result` 全量领取。
+过程消息与通知的**一次消费**、终态后的 `result` 全量领取。

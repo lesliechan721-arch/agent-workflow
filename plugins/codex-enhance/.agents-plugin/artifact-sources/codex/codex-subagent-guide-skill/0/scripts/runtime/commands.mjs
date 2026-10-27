@@ -5,9 +5,9 @@ import { atomicJson, readJson } from './files.mjs';
 import { fail, safeError } from './contracts.mjs';
 import { safeSpawn } from './platform.mjs';
 import { processTable, stopOwnedTree } from './processes.mjs';
-import { createRun, openRun, observeRun, recordFiles, readRecord, saveGap, saveObservation,
+import { createRun, openRun, openRuns, observeRun, recordFiles, readRecord, saveGap, saveObservation,
   workerAlive, expired, removeExpired, removeScratch, terminal, delay } from './store.mjs';
-import { OUTPUT_LIMIT, communication, needsCommunication, groupHeader, diagnostic, eventText,
+import { OUTPUT_LIMIT, communication, initializationDiagnostics, chooseBoundary, needsInitialization, groupHeader, diagnostic, eventText,
   finalChunks, resultReport, measureReport, collectReport, exportHint } from './output.mjs';
 
 const scanDiagnostic = (context) => context.scanFailed ? diagnostic('expirationScanIncomplete', 'Some expired resources could not be checked. They were retained.') : '';
@@ -36,6 +36,7 @@ export async function startRun(context, prepared, request) {
     await atomicJson(path.join(run.directory, 'launch.json'), {
       request: prepared.request, executable: prepared.executable, environment: prepared.environment,
       secretValues: prepared.secretValues, resourceRoot: prepared.selected.resourceRoot,
+      adapter: prepared.selected.executor.adapter,
       ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
     });
     child.unref();
@@ -53,14 +54,14 @@ export async function startRun(context, prepared, request) {
     context.table = child.exitCode === null && child.signalCode === null ? [run.meta.worker] : [];
     try { current = await observeRun(context, run); }
     catch (error) { return operationError('start', run.handle, error, run); }
-    if (current.snapshot.communicationSupported !== null || current.result) break;
+    if (current.snapshot.ready || current.result) break;
     const remaining = until - Date.now();
     if (remaining <= 0) break;
     await delay(Math.min(80, remaining));
   } while (Date.now() < until);
   await saveObservation(current, { terminalConsumed: false });
-  const ready = current.snapshot.communicationSupported !== null;
-  return { text: `start: ${ready ? 'ready' : current.result ? 'error' : 'notReady'}\n${groupHeader(current, true)}${ready ? '' : `code: ${current.result?.code ?? 'startupNotReady'}\n`}`,
+  const ready = current.snapshot.ready;
+  return { text: `start: ${ready ? 'ready' : current.result ? 'error' : 'notReady'}\n${groupHeader(current, true)}${initializationDiagnostics(current.snapshot.diagnostics, chooseBoundary(current.snapshot.diagnostics?.map((entry) => entry.message)))}${ready ? '' : `code: ${current.result?.code ?? 'startupNotReady'}\n`}`,
     diagnostic: scanDiagnostic(context), exitCode: ready ? 0 : 1 };
 }
 
@@ -70,7 +71,7 @@ export async function sendInput(context, request) {
     run = await observeRun(context, await openRun(context, request.runs[0]));
     if (run.snapshot.state === 'starting') fail('runNotReady', 'The run has not initialized.');
     if (run.snapshot.state !== 'running') fail('runClosed', 'The run no longer accepts input.');
-    if (run.snapshot.communicationSupported !== true) fail('communicationUnsupported', 'This run does not support communication.');
+    if (run.snapshot.initialization?.capabilities.communication?.status !== 'enabled') fail('communicationUnsupported', 'This run does not support communication.');
     const id = randomBytes(16).toString('hex');
     const name = `${String(Date.now()).padStart(16, '0')}-${process.hrtime.bigint()}-${id}.json`;
     await atomicJson(path.join(run.directory, 'outbox', name), { id, text: request.text, phase: 'queued' });
@@ -126,8 +127,9 @@ function waitReport(groups, more, changed) {
       if (!group.items.length && !group.error) continue;
       if (!first) yield '\n'; first = false;
       if (!group.run) { yield `run: ${group.handle}\ncode: ${group.error}\n`; continue; }
-      const capability = group.capability ?? (group.items.some((item) => item.kind === 'state' || item.kind === 'final' || item.kind === 'deferred') && needsCommunication(group.run));
+      const capability = group.capability ?? (group.items.some((item) => item.kind === 'state' || item.kind === 'final' || item.kind === 'deferred') && needsInitialization(group.run));
       yield groupHeader(group.run, capability);
+      if (capability && !group.items.some((item) => item.kind === 'final')) yield initializationDiagnostics(group.run.snapshot.diagnostics, token);
       if (group.error) yield `code: ${group.error}\n`;
       for (const item of group.items) {
         if (item.kind === 'message') yield item.rendered ?? await eventText(group.run, item.name, token);
@@ -148,9 +150,12 @@ export async function waitRuns(context, request) {
   for (;;) {
     context.table = undefined;
     groups = [];
+    const opened = await openRuns(context, request.runs);
     for (const handle of request.runs) {
       try {
-        const run = await observeRun(context, await openRun(context, handle));
+        const entry = opened.get(handle);
+        if (entry.error) throw entry.error;
+        const run = await observeRun(context, entry.run);
         if (run.result) await settleLateInputs(run);
         const events = await recordFiles(run, 'events');
         const items = [];
@@ -159,7 +164,7 @@ export async function waitRuns(context, request) {
           group.gaps = await recordFiles(run, 'gaps');
           group.resultBytes = (await measureReport(resultReport(run, [], group.gaps))).bytes;
           group.candidates.push({ kind: 'final' });
-        } else if (!run.result && (run.snapshot.sequence > run.observed.sequence || needsCommunication(run))) group.candidates.push({ kind: 'state' });
+        } else if (!run.result && (run.snapshot.sequence > run.observed.sequence || needsInitialization(run))) group.candidates.push({ kind: 'state' });
         group.candidates.push(...events.map((name) => ({ kind: 'message', name })));
         groups.push(group);
       } catch (error) { groups.push({ handle, items: [], error: safeError(error).code, candidates: [] }); }
@@ -203,7 +208,7 @@ export async function waitRuns(context, request) {
   const selected = await measureReport(waitReport(groups, more, true));
   for (const group of groups) {
     if (!group.run) continue;
-    group.capability = group.items.some((item) => item.kind !== 'message') && needsCommunication(group.run);
+    group.capability = group.items.some((item) => item.kind !== 'message') && needsInitialization(group.run);
     for (const item of group.items) if (item.kind === 'message') item.rendered = await eventText(group.run, item.name, selected.token);
   }
   // Consume only fully selected events. A failed deletion is not presented as delivered.

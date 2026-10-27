@@ -20,7 +20,8 @@ export async function runMessageMcp(argv, { stdin = process.stdin, stdout = proc
   if (argv.length === 1 && ['--help', '-h'].includes(argv[0])) {
     stdout.write('Child communication MCP server\nUsage: <generated command>\nTools: send_parent(text), receive_parent(timeoutMs=600000).\n'); return;
   }
-  if (argv.length !== 2 || argv[0] !== '--bridge' || !argv[1]) fail('invalidArguments', 'Use the child MCP command supplied by the adapter.');
+  if (![2, 3].includes(argv.length) || argv[0] !== '--bridge' || !argv[1] || argv.length === 3 && argv[2] !== '--send-only') fail('invalidArguments', 'Use the child MCP command supplied by the adapter.');
+  const availableTools = argv[2] === '--send-only' ? tools.slice(0, 1) : tools;
   const bindingFile = argv[1]; const controller = new AbortController(); const active = new Set();
   let output = Promise.resolve(); let failedOutput = false;
   const write = (value) => {
@@ -42,11 +43,11 @@ export async function runMessageMcp(argv, { stdin = process.stdin, stdout = proc
       const requested = request.params?.protocolVersion;
       result = { protocolVersion: ['2024-11-05', '2025-03-26', '2025-06-18'].includes(requested) ? requested : '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'aw-child-communication', version: '5.0.0' } };
     } else if (request.method === 'ping') result = {};
-    else if (request.method === 'tools/list') result = { tools };
+    else if (request.method === 'tools/list') result = { tools: availableTools };
     else if (request.method === 'tools/call') {
       let operation = request.params?.name === 'send_parent' ? 'send' : 'receive';
       try {
-        if (!fields(request.params, ['name', 'arguments', '_meta']) || !['send_parent', 'receive_parent'].includes(request.params.name)) fail('invalidArguments', 'Use send_parent or receive_parent.');
+        if (!fields(request.params, ['name', 'arguments', '_meta']) || !availableTools.some((tool) => tool.name === request.params.name)) fail('invalidArguments', 'Use an available communication tool.');
         const args = request.params.arguments ?? {};
         if (!fields(args, operation === 'send' ? ['text'] : ['timeoutMs'])) fail('invalidArguments', 'The tool arguments contain an undefined field.');
         const response = await invokeChildTool({ bindingFile, operation, text: args.text, timeoutMs: args.timeoutMs, signal: controller.signal });
