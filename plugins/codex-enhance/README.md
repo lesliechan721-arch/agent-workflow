@@ -50,7 +50,7 @@ Oracle 可直接选择 oracleEngine=browser/api，界面推荐 browser；省略�
 
 当前 Windows 原生 Oracle 的文件选择不符合固定 v1 协议。内建 adapter 对非空文件选择在提交后端前返回 fileSelectionUnsupported；未指定文件的请求仍可运行。
 
-Codex 的 codexProfile 读取有效 CODEX_HOME 中的 `<name>.config.toml`，把支持字段转换为本次运行覆盖；未支持或无关字段提示后忽略，低层同名配置仍可能生效。转换不保留原生用户配置层身份，可能覆盖项目配置。可适配的 profile hooks 沿用已有逐项信任与禁用状态，不自动批准或写回配置。codexBypassHookTrust 缺省 false；显式 true 会让本次线程内已启用但未信任或内容已修改的普通 hook 执行，包括其它来源的适用 hook，仍遵守禁用与管理限制，不授予工具审批或沙箱绕过权限。字段范围和限制见 [Codex profile](skills/codex-subagent-guide/references/codex-profile.md)。额外目录 addDirs（--add-dir）仍明确拒绝。
+Codex 的 codexProfile 读取有效 CODEX_HOME 中的 `<name>.config.toml`，把支持字段转换为本次运行覆盖；未支持或无关字段提示后忽略，低层同名配置仍可能生效。转换不保留原生用户配置层身份，可能覆盖项目配置。可适配的 profile hooks 沿用已有逐项信任与禁用状态，不自动批准或写回配置。codexBypassHookTrust 缺省 false；显式 true 会让本次线程内已启用但未信任或内容已修改的普通 hook 执行，包括其它来源的适用 hook，仍遵守禁用与管理限制，不授予工具审批或沙箱绕过权限。字段范围和限制见 [Codex profile](skills/codex-subagent-guide/docs/codex.md#codex-profile-转换)。额外目录 addDirs（--add-dir）仍明确拒绝。
 
 Codex 的 codexCliSource 可选 auto/cli/app，缺省 auto 先查 PATH，仅入口缺失时查 App；cli 只查 PATH，app 只查 App。已找到入口启动失败时不会换来源重试。App 发现面向 macOS 和 Windows，Linux 显式 app 拒绝；Windows 注册包发现和真实启动仍须 Windows 验收，不能从本机证据推断支持。
 
@@ -58,7 +58,7 @@ Codex 的 codexCliSource 可选 auto/cli/app，缺省 auto 先查 PATH，仅入�
 
 外部启动用 `start --executor <key>` 指定执行器，不接收 AW profile 名称。外部任务可以直接写进 --prompt，长任务或已有文件可以从 stdin 输入。--instructions-file 可选，可以复用已有角色文件；不传时不会自动补入默认角色，已就绪的通讯说明仍由 adapter 添加。顾问和调查的职责约束仍需明确传达。使用 `start` 启动，按句柄执行 `send`、多目标 `wait`、单目标 `result` 和 `stop`。回执显示 environment 的 pending/available/unavailable，不可用时给出具体原因；缺失或不可执行的 CLI 须修复安装、PATH 或执行器后重新开始。环境可用不证明登录、网络或模型资格。通讯回执保留 true/false/pending，并说明 enabled/disabled/unsupported、实际通道、自动输入时点及主动收件能力；晚到信息和 profile 诊断由 wait/result 补报。默认无执行期限。控制字段使用英文，消息和最终回答保留原语言并放入独立原文块。内部 JSONL 不作为用户界面。
 
-workspace 在指定目录执行任务，关注路径写入任务，不接受 --file。bundle 通过 --file 按固定的 AW 文件选择协议 v1 选择文件、目录或 glob；各适配器实现相同规则，不需要调用者按后端改写选择式。调用方法由 Guide 的 [外部委派说明](skills/codex-subagent-guide/references/external-delegation.md) 提供；适配器开发见 [适配器文档](skills/codex-subagent-guide/adapters.md)。
+workspace 在指定目录执行任务，关注路径写入任务，不接受 --file。bundle 通过 --file 按固定的 AW 文件选择协议 v1 选择文件、目录或 glob；各适配器实现相同规则，不需要调用者按后端改写选择式。调用方法由 Guide 的 [外部委派说明](skills/codex-subagent-guide/references/external-delegation.md) 提供；适配器开发见 [适配器文档](skills/codex-subagent-guide/docs/README.md)。
 
 ## 影响与边界
 

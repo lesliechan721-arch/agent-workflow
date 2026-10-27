@@ -22,34 +22,28 @@ node scripts/subagent.mjs start --executor "<key>" --instructions-file "<instruc
 | `--executor KEY` | 必填 | 执行器 key。 |
 | `--prompt TEXT` | 必填 | 任务提示；过长时用 `--prompt -` 从 stdin 输入。 |
 | `--workspace DIR` | 可选，默认当前目录 | 工作目录。 |
-| `--instructions-file FILE` | 可选 | 角色指令；无明确其他角色要求时使用默认 [任务指令](../assets/task-instructions.md)。 |
-| `--file SELECTOR` | 可选，可重复 | 仅 bundle 模式可用；选择、忽略规则和外发边界见 [文件选择](file-selection.md)。 |
+| `--instructions-file FILE` | 可选 | 角色指令；无明确其他角色要求时使用默认 [任务指令](assets/task-instructions.md)。 |
+| `--file SELECTOR` | 可选，可重复 | 仅 bundle 模式可用；选择、忽略规则和外发边界见 [文件选择](references/file-selection.md)。 |
 | `--model MODEL` / `--reasoning-effort EFFORT` | 可选 | 传入调用方已选值：明确要求优先，其次为已选配置；省略属性使用后端默认，不生成空参数；不支持的显式值须报错。 |
 | `--name NAME` | 可选，省略时自动生成 | 仅供显示，可重名；首字符须为 ASCII 字母或数字，后续允许 `._-`，总长 1–64。 |
 | `--deadline-ms N` | 可选，默认**无执行期限** | 仅明确要求时设置，单位毫秒。 |
 
 后续命令的 `--run` 使用启动回执中的句柄，不能用显示名称代替。
 
-permissionMode、communication、Codex profile/CLI 来源/hook 信任开关固定读取本产物已安装配置，不增加每次 start 开关。Codex profile 的未支持字段可提示后忽略，但已支持字段错误或显式参数错误仍失败；忽略不清除低层配置。profile、hooks 或 bypass 诊断需要判断时读取 [Codex profile](codex-profile.md)。Antigravity communication=true 在环境、桥、必要权限和原生工具准备成功后报告 enabled；按本次回执决定是否发送，准备失败读取具体错误。communication=false 保留普通任务及停止路径；本机结果不外推为其它平台已验证。
-
-Codex/Claude/agy 的 permissionMode 为 default / auto / full-access；default 保留显式 args/profile，auto/full-access 与 args 同类控制冲突时报 adapterArgumentConflict，不可用时报 permissionModeUnavailable，不静默换模式。三者与通讯、Codex hook bypass 独立。具体映射、冲突和 agy 持久许可见 [权限模式](../adapters.md#执行器权限模式) 与 [Antigravity](../adapters.md#antigravity)。agy非完整权限的通讯准备可按需追加精确脚本规则，跨run去重，失败、停止、重装或卸载不自动删除；已有Ask/Deny/strict保留。优先按生成指令直接发送，组合调用可能被原生权限系统拒绝，不扩大allow或自动切换模式。
-
 ## 识别回执：环境、状态与通信能力
 
-每次启动均检查所选 CLI/custom 入口，关闭通讯也不跳过。回执的 environment 为 pending/available/unavailable，未知为 pending；unavailable 时附 environment_code，按原因修复 CLI 安装、PATH 或 executor 后重新开始。available 不证明认证、余额、网络或模型资格。
+`environment` 为 pending / available / unavailable；pending 表示尚未确定。unavailable 时按 `environment_code` 修复入口或配置。
 
-回执的 `communication` 保留 pending/true/false；pending 表示尚无可靠通讯结论，不能认为不支持。初始化失败可同时为 environment:unavailable、communication:pending。首次能力就绪时同时显示下列字段；start 尚未取得 ready 时，由后续 wait/result 补报，快速终态也不应丢失。
+是否支持通信，以本次回执为准。`communication` 为 pending / true / false；pending 表示尚未确定，不能认为不支持。关闭通讯仍可等待结果或停止任务。
 
 | 字段 | 含义 |
 | --- | --- |
-| communication_status | enabled：本次入口已配置；disabled：安装配置关闭；unsupported：已检查，后端无可用双向能力。后两者对应回执的简单 communication=false |
-| communication_transport | enabled 时为 mcp 或 command，描述子侧发信/收件入口 |
-| communication_passive_delivery | enabled 时为 in-turn（可进入当前轮）、turn-boundary（当前轮后才进入）或 none（不自动输入） |
-| communication_active_receive | enabled 时的布尔值，说明子侧是否有主动收件入口 |
+| communication_status | enabled 时可发送；disabled 表示配置关闭，unsupported 表示无可用双向能力，后两者对应 communication=false。 |
+| communication_transport | 子侧接口为 mcp 或 command；父侧仍使用下述统一命令。 |
+| communication_passive_delivery | in-turn：父输入可进入当前轮；turn-boundary：当前轮结束后进入；none：不自动输入。 |
+| communication_active_receive | 子侧是否能主动等待父侧回复。 |
 
-只有 enabled 可 send。配置 communication=false 时仍检查环境和应用权限模式，没有 AW 桥、工具绑定、通讯说明或父输入自动调度，仍照常等待结果或停止；用户已有工具不因此删除。查询、协议或建桥错误是实际失败，不能当作 unsupported 继续。
-
-已确定的初始化结论与 ready/result 的安全诊断保存在运行快照和固定结果中；初始化结论按环境/能力字段交付，诊断以 DIAGNOSTIC 块交付；未随 start 出现时由 wait/result 补报，result 可重读。每项含 code、可选字段路径和简短原因；据此判断忽略项、配置错误或 hook bypass 影响，不能只看任务成功状态。
+环境、能力或诊断未随 `start` 返回时，从后续 `wait/result` 取得。初始化失败时环境可能已确定，而通信仍为 pending。按 `DIAGNOSTIC` 的 code、字段和原因判断配置忽略、错误或 hook 信任影响；诊断可随 `result` 重读，不能仅凭任务成功就忽略它们。
 
 | 观察到的状态 | 含义与后续动作 |
 | --- | --- |
@@ -59,7 +53,7 @@ Codex/Claude/agy 的 permissionMode 为 default / auto / full-access；default �
 | `completed`、`failed`、`cancelled`、`unknown` | 已有终态；用 wait 取得未读通知，或用 result 取得固定结果与全部未读消息。unknown 不能证明原副作用或远端执行已停止。 |
 | 未收到 `run`，或启动结果不明 | 保留已有启动证据，不因非零退出或回执缺失自动重提任务。 |
 
-**按需读取通信分支：** 准备追加输入或答复过程问题且 `communication: true`，或实际收到过程消息、投递缺口时，读取 [外部任务通信](communication.md)；仅有 `communication: true` 不要求预读。
+**按需读取通信分支：** 准备追加输入或答复过程问题且 `communication: true`，或实际收到过程消息、投递缺口时，读取 [外部任务通信](references/communication.md)；仅有 `communication: true` 不要求预读。
 
 ## 等待变化
 

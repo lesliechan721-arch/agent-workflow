@@ -239,7 +239,7 @@ export async function renderArtifactPlan(context) {
       ...(key === 'codex-subagent-guide' ? {
         ...(await runtimeResourceFiles(sourceRoot, 'scripts')),
         ...(await runtimeResourceFiles(sourceRoot, 'references')),
-        'adapters.md': await readFile(path.join(sourceRoot, 'adapters.md'), 'utf8'),
+        ...(await runtimeResourceFiles(sourceRoot, 'docs')),
       } : {}),
     };
     if (key === 'codex-subagent-guide') {

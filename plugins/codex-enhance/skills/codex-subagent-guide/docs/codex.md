@@ -1,8 +1,33 @@
-# Codex profile 转换
+# Codex 适配器
 
-配置或排查 Codex executor 的 `codexProfile`、hooks 或 `codexBypassHookTrust` 时读取本参考。它与 [适配器合同](../adapters.md) 一起定义长期支持范围；CLI 来源与 v5 wire 由适配器合同拥有。
+公共要求见 [配置与接入](configuration.md)、[Adapter v5](protocol.md) 和 [运行生命周期](runtime.md)。
 
-## 含义、覆盖与失败
+Codex 固定 workspace，通过 app-server 管理本次 thread/turn、正式输入和中断。Codex 使用 mcp / in-turn / activeReceive=true，活动轮用 turn/steer，无活动轮时新开 turn。
+
+`codexProfile` 从有效 CODEX_HOME 读取 profile-v2 的 `<name>.config.toml`，将精确支持字段转换为本次启动或线程覆盖；未支持和无关字段诊断后忽略。它不保留原生用户配置层身份，可能覆盖项目配置，不与原生 exec --profile 完全等价。字段范围、覆盖顺序、hooks 状态映射、信任与 bypass、失败码见 [Codex profile 转换](#codex-profile-转换)。raw --profile/-p 使用相同转换路径，与专用字段同时出现时拒绝；不直接传给 app-server。额外目录 addDirs（--add-dir）仍无等价映射，显式使用返回 parameterUnavailable。
+
+## Codex CLI 来源
+
+| codexCliSource | 查找规则 |
+| --- | --- |
+| auto，缺省 | 先查本次有效 PATH；仅没有可执行入口时查 App 内嵌 CLI |
+| cli | 只查 PATH，缺失即失败 |
+| app | 跳过 PATH，只查 App 内嵌 CLI，缺失即失败 |
+
+PATH 按目标 OS 的命令解析规则处理 executable、symlink 和 Windows shim。找到入口后固定绝对路径；启动失败、协议不支持或运行错误都不能切换来源或重发任务。
+
+macOS 依次检查用户 `~/Applications`、系统 `/Applications` 内的 Codex.app / ChatGPT.app；同目录 Codex.app 优先。候选须具有 `CFBundleIdentifier=com.openai.codex`，并包含有效 `Contents/Resources/codex`。该相对路径是已观察布局，不是官方跨版本保证。
+
+Windows 由当前用户注册的 `OpenAI.Codex_*!App` 取得实际 package identity，再查询安装根；只在这些包内有界发现 codex.exe 常规文件。遵守当前架构与包边界，不扫描磁盘、不固定版本目录或发布者后缀。候选不能唯一确定时报告歧义，系统查询失败与未安装分别诊断。Linux 的 auto/cli 使用 PATH，显式 app 在提交模型前拒绝。
+
+内嵌入口须位于匹配 App/package 的真实目录内，类型、执行权限及 argv 启动有效。使用所选路径完成无模型 app-server 初始化后才能提交任务；继承本次 cwd、环境、CODEX_HOME、认证和配置，不启动图形 App，不复制 binary 或下载依赖。诊断提供 path/app 来源、所选路径及可取得的版本。缺失时给出所选策略及修正 PATH、安装对应来源或更改策略的指引。App 更新移除入口时本次失败，下次新 run 重新发现。Windows 注册包发现与启动仍须 Windows 真机验收，不能用 macOS 或 fake 证据宣布支持。
+
+
+## Codex profile 转换
+
+本节面向适配器维护者，定义 profile 的配置支持范围、转换与失败边界。
+
+### 含义、覆盖与失败
 
 `codexProfile` 从本次合并环境的有效 CODEX_HOME 读取 profile-v2 `<name>.config.toml`，未设置时使用 Codex 用户 home 规则。名称须符合所选 CLI 的 profile-v2 名称合同，不能作为任意路径。只读一次，不写基础 config、不复制 home、不改变账号或会话根。基础、项目和管理配置仍由所选二进制加载。
 
@@ -10,7 +35,7 @@ profile 是本次增量默认覆盖，不是 AW 执行档位，也不保留原�
 
 普通字段从低到高为：Codex 基础/项目配置 → 支持的 profile 默认覆盖 → executor args 的同类显式选项 → 任务 model/reasoningEffort。任务与 args 的显式同类冲突仍失败；profile 被更高显式值覆盖。codexProfile 与 raw --profile/-p 同时出现时拒绝；仅 raw profile 也走同一转换，不传给 app-server。管理策略及受约束字段始终生效。
 
-executor 的 permissionMode 缺省 default，保留 profile 与用户显式 args 的权限选择。auto 在首次 thread/start.config 覆盖 approval_policy=on-request、approvals_reviewer=auto_review，并保留有效沙箱；full-access 覆盖 approval_policy=never、sandbox_mode=danger-full-access。后续轮次沿用同一配置。非 default 与 raw args 的同类显式控制冲突时返回 adapterArgumentConflict；auto 可保留显式沙箱限制。具体别名与拒绝范围见 [权限模式](../adapters.md#执行器权限模式)。模式不可用或回退时报告 permissionModeUnavailable，不换模式或重发；Codex --full-auto 不能替代 auto_review。
+executor 的 permissionMode 缺省 default，保留 profile 与用户显式 args 的权限选择。auto 在首次 thread/start.config 覆盖 approval_policy=on-request、approvals_reviewer=auto_review，并保留有效沙箱；full-access 覆盖 approval_policy=never、sandbox_mode=danger-full-access。后续轮次沿用同一配置。非 default 与 raw args 的同类显式控制冲突时返回 adapterArgumentConflict；auto 可保留显式沙箱限制。具体别名与拒绝范围见 [权限模式](configuration.md#执行器权限模式)。模式不可用或回退时报告 permissionModeUnavailable，不换模式或重发；Codex --full-auto 不能替代 auto_review。
 
 permissionMode、communication 和 codexBypassHookTrust 独立。full-access 不自动启用 hook bypass，auto 不改变信任或禁用状态；关闭通讯仍检查环境和应用权限模式。管理限制继续由后端执行。
 
@@ -22,7 +47,7 @@ AW 拥有 cwd、控制协议、任务及私有通讯绑定。profile 不能替�
 
 诊断使用 v5 的 `{code, field?, message}`，随 ready 或初始化失败 result 返回，由运行快照与固定结果保存；start 未见 ready 时 wait/result 补报，result 可重读。仅含英文 code、字段路径和简短原因，不含值、令牌、header、命令参数、摘要或原文；过量按字段组汇总并报告总数，遵守现有帧/显示预算。稳定分类为 profileFieldIgnored、profileFieldIrrelevant、profileValueInvalid、profileUnreadable、profileConversionUnsupported。显式 args/model/effort 不套用忽略策略。
 
-## Hooks 状态、信任与 bypass
+### Hooks 状态、信任与 bypass
 
 支持下文字段表列出的 profile TOML hook 事件、handler 及 `hooks.state`。其中 `SessionEnd` 只支持 `command`，不支持 `mcp_tool`；信任和 bypass 都不能使该组合执行，按下文的整事件覆盖规则处理。`features.hooks` 仍由实际配置决定，不因存在 hook 定义或开启 bypass 而强制设为 true。共享 `hooks.json`、基础/项目配置及插件的 hook 继续由 Codex 原生发现；不复制它们的定义来模拟 profile 层，也不把它们重新归属为 profile hooks。
 
@@ -53,7 +78,7 @@ bypass 的作用范围是本次线程发现的适用 hooks，包括其它配置�
 bypass 只由 executor 的 codexBypassHookTrust 提供，缺省 false；无 profile 也可开启。在首次 thread/start.config 显式发送 bypass_hook_trust 布尔值，不放启动 -c。profile 中 bypass_hook_trust 诊断后忽略并指向专属字段；raw --dangerously-bypass-hook-trust 和 raw -c bypass_hook_trust=... 返回 parameterUnavailable，不隐式启用。每次显式开启 bypass 都提供 `hookTrustBypassed` 诊断，说明线程范围与禁用/管理限制；沿用上述诊断的 ready/result 保存和补报机制。`config/read` 的原始层、hook 命令、MCP 输入、可信摘要及 profile 原文只用于本次内存适配，不放入诊断或运行快照。状态映射不恢复用户配置层身份、原生 profile 优先级、相对路径基准或共享 `hooks.json` 来源身份；不承诺与原生 profile 完全等价。
 
 
-## 精确字段范围
+### 精确字段范围
 
 以下为首版允许集合，不按前缀或整表自动接受未来字段；扩展须有参数、消费者与路径语义证据。范围接受不证明模型或所选 CLI 的消费者行为，真实验收仍按适配器合同执行。
 
@@ -61,7 +86,7 @@ bypass 只由 executor 的 codexBypassHookTrust 提供，缺省 false；无 prof
 
 未支持和无关字段只诊断键路径及原因，不报告值。支持字段的类型无效、不能无损转成目标协议值或违反控制边界时失败。相对普通文件路径是未支持表示，跳过对应字段/完整条目并告警。跳过不表示清除低层配置。
 
-### 启动覆盖
+#### 启动覆盖
 
 | 字段 | 首版处理与限制 |
 | --- | --- |
@@ -91,7 +116,7 @@ provider 首版子字段：`name`、`base_url`、`model_catalog_url`、`env_key`
 
 `sqlite_home`、`experimental_thread_store`、`otel`、`thread_unload_delay_secs` 首版暂不转换，按未支持字段提示；本次不为短生命周期外部执行增加存储/遥测配置适配。
 
-### 线程覆盖
+#### 线程覆盖
 
 | 字段组 | 首版支持字段和限制 |
 | --- | --- |
@@ -118,7 +143,7 @@ MCP 首版支持两类完整条目：
 
 命名 `permissions` / `default_permissions`、`auto_review`、`skills`、`agents`、MCP OAuth 存储/登录参数及其它 tools 子表首版暂不转换，按未支持执行字段处理。该范围不限制基础配置本来已启用的工具、技能或子代理；也不创建新的委派授权。
 
-### Hooks 精确范围
+#### Hooks 精确范围
 
 支持 `hooks` 内以下事件数组；右列同时规定状态 key 的事件标识：
 
@@ -143,7 +168,7 @@ MCP 首版支持两类完整条目：
 
 仅转换本次 profile/显式参数的 TOML hook 增量；基础/项目/插件 hooks 和共享 `hooks.json` 保持原生发现。`bypass_hook_trust` 不属于 profile 字段允许列表，专用 executor 字段及线程请求映射由上文 hooks 状态映射定义。
 
-### 已知无关及来源限制
+#### 已知无关及来源限制
 
 | 类别 | 字段和处理 |
 | --- | --- |
@@ -153,4 +178,4 @@ MCP 首版支持两类完整条目：
 | 旧 profile 选择 | `profile`、`profiles`：不是本次 profile-v2 入口；告警后忽略，不改读旧表 |
 | 其它未列字段 | 未支持，告警后忽略；不据字段名猜路径或消费者阶段 |
 
-上述“首版未支持”都是公开范围限制。用户选择了继续执行，但没有要求隐去这些差异。诊断需要足以让使用者判断是否修正 profile、改用基础配置或另选执行方式。
+上述“首版未支持”都是公开范围限制。诊断需要足以让使用者判断是否修正 profile、改用基础配置或另选执行方式。
