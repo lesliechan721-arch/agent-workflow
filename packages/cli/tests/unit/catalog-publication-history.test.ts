@@ -85,8 +85,10 @@ describe('Catalog publication history Git failures', () => {
       const repository = path.join(root, `inspection-${index}`);
       await fs.ensureDir(repository);
       await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+      // GC and geometric maintenance use separate thresholds across Git versions.
       for (const [key, value] of [
-        ['gc.auto', '1'], ['gc.autoDetach', 'true'], ['maintenance.autoDetach', 'true'],
+        ['gc.auto', '1'], ['maintenance.geometric-repack.auto', '1'],
+        ['gc.autoDetach', 'true'], ['maintenance.autoDetach', 'true'],
       ]) {
         await execFileAsync('git', ['config', key, value], { cwd: repository });
       }
