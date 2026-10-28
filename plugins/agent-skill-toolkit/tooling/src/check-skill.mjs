@@ -59,7 +59,7 @@ export async function checkSkill(input, { limits } = {}) {
   const seen = new Set();
   const pending = body === null ? [] : [{ path: 'SKILL.md', content: body, offset: bodyLine - 1 }];
   async function inspectReference(documentPath, ref, icon = false) {
-    const resolved = resolveReference(root, documentPath, ref.value, { icon });
+    const resolved = resolveReference(root, documentPath, ref.value, { icon, kind: ref.kind });
     if (resolved.status === 'ignored') return;
     if (resolved.status === 'external' || resolved.status === 'unresolved') {
       report.diagnostics.push(diagnostic('info', resolved.status === 'external' ? 'external-reference' : 'unresolved-reference', documentPath,
@@ -87,7 +87,7 @@ export async function checkSkill(input, { limits } = {}) {
   while (pending.length) {
     const item = pending.pop();
     try {
-      for (const ref of markdownReferences(item.content)) await inspectReference(item.path, { ...ref, line: ref.line + item.offset });
+      for (const ref of markdownReferences(item.content, { documentPath: item.path, resourcePaths: state.nodes })) await inspectReference(item.path, { ...ref, line: ref.line + item.offset });
     } catch {
       referencesComplete = false;
       incomplete(state, 'io-error', item.path, 'Markdown 引用提取未完成。', 'markdown-parse-error');

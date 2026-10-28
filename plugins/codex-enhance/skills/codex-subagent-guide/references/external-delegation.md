@@ -22,8 +22,8 @@ node scripts/subagent.mjs start --executor "<key>" --instructions-file "<instruc
 | `--executor KEY` | 必填 | 执行器 key。 |
 | `--prompt TEXT` | 必填 | 任务提示；过长时用 `--prompt -` 从 stdin 输入。 |
 | `--workspace DIR` | 可选，默认当前目录 | 工作目录。 |
-| `--instructions-file FILE` | 可选 | 角色指令；无明确其他角色要求时使用默认 [任务指令](../assets/task-instructions.md)。 |
-| `--file SELECTOR` | 可选，可重复 | 仅 bundle 模式可用；选择、忽略规则和外发边界见 [文件选择](file-selection.md)。 |
+| `--instructions-file FILE` | 可选 | 角色指令；无明确其他角色要求时使用默认 任务指令（`assets/task-instructions.md`）。 |
+| `--file SELECTOR` | 可选，可重复 | 仅 bundle 模式可用；选择、忽略规则和外发边界见 文件选择（`references/file-selection.md`）。 |
 | `--model MODEL` / `--reasoning-effort EFFORT` | 可选 | 传入调用方已选值：明确要求优先，其次为已选配置；省略属性使用后端默认，不生成空参数；不支持的显式值须报错。 |
 | `--name NAME` | 可选，省略时自动生成 | 仅供显示，可重名；首字符须为 ASCII 字母或数字，后续允许 `._-`，总长 1–64。 |
 | `--deadline-ms N` | 可选，默认**无执行期限** | 仅明确要求时设置，单位毫秒。 |
@@ -53,7 +53,7 @@ node scripts/subagent.mjs start --executor "<key>" --instructions-file "<instruc
 | `completed`、`failed`、`cancelled`、`unknown` | 已有终态；用 wait 取得未读通知，或用 result 取得固定结果与全部未读消息。unknown 不能证明原副作用或远端执行已停止。 |
 | 未收到 `run`，或启动结果不明 | 保留已有启动证据，不因非零退出或回执缺失自动重提任务。 |
 
-**按需读取通信分支：** 准备追加输入或答复过程问题且 `communication: true`，或实际收到过程消息、投递缺口时，读取 [外部任务通信](communication.md)；仅有 `communication: true` 不要求预读。
+**按需读取通信分支：** 准备追加输入或答复过程问题且 `communication: true`，或实际收到过程消息、投递缺口时，读取 外部任务通信（`references/communication.md`）；仅有 `communication: true` 不要求预读。
 
 ## 等待变化
 

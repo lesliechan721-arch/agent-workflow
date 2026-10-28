@@ -20,9 +20,9 @@ delta 表示对照可访问的基线、旧问题和本次差异，可用于 quic
 
 | 范围 | 判断方法 |
 | --- | --- |
-| 单个 Skill 包、修订版或源码设计 | 下方单体方法；完整评审或需要展开判断时读 [评审标准](references/review-standard.md) |
-| 多个 Skill、角色、工具或阶段完成一个用户结果 | [工作流评审](references/architecture-review.md)；沿真实输入、产物和交接检查 |
-| 一组公开入口与插件依赖 | [公开能力评审](references/public-surface-review.md)；检查发现、选择和独立安装价值 |
+| 单个 Skill 包、修订版或源码设计 | 下方单体方法；完整评审或需要展开判断时读 评审标准（`references/review-standard.md`） |
+| 多个 Skill、角色、工具或阶段完成一个用户结果 | 工作流评审（`references/architecture-review.md`）；沿真实输入、产物和交接检查 |
+| 一组公开入口与插件依赖 | 公开能力评审（`references/public-surface-review.md`）；检查发现、选择和独立安装价值 |
 
 工作流和公开能力问题同时存在时，先建立实际任务路径，再判断公开面。只在整体判断需要时深入相关单体，不默认逐个做 full review，也不把单体分数相加当作组合质量。
 
@@ -34,11 +34,11 @@ delta 表示对照可访问的基线、旧问题和本次差异，可用于 quic
 
 跨组件时核对每个组件接收什么、完成什么、下一步实际消费什么。区分采用方法、创建执行上下文、构建时复制与安装依赖。比较直接处理、单 Skill 和组合路径的收益与成本，保留必要独立判断、复用和恢复；入口数量不代替实际使用证据。
 
-文档的层级、指针或剪枝问题使用 `agent-content`；调用问题使用 [调用规则](references/skill-invocation.md)；职责、独立性或交接问题使用 [组合规则](references/skill-composition.md)。先定位问题属于当前能力、调用者还是环境，再确定修改位置。
+文档的层级、指针或剪枝问题使用 `agent-content`；调用问题使用 调用规则（`references/skill-invocation.md`）；职责、独立性或交接问题使用 组合规则（`references/skill-composition.md`）。先定位问题属于当前能力、调用者还是环境，再确定修改位置。
 
 ## 取得相应证据
 
-结构、字段和引用检查采用 [格式参考](references/skill-format.md) 及包工具：
+结构、字段和引用检查采用 格式参考（`references/skill-format.md`） 及包工具：
 
 ```sh
 node scripts/check-skill.mjs <skill-directory> --format json
@@ -54,6 +54,6 @@ Eval 设计或异常结果需要深入审核时使用 `audit-agent-skill-evals`�
 
 ## 形成结论
 
-问题写清位置、证据、受影响场景和解决问题所需的最小充分改变；必要时可重划职责或整体重组。用合理正确对照排除过度诊断；同一根因只报告一次。严重结论按 [证据与严重度](references/evidence-and-severity.md) 核对必要前提与影响。没有运行的效果判断保留为建议或未知。
+问题写清位置、证据、受影响场景和解决问题所需的最小充分改变；必要时可重划职责或整体重组。用合理正确对照排除过度诊断；同一根因只报告一次。严重结论按 证据与严重度（`references/evidence-and-severity.md`） 核对必要前提与影响。没有运行的效果判断保留为建议或未知。
 
-按 [报告模板](assets/human-report-template.md) 的适用部分交付范围、整体判断、关键问题、改进建议和未知项。只有单体 full 且用户要求评分时才使用 [评分维度](references/review-dimensions.md)。独立性来自实际作者参与和评审安排，不来自另一个 Skill 名称；独立审查与作者自检分别标明。
+按 报告模板（`assets/human-report-template.md`） 的适用部分交付范围、整体判断、关键问题、改进建议和未知项。只有单体 full 且用户要求评分时才使用 评分维度（`references/review-dimensions.md`）。独立性来自实际作者参与和评审安排，不来自另一个 Skill 名称；独立审查与作者自检分别标明。
