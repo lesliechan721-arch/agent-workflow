@@ -1,6 +1,6 @@
 # Dynamic Artifact Renderer
 
-为已选定的动态 target 实现 renderer 时读取。涉及配置定义或安装态 reader 时采用 [组件方法](plugin-components.md)。查询当前 capability receipt 中所需领域；CLI/Core 与作者 validator 是字段和行为真值。
+为已选定的动态 target 实现 renderer 时读取。涉及配置定义或安装态 reader 时采用 组件方法（`references/plugin-components.md`）。查询当前 capability receipt 中所需领域；CLI/Core 与作者 validator 是字段和行为真值。
 
 `artifacts.targets` 声明静态能力。renderer 根据当前 context 返回 `ArtifactPlan`，不直接写平台文件，也不在其中复制第二套 Skill 或 Agent 内容标准。
 
@@ -28,7 +28,7 @@ codex.skill 按当前 capability 显式选择 delivery。共享 native 使用 `m
 
 ## 共享资源与输出
 
-runtimeImports 是已声明的构建复用关系，不推断安装 dependencies。context 每项提供 artifactId、name、providerPluginId、exportName、path、digest。按当前 target ID 与声明 name 选择，仅读其 bundle-local path，不拼接 provider/sibling source，也不写导入文件。声明与 capability 传播见 [构建与共享](build-and-sharing.md)。
+runtimeImports 是已声明的构建复用关系，不推断安装 dependencies。context 每项提供 artifactId、name、providerPluginId、exportName、path、digest。按当前 target ID 与声明 name 选择，仅读其 bundle-local path，不拼接 provider/sibling source，也不写导入文件。声明与 capability 传播见 构建与共享（`references/build-and-sharing.md`）。
 
 stdout 仅含 JSON plan，诊断写 stderr；所有输出均不得泄露敏感值。相同输入产生相同 plan。缺少 target、额外 target、路径逃逸、直接写盘或部分结果都必须失败。
 
@@ -38,4 +38,4 @@ AW 在 staging/live 写入前扫描内容。长度至少 8 个 Unicode code poin
 
 在 agent-skills distribution 下，环境设置 `AW_PLUGIN_DISTRIBUTION=agent-skills`，不设置 `AW_PLUGIN_PLATFORM`。context 的 surface 为 `{ "kind": "distribution", "name": "agent-skills" }`，distribution 为 agent-skills，scope 继续区分 user/project。
 
-按 sourceDirs、distribution skillRuntimeFiles、renderer files 的合同顺序形成 final。为当前请求的每个 target 返回 artifact；disabled target 也返回 disabled，不直接省略。声明与导出使用 [Portable 分发](portable-skills.md)，不能以 Native final 代替其验证。
+按 sourceDirs、distribution skillRuntimeFiles、renderer files 的合同顺序形成 final。为当前请求的每个 target 返回 artifact；disabled target 也返回 disabled，不直接省略。声明与导出使用 Portable 分发（`references/portable-skills.md`），不能以 Native final 代替其验证。

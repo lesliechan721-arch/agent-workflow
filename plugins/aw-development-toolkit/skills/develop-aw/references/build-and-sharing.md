@@ -1,6 +1,6 @@
 # 构建与共享资源
 
-需要编译 Node 工具、复用插件间文件，或向 Skill 注入与生成资源时读取。先从当前 capability receipt 查询所用声明；source/provider 的定位与修改归属见 [来源与运行包](source-materialization.md)。
+需要编译 Node 工具、复用插件间文件，或向 Skill 注入与生成资源时读取。先从当前 capability receipt 查询所用声明；source/provider 的定位与修改归属见 来源与运行包（`references/source-materialization.md`）。
 
 ## 按消费方式选机制
 
@@ -28,11 +28,11 @@ Provider 在 `buildConfig.runtimeExports` 为导出提供稳定 name、source �
 
 Build import 以 plugin/export/env 声明，环境变量遵循 `AW_PLUGIN_IMPORT_<NAME>` 约定。构建脚本只读实际注入的绝对路径，不拼接 sibling source 或扫描其他插件 bundle。
 
-Artifact runtime import 按当前 target 的 artifactId 和声明 name 从 context 选取，只读其 bundle-local path；具体 renderer 请求边界见 [Artifact renderer](aw-artifact-renderer.md)。
+Artifact runtime import 按当前 target 的 artifactId 和声明 name 从 context 选取，只读其 bundle-local path；具体 renderer 请求边界见 Artifact renderer（`references/aw-artifact-renderer.md`）。
 
 ## Skill 文件与生成文件
 
-`skillRuntimeFiles` 的每项指定 skill、target，并选择本插件 source 或 provider import。静态 Skill 的 target 只位于 references、assets 或 scripts，不覆盖已经存在的目标。通过 platforms 与 distributions 选择实际投影；字段省略和组合语义见 [平台投影](platform-projection.md)。
+`skillRuntimeFiles` 的每项指定 skill、target，并选择本插件 source 或 provider import。静态 Skill 的 target 只位于 references、assets 或 scripts，不覆盖已经存在的目标。通过 platforms 与 distributions 选择实际投影；字段省略和组合语义见 平台投影（`references/platform-projection.md`）。
 
 `generatedSkillRuntimeFiles` 声明 build 应生成的精确文件，不执行复制，也不建立安装依赖。source 校验可以接受已声明但尚未生成的目标；最终包必须包含真实普通文件及完整引用闭包。不要用声明替代生成结果，或用宽泛路径掩盖缺失文件。
 
@@ -40,4 +40,4 @@ Artifact runtime import 按当前 target 的 artifactId 和声明 name 从 conte
 
 只有 `skillRuntimeFiles.import` 和 artifact `runtimeImports` 将 provider export 的运行能力要求传播给 consumer。纯 `buildImports`、本地 `skillRuntimeFiles.source` 和 generated 文件不做这项传播；consumer 自己的运行要求由其声明负责。
 
-能力计算的 declared、derived、detected 与 effective 含义见 [平台投影](platform-projection.md)。Provider/consumer 改动后，核对依赖顺序、实际构建结果、资源闭包及所选 surface 的 final。共享文件的源码位置、每个受影响消费者和最终路径分别记录；生成物由正常构建更新。
+能力计算的 declared、derived、detected 与 effective 含义见 平台投影（`references/platform-projection.md`）。Provider/consumer 改动后，核对依赖顺序、实际构建结果、资源闭包及所选 surface 的 final。共享文件的源码位置、每个受影响消费者和最终路径分别记录；生成物由正常构建更新。

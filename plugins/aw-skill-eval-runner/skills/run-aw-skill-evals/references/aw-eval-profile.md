@@ -60,12 +60,12 @@ Profile 的 `plugins` 选择参与插件并提供公共配置；需要区分共�
 
 ## 正式 Spec/Audit/Result
 
-本节提供独立 Auditor 所需的格式与绑定依据；准备、复用 Audit、交接和停止点由 [Runner 主入口](../SKILL.md) 负责。只读源审核不要求 Spec，也不产生机器 pass。
+本节提供独立 Auditor 所需的格式与绑定依据；准备、复用 Audit、交接和停止点由 Runner 主入口（`SKILL.md`） 负责。只读源审核不要求 Spec，也不产生机器 pass。
 
 `aw-skill-eval spec validate <spec.json>` 的成功 receipt 提供 workspace、provider、current/optional previous target、case digest 和 selected cases 的绑定事实。使用实际 receipt 值，providerDigest 取其 `calculated.providerDigest`，不自行实现摘要算法。
 
-[Audit 模板](../assets/eval-audit-template.json) 是 **EvalAudit v1 形状样例**，全零 digest 与空批准集合不是证据。执行准入要求 Audit 与上述身份精确绑定，覆盖全部 selected cases，且 `status=pass`、没有 blocked case；用 `aw-skill-eval audit validate <audit.json> --spec <spec.json>` 核验，要求零退出且 `valid=true`。case、target 或必要身份变化后重新验证，source 审核结论不替代候选绑定。
+Audit 模板（`assets/eval-audit-template.json`） 是 **EvalAudit v1 形状样例**，全零 digest 与空批准集合不是证据。执行准入要求 Audit 与上述身份精确绑定，覆盖全部 selected cases，且 `status=pass`、没有 blocked case；用 `aw-skill-eval audit validate <audit.json> --spec <spec.json>` 核验，要求零退出且 `valid=true`。case、target 或必要身份变化后重新验证，source 审核结论不替代候选绑定。
 
 `EvalResult v2` 使用对应输入执行 `aw-skill-eval result validate <result.json> --spec <spec.json> --audit <audit.json>`。验证通过只证明机器绑定；Oracle 和结果的语义判断归 Auditor。
 
-格式、状态值与身份算法由 CLI/parser 拥有，模板保留在本插件。成本授权与 Audit 分别成立；实际执行和失败处理采用 [执行与安全](execution-and-safety.md)。
+格式、状态值与身份算法由 CLI/parser 拥有，模板保留在本插件。成本授权与 Audit 分别成立；实际执行和失败处理采用 执行与安全（`references/execution-and-safety.md`）。

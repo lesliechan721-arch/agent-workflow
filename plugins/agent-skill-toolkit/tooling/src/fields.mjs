@@ -1,7 +1,7 @@
 import { parseDocument } from 'yaml';
 import { diagnostic } from './common.mjs';
 
-export const RULESET = 'authoring-2026-10-10';
+export const RULESET = 'authoring-2026-10-28';
 export const codePoints = value => [...value].length;
 export const isMapping = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 

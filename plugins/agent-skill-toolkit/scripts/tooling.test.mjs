@@ -188,27 +188,68 @@ test('unknown extensions and compatible allowed-tools arrays are advisory', asyn
   assert.ok(result.report.diagnostics.filter(item => item.code === 'unknown-extension').length >= 3);
 });
 
-test('checker resolves root/current links, link references and icons without running scripts', async t => {
+test('checker resolves root code paths, document-relative links and icons without running scripts', async t => {
   const parent = await fixture(t);
   const root = path.join(parent, 'sample-skill');
   await put(root, 'SKILL.md', skill('sample-skill', '', '[guide][method]\n\n[method]: references/guide.md#usage\n\n`scripts/never-run.mjs`\n\n```sh\ncat references/not-real.md\n```'));
-  await put(root, 'references/guide.md', '# Guide\n\n[details](./details.md)\n[asset](../assets/icon.svg)\n[package](../)\n');
-  await put(root, 'references/details.md', 'Read `assets/icon.svg`.');
+  await put(root, 'references/guide.md', '# Guide\n\n[details](./details.md#details)\n[asset](../assets/icon.svg?raw=1#preview)\n[package](../)\n');
+  await put(root, 'references/details.md', 'Read `assets/icon.svg`, `SKILL.md#usage`, and `docs/guide.md#usage`.');
+  await put(root, 'docs/guide.md', 'Read `annex/policy.md`.');
+  await put(root, 'annex/policy.md', '# Policy\n');
   await put(root, 'assets/icon.svg', '<svg/>');
   await put(root, 'scripts/never-run.mjs', `throw new Error('must not run');`);
   await put(root, 'agents/openai.yaml', 'interface:\n  icon_small: ./assets/icon.svg\n');
   const result = await jsonRun(check, root);
   assert.equal(result.code, 0);
-  assert.equal(result.report.scan.filesRead, 4);
-  await unlink(path.join(root, 'references/details.md'));
+  assert.equal(result.report.scan.filesRead, 6);
+  await put(root, 'annex/policy.md', 'Read `references/missing.md`.');
   const missing = await jsonRun(check, root);
   assert.equal(missing.code, 1);
-  assert.ok(missing.report.diagnostics.some(item => item.code === 'missing-reference' && item.path === 'references/guide.md' && item.line));
+  assert.ok(missing.report.diagnostics.some(item => item.code === 'missing-reference' && item.path === 'annex/policy.md' && item.line));
+});
+
+test('checker rejects missing and document-relative code paths while retaining standard navigation', async t => {
+  const root = path.join(await fixture(t), 'sample-skill');
+  await put(root, 'SKILL.md', skill('sample-skill', '', 'Read `references/guide.md`.'));
+  await put(root, 'assets/icon.svg', '<svg/>');
+  await put(root, 'references/details.md', '# Details\n');
+  await put(root, 'annex/policy.md', '# Policy\n');
+  for (const target of ['docs/missing.md', 'annex/missing.md', './details.md', '../assets/icon.svg']) {
+    await put(root, 'references/guide.md', `Read \`${target}\`.\n`);
+    const result = await jsonRun(check, root);
+    assert.equal(result.code, 1, target);
+    assert.ok(result.report.diagnostics.some(item => ['missing-reference', 'unsafe-node'].includes(item.code) && item.path === 'references/guide.md'), target);
+  }
+  await put(root, 'references/guide.md', '[details](references/details.md)\n');
+  const prefixedLink = await jsonRun(check, root);
+  assert.equal(prefixedLink.code, 1);
+  assert.ok(prefixedLink.report.diagnostics.some(item => item.code === 'missing-reference' && item.message.includes('references/references/details.md')));
 });
 
 test('checker ignores inline syntax explanations and slash invocation commands', async t => {
   const root = path.join(await fixture(t), 'sample-skill');
-  await put(root, 'SKILL.md', skill('sample-skill', '', 'Markdown links use `./` and `../`; invoke `/sample-skill` explicitly.\n'));
+  await put(root, 'SKILL.md', skill('sample-skill', '', [
+    'Markdown links use `./` and `../`; invoke `/sample-skill` explicitly.',
+    'Use `./spec.json` and `input/report.json`; run `aw-skill-eval run ./spec.json`.',
+    'The example is `node docs/example.mjs`.',
+    '```md',
+    '`docs/missing.md`',
+    '```',
+  ].join('\n')));
+  const result = await jsonRun(check, root);
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.report.diagnostics, []);
+});
+
+test('checker does not require target-Skill metadata or Eval business files in supporting docs', async t => {
+  const root = path.join(await fixture(t), 'sample-skill');
+  await put(root, 'SKILL.md', skill('sample-skill', '', 'Read `references/profile.md`.'));
+  await put(root, 'references/profile.md', [
+    'The target Skill uses `evals/manifest.json` and `providers/model.json`.',
+    'Its `agents/openai.yaml` file is optional.',
+    'Save project decisions in `docs/adr/`.',
+  ].join('\n'));
+
   const result = await jsonRun(check, root);
   assert.equal(result.code, 0);
   assert.deepEqual(result.report.diagnostics, []);

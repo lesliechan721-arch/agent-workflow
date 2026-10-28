@@ -26,7 +26,7 @@ description: "设计、实现、检查或改进网页与产品界面的视觉层
 | 阅读并理解，如文档、文章、帮助 | 内容结构、阅读节奏、导航和上下文定位 |
 | 观看或探索作品，如作品集、画廊 | 作品呈现、探索顺序和不妨碍内容的交互 |
 
-新页面、整体重做或方向尚不明确时，读取[视觉方向](references/visual-direction.md)。已有方向下的局部任务直接进入受影响主题，不重新开展风格选择。
+新页面、整体重做或方向尚不明确时，读取视觉方向（`references/visual-direction.md`）。已有方向下的局部任务直接进入受影响主题，不重新开展风格选择。
 
 ## 按问题展开方法
 
@@ -34,10 +34,10 @@ description: "设计、实现、检查或改进网页与产品界面的视觉层
 
 | 当前问题 | 读取 |
 | --- | --- |
-| 字体、内容层级、密度、布局、窄屏重排或多语言 | [排版与布局](references/typography-layout.md) |
-| 调色、主题、语义色、对比度或层次材质 | [色彩与材质](references/color-material.md) |
-| 控件、表单、状态、键盘、焦点、触控或界面文案 | [交互与可访问性](references/interaction-accessibility.md) |
-| 动效、手势、滚动效果或界面性能 | [动效与性能](references/motion-performance.md) |
+| 字体、内容层级、密度、布局、窄屏重排或多语言 | 排版与布局（`references/typography-layout.md`） |
+| 调色、主题、语义色、对比度或层次材质 | 色彩与材质（`references/color-material.md`） |
+| 控件、表单、状态、键盘、焦点、触控或界面文案 | 交互与可访问性（`references/interaction-accessibility.md`） |
+| 动效、手势、滚动效果或界面性能 | 动效与性能（`references/motion-performance.md`） |
 
 ## 落到当前产物
 
@@ -51,6 +51,6 @@ description: "设计、实现、检查或改进网页与产品界面的视觉层
 
 ## 核对与交付
 
-检查已有界面或完成实现后，按[结果验证](references/verification.md)核对真实产物。实现任务修复影响验收的问题并复验；只读检查报告问题，不修改产物。
+检查已有界面或完成实现后，按结果验证（`references/verification.md`）核对真实产物。实现任务修复影响验收的问题并复验；只读检查报告问题，不修改产物。
 
 交付当前入口或修改位置、重要设计取舍、实际检查及结果，以及仍未验证的页面、状态或环境。仅设计请求交付可实施的设计，不声称代码已完成；仅静态阅读不声称视觉、浏览器交互或完整可访问性合规已通过。

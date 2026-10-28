@@ -1,6 +1,6 @@
 # Portable Agent Skills 分发
 
-需要声明或导出标准 Agent Skills 时读取。只为创作、评审或简化取得运行包时，使用 [来源与运行包](source-materialization.md)，无需先新增 Portable 声明。
+需要声明或导出标准 Agent Skills 时读取。只为创作、评审或简化取得运行包时，使用 来源与运行包（`references/source-materialization.md`），无需先新增 Portable 声明。
 
 ## 确认分发与来源
 
@@ -8,9 +8,9 @@ Portable 是独立 distribution，不是 Codex/Claude 的别名。Plugin 必须�
 
 静态 Portable root 的直接子目录分别形成完整 Skill，保留生产 README。动态 target 使用明确的 distribution 声明。实际字段、支持组件及门禁以当前 capability receipt 和 validator 为准。
 
-确定所选 Skill 的 source、共享文件、runtime imports 与 renderer 输出。共享资源及 capability 传播采用 [构建与共享](build-and-sharing.md)，surface 选择采用 [平台投影](platform-projection.md)。原宿主的 Hook、配置或注入能力不能视为所有 Agent 都具备的条件；仅导出目标环境能够满足的内容，并说明其要求。
+确定所选 Skill 的 source、共享文件、runtime imports 与 renderer 输出。共享资源及 capability 传播采用 构建与共享（`references/build-and-sharing.md`），surface 选择采用 平台投影（`references/platform-projection.md`）。原宿主的 Hook、配置或注入能力不能视为所有 Agent 都具备的条件；仅导出目标环境能够满足的内容，并说明其要求。
 
-维护声明或内容时按 [Plugin 开发](plugin-development.md) 验证受影响消费者。保留文件和 runtime requirements receipt 由 AW 注入，source 与 renderer 不自行生成。
+维护声明或内容时按 Plugin 开发（`references/plugin-development.md`） 验证受影响消费者。保留文件和 runtime requirements receipt 由 AW 注入，source 与 renderer 不自行生成。
 
 ## 导出与核对
 
@@ -27,4 +27,4 @@ aw skill materialize <plugin-or-source-selector> --scope <scope> \
 
 从回执读取实际 Skill 路径、归属插件、来源绑定和能力要求，检查引用、资源闭包、未解析模板与目标环境依赖。一个依赖 Skill 仍归其实际 provider，不能归到根插件。结构通过不证明所有 Agent 均能运行。
 
-交付实际导出位置、选择、scope、来源绑定及未验证环境。通用方法可消费该完整包；跨 profile 覆盖、修改归属与输入变化后的绑定核验使用 [来源与运行包](source-materialization.md)。
+交付实际导出位置、选择、scope、来源绑定及未验证环境。通用方法可消费该完整包；跨 profile 覆盖、修改归属与输入变化后的绑定核验使用 来源与运行包（`references/source-materialization.md`）。

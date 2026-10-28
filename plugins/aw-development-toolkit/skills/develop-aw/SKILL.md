@@ -40,12 +40,12 @@ Workspace 使用用户明确位置、canonical `<root>/plugins/<name>` 的归属
 
 | 当前任务 | 资料 |
 | --- | --- |
-| 解析 source/final/profile、修改 owner，或准备一个和多个版本 | [来源与运行包](references/source-materialization.md) |
-| 创建、修改、注册或验证 Plugin | [Plugin 开发](references/plugin-development.md) |
-| 选择组件、配置、安装态配置读取或生命周期脚本 | [组件方法](references/plugin-components.md) |
-| 编译 Node 工具、共享文件、注入或生成 Skill 资源 | [构建与共享](references/build-and-sharing.md) |
-| 处理平台差异、模板、文件选择、动态投影或能力要求 | [平台投影](references/platform-projection.md) |
-| 维护 Workspace、inventory、依赖、版本或删除 Plugin | [Catalog 维护](references/catalog-development.md) |
-| 声明或导出 Portable Agent Skills | [Portable 分发](references/portable-skills.md) |
-| 激活、检查或停用本地开发源 | [Development source](references/development-source.md) |
-| 判断 AW 组件组合、依赖边和平台差异 | [领域依据](references/aw-domain-review.md) |
+| 解析 source/final/profile、修改 owner，或准备一个和多个版本 | 来源与运行包（`references/source-materialization.md`） |
+| 创建、修改、注册或验证 Plugin | Plugin 开发（`references/plugin-development.md`） |
+| 选择组件、配置、安装态配置读取或生命周期脚本 | 组件方法（`references/plugin-components.md`） |
+| 编译 Node 工具、共享文件、注入或生成 Skill 资源 | 构建与共享（`references/build-and-sharing.md`） |
+| 处理平台差异、模板、文件选择、动态投影或能力要求 | 平台投影（`references/platform-projection.md`） |
+| 维护 Workspace、inventory、依赖、版本或删除 Plugin | Catalog 维护（`references/catalog-development.md`） |
+| 声明或导出 Portable Agent Skills | Portable 分发（`references/portable-skills.md`） |
+| 激活、检查或停用本地开发源 | Development source（`references/development-source.md`） |
+| 判断 AW 组件组合、依赖边和平台差异 | 领域依据（`references/aw-domain-review.md`） |

@@ -44,4 +44,4 @@ node scripts/prototype-review.mjs wait --session <session.json>
 
 网页反馈以运行时验证的 `submitted` 回执为准。直接读取回执中的完整 `feedbackData`，核对当前原型 ID 和 revision；回执也提供 `feedback` 文件路径，仅在旧回执缺少完整内容或需要排查时读取该文件。
 
-`submitted` 表示收到有效提交，是否接受取决于反馈内容。按 [取得反馈](../SKILL.md#取得反馈) 处理修改、拒绝或新问题，再按 [形成结论](../SKILL.md#形成结论) 保存决定及证据，自动继续当前任务，无需用户回到聊天再次确认完成。
+`submitted` 表示收到有效提交，是否接受取决于反馈内容。按 取得反馈（`SKILL.md#取得反馈`） 处理修改、拒绝或新问题，再按 形成结论（`SKILL.md#形成结论`） 保存决定及证据，自动继续当前任务，无需用户回到聊天再次确认完成。

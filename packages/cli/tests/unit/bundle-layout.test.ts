@@ -1387,9 +1387,58 @@ describe('runtime Skill resource closure', () => {
     await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
   });
 
+  // Test Value Gate: real closure validation must follow code paths from nested
+  // resources, while Markdown navigation keeps its document-relative meaning.
+  it('follows Skill-root code paths and standard Markdown navigation in nested resources', async () => {
+    const skillRoot = await createRuntimeSkill('Read `references/guide.md#usage`.\n', {
+      'references/guide.md': [
+        'Read `SKILL.md#usage`, `docs/guide.md`, and `annex/policy.md`.',
+        '[details](./details.md#details)',
+        '[icon](../assets/icon.svg)',
+      ].join('\n'),
+      'references/details.md': '# Details\n',
+      'assets/icon.svg': '<svg/>\n',
+      'docs/guide.md': 'Read `references/details.md`.\n',
+      'annex/policy.md': '# Policy\n',
+    });
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+    await fs.writeFile(path.join(skillRoot, 'annex/policy.md'), 'Read `docs/missing.md`.\n');
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'inline-code target "docs/missing.md" from "annex/policy.md"',
+    );
+  });
+
+  it.each(['docs/missing.md', 'annex/missing.md', './details.md', '../assets/icon.svg'])(
+    'rejects missing or document-relative resource code path %s',
+    async (target) => {
+      const skillRoot = await createRuntimeSkill('Read `references/guide.md`.\n', {
+        'references/guide.md': `Read \`${target}\`.\n`,
+        'references/details.md': '# Details\n',
+        'assets/icon.svg': '<svg/>\n',
+        'annex/policy.md': '# Policy\n',
+      });
+
+      await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+        `inline-code target ${JSON.stringify(target)} from "references/guide.md"`,
+      );
+    },
+  );
+
+  it('resolves nested Markdown resource prefixes relative to their document', async () => {
+    const skillRoot = await createRuntimeSkill('[guide](references/guide.md)\n', {
+      'references/guide.md': '[details](references/details.md)\n',
+      'references/details.md': '# Details\n',
+    });
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'markdown-link target "references/details.md" from "references/guide.md"',
+    );
+  });
+
   it('allows only exact declared generated files during source closure validation', async () => {
     const skillRoot = await createRuntimeSkill([
-      '[generated](references/generated.md)',
+      'Read `references/generated.md`.',
       '[nested missing](references/nested/missing.md)',
     ].join('\n'));
 
@@ -1530,6 +1579,22 @@ describe('runtime Skill resource closure', () => {
     ].join('\n'));
 
     await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it('distinguishes target-Skill business paths in supporting docs from local execution targets', async () => {
+    const skillRoot = await createRuntimeSkill('Read `references/profile.md`.\n', {
+      'references/profile.md': [
+        'The target Skill uses `evals/manifest.json` and `providers/model.json`.',
+        'Its `agents/openai.yaml` file is optional.',
+        'Save project decisions in `docs/adr/`.',
+      ].join('\n'),
+    });
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+    await fs.appendFile(path.join(skillRoot, 'references/profile.md'), '\nRun `node evals/missing.mjs`.\n');
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'inline-command target "evals/missing.mjs" from "references/profile.md"',
+    );
   });
 
   it.each([
