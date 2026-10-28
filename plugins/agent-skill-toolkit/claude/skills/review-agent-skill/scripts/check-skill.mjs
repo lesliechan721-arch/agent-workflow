@@ -7580,7 +7580,7 @@ function isMain(url) {
 
 // src/fields.mjs
 var import_yaml = __toESM(require_dist(), 1);
-var RULESET = "authoring-2026-10-10";
+var RULESET = "authoring-2026-10-28";
 var codePoints = (value) => [...value].length;
 var isMapping = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 function parseYaml(content, file, diagnostics, lineOffset = 0) {
@@ -9022,7 +9022,18 @@ var Tn = R.lex;
 
 // src/references.mjs
 import path2 from "node:path";
-function markdownReferences(content) {
+function isResourceCodePath(value, documentPath, resourcePaths) {
+  if (/\s/.test(value)) return false;
+  const local = value.split("#")[0];
+  if (!local || local.endsWith("/") || local === "." || local === "..") return false;
+  const unprefixed = local.replace(/^(?:\.\.?\/)+/, "");
+  const first = unprefixed.split("/")[0];
+  if (unprefixed === "SKILL.md") return true;
+  if (unprefixed.includes("/") && (/^(?:references|assets|scripts|docs)$/.test(first) || resourcePaths.has(first))) return true;
+  if (path2.posix.extname(local) && resourcePaths.has(local.replace(/^\.\//, ""))) return true;
+  return path2.posix.dirname(documentPath) !== "." && resourcePaths.has(path2.posix.normalize(path2.posix.join(path2.posix.dirname(documentPath), local)));
+}
+function markdownReferences(content, { documentPath = "SKILL.md", resourcePaths = /* @__PURE__ */ new Set() } = {}) {
   const normalized = content.replace(/\r\n?/g, "\n");
   const tokens = k.lexer(normalized, { gfm: true });
   const references = [];
@@ -9037,7 +9048,7 @@ function markdownReferences(content) {
       if (token.type === "code" || token.type === "html") continue;
       const line = normalized.slice(0, start).split("\n").length;
       if (token.type === "link" || token.type === "image") references.push({ value: token.href, line, kind: "markdown-link" });
-      if (token.type === "codespan" && /^(?:references|assets|scripts)\//.test(token.text))
+      if (token.type === "codespan" && isResourceCodePath(token.text, documentPath, resourcePaths))
         references.push({ value: token.text, line, kind: "inline-code" });
       if (token.tokens) pending.push({ tokens: token.tokens, start });
       if (token.items) pending.push({ tokens: token.items, start });
@@ -9047,19 +9058,20 @@ function markdownReferences(content) {
   }
   return references.sort((a, b) => a.line - b.line);
 }
-function resolveReference(root, documentPath, value, { icon = false } = {}) {
+function resolveReference(root, documentPath, value, { icon = false, kind = "markdown-link" } = {}) {
   if (!value || value.startsWith("#") || /^(?:https?:|mailto:|data:|ftp:|tel:|\/\/)/i.test(value)) return { status: "ignored" };
   if (/^[A-Za-z]:[\\/]/.test(value) || value.startsWith("/") || value.startsWith("~")) return { status: "external" };
-  if (/\$|[{}*?<>]|\[[^\]]*\]/.test(value)) return { status: "unresolved" };
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) return { status: "external" };
   let local;
+  const pathValue = value.split("#")[0];
   try {
-    local = decodeURIComponent(value.split("#")[0]);
+    local = kind === "markdown-link" ? decodeURIComponent(pathValue.split("?")[0]) : pathValue;
   } catch {
     return { status: "unresolved" };
   }
+  if (/\$|[{}*?<>]|\[[^\]]*\]/.test(local)) return { status: "unresolved" };
   if (!local) return { status: "ignored" };
-  const rootRelative = /^(?:references|assets|scripts)\//.test(local) || icon;
+  const rootRelative = kind === "inline-code" || icon;
   const absolute = path2.resolve(rootRelative ? root : path2.dirname(path2.join(root, documentPath)), local);
   if (!inside(root, absolute)) return { status: "outside" };
   return { status: "local", path: slash(path2.relative(root, absolute)) || "." };
@@ -9128,7 +9140,7 @@ async function checkSkill(input, { limits } = {}) {
   const seen = /* @__PURE__ */ new Set();
   const pending = body === null ? [] : [{ path: "SKILL.md", content: body, offset: bodyLine - 1 }];
   async function inspectReference(documentPath, ref, icon = false) {
-    const resolved = resolveReference(root, documentPath, ref.value, { icon });
+    const resolved = resolveReference(root, documentPath, ref.value, { icon, kind: ref.kind });
     if (resolved.status === "ignored") return;
     if (resolved.status === "external" || resolved.status === "unresolved") {
       report.diagnostics.push(diagnostic(
@@ -9162,7 +9174,7 @@ async function checkSkill(input, { limits } = {}) {
   while (pending.length) {
     const item = pending.pop();
     try {
-      for (const ref of markdownReferences(item.content)) await inspectReference(item.path, { ...ref, line: ref.line + item.offset });
+      for (const ref of markdownReferences(item.content, { documentPath: item.path, resourcePaths: state.nodes })) await inspectReference(item.path, { ...ref, line: ref.line + item.offset });
     } catch {
       referencesComplete = false;
       incomplete(state, "io-error", item.path, "Markdown \u5F15\u7528\u63D0\u53D6\u672A\u5B8C\u6210\u3002", "markdown-parse-error");

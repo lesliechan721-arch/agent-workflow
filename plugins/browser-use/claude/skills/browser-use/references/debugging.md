@@ -23,7 +23,7 @@ agent-browser trace start
 agent-browser trace stop .browser-use/artifacts/preview/failure-01.json
 ```
 
-先按[产物约定](browsing.md#标签页与截图)准备私有目录和新路径。开始录制不会补回过去的操作；实际格式和产物位置以本机结果为准。当前基线的 trace 是 Chrome DevTools trace，不是 Playwright trace 包，也不是视频。不要默认上传完整 trace、HAR 或响应体。
+先按产物约定（`references/browsing.md#标签页与截图`）准备私有目录和新路径。开始录制不会补回过去的操作；实际格式和产物位置以本机结果为准。当前基线的 trace 是 Chrome DevTools trace，不是 Playwright trace 包，也不是视频。不要默认上传完整 trace、HAR 或响应体。
 
 ## 失败与版本差异
 

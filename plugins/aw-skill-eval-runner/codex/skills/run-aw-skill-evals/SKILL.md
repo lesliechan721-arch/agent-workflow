@@ -19,7 +19,7 @@ metadata:
 | 验证已有 Spec、Audit 或 Result | 执行相应公开 validator，报告诊断与绑定；不启动模型 |
 | 执行 Eval | 继续完成独立 Audit、成本与环境检查、运行和结果验证 |
 
-设计或审核 AW 用例、接入通用 Author/Auditor、处理正式 Audit 合同时，读取 [AW 格式与准入](references/aw-eval-profile.md)。已有有效输入直接采用，不重建无关资产。
+设计或审核 AW 用例、接入通用 Author/Auditor、处理正式 Audit 合同时，读取 AW 格式与准入（`references/aw-eval-profile.md`）。已有有效输入直接采用，不重建无关资产。
 
 ## 准备或验证输入
 
@@ -31,11 +31,11 @@ metadata:
 
 **独立 Audit。** 只检查用户指定的 Audit 或 Spec 同目录的 `audit.json`。通过公开 validator 核验 provider、workspace、current/previous target、case digest 和全部 selected cases；精确绑定且 `status=pass` 才复用。
 
-缺失或陈旧时，在独立上下文使用 `audit-agent-skill-evals` 的 preflight，提供 validated Spec、所选用例、相关 fixture、本技能 profile 和 [Audit 模板](assets/eval-audit-template.json) 的实际路径、验证命令及允许的输出位置。只交接本次所需合同。无法取得独立审核，或结果为 fail/unknown/blocked、覆盖不完整时停止；不代签 passing Audit，也不为通过而改用例或目标。
+缺失或陈旧时，在独立上下文使用 `audit-agent-skill-evals` 的 preflight，提供 validated Spec、所选用例、相关 fixture、本技能 profile 和 Audit 模板（`assets/eval-audit-template.json`） 的实际路径、验证命令及允许的输出位置。只交接本次所需合同。无法取得独立审核，或结果为 fail/unknown/blocked、覆盖不完整时停止；不代签 passing Audit，也不为通过而改用例或目标。
 
 **成本与授权。** 从 validated Spec/cases 计算 cases、runs、baseline variants 与真实模型调用估算，披露 provider 进程类别、现有凭据环境的使用、模型网络、custom-process 的未知影响及 validator 解析出的 outputDir；不读取凭据值。明确请求执行且预计内置调用不超过 10 次时可继续；超过 10 次、调用数未知或 custom-process，须有覆盖当前 Spec、Audit、成本与副作用的明确授权。已有授权仍适用时沿用。
 
-**执行环境。** 执行前读取 [执行与安全](references/execution-and-safety.md)，采用其中的调用估算和 Engine 权限、macOS Codex/keychain、进程管理条件。Audit、成本授权和环境检查分别成立，彼此不能替代。
+**执行环境。** 执行前读取 执行与安全（`references/execution-and-safety.md`），采用其中的调用估算和 Engine 权限、macOS Codex/keychain、进程管理条件。Audit、成本授权和环境检查分别成立，彼此不能替代。
 
 ## 执行与验证结果
 

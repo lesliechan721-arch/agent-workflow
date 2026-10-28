@@ -11,7 +11,7 @@
 | 在事件发生时执行动作 | Hook；写明触发、输入、副作用与失败行为，用受控事件作确定性验证 |
 | 访问工具服务或 App | MCP/App；按合同声明 command、env、auth、网络和权限，验证实际启动、健康与清理 |
 | 改变工具或 Agent 的可执行范围 | 权限声明；范围与所需动作匹配，核对目标平台的实际支持 |
-| 根据配置、scope 或状态生成内容 | 按 [平台投影](platform-projection.md) 选择投影机制；选定 renderer 后采用其 [请求与输出方法](aw-artifact-renderer.md) |
+| 根据配置、scope 或状态生成内容 | 按 平台投影（`references/platform-projection.md`） 选择投影机制；选定 renderer 后采用其 请求与输出方法（`references/aw-artifact-renderer.md`） |
 
 Slash command 的参数与副作用在用户说明中前置。安装和生成结果须保留相应平台的调用语义；不能只看 source frontmatter 就确认两端均生效。
 
@@ -23,13 +23,13 @@ MCP/App 的凭据值不进入 Skill、日志或分发包。生命周期由实际
 
 条件对象、固定标量和对象内叶级数组/KV 使用该合同提供的结构能力；保存、呈现和运行资源共用该合同，不另写插件专用校验，也不把容器改存成 JSON 字符串。只在 Agent 内容中说明影响任务选择的非显然规则，字段表和默认值保留在其权威声明。
 
-敏感字段沿当前合同限制为顶层 string，且不带 default 或 choices。Skill 产物和运行配置读取只使用允许的非敏感键；target 的 refreshKeys、敏感配置批次与输出隔离采用 [Artifact renderer](aw-artifact-renderer.md)。
+敏感字段沿当前合同限制为顶层 string，且不带 default 或 choices。Skill 产物和运行配置读取只使用允许的非敏感键；target 的 refreshKeys、敏感配置批次与输出隔离采用 Artifact renderer（`references/aw-artifact-renderer.md`）。
 
 配置 helper 只完成合同允许的辅助任务；输出应确定、可测试。不要用 helper 重建另一套配置状态或隐式安装依赖。
 
 ## 读取本次安装生效的配置
 
-`runtimeConfig` 声明在 `artifacts.targets[]` 的动态 Skill target 上，不是静态 Skill 或 manifest 顶层可直接追加的通用字段。已有该 target 时直接维护其声明；静态 Skill 出现这类需求时，先决定是否采用当前支持的动态 target。采用后按 [renderer](aw-artifact-renderer.md) 实现请求与输出，正文静态不免除这些前提；未采用受支持的路径时，明确能力限制。
+`runtimeConfig` 声明在 `artifacts.targets[]` 的动态 Skill target 上，不是静态 Skill 或 manifest 顶层可直接追加的通用字段。已有该 target 时直接维护其声明；静态 Skill 出现这类需求时，先决定是否采用当前支持的动态 target。采用后按 renderer（`references/aw-artifact-renderer.md`） 实现请求与输出，正文静态不免除这些前提；未采用受支持的路径时，明确能力限制。
 
 对受支持的 target，查询 `runtimeConfig` 的当前声明与 capability 要求，声明所需键及其依赖闭包。runtimeConfig 键须属于该 target 声明的 refreshKeys，闭包保持非敏感。AW 在 final Skill 中注入 reader，并按本次安装的有效配置提供值。
 
@@ -37,6 +37,6 @@ MCP/App 的凭据值不进入 Skill、日志或分发包。生命周期由实际
 
 ## 生命周期与交付
 
-安装前环境校验或外部工具安装使用 `scripts.preApply`，读取 [preApply](aw-pre-apply.md)。它在目标 preflight 后、cleanup 或 AW-owned 写入前运行；失败阻止该目标写入，外部动作的恢复由现有合同负责。构建期 Node 依赖和插件安装依赖分别按 [构建与共享](build-and-sharing.md) 处理。
+安装前环境校验或外部工具安装使用 `scripts.preApply`，读取 preApply（`references/aw-pre-apply.md`）。它在目标 preflight 后、cleanup 或 AW-owned 写入前运行；失败阻止该目标写入，外部动作的恢复由现有合同负责。构建期 Node 依赖和插件安装依赖分别按 构建与共享（`references/build-and-sharing.md`） 处理。
 
 实现后验证真实受影响的组件和平台 final。README 说明用户可观察能力、入口、权限和限制；不复制 manifest 字段全集或内部生成算法。

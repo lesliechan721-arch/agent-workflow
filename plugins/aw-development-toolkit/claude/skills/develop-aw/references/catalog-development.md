@@ -6,7 +6,7 @@
 
 只在用户请求初始化时运行公开 `aw catalog init`，随后用静态 status 确认 marker、identity 和 inventory。现有 Workspace 直接读取当前 status 与 source metadata。
 
-插件 source 使用 canonical `<root>/plugins/<name>`。维护 metadata、inventory 与 manifest dependency composition；依赖按实际可安装组合声明。Plugin 内部内容采用 [Plugin 开发](plugin-development.md)，共享文件与构建边采用 [构建与共享](build-and-sharing.md)，两类关系分别核对。
+插件 source 使用 canonical `<root>/plugins/<name>`。维护 metadata、inventory 与 manifest dependency composition；依赖按实际可安装组合声明。Plugin 内部内容采用 Plugin 开发（`references/plugin-development.md`），共享文件与构建边采用 构建与共享（`references/build-and-sharing.md`），两类关系分别核对。
 
 Plugin source version 与 Catalog version 分开。Catalog version 只通过公开 `aw catalog version` 管理，不手改生成 snapshot、digest 或内部状态。
 
@@ -24,6 +24,6 @@ remove 不自动提升版本、提交、构建或发布。删除后重新取得 
 
 修改组成后，按本次交付需要运行 Catalog build 和 complete validate，使用它们管理 snapshot。只读分析保持静态；未运行的聚合检查明确列为未验证。
 
-用户明确要求把当前 Workspace 设为本地开发源时采用 [Development source](development-source.md)。activate 自己负责 build、完整 validate、注册、sync 和 readiness，不在前后重复编排这些步骤。
+用户明确要求把当前 Workspace 设为本地开发源时采用 Development source（`references/development-source.md`）。activate 自己负责 build、完整 validate、注册、sync 和 readiness，不在前后重复编排这些步骤。
 
 交付实际 status、变更或删除回执、剩余依赖影响及验证范围。远端分发由用户显式启动 `publish-aw-catalog`，普通 Catalog 维护不自动发布。

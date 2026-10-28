@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "aw-skill-eval-runner",
-  "version": "0.1.0-beta.6",
+  "version": "0.1.0-beta.7",
   "description": "准备和验证 AW Skill Eval，核验独立 Audit 与执行条件，通过 aw-skill-eval 运行并验证结果。",
   "marketplace": {
     "category": "workflow",

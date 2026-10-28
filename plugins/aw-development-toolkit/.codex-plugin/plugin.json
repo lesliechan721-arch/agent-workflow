@@ -1,6 +1,6 @@
 {
   "name": "aw-development-toolkit",
-  "version": "0.1.0-beta.8",
+  "version": "0.1.0-beta.9",
   "description": "处理 AW 插件及 Skill 的来源、开发、验证与物化，维护 Catalog，并通过手动入口发布。",
   "interface": {
     "displayName": "AW Development Toolkit",

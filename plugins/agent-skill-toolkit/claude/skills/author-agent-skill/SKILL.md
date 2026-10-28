@@ -12,13 +12,13 @@ metadata:
 
 ## 提炼任务方法
 
-读取用户任务、现有材料和受影响文件。新建或实质重写时，按 [设计与验证](references/design-and-validation.md) 找出执行者缺少的领域知识、选择依据和易错点；从实际资料提炼方法，不把一次任务的答案写成所有输入的固定步骤。
+读取用户任务、现有材料和受影响文件。新建或实质重写时，按 设计与验证（`references/design-and-validation.md`） 找出执行者缺少的领域知识、选择依据和易错点；从实际资料提炼方法，不把一次任务的答案写成所有输入的固定步骤。
 
-已有明确要求就直接采用。局部修词或路径修正只处理当前变更；职责或调用范围改变时，按 [调用与描述](references/skill-invocation.md) 核对代表性请求和相近边界。组合、角色或交接改变时，使用 [组合规则](references/skill-composition.md)。
+已有明确要求就直接采用。局部修词或路径修正只处理当前变更；职责或调用范围改变时，按 调用与描述（`references/skill-invocation.md`） 核对代表性请求和相近边界。组合、角色或交接改变时，使用 组合规则（`references/skill-composition.md`）。
 
 ## 制作 Skill
 
-创建包或修改字段时读取 [格式与调用字段](references/skill-format.md)。新目录使用初始化工具：
+创建包、修改字段或资源引用时读取 格式与调用字段（`references/skill-format.md`）。新目录使用初始化工具：
 
 ```sh
 node scripts/init-skill.mjs <new-directory> --description "说明该技能处理的用户任务" --format json
@@ -30,9 +30,9 @@ node scripts/init-skill.mjs <new-directory> --description "说明该技能处理
 
 | 任务 | 方法 |
 | --- | --- |
-| 漏触发、误触发或调用行为改变 | [触发诊断](references/trigger-development.md) |
-| 创建或修改随包脚本，以及编写调用说明 | [脚本设计](references/script-authoring.md) |
-| 创建或修改 Eval case、fixture 和断言 | [Eval 设计](references/eval-design.md) |
+| 漏触发、误触发或调用行为改变 | 触发诊断（`references/trigger-development.md`） |
+| 创建或修改随包脚本，以及编写调用说明 | 脚本设计（`references/script-authoring.md`） |
+| 创建或修改 Eval case、fixture 和断言 | Eval 设计（`references/eval-design.md`） |
 
 ## 验证
 

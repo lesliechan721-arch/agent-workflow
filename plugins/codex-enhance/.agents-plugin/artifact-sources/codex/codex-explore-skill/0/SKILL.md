@@ -22,7 +22,7 @@ metadata:
 
 ## 委派与接纳
 
-使用已选配置并按 `codex-subagent-guide` 的约定委派子代理。native 使用 `codex-explore` 角色，已有角色指令不重复附加；外部执行使用 [调查指令](assets/explore-instructions.md)。
+使用已选配置并按 `codex-subagent-guide` 的约定委派子代理。native 使用 `codex-explore` 角色，已有角色指令不重复附加；外部执行使用 调查指令（`assets/explore-instructions.md`）。
 
 调查活跃时，父任务不重复调查或写入同一范围。
 

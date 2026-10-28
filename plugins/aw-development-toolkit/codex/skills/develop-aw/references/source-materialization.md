@@ -1,6 +1,6 @@
 # AW 来源与运行包
 
-解析 source、final、profile、修改 owner 或可比较版本时读取。导出标准 Agent Skills 使用 [Portable 分发](portable-skills.md)；选择共享构建机制使用 [构建与共享](build-and-sharing.md)。
+解析 source、final、profile、修改 owner 或可比较版本时读取。导出标准 Agent Skills 使用 Portable 分发（`references/portable-skills.md`）；选择共享构建机制使用 构建与共享（`references/build-and-sharing.md`）。
 
 ## 定位本次对象
 
@@ -43,7 +43,7 @@ aw review prepare <plugin-or-source-skill> --platform <platform> \
 
 各版本在自己的源码上下文中，使用相同 platform、scope、解析后配置和未变构建条件准备，分别核验来源绑定。source/provider/renderer 改变后重新准备。同名 profile 不证明 target 相同；运行器再次物化时核对实际 current/previous target，模型执行与 Audit 仍由运行器负责。
 
-应用已授权的 source diff 前，核对原工作区相关输入并协调并行修改；应用后按 [Plugin 开发](plugin-development.md) 验证对应产物和受影响消费者。
+应用已授权的 source diff 前，核对原工作区相关输入并协调并行修改；应用后按 Plugin 开发（`references/plugin-development.md`） 验证对应产物和受影响消费者。
 
 ## 核对与交付证据
 
@@ -51,4 +51,4 @@ aw review prepare <plugin-or-source-skill> --platform <platform> \
 
 同一正文在不同 profile 下可能有不同权限、调用策略与环境要求。production digest 相同且权限、profile 与适用规范等价时，可复用内容分析；实际环境覆盖分别核验，一个平台通过不能替代其他平台或 Portable 的检查。
 
-按本次实际取证交付 source 或 final、所选 profile、digest、全部来源绑定、修改 owner 和未知项。未准备或未检查的产物明确说明。AW 组合判断使用 [领域依据](aw-domain-review.md)，质量与候选接受由当前任务的方法裁决。
+按本次实际取证交付 source 或 final、所选 profile、digest、全部来源绑定、修改 owner 和未知项。未准备或未检查的产物明确说明。AW 组合判断使用 领域依据（`references/aw-domain-review.md`），质量与候选接受由当前任务的方法裁决。
