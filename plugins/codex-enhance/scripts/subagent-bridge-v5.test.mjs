@@ -10,6 +10,8 @@ import { pathToFileURL } from 'node:url';
 import { channel } from 'node:diagnostics_channel';
 import { createChildBridge, createChildChannel, invokeChildTool } from '../skills/codex-subagent-guide/scripts/runtime/adapter-channel.mjs';
 import { protectPrivatePath } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
+import { runMessage } from '../skills/codex-subagent-guide/scripts/message.mjs';
+import { runMessageMcp } from '../skills/codex-subagent-guide/scripts/message-mcp.mjs';
 
 const require = createRequire(import.meta.url);
 const messageScript = require.resolve('../skills/codex-subagent-guide/scripts/message.mjs');
@@ -99,7 +101,7 @@ async function fixture(t, options = {}) {
   const env = { ...process.env, HOME: root, AW_HOME: root, AW_CODEX_HOME: root, AW_CLAUDE_HOME: root };
   const preload = path.join(root, 'trace-bridge.mjs');
   await fs.writeFile(preload, "import { channel } from 'node:diagnostics_channel'; import { writeSync } from 'node:fs'; channel('aw.subagent.bridge').subscribe((event) => writeSync(3, JSON.stringify(event) + '\\n'));\n");
-  const execute = (args, input) => new Promise((resolve, reject) => {
+  const execute = (args, input, { keepStdinOpen = false } = {}) => new Promise((resolve, reject) => {
     const child = spawn(bridge.script.command, ['--import', pathToFileURL(preload).href, ...bridge.script.args, ...args], { shell: false, cwd: root, env, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
     let phase = 'spawned'; let trace = ''; let timer; let requestId;
     const progress = (event) => {
@@ -122,7 +124,8 @@ async function fixture(t, options = {}) {
     child.stdout.on('data', (bytes) => stdout.push(bytes)); child.stderr.on('data', (bytes) => stderr.push(bytes));
     child.on('error', (error) => { clearTimeout(timer); stopObserving(); reject(error); });
     child.on('close', (code) => { clearTimeout(timer); stopObserving(); resolve({ code, stdout: Buffer.concat(stdout).toString(), stderr: Buffer.concat(stderr).toString() }); });
-    child.stdin.end(input);
+    child.stdin.on('error', () => {});
+    if (!keepStdinOpen) child.stdin.end(input);
   });
   return { root, bridge, bindingFile, messages, invoke, execute, env, observation };
 }
@@ -131,7 +134,7 @@ test('generated script preserves text, rejects invalid input, and leaves no tool
   const f = await fixture(t);
   const prefix = ' 父输入\r\n😀 " ` $()\nEND_MESSAGE:00000000\n';
   const text = prefix + 'x'.repeat(4096 - Buffer.byteLength(prefix));
-  const sent = await f.execute(['send', '--text', '-'], text);
+  const sent = await f.execute(['send', '--text', text]);
   assert.equal(sent.code, 0); assert.equal(sent.stdout, 'send_parent: submitted\n'); assert.deepEqual(f.messages, [text]);
   const receipt = f.bridge.acceptInput({ id: id(1), text });
   const received = await f.execute(['receive', '--timeout-ms', '1000']);
@@ -144,6 +147,74 @@ test('generated script preserves text, rejects invalid input, and leaves no tool
   }
   assert.deepEqual(f.messages, [text]);
   assert.deepEqual((await fs.readdir(path.dirname(f.bindingFile))).sort(), ['binding.json']);
+});
+
+// Test Value Gate: shape errors must return before stdin, selected files, or
+// the private communication tool can be accessed. A held-open pipe must not wait.
+test('child send rejects invalid arguments without reading stdin or invoking a tool', async (t) => {
+  const observed = [];
+  const source = channel('aw.subagent.bridge');
+  const listener = (event) => observed.push(event);
+  source.subscribe(listener); t.after(() => source.unsubscribe(listener));
+  const stdin = { [Symbol.asyncIterator]() { assert.fail('Child send must not read stdin.'); } };
+  const binding = path.join(os.tmpdir(), 'unused-aw-child-binding.json');
+  for (const args of [
+    ['send'], ['send', '--text'], ['send', '--text-file'],
+    ['send', '--text', '-'], ['send', '--text-file', '-'],
+    ['send', '--text', 'x', '--text-file', 'missing'],
+    ['send', '--text-file', 'missing', '--text', 'x'],
+    ['send', '--text', 'x', '--text', 'y'],
+    ['send', '--text-file', 'missing', '--text-file', 'other'],
+    ['send', '--text-file', 'missing', '--timeout-ms', '0'],
+    ['send', '--unknown', 'x'], ['receive', '--text', 'x'],
+    ['receive', '--text-file', 'missing'], ['receive', '--timeout-ms', '0', '--timeout-ms', '1'],
+  ]) {
+    let stdout = '', stderr = '';
+    const exit = await runMessage(['--bridge', binding, ...args], { stdin, stdout: { write(value) { stdout += value; } }, stderr: { write(value) { stderr += value; } } });
+    assert.equal(exit, 2, JSON.stringify(args));
+    assert.equal(stdout, ''); assert.match(stderr, /^code: invalidArguments$/m);
+  }
+  assert.deepEqual(observed, []);
+  const f = await fixture(t);
+  const failure = await f.execute(['send', '--text', '-'], undefined, { keepStdinOpen: true });
+  assert.equal(failure.code, 2); assert.match(failure.stderr, /^code: invalidArguments$/m);
+  assert.deepEqual(f.messages, []);
+  assert.deepEqual(await fs.readdir(path.dirname(f.bindingFile)), ['binding.json']);
+});
+
+// Test Value Gate: the installed command must preserve selected file bytes,
+// resolve paths at its caller cwd, and classify content versus I/O failures.
+test('child send reads explicit files and rejects invalid files before submitting', async (t) => {
+  const f = await fixture(t);
+  const prefix = '\ufeff 父输入\r\n😀 " ` $()\n';
+  const text = prefix + 'x'.repeat(4096 - Buffer.byteLength(prefix));
+  await fs.writeFile(path.join(f.root, 'message.txt'), text);
+  const sent = await f.execute(['send', '--text-file', 'message.txt']);
+  assert.equal(sent.code, 0); assert.equal(sent.stdout, 'send_parent: submitted\n');
+  await fs.writeFile(path.join(f.root, '-'), '-');
+  assert.equal((await f.execute(['send', '--text-file', './-'])).code, 0);
+  assert.deepEqual(f.messages, [text, '-']);
+  for (const [name, bytes, code] of [
+    ['invalid-utf8', Buffer.from([0xc0, 0x80]), 'inputFileInvalid'],
+    ['nul', Buffer.from('x\0y'), 'inputFileInvalid'],
+    ['blank', Buffer.from(' \r\n'), 'inputFileInvalid'],
+    ['large', Buffer.from('😀'.repeat(1025)), 'messageTooLarge'],
+  ]) {
+    await fs.writeFile(path.join(f.root, name), bytes);
+    const failure = await f.execute(['send', '--text-file', name]);
+    assert.equal(failure.code, 2); assert.match(failure.stderr, new RegExp(`^code: ${code}$`, 'm')); assert.equal(failure.stdout, '');
+  }
+  const directory = await f.execute(['send', '--text-file', '.']);
+  assert.equal(directory.code, 2); assert.match(directory.stderr, /^code: inputFileInvalid$/m);
+  if (!windows) {
+    await fs.symlink(path.join(f.root, 'message.txt'), path.join(f.root, 'linked'));
+    const linked = await f.execute(['send', '--text-file', 'linked']);
+    assert.equal(linked.code, 2); assert.match(linked.stderr, /^code: inputFileInvalid$/m);
+  }
+  const missing = await f.execute(['send', '--text-file', 'missing']);
+  assert.equal(missing.code, 1); assert.match(missing.stderr, /^code: inputFileReadFailed$/m);
+  assert.deepEqual(f.messages, [text, '-']);
+  assert.deepEqual(await fs.readdir(path.dirname(f.bindingFile)), ['binding.json']);
 });
 
 test('missing installed toolkit fails bridge setup before communication can be declared ready', async (t) => {
@@ -372,27 +443,9 @@ test('generated MCP process supports concurrent receive/send and rejects extra t
   assert.equal(diagnostics, '');
 });
 
-// Test Value Gate: a declared send-only channel must expose no receive MCP tool,
-// reject receive through the actual command entry, and still allow child sends.
-test('send-only communication hides and rejects active receive', async (t) => {
-  const f = await fixture(t, { activeReceive: false, submitInput: async () => ({ status: 'submitted' }) });
-  const received = await f.execute(['receive', '--timeout-ms', '0']);
-  assert.equal(received.code, 1); assert.match(received.stdout, /^code: receiveUnsupported$/m);
-  const sent = await f.execute(['send', '--text', 'A question before the run closes.']);
-  assert.equal(sent.code, 0); assert.deepEqual(f.messages, ['A question before the run closes.']);
-  const child = spawn(f.bridge.mcpServer.command, f.bridge.mcpServer.args, { shell: false, cwd: f.root, env: f.env, stdio: ['pipe', 'pipe', 'pipe'] });
-  t.after(() => child.kill());
-  const responses = new Map(); let buffer = '';
-  child.stdout.setEncoding('utf8'); child.stdout.on('data', (data) => {
-    buffer += data; let newline;
-    while ((newline = buffer.indexOf('\n')) >= 0) { const response = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1); responses.set(response.id, response); }
-  });
-  for (const frame of [
-    { id: 1, method: 'tools/list' },
-    { id: 2, method: 'tools/call', params: { name: 'receive_parent', arguments: {} } },
-  ]) child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...frame })}\n`);
-  await until(() => responses.size === 2, windows ? 10000 : 3000);
-  assert.deepEqual(responses.get(1).result.tools.map((tool) => tool.name), ['send_parent']);
-  assert.equal(responses.get(2).result.isError, true);
-  const exited = once(child, 'exit'); child.stdin.end(); assert.deepEqual(await exited, [0, null]);
+// Test Value Gate: removed command flags must fail before the MCP server reads
+// JSON input or starts a communication operation.
+test('child MCP rejects the removed send-only flag before reading input', async () => {
+  const stdin = { [Symbol.asyncIterator]() { assert.fail('Invalid MCP arguments must not read input.'); } };
+  await assert.rejects(runMessageMcp(['--bridge', path.join(os.tmpdir(), 'unused-aw-child-binding.json'), '--send-only'], { stdin }), { code: 'invalidArguments' });
 });

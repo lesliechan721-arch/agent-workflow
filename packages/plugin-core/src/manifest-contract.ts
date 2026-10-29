@@ -54,6 +54,7 @@ import type {
 } from './types.js';
 import { readJsonFile } from './read-json.js';
 import { parsePermissionCommand } from './permission-command.js';
+import { normalizeManagedCommands, normalizeManagedCommandPermission, validateManagedCommandManifest, validateManagedCommandSources, type PermissionCommand } from './managed-commands.js';
 import { applyFileRules } from './file-rules.js';
 import { resolvePlatformEntries } from './platform-entries.js';
 import {
@@ -369,17 +370,17 @@ function ensureStringArray(value: unknown, fieldName: string): string[] {
 function normalizePermissionCommandArray(
   value: unknown,
   fieldName: string,
-): string[] | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  const entries = ensureStringArray(value, fieldName);
-  for (const [index, entry] of entries.entries()) {
-    parsePermissionCommand(entry, `${fieldName}[${index}]`);
-  }
-
-  return entries;
+): PermissionCommand[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error(`Invalid ${fieldName}: expected an array.`);
+  return value.map((entry, index) => {
+    const label = `${fieldName}[${index}]`;
+    if (typeof entry === 'string') {
+      parsePermissionCommand(entry, label);
+      return entry;
+    }
+    return normalizeManagedCommandPermission(entry, label);
+  });
 }
 
 function normalizeComparableStringArray(value: string[] | undefined): string[] | undefined {
@@ -1586,6 +1587,8 @@ const ARTIFACT_KIND_BY_TARGET: Record<ArtifactTarget, DynamicArtifactKind> = {
   'codex.skill': 'skill',
   'claude.skill': 'skill',
   'agent-skills.skill': 'skill',
+  'aw.command-set': 'commandSet',
+  'aw.command-package': 'commandPackage',
 };
 
 function normalizeArtifactRuntimeImports(
@@ -1852,6 +1855,9 @@ function normalizeArtifactTargetEntry(
 
   const id = ensureString(input.id, `${fieldName}.id`);
   validateArtifactId(id, `${fieldName}.id`);
+  if (/^command-(?:set|package)\./u.test(id)) {
+    throw new Error(`Invalid ${fieldName}.id: reserved managed command target prefix.`);
+  }
 
   const target = normalizeArtifactTarget(input.target, `${fieldName}.target`);
   const delivery = target === 'codex.skill'
@@ -2237,7 +2243,7 @@ function normalizePermissionEntry(
             input.agentOverrides,
             `${fieldName}.agentOverrides`,
             (overrideInput, overrideFieldName) => {
-              assertAllowedKeys(overrideInput, overrideFieldName, ['name', 'allow', 'ask', 'deny']);
+              assertAllowedKeys(overrideInput, overrideFieldName, overrideFieldName.endsWith('.claude') ? ['name', 'allow', 'ask', 'deny', 'sandbox'] : ['name', 'allow', 'ask', 'deny']);
               return {
                 name:
                   overrideInput.name === undefined
@@ -2255,6 +2261,14 @@ function normalizePermissionEntry(
                   overrideInput.deny,
                   `${overrideFieldName}.deny`,
                 ),
+                ...(overrideInput.sandbox === undefined ? {} : {
+                  sandbox: (() => {
+                    const sandbox = assertObject(overrideInput.sandbox, `${overrideFieldName}.sandbox`);
+                    assertAllowedKeys(sandbox, `${overrideFieldName}.sandbox`, ['excludedCommands']);
+                    if (!Array.isArray(sandbox.excludedCommands)) throw new Error(`Invalid ${overrideFieldName}.sandbox.excludedCommands: expected an array.`);
+                    return { excludedCommands: sandbox.excludedCommands.map((value, index) => normalizeManagedCommandPermission(value, `${overrideFieldName}.sandbox.excludedCommands[${index}]`)) };
+                  })(),
+                }),
               };
             },
           ),
@@ -2687,6 +2701,7 @@ export function validatePluginManifest(
     'buildConfig',
     'scripts',
     'config',
+    'managedCommands',
   ]);
 
   const manifest: NormalizedPluginManifest = {
@@ -2823,6 +2838,10 @@ export function validatePluginManifest(
     && !manifest.distributions?.agentSkills
   ) {
     throw new Error('Invalid artifacts.targets: agent-skills targets require distributions.agentSkills declaration.');
+  }
+  if (input.managedCommands !== undefined) {
+    manifest.managedCommands = normalizeManagedCommands(input.managedCommands);
+    validateManagedCommandManifest(manifest);
   }
   assertManifestPlatformSupport(manifest.name, manifest);
   assertCodexSharedNativeScopeConsistency(manifest);
@@ -3090,6 +3109,7 @@ export async function validateSourcePluginManifest(
   }
   await validateDeclaredNativeAssets(pluginRoot, manifest);
   await validateDeclaredAssetPathsExist(pluginRoot, manifest);
+  await validateManagedCommandSources(pluginRoot, manifest);
   await Promise.all([
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'mcpServers'),
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'apps'),
@@ -3129,7 +3149,10 @@ export async function readPluginManifest(
       reservedImports: options.reservedImports,
     })
     : validatePluginManifest(pluginRoot, rawManifest, { reservedImports: options.reservedImports });
-  if (mode === 'bundle') await assertActualNativePluginCapability(pluginRoot, manifest, 'bundle');
+  if (mode === 'bundle') {
+    await validateManagedCommandSources(pluginRoot, manifest);
+    await assertActualNativePluginCapability(pluginRoot, manifest, 'bundle');
+  }
   return {
     rootDir: pluginRoot,
     manifestPath,

@@ -7,6 +7,7 @@
 | 用户任务 | CLI 能力 | TUI 入口、确认和恢复 |
 | --- | --- | --- |
 | 添加一个或多个插件 | `install` | 插件 → 插件详情 → 安装 → 平台/位置 → 操作汇总 → 结果。多选添加共用新安装的位置和平台；依赖会自动安排合适位置，并在操作汇总中显示。 |
+| 插件托管命令与包变化 | 插件写入、`config … --apply` | 现有设置编辑支持 custom-managed 分支；安装/配置 Review 展示 producer、固定参数、共享影响、权限与沙箱例外，Progress/Result 同时投影 commandResults 和平台结果。平台卸载报告保留的共享包及显式移除入口。 |
 | 同步、重装、移除和普通清理 | `sync`、`reinstall`、`uninstall`、`cleanup` | 插件 → 插件详情的常用动作，或更多操作中的平台维护 → 目标选择与确认。来源不可用时仍保留普通离线清理。 |
 | 按项目清单准备 | `sync --all --scope project` | 首页 → 项目插件 → 同步全部可处理声明（N）。搜索、分区和状态筛选不缩小同步范围，N 为可处理声明根数；操作汇总保存精确 project 目标，允许准备尚未安装的根，不新增个人启用意图，被共用的内容与版本影响仍需确认。 |
 | 查看项目完整清单 | 项目 Intent 与 `status`，精确项目目标的 `sync` | 首页 → 项目插件（`projectStatus`）。默认显示全部声明根，包括就绪项、异常项和合法个人共用目标；额外安装只含当前项目实际安装的非声明根。多平台合为一张根卡。同步只为已确认可执行目标准备 Review，不重复安装共用目标。重新检查局部只读刷新，保留查询、焦点和草稿。 |
@@ -55,6 +56,7 @@
 | 插件 init、add-skill、validate、test、build、requirements | 不建设单插件作者工作区；开发技能调用 CLI。 |
 | Catalog Store | TUI 提供只读概览、保留规则、精确预览和显式确认清理。实际删除复用 CLI 的安全清理服务、AW_HOME 写锁和逐项复核。 |
 | Catalog Workspace、开发来源、Catalog 发布、单插件作者流程和 CLI npm 发布 | 这些是作者和发布流程，继续由开发技能和 CLI 承担；TUI 不提供这些入口。 |
+| `command install/update/remove/list/show/run` 与 `command package sync/remove` | 工具目录托管、透明进程调用和独立包维护通过 CLI 提供；不增加命令管理页面。插件安装和配置 apply 中的命令变化继续由现有 Review、Progress、Result 展示。 |
 | 自描述和任意文件维护 | TUI 不复制机器输出或任意文件操作接口。 |
 
 ## 实现验证索引

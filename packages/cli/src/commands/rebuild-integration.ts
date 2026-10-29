@@ -2,8 +2,17 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import type { RuntimeConfigSnapshot } from '@lesliechan721/aw-plugin-core';
+import { catalogFileMode, type RuntimeConfigSnapshot } from '@lesliechan721/aw-plugin-core';
+import { COMMAND_PRODUCER_RECORD_FILE, getManagedCommandArtifactTargets, getCommandPackageId, type ManagedCommandProducerRef } from '@lesliechan721/aw-plugin-core/manifest';
+import os from 'node:os';
+import {
+  commandSetsForProducer, createManagedCommandReferenceResolver, discoverRetainedManagedCommandPackages, retainedManagedCommandPackageResult, managedCommandProducerIdentity,
+  prepareManagedCommandPackage, resolveSkillManagedCommandReferences, type ManagedCommandCandidate,
+} from '../utils/managed-command-materialization.js';
+import { managedCommandDiagnostic, ManagedCommandError, publishManagedCommandBindings, revokeManagedCommandBindings, syncManagedCommandPackage, readInstalledCommandProducer, listManagedCommands } from '../utils/managed-command-store.js';
 import { injectInstalledRuntimeConfig, carryRuntimeConfigNativeReceipt } from '../utils/runtime-config.js';
+import { resolveCodexSkillsRelativeRoot } from '../utils/codex-skills-root.js';
+import { resolveClaudeSkillsRelativeRoot } from '../utils/claude-skills-root.js';
 
 import { generateAgentArtifacts } from '../generators/agents.js';
 import {
@@ -20,6 +29,7 @@ import type {
   CatalogResolution,
   CodexSharedHookGroup,
   GeneratedArtifact,
+  CommandProducerResult,
   MarketplaceManifest,
   PlatformName,
   PluginMeta,
@@ -129,6 +139,8 @@ import {
   projectMarketplaceManifestForPlatform,
   readStrictNamespacedMarketplaceRoot,
   replayNamespacedMarketplacePluginProjections,
+  refreshPreservedPlatformReceipt,
+  type PreservedPlatformReceipt,
   replayNamespacedCodexSkillOverlays,
 } from '../utils/local-marketplace.js';
 import { commitMarketplaceGenerationBackup } from '../utils/orphan-marketplace-cleanup.js';
@@ -214,6 +226,148 @@ interface PlannedWrite {
   additionalActions?: OperationAction[];
 }
 
+const commandPackagePreparationCaches = new WeakMap<RebuildExecutionContext, Map<string, Promise<{ action: OperationAction; candidate: ManagedCommandCandidate }>>>();
+const staticCommandPreparationCaches = new WeakMap<RebuildExecutionContext, Map<string, Promise<ValidatedArtifactPlanArtifact[]>>>();
+
+async function prepareStaticCommandArtifacts(options: {
+  plugin: PluginMeta; platform: PlatformName; cwd: string; env: NodeJS.ProcessEnv; context: RebuildExecutionContext;
+}): Promise<ValidatedArtifactPlanArtifact[]> {
+  const targets = getManagedCommandArtifactTargets(options.plugin.manifest).filter((target) => target.producer.kind === 'static-skill' && target.platform === options.platform);
+  if (!targets.length) return [];
+  const config = await resolveArtifactRenderConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, scope: 'user', cwd: options.cwd, env: options.env });
+  const key = JSON.stringify([options.plugin.rootDir, options.platform, config]);
+  let cache = staticCommandPreparationCaches.get(options.context);
+  if (!cache) { cache = new Map(); staticCommandPreparationCaches.set(options.context, cache); }
+  let prepared = cache.get(key);
+  if (!prepared) {
+    prepared = (async () => {
+      const rendered = await runArtifactRenderer({ plugin: options.plugin, event: 'install', platform: options.platform, scope: 'user', configScope: 'user', cwd: options.cwd, commandEnv: options.env, requestedArtifactIds: targets.map((target) => target.id) });
+      return validateArtifactPlan({ manifest: options.plugin.manifest, plan: rendered.plan, platform: options.platform, scope: 'user', requestedArtifactIds: rendered.context.requestedArtifactIds, renderConfig: rendered.context.config, rendererDigest: rendered.target.rendererDigest, manifestDigest: rendered.target.manifestDigest }).artifacts;
+    })();
+    cache.set(key, prepared);
+  }
+  return prepared;
+}
+
+/** Normal write preparation compares its real candidate; read-only inspection never calls this. */
+export async function hasPreparedStaticNativeCommandDrift(options: {
+  plugin: PluginMeta; cwd: string; env: NodeJS.ProcessEnv; context: RebuildExecutionContext; marketplaceRoot: string;
+}): Promise<boolean> {
+  const artifacts = await prepareStaticCommandArtifacts({ ...options, platform: 'codex' });
+  if (!artifacts.length) return false;
+  const pluginRoot = path.join(options.marketplaceRoot, 'plugins', options.plugin.manifest.name);
+  const skillsRoot = path.join(pluginRoot, await resolveCodexSkillsRelativeRoot({ ...options.plugin, rootDir: pluginRoot }));
+  for (const set of options.plugin.manifest.managedCommands?.sets ?? []) {
+    if (set.producer.kind !== 'static-skill' || set.producer.platform !== 'codex' || set.mode !== 'dynamic') continue;
+    const producer = await managedCommandProducerIdentity({ ...options, producer: set.producer, platform: 'codex', scope: 'user' });
+    const expected = commandSetsForProducer({ plugin: options.plugin, producer: set.producer, artifacts });
+    const previous = await readInstalledCommandProducer(path.join(skillsRoot, set.producer.skillKey)).catch(() => null);
+    if (!previous || JSON.stringify(previous.producer) !== JSON.stringify(producer) || JSON.stringify(previous.sets) !== JSON.stringify(expected)) return true;
+  }
+  return false;
+}
+
+async function commandPackageActions(options: {
+  plugin: PluginMeta; platform: PlatformName; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
+  context: RebuildExecutionContext;
+}): Promise<{ actions: OperationAction[]; candidates: ManagedCommandCandidate[] }> {
+  const actions: OperationAction[] = [];
+  const candidates: ManagedCommandCandidate[] = [];
+  for (const declaration of options.plugin.manifest.managedCommands?.packages ?? []) {
+    if (!declaration.platforms.includes(options.platform)) continue;
+    const producer = await managedCommandProducerIdentity({ ...options, scope: declaration.scope, producer: { kind: 'package', packageKey: declaration.key } });
+    let cache = commandPackagePreparationCaches.get(options.context);
+    if (!cache) { cache = new Map(); commandPackagePreparationCaches.set(options.context, cache); }
+    let preparation = cache.get(getCommandPackageId(producer));
+    if (!preparation) {
+      preparation = (async () => {
+        const prepared = await prepareManagedCommandPackage({ ...options, packageKey: declaration.key, scope: declaration.scope });
+        try {
+      const files: Array<import('./operation-plan.js').OperationArtifactFile & { mode: number }> = [];
+      async function visit(directory: string, prefix: string): Promise<void> {
+        for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+          const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+          const absolute = path.join(directory, entry.name);
+          if (entry.isDirectory()) await visit(absolute, relativePath);
+          else {
+            const content = await fs.readFile(absolute);
+            files.push({ relativePath, contentBase64: content.toString('base64'), contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`, mode: (await fs.stat(absolute)).mode & 0o777 });
+          }
+        }
+      }
+      await visit(prepared.resourceRoot, '');
+      files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+          return { action: { kind: 'syncManagedCommandPackage' as const, pluginId: pluginActionId(options.plugin), scope: declaration.scope, producer: prepared.producer, sets: prepared.sets, files, contentDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}` }, candidate: { producer: prepared.producer, sets: prepared.sets } };
+        } finally { await prepared.cleanup(); }
+      })();
+      cache.set(getCommandPackageId(producer), preparation);
+    }
+    const prepared = await preparation;
+    actions.push(prepared.action);
+    candidates.push(prepared.candidate);
+  }
+  return { actions, candidates };
+}
+
+async function prepareSkillCommandCandidate(options: {
+  plugin: PluginMeta; producer: ManagedCommandProducerRef; platform: PlatformName; scope: Scope; cwd: string;
+  tree: DynamicSkillTree; artifacts: readonly ValidatedArtifactPlanArtifact[];
+  sets?: import('../utils/managed-command-store.js').InstalledCommandSet[];
+}): Promise<ManagedCommandCandidate | undefined> {
+  const sets = options.sets ?? commandSetsForProducer(options);
+  if (sets.length === 0) return undefined;
+  const producer = await managedCommandProducerIdentity(options);
+  if (Object.keys(options.tree.files).length === 0) return { producer, sets: sets.map((set) => ({ ...set, state: 'disabled', entries: [] })) };
+  if (Object.hasOwn(options.tree.files, COMMAND_PRODUCER_RECORD_FILE)) throw new Error('commandProducerReservedResource: plugin cannot provide the command producer record.');
+  for (const set of sets) for (const entry of set.entries) {
+    if (!options.tree.files[entry.entry]) throw new Error(`commandResourceInvalid: command entry ${entry.entry} is missing from the final Skill.`);
+    if (process.platform !== 'win32' && entry.runner === 'executable' && options.tree.fileModes?.[entry.entry] !== 0o755) throw new Error(`commandRunnerUnsupported: command entry ${entry.entry} has no executable source file.`);
+  }
+  options.tree.files[COMMAND_PRODUCER_RECORD_FILE] = Buffer.from(`${JSON.stringify({ schemaVersion: 1, producer, sets }, null, 2)}\n`);
+  return { producer, sets };
+}
+
+async function prepareStaticNativeSkillActions(options: {
+  plugin: PluginMeta; platform: PlatformName; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
+  artifacts: readonly ValidatedArtifactPlanArtifact[]; commandCandidates: readonly ManagedCommandCandidate[];
+}): Promise<{ actions: OperationAction[]; candidates: ManagedCommandCandidate[] }> {
+  if (!options.plugin.manifest.skills) return { actions: [], candidates: [] };
+  if (!options.plugin.manifest.requires?.aw.capabilities?.includes('aw.managed-commands.v1')) return { actions: [], candidates: [] };
+  const scope = 'user';
+  const root = path.join(options.plugin.rootDir, options.platform, options.plugin.manifest.skills.replace(/^\.\//u, ''));
+  const trees: DynamicSkillTree[] = [];
+  const candidates: ManagedCommandCandidate[] = [];
+  let artifacts = [...options.artifacts];
+  const missingTargets = getManagedCommandArtifactTargets(options.plugin.manifest).filter((target) => {
+    const producer = target.producer;
+    return producer.kind === 'static-skill' && target.platform === options.platform && !artifacts.some((artifact) => artifact.id === target.id) && !options.commandCandidates.some((candidate) => candidate.producer.kind === 'static-skill' && candidate.producer.key === producer.skillKey && candidate.producer.platform === options.platform && candidate.producer.scope === scope);
+  });
+  if (missingTargets.length) {
+    const rendered = await runArtifactRenderer({ plugin: options.plugin, event: 'install', platform: options.platform, scope, configScope: scope, cwd: options.cwd, commandEnv: options.env, requestedArtifactIds: missingTargets.map((target) => target.id) });
+    artifacts.push(...validateArtifactPlan({ manifest: options.plugin.manifest, plan: rendered.plan, platform: options.platform, scope, requestedArtifactIds: rendered.context.requestedArtifactIds, renderConfig: rendered.context.config, rendererDigest: rendered.target.rendererDigest, manifestDigest: rendered.target.manifestDigest }).artifacts);
+  }
+  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const tree = await readDynamicSkillTree(path.join(root, entry.name), `${options.platform}.skill`);
+    if (!tree) continue;
+    const previous = options.commandCandidates.find((candidate) => candidate.producer.kind === 'static-skill' && candidate.producer.key === tree.skillKey && candidate.producer.platform === options.platform && candidate.producer.scope === scope);
+    const candidate = await prepareSkillCommandCandidate({ ...options, scope, producer: { kind: 'static-skill', platform: options.platform, skillKey: tree.skillKey }, tree, artifacts, ...(previous ? { sets: previous.sets } : {}) });
+    if (candidate) candidates.push(candidate);
+    trees.push(tree);
+  }
+  const resolver = await createManagedCommandReferenceResolver({ ...options, scope, candidates: [...options.commandCandidates, ...candidates] });
+  const actions: OperationAction[] = [];
+  for (const tree of trees) {
+    const hasCommandReferences = Object.entries(tree.files).some(([relative, content]) => relative.endsWith('.md') && content.includes('{{aw.command:'));
+    const hasCommandProducer = Object.hasOwn(tree.files, COMMAND_PRODUCER_RECORD_FILE);
+    if (!hasCommandReferences && !hasCommandProducer) continue;
+    resolveSkillManagedCommandReferences(tree, resolver);
+    const files = Object.entries(tree.files).map(([relativePath, content]) => ({ relativePath, contentBase64: content.toString('base64'), contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`, ...(tree.fileModes?.[relativePath] ? { mode: tree.fileModes[relativePath] } : {}) })).sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+    actions.push({ kind: 'materializeNativeSkill', pluginId: pluginActionId(options.plugin), platform: options.platform, scope, skillKey: tree.skillKey, files, contentDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}` });
+  }
+  return { actions, candidates };
+}
+
 export interface RebuildIntegration {
   driver: RebuildTargetDriver;
   setNativeMarketplaceEligibleTargets(targets: readonly DesiredTarget[]): void;
@@ -271,6 +425,9 @@ export interface RebuildExecutionContext {
   codexObservationSession?: CodexNativeObservationSession;
   codexObservationScopeByMarketplace?: ReadonlyMap<string, 'user' | 'both'>;
   preApplyExecutionCache?: Map<string, Promise<void>>;
+  managedCommandProducerCache?: Map<string, Promise<CommandProducerResult>>;
+  commandResults?: CommandProducerResult[];
+  managedCommandCandidates?: Map<string, ManagedCommandCandidate[]>;
 }
 
 function codexObservationScope(
@@ -645,7 +802,7 @@ function pathComponent(options: {
   path: string;
   allowedRoot: string;
   identity: OwnerIdentity;
-  pristineTree?: Array<{ relativePath: string; contentDigest: string }>;
+  pristineTree?: Array<{ relativePath: string; contentDigest: string; mode?: number }>;
 }): OwnedComponent {
   if (options.kind !== 'skill-directory') return options;
   return {
@@ -657,12 +814,14 @@ function pathComponent(options: {
 function pristineTreeDescriptor(tree: DynamicSkillTree): Array<{
   relativePath: string;
   contentDigest: string;
+  mode?: number;
 }> {
   return Object.entries(tree.files)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([relativePath, content]) => ({
       relativePath,
       contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
+      ...(tree.fileModes?.[relativePath] ? { mode: tree.fileModes[relativePath] } : {}),
     }));
 }
 
@@ -685,6 +844,7 @@ function skillWriteAction(options: {
       relativePath,
       contentBase64: content.toString('base64'),
       contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
+      ...(options.tree.fileModes?.[relativePath] ? { mode: options.tree.fileModes[relativePath] } : {}),
     })),
     {
       relativePath: '.agent-workflows-owner.json',
@@ -788,6 +948,9 @@ function mergePermissionStates(values: Array<Partial<ClaudePermissions> | undefi
     allow: [...new Set(values.flatMap((value) => value?.allow ?? []))],
     ask: [...new Set(values.flatMap((value) => value?.ask ?? []))],
     deny: [...new Set(values.flatMap((value) => value?.deny ?? []))],
+    ...(values.some((value) => value?.excludedCommands !== undefined) ? {
+      excludedCommands: [...new Set(values.flatMap((value) => value?.excludedCommands ?? []))],
+    } : {}),
   };
 }
 
@@ -804,6 +967,9 @@ function subtractPermissionState(
     allow: (value?.allow ?? []).filter((entry) => !remove.allow.has(entry)),
     ask: (value?.ask ?? []).filter((entry) => !remove.ask.has(entry)),
     deny: (value?.deny ?? []).filter((entry) => !remove.deny.has(entry)),
+    ...(value?.excludedCommands ? {
+      excludedCommands: value.excludedCommands.filter((entry) => !generated.excludedCommands?.includes(entry)),
+    } : {}),
   };
 }
 
@@ -820,6 +986,9 @@ function intersectPermissionState(
     allow: (value?.allow ?? []).filter((entry) => keep.allow.has(entry)),
     ask: (value?.ask ?? []).filter((entry) => keep.ask.has(entry)),
     deny: (value?.deny ?? []).filter((entry) => keep.deny.has(entry)),
+    ...(value?.excludedCommands ? {
+      excludedCommands: value.excludedCommands.filter((entry) => generated.excludedCommands?.includes(entry)),
+    } : {}),
   };
 }
 
@@ -827,7 +996,10 @@ function rebuildClaudePermissions(settings: ClaudeSettings, ownerKey: string, de
   const previousGenerated = mergePermissionStates(
     Object.values(settings.awGenerated?.permissions ?? {}),
   );
-  const currentPermissions = mergePermissionStates([settings.permissions]);
+  const currentPermissions = mergePermissionStates([{
+    ...settings.permissions,
+    ...(settings.sandbox?.excludedCommands ? { excludedCommands: settings.sandbox.excludedCommands } : {}),
+  }]);
   const manual = mergePermissionStates([
     subtractPermissionState(currentPermissions, previousGenerated),
     intersectPermissionState(
@@ -842,15 +1014,21 @@ function rebuildClaudePermissions(settings: ClaudeSettings, ownerKey: string, de
   if (Object.keys(settings.awGenerated.permissions).length === 0) {
     delete settings.awGenerated.permissions;
   }
-  if (manual.allow.length || manual.ask.length || manual.deny.length) {
+  if (manual.allow.length || manual.ask.length || manual.deny.length || manual.excludedCommands?.length) {
     settings.awGenerated.manualPermissions = manual;
   } else {
     delete settings.awGenerated.manualPermissions;
   }
-  settings.permissions = mergePermissionStates([
+  const combined = mergePermissionStates([
     manual,
     ...Object.values(settings.awGenerated.permissions ?? {}),
   ]);
+  settings.permissions = {
+    ...settings.permissions, allow: combined.allow, ask: combined.ask, deny: combined.deny,
+  };
+  if (combined.excludedCommands !== undefined) {
+    settings.sandbox = { ...settings.sandbox, excludedCommands: combined.excludedCommands };
+  }
   if (
     settings.awGenerated.permissions === undefined
     && settings.awGenerated.manualPermissions === undefined
@@ -1431,20 +1609,24 @@ async function resolveDynamicArtifacts(options: {
   previousArtifacts: readonly GeneratedArtifact[];
   requestedArtifactIds?: readonly string[];
   scriptTimeoutMs?: number;
+  context?: RebuildExecutionContext;
 }): Promise<{
   artifacts: ValidatedArtifactPlanArtifact[];
   sourceDirs(artifact: ValidatedArtifactPlanArtifact): string[];
   sensitiveValues: string[];
   runtimeConfigSnapshots?: Record<string, RuntimeConfigSnapshot>;
 }> {
-  const requestBatches = options.requestedArtifactIds
+  const preparedArtifacts = options.platform === 'codex' && options.context
+    ? await prepareStaticCommandArtifacts({ ...options, context: options.context }) : [];
+  const preparedIds = new Set(preparedArtifacts.map((artifact) => artifact.id));
+  const requestBatches = (options.requestedArtifactIds
     ? [options.requestedArtifactIds]
     : resolveAwDeliveredArtifactRequestBatches({
         manifest: options.plugin.manifest,
         platform: options.platform,
         scope: options.scope,
-      });
-  if (requestBatches.length === 0) {
+      })).map((batch) => batch.filter((id) => !preparedIds.has(id))).filter((batch) => batch.length > 0);
+  if (requestBatches.length === 0 && preparedArtifacts.length === 0) {
     return { artifacts: [], sourceDirs: () => [], sensitiveValues: [] };
   }
   const previousArtifacts = [...options.previousArtifacts];
@@ -1472,7 +1654,7 @@ async function resolveDynamicArtifacts(options: {
     cwd: options.cwd,
     env: options.env,
   });
-  const artifacts: ValidatedArtifactPlanArtifact[] = [];
+  const artifacts: ValidatedArtifactPlanArtifact[] = [...preparedArtifacts];
   const sourceDirsByArtifact = new Map<string, string[]>();
   for (const render of renders) {
     artifacts.push(...validateArtifactPlan({
@@ -1535,7 +1717,7 @@ function dynamicSkillWrite(options: {
       id: options.artifact.id,
       target: options.artifact.target,
       state: options.artifact.state,
-      ...(options.artifact.disabledReason
+      ...('disabledReason' in options.artifact && options.artifact.disabledReason
         ? { disabledReason: options.artifact.disabledReason }
         : {}),
       refreshKeys: [...options.artifact.refreshKeys],
@@ -1560,31 +1742,6 @@ function dynamicSkillWrite(options: {
   };
 }
 
-async function resolveCodexSkillsRelativeRoot(
-  plugin: PluginMeta,
-  marketplaceFallbackRoot?: string,
-): Promise<string> {
-  const manifestPaths = [
-    path.join(plugin.rootDir, '.codex-plugin', 'plugin.json'),
-    ...(marketplaceFallbackRoot
-      ? [path.join(marketplaceFallbackRoot, '.codex-plugin', 'plugin.json')]
-      : []),
-  ];
-  let manifest: Record<string, unknown> | null = null;
-  for (const manifestPath of manifestPaths) {
-    manifest = await fs.readJson(manifestPath).catch(() => null) as Record<string, unknown> | null;
-    if (manifest) break;
-  }
-  const raw = typeof manifest?.skills === 'string' && manifest.skills.trim() !== ''
-    ? manifest.skills
-    : plugin.manifest.skills ?? './codex/skills';
-  const normalized = path.posix.normalize(raw.replace(/^\.\//u, ''));
-  if (normalized === '..' || normalized.startsWith('../') || path.isAbsolute(normalized)) {
-    throw new Error(`Codex plugin skills root 越界：${raw}`);
-  }
-  return normalized;
-}
-
 async function buildClaudeWrites(options: {
   plugin: PluginMeta;
   scope: Scope;
@@ -1593,6 +1750,8 @@ async function buildClaudeWrites(options: {
   event: 'install';
   historicalArtifacts: readonly GeneratedArtifact[];
   scriptTimeoutMs?: number;
+  commandCandidates?: readonly ManagedCommandCandidate[];
+  nativeSkillActions?: OperationAction[];
 }): Promise<PlannedWrite[]> {
   const paths = resolveClaudePaths(options.cwd, options.scope, options.env);
   const writes: PlannedWrite[] = [];
@@ -1601,8 +1760,9 @@ async function buildClaudeWrites(options: {
     platform: 'claude',
     previousArtifacts: options.historicalArtifacts,
   });
+  const commandCandidates = [...(options.commandCandidates ?? [])];
+  const preparedSkills: Array<{ artifact: ValidatedArtifactPlanArtifact & { target: 'claude.skill' }; tree: DynamicSkillTree }> = [];
   for (const artifact of dynamic.artifacts.filter((entry) => entry.target === 'claude.skill')) {
-    const skillKey = artifact.skillKey!;
     const tree = await createDynamicSkillExpectedTree({
       artifact,
       sourceDirs: dynamic.sourceDirs(artifact),
@@ -1611,6 +1771,17 @@ async function buildClaudeWrites(options: {
       sourceRequirementsReceiptPolicy: 'allow',
     });
     await injectInstalledRuntimeConfig(tree, dynamic.runtimeConfigSnapshots?.[artifact.id]);
+    const candidate = await prepareSkillCommandCandidate({ ...options, producer: { kind: 'artifact', artifactId: artifact.id }, platform: 'claude', tree, artifacts: dynamic.artifacts });
+    if (candidate) commandCandidates.push(candidate);
+    preparedSkills.push({ artifact, tree });
+  }
+  const staticSkills = await prepareStaticNativeSkillActions({ ...options, platform: 'claude', artifacts: dynamic.artifacts, commandCandidates });
+  commandCandidates.push(...staticSkills.candidates);
+  options.nativeSkillActions?.push(...staticSkills.actions);
+  const commandResolver = await createManagedCommandReferenceResolver({ ...options, platform: 'claude', candidates: commandCandidates });
+  for (const { artifact, tree } of preparedSkills) {
+    const skillKey = artifact.skillKey!;
+    resolveSkillManagedCommandReferences(tree, commandResolver);
     assertNoSensitiveConfigInFiles(
       withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
       dynamic.sensitiveValues,
@@ -1650,7 +1821,7 @@ async function buildClaudeWrites(options: {
       scope: options.scope,
       settingsPath: paths.settingsPath,
     });
-    const desiredPermissions = mergeClaudePermissions(permissions);
+    const desiredPermissions = mergeClaudePermissions(permissions, commandResolver);
     const mutation = { kind: 'claude-permissions' as const, permissions: desiredPermissions };
     writes.push({
       artifact: { path: paths.settingsPath, kind: 'permission', platform: 'claude' },
@@ -1681,6 +1852,9 @@ async function buildCodexWrites(options: {
   marketplaceRoot?: string;
   marketplaceName?: string;
   userActivationDesired?: ReadonlySet<string>;
+  commandCandidates?: readonly ManagedCommandCandidate[];
+  nativeSkillActions?: OperationAction[];
+  context: RebuildExecutionContext;
 }): Promise<PlannedWrite[]> {
   const paths = resolveCodexPaths(options.cwd, options.scope, options.env);
   const writes: PlannedWrite[] = [];
@@ -1694,6 +1868,8 @@ async function buildCodexWrites(options: {
   );
   const dynamicRoles = dynamic.artifacts.filter((entry) => entry.target === 'codex.agentRole');
   const dynamicSkills = dynamic.artifacts.filter((entry) => entry.target === 'codex.skill');
+  const commandCandidates = [...(options.commandCandidates ?? [])];
+  const preparedSkills: Array<{ artifact: ValidatedArtifactPlanArtifact & { target: 'codex.skill' }; tree: DynamicSkillTree }> = [];
   const repoRoot = await resolveRepoRoot(options.cwd);
   const skillRoot = options.scope === 'user'
     ? path.join(getCodexHome(options.env), 'skills')
@@ -1707,6 +1883,16 @@ async function buildCodexWrites(options: {
       sourceRequirementsReceiptPolicy: 'allow',
     });
     await injectInstalledRuntimeConfig(tree, dynamic.runtimeConfigSnapshots?.[artifact.id]);
+    const candidate = await prepareSkillCommandCandidate({ ...options, producer: { kind: 'artifact', artifactId: artifact.id }, platform: 'codex', tree, artifacts: dynamic.artifacts });
+    if (candidate) commandCandidates.push(candidate);
+    preparedSkills.push({ artifact, tree });
+  }
+  const staticSkills = await prepareStaticNativeSkillActions({ ...options, platform: 'codex', artifacts: dynamic.artifacts, commandCandidates });
+  commandCandidates.push(...staticSkills.candidates);
+  options.nativeSkillActions?.push(...staticSkills.actions);
+  const commandResolver = await createManagedCommandReferenceResolver({ ...options, platform: 'codex', candidates: commandCandidates });
+  for (const { artifact, tree } of preparedSkills) {
+    resolveSkillManagedCommandReferences(tree, commandResolver);
     assertNoSensitiveConfigInFiles(
       withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
       dynamic.sensitiveValues,
@@ -1893,6 +2079,7 @@ async function buildCodexWrites(options: {
   for (const artifact of generateCodexPermissionArtifacts(
     options.plugin.manifest.name,
     resolvePlatformEntries(options.plugin.manifest.extensions?.permissions, 'codex'),
+    commandResolver,
   )) {
     writes.push(generatedTextWrite({
       ...options,
@@ -2146,18 +2333,16 @@ async function buildInspectionWrites(options: {
       });
     }
   }
-  for (const artifact of generateCodexPermissionArtifacts(
-    options.plugin.manifest.name,
-    resolvePlatformEntries(options.plugin.manifest.extensions?.permissions, 'codex'),
-  )) {
-    writes.push(generatedTextWrite({
-      ...options,
-      configDir: paths.configDir,
-      relativePath: artifact.relativePath,
-      artifactKey: artifact.artifactKey!,
-      content: artifact.content,
-      kind: 'permission',
-    }));
+  for (const permission of resolvePlatformEntries(options.plugin.manifest.extensions?.permissions, 'codex')) {
+    const artifactKey = buildGeneratedName(options.plugin.manifest.name, permission.name);
+    const artifactPath = path.join(paths.configDir, 'rules', `${artifactKey}.rules`);
+    writes.push({
+      artifact: { path: artifactPath, kind: 'permission', platform: 'codex', artifactKey },
+      component: pathComponent({
+        kind: 'owned-text-file', path: artifactPath, allowedRoot: paths.configDir,
+        identity: ownerIdentity(options.plugin.manifest.name, artifactKey, 'codex', options.scope),
+      }),
+    });
   }
   for (const artifact of generateAgentArtifacts(
     options.plugin.manifest.name,
@@ -3515,6 +3700,7 @@ interface StagedCodexNativeRender {
 }
 
 interface PreparedCodexNativeRender {
+  commandCandidates: ManagedCommandCandidate[];
   logicalPluginId: string;
   sourceIdentity: string;
   rendererDigest: string;
@@ -3667,6 +3853,8 @@ async function prepareCodexNativeRender(options: {
   env: NodeJS.ProcessEnv;
   requestedArtifactIds?: readonly string[];
   scriptTimeoutMs?: number;
+  commandCandidates?: readonly ManagedCommandCandidate[];
+  prepareCommandReferences?: (trees: DynamicSkillTree[], candidates: ManagedCommandCandidate[]) => Promise<ManagedCommandCandidate[]>;
 }): Promise<PreparedCodexNativeRender | null> {
   const requested = options.requestedArtifactIds
     ? new Set(options.requestedArtifactIds)
@@ -3674,9 +3862,19 @@ async function prepareCodexNativeRender(options: {
   const targets = codexNativeRenderTargets(options.plugin)
     .filter((target) => !requested || requested.has(target.id));
   if (targets.length === 0) return null;
+  let commandCandidates = [...(options.commandCandidates ?? [])];
+  if (!options.commandCandidates) {
+    for (const declaration of options.plugin.manifest.managedCommands?.packages ?? []) {
+      if (declaration.scope !== 'user' || !declaration.platforms.includes('codex')) continue;
+      const prepared = await prepareManagedCommandPackage({ ...options, packageKey: declaration.key, scope: 'user', cwd: options.plugin.rootDir });
+      commandCandidates.push({ producer: prepared.producer, sets: prepared.sets });
+      await prepared.cleanup();
+    }
+  }
   const byScope = new Map<Scope, typeof targets>();
   for (const target of targets) {
-    const requestScope: Scope = target.scopes.includes('user') ? 'user' : 'project';
+    const ownsCommandSet = options.plugin.manifest.managedCommands?.sets.some((set) => set.producer.kind === 'artifact' && set.producer.artifactId === target.id);
+    const requestScope: Scope = ownsCommandSet || target.scopes.includes('user') ? 'user' : 'project';
     const group = byScope.get(requestScope) ?? [];
     group.push(target);
     byScope.set(requestScope, group);
@@ -3700,7 +3898,10 @@ async function prepareCodexNativeRender(options: {
       cwd: options.plugin.rootDir,
       commandEnv: options.env,
       previousArtifacts: [],
-      requestedArtifactIds: group.map((target) => target.id),
+      requestedArtifactIds: [...group.map((target) => target.id), ...getManagedCommandArtifactTargets(options.plugin.manifest).filter((target) => {
+        const producer = target.producer;
+        return producer.kind === 'artifact' && group.some((skill) => skill.id === producer.artifactId);
+      }).map((target) => target.id)],
       scriptTimeoutMs: options.scriptTimeoutMs,
     });
     rendererDigest = rendered.target.rendererDigest;
@@ -3715,6 +3916,7 @@ async function prepareCodexNativeRender(options: {
       manifestDigest: rendered.target.manifestDigest,
     });
     for (const artifact of validated.artifacts) {
+      if (artifact.target === 'aw.command-set') continue;
       if (artifact.target !== 'codex.skill') {
         throw new Error(`Codex native renderer returned non-Skill artifact "${artifact.id}".`);
       }
@@ -3728,6 +3930,8 @@ async function prepareCodexNativeRender(options: {
         sourceRequirementsReceiptPolicy: 'allow',
       });
       await injectInstalledRuntimeConfig(tree, rendered.runtimeConfigSnapshots[artifact.id], { nativeReceiptPath });
+      const candidate = await prepareSkillCommandCandidate({ plugin: options.plugin, producer: { kind: 'artifact', artifactId: artifact.id }, platform: 'codex', scope: 'user', cwd: options.plugin.rootDir, tree, artifacts: validated.artifacts });
+      if (candidate) commandCandidates.push(candidate);
       assertNoSensitiveConfigInFiles(
         withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
         collectSensitivePluginConfigValues(
@@ -3754,6 +3958,17 @@ async function prepareCodexNativeRender(options: {
   if (!rendererDigest || renderedArtifacts.length !== targets.length) {
     throw new Error('Codex native renderer did not produce the complete declared target set.');
   }
+  if (options.prepareCommandReferences) commandCandidates = await options.prepareCommandReferences(renderedArtifacts.map((entry) => entry.tree), commandCandidates);
+  else {
+    const staticSkills = await prepareStaticNativeSkillActions({ plugin: options.plugin, platform: 'codex', scope: 'user', cwd: options.plugin.rootDir, env: options.env, artifacts: [], commandCandidates });
+    commandCandidates.push(...staticSkills.candidates);
+  }
+  const commandResolver = await createManagedCommandReferenceResolver({ plugin: options.plugin, platform: 'codex', scope: 'user', cwd: options.plugin.rootDir, env: options.env, candidates: commandCandidates });
+  for (const rendered of renderedArtifacts) {
+    resolveSkillManagedCommandReferences(rendered.tree, commandResolver);
+    const receiptTarget = receiptTargets.find((target) => target.id === rendered.artifact.id)!;
+    receiptTarget.artifactDigest = createCodexSkillStagingTreeContentDigest(rendered.tree);
+  }
 
   const logicalPluginId = options.plugin.pluginId
     ?? (options.plugin.sourceId ? `${options.plugin.sourceId}/${options.plugin.manifest.name}` : undefined);
@@ -3768,6 +3983,7 @@ async function prepareCodexNativeRender(options: {
     targets: receiptTargets,
   });
   return {
+    commandCandidates,
     logicalPluginId,
     sourceIdentity: options.plugin.sourceIdentity,
     rendererDigest,
@@ -3792,6 +4008,7 @@ function prepareCodexNativeRenderCached(options: {
       plugin: options.plugin,
       env: options.context.env,
       scriptTimeoutMs: options.scriptTimeoutMs,
+      commandCandidates: options.context.managedCommandCandidates?.get(pluginActionId(options.plugin)),
     });
     cache.set(options.plugin, preparation);
   }
@@ -3887,8 +4104,12 @@ export async function materializeReviewNativeSkills(options: {
   if (options.skills.length === 0) {
     throw new Error('Review materialization requires at least one selected Skill.');
   }
+  const { prepareIsolatedSkillCommandReferences } = await import('../review/skill-materialization.js');
   const skillsRoot = path.join(options.outputRoot, 'skills');
   await fs.ensureDir(skillsRoot);
+  let commandCandidates: ManagedCommandCandidate[] = [];
+  const staticTrees: DynamicSkillTree[] = [];
+  const directTrees: DynamicSkillTree[] = [];
 
   const declarations = options.plugin.manifest.artifacts?.targets ?? [];
   const dynamicSelections = options.skills.filter((skill) => skill.targetId !== null);
@@ -3921,6 +4142,9 @@ export async function materializeReviewNativeSkills(options: {
       errorOnExist: true,
       dereference: false,
     });
+    staticTrees.push(await validateSkillDirectory(destination, `${options.platform}.skill`, {
+      requirementsReceiptPolicy: 'allow',
+    }));
   }
 
   const directTargetIds = requiredDeclarations
@@ -3935,10 +4159,17 @@ export async function materializeReviewNativeSkills(options: {
       env: options.env,
       event: 'install',
       previousArtifacts: [],
-      requestedArtifactIds: directTargetIds,
+      requestedArtifactIds: [
+        ...directTargetIds,
+        ...getManagedCommandArtifactTargets(options.plugin.manifest)
+          .filter((target) => target.producer.kind === 'artifact'
+            && directTargetIds.includes(target.producer.artifactId))
+          .map((target) => target.id),
+      ],
       scriptTimeoutMs: options.scriptTimeoutMs,
     });
     for (const artifact of dynamic.artifacts) {
+      if (artifact.target === 'aw.command-set') continue;
       if (artifact.state !== 'present') {
         throw new Error(`Selected Skill target "${artifact.id}" did not produce a present Skill.`);
       }
@@ -3971,9 +4202,25 @@ export async function materializeReviewNativeSkills(options: {
         dynamic.sensitiveValues,
         'artifactRendererSensitiveConfigExposed: Final dynamic Skill contains sensitive config.',
       );
-      await writeDynamicSkillTree(path.join(skillsRoot, tree.skillKey), tree);
+      const candidate = await prepareSkillCommandCandidate({
+        ...options, producer: { kind: 'artifact', artifactId: artifact.id },
+        tree, artifacts: dynamic.artifacts,
+      });
+      if (candidate) commandCandidates.push(candidate);
+      directTrees.push(tree);
     }
   }
+
+  const prepareReferences = async (
+    trees: readonly DynamicSkillTree[], scope: Scope, copy: boolean,
+    candidates: readonly ManagedCommandCandidate[] = commandCandidates,
+  ): Promise<ManagedCommandCandidate[]> => prepareIsolatedSkillCommandReferences({
+    ...options, scope, candidates,
+    trees: copy ? trees.map((tree) => ({ ...tree, files: { ...tree.files } })) : trees,
+  });
+  const staticScope = 'user';
+  commandCandidates = await prepareReferences(staticTrees, staticScope, true);
+  commandCandidates = await prepareReferences(directTrees, options.scope, true);
 
   const nativeTargetIds = requiredDeclarations
     .filter((target) => target.delivery?.mode === 'codex-native')
@@ -3998,10 +4245,13 @@ export async function materializeReviewNativeSkills(options: {
       env: options.env,
       requestedArtifactIds: nativeTargetIds,
       scriptTimeoutMs: options.scriptTimeoutMs,
+      commandCandidates,
+      prepareCommandReferences: (trees, candidates) => prepareReferences(trees, 'user', false, candidates),
     });
     if (!prepared) {
       throw new Error('Selected Codex native Skill targets did not produce a projection.');
     }
+    commandCandidates = prepared.commandCandidates;
     const staged = await materializeCodexNativeRender({
       plugin: options.plugin,
       stagingRoot: marketplaceRoot,
@@ -4039,6 +4289,19 @@ export async function materializeReviewNativeSkills(options: {
     await fs.remove(marketplaceRoot);
   }
 
+  commandCandidates = await prepareReferences(staticTrees, staticScope, false);
+  commandCandidates = await prepareReferences(directTrees, options.scope, false);
+  for (const tree of staticTrees) {
+    for (const [relativePath, content] of Object.entries(tree.files)) {
+      if (relativePath.endsWith('.md')) {
+        await fs.writeFile(path.join(skillsRoot, tree.skillKey, ...relativePath.split('/')), content);
+      }
+    }
+  }
+  for (const tree of directTrees) {
+    await writeDynamicSkillTree(path.join(skillsRoot, tree.skillKey), tree);
+  }
+
   const skills: Array<{ skill: string; path: string }> = [];
   for (const skill of selectedNames.sort((left, right) => left.localeCompare(right))) {
     const skillRoot = path.join(skillsRoot, skill);
@@ -4059,6 +4322,7 @@ async function mirrorCatalog(
   logicalIdentity?: string,
   prepareStaging?: (stagingRoot: string) => Promise<void>,
   rematerializedPluginIds: ReadonlySet<string> = new Set(),
+  rematerializedPluginPlatforms?: ReadonlyMap<string, ReadonlySet<PlatformName>>,
 ): Promise<{
   rootDir: string;
   commit(): Promise<void>;
@@ -4121,6 +4385,7 @@ async function mirrorCatalog(
         throw error;
       },
     );
+    const retainedReceipts: PreservedPlatformReceipt[] = [];
     if (destinationExists) {
       await replayNamespacedCodexSkillOverlays({
         sourceRoot: destination,
@@ -4136,9 +4401,12 @@ async function mirrorCatalog(
         sourceIdentity: target.sourceIdentity!,
         marketplaceName,
         rematerializedPluginIds,
+        rematerializedPluginPlatforms,
+        onPreservedPlatformReceipt: (receipt) => retainedReceipts.push(receipt),
       });
     }
     await prepareStaging?.(staging);
+    for (const receipt of retainedReceipts) await refreshPreservedPlatformReceipt(staging, receipt);
     const backup = `${destination}.backup-${crypto.randomUUID()}`;
     if (destinationExists) await fs.move(destination, backup);
     try {
@@ -4219,16 +4487,20 @@ async function applyPlannedOperationAction(action: OperationAction): Promise<voi
       const digest = `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}`;
       if (digest !== action.contentDigest) throw new Error('Skill action content digest mismatch.');
       const treeFiles: Record<string, Buffer> = {};
+      const fileModes: Record<string, 0o755> = {};
       for (const file of files) {
         const content = Buffer.from(file.contentBase64, 'base64');
         if (`sha256:${crypto.createHash('sha256').update(content).digest('hex')}` !== file.contentDigest) {
           throw new Error(`Skill action file digest mismatch: ${file.relativePath}`);
         }
         if (file.relativePath !== '.agent-workflows-owner.json') treeFiles[file.relativePath] = content;
+        if (file.mode !== undefined && file.mode !== 0o644 && file.mode !== 0o755) throw new Error('Skill action file mode is invalid.');
+        if (file.mode === 0o755 && file.relativePath !== '.agent-workflows-owner.json') fileModes[file.relativePath] = 0o755;
       }
       await writeDynamicSkillTree(action.path, {
         skillKey: action.owner.artifactKey,
         files: treeFiles,
+        ...(Object.keys(fileModes).length > 0 ? { fileModes } : {}),
       }, {
         allowedRoot: action.allowedRoot,
         identity: action.owner,
@@ -4309,6 +4581,60 @@ function createNativeDriver(options: {
   captureCodexPostMutationSnapshots(marketplaceNames?: readonly string[]): Promise<void>;
 } {
   const runner = options.context.nativeCliRunner;
+  const revokeAtRoot = async (root: string, recursive = false, platform?: PlatformName): Promise<void> => {
+    const listed = await listManagedCommands(options.context.env);
+    const producers = new Map<string, import('../types.js').ProducerIdentity>();
+    for (const command of listed.commands) {
+      if (command.owner.kind !== 'plugin' || !command.resourceRoot) continue;
+      if (platform && command.owner.producer.platform !== platform) continue;
+      const relative = path.relative(path.resolve(root), path.resolve(command.resourceRoot));
+      if (relative !== '' && (!recursive || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) continue;
+      producers.set(getCommandPackageId(command.owner.producer), command.owner.producer);
+    }
+    for (const producer of producers.values()) {
+      const removedCommandIds = await revokeManagedCommandBindings(producer, options.context.env);
+      options.context.commandResults ??= [];
+      options.context.commandResults.push({ producer, state: 'completed', commandIds: [], removedCommandIds, errors: [], recoveryActions: [] });
+    }
+  };
+  const publishPackages = async (target: DesiredTarget): Promise<void> => {
+    const cache = options.context.managedCommandProducerCache ??= new Map();
+    for (const action of target.operationActions ?? []) {
+      if (action.kind !== 'syncManagedCommandPackage') continue;
+      const key = getCommandPackageId(action.producer);
+      let publication = cache.get(key);
+      if (!publication) {
+        publication = (async (): Promise<CommandProducerResult> => {
+          await options.context.reporter.event({ type: 'managed-command:producer', source: { plugin: action.producer.pluginName, scope: action.producer.scope }, data: { packageKey: action.producer.key, phase: 'start' } });
+          const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-command-publish-'));
+          try {
+            const digest = `sha256:${crypto.createHash('sha256').update(JSON.stringify(action.files)).digest('hex')}`;
+            if (digest !== action.contentDigest) throw new ManagedCommandError('commandResourceInvalid', 'The prepared command package digest changed.');
+            const resourceRoot = path.join(temporary, 'resource');
+            await fs.ensureDir(resourceRoot);
+            for (const file of action.files) {
+              const content = Buffer.from(file.contentBase64, 'base64');
+              if (`sha256:${crypto.createHash('sha256').update(content).digest('hex')}` !== file.contentDigest) throw new ManagedCommandError('commandResourceInvalid', 'The prepared command package file digest changed.');
+              const destination = path.join(resourceRoot, ...file.relativePath.split('/'));
+              await fs.outputFile(destination, content);
+              await fs.chmod(destination, file.mode);
+            }
+            const result = await syncManagedCommandPackage({ producer: action.producer, sourceDirectory: resourceRoot, sets: action.sets, env: options.context.env });
+            await options.context.reporter.event({ type: 'managed-command:producer', source: { plugin: action.producer.pluginName, scope: action.producer.scope }, data: { packageKey: action.producer.key, phase: 'success' } });
+            return { producer: action.producer, state: 'completed', commandIds: result.commandIds, removedCommandIds: result.removedCommandIds, errors: [], recoveryActions: [] };
+          } catch (error) {
+            await options.context.reporter.event({ type: 'managed-command:producer', source: { plugin: action.producer.pluginName, scope: action.producer.scope }, data: { packageKey: action.producer.key, phase: 'failure' } });
+            return { producer: action.producer, state: 'failed', commandIds: [], removedCommandIds: [], errors: [managedCommandDiagnostic(error)], recoveryActions: [`aw command package sync ${action.producer.sourceId}/${action.producer.pluginName} ${action.producer.key} --scope ${action.producer.scope} --yes`] };
+          } finally { await fs.remove(temporary); }
+        })();
+        cache.set(key, publication);
+      }
+      const result = await publication;
+      options.context.commandResults ??= [];
+      if (!options.context.commandResults.some((entry) => getCommandPackageId(entry.producer) === key)) options.context.commandResults.push(result);
+      if (result.state !== 'completed') throw new Error('commandPackagePublishFailed: sync the command package and retry the plugin operation.');
+    }
+  };
   const currentCodexManager = (): CodexManager | undefined => options.context.codexManager;
   const nativeGroupPreparations = new Map<string, Promise<void>>();
   const nativeTargetPreparations = new WeakMap<DesiredTarget, Promise<void>>();
@@ -4326,7 +4652,6 @@ function createNativeDriver(options: {
     target.identity.sourceIdentity ?? '',
     target.identity.marketplaceName ?? MARKETPLACE_NAME,
     path.normalize(path.resolve(target.identity.marketplaceRoot ?? resolveAwHome(options.context.env))),
-    target.identity.platform,
   ].join('\0');
   const observationScopeFor = (target: DesiredTarget): 'user' | 'both' =>
     codexObservationScope(
@@ -4377,17 +4702,18 @@ function createNativeDriver(options: {
         const members = groupTargets(target);
         const materializing = members.filter((candidate) =>
           candidate.writeNativeRequired ?? candidate.requiresNative);
-        if (target.identity.platform === 'codex') {
+        const codexMembers = members.filter((candidate) => candidate.identity.platform === 'codex');
+        if (codexMembers.length) {
           const observationScope = codexObservationScope(
             options.context,
             target.identity.marketplaceName ?? MARKETPLACE_NAME,
-            members.some((candidate) => candidate.identity.scope === 'project') ? 'project' : 'user',
+            codexMembers.some((candidate) => candidate.identity.scope === 'project') ? 'project' : 'user',
           );
-          const nativePluginIds = [...new Set(members.flatMap((candidate) =>
+          const nativePluginIds = [...new Set(codexMembers.flatMap((candidate) =>
             candidate.ownedComponents.flatMap((component) =>
               component.kind === 'native-plugin' ? [component.pluginId] : [])))].sort();
           for (const pluginId of nativePluginIds) {
-            const member = members.find((candidate) => candidate.ownedComponents.some((component) =>
+            const member = codexMembers.find((candidate) => candidate.ownedComponents.some((component) =>
               component.kind === 'native-plugin' && component.pluginId === pluginId))!;
             const registration = await inspectCodexPluginRegistrationLive({
               pluginId,
@@ -4424,13 +4750,35 @@ function createNativeDriver(options: {
           right.identity.scope,
           right.identity.cwd,
         ].join('\0'), 'en'));
+        const requestedPlatforms = new Map<string, Set<PlatformName>>();
+        for (const candidate of materializationTargets) {
+          const pluginId = candidate.identity.pluginId ?? `${candidate.identity.sourceId}/${candidate.identity.pluginName}`;
+          const platforms = requestedPlatforms.get(pluginId) ?? new Set<PlatformName>();
+          platforms.add(candidate.identity.platform);
+          requestedPlatforms.set(pluginId, platforms);
+        }
         const transaction = await mirrorCatalog(
           first.catalog,
           options.context.env,
           first.identity,
           first.plugin.catalogLogicalIdentity,
-          first.identity.platform === 'codex' ? async (stagingRoot) => {
+          async (stagingRoot) => {
+            const renderedReceipts: PreservedPlatformReceipt[] = [];
             for (const candidate of materializationTargets) {
+              for (const action of candidate.operationActions ?? []) {
+                if (action.kind !== 'materializeNativeSkill' || action.artifactId !== undefined) continue;
+                const skillsRoot = path.join(stagingRoot, 'plugins', candidate.identity.pluginName, action.platform, candidate.plugin.manifest.skills!.replace(/^\.\//u, ''), action.skillKey);
+                if (`sha256:${crypto.createHash('sha256').update(JSON.stringify(action.files)).digest('hex')}` !== action.contentDigest) throw new Error('commandResourceInvalid: prepared static Skill snapshot changed.');
+                for (const file of action.files) {
+                  const content = Buffer.from(file.contentBase64, 'base64');
+                  if (`sha256:${crypto.createHash('sha256').update(content).digest('hex')}` !== file.contentDigest) throw new Error('commandResourceInvalid: prepared static Skill file digest changed.');
+                  if (file.mode !== undefined && file.mode !== 0o644 && file.mode !== 0o755) throw new Error('Skill action file mode is invalid.');
+                  const destination = path.join(skillsRoot, ...file.relativePath.split('/'));
+                  await fs.outputFile(destination, content);
+                  await fs.chmod(destination, file.mode ?? 0o644);
+                }
+              }
+              if (candidate.identity.platform !== 'codex') continue;
               const hasStaticSkills = candidate.plugin.manifest.skills !== undefined;
               const preparedNativeRender = await requirePreparedCodexNativeRender({
                 context: options.context,
@@ -4444,6 +4792,7 @@ function createNativeDriver(options: {
                     hasStaticSkills,
                   })
                 : null;
+              if (nativeRender) renderedReceipts.push({ pluginName: candidate.identity.pluginName, receipt: nativeRender.receipt });
               if (!nativeRender) {
                 await ensureCodexActiveSkillsManifest({
                   plugin: candidate.plugin,
@@ -4464,9 +4813,11 @@ function createNativeDriver(options: {
                 });
               }
             }
-          } : undefined,
+            for (const receipt of renderedReceipts) await refreshPreservedPlatformReceipt(stagingRoot, receipt);
+          },
           new Set(materializationTargets.map((candidate) =>
             candidate.identity.pluginId ?? `${candidate.identity.sourceId}/${candidate.identity.pluginName}`)),
+          requestedPlatforms,
         );
         try {
           await transaction.commit();
@@ -4484,6 +4835,7 @@ function createNativeDriver(options: {
           throw error;
         }
         committedNativeGroups.add(key);
+        for (const candidate of materializationTargets) await revokeAtRoot(path.join(candidate.identity.marketplaceRoot ?? resolveAwHome(options.context.env), 'plugins', candidate.identity.pluginName), true, candidate.identity.platform);
       })().catch((error) => {
         throw asNativeGroupFailure(error);
       });
@@ -4723,7 +5075,7 @@ function createNativeDriver(options: {
       );
     },
     skillDirectoryMatchesPristineTree: async ({ actualPath, files }) => {
-      const expectedFiles = new Map(files.map((entry) => [entry.relativePath, entry.contentDigest]));
+      const expectedFiles = new Map(files.map((entry) => [entry.relativePath, entry]));
       const expectedDirectories = new Set<string>(['']);
       for (const relativePath of expectedFiles.keys()) {
         const segments = relativePath.split('/');
@@ -4746,7 +5098,10 @@ function createNativeDriver(options: {
           }
           if (!entry.isFile()) return false;
           const digest = `sha256:${crypto.createHash('sha256').update(await fs.readFile(absolutePath)).digest('hex')}`;
-          if (expectedFiles.get(relativePath) !== digest) return false;
+          const expected = expectedFiles.get(relativePath);
+          if (expected?.contentDigest !== digest) return false;
+          if (catalogFileMode(relativePath, (await fs.stat(absolutePath)).mode)
+            !== catalogFileMode(relativePath, expected.mode ?? 0o644)) return false;
           seen.add(relativePath);
         }
       }
@@ -4755,6 +5110,9 @@ function createNativeDriver(options: {
   };
   return {
     ownership,
+    beforeCleanupMutation: async (component) => {
+      if (component.kind === 'skill-directory') await revokeAtRoot(component.path);
+    },
     setNativeMarketplaceEligibleTargets: (eligibleTargets) => {
       nativeMarketplaceEligibleTargets = new Set(eligibleTargets);
     },
@@ -4934,7 +5292,13 @@ function createNativeDriver(options: {
         });
       }
     },
-    finalizeCleanup: async () => undefined,
+    finalizeCleanup: async (target) => {
+      for (const action of target.operationActions ?? []) {
+        if (action.kind !== 'retainManagedCommandPackage') continue;
+        options.context.commandResults ??= [];
+        if (!options.context.commandResults.some((result) => getCommandPackageId(result.producer) === action.packageId)) options.context.commandResults.push(retainedManagedCommandPackageResult(action));
+      }
+    },
     probeNative: async (component) => {
       const target = findTarget(component);
       if (!target) throw new Error('Native ownership probe cannot resolve its desired target.');
@@ -5022,7 +5386,10 @@ function createNativeDriver(options: {
           throw new Error('codexNativeObservationUnavailable: native group precheck is missing.');
         }
         const removalRequired = before === 'present';
-        if (!removalRequired) return;
+        if (!removalRequired) {
+          await revokeAtRoot(path.join(target.identity.marketplaceRoot ?? resolveAwHome(options.context.env), 'plugins', target.identity.pluginName), true, 'codex');
+          return;
+        }
         try {
           codexMutationMarketplaces.add(marketplaceName);
           await runObservedCodexMutation({
@@ -5061,6 +5428,7 @@ function createNativeDriver(options: {
               ? `codexNativeRemoveIncomplete: ${CODEX_REMOVE_RECOVERY}`
               : `codexNativeInstallIncomplete: ${component.pluginId} is absent from Codex plugin list.`);
           }
+          if (expected === 'absent') await revokeAtRoot(path.join(target.identity.marketplaceRoot ?? resolveAwHome(options.context.env), 'plugins', target.identity.pluginName), true, 'codex');
         };
         if (options.operationScopedNativePhases) {
           deferredPostchecks.push({ target, postcheck });
@@ -5094,6 +5462,7 @@ function createNativeDriver(options: {
       }
     },
     writeNative: async (target) => {
+      await publishPackages(target);
       if (!target.catalog) throw new Error('Missing rebuild target catalog data.');
       const marketplaceName = target.identity.marketplaceName ?? MARKETPLACE_NAME;
       const expectedMarketplaceRoot = target.identity.marketplaceRoot ?? resolveAwHome(options.context.env);
@@ -5231,13 +5600,42 @@ function createNativeDriver(options: {
           );
         }
       }
+      const pluginRoot = path.join(expectedMarketplaceRoot, 'plugins', target.identity.pluginName);
+      if (target.identity.platform === 'codex' || target.operationActions?.some((action) => action.kind === 'materializeNativeSkill' && action.platform === 'claude')) {
+        const relativeRoot = target.identity.platform === 'codex'
+          ? await resolveCodexSkillsRelativeRoot(target.plugin, expectedMarketplaceRoot)
+          : await resolveClaudeSkillsRelativeRoot(pluginRoot);
+        const skillsRoot = path.join(pluginRoot, relativeRoot);
+        for (const entry of await fs.readdir(skillsRoot, { withFileTypes: true }).catch(() => [])) {
+          if (!entry.isDirectory()) continue;
+          const resourceRoot = path.join(skillsRoot, entry.name);
+          const installed = await readInstalledCommandProducer(resourceRoot).catch(() => null);
+          if (!installed) continue;
+          const commandIds = await publishManagedCommandBindings({ ...installed, resourceRoot, env: options.context.env });
+          options.context.commandResults ??= [];
+          options.context.commandResults.push({ producer: installed.producer, state: 'completed', commandIds, removedCommandIds: [], errors: [], recoveryActions: [] });
+        }
+      }
     },
     writeArtifacts: async (target) => {
+      await publishPackages(target);
       for (const operationAction of target.operationActions ?? []) {
         if (operationAction.kind === 'writeOwnedArtifact'
           || operationAction.kind === 'updateSharedConfig'
           || operationAction.kind === 'setActivation') {
+          if (operationAction.kind === 'writeOwnedArtifact' && operationAction.artifactKind === 'skill-directory') {
+            const previous = await readInstalledCommandProducer(operationAction.path).catch(() => null);
+            if (previous && (previous.producer.sourceId !== target.identity.sourceId || previous.producer.sourceIdentity !== target.identity.sourceIdentity || previous.producer.pluginName !== target.identity.pluginName)) throw new Error('commandOwnerMismatch: installed command producer belongs to another source identity; clean up the previous owner first.');
+          }
           await applyPlannedOperationAction(operationAction);
+          if (operationAction.kind === 'writeOwnedArtifact' && operationAction.artifactKind === 'skill-directory') {
+            const installed = await readInstalledCommandProducer(operationAction.path).catch(() => null);
+            if (installed) {
+              const commandIds = await publishManagedCommandBindings({ ...installed, resourceRoot: operationAction.path, env: options.context.env });
+              options.context.commandResults ??= [];
+              options.context.commandResults.push({ producer: installed.producer, state: 'completed', commandIds, removedCommandIds: [], errors: [], recoveryActions: [] });
+            } else await revokeAtRoot(operationAction.path);
+          }
         }
       }
       return target.artifacts;
@@ -5327,6 +5725,26 @@ export function createRebuildIntegration(options: {
         });
       }
       const event = 'install' as const;
+      const commands = materializing ? await commandPackageActions({ ...input, env: options.context.env, context: options.context }) : { actions: [], candidates: [] };
+      options.context.managedCommandCandidates ??= new Map();
+      options.context.managedCommandCandidates.set(pluginActionId(input.plugin), commands.candidates);
+      const nativeSkillActions: OperationAction[] = [];
+      if (materializing && input.platform === 'codex' && input.plugin.manifest.managedCommands && codexNativeRenderTargets(input.plugin).length) {
+        const native = await prepareCodexNativeRenderCached({ context: options.context, plugin: input.plugin, scriptTimeoutMs: options.scriptTimeoutMs });
+        if (native) {
+          commands.candidates.push(...native.commandCandidates);
+          for (const { artifact, skillKey, tree } of native.renderedArtifacts) {
+            const files = Object.entries(tree.files).map(([relativePath, content]) => ({
+              relativePath, contentBase64: content.toString('base64'),
+              contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
+              ...(tree.fileModes?.[relativePath] ? { mode: tree.fileModes[relativePath] } : {}),
+            })).sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+            nativeSkillActions.push({ kind: 'materializeNativeSkill', pluginId: pluginActionId(input.plugin),
+              platform: 'codex', scope: 'user', artifactId: artifact.id, skillKey, files,
+              contentDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}` });
+          }
+        }
+      }
       const historicalArtifacts: GeneratedArtifact[] = [];
       let writes: PlannedWrite[] = [];
       let currentRemovalComponents: OwnedComponent[] = [];
@@ -5351,6 +5769,9 @@ export function createRebuildIntegration(options: {
             scriptTimeoutMs: options.scriptTimeoutMs,
             marketplaceName: input.marketplaceName,
             userActivationDesired: options.context.codexUserActivationDesired,
+            commandCandidates: commands.candidates,
+            nativeSkillActions,
+            context: options.context,
           });
         } else {
           writes = await buildClaudeWrites({
@@ -5359,6 +5780,8 @@ export function createRebuildIntegration(options: {
             event,
             historicalArtifacts,
             scriptTimeoutMs: options.scriptTimeoutMs,
+            commandCandidates: commands.candidates,
+            nativeSkillActions,
           });
         }
       } else if (input.platform === 'codex' && input.scope === 'project') {
@@ -5536,6 +5959,7 @@ export function createRebuildIntegration(options: {
         input.platform === 'claude'
         || input.command === 'reinstall'
         || !codexNativeExact
+        || (materializing && await hasPreparedStaticNativeCommandDrift({ plugin: input.plugin, cwd: input.cwd, env: options.context.env, context: options.context, marketplaceRoot: input.marketplaceRoot ?? resolveAwHome(options.context.env) }))
       );
       const nativeCleanupCandidate = input.platform === 'claude'
         ? input.includeNativeCleanupCandidate !== false
@@ -5634,7 +6058,11 @@ export function createRebuildIntegration(options: {
       ]);
       bindNamespacedOwnerIdentity(allComponents, input);
       const desiredKeys = new Set(desiredComponents.map(componentIdentityKey));
-      const operationActions: OperationAction[] = [];
+      const retainedPackages = input.command === 'cleanup' || input.command === 'uninstall'
+        ? await discoverRetainedManagedCommandPackages({ selectors: [{ sourceId: input.sourceId, pluginName: input.plugin.manifest.name }], scope: input.scope, cwd: input.cwd, env: options.context.env })
+        : [];
+      const operationActions: OperationAction[] = [...commands.actions, ...nativeSkillActions,
+        ...retainedPackages.map((entry) => ({ ...entry, kind: 'retainManagedCommandPackage' as const, pluginId: `${entry.producer.sourceId}/${entry.producer.pluginName}`, scope: entry.producer.scope }))];
       const preApply = input.plugin.manifest.scripts?.preApply;
       if (preApply && input.command !== 'cleanup' && input.command !== 'uninstall') {
         const script = path.resolve(input.plugin.rootDir, preApply.path.replace(/^\.\//u, ''));

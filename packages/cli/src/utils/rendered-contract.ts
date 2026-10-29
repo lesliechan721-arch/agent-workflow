@@ -1,5 +1,6 @@
 import type { ClaudePermissions } from '../generators/permissions.js';
 import type { PlatformName } from '../types.js';
+import { isManagedCommandId } from '@lesliechan721/aw-plugin-core/manifest';
 import {
   assertHookMatcherAllowed,
   assertNativeHookEvent,
@@ -45,11 +46,27 @@ export function validateRenderedClaudePermissions(
   for (const decision of ['allow', 'ask', 'deny'] as const) {
     const rules = assertStringArray(input[decision], `${fieldName}.${decision}`);
     for (const [index, rule] of rules.entries()) {
-      if (!/^Bash\([^"'\\*;&|<>`$()]+\)$/.test(rule)) {
+      if (!/^Bash\([^"'\\*;&|<>`$()]+\)$/.test(rule)
+        && !(rule.startsWith('Bash(') && rule.endsWith(')') && isManagedClaudePrefix(rule.slice(5, -1)))) {
         throw new Error(`Invalid ${fieldName}.${decision}[${index}]: expected a plain Bash(...) token prefix.`);
       }
     }
   }
+  if (input.excludedCommands !== undefined) {
+    for (const rule of assertStringArray(input.excludedCommands, `${fieldName}.excludedCommands`)) {
+      if (!isManagedClaudePrefix(rule)) {
+        throw new Error(`Invalid ${fieldName}.excludedCommands: expected a managed command prefix.`);
+      }
+    }
+  }
+}
+
+function isManagedClaudePrefix(value: string): boolean {
+  if (!value.endsWith(' *')) return false;
+  const tokens = value.slice(0, -2).split(' ');
+  return tokens[0] === 'aw' && tokens[1] === 'command' && tokens[2] === 'run'
+    && isManagedCommandId(tokens[3]) && tokens[4] === '--'
+    && tokens.slice(5).every((token) => /^[A-Za-z0-9_./:@%+=,-]+$/u.test(token));
 }
 
 export function validateRenderedCodexRules(

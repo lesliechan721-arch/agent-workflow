@@ -6,7 +6,7 @@ import type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js'
 export type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js'
 
 export const PLUGIN_MANIFEST_SCHEMA_VERSION = 3 as const
-export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 16
+export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 17
 
 const ajv = new Ajv2020({
   allErrors: true,
@@ -95,3 +95,5 @@ export * from './skill-frontmatter-capabilities.js'
 export * from './slash-commands.js'
 export * from './template-engine.js'
 export type * from './types.js'
+
+export * from './managed-commands.js';

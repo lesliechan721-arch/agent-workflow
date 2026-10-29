@@ -180,7 +180,7 @@ for (const permissionMode of ['default', 'full-access']) test('Antigravity: '+pe
   const f = await fixture(t, 'communication');
   f.request.communication = true; f.request.permissionMode = permissionMode; f.request.args = [];
   f.send(f.request);
-  assert.deepEqual((await f.waitFor('ready')).initialization.capabilities.communication, { status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary', activeReceive: true });
+  assert.deepEqual((await f.waitFor('ready')).initialization.capabilities.communication, { status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary' });
   assert.equal((await f.waitFor('message')).text, bridgeMessage);
   assert.equal((await f.waitFor('result')).state, 'completed');
   assert.equal((await f.exit).code, 0);

@@ -39,6 +39,8 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.plugin-config-summary.v1',
   'aw.plugin-pre-apply.v1',
   'aw.dynamic-artifacts.v2',
+  'aw.managed-commands.v1',
+  'aw.claude.sandbox-exclusions.v1',
   'aw.portable-skills.v1',
   'aw.runtime-imports.v1',
   'aw.installed-runtime-config.v2',

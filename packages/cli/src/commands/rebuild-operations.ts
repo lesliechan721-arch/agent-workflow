@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import type {
   GeneratedArtifact,
+  CommandProducerResult,
   CatalogResolution,
   PlatformName,
   PluginMeta,
@@ -55,6 +56,7 @@ export interface DesiredTarget {
   catalog?: CatalogResolution;
   preApplySource: PluginMeta;
   forceExclusiveCleanup?: boolean;
+  commandResults?: CommandProducerResult[];
 }
 
 export interface RebuildAction {
@@ -104,6 +106,7 @@ export interface RebuildPreApplyInvocation {
 export interface RebuildTargetDriver {
   ownership: OwnedComponentExecutor;
   preflightMutation?(target: DesiredTarget): Promise<void>;
+  beforeCleanupMutation?(component: OwnedComponent): Promise<void>;
   preflightMaterialize?(target: DesiredTarget): Promise<void>;
   selectRecoveryCleanupComponents?(
     target: DesiredTarget,
@@ -529,6 +532,10 @@ async function cleanupOwned(
     nativeRemove: driver.removeNative,
     forceExclusive: target.forceExclusiveCleanup,
     ...hooks,
+    beforeMutation: async (component) => {
+      await hooks.beforeMutation?.(component);
+      await driver.beforeCleanupMutation?.(component);
+    },
   });
 }
 
@@ -829,10 +836,11 @@ async function executeUninstall(options: {
   const live = inspection.components.filter((component) =>
     component.state !== 'absent'
     && isUninstallLiveOwnershipComponent(component.component));
-  if (live.length === 0) return succeeded('uninstall', target, accumulator);
-  const cleanupError = await cleanupTarget(target, driver, accumulator, 'cleanup.owned', events);
-  if (cleanupError) {
-    return failed('uninstall', target, accumulator, cleanupError.phase, cleanupError.message);
+  if (live.length > 0) {
+    const cleanupError = await cleanupTarget(target, driver, accumulator, 'cleanup.owned', events);
+    if (cleanupError) {
+      return failed('uninstall', target, accumulator, cleanupError.phase, cleanupError.message);
+    }
   }
   if (driver.finalizeCleanup) {
     try {

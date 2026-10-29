@@ -1,4 +1,5 @@
 import type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js';
+import type { ManagedCommands, ManagedCommandPermission, PermissionCommand } from './managed-commands.js';
 
 export type PlatformName = 'codex' | 'claude';
 export type DistributionName = 'agent-skills';
@@ -331,8 +332,13 @@ export interface InstructionDefinition {
   agentOverrides?: PlatformAgentOverrides<{ name: string; title: string; content: string; paths?: string[] }>;
 }
 export interface PermissionDefinition {
-  name: string; allow?: string[]; ask?: string[]; deny?: string[];
-  agentOverrides?: PlatformAgentOverrides<{ name: string; allow?: string[]; ask?: string[]; deny?: string[] }>;
+  name: string; allow?: PermissionCommand[]; ask?: PermissionCommand[]; deny?: PermissionCommand[];
+  /** Present after resolving the Claude override; source declarations use agentOverrides.claude. */
+  sandbox?: { excludedCommands: ManagedCommandPermission[] };
+  agentOverrides?: {
+    claude?: Partial<Omit<PermissionDefinition, 'agentOverrides'>> | null;
+    codex?: Partial<Omit<PermissionDefinition, 'agentOverrides' | 'sandbox'>> | null;
+  };
 }
 export type HookEvent = 'before_tool' | 'after_tool' | 'session_start';
 export interface HookDefinition {
@@ -366,8 +372,10 @@ export type ArtifactTarget =
   | 'codex.agentRole'
   | 'codex.skill'
   | 'claude.skill'
-  | 'agent-skills.skill';
-export type DynamicArtifactKind = 'instruction' | 'codexRole' | 'skill';
+  | 'agent-skills.skill'
+  | 'aw.command-set'
+  | 'aw.command-package';
+export type DynamicArtifactKind = 'instruction' | 'codexRole' | 'skill' | 'commandSet' | 'commandPackage';
 export type ManagedArtifactId = string;
 export interface ArtifactRuntimeImportDefinition extends BuildConfigImportReference {
   name: string;
@@ -386,7 +394,7 @@ interface PluginArtifactTargetDefinitionBase {
   platform?: PlatformName;
   distribution?: DistributionName;
   scopes: Scope[];
-  kind?: DynamicArtifactKind;
+  kind?: Exclude<DynamicArtifactKind, 'commandSet' | 'commandPackage'>;
   projectManagedKind?: CodexProjectManagedKind;
   states: ArtifactState[];
   refreshKeys: string[];
@@ -403,7 +411,7 @@ export type PluginArtifactTargetDefinition =
       delivery: CodexSkillDelivery;
     }
   | PluginArtifactTargetDefinitionBase & {
-      target: Exclude<ArtifactTarget, 'codex.skill'>;
+      target: Exclude<ArtifactTarget, 'codex.skill' | 'aw.command-set' | 'aw.command-package'>;
       delivery?: never;
     };
 export interface PluginArtifactsConfig { targets?: PluginArtifactTargetDefinition[] }
@@ -414,7 +422,7 @@ export interface PluginRequirements { aw: { capabilities?: string[] } }
 export type PluginManifestSource = PluginManifestSourceV3;
 export type NormalizedPluginManifest = Omit<
   PluginManifestSourceV3,
-  'requires' | 'extensions' | 'artifacts' | 'buildConfig' | 'scripts' | 'config'
+  'requires' | 'extensions' | 'artifacts' | 'buildConfig' | 'scripts' | 'config' | 'managedCommands'
 > & {
   requires?: PluginRequirements;
   extensions?: PluginExtensions;
@@ -422,6 +430,7 @@ export type NormalizedPluginManifest = Omit<
   buildConfig?: BuildConfig;
   scripts?: PluginScriptsConfig;
   config?: PluginConfigSchema;
+  managedCommands?: ManagedCommands;
 };
 export interface PluginMeta {
   sourceId?: CatalogSourceId;

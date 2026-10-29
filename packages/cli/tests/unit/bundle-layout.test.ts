@@ -295,6 +295,40 @@ describe('bundle layout validation', () => {
     await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
   });
 
+  // Test Value Gate: command packages must retain their complete directory in the
+  // distributed bundle, and a damaged entry must fail bundle validation.
+  it('bundles complete managed command directories at their declared relative paths', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    await updateFixturePluginManifest(repoRoot, (manifest) => {
+      manifest.requires = { aw: { capabilities: ['aw.managed-commands.v1'] } };
+      manifest.managedCommands = {
+        packages: [{ key: 'tools', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './tools/runtime' }],
+        sets: [{ set: 'tools', producer: { kind: 'package', packageKey: 'tools' }, mode: 'static', entries: [
+          { key: 'run', runner: 'node', entry: 'bin/run.mjs' },
+        ] }],
+      };
+    });
+    await fs.outputFile(path.join(pluginRoot, 'tools/runtime/bin/run.mjs'), 'import "../lib/helper.mjs";\n');
+    await fs.outputFile(path.join(pluginRoot, 'tools/runtime/lib/helper.mjs'), 'export {};\n');
+    const bytes = Buffer.from([0, 255, 10, 128]);
+    await fs.outputFile(path.join(pluginRoot, 'tools/runtime/data/resource.bin'), bytes);
+    await fs.ensureDir(path.join(pluginRoot, 'tools/runtime/empty'));
+
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+    const bundlePackageRoot = path.join(embeddedRoot, 'plugins/git-commit/tools/runtime');
+    await expect(fs.readFile(path.join(bundlePackageRoot, 'data/resource.bin'))).resolves.toEqual(bytes);
+    await expect(fs.pathExists(path.join(bundlePackageRoot, 'empty'))).resolves.toBe(true);
+    await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
+
+    await fs.remove(path.join(bundlePackageRoot, 'lib/helper.mjs'));
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow('runtime imports');
+    await fs.outputFile(path.join(bundlePackageRoot, 'lib/helper.mjs'), 'export {};\n');
+    await fs.remove(path.join(bundlePackageRoot, 'bin/run.mjs'));
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow('command entry');
+  });
+
   it('validates static portable distribution roots and generated dynamic sources', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');

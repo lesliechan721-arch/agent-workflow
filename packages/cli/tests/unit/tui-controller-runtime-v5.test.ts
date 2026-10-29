@@ -2364,6 +2364,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       retryApply: true,
     });
     expect(impactTitles(retryReview)).toEqual([
+      '重新生成 native-skill 原生 Skill',
       '重新应用 Claude Code · 当前项目', '重新应用 Codex · 所有项目',
     ]);
     expect(retryReview).toMatchObject({
@@ -2394,6 +2395,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       retryApply: true,
     });
     expect(impactTitles(retryWithoutApplyReview)).toEqual([
+      '重新生成 native-skill 原生 Skill',
       '重新应用 Claude Code · 当前项目', '重新应用 Codex · 所有项目',
     ]);
     expect(retryWithoutApplyReview).toMatchObject({

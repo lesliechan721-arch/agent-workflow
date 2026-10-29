@@ -10,6 +10,7 @@ import type {
   PluginMeta,
   RebuildReceiptOverallState,
   ReceiptTargetResult,
+  CommandProducerResult,
   Scope,
 } from '../types.js';
 import fs from 'fs-extra';
@@ -31,6 +32,7 @@ import {
 } from '../utils/native-cli.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
 import { readPluginManifest } from '../utils/manifest.js';
+import { discoverRetainedManagedCommandPackages, retainedManagedCommandPackageResult } from '../utils/managed-command-materialization.js';
 import { resolveAwHome, resolveCodexPaths } from '../utils/paths.js';
 import { resolveCliPackageRoot } from '../utils/paths.js';
 import { supportsPlatform } from '../utils/platform-support.js';
@@ -61,6 +63,7 @@ import {
   executeCodexReconcileActivations,
   inspectCodexPluginRegistrationLive,
   inspectCodexSharedNativeLive,
+  hasPreparedStaticNativeCommandDrift,
   inspectNativeMarketplaceRegistrations,
   removeCodexPluginActivation,
   removeNamespacedMarketplacePluginProjection,
@@ -290,6 +293,7 @@ export interface RebuildCommandResult {
   warnings: string[];
   rebuildResults: RebuildResult[];
   targetResults: ReceiptTargetResult[];
+  commandResults?: CommandProducerResult[];
   overallState: RebuildReceiptOverallState;
   receiptTargets: Array<{
     pluginName: string;
@@ -845,6 +849,8 @@ async function runSingleSourceRebuildCommand(options: {
     codexUserActivationDesired: options.runtime?.codexUserActivationDesired,
     codexObservationSession: options.runtime?.codexObservationSession,
     preApplyExecutionCache: options.runtime?.preApplyExecutionCache,
+    managedCommandProducerCache: options.runtime?.managedCommandProducerCache ?? new Map(),
+    commandResults: options.runtime?.commandResults ?? [],
   };
   const env = runtime.env;
   const selected = selectedPlatforms(options.commandOptions.platform);
@@ -1042,6 +1048,7 @@ async function runSingleSourceRebuildCommand(options: {
     warnings: [...new Set(warnings)],
     rebuildResults: results,
     targetResults: results.map(toTargetResult),
+    ...(runtime.commandResults?.length ? { commandResults: runtime.commandResults } : {}),
     overallState: successful.length === results.length
       ? 'succeeded'
       : successful.length > 0 ? 'partial' : 'failed',
@@ -1080,6 +1087,7 @@ function mergeRebuildCommandResults(results: RebuildCommandResult[]): RebuildCom
     warnings: [...new Set(results.flatMap((result) => result.warnings))],
     rebuildResults,
     targetResults: results.flatMap((result) => result.targetResults),
+    ...(results.some((result) => result.commandResults?.length) ? { commandResults: results.flatMap((result) => result.commandResults ?? []) } : {}),
     overallState: rebuildResults.every((result) => result.status === 'succeeded')
       ? 'succeeded'
       : rebuildResults.some((result) => result.status === 'succeeded') ? 'partial' : 'failed',
@@ -1742,6 +1750,7 @@ async function cleanupOfflineOwnedComponents(options: {
               && planned.target === action.registration);
           }
           if (action.kind === 'setActivation') return nativeAuthorized;
+          if (action.kind === 'retainManagedCommandPackage') return true;
           return false;
         });
       }
@@ -1820,6 +1829,7 @@ async function cleanupOfflineOwnedComponents(options: {
     plugins: results.filter((result) => result.status === 'succeeded').map((result) => result.target.pluginName),
     warnings: [...new Set(warnings)],
     rebuildResults: results,
+    commandResults: context.commandResults ?? [],
     targetResults: results.map(toTargetResult),
     overallState: results.every((result) => result.status === 'succeeded') ? 'succeeded' : 'failed',
     receiptTargets: results.map((result) => ({
@@ -1860,6 +1870,7 @@ function createOfflineCleanupOperationPlan(
   evidence: readonly OfflineCleanupTargetEvidence[],
   intent?: { scope: Scope; before: PluginIntentState; after: PluginIntentState },
   warnings: readonly string[] = [],
+  retainedPackages: readonly OperationAction[] = [],
 ): OperationPlan {
   const beforeDigest = intent ? calculatePluginIntentDigest(intent.before) : undefined;
   const afterDigest = intent ? calculatePluginIntentDigest(intent.after) : undefined;
@@ -1872,7 +1883,7 @@ function createOfflineCleanupOperationPlan(
     intentChanges: intent && beforeDigest !== afterDigest
       ? [{ scope: intent.scope, beforeDigest: beforeDigest!, afterDigest: afterDigest! }]
       : [],
-    actions: evidence.flatMap((target) => target.plan.actions.map((action): OperationAction =>
+    actions: [...retainedPackages, ...evidence.flatMap((target) => target.plan.actions.map((action): OperationAction =>
       action.action === 'removeNativeRegistration'
         ? {
             kind: 'removeNativeRegistration',
@@ -1888,7 +1899,7 @@ function createOfflineCleanupOperationPlan(
             scope: target.scope,
             path: action.target,
             ownerFingerprint: target.targetFingerprint,
-          })),
+          }))],
     changes: [
       ...evidence.flatMap((target) => removesIntent(target)
         ? [`${target.pluginId}:${target.platform}:${target.scope}:removeIntent`]
@@ -2984,6 +2995,14 @@ async function runRebuildCommandInSession(
   options: RebuildCommandInvocation,
 ): Promise<RebuildCommandResult> {
   const runtimeEnv = options.runtime?.env ?? process.env;
+  const retainSelectors = options.command === 'cleanup' ? options.pluginNames.map(parsePluginId) : [];
+  const primarySourceId = retainSelectors.some((selector) => !selector.sourceId)
+    ? (await readCatalogSourcesConfigSnapshot(runtimeEnv)).config.sources.find((source) => source.primary)?.id
+    : undefined;
+  const retainedPackages = options.command === 'cleanup'
+    ? await discoverRetainedManagedCommandPackages({ selectors: retainSelectors.map((selector) => ({ ...selector, sourceId: selector.sourceId ?? primarySourceId })), all: options.all, scope: options.commandOptions.scope, cwd: options.commandOptions.cwd, env: runtimeEnv })
+    : [];
+  const retainedPackageActions: OperationAction[] = retainedPackages.map((entry) => ({ ...entry, kind: 'retainManagedCommandPackage', pluginId: `${entry.producer.sourceId}/${entry.producer.pluginName}`, scope: entry.producer.scope }));
   const readInventory = options.runtime?.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
   let ordinaryInventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>> | undefined;
@@ -3350,7 +3369,7 @@ async function runRebuildCommandInSession(
         scope: options.commandOptions.scope,
         before: cleanupIntentBefore!,
         after: cleanupIntentAfter!,
-      }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings]);
+      }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings], retainedPackageActions);
       if (options.runtime?.expectedPlanFingerprint) {
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
@@ -3458,7 +3477,7 @@ async function runRebuildCommandInSession(
         scope: options.commandOptions.scope,
         before: cleanupIntentBefore!,
         after: cleanupIntentAfter!,
-      }, cleanupInventoryWarnings(cleanupInventory!, forceCleanupTargets));
+      }, cleanupInventoryWarnings(cleanupInventory!, forceCleanupTargets), retainedPackageActions);
       if (options.runtime?.expectedPlanFingerprint) {
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
@@ -3580,7 +3599,7 @@ async function runRebuildCommandInSession(
         scope: options.commandOptions.scope,
         before: cleanupIntentBefore!,
         after: cleanupIntentAfter!,
-      }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings]);
+      }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings], retainedPackageActions);
       if (options.runtime?.expectedPlanFingerprint) {
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
@@ -3624,7 +3643,7 @@ async function runRebuildCommandInSession(
       scope: options.commandOptions.scope,
       before: cleanupIntentBefore!,
       after: cleanupIntentAfter!,
-    }, [...cleanupInventoryWarnings(cleanupInventory!, cleanupTargets), ...cleanupUnavailableWarnings]);
+    }, [...cleanupInventoryWarnings(cleanupInventory!, cleanupTargets), ...cleanupUnavailableWarnings], retainedPackageActions);
     if (options.runtime?.expectedPlanFingerprint) {
       assertOperationPlanFingerprint(
         options.runtime.expectedPlanFingerprint,
@@ -4250,6 +4269,8 @@ async function runRebuildCommandInSession(
         codexObservationSession: options.runtime?.codexObservationSession,
         codexObservationScopeByMarketplace,
         preApplyExecutionCache: options.runtime?.preApplyExecutionCache,
+        managedCommandProducerCache: options.runtime?.managedCommandProducerCache,
+        commandResults: options.runtime?.commandResults,
       };
       const inspection = createRebuildIntegration({
         context: executionContext,
@@ -5083,8 +5104,14 @@ async function runRebuildCommandInSession(
             intentScopes,
             surface,
           });
-          const sharedNative: CodexReconcilerLiveEvidence['sharedNative'] = sharedInspection?.sharedNative
+          let sharedNative: CodexReconcilerLiveEvidence['sharedNative'] = sharedInspection?.sharedNative
             ?? { state: 'unobserved' };
+          if (options.command === 'sync' && sharedNative.state === 'usable'
+            && await hasPreparedStaticNativeCommandDrift({ plugin: entry.plugin,
+              cwd: options.commandOptions.cwd, env: runtimeEnv, context: executionContext,
+              marketplaceRoot: path.join(resolveAwHome(runtimeEnv), 'marketplaces', entry.source.sourceId) })) {
+            sharedNative = { state: 'replaceable', reason: 'renderDrift', diagnostic: 'projectionRenderDrift', version: sharedNative.version };
+          }
           const projectionEntries: Array<{
             scope: Scope;
             artifactKey: string;
@@ -6980,8 +7007,23 @@ async function runRebuildCommandInSession(
 export async function runRebuildCommand(
   options: RebuildCommandInvocation,
 ): Promise<RebuildCommandResult> {
+  const commandResults = options.runtime?.commandResults ?? [];
+  options = { ...options, runtime: { ...options.runtime, commandResults, managedCommandProducerCache: options.runtime?.managedCommandProducerCache ?? new Map() } };
+  const withCommands = (result: RebuildCommandResult): RebuildCommandResult => {
+    const byProducer = new Map<string, CommandProducerResult>();
+    const retained = (result.operationPlan?.actions ?? []).flatMap((action) => action.kind === 'retainManagedCommandPackage' ? [retainedManagedCommandPackageResult(action)] : []);
+    for (const entry of [...(result.commandResults ?? []), ...commandResults, ...retained]) {
+      const key = JSON.stringify(entry.producer);
+      const previous = byProducer.get(key);
+      byProducer.set(key, { ...entry, removedCommandIds: [...new Set([...(previous?.removedCommandIds ?? []), ...entry.removedCommandIds])].filter((id) => !entry.commandIds.includes(id)), errors: [...(previous?.errors ?? []), ...entry.errors], recoveryActions: [...new Set([...(previous?.recoveryActions ?? []), ...entry.recoveryActions])] });
+    }
+    const commands = [...byProducer.values()];
+    if (commands.length === 0) return result;
+    const failed = commands.some((entry) => entry.state !== 'completed');
+    return { ...result, commandResults: commands, overallState: failed ? result.targetResults.some((entry) => entry.state === 'completed') || commands.some((entry) => entry.state === 'completed') ? 'partial' : 'failed' : result.overallState };
+  };
   if (options.runtime?.codexObservationSession) {
-    return runRebuildCommandInSession(options);
+    return withCommands(await runRebuildCommandInSession(options));
   }
   const env = options.runtime?.env ?? process.env;
   const session = await createCodexNativeObservationSession({
@@ -6991,10 +7033,10 @@ export async function runRebuildCommand(
     manager: options.runtime?.codexManager,
   });
   try {
-    return await runRebuildCommandInSession({
+    return withCommands(await runRebuildCommandInSession({
       ...options,
       runtime: { ...options.runtime, codexObservationSession: session },
-    });
+    }));
   } finally {
     await session.dispose();
   }

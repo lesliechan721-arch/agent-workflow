@@ -3795,6 +3795,128 @@ describe('authoring tools', () => {
     await mapWithConcurrency(validations, 2, (validation) => validation());
   }, 30_000);
 
+  // Test Value Gate: the public author validator must use the AW surface and
+  // reject renderer output that can alter executable entries or leave references dangling.
+  it('validates managed command renderer candidates without registering commands', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-author-managed-'));
+    tempDirs.push(tempRoot);
+    const manifest = createBaseManifest('managed-author', {
+      skills: './skills',
+      requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      managedCommands: {
+        packages: [{ key: 'tools', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './tools', render: true }],
+        sets: [{ set: 'tools', producer: { kind: 'package', packageKey: 'tools' }, mode: 'dynamic', refreshKeys: [] }],
+      },
+    });
+    const renderer = [
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      'const c = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'if (c.surface.kind !== "aw" || c.surface.name !== "managed-commands" || c.platform || c.distribution) throw new Error("wrong surface");',
+      'if (process.env.AW_PLUGIN_SURFACE !== "managed-commands" || process.env.AW_PLUGIN_PLATFORM || process.env.AW_PLUGIN_DISTRIBUTION) throw new Error("wrong environment");',
+      'if (c.commandSources.length !== 1 || c.commandSources[0].packageKey !== "tools" || !path.isAbsolute(c.commandSources[0].sourceDir)) throw new Error("wrong command source");',
+      'if (c.artifactSources.length || Object.keys(c.config.values).length) throw new Error("unrelated inputs");',
+      'fs.appendFileSync(path.join(process.env.AW_PLUGIN_ROOT, "requests.jsonl"), JSON.stringify(c.requestedArtifactIds)+"\\n");',
+      'const artifacts = c.requestedArtifactIds.map(id => id === "command-package.tools"',
+      '  ? {id,target:"aw.command-package",kind:"commandPackage",state:"present",refreshKeys:[],files:{"settings.json":"{}"}}',
+      '  : {id,target:"aw.command-set",kind:"commandSet",state:"present",refreshKeys:[],entries:[{key:"run",runner:"node",entry:"run.mjs"}]});',
+      'process.stdout.write(JSON.stringify({version:2,artifacts}));',
+    ].join('\n');
+    const { pluginDir } = await writeSourcePlugin(tempRoot, 'managed-author', manifest, {
+      'scripts/render.mjs': renderer,
+      'tools/run.mjs': 'console.log("ready");\n',
+      'skills/helper/SKILL.md': '---\nname: helper\ndescription: Runs the managed helper.\n---\n{{aw.command:tools/run}} check\n',
+      'skills/helper/agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
+    });
+    const commandRoot = path.join(process.env.AW_HOME!, 'commands');
+    const before = await fs.pathExists(commandRoot);
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS]') });
+    expect((await fs.readFile(path.join(pluginDir, 'requests.jsonl'), 'utf8')).trim().split('\n')).toHaveLength(1);
+    expect(await fs.pathExists(commandRoot)).toBe(before);
+
+    for (const [modified, expected] of [
+      [renderer.replace('"settings.json":"{}"', '"run.mjs":"changed"'), 'cannot replace'],
+      [renderer.replace('kind:"commandSet",state:', 'platform:"codex",kind:"commandSet",state:'), 'declared surface'],
+      [renderer.replace('process.stdout.write(JSON.stringify({version:2,artifacts}))', 'process.stdout.write(JSON.stringify({version:2,artifacts:artifacts.slice(0,1)}))'), 'must return artifact'],
+      [renderer.replace('key:"run",runner:', 'key:"other",runner:'), 'commandReferenceInvalid'],
+    ]) {
+      await fs.writeFile(path.join(pluginDir, 'scripts/render.mjs'), modified);
+      await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({ stdout: expect.stringContaining(expected) });
+    }
+    await fs.writeFile(path.join(pluginDir, 'scripts/render.mjs'), renderer);
+    await writeAuthoringPluginManifest(pluginDir, {
+      ...manifest,
+      distributions: { agentSkills: { skills: './agent-skills/skills' } },
+    });
+    await fs.outputFile(path.join(pluginDir, 'agent-skills/skills/helper/SKILL.md'),
+      '---\nname: helper\ndescription: Runs the managed helper.\n---\n{{aw.command:tools/run}} check\n');
+    await fs.outputFile(path.join(pluginDir, 'agent-skills/skills/helper/README.md'), '# Helper\n');
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({ stdout: expect.stringContaining('managedCommandPortableUnsupported') });
+  });
+
+  // Test Value Gate: shared native commands must stay user-scoped while project
+  // consumers can resolve them and retain their separate AW-owned command scope.
+  it('validates shared Claude native commands in user scope and scoped consumers separately', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-author-claude-shared-'));
+    tempDirs.push(tempRoot);
+    const nativeSkill = 'native-helper';
+    const scopedSkill = 'scoped-helper';
+    const nativeText = `---\nname: ${nativeSkill}\ndescription: Shared native commands.\n---\n{{aw.command:native/run}}\n`;
+    const manifest = createBaseManifest('claude-shared-author', {
+      marketplace: {
+        category: 'workflow', strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CLAUDE'] },
+      },
+      skills: './skills',
+      requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets: [{
+        id: 'scoped-skill', platform: 'claude', target: 'claude.skill', scopes: ['user', 'project'],
+        states: ['present'], refreshKeys: [], skillKey: scopedSkill, sourceDirs: [`./skills/${scopedSkill}`],
+      }] },
+      managedCommands: {
+        packages: [{ key: 'project-tools', scope: 'project', platforms: ['claude'], sourceDir: './project-tools' }],
+        sets: [
+          { set: 'native', producer: { kind: 'static-skill', platform: 'claude', skillKey: nativeSkill }, mode: 'dynamic', refreshKeys: [] },
+          { set: 'scoped', producer: { kind: 'artifact', artifactId: 'scoped-skill' }, mode: 'dynamic', refreshKeys: [] },
+          { set: 'project-tools', producer: { kind: 'package', packageKey: 'project-tools' }, mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'run.mjs' }] },
+        ],
+      },
+      extensions: { permissions: [{ name: 'shared-native', allow: [{ command: { set: 'native', key: 'run' } }] }] },
+    });
+    const { pluginDir } = await writeSourcePlugin(tempRoot, 'claude-shared-author', manifest, {
+      [`skills/${nativeSkill}/SKILL.md`]: nativeText,
+      [`skills/${nativeSkill}/scripts/run.mjs`]: 'console.log("native");\n',
+      [`skills/${scopedSkill}/SKILL.md`]: `---\nname: ${scopedSkill}\ndescription: Scoped commands.\n---\n{{aw.command:native/run}}\n`,
+      [`skills/${scopedSkill}/scripts/run.mjs`]: 'console.log("scoped");\n',
+      'project-tools/run.mjs': 'console.log("project");\n',
+      'scripts/render.mjs': [
+        'import fs from "node:fs";',
+        'import path from "node:path";',
+        'const c = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        'if (c.platform !== "claude" || c.config.targetScope !== c.scope) throw new Error("wrong scope");',
+        'if (c.scope === "project" && c.requestedArtifactIds.includes("command-set.native")) throw new Error("native command requested in project scope");',
+        'fs.appendFileSync(path.join(process.env.AW_PLUGIN_ROOT, "requests.jsonl"), JSON.stringify({scope:c.scope,ids:c.requestedArtifactIds})+"\\n");',
+        'const artifacts = c.requestedArtifactIds.map(id => id === "scoped-skill" ? {',
+        '  id,platform:"claude",target:"claude.skill",kind:"skill",state:"present",refreshKeys:[],skillKey:"scoped-helper",',
+        '  content:{files:{"SKILL.md":"---\\nname: scoped-helper\\ndescription: Scoped commands.\\n---\\n{{aw.command:native/run}}\\n{{aw.command:scoped/run}}\\n"+(c.scope === "project" ? "{{aw.command:project-tools/run}}\\n" : "")}}',
+        '} : {id,platform:"claude",target:"aw.command-set",kind:"commandSet",state:"present",refreshKeys:[],entries:[{key:"run",runner:"node",entry:"scripts/run.mjs"}]});',
+        'process.stdout.write(JSON.stringify({version:2,artifacts}));',
+      ].join('\n'),
+    });
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS]') });
+    const calls = (await fs.readFile(path.join(pluginDir, 'requests.jsonl'), 'utf8'))
+      .trim().split('\n').map((line) => JSON.parse(line));
+    expect(calls).toEqual([
+      { scope: 'user', ids: ['scoped-skill', 'command-set.native', 'command-set.scoped'] },
+      { scope: 'project', ids: ['scoped-skill', 'command-set.scoped'] },
+    ]);
+
+    await fs.writeFile(path.join(pluginDir, 'skills', nativeSkill, 'SKILL.md'), `${nativeText}{{aw.command:project-tools/run}}\n`);
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({ stdout: expect.stringContaining('commandReferenceInvalid') });
+  });
+
   it('validate_plugin.mjs isolates the dynamic artifact renderer fixture environment', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-artifact-env-'));
     tempDirs.push(tempRoot);

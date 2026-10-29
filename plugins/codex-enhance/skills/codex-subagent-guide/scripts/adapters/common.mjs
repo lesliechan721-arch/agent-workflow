@@ -32,7 +32,7 @@ function validateNegotiation(value, context) {
   context.initialization = { environment: structuredClone(value.environment), capabilities: {} };
   if (value.environment.status !== 'available') fail(value.environment.code, 'The selected CLI is unavailable. Install or repair the CLI or PATH, or correct the executor, then start a new run.');
   const capability = value.capabilities.communication;
-  if (!fields(capability, capability?.supported === true ? ['supported', 'transport', 'passiveDelivery', 'activeReceive'] : ['supported'])
+  if (!fields(capability, capability?.supported === true ? ['supported', 'transport', 'passiveDelivery'] : ['supported'])
       || typeof capability.supported !== 'boolean') fail('protocolInvalid', 'The adapter communication candidate is invalid.');
   if (capability.supported) {
     const { supported: _supported, ...details } = capability;
@@ -110,11 +110,11 @@ export async function finalOutput(target) {
   return value;
 }
 
-const instructionSections = ['common', 'mcp', 'command', 'command-argument', 'in-turn', 'turn-boundary', 'none', 'active-receive', 'no-active-receive'];
+const instructionSections = ['common', 'mcp', 'command', 'command-argument', 'in-turn', 'turn-boundary', 'none', 'active-receive'];
 
 function quoteCommand(parts, shell, preferBare = false) {
   // agy treats a quoted executable as requiring a full-line permission match.
-  if (shell === 'posix') return parts.map((part) => preferBare && part !== 'MESSAGE_TEXT' && /^[A-Za-z0-9_./:@%+=,-]+$/.test(part)
+  if (shell === 'posix') return parts.map((part) => preferBare && !['MESSAGE_TEXT', 'MESSAGE_FILE'].includes(part) && /^[A-Za-z0-9_./:@%+=,-]+$/.test(part)
     ? part : `'${part.replaceAll("'", "'\\''")}'`).join(' ');
   if (shell === 'powershell') return `& ${parts.map((part) => `'${part.replaceAll("'", "''")}'`).join(' ')}`;
   fail('communicationShellUnsupported', 'Communication commands require a verified posix or powershell command tool.');
@@ -145,11 +145,11 @@ export async function renderCommunicationInstructions(communication, bridge, bin
     if (!bridge?.script || !text(bridge.script.command) || !Array.isArray(bridge.script.args) || bridge.script.args.some((value) => !text(value))) fail('runtimeResourceInvalid', 'The communication command binding is missing.');
     const invocation = [bridge.script.command, ...bridge.script.args];
     const argumentMode = bindings.sendTextMode === 'argument';
-    values.SEND = quoteCommand([...invocation, 'send', '--text', argumentMode ? 'MESSAGE_TEXT' : '-'], bindings.shell, argumentMode);
-    values.SENDSTDIN = quoteCommand([...invocation, 'send', '--text', '-'], bindings.shell, argumentMode);
+    values.SEND = quoteCommand([...invocation, 'send', '--text', 'MESSAGE_TEXT'], bindings.shell, argumentMode);
+    values.SENDFILE = quoteCommand([...invocation, 'send', '--text-file', 'MESSAGE_FILE'], bindings.shell, argumentMode);
     values.RECEIVE = quoteCommand([...invocation, 'receive', '--timeout-ms', '600000'], bindings.shell, argumentMode);
   }
-  const selected = ['common', bindings.sendTextMode === 'argument' ? 'command-argument' : communication.transport, communication.passiveDelivery, communication.activeReceive ? 'active-receive' : 'no-active-receive'];
+  const selected = ['common', bindings.sendTextMode === 'argument' ? 'command-argument' : communication.transport, communication.passiveDelivery, 'active-receive'];
   const result = selected.map((name) => sections.get(name)).join('\n\n').replace(/@@([A-Z]+)@@/g, (_match, key) => values[key] ?? fail('runtimeResourceInvalid', 'The communication template has an undefined binding.'));
   if (/@@[A-Z]+@@/.test(result)) fail('runtimeResourceInvalid', 'The communication template contains an invalid binding.');
   return result;
@@ -339,7 +339,7 @@ export function adapterMain(moduleUrl, descriptor, help) {
         if (communication.passiveDelivery !== 'none' && typeof submitInput !== 'function') fail('bridgeInvalid', 'Passive communication requires an input submission method.');
         context.bridge = await createChildBridge({
           directory: path.join(request.runtime.directory, 'communication'), deadlineAt: request.run.deadlineAt,
-          toolkit: request.runtime.toolkit, activeReceive: communication.activeReceive,
+          toolkit: request.runtime.toolkit,
           emitParentMessage: async (text) => {
             try { await emit({ type: 'message', text }); }
             catch (error) { context.abort('channelWriteFailed'); throw error; }

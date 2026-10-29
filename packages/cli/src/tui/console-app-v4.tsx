@@ -7,6 +7,7 @@ import { Box, Text, useInput, useWindowSize } from 'ink';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import path from 'node:path';
 import {
+  getCommandPackageId,
   resolvePluginConfigObjectProperties,
   validatePluginConfigValue,
 } from '@lesliechan721/aw-plugin-core/manifest';
@@ -9629,6 +9630,17 @@ export function ConsoleAppV4(props: {
         : `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`;
     const resultStatus = blocked ? 'error' : partial ? 'warning' : 'success';
     const resultTargets = resultSummary?.targets ?? [];
+    const commandResults = resultSummary?.commandResults ?? [];
+    const retainedCommandPackage = (result: typeof commandResults[number]): boolean =>
+      result.producer.kind === 'package' && (resultSummary?.action === 'cleanup' || resultSummary?.action === 'uninstall');
+    const commandResultRows = commandResults.map((result, index) => <ResultRow
+      key={`command:${index}`}
+      title={`${retainedCommandPackage(result) ? '保留' : ''}命令${result.producer.kind === 'package' ? '包' : '生产者'} ${result.producer.key}`}
+      description={`${result.producer.sourceId}/${result.producer.pluginName} · ${scopeLabel(result.producer.scope)} · ${retainedCommandPackage(result) ? result.producer.scope === 'user' ? '所有项目共用 · ' : '当前项目内共用 · ' : ''}${result.commandIds.length} 个命令${result.removedCommandIds.length ? ` · 撤销 ${result.removedCommandIds.length} 个` : ''}${result.errors[0] ? ` · ${result.errors[0].code}` : ''}`}
+      meta={retainedCommandPackage(result) ? '保留' : result.state === 'completed' ? '完成' : result.state === 'partial' ? '部分完成' : '失败'}
+      status={result.state === 'completed' ? 'success' : result.state === 'partial' ? 'warning' : 'error'}
+      compact={policy.mode === 'compact'}
+    />);
     const hasPreservedTarget = resultTargets.some((target) =>
       target.state === 'completed' || target.state === 'kept');
     const prioritizedTargets = [...resultTargets].sort((left, right) => {
@@ -9637,7 +9649,7 @@ export function ConsoleAppV4(props: {
       return priority(left) - priority(right);
     });
     const baseResultPaginationTotal = Math.max(
-      resultTargets.length,
+      resultTargets.length + commandResults.length,
       taskSummary?.rootResults.reduce((count, root) =>
         count + 1 + (taskSummary.requestedTargets.filter((target) =>
           target.pluginId === root.pluginId).length), 0) ?? 0,
@@ -9726,6 +9738,14 @@ export function ConsoleAppV4(props: {
       ...(resultSummary?.recoveryActions ?? []),
       ...prioritizedTargets.map((target) =>
         `${resultTargetName(target)} · ${platformLabel(target.platform)} · ${scopeLabel(target.scope)} · ${operationTargetStateLabel(target.state).label}`),
+      ...commandResults.flatMap((result) => [
+        `命令生产者 ${result.producer.key} · ${scopeLabel(result.producer.scope)} · ${result.state}`,
+        ...(retainedCommandPackage(result) ? [`保留命令包 ${getCommandPackageId(result.producer)} · ${result.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'}`] : []),
+        ...result.commandIds.map((id) => `命令 ${id}`),
+        ...result.removedCommandIds.map((id) => `已撤销命令 ${id}`),
+        ...result.errors.map((error) => `${error.code}: ${error.message}`),
+        ...result.recoveryActions,
+      ]),
       ...prioritizedPortablePairs.map((pair) =>
         `${pair.skill} · ${pair.agent ?? 'Agent 未确认'} · ${portablePairStateLabel(pair)}`),
       ...(taskSummary?.rootResults ?? []).map((root) => `${root.pluginId} · ${root.state}`),
@@ -9785,14 +9805,18 @@ export function ConsoleAppV4(props: {
     const resultActionViewport = actionViewport(actions, true, focus, scrollOffset,
       currentActionViewportLineBudget);
     const resultTargetLimit = Math.max(1, prefixRowLimit(
-      prioritizedTargets.map(() => policy.mode === 'compact' ? 1 : 2),
+      [...prioritizedTargets, ...commandResults].map(() => policy.mode === 'compact' ? 1 : 2),
       pageActionBudget() - 3 - resultActionViewport.limit - resultExtraRows,
     ));
-    const resultTargetPage = pagedItems(prioritizedTargets.length, resultTargetLimit);
+    const resultTargetPage = pagedItems(prioritizedTargets.length + commandResults.length, resultTargetLimit);
     const resultTargetOffset = resultTargetPage.offset;
     const visibleResultTargets = prioritizedTargets.slice(
       resultTargetOffset,
       resultTargetOffset + resultTargetLimit,
+    );
+    const visibleCommandResultRows = commandResultRows.slice(
+      Math.max(0, resultTargetOffset - prioritizedTargets.length),
+      Math.max(0, resultTargetOffset + resultTargetLimit - prioritizedTargets.length),
     );
     const portableTechnicalSummary = showTechnical;
     const portableRows = visiblePortablePairs.map((pair) => {
@@ -9938,10 +9962,10 @@ export function ConsoleAppV4(props: {
     });
     const taskResultLimit = Math.max(1, pageActionBudget(5) - resultActionViewport.limit);
     const pluginResultRows = taskOperation ? taskSelectedPluginRows : batchPluginResultRows;
-    const locationResultRows = taskOperation ? taskLocationRows : batchLocationResultRows;
+    const locationResultRows = [...(taskOperation ? taskLocationRows : batchLocationResultRows), ...commandResultRows];
     const combinedResultRows = [...pluginResultRows, ...locationResultRows];
     const actualResultRows = taskOperation || batchOperation ? combinedResultRows.length
-      : portableOperation ? prioritizedPortablePairs.length : prioritizedTargets.length;
+      : portableOperation ? prioritizedPortablePairs.length : prioritizedTargets.length + commandResults.length;
     const actualResultPageRows = taskOperation || batchOperation ? taskResultLimit
       : portableOperation ? portableSkillLimit : resultTargetLimit;
     if (!portableResultDetailOpen && actualResultRows > actualResultPageRows) {
@@ -10009,7 +10033,7 @@ export function ConsoleAppV4(props: {
       {!portableResultDetailOpen && portableSkillPage.pageCount > 1
         ? <Pager page={portableSkillPage.page} pageCount={portableSkillPage.pageCount} columns={size.columns - 2} /> : null}
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
-    </Box> : <Box flexDirection="column"><ResultCard status={resultStatus} title={blockedDependencyFailure ? '依赖安装没有完成' : blocked ? result.writeMayHaveCompleted ? '结果未确认' : '操作未完成' : sourceOperation ? '来源配置写入已完成' : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成' : resultSummary?.message ?? '状态已变化，请重新确认'} meta={resultTargets.length > 0 ? `${resultTargets.length} 个目标` : undefined}>{resetDispositionText ? <StaticRow title={resetDispositionText} status="success" compact /> : null}{configGroupRows}{visibleResultTargets.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />; })}{resultTargetPage.pageCount > 1 ? <Pager page={resultTargetPage.page} pageCount={resultTargetPage.pageCount} columns={size.columns - 6} /> : null}{partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}{configOperation && partial && !invalidConfigResult ? <Callout status="warning" title="恢复指引" description="已保存的设置层不会重写。失败的保存层保留草稿；应用失败时只重试应用。" /> : null}{resultSummary?.elapsedMs !== undefined ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}{visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={productResultMessage(message)} status="muted" compact />)}</ResultCard><SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} /></Box>;
+    </Box> : <Box flexDirection="column"><ResultCard status={resultStatus} title={blockedDependencyFailure ? '依赖安装没有完成' : blocked ? result.writeMayHaveCompleted ? '结果未确认' : '操作未完成' : sourceOperation ? '来源配置写入已完成' : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成' : resultSummary?.message ?? '状态已变化，请重新确认'} meta={resultTargets.length > 0 ? `${resultTargets.length} 个目标` : undefined}>{resetDispositionText ? <StaticRow title={resetDispositionText} status="success" compact /> : null}{configGroupRows}{visibleResultTargets.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />; })}{visibleCommandResultRows}{resultTargetPage.pageCount > 1 ? <Pager page={resultTargetPage.page} pageCount={resultTargetPage.pageCount} columns={size.columns - 6} /> : null}{partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}{configOperation && partial && !invalidConfigResult ? <Callout status="warning" title="恢复指引" description="已保存的设置层不会重写。失败的保存层保留草稿；应用失败时只重试应用。" /> : null}{resultSummary?.elapsedMs !== undefined ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}{visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={productResultMessage(message)} status="muted" compact />)}</ResultCard><SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} /></Box>;
   } else if (route.name === 'pluginContent' && plugin) {
     const overview = props.controller.getPluginContentOverview(plugin.pluginId);
     const contentState = props.controller.getPluginContentState(plugin.pluginId);

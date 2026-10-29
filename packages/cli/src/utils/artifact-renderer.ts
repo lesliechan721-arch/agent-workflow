@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import type {
   ArtifactPlan,
   ArtifactSurface,
+  ArtifactRenderSurfaceName,
   DistributionName,
   PlatformName,
   PluginArtifactRenderScriptEntry,
@@ -42,7 +43,7 @@ import {
   type PluginProcessResult,
   type PluginScriptInvocation,
 } from './plugin-scripts.js';
-import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
+import { getArtifactSourceBundleRelativePath, resolveCommandSourceDirectory } from './artifact-sources.js';
 import { resolveArtifactRequest } from './artifact-request.js';
 import { validateArtifactPlan } from './artifact-plan.js';
 import { createArtifactRuntimeConfigSnapshots } from './runtime-config.js';
@@ -87,6 +88,7 @@ export interface ArtifactRendererContext {
     target: string;
     sourceDirs: string[];
   }>;
+  commandSources: Array<{ packageKey: string; sourceDir: string }>;
   runtimeImports: Array<{
     artifactId: string;
     name: string;
@@ -283,7 +285,7 @@ export async function writeArtifactRendererContext(options: {
   logicalIdentity?: string;
   target: ArtifactRendererTarget;
   event: ArtifactRenderEvent;
-  platform: PlatformName | DistributionName;
+  platform: ArtifactRenderSurfaceName;
   scope: Scope;
   configScope?: Scope;
   cwd: string;
@@ -307,7 +309,8 @@ export async function writeArtifactRendererContext(options: {
   }
 
   const distribution = options.platform === 'agent-skills' ? options.platform : undefined;
-  const platform = distribution ? undefined : options.platform as PlatformName;
+  const awSurface = options.platform === 'managed-commands';
+  const platform = distribution || awSurface ? undefined : options.platform as PlatformName;
   const request = resolveArtifactRequest({
     manifest: options.target.sourceManifest,
     platform: options.platform,
@@ -373,12 +376,20 @@ export async function writeArtifactRendererContext(options: {
         ),
       })),
   );
+  const packageKeys = new Set(request.declarations.flatMap((declaration) =>
+    'producer' in declaration && declaration.producer.kind === 'package' ? [declaration.producer.packageKey] : []));
+  const commandSources = await Promise.all((options.target.sourceManifest.managedCommands?.packages ?? [])
+    .filter((entry) => packageKeys.has(entry.key))
+    .map(async (entry) => ({
+      packageKey: entry.key,
+      sourceDir: await resolveCommandSourceDirectory({ bundleRoot: options.target.bundleRoot!, pluginRelativePath: entry.sourceDir }),
+    })));
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-artifact-render-'));
   try {
     const context: ArtifactRendererContext = {
       event,
-      surface: distribution
+      surface: awSurface ? { kind: 'aw', name: 'managed-commands' } : distribution
         ? { kind: 'distribution', name: distribution }
         : { kind: 'platform', name: platform! },
       platform,
@@ -395,6 +406,7 @@ export async function writeArtifactRendererContext(options: {
       requestedArtifactIds: request.requestedArtifactIds,
       previousArtifacts: options.previousArtifacts ?? [],
       artifactSources,
+      commandSources,
       runtimeImports: request.declarations
         .flatMap((target) => (target.runtimeImports ?? []).map((runtimeImport) => {
           if (!runtimeImport.resolved) {
@@ -532,7 +544,7 @@ async function runArtifactRendererProcess(options: {
 export async function runArtifactRenderer(options: {
   event: ArtifactRenderEvent;
   plugin: PluginMeta;
-  platform: PlatformName | DistributionName;
+  platform: ArtifactRenderSurfaceName;
   scope: Scope;
   configScope?: Scope;
   cwd: string;
@@ -599,12 +611,15 @@ export async function runArtifactRenderer(options: {
       tempDir: writtenContext.tempDir,
       plugin: writtenContext.context.plugin,
       event,
-      ...(options.platform === 'agent-skills'
+      ...(options.platform === 'managed-commands'
+        ? {}
+        : options.platform === 'agent-skills'
         ? { distribution: options.platform }
         : { platform: options.platform }),
       scope: options.scope,
       bundleRoot: writtenContext.context.plugin.rootDir,
     });
+    if (options.platform === 'managed-commands') spawnEnv.AW_PLUGIN_SURFACE = 'managed-commands';
     const invocation = buildArtifactRendererInvocation({
       entry: target.entry!,
       entryPath: target.entryPath!,

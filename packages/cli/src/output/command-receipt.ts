@@ -1,8 +1,10 @@
 import type { InitCommandResult } from '../commands/init.js';
+import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import type { OperationPlan } from '../commands/operation-plan.js';
 import type { RebuildResult } from '../commands/rebuild-operations.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type {
+  CommandProducerResult,
   PlatformName,
   RebuildReceiptOverallState,
   ReceiptTargetIdentity,
@@ -32,6 +34,7 @@ export interface CliCommandResult {
   operationPlan?: OperationPlan;
   targetResults?: ReceiptTargetResult[];
   codexReconcilePlans?: CodexReconcilePlan[];
+  commandResults?: CommandProducerResult[];
 }
 
 export interface RebuildReceiptTargetResult extends ReceiptTargetResult {
@@ -63,6 +66,7 @@ export interface RebuildReceiptJson {
   overallState: RebuildReceiptOverallState;
   changes: string[];
   targetResults: RebuildReceiptTargetResult[];
+  commandResults?: CommandProducerResult[];
   warnings: string[];
   recoveryActions: string[];
   planFingerprint?: string;
@@ -314,16 +318,22 @@ function receiptTargetResult(
 function overallState(
   targetResults: readonly RebuildReceiptTargetResult[],
   fallback: RebuildReceiptOverallState | undefined,
+  commandResults: readonly CommandProducerResult[] = [],
 ): RebuildReceiptOverallState {
-  if (targetResults.length === 0) return fallback ?? 'succeeded';
+  if (targetResults.length === 0 && commandResults.length === 0) return fallback ?? 'succeeded';
   const successful = targetResults.filter((target) =>
     target.state === 'completed' && target.action !== 'skipped').length;
-  if (successful === targetResults.length) return 'succeeded';
+  const successfulCommands = commandResults.filter((result) => result.state === 'completed').length;
+  if (successful === targetResults.length && successfulCommands === commandResults.length) {
+    return 'succeeded';
+  }
   const successfulRequested = targetResults.some((target) =>
     target.relation === 'requested'
     && target.state === 'completed'
     && target.action !== 'skipped');
-  return successfulRequested || fallback === 'partial' ? 'partial' : 'failed';
+  return successfulRequested || successfulCommands > 0
+    || commandResults.some((result) => result.state === 'partial')
+    || fallback === 'partial' ? 'partial' : 'failed';
 }
 
 export function buildRebuildReceiptJson(
@@ -332,7 +342,8 @@ export function buildRebuildReceiptJson(
 ): RebuildReceiptJson {
   const hasCoreEvidence = (result.targetResults?.length ?? 0) > 0
     || (result.rebuildResults?.length ?? 0) > 0
-    || (result.receiptTargets?.length ?? 0) > 0;
+    || (result.receiptTargets?.length ?? 0) > 0
+    || (result.commandResults?.length ?? 0) > 0;
   const errors = result.errors ?? (!hasCoreEvidence && result.overallState !== 'succeeded'
     ? [{
         code: result.warnings[0]?.split(':', 1)[0] || 'writeCommandFailed',
@@ -341,12 +352,17 @@ export function buildRebuildReceiptJson(
     : []);
   const targetResults = sourceTargetResults(command, result, errors)
     .map((target) => receiptTargetResult(target, result));
-  const state = overallState(targetResults, result.overallState);
+  const commandResults = [...new Map((result.commandResults ?? [])
+    .map((producer) => [getCommandPackageId(producer.producer), producer])).values()];
+  const state = overallState(targetResults, result.overallState, commandResults);
   const changes = command === 'cleanup' && state !== 'succeeded'
     ? unique(targetResults.flatMap((target) => target.changes))
     : result.operationPlan?.changes ?? unique(targetResults.flatMap((target) => target.changes));
-  const recoveryActions = unique(targetResults.flatMap((target) => target.recoveryActions));
-  if (state !== 'succeeded' && targetResults.length === 0) {
+  const recoveryActions = unique([
+    ...targetResults.flatMap((target) => target.recoveryActions),
+    ...commandResults.flatMap((producer) => producer.recoveryActions),
+  ]);
+  if (state !== 'succeeded' && targetResults.length === 0 && commandResults.length === 0) {
     recoveryActions.push(...earlyFailureRecovery(command, errors[0]?.code));
   }
   return {
@@ -362,6 +378,7 @@ export function buildRebuildReceiptJson(
     overallState: state,
     changes,
     targetResults,
+    ...(commandResults.length > 0 ? { commandResults } : {}),
     warnings: unique([
       ...result.warnings,
       ...(result.operationPlan?.warnings ?? []),
@@ -383,7 +400,7 @@ export function renderRebuildReceipt(
     failed: '失败',
   };
   return [
-    `${command} ${stateLabel[receipt.overallState]}：${receipt.targetResults.length} 个目标。`,
+    `${command} ${stateLabel[receipt.overallState]}：${receipt.targetResults.length} 个目标。${receipt.commandResults?.length ? ` ${receipt.commandResults.length} 个命令生产者。` : ''}`,
     ...receipt.changes.map((change) => `变更：${change}`),
     ...receipt.warnings.map((warning) => `警告：${warning}`),
     ...receipt.errors.map((error) => error.message),
@@ -400,6 +417,15 @@ export function renderRebuildReceipt(
           .map((failure) => `  ${failure.phase}: ${failure.message}`),
       ];
     }),
+    ...(receipt.commandResults ?? []).flatMap((result) => [
+      `- ${result.producer.sourceId}/${result.producer.pluginName} / ${result.producer.kind}:${result.producer.key} / ${result.producer.scope}: ${result.state}`,
+      ...((command === 'cleanup' || command === 'uninstall') && result.producer.kind === 'package' ? [
+        `  保留命令包 ${getCommandPackageId(result.producer)}；${result.producer.scope === 'user' ? '所有项目共用，' : '当前项目内共用，'}其资源与绑定不随平台清理移除。`,
+      ] : []),
+      ...result.commandIds.map((id) => `  命令：${id}`),
+      ...result.removedCommandIds.map((id) => `  已撤销命令：${id}`),
+      ...result.errors.map((error) => `  ${error.code}: ${error.message}`),
+    ]),
     ...receipt.recoveryActions.map((recovery) => `恢复：${recovery}`),
   ];
 }

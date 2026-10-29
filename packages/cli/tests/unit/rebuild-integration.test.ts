@@ -3640,18 +3640,22 @@ describe('rebuild adapter integration', () => {
       plugin: 'stale-permission', artifactKey: 'permissions', platform: 'claude', scope: 'user',
     });
     await fs.outputJson(settingsPath, {
+      sandbox: { enabled: true, excludedCommands: ['manual', 'owned', 'shared', 'overlap'] },
       permissions: {
+        defaultMode: 'default',
         allow: ['Manual', 'AddedLater', 'OldGenerated', 'RetainedOverlap', 'OtherGenerated'],
       },
       awGenerated: {
         permissions: {
           [stalePermissionOwner]: {
             allow: ['OldGenerated', 'RetainedOverlap', 'RemovedOverlap'], ask: [], deny: [],
+            excludedCommands: ['owned', 'shared', 'overlap'],
           },
-          other: { allow: ['OtherGenerated'], ask: [], deny: [] },
+          other: { allow: ['OtherGenerated'], ask: [], deny: [], excludedCommands: ['shared'] },
         },
         manualPermissions: {
           allow: ['Manual', 'RemovedLater', 'RetainedOverlap', 'RemovedOverlap'], ask: [], deny: [],
+          excludedCommands: ['manual', 'overlap'],
         },
       },
     });
@@ -3695,8 +3699,11 @@ describe('rebuild adapter integration', () => {
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     const settings = await fs.readJson(settingsPath);
     expect(settings.awGenerated.permissions).toEqual({
-      other: { allow: ['OtherGenerated'], ask: [], deny: [] },
+      other: { allow: ['OtherGenerated'], ask: [], deny: [], excludedCommands: ['shared'] },
     });
+    expect(settings.sandbox.enabled).toBe(true);
+    expect(settings.sandbox.excludedCommands.toSorted()).toEqual(['manual', 'overlap', 'shared']);
+    expect(settings.permissions.defaultMode).toBe('default');
     expect(settings.awGenerated.manualPermissions.allow).toHaveLength(3);
     expect(settings.awGenerated.manualPermissions.allow).toEqual(expect.arrayContaining([
       'Manual', 'AddedLater', 'RetainedOverlap',

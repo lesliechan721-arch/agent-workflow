@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import YAML from 'yaml';
+import { catalogFileMode } from '@lesliechan721/aw-plugin-core';
 import {
   validatePortableSkillDirectoriesRoot as validateCorePortableSkillDirectoriesRoot,
   validatePortableSkillDirectory as validateCorePortableSkillDirectory,
@@ -31,6 +32,7 @@ export const AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH = 'aw-plugin-requirements.json'
 export interface DynamicSkillTree {
   skillKey: string;
   files: Record<string, Buffer>;
+  fileModes?: Record<string, 0o755>;
 }
 
 export function validatePortableSkillName(value: string, fieldName = 'portable Skill name'): void {
@@ -198,6 +200,7 @@ async function collectDirectoryFiles(
   rootDir: string,
   ownerMarkerPolicy: 'reject' | 'ignore',
   requirementsReceiptPolicy: 'reject' | 'allow' | 'ignore',
+  fileModes: Record<string, 0o755>,
 ): Promise<Record<string, Buffer>> {
   const files: Record<string, Buffer> = {};
 
@@ -228,6 +231,11 @@ async function collectDirectoryFiles(
         throw new Error(`Skill 静态源只支持普通文件和目录：${relativePath}`);
       }
       files[relativePath] = await fs.readFile(absolutePath);
+      if (catalogFileMode(relativePath, (await fs.stat(absolutePath)).mode) === '100755') {
+        fileModes[relativePath] = 0o755;
+      } else {
+        delete fileModes[relativePath];
+      }
     }
   };
 
@@ -268,14 +276,17 @@ export async function validateSkillDirectory(
   if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
     throw new Error(`Skill 根路径必须是真实目录：${rootDir}`);
   }
-  const tree = {
+  const fileModes: Record<string, 0o755> = {};
+  const tree: DynamicSkillTree = {
     skillKey: path.basename(rootDir),
     files: await collectDirectoryFiles(
       rootDir,
       options?.ownerMarkerPolicy ?? 'reject',
       options?.requirementsReceiptPolicy ?? 'reject',
+      fileModes,
     ),
   };
+  if (Object.keys(fileModes).length > 0) tree.fileModes = fileModes;
   validatePresentSkillTree({
     target,
     skillKey: tree.skillKey,
@@ -325,11 +336,13 @@ export async function createDynamicSkillExpectedTree(options: {
   }
 
   const files: Record<string, Buffer> = {};
+  const fileModes: Record<string, 0o755> = {};
   for (const sourceDir of options.sourceDirs ?? []) {
     Object.assign(files, await collectDirectoryFiles(
       sourceDir,
       'reject',
       options.sourceRequirementsReceiptPolicy ?? 'reject',
+      fileModes,
     ));
   }
   for (const [relativePath, content] of Object.entries(options.artifact.content?.files ?? {})) {
@@ -345,6 +358,7 @@ export async function createDynamicSkillExpectedTree(options: {
       throw new Error(`Skill renderer 不能声明保留文件 ${AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH}。`);
     }
     files[relativePath] = Buffer.from(content, 'utf8');
+    delete fileModes[relativePath];
   }
   if (options.requirementsReceipt) {
     const existingReceipt = files[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH];
@@ -362,6 +376,7 @@ export async function createDynamicSkillExpectedTree(options: {
       }
     }
     files[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH] = options.requirementsReceipt;
+    delete fileModes[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH];
   }
   validatePresentSkillTree({
     target: options.artifact.target,
@@ -375,7 +390,7 @@ export async function createDynamicSkillExpectedTree(options: {
     }
   }
 
-  return { skillKey, files };
+  return { skillKey, files, ...(Object.keys(fileModes).length > 0 ? { fileModes } : {}) };
 }
 
 export function createDynamicSkillTreeContentDigest(tree: DynamicSkillTree): string {
@@ -388,6 +403,7 @@ export function createDynamicSkillTreeContentDigest(tree: DynamicSkillTree): str
     contentLength.writeBigUInt64BE(BigInt(content.length));
     hash.update(pathLength);
     hash.update(relativePathBytes);
+    hash.update(catalogFileMode(relativePath, tree.fileModes?.[relativePath] ?? 0o644));
     hash.update(contentLength);
     hash.update(content);
   }
@@ -430,6 +446,8 @@ export async function skillDirectoryMatchesExpectedTree(
       if (!entry.isFile()) return false;
       const expected = expectedFiles.get(relativePath);
       if (!expected || !expected.equals(await fs.readFile(absolutePath))) return false;
+      if (catalogFileMode(relativePath, (await fs.stat(absolutePath)).mode)
+        !== catalogFileMode(relativePath, tree.fileModes?.[relativePath] ?? 0o644)) return false;
       seenFiles.add(relativePath);
     }
   }
@@ -524,6 +542,7 @@ export async function writeDynamicSkillTree(
     for (const [relativePath, content] of entries) {
       const targetPath = path.join(stagingRoot, relativePath.split('/').join(path.sep));
       await fs.writeFile(targetPath, content);
+      await fs.chmod(targetPath, tree.fileModes?.[relativePath] ?? 0o644);
       writtenPaths.push(path.join(rootDir, relativePath.split('/').join(path.sep)));
     }
     if (ownership) {
@@ -572,11 +591,12 @@ export async function readDynamicSkillTree(
   if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
     throw new Error(`Skill runtime 根路径必须是真实目录：${rootDir}`);
   }
-  const files = await collectDirectoryFiles(rootDir, 'ignore', 'allow');
+  const fileModes: Record<string, 0o755> = {};
+  const files = await collectDirectoryFiles(rootDir, 'ignore', 'allow', fileModes);
   if (!files[SKILL_FILE_PATH] || (target === 'codex.skill' && !files[CODEX_OPENAI_YAML_PATH])) {
     return null;
   }
-  const tree = { skillKey: path.basename(rootDir), files };
+  const tree = { skillKey: path.basename(rootDir), files, ...(Object.keys(fileModes).length > 0 ? { fileModes } : {}) };
   validatePresentSkillTree({
     target,
     skillKey: tree.skillKey,

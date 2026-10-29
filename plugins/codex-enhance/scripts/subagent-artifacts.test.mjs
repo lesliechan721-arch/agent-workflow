@@ -142,6 +142,47 @@ test('shares one profile definition, preserves defaults and declares exact consu
   }
   assert.deepEqual(manifest.marketplace.policy.products, ['CODEX']);
   assert.ok(manifest.requires.aw.capabilities.includes('aw.installed-runtime-config.v2'));
+  assert.ok(manifest.requires.aw.capabilities.includes('aw.managed-commands.v1'));
+  assert.deepEqual(manifest.managedCommands.packages ?? [], []);
+  assert.equal(manifest.managedCommands.sets.length, 1);
+  const [guideSet] = manifest.managedCommands.sets;
+  assert.equal(guideSet.set, 'guide');
+  assert.deepEqual(guideSet.producer, { kind: 'artifact', artifactId: 'codex-subagent-guide-skill' });
+  assert.equal(guideSet.mode, 'static');
+  assert.equal(guideSet.entries.length, 1);
+  const [guideCommand] = guideSet.entries;
+  const { variant = 'default', args = [], env = {}, envFrom = {}, cwd = 'caller' } = guideCommand;
+  const commandReference = { set: guideSet.set, key: guideCommand.key, variant };
+  assert.deepEqual(commandReference, { set: 'guide', key: 'subagent', variant: 'default' });
+  assert.equal(guideCommand.runner, 'node');
+  assert.equal(guideCommand.entry, 'scripts/subagent.mjs');
+  // Source omits launch defaults; a bundle can make them explicit without
+  // changing the Guide's public invocation or caller-directory behavior.
+  assert.deepEqual(args, []);
+  assert.deepEqual(env, {});
+  assert.deepEqual(envFrom, {});
+  assert.equal(cwd, 'caller');
+  assert.equal(manifest.extensions.permissions.length, 1);
+  const [permission] = manifest.extensions.permissions;
+  assert.equal(permission.name, 'subagent-commands');
+  assert.deepEqual(permission.allow.map((entry) => ({
+    command: { variant: 'default', ...entry.command },
+    argsPrefix: entry.argsPrefix,
+  })).sort((a, b) => a.argsPrefix[0].localeCompare(b.argsPrefix[0])),
+  ['start', 'send', 'wait', 'result', 'stop'].sort().map((verb) => ({
+    command: commandReference, argsPrefix: [verb],
+  })));
+  assert.deepEqual(permission.ask ?? [], []);
+  assert.deepEqual(permission.deny ?? [], []);
+  assert.equal(permission.agentOverrides.claude, null);
+  assert.equal(permission.agentOverrides.codex, undefined);
+  const managed = manifest.config.fields.subagentCommands.items.variants.cases['custom-managed'];
+  assert.deepEqual(Object.keys(managed.properties), ['mode', 'commandId']);
+  assert.equal(managed.properties.commandId.required, true);
+  const commandPattern = new RegExp(managed.properties.commandId.validation.pattern);
+  assert.ok(commandPattern.test(`cmdp_${'a'.repeat(64)}`));
+  assert.ok(commandPattern.test('cmdu_4ba70354-0867-4ecb-a927-120c1933f514'));
+  assert.equal(commandPattern.test('guide'), false);
   assert.ok(manifest.requires.aw.capabilities.includes('aw.plugin-config.v4'));
   assert.equal(manifest.requires.aw.capabilities.includes('aw.installed-runtime-config.v1'), false);
   assert.deepEqual(manifest.artifacts.targets.map((item) => item.id), ids);
@@ -228,6 +269,7 @@ test('renders adapter modes only in the Guide external reference', async () => {
     { key: 'agy', adapter: 'antigravity', communication: false },
     { key: 'oracle', adapter: 'oracle', envFrom: { SECRET: 'HOST_SECRET' } },
     { key: 'custom', adapter: 'custom', mode: 'bundle', command: '/not-invoked/adapter' },
+    { key: 'managed', adapter: 'custom-managed', mode: 'workspace', commandId: `cmdp_${'a'.repeat(64)}` },
   ];
   const expected = [
     ['codex', 'workspace'],
@@ -235,6 +277,7 @@ test('renders adapter modes only in the Guide external reference', async () => {
     ['agy', 'workspace'],
     ['oracle', 'bundle'],
     ['custom', 'bundle'],
+    ['managed', 'workspace'],
   ];
   for (const scope of ['user', 'project']) {
     const baseline = await renderArtifactPlan({ ...context(), scope, requestedArtifactIds: ids });
@@ -247,7 +290,7 @@ test('renders adapter modes only in the Guide external reference', async () => {
     }
     const reference = plan.artifacts.find((item) => item.id === 'codex-subagent-guide-skill')
       .content.files['references/external-delegation.md'];
-    for (const privateValue of ['literal-value', 'HOST_SECRET', '/not-invoked/adapter']) {
+    for (const privateValue of ['literal-value', 'HOST_SECRET', '/not-invoked/adapter', `cmdp_${'a'.repeat(64)}`]) {
       assert.equal(reference.includes(privateValue), false);
     }
   }

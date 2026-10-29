@@ -83,6 +83,15 @@ export function deriveAwCapabilitiesFromManifest(
       capabilities.push('aw.plugin-config-summary.v1')
     }
   }
+  const permissions = manifest.extensions?.permissions ?? []
+  if (manifest.managedCommands !== undefined || permissions.some((entry) =>
+    [entry, entry.agentOverrides?.codex, entry.agentOverrides?.claude].some((permission) =>
+      permission && [permission.allow, permission.ask, permission.deny].some((items) => items?.some((item) => typeof item !== 'string'))))) {
+    capabilities.push('aw.managed-commands.v1')
+  }
+  if (permissions.some((entry) => entry.agentOverrides?.claude?.sandbox !== undefined)) {
+    capabilities.push('aw.managed-commands.v1', 'aw.claude.sandbox-exclusions.v1')
+  }
   if (manifest.scripts?.preApply) capabilities.push('aw.plugin-pre-apply.v1')
   if ((manifest.artifacts?.targets?.length ?? 0) > 0) capabilities.push('aw.dynamic-artifacts.v2')
   if ((manifest.artifacts?.targets ?? []).some((target) => target.runtimeConfig !== undefined)) {
@@ -123,6 +132,7 @@ const CATALOG_DEV_SOURCE_CAPABILITY = 'aw.catalog-dev-source.v1' satisfies Regis
 
 function commandCapabilities(group: string, command: string | undefined, tail: string): AwCapabilityId[] {
   if (command === undefined) return []
+  if (group === 'command') return ['aw.managed-commands.v1']
   if (group === 'config') return [CONFIG_CAPABILITY]
   if (group === 'catalog' && command === 'source') return [CATALOG_SOURCE_CAPABILITY]
   if (group === 'catalog' && command === 'dev') return [CATALOG_DEV_SOURCE_CAPABILITY]

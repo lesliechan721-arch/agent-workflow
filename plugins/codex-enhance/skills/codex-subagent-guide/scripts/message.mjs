@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { pathToFileURL } from 'node:url';
 import { LIMITS, RuntimeError, fail } from './runtime/contracts.mjs';
-import { readStdin } from './runtime/files.mjs';
+import { readInputFile } from './runtime/files.mjs';
 import { formatChildResponse, invokeChildTool } from './runtime/adapter-channel.mjs';
 
 const HELP = `Child communication tools
 Usage: <generated command> send --text TEXT
-       <generated command> send --text -
+       <generated command> send --text-file PATH
        <generated command> receive [--timeout-ms N]
 
 Send submits one message to the parent channel. It does not wait for a reply.
@@ -15,7 +15,8 @@ N must be an integer from 0 to 1800000. Text must contain 1 to 4096 UTF-8 bytes.
 Inputs already submitted to model context are not replayed by receive.
 `;
 
-export async function runMessage(argv, { stdin = process.stdin, stdout = process.stdout, stderr = process.stderr } = {}) {
+export async function runMessage(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
+  const callerCwd = process.cwd();
   if ((argv.length === 1 && ['--help', '-h'].includes(argv[0])) || (argv.length === 3 && argv[0] === '--bridge' && ['--help', '-h'].includes(argv[2]))) { stdout.write(HELP); return 0; }
   let operation = 'receive';
   try {
@@ -23,8 +24,8 @@ export async function runMessage(argv, { stdin = process.stdin, stdout = process
     const bindingFile = argv[1]; operation = argv[2];
     const rest = argv.slice(3); let text; let timeoutMs;
     if (operation === 'send') {
-      if (rest.length !== 2 || rest[0] !== '--text') fail('invalidArguments', 'Use send --text TEXT or send --text -.');
-      text = rest[1] === '-' ? await readStdin(stdin, LIMITS.messageBytes, 'messageTooLarge') : rest[1];
+      if (rest.length !== 2 || !['--text', '--text-file'].includes(rest[0]) || typeof rest[1] !== 'string' || rest[1] === '-') fail('invalidArguments', 'Use send with exactly one --text TEXT or --text-file PATH input. A single hyphen is not an input.');
+      text = rest[0] === '--text-file' ? await readInputFile(rest[1], LIMITS.messageBytes, 'messageTooLarge', callerCwd) : rest[1];
     } else if (operation === 'receive') {
       if (rest.length) {
         if (rest.length !== 2 || rest[0] !== '--timeout-ms' || !/^(0|[1-9][0-9]*)$/.test(rest[1])) fail('invalidArguments', 'Use receive with an optional --timeout-ms integer.');
@@ -38,7 +39,7 @@ export async function runMessage(argv, { stdin = process.stdin, stdout = process
     const code = error instanceof RuntimeError ? error.code : 'childToolFailed';
     const message = error instanceof RuntimeError ? error.message : 'The child tool operation failed.';
     stderr.write(`diagnostic: error\ncode: ${code}\nmessage: ${JSON.stringify(message)}\n`);
-    return ['invalidArguments', 'messageInvalid', 'messageTooLarge', 'stdinInteractive', 'binaryUnsupported'].includes(code) ? 2 : 1;
+    return ['invalidArguments', 'messageInvalid', 'messageTooLarge', 'inputFileInvalid'].includes(code) ? 2 : 1;
   }
 }
 

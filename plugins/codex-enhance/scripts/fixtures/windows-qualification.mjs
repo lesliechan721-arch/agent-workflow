@@ -1,5 +1,17 @@
 // Shared by the native qualification and its protocol regression tests.
-export function field(text, key) { return text.replace(/^BEGIN_(MESSAGE|INPUT|FINAL|DIAGNOSTIC):([a-f0-9]{8})\n[\s\S]*?\nEND_\1:\2\n/gm, '').match(new RegExp(`^${key}: (.*)$`, 'm'))?.[1]; }
+export function field(text, key) {
+  const expression = /^<((?:message|input|result|diagnostic)(?:_[0-9]+)?)([^>\n]*)>\n([\s\S]*?)\n<\/\1>\n/gm;
+  const attributes = [...text.matchAll(expression)].map((match) => match[2]);
+  const controls = text.replace(expression, '');
+  const value = controls.match(new RegExp(`(?:^| )${key}=([^ \\n]+)`, 'm'))?.[1]
+    ?? attributes.map((properties) => properties.match(new RegExp(`(?:^| )${key}="([^"]*)"`))?.[1]).find((entry) => entry !== undefined);
+  if (value !== undefined) return value;
+  if (key === 'run') return controls.match(/^(?:started|starting|start_failed|ready|queued|stopped|stopping|deferred|exported) (aw5-[a-f0-9]{32}-[a-f0-9]{32})\b/m)?.[1];
+  if (key === 'state') {
+    if (/^starting /m.test(controls)) return 'starting';
+    if (/^(?:started|ready) /m.test(controls)) return 'running';
+  }
+}
 
 export const qualificationAdapter = String.raw`
 import fs from 'node:fs/promises';
@@ -26,7 +38,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     backend = spawn(process.execPath, ['-e', "setTimeout(()=>process.exit(4),300000);process.on('message',()=>process.exit(0));process.on('disconnect',()=>process.exit(0))"],
       { env: process.env, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], detached: false });
     closed = new Promise((resolve) => backend.once('close', resolve));
-    emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } } } });
+    emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' } } } });
     timer = setInterval(async () => { if (await fs.stat(process.env.FIXTURE_FINISH).catch(() => null)) await finish(false); }, 30);
   } else if (frame.type === 'message') {
     await fs.writeFile(process.env.FIXTURE_INPUT, JSON.stringify({ text: frame.text }));
@@ -42,7 +54,7 @@ export async function waitForCommunication(response, command, { timeoutMs = 6000
   let value = response;
   for (;;) {
     const state = field(value.stdout, 'state');
-    const code = field(value.stdout, 'code');
+    const code = field(value.stderr ?? '', 'code') ?? field(value.stdout, 'code');
     if (['completed', 'failed', 'cancelled', 'unknown'].includes(state) ||
       value.exit !== 0 && !(state === 'starting' && code === 'startupNotReady')) {
       throw Object.assign(new Error('The run did not become ready.'), { code: 'readinessFailed', details: {

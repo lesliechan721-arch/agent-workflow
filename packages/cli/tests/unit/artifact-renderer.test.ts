@@ -602,6 +602,55 @@ describe('artifact renderer runtime', () => {
     })).not.toThrow();
   });
 
+  // Test Value Gate: a command renderer cannot receive another target's secret
+  // through a combined request; the sensitive target must retain its own input.
+  it('keeps command targets out of sensitive renderer contexts', async () => {
+    const root = await makeTempRoot('aw-command-renderer-isolation-');
+    const cwd = path.join(root, 'repo');
+    await fs.ensureDir(cwd);
+    const manifest = createManifest() as PluginMeta['manifest'];
+    manifest.artifacts!.targets = [
+      { id: 'safe-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'safe-skill' },
+      { id: 'sensitive-instruction', platform: 'codex', scopes: ['user'], target: 'codex.developerInstructionsBlock', states: ['present'], refreshKeys: ['token'] },
+      { id: 'safe-role', platform: 'codex', scopes: ['user'], target: 'codex.agentRole', states: ['present'], refreshKeys: ['explorerModel'], roleKey: 'safe-role' },
+    ];
+    manifest.managedCommands = {
+      packages: [],
+      sets: [{ set: 'tools', producer: { kind: 'artifact', artifactId: 'safe-skill' }, mode: 'dynamic', refreshKeys: [] }],
+    };
+    const batches = resolveAwDeliveredArtifactRequestBatches({ manifest, platform: 'codex', scope: 'user' });
+    expect(batches).toEqual([
+      ['safe-skill', 'command-set.tools'],
+      ['sensitive-instruction', 'safe-role'],
+    ]);
+    expect(() => resolveArtifactRequest({ manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['command-set.tools', 'sensitive-instruction'] }))
+      .toThrow('artifactRendererSensitiveRequestMixed');
+
+    const plugin = await writePlugin(root, manifest);
+    const env = { AW_HOME: path.join(root, 'aw-home'), AW_CODEX_HOME: path.join(root, 'codex-home'), AW_CLAUDE_HOME: path.join(root, 'claude-home') };
+    const secret = 'fixture-sensitive-token-value';
+    await writePluginConfigStore({ pluginName: plugin.manifest.name, scope: 'user', cwd, env, values: { token: secret } });
+    const target = await resolveArtifactRendererTarget(plugin);
+    for (const requestedArtifactIds of batches) {
+      const written = await writeArtifactRendererContext({ target, event: 'install', platform: 'codex', scope: 'user', cwd, commandEnv: env, requestedArtifactIds });
+      try {
+        const context = await fs.readJson(written.contextPath);
+        if (requestedArtifactIds.includes('command-set.tools')) {
+          expect(context.config.values).not.toHaveProperty('token');
+          expect(context.config.schema).not.toHaveProperty('token');
+          expect(context.config.sources).not.toHaveProperty('token');
+          expect(await fs.readFile(written.contextPath, 'utf8')).not.toContain(secret);
+        } else {
+          expect(context.config.values.token).toBe(secret);
+        }
+      } finally {
+        await fs.remove(written.tempDir);
+      }
+    }
+    await expect(writeArtifactRendererContext({ target, event: 'install', platform: 'codex', scope: 'user', cwd, commandEnv: env, requestedArtifactIds: ['command-set.tools', 'sensitive-instruction'] }))
+      .rejects.toThrow('artifactRendererSensitiveRequestMixed');
+  });
+
   it('runs each renderer with the isolated homes declared in its context', async () => {
     const root = await makeTempRoot('aw-artifact-renderer-isolated-home-');
     const cwd = path.join(root, 'repo');
