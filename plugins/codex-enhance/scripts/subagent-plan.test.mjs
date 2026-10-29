@@ -132,9 +132,11 @@ test('managed host validation fixes nested AW argv and environment without expos
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: directory };
   const environment = { AW_HOME: directory, AW_COMMAND_HOST: JSON.stringify(host), AW_COMMAND_OLD: 'old', AW_PLUGIN_CONTEXT: 'temporary', SOURCE: '', KEEP: 'original' };
   await assert.rejects(validateCommandHost({ AW_HOME: directory }), { code: 'managedCommandHostMissing' });
-  for (const raw of ['{', '{}', JSON.stringify({ ...host, schemaVersion: 2 }), JSON.stringify({ ...host, awHome: '/different' }), JSON.stringify({ ...host, cliEntry: directory }), JSON.stringify({ ...host, nodeExecutable: cliEntry }), JSON.stringify({ ...host, unexpected: true })]) {
+  for (const raw of ['{', '{}', JSON.stringify({ ...host, schemaVersion: 2 }), JSON.stringify({ ...host, awHome: '/different' }), JSON.stringify({ ...host, cliEntry: directory }), JSON.stringify({ ...host, nodeExecutable: directory }), JSON.stringify({ ...host, nodeExecutable: path.join(directory, 'missing-node') }), JSON.stringify({ ...host, unexpected: true })]) {
     await assert.rejects(validateCommandHost({ ...environment, AW_COMMAND_HOST: raw }), { code: 'managedCommandHostInvalid' });
   }
+  // X_OK checks execution permissions on POSIX; Windows treats it as F_OK.
+  if (process.platform !== 'win32') await assert.rejects(validateCommandHost({ ...environment, AW_COMMAND_HOST: JSON.stringify({ ...host, nodeExecutable: cliEntry }) }), { code: 'managedCommandHostInvalid' });
   const commandId = 'cmdu_4ba70354-0867-4ecb-a927-120c1933f514';
   const args = ['', '中文\nargument', '--option'];
   const plan = select({ adapter: 'custom-managed', mode: 'workspace', commandId, args, env: { KEEP: 'executor' }, envFrom: { EMPTY: 'SOURCE' } });

@@ -6,6 +6,7 @@ export function field(text, key) {
   const value = controls.match(new RegExp(`(?:^| )${key}=([^ \\n]+)`, 'm'))?.[1]
     ?? attributes.map((properties) => properties.match(new RegExp(`(?:^| )${key}="([^"]*)"`))?.[1]).find((entry) => entry !== undefined);
   if (value !== undefined) return value;
+  if (key === 'delivery' && /^queued aw5-[a-f0-9]{32}-[a-f0-9]{32}\b/m.test(controls)) return 'queued';
   if (key === 'run') return controls.match(/^(?:started|starting|start_failed|ready|queued|stopped|stopping|deferred|exported) (aw5-[a-f0-9]{32}-[a-f0-9]{32})\b/m)?.[1];
   if (key === 'state') {
     if (/^starting /m.test(controls)) return 'starting';

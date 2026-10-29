@@ -88,6 +88,7 @@ test('Windows host failures retain only safe execution and parse diagnostics', a
   let selected; let budget;
   const api = await windowsHostFixture(t, async (command, args, options) => {
     budget = options.timeout;
+    assert.ok(budget > 15000 && budget <= 30000, 'PowerShell needs cold-start headroom and a bounded timeout.');
     if (selected.error) throw Object.assign(new Error(secret), { cmd: secret, stdout: secret, stderr: secret, ...selected.error });
     return { stdout: selected.stdout };
   });

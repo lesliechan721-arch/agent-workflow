@@ -9,15 +9,19 @@ import { Readable } from 'node:stream';
 import { syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
 import { validateDiagnostics } from '../skills/codex-subagent-guide/scripts/runtime/contracts.mjs';
+import { field } from './fixtures/windows-qualification.mjs';
 
 // Queue and output selection tests use real runtime modules and real files.
-// Only Windows PowerShell identity, ACL and directory-move calls are replaced;
+// Windows identity, ACL, directory-move and process-table calls are replaced;
 // the native runtime suite owns their real OS behavior and worker lifecycle.
 const originalExecFile = childProcess.execFile;
 let commands, store, files, output, cli;
 try {
   childProcess.execFile = Object.assign(() => {}, { [promisify.custom]: async (_command, _args, options) => {
     if (path.basename(_command).toLowerCase() === 'whoami.exe') return { stdout: '"fixture","S-1-5-21-123-456-789-1001"\r\n' };
+    if (options.env.AW_SUBAGENT_NATIVE_OPERATION === 'processTable') return { stdout: JSON.stringify([
+      { pid: process.pid, ppid: process.ppid, pgid: null, started: '123456789' },
+    ]) };
     const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString('utf8'));
     if (input.source && input.destination) await fs.rename(input.source, input.destination);
     else if (!input.target && !input.resources && Object.keys(input).length) throw new Error('Unexpected native runtime operation.');
@@ -62,7 +66,7 @@ async function fixture(t, sharedContext) {
   const run = await store.createRun(context, 'fixture', directory);
   // There is no worker in this suite. This cached identity is the native process
   // observation boundary for sendInput, which otherwise uses the real store.
-  run.meta.worker = { pid: process.pid, started: 'fixture-worker' };
+  run.meta.worker = { pid: process.pid, started: process.platform === 'win32' ? '123456789' : 'fixture-worker' };
   context.table = [run.meta.worker];
   run.snapshot = { state: 'running', ready: true, sequence: 2, initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' } } }, initializationSequence: 2 };
   await files.atomicJson(path.join(run.directory, 'owner.json'), run.meta);
@@ -87,7 +91,12 @@ async function fixture(t, sharedContext) {
 test('queued inputs preserve original text and fixed delivery gaps without duplicate blocks', async (t) => {
   const f = await fixture(t);
   const messages = Array.from({ length: 66 }, (_, index) => `${index}:` + 'x'.repeat(4000));
-  for (const text of messages) assert.equal((await commands.sendInput(f.context, { ...f.request, text })).text, `queued ${f.run.handle}\n`);
+  for (const text of messages) {
+    const response = await commands.sendInput(f.context, { ...f.request, text });
+    assert.equal(response.exitCode, 0);
+    assert.equal(response.text, `queued ${f.run.handle}\n`);
+    assert.equal(field(response.text, 'delivery'), 'queued');
+  }
   await f.complete();
   const destination = path.join(f.run.directory, 'export.txt');
   const exported = await commands.readResult(f.context, { ...f.request, outputFile: destination });
