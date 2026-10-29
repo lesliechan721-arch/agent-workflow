@@ -426,7 +426,7 @@ describe('status v8 current behavior', () => {
     expect(target.components).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'systemConsumer', key: 'codex:user', state: 'missing',
-        metadata: { evidence: 'assumed', requiredMinVersion: '0.145.0' },
+        metadata: { evidence: 'assumed', requiredMinVersion: '0.151.0' },
       }),
       expect.objectContaining({
         kind: 'systemConsumer', key: 'codex:project', state: 'missing',
@@ -2035,7 +2035,7 @@ describe('status v8 current behavior', () => {
     expect(result.payload.targets).toEqual([expect.objectContaining({
       state: 'blocked',
       reasons: expect.arrayContaining([
-        expect.objectContaining({ code: 'codexProjectPluginVersionTooLow' }),
+        expect.objectContaining({ code: 'codexSystemCliUnsupported' }),
       ]),
       recoveryActions: [{
         command: 'manual',
@@ -2045,7 +2045,7 @@ describe('status v8 current behavior', () => {
     expect(statusTargetActivation(result.payload.targets[0]!)).toMatchObject({
       evidence: 'unobserved',
       systemConsumer: {
-        state: 'incompatible', code: 'codexProjectPluginVersionTooLow',
+        state: 'incompatible', code: 'codexSystemCliUnsupported',
         detectedVersion: '0.150.0',
       },
     });
@@ -2055,7 +2055,7 @@ describe('status v8 current behavior', () => {
     expect(nativeRunner).not.toHaveBeenCalled();
   });
 
-  it('uses the user requirement for default-scope status with only user desired intent', async () => {
+  it('blocks Codex 0.150 for default-scope status with only user desired intent', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'user-low-codex-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
@@ -2089,19 +2089,25 @@ describe('status v8 current behavior', () => {
       setNativeCliRunnerOverrideForTests(null);
     }
 
-    expect(result.payload.targets[0]).toMatchObject({ state: 'needsSync' });
+    expect(result.payload.targets[0]).toMatchObject({
+      state: 'blocked',
+      reasons: expect.arrayContaining([
+        expect.objectContaining({ code: 'codexSystemCliUnsupported' }),
+      ]),
+    });
     const target = result.payload.targets[0]!;
     expect(target.platform).toBe('codex');
     expect(statusTargetIntent(target.placements.find((entry) => entry.scope === 'user')!)).toEqual({
       enabled: true, scopes: ['user'], relation: 'root',
     });
     expect(statusTargetActivation(result.payload.targets[0]!)).toMatchObject({
-      evidence: 'observed',
+      evidence: 'unobserved',
       systemConsumer: {
-        state: 'compatible', detectedVersion: '0.150.0', requiredMinVersion: '0.145.0',
+        state: 'incompatible', code: 'codexSystemCliUnsupported',
+        detectedVersion: '0.150.0', requiredMinVersion: '0.151.0',
       },
     });
-    expect(nativeRunner).toHaveBeenCalledTimes(2);
+    expect(nativeRunner).not.toHaveBeenCalled();
   });
 
   it.runIf(process.platform !== 'win32').each([
@@ -2217,7 +2223,7 @@ describe('status v8 current behavior', () => {
     expect(result.payload.targets).toEqual([expect.objectContaining({
       state: 'blocked',
       reasons: expect.arrayContaining([
-        expect.objectContaining({ code: 'codexProjectPluginUnsupported' }),
+        expect.objectContaining({ code: 'codexSystemCliUnsupported' }),
       ]),
       recoveryActions: [{
         command: 'manual',
@@ -2227,7 +2233,7 @@ describe('status v8 current behavior', () => {
     expect(statusTargetActivation(result.payload.targets[0]!)).toMatchObject({
       evidence: 'unobserved',
       systemConsumer: expect.objectContaining({
-        state: 'unresolved', code: 'codexProjectPluginUnsupported',
+        state: 'unresolved', code: 'codexSystemCliUnsupported',
       }),
     });
     expect(statusTargetSharedNative(result.payload.targets[0]!)).toMatchObject({

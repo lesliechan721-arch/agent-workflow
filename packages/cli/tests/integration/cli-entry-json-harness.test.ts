@@ -445,11 +445,8 @@ describe('CLI JSON Status v8 and Receipt v6 harness', () => {
     expect(commands[`${command}WriteCommand` as keyof typeof commands]).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    'codexProjectPluginVersionTooLow',
-    'codexProjectPluginUnsupported',
-    'codexSystemCliUnsupported',
-  ])('emits only the official system Codex CLI recovery for %s', async (code) => {
+  it('emits only the official system Codex CLI recovery for an unsupported consumer', async () => {
+    const code = 'codexSystemCliUnsupported';
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-write-json-codex-recovery-'));
     tempDirs.push(tempDir);
     const error = Object.assign(new Error(`${code}: consumer probe failed`), { code });

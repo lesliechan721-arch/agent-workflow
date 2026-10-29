@@ -78,8 +78,8 @@ CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。�
 | `pnpm test:smoke:decision-kit-browser` | 使用 Playwright Chromium 驱动真实 `decision-prototype` Review `start/wait` 会话，校验预览、标注、反馈校验、键盘提交和会话清理 |
 | `pnpm test:qualification:codex-project-native:harness` | 使用 fake executable 验证 qualification harness 的解析、隔离、脱敏、精确版本门禁和 schema；不提供 native 支持证据 |
 | `pnpm qualification:codex-project-native` | 使用 PATH 中精确 `codex-cli 0.151.0` 运行离线真实 qualification，并输出单个 schema 1 JSON report |
-| `pnpm test:qualification:codex-native-performance:harness` | 使用 fake executable 验证三个版本的参数、隔离、缺失 binary 和报告合同；不提供真实性能证据 |
-| `pnpm qualification:codex-native-performance` | 使用显式提供的精确 `0.145.0`、`0.151.0` 或 `0.153.0` binary，运行五次本地 native plugin 安装并输出 schema 1 JSON report |
+| `pnpm test:qualification:codex-native-performance:harness` | 使用 fake executable 验证两个版本的参数、隔离、缺失 binary 和报告合同；不提供真实性能证据 |
+| `pnpm qualification:codex-native-performance` | 使用显式提供的精确 `0.151.0` 或 `0.153.0` binary，运行五次本地 native plugin 安装并输出 schema 1 JSON report |
 | `pnpm test:qualification:windows-job:harness` | 在非 Windows 主机验证 qualification 的 timeout 配置和 AbortSignal 确实进入生产 runner；不提供 Windows 支持证据 |
 | `pnpm qualification:windows-job` | 在真实 Windows 主机验证 stdio、退出码、快速成功、正常 root 退出后的后代、嵌套后代、forced helper exit、生产 timeout、生产 abort 和 parent crash 清理；mock 和非 Windows 运行不提供此证据 |
 
@@ -97,7 +97,7 @@ Codex project native qualification 是显式 suite。它不得由 `pnpm test`、
 
 Harness 的确定性测试可以使用 fake executable，但 fake 只验证 runner 本身。native kind 的 `supported` 结果、project activation 和 trust 行为只能来自显式真实 qualification；无法从 `0.151.0` 离线 JSON 或行为证明的 kind 必须报告 `unsupported`。
 
-Native performance qualification 必须通过 `CODEX_QUALIFICATION_VERSION` 选择 `0.145.0`、`0.151.0` 或 `0.153.0`，并通过 `CODEX_QUALIFICATION_CLI` 提供本机已有的精确 binary。runner 不自动下载。每个 sample 使用新的临时 home、项目和 local marketplace。三个版本都验证 marketplace-scoped JSON list；`0.153.0` 还要求该 local list 在阻断 proxy 时成功。代表性 local native install 的五次同机中位数必须低于 15 秒；有可比较旧实现证据时，也可接受改善至少 70%。binary 缺失或版本不精确时必须报告未运行或失败，不能用 fake harness 代替。
+Native performance qualification 必须通过 `CODEX_QUALIFICATION_VERSION` 选择 `0.151.0` 或 `0.153.0`，并通过 `CODEX_QUALIFICATION_CLI` 提供本机已有的精确 binary。runner 不自动下载。每个 sample 使用新的临时 home、项目和 local marketplace。两个版本都验证 marketplace-scoped JSON list；`0.153.0` 还要求该 local list 在阻断 proxy 时成功。代表性 local native install 的五次同机中位数必须低于 15 秒；有可比较旧实现证据时，也可接受改善至少 70%。binary 缺失或版本不精确时必须报告未运行或失败，不能用 fake harness 代替。
 
 Windows Job containment 的确定性测试只验证配置编码、Windows argv quoting、manifest、PE header、调用路由和关闭等待合同。普通 `pnpm build` 只运行 manifest/hash/PE 校验，不要求 Go。强 release verification 运行 `pnpm windows-job:reproducibility`；它要求 manifest 记录的精确 Go 版本，并使用固定 `GOAMD64=v1`、`GOARM64=v8.0`、关闭用户 Go env/flags/experiments/toolchain 自动选择、隔离 module/workspace/cache 后重建两个 PE，再逐字节比较。Go 缺失、版本不同或 binary 不可复现时停止 release。真实支持证据只能来自对应架构的 Windows 主机运行 `pnpm qualification:windows-job`。该入口的 timeout 必须来自生产 runner 的真实 `timeoutMs`，abort 必须来自传入生产 runner 的 `AbortSignal`；forced helper exit 是独立场景。每个清理场景确认记录的 root 和后代 PID 已退出。macOS 交叉编译或 mock 成功不能关闭此 qualification gap。
 
@@ -161,7 +161,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 | Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |
 | Codex shared native/project activation qualification | 独立 qualification | `pnpm test:qualification:codex-project-native:harness`，并在支持的本机运行 `pnpm qualification:codex-project-native`；Windows 未实跑时必须报告证据缺口 |
-| Codex native 性能与版本合同 | Unit + Integration + 独立 qualification | Codex observation/native CLI 定向 unit、grouped write 与 Git batch integration、`pnpm test:qualification:codex-native-performance:harness`；有精确 binary 时分别运行三个版本的 `pnpm qualification:codex-native-performance`，缺失版本必须报告证据缺口 |
+| Codex native 性能与版本合同 | Unit + Integration + 独立 qualification | Codex observation/native CLI 定向 unit、grouped write 与 Git batch integration、`pnpm test:qualification:codex-native-performance:harness`；有精确 binary 时分别运行两个版本的 `pnpm qualification:codex-native-performance`，缺失版本必须报告证据缺口 |
 
 所有文档或代码改动最后运行 `git diff --check`。
 

@@ -779,7 +779,7 @@ function missingPureNativeScopes(
     !placement.desiredScopes?.includes(scope) && placement.activation?.[scope] !== true);
 }
 
-function hasScopedExtensionOwnership(target: StatusScopedTarget): boolean {
+export function hasScopedExtensionOwnership(target: StatusScopedTarget): boolean {
   return target.components.some((component) =>
     component.kind === 'ownership'
       && component.key !== 'native'

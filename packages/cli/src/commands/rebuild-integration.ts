@@ -79,6 +79,7 @@ import {
   type CodexManager,
   type NativeCliRunner,
 } from '../utils/native-cli.js';
+import { attachSafeOperationError, readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import {
   OWNED_TEXT_HEADER_PREFIX,
   createSharedOwnerToken,
@@ -535,7 +536,7 @@ async function executeCodexReconcileActivationsInSession(options: {
     for (const pluginId of observedActivationPluginIds) {
       const marketplaceName = codexMarketplaceFromPluginId(pluginId);
       const observationScope = options.observationScopeByMarketplace?.get(marketplaceName)
-        ?? (options.plans.some((plan) => plan.requirement.requiresProjectPluginContract)
+        ?? (options.plans.some((plan) => plan.requirement.scope === 'project')
           ? 'both'
           : 'user');
       const registration = await inspectCodexPluginRegistrationLive({
@@ -720,7 +721,7 @@ export async function postcheckCodexReconcileActivations(options: {
       try {
         const marketplaceName = codexMarketplaceFromPluginId(check.codexPluginId);
         const observationScope = options.observationScopeByMarketplace?.get(marketplaceName)
-          ?? (options.plans.some((plan) => plan.requirement.requiresProjectPluginContract)
+          ?? (options.plans.some((plan) => plan.requirement.scope === 'project')
             ? 'both'
             : 'user');
         const registration = await inspectCodexPluginRegistrationLive({
@@ -5059,6 +5060,10 @@ function createNativeDriver(options: {
           if (locator.desired) return;
           const target = findTarget(component);
           await prepareNativeGroup(target);
+          const pluginId = `${target.identity.pluginName}@${locator.marketplaceName}`;
+          const stateKey = codexStateKey(target, pluginId);
+          if (codexNativeStates.get(stateKey) === 'present'
+            && pendingCodexNativeStates.get(stateKey) !== 'absent') return;
           codexMutationMarketplaces.add(locator.marketplaceName);
           await runObservedCodexMutation({
             marketplaceName: locator.marketplaceName,
@@ -5419,8 +5424,19 @@ function createNativeDriver(options: {
               runner,
             ),
           });
-        } catch {
-          throw new Error(`codexNativeRemoveFailed: ${CODEX_REMOVE_RECOVERY}`);
+        } catch (error) {
+          const diagnostic = readSafeOperationError(error);
+          throw attachSafeOperationError(
+            new Error(`codexNativeRemoveFailed: ${CODEX_REMOVE_RECOVERY}`),
+            {
+              code: 'codexNativeRemoveFailed',
+              safeMessage: `Codex plugin removal did not complete. ${CODEX_REMOVE_RECOVERY}`,
+              ...(diagnostic?.exitCode === undefined ? {} : { exitCode: diagnostic.exitCode }),
+              ...(diagnostic ? {
+                cause: { code: diagnostic.code, safeMessage: diagnostic.safeMessage },
+              } : {}),
+            },
+          );
         }
         pendingCodexNativeStates.set(stateKey, 'absent');
         const postcheck = async () => {

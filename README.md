@@ -228,7 +228,7 @@ Codex/Claude 静态原生 Skill 的命令共用 user 身份与配置；在项目
 
 ### Codex project desired state 与恢复
 
-Codex native plugin 的基础最低版本是 `0.145.0`；任何 project activation 操作要求 `0.151.0`。AW-managed runtime 固定为已 qualification 的 `0.151.0`。PATH 中没有 system CLI 且操作只需修改 project activation 时，AW 不下载 manager。此时 AW 未观察到 system loader 或 Codex App，只把 project activation support 标为 `assumed`。
+Codex native plugin 和 project activation 统一要求最低版本 `0.151.0`。AW-managed runtime 固定为已 qualification 的 `0.151.0`。PATH 中没有 system CLI 且操作只需修改 project activation 时，AW 不下载 manager。此时 AW 未观察到 system loader 或 Codex App，只把 project activation support 标为 `assumed`。
 
 AW 把 desired intent 保存为严格的 schema 2 JSON：user scope 位于 `<AW_HOME>/plugin-intents.json`，project scope 位于仓库根的 `.agent-workflows/plugin-intents.json`。project intent 可以提交到 Git，并在多台机器共享。
 
@@ -339,10 +339,9 @@ pnpm release:install:local -- <cli.tgz> <eval.tgz> <core.tgz> <windows-x64.tgz> 
 
 Windows Job helper 以 Go 源码和预编译的 x64/arm64 PE 分发。两个 PE 分别进入 `@lesliechan721/aw-windows-job-win32-x64` 和 `@lesliechan721/aw-windows-job-win32-arm64`；Eval 包本身不包含 PE。npm 根据 `os`、`cpu` 和 Eval 的 optional dependency 只安装匹配平台的包。普通 `pnpm build` 只校验 manifest、源码 digest、binary digest 和 PE 架构，不要求 Go。修改 helper 源码或 toolchain 后，维护者运行 `pnpm --filter @lesliechan721/agent-skill-eval windows-job:refresh`；该命令固定交叉编译环境，并在 manifest 记录当前精确 Go 版本。强 release verification 运行 `pnpm windows-job:reproducibility`，要求安装该精确 Go 版本，使用本机 toolchain 重建两个 PE 并逐字节比较；Go 缺失、版本不同或结果不一致时停止。真实 Windows 行为仍用对应架构的 `pnpm qualification:windows-job` 验证。
 
-Codex native qualification 是显式、本机、离线的维护者入口，不进入普通 test、build 或 release。现有 `0.151.0` project activation 行为使用 `pnpm qualification:codex-project-native`。性能和 scoped list 合同分别对本机已有的三个精确 binary 运行；命令不会自动下载：
+Codex native qualification 是显式、本机、离线的维护者入口，不进入普通 test、build 或 release。现有 `0.151.0` project activation 行为使用 `pnpm qualification:codex-project-native`。性能和 scoped list 合同分别对本机已有的两个精确 binary 运行；命令不会自动下载：
 
 ```bash
-CODEX_QUALIFICATION_VERSION=0.145.0 CODEX_QUALIFICATION_CLI=/path/to/codex-0.145.0 pnpm qualification:codex-native-performance
 CODEX_QUALIFICATION_VERSION=0.151.0 CODEX_QUALIFICATION_CLI=/path/to/codex-0.151.0 pnpm qualification:codex-native-performance
 CODEX_QUALIFICATION_VERSION=0.153.0 CODEX_QUALIFICATION_CLI=/path/to/codex-0.153.0 pnpm qualification:codex-native-performance
 ```
