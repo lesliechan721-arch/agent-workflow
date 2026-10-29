@@ -32,6 +32,7 @@ Guide 保留调用方角色和任务约束。调用方先选定 executor/model/r
 | oracle | 固定 bundle | args、env、envFrom；不配置 wrapper command/entrypoint。 |
 | antigravity | 固定 workspace | PATH 中的 agy；permissionMode、args、env、envFrom；不增加专用认证字段。 |
 | custom | 必填 workspace 或 bundle | 绝对 command、可选绝对 entrypoint，加上相同的 args/env/envFrom。 |
+| custom-managed | 必填 workspace 或 bundle | commandId 指向已托管命令；执行 Adapter v5，加上相同的 args/env/envFrom。 |
 
 内建 mode 可以在原值中省略，显式错误值必须拒绝。command/entrypoint 不属于内建分支，不仅在 TUI 隐藏，也由共享校验器拒绝。切换 adapter 只修改草稿；不适用字段的移除和固定 mode 的变化须在保存前可见，取消不改原配置。args 是实际服务 argv 数组，env 是普通字符串 KV，envFrom 是宿主变量引用 KV，不把容器塞成 JSON 字符串。
 
@@ -73,9 +74,17 @@ renderer 只在 Guide 的 external-delegation 中生成执行器表，只显示 
 
 AW 在物化时注入安装态 JSON 和配置 reader（保留文件名 .aw-runtime-config.json、scripts/aw-runtime-config.mjs）；插件不伪造或覆盖保留资源。reader 从本产物返回 installedIdentity、获准的 effectiveValues（仅 subagentCommands）和 resourceRoot，不读最新 store 或同名 sibling。保存未 apply 时新调用继续用旧安装资源，活跃调用也不重读配置换后端。缺失或损坏通过正常 sync/reinstall 恢复。
 
+## 托管 custom adapter
+
+先使用 `aw command install` 托管完整 adapter 运行目录，再把返回的 cmdp_/cmdu_ 规范 ID 写入 commandId。Config v4 将 custom-managed 显示为“自定义（托管命令）”；它沿用 custom Adapter v5，不增加后端协议。mode 必填，command/entrypoint、permissionMode 及 Codex/Oracle 专属字段均拒绝。保存只检查 ID 语法，start 由 AW resolver 检查实际可用性，不按展示名、scope 或来源回退。
+
+Guide 从生成的 AW 命令入口启动，使用经过校验的 schema 1 AW_COMMAND_HOST 和受保护的 AW_HOME；缺失报 managedCommandHostMissing，非法报 managedCommandHostInvalid。主机包含当前 Node executable、真实 JS CLI entry 与已固定 awHome；不从 PATH 查另一个 AW，也不把 npm shim 当 Node 脚本。worker 的 adapter argv 固定为 `[host.nodeExecutable, host.cliEntry, "command", "run", commandId, "--"]`。executor args 只进入 Adapter v5 start.args；绑定的 fixed args 才进入 adapter argv。
+
+Guide 先应用 executor env/envFrom，再启动嵌套 AW；命令绑定的普通 env/envFrom 随后覆盖，AW/Guide 控制项最后注入。AW_COMMAND_HOST 单独校验后传给 worker 和嵌套 AW，不进入 v5 请求；嵌套 AW 重签描述但不改 AW_HOME。命令 binding 可显式 cwd=resource，v5 workspace 仍保留任务值。完整主机、环境保护与 runner 合同见 [托管命令合同](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/managed-commands.md#b3-运行参数环境与主机描述)。原绝对 custom 入口继续可用，不要求 CommandHost。
+
 ## 执行器权限模式
 
-Codex、Claude Code、Antigravity 的 `permissionMode` 可选 default / auto / full-access，缺省 default，显示名为“默认”“自动”“完整权限”。Oracle/custom 显式携带时拒绝；native 使用宿主权限。它读取本产物已安装配置，不增加每次 start 开关，不改变 execution 的 executor/model/reasoningEffort 含义。
+Codex、Claude Code、Antigravity 的 `permissionMode` 可选 default / auto / full-access，缺省 default，显示名为“默认”“自动”“完整权限”。Oracle/custom/custom-managed 显式携带时拒绝；native 使用宿主权限。它读取本产物已安装配置，不增加每次 start 开关，不改变 execution 的 executor/model/reasoningEffort 含义。
 
 | 模式 | Codex app-server | Claude Code | Antigravity |
 | --- | --- | --- | --- |
@@ -93,7 +102,9 @@ default 保留用户 args、profile 及后端正常加载的用户、项目和�
 
 ## Prompt 与模式
 
-CLI 只有 --executor 和 --prompt 必填。旧 --profile 参数按未知参数拒绝；native、未知 key、重复 key 和无效注册配置在后端启动前报错，通过 config、sync 或 reinstall 修复。任务可用 --prompt TEXT 或 --prompt -；stdin 读到 EOF，拒绝 TTY、空白、非法 UTF-8、重复 prompt 和超限。--instructions-file PATH 可选；相对路径相对调用 cwd，与 --workspace 的文件选择基准分开。
+CLI 必填 --executor，且必须只提供 --prompt TEXT 或 --prompt-file PATH 中的一项。父侧 send 和子侧 send 同理使用 --text TEXT 或 --text-file PATH。命令不读取 stdin；缺参、互斥、重复单值参数、未知或跨命令参数，以及 --prompt -、--text - 和文件参数值 - 均在创建/提交前返回参数错误，父侧为 argumentsInvalid，子侧为 invalidArguments，退出 2。需要单字符 - 使用内容为 - 的普通文件；名为 - 的文件使用 ./- 或绝对路径。
+
+相对输入/输出路径按 caller cwd 解析，不相对 --workspace 或 producer root。输入只读取一次，必须为普通文件且最后一段不是 symlink，按严格 UTF-8 校验，不去 BOM、不 trim，拒绝全空白和 NUL。prompt-file 与 instructions-file 各最多 256 KiB，text-file 最多 4096 bytes；合成 prompt 最多 524352 bytes。文件错误、大小及输出合同见 [文件输入与输出](runtime.md#文件输入与输出)。--instructions-file PATH 可选；native、未知 key、重复 key 和无效配置在后端启动前报错，通过 config、sync 或 reinstall 修复。
 
 不传指令文件时，协议 prompt 保留任务原文，不添加默认角色或空标题。显式传入时要求非空、可读 UTF-8 文件，runner 读取一次后组合为“执行指令”和“本次任务”两个段落。保留原文本，不截断，不向 adapter 发送指令文件路径让它再次打开。显式坏文件不能当成省略。指令与任务各最多 256 KiB，组合结果不套用单份上限。adapter 只在通讯已就绪时追加相应说明；无指令文件也可追加，调用方不预读或拼接这份说明。
 
@@ -117,7 +128,7 @@ CLI 已传入 model 或 effort 时，args 不能再次设置同一后端控制�
 
 变量名为 `[A-Za-z_][A-Za-z0-9_]*`，值不得包含 NUL。env 只保存普通字面值，不能保存密钥。envFrom 只存来源名；解析后的秘密不进入安装资源、stdin JSON、执行器表。继承其余普通宿主环境及后端认证设置，最终环境通过 spawn.env 交给 adapter，再按实际后端接口使用。
 
-`AW_PLUGIN_CONTEXT`、`AW_PLUGIN_*` 作者上下文、`AW_SUBAGENT_*` 运行控制项不能借 env/envFrom 注入。本次私有目录、工具绑定与进程归属标记由运行层设置；现有 Eval 进程标记按原合同继承但不可覆盖。诊断脱敏已解析 envFrom 值及可识别凭据，不输出完整 env 或请求。受信任适配器可能读取宿主凭据，环境过滤不构成隔离。
+`AW_PLUGIN_CONTEXT`、`AW_PLUGIN_*` 作者上下文、`AW_SUBAGENT_*` 运行控制项不能借 env/envFrom 注入。custom-managed 还拒绝 AW_COMMAND_*、AW_AGENT_SKILL_EVAL_PROCESS_MARKER 和 AW_HOME/AW_CODEX_HOME/AW_CLAUDE_HOME 的目标或来源名，跨 OS 按 ASCII 大小写不敏感检查；普通 command/entrypoint custom 保留既有校验范围。本次私有目录、工具绑定与进程归属标记由运行层设置；现有 Eval 进程标记按原合同继承但不可覆盖。诊断脱敏已解析 envFrom 值及可识别凭据，不输出完整 env 或请求。受信任适配器可能读取宿主凭据，环境过滤不构成隔离。
 
 ## 内建后端的共同要求
 

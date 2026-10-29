@@ -161,6 +161,26 @@ Workspace 必须位于有有效 HEAD 的 Git worktree 中，也可以是仓库�
 
 Agent 在 `develop-aw` 的 Catalog 维护路径处理删除：从用户指定的 Workspace 和插件名唯一定位 canonical 目标，确认显式删除授权、inventory、反向依赖及 Git 状态。公开 remove 要求有效 Git HEAD，目标已在 HEAD 中，且当前目标树的内容、可执行位和形状精确匹配 HEAD；目标内 staged、unstaged、untracked、ignored 或额外节点均按真实命令诊断处理。通过能力检查后，按公开帮助执行 remove 并保留 JSON receipt。保护性拒绝时报告阻碍，不丢弃用户变更或绕过删除保护。成功后重新读取 inventory 和依赖，只验证剩余受影响插件；空 inventory 只验证空 Catalog，不对已删除对象运行 validate、test、build 或 status。remove 不自动提升版本、提交或发布。
 
+## 托管命令与精确权限
+
+插件通过 Manifest v3 的 managedCommands.packages/sets 声明完整运行资源和静态/动态命令集合。使用 aw.managed-commands.v1；只有声明 Claude sandbox.excludedCommands 时再要求 aw.claude.sandbox-exclusions.v1。先交付支持能力的 CLI/Core，再分发依赖插件。
+
+```bash
+aw plugin capabilities --surface managed-commands --json
+aw plugin capabilities --surface artifacts --json
+aw plugin capabilities --surface extensions --json
+```
+
+[托管命令合同](managed-commands.md) 定义全部字段、默认值、拒绝条件、请求/返回、稳定 ID、模板语法、权限和生命周期。producer 必须是同插件中明确的 artifact、static-skill 或独立 package；不要拼安装路径或自行计算/缓存 command ID。动态 set/package 由声明投影到 ArtifactPlan v2 的精确请求，不能在 artifacts.targets 重复声明。包固定 scope，platforms 只控制触发，配置和校验依赖不得敏感。
+
+Codex/Claude 的 static-skill producer 均为 shared-user 原生资源，只使用 user 配置；project 安装或启用不产生项目命令身份。其动态集合 target 只在 user scope 请求，引用也不能指向 project 包。AW-owned 动态 Skill 继续继承实际物化 scope。
+
+Skill 使用 set/key/variant 逻辑引用；同一引用用于权限。AW 在最终 Skill 的全部 .md 中展开命令占位符，代码块也会展开；教学示例需分开花括号或描述语法，不能放入会被误解析的有效前缀。Portable 必须提供不依赖本机命令的内容，否则物化明确拒绝。review prepare 与作者测试只生成隔离候选，不注册用户命令。
+
+权限 argsPrefix 必须为安全非空 token 数组；精确表达不了时拆成窄子命令，不扩大为整个 aw/node/bash。Claude 的沙箱排除位于 agentOverrides.claude.sandbox.excludedCommands，独立于 allow，只接受结构化命令引用；Codex 不支持该 override。Review 展示 runner、资源、固定参数、共享影响、权限与沙箱变化；实际宿主匹配另行验证。
+
+包和命令由 AW 在 producer 成功边界发布，不在 preApply 中调用注册 CLI。完整旧产物可用时失败保留旧绑定；无法保持完整时先撤下绑定，通过 sync/reinstall/package sync 恢复。平台卸载保留独立共享包并报告显式 package remove 入口；弱正文损坏时仍按独立 owner 证据安全清理，不删除 foreign/shared 内容。升级、重装或删除 Guide 及托管 adapter 前先结束活跃任务。
+
 ## Build、Portable 和信任边界
 
 Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输入。不要隐式安装工具或读取真实用户配置。`buildConfig.runtimeExports`、`buildImports`、`skillRuntimeFiles.import` 和 artifact `runtimeImports` 是 typed build-time reuse edge；它们不自动形成 manifest dependency。
@@ -183,7 +203,7 @@ renderer 的结构化 stdout 保持完整 JSON，最大为 16 MiB；超限时 AW
 
 AW 为 Codex native dynamic projection 生成 `.agents-plugin/aw-codex-native-render.json`，插件源码和 renderer 不得声明该保留文件。schema 1 receipt 只记录规范化 identity 和 digest，不记录原始 config；所有 `codex-native` target 的 ID 与 Skill key 在整个 shared projection 内分别全局唯一，即使 scopes 不重叠也不能复用。`configDigest` 聚合 validated artifact 的 per-target config digest，`renderInputDigest` 绑定 source、plugin version、renderer digest 和规范化 target config/artifact digest。动态 payload digest 排除该 receipt 和 AW owner marker，规范化 `.codex-plugin/plugin.json` 的 version，但绑定 renderer 产生的真实 skills projection；静态 shared native digest 继续规范化 Codex-managed skills。AW 会检查完整 user effective config 中至少 8 个 Unicode code point 的 sensitive string 原文和 JSON 转义形态；该阈值只减少短值误报，不表示 secret 强度，日志仍脱敏所有长度。receipt 只有在 AW 生成或内容验证后，才从精确路径的扫描中排除；不得按 basename 通配。命中时停止，不改变 live marketplace、Codex registration 或 activation。receipt 是可删除、可重建的现场证据，不是作者维护的 ledger。
 
-renderer context 的 `requestedArtifactIds` 是本次唯一允许返回的 target ID 集合。它非空、无重复，并按 manifest 声明顺序规范化。因此，任两个在同一 platform/distribution surface 和 scope 内可被同次请求的 target 不能使用相同 ID；不同 surface 或不重叠 scope 可复用 ID，但 `codex-native` shared projection 使用上段更严格的全局唯一规则。同一 surface/scope 同时有 Skill 和读取 sensitive config 的非 Skill target 时，AW 把它们分成两个请求；两个请求读取同一份不可变 `previousArtifacts`，每个 `ArtifactPlan` 必须精确匹配该批 ID。`config.schema/values/sources/issues` 和 `changedConfigKeys` 只含本次 target `refreshKeys` 的并集。`artifactSources` 按 manifest 顺序提供当前 surface/scope 全部 Skill target 的真实 `sourceDirs`，即使该 Skill 未在本批请求中；renderer 可用这些路径复用静态资源，但不能据此读取更多配置或返回更多产物。不要猜测 bundle 的私有目录布局。context 不提供 config store 路径；renderer 的三个 `AW_*_HOME` 和 context home 路径都指向本次请求的临时目录。该输入隔离不是 OS sandbox。配置 helper 只支持 effective context 读取，缺少 `AW_PLUGIN_CONTEXT` 或显式 user/project 读取都会失败。renderer 必须对每个请求 ID 精确返回一个 artifact；缺失、重复或未请求输出都会失败。
+renderer context 的 `requestedArtifactIds` 是本次唯一允许返回的 target ID 集合。它非空、无重复，并按 manifest 声明顺序规范化。因此，任两个在同一 platform/distribution/AW surface 和 scope 内可被同次请求的 target 不能使用相同 ID；不同 surface 或不重叠 scope 可复用 ID，但 `codex-native` shared projection 使用上段更严格的全局唯一规则。同一 surface/scope 同时有 Skill 和读取 sensitive config 的非 Skill target 时，AW 把它们分成两个请求；两个请求读取同一份不可变 `previousArtifacts`，每个 `ArtifactPlan` 必须精确匹配该批 ID。`config.schema/values/sources/issues` 和 `changedConfigKeys` 只含本次 target `refreshKeys` 的并集。`commandSources` 在所有 context 中存在（默认 []），只提供本次命令 target 涉及包的已核验只读 sourceDir；AW surface 设置 AW_PLUGIN_SURFACE=managed-commands，不设置 platform/distribution。`artifactSources` 按 manifest 顺序提供当前 surface/scope 全部 Skill target 的真实 `sourceDirs`，即使该 Skill 未在本批请求中；renderer 可用这些路径复用静态资源，但不能据此读取更多配置或返回更多产物。不要猜测 bundle 的私有目录布局。context 不提供 config store 路径；renderer 的三个 `AW_*_HOME` 和 context home 路径都指向本次请求的临时目录。该输入隔离不是 OS sandbox。配置 helper 只支持 effective context 读取，缺少 `AW_PLUGIN_CONTEXT` 或显式 user/project 读取都会失败。renderer 必须对每个请求 ID 精确返回一个 artifact；缺失、重复或未请求输出都会失败。
 
 插件可以声明 executable build/test/preApply code、hooks、MCP servers、Apps、config 和 artifacts。preApply 只用于安装前环境校验或安装外部系统工具，必须幂等；它不能替代 manifest dependencies 或 build-time Node bundle。AW 验证声明并保护 ownership；请求级临时 home 是输入隔离，不是 OS sandbox。需要 context 的 preApply 必须完整读取 stdin 后再决定结果；不需要 context 的脚本可以直接成功退出。preApply 必须在返回前等待自己的全部后代退出，不得 daemonize 或遗留后台任务；AW 会在正常退出、超时和中断后清理本次脚本进程树，清理无法确认时 preApply 失败。安装或执行前必须把 executable source 和 trust boundary 作为受信任代码评审。
 

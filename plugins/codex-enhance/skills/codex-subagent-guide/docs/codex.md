@@ -2,7 +2,7 @@
 
 公共要求见 [配置与接入](configuration.md)、[Adapter v5](protocol.md) 和 [运行生命周期](runtime.md)。
 
-Codex 固定 workspace，通过 app-server 管理本次 thread/turn、正式输入和中断。Codex 使用 mcp / in-turn / activeReceive=true，活动轮用 turn/steer，无活动轮时新开 turn。
+Codex 固定 workspace，通过 app-server 管理本次 thread/turn、正式输入和中断。Codex 使用 mcp / in-turn，同时提供主动收件，活动轮用 turn/steer，无活动轮时新开 turn。
 
 `codexProfile` 从有效 CODEX_HOME 读取 profile-v2 的 `<name>.config.toml`，将精确支持字段转换为本次启动或线程覆盖；未支持和无关字段诊断后忽略。它不保留原生用户配置层身份，可能覆盖项目配置，不与原生 exec --profile 完全等价。字段范围、覆盖顺序、hooks 状态映射、信任与 bypass、失败码见 [Codex profile 转换](#codex-profile-转换)。raw --profile/-p 使用相同转换路径，与专用字段同时出现时拒绝；不直接传给 app-server。额外目录 addDirs（--add-dir）仍无等价映射，显式使用返回 parameterUnavailable。
 

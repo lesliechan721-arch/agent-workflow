@@ -38,7 +38,7 @@ Advisor 和 Explore 通过 Guide 委派；已有完整调度与生命周期方�
 
 通用、探索和咨询配置选择执行器、模型和推理强度。三个 Skill 各有默认空的自定义数组，按顺序使用第一个适用范围匹配项，未匹配时使用内建档位。Guide 保留调用方已选的配置；需要自行选择时才读取执行配置 reference。省略 executor 表示 native，直接使用宿主原生工具与角色。subagentCommands 默认空，默认配置不会自行启动外部服务。
 
-subagentCommands 使用 key 作为唯一显示名称。添加外部执行器时可选内建 Codex、Claude Code、Oracle、Antigravity，或 custom。内建入口无需手填 command/entrypoint；Codex、Claude Code 和 Antigravity 固定 workspace，Oracle 固定 bundle。Antigravity 使用 PATH 中的 agy。custom 使用自己的绝对程序入口和明确模式。args 定制实际后端参数，env 保存普通环境值，envFrom 引用宿主变量；密钥不要写入普通可分发配置。
+subagentCommands 使用 key 作为唯一显示名称。添加外部执行器时可选内建 Codex、Claude Code、Oracle、Antigravity，或 custom/custom-managed。内建入口无需手填 command/entrypoint；Codex、Claude Code 和 Antigravity 固定 workspace，Oracle 固定 bundle。Antigravity 使用 PATH 中的 agy。custom 使用自己的绝对程序入口和明确模式；custom-managed 使用 aw command install 返回的稳定 commandId，保留完整运行目录。args 定制实际后端参数，env 保存普通环境值，envFrom 引用宿主变量；密钥不要写入普通可分发配置。
 
 Codex、Claude Code、Antigravity 可设置 permissionMode：default（默认）保留用户 args 和 profile；auto 使用后端自动审批；full-access 使用官方完整权限入口。Codex 完整权限同时取消自身审批和沙箱，Claude/agy 不额外关闭终端沙箱，均不取得 OS 管理员权限。auto/full-access 高于 Codex profile 同类默认值；与 args 的同类显式控制冲突时启动前报错，模式不可用不静默回退。Oracle/custom 不接受此字段，native 使用宿主权限。权限模式、communication 和 codexBypassHookTrust 独立，完整权限不自动绕过 hook 信任。
 
@@ -56,7 +56,7 @@ Codex 的 codexCliSource 可选 auto/cli/app，缺省 auto 先查 PATH，仅入�
 
 外部配置可省略 model 和 reasoningEffort，表示使用后端默认。显式要求不支持时报错，不静默替换模型或服务。native 保留已有配置要求。Advisor 固定提供 general、advanced、expert 三个难度档位，默认分别为 gpt-6-astra high、xhigh、max。按问题歧义、耦合、验证难度和遗漏代价选档；无效配置不会触发回退。
 
-外部启动用 `start --executor <key>` 指定执行器，不接收 AW profile 名称。外部任务可以直接写进 --prompt，长任务或已有文件可以从 stdin 输入。--instructions-file 可选，可以复用已有角色文件；不传时不会自动补入默认角色，已就绪的通讯说明仍由 adapter 添加。顾问和调查的职责约束仍需明确传达。使用 `start` 启动，按句柄执行 `send`、多目标 `wait`、单目标 `result` 和 `stop`。回执显示 environment 的 pending/available/unavailable，不可用时给出具体原因；缺失或不可执行的 CLI 须修复安装、PATH 或执行器后重新开始。环境可用不证明登录、网络或模型资格。通讯回执保留 true/false/pending，并说明 enabled/disabled/unsupported、实际通道、自动输入时点及主动收件能力；晚到信息和 profile 诊断由 wait/result 补报。默认无执行期限。控制字段使用英文，消息和最终回答保留原语言并放入独立原文块。内部 JSONL 不作为用户界面。
+外部执行通过 AW 物化的稳定命令入口调用，按 `start --executor <key>` 指定执行器。任务使用 --prompt TEXT 或 --prompt-file PATH，消息使用 --text TEXT 或 --text-file PATH；不接受 -/stdin 输入。--instructions-file 可选，不传时不自动补入默认角色，启用通信时 adapter 仍添加通信说明。start 返回 started/starting 或带句柄的失败回执；starting 后继续原句柄，不重新启动。send/wait/result/stop 复用该句柄，正常回执仅显示调度需要的信息，正文放入 message/input/result/diagnostic 语义块。communication 只返回 true/false/pending，内部环境和传输细节不进入主代理回执。必要 code、投递缺口、失败和停止证据仍保留。环境可用不证明登录、网络或模型资格，默认无执行期限。
 
 workspace 在指定目录执行任务，关注路径写入任务，不接受 --file。bundle 通过 --file 按固定的 AW 文件选择协议 v1 选择文件、目录或 glob；各适配器实现相同规则，不需要调用者按后端改写选择式。调用方法由 Guide 的 [外部委派说明](skills/codex-subagent-guide/references/external-delegation.md) 提供；适配器开发见 [适配器文档](skills/codex-subagent-guide/docs/README.md)。
 
@@ -68,6 +68,8 @@ native 的 Advisor/Explore 生成角色只限制把同一任务通过相应 Skil
 
 只读指令、workspace/bundle 名称和文件筛选都不单独证明技术隔离。忽略规则不替代密钥检查，显式路径或链接也可能指向任务目录外。有限材料只能支持相应范围的结论。
 
-等待采用默认 10 分钟的响应式窗口，超时后继续原句柄。过程消息领取后删除，只有固定最终结果可在终态后 1 小时内重读；`result --export` 完整写入 stdout，接收目的地由调用者选择。服务终态或停止无法确认时保留 unknown 和已有内容，不自动重提。宿主必须允许后台 worker 继续运行；不提供跨父会话恢复。建议代码和候选 patch 只有应用并验证后才算已实施。
+等待采用默认 10 分钟的响应式窗口，超时后继续原句柄。过程消息领取后删除，只有固定最终结果可在终态后 1 小时内重读；普通 wait/result 报告最多 8192 UTF-8 bytes，超限使用 `result --output-file PATH` 直接导出同一完整报告；默认拒绝覆盖，完整写入并关闭后才消费。--export 已删除，传入时返回参数错误。服务终态或停止无法确认时保留 unknown 和已有内容，不自动重提。宿主必须允许后台 worker 继续运行；不提供跨父会话恢复。建议代码和候选 patch 只有应用并验证后才算已实施。
+
+升级、重装或删除 Guide 及其托管 adapter 前，先完成或 stop 正在运行的任务；稳定 ID 不保证旧 run 跨版本可继续。五个父侧子命令使用各自精确 allow，宿主强制审核仍可阻止运行，不自动改变后端 permissionMode。
 
 保存设置须 apply 才影响后续外部调用；仅保存继续使用旧安装产物。缺失或损坏按实际诊断通过正常 sync/reinstall 恢复。native 配置或角色刷新后，宿主可能需要受支持的刷新或新会话。

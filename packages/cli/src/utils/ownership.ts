@@ -87,7 +87,7 @@ export type OwnedComponent =
       kind: 'skill-directory';
       validateHealth?: boolean;
       // A pristine markerless catalog tree is absent, not deletion-authorized ownership.
-      pristineTree?: Array<{ relativePath: string; contentDigest: string }>;
+      pristineTree?: Array<{ relativePath: string; contentDigest: string; mode?: number }>;
     } & OwnedPathComponent)
   | ({ kind: 'owned-text-file' } & OwnedPathComponent)
   | {
@@ -148,7 +148,7 @@ export interface OwnedComponentExecutor {
   }>): Promise<void>;
   skillDirectoryMatchesPristineTree?(options: {
     actualPath: string;
-    files: ReadonlyArray<{ relativePath: string; contentDigest: string }>;
+    files: ReadonlyArray<{ relativePath: string; contentDigest: string; mode?: number }>;
   }): Promise<boolean>;
 }
 

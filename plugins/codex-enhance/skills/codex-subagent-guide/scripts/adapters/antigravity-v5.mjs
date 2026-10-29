@@ -8,7 +8,7 @@ import { prepareAntigravityPermission } from './antigravity-permissions.mjs';
 export { antigravityArguments, checkAntigravityArguments } from './antigravity-arguments.mjs';
 
 export async function negotiateAntigravityCommunication() {
-  return { supported: true, transport: 'command', passiveDelivery: 'turn-boundary', activeReceive: true };
+  return { supported: true, transport: 'command', passiveDelivery: 'turn-boundary' };
 }
 
 export async function negotiateAntigravity(context) {

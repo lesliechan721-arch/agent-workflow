@@ -8,6 +8,7 @@ import type {
   CatalogGenerationCandidateEvidence,
   CatalogGenerationSyncResult,
   CatalogSourceImpact,
+  CommandProducerResult,
   DependencyScopeOverride,
   PlatformName,
   Scope,
@@ -38,6 +39,7 @@ import type { ReconcileOperationPlan } from '../commands/reconcile-operation-pla
 import type { PreApplyAuthorizationTarget, RebuildCommandResult } from '../commands/rebuild-command.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
 import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
+import type { PluginConfigMutationImpact } from '../utils/plugin-config-impact.js';
 import type { OperationPlan } from '../commands/operation-plan.js';
 import type {
   RebuildProgressFeed,
@@ -429,8 +431,9 @@ export interface ConfigOperationEvidence {
   impactState?: 'known' | 'unknown';
   noEffectiveChange?: true;
   affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
+  commandPackages?: PluginConfigMutationImpact['affectedCommandPackages'];
   preApplyAuthorization?: PreApplyAuthorizationTarget[];
-  sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[] }>;
+  sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[]; platform?: PlatformName }>;
   shareability?: 'verified' | 'unverified';
 }
 
@@ -713,6 +716,7 @@ export interface OperationResultSummary {
   changes?: string[];
   warnings?: string[];
   recoveryActions?: string[];
+  commandResults?: CommandProducerResult[];
   planFingerprint?: string;
   diagnosticIds?: string[];
   effects?: OperationEffectFacts;
@@ -1403,6 +1407,11 @@ function sanitizeOperationSummary(
     ...(summary.changes ? { changes: summary.changes.map(text) } : {}),
     ...(summary.warnings ? { warnings: summary.warnings.map(text) } : {}),
     ...(summary.recoveryActions ? { recoveryActions: summary.recoveryActions.map(text) } : {}),
+    ...(summary.commandResults ? { commandResults: summary.commandResults.map((result) => ({
+      ...result,
+      errors: result.errors.map((error) => ({ ...error, message: text(error.message) })),
+      recoveryActions: result.recoveryActions.map(text),
+    })) } : {}),
     ...(summary.quarantineBasename ? { quarantineBasename: text(summary.quarantineBasename) } : {}),
     ...(summary.portable ? {
       portable: {
@@ -4639,7 +4648,9 @@ export class TuiController {
     const configImpact: OperationReviewModel['configImpact'] = configEvidence ? {
       state: configEvidence.some((group) => group.impactState !== 'known') ? 'unknown' : 'known',
       affectedTargetCount: new Set(configEvidence.flatMap((group) => group.affectedTargets
-        .map((target) => `${target.platform}\0${target.scope}`))).size,
+        .map((target) => `${target.platform}\0${target.scope}`))).size
+        + new Set(configEvidence.flatMap((group) => (group.commandPackages ?? [])
+          .map((target) => target.packageId))).size,
     } : undefined;
     const projection = buildOperationReviewProjection({
       intent,
@@ -5711,15 +5722,19 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       || root.state === 'kept' || root.state === 'partial').length;
     const failedCount = roots.filter((root) => root.state === 'failed' || root.state === 'partial'
       || root.state === 'notStarted' || root.state === 'blocked').length;
-    const code = failedCount === 0 ? 'operationSucceeded' as const
+    const commandFailed = taskExecution.commandResults?.some((result) => result.state !== 'completed') === true;
+    const code = failedCount === 0 && !commandFailed ? 'operationSucceeded' as const
       : completedCount > 0 ? 'operationPartial' as const : 'operationFailed' as const;
     return {
       code,
       message: code === 'operationSucceeded' ? '任务已完成。'
         : code === 'operationPartial' ? '任务只完成了一部分。' : '任务没有完成。',
       warnings: taskExecution.warnings,
-      recoveryActions: [...new Set(taskExecution.targetResults.flatMap((entry) =>
-        entry.recoveryActions ?? []))],
+      recoveryActions: [...new Set([
+        ...taskExecution.targetResults.flatMap((entry) => entry.recoveryActions ?? []),
+        ...(taskExecution.commandResults ?? []).flatMap((result) => result.recoveryActions),
+      ])],
+      ...(taskExecution.commandResults ? { commandResults: taskExecution.commandResults } : {}),
       ...(taskExecution.operationPlan?.planFingerprint
         ? { planFingerprint: taskExecution.operationPlan.planFingerprint } : {}),
       task: {
@@ -5867,6 +5882,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         requiredBy: entry.requiredBy,
         ...(entry.errorCode ? { errorCode: safeDiagnosticCode(entry.errorCode, 'writeFailed') } : {}),
       })),
+      ...(result.commandResults ? { commandResults: result.commandResults } : {}),
     };
   }
   if (intent.kind === 'configSaveBatch') {
@@ -5911,6 +5927,10 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         applyStatus: group.applyStatus,
         ...(group.errorCode ? { errorCode: safeDiagnosticCode(group.errorCode, 'configWriteFailed') } : {}),
       })),
+      commandResults: batch.groups.flatMap((group) => group.execution
+        && typeof group.execution === 'object'
+        ? ((group.execution as { apply?: { commandResults?: CommandProducerResult[] } }).apply?.commandResults ?? [])
+        : []),
       messages: [
         ...batch.groups.map((group) => {
           const label = group.scope === 'project' ? '当前项目' : '个人默认';
@@ -5936,6 +5956,8 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
     const rawTargets = Array.isArray(rawApply.targetResults)
       ? rawApply.targetResults as Array<Record<string, unknown>>
       : [];
+    const commandResults = Array.isArray(rawApply.commandResults)
+      ? rawApply.commandResults as CommandProducerResult[] : [];
     const targets = rawTargets.flatMap((entry) => {
       const target = typeof entry.target === 'object' && entry.target !== null
         ? entry.target as Record<string, unknown>
@@ -6018,6 +6040,8 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
           }
         : {}),
       ...(targets.length > 0 ? { targets } : {}),
+      ...(commandResults.length > 0 ? { commandResults,
+        recoveryActions: [...new Set(commandResults.flatMap((result) => result.recoveryActions))] } : {}),
     };
   }
   const sourceWarnings = intent.kind === 'sourceMutation'

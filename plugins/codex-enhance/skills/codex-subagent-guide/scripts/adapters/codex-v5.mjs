@@ -251,7 +251,7 @@ export async function executeCodex(context) {
   }
 }
 
-export async function negotiateCodexCommunication() { return { supported: true, transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true }; }
+export async function negotiateCodexCommunication() { return { supported: true, transport: 'mcp', passiveDelivery: 'in-turn' }; }
 
 export async function negotiateCodex(context) {
   checkCodexArguments(context.request);
@@ -266,7 +266,7 @@ export async function negotiateCodex(context) {
   context.initialization = { environment: { status: 'available' }, capabilities: {} };
   if (executable.diagnostic) context.diagnostics.push(executable.diagnostic);
   const { diagnostic: _diagnostic, ...invocation } = executable;
-  return { environment: { status: 'available' }, executable: invocation, capabilities: { communication: { supported: true, transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } } };
+  return { environment: { status: 'available' }, executable: invocation, capabilities: { communication: { supported: true, transport: 'mcp', passiveDelivery: 'in-turn' } } };
 }
 
 adapterMain(import.meta.url, { mode: 'workspace', codex: true, permissionMode: true, negotiate: negotiateCodex, execute: executeCodex }, 'Codex Adapter v5\nUsage: node codex-v5.mjs\nReads one persistent v5 JSONL connection. Uses PATH codex app-server, private parent tools, and automatic input.\nNormal backend configuration and approvals apply. Unsupported explicit options fail before model submission.\nNo default execution deadline or automatic retry. Backend process exit and service terminal are required.\n');

@@ -170,6 +170,19 @@ test('adapterMain: capability errors fail before ready or model submission', { t
   assert.equal(await fs.stat(path.join(run.directory, 'communication')).catch(() => null), null);
 });
 
+// Test Value Gate: legacy negotiation fields must fail before bridge allocation
+// or model input, rather than silently changing a custom adapter's capability.
+test('adapterMain: negotiation rejects the removed active receive capability', { timeout: testTimeoutMs }, async (t) => {
+  const run = await fixture(t, { args: ['legacyNegotiation'] });
+  const result = await run.finish();
+  assert.equal(result.code, 'protocolInvalid');
+  assert.equal(result.generationStarted, false);
+  assert.deepEqual(result.initialization, { environment: { status: 'available' }, capabilities: {} });
+  assert.equal(run.frames.some((frame) => frame.type === 'ready'), false);
+  assert.equal(await fs.stat(path.join(run.directory, 'communication')).catch(() => null), null);
+  assert.equal(await fs.stat(path.join(run.directory, 'initialization.json')).catch(() => null), null);
+});
+
 for (const communication of [true, false]) test(`adapterMain: unavailable environment fails before model input with communication ${communication}`, { timeout: testTimeoutMs }, async (t) => {
   const run = await fixture(t, { communication, args: ['environmentMissing'] });
   const result = await run.finish();
@@ -190,25 +203,24 @@ test('adapterMain: failed communication preparation preserves the environment wi
 });
 
 // Test Value Gate: rendered prompts must contain the actual registered entry
-// names and omit an unavailable active receive entry. Prose quality needs Eval.
+// names and always include active receive. Prose quality needs Eval.
 test('installed communication template selects actual tools across capability combinations', async () => {
-  for (const passiveDelivery of ['in-turn', 'turn-boundary', 'none']) for (const activeReceive of [true, false]) {
-    if (passiveDelivery === 'none' && !activeReceive) continue;
-    const communication = { status: 'enabled', transport: 'mcp', passiveDelivery, activeReceive };
+  for (const passiveDelivery of ['in-turn', 'turn-boundary', 'none']) {
+    const communication = { status: 'enabled', transport: 'mcp', passiveDelivery };
     const prompt = await renderCommunicationInstructions(communication, undefined, { sendTool: 'mcp__private__send_parent', receiveTool: 'mcp__private__receive_parent' }, pathToFileURL(path.join(scripts, '../assets/communication-instructions.md')));
     assert.ok(prompt.includes('`mcp__private__send_parent`'));
-    assert.equal(prompt.includes('`mcp__private__receive_parent`'), activeReceive);
+    assert.ok(prompt.includes('`mcp__private__receive_parent`'));
     assert.equal(prompt.includes('@@'), false);
     assert.equal(prompt.includes('<!-- aw:'), false);
   }
-  await assert.rejects(renderCommunicationInstructions({ status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary', activeReceive: true }, { script: { command: process.execPath, args: ['private-script'] } }, {}, pathToFileURL(path.join(scripts, '../assets/communication-instructions.md'))), { code: 'communicationShellUnsupported' });
-  await assert.rejects(renderCommunicationInstructions({ status: 'enabled', transport: 'mcp', passiveDelivery: 'none', activeReceive: true }, undefined, {}, new URL('file:///missing-aw-resource/communication-instructions.md')), { code: 'runtimeResourceMissing' });
+  await assert.rejects(renderCommunicationInstructions({ status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary' }, { script: { command: process.execPath, args: ['private-script'] } }, {}, pathToFileURL(path.join(scripts, '../assets/communication-instructions.md'))), { code: 'communicationShellUnsupported' });
+  await assert.rejects(renderCommunicationInstructions({ status: 'enabled', transport: 'mcp', passiveDelivery: 'none' }, undefined, {}, new URL('file:///missing-aw-resource/communication-instructions.md')), { code: 'runtimeResourceMissing' });
 });
 
 // Test Value Gate: the mode is an internal command-only selector. Invalid
 // bindings must fail before a prompt can direct a child to a different channel.
 test('communication instruction bindings reject invalid text modes and MCP combinations', async () => {
-  const communication = { status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary', activeReceive: true };
+  const communication = { status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary' };
   const bridge = { script: { command: process.execPath, args: ['private-script'] } };
   const template = pathToFileURL(path.join(scripts, '../assets/communication-instructions.md'));
   for (const sendTextMode of [undefined, null, false, '', 'stdin', 'other', [], {}]) {
@@ -220,12 +232,9 @@ test('communication instruction bindings reject invalid text modes and MCP combi
 
 // Test Value Gate: execute generated shell commands against the real message
 // script and bridge. Quoted paths and message bytes must remain literal, and
-// the default stdin form must retain the single-hyphen message use case.
-for (const [sendTextMode, message] of [
-  [undefined, "默认 'quotes' $HOME $(touch expanded-command) `touch expanded-backtick`\n第二行"],
-  ['argument', "参数 'quotes' $HOME $(touch expanded-command) `touch expanded-backtick`\n第二行"],
-  [undefined, '-'],
-]) test('generated communication command preserves literal bytes with '+(sendTextMode ?? 'stdin')+' input'+(message === '-' ? ' and the hyphen sentinel' : ''), { skip: process.platform === 'win32', timeout: 10000 }, async (t) => {
+// both text and file commands must preserve shell literals and the file form
+// must retain the single-hyphen message use case.
+for (const sendTextMode of [undefined, 'argument']) for (const input of ['text', 'file']) test('generated communication command preserves literal bytes with '+(sendTextMode ?? 'quoted')+' '+input+' input', { skip: process.platform === 'win32', timeout: 10000 }, async (t) => {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-command-binding-'));
   let bridge;
   t.after(async () => {
@@ -242,14 +251,19 @@ for (const [sendTextMode, message] of [
     emitParentMessage: async (text) => { messages.push(text); },
   });
   const bindings = { shell: 'posix', ...(sendTextMode ? { sendTextMode } : {}) };
-  const prompt = await renderCommunicationInstructions({ status: 'enabled', transport: 'command', passiveDelivery: 'none', activeReceive: true }, bridge, bindings, pathToFileURL(path.join(scripts, '../assets/communication-instructions.md')));
-  let command = prompt.match(/\x60\x60\x60text\n([^\n]+)\n\x60\x60\x60/)[1];
-  if (sendTextMode === 'argument') command = command.replace("'MESSAGE_TEXT'", "'"+message.replaceAll("'", "'\\''")+"'");
+  const prompt = await renderCommunicationInstructions({ status: 'enabled', transport: 'command', passiveDelivery: 'none' }, bridge, bindings, pathToFileURL(path.join(scripts, '../assets/communication-instructions.md')));
+  const placeholder = input === 'text' ? 'MESSAGE_TEXT' : 'MESSAGE_FILE';
+  let command = [...prompt.matchAll(/\x60\x60\x60text\n([\s\S]*?)\n\x60\x60\x60/g)].flatMap((match) => match[1].split('\n')).find((line) => line.includes(placeholder));
+  assert.ok(command);
+  const message = input === 'file' ? '-' : "消息 'quotes' $HOME $(touch expanded-command) `touch expanded-backtick`\n第二行";
+  const argument = input === 'file' ? "message 'quotes' $literal $(not-run).txt" : message;
+  if (input === 'file') await fs.writeFile(path.join(root, argument), message);
+  command = command.replace("'"+placeholder+"'", "'"+argument.replaceAll("'", "'\\''")+"'");
   const child = spawn('/bin/sh', ['-c', command], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.stderr.on('data', (chunk) => { stderr += chunk; });
-  child.stdin.end(sendTextMode === 'argument' ? '' : message);
+  child.stdin.end();
   const exit = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
   t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
   assert.equal(await exit, 0, stderr);

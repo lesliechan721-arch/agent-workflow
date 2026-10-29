@@ -22,11 +22,29 @@ import {
   getPluginAuthoringCapabilities,
   getPluginAuthoringCapabilitySurface,
   PLUGIN_MANIFEST_SCHEMA_VERSION,
+  getPluginCommandId,
+  getManagedCommandArtifactTargets,
+  validatePluginManifest,
 } from '@lesliechan721/aw-plugin-core/manifest'
 
 const require = createRequire(import.meta.url)
 
 describe('public package exports', () => {
+  it('ships managed command normalization, target projection and identity through the published package', () => {
+    const manifest = validatePluginManifest('/plugin', {
+      schemaVersion: 3, name: 'managed-tools', version: '1.0.0', description: 'Managed tools',
+      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      managedCommands: { packages: [{ key: 'tools', scope: 'user', platforms: ['codex'], sourceDir: './tools' }], sets: [] },
+    });
+    expect(manifest.managedCommands?.packages[0]?.refreshKeys).toEqual([]);
+    expect(getManagedCommandArtifactTargets(manifest)).toEqual([]);
+    expect(getAwCapabilityRegistry()).toEqual(expect.arrayContaining(['aw.managed-commands.v1', 'aw.claude.sandbox-exclusions.v1']));
+    expect(getPluginAuthoringCapabilitySurface('managed-commands').surface).toBe('managed-commands');
+    expect(getPluginCommandId({ schemaVersion: 1, producer: {
+      sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'example-plugin',
+      kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null,
+    }, set: 'tools', key: 'check', variant: 'default' })).toBe('cmdp_3b4519b3e3a1a54208a71b8229d433cb0b80c57e97260c8d2aab0e59c6adf28e');
+  });
   it('ships the v4 schema, capability and shared branch resolver through public exports', () => {
     const config = { schemaVersion: 4, fields: { backend: { type: 'object', properties: {
       adapter: { type: 'string' }, args: { type: 'array', items: { type: 'string' } },

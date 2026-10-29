@@ -2,15 +2,22 @@ import crypto from 'node:crypto';
 
 import {
   canonicalizePluginConfigValues,
+  getManagedCommandArtifactTargets,
+  getPluginConfigDependencyKeys,
   stablePluginConfigStringify,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   PluginArtifactTargetDefinition,
+  PlatformName,
   PluginMeta,
   ReceiptTargetIdentity,
   Scope,
 } from '../types.js';
+import {
+  discoverInstalledPluginManagedCommandPackages,
+  type ManagedCommandPackageDiscovery,
+} from './managed-command-materialization.js';
 import {
   coercePluginConfigUpdates,
   readPluginConfigStore,
@@ -33,6 +40,7 @@ export interface PluginConfigImpactSharedNativeTarget {
   id: string;
   skillKey: string;
   refreshKeys: string[];
+  platform?: PlatformName;
 }
 
 export interface PluginConfigMutationImpact {
@@ -46,6 +54,9 @@ export interface PluginConfigMutationImpact {
   staleRemovedKeys: string[];
   affectedTargets: ReceiptTargetIdentity[];
   sharedNativeRenderTargets: PluginConfigImpactSharedNativeTarget[];
+  commandPackages: ManagedCommandPackageDiscovery['packages'];
+  affectedCommandPackages: ManagedCommandPackageDiscovery['packages'];
+  commandDiscoveryErrors: ManagedCommandPackageDiscovery['errors'];
 }
 
 function configIdentity(plugin: PluginMeta): {
@@ -138,6 +149,56 @@ declaration is typeof declaration & {
     && typeof declaration.skillKey === 'string';
 }
 
+function targetConfigConsumers(plugin: PluginMeta, target: ReceiptTargetIdentity) {
+  const consumers = targetArtifactDeclarations(plugin, target).map((declaration) => ({
+    id: declaration.id,
+    refreshKeys: declaration.refreshKeys,
+    scope: nativeDeclaration(declaration) ? 'user' as const : target.scope,
+    sharedNativeSkillKey: nativeDeclaration(declaration) ? declaration.skillKey : undefined,
+    platform: target.platform,
+  }));
+  for (const declaration of getManagedCommandArtifactTargets(plugin.manifest)) {
+    if (declaration.target !== 'aw.command-set' || declaration.platform !== target.platform) continue;
+    const producer = declaration.producer;
+    if (producer.kind === 'package') continue;
+    const artifact = producer.kind === 'artifact'
+      ? plugin.manifest.artifacts?.targets?.find((entry) => entry.id === producer.artifactId)
+      : undefined;
+    const sharedNativeSkillKey = producer.kind === 'static-skill'
+      ? producer.skillKey : artifact && nativeDeclaration(artifact) ? artifact.skillKey : undefined;
+    if (!sharedNativeSkillKey && !declaration.scopes.includes(target.scope)) continue;
+    consumers.push({
+      id: artifact?.id ?? declaration.id,
+      refreshKeys: declaration.refreshKeys,
+      scope: sharedNativeSkillKey ? 'user' : target.scope,
+      sharedNativeSkillKey,
+      platform: target.platform,
+    });
+  }
+  return consumers;
+}
+
+function addSharedNativeConsumer(
+  output: Map<string, PluginConfigImpactSharedNativeTarget>,
+  consumer: ReturnType<typeof targetConfigConsumers>[number],
+): void {
+  if (!consumer.sharedNativeSkillKey) return;
+  const previous = output.get(consumer.id);
+  output.set(consumer.id, { id: consumer.id, skillKey: consumer.sharedNativeSkillKey,
+    ...(consumer.platform === 'claude' ? { platform: 'claude' } : {}),
+    refreshKeys: [...new Set([...(previous?.refreshKeys ?? []), ...consumer.refreshKeys])] });
+}
+
+export function pluginSharedNativeConfigTargets(plugin: PluginMeta): PluginConfigImpactSharedNativeTarget[] {
+  const targets = new Map<string, PluginConfigImpactSharedNativeTarget>();
+  for (const platform of ['codex', 'claude'] as const) {
+    for (const consumer of targetConfigConsumers(plugin, { pluginName: plugin.manifest.name, platform, scope: 'user' })) {
+      if (consumer.refreshKeys.length > 0) addSharedNativeConsumer(targets, consumer);
+    }
+  }
+  return [...targets.values()];
+}
+
 function rendererProjectionEqual(
   before: ResolvedEffectivePluginConfig,
   after: ResolvedEffectivePluginConfig,
@@ -163,18 +224,14 @@ function unknownImpact(options: {
   updatedKeys: string[];
   removedKeys: string[];
   staleRemovedKeys: string[];
+  commands: ManagedCommandPackageDiscovery;
 }): PluginConfigMutationImpact {
   const affectedTargets = dedupeTargets(options.visibleTargets);
   const sharedNativeRenderTargets = new Map<string, PluginConfigImpactSharedNativeTarget>();
   for (const target of affectedTargets) {
     if (options.scope !== 'user') continue;
-    for (const declaration of targetArtifactDeclarations(options.plugin, target)) {
-      if (!nativeDeclaration(declaration) || declaration.refreshKeys.length === 0) continue;
-      sharedNativeRenderTargets.set(declaration.id, {
-        id: declaration.id,
-        skillKey: declaration.skillKey!,
-        refreshKeys: [...declaration.refreshKeys],
-      });
+    for (const consumer of targetConfigConsumers(options.plugin, target)) {
+      if (consumer.refreshKeys.length > 0) addSharedNativeConsumer(sharedNativeRenderTargets, consumer);
     }
   }
   return {
@@ -188,6 +245,9 @@ function unknownImpact(options: {
     staleRemovedKeys: options.staleRemovedKeys,
     affectedTargets,
     sharedNativeRenderTargets: [...sharedNativeRenderTargets.values()],
+    commandPackages: options.commands.packages,
+    affectedCommandPackages: options.commands.packages,
+    commandDiscoveryErrors: options.commands.errors,
   };
 }
 
@@ -198,10 +258,19 @@ export async function analyzePluginConfigMutationImpact(options: {
   env?: NodeJS.ProcessEnv;
   visibleTargets: readonly ReceiptTargetIdentity[];
   mutation: PluginConfigImpactMutation;
+  commandDiscovery?: ManagedCommandPackageDiscovery;
 }): Promise<PluginConfigMutationImpact> {
+  const commands = options.commandDiscovery ?? await discoverInstalledPluginManagedCommandPackages({
+    plugin: options.plugin,
+    scope: options.scope,
+    cwd: options.cwd,
+    env: options.env ?? process.env,
+    platformTargets: options.visibleTargets,
+  });
   const schema = options.plugin.manifest.config?.fields;
   const needsProjectStore = options.scope === 'project'
-    || options.visibleTargets.some((target) => target.scope === 'project');
+    || options.visibleTargets.some((target) => target.scope === 'project')
+    || commands.packages.some((target) => target.producer.scope === 'project');
   const identity = configIdentity(options.plugin);
   const readStore = async (scope: Scope): Promise<PluginConfigStore> => {
     try {
@@ -270,6 +339,7 @@ export async function analyzePluginConfigMutationImpact(options: {
   const changedKeys = [...updatedKeys, ...removedKeys];
   if (!schema || editedStore.state === 'invalid') {
     return unknownImpact({
+      commands,
       stores,
       plugin: options.plugin,
       scope: options.scope,
@@ -287,7 +357,7 @@ export async function analyzePluginConfigMutationImpact(options: {
   }
   if (!storeChanged) {
     return {
-      impactState: 'known',
+      impactState: commands.errors.length > 0 ? 'unknown' : 'known',
       noEffectiveChange: true,
       storeChanged: false,
       storeDigest: digestStores(stores),
@@ -297,6 +367,9 @@ export async function analyzePluginConfigMutationImpact(options: {
       staleRemovedKeys: [],
       affectedTargets: [],
       sharedNativeRenderTargets: [],
+      commandPackages: commands.packages,
+      affectedCommandPackages: [],
+      commandDiscoveryErrors: commands.errors,
     };
   }
 
@@ -341,39 +414,50 @@ export async function analyzePluginConfigMutationImpact(options: {
 
   try {
     const affectedTargets: ReceiptTargetIdentity[] = [];
+    const affectedCommandPackages: ManagedCommandPackageDiscovery['packages'] = [];
     const sharedNativeRenderTargets = new Map<string, PluginConfigImpactSharedNativeTarget>();
     for (const target of dedupeTargets(options.visibleTargets)) {
       let affected = false;
-      const declarations = targetArtifactDeclarations(options.plugin, target);
+      const consumers = targetConfigConsumers(options.plugin, target);
       if (options.plugin.manifest.scripts?.preApply
         || (options.plugin.manifest.dependencies?.length ?? 0) > 0) {
         const config = await resolveScope(target.scope);
         affected = !configValuesEqual(config.before.values, config.after.values);
       }
-      for (const declaration of declarations) {
-        if (declaration.refreshKeys.length === 0) continue;
-        const renderScope = nativeDeclaration(declaration) ? 'user' : target.scope;
-        const config = await resolveScope(renderScope);
+      for (const consumer of consumers) {
+        if (consumer.refreshKeys.length === 0) continue;
+        const config = await resolveScope(consumer.scope);
+        const refreshKeys = getPluginConfigDependencyKeys(options.plugin.manifest.config!, consumer.refreshKeys);
         const changed = !rendererProjectionEqual(
           config.before,
           config.after,
-          declaration.refreshKeys,
+          refreshKeys,
         );
         if (!changed) continue;
         affected = true;
-        if (nativeDeclaration(declaration)) {
-          sharedNativeRenderTargets.set(declaration.id, {
-            id: declaration.id,
-            skillKey: declaration.skillKey!,
-            refreshKeys: [...declaration.refreshKeys],
-          });
-        }
+        addSharedNativeConsumer(sharedNativeRenderTargets, consumer);
       }
       if (affected) affectedTargets.push(target);
     }
+    const commandPackages = commands.packages.filter((target) => target.installed
+      || affectedTargets.some((platformTarget) => options.plugin.manifest.managedCommands?.packages
+        .some((declaration) => declaration.key === target.packageKey
+          && declaration.platforms.includes(platformTarget.platform))));
+    for (const target of commandPackages) {
+      if (!target.declared) {
+        affectedCommandPackages.push(target);
+        continue;
+      }
+      const config = await resolveScope(target.producer.scope);
+      const refreshKeys = getPluginConfigDependencyKeys(options.plugin.manifest.config!, target.refreshKeys);
+      if (!rendererProjectionEqual(config.before, config.after, refreshKeys)) {
+        affectedCommandPackages.push(target);
+      }
+    }
     return {
-      impactState: 'known',
-      noEffectiveChange: affectedTargets.length === 0,
+      impactState: commands.errors.length > 0 ? 'unknown' : 'known',
+      noEffectiveChange: affectedTargets.length === 0 && affectedCommandPackages.length === 0
+        && commands.errors.length === 0,
       storeChanged: true,
       storeDigest: digestStores(stores),
       changedKeys,
@@ -382,9 +466,13 @@ export async function analyzePluginConfigMutationImpact(options: {
       staleRemovedKeys,
       affectedTargets,
       sharedNativeRenderTargets: [...sharedNativeRenderTargets.values()],
+      commandPackages,
+      affectedCommandPackages,
+      commandDiscoveryErrors: commands.errors,
     };
   } catch {
     return unknownImpact({
+      commands,
       stores,
       plugin: options.plugin,
       scope: options.scope,

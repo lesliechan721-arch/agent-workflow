@@ -43,9 +43,8 @@ export function validateDelivery(value) {
 
 export function validateCommunication(value) {
   if (requiredFields(value, ['status']) && ['disabled', 'unsupported'].includes(value.status)) return value;
-  if (!requiredFields(value, ['status', 'transport', 'passiveDelivery', 'activeReceive']) || value.status !== 'enabled'
-      || !['mcp', 'command'].includes(value.transport) || !['in-turn', 'turn-boundary', 'none'].includes(value.passiveDelivery)
-      || typeof value.activeReceive !== 'boolean' || value.passiveDelivery === 'none' && !value.activeReceive) {
+  if (!requiredFields(value, ['status', 'transport', 'passiveDelivery']) || value.status !== 'enabled'
+      || !['mcp', 'command'].includes(value.transport) || !['in-turn', 'turn-boundary', 'none'].includes(value.passiveDelivery)) {
     fail('protocolInvalid', 'The communication descriptor is invalid.');
   }
   return value;

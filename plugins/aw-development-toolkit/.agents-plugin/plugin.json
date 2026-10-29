@@ -38,7 +38,9 @@
         "aw.catalog-publication.v1",
         "aw.review-preparation.v1",
         "aw.review-inspection.v2",
-        "aw.skill-validation.v1"
+        "aw.skill-validation.v1",
+        "aw.managed-commands.v1",
+        "aw.claude.sandbox-exclusions.v1"
       ]
     }
   },

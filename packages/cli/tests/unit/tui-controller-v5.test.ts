@@ -49,6 +49,71 @@ function source(
 }
 
 describe('TuiController session retirement', () => {
+  it.each([false, true])('shows the shared Claude static config impact with project activation when apply=%s', (apply) => {
+    const review = buildOperationReviewProjection({
+      intent: { kind: 'configSave', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared', apply,
+        updates: { mode: 'fast' }, changes: [{ key: 'mode', title: '模式', before: 'safe', after: 'fast' }] },
+      evidence: { ...baseEvidence, config: { scope: 'user', storeDigest: 'fixture',
+        affectedTargets: [{ platform: 'claude', scope: 'project' }],
+        sharedNativeRenderTargets: [{ id: 'command-set.tools', skillKey: 'provider', refreshKeys: ['mode'], platform: 'claude' }] } },
+    });
+    expect(review.requiresConfirmation).toBe(apply);
+    expect(review.changes).toContainEqual(expect.objectContaining({
+      title: apply ? '重新生成 provider 原生 Skill' : 'Claude Code 由平台共用的内容待同步',
+      description: apply ? '配置来源为个人默认；更新 Claude Code 由平台共用的内容会影响所有启用项目。' : '个人默认已保存；原生 Skill 尚未重新生成。',
+    }));
+    expect(review.changes.some((entry) => entry.title === '当前项目 Agent role 继续使用当前项目配置')).toBe(false);
+  });
+  it('keeps the shared Claude impact visible when retrying config apply', () => {
+    const review = buildOperationReviewProjection({
+      intent: { kind: 'configSave', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared', apply: true, retryApply: true },
+      evidence: { ...baseEvidence, config: { scope: 'user', storeDigest: 'fixture',
+        affectedTargets: [{ platform: 'claude', scope: 'project' }],
+        sharedNativeRenderTargets: [{ id: 'command-set.tools', skillKey: 'provider', refreshKeys: ['mode'], platform: 'claude' }] } },
+    });
+    expect(review.requiresConfirmation).toBe(true);
+    expect(review.changes).toContainEqual(expect.objectContaining({ title: '重新生成 provider 原生 Skill',
+      description: expect.stringContaining('Claude Code 由平台共用的内容会影响所有启用项目') }));
+  });
+  it('shows a retained package from the cleanup plan with shared impact and an exact remove command', () => {
+    const packageId = `pkg_${'2'.repeat(64)}`;
+    const recoveryAction = `aw command package remove ${packageId} --yes`;
+    const action = { kind: 'retainManagedCommandPackage' as const, pluginId: 'official/demo', scope: 'user' as const,
+      producer: { sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo',
+        kind: 'package' as const, key: 'tools', platform: null, scope: 'user' as const, projectRoot: null },
+      packageId, commandIds: ['installed-command'], availability: 'ready' as const, recoveryAction };
+    const review = buildOperationReviewProjection({
+      intent: { kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/demo', platform: 'codex', scope: 'project' },
+      evidence: { ...baseEvidence, operationPlan: createOperationPlan({ intentChanges: [], changes: [], warnings: [],
+        evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] }, actions: [action, action] }) },
+    });
+    const retained = review.changes.filter((entry) => entry.title === '保留命令包 tools');
+    expect(retained).toHaveLength(1);
+    expect(retained[0]).toMatchObject({ kind: 'keep', group: 'preserved', description: expect.stringContaining('所有项目共用') });
+    expect(retained[0]!.description).toContain(packageId);
+    expect(retained[0]!.description).toContain(recoveryAction);
+  });
+  it('shows the prepared command package launch and disabled sets in install Review', () => {
+    const review = buildOperationReviewProjection({
+      intent: { kind: 'pluginWrite', action: 'install', pluginId: 'official/demo', platform: 'claude', scope: 'user' },
+      evidence: { ...baseEvidence, operationPlan: createOperationPlan({
+        intentChanges: [], changes: [], warnings: [],
+        evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] },
+        actions: [{ kind: 'syncManagedCommandPackage', pluginId: 'official/demo', scope: 'user',
+          producer: { sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo',
+            kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null },
+          sets: [{ set: 'guide', state: 'present', entries: [{ key: 'subagent', variant: 'default',
+            runner: 'node', entry: 'runtime.mjs', args: ['--fixed', 'value'], env: {}, envFrom: {}, cwd: 'resource' }] },
+          { set: 'optional', state: 'disabled', entries: [] }], files: [], contentDigest: 'sha256:prepared',
+        }],
+      }) },
+    });
+    expect(review.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: '命令包 tools', description: expect.stringContaining('全部引用者') }),
+      expect.objectContaining({ title: 'guide/subagent/default', description: 'node · runtime.mjs · 固定参数 ["--fixed","value"] · cwd=resource' }),
+      expect.objectContaining({ title: '命令集合 optional', description: '已禁用；本集合命令失效' }),
+    ]));
+  });
   it('records only successful status read time and keeps it when returning home', async () => {
     let now = 1_000;
     const value = new TuiController(dependencies({ now: () => now }));

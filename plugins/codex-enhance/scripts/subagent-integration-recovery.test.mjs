@@ -213,15 +213,15 @@ test('lost worker result is fixed once and expires without regenerating work', {
   successful(reread, 'result'); assert.equal(field(reread.stdout, 'code'), 'workerLost');
   assert.deepEqual(blocks(reread.stdout, 'MESSAGE'), []);
   assert.equal((await f.evidence(started.run)).meta.terminalAt, first.meta.terminalAt);
-  assert.equal((await f.command(['wait', '--run', started.run])).stdout, 'wait: settled\n');
+  assert.equal((await f.command(['wait', '--run', started.run])).stdout, 'settled\n');
   assert.equal(await fs.readFile(f.generations, 'utf8'), 'generation\n');
   const clock = await f.clock(['result'], { now: first.meta.terminalAt });
   await clock.advance(3599999);
   successful(await f.command(['result', '--run', started.run], { env: clock.environment }), 'result');
   assert.equal((await f.evidence(started.run)).meta.terminalAt, first.meta.terminalAt);
   await clock.advance(1);
-  const expired = await f.command(['result', '--run', started.run, '--export'], { env: clock.environment });
-  assert.equal(expired.code, 1); assert.match(expired.stdout, /^code: (runExpired|runUnavailable)$/m);
+  const expired = await f.command(['result', '--run', started.run, '--output-file', path.join(f.directory, 'expired-result.txt')], { env: clock.environment });
+  assert.equal(expired.code, 1); assert.ok(['runExpired', 'runUnavailable'].includes(field(expired.stderr, 'code')));
   assert.deepEqual(blocks(expired.stdout, 'FINAL'), []);
 });
 
@@ -240,7 +240,7 @@ test('ordinary calls clean expired damaged content while help and invalid flags 
   await clock.advance(3600000);
   await fs.writeFile(path.join(run.directory, 'final.json'), '{damaged cached content');
   assert.equal((await f.command(['--help'], { env: clock.environment })).code, 0); await fs.stat(run.directory);
-  assert.equal((await f.command(['result', '--run', started.run, '--output-file', 'unused'], { env: clock.environment })).code, 2); await fs.stat(run.directory);
+  assert.equal((await f.command(['result', '--run', started.run, '--export', '--output-file', 'unused'], { env: clock.environment })).code, 2); await fs.stat(run.directory);
   const expired = await f.command(['result', '--run', started.run], { env: clock.environment });
   assert.equal(expired.code, 1); assert.deepEqual(blocks(expired.stdout, 'FINAL'), []);
   assert.equal(await fs.stat(run.directory).catch(() => null), null);
@@ -257,18 +257,18 @@ test('default run survives simulated time and a caller wait timeout', { timeout:
   successful(await f.command(['wait', '--run', started.run, '--timeout-ms', '0']), 'wait');
   const callerClock = await f.clock(['wait'], { stepMs: 100000 });
   const timeout = await f.command(['wait', '--run', started.run], { env: callerClock.environment });
-  assert.equal(timeout.code, 0); assert.equal(timeout.stdout, 'wait: timeout\n');
+  assert.equal(timeout.code, 0); assert.equal(timeout.stdout, 'timeout\n');
   const [acknowledged] = await callerClock.acknowledgements();
   assert.equal(acknowledged.now - callerClock.origin, 600000);
   await workerClock.advance(1800001);
   const input = 'Input after a simulated former default deadline.';
   successful(await f.command(['send', '--run', started.run, '--text', input]), 'send');
   const changed = await f.command(['wait', '--run', started.run]);
-  successful(changed, 'wait'); assert.equal(field(changed.stdout, 'state'), 'running');
+  successful(changed, 'wait'); assert.equal((await f.evidence(started.run)).snapshot.state, 'running');
   assert.deepEqual(blocks(changed.stdout, 'MESSAGE'), [input]);
   assert.deepEqual((await started.inputs(1)).map((message) => message.text), [input]);
   const pending = await f.command(['result', '--run', started.run]);
-  assert.equal(pending.code, 1); assert.equal(field(pending.stdout, 'code'), 'resultNotReady');
+  assert.equal(pending.code, 1); assert.equal(field(pending.stderr, 'code'), 'resultNotReady');
   assert.equal((await started.observed()).request.run.deadlineAt, null);
   await started.finish(); await f.waitTerminal(started.run);
   const result = await f.command(['result', '--run', started.run]);
@@ -294,7 +294,7 @@ test('long-running default run stays open beyond 30 minutes', {
     backendLifetimeMs: longRunMilliseconds + (windows ? 300000 : 60000),
     adapterLifetimeMs: longRunMilliseconds + (windows ? 305000 : 65000) });
   await f.initialized(started);
-  if (started.code === 0) { assert.equal(field(started.stdout, 'state'), 'running'); assert.equal(field(started.stdout, 'communication'), 'true'); }
+  if (started.code === 0) assert.equal(field(started.stdout, 'communication'), 'true');
   assert.equal((await started.observed()).request.run.deadlineAt, null);
   const began = performance.now();
   while (performance.now() - began < longRunMilliseconds) {
@@ -304,13 +304,13 @@ test('long-running default run stays open beyond 30 minutes', {
   const elapsedMilliseconds = performance.now() - began;
   assert.ok(elapsedMilliseconds >= longRunMilliseconds);
   const input = 'Input after the former default deadline.\r\n保留同一次任务。\n';
-  const sent = await f.command(['send', '--run', started.run, '--text', '-'], { stdin: Buffer.from(input) });
-  successful(sent, 'send'); assert.equal(field(sent.stdout, 'delivery'), 'queued');
+  const sent = await f.command(['send', '--run', started.run, '--text', input]);
+  successful(sent, 'send'); assert.equal(sent.stdout, `queued ${started.run}\n`);
   const changed = await f.command(['wait', '--run', started.run]);
   successful(changed, 'wait'); bounded(changed);
   assert.equal(field(changed.stdout, 'state'), 'running'); assert.deepEqual(blocks(changed.stdout, 'MESSAGE'), [input]);
   const stillRunning = await f.command(['result', '--run', started.run]);
-  assert.equal(stillRunning.code, 1); assert.equal(field(stillRunning.stdout, 'code'), 'resultNotReady');
+  assert.equal(stillRunning.code, 1); assert.equal(field(stillRunning.stderr, 'code'), 'resultNotReady');
   assert.deepEqual((await started.inputs(1)).map((message) => message.text), [input]);
   await started.finish(); await f.waitTerminal(started.run);
   const result = await f.command(['result', '--run', started.run]);

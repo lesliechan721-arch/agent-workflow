@@ -17,10 +17,10 @@ const diagnostics = channel('aw.subagent.bridge');
 const note = (phase, values = {}) => diagnostics.publish({ phase, ...values });
 
 /** Shared queue semantics, independent of the private file transport. */
-export function createChildChannel({ emitParentMessage, submitInput, canSubmitInput, onError, activeReceive = true } = {}) {
+export function createChildChannel({ emitParentMessage, submitInput, canSubmitInput, onError } = {}) {
   if (typeof emitParentMessage !== 'function' || (submitInput !== undefined && typeof submitInput !== 'function')
       || (canSubmitInput !== undefined && typeof canSubmitInput !== 'function')
-      || typeof activeReceive !== 'boolean' || (onError !== undefined && typeof onError !== 'function')) fail('bridgeInvalid', 'The child channel configuration is invalid.');
+      || (onError !== undefined && typeof onError !== 'function')) fail('bridgeInvalid', 'The child channel configuration is invalid.');
   let closed = false; let closingPromise; let receiving = null; let receiveActive = false; let submitting = false;
   const inputs = []; const pendingInputs = new Set(); const seenIds = new Set();
   const sends = new Set(); const submissions = new Set();
@@ -98,7 +98,6 @@ export function createChildChannel({ emitParentMessage, submitInput, canSubmitIn
           try { await sending; response = { outcome: 'submitted' }; }
           finally { sends.delete(sending); }
         } else if (request.operation === 'receive') {
-          if (!activeReceive) fail('receiveUnsupported', 'This communication channel has no active receive entry.');
           if (Object.hasOwn(request, 'text')) fail('invalidArguments', 'Receive does not accept message text.');
           const timeoutMs = request.timeoutMs ?? LIMITS.receiveMs;
           if (!validTimeout(timeoutMs)) fail('invalidArguments', 'Receive timeout must be an integer from 0 to 1800000 milliseconds.');
@@ -137,11 +136,11 @@ export function createChildChannel({ emitParentMessage, submitInput, canSubmitIn
 }
 
 /** One adapter owns the scheduler; tools only publish private requests. */
-export async function createChildBridge({ directory, deadlineAt, toolkit, emitParentMessage, submitInput, canSubmitInput, activeReceive = true } = {}) {
+export async function createChildBridge({ directory, deadlineAt, toolkit, emitParentMessage, submitInput, canSubmitInput } = {}) {
   if (!absolutePath(directory) || !(deadlineAt === null || epochMs(deadlineAt)) || !fields(toolkit, ['module', 'command', 'messageScript', 'mcpScript'])
       || ['module', 'command', 'messageScript', 'mcpScript'].some((key) => !absolutePath(toolkit[key])) || typeof emitParentMessage !== 'function'
       || (submitInput !== undefined && typeof submitInput !== 'function')
-      || typeof activeReceive !== 'boolean' || (canSubmitInput !== undefined && typeof canSubmitInput !== 'function')) fail('bridgeInvalid', 'The child bridge configuration is invalid.');
+      || (canSubmitInput !== undefined && typeof canSubmitInput !== 'function')) fail('bridgeInvalid', 'The child bridge configuration is invalid.');
   for (const file of Object.values(toolkit)) await assertNoReparsePath(file, 'file');
   await verifyPrivatePath(path.dirname(directory), 'directory');
   await fs.mkdir(directory, { mode: 0o700 });
@@ -151,7 +150,7 @@ export async function createChildBridge({ directory, deadlineAt, toolkit, emitPa
   await atomicJson(bindingFile, { binding, pid: process.pid });
   let closed = false; let closingPromise; let scanning = false;
   const requests = new Set(); const active = new Set();
-  const queue = createChildChannel({ emitParentMessage, submitInput, canSubmitInput, activeReceive, onError: () => { void close('error'); } });
+  const queue = createChildChannel({ emitParentMessage, submitInput, canSubmitInput, onError: () => { void close('error'); } });
   const handleRequest = async (name) => {
     const requestPath = path.join(directory, name);
     const responsePath = path.join(directory, name.replace('.request.json', '.response.json'));
@@ -243,7 +242,7 @@ export async function createChildBridge({ directory, deadlineAt, toolkit, emitPa
     deadlineTimer = setTimeout(tick, Math.max(0, Math.min(deadlineAt - Date.now(), 2147483647)));
   }
   return {
-    mcpServer: { command: toolkit.command, args: [toolkit.mcpScript, '--bridge', bindingFile, ...(activeReceive ? [] : ['--send-only'])] },
+    mcpServer: { command: toolkit.command, args: [toolkit.mcpScript, '--bridge', bindingFile] },
     script: { command: toolkit.command, args: [toolkit.messageScript, '--bridge', bindingFile] },
     acceptInput: queue.acceptInput,
     hasPendingInput: queue.hasPendingInput,

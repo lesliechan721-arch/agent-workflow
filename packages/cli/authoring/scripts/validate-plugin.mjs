@@ -13,7 +13,11 @@ import {
   createRuntimeConfigSnapshot,
   getPluginAuthoringAcceptedValues as getCorePluginAuthoringAcceptedValues,
   getSkillFrontmatterCapabilityRegistry,
+  getManagedCommandArtifactTargets,
   normalizePluginConfigDefinition,
+  parseManagedCommandPlaceholders,
+  replaceManagedCommandPlaceholders,
+  validateCommandEntryFiles,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { checkPluginVersions } from './lib/plugin-version-check.mjs';
@@ -32,7 +36,7 @@ const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 16;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 17;
 let capabilityDiagnostic = null;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
@@ -399,20 +403,27 @@ async function tryLoadCliManifestTools() {
     'commands',
     'aw-capabilities.js',
   );
+  const artifactPlanPath = path.join(CLI_PACKAGE_ROOT, 'dist', 'src', 'utils', 'artifact-plan.js');
+  const artifactRequestPath = path.join(CLI_PACKAGE_ROOT, 'dist', 'src', 'utils', 'artifact-request.js');
+  const commandMaterializationPath = path.join(CLI_PACKAGE_ROOT, 'dist', 'src', 'utils', 'managed-command-materialization.js');
   if (
     !fs.existsSync(manifestModulePath)
     || !fs.existsSync(runtimeProjectionModulePath)
     || !fs.existsSync(capabilityModulePath)
   ) return null;
   try {
-    const [manifestModule, runtimeProjectionModule, capabilityModule] = await Promise.all([
+    const [manifestModule, runtimeProjectionModule, capabilityModule, artifactPlanModule, artifactRequestModule, commandModule] = await Promise.all([
       import(pathToFileURL(manifestModulePath).href),
       import(pathToFileURL(runtimeProjectionModulePath).href),
       import(pathToFileURL(capabilityModulePath).href),
+      import(pathToFileURL(artifactPlanPath).href),
+      import(pathToFileURL(artifactRequestPath).href),
+      import(pathToFileURL(commandMaterializationPath).href),
     ]);
     if (
       manifestModule.SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION
       !== SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION
+      || typeof artifactRequestModule.requiresNonSensitiveArtifactInput !== 'function'
     ) {
       return null;
     }
@@ -424,6 +435,11 @@ async function tryLoadCliManifestTools() {
       resolvePluginRequirements: manifestModule.resolvePluginRequirements ?? null,
       implementedCapabilities: capabilityModule.IMPLEMENTED_AW_CAPABILITIES ?? null,
       createRuntimeResolver: runtimeProjectionModule.createCatalogRuntimeImportResolver ?? null,
+      validateArtifactPlan: artifactPlanModule.validateArtifactPlan,
+      requiresNonSensitiveArtifactInput: artifactRequestModule.requiresNonSensitiveArtifactInput,
+      prepareManagedCommandPackageFiles: commandModule.prepareManagedCommandPackageFiles,
+      managedCommandProducerIdentity: commandModule.managedCommandProducerIdentity,
+      createManagedCommandReferenceResolver: commandModule.createManagedCommandReferenceResolver,
     };
   } catch {
     return null;
@@ -603,6 +619,7 @@ function validateManifestLightweight(manifest) {
     'scripts',
     'config',
     'artifacts',
+    'managedCommands',
   ]);
 
   if (manifest.dependencies !== undefined) {
@@ -2707,7 +2724,23 @@ function validateRenderedSkillTree(options) {
 
   for (const [relativePath, content] of files) {
     const text = content.toString('utf8');
-    if (/\{\{[^{}]+\}\}/u.test(text)) {
+    let remaining = text;
+    if (relativePath.endsWith('.md')) {
+      try {
+        const placeholders = parseManagedCommandPlaceholders(text);
+        if (placeholders.length > 0 && !(manifest.requires?.aw?.capabilities ?? []).includes('aw.managed-commands.v1')) {
+          error(`${fieldName} managed command references require aw.managed-commands.v1`);
+        }
+        if (declaration.target === 'agent-skills.skill' && placeholders.length > 0) {
+          error(`${fieldName} managedCommandPortableUnsupported: Portable Skills cannot contain managed command references`);
+        } else if (options.managedTrees) {
+          remaining = replaceManagedCommandPlaceholders(text, () => `cmdp_${'0'.repeat(64)}`);
+        }
+      } catch (cause) {
+        error(`${fieldName} ${cause.message}`);
+      }
+    }
+    if (/\{\{[^{}]+\}\}/u.test(remaining)) {
       error(`${fieldName} final file tree contains an unresolved template in "${relativePath}"`);
     }
   }
@@ -2735,6 +2768,7 @@ function validateRenderedSkillTree(options) {
       skillValidationTools,
     );
   }
+  options.managedTrees?.push({ declaration, files, scope: options.managedScope });
 }
 
 function validateStaticPortableFinalTrees(
@@ -2799,6 +2833,11 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel, options) {
     const fieldName = `${planField}.artifacts[${index}]`;
     const entry = expectRecord(artifact, fieldName);
     if (!entry) return;
+    if (entry.target === 'aw.command-set' || entry.target === 'aw.command-package') {
+      const declaration = byKey.get(`${entry.id}:${entry.target}`);
+      if (declaration) returned.add(`${entry.id}:${entry.target}`);
+      return; // Shared ArtifactPlan validation owns command response fields.
+    }
     validateAllowedKeys(entry, fieldName, [
       'id',
       'platform',
@@ -2906,6 +2945,8 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel, options) {
           runtimeImports: options.runtimeImports,
           materializedRoot: path.join(options.tempRoot, `${declaration.platform ?? declaration.distribution}-${scopeLabel.split('/')[1]}-${index}`),
           skillValidationTools: options.skillValidationTools,
+          managedTrees: options.managedTrees,
+          managedScope: scopeLabel.split('/')[1],
         });
       }
     } else if (entry.skillKey !== undefined) {
@@ -2921,7 +2962,7 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel, options) {
   }
 }
 
-function resolveArtifactRendererFixtureRequests(declarations, manifest) {
+function resolveArtifactRendererFixtureRequests(declarations, manifest, requiresNonSensitiveArtifactInput) {
   const awOwned = new Map();
   const codexNative = new Map();
   for (const declaration of declarations) {
@@ -2939,7 +2980,9 @@ function resolveArtifactRendererFixtureRequests(declarations, manifest) {
       continue;
     }
 
-    const surface = declaration.platform ?? declaration.distribution;
+    const surface = declaration.surface?.kind === 'aw'
+      ? declaration.surface.name
+      : declaration.platform ?? declaration.distribution;
     if (!surface) continue;
     for (const scope of declaration.scopes) {
       const key = `${surface}:${scope}`;
@@ -2955,44 +2998,39 @@ function resolveArtifactRendererFixtureRequests(declarations, manifest) {
     }
   }
   const partitionedAwOwned = [...awOwned.values()].flatMap((request) => {
-    const hasSkill = request.declarations.some((declaration) =>
-      declaration.target === 'codex.skill'
-      || declaration.target === 'claude.skill'
-      || declaration.target === 'agent-skills.skill');
-    const hasSensitiveNonSkill = request.declarations.some((declaration) =>
-      declaration.target !== 'codex.skill'
-      && declaration.target !== 'claude.skill'
-      && declaration.target !== 'agent-skills.skill'
+    const hasNonSensitiveTarget = request.declarations.some(requiresNonSensitiveArtifactInput);
+    const hasSensitiveOtherTarget = request.declarations.some((declaration) =>
+      !requiresNonSensitiveArtifactInput(declaration)
       && declaration.refreshKeys.some((key) =>
         configFieldContainsSensitiveValue(manifest.config?.fields?.[key])));
-    if (!hasSkill || !hasSensitiveNonSkill) return [request];
-    const skillDeclarations = request.declarations.filter((declaration) =>
-      declaration.target === 'codex.skill'
-      || declaration.target === 'claude.skill'
-      || declaration.target === 'agent-skills.skill');
-    const nonSkillDeclarations = request.declarations.filter((declaration) =>
-      !skillDeclarations.includes(declaration));
+    if (!hasNonSensitiveTarget || !hasSensitiveOtherTarget) return [request];
+    const nonSensitiveDeclarations = request.declarations.filter(requiresNonSensitiveArtifactInput);
+    const otherDeclarations = request.declarations.filter((declaration) =>
+      !requiresNonSensitiveArtifactInput(declaration));
     return [
-      { ...request, declarations: skillDeclarations },
-      { ...request, declarations: nonSkillDeclarations },
+      { ...request, declarations: nonSensitiveDeclarations },
+      { ...request, declarations: otherDeclarations },
     ];
   });
   return [...partitionedAwOwned, ...codexNative.values()];
 }
 
-function runArtifactRendererFixture(
+async function runArtifactRendererFixture(
   pluginDir,
   manifest,
   renderEntry,
   declarations,
   resolvedRuntimeImports,
   skillValidationTools,
+  managedContext,
+  requiresNonSensitiveArtifactInput,
 ) {
-  if (!renderEntry || declarations.length === 0) return;
+  if (!renderEntry || declarations.length === 0) return [];
 
-  const requests = resolveArtifactRendererFixtureRequests(declarations, manifest);
+  const requests = resolveArtifactRendererFixtureRequests(declarations, manifest, requiresNonSensitiveArtifactInput);
   const values = defaultConfigValues(manifest);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-artifact-render-'));
+  const returnedArtifacts = [];
   try {
     for (const [requestIndex, request] of requests.entries()) {
       const {
@@ -3003,7 +3041,8 @@ function runArtifactRendererFixture(
         declarations: scopedDeclarations,
       } = request;
       const distribution = surface === 'agent-skills' ? surface : undefined;
-      const platform = distribution ? undefined : surface;
+      const awSurface = surface === 'managed-commands';
+      const platform = distribution || awSurface ? undefined : surface;
       const event = distribution ? 'materialize' : 'install';
       const requestRoot = path.join(tempRoot, `${requestIndex}-${kind}-${surface}-${scope}`);
       const rendererAwHome = path.join(requestRoot, 'aw-home');
@@ -3012,7 +3051,7 @@ function runArtifactRendererFixture(
       fs.mkdirSync(requestRoot, { recursive: true });
       const contextPath = path.join(requestRoot, 'context.json');
       const runtimeImports = scopedDeclarations.flatMap((target) =>
-        target.runtimeImports.map((runtimeImport, importIndex) => {
+        (target.runtimeImports ?? []).map((runtimeImport, importIndex) => {
           const resolved = resolvedRuntimeImports?.artifactImports.get(
             authorRuntimeImportKey(target.id, importIndex),
           );
@@ -3065,7 +3104,7 @@ function runArtifactRendererFixture(
         contextPath,
         JSON.stringify({
           event,
-          surface: distribution
+          surface: awSurface ? { kind: 'aw', name: 'managed-commands' } : distribution
             ? { kind: 'distribution', name: distribution }
             : { kind: 'platform', name: platform },
           ...(platform ? { platform } : {}),
@@ -3096,6 +3135,9 @@ function runArtifactRendererFixture(
             sourceDirs: target.sourceDirs.map((sourceDir) =>
               path.join(pluginDir, normalizeRelativePath(sourceDir))),
           })),
+          commandSources: (managedContext?.manifest.managedCommands?.packages ?? [])
+            .filter((entry) => scopedDeclarations.some((target) => target.packageKey === entry.key))
+            .map((entry) => ({ packageKey: entry.key, sourceDir: path.join(pluginDir, normalizeRelativePath(entry.sourceDir)) })),
           runtimeImports,
           paths: {
             awHome: rendererAwHome,
@@ -3132,6 +3174,7 @@ function runArtifactRendererFixture(
         AW_PLUGIN_EVENT: event,
         ...(platform ? { AW_PLUGIN_PLATFORM: platform } : {}),
         ...(distribution ? { AW_PLUGIN_DISTRIBUTION: distribution } : {}),
+        ...(awSurface ? { AW_PLUGIN_SURFACE: 'managed-commands' } : {}),
         AW_PLUGIN_SCOPE: scope,
       };
       if (process.platform === 'win32') {
@@ -3178,21 +3221,41 @@ function runArtifactRendererFixture(
         runtimeImports: resolvedRuntimeImports,
         tempRoot,
         skillValidationTools,
+        managedTrees: managedContext?.trees,
       });
+      if (managedContext) {
+        try {
+          const validated = managedContext.tools.validateArtifactPlan({
+            manifest: managedContext.manifest,
+            plan,
+            platform: surface,
+            scope,
+            requestedArtifactIds: scopedDeclarations.map((target) => target.id),
+            renderConfig: { values: scopedValues, sources: Object.fromEntries(Object.keys(scopedValues).map((key) => [key, 'default'])), issues: [] },
+          });
+          returnedArtifacts.push(...validated.artifacts.map((artifact) => ({ artifact, scope, surface })));
+        } catch (cause) {
+          error(`${fieldName}: ${cause.message}`);
+        }
+      }
     }
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+  return returnedArtifacts;
 }
 
-function validateDynamicArtifactsLightweight(
+async function validateDynamicArtifactsLightweight(
   pluginDir,
   manifest,
   renderEntry,
   runtimeImports,
   skillValidationTools,
+  managedContext,
+  requiresNonSensitiveArtifactInput,
 ) {
   const declarations = validateArtifactsConfigLightweight(pluginDir, manifest);
+  if (managedContext) declarations.push(...getManagedCommandArtifactTargets(managedContext.manifest));
   const hasTargets = declarations.length > 0;
   const hasRenderer = Boolean(manifest.scripts?.artifacts?.render);
 
@@ -3200,17 +3263,111 @@ function validateDynamicArtifactsLightweight(
     error('artifacts.targets requires scripts.artifacts.render');
   }
   if (hasRenderer && !hasTargets) {
-    error('scripts.artifacts.render requires artifacts.targets');
+    error('scripts.artifacts.render requires artifacts.targets or dynamic managedCommands targets');
   }
 
-  runArtifactRendererFixture(
+  return runArtifactRendererFixture(
     pluginDir,
     manifest,
     renderEntry,
     declarations,
     runtimeImports,
     skillValidationTools,
+    managedContext,
+    requiresNonSensitiveArtifactInput,
   );
+}
+
+async function validateAuthorManagedCommands(pluginDir, manifest, rendered, context) {
+  const { tools, trees } = context;
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-author-commands-'));
+  const env = { AW_HOME: path.join(tempRoot, 'aw-home'), AW_CODEX_HOME: path.join(tempRoot, 'codex-home'), AW_CLAUDE_HOME: path.join(tempRoot, 'claude-home') };
+  const plugin = { manifest, rootDir: pluginDir, sourceId: 'authoring', sourceIdentity: `sha256:${'0'.repeat(64)}` };
+  const candidates = [];
+  const cleanups = [];
+  try {
+    const root = manifest.skills && path.join(pluginDir, normalizeRelativePath(manifest.skills));
+    if (root && fs.existsSync(root)) {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        for (const platform of targetedPlatforms(manifest)) {
+          if ((manifest.artifacts?.targets ?? []).some((target) => target.platform === platform && target.kind === 'skill' && target.skillKey === entry.name)) continue;
+          const files = new Map();
+          collectArtifactSourceFiles(path.join(root, entry.name), `static Skill ${entry.name}`, files);
+          for (const [relative, bytes] of files) {
+            if (isTemplateTextFile(relative)) files.set(relative, Buffer.from(renderTemplateForPlatform(manifest, `${normalizeRelativePath(manifest.skills)}/${entry.name}/${relative}`, bytes.toString('utf8'), platform)));
+          }
+          const producer = await tools.managedCommandProducerIdentity({
+            plugin,
+            producer: { kind: 'static-skill', platform, skillKey: entry.name },
+            scope: 'user',
+            cwd: pluginDir,
+          });
+          trees.push({ declaration: { target: `${platform}.skill`, platform, skillKey: entry.name, staticSkill: true }, files, scope: producer.scope });
+        }
+      }
+    }
+    const setOutputs = (set, platform, scope) => {
+      if (set.mode === 'static') return { set: set.set, state: 'present', entries: set.entries };
+      const output = rendered.find((entry) => entry.artifact.id === `command-set.${set.set}` && entry.scope === scope && entry.surface === platform)?.artifact;
+      if (!output) throw new Error(`commandReferenceInvalid: dynamic command set ${set.set} was not returned`);
+      return { set: set.set, state: output.state, entries: output.entries };
+    };
+    for (const commandPackage of manifest.managedCommands?.packages ?? []) {
+      const sets = (manifest.managedCommands?.sets ?? [])
+        .filter((set) => set.producer.kind === 'package' && set.producer.packageKey === commandPackage.key)
+        .map((set) => setOutputs(set, 'managed-commands', commandPackage.scope));
+      const files = rendered.find((entry) => entry.artifact.id === `command-package.${commandPackage.key}`)?.artifact.files ?? {};
+      const prepared = await tools.prepareManagedCommandPackageFiles({ sourceRoot: path.join(pluginDir, normalizeRelativePath(commandPackage.sourceDir)), files, entries: sets.flatMap((set) => set.entries) });
+      cleanups.push(prepared.cleanup);
+      candidates.push({ producer: await tools.managedCommandProducerIdentity({ plugin, producer: { kind: 'package', packageKey: commandPackage.key }, scope: commandPackage.scope, cwd: pluginDir }), sets });
+    }
+    for (const [index, tree] of trees.entries()) {
+      const { declaration } = tree;
+      const scope = declaration.delivery?.mode === 'codex-native' ? 'user' : tree.scope;
+      if (!declaration.platform) continue;
+      const producer = declaration.staticSkill
+        ? { kind: 'static-skill', platform: declaration.platform, skillKey: declaration.skillKey }
+        : { kind: 'artifact', artifactId: declaration.id };
+      const sets = (manifest.managedCommands?.sets ?? []).filter((set) => JSON.stringify(set.producer) === JSON.stringify(producer))
+        .map((set) => setOutputs(set, declaration.platform, scope));
+      const resourceRoot = path.join(tempRoot, `skill-${index}`);
+      for (const [relative, bytes] of tree.files) {
+        const target = path.join(resourceRoot, ...relative.split('/'));
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, bytes);
+      }
+      await validateCommandEntryFiles(resourceRoot, sets.flatMap((set) => set.entries));
+      candidates.push({ producer: await tools.managedCommandProducerIdentity({ plugin, producer, scope, cwd: pluginDir }), sets });
+    }
+    for (const tree of trees) {
+      if (!tree.declaration.platform) continue;
+      const scope = tree.declaration.delivery?.mode === 'codex-native' ? 'user' : tree.scope;
+      const resolve = await tools.createManagedCommandReferenceResolver({ plugin, platform: tree.declaration.platform, scope, cwd: pluginDir, env, candidates });
+      for (const [relative, bytes] of tree.files) {
+        if (!relative.endsWith('.md')) continue;
+        const text = bytes.toString('utf8');
+        if (parseManagedCommandPlaceholders(text).length > 0 && !(manifest.requires?.aw?.capabilities ?? []).includes('aw.managed-commands.v1')) throw new Error('managed command references require aw.managed-commands.v1');
+        replaceManagedCommandPlaceholders(text, resolve);
+      }
+    }
+    for (const permission of manifest.extensions?.permissions ?? []) {
+      for (const platform of targetedPlatforms(manifest)) {
+        for (const scope of platform === 'codex' ? ['user'] : ['user', 'project']) {
+          const resolve = await tools.createManagedCommandReferenceResolver({ plugin, platform, scope, cwd: pluginDir, env, candidates });
+          const override = permission.agentOverrides?.[platform];
+          if (override === null) continue;
+          for (const decision of ['allow', 'ask', 'deny']) for (const rule of override?.[decision] ?? permission[decision] ?? []) if (typeof rule !== 'string') resolve(rule.command);
+          if (platform === 'claude') for (const rule of override?.sandbox?.excludedCommands ?? []) resolve(rule.command);
+        }
+      }
+    }
+  } catch (cause) {
+    error(`managed command authoring candidate: ${cause.message}`);
+  } finally {
+    for (const cleanup of cleanups) await cleanup();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function validateScriptsLightweight(pluginDir, manifest) {
@@ -3923,8 +4080,9 @@ async function validatePluginDir(pluginDir, options) {
   }
 
   const skillValidationTools = await tryLoadCliSkillValidationTools();
+  let normalizedManifest;
   try {
-    const normalizedManifest = await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
+    normalizedManifest = await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
     // Renderer fixtures consume the same compiled config as installed runtime consumers.
     if (normalizedManifest.config) manifest.config = normalizedManifest.config;
     const requirements = await cliManifestTools.resolvePluginRequirements({
@@ -3968,13 +4126,19 @@ async function validatePluginDir(pluginDir, options) {
     cliManifestTools,
   });
   validateStaticPortableFinalTrees(pluginDir, manifest, runtimeImports, skillValidationTools);
-  validateDynamicArtifactsLightweight(
+  const managedContext = normalizedManifest
+    ? { manifest: normalizedManifest, tools: cliManifestTools, trees: [] }
+    : undefined;
+  const rendered = await validateDynamicArtifactsLightweight(
     pluginDir,
     manifest,
     artifactRenderEntry,
     runtimeImports,
     skillValidationTools,
+    managedContext,
+    cliManifestTools.requiresNonSensitiveArtifactInput,
   );
+  if (managedContext) await validateAuthorManagedCommands(pluginDir, normalizedManifest, rendered ?? [], managedContext);
   validateMcpContent(pluginDir, manifest);
   validateAppsContent(pluginDir, manifest);
   warnCodexProjectScopeLimitations(manifest);

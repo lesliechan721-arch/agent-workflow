@@ -190,6 +190,7 @@ import {
 } from './commands/aw-capabilities.js';
 import type { ManagedCodexAuthorizer } from './utils/codex-manager.js';
 import { prepareSkillEval } from './commands/skill-eval.js';
+import { registerManagedCommandCli, runManagedCommandCli } from './commands/managed-commands.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type {
@@ -1557,6 +1558,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   const plugin = program
     .command('plugin')
     .description('Create and validate AW plugin source');
+
+  registerManagedCommandCli(program, () => createActionContext('command', {}), {
+    cliEntry: fileURLToPath(import.meta.url),
+    cliVersion: resolveCliVersion(),
+  }, (code) => { commandExitState.exitCode = code; });
 
   const self = program
     .command('self')
@@ -4001,6 +4007,12 @@ export async function runCli(
     ...createDefaultIo(),
     ...options.io,
   };
+  if (argv[0] === 'command') {
+    return runManagedCommandCli(argv.slice(1), createCliExecutionContext({ ...options, io }), {
+      cliEntry: fileURLToPath(import.meta.url),
+      cliVersion: resolveCliVersion(),
+    });
+  }
   const reviewCommand = argv[0] === 'review' && ['inspect', 'prepare'].includes(argv[1] ?? '')
     ? argv[1] as 'inspect' | 'prepare'
     : null;

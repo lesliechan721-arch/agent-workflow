@@ -209,6 +209,23 @@ project 配置按 Catalog logical identity 共享，不绑定 Git URL、SSH/HTTP
 
 该 runtime 位于 `AW_HOME` 的可删除弱缓存中，不加入 `PATH`，也不检测 Codex App。只修改已有 shared native 的 project activation 时不需要 manager；项目 intent 缺少 shared native package 时仍需要兼容的 system 或 AW-managed CLI。cleanup 和 uninstall 在没有可证明的 AW-owned native residue 时不会探测、提示或下载；移除失败会保留 residue，用户可重试命令、升级 AW，或安装兼容的官方 Codex CLI 后恢复。AW 不直接删除 Codex 私有 plugin storage，也不删除 foreign 内容。
 
+### 托管命令
+
+插件脚本和用户工具共用 `aw command run <command-id> -- <args...>` 稳定入口，升级资源路径不会改变同一 producer 的 ID。查看及维护用户工具：
+
+```bash
+aw command install ./review-adapter --name review-adapter --runner node --entry adapter.mjs
+aw command list --json
+aw command show <command-id> --json
+aw command run <command-id> -- --region example
+aw command update <cmdu-id> --from ./review-adapter --yes
+aw command remove <cmdu-id> --yes
+```
+
+install 复制完整运行目录；原开发目录移动后，已安装工具继续可用。update 保留用户 ID，remove 后重新 install 使用新 ID。run 原样传递 argv 和 stdio，不接受 runner/env/cwd 临时覆盖，不隐式下载或安装。独立插件包由 `aw command package sync/remove` 显式维护；平台卸载保留共享包，并报告精确移除入口。完整字段、权限、所有权及恢复见 [托管命令合同](docs/managed-commands.md)。
+
+Codex/Claude 静态原生 Skill 的命令共用 user 身份与配置；在项目中启用插件仍引用同一命令 ID。Claude 保留原生安装方式，项目配置不会覆盖共享启动定义。AW-owned 动态 Skill 则使用其实际 user/project 作用域。
+
 ### Codex project desired state 与恢复
 
 Codex native plugin 的基础最低版本是 `0.145.0`；任何 project activation 操作要求 `0.151.0`。AW-managed runtime 固定为已 qualification 的 `0.151.0`。PATH 中没有 system CLI 且操作只需修改 project activation 时，AW 不下载 manager。此时 AW 未观察到 system loader 或 Codex App，只把 project activation support 标为 `assumed`。
@@ -249,12 +266,14 @@ Portable 命令必须显式传 `--scope project|user`。`aw skill install` 使�
 ```bash
 aw config list codex-enhance -s user
 aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-6-luna","reasoningEffort":"high"}'
-aw config set codex-enhance advisorDebugProfile -s user --value-json '{"model":"gpt-6-astra","reasoningEffort":"high"}'
+aw config set codex-enhance advisorGeneralProfile -s user --value-json '{"model":"gpt-6-astra","reasoningEffort":"high"}'
 ```
 
-profile 的 executor 缺省为 native。Advisor 的 design、debug、review 专属 profile 可缺省；缺省时使用 `advisorProfile`，显式非法配置须修正。全部 shared native profile 只支持 user 配置。保存但不应用时，外部新调用仍使用安装产物的旧生效值；`--apply --yes` 会重新生成共享 Skill，并影响启用该插件的项目。原生宿主可能需要刷新或新会话。`advisorPolicy` 已删除，旧 off 和次数设置不再生效；仍需的限制应在当前任务或上游指令中提供。具体配置项、前台外部执行和升级边界见 [`codex-enhance` README](plugins/codex-enhance/README.md)。
+profile 的 executor 缺省为 native。Guide、Advisor 和 Explore 各有内建档位与按顺序匹配的自定义配置；外部 profile 可省略 model/reasoningEffort，表示后端默认。全部 shared native profile 只支持 user 配置。保存不改变安装产物，`--apply --yes` 才重新生成共享 Skill，并影响启用该插件的项目；原生宿主可能需要刷新或新会话。
 
-外部执行器可选 Codex、Claude Code、Oracle 或自定义 Adapter v4，支持后端参数、普通环境值和宿主环境引用。外部 profile 可省略模型与推理级别。配置需要支持 `aw.plugin-config.v4` 的 CLI；从旧协议升级时先更新执行器配置，再 sync 或 reinstall。命令使用 `--prompt TEXT` 或 `--prompt -`，指令文件可选；bundle 可用 `--file` 选择材料，workspace 模式在任务正文中说明关注路径。
+外部执行器可选 Codex、Claude Code、Oracle、Antigravity、绝对入口 custom，或引用稳定 commandId 的 custom-managed；自定义接入使用 Adapter v5。任务和消息只接受文本或直接文件参数，不从 -/stdin 读取。result 支持普通报告和 `--output-file PATH`，完整写入并关闭新文件后消费；--export 返回参数错误。bundle 通过 --file 选择材料，workspace 在任务正文中说明关注路径。
+
+配置需要支持 aw.plugin-config.v4 和托管命令能力的 CLI。升级、重装或删除 Guide 及托管 adapter 前，先完成或 stop 活跃任务；相同 ID 不承诺旧 run 跨版本可继续。具体配置、权限和使用边界见 [Codex Enhance README](plugins/codex-enhance/README.md)。
 
 ## 安装范围
 

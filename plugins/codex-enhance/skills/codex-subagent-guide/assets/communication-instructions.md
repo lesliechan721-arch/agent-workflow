@@ -14,23 +14,29 @@ Use the registered MCP tool `@@SEND@@` with a `text` argument to send one messag
 <!-- /aw:mcp -->
 
 <!-- aw:command -->
-Send one message with this command. Supply the message as UTF-8 standard input. Keep the private command and binding unchanged:
+Send one message as text or from a UTF-8 file. Replace `MESSAGE_TEXT` or `MESSAGE_FILE` with the message or file path. Keep the private command and binding unchanged:
 
 ```text
 @@SEND@@
+@@SENDFILE@@
 ```
+
+Use exactly one input form. Relative file paths use the command's current directory. Standard input is not supported. `--text -` and a file path of `-` are rejected. To send exactly `-`, use a file that contains that character.
 <!-- /aw:command -->
 
 <!-- aw:command-argument -->
-Send a message with this command, replacing `MESSAGE_TEXT` with its text:
+Send one message as text or from a UTF-8 file. Replace `MESSAGE_TEXT` or `MESSAGE_FILE` with the message or file path:
 
 ```text
 @@SEND@@
+@@SENDFILE@@
 ```
+
+Use exactly one input form. Relative file paths use the command's current directory.
 
 The permission covers this Node + communication script entry. Pipelines, wrappers, and combined commands may still require approval; preserve the selected permission mode on denial.
 
-`--text -` reads standard input, even when quoted. To send exactly `-`, use `@@SENDSTDIN@@` with `-` on standard input.
+Standard input is not supported. `--text -` and a file path of `-` are rejected. To send exactly `-`, use a file that contains that character.
 <!-- /aw:command-argument -->
 
 <!-- aw:in-turn -->
@@ -52,7 +58,3 @@ When a reply is required, keep this task open and use the default responsive wai
 
 Obtain each required answer before returning the final result. On closure, report the available result and unresolved questions. Do not wait for the task to reopen.
 <!-- /aw:active-receive -->
-
-<!-- aw:no-active-receive -->
-There is no active receive entry. You can send questions, blockers, or progress. Parent input can arrive automatically only while this run is open. Sending a question does not pause or keep the run open. When the turn ends and no accepted input remains, the run closes. If a required answer is missing, report the unfinished work in the final result. Do not claim that an answer arrived or that this run will reopen.
-<!-- /aw:no-active-receive -->

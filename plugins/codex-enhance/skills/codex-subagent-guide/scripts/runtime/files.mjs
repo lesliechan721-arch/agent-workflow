@@ -50,22 +50,37 @@ export function textFromBytes(bytes) {
   try { return decoder.decode(bytes); } catch { fail('binaryUnsupported', 'The input must be valid UTF-8 text without NUL.'); }
 }
 
-export async function readStdin(stream = process.stdin, maximumBytes = LIMITS.taskBytes, code = 'taskTooLarge') {
-  if (stream.isTTY) fail('stdinInteractive', 'Use --prompt - with redirected noninteractive stdin.');
-  const chunks = [];
-  let total = 0;
+export async function readInputFile(target, maximumBytes, tooLargeCode, callerCwd = process.cwd()) {
+  if (typeof target !== 'string' || !target || target === '-' || target.includes('\0') || !target.isWellFormed()) fail('inputFileInvalid', 'Use a normal input file path.');
+  const resolved = path.resolve(callerCwd, target);
+  let handle;
   try {
-    for await (const chunk of stream) {
-      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      total += bytes.length;
-      if (total > maximumBytes) fail(code, `The input exceeds the ${maximumBytes} byte limit.`);
-      chunks.push(bytes);
+    const entry = await fs.lstat(resolved);
+    if (!entry.isFile() || entry.isSymbolicLink()) fail('inputFileInvalid', 'The selected input must be a normal file, without a final symbolic link.');
+    handle = await fs.open(resolved, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const stat = await handle.stat();
+    if (!stat.isFile()) fail('inputFileInvalid', 'The selected input must be a normal file.');
+    if (stat.size > maximumBytes) fail(tooLargeCode, `The input exceeds the ${maximumBytes} byte limit.`);
+    const chunks = []; let total = 0;
+    for (;;) {
+      const buffer = Buffer.alloc(Math.min(65536, maximumBytes + 1 - total));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (!bytesRead) break;
+      total += bytesRead;
+      if (total > maximumBytes) fail(tooLargeCode, `The input exceeds the ${maximumBytes} byte limit.`);
+      chunks.push(buffer.subarray(0, bytesRead));
     }
+    const bytes = Buffer.concat(chunks, total);
+    let text;
+    try { text = decoder.decode(bytes); } catch { fail('inputFileInvalid', 'The input file must contain valid UTF-8 text.'); }
+    if (text.includes('\0') || !text.trim()) fail('inputFileInvalid', 'The input file must contain nonblank text without NUL.');
+    return text;
   } catch (error) {
-    if (error?.code === code) throw error;
-    fail('stdinUnreadable', 'The redirected prompt could not be read.');
+    if (['inputFileInvalid', tooLargeCode].includes(error.code)) throw error;
+    fail('inputFileReadFailed', 'The selected input file could not be read. Check its path and access permissions.');
+  } finally {
+    if (handle) await handle.close().catch(() => fail('inputFileReadFailed', 'The selected input file could not be closed.'));
   }
-  return textFromBytes(Buffer.concat(chunks, total));
 }
 
 export async function readText(target, maximumBytes, code) {

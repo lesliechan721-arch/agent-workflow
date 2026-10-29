@@ -1061,6 +1061,28 @@ describe('namespaced marketplace root', () => {
     ), 'utf8')).resolves.toBe(fixture.receiptContent);
   });
 
+  // Test Value Gate: a one-platform write must not bless damaged or overlapping native resources as preserved output.
+  it.each(['missing-receipt', 'overlapping-platform-root', 'overlapping-manifest-root'] as const)('rejects unrequested platform preservation with %s while both-platform replacement remains recoverable', async (damage) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const stagingRoot = path.join(isolation.layout.rootDir, 'cross-platform-damaged');
+    await createMarketplaceRoot(sourceRoot);
+    await createNativeProjectionFixture({ sourceRoot, stagingRoot });
+    const sourcePluginRoot = path.join(sourceRoot, 'plugins', 'native-projection');
+    const stagingPluginRoot = path.join(stagingRoot, 'plugins', 'native-projection');
+    await fs.outputJson(path.join(stagingPluginRoot, '.claude-plugin/plugin.json'), { name: 'native-projection', version: '2.0.0', skills: './claude/skills' });
+    const codexManifestPath = path.join(sourcePluginRoot, '.codex-plugin/plugin.json');
+    if (damage === 'missing-receipt') await fs.remove(path.join(sourcePluginRoot, '.agents-plugin/aw-codex-native-render.json'));
+    else {
+      const manifest = await fs.readJson(codexManifestPath);
+      await fs.writeJson(codexManifestPath, { ...manifest, skills: damage === 'overlapping-platform-root' ? './claude/skills' : './.codex-plugin/skills' });
+    }
+    const invocation = { sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw', rematerializedPluginIds: new Set(['official/native-projection']) };
+    await expect(replayNamespacedMarketplacePluginProjections({ ...invocation, rematerializedPluginPlatforms: new Map([['official/native-projection', new Set(['claude' as const])]]) })).rejects.toThrow(/marketplaceProjectionInvalid/u);
+    await expect(replayNamespacedMarketplacePluginProjections({ ...invocation, rematerializedPluginPlatforms: new Map([['official/native-projection', new Set(['codex', 'claude'] as const)]]) })).resolves.toBeUndefined();
+    expect((await fs.readJson(path.join(stagingPluginRoot, '.claude-plugin/plugin.json'))).version).toBe('2.0.0');
+  });
+
   it('preserves an empty native target and the absent Codex skills field', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');

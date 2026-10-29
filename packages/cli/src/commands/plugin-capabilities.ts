@@ -69,6 +69,12 @@ const adapterFacts: Readonly<Partial<Record<
     },
   },
   extensions: {
+    'extensions.permissions[].agentOverrides.claude.sandbox.excludedCommands': {
+      profiles: 'CLAUDE',
+      requires: 'aw.claude.sandbox-exclusions.v1; a validated command reference. Independent of allow.',
+      conflicts: 'Plain strings, Codex overrides, and widening to all aw commands.',
+      provenance: ['CLI managed command reference resolver and Claude permission writer'],
+    },
     'extensions.nativeHooks.claude': { profiles: 'CLAUDE', requires: 'CLAUDE product support.' },
     'extensions.nativeHooks.codex': { profiles: 'CODEX', requires: 'CODEX product support.' },
   },
@@ -92,7 +98,11 @@ const adapterFacts: Readonly<Partial<Record<
     'scripts.preApply': { requires: 'A Node entry inside the plugin root.' },
   },
   artifacts: {
-    'scripts.artifacts.render': { requires: 'artifacts.targets.' },
+    'scripts.artifacts.render': { requires: 'artifacts.targets, dynamic command sets, or render:true command packages.' },
+    'rendererContext.commandSources': {
+      requires: 'Only packages involved in the exact requested command targets; fixed bundle directories are read-only.',
+      provenance: ['CLI artifact renderer context'],
+    },
     'rendererContext.requestedArtifactIds': {
       requires: 'Return exactly these declared artifacts and no other artifacts.',
       provenance: ['CLI artifact renderer context'],
@@ -114,6 +124,24 @@ const adapterFacts: Readonly<Partial<Record<
       requires: 'A provider runtimeExports entry resolved into the consumer bundle.',
       conflicts: 'Using the reuse edge as an installation dependency.',
       provenance: ['CLI runtime import resolver'],
+    },
+  },
+  'managed-commands': {
+    managedCommands: {
+      requires: 'aw.managed-commands.v1. Bindings publish only after the producer succeeds.',
+      provenance: ['CLI managed command materialization and resolver'],
+    },
+    'managedCommands.packages[].sourceDir': {
+      requires: 'A complete runnable directory in the fixed bundle; only ordinary files and directories.',
+      conflicts: 'Links, protected trees, executable entry replacement by generated files.',
+    },
+    'managedCommands.packages[].scope': {
+      requires: 'One fixed effective configuration per producer; project producers bind the canonical project location.',
+      conflicts: 'User/shared-user consumers referring to project packages.',
+    },
+    'Skill Markdown placeholder': {
+      requires: 'A validated candidate or healthy installed producer in the same source/plugin and legal scope.',
+      conflicts: 'Portable distribution and unresolved, disabled, or foreign commands.',
     },
   },
 }

@@ -196,6 +196,7 @@ export interface OperationResultModel {
   changes: string[];
   warnings: string[];
   targetResults: RebuildReceiptJson['targetResults'];
+  commandResults?: RebuildReceiptJson['commandResults'];
   recoveryActions: string[];
   planFingerprint?: string;
   errors: RebuildReceiptJson['errors'];
@@ -207,6 +208,7 @@ export function buildOperationResultModel(receipt: RebuildReceiptJson): Operatio
     changes: [...receipt.changes],
     warnings: [...receipt.warnings],
     targetResults: structuredClone(receipt.targetResults),
+    ...(receipt.commandResults ? { commandResults: structuredClone(receipt.commandResults) } : {}),
     recoveryActions: [...receipt.recoveryActions],
     ...(receipt.planFingerprint ? { planFingerprint: receipt.planFingerprint } : {}),
     errors: structuredClone(receipt.errors),

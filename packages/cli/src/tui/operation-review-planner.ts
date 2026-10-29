@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { requestedIntentAction } from '../output/command-receipt.js';
 import type { PortableRetryReview } from '../portable/commands.js';
 import type { PlatformName } from '../types.js';
@@ -21,6 +23,8 @@ import {
 } from '../commands/options.js';
 import { MANAGED_CODEX_VERSION } from '../utils/codex-manager.js';
 import { platformLabel, scopeLabel } from './glossary.js';
+import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
+import { normalizeInstalledCommandProducer, type InstalledCommandProducer } from '../utils/managed-command-store.js';
 
 function plannerError(code: string, message: string): Error {
   return new Error(`${code}: ${message}`);
@@ -29,6 +33,70 @@ function plannerError(code: string, message: string): Error {
 function pluginNameFromId(pluginId: string): string {
   const separator = pluginId.indexOf('/');
   return separator < 0 ? pluginId : pluginId.slice(separator + 1);
+}
+
+function configCommandPackageChanges(evidence: OperationEvidence | undefined, apply: boolean): OperationReviewChange[] {
+  return (evidence?.config?.commandPackages ?? []).map((target) => ({
+    kind: target.declared && apply ? 'change' : 'warning',
+    group: 'configImpact',
+    title: `${target.declared ? apply ? '刷新' : '需同步' : '保留残留'}命令包 ${target.packageKey}`,
+    description: `${scopeLabel(target.producer.scope)} · ${target.producer.scope === 'user'
+      ? '平台共用一份个人默认配置，更新会影响全部引用者' : '当前项目配置'}${target.declared ? ''
+      : ` · 声明已删除；aw command package remove ${target.packageId} --yes`}`,
+  }));
+}
+
+function managedCommandPlanChanges(evidence: OperationEvidence | undefined): OperationReviewChange[] {
+  const changes: OperationReviewChange[] = [];
+  const producers = new Map<string, InstalledCommandProducer>();
+  const retained = new Set<string>();
+  for (const action of evidence?.operationPlan?.actions ?? []) {
+    if (action.kind === 'retainManagedCommandPackage') {
+      if (retained.has(action.packageId)) continue;
+      retained.add(action.packageId);
+      changes.push({ kind: 'keep', group: 'preserved', pluginId: action.pluginId,
+        title: `保留命令包 ${action.producer.key}`,
+        description: `${action.packageId} · ${scopeLabel(action.producer.scope)} · ${action.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'} · ${action.commandIds.length} 个命令 · ${action.availability} · ${action.recoveryAction}` });
+    } else if (action.kind === 'syncManagedCommandPackage') {
+      producers.set(getCommandPackageId(action.producer), { schemaVersion: 1, producer: action.producer, sets: action.sets });
+    } else if (action.kind === 'writeOwnedArtifact' || action.kind === 'materializeNativeSkill') {
+      for (const file of action.files ?? []) {
+        if (file.relativePath !== '.aw-command-producer.json') continue;
+        const record = normalizeInstalledCommandProducer(JSON.parse(Buffer.from(file.contentBase64, 'base64').toString('utf8')));
+        producers.set(getCommandPackageId(record.producer), record);
+      }
+      if (action.kind === 'writeOwnedArtifact' && action.platform === 'codex'
+        && action.artifactKind === 'owned-text-file' && path.extname(action.path) === '.rules') {
+        const rules = action.sourceContent ?? action.content;
+        if (rules) changes.push({ kind: 'change', group: 'runtime', pluginId: action.pluginId,
+          title: `Codex 权限规则 ${path.basename(action.path)}`, description: rules.trim() });
+      }
+    } else if (action.kind === 'updateSharedConfig' && action.mutation.kind === 'claude-permissions') {
+      const permissions = action.mutation.permissions as Record<string, unknown> | undefined;
+      for (const kind of ['allow', 'ask', 'deny', 'excludedCommands'] as const) {
+        const rules = permissions?.[kind];
+        if (!Array.isArray(rules) || rules.length === 0) continue;
+        changes.push({ kind: 'change', group: 'runtime', pluginId: action.pluginId,
+          title: kind === 'excludedCommands' ? 'Claude sandbox.excludedCommands' : `Claude permissions.${kind}`,
+          description: rules.filter((rule): rule is string => typeof rule === 'string').join('；') });
+      }
+    }
+  }
+  for (const { producer, sets } of producers.values()) {
+    const pluginId = `${producer.sourceId}/${producer.pluginName}`;
+    changes.push({ kind: 'change', group: 'runtime', pluginId,
+      title: `命令${producer.kind === 'package' ? '包' : '生产者'} ${producer.key}`,
+      description: `${pluginId} · ${scopeLabel(producer.scope)}${producer.platform ? ` · ${platformLabel(producer.platform)}`
+        : ' · 平台共用同一份生效配置'}${producer.scope === 'user' ? ' · 更新会影响全部引用者' : ''}` });
+    for (const set of sets) {
+      if (set.entries.length === 0) changes.push({ kind: 'change', group: 'runtime', pluginId,
+        title: `命令集合 ${set.set}`, description: set.state === 'disabled' ? '已禁用；本集合命令失效' : '空集合；本集合没有可用命令' });
+      for (const entry of set.entries) changes.push({ kind: 'change', group: 'runtime', pluginId,
+        title: `${set.set}/${entry.key}/${entry.variant}`,
+        description: `${entry.runner} · ${entry.entry} · 固定参数 ${JSON.stringify(entry.args)} · cwd=${entry.cwd}` });
+    }
+  }
+  return changes;
 }
 
 function scriptTimeoutChanges(intent: OperationIntent): OperationReviewChange[] {
@@ -523,6 +591,7 @@ function reviewChanges(
     );
     const runtimeChanges: OperationReviewChange[] = [
       ...scriptTimeoutChanges(intent),
+      ...managedCommandPlanChanges(evidence),
       ...preApplyScopeChanges(operationPreApplyTargets(evidence)),
       ...(evidence?.codexManager
       ? [{
@@ -692,6 +761,7 @@ function reviewChanges(
           : `${change.before} → ${change.after}`,
       })) ?? [{ kind: 'remove' as const, group: 'configChanges' as const, title: `删除${layerLabel}中的已存值`, description: '删除整个设置层且不创建备份；有效值将恢复为继承值或默认值。' }]),
       ...impactChanges,
+      ...configCommandPackageChanges(evidence, false),
       { kind: 'keep', group: 'preserved', title: intent.scope === 'user' ? '当前项目设置保持不变' : '个人默认保持不变' },
     ];
   }
@@ -844,6 +914,12 @@ function reviewChanges(
     return [
       ...scriptTimeoutChanges(intent),
       ...preApplyScopeChanges(evidence?.config?.preApplyAuthorization ?? []),
+      ...configCommandPackageChanges(evidence, true),
+      ...(evidence?.config?.sharedNativeRenderTargets ?? []).filter((shared) => evidence?.config?.affectedTargets
+        .some((target) => target.platform === (shared.platform ?? 'codex'))).map((shared): OperationReviewChange => ({
+        kind: 'change', group: 'configImpact', title: `重新生成 ${shared.skillKey} 原生 Skill`,
+        description: `配置来源为个人默认；更新 ${platformLabel(shared.platform ?? 'codex')} 由平台共用的内容会影响所有启用项目。`,
+      })),
       ...(evidence?.config?.affectedTargets.map((target): OperationReviewChange => ({
         kind: 'change',
         group: 'configImpact',
@@ -855,32 +931,33 @@ function reviewChanges(
   }
   if (intent.changes) {
     const noEffectiveChange = evidence?.config?.noEffectiveChange === true;
-    const hasAffectedCodexTarget = evidence?.config?.affectedTargets.some(
-      (target) => target.platform === 'codex',
-    ) ?? false;
-    const sharedNativeTargets = hasAffectedCodexTarget
-      ? evidence?.config?.sharedNativeRenderTargets ?? []
-      : [];
+    const sharedNativeTargets = (evidence?.config?.sharedNativeRenderTargets ?? []).filter((shared) =>
+      evidence?.config?.affectedTargets.some((target) => target.platform === (shared.platform ?? 'codex')));
+    const sharedPlatforms = [...new Set(sharedNativeTargets.map((target) => target.platform ?? 'codex'))];
+    const sharedPlatformLabel = sharedPlatforms.map(platformLabel).join('、');
+    const sharedSkillLabel = sharedPlatforms.includes('claude') ? '原生 Skill' : '动态 Skill';
+    const sharedCodexRole = sharedPlatforms.includes('codex')
+      ? [{ kind: 'keep' as const, group: 'preserved' as const, title: '当前项目 Agent role 继续使用当前项目配置' }] : [];
     const sharedNativeImpact: OperationReviewChange[] = noEffectiveChange || sharedNativeTargets.length === 0
       ? []
       : intent.apply
         ? [
             {
               kind: 'change', group: 'configImpact',
-              title: `重新生成 ${sharedNativeTargets.map((target) => target.skillKey).join('、')} 动态 Skill`,
-              description: '配置来源为个人默认；更新 Codex 由平台共用的内容会影响所有启用项目。',
+              title: `重新生成 ${sharedNativeTargets.map((target) => target.skillKey).join('、')} ${sharedSkillLabel}`,
+              description: `配置来源为个人默认；更新 ${sharedPlatformLabel} 由平台共用的内容会影响所有启用项目。`,
             },
             { kind: 'keep', group: 'preserved', title: '保留所有项目和当前项目的启用位置' },
-            { kind: 'keep', group: 'preserved', title: '当前项目 Agent role 继续使用当前项目配置' },
+            ...sharedCodexRole,
           ]
         : [
             {
               kind: 'warning', group: 'configImpact',
-              title: 'Codex 由平台共用的内容待同步',
-              description: '个人默认已保存；动态 Skill 尚未重新生成。',
+              title: `${sharedPlatformLabel} 由平台共用的内容待同步`,
+              description: `个人默认已保存；${sharedSkillLabel} 尚未重新生成。`,
             },
             { kind: 'keep', group: 'preserved', title: '当前由平台共用的内容和启用位置保持不变' },
-            { kind: 'keep', group: 'preserved', title: '当前项目 Agent role 继续使用当前项目配置' },
+            ...sharedCodexRole,
           ];
     return [
       ...scriptTimeoutChanges(intent),
@@ -915,6 +992,7 @@ function reviewChanges(
         title: '有效设置输入不变；无需重新应用',
       }] : []),
       ...sharedNativeImpact,
+      ...configCommandPackageChanges(evidence, intent.apply),
       ...(evidence?.config?.impactState === 'unknown' || noEffectiveChange || sharedNativeTargets.length > 0
         ? []
         : intent.apply && (evidence?.config?.affectedTargets.length ?? 0) > 0
@@ -925,6 +1003,7 @@ function reviewChanges(
         ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
             kind: 'warning', group: 'configImpact', title: `保存后需同步 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
           }))
+        : (evidence?.config?.commandPackages?.length ?? 0) > 0 ? []
         : [{ kind: 'keep' as const, group: 'configImpact' as const, title: '当前没有可见安装；只保存设置' }]),
       { kind: 'keep', group: 'preserved', title: '其他项目不会被自动扫描' },
     ];
@@ -1312,13 +1391,13 @@ export function buildOperationReviewProjection(options: {
     && intent.selection.kind === 'currentProjectIntentTargets';
   const sharedNativeConfigApply = (intent.kind === 'configSave'
     && intent.apply
-    && (evidence.config?.sharedNativeRenderTargets?.length ?? 0) > 0
-    && (evidence.config?.affectedTargets.some((target) => target.platform === 'codex') ?? false))
+    && (evidence.config?.sharedNativeRenderTargets?.some((shared) => evidence.config?.affectedTargets
+      .some((target) => target.platform === (shared.platform ?? 'codex'))) ?? false))
     || (intent.kind === 'configSaveBatch'
       && intent.apply
       && (evidence.configBatch?.groups.some((group) =>
-        (group.config.sharedNativeRenderTargets?.length ?? 0) > 0
-        && group.config.affectedTargets.some((target) => target.platform === 'codex')) ?? false));
+        group.config.sharedNativeRenderTargets?.some((shared) => group.config.affectedTargets
+          .some((target) => target.platform === (shared.platform ?? 'codex')))) ?? false));
   const requiresConfirmation = projectPreApplyConfirmation
     || sharedNativeConfigApply
     || intent.kind === 'catalogStorePrune'
@@ -1394,7 +1473,7 @@ export function buildOperationReviewProjection(options: {
       ])],
       ...(warning ? { warning }
         : sharedNativeConfigApply
-          ? { warning: '更新被共用的 Codex native 动态 Skill 会影响所有启用项目。' }
+          ? { warning: '更新被共用的原生 Skill 会影响所有启用项目。' }
         : requiresConfirmation && (evidence.sourceWrite
           || evidence.catalogGeneration?.impact
           || evidence.catalogGeneration?.primaryImpact)

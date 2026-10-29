@@ -10,6 +10,7 @@
 | 常驻指令、角色或 Agent 配置 | 对应 instruction、agent/role 或 extension；Agent 内容采用 `agent-content`，模型配置服从调用方的有效约束 |
 | 在事件发生时执行动作 | Hook；写明触发、输入、副作用与失败行为，用受控事件作确定性验证 |
 | 访问工具服务或 App | MCP/App；按合同声明 command、env、auth、网络和权限，验证实际启动、健康与清理 |
+| 脚本需要稳定调用入口或独立资源生命周期 | 采用 托管命令（`references/managed-commands.md`），选择资源 producer、集合和权限 |
 | 改变工具或 Agent 的可执行范围 | 权限声明；范围与所需动作匹配，核对目标平台的实际支持 |
 | 根据配置、scope 或状态生成内容 | 按 平台投影（`references/platform-projection.md`） 选择投影机制；选定 renderer 后采用其 请求与输出方法（`references/aw-artifact-renderer.md`） |
 
@@ -34,6 +35,8 @@ MCP/App 的凭据值不进入 Skill、日志或分发包。生命周期由实际
 对受支持的 target，查询 `runtimeConfig` 的当前声明与 capability 要求，声明所需键及其依赖闭包。runtimeConfig 键须属于该 target 声明的 refreshKeys，闭包保持非敏感。AW 在 final Skill 中注入 reader，并按本次安装的有效配置提供值。
 
 从脚本真实调用位置解析该 final 的 reader 和已安装配置。不能读“最新全局 store”替代本产物的生效配置，不能手写保留 receipt 或增加内容一致性门禁。按实际 user/project scope 验证；共享 Codex native projection 的 user 配置规则见 renderer 方法。
+
+为独立托管包配置运行参数或文件时，采用 托管命令（`references/managed-commands.md`）中的资源与配置方法。
 
 ## 生命周期与交付
 

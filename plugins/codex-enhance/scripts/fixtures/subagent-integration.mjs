@@ -17,7 +17,7 @@ const sourceScripts = guideRuntimeScripts(new URL('../', import.meta.url));
 const sourceEntry = path.join(sourceScripts, path.basename(registeredEntry));
 const sourceWorker = path.join(sourceScripts, path.basename(registeredWorker));
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-const terminalPattern = /^state: (completed|failed|cancelled|unknown)$/m;
+const terminalPattern = /^(?:<result(?:_[0-9]+)?\b[^\n]*\bstate="(?:completed|failed|cancelled|unknown)"|deferred \S+ state=(?:completed|failed|cancelled|unknown)\b)/m;
 const displayLimit = 8192;
 const windows = process.platform === 'win32';
 const batchObservationMs = windows ? 120000 : 5000;
@@ -106,7 +106,7 @@ async function start(frame) {
   if (scenario.readyGate) { await phase('readyGateWaiting'); await signal('ready'); }
   if (scenario.readyDelay) await new Promise((resolve) => setTimeout(resolve, scenario.readyDelay));
   if (finishing) return;
-  await emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: !frame.communication ? { status: 'disabled' } : scenario.communication === false || frame.mode === 'bundle' ? { status: 'unsupported' } : scenario.descriptor ?? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } } }, ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
+  await emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: !frame.communication ? { status: 'disabled' } : scenario.communication === false || frame.mode === 'bundle' ? { status: 'unsupported' } : scenario.descriptor ?? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' } } }, ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
   ready = true;
   await phase('readySent');
   for (const text of scenario.messages ?? []) await emit({ type: 'message', text });
@@ -141,12 +141,30 @@ async function eventually(read, description, milliseconds = windows ? 30000 : 50
   } while (Date.now() < end);
   throw new Error(`Timed out waiting for ${description}.`, { cause: latest });
 }
-const blockPattern = /^BEGIN_(MESSAGE|INPUT|FINAL|DIAGNOSTIC):([a-f0-9]{8})\n([\s\S]*?)\nEND_\1:\2\n/gm;
+const blockPattern = /^<((?:message|input|result|diagnostic)(?:_[0-9]+)?)([^>\n]*)>\n([\s\S]*?)\n<\/\1>\n/gm;
+const decodeAttribute = (value) => value.replaceAll('&quot;', '"').replaceAll('&gt;', '>').replaceAll('&lt;', '<').replaceAll('&amp;', '&');
+function records(output) {
+  return [...output.matchAll(blockPattern)].map((match) => ({
+    kind: match[1].replace(/_[0-9]+$/, ''), text: match[3],
+    attributes: Object.fromEntries([...match[2].matchAll(/([a-z_]+)="([^"]*)"/g)].map((entry) => [entry[1], decodeAttribute(entry[2])])),
+  }));
+}
 function blocks(output, kind) {
-  return [...output.matchAll(blockPattern)].filter((match) => match[1] === kind).map((match) => match[3]);
+  const name = kind === 'FINAL' ? 'result' : kind.toLowerCase();
+  return records(output).filter((record) => record.kind === name).map((record) => record.text);
 }
 function field(output, key) {
-  return output.replace(blockPattern, '').match(new RegExp(`^${key}: (.*)$`, 'm'))?.[1];
+  const controls = output.replace(blockPattern, '');
+  const attribute = controls.match(new RegExp(`(?:^| )${key}=([^ \\n]+)`, 'm'))?.[1];
+  if (attribute !== undefined) return attribute;
+  if (key === 'run') {
+    const handle = controls.match(/^(?:started|starting|start_failed|ready|queued|stopped|stopping|deferred|exported) (aw5-[a-f0-9]{32}-[a-f0-9]{32})\b/m)?.[1];
+    if (handle) return handle;
+  }
+  for (const kind of ['result', 'input', 'message', 'diagnostic']) {
+    const value = records(output).find((record) => record.kind === kind && Object.hasOwn(record.attributes, key))?.attributes[key];
+    if (value !== undefined) return value;
+  }
 }
 function bounded(result) {
   assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <= displayLimit, 'Response exceeds 8192 bytes.');
@@ -154,7 +172,9 @@ function bounded(result) {
 }
 function successful(result, command) {
   assert.equal(result.code, 0, `${command}: ${result.stdout}\n${result.stderr}`);
-  assert.match(result.stdout, new RegExp(`^${command}: `));
+  const expected = { start: /^started /m, send: /^queued /, wait: /^(?:ready |more=true$|<(?:message|input|result|diagnostic)|deferred |timeout$|settled$)/m,
+    result: /^(?:<(?:message|input|result|diagnostic)|exported )/, stop: /^stopp(?:ed|ing) / };
+  assert.match(result.stdout, expected[command]);
 }
 
 async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
@@ -199,8 +219,8 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     AW_HOME: directory, AW_CODEX_HOME: directory, AW_CLAUDE_HOME: directory,
     TMPDIR: temporaryRoot, TMP: temporaryRoot, TEMP: temporaryRoot };
   const handles = new Set();
-  let nextScenario = 0, nextClock = 0;
-  function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, timeout = windows ? 120000 : 35000, signal = t.signal } = {}) {
+  let nextScenario = 0, nextClock = 0, nextExport = 0;
+  function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, keepStdinOpen = false, timeout = windows ? 120000 : 35000, signal = t.signal } = {}) {
     return new Promise((resolve, reject) => {
       signal.throwIfAborted();
       const began = performance.now();
@@ -213,13 +233,15 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
       let timedOut = false;
       const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeout);
       child.once('error', (error) => { clearTimeout(timer); signal.removeEventListener('abort', abort); reject(error); });
-      child.stdout.on('data', (chunk) => { output.push(chunk); if (breakOutput) child.stdout.destroy(); });
+      child.stdout.on('data', (chunk) => { output.push(chunk); });
+      if (breakOutput) child.stdout.destroy();
       child.stderr.on('data', (chunk) => diagnostics.push(chunk));
       child.once('close', (code) => {
         clearTimeout(timer);
         signal.removeEventListener('abort', abort);
         const stdout = Buffer.concat(output).toString('utf8');
-        for (const match of stdout.matchAll(/^run: ([\x21-\x7e]+)$/gm)) handles.add(match[1]);
+        const handle = field(stdout, 'run');
+        if (/^aw5-[a-f0-9]{32}-[a-f0-9]{32}$/.test(handle ?? '')) handles.add(handle);
         let nativeTiming;
         const stderr = Buffer.concat(diagnostics).toString('utf8').split('\n').filter((line) => {
           if (!line.startsWith('AW_SUBAGENT_NATIVE_TIMING ')) return true;
@@ -227,22 +249,23 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
           return false;
         }).join('\n');
         const response = { code, stdout, stderr, elapsedMs: Math.round(performance.now() - began) };
-        phase('commandEnd', { operation: args[0], code, commandElapsedMs: response.elapsedMs, nativeTiming, state: field(stdout, 'state'), communication: field(stdout, 'communication'), errorCode: field(stdout, 'code'), failureDiagnostics: blocks(stdout, 'DIAGNOSTIC'), timedOut });
+        phase('commandEnd', { operation: args[0], code, commandElapsedMs: response.elapsedMs, nativeTiming, state: field(stdout, 'state'), communication: field(stdout, 'communication'), errorCode: field(stderr, 'code') ?? field(stdout, 'code'), failureDiagnostics: blocks(stderr + stdout, 'DIAGNOSTIC'), timedOut });
         if (signal.aborted) { reject(signal.reason); return; }
         if (timedOut) { reject(new Error(`Fixture command timed out: ${args[0]}\n${JSON.stringify(phases)}`)); return; }
         resolve(response);
       });
-      child.stdin.on('error', () => {}); child.stdin.end(stdin);
+      child.stdin.on('error', () => {}); if (!keepStdinOpen) child.stdin.end(stdin);
     });
   }
-  async function start(scenario = {}, { prompt = 'Assigned fixture task.', extra = [], env = {}, stdin, cwd } = {}) {
+  async function start(scenario = {}, { prompt = 'Assigned fixture task.', promptFile, extra = [], env = {}, stdin, cwd } = {}) {
     const runDirectory = path.join(directory, `scenario-${++nextScenario}`);
     const index = nextScenario;
     scenarios.push({ index, directory: runDirectory });
     await fs.mkdir(runDirectory);
     const scenarioFile = path.join(runDirectory, 'scenario.json');
     await fs.writeFile(scenarioFile, JSON.stringify(scenario));
-    const response = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt', prompt, ...extra],
+    const input = promptFile === undefined ? ['--prompt', prompt] : ['--prompt-file', promptFile];
+    const response = await command(['start', '--executor', 'fixture', '--workspace', workspace, ...input, ...extra],
       { env: { ...env, FIXTURE_SCENARIO_FILE: scenarioFile, FIXTURE_RUN_DIRECTORY: runDirectory, FIXTURE_GENERATIONS: generations }, stdin, cwd });
     const run = field(response.stdout, 'run');
     phase('startReturned', { scenario: index, code: response.code, state: field(response.stdout, 'state'), communication: field(response.stdout, 'communication') });
@@ -262,22 +285,15 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     assert.match(started.run ?? '', /^aw5-[a-f0-9]{32}-[a-f0-9]{32}$/, started.stdout + started.stderr);
     if (started.code === 0) { successful(started, 'start'); return; }
     assert.equal(started.code, 1, started.stdout + started.stderr);
-    assert.match(started.stdout, /^start: notReady\n/);
-    assert.equal(field(started.stdout, 'state'), 'starting');
-    assert.equal(field(started.stdout, 'communication'), 'pending');
-    assert.equal(field(started.stdout, 'code'), 'startupNotReady');
+    assert.match(started.stdout, /^starting aw5-/);
+    assert.equal(field(started.stderr, 'code'), 'startupNotReady');
     t.diagnostic(`AW_SUBAGENT_PARENT_PHASE ${JSON.stringify({ phase: 'continueSamePendingRun', elapsedMs: started.elapsedMs })}`);
     if (started.scenario.readyGate) await started.releaseReady();
     await started.published();
-    // A resultNotReady response reports the real running state without consuming
-    // messages. Fast terminal cases retain their first original wait/result read.
+    // Check the saved ready state without consuming public messages or ready.
+    // Fast terminal cases retain their first original wait/result read.
     if (!started.scenario.finishImmediately) await eventually(async () => {
-      const response = await command(['result', '--run', started.run]);
-      assert.equal(field(response.stdout, 'code'), 'resultNotReady', response.stdout + response.stderr);
-      assert.equal(response.code, 1); bounded(response);
-      const state = field(response.stdout, 'state');
-      assert.ok(['starting', 'running'].includes(state), response.stdout);
-      return state === 'running';
+      return (await evidence(started.run)).snapshot.ready;
     }, 'same run reaching running state', windows ? 120000 : 15000);
     phase('pendingRunInitialized');
   }
@@ -303,9 +319,23 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     }
     throw new Error('Fixture run did not reach a terminal state.');
   }
-  // Private evidence is used only for targeted crash, expiry and damaged-cache injection.
+  // Private evidence supports controlled lifecycle injection and ready checks
+  // that must not consume public messages or initialization notifications.
   async function evidence(run) {
-    return openRun(await storeContext({ temporaryRoot }), run);
+    const value = await openRun(await storeContext({ temporaryRoot }), run);
+    const read = async (name) => {
+      try { return JSON.parse(await fs.readFile(path.join(value.directory, name), 'utf8')); }
+      catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
+    };
+    return { ...value, snapshot: await read('snapshot.json'), result: await read('final.json') };
+  }
+  async function exportResult(run, { target = path.join(directory, `report-${++nextExport}.txt`), ...options } = {}) {
+    const response = await command(['result', '--run', run, '--output-file', target], options);
+    successful(response, 'result');
+    const destination = path.resolve(options.cwd ?? workspace, target);
+    const bytes = await fs.readFile(destination);
+    assert.equal(response.stdout, `exported ${run} path=${JSON.stringify(destination)} bytes=${bytes.length} consumed=true\n`);
+    return { ...response, report: bytes.toString('utf8'), target: destination };
   }
   t.after(async () => {
     const cleanupSignal = AbortSignal.timeout(cleanupTimeoutMs);
@@ -328,8 +358,8 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
       finally { await fs.rm(directory, { recursive: true, force: true }); phase('cleanupEnd'); }
     }
   }, { timeout: cleanupTimeoutMs + 5000 });
-  return { directory, temporaryRoot, workspace, installed, generations, snapshot, config, save, command, start, initialized, clock, waitTerminal, evidence, phase };
+  return { directory, temporaryRoot, workspace, installed, generations, snapshot, config, save, command, start, initialized, clock, waitTerminal, evidence, exportResult, phase };
 }
 
 
-export { fixture, sleep, eventually, terminalPattern, windows, testTimeoutMs, blocks, field, bounded, successful };
+export { fixture, sleep, eventually, terminalPattern, windows, testTimeoutMs, blocks, field, records, bounded, successful };

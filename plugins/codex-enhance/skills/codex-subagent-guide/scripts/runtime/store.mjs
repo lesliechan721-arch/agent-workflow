@@ -270,8 +270,8 @@ export async function observeRun(context, run, { allowExpired = false } = {}) {
   return { ...run, snapshot, observed, result };
 }
 
-export async function saveObservation(run, { terminalConsumed = run.observed.terminalConsumed } = {}) {
-  const observed = { sequence: run.snapshot.sequence, initializationSequence: run.snapshot.initializationSequence, terminalConsumed };
+export async function saveObservation(run, { terminalConsumed = run.observed.terminalConsumed, initializationSequence = run.snapshot.initializationSequence } = {}) {
+  const observed = { sequence: run.snapshot.sequence, initializationSequence, terminalConsumed };
   await atomicJson(path.join(run.directory, 'observed.json'), observed);
   run.observed = observed;
 }

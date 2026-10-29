@@ -10,6 +10,8 @@ Portable 是独立 distribution，不是 Codex/Claude 的别名。Plugin 必须�
 
 确定所选 Skill 的 source、共享文件、runtime imports 与 renderer 输出。共享资源及 capability 传播采用 构建与共享（`references/build-and-sharing.md`），surface 选择采用 平台投影（`references/platform-projection.md`）。原宿主的 Hook、配置或注入能力不能视为所有 Agent 都具备的条件；仅导出目标环境能够满足的内容，并说明其要求。
 
+Portable 不注册本机命令；含托管命令占位符的输出会被拒绝。为此分支提供不依赖本机命令 ID 的独立内容与资源。
+
 维护声明或内容时按 Plugin 开发（`references/plugin-development.md`） 验证受影响消费者。保留文件和 runtime requirements receipt 由 AW 注入，source 与 renderer 不自行生成。
 
 ## 导出与核对

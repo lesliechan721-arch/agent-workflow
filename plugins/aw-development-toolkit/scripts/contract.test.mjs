@@ -61,6 +61,7 @@ test('materializes complete AW methods on both platforms', () => {
       'references/source-materialization.md',
       'references/plugin-development.md',
       'references/plugin-components.md',
+      'references/managed-commands.md',
       'references/build-and-sharing.md',
       'references/platform-projection.md',
       'references/catalog-development.md',

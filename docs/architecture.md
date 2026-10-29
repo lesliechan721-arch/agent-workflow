@@ -42,6 +42,7 @@
 - Dynamic `codex.skill` 必须显式选择 `aw-extension` 或唯一受支持的 native delivery `{mode:"codex-native",identity:"shared",renderProfile:"user"}`。所有 `codex.skill` delivery、`claude.skill` 和 `agent-skills.skill` target 的 refresh key 都不得引用 sensitive config；非 Skill target 可以读取 sensitive config。native delivery 是 Codex-owned dynamic Skill，scope 和名字来自 target；其 refresh key 只能在 user scope 写入，project scope 的 set 必须拒绝，且不能与静态 Codex Skill 同名。同一插件 identity 的所有 Codex native 组件必须声明完全相同的 scope 集；静态 Skill、MCP、Hook 和 App 固定为 `{project,user}`，dynamic native 使用 target scopes，slash command 不属于该集合。config 只作为 surface 输入，不计入 Codex output owner 或冲突。
 - Codex native dynamic projection 在 payload 内使用固定 `.agents-plugin/aw-codex-native-render.json` receipt。schema 1 的 kind 是 `aw-codex-native-render`，strategy 固定为 `shared-user`；它只保存 logical plugin/source/version、renderer、规范化 target identity、per-target config/artifact digest、聚合 config/render-input digest 和排除 receipt 自身后的 payload digest，不保存原始 config。per-target config digest 绑定该 target 的 `refreshKeys` 对应 `values`、`sources` 和 `issues`，因此同值但来源变化会形成 render drift。旧 receipt 不兼容或损坏时报告可恢复的生成内容损坏，由现有 sync 重建；不增加 receipt 版本或迁移状态。所有 `codex-native` target 的 ID 与 Skill key 在整个 shared projection 内分别全局唯一，不受 scope 是否重叠影响。target 按稳定 ID 排序。AW 用完整 user effective config 的 sensitive string 检查最终 Skill tree；只有至少 8 个 Unicode code point 的原文或 JSON 转义形态会阻断。AW 生成并验证 receipt 内容后，才从该精确路径的扫描中排除 receipt；命中时在 marketplace commit、Codex remove/add 和 activation 前停止。receipt 是可重建的 projection evidence，不是 installed ledger。
 - Codex 或 Claude 操作重建共享 marketplace 时，保留非本次重新物化目标的完整插件副本和对应平台 marketplace 条目，包括静态插件。只有本次目标及依赖计划中确实需要写入 native 内容的依赖使用当前 Catalog payload；复用的依赖保留原副本。Codex native dynamic projection 继续要求有效回执。保留前校验来源、旧插件版本、旧 target identity 和旧输出完整性；把完整旧插件 payload 和原 receipt 一起复制到候选目录，并核对候选 payload digest。旧版本单独与 receipt 比较，不依赖会规范化版本的 payload digest。新 Catalog 的插件版本、target 或渲染输入变化不得替换未选中插件的有效旧产物；只有该插件自身参与重新物化时才使用新 Catalog payload。不运行其它插件 renderer，也不按当前配置重新签发旧输出。已从新 Catalog 删除的插件不恢复到新 marketplace。缺失或损坏的 projection 不复用，由该插件单独 sync 恢复，不阻断本次其它插件；来源身份冲突、不安全路径和实际 I/O 失败仍阻断。
+- 同一插件只重新物化一个平台时，保留另一平台的实际目录、平台 manifest、Skill 根、producer 记录和命令绑定，不读取新配置或运行该平台 renderer。保留前核验来源、路径、记录和输出；Codex dynamic projection 还须通过旧 receipt 的完整 payload 与 target 校验。另一平台改变组合 payload 后，只更新已验证 receipt 的派生 `payloadDigest`，保留原平台版本、targets、配置和渲染输入摘要；不按新 Catalog 元数据替换旧平台状态。无法验证的已物化平台阻止本次替换，可通过 `reinstall --platform both` 重建。双平台操作对同一 namespaced marketplace 共用准备结果，各平台仍独立执行 native 安装与后置检查。只撤销本次实际替换平台的绑定，完成后发布对应 producer。Codex 静态 Skill 的动态命令集在显式同步时比较实际准备结果与已安装记录；只有差异才触发替换，无差异保持复用。
 - 插件依赖只来自 manifest `dependencies`，只在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图；执行顺序是稳定的依赖优先拓扑序。
 - live ownership 和实际平台组件是输出清理和 status 的唯一真值；Intent 只选择要取消的 desired root，不是 installed ledger。不得新增安装合同存储、第二套安装状态或持久依赖图。
 - Codex project cleanup 和 uninstall 对当前仓库的 `.agents/skills` 做单层 owner marker 扫描。扫描不依赖当前 Manifest 是否仍声明该 Skill，也不进入嵌套目录或其它项目；删除仍要求 source、plugin、platform 和 scope 的 owner identity 精确匹配。
@@ -419,6 +420,24 @@ Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不�
 
 这些合同不接入 Codex app-server plugin/reconcile，也不保证运行中的 Codex App 自动刷新。App 的重新加载行为必须单独 qualification，不能由 CLI list 或文件变化推断。
 
+## 托管命令
+
+`aw command run <command-id> -- <args...>` 是插件和用户工具共用的稳定入口。Plugin Manifest v3 的唯一声明入口是 managedCommands.packages/sets，要求 aw.managed-commands.v1；Claude 沙箱例外另要求 aw.claude.sandbox-exclusions.v1。Config v4 与 ArtifactPlan v2 不因本功能改号。完整声明、校验、ID、机器输出、存储和主机合同见 [托管命令合同](managed-commands.md)。
+
+producer 唯一拥有资源生命周期，可以是 artifact、static-skill 或独立 package。插件 ID 是对核验来源、插件、完整 producer identity、set/key/variant 的规范序列化计算完整 SHA-256，形式为 cmdp_ 加 64 位小写 hex；版本、安装路径与当前配置不进入身份。用户 install 分配 cmdu_ UUID v4，update 保留 ID。来源别名或身份变化、project 路径移动形成新身份，不重定向旧绑定。
+
+Codex/Claude 静态原生 Skill 都使用 shared-user producer，固定 user 身份、空 projectRoot 和 user 配置。平台的 project 安装或启用不产生另一份命令身份；同源同实例的 Skill 正文与各 scope 权限引用同一 ID。Claude 保留原生插件分发与命名，AW-owned 动态 Skill 仍使用实际 user/project scope。单 scope 卸载不撤销仍存在的共享资源绑定；实际资源移除或替换时才撤销相关绑定，资源缺失时 run 拒绝并提示恢复，不增加引用计数或跨项目扫描。
+
+静态命令直接规范化；动态命令集合与包生成分别使用 aw.command-set 和 aw.command-package target。AW-owned 包的 surface 为 `{kind:"aw",name:"managed-commands"}`，不伪装第三个平台。renderer 只返回 requestedArtifactIds 的精确集合，每个集合返回完整 entries，空集合撤销本集合；未请求集合保持。命令目标只接收非敏感配置，秘密通过 envFrom 执行时解析。包固定一份 scope 配置，platforms 只决定安装触发；同一操作内 producer 去重刷新。
+
+AW 在最终 Skill 树的 .md 文件中解析 aw.command 逻辑占位符，并与结构化权限使用同一引用解析器；同一 owner、平台和实际 scope 下必须存在健康候选绑定。不存在、disabled、跨来源/插件或 scope 不合法时拒绝消费者。Portable 不注册本机命令，包含本机引用时明确拒绝。review prepare 和作者物化只计算隔离候选，不写用户命令库；preApply 不注册命令。
+
+用户定义强配置原子提交，完整目录复制到自有 revision 后才切换定义。插件索引只定位实际 producer，run 核验资源内 .aw-command-producer.json 与独立 owner 证据后启动，不把索引当安装真值。独立包的 owner.json 位于弱运行正文之外；正文或索引损坏仍可安全移除专属内容。run/list/show 不安装、不下载、不运行 renderer；通用 runner 保留 argv、stdio、cwd、退出码和可支持的信号，不新增超时、自动重试或正常退出后的整树清理。
+
+独立共享包由 package sync/remove 显式维护；平台卸载仅撤下自身引用和权限，Review 与结果列出保留包。配置 apply 发现核验同来源身份的 user/当前 project 包，并刷新匹配 refreshKeys 的已有 producer；不扫描其它项目，不隐式安装未使用包。Receipt v6 顶层和 Config Mutation Receipt v7 apply 对象分别以可选 commandResults 报告 producer 的实际结果；TUI Review、Progress、Result 使用同一结果，与平台 targetResults 并列，不增加平台枚举或命令管理页。
+
+权限结构化项将安全 argsPrefix 解析为精确 token 前缀。Codex 输出 prefix_rule，Claude allow/ask/deny 输出 Bash 包装并附尾部 ` *`；sandbox.excludedCommands 独立表达并使用相同 token。exclusion 不推导 allow，所有生成内容保留用户与其它 owner 的责任。规则生成、真实匹配、受限宿主运行是独立证据，宿主强制审核和管理沙箱仍可限制执行。
+
 ## 已安装运行配置
 
 Core 的 Config Definition v4 支持对象数组 `validation.uniqueBy` 和非敏感标量 `valueRef`。唯一约束使用一个已声明的浅标量属性；引用指向另一顶层对象数组的同类型 key，可联合保留的静态值。Core 提供统一候选与依赖闭包校验，CLI 保存、有效值解析和物化使用该合同。校验可以读取依赖字段，生效资源与 reader 返回值只公开获准的 keys。Store v5、顶层整体覆盖、既有数组和对象限值保持不变。
@@ -433,37 +452,17 @@ reader 从真实安装调用文件定位本产物，检查格式、版本、调�
 
 安装配置是随已有产物生成的弱资源，不形成 installed-state DB、安装 ledger 或新的 ownership 真值。保存未 apply 时继续使用旧生效值。staging 校验失败保留旧完整投影；平台 apply 允许部分成功，可用产物按自己的实际内容工作，不要求跨 Skill 一致。真实缺文件、格式错误、身份冲突或越权仍拒绝本次外部启动，并保留修正配置、sync/reinstall 与既有 cleanup 恢复入口。弱资源损坏不能授权删除 foreign/shared 内容。旧声明的 `resourceVersion`、`artifactIds`、v1 binding 和 `expectedRevision` 不兼容，须更新作者合同并正常重建；不迁移强配置格式。
 
-Codex Enhance 的执行 profile 选择 executor、model 和 reasoningEffort，Guide 保留调用方的目标、角色、独立性及预算。native 使用当前可用原生工具与角色；外部执行 profile 可省略 model/effort，沿用后端默认，显式不支持时报错。executor 缺省仍为 native，非法配置或不可用执行器不自动回退。Advisor 仅展示已配置选项，专属配置整体使用；general/advanced/expert 对应原有三个字段及 native、gpt-6-astra、high/xhigh/max 默认值。Core 不按咨询或调查名称加入业务分支。
+Codex Enhance 的 profile 选择 executor、model 与 reasoningEffort；native 使用当前宿主原生工具和角色，外部调用消费本产物的已安装配置。外部参数可省略模型与推理强度，表示后端默认；非法配置、不可用入口或明确不支持的值不回退其它后端。角色、执行配置和具体后端方法由 [Guide 适配器文档](../plugins/codex-enhance/skills/codex-subagent-guide/docs/README.md) 维护。
 
-subagentCommands 通过有限 adapter 分支配置内建 codex、claude-code、oracle、antigravity 或 custom。Codex/Claude Code/Antigravity 固定 workspace，Oracle 固定 bundle；Antigravity 使用 PATH 中的 agy。内建 command/entrypoint 不属于用户配置，显式错误 mode 由共享 validator 拒绝。custom 使用绝对 command、可选 entrypoint 和明确 mode。args、env、envFrom 是所有适配器共用的后端参数和环境输入；普通环境继承宿主，排除 AW 内部上下文并保护本次控制变量，envFrom 的解析值不进入安装资源或协议正文。运行时只从本产物取得生效配置，不读最新 store，不建立执行 revision 或第二份注册账本。所有分支可设置 communication，缺省 true；false 仍检查所选入口环境并应用权限模式，保留普通运行和结果生命周期，跳过 AW 桥、工具、通讯说明及自动父输入，不删除用户自己的 MCP/工具。不增加每次 start 开关。
+Guide 的静态集合 guide/subagent/default 使用 codex-subagent-guide-skill artifact producer，入口为 scripts/subagent.mjs。Codex shared native producer 固定 shared-user，项目取消激活不撤销共享命令。五个父侧 start/send/wait/result/stop 各自声明结构化精确 allow；不批准其它 ID 或命令管理入口。Codex Enhance 继续只安装到 Codex，不将整套 Guide Skill 移植到 Claude。
 
-Codex 专属配置为 codexProfile、codexCliSource（auto/cli/app，缺省 auto）和 codexBypassHookTrust（boolean，缺省 false）；后两者不接受在其它 adapter 中声明。plan 保留归一化的 start.codex 对象，必填 cliSource/bypassHookTrust，可选 profile，不改写为 raw args。profile-v2 文件从本次有效 CODEX_HOME 读取，只转换精确支持字段；未支持/无关字段诊断后忽略，支持字段类型错误、读取/转换或控制边界错误仍在提交前失败。增量覆盖不保留原生用户配置层身份，可能覆盖项目配置。profile hooks 在首个 thread/start 前按 config/read 原始 User/SessionFlags 层读取并映射既有信任与禁用状态，不写用户配置或自动授信。bypass 由 executor 字段显式在线程配置发送，影响本线程其它来源的适用普通 hooks，仍保留禁用及管理限制；profile 同名字段忽略，raw bypass 入口拒绝。精确范围、覆盖与失败码由长期 [Codex profile 参考](../plugins/codex-enhance/skills/codex-subagent-guide/docs/codex.md#codex-profile-转换) 拥有，真实消费者行为仍须验收。额外目录 addDirs/--add-dir 继续返回 parameterUnavailable。
+Config v4 的 custom-managed 分支把 commandId 绑定到用户或插件托管 adapter，仍使用 Adapter v5。worker 用当前受保护 CommandHost 调用同一个 AW 的 command run；executor args 留在 v5 请求，binding fixed args 才进入目标 argv。缺少/无效主机明确失败，不以 PATH 或其它 AW_HOME 回退；原绝对 custom 入口保持可用。配置、环境优先级与禁止字段见 [配置与接入](../plugins/codex-enhance/skills/codex-subagent-guide/docs/configuration.md#托管-custom-adapter)。
 
-Codex、Claude Code、Antigravity 的 permissionMode 为 default/auto/full-access，缺省 default；Oracle/custom 拒绝此字段，native 使用宿主权限，不增加每次 start 开关。default 不新增权限覆盖并保留用户 args/profile；auto/full-access 高于 Codex profile 同类默认值，与 raw args 重复控制时在启动或 settings 写入前返回 adapterArgumentConflict。Codex auto 在首次 thread/start.config 设置 on-request + auto_review 并保留有效沙箱；full-access 设置 never + danger-full-access。Claude 分别使用 --permission-mode auto / --dangerously-skip-permissions，agy 使用 --mode auto / --dangerously-skip-permissions，不额外关闭其终端沙箱。权限模式、communication、codexBypassHookTrust 独立，full-access 不启用 hook bypass。已知不可用或晚到 auto 回退报告 permissionModeUnavailable，按实际提交/停止证据收尾，不换模式或重发；管理限制继续生效。
+外部 start/send 及子侧 send 只接受文本或文件，缺参、互斥、重复、未知及 -/stdin 形式在副作用前拒绝。正常输出用简短控制行和 message/input/result/diagnostic 块；主代理仅得到 communication=true/false/pending 和必要证据，不公开 transport/passiveDelivery 或环境快照。启用通信始终提供 send/receive，Adapter v5 enabled 对象只含 status、transport 和 passiveDelivery，拒绝旧 activeReceive 字段。
 
-Codex auto 先查有效 PATH，仅无可执行入口才查 App；cli/app 分别限定单一来源。找到后固定路径，启动或协议失败不换来源、不重发。macOS 检查匹配 com.openai.codex 的用户/系统 App 内嵌入口；Windows 按当前用户注册 package identity 查询安装根并有界发现，不扫描磁盘或固定版本目录；Linux 显式 app 拒绝。所选二进制须先完成无模型 app-server 初始化；Windows 查找与启动必须有 Windows 真机证据。
+wait 只为未读事件、首次 ready、首次终态和必要错误返回，纯 closing 或 sequence 增长继续等待。普通 wait/result 的 stdout+stderr 合计最多 8192 UTF-8 bytes；大终态以一次 deferred 通知交付，固定结果仍可读取。result --output-file 独占创建新文件，完整写入、关闭后才消费；消费失败明确报告完整文件仍存在。--export 已删除。start/wait 与 result 的消费边界不同，过程消息没有重放保证，只有固定最终结果在终态后 1 小时可重读；不续期、不重启模型。精确 wire、文件、预算和消费规则见 [运行生命周期](../plugins/codex-enhance/skills/codex-subagent-guide/docs/runtime.md)。
 
-Oracle 分支的可选 oracleEngine（browser/api）仍在 plan 转换为 args，专用字段与同类 raw args 重复时启动前拒绝。Oracle 无 AW effort 时省略引擎仍由后端选择；有 AW effort 时必须由字段或明确 argv 选择引擎，不读取 Oracle 配置或从环境猜测。浏览器 effort 按公开上游映射，未知值和明确 Gemini browser 的 AW effort 启动前拒绝；API 值交由后端校验。共享 pro 预设不改变既有默认值，也不表示所有后端支持它。配置方式和常用 effort 映射见[插件说明](../plugins/codex-enhance/README.md)。
-
-外部 CLI start 必填 executor 和 prompt；v5 请求另外必填归一化后的 communication；Codex/Claude/agy 必填 permissionMode，Oracle/custom 不携带。任务来自 --prompt TEXT 或 --prompt -；--instructions-file 可省略。无指令文件时不读取默认角色；有文件时 runner 读取一次并合成为单个 prompt。所有适配器消费相同 prompt，adapter 仅在实际 enabled 后从唯一 communication-instructions 模板按能力追加说明，无角色文件也可追加。调用方不预读或拼接通讯说明，不再要求独立指令通道能力声明。角色约束仍由调用者完整提供，拼接不提高权限。共享角色资源仍用于 native 和显式外部调用，不新增角色查找或指令白名单。仅生成的 codex-advisor 与 codex-explore 原生角色在 developer_instructions 中追加“直接完成当前咨询/调查，不再通过相应 Skill 重复委派同一任务”的局部段落；Advisor 对应 codex-advisor，Explore 对应 codex-explore。该段落不进入共享资源或外部 prompt，不限制其它获准的有界协作。
-
-workspace 不接受 --file，关注路径写入任务，CLI 及 Adapter v5 都拒绝该模式下的文件筛选输入。bundle 请求的 fileSelectors 保存原始选择式，fileResolver 提供由本产物 resourceRoot 定位的公共解析命令描述；两个字段仅 bundle 必填，选择数组可为空，旧 files 请求字段不再使用。runner 只校验形状和空选择项，不扫描材料。Adapter v5 的 bundle 固定绑定 AW 文件选择协议 v1，固化既有 Oracle 0.21.4 选择基线。所有适配器对同一稳定可读文件树和选择式必须得到相同的规范化集合。适配器可调用公共 helper，或使用符合相同协议的原生能力；实现差异由适配器消除，不由调用 Skill 提醒用户接受。规则、例外、JSON 和错误由适配器文档的“文件选择与公共解析器”章节拥有。解析器只读目录、元数据和必要 ignore 文件，材料正文由实际适配器处理。文件筛选不是凭据检查、工作区白名单或技术隔离。
-
-内建适配器只控制 prompt、结果、工作目录、明确文件输入和管理本次会话所需的参数，不锁精确版本，按所选 permissionMode 映射权限，保留后端正常工具及管理限制。Oracle 在符合固定 v1 时将每个原始选择式交给自身 --file，不调用公共 helper，不构建 AW 材料投影；后端更新不自动改变协议。各实现须通过同套集合与失败边界验证，已知不符合时在提交前明确拒绝，不新增精确版本白名单或每次双解析。当前 Windows 原生 Oracle 的 ignore 行为不符合 v1，非空 fileSelectors 在扫描和提交后端前返回 fileSelectionUnsupported；空数组请求仍可运行。原生扫描错误处理也需真实验证，不能把裸透传当作完整支持证明。原始参数过长时明确失败，不截断或分批提交。helper 失败时不启动模型，原生后端错误则按实际提交及停止证据报告，不能都假定为 runner 输入失败。适配器通过严格 JSONL 返回 ready/message/delivery/closing/result，公开输出使用英文平铺控制字段与独立原文块；调用完成不代表业务验收通过。注册、输入输出、环境、生命周期、选择及后端验证详见 [适配器说明](../plugins/codex-enhance/skills/codex-subagent-guide/docs/README.md)。
-
-外部 start 固定本次安装配置、完整 prompt 和输入，创建私有临时 run 并由长期 worker 管理 adapter、队列、最新快照及固定结果。公开入口为 start/send/多目标 wait/单目标 result/stop；默认无执行期限，只有显式 --deadline-ms 设置固定期限。开发中的 v5 直接使用 initialization:{environment,capabilities}，不兼容旧 ready 的顶层 communication/communicationSupported，也不兼容缺少适用 permissionMode 的 start 请求，不增加版本协商。所有 adapter、所有 communication 值每次均执行只读 descriptor.negotiate(context)，检查本次有效环境与命名能力候选；不提交模型、不写用户配置、不读最新 AW store。Codex 沿用来源选择，Claude/agy/Oracle 使用有效 PATH，custom 保留绝对 command/entrypoint；固定选定入口，缺失、不可执行和平台限制分别报告，不改报通讯 unsupported。环境可用不证明认证、余额、网络或账户/模型资格。不增加能力服务或健康缓存。
-
-候选不是 ready；环境可用后才准备桥、必要权限、后端无模型初始化和实际工具/说明。关闭通讯只跳过通讯检查和准备，仍检查环境及映射权限。准备成功才发 ready，然后提交首次模型输入。ready 的严格 initialization 必含 environment:{status:available} 与 capabilities.communication；通讯为 disabled/unsupported，或 enabled 加 transport、passiveDelivery、activeReceive。enabled 须有发送及至少一种收件/自动输入，none+false 非法，bundle 不可 enabled。权限、查询和资源错误保留实际失败，不降为 unsupported。
-
-初始化失败 result 可保存已确定 initialization，未知 communication 可省略，环境无可靠结论时省略整个对象。environment unavailable 含稳定 code，只允许初始化失败、generationStarted:false，不能先发 ready。ready 后 result 可省略并沿用，显式携带必须与已发布描述一致；运行故障不改写历史能力。worker 将完整描述和安全诊断保存到已有快照与固定结果，沿用观察序号、一次交付及结果重读，不新增队列/账本/ACK。公开 environment 为 pending/available/unavailable，不可用时附 environment_code；communication 保留 pending/true/false 和已有细分字段。未检查通讯保持 pending，可与 environment:unavailable 同时出现。晚到与快速终态由 wait/result 补报。子侧脚本、MCP 和自动输入共用调度，父消息不扩大授权。
-
-Antigravity 通讯开启、实际非 full-access 且环境与安装资源可用时，在正式后端加载 settings 前，向有效用户目录的 ~/.gemini/antigravity-cli/settings.json 按需追加当前 Node + 已安装 message.mjs 的精确前缀 allow 和同一入口的引号兼容规则。后者只匹配单条命令与字面量参数，不能授权其它脚本、脚本前的 Node 选项或额外 shell 动作。default 的 raw args 已启用 full-access 时不新增；通讯关闭不读写自动授权 settings。规则跨 run 去重，保留未知字段及 allow/ask/deny/strict；坏配置、写入失败、检测到变化或明确拒绝分别失败，不覆盖原文件或删除限制。采用同目录临时文件原子替换，保留访问限制与所有者/路径边界；成功写入后任务失败、stop、cleanup、sync/reinstall、卸载及旧安装路径均不自动删除。禁止宽 Node/目录/终端许可、隐藏根参数、改写 HOME 或全局 MCP；无法精确表达或缺少足够窄的沙箱访问路径时报具体不支持。真实规则匹配、策略组合及沙箱访问单独取证，不以许可写入证明双向能力，也不把本机 agy 1.4.7 的 auto 账户回退当作 auto 成功。完整错误和恢复合同由适配器说明拥有。
-
-Antigravity使用同一agy进程和conversation的NDJSON轮次；单轮result不代表run结束，最终采用最后确认成功轮次的完整response，后续失败不冒充旧结果成功。通讯为command/turn-boundary/activeReceive=true；首次输入前完成环境、桥、必要权限及原生工具检查。发送提示优先直接调用精确脚本入口；组合管道可能因额外权限要求失败，不为兼容组合扩大授权。communication=false保留普通生命周期。关闭stdin不等于取消；停止只针对可证明归属的进程树，真实停止或后代清理不明保留unknown。具体输入、结束和验收边界由适配器文档拥有。
-
-wait 默认响应式长等待 600000 ms，任一目标变化即返回；过程消息消费后删除，终态通知只交付一次。result 只在终态读取全部未读消息与固定结果，完整输出后消费通知；仅固定最终结果在终态后 1 小时可重读，读取不续期。wait 与普通 result 合计最多 8 KiB，--export 将完整报告写入 stdout，由调用者选择完整接收路径；工具裁剪后不能声称过程消息可恢复。completed 与父输入投递缺口分别判断，不以服务完成推导追加要求送达。
-
-停止只处理本次可证明归属的执行及后代，本地退出不证明远端取消。未知终态、worker 失联或停止证据冲突保留 unknown；失联只可按已存证据固定一次 unknown，不能从日志或后端重新生成成功。普通调用按固定到期、归属与停止证据顺带清理，不设公开 cleanup、常驻清理器、全局账本或额外锁。损坏正文不阻止安全清理，foreign/shared 和链接资源保留。支持范围包括原生 macOS/Linux/Windows，相同合同的真实 OS 与后端证据分别取得；安装闭包从当前 resourceRoot 提供全部入口和平台依赖。详细生命周期、输出预算、v5 wire/API 及文件选择 v1 以 [适配器说明](../plugins/codex-enhance/skills/codex-subagent-guide/docs/README.md) 为唯一长期合同。
+本地停止与远端取消分别取证，worker 失联和证据冲突保留 unknown。正常调用只按固定期限、归属和停止证据回收专属资源，损坏正文不阻止安全清理；不引入跨父会话恢复、run registry、全局账本或额外锁。升级、重装或删除 Guide/托管 adapter 前先完成或 stop 活跃任务。原生 macOS/Linux/Windows、实际宿主规则匹配与后端资格分别验证，本机或 fake 通过不外推。
 
 ## Agent Skill Eval 执行与 Runner 边界
 

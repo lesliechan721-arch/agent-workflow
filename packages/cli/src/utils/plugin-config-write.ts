@@ -2,6 +2,7 @@ import type {
   PreApplyAuthorizationTarget,
   RebuildCommandRuntime,
 } from '../commands/rebuild-command.js';
+import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import {
   flattenStatusTargets,
   statusCommandV8,
@@ -10,6 +11,7 @@ import {
 import { syncWriteCommand } from '../commands/write-commands.js';
 import {
   CONFIG_MUTATION_RECEIPT_SCHEMA_VERSION,
+  type CommandProducerResult,
   type ConfigApplyError,
   type ConfigApplyResult,
   type ConfigApplyTargetResult,
@@ -42,7 +44,12 @@ import {
   summarizeEffectivePluginConfig,
   type PluginConfigValue,
 } from './plugin-config.js';
-import { analyzePluginConfigMutationImpact } from './plugin-config-impact.js';
+import { analyzePluginConfigMutationImpact, pluginSharedNativeConfigTargets } from './plugin-config-impact.js';
+import {
+  discoverInstalledPluginManagedCommandPackages,
+  syncPluginManagedCommandPackage,
+  type ManagedCommandPackageDiscovery,
+} from './managed-command-materialization.js';
 import {
   collectSensitivePluginConfigValues,
   redactPluginScriptOutput,
@@ -120,6 +127,13 @@ interface InternalConfigApplyTargetResult extends Omit<ReceiptTargetResult, 'sta
   state: ConfigApplyTargetResult['state'];
 }
 
+interface ConfigApplyDiscovery {
+  targets: ReceiptTargetIdentity[];
+  failures: ReceiptTargetResult[];
+  commandPackages?: ManagedCommandPackageDiscovery['packages'];
+  commandDiscoveryErrors?: ManagedCommandPackageDiscovery['errors'];
+}
+
 type InternalConfigApplyResult =
   | Extract<ConfigApplyResult, { state: 'skipped' }>
   | (Omit<Extract<ConfigApplyResult, { state: 'unavailable' }>, 'targetResults'> & {
@@ -180,7 +194,8 @@ function unavailableApply(
   reason: Extract<ConfigApplyResult, { state: 'unavailable' }>['reason'],
   stage: ConfigApplyError['stage'],
   targetResults: InternalConfigApplyTargetResult[] = [],
-): InternalConfigApplyResult {
+  commandPackages: ManagedCommandPackageDiscovery['packages'] = [],
+): Extract<InternalConfigApplyResult, { state: 'unavailable' }> {
   const messages: Record<typeof reason, string> = {
     invalidConfig: 'The effective config is invalid for every visible target.',
     schemaUnavailable: 'The config schema is unavailable after the config commit.',
@@ -192,6 +207,12 @@ function unavailableApply(
     state: 'unavailable',
     reason,
     targetResults,
+    ...(commandPackages.length > 0 ? { commandResults: commandPackages.map((target) => ({
+      producer: target.producer, state: 'failed' as const, commandIds: [], removedCommandIds: [],
+      errors: [{ code: reason, message: messages[reason] }],
+      recoveryActions: [`aw command package sync ${target.producer.sourceId}/${target.producer.pluginName} ${target.packageKey} --scope ${target.producer.scope} --yes`,
+        `aw command package remove ${target.packageId} --yes`],
+    })) } : {}),
     error: { stage, code: reason, message: messages[reason] },
   };
 }
@@ -292,26 +313,26 @@ async function reinstallVisibleTargets(options: {
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
-  discovered?: Awaited<ReturnType<typeof discoverVisibleTargets>>;
+  discovered?: ConfigApplyDiscovery;
   preApplyConfirmed?: boolean;
+  changedConfigKeys?: string[];
 }): Promise<InternalConfigApplyResult> {
   const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
-  const discovered = options.discovered ?? (options.applyTargets === undefined
-    ? await discoverVisibleTargets({
-        pluginName: options.plugin.manifest.name,
-        plugin: options.plugin,
-        scope: options.scope,
-        cwd: options.cwd,
-        env: options.env,
-        nativeCliRunner,
-        rebuildRuntime: options.rebuildRuntime,
-      })
-    : { targets: dedupeTargets(options.applyTargets), failures: [] });
+  const discovered = options.discovered ?? await resolveConfigApplyTargets(options);
   const targetResults: InternalConfigApplyTargetResult[] = [...discovered.failures];
-  let runtimeFailed = discovered.failures.length > 0;
+  const commandResults = new Map<string, CommandProducerResult>();
+  const managedCommandProducerCache = options.rebuildRuntime?.managedCommandProducerCache
+    ?? new Map<string, Promise<CommandProducerResult>>();
+  let runtimeFailed = discovered.failures.length > 0
+    || (discovered.commandDiscoveryErrors?.length ?? 0) > 0;
   let invalidTargets = 0;
   let unavailableTargets = 0;
   const errors: ConfigApplyError[] = [];
+  if ((discovered.commandDiscoveryErrors?.length ?? 0) > 0) {
+    errors.push(...discovered.commandDiscoveryErrors!.map((error): ConfigApplyError => ({
+      stage: 'targetDiscovery', code: error.code, message: error.message,
+    })));
+  }
   const reinstall = options.reinstallCommandImpl ?? syncWriteCommand;
   if (options.plugin.sourceId && !options.plugin.pluginId) {
     throw new Error(`Plugin "${options.plugin.manifest.name}" is missing its namespaced plugin ID.`);
@@ -322,7 +343,7 @@ async function reinstallVisibleTargets(options: {
 
   const sanitizeFailure = async (
     message: string,
-    target: ReceiptTargetIdentity,
+    target: Pick<ReceiptTargetIdentity, 'scope' | 'projectKey'>,
   ): Promise<string> => {
     let sensitiveValues: string[] = [];
     try {
@@ -449,6 +470,7 @@ async function reinstallVisibleTargets(options: {
           nativeCliRunner,
           preApplyConfirmed: options.preApplyConfirmed === true,
           preApplyExecutionCache,
+          managedCommandProducerCache,
           ...(debugLogger ? {
             debugLogger: {
               ...debugLogger,
@@ -464,6 +486,10 @@ async function reinstallVisibleTargets(options: {
         },
       );
       options.rebuildRuntime?.operationDiagnosticSink?.(result.rebuildResults);
+      for (const producer of result.commandResults ?? []) {
+        commandResults.set(getCommandPackageId(producer.producer), producer);
+        if (producer.state !== 'completed') runtimeFailed = true;
+      }
       if (result.overallState !== 'succeeded') runtimeFailed = true;
       targetResults.push(...await Promise.all(result.targetResults.map(async (entry) => ({
         ...entry,
@@ -490,14 +516,61 @@ async function reinstallVisibleTargets(options: {
     }
   }
 
-  if (discovered.targets.length === 0 && discovered.failures.length === 0) {
+  for (const target of discovered.commandPackages ?? []) {
+    await options.rebuildRuntime?.reporter?.event({
+      type: 'managed-command:producer',
+      source: { plugin: options.plugin.manifest.name, scope: target.producer.scope },
+      data: { packageKey: target.packageKey, phase: 'start' },
+    });
+    let result: CommandProducerResult;
+    if (!target.declared) {
+      result = {
+        producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
+        errors: [{ code: 'commandPackageDeclarationMissing',
+          message: 'The installed command package is no longer declared by this plugin.' }],
+        recoveryActions: [`aw command package remove ${target.packageId} --yes`],
+      };
+    } else {
+      try {
+        result = await syncPluginManagedCommandPackage({
+          plugin: options.plugin, packageKey: target.packageKey, scope: target.producer.scope,
+          cwd: options.cwd, env: options.env, managedCommandProducerCache,
+          event: options.changedConfigKeys?.length ? 'refresh' : 'install',
+          changedConfigKeys: options.changedConfigKeys ?? [],
+        });
+      } catch {
+        result = {
+          producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
+          errors: [{ code: 'commandPackageApplyFailed', message: 'The managed command package could not be refreshed.' }],
+          recoveryActions: [`aw command package sync ${selector} ${target.packageKey} --scope ${target.producer.scope} --yes`,
+            `aw command package remove ${target.packageId} --yes`],
+        };
+      }
+    }
+    result = { ...result, errors: await Promise.all(result.errors.map(async (error) => ({
+      ...error, message: await sanitizeFailure(error.message, { scope: target.producer.scope,
+        ...(target.producer.projectRoot ? { projectKey: target.producer.projectRoot } : {}) }),
+    }))) };
+    commandResults.set(getCommandPackageId(result.producer), result);
+    await options.rebuildRuntime?.reporter?.event({
+      type: 'managed-command:producer',
+      source: { plugin: options.plugin.manifest.name, scope: target.producer.scope },
+      data: { packageKey: target.packageKey, phase: result.state === 'completed' ? 'success' : 'failure' },
+    });
+    if (result.state !== 'completed') runtimeFailed = true;
+  }
+  const commands = commandResults.size > 0 ? { commandResults: [...commandResults.values()] } : {};
+  const commandTargetCount = (discovered.commandPackages?.length ?? 0);
+
+  if (discovered.targets.length === 0 && discovered.failures.length === 0
+    && commandTargetCount === 0 && !runtimeFailed) {
     return skippedApply('noVisibleTarget');
   }
-  if (discovered.targets.length > 0 && invalidTargets === discovered.targets.length) {
-    return unavailableApply('invalidConfig', 'targetValidation', targetResults);
+  if (discovered.targets.length > 0 && invalidTargets === discovered.targets.length && commandTargetCount === 0) {
+    return { ...unavailableApply('invalidConfig', 'targetValidation', targetResults), ...commands };
   }
-  if (discovered.targets.length > 0 && unavailableTargets === discovered.targets.length) {
-    return unavailableApply('effectiveConfigUnavailable', 'targetValidation', targetResults);
+  if (discovered.targets.length > 0 && unavailableTargets === discovered.targets.length && commandTargetCount === 0) {
+    return { ...unavailableApply('effectiveConfigUnavailable', 'targetValidation', targetResults), ...commands };
   }
   if (runtimeFailed
     || invalidTargets > 0
@@ -506,10 +579,11 @@ async function reinstallVisibleTargets(options: {
     return {
       state: 'partial',
       targetResults,
+      ...commands,
       ...(errors.length > 0 ? { errors } : {}),
     };
   }
-  return { state: 'succeeded', targetResults };
+  return { state: 'succeeded', targetResults, ...commands };
 }
 
 async function resolveConfigApplyTargets(options: {
@@ -520,31 +594,33 @@ async function resolveConfigApplyTargets(options: {
   applyTargets?: ReceiptTargetIdentity[];
   nativeCliRunner?: NativeCliRunner;
   rebuildRuntime?: RebuildCommandRuntime;
-}): Promise<Awaited<ReturnType<typeof discoverVisibleTargets>>> {
-  if (options.applyTargets !== undefined) {
-    return { targets: dedupeTargets(options.applyTargets), failures: [] };
-  }
-  return discoverVisibleTargets({
-    pluginName: options.plugin.manifest.name,
-    plugin: options.plugin,
-    scope: options.scope,
-    cwd: options.cwd,
-    env: options.env,
-    nativeCliRunner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
-    rebuildRuntime: options.rebuildRuntime,
+}): Promise<ConfigApplyDiscovery> {
+  const platformTargets = options.applyTargets !== undefined
+    ? { targets: dedupeTargets(options.applyTargets), failures: [] }
+    : await discoverVisibleTargets({
+        pluginName: options.plugin.manifest.name,
+        plugin: options.plugin,
+        scope: options.scope,
+        cwd: options.cwd,
+        env: options.env,
+        nativeCliRunner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
+        rebuildRuntime: options.rebuildRuntime,
+      });
+  const commands = await discoverInstalledPluginManagedCommandPackages({
+    plugin: options.plugin, scope: options.scope, cwd: options.cwd, env: options.env,
+    platformTargets: platformTargets.targets,
   });
+  return { ...platformTargets, commandPackages: commands.packages, commandDiscoveryErrors: commands.errors };
 }
 
-async function configApplyHasValidCodexTarget(options: {
+async function configApplyHasValidSharedNativeTarget(options: {
   plugin: PluginMeta;
   targets: ReceiptTargetIdentity[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<boolean> {
-  const codexScopes = new Set(options.targets
-    .filter((target) => target.platform === 'codex')
-    .map((target) => target.scope));
-  for (const scope of codexScopes) {
+  const sharedTargets = pluginSharedNativeConfigTargets(options.plugin);
+  if (options.targets.some((target) => sharedTargets.some((shared) => (shared.platform ?? 'codex') === target.platform))) {
     const effective = await resolveEffectivePluginConfig({
       ...(options.plugin.sourceId ? {
         sourceId: options.plugin.sourceId,
@@ -553,7 +629,7 @@ async function configApplyHasValidCodexTarget(options: {
       } : {}),
       pluginName: options.plugin.manifest.name,
       manifest: options.plugin.manifest,
-      targetScope: scope,
+      targetScope: 'user',
       cwd: options.cwd,
       env: options.env,
     });
@@ -574,6 +650,7 @@ async function applyConfigToVisibleTargets(options: {
   noVisibleTargetHasInvalidConfig?: boolean;
   preApplyConfirmed?: boolean;
   discovered?: Awaited<ReturnType<typeof resolveConfigApplyTargets>>;
+  changedConfigKeys?: string[];
 }): Promise<InternalConfigApplyResult> {
   let discovered: Awaited<ReturnType<typeof resolveConfigApplyTargets>>;
   if (options.discovered) {
@@ -587,6 +664,7 @@ async function applyConfigToVisibleTargets(options: {
   }
   if (discovered.targets.length === 0
     && discovered.failures.length === 0
+    && (discovered.commandPackages?.length ?? 0) === 0
     && options.noVisibleTargetHasInvalidConfig) {
     return unavailableApply('invalidConfig', 'targetValidation');
   }
@@ -824,11 +902,13 @@ export async function replayConfigRuntimeWrites(options: {
         };
       }
       discovered = {
+        ...discovered,
         targets: preApplyAuthorization.availableApplyTargets,
         failures: [...discovered.failures, ...preApplyAuthorization.unavailableTargetResults],
       };
       if (discovered.targets.length === 0
-        && preApplyAuthorization.unavailableTargetResults.length > 0) {
+        && preApplyAuthorization.unavailableTargetResults.length > 0
+        && (discovered.commandPackages?.length ?? 0) === 0) {
         const apply = unavailableApply(
           'sourceUnavailable',
           'source',
@@ -845,7 +925,7 @@ export async function replayConfigRuntimeWrites(options: {
         options.scope === 'user'
         && options.sharedNativeApplyConfirmed !== true
         && pluginHasSharedNativeRefreshKeys(options.plugin)
-        && await configApplyHasValidCodexTarget({
+        && await configApplyHasValidSharedNativeTarget({
           plugin: options.plugin,
           targets: discovered.targets,
           cwd: options.cwd,
@@ -897,16 +977,12 @@ type ApplyPluginConfigWriteOptions = {
 };
 
 function pluginHasSharedNativeRefreshKeys(plugin: PluginMeta): boolean {
-  return (plugin.manifest.artifacts?.targets ?? []).some((target) =>
-    target.platform === 'codex'
-    && target.target === 'codex.skill'
-    && target.delivery?.mode === 'codex-native'
-    && target.refreshKeys.length > 0);
+  return pluginSharedNativeConfigTargets(plugin).length > 0;
 }
 
 function throwSharedNativeApplyConfirmationRequired(): never {
   const error = new Error(
-    'sharedNativeConfigApplyConfirmationRequired: Applying this user config changes a shared Codex native artifact. Re-run with --yes.',
+    'sharedNativeConfigApplyConfirmationRequired: Applying this user config changes a shared native artifact. Re-run with --yes.',
   ) as Error & { code: string };
   error.code = 'sharedNativeConfigApplyConfirmationRequired';
   throw error;
@@ -999,6 +1075,9 @@ async function applyPluginConfigWriteUnlocked(
     cwd: options.cwd,
     env: options.env,
     visibleTargets: discovered?.targets ?? [],
+    ...(discovered ? { commandDiscovery: {
+      packages: discovered.commandPackages ?? [], errors: discovered.commandDiscoveryErrors ?? [],
+    } } : {}),
     mutation: {
       kind: 'patch',
       updates: requestedUpdates,
@@ -1021,7 +1100,8 @@ async function applyPluginConfigWriteUnlocked(
   let preApplyUnavailableReason: 'sourceUnavailable' | 'targetDiscoveryFailed' | undefined;
   let preApplyUnavailableTargetResults: ReceiptTargetResult[] = [];
   let applyDiscovery = discovered
-    ? { targets: impact.affectedTargets, failures: discovered.failures }
+    ? { ...discovered, targets: impact.affectedTargets, failures: discovered.failures,
+        commandPackages: impact.affectedCommandPackages }
     : undefined;
   const shouldApply = options.apply !== false && impact.storeChanged && !impact.noEffectiveChange;
   if (shouldApply && pluginMayRunPreApply(schemaPlugin)) {
@@ -1045,10 +1125,12 @@ async function applyPluginConfigWriteUnlocked(
       }
       preApplyUnavailableTargetResults = preApplyAuthorization.unavailableTargetResults;
       applyDiscovery = {
+        ...applyDiscovery,
         targets: preApplyAuthorization.availableApplyTargets,
         failures: [...applyDiscovery.failures, ...preApplyUnavailableTargetResults],
       };
-      if (applyDiscovery.targets.length === 0 && preApplyUnavailableTargetResults.length > 0) {
+      if (applyDiscovery.targets.length === 0 && preApplyUnavailableTargetResults.length > 0
+        && (applyDiscovery.commandPackages?.length ?? 0) === 0) {
         preApplyUnavailableReason = 'sourceUnavailable';
       }
     }
@@ -1057,8 +1139,8 @@ async function applyPluginConfigWriteUnlocked(
     options.apply !== false
     && options.scope === 'user'
     && options.sharedNativeApplyConfirmed !== true
-    && impact.sharedNativeRenderTargets.length > 0
-    && impact.affectedTargets.some((target) => target.platform === 'codex')
+    && impact.sharedNativeRenderTargets.some((shared) => impact.affectedTargets
+      .some((target) => target.platform === (shared.platform ?? 'codex')))
   ) {
     throwSharedNativeApplyConfirmationRequired();
   }
@@ -1091,7 +1173,7 @@ async function applyPluginConfigWriteUnlocked(
       env: options.env,
     }));
   } catch {
-    const apply = unavailableApply('effectiveConfigUnavailable', 'effectiveConfig');
+    const apply = unavailableApply('effectiveConfigUnavailable', 'effectiveConfig', [], impact.affectedCommandPackages);
     const otherProjectsMayRequireSync = options.scope === 'user' && impact.storeChanged;
     if (otherProjectsMayRequireSync) warnings.push(...otherProjectsWarning(options.scope));
     return {
@@ -1117,7 +1199,7 @@ async function applyPluginConfigWriteUnlocked(
         : targetDiscoveryFailed
           ? unavailableApply('targetDiscoveryFailed', 'targetDiscovery')
         : impact.noEffectiveChange
-            && ((discovered?.targets.length ?? 0) > 0
+            && ((discovered?.targets.length ?? 0) + impact.commandPackages.length > 0
               || staleRemovedKeys.length === impact.changedKeys.length)
             ? skippedApply('noEffectiveConfigChange')
           : preApplyUnavailableReason
@@ -1139,6 +1221,7 @@ async function applyPluginConfigWriteUnlocked(
                 && effective.issues.length > 0,
               preApplyConfirmed: options.preApplyConfirmed,
               discovered: applyDiscovery,
+              changedConfigKeys: impact.changedKeys,
             });
   } catch (error) {
     const failure = error instanceof Error ? error : new Error(String(error));
@@ -1341,10 +1424,11 @@ async function resetPluginConfigWithHelperUnlocked(
   let impact: Awaited<ReturnType<typeof analyzePluginConfigMutationImpact>> | undefined;
   let targetDiscoveryFailed = false;
   let visibleTargets: ReceiptTargetIdentity[] = [];
+  let discovered: ConfigApplyDiscovery | undefined;
   if (options.plugin) {
     if (options.apply !== false) {
       try {
-        visibleTargets = (await resolveConfigApplyTargets({
+        discovered = await resolveConfigApplyTargets({
           plugin: options.plugin,
           scope: options.scope,
           cwd: options.cwd,
@@ -1352,7 +1436,8 @@ async function resetPluginConfigWithHelperUnlocked(
           applyTargets: options.applyTargets,
           nativeCliRunner: options.nativeCliRunner,
           rebuildRuntime: options.rebuildRuntime,
-        })).targets;
+        });
+        visibleTargets = discovered.targets;
       } catch {
         targetDiscoveryFailed = true;
       }
@@ -1364,6 +1449,9 @@ async function resetPluginConfigWithHelperUnlocked(
         cwd: options.cwd,
         env: options.env,
         visibleTargets,
+        ...(discovered ? { commandDiscovery: {
+          packages: discovered.commandPackages ?? [], errors: discovered.commandDiscoveryErrors ?? [],
+        } } : {}),
         mutation: { kind: 'reset' },
       });
       removedKeys = impact.removedKeys;
@@ -1374,7 +1462,9 @@ async function resetPluginConfigWithHelperUnlocked(
   let preApplyUnavailableReason: 'sourceUnavailable' | undefined;
   let preApplyUnavailableTargetResults: ReceiptTargetResult[] = [];
   let applyDiscovery = options.plugin && !targetDiscoveryFailed
-    ? { targets: impact?.affectedTargets ?? visibleTargets, failures: [] as ReceiptTargetResult[] }
+    ? { targets: impact?.affectedTargets ?? visibleTargets, failures: [] as ReceiptTargetResult[],
+        commandPackages: impact?.affectedCommandPackages ?? discovered?.commandPackages,
+        commandDiscoveryErrors: impact?.commandDiscoveryErrors ?? discovered?.commandDiscoveryErrors }
     : undefined;
   if (
     options.plugin
@@ -1403,10 +1493,12 @@ async function resetPluginConfigWithHelperUnlocked(
     }
     preApplyUnavailableTargetResults = preApplyAuthorization.unavailableTargetResults;
     applyDiscovery = {
+      ...applyDiscovery,
       targets: preApplyAuthorization.availableApplyTargets,
       failures: preApplyUnavailableTargetResults,
     };
-    if (applyDiscovery.targets.length === 0 && preApplyUnavailableTargetResults.length > 0) {
+    if (applyDiscovery.targets.length === 0 && preApplyUnavailableTargetResults.length > 0
+      && (applyDiscovery.commandPackages?.length ?? 0) === 0) {
       preApplyUnavailableReason = 'sourceUnavailable';
     }
   }
@@ -1416,10 +1508,10 @@ async function resetPluginConfigWithHelperUnlocked(
     && options.scope === 'user'
     && options.sharedNativeApplyConfirmed !== true
     && (impact
-      ? impact.sharedNativeRenderTargets.length > 0
-        && impact.affectedTargets.some((target) => target.platform === 'codex')
-      : pluginHasSharedNativeRefreshKeys(options.plugin))
-    && visibleTargets.some((target) => target.platform === 'codex')
+      ? impact.sharedNativeRenderTargets.some((shared) => impact.affectedTargets
+        .some((target) => target.platform === (shared.platform ?? 'codex')))
+      : pluginSharedNativeConfigTargets(options.plugin).some((shared) => visibleTargets
+        .some((target) => target.platform === (shared.platform ?? 'codex'))))
   ) {
     throwSharedNativeApplyConfirmationRequired();
   }
@@ -1467,14 +1559,14 @@ async function resetPluginConfigWithHelperUnlocked(
         }));
       } catch {
         if (reset.deleted && options.apply !== false) {
-          apply = unavailableApply('effectiveConfigUnavailable', 'effectiveConfig');
+          apply = unavailableApply('effectiveConfigUnavailable', 'effectiveConfig', [], impact?.affectedCommandPackages);
         }
       }
       if (reset.deleted
         && options.apply !== false
         && apply.state === 'skipped'
         && impact?.noEffectiveChange
-        && visibleTargets.length > 0) {
+        && visibleTargets.length + (impact?.commandPackages.length ?? 0) > 0) {
         apply = skippedApply('noEffectiveConfigChange');
       } else if (reset.deleted
         && options.apply !== false
@@ -1500,6 +1592,7 @@ async function resetPluginConfigWithHelperUnlocked(
               noVisibleTargetHasInvalidConfig: (effective?.issues.length ?? 0) > 0,
               preApplyConfirmed: options.preApplyConfirmed,
               discovered: applyDiscovery,
+              changedConfigKeys: impact?.changedKeys ?? removedKeys,
             });
       }
     } else if (reset.deleted && options.apply !== false && apply.state === 'skipped') {

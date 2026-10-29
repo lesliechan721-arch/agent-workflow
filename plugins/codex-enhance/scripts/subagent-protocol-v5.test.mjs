@@ -17,7 +17,7 @@ const start = () => ({
   runtime: { directory: process.cwd(), toolkit: { module: import.meta.filename, command: process.execPath, messageScript: import.meta.filename, mcpScript: import.meta.filename } },
 });
 const initialization = (communication) => ({ environment: { status: 'available' }, capabilities: { communication } });
-const ready = (enabled = true) => ({ protocolVersion: 5, type: 'ready', initialization: initialization(enabled ? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } : { status: 'unsupported' }) });
+const ready = (enabled = true) => ({ protocolVersion: 5, type: 'ready', initialization: initialization(enabled ? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' } : { status: 'unsupported' }) });
 const input = (id = '2'.repeat(32), text = '父消息😀') => ({ protocolVersion: 5, type: 'message', id, text });
 const result = () => ({ protocolVersion: 5, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text: '最终结果。' });
 
@@ -49,22 +49,22 @@ test('Windows qualification adapter emits valid v5 initialization and stops its 
 // Test Value Gate: a terminal initialization failure must surface its status
 // immediately instead of being converted into a minute-long command timeout.
 test('qualification readiness follows pending runs and reports terminal failure immediately', async () => {
-  const pending = { exit: 1, handle: 'fixture', stdout: 'state: starting\ncommunication: pending\ncode: startupNotReady\n' };
+  const pending = { exit: 1, handle: 'fixture', stdout: 'starting fixture\n', stderr: '<diagnostic code="startupNotReady">\nInitialization is pending.\n</diagnostic>\n' };
   let calls = 0;
   await waitForCommunication(pending, async (args) => {
     calls++; assert.equal(args[2], 'fixture');
-    return { exit: 0, stdout: 'state: running\ncommunication: true\n' };
+    return { exit: 0, stdout: 'ready fixture communication=true\n' };
   });
   assert.equal(calls, 1);
   for (const state of ['failed', 'cancelled', 'unknown', 'completed']) {
     calls = 0;
     await assert.rejects(waitForCommunication(pending, async () => {
       calls++;
-      return { exit: 0, stdout: `state: ${state}\ncommunication: true\ncode: protocolInvalid\nBEGIN_FINAL:12345678\nstate: running\nEND_FINAL:12345678\n` };
+      return { exit: 0, stdout: `<result state="${state}" communication="true" code="protocolInvalid">\nready fixture communication=true\n</result>\n` };
     }), { code: 'readinessFailed', details: { state, runtimeCode: 'protocolInvalid' } });
     assert.equal(calls, 1);
   }
-  await assert.rejects(waitForCommunication({ exit: 1, stdout: 'state: failed\ncode: workerLost\n' }, () => assert.fail('A failed start must not poll.')), {
+  await assert.rejects(waitForCommunication({ exit: 1, stdout: 'start_failed fixture state=failed code=workerLost\n' }, () => assert.fail('A failed start must not poll.')), {
     code: 'readinessFailed', details: { state: 'failed', runtimeCode: 'workerLost' },
   });
   await assert.rejects(waitForCommunication(pending, () => assert.fail('An expired wait must not poll.'), { timeoutMs: 0 }), { code: 'commandTimeout' });
@@ -162,11 +162,16 @@ test('initialization validates environment, named capabilities, and immutable re
 });
 
 test('ready describes exact capabilities and rejects disabled mismatches and invalid diagnostics', () => {
+  for (const transport of ['mcp', 'command']) for (const passiveDelivery of ['in-turn', 'turn-boundary', 'none']) {
+    const communication = { status: 'enabled', transport, passiveDelivery };
+    assert.deepEqual(validateFrame({ ...ready(), initialization: initialization(communication) }, 'adapter').initialization.capabilities.communication, communication);
+  }
   for (const communication of [
     { status: 'disabled', activeReceive: false }, { status: 'unsupported', transport: 'mcp' },
     { status: 'enabled', transport: 'mcp', passiveDelivery: 'none', activeReceive: false },
     { status: 'enabled', transport: 'stdio', passiveDelivery: 'in-turn', activeReceive: true },
-    { status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary' },
+    { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true },
+    { status: 'enabled', transport: 'command' },
   ]) assert.throws(() => validateFrame({ ...ready(), initialization: initialization(communication) }, 'adapter'), { code: 'protocolInvalid' });
   assert.throws(() => validateFrame({ protocolVersion: 5, type: 'ready', communicationSupported: true }, 'adapter'));
   for (const diagnostics of [[{ code: 'warning', message: 'Safe reason.', value: 'private' }], [{ code: 'unsafe-code', message: 'Reason.' }], [{ code: 'warning', field: 'bad\nfield', message: 'Reason.' }]]) {

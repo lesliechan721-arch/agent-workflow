@@ -5,9 +5,19 @@ import {
   CODEX_NATIVE_HOOK_EVENTS,
   NATIVE_HOOK_EVENT_CONTRACTS,
 } from '../../src/utils/hooks-contract.js';
-import { validateRenderedHooksContent } from '../../src/utils/rendered-contract.js';
+import { validateRenderedClaudePermissions, validateRenderedHooksContent } from '../../src/utils/rendered-contract.js';
 
 describe('rendered contract validators', () => {
+  it('allows a managed command trailing wildcard without opening legacy shell patterns', () => {
+    const prefix = `aw command run cmdp_${'a'.repeat(64)} -- wait`;
+    expect(() => validateRenderedClaudePermissions({
+      allow: [`Bash(${prefix} *)`], ask: [], deny: [], excludedCommands: [`${prefix} *`],
+    })).not.toThrow();
+    for (const value of ['aw *', `${prefix}*`, `${prefix} && echo x *`, `${prefix} * *`]) {
+      expect(() => validateRenderedClaudePermissions({ allow: [`Bash(${value})`], ask: [], deny: [] })).toThrow();
+      expect(() => validateRenderedClaudePermissions({ allow: [], ask: [], deny: [], excludedCommands: [value] })).toThrow();
+    }
+  });
   it('accepts the complete Claude and Codex native hook allowlists in strict mode', () => {
     for (const event of CLAUDE_NATIVE_HOOK_EVENTS) {
       expect(() =>

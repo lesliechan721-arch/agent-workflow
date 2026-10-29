@@ -354,6 +354,11 @@
                     "id": "custom",
                     "title": "custom",
                     "value": "custom"
+                  },
+                  {
+                    "id": "custom-managed",
+                    "title": "自定义（托管命令）",
+                    "value": "custom-managed"
                   }
                 ]
               }
@@ -621,6 +626,38 @@
                       "minLength": 1,
                       "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)",
                       "maxLength": 4096
+                    }
+                  }
+                }
+              },
+              "custom-managed": {
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "required": true,
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "workspace",
+                          "title": "workspace",
+                          "value": "workspace"
+                        },
+                        {
+                          "id": "bundle",
+                          "title": "bundle",
+                          "value": "bundle"
+                        }
+                      ]
+                    }
+                  },
+                  "commandId": {
+                    "type": "string",
+                    "title": "托管命令 ID",
+                    "required": true,
+                    "validation": {
+                      "pattern": "^(?:cmdp_[0-9a-f]{64}|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$",
+                      "maxLength": 69
                     }
                   }
                 }
@@ -1080,7 +1117,8 @@
         "aw.plugin-config.v4",
         "aw.plugin-config-unique-by.v1",
         "aw.plugin-config-value-ref.v1",
-        "aw.installed-runtime-config.v2"
+        "aw.installed-runtime-config.v2",
+        "aw.managed-commands.v1"
       ]
     }
   },
@@ -1094,5 +1132,87 @@
       }
     },
     "cacheable": true
+  },
+  "managedCommands": {
+    "sets": [
+      {
+        "set": "guide",
+        "producer": {
+          "kind": "artifact",
+          "artifactId": "codex-subagent-guide-skill"
+        },
+        "mode": "static",
+        "entries": [
+          {
+            "key": "subagent",
+            "variant": "default",
+            "runner": "node",
+            "entry": "scripts/subagent.mjs"
+          }
+        ]
+      }
+    ]
+  },
+  "extensions": {
+    "permissions": [
+      {
+        "name": "subagent-commands",
+        "allow": [
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "start"
+            ]
+          },
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "send"
+            ]
+          },
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "wait"
+            ]
+          },
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "result"
+            ]
+          },
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "stop"
+            ]
+          }
+        ],
+        "agentOverrides": {
+          "claude": null
+        }
+      }
+    ]
   }
 }

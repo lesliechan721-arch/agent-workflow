@@ -77,6 +77,47 @@ afterEach(async () => {
 });
 
 describe('portable materializer', () => {
+  it.each(['static', 'dynamic'] as const)(
+    'rejects local managed command references in %s Portable content before publishing output',
+    async (kind) => {
+      const root = await tempRoot('aw-portable-managed-command-');
+      const manifest = baseManifest('local-command');
+      manifest.requires = { aw: { capabilities: ['aw.managed-commands.v1'] } };
+      if (kind === 'dynamic') {
+        manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+        manifest.artifacts = { targets: [{
+          id: 'portable', distribution: 'agent-skills', target: 'agent-skills.skill',
+          kind: 'skill', scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'portable',
+        }] };
+      }
+      const plugin = await pluginFixture(root, manifest);
+      if (kind === 'static') {
+        await writeSkill(plugin.rootDir, 'portable', 'Use {{aw.command:tools/run}}.');
+      } else {
+        await fs.ensureDir(path.join(plugin.rootDir, 'agent-skills', 'skills'));
+        await fs.outputFile(path.join(plugin.rootDir, 'render.mjs'), `
+          console.log(JSON.stringify({ version: 2, artifacts: [{
+            id: 'portable', distribution: 'agent-skills', target: 'agent-skills.skill',
+            kind: 'skill', state: 'present', refreshKeys: [], skillKey: 'portable',
+            content: { files: {
+              'SKILL.md': '---\\nname: portable\\ndescription: Portable fixture.\\n---\\nBody.\\n',
+              'README.md': '# Portable\\n',
+              'references/command.md': 'Use {{aw.command:tools/run}}.',
+            } },
+          }] }));
+        `);
+      }
+      const outputRoot = path.join(root, 'output');
+      const env = { ...process.env, AW_HOME: path.join(root, 'home') };
+      await expect(materializePortableSkills({
+        plugins: [plugin], pluginId: plugin.pluginId!, scope: 'user', cwd: root,
+        env, outputRoot,
+      })).rejects.toThrow('managedCommandPortableUnsupported');
+      await expect(fs.pathExists(outputRoot)).resolves.toBe(false);
+      await expect(fs.pathExists(path.join(env.AW_HOME, 'commands'))).resolves.toBe(false);
+    },
+  );
+
   it('keeps selector materialization valid after the Catalog generation lease ends', async () => {
     const root = await tempRoot('aw-portable-catalog-wrapper-');
     const snapshotRoot = path.join(root, 'snapshot');

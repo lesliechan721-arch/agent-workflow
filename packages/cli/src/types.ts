@@ -10,6 +10,7 @@ import type {
   DynamicArtifactKind,
   ManagedArtifactId,
   PlatformName,
+  ProducerIdentity,
   PluginId,
   PluginVersion,
   Scope,
@@ -19,7 +20,18 @@ import type {
 
 export type ArtifactSurface =
   | { kind: 'platform'; name: PlatformName }
-  | { kind: 'distribution'; name: DistributionName };
+  | { kind: 'distribution'; name: DistributionName }
+  | { kind: 'aw'; name: 'managed-commands' };
+export type ArtifactRenderSurfaceName = PlatformName | DistributionName | 'managed-commands';
+
+export interface CommandProducerResult {
+  producer: ProducerIdentity;
+  state: 'completed' | 'partial' | 'failed';
+  commandIds: string[];
+  removedCommandIds: string[];
+  errors: Array<{ code: string; message: string; subject?: string }>;
+  recoveryActions: string[];
+}
 export type PlatformSelection = PlatformName | 'both';
 export type CommandAction =
   | 'install'
@@ -358,6 +370,7 @@ export type ConfigApplyResult =
       state: 'skipped';
       reason: 'notRequested' | 'noConfigChange' | 'noEffectiveConfigChange' | 'noVisibleTarget';
       targetResults: [];
+      commandResults?: [];
     }
   | {
       state: 'unavailable';
@@ -369,15 +382,18 @@ export type ConfigApplyResult =
         | 'targetDiscoveryFailed';
       targetResults: ConfigApplyTargetResult[];
       error?: ConfigApplyError;
+      commandResults?: CommandProducerResult[];
     }
   | {
       state: 'succeeded';
       targetResults: ConfigApplyTargetResult[];
+      commandResults?: CommandProducerResult[];
     }
   | {
       state: 'partial';
       targetResults: ConfigApplyTargetResult[];
       errors?: ConfigApplyError[];
+      commandResults?: CommandProducerResult[];
     };
 
 export interface ConfigFieldEntry {
@@ -537,7 +553,9 @@ export type ArtifactPlanArtifact =
   | CodexAgentRoleArtifact
   | CodexSkillArtifact
   | ClaudeSkillArtifact
-  | AgentSkillsSkillArtifact;
+  | AgentSkillsSkillArtifact
+  | import('@lesliechan721/aw-plugin-core/manifest').CommandSetArtifact
+  | import('@lesliechan721/aw-plugin-core/manifest').CommandPackageArtifact;
 
 export interface GeneratedArtifact {
   path: string;

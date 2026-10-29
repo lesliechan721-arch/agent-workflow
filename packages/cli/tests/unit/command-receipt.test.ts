@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import type { ReconcileOperationPlan } from '../../src/commands/reconcile-operation-plan.js';
@@ -9,7 +10,7 @@ import {
   requestedIntentAction,
   renderRebuildReceipt,
 } from '../../src/output/command-receipt.js';
-import type { ReceiptTargetResult } from '../../src/types.js';
+import type { CommandProducerResult, ReceiptTargetResult } from '../../src/types.js';
 import type { CodexReconcilePlan } from '../../src/utils/codex-reconciler.js';
 
 const target = {
@@ -71,6 +72,43 @@ function codexReusePlan(): CodexReconcilePlan {
 }
 
 describe('command receipt v6', () => {
+  it('reports a retained shared package and its exact remove command after platform cleanup', () => {
+    const producer: CommandProducerResult['producer'] = { sourceId: 'team', sourceIdentity: `sha256:${'1'.repeat(64)}`, pluginName: 'demo',
+      kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null };
+    const packageId = getCommandPackageId(producer);
+    const recovery = `aw command package remove ${packageId} --yes`;
+    const retained: CommandProducerResult = {
+      producer, state: 'completed', commandIds: ['installed-command'], removedCommandIds: [], errors: [], recoveryActions: [recovery],
+    };
+    const result = { platforms: ['codex' as const], plugins: ['team/demo'], warnings: [],
+      targetResults: [completedTarget('cleanup')], commandResults: [retained] };
+    expect(buildRebuildReceiptJson('cleanup', result)).toMatchObject({ receiptSchemaVersion: 6,
+      overallState: 'succeeded', commandResults: [retained], recoveryActions: [recovery] });
+    expect(Object.keys(buildRebuildReceiptJson('cleanup', result).commandResults![0]!).sort())
+      .toEqual(['producer', 'state', 'commandIds', 'removedCommandIds', 'errors', 'recoveryActions'].sort());
+    const rendered = renderRebuildReceipt('cleanup', result).join('\n');
+    expect(rendered).toContain(`保留命令包 ${packageId}；所有项目共用`);
+    expect(rendered).toContain(recovery);
+  });
+  it('includes command producer failure in the receipt without creating a platform target', () => {
+    const commandResult: CommandProducerResult = {
+      producer: { sourceId: 'team', sourceIdentity: `sha256:${'1'.repeat(64)}`, pluginName: 'demo',
+        kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null },
+      state: 'failed', commandIds: [], removedCommandIds: [],
+      errors: [{ code: 'commandBindingInvalid', message: 'The command binding could not be published.' }],
+      recoveryActions: ['aw command package sync team/demo tools --scope user --yes'],
+    };
+    const result = { platforms: [], plugins: ['team/demo'], warnings: [],
+      overallState: 'succeeded' as const, targetResults: [], commandResults: [commandResult, commandResult] };
+    const receipt = buildRebuildReceiptJson('sync', result);
+    expect(receipt).toMatchObject({ receiptSchemaVersion: 6, ok: false,
+      overallState: 'failed', targetResults: [], commandResults: [commandResult],
+      recoveryActions: commandResult.recoveryActions, errors: [],
+    });
+    expect(buildRebuildReceiptJson('sync', { ...result, targetResults: [completedTarget('sync')] }))
+      .toMatchObject({ ok: false, overallState: 'partial' });
+    expect(renderRebuildReceipt('sync', result).join('\n')).toContain('commandBindingInvalid');
+  });
   it('reports cleanup as removing requested Intent', () => {
     expect(requestedIntentAction('cleanup')).toBe('remove');
   });

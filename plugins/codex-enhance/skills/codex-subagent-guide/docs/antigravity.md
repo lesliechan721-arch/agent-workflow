@@ -5,9 +5,9 @@
 
 Antigravity 使用 PATH 中的 `agy --input-format stream-json --output-format stream-json`，保持同一进程与 stdin，workspace 是后端 cwd。model/effort 分别映射 --model/--effort，省略不传空值。adapter 拥有格式、prompt、会话续接/选择、cwd、结束控制和固定的 `--print-timeout 0`；raw args 不得覆盖它们，也不得包含 help/version、子命令、额外 prompt、--continue/--conversation。权限按 permissionMode 映射；其它 sandbox、agent 参数按实际 CLI 合同校验，不额外放宽沙箱或改写全局 MCP。任务 model/effort 与 args 同类选项重复时拒绝。
 
-communication=true 使用 command / turn-boundary / activeReceive=true。协商固定可执行入口，随后建立私有桥、准备必要权限，并在首条user前检查原生init中的run_command工具；全部准备完成后才发enabled ready。已知工具被禁、配置冲突或资源不可用时按具体原因失败，建桥失败不变成unsupported；不增加每次模型探针。
+communication=true 使用 command / turn-boundary，同时提供主动收件。协商固定可执行入口，随后建立私有桥、准备必要权限，并在首条user前检查原生init中的run_command工具；全部准备完成后才发enabled ready。已知工具被禁、配置冲突或资源不可用时按具体原因失败，建桥失败不变成unsupported；不增加每次模型探针。
 
-生成的 POSIX 直接调用对安全字符组成的固定 token 使用裸写形式，避免带引号的 executable 触发 agy 整行匹配；需要引用的路径与正文仍保留字面量转义。子侧提示只补充权限边界和 `--text -` 读取 stdin 的特殊约定，不讲解通用 shell 语法。组合管道、重定向或包装仍可能被拒绝；按实际错误报告，不自动切换 full-access。
+生成的 POSIX 直接调用对安全字符组成的固定 token 使用裸写形式，避免带引号的 executable 触发 agy 整行匹配；需要引用的路径与正文仍保留字面量转义。子侧提示提供直接文本或 --text-file 文件调用；--text - 和文件参数 - 均拒绝，不读取 stdin。组合管道、重定向或包装仍可能被拒绝；按实际错误报告，不自动切换 full-access。
 
 ## 精确通讯权限与持久影响
 

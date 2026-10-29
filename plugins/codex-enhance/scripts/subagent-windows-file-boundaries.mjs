@@ -17,7 +17,7 @@ const safeCodes = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOENT', 'ETIMEDOUT', 'p
 const safeCode = (error) => safeCodes.has(error?.code) ? error.code : 'qualificationFailed';
 function fail(code) { throw Object.assign(new Error(code), { code }); }
 function requireTrue(value, code = 'protocolMismatch') { if (!value) fail(code); }
-function blocks(text, kind) { return [...text.matchAll(/^BEGIN_(MESSAGE|FINAL):([a-f0-9]{8})\n([\s\S]*?)\nEND_\1:\2\n/gm)].filter((match) => match[1] === kind).map((match) => match[3]); }
+function blocks(text, kind) { return [...text.matchAll(/<(message|result)(?:_\d+)?\b[^>]*>\n([\s\S]*?)\n<\/\1(?:_\d+)?>\n/g)].filter((match) => match[1] === (kind === 'FINAL' ? 'result' : 'message')).map((match) => match[2]); }
 
 const volumeSource = String.raw`
 Add-Type -TypeDefinition @'
@@ -57,7 +57,7 @@ async function lockedAtomic(directory, platform, files, transient = false) {
     "try { [Console]::Out.WriteLine('locked'); [Console]::Out.Flush(); [Console]::In.ReadLine() | Out-Null } finally { $stream.Dispose() }",
   ].join('\n');
   const environment = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !['psmodulepath', 'winpsmodulepath'].includes(name.toLowerCase()))), FIXTURE_LOCK_TARGET: Buffer.from(target).toString('base64') };
-  const child = spawn(path.join(systemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: environment, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+  const child = spawn(path.join(systemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: environment, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const closed = once(child, 'close'); closed.catch(() => {});
   child.stdin.on('error', () => {});
   const timeout = setTimeout(() => child.kill(), 30000);
@@ -172,8 +172,8 @@ async function main() {
     const environment = { ...Object.fromEntries(Object.entries(process.env).map(([name, value]) => [name.toUpperCase(), value])), HOME: directory, USERPROFILE: directory, CODEX_HOME: directory,
       AW_HOME: directory, AW_CODEX_HOME: directory, AW_CLAUDE_HOME: directory, TMPDIR: temporary, TMP: temporary, TEMP: temporary, FIXTURE_OBSERVED: observed, FIXTURE_INPUT: input, FIXTURE_FINISH: finish };
     command = (args, stdin) => new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [path.join(scripts, 'subagent.mjs'), ...args], { cwd: workspace, env: environment, stdio: ['pipe', 'pipe', 'ignore'] });
-      const chunks = []; let bytes = 0, timedOut = false;
+      const child = spawn(process.execPath, [path.join(scripts, 'subagent.mjs'), ...args], { cwd: workspace, env: environment, stdio: ['pipe', 'pipe', 'pipe'] });
+      const chunks = [], errors = []; child.stderr.on('data', (chunk) => errors.push(chunk)); let bytes = 0, timedOut = false;
       const timeout = setTimeout(() => { timedOut = true; child.kill(); }, 120000);
       child.stdin.on('error', () => {}); child.stdin.end(stdin);
       child.stdout.on('data', (chunk) => { bytes += chunk.length; if (bytes <= 131072) chunks.push(chunk); });
@@ -183,20 +183,22 @@ async function main() {
         if (timedOut) { reject(Object.assign(new Error(), { code: 'commandTimeout' })); return; }
         const stdout = Buffer.concat(chunks).toString('utf8');
         const handle = field(stdout, 'run'); if (/^aw5-[a-f0-9]{32}-[a-f0-9]{32}$/.test(handle ?? '')) handles.add(handle);
-        resolve({ exit, stdout, handle });
+        resolve({ exit, stdout, stderr: Buffer.concat(errors).toString('utf8'), handle });
       });
     });
     const prompt = '跨卷任务。\r\n保留中文与换行。\n';
     const message = '父输入。\r\n第二行。\n';
     const final = '跨卷最终答案。\r\n第二行。\n';
-    const started = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt', '-'], Buffer.from(prompt));
+    const promptFile = path.join(directory, 'prompt.txt'), messageFile = path.join(directory, 'message.txt');
+    await fs.writeFile(promptFile, prompt); await fs.writeFile(messageFile, message);
+    const started = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt-file', promptFile]);
     requireTrue(!!started.handle);
     const handle = started.handle;
     await waitForCommunication(started, command);
     const received = JSON.parse(await fs.readFile(observed, 'utf8'));
     requireTrue(received.prompt === prompt && await fs.realpath(received.workspace) === workspace && await fs.realpath(received.cwd) === workspace);
     emit('cross-volume.start-and-text', true, 'ok');
-    const sent = await command(['send', '--run', handle, '--text', '-'], Buffer.from(message));
+    const sent = await command(['send', '--run', handle, '--text-file', messageFile]);
     requireTrue(sent.exit === 0 && field(sent.stdout, 'delivery') === 'queued');
     let echo = false;
     const echoDeadline = Date.now() + 60000;
@@ -211,18 +213,19 @@ async function main() {
     await fs.writeFile(finish, '');
     let result;
     const resultDeadline = Date.now() + 60000;
-    do { result = await command(['result', '--run', handle]); if (field(result.stdout, 'code') !== 'resultNotReady') break; if (Date.now() >= resultDeadline) fail('commandTimeout'); } while (true);
+    do { result = await command(['result', '--run', handle]); if (field(result.stdout + result.stderr, 'code') !== 'resultNotReady') break; if (Date.now() >= resultDeadline) fail('commandTimeout'); } while (true);
     requireTrue(result.exit === 0 && field(result.stdout, 'state') === 'completed' && blocks(result.stdout, 'FINAL').includes(final));
-    const exported = await command(['result', '--run', handle, '--export']);
-    requireTrue(exported.exit === 0 && field(exported.stdout, 'state') === 'completed' && blocks(exported.stdout, 'FINAL').includes(final));
+    const outputFile = path.join(workspace, 'complete-result.txt');
+    const exported = await command(['result', '--run', handle, '--output-file', outputFile]);
+    requireTrue(exported.exit === 0 && / consumed=true\n$/.test(exported.stdout) && blocks(await fs.readFile(outputFile, 'utf8'), 'FINAL').includes(final));
     emit('cross-volume.result-export', true, 'ok');
     requireTrue((await command(['stop', '--run', handle])).exit === 0);
     await fs.unlink(finish);
-    const active = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt', '-'], Buffer.from(prompt));
+    const active = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt-file', promptFile]);
     requireTrue(!!active.handle);
     await waitForCommunication(active, command);
     const stopped = await command(['stop', '--run', active.handle]);
-    requireTrue(stopped.exit === 0 && field(stopped.stdout, 'state') === 'cancelled');
+    requireTrue(stopped.exit === 0 && /^stopped /.test(stopped.stdout));
     emit('cross-volume.active-stop', true, 'ok');
     completed = true;
   } finally {
