@@ -19,6 +19,7 @@ export const fields = (value, allowed) => object(value) && Object.keys(value).ev
 export const identifier = (value) => cleanString(value) && value.isWellFormed() && [...value].length <= 256 && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value);
 export const code = (value) => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(value);
 export const messageId = (value) => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
+export const runId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{11}$/.test(value);
 export const label = (value) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value);
 export const epochMs = (value) => Number.isSafeInteger(value) && value >= 0;
 export const absolutePath = (value) => text(value) && value.length > 0 && path.isAbsolute(value) && path.normalize(value) === value;
@@ -77,7 +78,7 @@ export function validateRequest(request) {
   const required = ['protocolVersion', 'type', 'run', 'execution', 'mode', 'workspace', 'prompt', 'args', 'communication', 'runtime'];
   if (!requiredFields(request, required, ['fileSelectors', 'fileResolver', 'codex', 'permissionMode']) || request.protocolVersion !== 5 || request.type !== 'start' || !['workspace', 'bundle'].includes(request.mode) || typeof request.communication !== 'boolean'
       || Object.hasOwn(request, 'permissionMode') && !['default', 'auto', 'full-access'].includes(request.permissionMode)) fail('protocolInvalid', 'Use a mode-correct Adapter v5 start frame.');
-  if (!requiredFields(request.run, ['id', 'name', 'deadlineAt']) || !messageId(request.run.id) || !label(request.run.name) || !(request.run.deadlineAt === null || epochMs(request.run.deadlineAt))) fail('protocolInvalid', 'The Adapter v5 run identity or deadline is invalid.');
+  if (!requiredFields(request.run, ['id', 'name', 'deadlineAt']) || !runId(request.run.id) || !label(request.run.name) || !(request.run.deadlineAt === null || epochMs(request.run.deadlineAt))) fail('protocolInvalid', 'The Adapter v5 run identity or deadline is invalid.');
   if (!requiredFields(request.execution, ['executor'], ['model', 'reasoningEffort']) || !identifier(request.execution.executor) || ['model', 'reasoningEffort'].some((key) => Object.hasOwn(request.execution, key) && !identifier(request.execution[key]))) fail('protocolInvalid', 'The Adapter v5 execution selection is invalid.');
   if (Object.hasOwn(request, 'codex') && (!requiredFields(request.codex, ['cliSource', 'bypassHookTrust'], ['profile'])
       || !['auto', 'cli', 'app'].includes(request.codex.cliSource) || typeof request.codex.bypassHookTrust !== 'boolean'

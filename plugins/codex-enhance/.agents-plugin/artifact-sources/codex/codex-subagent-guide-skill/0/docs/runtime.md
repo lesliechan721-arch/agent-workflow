@@ -123,7 +123,7 @@ path 是实际绝对输出路径，使用 JSON.stringify 的单行字符串转�
 
 ## 启动、等待与发送
 
-start 固定本次安装配置、执行器和完整输入，创建私有 run，由长期 worker 管理 adapter、队列与收尾。默认没有执行期限，deadlineAt 为 null；只有显式 --deadline-ms N 才从 worker 启动时刻固定期限。N 必须为正安全整数，且相加后仍为合法 EpochMs。新消息、轮次和等待不延长期限。start 最多观察初始化 10 秒；starting 或 start_failed 已产生的句柄必须继续使用，不能自动重新 start。
+start 固定本次安装配置、执行器和完整输入，创建私有 run，由长期 worker 管理 adapter、队列与收尾。句柄为 `aw5-<id>-<key>`，共 38 个字符：id 为 64 位随机数的 11 字符无填充 Base64URL 编码，key 为独立 128 位随机数的 22 字符无填充 Base64URL 编码。id 定位私有目录，读取时另行核对 key 与归属；两者均区分大小写，须完整保留。默认没有执行期限，deadlineAt 为 null；只有显式 --deadline-ms N 才从 worker 启动时刻固定期限。N 必须为正安全整数，且相加后仍为合法 EpochMs。新消息、轮次和等待不延长期限。start 最多观察初始化 10 秒；starting 或 start_failed 已产生的句柄必须继续使用，不能自动重新 start。
 
 wait 接受 1–16 个不同句柄，重复句柄合并。--timeout-ms 默认 600000，允许整数 0–1800000；先检查全部目标，再用同一截止时间等待任一可消费事件。纯 closing、sequence 增长或重复快照不唤醒。默认使用响应式长等待；调用工具窗口较短时续等同一任务，只有 more=true 或明确即时检查才使用零等待。等待结束不终止任务、不启动模型、不延长缓存期限。
 
