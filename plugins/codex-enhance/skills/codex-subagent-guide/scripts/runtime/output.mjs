@@ -4,6 +4,9 @@ import { readRecord } from './store.mjs';
 export const OUTPUT_LIMIT = 8192;
 export const STDERR_LIMIT = 1024;
 const attribute = (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+const routineDiagnostics = new Set(['codexExecutableSelected', 'communicationPermissionExisting',
+  'communicationPermissionAdded', 'profileFieldIrrelevant', 'hookTrustBypassed']);
+const sameDiagnostic = (left, right) => left.code === right.code && left.field === right.field && left.message === right.message;
 
 export function textBlock(kind, text, attributes = {}) {
   const base = kind.toLowerCase();
@@ -33,8 +36,9 @@ function diagnosticPrefix(value, maximumBytes) {
   return result;
 }
 
-export function initializationDiagnostics(diagnostics, run, initialization, { control = false, maximumBytes = control ? OUTPUT_LIMIT - STDERR_LIMIT : Infinity } = {}) {
-  const entries = [...(diagnostics ?? [])];
+export function initializationDiagnostics(diagnostics, run, initialization, { control = false, maximumBytes = control ? OUTPUT_LIMIT - STDERR_LIMIT : Infinity, showDiagnostics = false } = {}) {
+  const entries = (diagnostics ?? []).filter((entry, index, all) =>
+    (showDiagnostics || !routineDiagnostics.has(entry.code)) && all.findIndex((other) => sameDiagnostic(entry, other)) === index);
   const environment = initialization?.environment;
   const environmentFailure = 'The executor environment is unavailable. Repair the executor and start a new run.';
   if (environment?.status === 'unavailable' && !entries.some((entry) => entry.code === environment.code)) {
@@ -42,7 +46,7 @@ export function initializationDiagnostics(diagnostics, run, initialization, { co
   }
   const complete = entries.map((entry) => diagnostic(entry.code, entry.message, run, entry.field)).join('');
   if (Buffer.byteLength(complete) <= maximumBytes) return complete;
-  const omitted = diagnostic('diagnosticOmitted', 'Initialization diagnostic text or field paths were omitted to fit this report. After termination, use result --output-file PATH for the complete report.', run);
+  const omitted = diagnostic('diagnosticOmitted', 'Initialization diagnostic text or field paths were omitted to fit this report. After termination, use result --diagnostics --output-file PATH for the complete report.', run);
   const render = (textBytes, fields) => entries.map((entry) => textBlock('diagnostic', environment?.status === 'unavailable' && entry.code === environment.code ? environmentFailure : diagnosticPrefix(entry.message, textBytes), { code: entry.code, ...(fields && entry.field !== undefined ? { field: entry.field } : {}) })).join('') + omitted;
   // Keep original codes and field paths when they fit. Bound the complete group,
   // including framing, instead of applying only a per-message truncation limit.
@@ -59,7 +63,7 @@ export function initializationDiagnostics(diagnostics, run, initialization, { co
   // Long legal codes can themselves exceed a small final's remaining space.
   // Keep every code in one bounded notice; the caller can defer the final body.
   const codes = [...new Set(entries.map((entry) => entry.code))];
-  return textBlock('diagnostic', `Initialization reported these codes: ${codes.join(', ')}. ${environment?.status === 'unavailable' ? environmentFailure + ' ' : ''}Diagnostic text and field paths were omitted. After termination, use result --output-file PATH for the complete report.`, { run, code: 'diagnosticOmitted' });
+  return textBlock('diagnostic', `Initialization reported these codes: ${codes.join(', ')}. ${environment?.status === 'unavailable' ? environmentFailure + ' ' : ''}Diagnostic text and field paths were omitted. After termination, use result --diagnostics --output-file PATH for the complete report.`, { run, code: 'diagnosticOmitted' });
 }
 
 export function gapText(gap, run) {
@@ -77,7 +81,13 @@ export async function eventText(run, name) {
 
 export async function* finalChunks(run, gaps, includeInitialization = needsInitialization(run), options = {}) {
   const result = run.result;
-  if (options.diagnostics !== false) yield initializationDiagnostics(result.diagnostics ?? (includeInitialization ? run.snapshot.diagnostics : []), run.handle, includeInitialization ? run.snapshot.initialization : undefined, { maximumBytes: options.diagnosticBytes ?? Infinity });
+  const reported = !options.showDiagnostics && run.snapshot.ready && !includeInitialization ? run.snapshot.diagnostics ?? [] : [];
+  const diagnostics = [
+    ...(run.snapshot.ready ? run.snapshot.diagnostics ?? [] : []),
+    ...(result.diagnostics ?? (includeInitialization ? run.snapshot.diagnostics : []) ?? []),
+  ].filter((entry) => !reported.some((previous) => sameDiagnostic(entry, previous)));
+  if (options.diagnostics !== false) yield initializationDiagnostics(diagnostics, run.handle, includeInitialization ? run.snapshot.initialization : undefined,
+    { maximumBytes: options.diagnosticBytes ?? Infinity, showDiagnostics: options.showDiagnostics });
   for (const name of gaps) yield gapText(await readRecord(run, 'gaps', name), run.handle);
   if (result.message) yield diagnostic(result.code ?? 'resultDiagnostic', result.message, run.handle);
   yield textBlock('result', result.text, {
@@ -98,10 +108,10 @@ export async function uncoveredGaps(run, events, gaps) {
   return gaps.filter((name) => !covered.has(name));
 }
 
-export function resultReport(run, events, gaps) {
+export function resultReport(run, events, gaps, options = {}) {
   return async function* () {
     for (const name of events) yield await eventText(run, name);
-    yield* finalChunks(run, await uncoveredGaps(run, events, gaps));
+    yield* finalChunks(run, await uncoveredGaps(run, events, gaps), needsInitialization(run), options);
   };
 }
 

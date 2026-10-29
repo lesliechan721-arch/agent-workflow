@@ -46,7 +46,7 @@
 | 输出 | 如何处理 |
 | --- | --- |
 | `started <run> communication=…` | 已就绪，用 wait/result 获取后续消息与结果。 |
-| `starting <run>` | 10 秒内尚未就绪，附 startupNotReady、退出 1；继续等待原 run，不再次 start。 |
+| `starting <run>` | 10 秒内尚未就绪，退出 1；继续等待原 run，不再次 start。 |
 | `start_failed <run> [state=…] code=…` | 保留句柄并用 wait/result/stop 处理；state 仅在已有可靠终态时出现。 |
 | diagnostic，无 run | 创建句柄前失败，按错误处理。 |
 

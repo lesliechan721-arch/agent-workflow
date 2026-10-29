@@ -210,7 +210,9 @@ export async function runWorker(directory) {
   await state(candidate.state, {
     ...(candidate.initialization ? { initialization: candidate.initialization,
       initializationSequence: snapshot.ready ? snapshot.initializationSequence : snapshot.sequence + 1 } : {}),
-    ...(candidate.diagnostics ? { diagnostics: summarizeDiagnostics(candidate.diagnostics) } : {}),
+    // Keep ready diagnostics as the comparison point for later result reads.
+    // Complete terminal diagnostics remain in final.json.
+    ...(!snapshot.ready && candidate.diagnostics ? { diagnostics: summarizeDiagnostics(candidate.diagnostics) } : {}),
   });
 }
 

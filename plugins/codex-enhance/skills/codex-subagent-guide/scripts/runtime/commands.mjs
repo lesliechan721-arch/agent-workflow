@@ -66,13 +66,13 @@ export async function startRun(context, prepared, request) {
   try { await saveObservation(current, { terminalConsumed: false,
     initializationSequence: ready ? current.snapshot.initializationSequence : current.observed.initializationSequence }); }
   catch (error) { return operationDiagnostic(operationError('start', run.handle, error, current), context); }
-  if (ready) return { text: `started ${run.handle} communication=${communication(current.snapshot)}\n${initializationDiagnostics(current.snapshot.diagnostics, run.handle, current.snapshot.initialization, { control: true })}`, diagnostic: scanDiagnostic(context), exitCode: 0 };
+  if (ready) return { text: `started ${run.handle} communication=${communication(current.snapshot)}\n${initializationDiagnostics(current.snapshot.diagnostics, run.handle, current.snapshot.initialization, { control: true, showDiagnostics: request.showDiagnostics })}`, diagnostic: scanDiagnostic(context), exitCode: 0 };
   if (current.result) {
     const code = current.result.code ?? 'startupFailed';
     return { text: `start_failed ${run.handle} state=${current.result.state} code=${code}\n`,
       diagnostic: diagnostic(code, `${current.result.message ?? 'The executor stopped before it became ready.'} Continue with this handle through wait, result, or stop.`, run.handle) + scanDiagnostic(context), exitCode: 1 };
   }
-  return { text: `starting ${run.handle}\n`, diagnostic: diagnostic('startupNotReady', 'Initialization is still pending. Continue with this handle through wait, result, or stop.', run.handle) + scanDiagnostic(context), exitCode: 1 };
+  return { text: `starting ${run.handle}\n`, diagnostic: (request.showDiagnostics ? diagnostic('startupNotReady', 'Initialization is still pending. Continue with this handle through wait, result, or stop.', run.handle) : '') + scanDiagnostic(context), exitCode: 1 };
 
 }
 
@@ -150,7 +150,7 @@ export async function readResult(context, request) {
     await settleLateInputs(run);
     const events = await recordFiles(run, 'events');
     const gaps = await recordFiles(run, 'gaps');
-    const factory = resultReport(run, events, gaps);
+    const factory = resultReport(run, events, gaps, { showDiagnostics: request.showDiagnostics });
     const measured = await measureReport(factory);
     if (request.outputFile !== undefined) return await exportResult(run, events, factory, request.outputFile, context);
     const stderr = scanDiagnostic(context);
@@ -171,7 +171,7 @@ function deferredText(group, maximumBytes) {
   const line = `deferred ${group.handle} state=${group.run.result.state}${group.capability ? ` communication=${communication(group.run.snapshot)}` : ''}\n`;
   const hint = diagnostic('resultTooLarge', exportHint(group.handle), group.handle);
   return line + (group.capability ? initializationDiagnostics(group.run.snapshot.diagnostics, group.handle, group.run.snapshot.initialization, {
-    maximumBytes: Math.max(0, maximumBytes - Buffer.byteLength(line + hint)),
+    maximumBytes: Math.max(0, maximumBytes - Buffer.byteLength(line + hint)), showDiagnostics: group.showDiagnostics,
   }) : '') + hint;
 }
 
@@ -181,13 +181,13 @@ async function prepareWaitItem(group, candidate, maximumBytes) {
   if (candidate.kind === 'ready') {
     const line = `ready ${group.handle} communication=${communication(group.run.snapshot)}\n`;
     return { ...candidate, rendered: line + initializationDiagnostics(group.run.snapshot.diagnostics, group.handle, group.run.snapshot.initialization, {
-      maximumBytes: Math.max(0, maximumBytes - Buffer.byteLength(line)),
+      maximumBytes: Math.max(0, maximumBytes - Buffer.byteLength(line)), showDiagnostics: group.showDiagnostics,
     }) };
   }
   const gaps = await uncoveredGaps(group.run, group.events, group.gaps);
   const bodyBytes = (await measureReport(() => finalChunks(group.run, gaps, group.capability, { diagnostics: false }))).bytes;
   if (bodyBytes <= maximumBytes) {
-    const factory = () => finalChunks(group.run, gaps, group.capability, { diagnosticBytes: maximumBytes - bodyBytes });
+    const factory = () => finalChunks(group.run, gaps, group.capability, { diagnosticBytes: maximumBytes - bodyBytes, showDiagnostics: group.showDiagnostics });
     if ((await measureReport(factory)).bytes <= maximumBytes) return { ...candidate, rendered: await collectReport(factory, undefined, maximumBytes) };
   }
   return { kind: 'deferred', rendered: deferredText(group, maximumBytes) };
@@ -231,7 +231,7 @@ export async function waitRuns(context, request) {
         const run = await observeRun(context, entry.run);
         if (run.result) await settleLateInputs(run);
         const events = await recordFiles(run, 'events');
-        const group = { run, handle, items: [], events, gaps: [], candidates: events.map((name) => ({ kind: 'message', name })), capability: needsInitialization(run) };
+        const group = { run, handle, items: [], events, gaps: [], candidates: events.map((name) => ({ kind: 'message', name })), capability: needsInitialization(run), showDiagnostics: request.showDiagnostics };
         if (run.result && !run.observed.terminalConsumed) {
           group.gaps = await recordFiles(run, 'gaps');
           group.candidates.push({ kind: 'final' });

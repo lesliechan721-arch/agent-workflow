@@ -269,7 +269,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
       { env: { ...env, FIXTURE_SCENARIO_FILE: scenarioFile, FIXTURE_RUN_DIRECTORY: runDirectory, FIXTURE_GENERATIONS: generations }, stdin, cwd });
     const run = field(response.stdout, 'run');
     phase('startReturned', { scenario: index, code: response.code, state: field(response.stdout, 'state'), communication: field(response.stdout, 'communication') });
-    return { ...response, run, runDirectory, scenario,
+    return { ...response, run, runDirectory, scenario, showDiagnostics: extra.includes('--diagnostics'),
       observed: () => eventually(async () => JSON.parse(await fs.readFile(path.join(runDirectory, 'observed.json'), 'utf8')), 'adapter start'),
       published: () => eventually(() => fs.stat(path.join(runDirectory, 'published.json')), 'adapter ready and messages', windows ? 120000 : 15000),
       releaseReady: async () => { phase('releaseReady', { scenario: index }); await fs.writeFile(path.join(runDirectory, 'ready'), ''); },
@@ -286,7 +286,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     if (started.code === 0) { successful(started, 'start'); return; }
     assert.equal(started.code, 1, started.stdout + started.stderr);
     assert.match(started.stdout, /^starting aw5-/);
-    assert.equal(field(started.stderr, 'code'), 'startupNotReady');
+    assert.equal(field(started.stderr, 'code'), started.showDiagnostics ? 'startupNotReady' : undefined);
     t.diagnostic(`AW_SUBAGENT_PARENT_PHASE ${JSON.stringify({ phase: 'continueSamePendingRun', elapsedMs: started.elapsedMs })}`);
     if (started.scenario.readyGate) await started.releaseReady();
     await started.published();
@@ -329,8 +329,8 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     };
     return { ...value, snapshot: await read('snapshot.json'), result: await read('final.json') };
   }
-  async function exportResult(run, { target = path.join(directory, `report-${++nextExport}.txt`), ...options } = {}) {
-    const response = await command(['result', '--run', run, '--output-file', target], options);
+  async function exportResult(run, { target = path.join(directory, `report-${++nextExport}.txt`), showDiagnostics = false, ...options } = {}) {
+    const response = await command(['result', '--run', run, '--output-file', target, ...(showDiagnostics ? ['--diagnostics'] : [])], options);
     successful(response, 'result');
     const destination = path.resolve(options.cwd ?? workspace, target);
     const bytes = await fs.readFile(destination);

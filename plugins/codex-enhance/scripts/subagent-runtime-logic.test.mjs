@@ -294,6 +294,54 @@ test('parse rejects missing, mixed, repeated, stdin and removed options', () => 
   assert.equal(cli.parseCommand(['wait', '--run', 'x', '--run', 'x', '--timeout-ms', '0']).timeoutMs, 0);
 });
 
+// Test Value Gate: help must work without configuration or task side effects,
+// and diagnostics must be an explicit per-command display option.
+test('command help bypasses required task inputs and diagnostics parses for every operation', async () => {
+  const overview = await cli.executeCommand(cli.parseCommand(['--help']));
+  assert.equal(overview.exitCode, 0);
+  for (const operation of ['start', 'send', 'wait', 'result', 'stop']) {
+    const help = await cli.executeCommand(cli.parseCommand([operation, '--help']));
+    assert.equal(help.exitCode, 0);
+    assert.notEqual(help.text, overview.text);
+    assert.match(help.text, new RegExp(`Usage: ${operation} `));
+    assert.deepEqual(cli.parseCommand([operation, '-h']), cli.parseCommand([operation, '--help']));
+    const args = operation === 'start' ? ['--executor', 'x', '--prompt', 'task']
+      : operation === 'send' ? ['--run', 'x', '--text', 'input'] : ['--run', 'x'];
+    assert.equal(cli.parseCommand([operation, ...args, '--diagnostics']).showDiagnostics, true);
+    assert.throws(() => cli.parseCommand([operation, ...args, '--diagnostics', '--diagnostics']), { code: 'argumentsInvalid' });
+  }
+  assert.throws(() => cli.parseCommand(['wait', '--unknown']), (error) => error.code === 'argumentsInvalid' && error.message.includes('wait --help'));
+});
+
+// Test Value Gate: successful runs stay quiet, startup warnings are not repeated,
+// late warnings remain visible, and explicit diagnostics can recover full evidence.
+test('result display filters routine diagnostics and retains new warnings', async (t) => {
+  const f = await fixture(t);
+  const normal = ['codexExecutableSelected', 'communicationPermissionExisting', 'communicationPermissionAdded', 'profileFieldIrrelevant', 'hookTrustBypassed']
+    .map((code) => ({ code, message: `Routine ${code}.` }));
+  const warning = { code: 'profileFieldIgnored', field: 'features.unknown', message: 'Unsupported override.' };
+  const late = { code: 'backendActionDenied', message: 'A tool action was denied.' };
+  await f.complete();
+  await files.atomicJson(path.join(f.run.directory, 'snapshot.json'), { ...f.run.snapshot, diagnostics: [...normal, warning] });
+  await files.atomicJson(path.join(f.run.directory, 'final.json'), { protocolVersion: 5, type: 'result', state: 'completed',
+    generationStarted: true, backendExitCode: 0, text: 'Retained answer.', diagnostics: [late, late] });
+  const result = await commands.readResult(f.context, f.request);
+  assert.deepEqual(blocks(result.text, 'DIAGNOSTIC'), [late.message]);
+  assert.deepEqual(blocks(result.text, 'FINAL'), ['Retained answer.']);
+  // A fast terminal read must also deliver ready warnings that were never read.
+  await files.atomicJson(path.join(f.run.directory, 'observed.json'), { sequence: 1, initializationSequence: 0, terminalConsumed: false });
+  const first = await commands.readResult(f.context, f.request);
+  assert.deepEqual(blocks(first.text, 'DIAGNOSTIC'), [warning.message, late.message]);
+  const waited = await commands.waitRuns(f.context, f.request);
+  assert.deepEqual(blocks(waited.text, 'DIAGNOSTIC'), [warning.message, late.message]);
+  assert.deepEqual(blocks((await commands.readResult(f.context, f.request)).text, 'DIAGNOSTIC'), [late.message]);
+  const detailed = await commands.readResult(f.context, { ...f.request, showDiagnostics: true });
+  assert.deepEqual(blocks(detailed.text, 'DIAGNOSTIC'), [...normal, warning, late].map((entry) => entry.message));
+  const destination = path.join(f.run.directory, 'diagnostics.txt');
+  assert.equal((await commands.readResult(f.context, { ...f.request, showDiagnostics: true, outputFile: destination })).exitCode, 0);
+  assert.equal(await fs.readFile(destination, 'utf8'), detailed.text);
+});
+
 // Test Value Gate: user files must be read strictly once, preserve BOM and raw
 // text, reject special types, and use the caller directory before any mutation.
 test('input files preserve UTF-8 and reject invalid content or node types', async (t) => {

@@ -458,7 +458,7 @@ Guide 的静态集合 guide/subagent/default 使用 codex-subagent-guide-skill a
 
 Config v4 的 custom-managed 分支把 commandId 绑定到用户或插件托管 adapter，仍使用 Adapter v5。worker 用当前受保护 CommandHost 调用同一个 AW 的 command run；executor args 留在 v5 请求，binding fixed args 才进入目标 argv。缺少/无效主机明确失败，不以 PATH 或其它 AW_HOME 回退；原绝对 custom 入口保持可用。配置、环境优先级与禁止字段见 [配置与接入](../plugins/codex-enhance/skills/codex-subagent-guide/docs/configuration.md#托管-custom-adapter)。
 
-外部 start/send 及子侧 send 只接受文本或文件，缺参、互斥、重复、未知及 -/stdin 形式在副作用前拒绝。正常输出用简短控制行和 message/input/result/diagnostic 块；主代理仅得到 communication=true/false/pending 和必要证据，不公开 transport/passiveDelivery 或环境快照。启用通信始终提供 send/receive，Adapter v5 enabled 对象只含 status、transport 和 passiveDelivery，拒绝旧 activeReceive 字段。
+外部 start/send 及子侧 send 只接受文本或文件，缺参、互斥、重复、未知及 -/stdin 形式在副作用前拒绝。正常输出用简短控制行和 message/input/result/diagnostic 块；主代理仅得到 communication=true/false/pending 和必要证据，不公开 transport/passiveDelivery 或环境快照。正常诊断默认隐藏，最终结果省略已报告的 ready 诊断；`--diagnostics` 可查看完整诊断。`--help` 显示总览，各操作的 `--help` 显示对应参数与约束。启用通信始终提供 send/receive，Adapter v5 enabled 对象只含 status、transport 和 passiveDelivery，拒绝旧 activeReceive 字段。
 
 wait 只为未读事件、首次 ready、首次终态和必要错误返回，纯 closing 或 sequence 增长继续等待。普通 wait/result 的 stdout+stderr 合计最多 8192 UTF-8 bytes；大终态以一次 deferred 通知交付，固定结果仍可读取。result --output-file 独占创建新文件，完整写入、关闭后才消费；消费失败明确报告完整文件仍存在。--export 已删除。start/wait 与 result 的消费边界不同，过程消息没有重放保证，只有固定最终结果在终态后 1 小时可重读；不续期、不重启模型。精确 wire、文件、预算和消费规则见 [运行生命周期](../plugins/codex-enhance/skills/codex-subagent-guide/docs/runtime.md)。
 

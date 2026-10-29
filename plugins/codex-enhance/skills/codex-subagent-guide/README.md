@@ -11,4 +11,6 @@
 
 默认 [任务指令](assets/task-instructions.md) 是外部执行的可选角色资源；[子侧通信说明](assets/communication-instructions.md) 仅由实际配置了通信能力的 adapter 交给子代理，主代理不需预读。任务和消息仅接受文本或文件，完整结果可直接导出到新文件。升级、重装或删除 Guide 及托管 adapter 前，先完成或停止活跃任务。
 
+外部入口的 `--help` 显示操作总览，`<操作> --help` 显示当前操作的参数与示例。正常信息默认省略，最终报告不重复 ready 阶段已报告的诊断；需要查看完整诊断时，在该次命令加 `--diagnostics`，导出时也可使用。
+
 开发或维护执行器时，读取 [适配器说明](docs/README.md)。

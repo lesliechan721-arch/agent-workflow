@@ -13,7 +13,7 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
   const diagnostics = [{ code: 'profileFieldIgnored', field: 'features.unknown', message: 'Unsupported override; base settings remain active.' }];
   const [forWait, forResult] = await Promise.all([
     f.start({ communication: false, readyGate: true, finishImmediately: true }, { env: clock.environment }),
-    f.start({ communication: true, readyGate: true, finishImmediately: true, finalText, diagnostics, descriptor: { status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary' } }, { env: clock.environment }),
+    f.start({ communication: true, readyGate: true, finishImmediately: true, finalText, diagnostics, descriptor: { status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary' } }, { env: clock.environment, extra: ['--diagnostics'] }),
   ]);
   for (const [index, started] of [forWait, forResult].entries()) {
     const diagnostic = JSON.stringify({ phase: 'lateReadyStart', case: index === 0 ? 'communicationFalse' : 'communicationTrue',
@@ -21,7 +21,7 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
     if (process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1') t.diagnostic(`AW_SUBAGENT_COMMUNICATION_TEST ${diagnostic}`);
     assert.equal(started.code, 1, diagnostic); assert.match(started.stdout, /^starting aw5-/, diagnostic);
     assert.equal(field(started.stdout, 'communication'), undefined);
-    assert.equal(field(started.stderr, 'code'), 'startupNotReady');
+    assert.equal(field(started.stderr, 'code'), index === 1 ? 'startupNotReady' : undefined);
   }
   const observations = await clock.acknowledgements();
   assert.equal(observations.length, 2);
@@ -45,8 +45,34 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
   assert.deepEqual(blocks(resultWithCapability.stdout, 'FINAL'), [finalText]);
   const reread = await f.command(['result', '--run', forResult.run]);
   successful(reread, 'result'); assert.equal(field(reread.stdout, 'communication'), undefined);
-  assert.deepEqual(blocks(reread.stdout, 'DIAGNOSTIC'), blocks(resultWithCapability.stdout, 'DIAGNOSTIC'));
+  assert.deepEqual(blocks(reread.stdout, 'DIAGNOSTIC'), []);
+  const detailed = await f.command(['result', '--run', forResult.run, '--diagnostics']);
+  assert.deepEqual(blocks(detailed.stdout, 'DIAGNOSTIC'), blocks(resultWithCapability.stdout, 'DIAGNOSTIC'));
   assert.equal((await f.command(['wait', '--run', forResult.run])).stdout, 'settled\n');
+});
+
+// Test Value Gate: the real worker must retain ready diagnostics separately from
+// later warnings, so default reads stay quiet and --diagnostics can recover them.
+test('routine diagnostics are opt-in and final warnings do not repeat ready warnings', { timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t);
+  const routine = { code: 'codexExecutableSelected', message: 'Selected fixture Codex.' };
+  const warning = { code: 'profileFieldIgnored', field: 'features.fixture', message: 'Unsupported fixture override.' };
+  const late = { code: 'backendActionDenied', message: 'A fixture action was denied.' };
+  for (const showDiagnostics of [false, true]) {
+    const extra = showDiagnostics ? ['--diagnostics'] : [];
+    const started = await f.start({ diagnostics: [routine, warning], resultDiagnostics: [late] }, { extra });
+    await f.initialized(started);
+    const initialized = started.code === 0 ? started : await f.command(['wait', '--run', started.run, '--timeout-ms', '0', ...extra]);
+    successful(initialized, started.code === 0 ? 'start' : 'wait');
+    assert.deepEqual(blocks(initialized.stdout, 'DIAGNOSTIC'), (showDiagnostics ? [routine, warning] : [warning]).map((entry) => entry.message));
+    await started.finish(); await started.finished();
+    const terminal = await f.command(['wait', '--run', started.run, ...extra]);
+    successful(terminal, 'wait');
+    assert.deepEqual(blocks(terminal.stdout, 'DIAGNOSTIC'), (showDiagnostics ? [routine, warning, late] : [late]).map((entry) => entry.message));
+    const detailed = await f.command(['result', '--run', started.run, '--diagnostics']);
+    successful(detailed, 'result');
+    assert.deepEqual(blocks(detailed.stdout, 'DIAGNOSTIC'), [routine, warning, late].map((entry) => entry.message));
+  }
 });
 
 // Test Value Gate: failed initialization must preserve unknown capability and a

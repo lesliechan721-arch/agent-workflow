@@ -72,7 +72,7 @@ test('initialization failure with large diagnostics remains readable and exporta
   bounded(started); assert.equal(started.code, 1);
   assert.match(started.stdout, /^starting aw5-/);
   assert.equal(field(started.stdout, 'environment'), undefined);
-  assert.equal(field(started.stderr, 'code'), 'startupNotReady');
+  assert.equal(field(started.stderr, 'code'), undefined);
   await started.releaseReady();
   const limited = await eventually(async () => {
     const response = await f.command(['result', '--run', started.run]);
