@@ -13991,13 +13991,17 @@ describe('five namespaced write commands', () => {
     expect(runtime.installed.has('demo@aw')).toBe(true);
     let failRemove = true;
     runtime.nativeCliRunner.mockImplementation(async (invocation) => {
-      if (invocation.args.join(' ') === 'plugin remove demo@aw' && failRemove) {
+      const pluginArgs = invocation.args.slice(invocation.args.indexOf('plugin'));
+      if (pluginArgs.join(' ') === 'plugin remove demo@aw' && failRemove) {
         return { exitCode: 9, stdout: '', stderr: 'private native failure' };
       }
       return observationRunner(invocation);
     });
     const recoveryManagerResolver = vi.fn(async () => ({
-      kind: 'aw-managed' as const, version: '0.151.0', command: 'managed-codex', argsPrefix: [],
+      kind: 'aw-managed' as const,
+      version: '0.151.0',
+      command: process.execPath,
+      argsPrefix: [path.join(isolation.layout.fixtureCwd, 'managed-codex.js')],
     }));
     const writeRuntime = {
       env: runtime.env,
@@ -14009,7 +14013,8 @@ describe('five namespaced write commands', () => {
     const failed = await uninstallWriteCommand(['team/demo'], options, writeRuntime);
     expect(failed.overallState).toBe('failed');
     expect(runtime.nativeCliRunner.mock.calls.some(([invocation]) =>
-      invocation.args.join(' ') === 'plugin remove demo@aw')).toBe(true);
+      invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
+        === 'plugin remove demo@aw')).toBe(true);
     expect(runtime.installed.has('demo@aw')).toBe(true);
     const remaining = (await readCodexConfigFile(extensionConfigPath)).snapshot;
     expect(Object.keys(remaining.developerInstructions.managedBlocks)).toEqual([]);
@@ -14027,7 +14032,8 @@ describe('five namespaced write commands', () => {
     expect(retried.overallState, JSON.stringify(retried.rebuildResults)).toBe('succeeded');
     expect(runtime.installed.has('demo@aw')).toBe(false);
     expect(runtime.nativeCliRunner.mock.calls.some(([invocation]) =>
-      invocation.args.join(' ') === 'plugin remove demo@aw')).toBe(true);
+      invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
+        === 'plugin remove demo@aw')).toBe(true);
     expect((await readCodexConfigFile(configPath)).snapshot.plugins['demo@aw']).toBeUndefined();
     if (missingSystemCli) {
       expect(recoveryManagerResolver).toHaveBeenCalledTimes(2);
