@@ -31,7 +31,8 @@ stdout 不得透传后端日志、原始服务事件或 MCP stdout。adapter 负
 | `Text` | 合法 Unicode 字符串，无 NUL；按 UTF-8 字节计大小。允许换行，不 trim 或规范化；需非空时还要求不是全空白 |
 | `Label` | ASCII 名称，严格匹配 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`；不 trim 或替换字符 |
 | `Identifier` | 1–256 个 Unicode code point 的单行非空字符串，无控制字符；executor/model/effort 沿现有选择约束 |
-| `RunId / MessageId` | 32 个小写十六进制字符，由运行层生成，只在本次连接或目录中使用；不是模型应填写的 ID |
+| `RunId` | 64 位随机数的 11 字符无填充 Base64URL 编码，区分大小写；由运行层生成，只在本次连接或目录中使用；不是模型应填写的 ID |
+| `MessageId` | 32 个小写十六进制字符，由运行层生成，只在本次连接或目录中使用；不是模型应填写的 ID |
 | `Code` | 匹配 `^[A-Za-z][A-Za-z0-9]{0,63}$` 的安全错误码 |
 | `AbsolutePath` | 非空 Text，在当前 OS 上是规范化绝对路径；用途对应的类型、归属、symlink 和存在性另外校验 |
 | `EpochMs` | 非负安全整数，UTC Unix 毫秒；不能为 NaN、浮点数或字符串 |

@@ -9,7 +9,7 @@ import {
   commandSetsForProducer, createManagedCommandReferenceResolver, discoverRetainedManagedCommandPackages, retainedManagedCommandPackageResult, managedCommandProducerIdentity,
   prepareManagedCommandPackage, resolveSkillManagedCommandReferences, type ManagedCommandCandidate,
 } from '../utils/managed-command-materialization.js';
-import { managedCommandDiagnostic, ManagedCommandError, publishManagedCommandBindings, revokeManagedCommandBindings, syncManagedCommandPackage, readInstalledCommandProducer, listManagedCommands } from '../utils/managed-command-store.js';
+import { assertManagedCommandBindingIdentities, normalizeInstalledCommandProducer, managedCommandDiagnostic, ManagedCommandError, publishManagedCommandBindings, revokeManagedCommandBindings, syncManagedCommandPackage, readInstalledCommandProducer, listManagedCommands } from '../utils/managed-command-store.js';
 import { injectInstalledRuntimeConfig, carryRuntimeConfigNativeReceipt } from '../utils/runtime-config.js';
 import { resolveCodexSkillsRelativeRoot } from '../utils/codex-skills-root.js';
 import { resolveClaudeSkillsRelativeRoot } from '../utils/claude-skills-root.js';
@@ -4581,6 +4581,19 @@ function createNativeDriver(options: {
   captureCodexPostMutationSnapshots(marketplaceNames?: readonly string[]): Promise<void>;
 } {
   const runner = options.context.nativeCliRunner;
+  const preflightCommandBindings = async (targets: readonly DesiredTarget[]): Promise<void> => {
+    const producers: ManagedCommandCandidate[] = [];
+    for (const target of targets) for (const action of target.operationActions ?? []) {
+      if (action.kind === 'syncManagedCommandPackage') {
+        producers.push({ producer: action.producer, sets: action.sets });
+      } else if (action.kind === 'materializeNativeSkill'
+        || (action.kind === 'writeOwnedArtifact' && action.artifactKind === 'skill-directory')) {
+        const file = action.files?.find((entry) => entry.relativePath === COMMAND_PRODUCER_RECORD_FILE);
+        if (file) producers.push(normalizeInstalledCommandProducer(JSON.parse(Buffer.from(file.contentBase64, 'base64').toString('utf8'))));
+      }
+    }
+    await assertManagedCommandBindingIdentities({ producers, env: options.context.env });
+  };
   const revokeAtRoot = async (root: string, recursive = false, platform?: PlatformName): Promise<void> => {
     const listed = await listManagedCommands(options.context.env);
     const producers = new Map<string, import('../types.js').ProducerIdentity>();
@@ -4734,6 +4747,7 @@ function createNativeDriver(options: {
           }
         }
         if (materializing.length === 0) return;
+        await preflightCommandBindings(materializing);
         const first = materializing[0]!;
         if (!first.catalog) throw new Error('Missing rebuild target catalog data.');
         const catalogRoot = path.resolve(first.catalog.rootDir);
@@ -5218,6 +5232,7 @@ function createNativeDriver(options: {
         )));
     },
     preflightMutation: async (target) => {
+      await preflightCommandBindings([target]);
       if (!target.codexNativeObservationExpectation
         && !target.codexNativeSensitivePreflightRequired) return;
       const sensitiveValues = pluginHasCodexNativeSkillSurface(target.plugin)
@@ -5618,6 +5633,7 @@ function createNativeDriver(options: {
       }
     },
     writeArtifacts: async (target) => {
+      await preflightCommandBindings([target]);
       await publishPackages(target);
       for (const operationAction of target.operationActions ?? []) {
         if (operationAction.kind === 'writeOwnedArtifact'

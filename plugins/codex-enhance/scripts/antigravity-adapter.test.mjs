@@ -109,7 +109,7 @@ input.on('line',async line=>{
 input.on('close',()=>setImmediate(()=>process.exit(scenario==='nonzero'?7:0)));
 `, { mode: 0o700 });
   const request = {
-    protocolVersion: 5, type: 'start', permissionMode: 'default', run: { id: randomBytes(16).toString('hex'), name: 'agy-fixture', deadlineAt: null },
+    protocolVersion: 5, type: 'start', permissionMode: 'default', run: { id: randomBytes(8).toString('base64url'), name: 'agy-fixture', deadlineAt: null },
     execution: { executor: 'fixture', model: 'chosen-model', reasoningEffort: 'high' }, mode: 'workspace', workspace,
     prompt: ' 原始任务\nKeep "quotes", `$()` and Unicode。\n', args: ['--mode', 'plan', '--sandbox'], communication: false,
     runtime: { directory, toolkit: { command: process.execPath, module: path.join(installed, 'runtime/adapter-channel.mjs'), messageScript: path.join(installed, 'message.mjs'), mcpScript: path.join(installed, 'message-mcp.mjs') } },

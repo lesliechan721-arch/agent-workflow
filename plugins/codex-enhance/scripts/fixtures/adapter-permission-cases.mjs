@@ -18,7 +18,7 @@ test('permission modes map precisely and default preserves explicit arguments', 
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-permissions-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, 'review.config.toml'), 'approval_policy="never"\napprovals_reviewer="user"\nsandbox_mode="read-only"\nmodel="kept-model"\n');
-  const request = { args: [], execution: {}, workspace: root, run: { id: 'a'.repeat(32) }, codex: { cliSource: 'cli', bypassHookTrust: false, profile: 'review' } };
+  const request = { args: [], execution: {}, workspace: root, run: { id: 'a'.repeat(11) }, codex: { cliSource: 'cli', bypassHookTrust: false, profile: 'review' } };
   const environment = { CODEX_HOME: root };
   const defaults = await codexConfiguration({ ...request, permissionMode: 'default' }, environment);
   assert.equal(defaults.thread.config.approval_policy, 'never');
@@ -110,7 +110,7 @@ test('Claude auto preserves a successful answer that discusses unavailable auto 
     async end() { exited = true; done.resolve(); },
   };
   const context = {
-    request: { args: [], permissionMode: 'auto', execution: {}, run: { id: 'a'.repeat(32) } }, executable: { command: '/fake/claude', args: [] },
+    request: { args: [], permissionMode: 'auto', execution: {}, run: { id: 'a'.repeat(11) } }, executable: { command: '/fake/claude', args: [] },
     signal: controller.signal, stopped: deferred(), prompt: 'Explain permission modes.', generationStarted: false,
     abort(code) { this.errorCode = code; controller.abort(); done.resolve(); },
     async prepareCommunication() {}, async spawn() { return backend; }, async ready() {}, async beginClosing() {},

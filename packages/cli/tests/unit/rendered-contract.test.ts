@@ -9,7 +9,7 @@ import { validateRenderedClaudePermissions, validateRenderedHooksContent } from 
 
 describe('rendered contract validators', () => {
   it('allows a managed command trailing wildcard without opening legacy shell patterns', () => {
-    const prefix = `aw command run cmdp_${'a'.repeat(64)} -- wait`;
+    const prefix = `aw command run cmdp_${'a'.repeat(16)} -- wait`;
     expect(() => validateRenderedClaudePermissions({
       allow: [`Bash(${prefix} *)`], ask: [], deny: [], excludedCommands: [`${prefix} *`],
     })).not.toThrow();

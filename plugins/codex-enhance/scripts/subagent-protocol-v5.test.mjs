@@ -12,7 +12,7 @@ import { createFrameDecoder, createFrameWriter, createProtocolState, validateFra
 import { LIMITS, validateRequest } from '../skills/codex-subagent-guide/scripts/runtime/contracts.mjs';
 
 const start = () => ({
-  protocolVersion: 5, type: 'start', run: { id: '1'.repeat(32), name: 'agent-test', deadlineAt: null },
+  protocolVersion: 5, type: 'start', run: { id: '1'.repeat(11), name: 'agent-test', deadlineAt: null },
   execution: { executor: 'fixture' }, mode: 'workspace', workspace: process.cwd(), prompt: '原始任务\r\n😀', args: [], communication: true,
   runtime: { directory: process.cwd(), toolkit: { module: import.meta.filename, command: process.execPath, messageScript: import.meta.filename, mcpScript: import.meta.filename } },
 });

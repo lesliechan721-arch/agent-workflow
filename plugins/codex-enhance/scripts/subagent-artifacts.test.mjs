@@ -180,7 +180,7 @@ test('shares one profile definition, preserves defaults and declares exact consu
   assert.deepEqual(Object.keys(managed.properties), ['mode', 'commandId']);
   assert.equal(managed.properties.commandId.required, true);
   const commandPattern = new RegExp(managed.properties.commandId.validation.pattern);
-  assert.ok(commandPattern.test(`cmdp_${'a'.repeat(64)}`));
+  assert.ok(commandPattern.test(`cmdp_${'a'.repeat(16)}`));
   assert.ok(commandPattern.test('cmdu_4ba70354-0867-4ecb-a927-120c1933f514'));
   assert.equal(commandPattern.test('guide'), false);
   assert.ok(manifest.requires.aw.capabilities.includes('aw.plugin-config.v4'));
@@ -269,7 +269,7 @@ test('renders adapter modes only in the Guide external reference', async () => {
     { key: 'agy', adapter: 'antigravity', communication: false },
     { key: 'oracle', adapter: 'oracle', envFrom: { SECRET: 'HOST_SECRET' } },
     { key: 'custom', adapter: 'custom', mode: 'bundle', command: '/not-invoked/adapter' },
-    { key: 'managed', adapter: 'custom-managed', mode: 'workspace', commandId: `cmdp_${'a'.repeat(64)}` },
+    { key: 'managed', adapter: 'custom-managed', mode: 'workspace', commandId: `cmdp_${'a'.repeat(16)}` },
   ];
   const expected = [
     ['codex', 'workspace'],
@@ -290,7 +290,7 @@ test('renders adapter modes only in the Guide external reference', async () => {
     }
     const reference = plan.artifacts.find((item) => item.id === 'codex-subagent-guide-skill')
       .content.files['references/external-delegation.md'];
-    for (const privateValue of ['literal-value', 'HOST_SECRET', '/not-invoked/adapter', `cmdp_${'a'.repeat(64)}`]) {
+    for (const privateValue of ['literal-value', 'HOST_SECRET', '/not-invoked/adapter', `cmdp_${'a'.repeat(16)}`]) {
       assert.equal(reference.includes(privateValue), false);
     }
   }

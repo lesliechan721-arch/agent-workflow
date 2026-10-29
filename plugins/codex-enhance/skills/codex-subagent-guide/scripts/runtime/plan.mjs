@@ -9,7 +9,7 @@ export const ADAPTERS = Object.freeze({
   antigravity: { mode: 'workspace', entrypoint: 'antigravity-v5.mjs' },
   oracle: { mode: 'bundle', entrypoint: 'oracle-v5.mjs' },
 });
-export const commandIdPattern = /^(?:cmdp_[0-9a-f]{64}|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+export const commandIdPattern = /^(?:cmdp_[0-9a-f]{16}|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
 const variableName = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const protectedVariable = (key) => key.startsWith('AW_PLUGIN_') || key.startsWith('AW_SUBAGENT_') || key === 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
 const plainObject = (value) => value && typeof value === 'object' && !Array.isArray(value);

@@ -63,7 +63,7 @@ test('diagnostic redaction expansion preserves completed output and readable exp
 // Test Value Gate: a legal custom result can exceed the snapshot budget without
 // ready. Public reads must stay bounded and export must retain every diagnostic.
 test('initialization failure with large diagnostics remains readable and exportable', { timeout: testTimeoutMs }, async (t) => {
-  const diagnostics = Array.from({ length: 20 }, (_, index) => ({ code: 'profileFieldIgnored', field: `features.item_${index}`, message: 'x'.repeat(1000) }));
+  const diagnostics = Array.from({ length: 20 }, (_, index) => ({ code: 'profileFieldIgnored', field: `features.item_${index}_${'f'.repeat(64)}`, message: 'x'.repeat(1000) }));
   validateFrame({ protocolVersion: 5, type: 'result', state: 'failed', generationStarted: false, backendExitCode: null,
     text: '', code: 'fixtureInitializationFailed', diagnostics }, 'adapter');
   const f = await fixture(t);
@@ -96,6 +96,7 @@ test('initialization failure with large diagnostics remains readable and exporta
   assert.ok(terminalDiagnostics.some((record) => record.attributes.code === 'fixtureInitializationFailed' && record.text === 'Fixture initialization failed.'));
   assert.equal((await f.command(['wait', '--run', started.run, '--timeout-ms', '0'])).stdout, 'settled\n');
   const exported = await f.exportResult(started.run);
+  assert.ok(Buffer.byteLength(exported.report) > 8192);
   assert.equal(field(exported.report, 'state'), 'failed');
   assert.equal(field(exported.report, 'code'), 'fixtureInitializationFailed');
   assert.equal(field(exported.report, 'environment'), undefined);

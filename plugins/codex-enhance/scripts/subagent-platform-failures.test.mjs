@@ -119,7 +119,7 @@ test('Windows host failures retain only safe execution and parse diagnostics', a
 test('owned run reads batch native verification without caching ownership', async (t) => {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-owner-batch-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const id = 'a'.repeat(32);
+  const id = 'a'.repeat(11);
   const directory = path.join(root, id);
   await fs.mkdir(directory);
   let calls = 0;
@@ -134,7 +134,7 @@ test('owned run reads batch native verification without caching ownership', asyn
     return { stdout: 'true' };
   });
   const owner = await api.currentUserIdentity();
-  const meta = { schema: 5, id, key: 'b'.repeat(32), name: 'fixture', token: 'c'.repeat(48), owner, processes: [], terminalAt: null };
+  const meta = { schema: 5, id, key: 'b'.repeat(22), name: 'fixture', token: 'c'.repeat(48), owner, processes: [], terminalAt: null };
   await fs.writeFile(path.join(directory, 'owner.json'), JSON.stringify(meta));
   const { readOwner } = await import('../skills/codex-subagent-guide/scripts/runtime/store.mjs');
   assert.deepEqual((await readOwner({ root, owner }, id)).meta, meta);
@@ -170,9 +170,9 @@ test('multi-run reads batch verification and isolate unsafe or missing owners', 
   const owner = await api.currentUserIdentity();
   const { openRuns, scanExpired } = await import('../skills/codex-subagent-guide/scripts/runtime/store.mjs');
   const handles = [];
-  for (const id of ['a', 'b', 'c'].map((value) => value.repeat(32))) {
+  for (const id of ['a', 'b', 'c'].map((value) => value.repeat(11))) {
     await fs.mkdir(path.join(root, id));
-    const meta = { schema: 5, id, key: 'd'.repeat(32), name: 'fixture', token: 'e'.repeat(48), owner, processes: [], terminalAt: Date.now() };
+    const meta = { schema: 5, id, key: 'd'.repeat(22), name: 'fixture', token: 'e'.repeat(48), owner, processes: [], terminalAt: Date.now() };
     await fs.writeFile(path.join(root, id, 'owner.json'), JSON.stringify(meta));
     handles.push(`aw5-${id}-${meta.key}`);
   }
@@ -180,14 +180,14 @@ test('multi-run reads batch verification and isolate unsafe or missing owners', 
   let results = await openRuns(context, handles);
   assert.ok(handles.every((handle) => results.get(handle).run?.handle === handle));
   assert.equal(calls, 1);
-  results = await openRuns(context, [...handles, handles[0].slice(0, -32) + 'f'.repeat(32), 'invalid']);
+  results = await openRuns(context, [...handles, handles[0].slice(0, -22) + 'f'.repeat(22), 'invalid']);
   assert.ok(handles.every((handle) => results.get(handle).run?.handle === handle));
   assert.equal([...results.values()].filter(({ error }) => error?.code === 'runUnavailable').length, 2);
   assert.equal(calls, 2, 'A later read must get fresh native evidence.');
   calls = 0;
   assert.equal(await scanExpired(context), false);
   assert.equal(calls, 2, 'Root enumeration and all owner records require two native calls.');
-  unsafe = path.join(root, 'b'.repeat(32), 'owner.json');
+  unsafe = path.join(root, 'b'.repeat(11), 'owner.json');
   calls = 0;
   results = await openRuns(context, handles);
   assert.equal(results.get(handles[1]).error.code, 'runUnavailable');
@@ -197,18 +197,18 @@ test('multi-run reads batch verification and isolate unsafe or missing owners', 
   assert.equal(await scanExpired(context), true);
   assert.ok(await fs.stat(unsafe));
   unsafe = undefined;
-  await fs.unlink(path.join(root, 'b'.repeat(32), 'owner.json'));
+  await fs.unlink(path.join(root, 'b'.repeat(11), 'owner.json'));
   results = await openRuns(context, handles);
   assert.equal(results.get(handles[1]).error.code, 'runUnavailable');
   assert.ok(results.get(handles[0]).run && results.get(handles[2]).run);
-  const expiredOwner = path.join(root, 'a'.repeat(32), 'owner.json');
+  const expiredOwner = path.join(root, 'a'.repeat(11), 'owner.json');
   const expired = JSON.parse(await fs.readFile(expiredOwner, 'utf8'));
   Object.assign(expired, { terminalAt: Date.now() - 3600001, worker: { pid: 2147483647, started: '2' }, localTreeStopped: true });
   await fs.writeFile(expiredOwner, JSON.stringify(expired));
   assert.equal(await scanExpired(context), true);
   assert.equal(await fs.stat(path.dirname(expiredOwner)).catch(() => null), null);
-  assert.ok(await fs.stat(path.join(root, 'b'.repeat(32))));
-  assert.ok(await fs.stat(path.join(root, 'c'.repeat(32))));
+  assert.ok(await fs.stat(path.join(root, 'b'.repeat(11))));
+  assert.ok(await fs.stat(path.join(root, 'c'.repeat(11))));
   t.diagnostic('Windows native ACL calls for 3 healthy runs: open 3 -> 1; expiration scan 4 -> 2; every read revalidates.');
 });
 
@@ -230,11 +230,11 @@ test('large owner scans bound each encoded native input without losing resources
   const owner = await api.currentUserIdentity();
   const ownerFiles = [];
   for (let index = 0; index < 128; index++) {
-    const id = index.toString(16).padStart(32, '0');
+    const id = index.toString(16).padStart(11, '0');
     await fs.mkdir(path.join(root, id));
     const target = path.join(root, id, 'owner.json');
     ownerFiles.push(target);
-    await fs.writeFile(target, JSON.stringify({ schema: 5, id, key: 'a'.repeat(32), name: 'fixture', token: 'b'.repeat(48), owner, processes: [], terminalAt: Date.now() }));
+    await fs.writeFile(target, JSON.stringify({ schema: 5, id, key: 'a'.repeat(22), name: 'fixture', token: 'b'.repeat(48), owner, processes: [], terminalAt: Date.now() }));
   }
   const { scanExpired } = await import('../skills/codex-subagent-guide/scripts/runtime/store.mjs');
   assert.equal(await scanExpired({ root, owner }), false);
@@ -249,7 +249,7 @@ test('large owner scans bound each encoded native input without losing resources
 test('multi-target wait rechecks permissions after a polling delay', async (t) => {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-wait-owner-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const first = 'a'.repeat(32), second = 'b'.repeat(32);
+  const first = 'a'.repeat(11), second = 'b'.repeat(11);
   let batches = 0;
   const api = windowsHostFixture(t, async (_command, _args, options) => {
     if (options.env.AW_SUBAGENT_NATIVE_OPERATION === 'processTable') return { stdout: JSON.stringify([{ pid: process.pid, ppid: process.ppid, started: '1' }]) };
@@ -267,7 +267,7 @@ test('multi-target wait rechecks permissions after a polling delay', async (t) =
     const directory = path.join(root, id);
     await fs.mkdir(directory);
     await fs.mkdir(path.join(directory, 'events'));
-    const meta = { schema: 5, id, key: 'c'.repeat(32), name: 'fixture', token: 'd'.repeat(48), owner, processes: [], terminalAt: null, worker: { pid: process.pid, started: '1' } };
+    const meta = { schema: 5, id, key: 'c'.repeat(22), name: 'fixture', token: 'd'.repeat(48), owner, processes: [], terminalAt: null, worker: { pid: process.pid, started: '1' } };
     await fs.writeFile(path.join(directory, 'owner.json'), JSON.stringify(meta));
     await fs.writeFile(path.join(directory, 'snapshot.json'), JSON.stringify({ state: 'running', sequence: 2, ready: true, initialization: null, initializationSequence: 0 }));
     await fs.writeFile(path.join(directory, 'observed.json'), JSON.stringify({ sequence: 2, initializationSequence: 0, terminalConsumed: false }));

@@ -225,7 +225,7 @@ const registry = {
         { field: 'CommandSetArtifact.disabledReason', type: 'non-empty Unicode string', required: 'optional only when disabled' },
         { field: 'CommandPackageArtifact', type: '{id,target:aw.command-package,kind:commandPackage,state:present,refreshKeys,files}; no platform/distribution/scope/owner/producer overrides; files explicit and complete, may be {}', required: 'rendered package response' },
         { field: 'ArtifactPlan.commandOutputs', type: 'version:2; each requested ID exactly once; no extra or missing IDs; existing limits and sensitive scans apply', required: 'command renderer response' },
-        { field: 'commandIdentity', type: 'schemaVersion:1; complete verified producer + set/key/variant; cmdp_ + full lowercase SHA256 of canonical sorted-key UTF-8 JSON; excludes version/config/resource path', required: true },
+        { field: 'commandIdentity', type: 'schemaVersion:1; complete verified producer + set/key/variant; cmdp_ + first 16 lowercase hex characters of SHA256 of canonical sorted-key UTF-8 JSON; excludes version/config/resource path', required: true },
         { field: 'normalizedTarget', type: 'dynamic set command-set.<set>:aw.command-set/commandSet; rendered package command-package.<key>:aw.command-package/commandPackage; reserved artifact ID prefixes', required: false },
         { field: 'scripts.artifacts.render', type: 'existing renderer declaration', required: 'any dynamic set or render:true package' },
       ],

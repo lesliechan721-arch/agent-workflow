@@ -158,7 +158,7 @@ function field(output, key) {
   const attribute = controls.match(new RegExp(`(?:^| )${key}=([^ \\n]+)`, 'm'))?.[1];
   if (attribute !== undefined) return attribute;
   if (key === 'run') {
-    const handle = controls.match(/^(?:started|starting|start_failed|ready|queued|stopped|stopping|deferred|exported) (aw5-[a-f0-9]{32}-[a-f0-9]{32})\b/m)?.[1];
+    const handle = controls.match(/^(?:started|starting|start_failed|ready|queued|stopped|stopping|deferred|exported) (aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22})(?=\s|$)/m)?.[1];
     if (handle) return handle;
   }
   for (const kind of ['result', 'input', 'message', 'diagnostic']) {
@@ -241,7 +241,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
         signal.removeEventListener('abort', abort);
         const stdout = Buffer.concat(output).toString('utf8');
         const handle = field(stdout, 'run');
-        if (/^aw5-[a-f0-9]{32}-[a-f0-9]{32}$/.test(handle ?? '')) handles.add(handle);
+        if (/^aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/.test(handle ?? '')) handles.add(handle);
         let nativeTiming;
         const stderr = Buffer.concat(diagnostics).toString('utf8').split('\n').filter((line) => {
           if (!line.startsWith('AW_SUBAGENT_NATIVE_TIMING ')) return true;
@@ -282,7 +282,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     };
   }
   async function initialized(started) {
-    assert.match(started.run ?? '', /^aw5-[a-f0-9]{32}-[a-f0-9]{32}$/, started.stdout + started.stderr);
+    assert.match(started.run ?? '', /^aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/, started.stdout + started.stderr);
     if (started.code === 0) { successful(started, 'start'); return; }
     assert.equal(started.code, 1, started.stdout + started.stderr);
     assert.match(started.stdout, /^starting aw5-/);

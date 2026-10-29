@@ -12,7 +12,7 @@ import { mapHookState, sessionHookSource } from '../../skills/codex-subagent-gui
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-profile-cases-'));
 test.after(() => fs.rm(root, { recursive: true, force: true }));
 const plain = (value) => JSON.parse(JSON.stringify(value, (_, item) => typeof item === 'bigint' ? Number(item) : item));
-const request = (args = [], execution = {}) => ({ args, execution, workspace: root, run: { id: '0123456789abcdef0123456789abcdef' }, codex: { cliSource: 'cli', bypassHookTrust: false } });
+const request = (args = [], execution = {}) => ({ args, execution, workspace: root, run: { id: 'Ab_cd-0123A' }, codex: { cliSource: 'cli', bypassHookTrust: false } });
 async function profile(t, text) {
   const home = await fs.realpath(await fs.mkdtemp(path.join(root, 'home-')));
   await fs.writeFile(path.join(home, 'test.config.toml'), text);

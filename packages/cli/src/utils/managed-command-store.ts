@@ -118,7 +118,7 @@ async function writeJson(root: string, target: string, value: unknown): Promise<
   await atomicReplaceSafeFile({ allowedRoot: root, filePath: target, content: `${JSON.stringify(value, null, 2)}\n`, label: 'Managed command record' });
 }
 export function assertUserCommandId(id: string): void {
-  if (/^cmdp_[0-9a-f]{64}$/u.test(id)) fail('commandOwnerMismatch', 'Plugin commands must be maintained with their producer sync, reinstall, or package remove command.');
+  if (/^cmdp_[0-9a-f]{16}$/u.test(id)) fail('commandOwnerMismatch', 'Plugin commands must be maintained with their producer sync, reinstall, or package remove command.');
   if (!USER_ID.test(id)) throw new ManagedCommandError('invalidArguments', 'A canonical user command ID is required.', true);
 }
 export function validateManagedCommandName(value: unknown): string {
@@ -316,7 +316,7 @@ export async function revokeManagedCommandBindings(producer: ProducerIdentity, e
   const removed: string[] = [];
   await safePath(root, path.join(root, 'bindings'));
   for (const file of await entriesAt(path.join(root, 'bindings'))) {
-    if (!/^cmdp_[0-9a-f]{64}\.json$/u.test(file)) continue;
+    if (!/^cmdp_[0-9a-f]{16}\.json$/u.test(file)) continue;
     const id = file.slice(0, -5);
     try {
       const binding = await readBinding(root, id);
@@ -327,6 +327,29 @@ export async function revokeManagedCommandBindings(producer: ProducerIdentity, e
   }
   return removed;
 }
+async function prepareManagedCommandIdentities(root: string, records: InstalledCommandProducer[]): Promise<Map<string, CommandIdentity>> {
+  const candidates = new Map<string, CommandIdentity>();
+  for (const record of records) for (const set of record.sets) for (const entry of set.entries) {
+    const identity: CommandIdentity = { schemaVersion: 1, producer: record.producer, set: set.set, key: entry.key, variant: entry.variant };
+    const id = getPluginCommandId(identity);
+    const candidate = candidates.get(id);
+    if (candidate && !equal(candidate, identity)) fail('commandIdentityConflict', 'commandIdentityConflict: the command ID already belongs to another identity.');
+    const existingPath = path.join(root, 'bindings', `${id}.json`);
+    if (await fs.lstat(existingPath).catch(() => null)) {
+      const existing = await readBinding(root, id);
+      if (!equal(existing.identity, identity)) fail('commandIdentityConflict', 'commandIdentityConflict: the command ID already belongs to another identity.');
+    }
+    candidates.set(id, identity);
+  }
+  return candidates;
+}
+export async function assertManagedCommandBindingIdentities(options: {
+  producers: Array<Pick<InstalledCommandProducer, 'producer' | 'sets'>>; env?: NodeJS.ProcessEnv;
+}): Promise<void> {
+  if (options.producers.length === 0) return;
+  const records = options.producers.map((producer) => normalizeInstalledCommandProducer({ ...producer, schemaVersion: 1 }));
+  await prepareManagedCommandIdentities(await managedCommandRoot(options.env), records);
+}
 export async function publishManagedCommandBindings(options: {
   producer: ProducerIdentity; resourceRoot: string; sets: InstalledCommandSet[]; env?: NodeJS.ProcessEnv;
 }): Promise<string[]> {
@@ -334,23 +357,11 @@ export async function publishManagedCommandBindings(options: {
   const root = await managedCommandRoot(options.env);
   const resourceRoot = path.resolve(options.resourceRoot);
   for (const set of record.sets) for (const entry of set.entries) await validateManagedCommandResource(resourceRoot, entry);
-  const ids: string[] = [];
-  const candidates: ManagedCommandBinding[] = [];
-  for (const set of record.sets) for (const entry of set.entries) {
-    const identity: CommandIdentity = { schemaVersion: 1, producer: record.producer, set: set.set, key: entry.key, variant: entry.variant };
-    const id = getPluginCommandId(identity);
-    const existingPath = path.join(root, 'bindings', `${id}.json`);
-    if (await fs.lstat(existingPath).catch(() => null)) {
-      const existing = await readBinding(root, id);
-      if (!equal(existing.identity, identity)) fail('commandIdentityConflict', 'The command ID already belongs to another identity.');
-    }
-    candidates.push({ schemaVersion: 1, id, identity, resourceRoot });
-    ids.push(id);
-  }
+  const candidates = await prepareManagedCommandIdentities(root, [record]);
   await writeInstalledCommandProducer(resourceRoot, record);
   await revokeManagedCommandBindings(record.producer, options.env);
-  for (const binding of candidates) await writeJson(root, path.join(root, 'bindings', `${binding.id}.json`), binding);
-  return ids;
+  for (const [id, identity] of candidates) await writeJson(root, path.join(root, 'bindings', `${id}.json`), { schemaVersion: 1, id, identity, resourceRoot });
+  return [...candidates.keys()];
 }
 
 export async function readManagedCommandPackageOwner(id: string, env: NodeJS.ProcessEnv = process.env): Promise<{ producer: ProducerIdentity; resourceRoot: string }> {
@@ -388,6 +399,7 @@ export async function syncManagedCommandPackage(options: {
     await copyManagedCommandDirectory(options.sourceDirectory, resourceRoot, options.env);
     const record = normalizeInstalledCommandProducer({ schemaVersion: 1, producer, sets: options.sets });
     for (const set of record.sets) for (const entry of set.entries) await validateManagedCommandResource(resourceRoot, entry);
+    await prepareManagedCommandIdentities(root, [record]);
     await writeInstalledCommandProducer(resourceRoot, record);
     await writeJson(root, path.join(staging, 'owner.json'), { schemaVersion: 1, owner: 'agent-workflows', kind: 'plugin-command-package', producer });
     const removed = await revokeManagedCommandBindings(producer, options.env);
@@ -501,7 +513,7 @@ export async function listManagedCommands(env: NodeJS.ProcessEnv = process.env):
     await safePath(root, path.join(root, kind));
     for (const file of (await entriesAt(path.join(root, kind))).sort()) {
       const id = kind === 'bindings' ? file.replace(/\.json$/u, '') : file;
-      if (!(kind === 'users' ? USER_ID.test(id) : /^cmdp_[0-9a-f]{64}\.json$/u.test(file))) {
+      if (!(kind === 'users' ? USER_ID.test(id) : /^cmdp_[0-9a-f]{16}\.json$/u.test(file))) {
         errors.push({ code: 'commandBindingInvalid', message: 'An unrecognized command record was retained.', subject: `commands/${kind}/${file}` });
         continue;
       }

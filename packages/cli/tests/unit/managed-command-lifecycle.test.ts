@@ -1,6 +1,8 @@
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { syncBuiltinESMExports } from 'node:module';
 import fs from 'fs-extra';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createRebuildIntegration, type RebuildExecutionContext } from '../../src/commands/rebuild-integration.js';
 import { executeRebuildOperation } from '../../src/commands/rebuild-operations.js';
@@ -71,6 +73,58 @@ describe('managed command plugin lifecycle', () => {
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     return { target, context };
   }
+
+  // A refresh must reject a colliding identity before cleanup removes the old
+  // binding or replaces the owned Skill. Only the identity hash is controlled.
+  it('preserves the artifact command and Skill when refresh identities collide', async () => {
+    const manifest = (key: string) => ({ ...baseManifest,
+      artifacts: { targets: [{ id: 'provider', platform: 'codex', target: 'codex.skill', delivery: { mode: 'aw-extension' }, scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'provider' }] },
+      managedCommands: { sets: [{ set: 'tools', producer: { kind: 'artifact', artifactId: 'provider' }, mode: 'static', entries: [{ key, runner: 'node', entry: 'scripts/tool.mjs' }] }] },
+    });
+    const files = { ...skillFiles, 'SKILL.md': '---\nname: provider\ndescription: Lifecycle fixture.\n---\nFixture.\n' };
+    await fs.outputFile(path.join(pluginRoot, 'render.mjs'), `console.log(JSON.stringify({version:2,artifacts:[{id:'provider',target:'codex.skill',kind:'skill',platform:'codex',state:'present',skillKey:'provider',refreshKeys:[],content:{files:${JSON.stringify(files)}}}]}));\n`);
+    const createHash = crypto.createHash;
+    const hashSpy = vi.spyOn(crypto, 'createHash').mockImplementation((algorithm, options) => {
+      const hash = createHash(algorithm, options);
+      const update = hash.update.bind(hash);
+      const digest = hash.digest.bind(hash);
+      let identity = false;
+      hash.update = ((data: Parameters<typeof hash.update>[0], ...rest: unknown[]) => {
+        if (typeof data === 'string' && data.includes('"schemaVersion":1') && data.includes('"producer":') && data.includes('"set":')) identity = true;
+        Reflect.apply(update, hash, [data, ...rest]);
+        return hash;
+      }) as typeof hash.update;
+      hash.digest = ((encoding?: crypto.BinaryToTextEncoding) => {
+        const result = encoding ? digest(encoding) : digest();
+        return identity && typeof result === 'string' ? '0123456789abcdef' + result.slice(16) : result;
+      }) as typeof hash.digest;
+      return hash;
+    });
+    syncBuiltinESMExports();
+    try {
+      const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+      await fs.outputJson(manifestPath, manifest('first'));
+      await execute(await readFixture(), 'install');
+      const command = (await listManagedCommands(isolated.env)).commands[0]!;
+      const bindingPath = path.join(isolated.layout.awHomeDir, 'commands', 'bindings', `${command.id}.json`);
+      const bindingBefore = await fs.readFile(bindingPath, 'utf8');
+      const recordPath = path.join(command.resourceRoot!, '.aw-command-producer.json');
+      const recordBefore = await fs.readFile(recordPath, 'utf8');
+      const skillBefore = await fs.readFile(path.join(command.resourceRoot!, 'SKILL.md'), 'utf8');
+      await fs.outputJson(manifestPath, manifest('second'));
+      const { integration } = integrationFor();
+      const target = await build(await readFixture(), 'sync', 'codex', integration);
+      const result = await executeRebuildOperation({ command: 'sync', target, driver: integration.driver });
+      expect(result.status).toBe('failed');
+      expect(result.failures).toContainEqual(expect.objectContaining({ message: expect.stringContaining('commandIdentityConflict') }));
+      expect(await fs.readFile(bindingPath, 'utf8')).toBe(bindingBefore);
+      expect(await fs.readFile(recordPath, 'utf8')).toBe(recordBefore);
+      expect(await fs.readFile(path.join(command.resourceRoot!, 'SKILL.md'), 'utf8')).toBe(skillBefore);
+    } finally {
+      hashSpy.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
 
   // Protects publication after actual owned Skill writes, stable IDs across refresh, and cleanup revocation.
   it('installs, runs, refreshes, reinstalls, empties, and cleans an artifact command producer', async () => {

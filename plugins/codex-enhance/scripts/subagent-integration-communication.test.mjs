@@ -62,7 +62,7 @@ test('managed custom execution retains the fixed host and v5 arguments after sta
   const f = await fixture(t);
   const cliEntry = path.join(f.directory, 'fake aw host 中文.mjs');
   const observedFile = path.join(f.directory, 'host-observed.json');
-  const commandId = 'cmdp_' + 'a'.repeat(64);
+  const commandId = 'cmdp_' + 'a'.repeat(16);
   const args = ['', '原文\r\n😀', '--literal', '$(touch escaped)'];
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: f.directory };
   await fs.writeFile(cliEntry, `import fs from 'node:fs/promises';

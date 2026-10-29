@@ -3,14 +3,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { atomicJson, atomicJsonFiles, readJson, safePath } from './files.mjs';
-import { fail, STATES, validateResult, validateInitialization, validateDiagnostics } from './contracts.mjs';
+import { fail, STATES, runId, validateResult, validateInitialization, validateDiagnostics } from './contracts.mjs';
 import { currentUserIdentity, protectPrivatePath, protectPrivatePaths, verifyPrivatePath, verifyPrivatePaths, assertNoReparseTree, windowsOperation } from './platform.mjs';
 import { processTable } from './processes.mjs';
 
 export const CACHE_MS = 3600000;
 export const terminal = (state) => STATES.includes(state);
 export const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const handlePattern = /^aw5-([a-f0-9]{32})-([a-f0-9]{32})$/;
+const handlePattern = /^aw5-([A-Za-z0-9_-]{11})-([A-Za-z0-9_-]{22})$/;
+const runKeyPattern = /^[A-Za-z0-9_-]{22}$/;
 const recordName = /^[a-z0-9-]+\.json$/;
 
 export function parseHandle(handle) {
@@ -61,8 +62,8 @@ async function prepareRoot(context) {
 
 export async function createRun(context, name, workspace) {
   await prepareRoot(context);
-  const id = randomBytes(16).toString('hex');
-  const key = randomBytes(16).toString('hex');
+  const id = randomBytes(8).toString('base64url');
+  const key = randomBytes(16).toString('base64url');
   const handle = `aw5-${id}-${key}`;
   const directory = path.join(context.root, id);
   await privateDirectory(directory);
@@ -82,7 +83,7 @@ export async function createRun(context, name, workspace) {
 }
 
 export async function readOwner(context, id) {
-  if (!/^[a-f0-9]{32}$/.test(id)) fail('runUnavailable', 'The run is unavailable.');
+  if (!runId(id)) fail('runUnavailable', 'The run is unavailable.');
   const directory = path.join(context.root, id);
   try {
     await verifyPrivatePaths([
@@ -98,7 +99,7 @@ async function readVerifiedOwner(context, id) {
   const directory = path.join(context.root, id);
   try {
     const meta = await readJson(path.join(directory, 'owner.json'), 1024 * 1024);
-    if (meta.schema !== 5 || meta.id !== id || !/^[a-f0-9]{32}$/.test(meta.key ?? '') ||
+    if (meta.schema !== 5 || meta.id !== id || !runKeyPattern.test(meta.key ?? '') ||
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(meta.name ?? '') ||
       !/^[a-f0-9]{48}$/.test(meta.token ?? '') || JSON.stringify(meta.owner) !== JSON.stringify(context.owner) ||
       !Array.isArray(meta.processes) || !(meta.terminalAt === null || Number.isSafeInteger(meta.terminalAt) && meta.terminalAt >= 0)) {
@@ -309,7 +310,7 @@ export async function scanExpired(context) {
     if (error.code === 'ENOENT' || !await fs.lstat(context.root).catch(() => null)) return false;
     return true;
   }
-  const ids = entries.filter((item) => item.isDirectory() && /^[a-f0-9]{32}$/.test(item.name)).slice(0, 128).map((entry) => entry.name);
+  const ids = entries.filter((item) => item.isDirectory() && runId(item.name)).slice(0, 128).map((entry) => entry.name);
   const owners = await readOwners(context, ids);
   for (const id of ids) {
     try {

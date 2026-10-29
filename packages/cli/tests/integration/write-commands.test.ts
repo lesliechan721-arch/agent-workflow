@@ -16090,7 +16090,7 @@ describe('five namespaced write commands', () => {
       const installed = await runPublic(['install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project']);
       expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
       guideId = (await listManagedCommands(isolation.env)).commands.find((command) => command.name === 'guide/subagent/default')!.id;
-      expect(guideId).toMatch(/^cmdp_[0-9a-f]{64}$/u);
+      expect(guideId).toMatch(/^cmdp_[0-9a-f]{16}$/u);
       expect(review.changes).toContainEqual(expect.objectContaining({ title: expect.stringMatching(/^Codex 权限规则/u), description: expect.stringContaining(guideId) }));
       const permission = await fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex/rules/aw-codex-enhance-subagent-commands.rules'), 'utf8');
       expect(permission).toContain(JSON.stringify(['aw', 'command', 'run', guideId, '--', 'start']));
