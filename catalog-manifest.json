@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.51",
+  "catalogVersion": "0.1.0-beta.52",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "13490156660dec18f577f522717e85ee2c964604"
+    "sourceHead": "bcec697d3d359f48537a54be6101fa0d1c0bd1d7"
   },
   "entries": [
     {
@@ -117,7 +117,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.9",
+      "version": "0.1.0-beta.10",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -128,6 +128,8 @@
             "aw.catalog-authoring.v1",
             "aw.catalog-dev-source.v1",
             "aw.catalog-publication.v1",
+            "aw.claude.sandbox-exclusions.v1",
+            "aw.managed-commands.v1",
             "aw.plugin-authoring.v1",
             "aw.plugin-manifest.v3",
             "aw.plugin-skills.v1",
@@ -139,9 +141,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:aefd46c3330c0eb8f777aed4efcb5f45b120097b3dedc9ab0f847c14a6e6613d",
-      "manifestDigest": "sha256:aac1c394b1214e8d4aeb084708553ee81914006c120378804ad261486e898e7f",
-      "contentDigest": "sha256:372d80566e93ff85c3d0eba46813e9b1ee8fbf11547b0ec50f7f6a153e3d42f9"
+      "artifactDigest": "sha256:76db1e822fab86221dda723a5f4cda1a0a58a5122c0e5f3ddcb482bcda912e71",
+      "manifestDigest": "sha256:610ee0c9058b5b3eaf5a2d4a531085db91af87c5482b63a7e991450c9b8eeea6",
+      "contentDigest": "sha256:b1ebf400df15ef5844ab6ce3d70911c4414704a5d1a0ce84e81f5b1b7075aab9"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -247,13 +249,14 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.15",
+      "version": "0.2.0-beta.16",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
             "aw.dynamic-artifacts.v2",
             "aw.installed-runtime-config.v2",
+            "aw.managed-commands.v1",
             "aw.plugin-build-config.v1",
             "aw.plugin-config-array.v1",
             "aw.plugin-config-summary.v1",
@@ -266,9 +269,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:630ef3e3c997182266855038d977bc178297f03a0e7e917b6996a9274cbe55d8",
-      "manifestDigest": "sha256:9fed8bf7938663c89d4392567172c3f85563ed7a1563c471e8ff8691f9d15362",
-      "contentDigest": "sha256:edcd7615b9fc523871ff8c33f9ac7bd6de9b141e596fa7b3f3b738080f071f32"
+      "artifactDigest": "sha256:90f4292b568869357e7625eac4aad0f561f7891a6d7442afee7daef728108023",
+      "manifestDigest": "sha256:7e071ba5cac5cd14d55978f6ab0d8eb0f72574e584b4a820b209bc80dff35289",
+      "contentDigest": "sha256:aff6f7898ce54f0ba9cb4a98c8b25b72f38839d162cbc57322991a15a0be6de9"
     },
     {
       "name": "decision-kit",

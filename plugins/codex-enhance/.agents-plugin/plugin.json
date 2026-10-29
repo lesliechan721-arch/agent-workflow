@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "codex-enhance",
-  "version": "0.2.0-beta.15",
+  "version": "0.2.0-beta.16",
   "description": "在 Codex 中组织已授权的通用委派、只读技术第二意见和大范围事实调查。",
   "marketplace": {
     "category": "workflow",
@@ -28,6 +28,7 @@
       "capabilities": [
         "aw.dynamic-artifacts.v2",
         "aw.installed-runtime-config.v2",
+        "aw.managed-commands.v1",
         "aw.plugin-build-config.v1",
         "aw.plugin-config-array.v1",
         "aw.plugin-config-summary.v1",
@@ -47,6 +48,71 @@
       "Skills",
       "Agents"
     ]
+  },
+  "extensions": {
+    "instructions": [],
+    "permissions": [
+      {
+        "name": "subagent-commands",
+        "allow": [
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "start"
+            ]
+          },
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "send"
+            ]
+          },
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "wait"
+            ]
+          },
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "result"
+            ]
+          },
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "stop"
+            ]
+          }
+        ],
+        "agentOverrides": {
+          "claude": null
+        }
+      }
+    ],
+    "hooks": [],
+    "agents": []
   },
   "buildConfig": {
     "fileRules": {
@@ -1735,6 +1801,11 @@
                     "id": "custom",
                     "title": "custom",
                     "value": "custom"
+                  },
+                  {
+                    "id": "custom-managed",
+                    "title": "自定义（托管命令）",
+                    "value": "custom-managed"
                   }
                 ]
               }
@@ -2002,6 +2073,38 @@
                       "minLength": 1,
                       "maxLength": 4096,
                       "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)"
+                    }
+                  }
+                }
+              },
+              "custom-managed": {
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "required": true,
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "workspace",
+                          "title": "workspace",
+                          "value": "workspace"
+                        },
+                        {
+                          "id": "bundle",
+                          "title": "bundle",
+                          "value": "bundle"
+                        }
+                      ]
+                    }
+                  },
+                  "commandId": {
+                    "type": "string",
+                    "title": "托管命令 ID",
+                    "required": true,
+                    "validation": {
+                      "maxLength": 69,
+                      "pattern": "^(?:cmdp_[0-9a-f]{64}|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$"
                     }
                   }
                 }
@@ -3674,6 +3777,31 @@
         "refreshKeys": [],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-advisor"
+      }
+    ]
+  },
+  "managedCommands": {
+    "packages": [],
+    "sets": [
+      {
+        "set": "guide",
+        "producer": {
+          "kind": "artifact",
+          "artifactId": "codex-subagent-guide-skill"
+        },
+        "mode": "static",
+        "entries": [
+          {
+            "key": "subagent",
+            "variant": "default",
+            "runner": "node",
+            "entry": "scripts/subagent.mjs",
+            "args": [],
+            "env": {},
+            "envFrom": {},
+            "cwd": "caller"
+          }
+        ]
       }
     ]
   }

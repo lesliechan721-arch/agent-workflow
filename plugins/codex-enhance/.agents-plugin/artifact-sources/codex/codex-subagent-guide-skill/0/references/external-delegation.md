@@ -1,26 +1,39 @@
 # 外部委派
 
-用已选配置的 `executor` 值精确匹配下表中的 key。若无任何匹配则可认定配置无效并报告缺口。
+用已选配置的 `executor` 值精确匹配下表中的 key。若无任何匹配代表配置无效，结束并报告缺口。
 
 <!-- subagent-commands -->
 
-## 模式和启动
+## 共用回执格式
+
+下文 `<...>` 表示实际值，`[...]` 表示可选部分。run 是启动句柄，不能用展示名代替；code 是错误码，state 是 completed/failed/cancelled/unknown 任务终态。communication 为 true/false/pending：可通信、整体通信关闭或不支持、尚未取得结论。
+
+| 正文块形态 | 读取方式 |
+| --- | --- |
+| `<message run="…">…</message>` | 子侧过程消息，不代替最终结果。 |
+| `<input run="…" delivery="…" code="…">…</input>` | 有投递缺口的父输入，delivery 为 notSubmitted/unknown；completed 也不能证明这些要求已送达。 |
+| `<result run="…" state="…">…</result>` | 最终正文与结果证据。 |
+| `<diagnostic [run="…"] code="…" [field="…"]>…</diagnostic>` | 简短原因与恢复动作；没有句柄或具体字段时省略相应属性。 |
+
+非 completed 结果必有 text_status（partial 表示部分正文，missing 表示无正文）、generation_started（true/false/null；null 表示无法确认是否已开始生成）和 backend_exit_code（整数或 null；null 表示退出码未知）。固定结果已有 code 或 remote_stop_confirmed 时保留。
+
+正文含结束标签时，为避免歧义标签将使用数字后缀，如 result_2。
+
+## start：启动任务
 
 输入模式由执行器配置决定：
 
 - **workspace**：使用 `--workspace` 指定工作目录。
 - **bundle**：只附加 `--file` 选中的文件。
 
-启动命令：
-
 ```text
-node scripts/subagent.mjs start --executor "<key>" --instructions-file "<instructions-file>" --prompt "<complete task>"
+{{aw.command:guide/subagent}} start --executor "<key>" --instructions-file "<instructions-file>" --prompt "<text>"
 ```
 
 | 参数 | 必填或默认值 | 用途与限制 |
 | --- | --- | --- |
 | `--executor KEY` | 必填 | 执行器 key。 |
-| `--prompt TEXT` | 必填 | 任务提示；过长时用 `--prompt -` 从 stdin 输入。 |
+| `--prompt-file PATH` 或 `--prompt TEXT` | 必须且只能选一项 | 文件为非空 UTF-8 普通文件。 |
 | `--workspace DIR` | 可选，默认当前目录 | 工作目录。 |
 | `--instructions-file FILE` | 可选 | 角色指令；无明确其他角色要求时使用默认 任务指令（`assets/task-instructions.md`）。 |
 | `--file SELECTOR` | 可选，可重复 | 仅 bundle 模式可用；选择、忽略规则和外发边界见 文件选择（`references/file-selection.md`）。 |
@@ -28,76 +41,74 @@ node scripts/subagent.mjs start --executor "<key>" --instructions-file "<instruc
 | `--name NAME` | 可选，省略时自动生成 | 仅供显示，可重名；首字符须为 ASCII 字母或数字，后续允许 `._-`，总长 1–64。 |
 | `--deadline-ms N` | 可选，默认**无执行期限** | 仅明确要求时设置，单位毫秒。 |
 
-后续命令的 `--run` 使用启动回执中的句柄，不能用显示名称代替。
+文件参数路径相对 cwd 解析。
 
-## 识别回执：环境、状态与通信能力
-
-`environment` 为 pending / available / unavailable；pending 表示尚未确定。unavailable 时按 `environment_code` 修复入口或配置。
-
-是否支持通信，以本次回执为准。`communication` 为 pending / true / false；pending 表示尚未确定，不能认为不支持。关闭通讯仍可等待结果或停止任务。
-
-| 字段 | 含义 |
+| 输出 | 如何处理 |
 | --- | --- |
-| communication_status | enabled 时可发送；disabled 表示配置关闭，unsupported 表示无可用双向能力，后两者对应 communication=false。 |
-| communication_transport | 子侧接口为 mcp 或 command；父侧仍使用下述统一命令。 |
-| communication_passive_delivery | in-turn：父输入可进入当前轮；turn-boundary：当前轮结束后进入；none：不自动输入。 |
-| communication_active_receive | 子侧是否能主动等待父侧回复。 |
+| `started <run> communication=…` | 已就绪，用 wait/result 获取后续消息与结果。 |
+| `starting <run>` | 10 秒内尚未就绪，附 startupNotReady、退出 1；继续等待原 run，不再次 start。 |
+| `start_failed <run> [state=…] code=…` | 保留句柄并用 wait/result/stop 处理；state 仅在已有可靠终态时出现。 |
+| diagnostic，无 run | 创建句柄前失败，按错误处理。 |
 
-环境、能力或诊断未随 `start` 返回时，从后续 `wait/result` 取得。初始化失败时环境可能已确定，而通信仍为 pending。按 `DIAGNOSTIC` 的 code、字段和原因判断配置忽略、错误或 hook 信任影响；诊断可随 `result` 重读，不能仅凭任务成功就忽略它们。
+start 不消费过程消息或终态通知。回执丢失或非零退出不证明后端未执行，不自动重提任务。
 
-| 观察到的状态 | 含义与后续动作 |
-| --- | --- |
-| `state: starting` | 初始化尚未确认就绪，等待原 run 的能力与状态更新。即使 `start` 以退出码 1 返回 `startupNotReady`，本次 run 也可能已经启动，不能据此自动再次 `start`。 |
-| `state: running` | 继续等待；能力为 true 也不要求主动发送消息。 |
-| `state: closing` | 不再追加输入，等待收尾和最终结果。 |
-| `completed`、`failed`、`cancelled`、`unknown` | 已有终态；用 wait 取得未读通知，或用 result 取得固定结果与全部未读消息。unknown 不能证明原副作用或远端执行已停止。 |
-| 未收到 `run`，或启动结果不明 | 保留已有启动证据，不因非零退出或回执缺失自动重提任务。 |
+准备追加输入或答复过程问题且 communication=true，或收到过程消息、投递缺口时，读取 外部任务通信（`references/communication.md`）；仅有通信能力不要求预读。
 
-**按需读取通信分支：** 准备追加输入或答复过程问题且 `communication: true`，或实际收到过程消息、投递缺口时，读取 外部任务通信（`references/communication.md`）；仅有 `communication: true` 不要求预读。
-
-## 等待变化
+## wait：等待可处理事件
 
 ```text
-node scripts/subagent.mjs wait --run "<run-a>" --run "<run-b>"
+{{aw.command:guide/subagent}} wait --run "<run-a>" --run "<run-b>"
 ```
 
-`wait` 同时观察最多 16 个不同 run；任一目标出现新过程消息、状态变化或终态即提前返回，不依次等完各目标。默认等待超时时间为 ** 10 分钟 **；显式 `--timeout-ms N` 允许 `0–1800000` 毫秒。对同一 run 的 `wait` 和 `result` 消费调用应串行进行。
+默认响应式等待 600000 ms，一次按参数顺序观察 1–16 个不同句柄；`--timeout-ms N` 允许 0–1800000 ms。同一 run 的 wait/result 串行调用。
 
-| wait 回执中的信息 | 含义与后续动作 |
+| 输出 | 如何处理 |
 | --- | --- |
-| 新事件或首次终态 | 只返回有变化的目标。完整结果可容纳时随终态交付；仅本批空间不足则保留终态未读并标 `more: true`；单个结果本身超限才使用 `result: deferred`。 |
-| `more: true` | 本批后仍有待取事件；用 `--timeout-ms 0` 排空，再恢复长等待。省略 `more` 表示没有剩余**事件**，不表示结果已完整取得。 |
-| `result: deferred` | 终态通知已交付，但完整正文未随本次回执交付；用 `result` 读取或导出。后续 wait 不会重放该通知。 |
-| `wait: timeout` | 仅本次观察窗口没有变化；继续等待原任务，不重新生成。 |
-| `wait: settled` | 所选 run 均已终态且没有未读事件；仍须检查是否有 deferred 的完整结果尚未取得。 |
-| 部分目标读取失败 | 同次回执可包含其他 run 的有效结果；保留它们，分别处理失败目标的缺口。 |
+| `ready <run> communication=…` | 只补报 start 未报告的首次就绪；若终态同时可见，通信信息合入 result/deferred。 |
+| message / input / result 块 | 按共用格式处理消息、投递缺口或完整最终结果。 |
+| `deferred <run> state=… [communication=…]` | 终态通知已消费，正文未交付；用 result 读取或导出，wait 不重放此通知。 |
+| 首行 `more=true` | 用 `--timeout-ms 0` 排空剩余事件，再恢复长等待；它不表示任务仍运行或 deferred 正文已取得。 |
+| `timeout` | 本次窗口到期，继续原任务。 |
+| `settled` | 全部目标终态且无未读事件；检查是否还有 deferred 正文未取得。 |
 
-`wait` 与未加 `--export` 的 `result`，每次 stdout 与 stderr 合计最多 **8 KiB**；调用前使用能完整接收回执的工具路径。
+单个结果超限才 deferred，本批空间不足则保留未读并给出 more=true。读取/归属/失联问题返回 diagnostic，保留同批其它有效结果。
 
-## 读取最终结果
-
-```text
-node scripts/subagent.mjs result --run "<run>"
-node scripts/subagent.mjs result --run "<run>" --export
-```
-
-`result` 只接受一个 `--run`，且 run 已终态、未过期。它按接收顺序把**所有未读过程消息**与最终结果作为一次完整报告输出；随后消费这些过程消息。再次 `result` 只重读最终结果。`wait` 已消费的消息也不在报告中重复。
-
-返回 `resultNotReady` 时继续等待原 run。返回 `resultTooLarge` 时，表示完整报告超过输出上限；需要使用无参数标志 `--export` 将完整报告输出到 stdout，由调用者选择文件、管道或其他接收端，再按需读取。`--export` 不提高调用工具的输出上限。
-
-检查退出码和诊断，不能仅以 `result: read` 判断整次调用成功。脚本输出失败时不开始消费；`resultConsumeFailed` 表示报告已输出，但消息删除或观察位置更新失败，再读可能出现已输出但尚未删除的消息。工具回执丢失、裁剪或下游保存失败时，若脚本已消费，过程消息无法重读；只可从已经完整保存的副本继续处理。
-
-最终结果缓存固定保留 1 小时，读取不会续期。遇到 `runExpired` 或 `runUnavailable` 时，采用已保存的结果并说明缺口，不为取回旧结果重新生成。
-
-
-## 核对回执完整性
-
-`FINAL` 块是最终回答，`MESSAGE` 块是过程消息，`INPUT` 块是有投递问题的父输入，`DIAGNOSTIC` 块是外部诊断；以块外 `state`、`code`、`delivery` 判定运行和投递，正文里的同名行不能改变控制含义。`wait` / `result` 退出码为 0 只表示读取命令完成，不等于子代理业务成功。
-
-## 停止任务
+## result：读取完整结果
 
 ```text
-node scripts/subagent.mjs stop --run "<run>"
+{{aw.command:guide/subagent}} result --run "<run>"
 ```
 
-`stop` 最多观察 30 秒。返回 `stop: stopping` 时尚未确认停止；`state: closing` 或 `state: unknown` 也仍有待核实事项。本地任务停止不能单独证明远端任务已经取消。
+完整结果太大时可导出到文件 `--output-file "<file>"`；文件路径相对 cwd 解析，父目录须已存在；不覆盖已有文件。
+
+| 输出 | 如何处理 |
+| --- | --- |
+| message → input → result 块 | 完整结果包含全部未读消息、未被这些事件覆盖的固定投递缺口和最终正文；必要 diagnostic 随对应块交付。 |
+| `exported <run> path=… bytes=… consumed=true` | 文件完整写入、关闭并消费成功；path 是 JSON 字符串形式的绝对路径，bytes 是 UTF-8 字节数。 |
+| `exported … consumed=false`，附 resultConsumeFailed | 完整文件已存在，消息可能仅部分消费；保留文件，再读可能重复。 |
+| resultNotReady / resultTooLarge | 分别继续等待、改用文件导出；超限时未消费。 |
+| resultOutputExists | 目标已存在，核对后选择获准的新路径。 |
+| resultOutputFailed，含 complete=false | 写入/关闭失败，未消费；按诊断路径和已写 bytes 核对可能留下的不完整文件，bytes 可能为 unknown。 |
+
+## stop：停止任务
+
+```text
+{{aw.command:guide/subagent}} stop --run "<run>"
+```
+
+| 输出 | 如何处理 |
+| --- | --- |
+| `stopped <run> remote_stop_confirmed=…` | 已确认本地停止，单独核对远端证据。 |
+| `stopping <run> remote_stop_confirmed=…` | 最多观察 30 秒仍未确认本地停止；附 localStopUnconfirmed、退出 1，保留未确认事项。 |
+
+remote_stop_confirmed 的 true/false/unknown 表示远端取消证据，本地停止或 unknown 不证明远端停止。
+
+## 消费与结果保留
+
+操作失败的 diagnostic 写 stderr，已读取任务证据随相关块写 stdout。退出 0 表示命令完成（含 timeout 或读到失败任务），1 为操作失败，2 为参数无效。
+
+普通 wait/result 的 stdout+stderr 合计最多 8192 UTF-8 bytes，工具须完整接收。
+
+wait 先消费选入回执的消息并保存观察位置，再输出；普通 result 在完整输出成功后消费。已消费的过程消息不保证重放，回执丢失后不能依赖重复读取恢复。部分消费失败可能已有消息删除或造成重复，应保留已完整收到的副本。
+
+固定最终结果在终态后保留 1 小时，可用 result 重读，读取不续期。runExpired/runUnavailable 时说明缺口，不为取回旧结果重新生成。

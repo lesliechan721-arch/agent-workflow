@@ -54,7 +54,8 @@ function nativeFailure(error, operation, started, timeoutMs, phase = 'execute') 
 // are JSON data in an environment value, never executable command text.
 export async function windowsOperation(source, input = {}, operation = 'other') {
   const executable = windowsPowerShell();
-  const timeoutMs = 15000;
+  // Cold PowerShell startup and ACL operations can exceed 15 seconds on CI.
+  const timeoutMs = 30000;
   const started = performance.now();
   let phase = 'execute';
   const script = [

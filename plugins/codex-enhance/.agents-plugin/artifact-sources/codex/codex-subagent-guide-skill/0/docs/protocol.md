@@ -6,7 +6,7 @@
 
 ### 1. 进程、通道及版本
 
-worker 以 `shell:false`、`detached:false` 启动 adapter。custom 的 argv 只含已注册的可选 entrypoint；后端 args 放在 start 请求中。cwd 是本次绝对 workspace。stdin 持续打开用于控制，stdout 只输出本协议，stderr 是诊断。adapter 及后代继承本次受保护的进程归属 token；禁止重写该 token 或 AW 内部配置控制项。
+worker 以 `shell:false`、`detached:false` 启动 adapter。custom 的 argv 只含已注册的可选 entrypoint；custom-managed 通过同一 AW 主机的 command run 启动，绑定 fixed args 属于 adapter argv；两种分支的 executor args 都只放在 v5 start 请求中。cwd 缺省为本次绝对 workspace，托管 binding 可显式 cwd=resource；v5 workspace 值保持。stdin 持续打开用于控制，stdout 只输出本协议，stderr 是诊断。adapter 及后代继承本次受保护的进程归属 token；禁止重写该 token 或 AW 内部配置控制项。
 
 本合同同时适用于 macOS、Linux 和 Windows。worker 的后台存活、进程身份、停止及私有文件保护按 [操作系统与安装闭包](runtime.md#操作系统与安装闭包) 实现；`detached:false` 只描述 worker 与 adapter 的关系，不要求 worker 随短暂的 start 命令退出。Windows 的归属验证不能依赖 POSIX ps 或读取 Unix 进程环境；归属 token 不替代本机进程身份或受控进程边界。后端入口按本机安全启动方法解析，协议 args 保持 argv 数据，不拼为 shell 文本。
 
@@ -20,7 +20,7 @@ worker 以 `shell:false`、`detached:false` 启动 adapter。custom 的 argv 只
 
 stdout 不得透传后端日志、原始服务事件或 MCP stdout。adapter 负责转成明确的协议事件；调试信息只写 stderr。版本不符、未知事件、未知字段和顺序错误按照第 6 节结束，不猜测旧 v4 含义。
 
-字段名、枚举、错误码、程序生成的说明和诊断、MCP/脚本工具描述及共享 API 说明均使用英文。task/message/result.text 等数据保持原语言和原文，允许中文，不为满足输出语言而翻译。外部原始诊断若需要引用，必须与程序说明分开，向模型展示时进入 DIAGNOSTIC 块，不能拼到控制字段中。显示层的省略不改变本协议字段及内部结果证据。
+字段名、枚举、错误码、程序生成的说明和诊断、MCP/脚本工具描述及共享 API 说明均使用英文。task/message/result.text 等数据保持原语言和原文，允许中文，不为满足输出语言而翻译。外部原始诊断若需要引用，必须与程序说明分开，向模型展示时进入 diagnostic 块，不能拼到控制字段中。显示层的省略不改变本协议字段及内部结果证据。
 
 ### 2. 类型、大小和额度
 
@@ -51,7 +51,7 @@ stdout 不得透传后端日志、原始服务事件或 MCP stdout。adapter 负
 | 两个方向的消息 | 无累计条数或累计消息字节上限；每条仍须满足 message.text 和帧大小限制 |
 | stderr 诊断 | 整个 run 最多 8 MiB；这是运行资源预算，超额触发第 6 节收尾，不能仅截断留存后继续报告 completed |
 
-这些是单帧、单条正文及诊断的资源限制，不给整次 run 的通信设置累计额度。每方向只检查单条字节数，不维护累计消息额度账本。worker 另行保留的全部未解决投递摘要不属于 adapter result 帧，不受 result.text 或 result 帧大小上限限制；按[运行生命周期](runtime.md#停止失联与结果缓存) 完整保留并支持流式导出。result.text 的 4 MiB 与 result 帧的 32 MiB 不是主代理显示额度；wait 与未加 --export 的 result 的 stdout+stderr 合计最多 8 KiB；result 一次读取全部未读消息及固定最终结果，result --export 将完整报告写到 stdout，不受显示上限限制，由主代理选择接收目的地和方式。单条过程消息和必要封套、诊断须能独立交付，精确显示和调用工具预算见[命令输出合同](runtime.md#命令输出合同)；超限消息拒绝，不截断或自动拆分。
+这些是单帧、单条正文及诊断的资源限制，不给整次 run 的通信设置累计额度。每方向只检查单条字节数，不维护累计消息额度账本。worker 另行保留的全部未解决投递摘要不属于 adapter result 帧，不受 result.text 或 result 帧大小上限限制；按[运行生命周期](runtime.md#停止失联与结果缓存) 完整保留并支持流式导出。result.text 的 4 MiB 与 result 帧的 32 MiB 不是主代理显示额度；普通 wait/result 的 stdout+stderr 合计最多 8192 bytes，stderr 最多 1024。result 一次读取全部未读事件和固定最终结果；--output-file 将相同完整报告直接写入文件，不受普通报告预算约束。--export 是未知参数，在创建文件或消费前拒绝。单条过程消息、封套与必要诊断必须能独立交付；精确格式、工具预算和文件消费见 [命令输出合同](runtime.md#命令输出合同)。超限消息拒绝，不截断或自动拆分。
 
 实现可以在大帧尚未完整时提前拒绝超限，不得无限缓冲。通道写入等待仍受已显式设置的 deadline 和停止请求约束，不能因回压停止读取控制输入。双方应使用独立读取循环与串行写队列，不在读取循环中等待整个模型 turn 或等待用户答复。
 
@@ -145,7 +145,7 @@ adapter 停止接受新任务输入，调用后端正式中断方法，结束子
 ##### ready
 
 ```json
-{"protocolVersion":5,"type":"ready","initialization":{"environment":{"status":"available"},"capabilities":{"communication":{"status":"enabled","transport":"mcp","passiveDelivery":"in-turn","activeReceive":true}}}}
+{"protocolVersion":5,"type":"ready","initialization":{"environment":{"status":"available"},"capabilities":{"communication":{"status":"enabled","transport":"mcp","passiveDelivery":"in-turn"}}}}
 ```
 
 `initialization` 是必填严格对象，只含 environment、capabilities；替换旧顶层 communication，不兼容旧形状。environment 只能是 `{status:"available"}` 或 `{status:"unavailable",code:Code}`。available 表示已按本次选择规则找到可执行入口，不保证认证、网络、余额或模型资格。ready 只允许 available；capabilities 必须包含已确定的 communication。未来只增加有定义并经验证的命名能力，不接收任意 JSON 或复制顶层布尔值。
@@ -154,19 +154,19 @@ adapter 停止接受新任务输入，调用后端正式中断方法，结束子
 
 | status | 完整形状与含义 |
 | --- | --- |
-| enabled | 必填 transport=mcp/command、passiveDelivery=in-turn/turn-boundary/none、activeReceive=boolean；本次发送入口及声明的收件/自动输入入口已配置 |
+| enabled | 必填 transport=mcp/command、passiveDelivery=in-turn/turn-boundary/none；本次发送入口及声明的收件/自动输入入口已配置 |
 | disabled | 仅 `{ "status": "disabled" }`；请求关闭，跳过通讯检查和准备，仍检查环境及权限模式，不建 AW 桥、不注入工具或通讯说明 |
 | unsupported | 仅 `{ "status": "unsupported" }`；已查询且后端无可用双向能力，继续普通任务 |
 
-enabled 必须支持子→父发送，且被动输入与主动收件至少一种可用，none+false 非法。disabled/unsupported 不带其它字段；bundle 不得 enabled。communication=false 必须 disabled，不能 enabled；协议错、超时、缺字段或配置失败都不能报 unsupported。必须在首次模型提交之前完成 ready 写入；只有 enabled 注入按实际能力生成的说明。
+enabled 必须同时支持子→父发送和主动接收；passiveDelivery 只控制自动输入与提示词，none 也保留 receive。旧 activeReceive 字段按未知字段拒绝。disabled/unsupported 不带其它字段；bundle 不得 enabled。communication=false 必须 disabled，不能 enabled；协议错、超时、缺字段或配置失败都不能报 unsupported。必须在首次模型提交之前完成 ready 写入；只有 enabled 注入按实际能力生成的说明。
 
 ready 可带 `diagnostics: [{ "code": "profileFieldIgnored", "field": "features.example", "message": "The profile override was ignored; lower-layer configuration remains active." }]`。每项严格为 `{code, field?, message}`：code 为 Code，field 可选且仅字段路径，message 是简短英文说明。不得包含值、令牌、header、命令参数、可信摘要或 profile 原文。按字段组汇总过量诊断并报告总数，仍须满足 ready 帧及输出预算。
 
-接收诊断先校验原始形状，再脱敏。脱敏扩张使 message 或 field 超出单项预算时，保留 code 并明确说明省略；不能因此改写运行终态或丢失最终正文。快照只保存预算内摘要，固定结果保留其余完整安全诊断，并按既有 result 输出预算与 --export 合同读取。
+接收诊断先校验原始形状，再脱敏。脱敏扩张使 message 或 field 超出单项预算时，保留 code 并明确说明省略；不能因此改写运行终态或丢失最终正文。快照只保存预算内摘要，固定结果保留其余完整安全诊断，并按 result 普通报告或 --output-file 合同读取；主代理只得到必要 code、原因及恢复动作，不输出内部详细状态。
 
 worker 验证后进入 running。协议不增加 ready 的反向 ACK；因此 ready 与模型提交之间的故障仍可能形成 unknown，不能据未收到 start 回执重复生成。启动调用的 10 秒只是观察窗口，不是 adapter 的完整执行期限。
 
-worker 将完整 initialization、诊断及更新位置保存到已有最新快照和固定结果。若 start 已交付 pending，后续 wait 首次交付状态或终态（含 deferred），或 result 交付报告时须补报完整描述及诊断；快速收尾和快照合并不能吞掉它们。能力交付后无需重复，固定结果中的诊断可随 result 重读。初始化失败仍保存已确定的环境和能力；未检查的成员保持未知。失联且无可靠结论时保持 pending；失败诊断仍可随 result 保存。不新增事件队列、日志账本或 ACK。
+worker 将完整 initialization、诊断及更新位置保存到已有最新快照和固定结果。若 start 已交付 pending，后续 wait 首次 ready 或终态（含 deferred），或 result 交付报告时须补报 communication 与必要诊断；transport/passiveDelivery 仅内部使用；快速收尾和快照合并不能吞掉它们。能力交付后无需重复，固定结果中的诊断可随 result 重读。初始化失败仍保存已确定的环境和能力；未检查的成员保持未知。失联且无可靠结论时保持 pending；失败诊断仍可随 result 保存。不新增事件队列、日志账本或 ACK。
 
 ##### message：子代理发往父代理
 
@@ -292,7 +292,7 @@ cancelled 要求本次存在停止意图、本地执行已停止；已经提交�
 
 每次 adapter 初始化均调用 `descriptor.negotiate(context)`，替换 negotiateCommunication；所有 adapter、所有 communication 值均执行。context 包含本次 mode、安装配置、解析后的后端选项、有效环境及可检查资源。协商只读，不提交模型、不修改用户配置、不读最新 AW store。它同时返回环境与命名能力的候选；具体 executable、准备参数及权限规则计划只留在 adapter 内存，不加入 wire。
 
-环境检查确认所需 CLI/custom command 可按当前平台规则找到并执行。Codex 遵守 codexCliSource 的完整选择规则；Claude/agy/Oracle 使用有效 PATH；custom 保留绝对 command/entrypoint。缺失、不可执行、平台不支持分别返回稳定原因；不得以通讯 unsupported 代替。选定入口固定，失败不切换来源或重发。可执行有界无模型的原生初始化/查询，不建独立能力服务或持久健康缓存；该检查不证明认证或账户/模型资格。
+环境检查确认所需 CLI/custom command 或托管绑定可按当前平台规则找到并执行。Codex 遵守 codexCliSource 的完整选择规则；Claude/agy/Oracle 使用有效 PATH；custom 保留绝对 command/entrypoint。缺失、不可执行、平台不支持分别返回稳定原因；不得以通讯 unsupported 代替。选定入口固定，失败不切换来源或重发。可执行有界无模型的原生初始化/查询，不建独立能力服务或持久健康缓存；该检查不证明认证或账户/模型资格。
 
 公共 helper 校验环境与通讯候选，仅环境可用才进入准备。communication=false 只跳过通讯检查、桥、工具及说明，不跳过环境或权限模式。明确无通讯实现的 Oracle 可继续普通任务；已知支持路径的权限、资源、查询或建桥失败必须保留实际错误并收尾，不能降为 unsupported。
 
@@ -300,7 +300,7 @@ cancelled 要求本次存在停止意图、本地执行已停止；已经提交�
 
 外部通讯 prose 的唯一来源为 [communication-instructions.md](../assets/communication-instructions.md)。模板按公共、MCP/command、被动输入和主动收件片段组合，不在 common 中维护另一份文案。只在 enabled 时生成；模板或安装资源缺失按 runtime resource 错误失败，不退回旧固定文案。native 不注入这些外部桥指令。
 
-MCP 片段使用实际注册工具名；command 片段使用 bridge.script.command/args 生成完整 send/receive 调用，保留私有 binding，不要求模型填 run ID 或路径。按实际命令工具 shell 正确引用；未知 shell 不使用伪通用引用。in-turn 明确当前上下文自动输入，turn-boundary 明确等当前轮结束，none 不承诺自动输入。activeReceive=true 才提供收件方法及默认 600000、最高 1800000 ms 的响应式等待。false 不要求 receive，不承诺发问后暂停；没有已接受待办输入时仍正常关闭，缺必要答复须在最终结果说明未完成部分，不增加 idle 保活或周期拉取。
+MCP 片段使用实际注册工具名；command 片段使用 bridge.script.command/args 生成完整 send/receive 调用：@@SEND@@ 使用 send --text MESSAGE_TEXT，@@SENDFILE@@ 使用 send --text-file MESSAGE_FILE；移除 @@SENDSTDIN@@，保留私有 binding，不要求模型填 run ID 或路径。按实际命令工具 shell 正确引用；未知 shell 不使用伪通用引用。in-turn 明确当前上下文自动输入，turn-boundary 明确等当前轮结束，none 不承诺自动输入。通信启用时始终包含 active-receive 方法片段，提供默认 600000、最高 1800000 ms 的响应式等待；移除 no-active-receive 分支。需要父回复才能继续时保持任务开放，没有待处理输入及必要答复时正常关闭，不增加 idle 保活或周期拉取。
 
 公共片段保留 4096 UTF-8 字节单条上限、无累计额度、不自动拆分/截断/重发不明消息、自动输入不由 receive 重放、父消息不扩张授权，以及最终结果不能由过程消息替代。角色只含角色内容，初始任务组合一次；后续输入保留协作标识，不重复整份角色与说明。
 
@@ -351,19 +351,19 @@ interface ChildBridge {
 
 | 工具/脚本操作 | 输入 | 结果 |
 | --- | --- | --- |
-| `send_parent` / `send --text TEXT` | 非空正文；脚本支持 `--text -` | `submitted` or an explicit error; no implicit wait |
+| `send_parent` / `send --text TEXT` / `send --text-file PATH` | 非空正文；脚本只接受文本或文件，拒绝缺参、互斥和 -，不读取 stdin | `submitted` or an explicit error; no implicit wait |
 | `receive_parent` / `receive --timeout-ms N` | timeoutMs 可选，默认 600000，整数 0–1800000 | `received` with the assigned text, `timeout`, or `closed`; no cursor/history/replyTo |
 
-receive 在一条输入可分配时提前返回；有多个显式 receive 时只允许一个活跃调用，其余返回 `receiveAlreadyPending`，避免额外多消费者合同。MCP 和脚本均使用以上语义和 4 KiB 单条正文上限。普通返回使用英文控制行和独立 MESSAGE 块，按[命令输出合同](runtime.md#命令输出合同)生成短边界；正文保留原文。MCP 标准 envelope 只由包装处理，不把父输入混入工具状态或说明。工具成功状态使用 submitted/received，空结果使用 timeout/closed，错误使用明确的英文 code。
+receive 在一条输入可分配时提前返回；有多个显式 receive 时只允许一个活跃调用，其余返回 `receiveAlreadyPending`，避免额外多消费者合同。MCP 和脚本均使用以上语义和 4 KiB 单条正文上限。子侧保留 v5 工具输出：首行为 `send_parent: <outcome>` 或 `receive_parent: <outcome>`，可选 code 和 JSON 字符串 message。received 正文保留原文，使用独立 `BEGIN_MESSAGE:TOKEN` / `END_MESSAGE:TOKEN` 行包围；TOKEN 是每次输出生成且不出现在该正文中的 8 位小写十六进制值，正文前后各有 framing LF，不 trim 原文。父侧五命令的语义标签不用于此子侧工具合同。MCP 标准 envelope 只由包装处理，不把父输入混入工具状态或说明。工具成功状态使用 submitted/received，空结果使用 timeout/closed，错误使用明确的英文 code。
 
-子代理只取得本次声明的入口。activeReceive=true 时，需要问答才能继续应保持任务开放并采用默认 10 分钟响应式收件；输入或 closed 提前返回，明确更短窗口及剩余 run 时限可缩短它，deadline 或 close 必须唤醒等待。activeReceive=false 时按上述正常关闭边界处理。工具 schema/help 拥有参数规则，单一模板补充生命周期和输入语义。
+MCP 始终注册 send/receive 两个工具，脚本也始终提供两个入口，不提供 send-only 模式。需要问答才能继续时保持任务开放并采用默认 10 分钟响应式收件；输入或 closed 提前返回，明确更短窗口及剩余 run 时限可缩短它，deadline 或 close 必须唤醒等待。工具 schema/help 拥有参数规则，单一模板补充生命周期和输入语义。
 
 ### 8. 最低合同验收
 
 从真实 adapter 进程及公开 helper 入口验证，使用隔离目录及 fake backend。以下各风险只在最低足够真实的层级覆盖：
 
 1. JSONL 的半帧、多帧、Unicode 分片、未知字段、非法 UTF-8、EOF 半帧及大小边界。
-2. start 必填 communication、适用后端的 permissionMode 及 Codex 专属对象；enabled/disabled/unsupported、完整能力组合与非法 none+false、缺失/重复 ready、初始化失败和关闭时消息拒绝；关闭跳过通讯检查、桥和说明但仍检查环境及权限模式；晚到能力与诊断由 wait/result 补报，快速终态不能吞掉它们。
+2. start 必填 communication、适用后端的 permissionMode 及 Codex 专属对象；enabled/disabled/unsupported、完整能力组合与旧 activeReceive 字段拒绝、缺失/重复 ready、初始化失败和关闭时消息拒绝；关闭跳过通讯检查、桥和说明但仍检查环境及权限模式；晚到能力与诊断由 wait/result 补报，快速终态不能吞掉它们。
 3. 双向正文完整且不翻译，4 KiB 边界有效；双向发送并消费超过 64 条仍可继续，未消费队列也不因固定条数被拒绝，未解决投递不因旧累计字节额度丢失；名称符合 ASCII 规则，程序输出为英文；重复正文两次、身份固定、内部 ID 关联、重复/未知 delivery 拒绝。
 4. 慢输出回压下仍可接收 stop；deadlineAt 为 null 时跨过旧 30 分钟仍运行，显式 deadline、EOF、adapter 崩溃不重启任务。
 5. 一个后端 turn 完成时不会误认 run 结束；closing 与父输入交错时分类可查。

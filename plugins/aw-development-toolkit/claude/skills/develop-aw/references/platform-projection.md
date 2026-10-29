@@ -11,6 +11,7 @@ Skill 脚本需要读取本次安装生效的配置时，采用 组件方法（`
 | 平台名称或少量静态文字替换 | `templates.vars` 与明确的 `templates.include` | 只替换预期文件，保留其他正文 |
 | 各平台需要不同文件 | `fileRules` 的平台 include/exclude | 最终文件集合及引用闭包 |
 | 平台 manifest 的专属字段 | 当前支持的 `manifestOverrides` | 对应平台公开字段和 validator |
+| Skill 调用与权限需要稳定命令 | 采用 托管命令（`references/managed-commands.md`），由 AW 解析逻辑引用 | 最终正文和权限指向同一命令，独立包使用 AW-owned surface |
 | 配置、scope 或状态决定实际 artifact | 声明 targets 并使用 renderer | 请求/输出、配置与状态边界 |
 
 `manifestOverrides.claude` 只能使用当前公开支持的字段，不是任意对象合并入口。不要因另一个平台支持某字段就复制过去。renderer 的具体合同见 Artifact renderer（`references/aw-artifact-renderer.md`）。

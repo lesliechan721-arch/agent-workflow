@@ -65,7 +65,7 @@ export async function negotiateClaudeCommunication(context) {
     const pattern = new RegExp(`^${rule.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
     if (rule === server || tools.some((tool) => pattern.test(tool))) fail('communicationToolDenied', 'A Claude deny rule blocks an AW parent send or receive tool. Remove that restriction or set communication:false.');
   }
-  return { supported: true, transport: 'mcp', passiveDelivery: 'turn-boundary', activeReceive: true };
+  return { supported: true, transport: 'mcp', passiveDelivery: 'turn-boundary' };
 }
 
 export function claudeArguments(request, mcpServer) {
