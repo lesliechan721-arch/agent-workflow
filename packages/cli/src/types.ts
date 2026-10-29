@@ -584,7 +584,6 @@ export interface AgentVersionRequirement {
 export interface CodexOperationRequirement {
   scope: Scope;
   minimumVersion: StrictSemVerString;
-  requiresProjectPluginContract: boolean;
 }
 
 export interface AgentVersionProbeResult {

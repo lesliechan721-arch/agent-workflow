@@ -57,6 +57,7 @@ import crypto from 'node:crypto';
 import fs from 'fs-extra';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
+import { projectExecutionDiagnostics } from '../../src/tui/diagnostic-projection.js';
 import { listManagedCommands, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { PassThrough } from 'node:stream';
 import {
@@ -85,6 +86,7 @@ import {
 } from '../../src/utils/plugin-config.js';
 import { createCapturedCliIo, createTtyRuntimeStreams } from '../helpers/cli-entry.js';
 import {
+  NativeCliError,
   setNativeCliRunnerOverrideForTests,
   type NativeCliInvocation,
 } from '../../src/utils/native-cli.js';
@@ -13936,6 +13938,110 @@ describe('five namespaced write commands', () => {
     expect(managedCodexAuthorizer).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['user', false], ['user', true], ['project', false], ['project', true],
+  ] as const)('removes a mixed Codex plugin in %s and retries native failures (system CLI missing: %s)', async (scope, missingSystemCli) => {
+    // Test Value Gate: uninstall must remove native content as well as AW extensions, retain recovery evidence on native failure, and retry after extensions are gone.
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'mixed-uninstall-source');
+    await createNativeDependencyCatalog(sourceRoot, [{
+      name: 'demo',
+      configureManifest: (manifest) => {
+        manifest.extensions = {
+          instructions: [{ name: 'policy', title: 'Policy', content: 'Managed policy.' }],
+        };
+      },
+    }]);
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    const runtime = await createCodexNativeTestRuntime(isolation);
+    const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope } as const;
+    const installed = await installWriteCommand(['team/demo'], options, runtime);
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    const configPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+    const extensionConfigPath = scope === 'user'
+      ? configPath : path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
+    const originalRunner = runtime.nativeCliRunner.getMockImplementation()!;
+    const observationRunner = async (invocation: NativeCliInvocation) => {
+      if (missingSystemCli && invocation.command === 'codex') {
+        throw new NativeCliError({
+          invocation, exitCode: 1, stdout: '', stderr: '',
+          cause: Object.assign(new Error('Codex is missing'), { code: 'ENOENT' }),
+        });
+      }
+      return originalRunner(invocation);
+    };
+    runtime.nativeCliRunner.mockImplementation(observationRunner);
+    const denied = await uninstallWriteCommand(['team/demo'], options, {
+      env: runtime.env,
+      nativeCliRunner: runtime.nativeCliRunner,
+      codexManagerResolver: async () => {
+        throw new CodexManagerError('managedCodexAuthorizationRequired', 'Authorization is required.');
+      },
+    });
+    expect(denied.targetResults).toEqual([
+      expect.objectContaining({ errorCode: 'managedCodexAuthorizationRequired' }),
+    ]);
+    expect(Object.keys((await readCodexConfigFile(extensionConfigPath)).snapshot
+      .developerInstructions.managedBlocks)).toHaveLength(1);
+    expect(runtime.installed.has('demo@aw')).toBe(true);
+    let failRemove = true;
+    runtime.nativeCliRunner.mockImplementation(async (invocation) => {
+      if (invocation.args.join(' ') === 'plugin remove demo@aw' && failRemove) {
+        return { exitCode: 9, stdout: '', stderr: 'private native failure' };
+      }
+      return observationRunner(invocation);
+    });
+    const recoveryManagerResolver = vi.fn(async () => ({
+      kind: 'aw-managed' as const, version: '0.151.0', command: 'managed-codex', argsPrefix: [],
+    }));
+    const writeRuntime = {
+      env: runtime.env,
+      nativeCliRunner: runtime.nativeCliRunner,
+      ...(missingSystemCli ? {
+        codexManagerResolver: recoveryManagerResolver,
+      } : {}),
+    };
+    const failed = await uninstallWriteCommand(['team/demo'], options, writeRuntime);
+    expect(failed.overallState).toBe('failed');
+    expect(runtime.nativeCliRunner.mock.calls.some(([invocation]) =>
+      invocation.args.join(' ') === 'plugin remove demo@aw')).toBe(true);
+    expect(runtime.installed.has('demo@aw')).toBe(true);
+    const remaining = (await readCodexConfigFile(extensionConfigPath)).snapshot;
+    expect(Object.keys(remaining.developerInstructions.managedBlocks)).toEqual([]);
+    expect((await readCodexConfigFile(configPath)).snapshot.marketplaces.aw).toBeDefined();
+    const diagnostics = projectExecutionDiagnostics(failed, 'uninstall').diagnostics;
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'codexNativeRemoveFailed', stage: 'cleanup.owned', exitCode: 9,
+      causes: [expect.objectContaining({ code: 'nativeCliFailed' })],
+    }));
+    expect(JSON.stringify(diagnostics)).not.toContain('private native failure');
+
+    failRemove = false;
+    runtime.nativeCliRunner.mockClear();
+    const retried = await uninstallWriteCommand(['team/demo'], options, writeRuntime);
+    expect(retried.overallState, JSON.stringify(retried.rebuildResults)).toBe('succeeded');
+    expect(runtime.installed.has('demo@aw')).toBe(false);
+    expect(runtime.nativeCliRunner.mock.calls.some(([invocation]) =>
+      invocation.args.join(' ') === 'plugin remove demo@aw')).toBe(true);
+    expect((await readCodexConfigFile(configPath)).snapshot.plugins['demo@aw']).toBeUndefined();
+    if (missingSystemCli) {
+      expect(recoveryManagerResolver).toHaveBeenCalledTimes(2);
+    }
+    if (missingSystemCli && scope === 'user') {
+      recoveryManagerResolver.mockClear();
+      runtime.nativeCliRunner.mockClear();
+      await uninstallWriteCommand(['team/demo'], options, writeRuntime);
+      expect(recoveryManagerResolver).not.toHaveBeenCalled();
+      expect(runtime.nativeCliRunner.mock.calls.every(([invocation]) =>
+        invocation.args.includes('list'))).toBe(true);
+    }
+  });
+
   it('authorizes a managed Codex runtime before the first user native write', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'managed-codex-source');
@@ -14125,23 +14231,25 @@ describe('five namespaced write commands', () => {
     codexManagerResolver.mockClear();
     nativeCliRunner.mockClear();
 
-    const alreadyClean = await uninstallWriteCommand(['team/demo'], {
+    const uninstalled = await uninstallWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
-      platform: 'codex', scope: 'user',
+      platform: 'codex', scope: 'user', allowManagedCodexInstall: true,
     }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
-    expect(alreadyClean.overallState, JSON.stringify(alreadyClean.rebuildResults)).toBe('succeeded');
-    expect(codexManagerResolver).not.toHaveBeenCalled();
-    expect(nativeCliRunner).toHaveBeenCalledTimes(2);
-    expect(nativeCliRunner.mock.calls.every(([invocation]) =>
-      invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
-        === 'plugin list --marketplace aw --json')).toBe(true);
+    expect(uninstalled.overallState, JSON.stringify(uninstalled.rebuildResults)).toBe('succeeded');
+    expect(codexManagerResolver).toHaveBeenCalledTimes(1);
+    expect(installed).toBe(false);
+    expect(nativeCliRunner.mock.calls.some(([invocation]) =>
+      invocation.command === manager.command
+      && invocation.args.join(' ') === `${manager.argsPrefix[0]} plugin remove demo@aw`)).toBe(true);
 
+    codexManagerResolver.mockClear();
     nativeCliRunner.mockClear();
     const noOp = await uninstallWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex', scope: 'user',
     }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
     expect(noOp.overallState, JSON.stringify(noOp.rebuildResults)).toBe('succeeded');
+    expect(codexManagerResolver).not.toHaveBeenCalled();
     expect(nativeCliRunner).toHaveBeenCalledTimes(1);
     expect(nativeCliRunner.mock.calls.every(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')

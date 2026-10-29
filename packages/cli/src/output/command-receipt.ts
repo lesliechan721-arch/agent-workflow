@@ -89,9 +89,7 @@ function recoveryForTarget(state: ReceiptTargetResult['state'], errorCode?: stri
   if (state === 'completed') return [];
   if (errorCode === 'exclusiveOwnerEvidenceInvalid'
     || errorCode === 'forceCleanupPathUnavailable') return [];
-  if (errorCode === 'codexProjectPluginVersionTooLow'
-    || errorCode === 'codexProjectPluginUnsupported'
-    || errorCode === 'codexSystemCliUnsupported') {
+  if (errorCode === 'codexSystemCliUnsupported') {
     return ['upgrade or repair the official system Codex CLI, then retry the original operation'];
   }
   if (errorCode === 'sourceMissing' || errorCode === 'catalogSourceUnavailable'
@@ -129,9 +127,7 @@ function rebuildErrorCode(message: string): string {
 }
 
 function earlyFailureRecovery(command: RebuildReceiptJson['command'], errorCode?: string): string[] {
-  if (errorCode === 'codexProjectPluginVersionTooLow'
-    || errorCode === 'codexProjectPluginUnsupported'
-    || errorCode === 'codexSystemCliUnsupported') {
+  if (errorCode === 'codexSystemCliUnsupported') {
     return ['upgrade or repair the official system Codex CLI, then retry the original operation'];
   }
   if (errorCode === 'syncSelectorConflict') {

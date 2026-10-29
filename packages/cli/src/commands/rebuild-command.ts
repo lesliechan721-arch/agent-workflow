@@ -45,6 +45,7 @@ import {
   type CodexReconcilerLiveEvidence,
 } from '../utils/codex-reconciler.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
+import { isCanonicalCodexMarketplaceRegistration } from '../utils/codex-shared-native.js';
 import {
   executeRebuildComponentCleanup,
   executeRebuildOperation,
@@ -4263,6 +4264,7 @@ async function runRebuildCommandInSession(
       const executionContext: RebuildExecutionContext = {
         env: runtimeEnv,
         nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
+        codexManager: options.runtime?.codexManager,
         reporter: options.runtime?.reporter ?? createNoopReporter(),
         debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
         expectedCatalogConfigDigest: catalog.configDigest,
@@ -5582,7 +5584,7 @@ async function runRebuildCommandInSession(
             plan.postcheck.support === 'observed'
             && plan.postcheck.plugins.length > 0);
         const previewActivationScope: Scope = provisionalCodexPlans.some((plan) =>
-          plan.requirement.requiresProjectPluginContract) ? 'project' : 'user';
+          plan.requirement.scope === 'project') ? 'project' : 'user';
         const previewConsumer = previewActivationOnly
           ? await (
               options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
@@ -6032,6 +6034,76 @@ async function runRebuildCommandInSession(
             preflightTargets,
           );
         }
+        if (!executionContext.codexManager) {
+          const removalTargets = [];
+          for (const [key, prepared] of lockedPreparation.preparedTargets) {
+            const target = prepared.target;
+            if (target.identity.platform !== 'codex'
+              || target.writeNativeRequired
+              || operationPreparationFailures.has(key)) continue;
+            const nativeComponents = target.ownedComponents.filter((component) =>
+              component.kind === 'native-plugin'
+              || (component.kind === 'shared-config' && component.locator.kind === 'codex-marketplace'));
+            if (nativeComponents.length === 0) continue;
+            const inspected = await inspectOwnedComponents({
+              components: nativeComponents,
+              executor: lockedPreparation.integration.driver.ownership,
+              nativeProbe: lockedPreparation.integration.driver.probeNative,
+            });
+            let requiresManager = inspected.components.some((component) =>
+              component.state === 'present'
+              || (component.state === 'partial' && component.component.kind !== 'native-plugin'));
+            if (!requiresManager && inspected.components.some((component) =>
+              component.component.kind === 'native-plugin'
+              && (component.state === 'partial' || component.state === 'error'))) {
+              try {
+                const config = await readCodexConfigFile(
+                  resolveCodexPaths(target.identity.cwd, 'user', runtimeEnv).configTomlPath,
+                );
+                requiresManager = Boolean(target.identity.marketplaceName && target.identity.marketplaceRoot
+                  && isCanonicalCodexMarketplaceRegistration(
+                    config.snapshot.marketplaces[target.identity.marketplaceName],
+                    target.identity.marketplaceRoot,
+                  ));
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                operationPreparationFailures.set(key, failedResult(options.command, target.identity, message));
+                continue;
+              }
+            }
+            if (requiresManager) {
+              removalTargets.push({ key, target });
+            }
+          }
+          if (removalTargets.length > 0) {
+            try {
+              const managerOptions = {
+                cwd: options.commandOptions.cwd,
+                env: runtimeEnv,
+                runner: executionContext.nativeCliRunner,
+                authorizer: options.runtime?.managedCodexAuthorizer,
+                operationRequirement: getCodexOperationRequirement(options.commandOptions.scope),
+              };
+              if (options.runtime?.codexManagerResolver) {
+                executionContext.codexManager = await options.runtime.codexManagerResolver(managerOptions);
+              } else {
+                const consumer = await (
+                  options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
+                )({ ...managerOptions, requiresNativeMaterialization: true });
+                if (consumer.support !== 'observed') {
+                  throw new Error('Codex native removal requires an observed CLI consumer.');
+                }
+                executionContext.codexManager = consumer.manager;
+              }
+              executionContext.codexObservationSession?.setManager(executionContext.codexManager);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              for (const { key, target } of removalTargets) {
+                operationPreparationFailures.set(key, failedResult(options.command, target.identity, message));
+              }
+            }
+          }
+        }
         if (options.runtime?.awHomeMutationToken) {
           if (lifecycleCommand) {
             const preparedKeys = new Set(operationPreparations.keys());
@@ -6320,7 +6392,9 @@ async function runRebuildCommandInSession(
           && plannedNativeAction !== undefined
           && (plannedNativeAction.action === 'reuse'
             || plannedNativeAction.action === 'none')
-          && !hasCodexExtensionMutation;
+          && !hasCodexExtensionMutation
+          && !lockedPreparation.preparedTargets.get(key)?.target.ownedComponents.some((component) =>
+            component.kind === 'native-plugin');
         if (failedDependency || failedConsumer || planned.action === 'block') {
           const code = failedConsumer
             ? 'dependencyStillRequired'

@@ -3,7 +3,6 @@ import crypto from 'node:crypto';
 import {
   AGENT_VERSION_DISPLAY_NAMES,
   AGENT_VERSION_PROBE_COMMANDS,
-  CODEX_PROJECT_PLUGIN_MIN_VERSION,
   DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS,
   MINIMUM_AGENT_VERSIONS,
 } from '../constants.js';
@@ -53,13 +52,9 @@ export function getAgentVersionRequirement(platform: PlatformName): AgentVersion
 }
 
 export function getCodexOperationRequirement(scope: Scope): CodexOperationRequirement {
-  const requiresProjectPluginContract = scope === 'project';
   return {
     scope,
-    minimumVersion: requiresProjectPluginContract
-      ? CODEX_PROJECT_PLUGIN_MIN_VERSION
-      : MINIMUM_AGENT_VERSIONS.codex,
-    requiresProjectPluginContract,
+    minimumVersion: MINIMUM_AGENT_VERSIONS.codex,
   };
 }
 

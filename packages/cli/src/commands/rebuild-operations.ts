@@ -242,6 +242,7 @@ function mergeCleanup(
     phase,
     label: failure.label,
     message: failure.message,
+    ...(failure.operationDiagnostic ? { operationDiagnostic: failure.operationDiagnostic } : {}),
   })));
 }
 
@@ -261,6 +262,8 @@ function failed(
   message: string,
   operationDiagnostic?: SafeOperationErrorMetadata,
 ): RebuildFailedResult {
+  operationDiagnostic ??= accumulator.failures.find((failure) =>
+    failure.phase === phase && failure.message === message)?.operationDiagnostic;
   if (!accumulator.failures.some((failure) => failure.phase === phase && failure.message === message)) {
     accumulator.failures.unshift({ phase, message, ...(operationDiagnostic ? { operationDiagnostic } : {}) });
   }

@@ -1806,6 +1806,45 @@ describe('TUI v4 router and ViewModel', () => {
     expect(controller.listPlugins({ mode: 'browse', installFilter: 'uninstalled' })).toEqual([]);
   });
 
+  it.each(['present', 'partial'] as const)(
+    'allows installation after cleanup leaves %s shared native ownership without enabled scopes',
+    async (nativeState) => {
+      // Test Value Gate: shared native residue must not hide install actions for both absent placements after cleanup.
+      const codex = target({ platform: 'codex', scope: 'user', state: 'absent' });
+      if (codex.platform !== 'codex') throw new Error('expected Codex target');
+      codex.components.push({
+        kind: 'sharedNative', key: 'demo@aw', state: 'replaceable',
+        metadata: { shared: true, reason: 'outdated', version: '1.0.0', desiredVersion: '2.0.0' },
+      });
+      codex.placements.push({
+        scope: 'project', state: 'absent', components: [], reasons: [], recoveryActions: [],
+      });
+      for (const placement of codex.placements) {
+        placement.components.push(
+          { kind: 'ownership', key: 'native', state: nativeState },
+          { kind: 'ownership', key: 'activation-user', state: 'present' },
+          { kind: 'activation', key: 'user', state: 'disabled', metadata: { evidence: 'observed' } },
+        );
+      }
+      const controller = new TuiController(dependencies({
+        loadStatus: vi.fn().mockResolvedValue({
+          payload: status({ targets: [codex] }),
+          pluginSummaries: [{
+            ...summaries(['official', 'demo'])[0]!,
+            supportedTargets: { codex: ['project', 'user'], claude: [] },
+          }],
+        }),
+      }));
+      await controller.load();
+      expect(controller.pluginHasInstallableTarget('official/demo')).toBe(true);
+      for (const scope of ['user', 'project'] as const) {
+        expect(controller.listPluginInstallBatchTargets(['official/demo'], 'codex', scope)).toEqual([
+          { pluginId: 'official/demo', platform: 'codex', scope, state: 'add' },
+        ]);
+      }
+    },
+  );
+
   it('classifies each Codex batch install scope from its exact placement', async () => {
     const codex = target({ platform: 'codex', scope: 'project', state: 'error' });
     if (codex.platform !== 'codex') throw new Error('expected Codex target');

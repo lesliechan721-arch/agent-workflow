@@ -403,12 +403,12 @@ export function statusTargetActivation(
       : consumer.state === 'compatible' && typeof detectedVersion === 'string'
         ? { state: 'compatible', detectedVersion, requiredMinVersion }
         : consumer.state === 'incompatible'
-          && (code === 'codexProjectPluginVersionTooLow' || code === 'codexSystemCliUnsupported')
+          && code === 'codexSystemCliUnsupported'
           && typeof detectedVersion === 'string'
           && typeof diagnostic === 'string'
           ? { state: 'incompatible', code, detectedVersion, diagnostic, requiredMinVersion }
           : consumer.state === 'unresolved'
-            && (code === 'codexProjectPluginUnsupported' || code === 'codexSystemCliUnsupported')
+            && code === 'codexSystemCliUnsupported'
             && typeof diagnostic === 'string'
             ? { state: 'unresolved', code, diagnostic, requiredMinVersion }
             : undefined;
@@ -899,9 +899,7 @@ export function statusRecovery(options: {
     }];
   }
   if (options.errorCodes?.some((code) =>
-    code === 'codexProjectPluginVersionTooLow'
-    || code === 'codexProjectPluginUnsupported'
-    || code === 'codexSystemCliUnsupported')) {
+    code === 'codexProjectPluginUnsupported' || code === 'codexSystemCliUnsupported')) {
     return [{
       command: 'manual',
       description: '升级或修复官方 system Codex CLI 后重试原操作。',

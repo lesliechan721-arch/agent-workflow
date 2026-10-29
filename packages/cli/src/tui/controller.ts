@@ -53,6 +53,7 @@ import {
   type ConfigGroupViewModel,
   buildTuiViewModel,
   dependencyPlacementTargets,
+  hasScopedExtensionOwnership,
   type InstallPlacementDraftViewModel,
   type PluginListItemViewModel,
   type PluginDependencyOverviewViewModel,
@@ -3760,10 +3761,13 @@ export class TuiController {
               && activation[scope] === true);
         });
         const exactOwnership = exactTarget ? statusTargetOwnershipState(exactTarget) : 'absent';
+        const existingOutput = targetPlatform === 'codex'
+          ? exactTarget !== undefined && hasScopedExtensionOwnership(exactTarget)
+          : exactOwnership === 'present' || exactOwnership === 'partial';
         if (plugin?.catalogEntryMissing) {
           return { ...target, state: 'blocked', reason: '来源中没有可信插件定义' };
         }
-        if (alreadyConfigured || exactOwnership === 'present' || exactOwnership === 'partial') {
+        if (alreadyConfigured || existingOutput) {
           return { ...target, state: 'existing' };
         }
         if (!plugin) return { ...target, state: 'blocked', reason: '插件已不在当前状态中' };
@@ -3800,7 +3804,7 @@ export class TuiController {
           const confirmedMissing = activation?.evidence === 'observed' && activation[scope] === false
             || intent.enabled && !intent.scopes.includes(scope)
             || representativeTarget.state === 'absent'
-              && statusTargetOwnershipState(representativeTarget) === 'absent'
+              && !hasScopedExtensionOwnership(representativeTarget)
               && !intent.enabled;
           if (!confirmedMissing) {
             return { ...target, state: 'blocked', reason: '无法确认所选位置是否缺失' };

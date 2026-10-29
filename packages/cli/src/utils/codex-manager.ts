@@ -29,8 +29,6 @@ export const MANAGED_CODEX_MARKER_FILE = '.aw-managed-runtime.json';
 
 export type CodexManagerErrorCode =
   | 'codexSystemCliUnsupported'
-  | 'codexProjectPluginVersionTooLow'
-  | 'codexProjectPluginUnsupported'
   | 'managedCodexAuthorizationRequired'
   | 'managedCodexUnavailable';
 
@@ -98,14 +96,14 @@ export type SystemCodexInspection =
     }
   | {
       state: 'incompatible';
-      code: 'codexProjectPluginVersionTooLow' | 'codexSystemCliUnsupported';
+      code: 'codexSystemCliUnsupported';
       detectedVersion: string;
       diagnostic: string;
       requiredMinVersion: string;
     }
   | {
       state: 'unresolved';
-      code: 'codexProjectPluginUnsupported' | 'codexSystemCliUnsupported';
+      code: 'codexSystemCliUnsupported';
       diagnostic: string;
       requiredMinVersion: string;
     };
@@ -720,9 +718,7 @@ export async function inspectSystemCodex(
   const requiredMinVersion = options.operationRequirement.minimumVersion;
   const unresolved = (diagnostic: string): SystemCodexInspection => ({
     state: 'unresolved',
-    code: options.operationRequirement.requiresProjectPluginContract
-      ? 'codexProjectPluginUnsupported'
-      : 'codexSystemCliUnsupported',
+    code: 'codexSystemCliUnsupported',
     diagnostic,
     requiredMinVersion,
   });
@@ -741,9 +737,7 @@ export async function inspectSystemCodex(
   if (result.status === 'tooOld') {
     return {
       state: 'incompatible',
-      code: options.operationRequirement.requiresProjectPluginContract
-        ? 'codexProjectPluginVersionTooLow'
-        : 'codexSystemCliUnsupported',
+      code: 'codexSystemCliUnsupported',
       detectedVersion: result.detectedVersion!,
       diagnostic: unsupportedSystemDiagnostic(result),
       requiredMinVersion,
@@ -845,18 +839,6 @@ function unsupportedSystemDiagnostic(
   return `The installed system Codex CLI is not supported.${detected} Required minimum: ${system.requiredMinVersion}. Upgrade the official Codex CLI and retry; AW does not bypass an installed but unsupported system CLI.`;
 }
 
-function unsupportedSystemCode(
-  options: Pick<CodexManagerOptions, 'operationRequirement'>,
-  result?: AgentVersionProbeResult,
-): CodexManagerErrorCode {
-  if (!options.operationRequirement?.requiresProjectPluginContract) {
-    return 'codexSystemCliUnsupported';
-  }
-  return result?.status === 'tooOld'
-    ? 'codexProjectPluginVersionTooLow'
-    : 'codexProjectPluginUnsupported';
-}
-
 const MANAGED_AUTHORIZATION_DIAGNOSTIC =
   'This operation must acquire or rebuild the pinned AW-managed Codex runtime. Retry with --allow-managed-codex-install, or approve the interactive prompt.';
 
@@ -879,14 +861,14 @@ export async function previewCodexManager(
   if (system.state === 'unsupported') {
     return {
       state: 'blocked',
-      code: unsupportedSystemCode(options),
+      code: 'codexSystemCliUnsupported',
       diagnostic: system.diagnostic,
     };
   }
   if (system.state === 'probed') {
     return {
       state: 'blocked',
-      code: unsupportedSystemCode(options, system.result),
+      code: 'codexSystemCliUnsupported',
       diagnostic: unsupportedSystemDiagnostic(system.result),
     };
   }
@@ -913,11 +895,11 @@ export async function resolveCodexManager(
     };
   }
   if (system.state === 'unsupported') {
-    throw new CodexManagerError(unsupportedSystemCode(options), system.diagnostic);
+    throw new CodexManagerError('codexSystemCliUnsupported', system.diagnostic);
   }
   if (system.state === 'probed') {
     throw new CodexManagerError(
-      unsupportedSystemCode(options, system.result),
+      'codexSystemCliUnsupported',
       unsupportedSystemDiagnostic(system.result),
     );
   }
@@ -979,11 +961,11 @@ export async function resolveCodexOperationConsumer(
     };
   }
   if (system.state === 'unsupported') {
-    throw new CodexManagerError(unsupportedSystemCode(options), system.diagnostic);
+    throw new CodexManagerError('codexSystemCliUnsupported', system.diagnostic);
   }
   if (system.state === 'probed') {
     throw new CodexManagerError(
-      unsupportedSystemCode(options, system.result),
+      'codexSystemCliUnsupported',
       unsupportedSystemDiagnostic(system.result),
     );
   }

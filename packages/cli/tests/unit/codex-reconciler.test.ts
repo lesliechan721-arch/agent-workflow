@@ -151,8 +151,8 @@ describe('Codex desired-state reconciliation planner', () => {
       { activations: { user: true, project: false } },
     )));
     expect(plan.requirement).toMatchObject({
+      scope: 'project',
       minimumVersion: '0.151.0',
-      requiresProjectPluginContract: true,
     });
     expect(plan.activationActions.user[0]).toMatchObject({ action: 'disable', desired: false });
     expect(plan.activationActions.project[0]).toMatchObject({ action: 'enable', desired: true });

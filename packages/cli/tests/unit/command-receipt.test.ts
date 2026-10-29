@@ -48,7 +48,7 @@ function successfulRebuild(command: RebuildResult['command'] = 'install'): Rebui
 function codexReusePlan(): CodexReconcilePlan {
   return {
     requirement: {
-      scope: 'project', minimumVersion: '0.0.0', requiresProjectPluginContract: true,
+      scope: 'project', minimumVersion: '0.0.0',
     },
     desiredTargets: [{ pluginId: 'team/demo', scopes: ['project', 'user'] }],
     sharedNativeActions: [{
@@ -65,7 +65,7 @@ function codexReusePlan(): CodexReconcilePlan {
     },
     warnings: [],
     postcheck: { requirement: {
-      scope: 'project', minimumVersion: '0.0.0', requiresProjectPluginContract: true,
+      scope: 'project', minimumVersion: '0.0.0',
     }, support: 'observed', plugins: [] },
     review: { requiresConfirmation: false, sharedImpact: { pluginIds: [] } },
   };
@@ -359,7 +359,7 @@ describe('command receipt v6', () => {
   });
 
   it('keeps early failure recovery without inventing a plan fingerprint or changes', () => {
-    const errorCode = 'codexProjectPluginVersionTooLow';
+    const errorCode = 'codexSystemCliUnsupported';
     const receipt = buildRebuildReceiptJson('install', {
       platforms: ['codex'], plugins: ['team/demo'], warnings: [], overallState: 'failed',
       errors: [{ code: errorCode, message: `${errorCode}: consumer probe failed` }],
