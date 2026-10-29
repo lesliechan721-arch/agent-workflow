@@ -150,10 +150,10 @@ projectRoot 使用现有项目根定位器确定项目，再 `realpath` 并按�
 规范序列化 C：object keys 按 ECMAScript 默认字符串排序；数组保持顺序；primitive 用 `JSON.stringify`；递归拼接，不含空白或末尾换行。对象中所有列出的 identity 字段必填，不允许 undefined/额外字段。插件命令 ID 精确为：
 
 ```text
-cmdp_ + lowercaseHex(SHA256(UTF8(C(CommandIdentity))))
+cmdp_ + lowercaseHex(SHA256(UTF8(C(CommandIdentity))))[0:16]
 ```
 
-不截短、不加第二次摘要，不把版本、config digest、resourceRoot、安装路径或包 revision 放入 identity。sourceId 改名也形成新身份；相同别名替换 sourceIdentity 必须形成新身份。规范化前后的键大小写不互换。若遇同 ID 不同 identity，不覆盖，返回 `commandIdentityConflict`。
+取摘要前 64 位，编码为 16 位小写 hex；完整命令 ID 共 21 个字符。不加第二次摘要，不把版本、config digest、resourceRoot、安装路径或包 revision 放入 identity。sourceId 改名也形成新身份；相同别名替换 sourceIdentity 必须形成新身份。规范化前后的键大小写不互换。绑定仍核对完整 identity；若遇同 ID 不同 identity，不覆盖，返回 `commandIdentityConflict`。
 
 用户命令 ID 为 `cmdu_` 加标准小写带连字符 UUID v4，例如 `cmdu_4ba70354-0867-4ecb-a927-120c1933f514`。首次 install 生成，update 不变，remove 后重新 install 重新生成。两种 ID 都不接受大小写修正或人类名称路由。
 

@@ -1,7 +1,9 @@
 import * as fs from 'node:fs/promises';
+import crypto from 'node:crypto';
+import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getCommandPackageId, normalizeCommandDefinition, normalizeCommandLaunch, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { createIsolatedTestEnv, type IsolatedTestEnvironment } from '../helpers/test-isolation.js';
@@ -10,12 +12,14 @@ import {
   copyManagedCommandDirectory,
   installUserCommand,
   listManagedCommands,
+  publishManagedCommandBindings,
   readUserCommandDefinition,
   removeManagedCommandPackage,
   removeUserCommand,
   resolveManagedCommand,
   syncManagedCommandPackage,
   updateUserCommand,
+  writeInstalledCommandProducer,
 } from '../../src/utils/managed-command-store.js';
 import { buildManagedCommandEnvironment, prepareManagedCommandRun } from '../../src/utils/managed-command-runtime.js';
 
@@ -102,6 +106,55 @@ describe('managed command store and run preparation', () => {
     expect(removed.removedCommandIds).toEqual([id]);
     await expect(resolveManagedCommand(id, isolated.env)).rejects.toMatchObject({ code: 'commandNotFound' });
     expect(await fs.readFile(path.join(source, 'entry.mjs'), 'utf8')).toContain('dependency.mjs');
+  });
+
+  // A digest collision must fail before changing either the producer or any
+  // binding, including when both conflicting identities are new candidates.
+  it('rejects digest collisions in publication and package sync without replacing existing state', async () => {
+    const producer: ProducerIdentity = { sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'example', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null };
+    const entries = ['first', 'second'].map((key) => normalizeCommandDefinition({ key, runner: 'node', entry: 'entry.mjs' }));
+    const recordPath = path.join(source, COMMAND_PRODUCER_RECORD);
+    const bindings = path.join(isolated.layout.awHomeDir, 'commands', 'bindings');
+    await writeInstalledCommandProducer(source, { schemaVersion: 1, producer, sets: [] });
+    const before = await fs.readFile(recordPath, 'utf8');
+    const createHash = crypto.createHash;
+    const hashSpy = vi.spyOn(crypto, 'createHash').mockImplementation((algorithm, options) => {
+      const hash = createHash(algorithm, options);
+      // Natural SHA64 collisions are not practical test inputs. Replace only
+      // the crypto digest; normalization, publication and real files stay live.
+      vi.spyOn(hash, 'digest').mockReturnValue('a'.repeat(64));
+      return hash;
+    });
+    syncBuiltinESMExports();
+    try {
+      const publish = (selected: typeof entries) => publishManagedCommandBindings({ producer, resourceRoot: source, sets: [{ set: 'tools', state: 'present', entries: selected }], env: isolated.env });
+      await expect(publish(entries)).rejects.toMatchObject({ code: 'commandIdentityConflict' });
+      expect(await fs.readFile(recordPath, 'utf8')).toBe(before);
+      await expect(fs.lstat(bindings)).rejects.toMatchObject({ code: 'ENOENT' });
+      const [id] = await publish(entries.slice(0, 1));
+      const bindingPath = path.join(bindings, `${id}.json`);
+      const bindingBefore = await fs.readFile(bindingPath, 'utf8');
+      const recordBefore = await fs.readFile(recordPath, 'utf8');
+      await expect(publish(entries.slice(1))).rejects.toMatchObject({ code: 'commandIdentityConflict' });
+      expect(await fs.readFile(bindingPath, 'utf8')).toBe(bindingBefore);
+      expect(await fs.readFile(recordPath, 'utf8')).toBe(recordBefore);
+      const packageSource = path.join(isolated.layout.fixtureCwd, 'collision-package');
+      await fs.mkdir(packageSource);
+      await fs.writeFile(path.join(packageSource, 'entry.mjs'), '// Original package.\n');
+      const sync = (selected: typeof entries) => syncManagedCommandPackage({ producer, sourceDirectory: packageSource, sets: [{ set: 'tools', state: 'present', entries: selected }], env: isolated.env });
+      const installed = await sync(entries.slice(0, 1));
+      const installedRecord = path.join(installed.resourceRoot, COMMAND_PRODUCER_RECORD);
+      const installedBefore = await fs.readFile(installedRecord, 'utf8');
+      const installedBindingBefore = await fs.readFile(bindingPath, 'utf8');
+      await fs.writeFile(path.join(packageSource, 'entry.mjs'), '// Replacement package.\n');
+      await expect(sync(entries.slice(1))).rejects.toMatchObject({ code: 'commandIdentityConflict' });
+      expect(await fs.readFile(bindingPath, 'utf8')).toBe(installedBindingBefore);
+      expect(await fs.readFile(installedRecord, 'utf8')).toBe(installedBefore);
+      expect(await fs.readFile(path.join(installed.resourceRoot, 'entry.mjs'), 'utf8')).toBe('// Original package.\n');
+    } finally {
+      hashSpy.mockRestore();
+      syncBuiltinESMExports();
+    }
   });
 
   // Protects byte-level argv composition and control environment precedence before transparent spawn.

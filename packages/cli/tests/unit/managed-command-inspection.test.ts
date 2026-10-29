@@ -32,7 +32,7 @@ describe('managed command read-only inspection', () => {
     await fs.outputFile(path.join(root, 'render.mjs'), 'throw new Error("Read-only inspection must not run the renderer.");\n');
     const plugin = { ...await readPluginManifest(root), sourceId: 'fixture', sourceIdentity, pluginId: 'fixture/inspection-commands' };
     const bindings = path.join(isolated.layout.awHomeDir, 'commands', 'bindings');
-    const damagedPath = path.join(bindings, `cmdp_${'0'.repeat(64)}.json`);
+    const damagedPath = path.join(bindings, `cmdp_${'0'.repeat(16)}.json`);
     if (bindingState === 'damaged') await fs.outputFile(damagedPath, '{broken');
     const context = createCommandExecutionContext({ env: isolated.env, nativeCliRunner: async () => { throw new Error('Inspection must not invoke native CLI.'); } });
     const integration = createRebuildIntegration({ context });

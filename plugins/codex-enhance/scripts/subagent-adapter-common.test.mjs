@@ -104,7 +104,7 @@ async function fixture(t, { deadlineAt = null, communication = true, args = [], 
     return result;
   };
   send({
-    type: 'start', run: { id: randomBytes(16).toString('hex'), name: 'lifecycle-fixture', deadlineAt },
+    type: 'start', run: { id: randomBytes(8).toString('base64url'), name: 'lifecycle-fixture', deadlineAt },
     execution: { executor: 'fixture' }, mode: 'workspace', workspace,
     prompt: 'Wait for the lifecycle stop.', args, communication, ...(codex === undefined ? {} : { codex }),
     runtime: { directory, toolkit: {

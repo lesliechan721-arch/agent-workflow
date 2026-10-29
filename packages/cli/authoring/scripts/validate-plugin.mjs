@@ -2734,7 +2734,7 @@ function validateRenderedSkillTree(options) {
         if (declaration.target === 'agent-skills.skill' && placeholders.length > 0) {
           error(`${fieldName} managedCommandPortableUnsupported: Portable Skills cannot contain managed command references`);
         } else if (options.managedTrees) {
-          remaining = replaceManagedCommandPlaceholders(text, () => `cmdp_${'0'.repeat(64)}`);
+          remaining = replaceManagedCommandPlaceholders(text, () => `cmdp_${'0'.repeat(16)}`);
         }
       } catch (cause) {
         error(`${fieldName} ${cause.message}`);

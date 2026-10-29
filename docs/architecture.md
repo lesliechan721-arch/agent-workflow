@@ -424,7 +424,7 @@ Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不�
 
 `aw command run <command-id> -- <args...>` 是插件和用户工具共用的稳定入口。Plugin Manifest v3 的唯一声明入口是 managedCommands.packages/sets，要求 aw.managed-commands.v1；Claude 沙箱例外另要求 aw.claude.sandbox-exclusions.v1。Config v4 与 ArtifactPlan v2 不因本功能改号。完整声明、校验、ID、机器输出、存储和主机合同见 [托管命令合同](managed-commands.md)。
 
-producer 唯一拥有资源生命周期，可以是 artifact、static-skill 或独立 package。插件 ID 是对核验来源、插件、完整 producer identity、set/key/variant 的规范序列化计算完整 SHA-256，形式为 cmdp_ 加 64 位小写 hex；版本、安装路径与当前配置不进入身份。用户 install 分配 cmdu_ UUID v4，update 保留 ID。来源别名或身份变化、project 路径移动形成新身份，不重定向旧绑定。
+producer 唯一拥有资源生命周期，可以是 artifact、static-skill 或独立 package。插件 ID 是对核验来源、插件、完整 producer identity、set/key/variant 的规范序列化计算 SHA-256，取前 64 位，形式为 cmdp_ 加 16 位小写 hex；绑定仍核对完整 identity，冲突拒绝覆盖。版本、安装路径与当前配置不进入身份。用户 install 分配 cmdu_ UUID v4，update 保留 ID。来源别名或身份变化、project 路径移动形成新身份，不重定向旧绑定。
 
 Codex/Claude 静态原生 Skill 都使用 shared-user producer，固定 user 身份、空 projectRoot 和 user 配置。平台的 project 安装或启用不产生另一份命令身份；同源同实例的 Skill 正文与各 scope 权限引用同一 ID。Claude 保留原生插件分发与命名，AW-owned 动态 Skill 仍使用实际 user/project scope。单 scope 卸载不撤销仍存在的共享资源绑定；实际资源移除或替换时才撤销相关绑定，资源缺失时 run 拒绝并提示恢复，不增加引用计数或跨项目扫描。
 

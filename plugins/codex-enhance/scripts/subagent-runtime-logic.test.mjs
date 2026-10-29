@@ -86,6 +86,23 @@ async function fixture(t, sharedContext) {
   };
 }
 
+// Test Value Gate: short handles must locate the same owned run and reject a
+// different key or unsafe path without accepting the previous handle format.
+test('short run handles retain independent lookup and key validation', async (t) => {
+  const f = await fixture(t);
+  assert.equal(f.run.handle.length, 38);
+  assert.match(f.run.handle, /^aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/);
+  assert.equal(Buffer.from(f.run.meta.id, 'base64url').length, 8);
+  assert.equal(Buffer.from(f.run.meta.key, 'base64url').length, 16);
+  assert.deepEqual(store.parseHandle(f.run.handle), { id: f.run.meta.id, key: f.run.meta.key });
+  assert.equal((await store.openRun(f.context, f.run.handle)).directory, f.run.directory);
+  const differentKey = `${f.run.meta.key[0] === 'A' ? 'B' : 'A'}${f.run.meta.key.slice(1)}`;
+  await assert.rejects(store.openRun(f.context, `aw5-${f.run.meta.id}-${differentKey}`), { code: 'runUnavailable' });
+  for (const invalid of [`aw5-${'a'.repeat(32)}-${'b'.repeat(32)}`, `aw5-${'../'.repeat(3)}aa-${f.run.meta.key}`, f.run.handle + 'x']) {
+    assert.throws(() => store.parseHandle(invalid), { code: 'runUnavailable' });
+  }
+});
+
 // Test Value Gate: queues have no cumulative quota; each retained input gap is
 // reported once per report even when its delivery event is also unread.
 test('queued inputs preserve original text and fixed delivery gaps without duplicate blocks', async (t) => {

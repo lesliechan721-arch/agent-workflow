@@ -77,7 +77,7 @@ describe('prepared managed command Review', () => {
         || entry.kind === 'materializeNativeSkill') && entry.files?.some((file) => file.relativePath === 'SKILL.md'))!;
       if (skillAction.kind !== 'writeOwnedArtifact' && skillAction.kind !== 'materializeNativeSkill') throw new Error('Missing prepared Skill.');
       const skill = Buffer.from(skillAction.files!.find((file) => file.relativePath === 'SKILL.md')!.contentBase64, 'base64').toString('utf8');
-      const commandId = skill.match(/aw command run (cmdp_[0-9a-f]{64}) -- check/u)?.[1];
+      const commandId = skill.match(/aw command run (cmdp_[0-9a-f]{16}) -- check/u)?.[1];
       expect(commandId).toBeDefined();
       if (platform === 'codex') {
         const action = operationPlan.actions.find((entry) => entry.kind === 'writeOwnedArtifact' && entry.path.endsWith('.rules'))!;

@@ -71,7 +71,7 @@ export const COMMAND_PRODUCER_RECORD_FILE = '.aw-command-producer.json';
 export const MANAGED_COMMAND_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const SAFE_PERMISSION_TOKEN = /^[A-Za-z0-9_./:@%+=,-]+$/u;
-const PLUGIN_COMMAND_ID = /^cmdp_[0-9a-f]{64}$/u;
+const PLUGIN_COMMAND_ID = /^cmdp_[0-9a-f]{16}$/u;
 const USER_COMMAND_ID = /^cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const PACKAGE_ID = /^pkg_[0-9a-f]{64}$/u;
 const PACKAGE_PROTECTED_NAMES = new Set(['.git', 'node_modules', '.agents-plugin', '.codex-plugin', '.claude-plugin', '.release', '.tmp', 'evals', 'reports', COMMAND_PRODUCER_RECORD_FILE, '.agent-workflows-owner.json', '.aw-runtime-config.json', 'aw-plugin-requirements.json']);
@@ -284,7 +284,7 @@ function canonical(value: unknown): string {
 }
 export function canonicalizeCommandIdentity(value: CommandIdentity): string { return canonical(normalizeCommandIdentity(value)); }
 export function getPluginCommandId(identity: CommandIdentity): string {
-  return `cmdp_${createHash('sha256').update(canonicalizeCommandIdentity(identity), 'utf8').digest('hex')}`;
+  return `cmdp_${createHash('sha256').update(canonicalizeCommandIdentity(identity), 'utf8').digest('hex').slice(0, 16)}`;
 }
 export function getCommandPackageId(producer: ProducerIdentity): string {
   return `pkg_${createHash('sha256').update(canonical(normalizeProducerIdentity(producer)), 'utf8').digest('hex')}`;

@@ -957,7 +957,7 @@ describe('local-plugin generator', () => {
   });
 
   it('resolves managed permissions to the same narrow command in both platforms', () => {
-    const id = `cmdp_${'a'.repeat(64)}`;
+    const id = `cmdp_${'a'.repeat(16)}`;
     const command = { set: 'guide', key: 'subagent', variant: 'default' };
     const entry = { command, argsPrefix: ['wait'] };
     const permissions = [{ name: 'guide', allow: [entry, entry], sandbox: { excludedCommands: [entry] } }];

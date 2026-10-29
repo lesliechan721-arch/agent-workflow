@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertPluginManifestStructure, deriveAwCapabilitiesFromManifest, getCommandPackageId,
-  getManagedCommandArtifactTargets, getPluginCommandId, normalizeCommandDefinition,
+  getManagedCommandArtifactTargets, getPluginCommandId, isManagedCommandId, normalizeCommandDefinition,
   normalizeCommandIdentity, normalizeCommandLaunch, normalizeManagedCommands,
   normalizeInstalledCommandProducer, normalizeUserCommandDefinition,
   parseManagedCommandPlaceholders, replaceManagedCommandPlaceholders,
@@ -149,9 +149,13 @@ describe('managed commands author contract', () => {
     ]) expect(() => assertPluginManifestStructure(manifest({ extensions: { permissions: [entry] } }))).toThrow();
   });
 
-  it('uses the exact full identity hash and preserves source, scope and key case distinctions', () => {
+  it('uses the first 64 hash bits and preserves source, scope and key case distinctions', () => {
     // Golden values were computed independently from the normative canonical JSON with Python hashlib.
-    expect(getPluginCommandId(identity)).toBe('cmdp_3b4519b3e3a1a54208a71b8229d433cb0b80c57e97260c8d2aab0e59c6adf28e');
+    expect(getPluginCommandId(identity)).toBe('cmdp_3b4519b3e3a1a542');
+    expect(isManagedCommandId('cmdp_3b4519b3e3a1a542')).toBe(true);
+    for (const invalid of ['cmdp_3B4519B3E3A1A542', `cmdp_${'a'.repeat(15)}`, `cmdp_${'a'.repeat(17)}`, `cmdp_${'a'.repeat(64)}`]) {
+      expect(isManagedCommandId(invalid)).toBe(false);
+    }
     expect(getCommandPackageId(producer)).toBe('pkg_32d3b599e9e009f6dccdbab521941d838d1ec5ae75ba3fc2a7b8b3a7ad68e6c4');
     expect(getPluginCommandId({ variant: 'default', key: 'check', set: 'tools', producer: { ...producer }, schemaVersion: 1 })).toBe(getPluginCommandId(identity));
     for (const changed of [{ ...producer, sourceId: 'renamed' }, { ...producer, sourceIdentity: `sha256:${'b'.repeat(64)}` }, { ...producer, scope: 'project' as const, projectRoot: path.resolve('/project') }]) {

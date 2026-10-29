@@ -656,8 +656,8 @@
                     "title": "托管命令 ID",
                     "required": true,
                     "validation": {
-                      "pattern": "^(?:cmdp_[0-9a-f]{64}|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$",
-                      "maxLength": 69
+                      "pattern": "^(?:cmdp_[0-9a-f]{16}|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$",
+                      "maxLength": 41
                     }
                   }
                 }

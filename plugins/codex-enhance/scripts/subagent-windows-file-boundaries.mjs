@@ -133,10 +133,10 @@ async function main() {
     for (const root of await fs.readdir(temporary).catch(() => [])) {
       if (!/^aw-subagent-v5-[a-f0-9]{16}$/.test(root)) continue;
       for (const id of await fs.readdir(path.join(temporary, root))) {
-        if (!/^[a-f0-9]{32}$/.test(id)) continue;
+        if (!/^[A-Za-z0-9_-]{11}$/.test(id)) continue;
         const location = path.join(temporary, root, id);
         const meta = JSON.parse(await fs.readFile(path.join(location, 'owner.json'), 'utf8'));
-        requireTrue(meta.id === id && /^[a-f0-9]{32}$/.test(meta.key ?? ''));
+        requireTrue(meta.id === id && /^[A-Za-z0-9_-]{22}$/.test(meta.key ?? ''));
         runDirectories.add(location); handles.add(`aw5-${id}-${meta.key}`);
       }
     }
@@ -182,7 +182,7 @@ async function main() {
         clearTimeout(timeout);
         if (timedOut) { reject(Object.assign(new Error(), { code: 'commandTimeout' })); return; }
         const stdout = Buffer.concat(chunks).toString('utf8');
-        const handle = field(stdout, 'run'); if (/^aw5-[a-f0-9]{32}-[a-f0-9]{32}$/.test(handle ?? '')) handles.add(handle);
+        const handle = field(stdout, 'run'); if (/^aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/.test(handle ?? '')) handles.add(handle);
         resolve({ exit, stdout, stderr: Buffer.concat(errors).toString('utf8'), handle });
       });
     });

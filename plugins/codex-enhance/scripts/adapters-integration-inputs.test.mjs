@@ -90,7 +90,7 @@ for (const order of ['parent first', 'receive first']) test(`Claude: ${order} re
   const context = {
     executable: { command: 'claude', args: [] },
     prompt: 'Ask the parent for a value.',
-    request: { args: [], execution: {}, prompt: 'Ask the parent for a value.', run: { id: 'e'.repeat(32) } },
+    request: { args: [], execution: {}, prompt: 'Ask the parent for a value.', run: { id: 'e'.repeat(11) } },
     signal: controller.signal, stopped,
     abort(code) { this.errorCode = code; controller.abort(); stopped.resolve(); },
     async ready() {},

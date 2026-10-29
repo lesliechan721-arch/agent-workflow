@@ -43,7 +43,7 @@ describe('public package exports', () => {
     expect(getPluginCommandId({ schemaVersion: 1, producer: {
       sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'example-plugin',
       kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null,
-    }, set: 'tools', key: 'check', variant: 'default' })).toBe('cmdp_3b4519b3e3a1a54208a71b8229d433cb0b80c57e97260c8d2aab0e59c6adf28e');
+    }, set: 'tools', key: 'check', variant: 'default' })).toBe('cmdp_3b4519b3e3a1a542');
   });
   it('ships the v4 schema, capability and shared branch resolver through public exports', () => {
     const config = { schemaVersion: 4, fields: { backend: { type: 'object', properties: {

@@ -82,7 +82,7 @@ describe('managed command CLI', () => {
     const listed = await invoke(['list', '--json']);
     expect(listed.exitCode).toBe(1);
     expect(listed.receipt).toMatchObject({ ok: false, overallState: 'partial', commands: [{ id, availability: 'unavailable' }] });
-    const pluginId = `cmdp_${'0'.repeat(64)}`;
+    const pluginId = `cmdp_${'0'.repeat(16)}`;
     const refused = await invoke(['remove', pluginId, '--yes', '--json']);
     expect(refused.exitCode).toBe(1);
     expect(refused.receipt.errors[0]!.code).toBe('commandOwnerMismatch');

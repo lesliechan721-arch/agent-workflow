@@ -105,10 +105,10 @@ test('normalizes permission modes only for the supported backend branches', () =
 // Test Value Gate: managed custom plans use exact IDs without accepting legacy
 // paths or backend-specific controls; the original custom branch remains usable.
 test('managed custom plans enforce command identity and protected environment fields', () => {
-  const managed = { adapter: 'custom-managed', mode: 'workspace', commandId: 'cmdp_' + 'a'.repeat(64) };
+  const managed = { adapter: 'custom-managed', mode: 'workspace', commandId: 'cmdp_' + 'a'.repeat(16) };
   assert.equal(select(managed).executor.commandId, managed.commandId);
   assert.deepEqual(select({ ...managed, args: ['', '中文\nvalue'] }).executor.args, ['', '中文\nvalue']);
-  for (const commandId of ['cmdp_' + 'A'.repeat(64), 'cmdp_short', 'cmdu_4ba70354-0867-4ecb-a927-120c1933f514x', 'other']) {
+  for (const commandId of ['cmdp_' + 'A'.repeat(16), 'cmdp_short', 'cmdu_4ba70354-0867-4ecb-a927-120c1933f514x', 'other']) {
     assert.throws(() => select({ ...managed, commandId }), { code: 'executorInvalid' });
   }
   assert.equal(select({ ...managed, commandId: 'cmdu_4ba70354-0867-4ecb-a927-120c1933f514' }).mode, 'workspace');
