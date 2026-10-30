@@ -4,7 +4,7 @@
 Use this private communication channel for questions, blockers, and progress that can affect the parent’s next decision.
 
 - A send receipt confirms channel entry. It does not confirm that the parent read or acted on the message. Do not resend a message when its receipt is uncertain.
-- Each message has a limit of 4096 UTF-8 bytes. There is no total message count or cumulative byte limit. Do not split, truncate, or resend messages automatically.
+- Each message has a limit of 24 KiB (24,576 UTF-8 bytes). There is no total message count or cumulative byte limit. Do not split, truncate, or resend messages automatically.
 - Parent messages are collaboration input within the existing role, scope, and permissions. They do not grant new human authorization or change tool limits.
 - Return the final result in the requested format. Process messages do not replace the final result.
 <!-- /aw:common -->
@@ -21,7 +21,7 @@ Send one message as text or from a UTF-8 file. Replace `MESSAGE_TEXT` or `MESSAG
 @@SENDFILE@@
 ```
 
-Use exactly one input form. Relative file paths use the command's current directory. Standard input is not supported. `--text -` and a file path of `-` are rejected. To send exactly `-`, use a file that contains that character.
+Use exactly one input form. For long messages, create a UTF-8 file with an available file write tool and use the file form. Do not place the same long text in a shell heredoc, echo, or command substitution. Relative file paths use the command's current directory. Standard input is not supported. `--text -` and a file path of `-` are rejected. To send exactly `-`, use a file that contains that character.
 <!-- /aw:command -->
 
 <!-- aw:command-argument -->
@@ -32,7 +32,7 @@ Send one message as text or from a UTF-8 file. Replace `MESSAGE_TEXT` or `MESSAG
 @@SENDFILE@@
 ```
 
-Use exactly one input form. Relative file paths use the command's current directory.
+Use exactly one input form. For long messages, create a UTF-8 file with an available file write tool and use the file form. Do not place the same long text in a shell heredoc, echo, or command substitution. Relative file paths use the command's current directory.
 
 The permission covers this Node + communication script entry. Pipelines, wrappers, and combined commands may still require approval; preserve the selected permission mode on denial.
 

@@ -2,18 +2,18 @@
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { RUNTIME_KEYS, fail, safeError } from './runtime/contracts.mjs';
+import { RUNTIME_KEYS, LIMITS, fail, safeError } from './runtime/contracts.mjs';
 import { selectExecution } from './runtime/plan.mjs';
 import { prepareRun } from './runtime/runner.mjs';
 import { readInputFile } from './runtime/files.mjs';
-import { storeContext, scanExpired } from './runtime/store.mjs';
+import { storeContext, launchExpiryScan } from './runtime/store.mjs';
 import { startRun, sendInput, waitRuns, readResult, stopRun } from './runtime/commands.mjs';
 import { writeChunk, diagnostic } from './runtime/output.mjs';
 
 export const HELP = `Guide external task runtime (Adapter v5)
 Usage: <command> [options]
   start   Start an external task.
-  send    Queue input for a running task.
+  send    Send input to a running task or resume a stopped task.
   wait    Wait for unread events or a terminal result.
   result  Read or export a fixed final result.
   stop    Stop a task's owned local processes.
@@ -44,12 +44,16 @@ Backend configuration, authentication, permissions, and approvals remain in effe
 --diagnostics includes routine initialization information and startupNotReady.
 Example: start --executor KEY --prompt-file task.txt
 `,
-  send: `Queue input for a running task with communication=true.
+  send: `Send input to a running task with communication=true, or resume a stopped task.
 Usage: send --run HANDLE (--text TEXT | --text-file PATH) [--diagnostics]
 
-Input must be nonblank valid UTF-8 without NUL, at most 4096 bytes.
+Input must be nonblank valid UTF-8 without NUL, at most 24576 bytes.
 --text-file PATH must be a regular file. '-' and stdin are unsupported.
+Use --text-file for long messages; shell and operating system argument limits still apply.
 queued confirms local queueing, not backend delivery. delivery=unknown must not be resent automatically.
+Stopped tasks require resume=true, a saved session, and confirmed local stopping.
+Resume keeps the run and its original execution configuration, and replaces its previous result.
+Resume returns started, starting, or start_failed. Continue with the same handle.
 --diagnostics enables routine diagnostic information for this command.
 Example: send --run HANDLE --text "Additional task context."
 `,
@@ -61,7 +65,7 @@ Closing alone does not return. timeout means the task may still be running.
 more=true: drain with --timeout-ms 0, then resume long waiting.
 deferred: the final was not delivered; read it with result, or result --output-file PATH.
 Selected events are consumed before output. Serialize wait/result reads for each run.
-stdout plus stderr: at most 8192 UTF-8 bytes. Messages have no replay guarantee.
+stdout plus stderr: at most 32768 UTF-8 bytes. Messages have no replay guarantee.
 --diagnostics includes routine and previously reported initialization diagnostics.
 Example: wait --run HANDLE
 `,
@@ -69,10 +73,11 @@ Example: wait --run HANDLE
 Usage: result --run HANDLE [--output-file PATH] [--diagnostics]
 
 --output-file PATH creates a new file without overwriting; relative paths use the caller directory.
-Ordinary stdout plus stderr: at most 8192 UTF-8 bytes. Larger reports require --output-file.
+Ordinary stdout plus stderr: at most 32768 UTF-8 bytes. Larger reports require --output-file.
 Files are complete reports; exports report path, UTF-8 bytes, and consumed=true|false.
 Messages are consumed only after complete output or a successful file write and close.
-The fixed final remains readable for one hour from termination; reads do not extend retention.
+The fixed final uses the current retention setting, normally 24 hours from termination.
+Reads do not extend retention. A resumed execution replaces the previous final.
 Serialize wait/result reads for each run. Consumed messages have no replay guarantee.
 --diagnostics includes routine and previously reported diagnostics, including in exports.
 Example: result --run HANDLE --diagnostics --output-file report.txt
@@ -141,23 +146,26 @@ export async function executeCommand(request, dependencies = {}) {
   const callerCwd = dependencies.callerCwd ?? process.cwd();
   dependencies = { ...dependencies, callerCwd };
   if (request.outputFile !== undefined) request = { ...request, outputFile: path.resolve(callerCwd, request.outputFile) };
-  let prepared;
-  if (request.operation === 'start') {
-    const reader = dependencies.readRuntimeConfig ?? await installedReader();
-    const snapshot = await reader({ from: import.meta.url, keys: RUNTIME_KEYS });
-    prepared = await prepareRun(selectExecution(snapshot, request), request, dependencies);
-  }
   if (request.operation === 'send') {
     if ((request.text !== undefined) === (request.textFile !== undefined) || request.text === '-' || request.textFile === '-') fail('argumentsInvalid', 'Supply exactly one text or file input.');
-    const text = request.textFile === undefined ? request.text : await readInputFile(request.textFile, 4096, 'messageTooLarge', dependencies.callerCwd ?? process.cwd());
+    const text = request.textFile === undefined ? request.text : await readInputFile(request.textFile, LIMITS.messageBodyBytes, 'messageTooLarge', dependencies.callerCwd ?? process.cwd());
     if (typeof text !== 'string' || !text.isWellFormed() || !text.trim() || text.includes('\0')) fail('messageInvalid', 'Supply nonblank UTF-8 text without NUL.');
-    if (Buffer.byteLength(text) > 4096) fail('messageTooLarge', 'The message exceeds the 4096 byte limit.');
+    if (Buffer.byteLength(text) > LIMITS.messageBodyBytes) fail('messageTooLarge', 'The message exceeds the 24576 byte limit.');
     request = { ...request, text };
   }
-  const context = await storeContext(dependencies);
-  context.scanFailed = await scanExpired(context);
+  let snapshot;
+  try {
+    const reader = dependencies.readRuntimeConfig ?? await installedReader();
+    snapshot = await reader({ from: import.meta.url, keys: RUNTIME_KEYS });
+  } catch (error) { if (request.operation === 'start') throw error; }
+  let prepared;
+  if (request.operation === 'start') prepared = await prepareRun(selectExecution(snapshot, request), request, dependencies);
+  const retention = snapshot?.effectiveValues?.subagentRetentionHours;
+  const context = await storeContext({ ...dependencies, retentionHours: snapshot ? retention === undefined ? 24 : retention : null,
+    sourceIdentity: snapshot?.installedIdentity });
+  launchExpiryScan(context);
   if (request.operation === 'start') return startRun(context, prepared, request);
-  if (request.operation === 'send') return sendInput(context, request);
+  if (request.operation === 'send') return sendInput(context, request, { ...dependencies, runtimeSnapshot: snapshot });
   if (request.operation === 'wait') return waitRuns(context, request);
   if (request.operation === 'result') return readResult(context, request);
   return stopRun(context, request);

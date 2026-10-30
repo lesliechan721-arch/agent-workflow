@@ -6,11 +6,11 @@ export const LIMITS = Object.freeze({
   promptBytes: 524352, requestBytes: 8388608,
   outputBytes: 4194304, logBytes: 8388608,
   resultBytes: 33554432,
-  messageBytes: 4096, messageFrameBytes: 32768, controlFrameBytes: 4096,
+  messageBytes: 4096, messageBodyBytes: 24576, messageFrameBytes: 262144, controlFrameBytes: 4096,
   deliveryFrameBytes: 16384, receiveMs: 600000, waitMs: 600000, maximumWaitMs: 1800000,
 });
 
-export const RUNTIME_KEYS = Object.freeze(['subagentCommands']);
+export const RUNTIME_KEYS = Object.freeze(['subagentCommands', 'subagentRetentionHours']);
 export const STATES = Object.freeze(['completed', 'failed', 'cancelled', 'unknown']);
 export const cleanString = (value) => typeof value === 'string' && value.trim().length > 0 && !/[\u0000-\u001f\u007f]/u.test(value);
 export const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -28,7 +28,7 @@ const byteLength = (value) => Buffer.byteLength(value, 'utf8');
 
 export function validateMessageText(value) {
   if (!text(value) || !value.trim()) fail('messageInvalid', 'Message text must be nonempty Unicode text without NUL.');
-  if (byteLength(value) > LIMITS.messageBytes) fail('messageTooLarge', 'Message text exceeds the 4096-byte limit.');
+  if (byteLength(value) > LIMITS.messageBodyBytes) fail('messageTooLarge', 'Message text exceeds the 24576-byte limit.');
   return value;
 }
 
@@ -51,15 +51,21 @@ export function validateCommunication(value) {
   return value;
 }
 
+export function validateResume(value) {
+  if (!requiredFields(value, ['status']) || !['enabled', 'disabled', 'unsupported'].includes(value.status)) fail('protocolInvalid', 'The resume descriptor is invalid.');
+  return value;
+}
+
 export function validateInitialization(value, { ready = false } = {}) {
   if (!requiredFields(value, ['environment', 'capabilities'])
       || !(requiredFields(value.environment, ['status']) && value.environment.status === 'available'
         || requiredFields(value.environment, ['status', 'code']) && value.environment.status === 'unavailable' && code(value.environment.code))
-      || !fields(value.capabilities, ['communication'])
-      || ready && (value.environment.status !== 'available' || !Object.hasOwn(value.capabilities, 'communication'))) {
+      || !fields(value.capabilities, ['communication', 'resume'])
+      || ready && (value.environment.status !== 'available' || !Object.hasOwn(value.capabilities, 'communication') || !Object.hasOwn(value.capabilities, 'resume'))) {
     fail('protocolInvalid', 'The initialization descriptor is invalid.');
   }
   if (Object.hasOwn(value.capabilities, 'communication')) validateCommunication(value.capabilities.communication);
+  if (Object.hasOwn(value.capabilities, 'resume')) validateResume(value.capabilities.resume);
   if (value.environment.status === 'unavailable' && value.capabilities.communication?.status === 'enabled') fail('protocolInvalid', 'An unavailable environment cannot enable communication.');
   return value;
 }
@@ -75,8 +81,9 @@ export function validateDiagnostics(value) {
 
 /** The shared wire shape does not establish a backend's terminal state. */
 export function validateRequest(request) {
-  const required = ['protocolVersion', 'type', 'run', 'execution', 'mode', 'workspace', 'prompt', 'args', 'communication', 'runtime'];
-  if (!requiredFields(request, required, ['fileSelectors', 'fileResolver', 'codex', 'permissionMode']) || request.protocolVersion !== 5 || request.type !== 'start' || !['workspace', 'bundle'].includes(request.mode) || typeof request.communication !== 'boolean'
+  const required = ['protocolVersion', 'type', 'run', 'execution', 'mode', 'workspace', 'prompt', 'args', 'communication', 'resume', 'runtime'];
+  if (!requiredFields(request, required, ['fileSelectors', 'fileResolver', 'codex', 'permissionMode', 'sessionId']) || request.protocolVersion !== 5 || request.type !== 'start' || !['workspace', 'bundle'].includes(request.mode) || typeof request.communication !== 'boolean' || typeof request.resume !== 'boolean'
+      || Object.hasOwn(request, 'sessionId') && (!request.resume || !identifier(request.sessionId))
       || Object.hasOwn(request, 'permissionMode') && !['default', 'auto', 'full-access'].includes(request.permissionMode)) fail('protocolInvalid', 'Use a mode-correct Adapter v5 start frame.');
   if (!requiredFields(request.run, ['id', 'name', 'deadlineAt']) || !runId(request.run.id) || !label(request.run.name) || !(request.run.deadlineAt === null || epochMs(request.run.deadlineAt))) fail('protocolInvalid', 'The Adapter v5 run identity or deadline is invalid.');
   if (!requiredFields(request.execution, ['executor'], ['model', 'reasoningEffort']) || !identifier(request.execution.executor) || ['model', 'reasoningEffort'].some((key) => Object.hasOwn(request.execution, key) && !identifier(request.execution[key]))) fail('protocolInvalid', 'The Adapter v5 execution selection is invalid.');
@@ -85,8 +92,8 @@ export function validateRequest(request) {
       || Object.hasOwn(request.codex, 'profile') && !identifier(request.codex.profile))) fail('protocolInvalid', 'The Codex adapter configuration is invalid.');
   if (!absolutePath(request.workspace) || !text(request.prompt) || !request.prompt.trim() || byteLength(request.prompt) > LIMITS.promptBytes || !Array.isArray(request.args) || request.args.some((value) => !text(value))) fail('protocolInvalid', 'The Adapter v5 workspace, prompt, or args is invalid.');
   if (!requiredFields(request.runtime, ['directory', 'toolkit']) || !absolutePath(request.runtime.directory) || !requiredFields(request.runtime.toolkit, ['module', 'command', 'messageScript', 'mcpScript']) || Object.values(request.runtime.toolkit).some((value) => !absolutePath(value))) fail('protocolInvalid', 'The Adapter v5 private runtime or installed toolkit is invalid.');
-  if (request.mode === 'workspace') {
-    if (Object.hasOwn(request, 'fileSelectors') || Object.hasOwn(request, 'fileResolver')) fail('protocolInvalid', 'Workspace requests must omit all file selection fields.');
+  if (request.mode === 'workspace' || Object.hasOwn(request, 'sessionId')) {
+    if (Object.hasOwn(request, 'fileSelectors') || Object.hasOwn(request, 'fileResolver')) fail('protocolInvalid', 'Workspace and resume requests must omit all file selection fields.');
   } else {
     if (!Array.isArray(request.fileSelectors) || request.fileSelectors.some((value) => !text(value)) || !requiredFields(request.fileResolver, ['command', 'args']) || !absolutePath(request.fileResolver.command) || !Array.isArray(request.fileResolver.args) || request.fileResolver.args.length !== 1 || !absolutePath(request.fileResolver.args[0])) fail('protocolInvalid', 'Bundle requests require raw fileSelectors and the installed fileResolver.');
     try { validateSelectors(request.fileSelectors); } catch { fail('protocolInvalid', 'The bundle fileSelectors contain an invalid selection value.'); }

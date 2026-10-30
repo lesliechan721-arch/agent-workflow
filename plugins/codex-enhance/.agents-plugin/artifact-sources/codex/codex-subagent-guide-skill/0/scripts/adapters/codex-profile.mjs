@@ -1246,14 +1246,15 @@ var LIMITS2 = Object.freeze({
   logBytes: 8388608,
   resultBytes: 33554432,
   messageBytes: 4096,
-  messageFrameBytes: 32768,
+  messageBodyBytes: 24576,
+  messageFrameBytes: 262144,
   controlFrameBytes: 4096,
   deliveryFrameBytes: 16384,
   receiveMs: 6e5,
   waitMs: 6e5,
   maximumWaitMs: 18e5
 });
-var RUNTIME_KEYS = Object.freeze(["subagentCommands"]);
+var RUNTIME_KEYS = Object.freeze(["subagentCommands", "subagentRetentionHours"]);
 var STATES = Object.freeze(["completed", "failed", "cancelled", "unknown"]);
 var RuntimeError = class extends Error {
   constructor(code, message, recoveryActions = []) {

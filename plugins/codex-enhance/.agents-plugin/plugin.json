@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "codex-enhance",
-  "version": "0.2.0-beta.18",
+  "version": "0.2.0-beta.19",
   "description": "在 Codex 中组织已授权的通用委派、只读技术第二意见和大范围事实调查。",
   "marketplace": {
     "category": "workflow",
@@ -1815,6 +1815,11 @@
               "title": "父子通讯",
               "description": "省略时开启；设为 false 时不建立 AW 通讯桥，也不注入通讯工具和指令。开启仍须通过本次适配器能力检查。"
             },
+            "resume": {
+              "type": "boolean",
+              "title": "恢复执行",
+              "description": "省略时开启；允许向已结束的代理发送新消息来恢复原会话。与父子通讯独立，开启仍须通过适配器能力检查。"
+            },
             "args": {
               "type": "array",
               "items": {
@@ -2114,6 +2119,18 @@
         },
         "validation": {
           "uniqueBy": "key"
+        }
+      },
+      "subagentRetentionHours": {
+        "type": "number",
+        "title": "执行记录保留小时数",
+        "description": "从执行结束计算，默认保留 24 小时；0 表示永不过期且不进行过期扫描。配置 apply 后从下次命令生效。",
+        "required": true,
+        "default": 24,
+        "validation": {
+          "integer": true,
+          "minimum": 0,
+          "maximum": 2501999792
         }
       },
       "advisorGeneralProfile": {
@@ -3607,7 +3624,8 @@
             "generalTaskProfile",
             "complexTaskProfile",
             "advancedTaskProfile",
-            "taskCustomProfiles"
+            "taskCustomProfiles",
+            "subagentRetentionHours"
           ]
         },
         {
@@ -3698,7 +3716,8 @@
           "complexTaskProfile",
           "advancedTaskProfile",
           "taskCustomProfiles",
-          "subagentCommands"
+          "subagentCommands",
+          "subagentRetentionHours"
         ],
         "delivery": {
           "mode": "codex-native",
@@ -3708,7 +3727,8 @@
         "skillKey": "codex-subagent-guide",
         "runtimeConfig": {
           "keys": [
-            "subagentCommands"
+            "subagentCommands",
+            "subagentRetentionHours"
           ]
         },
         "sourceDirs": [

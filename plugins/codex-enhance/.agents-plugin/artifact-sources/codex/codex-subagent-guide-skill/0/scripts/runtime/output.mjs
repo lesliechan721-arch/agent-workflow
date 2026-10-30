@@ -1,7 +1,7 @@
-import { fail } from './contracts.mjs';
+import { fail, LIMITS } from './contracts.mjs';
 import { readRecord } from './store.mjs';
 
-export const OUTPUT_LIMIT = 8192;
+export const OUTPUT_LIMIT = 32768;
 export const STDERR_LIMIT = 1024;
 const attribute = (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 const routineDiagnostics = new Set(['codexExecutableSelected', 'communicationPermissionExisting',
@@ -16,6 +16,10 @@ export function textBlock(kind, text, attributes = {}) {
   return `<${name}${properties}>\n${text}\n</${name}>\n`;
 }
 export const communication = (snapshot) => snapshot.initialization?.capabilities.communication === undefined ? 'pending' : String(snapshot.initialization.capabilities.communication.status === 'enabled');
+export const resume = (snapshot) => {
+  const status = snapshot.initialization?.capabilities.resume?.status ?? snapshot.resume;
+  return status === undefined ? 'pending' : String(status === 'enabled');
+};
 export const needsInitialization = (run) => run.snapshot.initializationSequence > run.observed.initializationSequence ||
   Boolean(run.result && run.snapshot.initialization === null && !run.observed.terminalConsumed);
 
@@ -68,14 +72,14 @@ export function initializationDiagnostics(diagnostics, run, initialization, { co
 
 export function gapText(gap, run) {
   if (!['notSubmitted', 'unknown'].includes(gap.status) || !/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(gap.code ?? '') ||
-    typeof gap.text !== 'string' || !gap.text.isWellFormed() || !gap.text.trim() || gap.text.includes('\0') || Buffer.byteLength(gap.text) > 4096) fail('runStateUnavailable', 'An input delivery record is invalid.');
+    typeof gap.text !== 'string' || !gap.text.isWellFormed() || !gap.text.trim() || gap.text.includes('\0') || Buffer.byteLength(gap.text) > LIMITS.messageBodyBytes) fail('runStateUnavailable', 'An input delivery record is invalid.');
   return (gap.message ? diagnostic(gap.code, gap.message, run) : '') + textBlock('input', gap.text, { run, delivery: gap.status, code: gap.code });
 }
 
 export async function eventText(run, name) {
   const event = await readRecord(run, 'events', name);
   if (event.type === 'delivery') return gapText(await readRecord(run, 'gaps', event.gap), run.handle);
-  if (event.type !== 'message' || typeof event.text !== 'string' || !event.text.isWellFormed() || !event.text.trim() || event.text.includes('\0') || Buffer.byteLength(event.text) > 4096) fail('runStateUnavailable', 'A process message is invalid.');
+  if (event.type !== 'message' || typeof event.text !== 'string' || !event.text.isWellFormed() || !event.text.trim() || event.text.includes('\0') || Buffer.byteLength(event.text) > LIMITS.messageBodyBytes) fail('runStateUnavailable', 'A process message is invalid.');
   return textBlock('message', event.text, { run: run.handle });
 }
 
@@ -92,7 +96,7 @@ export async function* finalChunks(run, gaps, includeInitialization = needsIniti
   if (result.message) yield diagnostic(result.code ?? 'resultDiagnostic', result.message, run.handle);
   yield textBlock('result', result.text, {
     run: run.handle, state: result.state,
-    ...(includeInitialization ? { communication: communication(run.snapshot) } : {}),
+    ...(includeInitialization ? { communication: communication(run.snapshot), resume: resume(run.snapshot) } : {}),
     ...(result.state !== 'completed' ? { text_status: result.text ? 'partial' : 'missing', generation_started: result.generationStarted, backend_exit_code: result.backendExitCode } : {}),
     ...(result.code ? { code: result.code } : {}),
     ...(run.meta.stopRequested || Object.hasOwn(result, 'remoteStopConfirmed') ? { remote_stop_confirmed: result.remoteStopConfirmed ?? 'unknown' } : {}),

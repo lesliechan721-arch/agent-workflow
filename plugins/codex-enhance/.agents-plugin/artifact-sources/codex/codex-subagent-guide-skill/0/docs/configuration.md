@@ -4,7 +4,7 @@
 
 ## 职责与源码入口
 
-`subagent.mjs` 固定安装配置和输入，启动一个长期 worker；worker 持续管理一个 v5 adapter、父侧队列、快照、停止及最终结果。adapter 拥有后端会话、子侧工具及收件调度。一个 run 不重连、重放、resume 或跨父会话续接。
+`subagent.mjs` 固定安装配置和输入，启动一个长期 worker；worker 持续管理一个 v5 adapter、父侧队列、快照、停止及最终结果。adapter 拥有后端会话、子侧工具及收件调度。一个执行连接不自动重连或重放。已结束的 run 可通过 send 显式恢复原 session；同一用户可跨父会话凭原句柄串行操作，恢复始终绑定原执行配置。
 
 | 入口 | 责任 |
 | --- | --- |
@@ -36,16 +36,17 @@ Guide 保留调用方角色和任务约束。调用方先选定 executor/model/r
 
 内建 mode 可以在原值中省略，显式错误值必须拒绝。command/entrypoint 不属于内建分支，不仅在 TUI 隐藏，也由共享校验器拒绝。切换 adapter 只修改草稿；不适用字段的移除和固定 mode 的变化须在保存前可见，取消不改原配置。args 是实际服务 argv 数组，env 是普通字符串 KV，envFrom 是宿主变量引用 KV，不把容器塞成 JSON 字符串。
 
-所有分支均可设置布尔 `communication`，缺省为 true；它表达用户意图，不证明后端支持通讯。关闭后仍检查环境并应用权限模式，保留 start/wait/result/stop 和最终结果缓存，只跳过 AW 桥、工具绑定、通讯说明及父输入自动调度；用户已有 MCP、插件和工具继续由后端管理。不增加每次 start 的通讯开关。
+所有分支均可设置独立的布尔 `communication` 和 `resume`，两者缺省均为 true。resume 请求恢复能力，实际由适配器确认；关闭通信但启用恢复合法，不增加每次命令的恢复覆盖参数。communication 表达用户意图，不证明后端支持通讯。关闭后仍检查环境并应用权限模式，保留 start/wait/result/stop 和最终结果缓存，只跳过 AW 桥、工具绑定、通讯说明及父输入自动调度；用户已有 MCP、插件和工具继续由后端管理。不增加每次 start 的通讯开关。
 
 Codex 的 `codexCliSource` 为 auto/cli/app，缺省 auto；`codexBypassHookTrust` 为布尔值，缺省 false。后者使本次线程已启用但未信任或内容已修改的普通 hook 可执行，范围包括所选 profile 之外的适用 hooks；仍保留禁用状态与管理策略，不授予审批或沙箱绕过权限。两个字段在其它 adapter 上均拒绝，错误类型或枚举同样拒绝。它们与 codexProfile、communication 独立组合，固定读取本产物已安装配置。
 
 ```json
 {
+  "subagentRetentionHours": 24,
   "generalTaskProfile": { "executor": "codex-local" },
   "advisorGeneralProfile": { "executor": "oracle-review" },
   "subagentCommands": [
-    { "key": "codex-local", "adapter": "codex", "codexProfile": "advanced", "codexCliSource": "auto", "codexBypassHookTrust": false, "communication": true },
+    { "key": "codex-local", "adapter": "codex", "codexProfile": "advanced", "codexCliSource": "auto", "codexBypassHookTrust": false, "communication": true, "resume": true },
     { "key": "claude-local", "adapter": "claude-code" },
     { "key": "agy-task", "adapter": "antigravity", "communication": false },
     {
@@ -72,7 +73,15 @@ Config Definition v4 的有限对象分支、标量 const 和叶级数组/KV 由
 
 renderer 只在 Guide 的 external-delegation 中生成执行器表，只显示 key、mode；不展示未经本次初始化的能力，不把表塞进所有 Skill 或角色。profile 表对外部省略的 model/effort 显示“后端默认”；native 不补造这样的缺省配置。Guide 的档位表位于按需读取的 execution-profiles reference；Advisor 显示 general / advanced / expert，依次对应 advisorGeneralProfile / advisorAdvancedProfile / advisorExpertProfile，保留 native、gpt-6-astra 和 high / xhigh / max 默认值。
 
-AW 在物化时注入安装态 JSON 和配置 reader（保留文件名 .aw-runtime-config.json、scripts/aw-runtime-config.mjs）；插件不伪造或覆盖保留资源。reader 从本产物返回 installedIdentity、获准的 effectiveValues（仅 subagentCommands）和 resourceRoot，不读最新 store 或同名 sibling。保存未 apply 时新调用继续用旧安装资源，活跃调用也不重读配置换后端。缺失或损坏通过正常 sync/reinstall 恢复。
+AW 在物化时注入安装态 JSON 和配置 reader（保留文件名 .aw-runtime-config.json、scripts/aw-runtime-config.mjs）；插件不伪造或覆盖保留资源。reader 从本产物返回 installedIdentity、获准的 effectiveValues（subagentCommands 和 subagentRetentionHours）和 resourceRoot，不读最新 store 或同名 sibling。保存未 apply 时新调用继续用旧安装资源，活跃调用也不重读配置换后端。缺失或损坏通过正常 sync/reinstall 恢复。
+
+## 资料保留与恢复配置
+
+`subagentRetentionHours` 是 Guide 独立配置，单位小时，默认 24；允许 0 至 floor(Number.MAX_SAFE_INTEGER / 3,600,000) 的整数，0 表示永不过期且不扫描，负数、非整数和非法数值拒绝。命令开始读取一次最新物化生效值，前台过期判断和后台扫描共用；仅保存未 apply 不改变生效值。它是资料管理设置，不冻结在 run 的执行配置中。
+
+run 资料放在用户 home 下的 `~/.aw-subagent`。恢复只保留最新执行，先导出所需旧结果；执行记录按 terminalAt 计算当前 TTL，入口元数据另用严格超过 max(2 × TTL, 24 小时) 的 mtime 间隔。扫描是静默的独立子进程，同 run 分轮清理，不影响调度。完整目录、恢复提交与清理边界见 [用户目录、恢复与过期](runtime.md#1-用户目录恢复与过期)。
+
+首次 start 保存原 executor、adapter/入口或 commandId、安装来源、workspace、显式 model/effort、args、权限和 Codex 设置、通信/恢复开关、env/envFrom 映射、执行期限策略和 bundle 选择配置。恢复复制到新执行目录，不重选当前 subagentCommands、不接受覆盖；入口缺失或身份不符时失败。envFrom 保留映射并在恢复时重新解析宿主值，不保存完整环境或凭据镜像。deadlineMs 作为每次执行的时长保持；bundle 不重新扫描或重发原材料。
 
 ## 托管 custom adapter
 
@@ -81,6 +90,8 @@ AW 在物化时注入安装态 JSON 和配置 reader（保留文件名 .aw-runti
 Guide 从生成的 AW 命令入口启动，使用经过校验的 schema 1 AW_COMMAND_HOST 和受保护的 AW_HOME；缺失报 managedCommandHostMissing，非法报 managedCommandHostInvalid。主机包含当前 Node executable、真实 JS CLI entry 与已固定 awHome；不从 PATH 查另一个 AW，也不把 npm shim 当 Node 脚本。worker 的 adapter argv 固定为 `[host.nodeExecutable, host.cliEntry, "command", "run", commandId, "--"]`。executor args 只进入 Adapter v5 start.args；绑定的 fixed args 才进入 adapter argv。
 
 Guide 先应用 executor env/envFrom，再启动嵌套 AW；命令绑定的普通 env/envFrom 随后覆盖，AW/Guide 控制项最后注入。AW_COMMAND_HOST 单独校验后传给 worker 和嵌套 AW，不进入 v5 请求；嵌套 AW 重签描述但不改 AW_HOME。命令 binding 可显式 cwd=resource，v5 workspace 仍保留任务值。完整主机、环境保护与 runner 合同见 [托管命令合同](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/managed-commands.md#b3-运行参数环境与主机描述)。原绝对 custom 入口继续可用，不要求 CommandHost。
+
+custom-managed 首次启动还使用同一已验证 CommandHost 与固定 AW_HOME 调用 command show <id> --json，只接受成功且 availability=ready、launch/resourceRoot 完整的结果。保存 id/owner/resourceRoot 与 launch.runner/entry/args/env/envFrom/cwd；恢复前经同一入口重读并比较，任何执行相关差异返回 resumeExecutionChanged，展示 name 不参与。实际仍经原 command run 执行，不直接运行保存路径，不保存旧程序副本或新增摘要合同，也不承诺与外部同时更新强一致。
 
 ## 执行器权限模式
 
@@ -104,7 +115,7 @@ default 保留用户 args、profile 及后端正常加载的用户、项目和�
 
 CLI 必填 --executor，且必须只提供 --prompt TEXT 或 --prompt-file PATH 中的一项。父侧 send 和子侧 send 同理使用 --text TEXT 或 --text-file PATH。命令不读取 stdin；缺参、互斥、重复单值参数、未知或跨命令参数，以及 --prompt -、--text - 和文件参数值 - 均在创建/提交前返回参数错误，父侧为 argumentsInvalid，子侧为 invalidArguments，退出 2。需要单字符 - 使用内容为 - 的普通文件；名为 - 的文件使用 ./- 或绝对路径。
 
-相对输入/输出路径按 caller cwd 解析，不相对 --workspace 或 producer root。输入只读取一次，必须为普通文件且最后一段不是 symlink，按严格 UTF-8 校验，不去 BOM、不 trim，拒绝全空白和 NUL。prompt-file 与 instructions-file 各最多 256 KiB，text-file 最多 4096 bytes；合成 prompt 最多 524352 bytes。文件错误、大小及输出合同见 [文件输入与输出](runtime.md#文件输入与输出)。--instructions-file PATH 可选；native、未知 key、重复 key 和无效配置在后端启动前报错，通过 config、sync 或 reinstall 修复。
+相对输入/输出路径按 caller cwd 解析，不相对 --workspace 或 producer root。输入只读取一次，必须为普通文件且最后一段不是 symlink，按严格 UTF-8 校验，不去 BOM、不 trim，拒绝全空白和 NUL。prompt-file 与 instructions-file 各最多 256 KiB，text-file 最多 24 KiB（24,576 UTF-8 字节）；长消息通过文件写入能力创建后使用 --text-file，argv 仍受宿主命令行限制；合成 prompt 最多 524352 bytes。文件错误、大小及输出合同见 [文件输入与输出](runtime.md#文件输入与输出)。--instructions-file PATH 可选；native、未知 key、重复 key 和无效配置在后端启动前报错，通过 config、sync 或 reinstall 修复。
 
 不传指令文件时，协议 prompt 保留任务原文，不添加默认角色或空标题。显式传入时要求非空、可读 UTF-8 文件，runner 读取一次后组合为“执行指令”和“本次任务”两个段落。保留原文本，不截断，不向 adapter 发送指令文件路径让它再次打开。显式坏文件不能当成省略。指令与任务各最多 256 KiB，组合结果不套用单份上限。adapter 只在通讯已就绪时追加相应说明；无指令文件也可追加，调用方不预读或拼接这份说明。
 
@@ -132,7 +143,7 @@ CLI 已传入 model 或 effort 时，args 不能再次设置同一后端控制�
 
 ## 内建后端的共同要求
 
-只有本次工具与调度配置就绪才能报告 enabled。普通父输入不隐含强制 interrupt；轮次边界和提交竞态由 adapter 处理。
+通信仅在本次工具与调度配置就绪后报告 enabled。恢复独立协商，真实 session 可用时及时发送 session 帧，不能只依赖最终 result.sessionId。不能可靠恢复原 session 和当前工具绑定时报告 unsupported 或实际失败，不降级新会话；详见 [session 合同](protocol.md#session恢复绑定)。普通父输入不隐含强制 interrupt；轮次边界和提交竞态由 adapter 处理。
 
 保留 cwd、模型、推理强度、配置、args、env/envFrom、认证、项目指令、hooks、插件、MCP、工具权限及审批。显式 args、model、effort 无法映射时在首次模型提交前报错；Codex profile 的忽略策略仅按 [Codex 实现](codex.md#codex-profile-转换) 的精确范围使用。不复制 Eval 的权限配置，不自动关闭工具；权限提升只按明确选择的 permissionMode 或 args，受后端管理策略及本次授权约束。
 

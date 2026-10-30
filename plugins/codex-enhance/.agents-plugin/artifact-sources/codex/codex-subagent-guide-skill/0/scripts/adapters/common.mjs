@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LIMITS, fail, redact, safeError, fields, text, absolutePath, validateCommunication, validateInitialization } from '../runtime/contracts.mjs';
+import { LIMITS, fail, redact, safeError, fields, text, absolutePath, validateCommunication, validateInitialization, identifier } from '../runtime/contracts.mjs';
 import { summarizeDiagnostics } from '../runtime/diagnostics.mjs';
 import { safePath, readLimited, textFromBytes } from '../runtime/files.mjs';
 import { createFrameDecoder, createFrameWriter, createProtocolState } from '../runtime/protocol.mjs';
@@ -27,10 +27,12 @@ export async function negotiateExecutable(context, command, args = [], options =
 }
 
 function validateNegotiation(value, context) {
-  if (!fields(value, ['environment', 'capabilities', 'executable']) || !fields(value.capabilities, ['communication'])) fail('protocolInvalid', 'The adapter initialization candidate is invalid.');
+  if (!fields(value, ['environment', 'capabilities', 'executable']) || !fields(value.capabilities, ['communication', 'resume'])) fail('protocolInvalid', 'The adapter initialization candidate is invalid.');
   validateInitialization({ environment: value.environment, capabilities: {} });
   context.initialization = { environment: structuredClone(value.environment), capabilities: {} };
   if (value.environment.status !== 'available') fail(value.environment.code, 'The selected CLI is unavailable. Install or repair the CLI or PATH, or correct the executor, then start a new run.');
+  const resume = value.capabilities.resume;
+  if (!fields(resume, ['supported']) || typeof resume.supported !== 'boolean') fail('protocolInvalid', 'The adapter resume candidate is invalid.');
   const capability = value.capabilities.communication;
   if (!fields(capability, capability?.supported === true ? ['supported', 'transport', 'passiveDelivery'] : ['supported'])
       || typeof capability.supported !== 'boolean') fail('protocolInvalid', 'The adapter communication candidate is invalid.');
@@ -44,6 +46,9 @@ function validateNegotiation(value, context) {
       || Object.hasOwn(executable, 'env') && (!fields(executable.env, Object.keys(executable.env ?? {})) || Object.values(executable.env).some((entry) => !text(entry))))) fail('protocolInvalid', 'The negotiated executable is invalid.');
   context.executable = executable;
   if (executable?.env) context.environment = { ...executable.env };
+  context.resume = { status: !context.request.resume ? 'disabled' : resume.supported ? 'enabled' : 'unsupported' };
+  context.initialization.capabilities.resume = structuredClone(context.resume);
+  if (context.request.sessionId && !resume.supported) fail('resumeUnsupported', 'The selected backend cannot resume this session with the saved configuration.');
   context.communicationCandidate = structuredClone(capability);
 }
 
@@ -307,8 +312,14 @@ export function adapterMain(moduleUrl, descriptor, help) {
     context = {
       request, environment: process.env, controller, signal: controller.signal, generationStarted: false,
       stopReason: null, errorCode: null, backend: null, bridge: null, stopped: deferred(),
-      communication: null, initialization: null, executable: null, communicationCandidate: null, prompt: request.prompt, diagnostics: [],
+      communication: null, resume: null, sessionId: null, initialization: null, executable: null, communicationCandidate: null, prompt: request.prompt, diagnostics: [],
       emit, abort: (code) => shutdown('channelError', code),
+      async bindSession(sessionId) {
+        if (!identifier(sessionId) || request.sessionId && request.sessionId !== sessionId || context.sessionId && context.sessionId !== sessionId) fail('backendSessionMismatch', 'The backend must preserve the requested session.');
+        if (context.sessionId === sessionId) return;
+        context.sessionId = sessionId;
+        if (context.resume?.status === 'enabled') await emit({ type: 'session', sessionId });
+      },
       async ready(diagnostics = []) {
         if (context.signal.aborted) return;
         if (!context.communication) fail('communicationNotPrepared', 'Prepare communication before reporting ready.');

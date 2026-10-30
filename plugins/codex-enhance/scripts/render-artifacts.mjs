@@ -10,7 +10,7 @@ const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
 export const SKILL_CONFIG_KEYS = {
   'codex-subagent-guide': [
     'simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile',
-    'taskCustomProfiles', 'subagentCommands',
+    'taskCustomProfiles', 'subagentCommands', 'subagentRetentionHours',
   ],
   'codex-advisor': [
     'advisorGeneralProfile', 'advisorAdvancedProfile', 'advisorExpertProfile', 'advisorCustomProfiles',
