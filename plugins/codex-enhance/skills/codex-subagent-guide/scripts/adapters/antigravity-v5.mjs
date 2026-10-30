@@ -15,7 +15,7 @@ export async function negotiateAntigravity(context) {
   antigravityArguments(context.request);
   const executable = await negotiateExecutable(context, 'agy');
   const communication = context.request.communication ? await negotiateAntigravityCommunication(context) : { supported: false };
-  return { environment: { status: 'available' }, executable, capabilities: { communication } };
+  return { environment: { status: 'available' }, executable, capabilities: { communication, resume: { supported: true } } };
 }
 
 export async function executeAntigravity(context) {
@@ -74,7 +74,9 @@ export async function executeAntigravity(context) {
     if (context.signal.aborted) return;
     if (value.event === 'init') {
       if (sessionId || !identifier(value.conversation_id) || !object(value.init)) return invalid();
+      if (context.request.sessionId && context.request.sessionId !== value.conversation_id) return invalid('backendSessionMismatch');
       sessionId = value.conversation_id;
+      void context.bindSession(sessionId).catch((error) => invalid(error.code ?? 'backendSessionMismatch'));
       if (bridge && (!Array.isArray(value.init.tools) || !value.init.tools.includes('run_command'))) return invalid('communicationToolUnavailable');
       if (bridge && value.init.permission_mode === 'strict') return invalid('communicationPermissionDenied');
       initialized.resolve();

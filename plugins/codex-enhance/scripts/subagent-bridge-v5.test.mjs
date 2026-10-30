@@ -12,6 +12,7 @@ import { createChildBridge, createChildChannel, invokeChildTool } from '../skill
 import { protectPrivatePath } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 import { runMessage } from '../skills/codex-subagent-guide/scripts/message.mjs';
 import { runMessageMcp } from '../skills/codex-subagent-guide/scripts/message-mcp.mjs';
+import { messageBodies } from './fixtures/message-bodies.mjs';
 
 const require = createRequire(import.meta.url);
 const messageScript = require.resolve('../skills/codex-subagent-guide/scripts/message.mjs');
@@ -132,8 +133,7 @@ async function fixture(t, options = {}) {
 
 test('generated script preserves text, rejects invalid input, and leaves no tool history', async (t) => {
   const f = await fixture(t);
-  const prefix = ' 父输入\r\n😀 " ` $()\nEND_MESSAGE:00000000\n';
-  const text = prefix + 'x'.repeat(4096 - Buffer.byteLength(prefix));
+  const text = messageBodies[0];
   const sent = await f.execute(['send', '--text', text]);
   assert.equal(sent.code, 0); assert.equal(sent.stdout, 'send_parent: submitted\n'); assert.deepEqual(f.messages, [text]);
   const receipt = f.bridge.acceptInput({ id: id(1), text });
@@ -142,7 +142,7 @@ test('generated script preserves text, rejects invalid input, and leaves no tool
   const boundary = /^receive_parent: received\nBEGIN_MESSAGE:([0-9a-f]{8})\n/.exec(received.stdout)?.[1];
   assert.ok(boundary); assert.equal(received.stdout, `receive_parent: received\nBEGIN_MESSAGE:${boundary}\n${text}\nEND_MESSAGE:${boundary}\n`);
   assert.deepEqual(await receipt, { status: 'submitted' });
-  for (const args of [['send', '--text', ' '], ['send', '--text', '😀'.repeat(1025)], ['receive', '--timeout-ms', '-1'], ['receive', '--timeout-ms', '1800001'], ['send', '--text', 'x', '--from', 'other']]) {
+  for (const args of [['send', '--text', ' '], ['send', '--text', text + 'x'], ['receive', '--timeout-ms', '-1'], ['receive', '--timeout-ms', '1800001'], ['send', '--text', 'x', '--from', 'other']]) {
     const failure = await f.execute(args); assert.equal(failure.code, 2); assert.equal(failure.stdout, ''); assert.match(failure.stderr, /code: /);
   }
   assert.deepEqual(f.messages, [text]);
@@ -186,8 +186,8 @@ test('child send rejects invalid arguments without reading stdin or invoking a t
 // resolve paths at its caller cwd, and classify content versus I/O failures.
 test('child send reads explicit files and rejects invalid files before submitting', async (t) => {
   const f = await fixture(t);
-  const prefix = '\ufeff 父输入\r\n😀 " ` $()\n';
-  const text = prefix + 'x'.repeat(4096 - Buffer.byteLength(prefix));
+  const text = messageBodies[1];
+  assert.ok(Buffer.byteLength(JSON.stringify({ text })) > 65536);
   await fs.writeFile(path.join(f.root, 'message.txt'), text);
   const sent = await f.execute(['send', '--text-file', 'message.txt']);
   assert.equal(sent.code, 0); assert.equal(sent.stdout, 'send_parent: submitted\n');
@@ -198,7 +198,7 @@ test('child send reads explicit files and rejects invalid files before submittin
     ['invalid-utf8', Buffer.from([0xc0, 0x80]), 'inputFileInvalid'],
     ['nul', Buffer.from('x\0y'), 'inputFileInvalid'],
     ['blank', Buffer.from(' \r\n'), 'inputFileInvalid'],
-    ['large', Buffer.from('😀'.repeat(1025)), 'messageTooLarge'],
+    ['large', Buffer.from(messageBodies[0] + 'x'), 'messageTooLarge'],
   ]) {
     await fs.writeFile(path.join(f.root, name), bytes);
     const failure = await f.execute(['send', '--text-file', name]);
@@ -271,7 +271,7 @@ test('caller and scanner never delete the same response concurrently', async (t)
 
 test('single-message byte boundary and queues remain usable beyond 64 inputs and sends', async (t) => {
   const f = channelFixture(t);
-  const text = '😀'.repeat(1024);
+  const text = messageBodies[0];
   assert.equal((await f.invoke('send', { text })).outcome, 'submitted');
   const deliveries = [];
   for (let index = 0; index < 80; index++) deliveries.push(f.bridge.acceptInput({ id: id(index), text: index === 0 ? text : 'same text' }));
@@ -292,8 +292,9 @@ test('explicit receive and automatic input share allocation without replay', asy
   const automatic = []; let finishSubmission;
   const f = channelFixture(t, { submitInput: (message) => new Promise((resolve) => { automatic.push(message); finishSubmission = resolve; diagnostic.note('automaticSubmissionStarted'); }) });
   diagnostic.note('fixtureReady');
-  const first = f.bridge.acceptInput({ id: id(1), text: 'automatic only' });
+  const first = f.bridge.acceptInput({ id: id(1), text: messageBodies[1] });
   await until(() => automatic.length === 1);
+  assert.deepEqual(automatic, [{ id: id(1), text: messageBodies[1] }]);
   assert.equal(f.bridge.hasPendingInput(), true);
   assert.equal((await f.invoke('receive', { timeoutMs: 0 })).outcome, 'timeout');
   const timeoutMs = 1000;
@@ -309,9 +310,9 @@ test('explicit receive and automatic input share allocation without replay', asy
   assert.equal(duplicate.response.code, 'receiveAlreadyPending', diagnostic.snapshot({ responses: [...responses] }));
   const receivingIndex = 1 - duplicate.index;
   assert.equal(responses.has(receivingIndex), false, diagnostic.snapshot({ responses: [...responses] }));
-  const second = f.bridge.acceptInput({ id: id(2), text: 'explicit only' });
+  const second = f.bridge.acceptInput({ id: id(2), text: messageBodies[0] });
   const received = (await receivers[receivingIndex]).response;
-  assert.equal(received.outcome, 'received'); assert.equal(received.text, 'explicit only'); assert.deepEqual(await second, { status: 'submitted' });
+  assert.equal(received.outcome, 'received'); assert.equal(received.text, messageBodies[0]); assert.deepEqual(await second, { status: 'submitted' });
   finishSubmission({ status: 'unknown', code: 'backendUncertain' });
   assert.deepEqual(await first, { status: 'unknown', code: 'backendUncertain' });
   assert.equal(automatic.length, 1); assert.equal(f.bridge.hasPendingInput(), false);
@@ -425,18 +426,30 @@ test('generated MCP process supports concurrent receive/send and rejects extra t
   assert.equal(responses.get(1).result.protocolVersion, '2025-03-26');
   assert.deepEqual(responses.get(2).result.tools.map((tool) => tool.name), ['send_parent', 'receive_parent']);
   request(3, 'tools/call', { name: 'receive_parent', arguments: {} });
-  request(4, 'tools/call', { name: 'send_parent', arguments: { text: '子问题😀' } });
+  request(4, 'tools/call', { name: 'send_parent', arguments: { text: messageBodies[0] } });
   try { await until(() => responses.has(4), responseWindow); }
   catch (error) {
     diagnostic.note('sendResponseWaitFailed', { childExitCode: child.exitCode, childSignal: child.signalCode, diagnostics });
     throw new Error(`${error.message}\n${diagnostic.snapshot({ responses: [...responses.values()], messages: f.messages, diagnostics })}`, { cause: error });
   }
-  assert.equal(responses.has(3), false); assert.deepEqual(f.messages, ['子问题😀']);
+  assert.equal(responses.has(3), false); assert.deepEqual(f.messages, [messageBodies[0]]);
   request(5, 'tools/call', { name: 'send_parent', arguments: { text: 'wrong', from: 'other' } });
   await until(() => responses.has(5), responseWindow); assert.equal(responses.get(5).result.isError, true); assert.equal(f.messages.length, 1);
-  const delivered = f.bridge.acceptInput({ id: id(1), text: '父答复\r\n😀' });
-  await until(() => responses.has(3), responseWindow); assert.match(responses.get(3).result.content[0].text, /^receive_parent: received\n/); assert.match(responses.get(3).result.content[0].text, /父答复\r\n😀/);
+  const delivered = f.bridge.acceptInput({ id: id(1), text: messageBodies[1] });
+  await until(() => responses.has(3), responseWindow);
+  const received = responses.get(3).result.content[0].text;
+  const boundary = /^receive_parent: received\nBEGIN_MESSAGE:([0-9a-f]{8})\n/.exec(received)?.[1];
+  assert.ok(boundary); assert.equal(received, `receive_parent: received\nBEGIN_MESSAGE:${boundary}\n${messageBodies[1]}\nEND_MESSAGE:${boundary}\n`);
   assert.deepEqual(await delivered, { status: 'submitted' });
+  request(7, 'tools/call', { name: 'send_parent', arguments: { text: messageBodies[1] } });
+  await until(() => responses.has(7), responseWindow);
+  assert.equal(responses.get(7).result.isError, undefined);
+  assert.deepEqual(f.messages, messageBodies);
+  request(8, 'tools/call', { name: 'send_parent', arguments: { text: messageBodies[0] + 'x' } });
+  await until(() => responses.has(8), responseWindow);
+  assert.equal(responses.get(8).result.isError, true);
+  assert.match(responses.get(8).result.content[0].text, /^code: messageTooLarge$/m);
+  assert.deepEqual(f.messages, messageBodies);
   request(6, 'tools/call', { name: 'receive_parent', arguments: {} });
   const exited = once(child, 'exit'); child.stdin.end();
   assert.deepEqual(await exited, [0, null]);

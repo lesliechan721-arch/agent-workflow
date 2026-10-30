@@ -1,5 +1,5 @@
 import {
-  LIMITS, fields, fail, messageId, validateDelivery, validateMessageText,
+  LIMITS, fields, fail, messageId, identifier, validateDelivery, validateMessageText,
   validateRequest, validateResult, validateInitialization, validateDiagnostics,
 } from './contracts.mjs';
 import { isDeepStrictEqual } from 'node:util';
@@ -27,6 +27,9 @@ export function validateFrame(frame, direction) {
     validateInitialization(frame.initialization, { ready: true });
     if (Object.hasOwn(frame, 'diagnostics')) validateDiagnostics(frame.diagnostics);
     maximum = LIMITS.controlFrameBytes;
+  } else if (direction === 'adapter' && frame.type === 'session') {
+    if (!required(frame, ['protocolVersion', 'type', 'sessionId']) || !identifier(frame.sessionId)) invalid('The session frame is invalid.');
+    maximum = LIMITS.controlFrameBytes;
   } else if (direction === 'adapter' && frame.type === 'delivery') {
     if (!required(frame, ['protocolVersion', 'type', 'id', 'status'], ['code', 'message']) || !messageId(frame.id)) invalid('The delivery frame is invalid.');
     const { protocolVersion, type, id, ...delivery } = frame;
@@ -44,9 +47,16 @@ export function validateFrame(frame, direction) {
 /** One connection owns one state. Validate before committing each frame. */
 export function createProtocolState() {
   let started = false; let ready = false; let closing = false; let result = false;
-  let initialization = null; let mode; let requestedCommunication; let stopReason = null;
+  let initialization = null; let mode; let requestedCommunication; let requestedResume; let expectedSession; let sessionId = null; let resume = null; let stopReason = null;
   const seenInputs = new Set(); const awaitingDelivery = new Set();
+  const checkResume = (value) => {
+    const capability = value.capabilities.resume;
+    if (!capability) return;
+    if (!requestedResume && capability.status !== 'disabled' || requestedResume && capability.status === 'disabled') invalid('Initialization must preserve the requested resume setting.');
+    if (sessionId && capability.status !== 'enabled') invalid('A bound session requires resume enabled.');
+  };
   const checkCommunication = (value) => {
+    checkResume(value);
     const communication = value.capabilities.communication;
     if (!communication) return;
     if (mode === 'bundle' && communication.status === 'enabled') invalid('Bundle runs cannot enable communication.');
@@ -56,13 +66,15 @@ export function createProtocolState() {
     get phase() { return result ? 'terminal' : closing ? 'closing' : ready ? 'running' : started ? 'starting' : 'initial'; },
     get initialization() { return initialization; },
     get communication() { return initialization?.capabilities.communication ?? null; },
+    get resume() { return resume; },
+    get sessionId() { return sessionId; },
     get stopReason() { return stopReason; },
     acceptWorker(frame) {
       validateFrame(frame, 'worker');
       if (result) invalid('Task input is not allowed after the result.');
       if (!started) {
         if (frame.type !== 'start') invalid('The first worker frame must be start.');
-        started = true; mode = frame.mode; requestedCommunication = frame.communication; return frame;
+        started = true; mode = frame.mode; requestedCommunication = frame.communication; requestedResume = frame.resume; expectedSession = frame.sessionId; return frame;
       }
       if (frame.type === 'start') invalid('Start must occur exactly once.');
       if (frame.type === 'stop') { stopReason ??= frame.reason; return frame; }
@@ -73,11 +85,16 @@ export function createProtocolState() {
     acceptAdapter(frame) {
       validateFrame(frame, 'adapter');
       if (!started || result) invalid('Adapter events require start and cannot follow result.');
-      if (frame.type === 'ready') {
+      if (frame.type === 'session') {
+        if (closing || !requestedResume || resume && resume.status !== 'enabled') invalid('Session binding requires an open resume-enabled run.');
+        if (sessionId && sessionId !== frame.sessionId || expectedSession && expectedSession !== frame.sessionId) invalid('The session cannot change within a run or on resume.');
+        sessionId = frame.sessionId; resume = { status: 'enabled' };
+      } else if (frame.type === 'ready') {
         if (ready || closing) invalid('Ready must occur once before closing.');
         checkCommunication(frame.initialization);
-        ready = true; initialization = structuredClone(frame.initialization);
+        ready = true; initialization = structuredClone(frame.initialization); resume = structuredClone(initialization.capabilities.resume);
       } else if (frame.type === 'result') {
+        if (frame.sessionId && (sessionId && sessionId !== frame.sessionId || expectedSession && expectedSession !== frame.sessionId)) invalid('The result session must preserve the session binding.');
         if (!ready) {
           const provenUnsubmitted = ['failed', 'cancelled'].includes(frame.state) && frame.generationStarted === false;
           const uncertain = frame.state === 'unknown' && frame.generationStarted === null;
@@ -86,7 +103,10 @@ export function createProtocolState() {
         if (frame.initialization) {
           checkCommunication(frame.initialization);
           if (ready && !isDeepStrictEqual(initialization, frame.initialization)) invalid('The result must preserve the published initialization descriptor.');
-          if (!ready) initialization = structuredClone(frame.initialization);
+          if (!ready) {
+            initialization = structuredClone(frame.initialization);
+            if (initialization.capabilities.resume) resume = structuredClone(initialization.capabilities.resume);
+          }
         }
         result = true;
       } else if (!ready) invalid('The first adapter event must be ready or an initialization result.');

@@ -11,7 +11,8 @@ Usage: <generated command> send --text TEXT
 
 Send submits one message to the parent channel. It does not wait for a reply.
 Receive waits for one input, a timeout, or closure. The default is 600000 ms.
-N must be an integer from 0 to 1800000. Text must contain 1 to 4096 UTF-8 bytes.
+N must be an integer from 0 to 1800000. Text must contain 1 to 24576 UTF-8 bytes.
+Use --text-file for long messages to avoid host command-line limits.
 Inputs already submitted to model context are not replayed by receive.
 `;
 
@@ -25,7 +26,7 @@ export async function runMessage(argv, { stdout = process.stdout, stderr = proce
     const rest = argv.slice(3); let text; let timeoutMs;
     if (operation === 'send') {
       if (rest.length !== 2 || !['--text', '--text-file'].includes(rest[0]) || typeof rest[1] !== 'string' || rest[1] === '-') fail('invalidArguments', 'Use send with exactly one --text TEXT or --text-file PATH input. A single hyphen is not an input.');
-      text = rest[0] === '--text-file' ? await readInputFile(rest[1], LIMITS.messageBytes, 'messageTooLarge', callerCwd) : rest[1];
+      text = rest[0] === '--text-file' ? await readInputFile(rest[1], LIMITS.messageBodyBytes, 'messageTooLarge', callerCwd) : rest[1];
     } else if (operation === 'receive') {
       if (rest.length) {
         if (rest.length !== 2 || rest[0] !== '--timeout-ms' || !/^(0|[1-9][0-9]*)$/.test(rest[1])) fail('invalidArguments', 'Use receive with an optional --timeout-ms integer.');

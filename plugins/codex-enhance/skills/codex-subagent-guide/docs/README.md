@@ -5,8 +5,8 @@
 | 文档 | 读取场景 |
 | --- | --- |
 | [配置与接入](configuration.md) | 查找源码入口，维护执行器配置、权限模式、任务输入和环境。 |
-| [Adapter v5 协议](protocol.md) | 实现或修改 start/ready/message/delivery/closing/result、初始化和通讯桥接。 |
-| [运行生命周期与平台支持](runtime.md) | 维护命令输出、观察与消费、停止、缓存、macOS/Linux/Windows 及安装闭包；核对验证要求。 |
+| [Adapter v5 协议](protocol.md) | 实现或修改 start/ready/session/message/delivery/closing/result、初始化和通讯桥接。 |
+| [运行生命周期与平台支持](runtime.md) | 维护命令输出、恢复、观察与消费、停止、用户目录、可配置保留与异步清理、macOS/Linux/Windows 及安装闭包；核对验证要求。 |
 | [文件选择](file-selection.md) | 接入 bundle 文件选择 v1 或公共解析命令。 |
 | [Codex](codex.md) | 维护 app-server、CLI 来源、profile 转换、hooks 信任和支持字段。 |
 | [Claude Code](claude-code.md) | 维护持续会话、MCP 通讯及工具权限检查。 |

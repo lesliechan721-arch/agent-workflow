@@ -59,7 +59,7 @@ test('Windows root publication preserves a competing existing directory or file'
   for (const kind of ['privateDirectory', 'inheritedDirectory', 'file']) {
     const isolated = path.join(temporary, kind);
     await fs.mkdir(isolated);
-    const context = await storeContext({ temporaryRoot: isolated });
+    const context = await storeContext({ homeRoot: isolated });
     const mkdtemp = fs.mkdtemp; const rmdir = fs.rmdir;
     let staging, inserted, sourceRetained = false;
     fs.mkdtemp = async (prefix, ...options) => {
@@ -111,7 +111,7 @@ test('worker final published between missing-file probes remains readable', { ti
   const finalText = 'Committed between final-file probes.\r\n保留原文。\n';
   const started = await f.start({ finalText });
   await f.initialized(started);
-  const context = await storeContext({ temporaryRoot: f.temporaryRoot });
+  const context = await storeContext({ homeRoot: f.homeRoot });
   const run = await openRun(context, started.run);
   assert.equal(await workerAlive(context, run.meta), true);
   const finalFile = path.join(run.directory, 'final.json');
@@ -156,7 +156,7 @@ test('late worker final publication survives a parent lost-worker observation', 
   const finalText = 'Saved successful answer.\r\n保留最终正文。\n';
   const started = await f.start({ finalText });
   await f.initialized(started);
-  const context = await storeContext({ temporaryRoot: f.temporaryRoot });
+  const context = await storeContext({ homeRoot: f.homeRoot });
   const run = await openRun(context, started.run);
   const finalFile = path.join(run.directory, 'final.json');
   const ownerFile = path.join(run.directory, 'owner.json');
@@ -197,6 +197,7 @@ test('late worker final publication survives a parent lost-worker observation', 
 // new work, and repeat observations must preserve the first expiry origin.
 test('lost worker result is fixed once and expires without regenerating work', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
+  f.snapshot.effectiveValues.subagentRetentionHours = 24; await f.save();
   const started = await f.start({ messages: ['Saved process message.'] });
   await f.initialized(started); await started.published();
   const before = await f.evidence(started.run);
@@ -216,7 +217,7 @@ test('lost worker result is fixed once and expires without regenerating work', {
   assert.equal((await f.command(['wait', '--run', started.run])).stdout, 'settled\n');
   assert.equal(await fs.readFile(f.generations, 'utf8'), 'generation\n');
   const clock = await f.clock(['result'], { now: first.meta.terminalAt });
-  await clock.advance(3599999);
+  await clock.advance(86399999);
   successful(await f.command(['result', '--run', started.run], { env: clock.environment }), 'result');
   assert.equal((await f.evidence(started.run)).meta.terminalAt, first.meta.terminalAt);
   await clock.advance(1);
@@ -229,6 +230,7 @@ test('lost worker result is fixed once and expires without regenerating work', {
 // cleanup even when cached content is damaged; read-only help must not scan.
 test('ordinary calls clean expired damaged content while help and invalid flags stay read-only', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
+  f.snapshot.effectiveValues.subagentRetentionHours = 24; await f.save();
   const started = await f.start({ finishImmediately: true });
   await f.initialized(started); await f.waitTerminal(started.run);
   const run = await f.evidence(started.run);
@@ -236,14 +238,14 @@ test('ordinary calls clean expired damaged content while help and invalid flags 
     try { process.kill(run.meta.worker.pid, 0); return false; }
     catch (error) { if (error.code === 'ESRCH') return true; throw error; }
   }, 'worker exit');
-  const clock = await f.clock(['--help', 'result'], { now: run.meta.terminalAt });
-  await clock.advance(3600000);
+  run.meta.terminalAt = Date.now() - 86400001;
+  await fs.writeFile(path.join(run.directory, 'owner.json'), JSON.stringify(run.meta), { mode: 0o600 });
   await fs.writeFile(path.join(run.directory, 'final.json'), '{damaged cached content');
-  assert.equal((await f.command(['--help'], { env: clock.environment })).code, 0); await fs.stat(run.directory);
-  assert.equal((await f.command(['result', '--run', started.run, '--export', '--output-file', 'unused'], { env: clock.environment })).code, 2); await fs.stat(run.directory);
-  const expired = await f.command(['result', '--run', started.run], { env: clock.environment });
+  assert.equal((await f.command(['--help'])).code, 0); await fs.stat(run.directory);
+  assert.equal((await f.command(['result', '--run', started.run, '--export', '--output-file', 'unused'])).code, 2); await fs.stat(run.directory);
+  const expired = await f.command(['result', '--run', started.run]);
   assert.equal(expired.code, 1); assert.deepEqual(blocks(expired.stdout, 'FINAL'), []);
-  assert.equal(await fs.stat(run.directory).catch(() => null), null);
+  await eventually(async () => await fs.stat(run.directory).catch(() => null) === null, 'asynchronous expired execution cleanup');
 });
 
 // Test Value Gate: caller wait time must not impose a task deadline. Advance

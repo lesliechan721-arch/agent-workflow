@@ -44,6 +44,7 @@ export function antigravityArguments(request) {
   const args = ['--input-format', 'stream-json', '--output-format', 'stream-json', '--print-timeout', '0', ...request.args];
   if (permissionMode(request) === 'auto') args.push('--mode', 'auto');
   else if (permissionMode(request) === 'full-access') args.push('--dangerously-skip-permissions');
+  if (request.sessionId) args.push('--conversation', request.sessionId);
   if (request.execution.model !== undefined) args.push('--model', request.execution.model);
   if (request.execution.reasoningEffort !== undefined) args.push('--effort', request.execution.reasoningEffort);
   return args;

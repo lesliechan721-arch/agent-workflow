@@ -26,3 +26,9 @@ communication=true 使用 command / turn-boundary，同时提供主动收件。�
 首条及后续输入均为 user NDJSON。活动轮不自动开始下一轮；父输入留在共享队列，已有 receive 优先。result 只结束当前轮；边界处同一输入只通过自动输入或 receive 其中一条路径消费，至多一个自动提交等待确认。stdin.write 成功只证明写管道，submitted 需要同一 conversation 中新增且可关联的 user_input/DONE；旧事件或重复 step 不作确认。写后断线且无确认保留 unknown，确定未接受才为 notSubmitted，不按回答猜测、不自动重发。该映射未获真实证据时不能发布自动交付能力。
 
 run 使用最后一个已确认成功轮次的完整 result.response，不默认拼接所有轮。后续轮失败时不能以旧回答宣布成功，可明确保留部分结果。关闭前分类已接受输入，停止子侧发送，发 closing，再关闭 stdin 并取得本进程退出及所属后代证据；迟到输入不开新轮，无待办则自然结束。关闭 stdin 不等于取消；stop/deadline 只处理可证明归属的进程树，不发 Claude control_request，不按进程名杀其它 agy 或共享服务。exit 0、部分正文或单轮 SUCCESS 均不足以证明 run 成功，停止或清理不明保留 unknown。
+
+## 恢复与工具重绑
+
+恢复通过 `--conversation <sessionId>` 选择绑定 conversation，实际 init 返回的 conversation_id 必须相同；获得真实 ID 后及时发送 session 帧。每次新建当前 command bridge，重新检查 run_command 能力和必要权限，并把当前工具调用说明加入本次新消息，不重复初始任务或旧输入。会话不存在、ID 不符或不接受输入时明确失败，不使用 --continue 选择其它会话、不 fork、不新建回退，也不重试不明投递。用户正常会话根及认证设置保留，后端会话不存于 AW 的临时 adapter/ 中。
+
+该路径仍须在实际 agy、账户、权限模式和原生操作系统上验证；协议实现与公开 CLI 说明不构成真实恢复或工具交付验收。没有实际运行证据时保留此限制，不从其它后端通过外推。

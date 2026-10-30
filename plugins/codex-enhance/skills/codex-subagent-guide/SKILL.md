@@ -20,7 +20,7 @@ native 使用可用的原生子代理工具。模型和推理强度按优先级 
 
 明确要求的模型或推理强度优先于所选配置。外部配置省略的属性使用后端默认，不生成空参数。
 
-非 native 使用 外部委派（`references/external-delegation.md`），按其模式、命令和状态合同操作。
+非 native 使用 外部委派（`references/external-delegation.md`），按其模式、命令和状态合同操作；发送过程输入或恢复已结束任务时，再读取 通信与恢复（`references/communication.md`）。
 
 ## 任务上下文
 

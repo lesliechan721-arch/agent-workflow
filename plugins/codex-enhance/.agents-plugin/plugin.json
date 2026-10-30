@@ -57,6 +57,8 @@
         "./scripts/subagent-integration-reports.test.mjs",
         "./scripts/subagent-integration-results.test.mjs",
         "./scripts/subagent-integration-recovery.test.mjs",
+        "./scripts/subagent-integration-resume.test.mjs",
+        "./scripts/subagent-integration-resume-output.test.mjs",
         "./scripts/subagent-runtime-logic.test.mjs",
         "./scripts/subagent-plan.test.mjs",
         "./scripts/codex-executable.test.mjs",
@@ -67,10 +69,12 @@
         "./scripts/subagent-bridge-v5.test.mjs",
         "./scripts/subagent-platform.test.mjs",
         "./scripts/subagent-platform-failures.test.mjs",
+        "./scripts/subagent-storage.test.mjs",
         "./scripts/file-selection.test.mjs",
         "./scripts/adapters-integration-inputs.test.mjs",
         "./scripts/adapters-integration-protocol.test.mjs",
         "./scripts/adapters-integration-control.test.mjs",
+        "./scripts/adapters-integration-recovery.test.mjs",
         "./scripts/adapter-permissions.test.mjs",
         "./scripts/antigravity-permissions.test.mjs"
       ]
@@ -367,6 +371,11 @@
               "type": "boolean",
               "title": "父子通讯",
               "description": "省略时开启；设为 false 时不建立 AW 通讯桥，也不注入通讯工具和指令。开启仍须通过本次适配器能力检查。"
+            },
+            "resume": {
+              "type": "boolean",
+              "title": "恢复执行",
+              "description": "省略时开启；允许向已结束的代理发送新消息来恢复原会话。与父子通讯独立，开启仍须通过适配器能力检查。"
             },
             "args": {
               "type": "array",
@@ -671,6 +680,18 @@
         "default": [],
         "required": true
       },
+      "subagentRetentionHours": {
+        "type": "number",
+        "title": "执行记录保留小时数",
+        "description": "从执行结束计算，默认保留 24 小时；0 表示永不过期且不进行过期扫描。配置 apply 后从下次命令生效。",
+        "validation": {
+          "integer": true,
+          "minimum": 0,
+          "maximum": 2501999792
+        },
+        "default": 24,
+        "required": true
+      },
       "advisorGeneralProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "general 咨询配置",
@@ -881,7 +902,8 @@
             "generalTaskProfile",
             "complexTaskProfile",
             "advancedTaskProfile",
-            "taskCustomProfiles"
+            "taskCustomProfiles",
+            "subagentRetentionHours"
           ]
         },
         {
@@ -1037,7 +1059,8 @@
           "complexTaskProfile",
           "advancedTaskProfile",
           "taskCustomProfiles",
-          "subagentCommands"
+          "subagentCommands",
+          "subagentRetentionHours"
         ],
         "skillKey": "codex-subagent-guide",
         "sourceDirs": [
@@ -1045,7 +1068,8 @@
         ],
         "runtimeConfig": {
           "keys": [
-            "subagentCommands"
+            "subagentCommands",
+            "subagentRetentionHours"
           ]
         }
       },

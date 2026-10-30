@@ -54,8 +54,8 @@ describe('Config Definition v4 CLI boundaries', () => {
       { key: 'oracle-default', adapter: 'oracle' },
       { key: 'codex-review', adapter: 'codex', codexProfile: 'review profile' },
       { key: 'codex-default', adapter: 'codex' },
-      { key: 'codex-app', adapter: 'codex', codexCliSource: 'app', codexBypassHookTrust: true, communication: false },
-      { key: 'codex-cli', adapter: 'codex', codexCliSource: 'cli', codexBypassHookTrust: false, communication: true },
+      { key: 'codex-app', adapter: 'codex', codexCliSource: 'app', codexBypassHookTrust: true, communication: false, resume: true },
+      { key: 'codex-cli', adapter: 'codex', codexCliSource: 'cli', codexBypassHookTrust: false, communication: true, resume: false },
       { key: 'codex-auto', adapter: 'codex', codexCliSource: 'auto', codexBypassHookTrust: true, codexProfile: 'advanced' },
       { key: 'agy', adapter: 'antigravity', communication: false, args: ['--model', 'backend-default'],
         env: { ORDINARY: 'literal' }, envFrom: { TOKEN: 'HOST_TOKEN' } },
@@ -73,7 +73,7 @@ describe('Config Definition v4 CLI boundaries', () => {
     const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
       logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['codex-subagent-guide-skill'],
       config: { ...config, mode: 'artifact-render', targetScope: 'user' } });
-    expect(snapshots['codex-subagent-guide-skill']!.effectiveValues).toEqual({ subagentCommands: commands });
+    expect(snapshots['codex-subagent-guide-skill']!.effectiveValues).toEqual({ subagentCommands: commands, subagentRetentionHours: 24 });
     const file = resolvePluginConfigStorePath(store);
     const before = await fs.readFile(file);
     for (const invalid of [
@@ -83,6 +83,7 @@ describe('Config Definition v4 CLI boundaries', () => {
       ...['codex', 'claude-code', 'antigravity', 'oracle', 'custom'].flatMap((adapter) =>
         ['false', 0, null].map((communication) => ({ key: 'invalid', adapter, communication,
           ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) }))),
+      ...['false', 0, null].map((resume) => ({ ...commands[4], resume })),
       ...['cli-path', false, null].map((codexCliSource) => ({ ...commands[4], codexCliSource })),
       ...['false', 0, null].map((codexBypassHookTrust) => ({ ...commands[4], codexBypassHookTrust })),
       ...['claude-code', 'antigravity', 'oracle', 'custom'].flatMap((adapter) => [
@@ -100,6 +101,31 @@ describe('Config Definition v4 CLI boundaries', () => {
       { ...commands[7], command: process.execPath },
     ]) {
       await expect(save({ subagentCommands: [commands[0], { ...invalid, key: 'invalid' }] })).rejects.toThrow();
+      expect(await fs.readFile(file)).toEqual(before);
+    }
+  });
+
+  // Test Value Gate: persisted retention and installed snapshots control deletion;
+  // zero must survive saving, and invalid values must preserve the prior file.
+  it('saves Guide retention hours including zero and rejects invalid ranges atomically', async () => {
+    const { store, plugin, save } = fixture();
+    const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/codex-enhance/.agents-plugin/plugin.json'));
+    plugin.manifest.config = normalizePluginConfigDefinition(source.config);
+    plugin.manifest.artifacts = source.artifacts;
+    const maximum = Math.floor(Number.MAX_SAFE_INTEGER / 3_600_000);
+    for (const subagentRetentionHours of [maximum, 1, 0]) {
+      await save({ subagentRetentionHours });
+      const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
+      expect(config.values.subagentRetentionHours).toBe(subagentRetentionHours);
+      const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
+        logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['codex-subagent-guide-skill'],
+        config: { ...config, mode: 'artifact-render', targetScope: 'user' } });
+      expect(snapshots['codex-subagent-guide-skill']!.effectiveValues).toEqual({ subagentCommands: [], subagentRetentionHours });
+    }
+    const file = resolvePluginConfigStorePath(store);
+    const before = await fs.readFile(file);
+    for (const subagentRetentionHours of [-1, 0.5, maximum + 1, Number.NaN, Number.POSITIVE_INFINITY, 'invalid', null]) {
+      await expect(save({ subagentRetentionHours })).rejects.toThrow();
       expect(await fs.readFile(file)).toEqual(before);
     }
   });

@@ -191,7 +191,7 @@ test('shares one profile definition, preserves defaults and declares exact consu
     if (target.target === 'codex.skill') {
       assert.deepEqual(target.delivery, { mode: 'codex-native', identity: 'shared', renderProfile: 'user' });
       assert.deepEqual(target.refreshKeys, SKILL_CONFIG_KEYS[target.skillKey]);
-      assert.deepEqual(target.runtimeConfig, target.skillKey === 'codex-subagent-guide' ? { keys: ['subagentCommands'] } : undefined);
+      assert.deepEqual(target.runtimeConfig, target.skillKey === 'codex-subagent-guide' ? { keys: ['subagentCommands', 'subagentRetentionHours'] } : undefined);
     } else {
       assert.deepEqual(target.refreshKeys, []);
       assert.equal(target.runtimeConfig, undefined);
@@ -398,7 +398,7 @@ test('delivered Skill links resolve inside each artifact resource root', async (
 test('delivered Guide contains its executable entries and relative module closure', async () => {
   const plan = await renderArtifactPlan(context());
   const files = plan.artifacts.find((item) => item.id === 'codex-subagent-guide-skill').content.files;
-  for (const entry of ['subagent.mjs', 'worker.mjs', 'message.mjs', 'message-mcp.mjs',
+  for (const entry of ['subagent.mjs', 'worker.mjs', 'scan-expired.mjs', 'message.mjs', 'message-mcp.mjs',
     'adapters/codex-v5.mjs', 'adapters/codex-profile.mjs', 'adapters/claude-code-v5.mjs',
     'adapters/antigravity-v5.mjs', 'adapters/oracle-v5.mjs']) {
     assert.equal(typeof files[`scripts/${entry}`], 'string', `Missing executable entry: ${entry}`);

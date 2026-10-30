@@ -179,7 +179,7 @@ export async function executeCodex(context) {
   } });
   if (bridge) configuration.thread.config.mcp_servers = {
     ...configuration.thread.config.mcp_servers,
-    [server]: { command: bridge.mcpServer.command, args: bridge.mcpServer.args, required: true },
+    [server]: { command: bridge.mcpServer.command, args: bridge.mcpServer.args, required: true, tools: { receive_parent: { output_token_limit: 32768 } } },
   };
   const executable = context.executable;
   watchPermissionFallback(context);
@@ -221,9 +221,13 @@ export async function executeCodex(context) {
       catch { fail('profileHookStateUnavailable', 'The backend could not return raw hook state layers.'); }
       mapHookState(configuration, layers);
     }
-    const response = await rpc.call('thread/start', configuration.thread);
+    const response = context.request.sessionId
+      ? await rpc.call('thread/resume', { ...configuration.thread, threadId: context.request.sessionId })
+      : await rpc.call('thread/start', configuration.thread);
     threadId = response?.thread?.id;
     if (typeof threadId !== 'string' || !threadId) fail('backendOutputInvalid', 'The backend did not return a thread ID.');
+    if (context.request.sessionId && (response.thread.status?.type === 'active' || response.thread.turns?.some((turn) => turn.status === 'inProgress'))) fail('backendInputUnavailable', 'The original backend thread still has an active turn.');
+    await context.bindSession(threadId);
     if (typeof response.model === 'string') model = response.model;
     if (context.signal.aborted) return { state: 'cancelled', code: context.errorCode, text: '' };
     await context.ready();
@@ -266,7 +270,7 @@ export async function negotiateCodex(context) {
   context.initialization = { environment: { status: 'available' }, capabilities: {} };
   if (executable.diagnostic) context.diagnostics.push(executable.diagnostic);
   const { diagnostic: _diagnostic, ...invocation } = executable;
-  return { environment: { status: 'available' }, executable: invocation, capabilities: { communication: { supported: true, transport: 'mcp', passiveDelivery: 'in-turn' } } };
+  return { environment: { status: 'available' }, executable: invocation, capabilities: { communication: { supported: true, transport: 'mcp', passiveDelivery: 'in-turn' }, resume: { supported: !context.request.args.includes('--ephemeral') } } };
 }
 
 adapterMain(import.meta.url, { mode: 'workspace', codex: true, permissionMode: true, negotiate: negotiateCodex, execute: executeCodex }, 'Codex Adapter v5\nUsage: node codex-v5.mjs\nReads one persistent v5 JSONL connection. Uses PATH codex app-server, private parent tools, and automatic input.\nNormal backend configuration and approvals apply. Unsupported explicit options fail before model submission.\nNo default execution deadline or automatic retry. Backend process exit and service terminal are required.\n');

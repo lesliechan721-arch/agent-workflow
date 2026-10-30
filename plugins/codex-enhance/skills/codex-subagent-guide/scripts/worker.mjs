@@ -10,12 +10,12 @@ import { sanitizeDiagnostics, summarizeDiagnostics } from './runtime/diagnostics
 import { createFrameDecoder, createFrameWriter, createProtocolState } from './runtime/protocol.mjs';
 import { safeSpawn, resolveSafeCommand } from './runtime/platform.mjs';
 import { processTable, observeTree, stopOwnedTree } from './runtime/processes.mjs';
-import { storeContext, readOwner, recordFiles, readRecord, saveGap, removeScratch, delay } from './runtime/store.mjs';
+import { storeContext, readExecution, recordFiles, readRecord, saveGap, removeScratch, delay } from './runtime/store.mjs';
 
 export async function runWorker(directory) {
   const startedAt = Date.now();
-  const context = await storeContext({ temporaryRoot: path.dirname(path.dirname(directory)) });
-  const run = await readOwner(context, path.basename(directory));
+  const context = await storeContext({ root: path.dirname(path.dirname(path.dirname(directory))) });
+  const run = await readExecution(context, directory);
   if (run.directory !== directory || process.env.AW_SUBAGENT_PROCESS_TOKEN !== run.meta.token) fail('workerIdentityInvalid', 'The worker ownership binding is invalid.');
   const bootstrapEnd = Date.now() + 10000;
   let prepared;
@@ -26,8 +26,14 @@ export async function runWorker(directory) {
       await delay(20);
     }
   }
-  run.meta = (await readOwner(context, run.meta.id)).meta;
-  if (run.meta.worker?.pid !== process.pid) fail('workerIdentityInvalid', 'The worker process does not match its recorded identity.');
+  // The descriptor is prepared before publication. The parent records the
+  // spawned worker identity before this worker can submit the adapter start.
+  for (;;) {
+    run.meta = (await readExecution(context, directory)).meta;
+    if (run.meta.worker?.pid === process.pid) break;
+    if (run.meta.worker || Date.now() >= bootstrapEnd) fail('workerIdentityInvalid', 'The worker process does not match its recorded identity.');
+    await delay(20);
+  }
   await fs.unlink(path.join(directory, 'launch.json'));
   const request = { ...prepared.request,
     run: { id: run.meta.id, name: run.meta.name, deadlineAt: prepared.deadlineMs === undefined ? null : startedAt + prepared.deadlineMs },
@@ -59,14 +65,18 @@ export async function runWorker(directory) {
   };
   const pendingNames = new Map();
   const acceptEvent = async (frame) => {
-    if (frame.type === 'ready') {
+    if (frame.type === 'session') {
+      await atomicJson(path.join(directory, 'session.json'), { sessionId: frame.sessionId });
+      if (snapshot.resume !== 'enabled') await state(snapshot.state, { resume: 'enabled', initializationSequence: snapshot.sequence + 1 });
+    } else if (frame.type === 'ready') {
       readyDiagnostics = frame.diagnostics ? sanitizeDiagnostics(frame.diagnostics, prepared.environment, prepared.secretValues) : undefined;
       await state(stopReason ? 'closing' : 'running', { ready: true, initialization: frame.initialization,
+        resume: frame.initialization.capabilities.resume.status,
         ...(readyDiagnostics ? { diagnostics: summarizeDiagnostics(readyDiagnostics) } : {}),
         initializationSequence: snapshot.sequence + 1 });
     } else if (frame.type === 'message') {
       const text = sanitize(frame.text);
-      if (Buffer.byteLength(text) > 4096) fail('messageTooLarge', 'The redacted message exceeds its limit.');
+      if (Buffer.byteLength(text) > LIMITS.messageBodyBytes) fail('messageTooLarge', 'The redacted message exceeds its limit.');
       await event({ type: 'message', text });
     } else if (frame.type === 'delivery') {
       const name = pendingNames.get(frame.id);
@@ -83,7 +93,8 @@ export async function runWorker(directory) {
       stoppingAt ??= Date.now();
     } else if (frame.type === 'result') {
       candidate = { ...frame, text: sanitize(frame.text), ...(frame.message ? { message: sanitize(frame.message) } : {}) };
-      for (const key of ['model', 'sessionId']) if (candidate[key]) candidate[key] = sanitize(candidate[key]);
+      if (candidate.model) candidate.model = sanitize(candidate.model);
+      if (candidate.initialization?.capabilities.resume) await state(snapshot.state, { resume: candidate.initialization.capabilities.resume.status });
       stoppingAt ??= Date.now();
     }
   };

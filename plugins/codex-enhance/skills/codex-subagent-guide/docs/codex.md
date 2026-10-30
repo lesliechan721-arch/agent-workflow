@@ -6,6 +6,12 @@ Codex 固定 workspace，通过 app-server 管理本次 thread/turn、正式输�
 
 `codexProfile` 从有效 CODEX_HOME 读取 profile-v2 的 `<name>.config.toml`，将精确支持字段转换为本次启动或线程覆盖；未支持和无关字段诊断后忽略。它不保留原生用户配置层身份，可能覆盖项目配置，不与原生 exec --profile 完全等价。字段范围、覆盖顺序、hooks 状态映射、信任与 bypass、失败码见 [Codex profile 转换](#codex-profile-转换)。raw --profile/-p 使用相同转换路径，与专用字段同时出现时拒绝；不直接传给 app-server。额外目录 addDirs（--add-dir）仍无等价映射，显式使用返回 parameterUnavailable。
 
+## 恢复与工具重绑
+
+首次执行通过 thread/start 建立会话，恢复通过 app-server 的 thread/resume 传入绑定 threadId，并保留原 cwd 和执行配置；确认实际返回 ID 一致后才提交本次新消息。原线程仍有 active/inProgress turn 时明确失败，不投递、不 fork、不新建回退。使用 --ephemeral 时不保留可恢复会话，resume 报 unsupported；配置关闭时为 disabled。
+
+得到真实 thread ID 时及时发送 session 帧。每次恢复以同一 run 的私有 AW MCP server key 替换为当前 bridge 的 command/args，重新注入必要通信说明，避免模型调用旧绑定；不复制聊天历史或重复初始任务。只有私有 receive_parent 设置 tools.receive_parent.output_token_limit=32768，不改其它工具或全局用户配置。真实 CLI 必须支持所用 API、持久化及工具预算；本地协议或 fake 通过不构成真实会话恢复和完整工具交付验收。
+
 ## Codex CLI 来源
 
 | codexCliSource | 查找规则 |

@@ -94,6 +94,7 @@ for (const order of ['parent first', 'receive first']) test(`Claude: ${order} re
     signal: controller.signal, stopped,
     abort(code) { this.errorCode = code; controller.abort(); stopped.resolve(); },
     async ready() {},
+    async bindSession() {},
     async beginClosing(reason) { await this.bridge.close(reason); },
     async prepareCommunication({ submitInput, canSubmitInput }) {
       this.bridge = await createChildBridge({

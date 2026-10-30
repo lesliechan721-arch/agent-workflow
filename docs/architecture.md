@@ -458,11 +458,15 @@ Guide 的静态集合 guide/subagent/default 使用 codex-subagent-guide-skill a
 
 Config v4 的 custom-managed 分支把 commandId 绑定到用户或插件托管 adapter，仍使用 Adapter v5。worker 用当前受保护 CommandHost 调用同一个 AW 的 command run；executor args 留在 v5 请求，binding fixed args 才进入目标 argv。缺少/无效主机明确失败，不以 PATH 或其它 AW_HOME 回退；原绝对 custom 入口保持可用。配置、环境优先级与禁止字段见 [配置与接入](../plugins/codex-enhance/skills/codex-subagent-guide/docs/configuration.md#托管-custom-adapter)。
 
-外部 start/send 及子侧 send 只接受文本或文件，缺参、互斥、重复、未知及 -/stdin 形式在副作用前拒绝。正常输出用简短控制行和 message/input/result/diagnostic 块；主代理仅得到 communication=true/false/pending 和必要证据，不公开 transport/passiveDelivery 或环境快照。正常诊断默认隐藏，最终结果省略已报告的 ready 诊断；`--diagnostics` 可查看完整诊断。`--help` 显示总览，各操作的 `--help` 显示对应参数与约束。启用通信始终提供 send/receive，Adapter v5 enabled 对象只含 status、transport 和 passiveDelivery，拒绝旧 activeReceive 字段。
+外部 start/send 及子侧 send 只接受文本或文件，缺参、互斥、重复、未知及 -/stdin 形式在副作用前拒绝。正常输出用简短控制行和 message/input/result/diagnostic 块；主代理仅得到 communication=true/false/pending、独立的 resume=true/false/pending 和必要证据，不公开 transport/passiveDelivery 或环境快照。正常诊断默认隐藏，最终结果省略已报告的 ready 诊断；`--diagnostics` 可查看完整诊断。`--help` 显示总览，各操作的 `--help` 显示对应参数与约束。启用通信始终提供 send/receive，Adapter v5 的 communication enabled 对象只含 status、transport 和 passiveDelivery，拒绝旧 activeReceive 字段。
 
-wait 只为未读事件、首次 ready、首次终态和必要错误返回，纯 closing 或 sequence 增长继续等待。普通 wait/result 的 stdout+stderr 合计最多 8192 UTF-8 bytes；大终态以一次 deferred 通知交付，固定结果仍可读取。result --output-file 独占创建新文件，完整写入、关闭后才消费；消费失败明确报告完整文件仍存在。--export 已删除。start/wait 与 result 的消费边界不同，过程消息没有重放保证，只有固定最终结果在终态后 1 小时可重读；不续期、不重启模型。精确 wire、文件、预算和消费规则见 [运行生命周期](../plugins/codex-enhance/skills/codex-subagent-guide/docs/runtime.md)。
+wait 只为未读事件、首次 ready、首次终态和必要错误返回，纯 closing 或 sequence 增长继续等待。普通 wait/result 的 stdout+stderr 合计最多 32 KiB（32,768 UTF-8 字节）；大终态以一次 deferred 通知交付，固定结果仍可读取。result --output-file 独占创建新文件，完整写入、关闭后才消费；消费失败明确报告完整文件仍存在。--export 已删除。start/wait 与 result 的消费边界不同，过程消息没有重放保证，固定最终结果按命令开始时的最新生效 subagentRetentionHours 从本次 terminalAt 起算，默认 24 小时，0 关闭过期及扫描，负数配置拒绝；读取不续期。精确 wire、文件、预算和消费规则见 [运行生命周期](../plugins/codex-enhance/skills/codex-subagent-guide/docs/runtime.md)。
 
-本地停止与远端取消分别取证，worker 失联和证据冲突保留 unknown。正常调用只按固定期限、归属和停止证据回收专属资源，损坏正文不阻止安全清理；不引入跨父会话恢复、run registry、全局账本或额外锁。升级、重装或删除 Guide/托管 adapter 前先完成或 stop 活跃任务。原生 macOS/Linux/Windows、实际宿主规则匹配与后端资格分别验证，本机或 fake 通过不外推。
+本地停止与远端取消分别取证，worker 失联和证据冲突保留 unknown。专属执行记录只按本次 TTL、归属和停止证据回收，损坏正文不阻止安全清理；运行资料固定在用户 home 下 ~/.aw-subagent，按 run 的 current.json 入口定位独立 executions/<id>。终态 send 在未过期、resume 启用、session 绑定及本地树停止证据充分时恢复原 run；同一用户可凭句柄跨父会话串行恢复，不能覆盖原执行配置。新执行自足保存原配置、session 和能力，写齐后原子切换入口再启动 worker，随后尽力删除旧执行；只提供最新结果。适配器持久绑定真实 session 并重建当前工具，不自动重放、不新建会话回退。
+
+外部恢复沿用 Adapter v5，start 必填 resume，恢复额外携带内部 sessionId；ready 必填独立 resume 能力，session 帧可先于 ready，持久保存即确认恢复支持。普通 result.sessionId 不单独证明能力。后端支持及真实验收范围各自记录，不以 fake 或返回过会话 ID 外推。父子正文统一最多 24 KiB，含正文的协议/桥接/队列容器为 256 KiB，长消息使用 --text-file；内外工具接收预算建议请求 65,536 tokens 并核验实际链路完整交付。
+
+正常命令以当前生效保留配置启动静默独立扫描，最多一个扫描，前台不等待。执行记录过期且归属/停止证据充分才删除具体目录；同 run 本轮有执行内容时只清内容，删空也不清入口。入口 mtime 年龄须严格超过 max(2 × TTL, 24 小时)，且初次检查为空、非递归删除空执行容器成功后，才删已知入口及空 run。恢复准备先尽力刷新入口 mtime，不延长结果 TTL；扫描不写运行状态、不停进程、不递归删 run，失败不影响回执或退出码。不增加 run registry、全局账本、调度锁或强一致协议。升级、重装或删除 Guide/托管 adapter 前先完成或 stop 活跃任务。原生 macOS/Linux/Windows、实际宿主规则匹配与后端资格分别验证，本机或 fake 通过不外推。
 
 ## Agent Skill Eval 执行与 Runner 边界
 

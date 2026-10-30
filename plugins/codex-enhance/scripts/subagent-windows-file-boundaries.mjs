@@ -130,11 +130,12 @@ async function main() {
   const runDirectories = new Set();
   const handles = new Set();
   async function discover() {
-    for (const root of await fs.readdir(temporary).catch(() => [])) {
-      if (!/^aw-subagent-v5-[a-f0-9]{16}$/.test(root)) continue;
-      for (const id of await fs.readdir(path.join(temporary, root))) {
-        if (!/^[A-Za-z0-9_-]{11}$/.test(id)) continue;
-        const location = path.join(temporary, root, id);
+    const root = path.join(directory, '.aw-subagent');
+    for (const id of await fs.readdir(root).catch(() => [])) {
+      if (!/^[A-Za-z0-9_-]{11}$/.test(id)) continue;
+      const container = path.join(root, id, 'executions');
+      for (const execution of await fs.readdir(container).catch(() => [])) {
+        const location = path.join(container, execution);
         const meta = JSON.parse(await fs.readFile(path.join(location, 'owner.json'), 'utf8'));
         requireTrue(meta.id === id && /^[A-Za-z0-9_-]{22}$/.test(meta.key ?? ''));
         runDirectories.add(location); handles.add(`aw5-${id}-${meta.key}`);

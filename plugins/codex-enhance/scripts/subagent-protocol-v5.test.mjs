@@ -13,10 +13,10 @@ import { LIMITS, validateRequest } from '../skills/codex-subagent-guide/scripts/
 
 const start = () => ({
   protocolVersion: 5, type: 'start', run: { id: '1'.repeat(11), name: 'agent-test', deadlineAt: null },
-  execution: { executor: 'fixture' }, mode: 'workspace', workspace: process.cwd(), prompt: '原始任务\r\n😀', args: [], communication: true,
+  execution: { executor: 'fixture' }, mode: 'workspace', workspace: process.cwd(), prompt: '原始任务\r\n😀', args: [], communication: true, resume: true,
   runtime: { directory: process.cwd(), toolkit: { module: import.meta.filename, command: process.execPath, messageScript: import.meta.filename, mcpScript: import.meta.filename } },
 });
-const initialization = (communication) => ({ environment: { status: 'available' }, capabilities: { communication } });
+const initialization = (communication, resume = { status: 'enabled' }) => ({ environment: { status: 'available' }, capabilities: { communication, resume } });
 const ready = (enabled = true) => ({ protocolVersion: 5, type: 'ready', initialization: initialization(enabled ? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' } : { status: 'unsupported' }) });
 const input = (id = '2'.repeat(32), text = '父消息😀') => ({ protocolVersion: 5, type: 'message', id, text });
 const result = () => ({ protocolVersion: 5, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text: '最终结果。' });
@@ -41,7 +41,7 @@ test('Windows qualification adapter emits valid v5 initialization and stops its 
   }
   assert.deepEqual(await closed, [0, null]);
   assert.deepEqual(frames.map((frame) => frame.type), ['ready', 'closing', 'result']);
-  assert.deepEqual(frames[0], ready());
+  assert.deepEqual(frames[0], { ...ready(), initialization: initialization(ready().initialization.capabilities.communication, { status: 'unsupported' }) });
   assert.equal(frames[2].state, 'cancelled');
   assert.equal(frames[2].backendExitCode, 0);
 });
@@ -114,6 +114,10 @@ test('v5 shape validation rejects unknown fields, old requests, unsafe IDs, name
     (value) => { value.prompt = '\ud800'; },
     (value) => { delete value.communication; },
     (value) => { value.communication = 'true'; },
+    (value) => { delete value.resume; },
+    (value) => { value.resume = 'true'; },
+    (value) => { value.sessionId = 'bad\nidentifier'; },
+    (value) => { value.resume = false; value.sessionId = 'session'; },
     (value) => { value.permissionMode = 'skip'; },
   ]) {
     const frame = start(); mutate(frame); assert.throws(() => validateRequest(frame));
@@ -186,8 +190,8 @@ test('ready describes exact capabilities and rejects disabled mismatches and inv
   assert.throws(() => disabled.acceptWorker(input()));
 });
 
-test('both message directions enforce 4096 UTF-8 bytes without truncating or normalizing', () => {
-  const text = '😀'.repeat(1024);
+test('both message directions enforce 24576 UTF-8 bytes without truncating or normalizing', () => {
+  const text = '😀'.repeat(6144);
   assert.equal(validateFrame(input(undefined, text), 'worker').text, text);
   assert.equal(validateFrame({ protocolVersion: 5, type: 'message', text }, 'adapter').text, text);
   for (const invalid of [`${text}x`, ' \r\n', 'contains\0nul', '\ud800']) {
@@ -271,4 +275,66 @@ test('asynchronous frame handlers report failure without blocking later control 
   assert.deepEqual(observed, ['start', 'stop']);
   const failure = new Error('The fake task failed.'); rejectHandler(failure);
   await Promise.resolve(); assert.deepEqual(failures, [failure]);
+});
+
+// Test Value Gate: a session event is durable resume evidence before readiness.
+// Wrong-session binding must fail before a worker can persist a replacement.
+test('session binds one requested session before ready and retains resume evidence on early failure', () => {
+  const session = (sessionId = 'original-session') => ({ protocolVersion: 5, type: 'session', sessionId });
+  const state = createProtocolState();
+  assert.throws(() => state.acceptAdapter(session()), { code: 'protocolInvalid' });
+  state.acceptWorker({ ...start(), sessionId: 'original-session' });
+  state.acceptAdapter(session()); state.acceptAdapter(session());
+  assert.equal(state.sessionId, 'original-session');
+  assert.deepEqual(state.resume, { status: 'enabled' });
+  assert.equal(state.initialization, null);
+  assert.throws(() => state.acceptAdapter(session('other-session')), { code: 'protocolInvalid' });
+  assert.throws(() => state.acceptAdapter({ ...ready(), initialization: initialization({ status: 'unsupported' }, { status: 'unsupported' }) }), { code: 'protocolInvalid' });
+  assert.throws(() => state.acceptAdapter({ ...result(), state: 'unknown', code: 'backendLost', generationStarted: null, sessionId: 'other-session' }), { code: 'protocolInvalid' });
+  state.acceptAdapter({ ...result(), state: 'unknown', code: 'backendLost', generationStarted: null, sessionId: 'original-session' });
+  assert.deepEqual(state.resume, { status: 'enabled' });
+  assert.throws(() => state.acceptAdapter(session()), { code: 'protocolInvalid' });
+});
+
+test('resume requires explicit capability evidence and session publication stops at closing', () => {
+  const session = { protocolVersion: 5, type: 'session', sessionId: 'session' };
+  const disabled = createProtocolState(); disabled.acceptWorker({ ...start(), resume: false });
+  assert.throws(() => disabled.acceptAdapter(session), { code: 'protocolInvalid' });
+  assert.throws(() => disabled.acceptAdapter(ready()), { code: 'protocolInvalid' });
+  disabled.acceptAdapter({ ...ready(), initialization: initialization({ status: 'unsupported' }, { status: 'disabled' }) });
+  const unsupported = createProtocolState(); unsupported.acceptWorker(start());
+  unsupported.acceptAdapter({ ...ready(), initialization: initialization({ status: 'unsupported' }, { status: 'unsupported' }) });
+  assert.throws(() => unsupported.acceptAdapter(session), { code: 'protocolInvalid' });
+  const closing = createProtocolState(); closing.acceptWorker(start()); closing.acceptAdapter(ready());
+  closing.acceptAdapter({ protocolVersion: 5, type: 'closing', reason: 'completed' });
+  assert.throws(() => closing.acceptAdapter(session), { code: 'protocolInvalid' });
+  closing.acceptAdapter({ ...result(), sessionId: 'session' });
+  assert.equal(closing.sessionId, null);
+  assert.deepEqual(closing.resume, { status: 'enabled' });
+  const noEvidence = createProtocolState(); noEvidence.acceptWorker(start());
+  noEvidence.acceptAdapter({ ...result(), state: 'unknown', code: 'backendLost', generationStarted: null, sessionId: 'session' });
+  assert.equal(noEvidence.resume, null); assert.equal(noEvidence.sessionId, null);
+  for (const resume of [undefined, { status: 'pending' }, { status: 'enabled', sessionId: 'session' }]) {
+    const frame = ready(); frame.initialization.capabilities.resume = resume;
+    assert.throws(() => validateFrame(frame, 'adapter'), { code: 'protocolInvalid' });
+  }
+});
+
+// Test Value Gate: resumed bundles use their backend session context. Sending
+// raw selectors again would permit accidental file scans or expanded context.
+test('resumed bundle start omits all file selection fields', () => {
+  const request = { ...start(), mode: 'bundle', sessionId: 'saved-session' };
+  assert.equal(validateRequest(request), request);
+  assert.throws(() => validateRequest({ ...request, fileSelectors: [] }), { code: 'protocolInvalid' });
+  assert.throws(() => validateRequest({ ...request, fileResolver: { command: process.execPath, args: [import.meta.filename] } }), { code: 'protocolInvalid' });
+});
+
+test('message frame budget carries the full body even with JSON control-character escaping', () => {
+  const text = '\x01'.repeat(LIMITS.messageBodyBytes);
+  const frame = input(undefined, text);
+  assert.equal(validateFrame(frame, 'worker').text, text);
+  const frames = [];
+  const decoder = createFrameDecoder({ direction: 'worker', onFrame: (value) => frames.push(value) });
+  decoder.push(Buffer.from(JSON.stringify(frame) + '\n')); decoder.end();
+  assert.deepEqual(frames, [frame]);
 });

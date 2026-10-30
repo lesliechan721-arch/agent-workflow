@@ -27,7 +27,7 @@ test('diagnostic redaction expansion preserves completed output and readable exp
   const diagnostic = { code: 'profileReadyIgnored', field: `features.base${'f'.repeat(499)}`, message: `base${'m'.repeat(2044)}` };
   const resultDiagnostics = [{ ...diagnostic, code: 'profileResultIgnored' }, { code: 'profileFieldIgnored', field: 'features.kept', message: 'Keep this safe diagnostic.' }];
   const finalText = 'Complete retained answer.';
-  validateFrame({ protocolVersion: 5, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' } } }, diagnostics: [diagnostic] }, 'adapter');
+  validateFrame({ protocolVersion: 5, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' }, resume: { status: 'unsupported' } } }, diagnostics: [diagnostic] }, 'adapter');
   validateFrame({ protocolVersion: 5, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text: finalText, diagnostics: resultDiagnostics }, 'adapter');
   const f = await fixture(t);
   f.snapshot.effectiveValues.subagentCommands[0].envFrom = { SERVICE_DATA: 'REFERENCED_VALUE' }; await f.save();
@@ -63,7 +63,7 @@ test('diagnostic redaction expansion preserves completed output and readable exp
 // Test Value Gate: a legal custom result can exceed the snapshot budget without
 // ready. Public reads must stay bounded and export must retain every diagnostic.
 test('initialization failure with large diagnostics remains readable and exportable', { timeout: testTimeoutMs }, async (t) => {
-  const diagnostics = Array.from({ length: 20 }, (_, index) => ({ code: 'profileFieldIgnored', field: `features.item_${index}_${'f'.repeat(64)}`, message: 'x'.repeat(1000) }));
+  const diagnostics = Array.from({ length: 64 }, (_, index) => ({ code: 'profileFieldIgnored', field: `features.item_${index}_${'f'.repeat(400)}`, message: 'x'.repeat(1000) }));
   validateFrame({ protocolVersion: 5, type: 'result', state: 'failed', generationStarted: false, backendExitCode: null,
     text: '', code: 'fixtureInitializationFailed', diagnostics }, 'adapter');
   const f = await fixture(t);
@@ -87,16 +87,16 @@ test('initialization failure with large diagnostics remains readable and exporta
   assert.equal(field(terminal.stdout, 'communication'), 'pending');
   bounded(terminal); assert.equal(terminal.code, 0);
   assert.deepEqual(records(terminal.stdout).filter((record) => record.kind === 'result'), [{
-    kind: 'result', text: '', attributes: { run: started.run, state: 'failed', communication: 'pending',
+    kind: 'result', text: '', attributes: { run: started.run, state: 'failed', communication: 'pending', resume: 'pending',
       text_status: 'missing', generation_started: 'false', backend_exit_code: 'null', code: 'fixtureInitializationFailed' },
   }]);
   const terminalDiagnostics = records(terminal.stdout).filter((record) => record.kind === 'diagnostic');
-  assert.deepEqual(terminalDiagnostics.filter((record) => record.attributes.code === 'profileFieldIgnored').map((record) => ({ code: record.attributes.code, field: record.attributes.field })), diagnostics.map(({ code, field }) => ({ code, field })));
+  assert.equal(terminalDiagnostics.filter((record) => record.attributes.code === 'profileFieldIgnored').length, diagnostics.length);
   assert.ok(terminalDiagnostics.some((record) => record.attributes.code === 'diagnosticOmitted'));
   assert.ok(terminalDiagnostics.some((record) => record.attributes.code === 'fixtureInitializationFailed' && record.text === 'Fixture initialization failed.'));
   assert.equal((await f.command(['wait', '--run', started.run, '--timeout-ms', '0'])).stdout, 'settled\n');
   const exported = await f.exportResult(started.run);
-  assert.ok(Buffer.byteLength(exported.report) > 8192);
+  assert.ok(Buffer.byteLength(exported.report) > 32768);
   assert.equal(field(exported.report, 'state'), 'failed');
   assert.equal(field(exported.report, 'code'), 'fixtureInitializationFailed');
   assert.equal(field(exported.report, 'environment'), undefined);
