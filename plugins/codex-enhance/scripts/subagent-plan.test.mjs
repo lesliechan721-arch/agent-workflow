@@ -5,7 +5,7 @@ import os from 'node:os';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { prepareRun, validateCommandHost } from '../skills/codex-subagent-guide/scripts/runtime/runner.mjs';
+import { prepareRun, prepareResume, executionConfiguration, validateCommandHost } from '../skills/codex-subagent-guide/scripts/runtime/runner.mjs';
 import { selectExecution } from '../skills/codex-subagent-guide/scripts/runtime/plan.mjs';
 
 const resourceRoot = fileURLToPath(new URL('../skills/codex-subagent-guide/', import.meta.url));
@@ -35,6 +35,40 @@ test('normalizes communication and Codex controls without changing backend args'
   }
   assert.deepEqual(select({ adapter: 'codex', codexBypassHookTrust: true,
     communication: false }).codex, { cliSource: 'auto', bypassHookTrust: true });
+});
+
+// Test Value Gate: a bundle continuation must use only the new message, while
+// retaining its saved selectors for provenance and its original AW choices.
+// This is request preparation, so it needs real paths but no worker or ACL run.
+test('resume preparation preserves frozen choices and does not reselect bundle files', async (t) => {
+  const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-resume-plan-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const installedIdentity = { sourceId: 'fixture', sourceIdentity: 'fixture-source', pluginId: 'fixture/codex-enhance',
+    pluginName: 'codex-enhance', platform: 'codex', scope: 'user', configScope: 'user', artifactId: 'guide', skillKey: 'codex-subagent-guide' };
+  const snapshot = { installedIdentity, resourceRoot, effectiveValues: { subagentCommands: [{
+    key: 'selected', adapter: 'custom', mode: 'bundle', command: await fs.realpath(process.execPath),
+    args: ['original-option'], envFrom: { SERVICE_DATA: 'SOURCE' },
+  }] } };
+  const selected = selectExecution(snapshot, { executor: 'selected', model: 'original-model', reasoningEffort: 'original-effort' });
+  const request = { prompt: 'Original task.', workspace: directory, files: ['original.txt'], deadlineMs: 20000 };
+  const configuration = executionConfiguration(await prepareRun(selected, request, { environment: { SOURCE: 'old-value' } }), request);
+  snapshot.effectiveValues.subagentCommands = [];
+  const text = 'Only the new task.\r\n继续检查。\n';
+  const prepared = await prepareResume(configuration, text, 'original-session', { runtimeSnapshot: snapshot, environment: { SOURCE: 'current-value' } });
+  assert.equal(prepared.request.prompt, text);
+  assert.equal(prepared.request.sessionId, 'original-session');
+  assert.deepEqual(prepared.request.execution, { executor: 'selected', model: 'original-model', reasoningEffort: 'original-effort' });
+  assert.deepEqual(prepared.request.args, ['original-option']);
+  assert.equal(prepared.environment.SERVICE_DATA, 'current-value');
+  assert.equal(Object.hasOwn(prepared.request, 'fileSelectors'), false);
+  assert.equal(Object.hasOwn(prepared.request, 'fileResolver'), false);
+  assert.deepEqual(configuration.request.fileSelectors, ['original.txt']);
+  assert.equal(configuration.deadlineMs, 20000);
+  assert.equal(Object.hasOwn(configuration, 'environment'), false);
+  await assert.rejects(prepareResume(configuration, text, 'original-session', { runtimeSnapshot: snapshot, environment: {} }), { code: 'environmentSourceMissing' });
+  await assert.rejects(prepareResume(configuration, text, 'original-session', {
+    runtimeSnapshot: { ...snapshot, installedIdentity: { ...installedIdentity, sourceIdentity: 'foreign' } },
+  }), { code: 'resumeExecutionChanged' });
 });
 
 // Test Value Gate: every supported branch has a fixed installed entrypoint or

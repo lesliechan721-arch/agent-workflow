@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { openRun, storeContext } from '../../skills/codex-subagent-guide/scripts/runtime/store.mjs';
+import { parseHandle } from '../../skills/codex-subagent-guide/scripts/runtime/store.mjs';
 import { guideRuntimeScripts } from './guide-runtime-resources.mjs';
 
 const require = createRequire(import.meta.url);
@@ -317,7 +317,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     });
     return { ...response, run: previous.run, runDirectory, scenario,
       observed: () => eventually(async () => JSON.parse(await fs.readFile(path.join(runDirectory, 'observed.json'), 'utf8')), 'resumed adapter start'),
-      published: () => eventually(() => fs.stat(path.join(runDirectory, 'published.json')), 'resumed adapter ready'),
+      published: () => eventually(() => fs.stat(path.join(runDirectory, 'published.json')), 'resumed adapter ready', windows ? 120000 : 15000),
       finish: () => fs.writeFile(path.join(runDirectory, 'finish'), ''),
       releaseReady: () => fs.writeFile(path.join(runDirectory, 'ready'), ''),
     };
@@ -344,15 +344,33 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     }
     throw new Error('Fixture run did not reach a terminal state.');
   }
-  // Private evidence supports controlled lifecycle injection and ready checks
-  // that must not consume public messages or initialization notifications.
+  // These are this fixture's known files, not an ownership test. Read them
+  // directly so readiness polling does not run native ACL checks every time.
+  // Public commands still exercise the complete ownership and process boundary.
   async function evidence(run) {
-    const value = await openRun(await storeContext({ homeRoot: directory }), run);
+    assert.ok(handles.has(run), 'Evidence must belong to a run created by this fixture.');
+    const { id, key } = parseHandle(run);
+    const entryDirectory = path.join(directory, '.aw-subagent', id);
+    const entry = JSON.parse(await fs.readFile(path.join(entryDirectory, 'current.json'), 'utf8'));
+    assert.equal(entry.key, key);
+    assert.match(entry.executionId, /^[A-Za-z0-9_-]{22}$/);
+    const containerDirectory = path.join(entryDirectory, 'executions');
+    const executionDirectory = path.join(containerDirectory, entry.executionId);
     const read = async (name) => {
-      try { return JSON.parse(await fs.readFile(path.join(value.directory, name), 'utf8')); }
+      try { return JSON.parse(await fs.readFile(path.join(executionDirectory, name), 'utf8')); }
       catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
     };
-    return { ...value, snapshot: await read('snapshot.json'), result: await read('final.json') };
+    return { directory: executionDirectory, entryDirectory, containerDirectory, entry, handle: run,
+      meta: await read('owner.json'), snapshot: await read('snapshot.json'), result: await read('final.json') };
+  }
+  async function stopped(run) {
+    return eventually(async () => {
+      const value = await evidence(run);
+      if (!value.result || !value.meta.localTreeStopped || !value.meta.worker) return false;
+      try { process.kill(value.meta.worker.pid, 0); return false; }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+      return value;
+    }, 'fixed terminal evidence and worker exit', windows ? 120000 : 10000);
   }
   async function exportResult(run, { target = path.join(directory, `report-${++nextExport}.txt`), showDiagnostics = false, ...options } = {}) {
     const response = await command(['result', '--run', run, '--output-file', target, ...(showDiagnostics ? ['--diagnostics'] : [])], options);
@@ -383,7 +401,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
       finally { await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); phase('cleanupEnd'); }
     }
   }, { timeout: cleanupTimeoutMs + 5000 });
-  return { directory, homeRoot: directory, temporaryRoot, workspace, installed, generations, snapshot, config, save, command, start, resume, initialized, clock, waitTerminal, evidence, exportResult, phase };
+  return { directory, homeRoot: directory, temporaryRoot, workspace, installed, generations, snapshot, config, save, command, start, resume, initialized, clock, waitTerminal, evidence, stopped, exportResult, phase };
 }
 
 

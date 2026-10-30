@@ -58,6 +58,7 @@
         "./scripts/subagent-integration-results.test.mjs",
         "./scripts/subagent-integration-recovery.test.mjs",
         "./scripts/subagent-integration-resume.test.mjs",
+        "./scripts/subagent-integration-resume-output.test.mjs",
         "./scripts/subagent-runtime-logic.test.mjs",
         "./scripts/subagent-plan.test.mjs",
         "./scripts/codex-executable.test.mjs",

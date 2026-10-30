@@ -87,6 +87,32 @@ async function fixture(t, sharedContext) {
   };
 }
 
+// Test Value Gate: missing session bindings and unconfirmed stopping must fail
+// before a new execution is published, without replacing the saved final.
+// Native process and ACL enforcement have separate platform coverage.
+test('resume preflight preserves the current result when session or stopping evidence is missing', async (t) => {
+  mockProcessObserver(t);
+  const f = await fixture(t);
+  await f.complete('Preserve this result.');
+  f.run.snapshot.initialization.capabilities.resume = { status: 'enabled' };
+  await files.atomicJson(path.join(f.run.directory, 'snapshot.json'), f.run.snapshot);
+  f.run.meta.worker = { pid: 2147483647, started: '123456789' };
+  await files.atomicJson(path.join(f.run.directory, 'owner.json'), f.run.meta);
+  const current = await fs.readFile(path.join(f.run.entryDirectory, 'current.json'));
+  const final = await fs.readFile(path.join(f.run.directory, 'final.json'));
+  const request = { ...f.request, text: 'Do not submit this input.' };
+  const missing = await commands.sendInput(f.context, request);
+  assert.equal(missing.exitCode, 1); assert.equal(field(missing.diagnostic, 'code'), 'resumeSessionUnavailable');
+  await files.atomicJson(path.join(f.run.directory, 'session.json'), { sessionId: 'original-session' });
+  f.run.meta.localTreeStopped = false;
+  await files.atomicJson(path.join(f.run.directory, 'owner.json'), f.run.meta);
+  const unconfirmed = await commands.sendInput(f.context, request);
+  assert.equal(unconfirmed.exitCode, 1); assert.equal(field(unconfirmed.diagnostic, 'code'), 'localStopUnconfirmed');
+  assert.deepEqual(await fs.readFile(path.join(f.run.entryDirectory, 'current.json')), current);
+  assert.deepEqual(await fs.readFile(path.join(f.run.directory, 'final.json')), final);
+  assert.deepEqual(await fs.readdir(f.run.containerDirectory), [f.run.meta.executionId]);
+});
+
 // Test Value Gate: short handles must locate the same owned run and reject a
 // different key or unsafe path without accepting the previous handle format.
 test('short run handles retain independent lookup and key validation', async (t) => {
