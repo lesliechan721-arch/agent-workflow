@@ -33,8 +33,8 @@ adapterMain(import.meta.url, {
       await fs.writeFile(path.join(context.request.runtime.directory, 'queried.json'), '{}');
       throw Object.assign(new Error('Capability query failed.'), { code: 'communicationQueryFailed' });
     }
-    if (context.request.args.includes('legacyNegotiation')) return { environment: { status: 'available' }, capabilities: { communication: { supported: true, transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } }, executable };
-    return { environment: { status: 'available' }, capabilities: { communication: context.request.args.includes('preparationMustFail') ? { supported: true, transport: 'mcp', passiveDelivery: 'in-turn' } : { supported: false } }, executable };
+    if (context.request.args.includes('legacyNegotiation')) return { environment: { status: 'available' }, capabilities: { resume: { supported: false }, communication: { supported: true, transport: 'mcp', passiveDelivery: 'in-turn', activeReceive: true } }, executable };
+    return { environment: { status: 'available' }, capabilities: { resume: { supported: false }, communication: context.request.args.includes('preparationMustFail') ? { supported: true, transport: 'mcp', passiveDelivery: 'in-turn' } : { supported: false } }, executable };
   },
   async execute(context) {
     active = context;

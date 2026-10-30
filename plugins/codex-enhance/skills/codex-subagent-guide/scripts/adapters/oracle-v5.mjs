@@ -7,9 +7,9 @@ import { assertOracleFileSelectionSupported, oracleArguments } from './oracle-ar
 export { assertOracleFileSelectionSupported, oracleArguments } from './oracle-arguments.mjs';
 
 export async function negotiateOracle(context) {
-  assertOracleFileSelectionSupported(context.request.fileSelectors);
+  if (!context.request.sessionId) assertOracleFileSelectionSupported(context.request.fileSelectors);
   const executable = await negotiateExecutable(context, 'oracle');
-  return { environment: { status: 'available' }, executable, capabilities: { communication: { supported: false } } };
+  return { environment: { status: 'available' }, executable, capabilities: { communication: { supported: false }, resume: { supported: false } } };
 }
 
 export async function executeOracle(context) {

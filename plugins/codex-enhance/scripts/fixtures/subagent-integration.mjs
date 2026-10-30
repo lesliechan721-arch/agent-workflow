@@ -18,7 +18,7 @@ const sourceEntry = path.join(sourceScripts, path.basename(registeredEntry));
 const sourceWorker = path.join(sourceScripts, path.basename(registeredWorker));
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const terminalPattern = /^(?:<result(?:_[0-9]+)?\b[^\n]*\bstate="(?:completed|failed|cancelled|unknown)"|deferred \S+ state=(?:completed|failed|cancelled|unknown)\b)/m;
-const displayLimit = 8192;
+const displayLimit = 32768;
 const windows = process.platform === 'win32';
 const batchObservationMs = windows ? 120000 : 5000;
 const testTimeoutMs = windows ? 180000 : 35000;
@@ -85,6 +85,13 @@ async function start(frame) {
   const environment = Object.fromEntries(['SOURCE', 'SERVICE_DATA', 'EMPTY', 'EMPTY_REFERENCE', 'ORDINARY_HOST',
     'AW_PLUGIN_CONTEXT', 'AW_SUBAGENT_TEMP_DIR'].map((key) => [key, process.env[key]]));
   const observed = { request: frame, pid: process.pid, argv: process.argv.slice(2), cwd: process.cwd(), environment };
+  if (scenario.resume && frame.resume && !scenario.sessionAfterReady) {
+    await emit({ type: 'session', sessionId: scenario.sessionId ?? frame.sessionId ?? 'fixture-session' });
+    if (scenario.exitAfterSession) {
+      await fs.writeFile(root + '/observed.json', JSON.stringify(observed));
+      process.exit(2);
+    }
+  }
   if (scenario.initializationFailure) {
     await fs.writeFile(root + '/observed.json', JSON.stringify(observed));
     if (scenario.readyGate) { await phase('readyGateWaiting'); await signal('ready'); }
@@ -106,7 +113,7 @@ async function start(frame) {
   if (scenario.readyGate) { await phase('readyGateWaiting'); await signal('ready'); }
   if (scenario.readyDelay) await new Promise((resolve) => setTimeout(resolve, scenario.readyDelay));
   if (finishing) return;
-  await emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: !frame.communication ? { status: 'disabled' } : scenario.communication === false || frame.mode === 'bundle' ? { status: 'unsupported' } : scenario.descriptor ?? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' } } }, ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
+  await emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: !frame.communication ? { status: 'disabled' } : scenario.communication === false || frame.mode === 'bundle' ? { status: 'unsupported' } : scenario.descriptor ?? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' }, resume: { status: !frame.resume ? 'disabled' : scenario.resume ? 'enabled' : 'unsupported' } } }, ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
   ready = true;
   await phase('readySent');
   for (const text of scenario.messages ?? []) await emit({ type: 'message', text });
@@ -122,6 +129,7 @@ for await (const line of lines) {
   if (frame.type === 'stop') { void finish(true).catch(() => process.exit(2)); continue; }
   if (frame.type === 'message') {
     await fs.appendFile(root + '/inputs.jsonl', JSON.stringify(frame) + '\n');
+    if (scenario.repeatSessionOnInput) await emit({ type: 'session', sessionId: scenario.sessionId ?? 'fixture-session' });
     const status = scenario.delivery ?? 'submitted';
     await emit({ type: 'delivery', id: frame.id, status,
       ...(status === 'submitted' ? {} : { code: 'fixtureDeliveryUnknown', message: 'Fixture input submission is unknown.' }) });
@@ -167,7 +175,7 @@ function field(output, key) {
   }
 }
 function bounded(result) {
-  assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <= displayLimit, 'Response exceeds 8192 bytes.');
+  assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <= displayLimit, 'Response exceeds 32768 bytes.');
   assert.ok(Buffer.byteLength(result.stderr) <= 1024, 'Diagnostics exceed 1024 bytes.');
 }
 function successful(result, command) {
@@ -202,14 +210,15 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
   await fs.copyFile(registeredDiagnostics, diagnosticsPreload);
   const diagnosticsArgs = process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1'
     ? ['--import', pathToFileURL(diagnosticsPreload).href] : [];
-  const snapshot = { installedIdentity: { source: 'fixture', plugin: 'fixture', platform: 'codex', scope: 'user' }, resourceRoot: installed,
+  const snapshot = { installedIdentity: { sourceId: 'fixture', sourceIdentity: 'fixture-source', pluginId: 'fixture/codex-enhance', pluginName: 'codex-enhance', pluginVersion: '0.0.0', platform: 'codex', scope: 'user', configScope: 'user', artifactId: 'guide', skillKey: 'codex-subagent-guide' }, resourceRoot: installed,
     effectiveValues: {
+      subagentRetentionHours: 0,
       subagentCommands: [{ key: 'fixture', adapter: 'custom', mode, command: await fs.realpath(process.execPath), entrypoint: adapter }] } };
   const config = path.join(installed, 'effective.json');
   const save = () => fs.writeFile(config, JSON.stringify(snapshot));
   await save();
   await fs.writeFile(path.join(installed, 'scripts', 'aw-runtime-config.mjs'),
-    "import fs from 'node:fs/promises';export async function readRuntimeConfig({keys}){if(JSON.stringify(keys)!=='[\"subagentCommands\"]')throw new Error('Unexpected runtime keys');return JSON.parse(await fs.readFile(new URL('../effective.json',import.meta.url),'utf8'));}\n");
+    "import fs from 'node:fs/promises';export async function readRuntimeConfig({keys}){if(JSON.stringify(keys)!=='[\"subagentCommands\",\"subagentRetentionHours\"]')throw new Error('Unexpected runtime keys');return JSON.parse(await fs.readFile(new URL('../effective.json',import.meta.url),'utf8'));}\n");
   const entry = path.join(installed, 'scripts', path.relative(sourceScripts, sourceEntry));
   // Windows native tools need their normal host environment. Normalize names so
   // the isolated paths below replace host values without mixed-case duplicates.
@@ -297,6 +306,22 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     }, 'same run reaching running state', windows ? 120000 : 15000);
     phase('pendingRunInitialized');
   }
+  async function resume(previous, text, scenario = {}, { env = {}, extra = [] } = {}) {
+    const runDirectory = path.join(directory, `scenario-${++nextScenario}`);
+    scenarios.push({ index: nextScenario, directory: runDirectory });
+    await fs.mkdir(runDirectory);
+    const scenarioFile = path.join(runDirectory, 'scenario.json');
+    await fs.writeFile(scenarioFile, JSON.stringify(scenario));
+    const response = await command(['send', '--run', previous.run, '--text', text, ...extra], {
+      env: { ...env, FIXTURE_SCENARIO_FILE: scenarioFile, FIXTURE_RUN_DIRECTORY: runDirectory, FIXTURE_GENERATIONS: generations },
+    });
+    return { ...response, run: previous.run, runDirectory, scenario,
+      observed: () => eventually(async () => JSON.parse(await fs.readFile(path.join(runDirectory, 'observed.json'), 'utf8')), 'resumed adapter start'),
+      published: () => eventually(() => fs.stat(path.join(runDirectory, 'published.json')), 'resumed adapter ready'),
+      finish: () => fs.writeFile(path.join(runDirectory, 'finish'), ''),
+      releaseReady: () => fs.writeFile(path.join(runDirectory, 'ready'), ''),
+    };
+  }
   async function clock(roles, { stepMs, now = Date.now() } = {}) {
     const file = path.join(directory, `clock-${++nextClock}.json`);
     const origin = now; const settings = { roles, now: origin, ...(stepMs ? { stepMs } : {}) };
@@ -322,7 +347,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
   // Private evidence supports controlled lifecycle injection and ready checks
   // that must not consume public messages or initialization notifications.
   async function evidence(run) {
-    const value = await openRun(await storeContext({ temporaryRoot }), run);
+    const value = await openRun(await storeContext({ homeRoot: directory }), run);
     const read = async (name) => {
       try { return JSON.parse(await fs.readFile(path.join(value.directory, name), 'utf8')); }
       catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
@@ -355,10 +380,10 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
           await command(['stop', '--run', run], { signal: cleanupSignal, timeout: cleanupTimeoutMs });
         }
       }
-      finally { await fs.rm(directory, { recursive: true, force: true }); phase('cleanupEnd'); }
+      finally { await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); phase('cleanupEnd'); }
     }
   }, { timeout: cleanupTimeoutMs + 5000 });
-  return { directory, temporaryRoot, workspace, installed, generations, snapshot, config, save, command, start, initialized, clock, waitTerminal, evidence, exportResult, phase };
+  return { directory, homeRoot: directory, temporaryRoot, workspace, installed, generations, snapshot, config, save, command, start, resume, initialized, clock, waitTerminal, evidence, exportResult, phase };
 }
 
 

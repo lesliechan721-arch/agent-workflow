@@ -40,8 +40,8 @@ try {
   syncBuiltinESMExports();
 }
 
-const displayLimit = 8192;
-const messageLimit = 4096;
+const displayLimit = 32768;
+const messageLimit = 24576;
 const blockPattern = /<(message|input|result|diagnostic)(?:_\d+)?\b[^>]*>\n([\s\S]*?)\n<\/\1(?:_\d+)?>\n/g;
 const blocks = (text, kind) => [...text.matchAll(blockPattern)].filter((match) => match[1] === ({ MESSAGE: 'message', INPUT: 'input', FINAL: 'result', DIAGNOSTIC: 'diagnostic' }[kind] ?? kind)).map((match) => match[2]);
 const bounded = (response) => {
@@ -62,16 +62,17 @@ function mockProcessObserver(t) {
 async function fixture(t, sharedContext) {
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-runtime-logic-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const context = sharedContext ?? await store.storeContext({ temporaryRoot: directory });
+  const context = sharedContext ?? await store.storeContext({ homeRoot: directory });
   const run = await store.createRun(context, 'fixture', directory);
   // There is no worker in this suite. This cached identity is the native process
   // observation boundary for sendInput, which otherwise uses the real store.
   run.meta.worker = { pid: process.pid, started: process.platform === 'win32' ? '123456789' : 'fixture-worker' };
   context.table = [run.meta.worker];
-  run.snapshot = { state: 'running', ready: true, sequence: 2, initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' } } }, initializationSequence: 2 };
+  run.snapshot = { state: 'running', ready: true, sequence: 2, initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' }, resume: { status: 'unsupported' } } }, initializationSequence: 2 };
   await files.atomicJson(path.join(run.directory, 'owner.json'), run.meta);
   await files.atomicJson(path.join(run.directory, 'snapshot.json'), run.snapshot);
   await files.atomicJson(path.join(run.directory, 'observed.json'), { sequence: 2, initializationSequence: 2, terminalConsumed: false });
+  await store.publishRun(context, run);
   return { context, run, request: { runs: [run.handle], timeoutMs: 0 },
     async messages(texts) {
       for (const [index, text] of texts.entries()) await files.atomicJson(path.join(run.directory, 'events', `${String(index).padStart(4, '0')}.json`), { type: 'message', text });
@@ -129,7 +130,7 @@ test('queued inputs preserve original text and fixed delivery gaps without dupli
 // export writes a complete report before consuming the exact frozen event list.
 test('large reports require a file and preserve all messages until complete export', async (t) => {
   const f = await fixture(t);
-  const messages = ['甲'.repeat(1365) + 'x', 'y'.repeat(4096), 'z'.repeat(4096)];
+  const messages = ['甲'.repeat(8191) + 'xxx', 'y'.repeat(messageLimit), 'z'.repeat(messageLimit)];
   await f.messages(messages); await f.complete('Complete answer.');
   const before = await fs.readFile(path.join(f.run.directory, 'observed.json'), 'utf8');
   const limited = await commands.readResult(f.context, f.request);
@@ -154,8 +155,8 @@ test('large reports require a file and preserve all messages until complete expo
 // terminal notifications are consumed once without removing the fixed result.
 test('wait drains complete message batches and defers only oversized terminal notifications', async (t) => {
   const f = await fixture(t);
-  const messages = ['x'.repeat(4096), 'y'.repeat(4096), 'z'.repeat(4096)];
-  await f.messages(messages); await f.complete('大答案\n'.repeat(3000));
+  const messages = ['x'.repeat(messageLimit), 'y'.repeat(messageLimit), 'z'.repeat(messageLimit)];
+  await f.messages(messages); await f.complete('大答案\n'.repeat(12000));
   await files.atomicJson(path.join(f.run.directory, 'observed.json'), { sequence: 1, initializationSequence: 0, terminalConsumed: false });
   const seen = []; let deferred = 0;
   for (let index = 0; index < 6; index++) {
@@ -185,7 +186,7 @@ test('wait ignores closing sequence changes and reports successful ready once', 
   assert.equal(response.text, 'timeout\n');
   assert.equal(await fs.readFile(path.join(f.run.directory, 'observed.json'), 'utf8'), before);
   await files.atomicJson(path.join(f.run.directory, 'observed.json'), { sequence: 1, initializationSequence: 0, terminalConsumed: false });
-  assert.equal((await commands.waitRuns(f.context, f.request)).text, `ready ${f.run.handle} communication=true\n`);
+  assert.equal((await commands.waitRuns(f.context, f.request)).text, `ready ${f.run.handle} communication=true resume=false\n`);
   assert.equal((await commands.waitRuns(f.context, f.request)).text, 'timeout\n');
   await files.atomicJson(path.join(f.run.directory, 'observed.json'), { sequence: 1, initializationSequence: 0, terminalConsumed: false });
   await f.complete('Terminal body.');
@@ -196,13 +197,13 @@ test('wait ignores closing sequence changes and reports successful ready once', 
 // Test Value Gate: a terminal report which fits by itself remains unread when
 // preceding messages consume this batch, instead of being changed to deferred.
 test('wait preserves a fitting final for the next budgeted batch', async (t) => {
-  const f = await fixture(t); await f.messages(['x'.repeat(4096)]); await f.complete('y'.repeat(5000));
+  const f = await fixture(t); await f.messages(['x'.repeat(messageLimit)]); await f.complete('y'.repeat(10000));
   const first = await commands.waitRuns(f.context, f.request); bounded(first);
-  assert.match(first.text, /^more=true\n/); assert.deepEqual(blocks(first.text, 'MESSAGE'), ['x'.repeat(4096)]);
+  assert.match(first.text, /^more=true\n/); assert.deepEqual(blocks(first.text, 'MESSAGE'), ['x'.repeat(messageLimit)]);
   assert.deepEqual(blocks(first.text, 'FINAL'), []); assert.doesNotMatch(first.text, /deferred/);
   const observed = await files.readJson(path.join(f.run.directory, 'observed.json')); assert.equal(observed.terminalConsumed, false);
   const second = await commands.waitRuns(f.context, f.request); bounded(second);
-  assert.deepEqual(blocks(second.text, 'FINAL'), ['y'.repeat(5000)]);
+  assert.deepEqual(blocks(second.text, 'FINAL'), ['y'.repeat(10000)]);
 });
 
 // Test Value Gate: tags must preserve raw message bytes, use independent safe
@@ -348,19 +349,19 @@ test('input files preserve UTF-8 and reject invalid content or node types', asyn
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-input-files-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const target = path.join(directory, 'input.txt');
-  for (const [bytes, code] of [[Buffer.from([0xff]), 'inputFileInvalid'], [Buffer.from([0]), 'inputFileInvalid'], [Buffer.from('  '), 'inputFileInvalid'], [Buffer.alloc(4097, 120), 'messageTooLarge']]) {
+  for (const [bytes, code] of [[Buffer.from([0xff]), 'inputFileInvalid'], [Buffer.from([0]), 'inputFileInvalid'], [Buffer.from('  '), 'inputFileInvalid'], [Buffer.alloc(messageLimit + 1, 120), 'messageTooLarge']]) {
     await fs.writeFile(target, bytes);
-    await assert.rejects(files.readInputFile('input.txt', 4096, 'messageTooLarge', directory), { code });
+    await assert.rejects(files.readInputFile('input.txt', messageLimit, 'messageTooLarge', directory), { code });
   }
   const text = '\ufeff  原文\n\n'; await fs.writeFile(target, text);
-  assert.equal(await files.readInputFile('input.txt', 4096, 'messageTooLarge', directory), text);
-  await assert.rejects(files.readInputFile(directory, 4096, 'messageTooLarge'), { code: 'inputFileInvalid' });
-  await assert.rejects(files.readInputFile(path.join(directory, 'missing'), 4096, 'messageTooLarge'), { code: 'inputFileReadFailed' });
+  assert.equal(await files.readInputFile('input.txt', messageLimit, 'messageTooLarge', directory), text);
+  await assert.rejects(files.readInputFile(directory, messageLimit, 'messageTooLarge'), { code: 'inputFileInvalid' });
+  await assert.rejects(files.readInputFile(path.join(directory, 'missing'), messageLimit, 'messageTooLarge'), { code: 'inputFileReadFailed' });
   if (process.platform !== 'win32') {
     const link = path.join(directory, 'link'); await fs.symlink(target, link);
-    await assert.rejects(files.readInputFile(link, 4096, 'messageTooLarge'), { code: 'inputFileInvalid' });
+    await assert.rejects(files.readInputFile(link, messageLimit, 'messageTooLarge'), { code: 'inputFileInvalid' });
   }
-  await fs.writeFile(path.join(directory, '-'), '-'); assert.equal(await files.readInputFile('./-', 4096, 'messageTooLarge', directory), '-');
+  await fs.writeFile(path.join(directory, '-'), '-'); assert.equal(await files.readInputFile('./-', messageLimit, 'messageTooLarge', directory), '-');
 });
 
 // Test Value Gate: a corrupt event or a failed delete in one run must not block
@@ -413,9 +414,9 @@ test('deferred terminal evidence remains deliverable with a full legal diagnosti
   const f = await fixture(t);
   f.run.snapshot.diagnostics = Array.from({ length: 64 }, (_, index) => ({ code: `warning00${String(index).padStart(2, '0')}`, message: 'x' }));
   await files.atomicJson(path.join(f.run.directory, 'observed.json'), { sequence: 1, initializationSequence: 0, terminalConsumed: false });
-  await f.complete('x'.repeat(9000));
+  await f.complete('x'.repeat(40000));
   const response = await commands.waitRuns(f.context, f.request); bounded(response);
-  assert.match(response.text, new RegExp(`^deferred ${f.run.handle} state=completed communication=true\\n`));
+  assert.match(response.text, new RegExp(`^deferred ${f.run.handle} state=completed communication=true resume=false\\n`));
   for (const entry of f.run.snapshot.diagnostics) assert.ok(response.text.includes(`code="${entry.code}"`));
   assert.equal((await commands.waitRuns(f.context, f.request)).text, 'settled\n');
 });
@@ -458,12 +459,12 @@ test('wait budgets complete diagnostic lists with long fields for ready, final a
     f.run.snapshot.diagnostics = diagnostics;
     await files.atomicJson(path.join(f.run.directory, 'observed.json'), { sequence: 1, initializationSequence: 0, terminalConsumed: false });
     if (state === 'ready') await files.atomicJson(path.join(f.run.directory, 'snapshot.json'), f.run.snapshot);
-    else await f.complete(state === 'deferred' ? 'x'.repeat(9000) : 'Small final');
+    else await f.complete(state === 'deferred' ? 'x'.repeat(40000) : 'Small final');
     const response = await commands.waitRuns(f.context, f.request); bounded(response); assert.equal(response.exitCode, 0);
-    if (state === 'ready') assert.match(response.text, new RegExp(`^ready ${f.run.handle} communication=true\n`));
-    else if (state === 'deferred') assert.match(response.text, new RegExp(`^deferred ${f.run.handle} state=completed communication=true\n`));
+    if (state === 'ready') assert.match(response.text, new RegExp(`^ready ${f.run.handle} communication=true resume=false\n`));
+    else if (state === 'deferred') assert.match(response.text, new RegExp(`^deferred ${f.run.handle} state=completed communication=true resume=false\n`));
     else assert.deepEqual(blocks(response.text, 'FINAL'), ['Small final']);
-    assert.match(response.text, /code="diagnosticOmitted"/); assert.match(response.text, /Backend reported a profile limit/);
+    assert.doesNotMatch(response.text, /code="diagnosticOmitted"/); assert.match(response.text, /Backend reported a profile limit/);
     for (const entry of diagnostics) assert.ok(response.text.includes(`code="${entry.code}"`));
     assert.equal((await commands.waitRuns(f.context, f.request)).text, state === 'ready' ? 'timeout\n' : 'settled\n');
   }
@@ -475,7 +476,7 @@ test('large ready diagnostics drain across runs and remain deliverable beside a 
   mockProcessObserver(t);
   for (const broken of [false, true]) {
     const first = await fixture(t), second = await fixture(t, first.context);
-    const diagnostics = Array.from({ length: 64 }, (_, index) => ({ code: `warning${index}`, message: 'Backend reported a profile limit. ' + 'x'.repeat(100) }));
+    const diagnostics = Array.from({ length: 64 }, (_, index) => ({ code: `warning${index}`, message: 'Backend reported a profile limit. ' + 'x'.repeat(160) }));
     for (const f of [first, second]) {
       await files.atomicJson(path.join(f.run.directory, 'snapshot.json'), { ...f.run.snapshot, diagnostics });
       await files.atomicJson(path.join(f.run.directory, 'observed.json'), { sequence: 1, initializationSequence: 0, terminalConsumed: false });
@@ -483,11 +484,11 @@ test('large ready diagnostics drain across runs and remain deliverable beside a 
     if (broken) { await second.complete('Broken terminal'); await fs.writeFile(path.join(second.run.directory, 'events', 'bad.json'), '{broken'); }
     const request = { runs: [first.run.handle, second.run.handle], timeoutMs: 0 };
     const response = await commands.waitRuns(first.context, request); bounded(response);
-    assert.equal(response.exitCode, broken ? 1 : 0); assert.match(response.text, new RegExp(`ready ${first.run.handle} communication=true\n`));
-    assert.match(response.text, /code="diagnosticOmitted"/);
+    assert.equal(response.exitCode, broken ? 1 : 0); assert.match(response.text, new RegExp(`ready ${first.run.handle} communication=true resume=false\n`));
+    assert.doesNotMatch(response.text, /code="diagnosticOmitted"/);
     if (broken) assert.match(response.diagnostic, /code="jsonInvalid"/);
     const next = await commands.waitRuns(first.context, request); bounded(next);
     assert.doesNotMatch(next.text, new RegExp(`ready ${first.run.handle}`));
-    if (!broken) assert.match(next.text, new RegExp(`ready ${second.run.handle} communication=true\n`));
+    if (!broken) assert.match(next.text, new RegExp(`ready ${second.run.handle} communication=true resume=false\n`));
   }
 });

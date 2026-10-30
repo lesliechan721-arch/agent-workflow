@@ -42,9 +42,11 @@ export function selectExecution(snapshot, request) {
   if (!Array.isArray(commands) || commands.some((entry) => !plainObject(entry) || !cleanString(entry.key) || entry.key === 'native') || new Set(commands.map((entry) => entry.key)).size !== commands.length) fail('registryInvalid', 'The installed command registry has invalid or duplicate keys. Correct the registry and sync.', ['config', 'sync']);
   const executor = commands.find((entry) => entry.key === executorKey);
   if (!executor) fail('executorUnknown', 'The selected executor is missing. Correct the registry and sync.', ['config', 'sync']);
-  const allowed = ['key', 'adapter', 'mode', 'command', 'entrypoint', 'commandId', 'args', 'env', 'envFrom', 'communication', 'oracleEngine', 'codexProfile', 'codexCliSource', 'codexBypassHookTrust', 'permissionMode'];
+  const allowed = ['key', 'adapter', 'mode', 'command', 'entrypoint', 'commandId', 'args', 'env', 'envFrom', 'communication', 'resume', 'oracleEngine', 'codexProfile', 'codexCliSource', 'codexBypassHookTrust', 'permissionMode'];
   if (Object.keys(executor).some((key) => !allowed.includes(key)) || !['codex', 'claude-code', 'antigravity', 'oracle', 'custom', 'custom-managed'].includes(executor.adapter)) fail('executorInvalid', 'Update the executor to the current adapter configuration and sync.', ['config', 'sync']);
-  if (Object.hasOwn(executor, 'communication') && typeof executor.communication !== 'boolean') fail('executorInvalid', 'communication must be a boolean.', ['config', 'sync']);
+  for (const field of ['communication', 'resume']) {
+    if (Object.hasOwn(executor, field) && typeof executor[field] !== 'boolean') fail('executorInvalid', `${field} must be a boolean.`, ['config', 'sync']);
+  }
   if (Object.hasOwn(executor, 'codexCliSource') && (executor.adapter !== 'codex' || !['auto', 'cli', 'app'].includes(executor.codexCliSource))) fail('executorInvalid', 'codexCliSource is only available for Codex and must be auto, cli or app.', ['config', 'sync']);
   if (Object.hasOwn(executor, 'codexBypassHookTrust') && (executor.adapter !== 'codex' || typeof executor.codexBypassHookTrust !== 'boolean')) fail('executorInvalid', 'codexBypassHookTrust is only available for Codex and must be a boolean.', ['config', 'sync']);
   if (Object.hasOwn(executor, 'oracleEngine') && (executor.adapter !== 'oracle' || !['api', 'browser'].includes(executor.oracleEngine))) fail('executorInvalid', 'oracleEngine is only available for Oracle and must be api or browser.', ['config', 'sync']);
@@ -60,7 +62,7 @@ export function selectExecution(snapshot, request) {
     mode = descriptor.mode; command = process.execPath;
     entrypoint = path.join(snapshot.resourceRoot, 'scripts', 'adapters', descriptor.entrypoint);
   } else if (executor.adapter === 'custom-managed') {
-    const fields = ['key', 'adapter', 'mode', 'commandId', 'args', 'env', 'envFrom', 'communication'];
+    const fields = ['key', 'adapter', 'mode', 'commandId', 'args', 'env', 'envFrom', 'communication', 'resume'];
     if (Object.keys(executor).some((key) => !fields.includes(key)) || !['workspace', 'bundle'].includes(executor.mode) || !commandIdPattern.test(executor.commandId ?? '')) fail('executorInvalid', 'Managed custom adapters require a mode and an exact command ID.');
     mode = executor.mode;
   } else {
@@ -82,8 +84,8 @@ export function selectExecution(snapshot, request) {
     bypassHookTrust: executor.codexBypassHookTrust ?? false,
     ...(codexProfile === undefined ? {} : { profile: codexProfile }),
   } : undefined;
-  return { execution, mode, communication: executor.communication ?? true,
+  return { execution, mode, communication: executor.communication ?? true, resume: executor.resume ?? true,
     ...(supportsPermissionMode ? { permissionMode: executor.permissionMode ?? 'default' } : {}),
-    ...(codex ? { codex } : {}), resourceRoot: snapshot.resourceRoot,
+    ...(codex ? { codex } : {}), resourceRoot: snapshot.resourceRoot, installedIdentity: snapshot.installedIdentity,
     executor: { ...executor, args }, command, entrypoint };
 }

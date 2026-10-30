@@ -1,10 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { constants } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { isDeepStrictEqual } from 'node:util';
 import { LIMITS, fail } from './contracts.mjs';
 import { safePath, readText, readInputFile, executablePaths } from './files.mjs';
 import { validateEnvironmentConfig } from './plan.mjs';
 import { validateSelectors } from '../file-selection/contracts.mjs';
+import { sameSourceIdentity } from './store.mjs';
 
 export function resolveAdapterEnvironment(source = process.env, executor = {}) {
   validateEnvironmentConfig(executor);
@@ -52,6 +55,80 @@ export async function validateCommandHost(environment) {
   return host;
 }
 
+async function managedLaunch(host, commandId, environment, workspace) {
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(host.nodeExecutable, [host.cliEntry, 'command', 'show', commandId, '--json'], {
+      cwd: workspace, env: { ...environment, AW_HOME: host.awHome, AW_COMMAND_HOST: JSON.stringify(host) },
+      stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+    });
+    const chunks = []; let bytes = 0;
+    const timer = setTimeout(() => { child.kill(); reject(new Error('Command inspection timed out.')); }, 10000);
+    child.stdout.on('data', (chunk) => {
+      bytes += chunk.length;
+      if (bytes > 1024 * 1024) { child.kill(); reject(new Error('Command inspection exceeded its limit.')); }
+      else chunks.push(chunk);
+    });
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      try {
+        const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (code !== 0 || value.schemaVersion !== 1 || value.command !== 'command.show' || value.ok !== true ||
+          value.overallState !== 'completed' || value.commands?.length !== 1) throw new Error();
+        resolve(value.commands[0]);
+      } catch { reject(new Error('Command inspection failed.')); }
+    });
+  }).catch(() => fail('managedCommandUnavailable', 'The original managed command is unavailable. Repair it before sending input.'));
+  const launch = result.launch;
+  if (result.id !== commandId || result.availability !== 'ready' || !path.isAbsolute(result.resourceRoot ?? '') ||
+    !result.owner || !['user', 'plugin'].includes(result.owner.kind) || !launch ||
+    !['node', 'executable'].includes(launch.runner) || typeof launch.entry !== 'string' || !launch.entry ||
+    !Array.isArray(launch.args) || launch.args.some((value) => typeof value !== 'string') ||
+    !launch.env || typeof launch.env !== 'object' || Array.isArray(launch.env) ||
+    !launch.envFrom || typeof launch.envFrom !== 'object' || Array.isArray(launch.envFrom) ||
+    !['caller', 'resource'].includes(launch.cwd)) fail('managedCommandUnavailable', 'The original managed command has no complete launch definition.');
+  return { id: result.id, owner: result.owner, resourceRoot: result.resourceRoot,
+    launch: { runner: launch.runner, entry: launch.entry, args: launch.args, env: launch.env, envFrom: launch.envFrom, cwd: launch.cwd } };
+}
+
+export function executionConfiguration(prepared, request) {
+  const { prompt, sessionId, ...configuration } = prepared.request;
+  return { schema: 1, selected: prepared.selected, request: configuration,
+    ...(prepared.commandHost ? { commandHost: prepared.commandHost, managedLaunch: prepared.managedLaunch } : {}),
+    ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }) };
+}
+
+export async function prepareResume(configuration, text, sessionId, options = {}) {
+  if (configuration?.schema !== 1 || !configuration.selected || !configuration.request ||
+    !path.isAbsolute(configuration.selected.resourceRoot ?? '') || configuration.request.type !== 'start' ||
+    configuration.request.resume !== true) fail('resumeConfigurationUnavailable', 'The saved execution configuration is unavailable.');
+  const selected = configuration.selected;
+  const installed = options.runtimeSnapshot;
+  if (!installed || installed.resourceRoot !== selected.resourceRoot ||
+    !sameSourceIdentity(installed.installedIdentity, selected.installedIdentity)) fail('resumeExecutionChanged', 'The original installed runtime cannot be verified. Sync or reinstall the original Guide before sending input.');
+  await safePath(selected.resourceRoot, 'directory');
+  await safePath(path.join(selected.resourceRoot, 'scripts', 'worker.mjs'));
+  await safePath(configuration.request.workspace, 'directory');
+  const source = { ...(options.environment ?? process.env) };
+  let host;
+  if (selected.executor.adapter === 'custom-managed') {
+    host = await validateCommandHost({ ...source, AW_HOME: configuration.commandHost?.awHome,
+      AW_COMMAND_HOST: JSON.stringify(configuration.commandHost) });
+  }
+  const resolved = resolveAdapterEnvironment(source, selected.executor);
+  if (host) Object.assign(resolved.environment, { AW_COMMAND_HOST: JSON.stringify(host), AW_HOME: host.awHome });
+  let frozenLaunch;
+  if (host) {
+    frozenLaunch = await managedLaunch(host, selected.executor.commandId, resolved.environment, configuration.request.workspace);
+    if (!isDeepStrictEqual(frozenLaunch, configuration.managedLaunch)) fail('resumeExecutionChanged', 'The original managed command launch changed. Start a new run with the intended configuration.');
+  }
+  const executable = host ? { command: host.nodeExecutable, args: [host.cliEntry, 'command', 'run', selected.executor.commandId, '--'] }
+    : await executablePaths(selected.command, selected.entrypoint);
+  const { fileSelectors, fileResolver, ...wire } = configuration.request;
+  return { selected, executable, request: { ...wire, prompt: text, sessionId }, ...resolved,
+    ...(host ? { commandHost: host, managedLaunch: frozenLaunch } : {}), configuration };
+}
+
 export async function prepareRun(selected, request, options = {}) {
   const fileSelectors = request.files ?? [];
   if (selected.mode === 'workspace' && fileSelectors.length) fail('filesNotAllowedInWorkspace', 'Workspace execution does not accept --file. Describe the focus paths in the prompt.');
@@ -89,7 +166,7 @@ export async function prepareRun(selected, request, options = {}) {
   }
   const wire = {
     protocolVersion: 5, type: 'start', execution: { ...selected.execution }, mode: selected.mode,
-    workspace, prompt, args: [...selected.executor.args], communication: selected.communication,
+    workspace, prompt, args: [...selected.executor.args], communication: selected.communication, resume: selected.resume,
     ...(selected.permissionMode === undefined ? {} : { permissionMode: selected.permissionMode }),
     ...(selected.codex ? { codex: { ...selected.codex } } : {}),
     ...(selected.mode === 'bundle' ? {
@@ -99,5 +176,7 @@ export async function prepareRun(selected, request, options = {}) {
   };
   const resolved = resolveAdapterEnvironment(source, selected.executor);
   if (host) Object.assign(resolved.environment, { AW_COMMAND_HOST: JSON.stringify(host), AW_HOME: host.awHome });
-  return { selected, executable, originalWorkspace: workspace, request: wire, ...resolved };
+  const frozenLaunch = host ? await managedLaunch(host, selected.executor.commandId, resolved.environment, workspace) : undefined;
+  return { selected, executable, originalWorkspace: workspace, request: wire, ...resolved,
+    ...(host ? { commandHost: host, managedLaunch: frozenLaunch } : {}) };
 }

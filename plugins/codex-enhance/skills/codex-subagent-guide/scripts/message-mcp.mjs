@@ -7,7 +7,7 @@ const tools = [
   {
     name: 'send_parent',
     description: 'Submit one message to the parent channel without waiting for a reply. Success does not prove the parent model has read it.',
-    inputSchema: { type: 'object', additionalProperties: false, required: ['text'], properties: { text: { type: 'string', minLength: 1, description: 'Nonempty Unicode text, at most 4096 UTF-8 bytes.' } } },
+    inputSchema: { type: 'object', additionalProperties: false, required: ['text'], properties: { text: { type: 'string', minLength: 1, description: 'Nonempty Unicode text, at most 24576 UTF-8 bytes.' } } },
   },
   {
     name: 'receive_parent',

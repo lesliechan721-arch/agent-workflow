@@ -1,21 +1,22 @@
-# 外部任务通信
+# 通讯与恢复
 
-本次回执确认 communication=true 后才可发送。
-
-## send：发送补充输入
+## send：发送消息
 
 ```text
 {{aw.command:guide/subagent}} send --run "<run>" --text "<msg>"
 ```
 
-长消息可文件传入 `--text-file "<file>"` ，`--text-file` 与 `--text` 必须且只能选一项；文件须为非空 UTF-8 普通文件，路径相对 cwd 解析。
+长消息使用文件传入 `--text-file "<file>"` ，`--text-file` 与 `--text` 必须且只能选一项；文件须为非空 UTF-8 普通文件，路径相对 cwd 解析。
 
-单条最多 4096 UTF-8 bytes，超限时重新组织必要信息，不自动截断或拆分。
+单条最多 24,576 UTF-8 bytes，超限时重新组织必要信息，不自动截断或拆分。
+
+当支持恢复时，发送消息可以恢复已结束的代理；恢复后 `result` 只提供最新一轮结果。
 
 | 输出 | 如何处理 |
 | --- | --- |
 | `queued <run>` | 已入队，不证明已读、已执行或立即打断当前轮。 |
 | `queued <run> delivery=unknown` | 已入队但投递不明；关闭竞态仍退出 0，不自动重发。 |
+| started / starting / start_failed | 沿用外部委派的 start 回执处理。 |
 | diagnostic | 按实际错误处理；提交前失败不输出 queued，操作失败退出 1。 |
 
 回执丢失也不自动重发，重发会形成另一条消息。共用属性、正文块和消费规则见外部委派。

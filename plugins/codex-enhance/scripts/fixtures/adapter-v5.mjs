@@ -126,9 +126,12 @@ input.on('line',async line=>{
  if(backend==='codex'){
   const respond=result=>emit({id:value.id,result});
   if(value.method==='initialize')respond({});
-  else if(value.method==='thread/start') {
+  else if(value.method==='thread/start'||value.method==='thread/resume') {
    communicationServer = Object.entries(value.params.config?.mcp_servers ?? {}).find(([key]) => key.startsWith('aw_parent_'))?.[1];
-   if(scenario==='initialization failure')emit({id:value.id,error:{code:-32602,message:'invalid explicit configuration'}});
+   if(value.method==='thread/resume'&&scenario==='resume rejection')emit({id:value.id,error:{code:-32602,message:'session unavailable'}});
+   else if(value.method==='thread/resume'&&scenario==='resume mismatch')respond({thread:{id:'other-thread'},model:'model-fixture'});
+   else if(value.method==='thread/resume'&&scenario==='resume active')respond({thread:{id:'thread-fixture',status:{type:'active'}},model:'model-fixture'});
+   else if(scenario==='initialization failure')emit({id:value.id,error:{code:-32602,message:'invalid explicit configuration'}});
    else respond({thread:{id:'thread-fixture'},model:'model-fixture'});
   } else if(value.method==='turn/start') {
    count++;active='turn-'+count;respond({turn:{id:active,status:'inProgress',items:[]}});
@@ -184,7 +187,7 @@ input.on('close',()=>{clearTimeout(timer);setImmediate(()=>process.exit(scenario
     FIXTURE_CASE: scenario, FIXTURE_BACKEND: backend, FIXTURE_CAPTURE: capture, FIXTURE_RUNTIME: runtime,
   };
   const request = {
-    protocolVersion: 5, type: 'start', communication: true, ...(backend !== 'oracle' ? { permissionMode: 'default' } : {}), ...(backend === 'codex' ? { codex: { cliSource: 'auto', bypassHookTrust: false } } : {}), run: { id: randomBytes(8).toString('base64url'), name: 'agent-fixture', deadlineAt: null },
+    protocolVersion: 5, type: 'start', communication: true, resume: true, ...(backend !== 'oracle' ? { permissionMode: 'default' } : {}), ...(backend === 'codex' ? { codex: { cliSource: 'auto', bypassHookTrust: false } } : {}), run: { id: randomBytes(8).toString('base64url'), name: 'agent-fixture', deadlineAt: null },
     execution: { executor: 'fixture' }, mode: backend === 'oracle' ? 'bundle' : 'workspace',
     workspace, prompt: ' 原始任务\nQuotes: " ` $() \\n\n', args: [],
     runtime: { directory: runtime, toolkit: { command: process.execPath, module: path.join(installed, 'runtime/adapter-channel.mjs'), messageScript: installedEntry(sourceEntries.message), mcpScript: installedEntry(sourceEntries.mcp) } },
@@ -224,7 +227,7 @@ input.on('close',()=>{clearTimeout(timer);setImmediate(()=>process.exit(scenario
     return { child, send, waitFor, frames, exit };
   };
   const captured = async () => (await fs.readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
-  return { request, start, captured, waitForCaptured: (predicate) => waitForCaptured(capture, predicate), capture, workspace, home };
+  return { request, start, captured, environment, waitForCaptured: (predicate) => waitForCaptured(capture, predicate), capture, workspace, home };
 }
 
 

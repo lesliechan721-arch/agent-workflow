@@ -39,17 +39,22 @@ test('normalizes communication and Codex controls without changing backend args'
 
 // Test Value Gate: every supported branch has a fixed installed entrypoint or
 // retains its custom command; Codex-only options cannot leak to another backend.
-test('plans all adapters with the installed communication choice', () => {
-  for (const adapter of ['codex', 'claude-code', 'antigravity', 'oracle', 'custom']) {
+test('plans all adapters with independent communication and resume choices', () => {
+  for (const adapter of ['codex', 'claude-code', 'antigravity', 'oracle', 'custom', 'custom-managed']) {
     const command = adapter === 'custom'
-      ? { adapter, mode: 'workspace', command: process.execPath } : { adapter };
+      ? { adapter, mode: 'workspace', command: process.execPath }
+      : adapter === 'custom-managed' ? { adapter, mode: 'workspace', commandId: `cmdp_${'a'.repeat(16)}` } : { adapter };
     for (const communication of [undefined, false, true]) {
-      const plan = select({ ...command, ...(communication === undefined ? {} : { communication }) });
-      assert.equal(plan.communication, communication ?? true);
-      assert.equal(plan.mode, adapter === 'oracle' ? 'bundle' : 'workspace');
-      assert.equal(Object.hasOwn(plan, 'codex'), adapter === 'codex');
-      if (adapter === 'antigravity') assert.equal(plan.entrypoint,
-        path.join(resourceRoot, 'scripts/adapters/antigravity-v5.mjs'));
+      for (const resume of [undefined, false, true]) {
+        const plan = select({ ...command, ...(communication === undefined ? {} : { communication }), ...(resume === undefined ? {} : { resume }) });
+        assert.equal(plan.communication, communication ?? true);
+        assert.equal(plan.resume, resume ?? true);
+        assert.deepEqual(plan.installedIdentity, { pluginName: 'codex-enhance' });
+        assert.equal(plan.mode, adapter === 'oracle' ? 'bundle' : 'workspace');
+        assert.equal(Object.hasOwn(plan, 'codex'), adapter === 'codex');
+        if (adapter === 'antigravity') assert.equal(plan.entrypoint,
+          path.join(resourceRoot, 'scripts/adapters/antigravity-v5.mjs'));
+      }
     }
   }
 });
@@ -59,6 +64,7 @@ test('plans all adapters with the installed communication choice', () => {
 test('rejects invalid controls and duplicate dedicated/raw Codex profiles', () => {
   const invalid = [
     ...['false', 0, null].map((communication) => ({ adapter: 'codex', communication })),
+    ...['false', 0, null].map((resume) => ({ adapter: 'codex', resume })),
     ...['path', '', false, null].map((codexCliSource) => ({ adapter: 'codex', codexCliSource })),
     ...['false', 0, null].map((codexBypassHookTrust) => ({ adapter: 'codex', codexBypassHookTrust })),
     { adapter: 'antigravity', mode: 'bundle' },
@@ -128,7 +134,11 @@ test('managed custom plans enforce command identity and protected environment fi
 test('managed host validation fixes nested AW argv and environment without exposing the descriptor', async (t) => {
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-managed-guide-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const cliEntry = path.join(directory, 'aw cli 中文.mjs'); await fs.writeFile(cliEntry, '// local fake CLI');
+  const commandId = 'cmdu_4ba70354-0867-4ecb-a927-120c1933f514';
+  const descriptor = { id: commandId, owner: { kind: 'user' }, resourceRoot: directory,
+    availability: 'ready', launch: { runner: 'node', entry: 'adapter.mjs', args: [], env: {}, envFrom: {}, cwd: 'caller' } };
+  const cliEntry = path.join(directory, 'aw cli 中文.mjs');
+  await fs.writeFile(cliEntry, `process.stdout.write(JSON.stringify(${JSON.stringify({ schemaVersion: 1, command: 'command.show', ok: true, overallState: 'completed', commands: [descriptor] })}));`);
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: directory };
   const environment = { AW_HOME: directory, AW_COMMAND_HOST: JSON.stringify(host), AW_COMMAND_OLD: 'old', AW_PLUGIN_CONTEXT: 'temporary', SOURCE: '', KEEP: 'original' };
   await assert.rejects(validateCommandHost({ AW_HOME: directory }), { code: 'managedCommandHostMissing' });
@@ -137,7 +147,6 @@ test('managed host validation fixes nested AW argv and environment without expos
   }
   // X_OK checks execution permissions on POSIX; Windows treats it as F_OK.
   if (process.platform !== 'win32') await assert.rejects(validateCommandHost({ ...environment, AW_COMMAND_HOST: JSON.stringify({ ...host, nodeExecutable: cliEntry }) }), { code: 'managedCommandHostInvalid' });
-  const commandId = 'cmdu_4ba70354-0867-4ecb-a927-120c1933f514';
   const args = ['', '中文\nargument', '--option'];
   const plan = select({ adapter: 'custom-managed', mode: 'workspace', commandId, args, env: { KEEP: 'executor' }, envFrom: { EMPTY: 'SOURCE' } });
   const prepared = await prepareRun(plan, { prompt: ' task\n', workspace: directory }, { environment });

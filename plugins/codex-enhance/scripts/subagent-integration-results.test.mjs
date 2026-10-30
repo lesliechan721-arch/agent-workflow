@@ -41,7 +41,7 @@ test('result consumes every unread message once and only the fixed final result 
   const settled = await f.command(['wait', '--run', started.run]);
   successful(settled, 'wait'); assert.equal(settled.stdout, 'settled\n');
   const closed = await f.command(['send', '--run', started.run, '--text', 'late']);
-  assert.equal(closed.code, 1); assert.equal(field(closed.stderr, 'code'), 'runClosed');
+  assert.equal(closed.code, 1); assert.equal(field(closed.stderr, 'code'), 'resumeUnsupported');
   assert.equal(await fs.readFile(f.generations, 'utf8'), 'generation\n');
 });
 

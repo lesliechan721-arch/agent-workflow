@@ -71,7 +71,7 @@ export async function negotiateClaudeCommunication(context) {
 export function claudeArguments(request, mcpServer) {
   const mode = permissionMode(request);
   checkArguments(request.args, {
-    owned: ['--print', '-p', '--output-format', '--input-format', '--continue', '-c', '--resume', '-r', '--fork-session', '--from-pr', '--cloud', '--remote', '--environment', '--teleport', '--worktree', '-w', '--tmux', '--help', '-h', '--version', '-v', '--replay-user-messages', '--permission-prompt-tool'],
+    owned: ['--print', '-p', '--output-format', '--input-format', '--continue', '-c', '--resume', '-r', '--fork-session', '--from-pr', '--cloud', '--remote', '--environment', '--teleport', '--worktree', '-w', '--tmux', '--help', '-h', '--version', '-v', '--replay-user-messages', '--permission-prompt-tool', '--session-id'],
     commands: ['agents', 'auth', 'doctor', 'install', 'mcp', 'plugin', 'plugins', 'setup-token', 'update', 'upgrade'],
     short: { '-d': 'value', '-n': 'value' },
     values: valueOptions,
@@ -88,6 +88,7 @@ export function claudeArguments(request, mcpServer) {
   else if (mode === 'full-access') args.push('--dangerously-skip-permissions');
   if (request.execution.model !== undefined) args.push('--model', request.execution.model);
   if (request.execution.reasoningEffort !== undefined) args.push('--effort', request.execution.reasoningEffort);
+  if (request.sessionId) args.push('--resume', request.sessionId);
   if (mcpServer) args.push('--mcp-config', JSON.stringify({ mcpServers: { [`aw_parent_${request.run.id}`]: mcpServer } }));
   return args;
 }
@@ -96,7 +97,9 @@ export async function negotiateClaude(context) {
   claudeArguments(context.request);
   const executable = await negotiateExecutable(context, 'claude', [], { packageName: '@anthropic-ai/claude-code', binName: 'claude' });
   const communication = context.request.communication ? await negotiateClaudeCommunication(context) : { supported: false };
-  return { environment: { status: 'available' }, executable, capabilities: { communication } };
+  const skipHistory = context.environment.CLAUDE_CODE_SKIP_PROMPT_HISTORY;
+  const persistence = !context.request.args.includes('--no-session-persistence') && (!skipHistory || ['0', 'false'].includes(skipHistory.toLowerCase()));
+  return { environment: { status: 'available' }, executable, capabilities: { communication, resume: { supported: persistence } } };
 }
 
 export async function executeClaude(context) {
@@ -141,7 +144,9 @@ export async function executeClaude(context) {
   const lines = backendLines((value) => {
     if (value.type === 'system' && value.subtype === 'init') {
       if (permissionMode(context.request) === 'auto' && value.permissionMode !== undefined && value.permissionMode !== 'auto') { context.abort('permissionModeUnavailable'); return; }
-      if (typeof value.session_id === 'string') sessionId = value.session_id;
+      if (typeof value.session_id !== 'string' || !value.session_id || sessionId && sessionId !== value.session_id || context.request.sessionId && context.request.sessionId !== value.session_id) { context.abort('backendSessionMismatch'); return; }
+      sessionId = value.session_id;
+      void context.bindSession(sessionId).catch((error) => context.abort(error.code ?? 'backendSessionMismatch'));
       if (typeof value.model === 'string') model = value.model;
     } else if (value.type === 'user' && acknowledgements.has(value.uuid)) {
       acknowledgements.get(value.uuid).resolve({ status: 'submitted' });
@@ -150,6 +155,7 @@ export async function executeClaude(context) {
       if (typeof value.is_error !== 'boolean' || !Number.isSafeInteger(value.num_turns) || value.num_turns < 0 || typeof value.session_id !== 'string' || !value.session_id || typeof value.subtype !== 'string' || terminal && !active) { context.abort('backendOutputInvalid'); return; }
       if (sessionId && sessionId !== value.session_id) { context.abort('backendSessionMismatch'); return; }
       sessionId = value.session_id;
+      void context.bindSession(sessionId).catch((error) => context.abort(error.code ?? 'backendSessionMismatch'));
       terminal = value;
       active = false;
       if (value.num_turns > 0) context.generationStarted = true;

@@ -39,7 +39,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     backend = spawn(process.execPath, ['-e', "setTimeout(()=>process.exit(4),300000);process.on('message',()=>process.exit(0));process.on('disconnect',()=>process.exit(0))"],
       { env: process.env, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], detached: false });
     closed = new Promise((resolve) => backend.once('close', resolve));
-    emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' } } } });
+    emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' }, resume: { status: frame.resume ? 'unsupported' : 'disabled' } } } });
     timer = setInterval(async () => { if (await fs.stat(process.env.FIXTURE_FINISH).catch(() => null)) await finish(false); }, 30);
   } else if (frame.type === 'message') {
     await fs.writeFile(process.env.FIXTURE_INPUT, JSON.stringify({ text: frame.text }));

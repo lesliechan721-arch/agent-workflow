@@ -6,7 +6,7 @@
 
 ## 共用回执格式
 
-下文 `<...>` 表示实际值，`[...]` 表示可选部分。run 是启动句柄，不能用展示名代替；code 是错误码，state 是 completed/failed/cancelled/unknown 任务终态。communication 为 true/false/pending：可通信、整体通信关闭或不支持、尚未取得结论。
+下文 `<...>` 表示实际值，`[...]` 表示可选部分。run 是启动句柄，不能用展示名代替；code 是错误码，state 是 completed/failed/cancelled/unknown 任务终态。communication 与 resume 分别表示运行中通信和终态恢复能力，值为 true/false/pending：已启用且支持、关闭或不支持、尚未取得结论。两项能力独立。
 
 | 正文块形态 | 读取方式 |
 | --- | --- |
@@ -45,14 +45,12 @@
 
 | 输出 | 如何处理 |
 | --- | --- |
-| `started <run> communication=…` | 已就绪，用 wait/result 获取后续消息与结果。 |
+| `started <run> communication=… resume=…` | 已就绪，用 wait/result 获取后续消息与结果。 |
 | `starting <run>` | 10 秒内尚未就绪，退出 1；继续等待原 run，不再次 start。 |
 | `start_failed <run> [state=…] code=…` | 保留句柄并用 wait/result/stop 处理；state 仅在已有可靠终态时出现。 |
 | diagnostic，无 run | 创建句柄前失败，按错误处理。 |
 
 start 不消费过程消息或终态通知。回执丢失或非零退出不证明后端未执行，不自动重提任务。
-
-准备追加输入或答复过程问题且 communication=true，或收到过程消息、投递缺口时，读取 外部任务通信（`references/communication.md`）；仅有通信能力不要求预读。
 
 ## wait：等待可处理事件
 
@@ -60,18 +58,27 @@ start 不消费过程消息或终态通知。回执丢失或非零退出不证�
 {{aw.command:guide/subagent}} wait --run "<run-a>" --run "<run-b>"
 ```
 
-默认响应式等待 600000 ms，一次按参数顺序观察 1–16 个不同句柄；`--timeout-ms N` 允许 0–1800000 ms。同一 run 的 wait/result 串行调用。
+默认响应式等待 600000 ms，一次按参数顺序观察 1–16 个不同句柄；`--timeout-ms N` 允许 0–1800000 ms。同一 run 的 send/wait/result/stop 串行调用。
 
 | 输出 | 如何处理 |
 | --- | --- |
-| `ready <run> communication=…` | 只补报 start 未报告的首次就绪；若终态同时可见，通信信息合入 result/deferred。 |
+| `ready <run> communication=… resume=…` | 只补报 start 未报告的首次就绪；若终态同时可见，两项能力信息合入 result/deferred。 |
 | message / input / result 块 | 按共用格式处理消息、投递缺口或完整最终结果。 |
-| `deferred <run> state=… [communication=…]` | 终态通知已消费，正文未交付；用 result 读取或导出，wait 不重放此通知。 |
+| `deferred <run> state=… [communication=… resume=…]` | 终态通知已消费，正文未交付；用 result 读取或导出，wait 不重放此通知。 |
 | 首行 `more=true` | 用 `--timeout-ms 0` 排空剩余事件，再恢复长等待；它不表示任务仍运行或 deferred 正文已取得。 |
 | `timeout` | 本次窗口到期，继续原任务。 |
 | `settled` | 全部目标终态且无未读事件；检查是否还有 deferred 正文未取得。 |
 
 单个结果超限才 deferred，本批空间不足则保留未读并给出 more=true。读取/归属/失联问题返回 diagnostic，保留同批其它有效结果。
+
+## 发送与恢复
+
+通过 start/wait 返回的状态判断任务支持的能力：
+
+- `communication=true`： 与运行中代理通讯。
+- `resume=true`: 恢复已结束代理。
+
+**当能力支持并且需要使用时**，可读取 通讯与恢复（`references/communication.md`）。
 
 ## result：读取完整结果
 
@@ -107,8 +114,8 @@ remote_stop_confirmed 的 true/false/unknown 表示远端取消证据，本地�
 
 操作失败的 diagnostic 写 stderr，已读取任务证据随相关块写 stdout。退出 0 表示命令完成（含 timeout 或读到失败任务），1 为操作失败，2 为参数无效。
 
-普通 wait/result 的 stdout+stderr 合计最多 8192 UTF-8 bytes，工具须完整接收。
+wait/result 的 stdout+stderr 合计最多 32,768 UTF-8 bytes，工具须完整接收。
 
-wait 先消费选入回执的消息并保存观察位置，再输出；普通 result 在完整输出成功后消费。已消费的过程消息不保证重放，回执丢失后不能依赖重复读取恢复。部分消费失败可能已有消息删除或造成重复，应保留已完整收到的副本。
+wait 先消费选入回执的消息并保存观察位置，再输出；result 在完整输出成功后消费。已消费的过程消息不保证重放，回执丢失后不能依赖重复读取恢复。部分消费失败可能已有消息删除或造成重复，应保留已完整收到的副本。
 
-固定最终结果在终态后保留 1 小时，可用 result 重读，读取不续期。runExpired/runUnavailable 时说明缺口，不为取回旧结果重新生成。
+最终结果会保留一段时间，可用 result 重读。runExpired/runUnavailable 时说明缺口，不为取回旧结果重新生成。

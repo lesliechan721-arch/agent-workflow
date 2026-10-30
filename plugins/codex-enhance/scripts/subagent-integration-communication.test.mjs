@@ -66,8 +66,12 @@ test('managed custom execution retains the fixed host and v5 arguments after sta
   const args = ['', '原文\r\n😀', '--literal', '$(touch escaped)'];
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: f.directory };
   await fs.writeFile(cliEntry, `import fs from 'node:fs/promises';
+if (process.argv[3] === 'show') {
+  console.log(JSON.stringify({ schemaVersion: 1, command: 'command.show', ok: true, overallState: 'completed', commands: [{ id: ${JSON.stringify(commandId)}, owner: { kind: 'user' }, availability: 'ready', resourceRoot: ${JSON.stringify(f.directory)}, launch: { runner: 'node', entry: 'fake-adapter.mjs', args: [], env: {}, envFrom: {}, cwd: 'caller' } }], packages: [], changes: [], errors: [], recoveryActions: [] }));
+} else {
 await fs.writeFile(${JSON.stringify(observedFile)}, JSON.stringify({ argv: process.argv.slice(2), awHome: process.env.AW_HOME, host: JSON.parse(process.env.AW_COMMAND_HOST), pid: process.pid }));
 await import(${JSON.stringify(pathToFileURL(path.join(f.directory, 'fake-adapter.mjs')).href)});
+}
 `);
   f.snapshot.effectiveValues.subagentCommands = [{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId, args }];
   await f.save();
@@ -238,5 +242,5 @@ test('completed command communication retains its question and final result', { 
   assert.deepEqual([...terminal, result].flatMap((response) => blocks(response.stdout, 'MESSAGE')), ['Which target is required?']);
   assert.deepEqual(blocks(result.stdout, 'FINAL'), [finalText]);
   const send = await f.command(['send', '--run', started.run, '--text', 'A late answer.']);
-  assert.equal(send.code, 1); assert.equal(field(send.stderr, 'code'), 'runClosed');
+  assert.equal(send.code, 1); assert.equal(field(send.stderr, 'code'), 'resumeUnsupported');
 });

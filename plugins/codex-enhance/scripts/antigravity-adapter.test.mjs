@@ -111,7 +111,7 @@ input.on('close',()=>setImmediate(()=>process.exit(scenario==='nonzero'?7:0)));
   const request = {
     protocolVersion: 5, type: 'start', permissionMode: 'default', run: { id: randomBytes(8).toString('base64url'), name: 'agy-fixture', deadlineAt: null },
     execution: { executor: 'fixture', model: 'chosen-model', reasoningEffort: 'high' }, mode: 'workspace', workspace,
-    prompt: ' 原始任务\nKeep "quotes", `$()` and Unicode。\n', args: ['--mode', 'plan', '--sandbox'], communication: false,
+    prompt: ' 原始任务\nKeep "quotes", `$()` and Unicode。\n', args: ['--mode', 'plan', '--sandbox'], communication: false, resume: true,
     runtime: { directory, toolkit: { command: process.execPath, module: path.join(installed, 'runtime/adapter-channel.mjs'), messageScript: path.join(installed, 'message.mjs'), mcpScript: path.join(installed, 'message-mcp.mjs') } },
   };
   const environment = {
@@ -318,6 +318,7 @@ async function communicationFixture(t, { secondFails = false, staleSecondStep = 
       return this.bridge;
     },
     async ready() {},
+    async bindSession() {},
     async beginClosing(reason) { clearInterval(scheduler); await this.bridge.close(reason); },
     async spawn() {
       setImmediate(() => emit({ event: 'init', conversation_id: 'same-conversation', init: { tools: ['run_command'], permission_mode: 'always-proceed' } }));
@@ -475,4 +476,27 @@ test('Antigravity closes queued input after an empty denied terminal without sub
   assert.equal(f.backendExited(), true);
   assert.deepEqual(await f.context.bridge.acceptInput({ id: 'f'.repeat(32), text: 'Queued follow-up must remain unsubmitted' }), { status: 'notSubmitted', code: 'runClosed', message: 'The run is closed.' });
   assert.equal(f.inputs.length, 1);
+});
+
+// Test Value Gate: the native conversation target is owned by AW, and a
+// mismatched backend init must stop before any resumed input can be submitted.
+for (const match of [true, false]) test(`Antigravity resume ${match ? 'targets the original conversation' : 'rejects a different conversation before input'}`, testOptions, async (t) => {
+  const f = await fixture(t);
+  const sessionId = match ? 'conversation-fixture' : 'other-conversation';
+  f.send({ ...f.request, sessionId, prompt: 'Only this follow-up.' });
+  const result = await f.waitFor('result');
+  assert.equal((await f.exit).code, 0);
+  const captured = await f.captured();
+  assert.equal(captured[0].args[captured[0].args.indexOf('--conversation') + 1], sessionId);
+  if (match) {
+    assert.equal(result.state, 'completed');
+    assert.equal((await f.waitFor('session')).sessionId, sessionId);
+    assert.equal(captured.filter((value) => value.input).length, 1);
+    assert.equal(captured.find((value) => value.input).input.message.content, 'Only this follow-up.');
+  } else {
+    assert.equal(result.code, 'backendSessionMismatch');
+    assert.equal(result.generationStarted, false);
+    assert.equal(captured.some((value) => value.input), false);
+    assert.equal(f.frames.some((frame) => frame.type === 'ready'), false);
+  }
 });

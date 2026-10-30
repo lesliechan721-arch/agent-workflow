@@ -16181,6 +16181,8 @@ describe('five namespaced write commands', () => {
     await fs.writeJson(path.join(scenario, 'scenario.json'), { echo: true, finalText: 'Public Guide final result.', adapterLifetimeMs: 60000, backendLifetimeMs: 60000 });
     const environment = {
       ...isolation.env,
+      HOME: fixture.homeRoot,
+      USERPROFILE: fixture.homeRoot,
       TMPDIR: fixture.temporaryRoot,
       TMP: fixture.temporaryRoot,
       TEMP: fixture.temporaryRoot,
@@ -16220,12 +16222,13 @@ describe('five namespaced write commands', () => {
       const started = await invokeGuide(guideId, ['start', '--executor', 'fixture', '--workspace', fixture.workspace, '--prompt-file', 'prompt.txt']);
       run = helpers.field(started.stdout, 'run');
       expect(started, JSON.stringify(started)).toMatchObject({ exitCode: 0, stderr: '' });
-      expect(started.stdout).toMatch(/^started \S+ communication=true\n$/u);
+      expect(started.stdout).toMatch(/^started \S+ communication=true resume=false\n$/u);
       const observed = await helpers.eventually(async () => fs.readJson(path.join(scenario, 'observed.json')), 'public installed Guide backend');
       process.kill(observed.pid, 0);
       expect(observed.argv).toEqual(['fixed-argv']);
       expect(observed.request.args).toEqual(['v5-request-only']);
       expect(observed.request.prompt).toBe('Public installation task.\n');
+      expect(observed.request.resume).toBe(true);
       const sent = await invokeGuide(guideId, ['send', '--run', run!, '--text', 'Continue.']);
       expect(sent).toMatchObject({ exitCode: 0, stdout: `queued ${run}\n` });
       await helpers.eventually(async () => (await fs.readFile(path.join(scenario, 'inputs.jsonl'), 'utf8')).includes('Continue.'), 'public wrapped worker still alive after start');
@@ -16344,9 +16347,9 @@ describe('five namespaced write commands', () => {
     expect(initialBinding).toMatchObject({
       schemaVersion: 2,
       installedIdentity: { skillKey: 'codex-subagent-guide', scope: 'user', configScope: 'user' },
-      allowedKeys: ['subagentCommands'],
+      allowedKeys: ['subagentCommands', 'subagentRetentionHours'],
     });
-    expect(initialBinding.effectiveValues).toEqual({ subagentCommands: [] });
+    expect(initialBinding.effectiveValues).toEqual({ subagentCommands: [], subagentRetentionHours: 24 });
     for (const skill of ['codex-explore', 'codex-advisor']) {
       await expect(fs.pathExists(path.join(cacheRoot, 'codex', 'skills', skill, AW_RUNTIME_CONFIG_BINDING_PATH)))
         .resolves.toBe(false);
