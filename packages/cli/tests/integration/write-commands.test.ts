@@ -16173,6 +16173,9 @@ describe('five namespaced write commands', () => {
     const { isolation, runtime, runPublic } = await prepareCodexEnhancePublicCommandFixture();
     const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
     const helpers = await import(pathToFileURL(path.join(repositoryRoot, 'plugins/codex-enhance/scripts/fixtures/subagent-integration.mjs')).href);
+    const { openRun, storeContext } = await import(pathToFileURL(path.join(
+      repositoryRoot, 'plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/store.mjs',
+    )).href);
     const cleanups: Array<() => Promise<void>> = [];
     const fixture = await helpers.fixture({ signal: new AbortController().signal, diagnostic: () => {}, after: (cleanup: () => Promise<void>) => { cleanups.push(cleanup); } });
     const cliEntry = path.join(repositoryRoot, 'packages/cli/dist/index.js');
@@ -16245,7 +16248,8 @@ describe('five namespaced write commands', () => {
         if (guideId && run) {
           const stopped = await invokeGuide(guideId, ['stop', '--run', run]);
           expect(stopped, JSON.stringify(stopped)).toMatchObject({ exitCode: 0 });
-          const { meta } = await fixture.evidence(run);
+          // invokeGuide creates this run outside the fixture's tracked commands.
+          const { meta } = await openRun(await storeContext({ homeRoot: fixture.homeRoot }), run);
           // A saved final result does not mean the worker has released its cwd.
           // Windows cannot remove that directory until the worker exits.
           await helpers.eventually(() => {
