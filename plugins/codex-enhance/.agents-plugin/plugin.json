@@ -436,7 +436,7 @@
                   "codexProfile": {
                     "type": "string",
                     "title": "Codex 配置 Profile",
-                    "description": "从本次有效 CODEX_HOME 读取同名 .config.toml，将支持字段转换为运行时覆盖；未支持字段提示后忽略。不保留原生用户配置层身份，可能覆盖项目配置。AW 显式 model/effort 仍优先。",
+                    "description": "从本次有效 CODEX_HOME 读取同名 .config.toml，完整传递配置；已知不生效或与 AW 控制冲突的配置报错。已确认在线程生效的字段优先通过 thread/start 传入，其余通过启动 -c 传入。不自动启用严格模式。不保留原生用户配置层身份，可能覆盖项目配置。AW 显式 model/effort 仍优先。",
                     "validation": {
                       "minLength": 1,
                       "pattern": "^[^\\x00]*[^\\s\\x00][^\\x00]*$",

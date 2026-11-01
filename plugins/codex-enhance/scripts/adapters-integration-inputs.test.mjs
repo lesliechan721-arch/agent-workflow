@@ -34,7 +34,7 @@ for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: installed
   assert.equal(captured[0].environment.OPENAI_API_KEY, 'synthetic-test-key');
   if (backend === 'codex') {
     const start = captured.find((value) => value.input?.method === 'thread/start').input.params;
-    assert.equal(start.config.model, 'chosen-model'); assert.equal(start.config.sandbox_mode, 'workspace-write'); assert.equal(start.config.approval_policy, 'on-request');
+    assert.equal(start.model, 'chosen-model'); assert.equal(start.config.model, undefined); assert.equal(start.config.sandbox_mode, 'workspace-write'); assert.equal(start.config.approval_policy, 'on-request');
     const turn = captured.find((value) => value.input?.method === 'turn/start').input.params;
     assert.equal(turn.effort, 'high'); assert.ok(turn.input[0].text.startsWith(f.request.prompt));
     assert.equal(start.config.shell_environment_policy.inherit, 'all');
@@ -65,6 +65,22 @@ for (const backend of ['codex', 'claude']) test(`${backend}: parent input uses t
   assert.ok(actual.endsWith(text));
   if (backend === 'codex') assert.equal(inputs.length, 1);
   else assert.equal(inputs.length, 2);
+});
+
+// Test Value Gate: a TOML-only MCP value must not lose the user's whole table
+// when the adapter adds its private communication server to the same CLI layer.
+test('Codex: startup MCP configuration survives private communication binding', { skip: !supported, timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t, 'codex');
+  f.request.args = ['-c', 'mcp_servers.fixture={command="fixture-tool",future_counter=9007199254740993}'];
+  const run = f.start(); run.send(f.request);
+  await run.waitFor('ready');
+  assert.equal((await run.waitFor('result')).state, 'completed');
+  assert.equal((await run.exit).code, 0);
+  const captured = await f.captured();
+  assert(captured[0].args.some((arg) => arg.startsWith('mcp_servers=') && arg.includes('9007199254740993')));
+  const config = captured.find((value) => value.input?.method === 'thread/start').input.params.config;
+  assert.equal(config.mcp_servers, undefined);
+  assert.equal(config[`mcp_servers.aw_parent_${f.request.run.id}`].required, true);
 });
 
 // Replace only the external Claude stream. The real executor and bridge must
