@@ -164,7 +164,7 @@ adapter 停止接受新任务输入，调用后端正式中断方法，结束子
 
 enabled 必须同时支持子→父发送和主动接收；passiveDelivery 只控制自动输入与提示词，none 也保留 receive。旧 activeReceive 字段按未知字段拒绝。disabled/unsupported 不带其它字段；bundle 不得 enabled。communication=false 必须 disabled，不能 enabled；协议错、超时、缺字段或配置失败都不能报 unsupported。必须在首次模型提交之前完成 ready 写入；只有 enabled 注入按实际能力生成的说明。
 
-ready 可带 `diagnostics: [{ "code": "profileFieldIgnored", "field": "features.example", "message": "The profile override was ignored; lower-layer configuration remains active." }]`。每项严格为 `{code, field?, message}`：code 为 Code，field 可选且仅字段路径，message 是简短英文说明。不得包含值、令牌、header、命令参数、可信摘要或 profile 原文。按字段组汇总过量诊断并报告总数，仍须满足 ready 帧及输出预算。
+ready 可带 `diagnostics: [{ "code": "backendConfigWarning", "message": "Codex reported a configuration warning. Native defaults or fallback behavior may apply." }]`。每项严格为 `{code, field?, message}`：code 为 Code，field 可选且仅字段路径，message 是简短英文说明。不得包含值、令牌、header、命令参数、可信摘要或 profile 原文。按字段组汇总过量诊断并报告总数，仍须满足 ready 帧及输出预算。
 
 接收诊断先校验原始形状，再脱敏。脱敏扩张使 message 或 field 超出单项预算时，保留 code 并明确说明省略；不能因此改写运行终态或丢失最终正文。快照只保存预算内摘要，固定结果保留其余完整安全诊断，并按 result 普通报告或 --output-file 合同读取；主代理只得到必要 code、原因及恢复动作，不输出内部详细状态。
 

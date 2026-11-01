@@ -32,6 +32,7 @@ import { createRequire as awCreateRequire } from 'node:module'; const require = 
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { isIP } from "node:net";
 
 // scripts/node_modules/.pnpm/smol-toml@1.9.1/node_modules/smol-toml/dist/error.js
 /*!
@@ -1271,257 +1272,302 @@ function fail(code, message, recoveryActions = []) {
 // skills/codex-subagent-guide/scripts/adapters/codex-hooks.mjs
 var hookEvents = Object.fromEntries(["PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact", "SessionStart", "SessionEnd", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "Interrupt"].map((name) => [name, name.replace(/[A-Z]/g, (letter, index) => `${index ? "_" : ""}${letter.toLowerCase()}`)]));
 var table = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
-function convertHooks(value, { validate, ignored }) {
-  validate(value, "object", "hooks");
-  const result = /* @__PURE__ */ Object.create(null);
+function mergeStateRecord(base, overlay) {
+  const result = { ...base, ...overlay };
+  for (const [key, value] of Object.entries(overlay)) {
+    if (table(base?.[key]) && table(value)) result[key] = mergeStateRecord(base[key], value);
+  }
+  return result;
+}
+function convertHooks(value, { invalid, unsupported }) {
+  if (!table(value)) invalid("hooks", "Hooks must be a table for source-state mapping.");
+  const result = Object.assign(/* @__PURE__ */ Object.create(null), value);
   for (const [event, groups] of Object.entries(value)) {
     if (event === "state") {
-      validate(groups, "object", "hooks.state");
+      if (!table(groups)) invalid("hooks.state", "Hook state must be a table.");
       result.state = /* @__PURE__ */ Object.create(null);
-      for (const [key, state] of Object.entries(groups)) {
-        validate(state, "object", "hooks.state");
-        const converted2 = /* @__PURE__ */ Object.create(null);
-        for (const [field, item] of Object.entries(state)) {
-          if (field === "enabled" || field === "trusted_hash") converted2[field] = validate(item, field === "enabled" ? "boolean" : "string", `hooks.state.${field}`);
-          else ignored(`hooks.state.${field}`);
-        }
-        if (key.trim()) result.state[key.trim()] = { ...result.state[key.trim()], ...converted2 };
+      for (const [index, [key, state]] of Object.entries(groups).entries()) {
+        const field2 = `hooks.state[${index}]`;
+        if (!table(state)) invalid(field2, "A hook state record must be a table.");
+        if (Object.hasOwn(state, "enabled") && typeof state.enabled !== "boolean") invalid(`${field2}.enabled`, "Hook enabled state must be a boolean.");
+        if (Object.hasOwn(state, "trusted_hash") && typeof state.trusted_hash !== "string") invalid(`${field2}.trusted_hash`, "Hook trust state must be a string.");
+        if (key.trim()) result.state[key.trim()] = mergeStateRecord(result.state[key.trim()], state);
       }
       continue;
     }
-    if (!Object.hasOwn(hookEvents, event)) {
-      ignored(`hooks.${event}`);
+    const known = Object.hasOwn(hookEvents, event);
+    const field = known ? `hooks.${event}` : "hooks.<event>";
+    if (!Array.isArray(groups)) {
+      if (known) invalid(field, "Hook event groups must be an array for source-state mapping.");
       continue;
     }
-    validate(groups, "array", `hooks.${event}`);
-    let unsupported = false;
-    const converted = groups.map((group) => {
-      validate(group, "object", `hooks.${event}`);
-      if (Object.keys(group).some((key) => !["matcher", "hooks"].includes(key))) unsupported = true;
-      if (Object.hasOwn(group, "matcher")) validate(group.matcher, "string", `hooks.${event}.matcher`);
-      if (Object.hasOwn(group, "hooks")) validate(group.hooks, "array", `hooks.${event}.hooks`);
-      const handlers = (group.hooks ?? []).map((handler) => {
-        validate(handler, "object", `hooks.${event}.hooks`);
-        validate(handler.type, "string", `hooks.${event}.type`);
-        if (!["command", "mcp_tool"].includes(handler.type)) {
-          unsupported = true;
-          return handler;
+    for (const [groupIndex, group] of groups.entries()) {
+      const groupField = `${field}[${groupIndex}]`;
+      if (!table(group)) {
+        if (known) invalid(groupField, "A hook group must be a table for source-state mapping.");
+        continue;
+      }
+      if (Object.hasOwn(group, "hooks") && !Array.isArray(group.hooks)) {
+        if (known) invalid(`${groupField}.hooks`, "Hook handlers must be an array for source-state mapping.");
+        continue;
+      }
+      for (const [handlerIndex, handler] of (group.hooks ?? []).entries()) {
+        const handlerField = `${groupField}.hooks[${handlerIndex}]`;
+        if (!table(handler)) {
+          if (known) invalid(handlerField, "A hook handler must be a table for source-state mapping.");
+          continue;
         }
-        if (handler.type === "mcp_tool" && event === "SessionEnd") unsupported = true;
-        const fields = handler.type === "command" ? { type: "string", command: "string", commandWindows: "string", command_windows: "string", statusMessage: "string", timeout: "uint", additionalContextLimit: "uint", async: "boolean" } : { type: "string", server: "string", tool: "string", input: "jsonObject", timeout: "uint", statusMessage: "string" };
-        for (const required of handler.type === "command" ? ["command"] : ["server", "tool"]) validate(handler[required], "string", `hooks.${event}.${required}`);
-        if (Object.hasOwn(handler, "commandWindows") && Object.hasOwn(handler, "command_windows")) fail("profileValueInvalid", "A hook command alias is specified twice.");
-        const output = /* @__PURE__ */ Object.create(null);
-        for (const [field, item] of Object.entries(handler)) {
-          if (!Object.hasOwn(fields, field)) {
-            unsupported = true;
-            continue;
-          }
-          output[field] = validate(item, fields[field], `hooks.${event}.${field}`);
-        }
-        return output;
-      });
-      return { ...Object.hasOwn(group, "matcher") ? { matcher: group.matcher } : {}, ...Object.hasOwn(group, "hooks") ? { hooks: handlers } : {} };
-    });
-    if (unsupported) ignored(`hooks.${event}`, "The complete event override is ignored because its definition contains unsupported fields or handlers. Other native hook sources remain active.");
-    else result[event] = converted;
+        if (handler.type === "prompt" || handler.type === "agent") unsupported(`${handlerField}.type`, "This hook handler cannot execute in the supported Codex backend.");
+        if (event === "SessionEnd" && handler.type === "mcp_tool") unsupported(`${handlerField}.type`, "The Codex backend does not execute MCP tool handlers for SessionEnd.");
+      }
+    }
   }
   return result;
 }
 
 // skills/codex-subagent-guide/scripts/adapters/codex-profile.mjs
-var startup = /* @__PURE__ */ new Set(["model_catalog_json", "model_provider", "model_providers", "openai_base_url", "chatgpt_base_url", "forced_login_method", "forced_chatgpt_workspace_id", "cli_auth_credentials_store", "features"]);
-var scalarTypes = {
-  model_catalog_json: "path",
-  model_provider: "string",
-  openai_base_url: "string",
-  chatgpt_base_url: "string",
-  forced_login_method: "string",
-  forced_chatgpt_workspace_id: "string",
-  cli_auth_credentials_store: "string",
-  model: "string",
-  model_reasoning_effort: "string",
-  model_reasoning_summary: "string",
-  model_verbosity: "string",
-  service_tier: "string",
-  model_context_window: "integer",
-  model_auto_compact_token_limit: "integer",
-  model_auto_compact_token_limit_scope: "string",
-  model_post_turn_compact_threshold_percent: "byte",
-  tool_output_token_limit: "uint",
-  compact_prompt: "string",
-  experimental_compact_prompt_file: "path",
-  instructions: "string",
-  developer_instructions: "string",
-  model_instructions_file: "path",
-  project_doc_max_bytes: "uint",
-  project_doc_fallback_filenames: "filenames",
-  web_search: "string",
-  allow_login_shell: "boolean",
-  background_terminal_max_timeout: "uint",
-  approvals_reviewer: "string",
-  sandbox_mode: "string",
-  mcp_optional_startup_grace_ms: "uint",
-  include_environment_context: "boolean",
-  include_environment_context_time: "boolean"
+var threadFields = /* @__PURE__ */ new Set([
+  "model",
+  "service_tier",
+  "model_reasoning_effort",
+  "model_reasoning_summary",
+  "model_verbosity",
+  "model_context_window",
+  "model_auto_compact_token_limit",
+  "model_auto_compact_token_limit_scope",
+  "model_post_turn_compact_threshold_percent",
+  "compact_prompt",
+  "experimental_compact_prompt_file",
+  "instructions",
+  "developer_instructions",
+  "model_instructions_file",
+  "include_environment_context",
+  "include_environment_context_time",
+  "project_doc_max_bytes",
+  "project_doc_fallback_filenames",
+  "allow_login_shell",
+  "shell_environment_policy",
+  "background_terminal_max_timeout",
+  "tool_output_token_limit",
+  "approval_policy",
+  "approvals_reviewer",
+  "sandbox_mode",
+  "sandbox_workspace_write",
+  "permissions",
+  "default_permissions",
+  "auto_review",
+  "web_search",
+  "tools",
+  "mcp_servers",
+  "mcp_optional_startup_grace_ms",
+  "skills",
+  "agents",
+  "hooks",
+  "thread_unload_delay_secs"
+]);
+var structuredFeatures = /* @__PURE__ */ new Set(["code_mode", "multi_agent_v2", "network_proxy", "sleep_tool", "runtime_agent_instances"]);
+var aliases = [["agents", "max_threads", "max_concurrent_threads_per_session"], ["memories", "no_memories_if_mcp_or_web_search", "disable_on_external_context"]];
+var absolutePaths = ["model_instructions_file", "experimental_compact_prompt_file", "model_catalog_json", "sqlite_home", "log_dir"];
+var unsupportedFields = {
+  allow_symlinked_codex_home: "Runtime overrides cannot preserve the required host user-layer identity.",
+  profile: "Use the profile-v2 selection entry instead of a configuration profile selector.",
+  profiles: "Legacy profile definitions cannot be used as profile-v2 runtime overrides.",
+  js_repl_node_path: "The Codex backend marks this deprecated setting as ignored.",
+  js_repl_node_module_dirs: "The Codex backend marks this deprecated setting as ignored.",
+  tui: "This execution mode has no terminal UI consumer.",
+  desktop: "This execution mode has no desktop UI consumer.",
+  file_opener: "This execution mode has no file-opener consumer."
 };
-var providerTypes = { name: "string", base_url: "string", model_catalog_url: "string", env_key: "string", env_key_instructions: "string", wire_api: "string", query_params: "strings", http_headers: "strings", env_http_headers: "strings", request_max_retries: "uint", stream_max_retries: "uint", stream_idle_timeout_ms: "uint", websocket_connect_timeout_ms: "uint", requires_openai_auth: "boolean", supports_websockets: "boolean" };
-var mcpTypes = { command: "command", args: "stringArray", env: "strings", env_vars: "stringArray", cwd: "path", enabled: "boolean", required: "boolean", startup_timeout_sec: "number", tool_timeout_sec: "number", enabled_tools: "stringArray", disabled_tools: "stringArray", url: "string", bearer_token_env_var: "string", http_headers: "strings", env_http_headers: "strings" };
-var nestedTypes = {
-  shell_environment_policy: { inherit: "string", ignore_default_excludes: "boolean", exclude: "stringArray", include_only: "stringArray", set: "strings" },
-  sandbox_workspace_write: { writable_roots: "paths", network_access: "boolean", exclude_tmpdir_env_var: "boolean", exclude_slash_tmp: "boolean" }
-};
-var featureNames = /* @__PURE__ */ new Set(["api_key_model_discovery", "code_mode_host", "code_mode", "model_catalog_in_context", "plugins", "standalone_web_search", "hooks"]);
-var irrelevant = /* @__PURE__ */ new Set(["review_model", "plan_mode_reasoning_effort", "tui", "desktop", "file_opener"]);
-function mergeConfiguration(left, right) {
-  const output = Object.assign(/* @__PURE__ */ Object.create(null), left);
-  for (const [key, value] of Object.entries(right)) output[key] = table(value) && table(output[key]) ? mergeConfiguration(output[key], value) : value;
-  return output;
+function normalizeAliases(value) {
+  if (!table(value)) return value;
+  const result = Object.assign(/* @__PURE__ */ Object.create(null), value);
+  for (const [parent, alias, canonical] of aliases) {
+    if (!table(result[parent]) || !Object.hasOwn(result[parent], alias)) continue;
+    result[parent] = Object.assign(/* @__PURE__ */ Object.create(null), result[parent]);
+    if (!Object.hasOwn(result[parent], canonical)) result[parent][canonical] = result[parent][alias];
+    delete result[parent][alias];
+  }
+  return result;
 }
-function jsonValue(value, field, invalid) {
+var asciiLower = (value) => value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+function normalizeHost(value) {
+  let host = value.trim();
+  if (host.startsWith("[") && host.includes("]")) host = host.slice(1, host.indexOf("]"));
+  else if ([...host].filter((letter) => letter === ":").length === 1) host = host.split(":", 1)[0];
+  host = asciiLower(host).replace(/\.+$/, "");
+  for (const separator of ["%25", "%"]) {
+    const index = host.indexOf(separator);
+    if (index >= 0 && isIP(host.slice(0, index))) return `${host.slice(0, index)}%${host.slice(index + separator.length)}`;
+  }
+  return host;
+}
+function normalizeKeys(value, normalize) {
+  const result = /* @__PURE__ */ Object.create(null);
+  for (const [key, item] of Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) result[normalize(key)] = item;
+  return result;
+}
+function mergeConfiguration(left, right, { platform = process.platform } = {}) {
+  const merge = (base, overlay, keys) => {
+    const feature = keys.length === 2 && keys[0] === "features" && structuredFeatures.has(keys[1]);
+    if (feature && typeof base === "boolean" && table(overlay)) base = { enabled: base };
+    else if (feature && table(base) && typeof overlay === "boolean") overlay = { enabled: overlay };
+    if (!table(overlay)) return Array.isArray(overlay) ? overlay.map((item) => merge(void 0, item, [...keys, "[]"])) : overlay;
+    let output = table(base) ? Object.assign(/* @__PURE__ */ Object.create(null), base) : /* @__PURE__ */ Object.create(null);
+    if (keys.length === 1 && keys[0] === "shell_environment_policy") {
+      if (Object.hasOwn(overlay, "filters")) {
+        delete output.exclude;
+        delete output.include_only;
+      } else if (Object.hasOwn(overlay, "exclude") || Object.hasOwn(overlay, "include_only")) delete output.filters;
+    }
+    const filters = keys.length === 2 && keys[0] === "shell_environment_policy" && keys[1] === "filters";
+    const domains = keys.length === 4 && keys[0] === "permissions" && keys[2] === "network" && keys[3] === "domains" || keys.length === 3 && keys[0] === "application" && keys[1] === "network" && keys[2] === "domains";
+    if (filters || domains) {
+      const normalize = filters ? (key) => key.toLowerCase() : normalizeHost;
+      output = normalizeKeys(output, normalize);
+      overlay = normalizeKeys(overlay, normalize);
+    }
+    if (keys.length === 3 && keys[0] === "features" && structuredFeatures.has(keys[1]) && keys[2] === "credentials") {
+      for (const [provider, value] of Object.entries(overlay)) {
+        if (!Array.isArray(value?.env)) continue;
+        for (const [existing, previous] of Object.entries(output)) {
+          const sources = Array.isArray(overlay[existing]?.env) ? overlay[existing].env : previous?.env;
+          if (existing !== provider && Array.isArray(sources) && sources.some((source) => typeof source === "string" && value.env.some((next) => typeof next === "string" && (source === next || platform === "win32" && asciiLower(source) === asciiLower(next))))) delete output[existing];
+        }
+      }
+    }
+    for (const [key, value] of Object.entries(overlay)) output[key] = merge(output[key], value, [...keys, key]);
+    return output;
+  };
+  return merge(normalizeAliases(left), normalizeAliases(right), []);
+}
+function jsonValue(value) {
   if (typeof value === "bigint") {
-    if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) invalid(field, "Integer cannot be represented without loss.");
+    if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) throw new Error();
     return Number(value);
   }
-  if (value === null || value === void 0 || typeof value === "number" && (!Number.isFinite(value) || Number.isInteger(value) && !Number.isSafeInteger(value))) invalid(field, "Value cannot be represented without loss.");
-  if (Array.isArray(value)) return value.map((item) => jsonValue(item, field, invalid));
-  if (typeof value === "object") {
-    if (!table(value)) invalid(field, "TOML date and time values are not supported.");
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, jsonValue(item, field, invalid)]));
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || Number.isInteger(value)) throw new Error();
+    return value;
   }
-  return value;
+  if (typeof value === "string" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.map(jsonValue);
+  if (table(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, jsonValue(item)]));
+  throw new Error();
+}
+function checkTomlValue(value) {
+  if (value instanceof Date) fail("profileConversionUnsupported", "The TOML parser cannot preserve original date and time precision. Use a configuration representation supported without loss.");
+  if (Object.is(value, -0)) fail("profileConversionUnsupported", "The TOML serializer cannot preserve negative floating-point zero without loss.");
+  if (Array.isArray(value)) {
+    for (const item of value) checkTomlValue(item);
+  } else if (table(value)) {
+    for (const item of Object.values(value)) checkTomlValue(item);
+  } else if (!["string", "boolean", "number", "bigint"].includes(typeof value)) fail("profileConversionUnsupported", "The value cannot be represented as TOML without loss.");
 }
 function parseProfile(text, diagnostics = []) {
   try {
-    return parse(text, { integersAsBigInt: true });
-  } catch {
+    const document = parse(text, { integersAsBigInt: true });
+    checkTomlValue(document);
+    return document;
+  } catch (error) {
+    if (error.code === "profileConversionUnsupported") {
+      diagnostics.push({ code: error.code, field: "profile", message: error.message });
+      throw error;
+    }
     diagnostics.push({ code: "profileValueInvalid", field: "profile", message: "The profile is not valid TOML." });
     fail("profileValueInvalid", "The profile is not valid TOML.");
   }
 }
 function tomlValue(value) {
-  const wrapper = stringify({ value: [[value]] });
+  checkTomlValue(value);
+  const wrapper = stringify({ value: [[value]] }, { numbersAsFloat: true });
   return wrapper.slice(wrapper.indexOf("=") + 1).trim().replace(/^\[\s*\[\s*/, "").replace(/\s*\]\s*\]$/, "");
 }
-function parseConfigArgument(argument) {
+function parseConfigArgument(argument, { diagnostics = [] } = {}) {
+  let document;
   try {
     try {
-      return parse(argument, { integersAsBigInt: true });
+      document = parse(argument, { integersAsBigInt: true });
     } catch {
       const equals = argument.indexOf("=");
       const raw = argument.slice(equals + 1);
       if (equals < 1 || !/^[A-Za-z0-9_-]+$/.test(raw)) throw new Error();
-      return parse(`${argument.slice(0, equals)}=${tomlValue(raw)}`, { integersAsBigInt: true });
+      document = parse(`${argument.slice(0, equals)}=${tomlValue(raw)}`, { integersAsBigInt: true });
     }
   } catch {
-    fail("adapterArgumentsInvalid", "A config override is not a valid TOML assignment.");
+    const message = "A config override is not a valid TOML assignment.";
+    diagnostics.push({ code: "adapterArgumentsInvalid", field: "args.config", message });
+    fail("adapterArgumentsInvalid", message);
   }
+  try {
+    checkTomlValue(document);
+  } catch (error) {
+    if (error.code === "profileConversionUnsupported") diagnostics.push({ code: error.code, field: "args.config", message: error.message });
+    throw error;
+  }
+  return document;
 }
-function convertProfile(document, { diagnostics = [], explicit = false } = {}) {
-  const invalid = (field, message = "The supported field has an invalid type or value.") => {
-    const code = explicit ? "adapterArgumentsInvalid" : "profileValueInvalid";
+function convertProfile(document, { diagnostics = [], explicit = false, baseDir = process.cwd(), environment = process.env, platform = process.platform, privateMcpServer } = {}) {
+  const report = (code, field, message) => {
     diagnostics.push({ code, field, message });
     fail(code, message);
   };
-  const ignored = (field, message = "This override is unsupported and was ignored. Lower configuration layers remain active.") => {
-    if (explicit) fail("parameterUnavailable", `The explicit ${field.split(".")[0]} override is unsupported.`);
-    diagnostics.push({ code: "profileFieldIgnored", field, message });
-  };
-  const validate = (original, type, field) => {
-    if (type === "object" || type === "array") {
-      if (!(type === "object" ? table(original) : Array.isArray(original))) invalid(field);
-      return original;
-    }
-    const value = jsonValue(original, field, invalid);
-    const expected = ["object", "jsonObject"].includes(type) ? table(value) : type === "array" ? Array.isArray(value) : ["path", "command"].includes(type) ? typeof value === "string" : ["stringArray", "filenames", "paths"].includes(type) ? Array.isArray(value) && value.every((item) => typeof item === "string") : type === "strings" ? table(value) && Object.values(value).every((item) => typeof item === "string") : ["integer", "uint", "byte"].includes(type) ? typeof original === "bigint" && Number.isSafeInteger(value) && (type === "integer" || value >= 0) && (type !== "byte" || value <= 255) : type === "number" ? typeof value === "number" && Number.isFinite(value) && value >= 0 : typeof value === type;
-    if (!expected) invalid(field);
-    if (type === "filenames" && value.some((item) => !item || /[\\/]/.test(item) || [".", ".."].includes(item))) invalid(field, "Project document candidates must be file names.");
-    return value;
-  };
-  const checked = (value, type, field) => {
-    value = validate(value, type, field);
-    const relative = type === "path" ? !path.isAbsolute(value) : type === "paths" ? value.some((item) => !path.isAbsolute(item)) : type === "command" ? /[\\/]/.test(value) && !path.isAbsolute(value) : false;
-    if (relative) {
-      ignored(field, "Relative paths are unsupported. This override is ignored; lower configuration layers remain active.");
-      return void 0;
-    }
-    return value;
-  };
-  const fields = (value, types, prefix) => {
-    validate(value, "object", prefix);
-    const result2 = /* @__PURE__ */ Object.create(null);
-    for (const [key, item] of Object.entries(value)) {
-      if (!Object.hasOwn(types, key)) {
-        ignored(`${prefix}.${key}`);
-        continue;
-      }
-      const output = checked(item, types[key], `${prefix}.${key}`);
-      if (output !== void 0) result2[key] = output;
-    }
-    return result2;
-  };
-  validate(document, "object", "profile");
-  const result = /* @__PURE__ */ Object.create(null);
-  const ignoredProviders = /* @__PURE__ */ new Set();
-  for (const [key, value] of Object.entries(document)) {
-    if (Object.hasOwn(scalarTypes, key)) {
-      const output = checked(value, scalarTypes[key], key);
-      if (output !== void 0) result[key] = output;
-    } else if (Object.hasOwn(nestedTypes, key)) result[key] = fields(value, nestedTypes[key], key);
-    else if (key === "hooks") result.hooks = convertHooks(value, { validate, ignored });
-    else if (key === "features") {
-      validate(value, "object", key);
-      result.features = /* @__PURE__ */ Object.create(null);
-      for (const [name, item] of Object.entries(value)) {
-        if (!featureNames.has(name)) {
-          ignored(`${key}.${name}`);
-          continue;
-        }
-        result.features[name] = ["code_mode", "code_mode_host"].includes(name) && table(item) ? fields(item, { enabled: "boolean" }, `${key}.${name}`) : validate(item, "boolean", `${key}.${name}`);
-      }
-    } else if (key === "model_providers" || key === "mcp_servers" || key === "plugins") {
-      validate(value, "object", key);
-      result[key] = /* @__PURE__ */ Object.create(null);
-      for (const [name, item] of Object.entries(value)) {
-        const prefix = `${key}.${name}`;
-        validate(item, "object", prefix);
-        const types = key === "model_providers" ? providerTypes : key === "mcp_servers" ? mcpTypes : { enabled: "boolean" };
-        const converted = fields(item, types, prefix);
-        if (key !== "plugins" && Object.keys(item).some((field) => !Object.hasOwn(types, field))) {
-          ignored(prefix, "The complete entry is ignored because unsupported fields can change authentication or transport semantics. Lower configuration layers remain active.");
-          if (key === "model_providers") ignoredProviders.add(name);
-          continue;
-        }
-        if (key === "mcp_servers") {
-          if (Object.hasOwn(item, "command") && Object.hasOwn(item, "url") || Object.hasOwn(item, "command") && ["bearer_token_env_var", "http_headers", "env_http_headers"].some((field) => Object.hasOwn(item, field)) || Object.hasOwn(item, "url") && ["args", "env", "env_vars", "cwd"].some((field) => Object.hasOwn(item, field))) invalid(prefix, "MCP transports and their authentication fields cannot be mixed.");
-          if (["cwd", "command"].some((field) => Object.hasOwn(item, field) && !Object.hasOwn(converted, field))) {
-            ignored(prefix, "The complete MCP entry is ignored because its path representation is unsupported.");
-            continue;
-          }
-        }
-        result[key][name] = converted;
-      }
-    } else if (key === "approval_policy") {
-      if (typeof value === "string") result[key] = value;
-      else {
-        validate(value, "object", key);
-        if (Object.keys(value).some((field) => field !== "granular")) {
-          ignored(key);
-          continue;
-        }
-        const granular = fields(value.granular, { sandbox_approval: "boolean", rules: "boolean", skill_approval: "boolean", request_permissions: "boolean", mcp_elicitations: "boolean" }, "approval_policy.granular");
-        if (Object.keys(value.granular).some((field) => !Object.hasOwn(granular, field))) {
-          ignored(key);
-          continue;
-        }
-        result[key] = { granular };
-      }
-    } else if (irrelevant.has(key) && !explicit) diagnostics.push({ code: "profileFieldIrrelevant", field: key, message: "This field does not apply to this external task and was ignored." });
-    else ignored(key, key === "bypass_hook_trust" ? "Use the executor codexBypassHookTrust field. Profile bypass does not enable hook trust bypass." : void 0);
+  const invalid = (field, message) => report(explicit ? "adapterArgumentsInvalid" : "profileValueInvalid", field, message);
+  const unsupported = (field, message) => report("profileFieldUnsupported", field, message);
+  const conversionUnsupported = (field, message) => report("profileConversionUnsupported", field, message);
+  const controlled = (field, message) => report("adapterArgumentsInvalid", field, message);
+  if (!table(document)) invalid("profile", "Configuration must be a TOML table.");
+  for (const [key, message] of Object.entries(unsupportedFields)) if (Object.hasOwn(document, key)) unsupported(key, message);
+  for (const key of ["cwd", "bypass_hook_trust"]) {
+    if (Object.hasOwn(document, key)) controlled(key, key === "cwd" ? "AW controls the workspace for this task." : "AW controls hook trust bypass. Use the executor codexBypassHookTrust setting.");
   }
-  if (ignoredProviders.has(result.model_provider)) {
-    ignored("model_provider", "The profile provider selector is ignored because its provider definition was ignored.");
-    delete result.model_provider;
+  if (table(document.agents) && Object.hasOwn(document.agents, "job_max_runtime_seconds")) unsupported("agents.job_max_runtime_seconds", "The Codex backend accepts this removed agent-job setting for compatibility but does not execute it.");
+  if (table(document.orchestrator) && Object.hasOwn(document.orchestrator, "skills")) unsupported("orchestrator.skills", "The Codex backend ignores this deprecated setting.");
+  if (table(document.ghost_snapshot)) {
+    for (const field of ["ignore_large_untracked_files", "ignore_untracked_files_over_bytes", "ignore_large_untracked_dirs", "large_untracked_dir_warning_threshold", "disable_warnings"]) {
+      if (Object.hasOwn(document.ghost_snapshot, field)) unsupported(`ghost_snapshot.${field}`, "The Codex backend ignores this deprecated setting.");
+    }
+  }
+  if (Object.hasOwn(document, "mcp_servers") && !table(document.mcp_servers)) invalid("mcp_servers", "MCP servers must be a table for the AW private binding merge.");
+  if (privateMcpServer && table(document.mcp_servers) && Object.hasOwn(document.mcp_servers, privateMcpServer)) controlled("mcp_servers.<private>", "The configuration conflicts with the AW private MCP binding.");
+  if (Object.hasOwn(document, "model") && typeof document.model !== "string") invalid("model", "The model mapping must be a string.");
+  const result = mergeConfiguration({}, document, { platform });
+  if (Object.hasOwn(result, "hooks")) result.hooks = convertHooks(result.hooks, { invalid, unsupported });
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const resolvePath = (value, field) => {
+    if (typeof value !== "string") return value;
+    let target = value;
+    if (platform === "win32") {
+      target = target.replace(/^\\\\[?.]\\UNC\\/, "\\\\").replace(/^\\\\[?.]\\(?=[A-Za-z]:[\\/])/, "");
+      if (/^[A-Za-z]:(?![\\/])/.test(target) || /^\\\\[?.]\\/.test(target)) conversionUnsupported(field, "This Windows path representation cannot be converted reliably. Use an absolute drive or UNC path.");
+    }
+    const homeRelative = target === "~" || target.startsWith("~/") || platform === "win32" && target.startsWith("~\\");
+    if (homeRelative) {
+      const home = platform === "win32" ? environment.USERPROFILE || (platform === process.platform ? os.homedir() : void 0) : environment.HOME || (platform === process.platform ? os.homedir() : void 0);
+      if (!home || !paths.isAbsolute(home)) conversionUnsupported(field, "The effective home directory cannot be resolved. Use an absolute path.");
+      target = paths.join(home, target.slice(1).replace(platform === "win32" ? /^[\\/]+/ : /^\/+/, ""));
+    }
+    if (!paths.isAbsolute(baseDir)) conversionUnsupported(field, "The configuration source directory cannot be resolved. Use an absolute path.");
+    return paths.resolve(baseDir, target);
+  };
+  for (const field of absolutePaths) if (Object.hasOwn(result, field)) result[field] = resolvePath(result[field], field);
+  if (Array.isArray(result.sandbox_workspace_write?.writable_roots)) result.sandbox_workspace_write.writable_roots = result.sandbox_workspace_write.writable_roots.map((value, index) => resolvePath(value, `sandbox_workspace_write.writable_roots[${index}]`));
+  if (table(result.agents)) {
+    for (const agent of Object.values(result.agents)) if (table(agent) && Object.hasOwn(agent, "config_file")) agent.config_file = resolvePath(agent.config_file, "agents.<name>.config_file");
+  }
+  if (Array.isArray(result.skills?.config)) {
+    for (const [index, skill] of result.skills.config.entries()) if (table(skill) && Object.hasOwn(skill, "path")) skill.path = resolvePath(skill.path, `skills.config[${index}].path`);
+  }
+  for (const exporter of ["exporter", "trace_exporter", "metrics_exporter"]) {
+    for (const transport of ["otlp-http", "otlp-grpc"]) {
+      const tls = result.otel?.[exporter]?.[transport]?.tls;
+      if (!table(tls)) continue;
+      for (const field of ["ca-certificate", "client-certificate", "client-private-key"]) if (Object.hasOwn(tls, field)) tls[field] = resolvePath(tls[field], `otel.${exporter}.${transport}.tls.${field}`);
+    }
+  }
+  try {
+    tomlValue(result);
+  } catch {
+    conversionUnsupported("configuration", "The configuration cannot be serialized as TOML without loss.");
   }
   return result;
 }
@@ -1546,14 +1592,38 @@ async function readCodexProfile(name, environment, diagnostics = [], cwd = proce
   }
   return { profilePath, document: parseProfile(text, diagnostics) };
 }
-function splitConfiguration(value) {
+function splitConfiguration(value, { diagnostics = [] } = {}) {
   const launch = /* @__PURE__ */ Object.create(null), thread = /* @__PURE__ */ Object.create(null);
-  for (const [key, item] of Object.entries(value)) (startup.has(key) ? launch : thread)[key] = item;
+  const threadValue = (key, item, target = key) => {
+    try {
+      thread[target] = jsonValue(item);
+    } catch {
+      if (key === "hooks") {
+        const message = "Hooks cannot be represented as JSON without loss while preserving source-state mapping.";
+        diagnostics.push({ code: "profileConversionUnsupported", field: "hooks", message });
+        fail("profileConversionUnsupported", message);
+      }
+      if (key === "features.hooks") launch.features = { ...launch.features, hooks: item };
+      else launch[key] = item;
+    }
+  };
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "features" && table(item)) {
+      const features = Object.fromEntries(Object.entries(item).filter(([name]) => name !== "hooks"));
+      if (Object.keys(features).length) launch.features = { ...launch.features, ...features };
+      if (Object.hasOwn(item, "hooks")) threadValue("features.hooks", item.hooks);
+    } else if (threadFields.has(key)) threadValue(key, item);
+    else launch[key] = item;
+  }
   return { launch, thread };
 }
 function launchArguments(launch, extra = [], platform = process.platform) {
   const argv = ["app-server", ...extra];
-  for (const [key, value] of Object.entries(launch)) argv.push("-c", `${key}=${tomlValue(value)}`);
+  try {
+    for (const [key, value] of Object.entries(launch)) argv.push("-c", `${/^[A-Za-z0-9_-]+$/.test(key) ? key : tomlValue(key)}=${tomlValue(value)}`);
+  } catch {
+    fail("profileConversionUnsupported", "Startup configuration cannot be serialized as TOML without loss.");
+  }
   const size = argv.reduce((total, value) => total + (platform === "win32" ? value.length * 2 : Buffer.byteLength(value)) + 3, 0);
   if (size > (platform === "win32" ? 28e3 : 12e4)) fail("profileConversionUnsupported", "Startup configuration exceeds the supported command-line size. Reduce startup overrides.");
   return argv;

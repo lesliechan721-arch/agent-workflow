@@ -28,7 +28,7 @@ export function summarizeDiagnostics(diagnostics, environment = {}, secretValues
     const group = groups.get(key) ?? { code: entry.code, field, count: 0 };
     group.count++; groups.set(key, group);
   }
-  const summary = [{ code: 'diagnosticsSummarized', message: `${safe.length} initialization diagnostics were grouped. Ignored profile overrides do not disable base or project configuration.` }];
+  const summary = [{ code: 'diagnosticsSummarized', message: `${safe.length} initialization diagnostics were grouped.` }];
   let included = 0;
   for (const group of groups.values()) {
     const entry = { code: group.code, field: group.field, message: `${group.count} diagnostics in this field group.` };
