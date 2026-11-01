@@ -170,7 +170,7 @@ describe('aw plugin remove', () => {
 
     const result = await removeJson(fixture.workspaceRoot);
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.stderr).toBe('');
     expect(result.stdout.trim().split(/\r?\n/u)).toHaveLength(1);
     expect(result.receipt).toEqual({
@@ -207,7 +207,7 @@ describe('aw plugin remove', () => {
 
     const result = await removeJson(fixture.workspaceRoot);
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.receipt).toMatchObject({
       ok: true,
       plugin: { name: 'remove-me' },
@@ -219,11 +219,11 @@ describe('aw plugin remove', () => {
   });
 
   it('treats a pathspec-magic Workspace directory as a literal Git target path', async () => {
-    const fixture = await createWorkspace({ workspaceDirectory: ':(exclude)catalog' });
+    const fixture = await createWorkspace({ workspaceDirectory: 'catalog[1]' });
 
     const result = await removeJson(fixture.workspaceRoot);
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.stderr).toBe('');
     expect(result.receipt).toMatchObject({
       ok: true,
@@ -306,7 +306,12 @@ describe('aw plugin remove', () => {
       await fs.remove(path.join(fixture.pluginRoot, 'README.md'));
     }],
     ['executable mode change', async (fixture: Awaited<ReturnType<typeof createWorkspace>>) => {
-      await fs.chmod(path.join(fixture.pluginRoot, 'README.md'), 0o755);
+      if (process.platform === 'win32') {
+        await git(fixture.repoRoot, ['update-index', '--chmod=+x', '--',
+          path.relative(fixture.repoRoot, path.join(fixture.pluginRoot, 'README.md'))]);
+      } else {
+        await fs.chmod(path.join(fixture.pluginRoot, 'README.md'), 0o755);
+      }
     }],
     ['untracked node', async (fixture: Awaited<ReturnType<typeof createWorkspace>>) => {
       await fs.writeFile(path.join(fixture.pluginRoot, 'untracked.txt'), 'untracked\n');

@@ -11,6 +11,14 @@
   },
   "suites": [
     {
+      "id": "alignment-reading",
+      "kind": "conversation",
+      "cases": "alignment-reading-cases.json",
+      "profiles": ["project-default"],
+      "runs": 1,
+      "timeoutMs": 300000
+    },
+    {
       "id": "trigger",
       "kind": "trigger",
       "cases": "trigger-cases.json",
@@ -18,8 +26,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 180000,
-      "requiredForRelease": false
+      "timeoutMs": 180000
     },
     {
       "id": "behavior",
@@ -29,8 +36,7 @@
         "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "timeoutMs": 300000
     }
   ]
 }

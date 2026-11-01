@@ -127,8 +127,8 @@
       "prompt": "以 Standard 保障正式审查 skills/session-expiry/SKILL.md 是否符合 docs/specs/session-expiry.md，并检查工程质量。不要修改文件。",
       "assertions": [
         "完整结果由两个合格独立上下文分轴形成。当前若是独立审查上下文，可自行先完成一轴并补另一轴，也可只协调两个 reviewer；已有本轮安排可复用，轴 reviewer 加载本 Skill 后直接执行分配范围。",
-        "Engineering quality 把被否决方案、Review 过程和过程性否定指令识别为公开 Skill 的材料问题",
-        "finding 给出可验证关闭条件：最终 Skill 只正面表达当前 expiresAt 行为和必要约束",
+        "工程轴定位无执行用途的方案讨论和 Review 往返，说明对目标读者的影响；必要安全、兼容或维护理由不因涉及历史而成为问题。",
+        "给出针对实际残留的最小删改与可验证关闭条件，保留当前 expiresAt 行为及必要约束，不要求整份文件重写。",
         "不建议增加通用状态框架、完整文案 snapshot 或文件 hash",
         "不修改被审 Skill 或 Spec",
         "独立上下文不可用或未完成时明确覆盖不足；不能凭回复声称已完成两份独立审查。"
@@ -145,9 +145,81 @@
         "workspaceUnchanged": true
       },
       "audit": {
-        "rationale": "公开 Skill 把被否决方案和 Review 过程写成常驻指令，会改变 agent 行为并误导使用者；应作为 Engineering quality blocker，并要求改写为当前有效合同。",
-        "allowedVariance": "finding 标题可不同；必须指出过程历史泄漏、说明材料影响，并给出正面当前态改写的可验证关闭条件。",
+        "rationale": "过程残留是否构成问题以及严重度取决于当前用途和具体影响，不能仅凭含有解释、历史或否定语句就判 blocker。",
+        "allowedVariance": "允许不同报告结构、等价关闭方式与相称严重度；需定位无用途内容并保留必要依据，不要求固定措辞或整文件重写。",
         "minimalCounterexample": "如果历史原因是理解当前安全、兼容、迁移或回滚约束所必需的 Evidence，则可以保留该必要理由而不构成 blocker。"
+      }
+    },
+    {
+      "id": "review-process-residue-preserves-reasons",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用 dev-review-code，只负责当前工程质量轴。审查 src/serialize.js、docs/api.md 是否满足 contract.md 和维护需要，核对现有测试；其它轴由调用者处理。不修改文件、不保存报告，也不扩展本次审查范围。",
+      "assertions": [
+        "按已分配工程轴直接核对真实代码、合同和文档，报告实际检查与覆盖，不重建整体审查或冒称另一轴完成。",
+        "保留旧终端读取 name 的必要兼容理由，不要求删除字段、全部注释或重写整个文件；测试通过不能代替内容用途判断。",
+        "指出首行仅记录作者修改经过、对未来 API 使用者或维护者没有当前用途，给出该位置的最小删改；不把这一局部残留升级成无依据的安全或功能失败。",
+        "保持源码、测试、合同和文档原样，不把建议变成实际修改。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "contract.md": "# Record 输出合同\nserializeRecord(record) 接受合法的 id、name 字符串，输出 id、name、displayName。id 原样保留，两个名称字段均等于输入 name，不 trim、不转换、不修改输入。v1 离线终端仍只读取 name，迁移完成前必须保留此字段；当前 Web 客户端读取 displayName。文档面向 API 使用者与维护者，需要说明这两个字段和兼容原因。本次不改变终端、不新增配置或持久状态。\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/serialize.js": "// 我先做过通用适配器，收到上轮意见后撤回；这次重新整理成直接返回。\n// v1 离线终端仍读取 name，迁移完成前保留该字段。\nexport function serializeRecord(record) {\n  return {id: record.id, name: record.name, displayName: record.name};\n}\n",
+          "docs/api.md": "# Record API\n输出 id、name、displayName，均保持原始字符串，两个名称字段值相同，不修改输入。v1 离线终端仍依赖 name，Web 客户端使用 displayName；终端迁移完成前保留旧字段。\n",
+          "test/serialize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {serializeRecord} from '../src/serialize.js';\ntest('legacy client reads name', () => {\n  assert.equal(serializeRecord({id:'001',name:'Ada'}).name,'Ada');\n});\ntest('both clients receive the same unchanged name', () => {\n  assert.deepEqual(serializeRecord({id:'001',name:' Ada '}),{id:'001',name:' Ada ',displayName:' Ada '});\n  assert.deepEqual(serializeRecord({id:'1',name:''}),{id:'1',name:'',displayName:''});\n});\ntest('input is unchanged', () => {\n  const input=Object.freeze({id:'001',name:'Ada'});\n  serializeRecord(input);\n  assert.deepEqual(input,{id:'001',name:'Ada'});\n});\n",
+          "src/unrelated.js": "export const untouched = true;\n"
+        }
+      },
+      "expected": {
+        "output": "报告有依据的本轴判断、最小建议和限制，区分无用途过程与必要维护理由。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "配对场景仅改变一条无后续用途的过程注释，两者的行为、合法维护原因、测试与权限相同，检验误报与漏报。",
+        "minimalCounterexample": "去掉无用途过程注释后不再有该 finding；用户指定的迁移记录中，相同经过可因用途不同而合法。",
+        "allowedVariance": "允许报告措辞、检查顺序和相称严重度变化；不锁词语，不要求全文件重写或两份新审查。角色声明是给定职责，不替代真实独立性证据。"
+      }
+    },
+    {
+      "id": "review-needed-reasons-are-not-residue",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用 dev-review-code，只负责当前工程质量轴。审查 src/serialize.js、docs/api.md 是否满足 contract.md 和维护需要，核对现有测试；其它轴由调用者处理。不修改文件、不保存报告，也不扩展本次审查范围。",
+      "assertions": [
+        "按已分配工程轴直接核对真实代码、合同和文档，报告实际检查与覆盖，不重建整体审查或冒称另一轴完成。",
+        "保留旧终端读取 name 的必要兼容理由，不要求删除字段、全部注释或重写整个文件；测试通过不能代替内容用途判断。",
+        "只有现行接口和必要兼容原因时，不报告过程残留，不为了产生 finding 要求改写或新增框架。",
+        "保持源码、测试、合同和文档原样，不把建议变成实际修改。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "contract.md": "# Record 输出合同\nserializeRecord(record) 接受合法的 id、name 字符串，输出 id、name、displayName。id 原样保留，两个名称字段均等于输入 name，不 trim、不转换、不修改输入。v1 离线终端仍只读取 name，迁移完成前必须保留此字段；当前 Web 客户端读取 displayName。文档面向 API 使用者与维护者，需要说明这两个字段和兼容原因。本次不改变终端、不新增配置或持久状态。\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/serialize.js": "// v1 离线终端仍读取 name，迁移完成前保留该字段。\nexport function serializeRecord(record) {\n  return {id: record.id, name: record.name, displayName: record.name};\n}\n",
+          "docs/api.md": "# Record API\n输出 id、name、displayName，均保持原始字符串，两个名称字段值相同，不修改输入。v1 离线终端仍依赖 name，Web 客户端使用 displayName；终端迁移完成前保留旧字段。\n",
+          "test/serialize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {serializeRecord} from '../src/serialize.js';\ntest('legacy client reads name', () => {\n  assert.equal(serializeRecord({id:'001',name:'Ada'}).name,'Ada');\n});\ntest('both clients receive the same unchanged name', () => {\n  assert.deepEqual(serializeRecord({id:'001',name:' Ada '}),{id:'001',name:' Ada ',displayName:' Ada '});\n  assert.deepEqual(serializeRecord({id:'1',name:''}),{id:'1',name:'',displayName:''});\n});\ntest('input is unchanged', () => {\n  const input=Object.freeze({id:'001',name:'Ada'});\n  serializeRecord(input);\n  assert.deepEqual(input,{id:'001',name:'Ada'});\n});\n",
+          "src/unrelated.js": "export const untouched = true;\n"
+        }
+      },
+      "expected": {
+        "output": "报告有依据的本轴判断、最小建议和限制，区分无用途过程与必要维护理由。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "配对场景仅改变一条无后续用途的过程注释，两者的行为、合法维护原因、测试与权限相同，检验误报与漏报。",
+        "minimalCounterexample": "去掉无用途过程注释后不再有该 finding；用户指定的迁移记录中，相同经过可因用途不同而合法。",
+        "allowedVariance": "允许报告措辞、检查顺序和相称严重度变化；不锁词语，不要求全文件重写或两份新审查。角色声明是给定职责，不替代真实独立性证据。"
       }
     }
   ]

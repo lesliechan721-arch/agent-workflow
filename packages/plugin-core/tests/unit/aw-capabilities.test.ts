@@ -49,6 +49,7 @@ describe('AW capability contracts', () => {
     expect(registry).toContain('aw.review-inspection.v2')
     expect(registry).toContain('aw.plugin-recovery.v1')
     expect(registry).not.toContain('aw.project-recovery.v1')
+    expect(registry).not.toContain('aw.review-publication.v1')
     expect(registry).not.toContain('aw.review-inspection.v1')
     expect(registry).not.toContain('aw.catalog-context.v1')
     expect(registry).toContain('aw.installed-runtime-config.v2')
@@ -139,6 +140,7 @@ describe('AW capability contracts', () => {
       'aw catalog publish plan --json',
       'aw review inspect . --json',
       'aw review prepare . --platform codex --scope user --out ./prepared --json',
+      ...['digest', 'publish', 'verify', 'list', 'show'].map((command) => `aw review ${command}`),
       'aw self check --json && aw future command',
       'aw "$GROUP" status',
       '```',
@@ -199,6 +201,13 @@ describe('AW capability contracts', () => {
       'aw.review-preparation.v1',
       'aw.self-check.v1',
     ])
+    for (const command of ['digest', 'publish', 'verify', 'list', 'show']) {
+      expect(result.observations).toContainEqual(expect.objectContaining({
+        code: 'aw-command-unmapped',
+        command: `aw review ${command}`,
+        blocking: false,
+      }))
+    }
     expect(result.observations).toEqual(expect.arrayContaining([
       expect.objectContaining({
         code: 'aw-command-detected',

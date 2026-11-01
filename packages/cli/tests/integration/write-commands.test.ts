@@ -1,7 +1,9 @@
 import { writeIntentFixture, readIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { spawn } from 'node:child_process';
+import { realpath } from 'node:fs/promises';
 import { createElement } from 'react';
 import { render } from 'ink-testing-library';
 
@@ -64,7 +66,10 @@ import {
 import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'fs-extra';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
+import { projectExecutionDiagnostics } from '../../src/tui/diagnostic-projection.js';
+import { listManagedCommands, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { PassThrough } from 'node:stream';
 import {
   AW_RUNTIME_CONFIG_BINDING_PATH,
@@ -92,6 +97,7 @@ import {
 } from '../../src/utils/plugin-config.js';
 import { createCapturedCliIo, createTtyRuntimeStreams } from '../helpers/cli-entry.js';
 import {
+  NativeCliError,
   setNativeCliRunnerOverrideForTests,
   type NativeCliInvocation,
 } from '../../src/utils/native-cli.js';
@@ -306,13 +312,21 @@ async function snapshotRegularTree(root: string): Promise<Record<string, string>
   return snapshot;
 }
 
-function createCodexNativeTestRuntime(
+async function createCodexNativeTestRuntime(
   isolation: {
     env: NodeJS.ProcessEnv;
     layout: { fixtureCwd: string };
   },
   codexVersion = '0.200.0',
 ) {
+  // Observation and public CLI paths inspect PATH even when mutation uses a fake manager.
+  const systemRoot = await fs.mkdtemp(path.join(isolation.layout.fixtureCwd, 'fake-codex-'));
+  const binRoot = await writeStatusSystemCodexPackage(systemRoot, codexVersion);
+  const inheritedPath = Object.entries(isolation.env).find(([key]) => key.toLowerCase() === 'path')?.[1];
+  for (const key of Object.keys(isolation.env)) {
+    if (key.toLowerCase() === 'path') delete isolation.env[key];
+  }
+  isolation.env.PATH = [binRoot, inheritedPath].filter(Boolean).join(path.delimiter);
   const installed = new Set<string>();
   const installedVersions = new Map<string, string>();
   const marketplaceRoots = new Map<string, string>();
@@ -426,6 +440,7 @@ function createCodexNativeTestRuntime(
   });
   return {
     env: isolation.env,
+    codexVersion,
     nativeCliRunner,
     codexManagerResolver: vi.fn(async () => ({
       kind: 'system' as const,
@@ -437,76 +452,88 @@ function createCodexNativeTestRuntime(
   };
 }
 
-async function createClaudeNativeTestRuntime(
-  isolation: { env: NodeJS.ProcessEnv; layout: { fixtureCwd: string } },
-) {
-  const cwd = isolation.layout.fixtureCwd;
-  const projectRoot = await fs.realpath(cwd);
-  const claudeHome = isolation.env.CLAUDE_CONFIG_DIR!;
-  const installedPath = path.join(claudeHome, 'plugins', 'installed_plugins.json');
-  const knownPath = path.join(claudeHome, 'plugins', 'known_marketplaces.json');
-  const marketplaceRoots = new Map<string, string>();
-  const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
-    if (invocation.command !== 'claude') {
-      return { exitCode: 0, stdout: invocation.args.includes('--version')
-        ? 'codex-cli 0.200.0' : '{"installed":[],"available":[]}', stderr: '' };
-    }
-    const args = invocation.args;
-    if (args[0] !== 'plugin') return { exitCode: 0, stdout: '2.1.88 (Claude Code)', stderr: '' };
-    const scopeIndex = args.indexOf('--scope');
-    const scope = scopeIndex === -1 ? 'user' : args[scopeIndex + 1]!;
-    const settingsPath = scope === 'project'
-      ? path.join(cwd, '.claude', 'settings.json')
-      : path.join(claudeHome, 'settings.json');
-    const settings = await fs.readJson(settingsPath).catch(() => ({})) as Record<string, unknown>;
-    if (args[1] === 'marketplace' && args[2] === 'add') {
-      const marketplaceRoot = args[3]!;
-      const config = await fs.readJson(path.join(marketplaceRoot, 'config.json')) as {
-        marketplaceName: string;
-      };
-      marketplaceRoots.set(config.marketplaceName, marketplaceRoot);
-      await fs.outputJson(settingsPath, {
-        ...settings,
-        extraKnownMarketplaces: {
-          ...((settings.extraKnownMarketplaces ?? {}) as Record<string, unknown>),
-          [config.marketplaceName]: { source: { source: 'directory', path: marketplaceRoot } },
-        },
-      });
-      const known = await fs.readJson(knownPath).catch(() => ({})) as Record<string, unknown>;
-      await fs.outputJson(knownPath, {
-        ...known,
-        [config.marketplaceName]: {
-          source: { source: 'directory', path: marketplaceRoot }, installLocation: marketplaceRoot,
-        },
-      });
-    }
-    if (args[1] === 'install' || args[1] === 'uninstall') {
-      const pluginId = args[2]!;
-      const enabled = { ...((settings.enabledPlugins ?? {}) as Record<string, unknown>) };
-      if (args[1] === 'install') enabled[pluginId] = true;
-      else delete enabled[pluginId];
-      await fs.outputJson(settingsPath, { ...settings, enabledPlugins: enabled });
-      const installed = await fs.readJson(installedPath).catch(() => ({ plugins: {} })) as {
-        plugins?: Record<string, Array<Record<string, unknown>>>;
-      };
-      const plugins = { ...(installed.plugins ?? {}) };
-      const records = [...(plugins[pluginId] ?? [])].filter((record) =>
-        record.scope !== scope || (scope === 'project' && record.projectPath !== projectRoot));
-      if (args[1] === 'install') {
-        records.push({
-          name: pluginId.slice(0, pluginId.lastIndexOf('@')),
-          scope,
-          ...(scope === 'project' ? { projectPath: projectRoot } : {}),
-          version: '1.0.0',
-        });
-      }
-      if (records.length > 0) plugins[pluginId] = records;
-      else delete plugins[pluginId];
-      await fs.outputJson(installedPath, { plugins });
-    }
-    return { exitCode: 0, stdout: '2.1.88 (Claude Code)', stderr: '' };
+async function prepareCodexEnhancePublicCommandFixture() {
+  const isolation = getCurrentSourceTestIsolation();
+  const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const sourcePluginRoot = path.join(repositoryRoot, 'plugins', 'codex-enhance');
+  const authoringRoot = path.join(isolation.layout.fixtureCwd, 'codex-enhance-authoring');
+  await fs.copy(
+    path.join(repositoryRoot, 'plugins', 'marketplace-source.json'),
+    path.join(authoringRoot, 'plugins', 'marketplace-source.json'),
+  );
+  const copiedPluginRoot = path.join(authoringRoot, 'plugins', 'codex-enhance');
+  await fs.copy(sourcePluginRoot, copiedPluginRoot);
+  await stubCodexFileSelectionForNativeFixture(copiedPluginRoot);
+  const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
+  await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), {
+    schemaVersion: 1,
+    kind: 'catalog',
+    workspaceIdentity: `fixture:${crypto.createHash('sha256').update(sourceRoot).digest('hex')}`,
+    sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${sourceRoot}`).digest('hex')}`,
   });
-  return { runtime: { env: isolation.env, nativeCliRunner }, nativeCliRunner, installedPath, claudeHome, projectRoot };
+  const manifest = await fs.readJson(path.join(
+    sourceRoot, 'plugins', 'codex-enhance', '.agents-plugin', 'plugin.json',
+  ));
+  const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+  const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+  const sourceIdentity = await calculateCatalogSourceIdentity(source);
+  const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
+  await replaceCatalogSourcesConfigWithoutActive({
+    config: { schemaVersion: 2, sources: [source] },
+    expectedDigest: before.digest,
+    env: isolation.env,
+  });
+  await syncCatalogSourceGeneration({
+    sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+  });
+  const runtime = await createCodexNativeTestRuntime(isolation);
+  const runPublic = async (args: string[]) => {
+    const captured = createCapturedCliIo();
+    const exitCode = await runCli([...args, '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: captured.io,
+      interactive: false,
+      nativeCliRunner: runtime.nativeCliRunner,
+    });
+    return { exitCode, payload: JSON.parse(captured.readStdout()) as Record<string, unknown> };
+  };
+  return {
+    isolation,
+    sourcePluginRoot,
+    sourceRoot,
+    sourceIdentity,
+    logicalIdentity,
+    cacheRoot: path.join(
+      isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'codex-enhance', manifest.version,
+    ),
+    runtime,
+    runPublic,
+  };
+}
+
+function renderCodexNpmShim(): string {
+  return [
+    '@ECHO off',
+    'GOTO start',
+    ':find_dp0',
+    'SET dp0=%~dp0',
+    'EXIT /b',
+    ':start',
+    'SETLOCAL',
+    'CALL :find_dp0',
+    '',
+    'IF EXIST "%dp0%\\node.exe" (',
+    '  SET "_prog=%dp0%\\node.exe"',
+    ') ELSE (',
+    '  SET "_prog=node"',
+    '  SET PATHEXT=%PATHEXT:;.JS;=;%',
+    ')',
+    '',
+    'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & ' +
+      '"%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*',
+    '',
+  ].join('\r\n');
 }
 
 async function writeStatusSystemCodexPackage(
@@ -529,7 +556,7 @@ async function writeStatusSystemCodexPackage(
   await fs.chmod(launcher, 0o755);
   await fs.ensureDir(binRoot);
   if (process.platform === 'win32') {
-    await fs.outputFile(path.join(binRoot, 'codex.CMD'), '@echo off\r\n');
+    await fs.outputFile(path.join(binRoot, 'codex.CMD'), renderCodexNpmShim());
   } else {
     await fs.symlink(path.relative(binRoot, launcher), path.join(binRoot, 'codex'));
   }
@@ -560,7 +587,7 @@ async function writeIntentRoundTripCodexPackage(root: string): Promise<string> {
   if (process.platform === 'win32') {
     await fs.outputFile(
       path.join(binRoot, 'codex.CMD'),
-      '@node "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n',
+      renderCodexNpmShim(),
     );
   } else {
     await fs.symlink(path.relative(binRoot, launcher), path.join(binRoot, 'codex'));
@@ -720,6 +747,35 @@ describe('five namespaced write commands', () => {
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 
+  // Test Value Gate: a shared source operation must execute only the selected plugin/platform pairs.
+  it('groups exact Native targets without expanding the plugin and platform combinations', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'exact-native-source');
+    await createNativeDependencyCatalog(sourceRoot, ['first', 'second'].map((name) => ({
+      name, configureManifest(manifest) { manifest.marketplace.policy.products = ['CODEX', 'CLAUDE']; },
+    })));
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      expectedDigest: before.digest, env: isolation.env,
+    });
+    const codex = await createCodexNativeTestRuntime(isolation);
+    const claude = await createClaudeNativeTestRuntime(isolation);
+    const receipt = await runRecovery('install', ['team/first', 'team/second'], {
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0',
+      targets: ['codex', 'claude-code'], yes: true,
+      exactTargets: [{ pluginId: 'team/first', agent: 'codex' },
+        { pluginId: 'team/second', agent: 'claude-code' }],
+    }, { nativeCliRunner: (invocation) => invocation.command === 'claude'
+      ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation) });
+    expect(receipt, JSON.stringify(receipt)).toMatchObject({ ok: true });
+    expect(receipt.targetResults.map(({ pluginId, agent }) => [pluginId, agent])).toEqual([
+      ['team/first', 'codex'], ['team/second', 'claude-code'],
+    ]);
+    expect([...codex.installed]).toEqual(['first@aw']);
+    expect(Object.keys((await fs.readJson(claude.installedPath)).plugins)).toEqual(['second@aw']);
+  });
+
   it('executes selected project Native demand without writing either intent file or other roots', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'execution-only-source');
@@ -740,7 +796,7 @@ describe('five namespaced write commands', () => {
       roots: requirements.roots.map(({ pluginId }) => ({ pluginId })),
     });
     const intentBytes = await fs.readFile(intentPath);
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const execute = (pluginId: string) => syncWriteCommand([pluginId], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
@@ -848,7 +904,7 @@ describe('five namespaced write commands', () => {
     await writeIntentFixture({ scope: 'user', cwd: callers[0]!, env: isolation.env }, {
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     for (const cwd of callers) {
       const result = await runRecovery('reinstall', ['team/demo'], {
         scope: 'user', cwd, env: isolation.env, cliVersion: '1.0.0',
@@ -870,6 +926,227 @@ describe('five namespaced write commands', () => {
       !invocation.cwd || !callers.includes(invocation.cwd))).toBe(true);
     expect(runtime.installed.has('demo@aw')).toBe(true);
   }, 30_000);
+
+  // Test Value Gate: cross-platform writes must preserve the other platform's installed bytes and unapplied configuration.
+  it.each([
+    ['static', ['codex', 'claude']],
+    ['static', ['claude', 'codex']],
+    ['dynamic', ['both']],
+  ] as const)('preserves both native command platforms for %s Codex with install order %j', async (codexMode, order) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const authoringRoot = path.join(cwd, 'dual-native-authoring');
+    const pluginRoot = path.join(authoringRoot, 'plugins', 'dual-native');
+    const trace = path.join(cwd, 'dual-native-render-requests.jsonl');
+    const tool = 'import fs from "node:fs";fs.writeFileSync(process.env.CAPTURE_FILE,JSON.stringify(process.argv.slice(2)));\n';
+    await fs.copy(path.join(repositoryRoot, 'plugins', 'marketplace-source.json'), path.join(authoringRoot, 'plugins', 'marketplace-source.json'));
+    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
+      schemaVersion: 3, name: 'dual-native', version: '1.0.0', description: 'Dual native fixture.', skills: './skills',
+      requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
+      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      config: { schemaVersion: 4, fields: { codexValue: { type: 'string', default: 'old-codex' }, claudeValue: { type: 'string', default: 'old-claude' } } },
+      scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
+      ...(codexMode === 'dynamic' ? { artifacts: { targets: [{ id: 'codex-rendered', platform: 'codex', target: 'codex.skill', delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' }, scopes: ['user', 'project'], states: ['present'], refreshKeys: ['codexValue'], skillKey: 'codex-rendered' }] } } : {}),
+      managedCommands: { sets: [
+        { set: 'codex-tools', producer: codexMode === 'dynamic' ? { kind: 'artifact', artifactId: 'codex-rendered' } : { kind: 'static-skill', platform: 'codex', skillKey: 'shared' }, mode: 'dynamic', refreshKeys: ['codexValue'] },
+        { set: 'claude-tools', producer: { kind: 'static-skill', platform: 'claude', skillKey: 'shared' }, mode: 'dynamic', refreshKeys: ['claudeValue'] },
+      ] },
+      buildConfig: { skillRuntimeFiles: (['codex', 'claude'] as const).map((platform) => ({ skill: 'shared', source: `./${platform}-command.md`, target: `references/${platform}-command.md`, platforms: [platform] })) },
+    });
+    await fs.outputFile(path.join(pluginRoot, 'skills/shared/SKILL.md'), '---\nname: shared\ndescription: Shared native fixture.\n---\nUse the platform command reference.\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills/shared/README.md'), '# Shared native\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills/shared/agents/openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills/shared/scripts/tool.mjs'), tool);
+    for (const platform of ['codex', 'claude']) await fs.outputFile(path.join(pluginRoot, `${platform}-command.md`), `{{aw.command:${platform}-tools/run}} check\n`);
+    await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
+      "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
+      `fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({platform:c.platform,ids:c.requestedArtifactIds})+'\\n');`,
+      `const tool=${JSON.stringify(tool)};`,
+      "console.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>id==='codex-rendered'?{id,target:'codex.skill',kind:'skill',platform:'codex',state:'present',skillKey:'codex-rendered',refreshKeys:['codexValue'],content:{files:{'SKILL.md':'---\\nname: codex-rendered\\ndescription: Rendered native.\\n---\\n{{aw.command:codex-tools/run}} check\\n','README.md':'# Native\\n','agents/openai.yaml':'policy:\\n  allow_implicit_invocation: true\\n','scripts/tool.mjs':tool}}}:{id,target:'aw.command-set',kind:'commandSet',platform:c.platform,state:'present',refreshKeys:[c.platform+'Value'],entries:[{key:'run',runner:'node',entry:'scripts/tool.mjs',args:[c.config.values[c.platform+'Value']]}]})}));",
+    ].join('\n'));
+    const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
+    await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), { schemaVersion: 1, kind: 'catalog', workspaceIdentity: `fixture:${sourceRoot}`, sourceIdentity: `sha256:${'c'.repeat(64)}` });
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: before.digest, env: isolation.env });
+    const codex = await createCodexNativeTestRuntime(isolation, '0.151.0');
+    const claude = await createClaudeNativeTestRuntime(isolation);
+    const nativeCliRunner = async (invocation: NativeCliInvocation) => invocation.command === 'claude' ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation);
+    const run = async (args: string[]) => {
+      const captured = createCapturedCliIo();
+      const exitCode = await runCli([...args, '--json'], { cwd, env: isolation.env, io: captured.io, interactive: false, nativeCliRunner });
+      return { exitCode, payload: JSON.parse(captured.readStdout()), stderr: captured.readStderr() };
+    };
+    const ids = new Map<string, string>();
+    const assertCommands = async (expected: Record<string, string>) => {
+      const commands = (await listManagedCommands(isolation.env)).commands;
+      expect(commands).toHaveLength(Object.keys(expected).length);
+      for (const [platform, value] of Object.entries(expected)) {
+        const command = commands.find((entry) => entry.owner.kind === 'plugin' && entry.owner.producer.platform === platform)!;
+        expect(command).toMatchObject({ availability: 'ready' });
+        if (ids.has(platform)) expect(command.id).toBe(ids.get(platform));
+        ids.set(platform, command.id);
+        const record = await fs.readJson(path.join(command.resourceRoot!, '.aw-command-producer.json'));
+        expect(record.producer).toMatchObject({ platform, sourceId: 'team', scope: 'user', projectRoot: null });
+        expect((await resolveManagedCommand(command.id, isolation.env)).launch.args).toEqual([value]);
+        const markdown = platform === 'codex' && codexMode === 'dynamic' ? 'SKILL.md' : `references/${platform}-command.md`;
+        expect(await fs.readFile(path.join(command.resourceRoot!, markdown), 'utf8')).toContain(`aw command run ${command.id} -- check`);
+        const capture = path.join(cwd, `${platform}-run.json`);
+        expect(await runCli(['command', 'run', command.id, '--', 'check'], { cwd, env: { ...isolation.env, CAPTURE_FILE: capture }, io: createCapturedCliIo().io, interactive: false, nativeCliRunner })).toBe(0);
+        expect(await fs.readJson(capture)).toEqual([value, 'check']);
+      }
+    };
+    const expected: Record<string, string> = {};
+    for (const platform of order) {
+      const installed = await run(['install', 'team/dual-native', ...(platform === 'both' ? ['--target', 'codex', '--target', 'claude-code'] : ['--target', platform === 'claude' ? 'claude-code' : platform]), '--scope', 'user']);
+      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      for (const current of platform === 'both' ? ['codex', 'claude'] : [platform]) expected[current] = `old-${current}`;
+      await assertCommands(expected);
+    }
+    for (const platform of ['codex', 'claude']) expect(await run(['config', 'set', 'team/dual-native', `${platform}Value`, '--scope', 'user', '--value-json', JSON.stringify(`saved-${platform}`)])).toMatchObject({ exitCode: 0 });
+    const selected = order[0] === 'both' ? ['claude', 'codex'] : [order.at(-1)!];
+    for (const platform of selected) {
+      const oldTrace = (await fs.readFile(trace, 'utf8')).trim().split('\n').length;
+      const other = platform === 'codex' ? 'claude' : 'codex';
+      const otherCommand = (await listManagedCommands(isolation.env)).commands.find((command) => command.owner.kind === 'plugin' && command.owner.producer.platform === other)!;
+      const oldTree = await snapshotRegularTree(otherCommand.resourceRoot!);
+      const receiptPath = path.join(isolation.env.AW_HOME!, 'marketplaces/team/plugins/dual-native', CODEX_NATIVE_RENDER_RECEIPT_PATH);
+      const previousReceipt = codexMode === 'dynamic' && other === 'codex' ? await fs.readJson(receiptPath) : undefined;
+      const synced = await run(['sync', 'team/dual-native', ...(platform === 'both' ? ['--target', 'codex', '--target', 'claude-code'] : ['--target', platform === 'claude' ? 'claude-code' : platform]), '--scope', 'user', '--yes']);
+      expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      const requests = (await fs.readFile(trace, 'utf8')).trim().split('\n').slice(oldTrace).map((line) => JSON.parse(line));
+      expect(requests.length).toBeGreaterThan(0);
+      expect(requests.every((request) => request.platform === platform)).toBe(true);
+      expect(await snapshotRegularTree(otherCommand.resourceRoot!)).toEqual(oldTree);
+      if (previousReceipt) {
+        const afterReceipt = await fs.readJson(receiptPath);
+        expect({ ...afterReceipt, payloadDigest: previousReceipt.payloadDigest }).toEqual(previousReceipt);
+        expect(afterReceipt.payloadDigest).toBe(await calculateCodexNativeRenderPayloadDigest(path.dirname(path.dirname(receiptPath))));
+      }
+      expect(synced.payload.commandResults?.flatMap((result: { removedCommandIds: string[] }) => result.removedCommandIds) ?? []).not.toContain(ids.get(other));
+      expected[platform] = `saved-${platform}`;
+      await assertCommands(expected);
+      if (platform === 'codex') {
+        const mutations = () => codex.nativeCliRunner.mock.calls.filter(([invocation]) => invocation.args[0] === 'plugin' && ['add', 'remove'].includes(invocation.args[1] ?? '')).length;
+        const beforeNoop = mutations();
+        expect(await run(['sync', 'team/dual-native', '--target', 'codex', '--scope', 'user', '--yes'])).toMatchObject({ exitCode: 0 });
+        expect(mutations()).toBe(beforeNoop);
+      }
+    }
+    if (codexMode === 'dynamic') {
+      const codexCommand = (await listManagedCommands(isolation.env)).commands.find((command) => command.owner.kind === 'plugin' && command.owner.producer.platform === 'codex')!;
+      const recordPath = path.join(codexCommand.resourceRoot!, '.aw-command-producer.json');
+      await fs.writeFile(recordPath, '{damaged');
+      const other = (await listManagedCommands(isolation.env)).commands.find((command) => command.owner.kind === 'plugin' && command.owner.producer.platform === 'claude')!;
+      const otherTree = await snapshotRegularTree(other.resourceRoot!);
+      const blocked = await run(['sync', 'team/dual-native', '--target', 'claude-code', '--scope', 'user', '--yes']);
+      expect(blocked.exitCode).toBe(1);
+      expect(await snapshotRegularTree(other.resourceRoot!)).toEqual(otherTree);
+      const repaired = await run(['reinstall', 'team/dual-native', '--target', 'codex', '--target', 'claude-code', '--scope', 'user', '--yes']);
+      expect(repaired, JSON.stringify(repaired)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      await assertCommands({ codex: 'saved-codex', claude: 'saved-claude' });
+    }
+  }, 90000);
+
+  // Protects the shared native payload across real scoped installation, config input, recovery, and offline cleanup.
+  it('shares one Claude static command across user and two projects without scope cleanup revoking it', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const authoringRoot = path.join(isolation.layout.fixtureCwd, 'claude-shared-authoring');
+    const pluginRoot = path.join(authoringRoot, 'plugins', 'shared-claude');
+    const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+    await fs.copy(path.join(repositoryRoot, 'plugins', 'marketplace-source.json'), path.join(authoringRoot, 'plugins', 'marketplace-source.json'));
+    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
+      schemaVersion: 3, name: 'shared-claude', version: '1.0.0', description: 'Shared Claude command fixture.', skills: './skills',
+      requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
+      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CLAUDE'] } },
+      config: { schemaVersion: 4, fields: { revision: { type: 'string', default: 'default' } } },
+      scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
+      managedCommands: { sets: [{ set: 'native', producer: { kind: 'static-skill', platform: 'claude', skillKey: 'shared-native' }, mode: 'dynamic', refreshKeys: ['revision'] }] },
+      extensions: { permissions: [{ name: 'native', allow: [{ command: { set: 'native', key: 'run' }, argsPrefix: ['check'] }] }] },
+    });
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'shared-native', 'SKILL.md'), '---\nname: shared-native\ndescription: Shared Claude native fixture.\n---\n{{aw.command:native/run}} check\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'shared-native', 'README.md'), '# Shared native\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'shared-native', 'scripts', 'tool.mjs'), 'import fs from "node:fs"; fs.writeFileSync(process.env.CAPTURE_FILE,JSON.stringify(process.argv.slice(2)));\n');
+    await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
+      "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
+      "if(c.scope!=='user')throw new Error('Static command renderer must use user input.');",
+      "console.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>({id,target:'aw.command-set',kind:'commandSet',platform:'claude',state:'present',refreshKeys:['revision'],entries:[{key:'run',runner:'node',entry:'scripts/tool.mjs',args:[c.config.values.revision]}]}))}));",
+    ].join('\n'));
+    const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
+    await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), {
+      schemaVersion: 1, kind: 'catalog',
+      workspaceIdentity: `fixture:${crypto.createHash('sha256').update(sourceRoot).digest('hex')}`,
+      sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${sourceRoot}`).digest('hex')}`,
+    });
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [source] }, expectedDigest: before.digest, env: isolation.env });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
+    const projects = [path.join(isolation.layout.fixtureCwd, 'project-a'), path.join(isolation.layout.fixtureCwd, 'project-b')];
+    for (const cwd of projects) { await fs.ensureDir(cwd); await git(cwd, ['init']); }
+    const { runtime, nativeCliRunner, installedPath } = await createClaudeNativeTestRuntime(isolation);
+    const config = { sourceId: 'team', sourceIdentity, logicalIdentity, pluginName: 'shared-claude', env: isolation.env };
+    await writePluginConfigStore({ ...config, scope: 'user', cwd: projects[0]!, values: { revision: 'user-value' } });
+    for (const [index, cwd] of projects.entries()) await writePluginConfigStore({ ...config, scope: 'project', cwd, values: { revision: `project-${index}` } });
+    const runPublic = async (cwd: string, args: string[]) => {
+      const captured = createCapturedCliIo();
+      const exitCode = await runCli([...args, '--json'], { cwd, env: isolation.env, io: captured.io, interactive: false, nativeCliRunner });
+      return { exitCode, payload: JSON.parse(captured.readStdout()), stderr: captured.readStderr() };
+    };
+    let commandId: string | undefined, resourceRoot: string | undefined;
+    for (const [scope, cwd] of [['user', projects[0]!], ['project', projects[0]!], ['project', projects[1]!]] as const) {
+      const installed = await runPublic(cwd, ['install', 'team/shared-claude', '--target', 'claude-code', '--scope', scope]);
+      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      const commands = (await listManagedCommands(isolation.env)).commands;
+      expect(commands).toHaveLength(1);
+      commandId ??= commands[0]!.id;
+      resourceRoot ??= commands[0]!.resourceRoot!;
+      expect(commands[0]).toMatchObject({ id: commandId, resourceRoot, availability: 'ready', owner: { kind: 'plugin', producer: { scope: 'user', projectRoot: null, platform: 'claude', kind: 'static-skill' } } });
+      expect((await resolveManagedCommand(commandId, isolation.env)).launch.args).toEqual(['user-value']);
+    }
+    const registry = await fs.readJson(installedPath);
+    const nativeRecords = Object.values(registry.plugins).flat() as Array<{ installPath: string }>;
+    expect(nativeRecords).toHaveLength(3);
+    expect(new Set(nativeRecords.map((record) => record.installPath)).size).toBe(1);
+    expect(await fs.readFile(path.join(resourceRoot!, 'SKILL.md'), 'utf8')).toContain(`aw command run ${commandId} -- check`);
+    expect((await fs.readJson(path.join(resourceRoot!, '.aw-command-producer.json'))).producer).toMatchObject({ scope: 'user', projectRoot: null, kind: 'static-skill', platform: 'claude' });
+    const userSettings = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
+    const checkRun = async () => {
+      const capture = path.join(isolation.layout.fixtureCwd, 'claude-shared-capture.json');
+      const output = createCapturedCliIo();
+      expect(await runCli(['command', 'run', commandId!, '--', 'check'], { cwd: projects[1]!, env: { ...isolation.env, CAPTURE_FILE: capture }, io: output.io, interactive: false, nativeCliRunner })).toBe(0);
+      expect(await fs.readJson(capture)).toEqual(['user-value', 'check']);
+    };
+    await checkRun();
+    const cleaned = await runPublic(projects[0]!, ['cleanup', 'team/shared-claude', '--target', 'claude-code', '--scope', 'project', '--yes']);
+    expect(cleaned, JSON.stringify(cleaned)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    expect((await fs.readJson(path.join(projects[0]!, '.claude', 'settings.json'))).permissions?.allow ?? []).not.toContain(`Bash(aw command run ${commandId} -- check *)`);
+    expect((await fs.readJson(userSettings)).permissions.allow).toContain(`Bash(aw command run ${commandId} -- check *)`);
+    await checkRun();
+    const uninstalled = await runPublic(projects[1]!, ['uninstall', 'team/shared-claude', '--target', 'claude-code', '--scope', 'project']);
+    expect(uninstalled, JSON.stringify(uninstalled)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    await checkRun();
+    expect(await runPublic(projects[1]!, ['install', 'team/shared-claude', '--target', 'claude-code', '--scope', 'project'])).toMatchObject({ exitCode: 0 });
+    const offline = await cleanupWriteCommand(['team/shared-claude'], { cwd: projects[1]!, platform: 'claude', scope: 'project', yes: true }, { ...runtime, catalogBootstrapError: new Error('Fixture Catalog offline.') });
+    expect(offline.overallState, JSON.stringify(offline.rebuildResults)).toBe('succeeded');
+    expect(offline.commandResults?.flatMap((result) => result.removedCommandIds) ?? []).not.toContain(commandId);
+    await checkRun();
+    const mirrorConfigPath = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team', 'config.json');
+    const mirrorConfig = await fs.readJson(mirrorConfigPath);
+    await fs.writeJson(mirrorConfigPath, { ...mirrorConfig, sourceIdentity: `sha256:${'b'.repeat(64)}` });
+    await expect(resolveManagedCommand(commandId!, isolation.env)).rejects.toThrow();
+    await fs.writeJson(mirrorConfigPath, mirrorConfig);
+    await fs.writeFile(path.join(resourceRoot!, '.aw-command-producer.json'), '{broken');
+    await expect(resolveManagedCommand(commandId!, isolation.env)).rejects.toThrow();
+    expect(await runPublic(projects[0]!, ['reinstall', 'team/shared-claude', '--target', 'claude-code', '--scope', 'user'])).toMatchObject({ exitCode: 0 });
+    expect((await listManagedCommands(isolation.env)).commands.map((entry) => entry.id)).toEqual([commandId]);
+    await checkRun();
+    await fs.remove(resourceRoot!);
+    await expect(resolveManagedCommand(commandId!, isolation.env)).rejects.toThrow();
+    expect(await runPublic(projects[0]!, ['reinstall', 'team/shared-claude', '--target', 'claude-code', '--scope', 'user'])).toMatchObject({ exitCode: 0 });
+    await checkRun();
+  }, 90000);
 
   it('keeps sensitive config input out of argv and preserves stdin bytes', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -1381,7 +1658,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const nativeRuntime = createCodexNativeTestRuntime(isolation);
+    const nativeRuntime = await createCodexNativeTestRuntime(isolation);
     const runPublic = async (args: string[]) => {
       const captured = createCapturedCliIo();
       const exitCode = await runCli([...args, '--json'], {
@@ -1895,7 +2172,7 @@ describe('five namespaced write commands', () => {
       config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest, env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
       nativeCliRunner: runtime.nativeCliRunner, interactive: false,
@@ -1919,6 +2196,59 @@ describe('five namespaced write commands', () => {
     expect((await readIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd,
       env: isolation.env })).roots).toEqual([]);
   }, 30_000);
+
+  it('updates only selected native plugins and dependencies that require materialization', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'selected-native-update-source');
+    const writeCatalog = async (version: string) => createNativeDependencyCatalog(sourceRoot, [
+      ...['changed-dependency', 'unrelated'].map((name) => ({
+        name,
+        configureManifest: (manifest: PluginMeta['manifest']) => { manifest.version = version; },
+      })),
+      { name: 'kept-dependency' },
+      {
+        name: 'root',
+        dependencies: ['changed-dependency', 'kept-dependency'],
+        configureManifest: (manifest: PluginMeta['manifest']) => { manifest.version = version; },
+      },
+    ]);
+    await writeCatalog('1.0.0');
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const nativeRuntime = await createCodexNativeTestRuntime(isolation);
+    const runtime = { env: isolation.env, nativeCliRunner: nativeRuntime.nativeCliRunner };
+    const commandOptions = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const, yes: true };
+    const installed = await installFixturePlugin(['team/root', 'team/unrelated'], commandOptions, runtime);
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+    for (const name of ['unrelated', 'kept-dependency']) {
+      await fs.outputFile(path.join(marketplaceRoot, 'plugins', name, 'local.txt'), `${name} retained\n`);
+    }
+    const before = await snapshotRegularTree(path.join(marketplaceRoot, 'plugins', 'unrelated'));
+
+    await writeCatalog('2.0.0');
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    const updated = await syncWriteCommand(['team/root'], commandOptions, runtime);
+
+    expect(updated.overallState, JSON.stringify(updated.rebuildResults)).toBe('succeeded');
+    expect(updated.dependencyPlan?.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/kept-dependency', action: 'keep' }),
+    ]));
+    for (const name of ['root', 'changed-dependency']) {
+      await expect(fs.readJson(path.join(marketplaceRoot, 'plugins', name, '.codex-plugin', 'plugin.json')))
+        .resolves.toMatchObject({ version: '2.0.0' });
+    }
+    expect(await snapshotRegularTree(path.join(marketplaceRoot, 'plugins', 'unrelated'))).toEqual(before);
+    await expect(fs.readFile(path.join(marketplaceRoot, 'plugins', 'kept-dependency', 'local.txt'), 'utf8'))
+      .resolves.toBe('kept-dependency retained\n');
+  });
 
   it('materializes one native marketplace generation and one Codex post snapshot for a dependency group', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -1975,7 +2305,7 @@ describe('five namespaced write commands', () => {
       const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
       await fs.writeJson(manifestPath, { ...manifest, name: 'aw' });
     }
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -2095,7 +2425,7 @@ describe('five namespaced write commands', () => {
         expectedDigest: snapshot.digest,
         env: isolation.env,
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime(isolation);
       const initialInstall = await installFixturePlugin(['team/demo'], {
         cwd: isolation.layout.fixtureCwd,
         platform: 'codex',
@@ -2242,7 +2572,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const codexOperationConsumerResolver = vi.fn(async (
       options: Parameters<NonNullable<
         RebuildCommandRuntime['codexOperationConsumerResolver']
@@ -2468,7 +2798,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const codexOperationConsumerResolver = vi.fn();
 
     const result = await installFixturePlugin(['team/demo'], {
@@ -2509,7 +2839,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const listCalls = (calls: readonly [NativeCliInvocation, ...unknown[]][]) => calls.filter(
       ([invocation]) => {
         const pluginIndex = invocation.args.indexOf('plugin');
@@ -2599,7 +2929,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     let failLeafB = true;
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       const pluginIndex = invocation.args.indexOf('plugin');
@@ -2672,7 +3002,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const realCopy = fs.copy.bind(fs);
     const copy = vi.spyOn(fs, 'copy').mockImplementation(async (source, destination, options) => {
       if (path.basename(path.dirname(String(destination))).startsWith('.team-staging-')
@@ -2728,7 +3058,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/a'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -2800,7 +3130,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/a', 'team/b'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -2865,7 +3195,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       const response = await runtime.nativeCliRunner(invocation);
       const pluginIndex = invocation.args.indexOf('plugin');
@@ -3065,7 +3395,7 @@ describe('five namespaced write commands', () => {
     }, intent);
     await git(seedRoot, ['add', '.agent-workflows/plugin-intents.json']);
     await git(seedRoot, ['commit', '-m', 'Add shared project intent']);
-    await git(isolation.layout.fixtureCwd, ['clone', seedRoot, cloneRoot]);
+    await git(isolation.layout.fixtureCwd, ['-c', 'core.autocrlf=false', 'clone', seedRoot, cloneRoot]);
     expect(await git(cloneRoot, ['ls-files'])).toBe('.agent-workflows/plugin-intents.json');
 
     const cloneEnv = {
@@ -3091,7 +3421,7 @@ describe('five namespaced write commands', () => {
     });
     const intentPath = path.join(cloneRoot, '.agent-workflows', 'plugin-intents.json');
     const intentBefore = await fs.readFile(intentPath);
-    const runtime = createCodexNativeTestRuntime({
+    const runtime = await createCodexNativeTestRuntime({
       env: cloneEnv,
       layout: { fixtureCwd: cloneRoot },
     }, '0.151.0');
@@ -3224,7 +3554,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const projectInstalled = await installFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -3372,7 +3702,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       const pluginIndex = invocation.args.indexOf('plugin');
       const pluginArgs = pluginIndex >= 0
@@ -3404,7 +3734,7 @@ describe('five namespaced write commands', () => {
 
     const binRoot = await writeStatusSystemCodexPackage(
       path.join(isolation.layout.fixtureCwd, 'unreadable-registration-prefix'),
-      '0.151.0',
+      runtime.codexVersion,
     );
     setNativeCliRunnerOverrideForTests(nativeCliRunner);
     let status;
@@ -3460,7 +3790,7 @@ describe('five namespaced write commands', () => {
         expectedDigest: snapshot.digest,
         env: isolation.env,
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime(isolation);
       await expect(installFixturePlugin(['team/demo'], {
         cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: sharedAction === 'reuse' ? 'project' : 'user',
       }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -3580,7 +3910,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user', yes: true,
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -3690,7 +4020,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -3729,7 +4059,7 @@ describe('five namespaced write commands', () => {
           { id: 'team', type: 'path', primary: true, path: sourceRoot },
         ] }, expectedDigest: snapshot.digest, env: isolation.env,
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime(isolation);
       const user = await installFixturePlugin(['team/demo'], {
         cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
       }, runtime);
@@ -3784,7 +4114,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     let addObserved = false;
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       const pluginIndex = invocation.args.indexOf('plugin');
@@ -3853,7 +4183,7 @@ describe('five namespaced write commands', () => {
         expectedDigest: snapshot.digest,
         env: isolation.env,
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime(isolation);
       const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
         const pluginIndex = invocation.args.indexOf('plugin');
         const pluginArgs = pluginIndex >= 0
@@ -3907,7 +4237,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const installed = await installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -4099,7 +4429,7 @@ describe('five namespaced write commands', () => {
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest, env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
     for (const name of ['alpha', 'beta']) {
       const installed = await installFixturePlugin([`team/${name}`], options, runtime);
@@ -4144,7 +4474,7 @@ describe('five namespaced write commands', () => {
     const cacheRoot = path.join(
       isolation.env.CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo', '1.0.0',
     );
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const first = await installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -4187,7 +4517,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/leaf'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -4295,7 +4625,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const installed = await installFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
@@ -4306,7 +4636,7 @@ describe('five namespaced write commands', () => {
 
     const binRoot = await writeStatusSystemCodexPackage(
       path.join(isolation.layout.fixtureCwd, 'project-native-dependency-prefix'),
-      '0.151.0',
+      runtime.codexVersion,
     );
     setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
     try {
@@ -4385,7 +4715,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -4534,7 +4864,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -4603,7 +4933,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -4658,7 +4988,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const installedRuntime = createCodexNativeTestRuntime(isolation);
+    const installedRuntime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -4716,7 +5046,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const installedRuntime = createCodexNativeTestRuntime(isolation);
+    const installedRuntime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', yes: true,
     }, installedRuntime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -4805,7 +5135,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const installedRuntime = createCodexNativeTestRuntime(isolation);
+    const installedRuntime = await createCodexNativeTestRuntime(isolation);
     const selectors = ['team/alpha', 'team/beta'];
     await expect(installFixturePlugin(selectors, {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', yes: true,
@@ -4911,7 +5241,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const codexRuntime = createCodexNativeTestRuntime(isolation);
+    const codexRuntime = await createCodexNativeTestRuntime(isolation);
     const preApplyPath = path.join(isolation.env.AW_HOME!, 'pre-apply-codex.txt');
     const preApplyEvents: Array<{ phase: string; outputExists: boolean }> = [];
     const reporter: NonNullable<RebuildCommandRuntime['reporter']> = {
@@ -5317,7 +5647,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const installedRuntime = createCodexNativeTestRuntime(isolation);
+    const installedRuntime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -5325,7 +5655,7 @@ describe('five namespaced write commands', () => {
     }, installedRuntime)).resolves.toMatchObject({ overallState: 'succeeded' });
     const binRoot = await writeStatusSystemCodexPackage(
       path.join(isolation.layout.fixtureCwd, 'status-system-prefix'),
-      '0.151.0',
+      installedRuntime.codexVersion,
     );
     const statusRunner = vi.fn(installedRuntime.nativeCliRunner);
     setNativeCliRunnerOverrideForTests(statusRunner);
@@ -5824,12 +6154,12 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
     const binRoot = await writeStatusSystemCodexPackage(
-      path.join(isolation.layout.fixtureCwd, 'user-extension-status-prefix'), '0.151.0',
+      path.join(isolation.layout.fixtureCwd, 'user-extension-status-prefix'), runtime.codexVersion,
     );
     setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
     try {
@@ -5873,7 +6203,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['official/agent-content-toolkit'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -5915,7 +6245,7 @@ describe('five namespaced write commands', () => {
 
     const binRoot = await writeStatusSystemCodexPackage(
       path.join(isolation.layout.fixtureCwd, 'native-cross-scope-status-prefix'),
-      '0.151.0',
+      runtime.codexVersion,
     );
     const statusEnv = { ...isolation.env, PATH: binRoot };
     setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
@@ -5977,7 +6307,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, yes: true };
     await expect(installFixturePlugin(['official/leaf'], {
       ...options, scope: 'user',
@@ -6025,7 +6355,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['official/leaf'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
@@ -6221,7 +6551,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const nativeCliRunner = runtime.nativeCliRunner;
     const installed = await installFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd,
@@ -6463,7 +6793,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const nativeCliRunner = runtime.nativeCliRunner;
     await writePreferences({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
       ...createEmptyPreferences(), agents: ['codex'],
@@ -8691,7 +9021,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
     await expect(installFixturePlugin(['official/demo'], options, runtime))
       .resolves.toMatchObject({ overallState: 'succeeded' });
@@ -8751,7 +9081,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const cwd = isolation.layout.fixtureCwd;
     await expect(installFixturePlugin(['official/demo'], {
       cwd, platform: 'codex', scope: 'user',
@@ -8914,7 +9244,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const selected = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
     await expect(installFixturePlugin(['official/demo'], selected, runtime))
       .resolves.toMatchObject({ overallState: 'succeeded' });
@@ -8960,7 +9290,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const cwd = isolation.layout.fixtureCwd;
     const user = { cwd, platform: 'codex' as const, scope: 'user' as const };
     for (const pluginId of ['official/demo', 'official/other']) {
@@ -9023,7 +9353,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const selected = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
     await expect(installFixturePlugin(['official/demo'], selected, runtime))
       .resolves.toMatchObject({ overallState: 'succeeded' });
@@ -9208,7 +9538,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const cwd = isolation.layout.fixtureCwd;
     await expect(installFixturePlugin(['official/demo'], {
       cwd, platform: 'codex', scope: 'user',
@@ -9251,7 +9581,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const cwd = isolation.layout.fixtureCwd;
     await expect(installFixturePlugin(['official/demo'], {
       cwd, platform: 'codex', scope: 'user',
@@ -9300,7 +9630,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const cwd = isolation.layout.fixtureCwd;
     await expect(installFixturePlugin(['official/demo'], {
       cwd, platform: 'codex', scope: 'user',
@@ -9814,7 +10144,7 @@ describe('five namespaced write commands', () => {
         expectedDigest: initial.digest,
         env: isolation.env,
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime(isolation);
       const installed = await installFixturePlugin(['team/demo'], {
         cwd: isolation.layout.fixtureCwd,
         platform: 'codex',
@@ -9920,7 +10250,7 @@ describe('five namespaced write commands', () => {
         expectedDigest: initial.digest,
         env: isolation.env,
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime(isolation);
       const installed = await installFixturePlugin(['team/demo'], {
         cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
       }, runtime);
@@ -10033,7 +10363,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const installed = await installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime);
@@ -10957,7 +11287,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const installed = await installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
@@ -11620,7 +11950,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const listCallsBefore = runtime.nativeCliRunner.mock.calls.length;
     const failingManagerResolver: NonNullable<
       RebuildCommandRuntime['codexManagerResolver']
@@ -12107,11 +12437,18 @@ describe('five namespaced write commands', () => {
       'agents',
       'aw-leaf-leaf-role.toml',
     );
-    await fs.chmod(leafAgent, 0o000);
+    const canonicalLeafAgent = await fs.realpath(leafAgent);
+    const readFile = fs.readFile;
+    const unreadableAgent = vi.spyOn(fs, 'readFile').mockImplementation((...args) => {
+      if ([leafAgent, canonicalLeafAgent].includes(String(args[0]))) {
+        return Promise.reject(Object.assign(new Error('Access denied'), { code: 'EACCES' }));
+      }
+      return Reflect.apply(readFile, fs, args);
+    });
     const driftedLeaf = await statusCommandV8({
       plugins: ['team/leaf'], cwd: isolation.layout.fixtureCwd, env: isolation.env,
       cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
-    }).finally(async () => fs.chmod(leafAgent, 0o644));
+    }).finally(() => unreadableAgent.mockRestore());
     expect(driftedLeaf.payload.targets).toEqual([expect.objectContaining({
       state: 'blocked',
       placements: [expect.objectContaining({
@@ -13738,6 +14075,117 @@ describe('five namespaced write commands', () => {
     expect(managedCodexAuthorizer).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['user', false], ['user', true], ['project', false], ['project', true],
+  ] as const)('reinstalls a mixed Codex plugin in %s and retries native failures (system CLI missing: %s)', async (scope, missingSystemCli) => {
+    // Test Value Gate: an authorized shared reinstall must retain recovery evidence on native removal failure and retry after scoped extensions are gone.
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'mixed-uninstall-source');
+    await createNativeDependencyCatalog(sourceRoot, [{
+      name: 'demo',
+      configureManifest: (manifest) => {
+        manifest.extensions = {
+          instructions: [{ name: 'policy', title: 'Policy', content: 'Managed policy.' }],
+        };
+      },
+    }]);
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    const runtime = await createCodexNativeTestRuntime(isolation);
+    const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope, yes: true } as const;
+    const installed = await installWriteCommand(['team/demo'], options, runtime);
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    const configPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+    const extensionConfigPath = scope === 'user'
+      ? configPath : path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
+    const originalRunner = runtime.nativeCliRunner.getMockImplementation()!;
+    const observationRunner = async (invocation: NativeCliInvocation) => {
+      if (missingSystemCli && invocation.command === 'codex') {
+        throw new NativeCliError({
+          invocation, exitCode: 1, stdout: '', stderr: '',
+          cause: Object.assign(new Error('Codex is missing'), { code: 'ENOENT' }),
+        });
+      }
+      return originalRunner(invocation);
+    };
+    runtime.nativeCliRunner.mockImplementation(observationRunner);
+    const denied = await reinstallWriteCommand(['team/demo'], options, {
+      env: runtime.env,
+      nativeCliRunner: runtime.nativeCliRunner,
+      codexManagerResolver: async () => {
+        throw new CodexManagerError('managedCodexAuthorizationRequired', 'Authorization is required.');
+      },
+    });
+    expect(denied.targetResults).toEqual([
+      expect.objectContaining({ errorCode: missingSystemCli ? 'codexSharedNativeCorrupt' : 'managedCodexAuthorizationRequired' }),
+    ]);
+    expect(Object.keys((await readCodexConfigFile(extensionConfigPath)).snapshot
+      .developerInstructions.managedBlocks)).toHaveLength(1);
+    expect(runtime.installed.has('demo@aw')).toBe(true);
+    let failRemove = true;
+    runtime.nativeCliRunner.mockImplementation(async (invocation) => {
+      const pluginArgs = invocation.args.slice(invocation.args.indexOf('plugin'));
+      if (pluginArgs.join(' ') === 'plugin remove demo@aw' && failRemove) {
+        return { exitCode: 9, stdout: '', stderr: 'private native failure' };
+      }
+      return observationRunner(invocation);
+    });
+    const recoveryManagerResolver = vi.fn(async () => ({
+      kind: 'aw-managed' as const,
+      version: '0.151.0',
+      command: process.execPath,
+      argsPrefix: [path.join(isolation.layout.fixtureCwd, 'managed-codex.js')],
+    }));
+    const writeRuntime = {
+      env: runtime.env,
+      nativeCliRunner: runtime.nativeCliRunner,
+      ...(missingSystemCli ? {
+        codexManager: await recoveryManagerResolver(),
+        codexManagerResolver: recoveryManagerResolver,
+      } : {}),
+    };
+    const failed = await reinstallWriteCommand(['team/demo'], options, writeRuntime);
+    expect(failed.overallState).toBe('failed');
+    expect(runtime.nativeCliRunner.mock.calls.some(([invocation]) =>
+      invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
+        === 'plugin remove demo@aw')).toBe(true);
+    expect(runtime.installed.has('demo@aw')).toBe(true);
+    const remaining = (await readCodexConfigFile(extensionConfigPath)).snapshot;
+    expect(Object.keys(remaining.developerInstructions.managedBlocks)).toEqual([]);
+    expect((await readCodexConfigFile(configPath)).snapshot.marketplaces.aw).toBeDefined();
+    const diagnostics = projectExecutionDiagnostics(failed, 'reinstall').diagnostics;
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'codexNativeRemoveFailed', stage: 'cleanup.owned', exitCode: 9,
+      causes: [expect.objectContaining({ code: 'nativeCliFailed' })],
+    }));
+    expect(JSON.stringify(diagnostics)).not.toContain('private native failure');
+
+    failRemove = false;
+    runtime.nativeCliRunner.mockClear();
+    const retried = await reinstallWriteCommand(['team/demo'], options, writeRuntime);
+    expect(retried.overallState, JSON.stringify(retried.rebuildResults)).toBe('succeeded');
+    expect(runtime.installed.has('demo@aw')).toBe(true);
+    expect(runtime.nativeCliRunner.mock.calls.some(([invocation]) =>
+      invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
+        === 'plugin remove demo@aw')).toBe(true);
+    expect((await readCodexConfigFile(extensionConfigPath)).snapshot.plugins['demo@aw']?.enabled).toBe(true);
+    if (missingSystemCli) {
+      expect(recoveryManagerResolver).toHaveBeenCalledTimes(1);
+    }
+    if (missingSystemCli && scope === 'user') {
+      recoveryManagerResolver.mockClear();
+      runtime.nativeCliRunner.mockClear();
+      await uninstallWriteCommand(['team/demo'], options, writeRuntime);
+      expect(recoveryManagerResolver).not.toHaveBeenCalled();
+      expect(runtime.nativeCliRunner.mock.calls.every(([invocation]) =>
+        invocation.args.includes('list'))).toBe(true);
+    }
+  });
+
   it('authorizes a managed Codex runtime before the first user native write', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'managed-codex-source');
@@ -13937,23 +14385,25 @@ describe('five namespaced write commands', () => {
     codexManagerResolver.mockClear();
     nativeCliRunner.mockClear();
 
-    const alreadyClean = await uninstallWriteCommand(['team/demo'], {
+    const uninstalled = await uninstallWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
-      platform: 'codex', scope: 'user',
+      platform: 'codex', scope: 'user', allowManagedCodexInstall: true,
     }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
-    expect(alreadyClean.overallState, JSON.stringify(alreadyClean.rebuildResults)).toBe('succeeded');
+    expect(uninstalled.overallState, JSON.stringify(uninstalled.rebuildResults)).toBe('succeeded');
     expect(codexManagerResolver).not.toHaveBeenCalled();
     expect(nativeCliRunner).toHaveBeenCalledTimes(1);
     expect(nativeCliRunner.mock.calls.every(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
         === 'plugin list --marketplace aw --json')).toBe(true);
 
+    codexManagerResolver.mockClear();
     nativeCliRunner.mockClear();
     const noOp = await uninstallWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex', scope: 'user',
     }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
     expect(noOp.overallState, JSON.stringify(noOp.rebuildResults)).toBe('succeeded');
+    expect(codexManagerResolver).not.toHaveBeenCalled();
     expect(nativeCliRunner).toHaveBeenCalledTimes(1);
     expect(nativeCliRunner.mock.calls.every(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
@@ -13973,7 +14423,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const installedRuntime = createCodexNativeTestRuntime(isolation);
+    const installedRuntime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -14195,7 +14645,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: before.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const runPublic = async (args: string[]) => {
       const captured = createCapturedCliIo();
       const exitCode = await runCli([...args, '--json'], {
@@ -14379,7 +14829,10 @@ describe('five namespaced write commands', () => {
       'import { readFile } from "node:fs/promises";',
       'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
       'const mode = context.config.values.mode ?? "safe";',
-      'if (mode === "fail") throw new Error("renderer requested failure");',
+      'if (mode === "fail") {',
+      '  console.error("file:///C:/Users/RUNNER%7E1/AppData/Local/Temp/private-renderer/render.mjs:4:28");',
+      '  throw new Error("renderer requested failure");',
+      '}',
       'console.log(JSON.stringify({ version: 2, artifacts: [{',
       '  id: "instruction", kind: "instruction", platform: "codex",',
       '  target: "codex.developerInstructionsBlock", state: "present",',
@@ -14744,6 +15197,10 @@ describe('five namespaced write commands', () => {
     'blocks sensitive config in native %s before live Codex mutations',
     async (leakPath, pluginName) => {
       const isolation = getCurrentSourceTestIsolation();
+      const env = {
+        ...isolation.env,
+        AW_HOME: path.join(isolation.env.AW_HOME!, 'renderer-process-long-working-directory'),
+      };
       const sourceRoot = path.join(isolation.layout.fixtureCwd, `${pluginName}-source`);
       const rendererPath = path.join(sourceRoot, 'plugins', pluginName, 'scripts', 'render.mjs');
       const secret = `secret-${pluginName}-value`;
@@ -14753,8 +15210,11 @@ describe('five namespaced write commands', () => {
           ? `, "references/secret.md": ${JSON.stringify(secret)}`
           : '';
         await fs.outputFile(rendererPath, [
-          'import { readFile } from "node:fs/promises";',
+          'import assert from "node:assert/strict";',
+          'import { readFile, realpath } from "node:fs/promises";',
           'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+          'assert.ok(context.plugin.rootDir.length >= 260);',
+          'assert.equal(await realpath(process.cwd()), await realpath(context.plugin.rootDir));',
           'console.log(JSON.stringify({ version: 2, artifacts: context.requestedArtifactIds.map((id) => ({',
           '  id, kind: "skill", platform: "codex", target: "codex.skill", state: "present",',
           `  skillKey: ${JSON.stringify(pluginName)}, refreshKeys: [], content: { files: {`,
@@ -14794,14 +15254,14 @@ describe('five namespaced write commands', () => {
 
       await writeRenderer(false);
       await createFixture();
-      const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+      const before = await readCatalogSourcesConfigSnapshot(env);
       await replaceCatalogSourcesConfig({
         config: {
           schemaVersion: 2,
           sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
         },
         expectedDigest: before.digest,
-        env: isolation.env,
+        env,
       });
       await writePluginConfigStore({
         sourceId: 'team',
@@ -14811,10 +15271,10 @@ describe('five namespaced write commands', () => {
         pluginName,
         scope: 'user',
         cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
+        env,
         values: { secret },
       });
-      const runtime = createCodexNativeTestRuntime(isolation);
+      const runtime = await createCodexNativeTestRuntime({ ...isolation, env });
       const installed = await installFixturePlugin([`team/${pluginName}`], {
         cwd: isolation.layout.fixtureCwd,
         platform: 'codex',
@@ -14823,11 +15283,11 @@ describe('five namespaced write commands', () => {
       expect(installed, JSON.stringify(installed, null, 2))
         .toMatchObject({ overallState: 'succeeded' });
 
-      const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+      const marketplaceRoot = path.join(env.AW_HOME, 'marketplaces', 'team');
       const pluginId = `${pluginName}@aw`;
       const marketplaceBefore = await snapshotRegularTree(marketplaceRoot);
       const installedBefore = new Set(runtime.installed);
-      const configPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
+      const configPath = path.join(env.AW_CODEX_HOME!, 'config.toml');
       const configBefore = await fs.readFile(configPath);
       const projectConfigPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
       const projectConfigBefore = await fs.readFile(projectConfigPath).catch(() => undefined);
@@ -14835,7 +15295,7 @@ describe('five namespaced write commands', () => {
       await writeRenderer(true);
       await createFixture();
       await syncCatalogSourceGeneration({
-        sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+        sourceId: 'team', cliVersion: '1.0.0', env,
       });
       const callsBeforeSync = runtime.nativeCliRunner.mock.calls.length;
       const result = await syncWriteCommand([`team/${pluginName}`], {
@@ -14910,7 +15370,7 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
       values: { secret },
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
 
     const result = await installFixturePlugin([`team/${pluginName}`], {
       cwd: isolation.layout.fixtureCwd,
@@ -14970,7 +15430,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: before.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin([`team/${pluginName}`], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -15057,7 +15517,7 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
       values: { secret: 'safe-default' },
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     await expect(installFixturePlugin([`team/${pluginName}`], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -15167,7 +15627,7 @@ describe('five namespaced write commands', () => {
     await addProjectFixtureRoots({
       cwd: isolation.layout.fixtureCwd, env: isolation.env, selectors: ['team/native-config'],
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const runPublic = async (args: string[]) => {
       const captured = createCapturedCliIo();
       const exitCode = await runCli([...args, '--json'], {
@@ -15345,14 +15805,19 @@ describe('five namespaced write commands', () => {
         .map(([invocation]) => invocation.args.slice(invocation.args.indexOf('plugin')).join(' '))
         .filter((args) => args.includes(' add ') || args.includes(' remove ')),
     })).toHaveLength(1);
-    expect(firstRenderEvents[0]!.cwd).toBe(firstRenderEvents[0]!.context.plugin.rootDir);
-    expect(firstRenderEvents[0]!.cwd).not.toBe(isolation.layout.fixtureCwd);
+    const [rendererCwd, rendererPluginRoot, projectCwd] = await Promise.all([
+      realpath(firstRenderEvents[0]!.cwd),
+      realpath(firstRenderEvents[0]!.context.plugin.rootDir),
+      realpath(isolation.layout.fixtureCwd),
+    ]);
+    expect(rendererCwd).toBe(rendererPluginRoot);
+    expect(rendererCwd).not.toBe(projectCwd);
     expect(firstRenderEvents[0]!.context.config.schema).not.toHaveProperty('projectMode');
     expect(firstRenderEvents[0]!.context.config.values).not.toHaveProperty('projectMode');
 
     const statusBinRoot = await writeStatusSystemCodexPackage(
       path.join(isolation.layout.fixtureCwd, 'native-config-status-prefix'),
-      '0.151.0',
+      runtime.codexVersion,
     );
     const readNativeStatus = async () => {
       const statusRunner = vi.fn(runtime.nativeCliRunner);
@@ -15904,7 +16369,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: before.digest,
       env: isolation.env,
     });
-    const runtime = createCodexNativeTestRuntime(isolation);
+    const runtime = await createCodexNativeTestRuntime(isolation);
     const installed = await installFixturePlugin(['team/mixed-native'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -15938,40 +16403,136 @@ describe('five namespaced write commands', () => {
 
   });
 
-  it('runs codex-enhance shared Skills and project roles through public commands', async () => {
-    const isolation = getCurrentSourceTestIsolation();
+  it('runs the publicly installed Guide cmdp entry through AW into a fake v5 managed adapter', async () => {
+    // Test Value Gate: one real public installation closes generated Skill/permission IDs, AW wrapping, and a live fake v5 backend.
+    const { isolation, runtime, runPublic } = await prepareCodexEnhancePublicCommandFixture();
     const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
-    const sourcePluginRoot = path.join(repositoryRoot, 'plugins', 'codex-enhance');
-    const authoringRoot = path.join(isolation.layout.fixtureCwd, 'codex-enhance-authoring');
-    await fs.copy(
-      path.join(repositoryRoot, 'plugins', 'marketplace-source.json'),
-      path.join(authoringRoot, 'plugins', 'marketplace-source.json'),
-    );
-    const copiedPluginRoot = path.join(authoringRoot, 'plugins', 'codex-enhance');
-    await fs.copy(sourcePluginRoot, copiedPluginRoot);
-    await stubCodexFileSelectionForNativeFixture(copiedPluginRoot);
-    const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
-    await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), {
-      schemaVersion: 1,
-      kind: 'catalog',
-      workspaceIdentity: `fixture:${crypto.createHash('sha256').update(sourceRoot).digest('hex')}`,
-      sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${sourceRoot}`).digest('hex')}`,
+    const helpers = await import(pathToFileURL(path.join(repositoryRoot, 'plugins/codex-enhance/scripts/fixtures/subagent-integration.mjs')).href);
+    const { openRun, storeContext } = await import(pathToFileURL(path.join(
+      repositoryRoot, 'plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/store.mjs',
+    )).href);
+    const cleanups: Array<() => Promise<void>> = [];
+    const fixture = await helpers.fixture({ signal: new AbortController().signal, diagnostic: () => {}, after: (cleanup: () => Promise<void>) => { cleanups.push(cleanup); } });
+    const cliEntry = path.join(repositoryRoot, 'packages/cli/dist/index.js');
+    const scenario = path.join(fixture.directory, 'public-managed-scenario');
+    await fs.ensureDir(scenario);
+    await fs.writeJson(path.join(scenario, 'scenario.json'), { echo: true, finalText: 'Public Guide final result.', adapterLifetimeMs: 60000, backendLifetimeMs: 60000 });
+    const environment = {
+      ...isolation.env,
+      HOME: fixture.homeRoot,
+      USERPROFILE: fixture.homeRoot,
+      TMPDIR: fixture.temporaryRoot,
+      TMP: fixture.temporaryRoot,
+      TEMP: fixture.temporaryRoot,
+      FIXTURE_SCENARIO_FILE: path.join(scenario, 'scenario.json'),
+      FIXTURE_RUN_DIRECTORY: scenario,
+      FIXTURE_GENERATIONS: fixture.generations,
+    };
+    const invokeGuide = (id: string, args: string[]) => new Promise<{ exitCode: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, [cliEntry, 'command', 'run', id, '--', ...args], { cwd: fixture.workspace, env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
+      const stdout: Buffer[] = [], stderr: Buffer[] = [];
+      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Public managed Guide command timed out.')); }, 30000);
+      child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+      child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+      child.once('error', (error) => { clearTimeout(timer); reject(error); });
+      child.once('close', (exitCode) => { clearTimeout(timer); resolve({ exitCode, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') }); });
     });
-    const manifest = await fs.readJson(path.join(
-      sourceRoot, 'plugins', 'codex-enhance', '.agents-plugin', 'plugin.json',
-    ));
-    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
-    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
-    const sourceIdentity = await calculateCatalogSourceIdentity(source);
-    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
-    await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 2, sources: [source] },
-      expectedDigest: before.digest,
-      env: isolation.env,
-    });
-    await syncCatalogSourceGeneration({
-      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
-    });
+    let guideId: string | undefined, run: string | undefined;
+    try {
+      const adapterSource = path.join(isolation.layout.fixtureCwd, 'public-adapter');
+      await fs.ensureDir(adapterSource);
+      await fs.copyFile(path.join(fixture.directory, 'fake-adapter.mjs'), path.join(adapterSource, 'adapter.mjs'));
+      const adapter = await runPublic(['command', 'install', adapterSource, '--name', 'public-v5-adapter', '--runner', 'node', '--entry', 'adapter.mjs', '--args-json', '["fixed-argv"]', '--yes']);
+      expect(adapter.exitCode).toBe(0);
+      const adapterId = (adapter.payload.commands as Array<{ id: string }>)[0]!.id;
+      expect(await runPublic(['config', 'set', 'team/codex-enhance', 'subagentCommands', '--scope', 'user', '--value-json', JSON.stringify([{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId: adapterId, args: ['v5-request-only'] }])])).toMatchObject({ exitCode: 0 });
+      const preview = await installWriteCommand(['team/codex-enhance'], { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project' }, { ...runtime, previewOperationPlan: true });
+      const review = buildOperationReviewProjection({ intent: { kind: 'pluginWrite', action: 'install', pluginId: 'team/codex-enhance', platform: 'codex', scope: 'project' }, evidence: { catalog: { configDigest: 'fixture', compositeDigest: 'fixture' }, operationPlan: preview.operationPlan } });
+      expect(review.changes).toContainEqual(expect.objectContaining({ title: 'guide/subagent/default', description: expect.stringContaining('node · scripts/subagent.mjs') }));
+      const installed = await runPublic(['install', 'team/codex-enhance', '--target', 'codex', '--scope', 'project']);
+      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      guideId = (await listManagedCommands(isolation.env)).commands.find((command) => command.name === 'guide/subagent/default')!.id;
+      expect(guideId).toMatch(/^cmdp_[0-9a-f]{16}$/u);
+      expect(review.changes).toContainEqual(expect.objectContaining({ title: expect.stringMatching(/^Codex 权限规则/u), description: expect.stringContaining(guideId) }));
+      const permission = await fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex/rules/aw-codex-enhance-subagent-commands.rules'), 'utf8');
+      expect(permission).toContain(JSON.stringify(['aw', 'command', 'run', guideId, '--', 'start']));
+      await fs.writeFile(path.join(fixture.workspace, 'prompt.txt'), 'Public installation task.\n');
+      const started = await invokeGuide(guideId, ['start', '--executor', 'fixture', '--workspace', fixture.workspace, '--prompt-file', 'prompt.txt']);
+      run = helpers.field(started.stdout, 'run');
+      expect(started, JSON.stringify(started)).toMatchObject({ exitCode: 0, stderr: '' });
+      expect(started.stdout).toMatch(/^started \S+ communication=true resume=false\n$/u);
+      const observed = await helpers.eventually(async () => fs.readJson(path.join(scenario, 'observed.json')), 'public installed Guide backend');
+      process.kill(observed.pid, 0);
+      expect(observed.argv).toEqual(['fixed-argv']);
+      expect(observed.request.args).toEqual(['v5-request-only']);
+      expect(observed.request.prompt).toBe('Public installation task.\n');
+      expect(observed.request.resume).toBe(true);
+      const sent = await invokeGuide(guideId, ['send', '--run', run!, '--text', 'Continue.']);
+      expect(sent).toMatchObject({ exitCode: 0, stdout: `queued ${run}\n` });
+      await helpers.eventually(async () => (await fs.readFile(path.join(scenario, 'inputs.jsonl'), 'utf8')).includes('Continue.'), 'public wrapped worker still alive after start');
+      await fs.writeFile(path.join(scenario, 'finish'), '');
+      const deadline = Date.now() + 10000;
+      let final: Awaited<ReturnType<typeof invokeGuide>>;
+      do {
+        final = await invokeGuide(guideId, ['wait', '--run', run!, '--timeout-ms', String(Math.max(0, deadline - Date.now()))]);
+        expect(final).toMatchObject({ exitCode: 0 });
+      } while (!helpers.terminalPattern.test(final.stdout) && Date.now() < deadline);
+      expect(final.stdout).toContain('Public Guide final result.');
+    } finally {
+      try {
+        if (guideId && run) {
+          const stopped = await invokeGuide(guideId, ['stop', '--run', run]);
+          expect(stopped, JSON.stringify(stopped)).toMatchObject({ exitCode: 0 });
+          // invokeGuide creates this run outside the fixture's tracked commands.
+          const { meta } = await openRun(await storeContext({ homeRoot: fixture.homeRoot }), run);
+          // A saved final result does not mean the worker has released its cwd.
+          // Windows cannot remove that directory until the worker exits.
+          await helpers.eventually(() => {
+            try {
+              process.kill(meta.worker.pid, 0);
+              return false;
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+              return true;
+            }
+          }, 'public managed Guide worker exit');
+        }
+      } finally {
+        for (const cleanup of cleanups.reverse()) await cleanup();
+      }
+    }
+  }, 90000);
+
+  it('cleans codex-enhance project roles when its shared command binding is missing', async () => {
+    // Missing weak command state must not block cleanup of exact scoped output.
+    const { isolation, cacheRoot, runPublic } = await prepareCodexEnhancePublicCommandFixture();
+    expect(await runPublic([
+      'install', 'team/codex-enhance', '--target', 'codex', '--scope', 'project',
+    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    const guideCommand = (await listManagedCommands(isolation.env)).commands
+      .find((command) => command.name === 'guide/subagent/default')!;
+    await fs.remove(path.join(isolation.env.AW_HOME!, 'commands', 'bindings', `${guideCommand.id}.json`));
+    const intentPath = path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-intents.json');
+    const intentBefore = await fs.readFile(intentPath);
+
+    expect(await runPublic([
+      'cleanup', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    for (const role of ['codex-explore', 'codex-subagent', 'codex-advisor']) {
+      await expect(fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'agents',
+        `aw-codex-enhance-${role}.toml`))).resolves.toBe(false);
+    }
+    expect((await readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')))
+      .snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
+    await expect(fs.readFile(intentPath)).resolves.toEqual(intentBefore);
+    await expect(fs.pathExists(path.join(cacheRoot, 'codex', 'skills', 'codex-subagent-guide', 'SKILL.md')))
+      .resolves.toBe(true);
+  });
+
+  it('rematerializes codex-enhance shared Skills without changing project roles through public commands', async () => {
+    // Test Value Gate: real config writes rematerialize only affected shared Skills and bindings, while project roles keep their bytes and scope.
+    const { isolation, sourcePluginRoot, sourceRoot, sourceIdentity, logicalIdentity, cacheRoot, runPublic } =
+      await prepareCodexEnhancePublicCommandFixture();
     // Test Value Gate: bundled role-only requests share declared resources without reading Skill config or rendering extra targets.
     const bundledPlugin = await readPluginManifest(path.join(sourceRoot, 'plugins', 'codex-enhance'), { mode: 'bundle' });
     const roleArtifactIds = ['codex-explore-role', 'codex-subagent-role', 'codex-advisor-role'];
@@ -16019,19 +16580,6 @@ describe('five namespaced write commands', () => {
       if (artifact.kind !== 'codexRole') throw new Error('Expected a Codex role artifact.');
       assertRoleInstructions(roleKeys[index]!, artifact.content?.roleFile?.developer_instructions, instructions);
     }
-    const runtime = createCodexNativeTestRuntime(isolation);
-    const runPublic = async (args: string[]) => {
-      const captured = createCapturedCliIo();
-      const exitCode = await runCli([...args, '--json'], {
-        cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
-        io: captured.io,
-        interactive: false,
-        nativeCliRunner: runtime.nativeCliRunner,
-      });
-      return { exitCode, payload: JSON.parse(captured.readStdout()) as Record<string, unknown> };
-    };
-
     expect(await runPublic([
       'config', 'set', 'team/codex-enhance', 'standardProfile', '--scope', 'project',
       '--value-json', '{"model":"project-standard","reasoningEffort":"max"}',
@@ -16048,12 +16596,6 @@ describe('five namespaced write commands', () => {
     ]);
     expect(projectInstall, JSON.stringify(projectInstall, null, 2))
       .toMatchObject({ exitCode: 0, payload: { ok: true } });
-    const cacheRoot = path.join(
-      isolation.env.CODEX_HOME!, 'plugins', 'cache', 'aw', 'codex-enhance', manifest.version,
-    );
-    const marketplaceRoot = path.join(
-      isolation.env.AW_HOME!, 'marketplaces', 'team', 'plugins', 'codex-enhance',
-    );
     const skillKeys = ['codex-explore', 'codex-subagent-guide', 'codex-advisor'];
     const skillPaths = skillKeys.map((skill) =>
       path.join(cacheRoot, 'codex', 'skills', skill, 'SKILL.md'));
@@ -16070,8 +16612,9 @@ describe('five namespaced write commands', () => {
     expect(initialBinding).toMatchObject({
       schemaVersion: 2,
       installedIdentity: { skillKey: 'codex-subagent-guide', scope: 'user', configScope: 'user' },
-      effectiveValues: { standardProfile: { model: 'user-standard', reasoningEffort: 'max' } },
+      allowedKeys: ['subagentCommands', 'subagentRetentionHours'],
     });
+    expect(initialBinding.effectiveValues).toEqual({ subagentCommands: [], subagentRetentionHours: 24 });
     for (const skill of ['codex-explore', 'codex-advisor']) {
       await expect(fs.pathExists(path.join(cacheRoot, 'codex', 'skills', skill, AW_RUNTIME_CONFIG_BINDING_PATH)))
         .resolves.toBe(false);
@@ -16128,9 +16671,7 @@ describe('five namespaced write commands', () => {
       await expect(fs.readFile(skillPaths[index]!)).resolves.toEqual(initialSkillBytes[index]);
     }
     const updatedBinding = await fs.readJson(guideBindingPath) as RuntimeConfigBinding;
-    expect(updatedBinding.effectiveValues.standardProfile).toEqual({
-      model: 'updated-standard', reasoningEffort: 'high',
-    });
+    expect(updatedBinding).toEqual(initialBinding);
     for (const [index, file] of rolePaths.entries()) {
       await expect(fs.readFile(file, 'utf8')).resolves.toBe(initialRoleBytes[index]);
     }
@@ -16187,6 +16728,8 @@ describe('five namespaced write commands', () => {
     ]);
     expect(userConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
     expect(projectConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
+    const guideCommand = (await listManagedCommands(isolation.env)).commands.find((command) => command.name === 'guide/subagent/default')!;
+    await fs.writeFile(path.join(isolation.env.AW_HOME!, 'commands', 'bindings', `${guideCommand.id}.json`), '{broken');
     expect(await runPublic([
       'cleanup', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes',
     ])).toMatchObject({ exitCode: 0, payload: { ok: true } });

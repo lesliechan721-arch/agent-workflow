@@ -9,7 +9,7 @@ metadata:
 
 # browser-use
 
-按用户目标选择最少的操作。只需打开预览时，不扩展成调试或测试任务。首次创建会话先读[浏览与会话](references/browsing.md#任务会话)，确定本任务的会话、配置和界面模式；后续复用这些设置。
+按用户目标选择最少的操作。只需打开预览时，不扩展成调试或测试任务。首次创建会话先读浏览与会话（`references/browsing.md#任务会话`），确定本任务的会话、配置和界面模式；后续复用这些设置。
 
 ## 核心路径
 
@@ -40,7 +40,7 @@ agent-browser snapshot -i
 
 ## 按需扩展
 
-普通浏览、表单、等待、标签页、特殊输入、截图和登录见[浏览与会话](references/browsing.md)。控制台、网络、trace 和失败恢复见[调试](references/debugging.md)。
+普通浏览、表单、等待、标签页、特殊输入、截图和登录见浏览与会话（`references/browsing.md`）。控制台、网络、trace 和失败恢复见调试（`references/debugging.md`）。
 
 确有任务需要时，可使用原生页面 JavaScript、上传下载、录制、可访问性检查等能力；先查 `agent-browser <command> --help`，必要时查[官方文档](https://agent-browser.dev/)。
 

@@ -5,7 +5,7 @@
     "unitUnderTest": "publish-aw-catalog",
     "participants": [
       "develop-aw",
-      "review-aw"
+      "review-agent-skill"
     ],
     "policy": {
       "optimization": "precision-first",

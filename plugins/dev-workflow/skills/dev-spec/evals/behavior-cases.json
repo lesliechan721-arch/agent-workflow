@@ -11,7 +11,10 @@
     },
     "runtime": {
       "isolation": "strict"
-    }
+    },
+    "participants": [
+      "explain-for-review"
+    ]
   },
   "cases": [
     {
@@ -26,12 +29,14 @@
         "只综合输入中已经确认的决定，不重新发起需求访谈或发明兼容承诺",
         "把服务端拒绝、旧邀请语义和用户提示写成材料决定或可观察行为",
         "明确保留文件组织、缓存方式和测试组织的实现自由",
-        "没有逐文件任务清单、精确命令序列或自然语言状态机"
+        "不把无来源的文件级步骤、命令序列或状态机制写成要求；允许用流程或状态关系解释已确认的用户行为。",
+        "保留连续7×24小时及服务端毫秒时间戳语义，恰好到期时拒绝，不把边界验收仅写成测试名称。"
       ],
       "input": {
         "scriptedReplies": [],
         "workspaceFiles": {
-          "decisions/invitation-expiry.md": "# 已确认决定\n\n- 团队邀请创建后 7 天过期。\n- 服务端接受邀请时必须拒绝过期邀请。\n- 旧邀请沿用创建时间计算，不做批量迁移。\n- 用户看到明确的过期提示，并可以重新邀请。\n- 验收：第 7 天前可接受，第 7 天后拒绝。\n- 文件组织、缓存方式和测试目录交给实现者。\n"
+          "decisions/invitation-expiry.md": "# 已确认决定\n团队邀请创建后7×24小时过期。createdAt、now都是同一服务端时钟的毫秒时间戳；now >= createdAt + 604800000时拒绝，此前接受。旧邀请沿用创建时间计算，不做批量迁移。用户看到明确的过期提示，并可另外发起重新邀请。验收覆盖过期前、恰好到期和到期后。文件组织、缓存方式和测试目录由实施者决定。\n",
+          ".gitignore": "/docs/specs/\n"
         }
       },
       "expected": {
@@ -43,20 +48,14 @@
         "artifacts": [
           {
             "path": "docs/specs/invitation-expiry.md",
-            "exists": true,
-            "contains": [
-              "7 天",
-              "服务端",
-              "过期提示",
-              "验收"
-            ],
-            "notContains": [
-              "## 实施步骤",
-              "第一步",
-              "第二步"
-            ]
+            "exists": true
           }
         ]
+      },
+      "audit": {
+        "rationale": "用明确当前决定评价规范产物；不以固定标题、中文措辞或段落词命中代替语义。",
+        "allowedVariance": "允许等价语言、关系图及主题组织；保留精确时间、边界和实现自由，不能纳入未接受机制。",
+        "minimalCounterexample": "关键边界未决定时应保留缺口，不强制生成完整正式规格。"
       }
     },
     {
@@ -76,7 +75,8 @@
       "input": {
         "scriptedReplies": [],
         "workspaceFiles": {
-          "decisions/session-expiry.md": "# Session expiry 决定\n\n## 中间讨论\n\n曾考虑新增 `SessionStateMachine`，按 `pending -> checking -> retrying -> expired` 持久化状态；该方案没有进入最终决定。\n\n## 最终决定\n\n- 每次请求根据 `expiresAt` 与当前时间判断是否过期。\n- 过期后服务端拒绝并返回明确错误；未过期请求保持现有行为。\n- 不新增持久化迁移。\n- 验收覆盖过期前、边界时刻和过期后。\n- 文件、函数和测试组织由实现者决定。\n"
+          "decisions/session-expiry.md": "# Session expiry 决定\n\n## 中间讨论\n\n曾考虑新增 `SessionStateMachine`，按 `pending -> checking -> retrying -> expired` 持久化状态；该方案没有进入最终决定。\n\n## 最终决定\n\n- 每次请求比较同一服务端时钟的毫秒时间戳 now 与 expiresAt；now >= expiresAt 时过期，now < expiresAt 时未过期。\n- 过期后服务端拒绝并返回明确错误；未过期请求保持现有行为。\n- 不新增持久化迁移。\n- 验收覆盖过期前、边界时刻和过期后。\n- 文件、函数和测试组织由实现者决定。\n",
+          ".gitignore": "/docs/specs/\n"
         }
       },
       "expected": {
@@ -88,21 +88,14 @@
         "artifacts": [
           {
             "path": "docs/specs/session-expiry.md",
-            "exists": true,
-            "contains": [
-              "expiresAt",
-              "过期",
-              "验收"
-            ],
-            "notContains": [
-              "SessionStateMachine",
-              "pending -> checking",
-              "被替代",
-              "中间讨论",
-              "不要使用"
-            ]
+            "exists": true
           }
         ]
+      },
+      "audit": {
+        "rationale": "用明确当前决定评价规范产物；不以固定标题、中文措辞或段落词命中代替语义。",
+        "allowedVariance": "允许等价语言、关系图及主题组织；保留精确时间、边界和实现自由，不能纳入未接受机制。",
+        "minimalCounterexample": "关键边界未决定时应保留缺口，不强制生成完整正式规格。"
       }
     },
     {
@@ -117,7 +110,8 @@
         "识别会材料性改变用户行为和验收的开放决定",
         "不创建 docs/specs/invitation-expiry-open.md",
         "不替用户选择服务端拒绝或自动补发",
-        "清楚说明关闭缺口所需的决定"
+        "清楚说明关闭缺口所需的决定",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -127,7 +121,8 @@
       },
       "expected": {
         "output": "识别过期处理仍未决定，停止写 Spec，并向用户说明需要确认服务端拒绝还是自动补发。",
-        "workspaceUnchanged": true
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": []
       },
       "audit": {
         "rationale": "服务端拒绝还是自动补发会材料性改变用户行为和验收；决定未确认时不得写 Spec 或代替用户选择。",
@@ -147,7 +142,8 @@
         "识别材料证据缺口",
         "不创建 docs/specs/search-latency.md",
         "不发明基准结果或 p95 阈值",
-        "说明继续写 Spec 前需要的证据"
+        "说明继续写 Spec 前需要的证据",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -157,12 +153,104 @@
       },
       "expected": {
         "output": "识别缺少基准结果，停止写 Spec，并说明需要取得证据后才能确认 p95 验收阈值。",
-        "workspaceUnchanged": true
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": []
       },
       "audit": {
         "rationale": "输入明确要求用尚不存在的基准证据确定材料阈值；Spec 作者不能发明测量结果或阈值。",
         "allowedVariance": "可以请求基准结果或让调用者返回 Shape；不得创建目标 Spec 或发明阈值。",
         "minimalCounterexample": "如果输入包含基准结果和已经确认的 p95 阈值，则可以把该证据与阈值写入 Spec。"
+      }
+    },
+    {
+      "id": "delivered-spec-followup-preserves-history",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "原分页任务已经完成并交付。现在我确认新需求：每页改为50条，其余排序、租户、筛选和超出末页行为保持。使用 dev-spec 将关联后续任务写到 .dev-workflows/paging-v2/spec.md，只写新规格，不修改旧任务、现行公共合同或代码。",
+      "assertions": [
+        "新规格明确每页50条，保留排序、租户隔离、筛选、空页合同和验收。",
+        "引用旧规格和交付状态作为历史依据，不覆盖旧记录，不把旧代码说成已实现50条。",
+        "只写指定后续规格，不复制整套旧任务，不启动实施或修改现行公共合同。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          ".dev-workflows/paging-v1/spec.md": "# 分页规格 v1\n每页20条，按创建时间升序；只显示当前租户且符合筛选条件的记录。请求超出末页时返回空页，不改写数据。\n",
+          ".dev-workflows/paging-v1/result.md": "# 已交付结果\n每页20条，排序、租户、筛选与空页边界已经验证。\n",
+          "src/paging.js": "export const pageSize=20;\n",
+          "docs/paging-contract.md": "# 分页规格 v1\n每页20条，按创建时间升序；只显示当前租户且符合筛选条件的记录。请求超出末页时返回空页，不改写数据。\n"
+        }
+      },
+      "expected": {
+        "output": "交付后续规格，说明确认变化、历史来源与尚未实施状态。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/paging-v2/spec.md"
+        ],
+        "artifacts": [
+          {
+            "path": ".dev-workflows/paging-v2/spec.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "新需求进入后续规格，不倒改已交付任务。",
+        "minimalCounterexample": "仍在执行且获准修订的任务可维护当前规格，但需保留原确认依据。",
+        "allowedVariance": "允许等价结构与引用，不强制新日志、版本系统或状态字段。"
+      }
+    },
+    {
+      "id": "same-task-current-spec-retains-ended-build-basis",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "iteration-history"
+      ],
+      "prompt": "使用 dev-spec 修订同一个 paging 任务。我现在确认每页从20改为50，其余排序、租户、空结果和末页行为不变。当前入口仍是 .dev-workflows/paging/spec.md 及其 spec/api.md。001已交付，本地资料没有Git历史；替换前保留可找回的旧批准规格及规范附件，旧引用仍须可用。不要改001、产品代码或启动新Task、Build、审查，本次只写当前完整规格与必要历史副本；历史副本存入 .dev-workflows/paging/spec-history/。",
+      "assertions": [
+        "当前主规格与附件完整一致地表达50及其余原规则，不用补丁日志代替当前规范。",
+        "保留旧批准规格和旧api.md；历史规格引用解析到20的旧附件，不指向已变为50的当前附件。",
+        "001 Work及产品代码字节不变；后续记录可说明旧依据位置，不覆盖旧交付结果。",
+        "不因原Build结束而强制另建Task；只编写规格，不启动设计、Build或审查。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          ".dev-workflows/paging/spec.md": "# 当前分页规格\n用户已批准：按[分页接口](spec/api.md)执行，按输入顺序且仅当前租户；空结果为空数组，末页不足时全部返回。\n",
+          ".dev-workflows/paging/spec/api.md": "# 分页接口\n每页20条，页码从1开始；超出末页返回空数组。\n",
+          ".dev-workflows/paging/builds/001/work.md": "# Build 001\n已交付；批准依据 ../../spec.md 及 ../../spec/api.md，每页20。原交付记录不修改。\n",
+          "src/page.js": "export const pageSize = 20;\n"
+        }
+      },
+      "expected": {
+        "output": "同一Task的当前完整规格采用新确认，旧批准依据与附件仍可定位，已结束交付和产品保持原样。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          ".dev-workflows/paging/spec.md",
+          ".dev-workflows/paging/spec/api.md",
+          ".dev-workflows/paging/spec-history/**"
+        ],
+        "artifacts": [
+          {
+            "path": ".dev-workflows/paging/spec.md",
+            "exists": true
+          },
+          {
+            "path": ".dev-workflows/paging/spec/api.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "当前规范变化不能销毁已结束轮次的完整依据；Spec只维护规范，不承担Build执行。",
+        "allowedVariance": "spec-history/内的版本目录命名自由，保留完整旧文档和可达引用；真实旧版本足够时可复用。",
+        "minimalCounterexample": "已有可访问的稳定旧版本能完整恢复依据时，无需再复制全部规范。"
       }
     }
   ]

@@ -1,11 +1,11 @@
 import crypto from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
 import {
   GENERATED_OUTPUT_MARKER_FILENAME,
   validatePublishedCatalogSnapshot,
+  type CatalogManifestV7Entry,
 } from '@lesliechan721/aw-plugin-core';
 
 import {
@@ -267,16 +267,19 @@ async function createPublicationCommit(
   await assertSnapshotBinding(snapshotRoot, descriptor, display);
   if (parent) {
     await publicationGit(repositoryRoot, [
+      '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
       'checkout', '--quiet', '--detach', 'refs/aw/catalog-parent',
     ], env, 'publicationCommitFailed', 'Could not select the publication parent.');
   } else {
     await publicationGit(repositoryRoot, [
+      '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
       'checkout', '--quiet', '--orphan', 'catalog-publication',
     ], env, 'publicationCommitFailed', 'Could not create the initial Catalog publication.');
   }
   await clearWorktree(repositoryRoot);
   await fs.copy(snapshotRoot, repositoryRoot, { dereference: false });
   await publicationGit(repositoryRoot, [
+    '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
     'add', '--force', '--all',
   ], env, 'publicationCommitFailed', 'Could not stage the Catalog publication tree.');
   await publicationGit(repositoryRoot, [
@@ -298,6 +301,7 @@ async function createPublicationCommit(
   const verificationRoot = path.join(preparation.temporaryRoot, 'verification');
   await fs.ensureDir(verificationRoot);
   await publicationGit(repositoryRoot, [
+    '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
     '--work-tree', verificationRoot, 'checkout', '--quiet', commit, '--', '.',
   ], env, 'publicationCommitFailed', 'Could not verify the Catalog publication commit tree.');
   await assertSnapshotBinding(verificationRoot, descriptor, display);
@@ -351,7 +355,7 @@ const PERSISTED_REPOSITORY_CONFIG = new Map<string, ReadonlySet<string>>([
   ['core.logallrefupdates', new Set(['true'])],
   ['core.ignorecase', new Set(['true'])],
   ['core.precomposeunicode', new Set(['true'])],
-  ['core.hookspath', new Set([os.devNull])],
+  ['core.hookspath', new Set(['/dev/null'])],
   ['core.symlinks', new Set(['true'])],
 ]);
 
@@ -484,6 +488,7 @@ async function validatePersistentRepository(
     try {
       await fs.ensureDir(verificationRoot);
       await publicationGit(repositoryRoot, [
+        '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
         '--work-tree', verificationRoot, 'checkout', '--quiet', journal.expectedCommit, '--', '.',
       ], env, 'pendingRepositoryInvalid', 'Pending Catalog publication commit tree is damaged.');
       await assertSnapshotBinding(verificationRoot, journal.descriptor, journal.display);
@@ -744,7 +749,10 @@ export async function persistCatalogPublicationPlan(options: {
 }
 
 export async function prepareCatalogPublicationPlan(
-  options: PublicationTargetOptions & ReceiptResolution & PersistPlanHooks,
+  options: PublicationTargetOptions & ReceiptResolution & PersistPlanHooks & {
+    officialPluginHistory?: readonly CatalogManifestV7Entry[];
+    sourcePluginVersionsAtBaseline?: Readonly<Record<string, string>>;
+  },
 ): Promise<CatalogPublishPlanReceipt> {
   const context = await inspectCatalogPublicationLiveContext(options);
   const existing = await readExistingPlan(context, options);

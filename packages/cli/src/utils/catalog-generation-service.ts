@@ -995,7 +995,7 @@ export async function recoverCatalogGenerationStateAndActivate(options: {
     });
     assertStoreMatchesCandidate(options.sourceId, store, resolved.candidate);
     await options.runtime?.afterRecoveryStorePublished?.();
-    return withAwHomeMutationLock({
+    return await withAwHomeMutationLock({
       env,
       signal: options.signal,
       action: async () => {

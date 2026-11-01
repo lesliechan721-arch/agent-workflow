@@ -37,7 +37,7 @@ export function assertAuthoringPluginPathFence(options) {
       throw new Error(`Workspace root is not a directory: ${requestedRepoRoot}`);
     }
   }
-  const repoRoot = requestedRepoRoot ? fs.realpathSync(requestedRepoRoot) : null;
+  const repoRoot = requestedRepoRoot ? fs.realpathSync.native(requestedRepoRoot) : null;
   if (requestedRepoRoot && !isInsideRoot(requestedRepoRoot, requestedPluginRoot)) {
     throw new Error(`Plugin root must be inside the workspace root: ${requestedPluginRoot}`);
   }
@@ -84,8 +84,8 @@ export function assertAuthoringPluginPathFence(options) {
   if (!manifestStat || manifestStat.isSymbolicLink() || !manifestStat.isFile()) {
     throw new Error(`Plugin manifest must be a regular non-symbolic-link file: ${manifestPath}`);
   }
-  const canonicalManifest = fs.realpathSync(manifestPath);
-  if (!isInsideRoot(fs.realpathSync(pluginRoot), canonicalManifest)) {
+  const canonicalManifest = fs.realpathSync.native(manifestPath);
+  if (!isInsideRoot(fs.realpathSync.native(pluginRoot), canonicalManifest)) {
     throw new Error(`Plugin manifest must stay inside the plugin root: ${manifestPath}`);
   }
   return { repoRoot, pluginRoot, manifestPath };
@@ -96,7 +96,7 @@ export function resolveAuthoringPluginRoot(options) {
   if (!assertDirectoryNode(requestedRepoRoot, 'Workspace root')) {
     throw new Error(`Workspace root is not a directory: ${requestedRepoRoot}`);
   }
-  const repoRoot = fs.realpathSync(requestedRepoRoot);
+  const repoRoot = fs.realpathSync.native(requestedRepoRoot);
   const explicit = options.pluginRoot !== undefined;
   const pluginRoot = explicit
     ? path.resolve(repoRoot, options.pluginRoot)

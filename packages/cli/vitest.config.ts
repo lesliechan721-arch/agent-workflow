@@ -1,3 +1,5 @@
+import { vitestWorkerOptions } from './scripts/test-workers.mjs';
+
 import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
@@ -11,9 +13,11 @@ const pureTests = [
 ];
 const processTests = [
   'tests/unit/process-tree.test.ts',
+  'tests/unit/test-command-diagnostics.test.ts',
   'tests/unit/native-cli.test.ts',
   'tests/unit/skills-cli-lifecycle.test.ts',
   'tests/unit/plugin-scripts.test.ts',
+  'tests/unit/managed-command-materialization.test.ts',
   'tests/unit/artifact-renderer.test.ts',
   'tests/unit/process-lock.test.ts',
   'tests/integration/aw-home-mutation-command-lock.test.ts',
@@ -48,8 +52,7 @@ export default defineConfig({
     ],
   },
   test: {
-    maxWorkers: 2,
-    minWorkers: 1,
+    ...vitestWorkerOptions(),
     projects: [
       {
         extends: true,

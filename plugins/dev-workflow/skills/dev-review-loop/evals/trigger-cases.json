@@ -7,7 +7,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "按用户授权、当前范围、真实结果与独立性评价，兼顾漏修和误触发/范围扩张；方法精简效果须与固定基线比较。"
+      "rationale": "按显式入口与未选入口区分触发；完整工作意图或 caller 委派不能代替用户选择，实际共享方法与结果由行为用例检查。"
     },
     "participants": [
       "dev-build",
@@ -33,12 +33,12 @@
       ],
       "input": {
         "query": "检查当前记录选择改动，发现影响当前合同的问题就修好，运行验证并复审后给我结果。",
-        "expectedLoad": true
+        "expectedLoad": false
       },
       "audit": {
-        "rationale": "用户要求完整审查修复闭环。",
-        "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
-        "minimalCounterexample": "仅要求指出问题且只读时不默认选择Repair。"
+        "rationale": "未由用户显式选择本宏；完整任务意图或上层委派不等于启动手动入口。已启动的上层可采用自带共享方法。",
+        "allowedVariance": "不加载本手动宏，仍可完成普通处理或使用可达的叶子能力；方法执行质量由行为用例检查。",
+        "minimalCounterexample": "用户明确调用 $dev-review-loop，且请求未仅讨论该能力时应加载。"
       }
     },
     {
@@ -49,12 +49,12 @@
       ],
       "input": {
         "query": "当前Build已完成共享查询milestone，委托你在现有修复授权和剩余额度内核验当前累计范围，必要时修复并复审。",
-        "expectedLoad": true
+        "expectedLoad": false
       },
       "audit": {
-        "rationale": "调用方明确授予局部闭环责任。",
-        "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
-        "minimalCounterexample": "仅分配实现一个修复函数时应使用Implement，不能让每个worker重建Repair。"
+        "rationale": "未由用户显式选择本宏；完整任务意图或上层委派不等于启动手动入口。已启动的上层可采用自带共享方法。",
+        "allowedVariance": "不加载本手动宏，仍可完成普通处理或使用可达的叶子能力；方法执行质量由行为用例检查。",
+        "minimalCounterexample": "用户明确调用 $dev-review-loop，且请求未仅讨论该能力时应加载。"
       }
     },
     {
@@ -64,11 +64,11 @@
         "boundary"
       ],
       "input": {
-        "query": "使用 dev-review-loop 检查当前模块并修复本范围问题，保留当前授权和预算。",
+        "query": "使用 $dev-review-loop 检查当前模块并修复本范围问题，保留当前授权和预算。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "显式选择且请求在能力范围内。",
+        "rationale": "用户显式选择本宏；是否加载与实际任务完成分开判断。",
         "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
         "minimalCounterexample": "用户只讨论是否值得使用该方法，不启动执行。"
       }
@@ -80,11 +80,11 @@
         "boundary"
       ],
       "input": {
-        "query": "根据当前Review修复这些实质问题，再对整个已指定模块复审，直到满足要求或达到现有停止条件。",
+        "query": "使用 $dev-review-loop。根据当前Review修复这些实质问题，再对整个已指定模块复审，直到满足要求或达到现有停止条件。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "已有报告仍需验证和闭环。",
+        "rationale": "用户显式选择本宏；是否加载与实际任务完成分开判断。",
         "allowedVariance": "允许等价表述、合理方法组合和实现；不要求固定标题、文件数量或无用途返回字段。角色隔离与真实运行另以Engine证据核对。",
         "minimalCounterexample": "只需要解释一条finding时不启动修改。"
       }

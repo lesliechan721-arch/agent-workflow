@@ -1,30 +1,20 @@
 # develop-aw Eval
 
-本测试资产使用 AW Selected Cases v1 / Manifest v1，由当前项目公开 parser 核验格式。适配字段的权威说明在 Runner 的 `references/aw-eval-profile.md`，真实 parser 高于本包辅助校验器。
+本目录使用 Selected Cases v1 / Manifest v1。所有 suite 的被测对象为 `develop-aw`，profile 提供 AW 与通用方法的实际依赖。当前共 51 个 case，模型状态为 **NOT_RUN**；正式运行前须通过公开 parser、独立 Oracle 审核和执行授权。
 
-项目与 Runner 案例只证明实际执行的范围。`simplify-fixtures` 会真实写出两个隔离 final 和两个 test-only binding，但只证明命令路由、同 profile 选择与文件范围；它不证明生产 renderer、canonical binding、Audit、模型行为或生产 apply。
+| Suite | 用例 | 数量 |
+| --- | --- | ---: |
+| `trigger` | [trigger-cases.json](trigger-cases.json) | 9 |
+| `diagnostic` | [diagnostic-cases.json](diagnostic-cases.json) | 2 |
+| `source-routing` | [source-routing-cases.json](source-routing-cases.json) | 8 |
+| `review-materialization` | [review-materialization-cases.json](review-materialization-cases.json) | 9 |
+| `review-diagnostic` | [review-diagnostic-cases.json](review-diagnostic-cases.json) | 2 |
+| `integration-trigger` | [integration-trigger-cases.json](integration-trigger-cases.json) | 10 |
+| `simplify-source` | [simplify-source-cases.json](simplify-source-cases.json) | 4 |
+| `method` | [method-cases.json](method-cases.json) | 7 |
 
-Trigger 只检查任意加载；不以不是顶层 owner 禁止合法下游组合。发布候选与 diagnostic 按 manifest 区分；标为 required 不等于已通过。全体模型运行状态为 NOT_RUN。
+触发覆盖 AW 插件与 Skill 的分析、创建、修改、评审协作、简化协作及 Portable 导出；独立标准包和只执行已有 Spec 保持反例。expectedLoad 只表示是否采用该能力，不规定首次入口，也不关闭其他合法能力。显式请求名称不证明实际加载，加载需真实注入或文件读取证据。
 
-| Case | 层 | 观测依据 | 模型状态 |
-| --- | --- | --- | --- |
-| `init_catalog` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `edit_plugin` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `remove_plugin` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `activate_local` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `review_only` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `generic_skill` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `run_only` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `plain_project` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
-| `cli_unavailable_stops` | diagnostic | 方法或明确拒绝替身，仅限诊断 | NOT_RUN |
-| `publisher_not_auto_dependency` | diagnostic | 方法或明确拒绝替身，仅限诊断 | NOT_RUN |
-| `prepare_isolated_unverified_candidate` | simplification | 真实候选 source、受控 CLI 路由与隔离 final 文件 | NOT_RUN |
-| `only_final_has_no_production_source` | simplification | only-final 来源缺口与不写边界 | NOT_RUN |
-| `shorter_source_same_final` | simplification | 给定 source/final 的关键对照 | NOT_RUN |
-| `second_candidate_provider_drift` | simplification | provider 变化后的绑定停止条件 | NOT_RUN |
+AW 来源、物化和组合场景由本插件维护，详见[集成说明](integration-README.md)。通用 Reviewer、Simplifier 与 Auditor 仍负责各自的方法判断；本目录评价 AW 事实、操作选择、来源与权限边界。Oracle 尚未独立审核，模型结果尚未取得。
 
-## 运行与审定
-
-新 simplification suite 不属于 release 必需项。先用实际 parser 和独立 Oracle 审核确认用例可执行；只有得到模型运行授权后才能建立行为结果。CLI deny fixture 只证明拒绝边界，simplify fixture 只证明明确列出的路由副作用。
-
-一般格式示例属于测试输入，不要求模型采用 AW 作为所有消费者格式；未知外部事实不由 prompt 自称证明。真实集成责任与未验证项见[迁移记录](../../../../../docs/skill-toolkit-migration.md)。
+七个方法场景的前提、产物和验证边界见[方法用例说明](method-README.md)。CLI 测试替身只证明受控路由、实际文件与权限边界；生产物化由真实 CLI 测试验证，模型行为另行运行。suite/profile 的运行选择以 [manifest.json](manifest.json) 为准。

@@ -17,8 +17,6 @@ export interface AwSkillEvalTriggerSuite {
   forbidMultipleSkillLoads: boolean
   profiles: string[]
   defaultRuns: number
-  releaseSplits: Array<'train' | 'validation' | 'sanity' | 'all'>
-  requiredForRelease: boolean
   perRunTimeoutMs: number
 }
 
@@ -275,6 +273,7 @@ export function validateAwSkillEvalConversationCaseDocument(
       boolean(review.workspace_unchanged, `${label}.evals[${index}].review.workspace_unchanged`)
     }
     const allowedWorkspaceChanges = review.allowed_workspace_changes === undefined
+      || (Array.isArray(review.allowed_workspace_changes) && review.allowed_workspace_changes.length === 0)
       ? []
       : strings(
           review.allowed_workspace_changes,
@@ -312,13 +311,14 @@ export function validateAwSkillEvalConversationCaseDocument(
       if (review.workspace_unchanged !== false) {
         throw new Error(`${label}.evals[${index}] workspace-write requires review.workspace_unchanged=false.`)
       }
-      if (allowedWorkspaceChanges.length === 0) {
-        throw new Error(`${label}.evals[${index}] workspace-write requires non-empty review.allowed_workspace_changes.`)
+      if (!Array.isArray(review.allowed_workspace_changes)) {
+        throw new Error(`${label}.evals[${index}] workspace-write requires explicit review.allowed_workspace_changes.`)
       }
-      if (artifactPaths.length === 0) {
+      if (allowedWorkspaceChanges.length > 0 && artifactPaths.length === 0) {
         throw new Error(`${label}.evals[${index}] workspace-write requires non-empty review.artifacts.`)
       }
-      const unmatchedArtifact = artifactPaths.find((artifactPath) => !allowedWorkspaceChanges.some(
+      // An explicit empty allowlist tests voluntary non-writing in a writable sandbox.
+      const unmatchedArtifact = allowedWorkspaceChanges.length > 0 && artifactPaths.find((artifactPath) => !allowedWorkspaceChanges.some(
         (pattern) => workspacePathMatchesPattern(artifactPath, pattern),
       ))
       if (unmatchedArtifact) {
@@ -456,11 +456,6 @@ export function validateAwSkillEvalTriggerCaseDocument(
     throw new Error(
       `Trigger suite "${suite.id}" requires fixtureModule because cases declare workspace_fixture.`,
     )
-  }
-  for (const split of suite.releaseSplits) {
-    if (split !== 'all' && !cases.some((entry) => entry.split === split)) {
-      throw new Error(`Trigger suite "${suite.id}" has no cases for release split "${split}".`)
-    }
   }
   return { schemaVersion: AW_SKILL_EVAL_CASE_SCHEMA_VERSION, skill, cases }
 }

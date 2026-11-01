@@ -11,6 +11,8 @@ import { buildTuiViewModel } from '../../src/tui/model.js';
 import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
 import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
 import { prepareRecovery } from '../../src/recovery/coordinator.js';
+import { createOperationPlan } from '../../src/commands/operation-plan.js';
+import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { statusFromObservations } from '../../src/recovery/status.js';
 import { observePreferences } from '../../src/intent/deployment-preferences.js';
 import type { DemandSnapshot } from '../../src/recovery/demand.js';
@@ -492,6 +494,7 @@ describe('scoped inventory in Ink', () => {
     const plan = { kind: 'recovery', scope: 'user', plan: { receipt,
       plannedImpact: { declaration: false, preferences: false, config: false, outputs: true },
       changes: [], warnings: [], context: { dispose: async () => {} }, sourceRefreshes: [],
+      nativeGroups: [], portableGroups: [],
     } } as unknown as ScopedTuiPlan;
     const prepareScopedTask = vi.fn().mockResolvedValue(plan);
     const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
@@ -983,6 +986,7 @@ describe('scoped inventory in Ink', () => {
       blockers: [], errors: [],
     }, plannedImpact: { declaration: false, preferences: false, config: false, outputs: true },
     changes: ['首次准备后同步'], warnings: [], context: { dispose: async () => {} },
+    nativeGroups: [], portableGroups: [],
     } } as unknown as ScopedTuiPlan;
     const prepareScopedTask = vi.fn().mockResolvedValue(plan);
     const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
@@ -1077,5 +1081,93 @@ describe('scoped inventory in Ink', () => {
     await tick();
     expect(checkedFrame(instance, sizes[0]!)).toContain('通用 Skills 额外安装未完整覆盖');
     instance.unmount();
+  });
+});
+
+// Test Value Gate: scoped recovery must show reviewed command launches, live producer progress,
+// producer failures and retained-package removal without switching to the legacy executor.
+describe('managed commands in scoped Ink recovery', () => {
+  it.each(['sync', 'cleanup'] as const)('keeps command facts through %s Review, Progress and Result', async (command) => {
+    const producer = { sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`,
+      pluginName: 'provider', kind: 'package' as const, key: 'tools', platform: null,
+      scope: 'user' as const, projectRoot: null };
+    const packageId = `pkg_${'2'.repeat(64)}`;
+    const remove = `aw command package remove ${packageId} --yes`;
+    const action = command === 'cleanup'
+      ? { kind: 'retainManagedCommandPackage' as const, pluginId: 'official/provider', scope: 'user' as const,
+          producer, packageId, commandIds: ['installed-command'], availability: 'ready' as const, recoveryAction: remove }
+      : { kind: 'syncManagedCommandPackage' as const, pluginId: 'official/provider', scope: 'user' as const,
+          producer, sets: [{ set: 'guide', state: 'present' as const, entries: [{ key: 'worker', variant: 'default',
+            runner: 'node' as const, entry: 'runtime.mjs', args: ['--fixed', 'value'],
+            env: {}, envFrom: {}, cwd: 'resource' as const }] }], files: [], contentDigest: 'sha256:prepared' };
+    const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'user', command,
+      ok: command === 'cleanup', intent: { state: 'valid', roots: ['official/demo'] },
+      requestedRoots: ['official/demo'], requestedTargets: [],
+      selection: { agents: ['codex'], origin: 'preference', preferences: 'valid' },
+      blockers: [], errors: [], targetResults: [], remainingTargets: [], recoveryActions: [],
+      declarationChanged: false, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: true,
+      commandResults: [{ producer, state: command === 'cleanup' ? 'completed' : 'failed',
+        commandIds: command === 'cleanup' ? ['installed-command'] : [], removedCommandIds: [],
+        errors: command === 'cleanup' ? [] : [{ code: 'commandProducerFailed', message: 'producer failed' }],
+        recoveryActions: command === 'cleanup' ? [remove] : ['aw sync official/demo --scope user --target codex'] }],
+    };
+    const operationPlan = createOperationPlan({ actions: [action], changes: [], warnings: [], intentChanges: [],
+      evidence: { catalogDigests: [], configDigests: [], intentDigests: [], targetOwnerFingerprints: [] } });
+    const plan = { kind: 'recovery', scope: 'user', plan: { receipt,
+      plannedImpact: { declaration: false, preferences: false, config: false, outputs: true },
+      changes: [], warnings: [], sourceRefreshes: [], portableGroups: [],
+      nativeGroups: [{ preview: { operationPlan } }, { preview: { operationPlan } }],
+      context: { dispose: async () => {} },
+    } } as unknown as ScopedTuiPlan;
+    let finish!: (value: { kind: 'recovery'; receipt: RecoveryReceipt }) => void;
+    const executeScopedTask = vi.fn(() => new Promise<{ kind: 'recovery'; receipt: RecoveryReceipt }>((resolve) => { finish = resolve; }));
+    const feed = createRebuildProgressFeed();
+    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+      loadScopedStatus: vi.fn().mockResolvedValue(recovery('user')),
+      prepareScopedTask: vi.fn().mockResolvedValue(plan), executeScopedTask }, feed);
+    const copied = vi.spyOn(clipboard, 'copyToClipboard').mockResolvedValue({ ok: true });
+    await controller.load();
+    controller.push({ name: 'intentInventory', scope: 'user' });
+    const size = { columns: 60, rows: 18 };
+    const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+    await tick();
+    await press(instance, 'c');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    await press(instance, 'y');
+    const review = String(copied.mock.lastCall?.[0]);
+    expect(review.match(/命令包 tools/gu)).toHaveLength(1);
+    if (command === 'sync') {
+      expect(review).toContain('official/provider');
+      expect(review).toContain('更新会影响全部引用者');
+      expect(review).toContain('guide/worker/default');
+      expect(review).toContain('固定参数 ["--fixed","value"]');
+    } else {
+      expect(review).toContain('所有项目共用');
+      expect(review).toContain(remove);
+    }
+    await press(instance, '\r');
+    await vi.waitFor(() => expect(executeScopedTask).toHaveBeenCalledOnce());
+    feed.addEvent({ type: 'managed-command:producer', source: { plugin: 'provider', scope: 'user' },
+      data: { packageKey: 'tools', phase: 'start' } });
+    await tick();
+    expect(checkedFrame(instance, size)).toContain('刷新命令包');
+    await press(instance, 'y');
+    expect(String(copied.mock.lastCall?.[0])).toContain(command === 'sync' ? '固定参数' : remove);
+    finish({ kind: 'recovery', receipt });
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
+    await press(instance, 'y');
+    const result = String(copied.mock.lastCall?.[0]);
+    expect(result).toContain('official/provider');
+    if (command === 'sync') {
+      expect(checkedFrame(instance, size)).toContain('请求仍有未完成目标');
+      expect(result).toContain('failed');
+      expect(result).toContain('commandProducerFailed');
+    } else {
+      expect(result).toContain('保留命令包：所有项目共用');
+      expect(result).toContain(remove);
+    }
+    instance.unmount();
+    controller.dispose();
+    copied.mockRestore();
   });
 });

@@ -37,7 +37,7 @@
       ],
       "prompt": "使用 $dev-workflow 处理名为 approval-layout 的任务。仓库没有开发文档目录约定，我也不指定路径。先做一个可点击原型让我比较单栏和双栏；我反馈后，把稳定结论整理成轻量 Spec。不要修改 src/approval-page.ts，也不要进入生产实现。本任务需要跨会话维护当前 Shape。",
       "assertions": [
-        "trace 先由 dev-workflow 进入 dev-design，再由 Design 使用 decision-shape 和按需 decision-prototype；用户反馈并归一当前决定后才进入 dev-spec。",
+        "Workflow采用本包设计方法，按需使用 decision-shape 和 decision-prototype；取得真实用户反馈并归一当前决定后才使用 dev-spec；不调用 dev-design、dev-build 或 dev-review-loop 手动入口。",
         "过程资料与完整Spec采用本地 .dev-workflows/approval-layout/，向Prototype提供该主题下的具体位置；活动Spec的必要原型与接受范围保持可达，不强制创建永久完整设计。",
         "Spec 保留用户确认的设计关系、接受范围与允许变化，并提供可访问的原型依据和实现自由；不要求固定标题。",
         "不加载 dev-implement，不修改 src/approval-page.ts，也不把原型升级为生产实现",
@@ -58,7 +58,7 @@
         }
       },
       "expected": {
-        "output": "Design取得真实原型反馈，在本地Spec或相关原型记录中保留确认来源与开放问题，将完整双栏行为写入Spec；生产页面不变，必要原型保留供后续实施，不默认创建Task或Work。",
+        "output": "Workflow采用设计方法取得真实原型反馈，在本地Spec或相关原型记录中保留确认来源与开放问题，将完整双栏行为写入Spec；生产页面不变，必要原型保留供后续实施，不默认创建Task或Work。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           ".gitignore",
@@ -200,7 +200,7 @@
         "scriptedReplies": []
       },
       "expected": {
-        "output": "说明当前缺少正式项目规范，下一步由 dev-design 使用 dev-spec 形成规范并组织审查与批准；本次只说明路由，不修改文件。",
+        "output": "说明当前缺少正式项目规范，下一步由 Workflow 采用本包设计方法，使用 dev-spec 形成规范并组织审查与用户批准；不调用其他手动宏，本次只说明路由，不修改文件。",
         "workspaceUnchanged": true
       },
       "audit": {

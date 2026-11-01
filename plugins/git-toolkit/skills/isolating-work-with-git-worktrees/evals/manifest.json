@@ -26,12 +26,7 @@
         "project-default"
       ],
       "runs": 3,
-      "timeoutMs": 180000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation",
-        "sanity"
-      ]
+      "timeoutMs": 180000
     },
     {
       "id": "router-diagnostic",
@@ -41,8 +36,7 @@
         "project-default"
       ],
       "runs": 3,
-      "timeoutMs": 180000,
-      "requiredForRelease": false
+      "timeoutMs": 180000
     },
     {
       "id": "behavior",
@@ -53,7 +47,6 @@
       ],
       "runs": 3,
       "timeoutMs": 300000,
-      "requiredForRelease": true,
       "provider": {
         "type": "custom-process",
         "command": [

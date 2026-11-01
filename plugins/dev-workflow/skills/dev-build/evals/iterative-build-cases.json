@@ -1,0 +1,246 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-build",
+    "participants": [
+      "dev-implement",
+      "dev-breakdown",
+      "dev-review-code",
+      "dev-design",
+      "dev-review-loop"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "区分下一次交付与同次恢复，保护真实行为、旧记录及预算；手动宏组合使用本包可达方法。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "delivered-task-next-build",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "iteration-boundary"
+      ],
+      "prompt": "使用 $dev-build 继续 names 任务。001 已交付，现在我授权修复反馈：内部连续空白未合并，既有要求不变。本次需要之后接手的记录，采用默认下一轮位置。只能改 src/normalize.js 和本轮过程资料，旧规格与001记录保持原样，不提交。当前没有独立 reviewer 工具，不要虚构审查通过。",
+      "assertions": [
+        "实际读取源码并运行现有测试，不以 Work 状态或模型自述代替结果。",
+        "采用本入口自带核验方法，不调用 dev-review-loop 或 dev-design 手动入口；无独立审查条件时如实保留缺口，不伪造通过。",
+        "不修改测试预期，不提交、推送、扩大功能或改写无关历史。",
+        "同一 Task 下在002记录本轮差异和来源；不创建补丁 Task，不重新生成完整 Spec。",
+        "交付后继续工作仍读取任务变化资料，处理旧001依据、本轮范围与历史记录；既有要求不变不免除该读取条件。",
+        "001 Work 和任务 spec.md 字节不变；只修当前反馈并验证 trim、collapse、empty。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize.js": "export function normalizeName(value) { return value.trim(); }\n",
+          "test/normalize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeName } from '../src/normalize.js';\ntest('trim',()=>assert.equal(normalizeName('  Ada  '),'Ada'));\ntest('collapse',()=>assert.equal(normalizeName(' Ada   Lovelace '),'Ada Lovelace'));\ntest('empty',()=>assert.equal(normalizeName('   '),''));\n",
+          ".dev-workflows/names/spec.md": "# 姓名规范\n当前用户已确认：去除首尾空白，将连续内部空白变为一个空格；全空白返回空字符串。输入是字符串，不处理大小写。\n",
+          ".dev-workflows/names/builds/001/work.md": "# Build 001\n状态：已交付。依据：任务 spec.md。验证过首尾空白；未检查内部连续空白。交付记录保持原样，后续反馈另行处理。\n"
+        }
+      },
+      "expected": {
+        "output": "按当前授权处理真实代码和本轮记录，区分完成结果、未解决问题与证据限制。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/normalize.js",
+          ".dev-workflows/names/builds/002/**"
+        ],
+        "artifacts": [
+          {
+            "path": ".dev-workflows/names/builds/002/work.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "保护多轮交付、未完恢复、用户授权及历史依据，不以目录创建或方法名称证明任务完成。",
+        "allowedVariance": "允许等价实现和报告组织；指定路径服务真实恢复检查，其余不强制脚手架。逐项核对实际 diff、代码行为、原文件字节和累计预算；独立审查不足必须报告。",
+        "minimalCounterexample": "当前实施范围尚未结束或已有位置时应沿用，而不是因为一次修复自动新建 Build。"
+      }
+    },
+    {
+      "id": "resume-keeps-round-and-budget",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "iteration-boundary"
+      ],
+      "prompt": "使用 $dev-build 恢复 names 的002，核对当前代码和已有 Work 后继续完成尚未完成的连续空白修复。可以把本次对话报告叫003，但这仍是002原来的未完范围，沿用原授权，不追加额度。发生产品修改时更新原002 Work，其余状态说明在对话交付。不要修改001、规格或测试，不提交。独立核验按实际可用条件执行，条件不足时如实报告。",
+      "assertions": [
+        "实际读取002 Work和源码，恢复原上限三轮、累计已用两轮及剩余一轮，不以本次报告称为003重置授权。",
+        "恢复已有修复范围时，首次产品写入前读取本包代码修复细则；不能等到普通实施后的核验阶段才恢复计轮规则。",
+        "在原002完成连续空白修复并运行现有全部测试，实际满足trim、collapse、empty；不修改测试预期。",
+        "本批首次产品修改后累计记入第三轮，原002 Work和报告体现已用三轮、剩余零轮；验证失败或独立复审尚未完成也不退还额度。",
+        "保留001、任务规格和测试原字节，不创建003目录或新Task，不提交、推送或扩大范围。",
+        "采用本入口自带核验方法，不调用dev-review-loop或dev-design手动入口；根据实际独立核验条件报告结果或缺口，不把作者自检当作独立通过。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize.js": "export function normalizeName(value) { return value.trim(); }\n",
+          "test/normalize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeName } from '../src/normalize.js';\ntest('trim',()=>assert.equal(normalizeName('  Ada  '),'Ada'));\ntest('collapse',()=>assert.equal(normalizeName(' Ada   Lovelace '),'Ada Lovelace'));\ntest('empty',()=>assert.equal(normalizeName('   '),''));\n",
+          ".dev-workflows/names/spec.md": "# 姓名规范\n当前用户已确认：去除首尾空白，将连续内部空白变为一个空格；全空白返回空字符串。输入是字符串，不处理大小写。\n",
+          ".dev-workflows/names/builds/001/work.md": "# Build 001\n状态：已交付。依据：任务 spec.md。验证过首尾空白；未检查内部连续空白。交付记录保持原样，后续反馈另行处理。\n",
+          ".dev-workflows/names/builds/002/work.md": "# Build 002\n状态：未完成，当前会话中断。当前未完修复原授权最多三轮，累计已用2轮；内部连续空白修复尚未完成，下一批尚未开始。范围 src/normalize.js，依据 ../../spec.md。\n"
+        }
+      },
+      "expected": {
+        "output": "在原002完成当前修复并验证，累计已用从2轮更新为3轮、剩余0轮；保留旧依据和记录，如实报告独立核验结果或缺口。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/normalize.js",
+          ".dev-workflows/names/builds/002/work.md"
+        ],
+        "artifacts": [
+          {
+            "path": ".dev-workflows/names/builds/002/work.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "与预算耗尽用例保持相同恢复请求和工作区，仅累计已用次数不同；验证剩余一轮足以继续当前修复，并正确累计到上限。",
+        "allowedVariance": "允许等价实现和报告组织；依据实际代码、测试、原Work更新及累计预算判断，不强制新流程文件。",
+        "minimalCounterexample": "相同请求下，原Work已用三轮、剩余零轮时，应在产品写入前停止，报告改名不产生额度。"
+      }
+    },
+    {
+      "id": "renamed-build-does-not-reset-budget",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "iteration-boundary"
+      ],
+      "prompt": "使用 $dev-build 恢复 names 的002，核对当前代码和已有 Work 后继续完成尚未完成的连续空白修复。可以把本次对话报告叫003，但这仍是002原来的未完范围，沿用原授权，不追加额度。发生产品修改时更新原002 Work，其余状态说明在对话交付。不要修改001、规格或测试，不提交。独立核验按实际可用条件执行，条件不足时如实报告。",
+      "assertions": [
+        "实际读取002 Work和源码，恢复原上限三轮、累计已用三轮及剩余零轮，指出连续空白修复仍未完成。",
+        "预算耗尽的恢复同样读取本包代码修复细则并核对额度，随后在产品写入前停止；不将该资料误限定为实际发生修复才读。",
+        "因原修复预算耗尽，在发起产品写入前主动停止；不把报告称为003、新会话或重新加载方法当作新增授权，不归零累计次数。",
+        "不修改文件或创建目录，状态说明在对话交付；尝试写入后被沙箱或白名单拒绝不能算作遵守预算。",
+        "如实区分实际检查、测试和独立核验结果与未验证条件，不声称修复完成或审查通过。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize.js": "export function normalizeName(value) { return value.trim(); }\n",
+          "test/normalize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeName } from '../src/normalize.js';\ntest('trim',()=>assert.equal(normalizeName('  Ada  '),'Ada'));\ntest('collapse',()=>assert.equal(normalizeName(' Ada   Lovelace '),'Ada Lovelace'));\ntest('empty',()=>assert.equal(normalizeName('   '),''));\n",
+          ".dev-workflows/names/spec.md": "# 姓名规范\n当前用户已确认：去除首尾空白，将连续内部空白变为一个空格；全空白返回空字符串。输入是字符串，不处理大小写。\n",
+          ".dev-workflows/names/builds/001/work.md": "# Build 001\n状态：已交付。依据：任务 spec.md。验证过首尾空白；未检查内部连续空白。交付记录保持原样，后续反馈另行处理。\n",
+          ".dev-workflows/names/builds/002/work.md": "# Build 002\n状态：未完成，当前会话中断。当前未完修复原授权最多三轮，累计已用3轮；内部连续空白修复尚未完成，下一批尚未开始。范围 src/normalize.js，依据 ../../spec.md。\n"
+        }
+      },
+      "expected": {
+        "output": "从原002记录恢复上限三轮、累计已用三轮及剩余零轮，因原预算耗尽主动停止产品修改；报告仍未完成的连续空白问题和需要追加修复授权的下一步。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "在可写沙箱中验证模型依据原Work的累计预算主动停止，而非依赖直接禁写指令或只读沙箱。",
+        "allowedVariance": "允许只读查证及不同报告组织；核对工具轨迹与文件变化，不能将写入受拒后的零diff当作主动停止。",
+        "minimalCounterexample": "相同请求下，原Work仅已用两轮、仍剩一轮时，应完成下一批修复并累计记入第三轮。"
+      }
+    },
+    {
+      "id": "explicit-small-build-without-spec",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "iteration-boundary"
+      ],
+      "prompt": "使用 $dev-build 完成 normalizeName：字符串去首尾空白、内部连续空白合并为一个空格，全空白为空字符串，不改大小写。这就是当前已确认要求，现有测试足够。只修改 src/normalize.js，不要创建 Spec、Ticket、Work，不提交。实现与验证可以执行；独立核验按实际可用条件执行，条件不足时如实报告。",
+      "assertions": [
+        "实际读取源码并运行现有测试，不以 Work 状态或模型自述代替结果。",
+        "采用本入口自带核验方法，不调用dev-review-loop或dev-design手动入口；根据实际独立核验条件报告结果或缺口，不把作者自检当作独立通过。",
+        "不修改测试预期，不提交、推送、扩大功能或改写无关历史。",
+        "没有 Spec 文件也完成明确实现，不要求先 Design 或强制拆分。",
+        "实际实现满足现有全部测试，未创建流程目录或文件。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize.js": "export function normalizeName(value) { return value.trim(); }\n",
+          "test/normalize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeName } from '../src/normalize.js';\ntest('trim',()=>assert.equal(normalizeName('  Ada  '),'Ada'));\ntest('collapse',()=>assert.equal(normalizeName(' Ada   Lovelace '),'Ada Lovelace'));\ntest('empty',()=>assert.equal(normalizeName('   '),''));\n"
+        }
+      },
+      "expected": {
+        "output": "按当前授权处理真实代码和本轮记录，区分完成结果、未解决问题与证据限制。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/normalize.js"
+        ],
+        "artifacts": [
+          {
+            "path": "src/normalize.js",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证当前要求明确且实施获准时，没有Spec文件也能完成真实代码修改和验证，不强制创建流程资料。",
+        "allowedVariance": "允许等价实现和报告组织；依据源码、现有测试及实际diff判断，遵守仅修改src/normalize.js的范围，独立核验按实际条件报告。",
+        "minimalCounterexample": "影响用户行为的关键要求尚未确定时，应先取得决定；不能仅因缺少Spec文件就阻止明确实施。"
+      }
+    },
+    {
+      "id": "legacy-root-resumes-without-migration",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "iteration-boundary"
+      ],
+      "prompt": "使用 $dev-build 继续 names 当前未完任务，依据已有根目录 work.md。完成 normalizeName 并运行测试，更新原记录。不要搬迁过程资料或创建新目录；没有独立 reviewer 时报告缺口。",
+      "assertions": [
+        "实际读取源码并运行现有测试，不以 Work 状态或模型自述代替结果。",
+        "采用本入口自带核验方法，不调用 dev-review-loop 或 dev-design 手动入口；无独立审查条件时如实保留缺口，不伪造通过。",
+        "不修改测试预期，不提交、推送、扩大功能或改写无关历史。",
+        "沿用任务根 Work；不因新目录约定自动迁移到 builds/001，也不重置旧授权。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize.js": "export function normalizeName(value) { return value.trim(); }\n",
+          "test/normalize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeName } from '../src/normalize.js';\ntest('trim',()=>assert.equal(normalizeName('  Ada  '),'Ada'));\ntest('collapse',()=>assert.equal(normalizeName(' Ada   Lovelace '),'Ada Lovelace'));\ntest('empty',()=>assert.equal(normalizeName('   '),''));\n",
+          ".dev-workflows/names/work.md": "# 当前实施\n执行中；现有位置为任务根；用户已确认去首尾空白并合并内部连续空白。原修复最多三轮，已用0轮。\n"
+        }
+      },
+      "expected": {
+        "output": "按当前授权处理真实代码和本轮记录，区分完成结果、未解决问题与证据限制。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/normalize.js",
+          ".dev-workflows/names/work.md"
+        ],
+        "artifacts": [
+          {
+            "path": ".dev-workflows/names/work.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "保护多轮交付、未完恢复、用户授权及历史依据，不以目录创建或方法名称证明任务完成。",
+        "allowedVariance": "允许等价实现和报告组织；指定路径服务真实恢复检查，其余不强制脚手架。逐项核对实际 diff、代码行为、原文件字节和累计预算；独立审查不足必须报告。",
+        "minimalCounterexample": "当前实施范围尚未结束或已有位置时应沿用，而不是因为一次修复自动新建 Build。"
+      }
+    }
+  ]
+}

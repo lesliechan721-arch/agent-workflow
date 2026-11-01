@@ -57,8 +57,6 @@ function manifest(): Record<string, unknown> {
       kind: 'trigger',
       cases: 'selected-cases.json',
       profiles: ['selected'],
-      releaseSplits: [],
-      requiredForRelease: true,
     }],
   }
 }
@@ -138,7 +136,7 @@ describe('AwSkillEvalManifest v1 reader', () => {
     }
   })
 
-  it('accepts canonical v1 and rejects invalid release/profile selections', async () => {
+  it('accepts canonical v1 and rejects invalid profile selections', async () => {
     const fixture = await createFixture()
     const validManifest = manifest()
     await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), validManifest, { spaces: 2 })
@@ -149,19 +147,7 @@ describe('AwSkillEvalManifest v1 reader', () => {
     })).resolves.toMatchObject({
       valid: true,
       errors: [],
-      manifest: { version: 1, suites: [{ releaseSplits: [] }] },
-    })
-
-    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
-      ...validManifest,
-      suites: [{ ...(validManifest.suites as Record<string, unknown>[])[0], releaseSplits: ['validation', 'validation'] }],
-    }, { spaces: 2 })
-    await expect(validateAwSkillEvalManifest({
-      plugin: fixture.plugin,
-      skill: 'owner-skill',
-    })).resolves.toMatchObject({
-      valid: false,
-      errors: [expect.stringContaining('releaseSplits must contain unique values')],
+      manifest: { version: 1, suites: validManifest.suites },
     })
 
     await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
@@ -175,37 +161,36 @@ describe('AwSkillEvalManifest v1 reader', () => {
       valid: false,
       errors: [expect.stringContaining('profiles must be a non-empty array')],
     })
+  })
 
+  it.each([
+    ['requiredForRelease', true],
+    ['requiredForRelease', false],
+    ['requiredForRelease', 'invalid'],
+    ['releaseSplits', ['validation', 'sanity']],
+    ['releaseSplits', []],
+    ['releaseSplits', ['validation', 'validation']],
+    ['releaseSplits', 'invalid'],
+    ['releaseProcessManagement', 'managed-only'],
+    ['releaseProcessManagement', 'allow-unmanaged-confirmed'],
+    ['releaseProcessManagement', 'invalid'],
+    ['releaseProcessManagement', null],
+    ['unrecognizedOption', true],
+  ] as const)('rejects unknown suite field %s with value %j', async (key, value) => {
+    const fixture = await createFixture()
+    const validManifest = manifest()
     await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
       ...validManifest,
-      suites: [{
-        ...(validManifest.suites as Record<string, unknown>[])[0],
-        releaseProcessManagement: 'allow-unmanaged-confirmed',
-      }],
+      suites: [{ ...(validManifest.suites as Record<string, unknown>[])[0], [key]: value }],
     }, { spaces: 2 })
+
     await expect(validateAwSkillEvalManifest({
       plugin: fixture.plugin,
       skill: 'owner-skill',
-    })).resolves.toMatchObject({
-      valid: true,
-      manifest: {
-        suites: [{ releaseProcessManagement: 'allow-unmanaged-confirmed' }],
-      },
-    })
-
-    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
-      ...validManifest,
-      suites: [{
-        ...(validManifest.suites as Record<string, unknown>[])[0],
-        releaseProcessManagement: 'unmanaged',
-      }],
-    }, { spaces: 2 })
-    await expect(validateAwSkillEvalManifest({
-      plugin: fixture.plugin,
-      skill: 'owner-skill',
-    })).resolves.toMatchObject({
+    })).resolves.toEqual({
       valid: false,
-      errors: [expect.stringContaining('releaseProcessManagement must be managed-only or allow-unmanaged-confirmed')],
+      errors: [`eval manifest.suites[0] has unknown field "${key}".`],
+      manifest: null,
     })
   })
 
@@ -292,7 +277,7 @@ describe('AwSkillEvalManifest v1 reader', () => {
     expect(message).not.toContain(sensitiveValue)
   })
 
-  it('does not invent a release requirement for a dynamic Skill', async () => {
+  it('accepts a manifest for a dynamic Skill', async () => {
     const fixture = await createFixture()
     fixture.plugin.manifest.artifacts = {
       targets: [{
@@ -301,12 +286,8 @@ describe('AwSkillEvalManifest v1 reader', () => {
         skillKey: 'owner-skill',
       }],
     } as NonNullable<PluginMeta['manifest']['artifacts']>
-    const noReleaseSuite = manifest()
-    noReleaseSuite.suites = [{
-      ...((noReleaseSuite.suites as Record<string, unknown>[])[0]!),
-      requiredForRelease: false,
-    }]
-    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), noReleaseSuite, { spaces: 2 })
+    const dynamicManifest = manifest()
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), dynamicManifest, { spaces: 2 })
 
     await expect(validateAwSkillEvalManifest({
       plugin: fixture.plugin,
@@ -314,7 +295,7 @@ describe('AwSkillEvalManifest v1 reader', () => {
     })).resolves.toMatchObject({
       valid: true,
       errors: [],
-      manifest: { suites: [{ requiredForRelease: false }] },
+      manifest: { suites: dynamicManifest.suites },
     })
   })
 

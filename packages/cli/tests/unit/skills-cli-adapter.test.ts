@@ -14,6 +14,7 @@ import {
   type SkillsCliRunner,
 } from '../../src/portable/skills-cli.js';
 import { normalizePortableAgents } from '../../src/portable/commands.js';
+import { writeSkillsCliFixture } from '../helpers/skills-cli-fixture.js';
 
 const roots: string[] = [];
 
@@ -25,24 +26,21 @@ async function fakeSkills(options: {
 } = {}): Promise<{ cwd: string; env: NodeJS.ProcessEnv; log: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-fake-skills-'));
   roots.push(root);
-  const executable = path.join(root, 'skills');
   const log = path.join(root, 'calls.jsonl');
-  await fs.writeFile(executable, [
+  const fixture = await writeSkillsCliFixture(root, [
     '#!/usr/bin/env node',
-    "const fs = require('node:fs');",
+    "import fs from 'node:fs';",
     "fs.appendFileSync(process.env.FAKE_SKILLS_LOG, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }) + '\\n');",
     "if (process.argv[2] === '--version') { const done = () => { console.log(process.env.FAKE_SKILLS_VERSION); process.exit(0); }; if (process.env.FAKE_SKILLS_DELAY_VERSION === '1') setTimeout(done, 30_000); else done(); }",
     "if (process.argv[2] === 'list') { console.log(process.env.FAKE_SKILLS_LIST); process.exit(0); }",
     "if (process.argv[2] === 'add') process.exit(Number(process.env.FAKE_SKILLS_ADD_EXIT || '0'));",
     'process.exit(2);',
-  ].join('\n'));
-  await fs.chmod(executable, 0o755);
+  ].join('\n'), process.env);
   return {
     cwd: root,
     log,
     env: {
-      ...process.env,
-      PATH: `${root}${path.delimiter}${process.env.PATH ?? ''}`,
+      ...fixture.env,
       FAKE_SKILLS_LOG: log,
       FAKE_SKILLS_VERSION: options.version ?? '1.5.23',
       FAKE_SKILLS_LIST: JSON.stringify(options.list ?? []),
@@ -243,7 +241,9 @@ describe('Skills CLI adapter', () => {
     await fs.move(fake.shim, fake.shim.replace(/\.cmd$/u, '.CMD'));
     await expect(probeSkillsCli({ ...fake, env: { ...fake.env, PATHEXT: undefined }, platform: 'win32' }))
       .resolves.toEqual({ version: '1.5.23' });
-    await expect(probeSkillsCli({ ...fake, env: { ...fake.env, PATH: fake.cwd }, platform: 'win32' }))
+    const emptyBin = path.join(fake.cwd, 'empty-bin');
+    await fs.ensureDir(emptyBin);
+    await expect(probeSkillsCli({ ...fake, env: { ...fake.env, PATH: emptyBin }, platform: 'win32' }))
       .rejects.toThrow('portableSkillsCliMissing');
   });
 

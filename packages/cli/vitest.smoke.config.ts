@@ -1,3 +1,5 @@
+import { vitestWorkerOptions } from './scripts/test-workers.mjs';
+
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -7,8 +9,7 @@ export default defineConfig({
     setupFiles: ['tests/setup/test-isolation.ts', 'tests/setup/test-isolation-smoke.ts'],
     // Smoke cases exercise real build/pack commands that rewrite the repo-level dist outputs.
     fileParallelism: false,
-    maxWorkers: 1,
-    minWorkers: 1,
+    ...vitestWorkerOptions({ serial: true }),
     hookTimeout: 120000,
     testTimeout: 120000,
     coverage: {

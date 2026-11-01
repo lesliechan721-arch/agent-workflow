@@ -11,7 +11,10 @@
     },
     "runtime": {
       "isolation": "strict"
-    }
+    },
+    "participants": [
+      "explain-for-review"
+    ]
   },
   "cases": [
     {
@@ -45,7 +48,10 @@
           "docs/design/export.md"
         ],
         "artifacts": [
-          { "path": "docs/design/export.md", "exists": true }
+          {
+            "path": "docs/design/export.md",
+            "exists": true
+          }
         ]
       },
       "audit": {
@@ -81,7 +87,10 @@
           "docs/design/**"
         ],
         "artifacts": [
-          { "path": "docs/design/flow.md", "exists": true }
+          {
+            "path": "docs/design/flow.md",
+            "exists": true
+          }
         ]
       },
       "audit": {

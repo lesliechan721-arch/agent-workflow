@@ -20,15 +20,18 @@ export interface ClaudeSettings {
     allow?: string[];
     ask?: string[];
     deny?: string[];
+    [key: string]: unknown;
   };
+  sandbox?: { excludedCommands?: string[]; [key: string]: unknown };
   hooks?: Array<Record<string, unknown>>;
   awGenerated?: {
-    permissions?: Record<string, { allow: string[]; ask: string[]; deny: string[] }>;
+    permissions?: Record<string, { allow: string[]; ask: string[]; deny: string[]; excludedCommands?: string[] }>;
     hooks?: Record<string, Array<Record<string, unknown>>>;
     manualPermissions?: {
       allow?: string[];
       ask?: string[];
       deny?: string[];
+      excludedCommands?: string[];
     };
     manualHooks?: Array<Record<string, unknown>>;
   };

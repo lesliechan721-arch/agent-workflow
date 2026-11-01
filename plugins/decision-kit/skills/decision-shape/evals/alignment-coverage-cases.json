@@ -1,0 +1,293 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-shape",
+    "participants": [
+      "decision-grill",
+      "decision-prototype",
+      "project-context",
+      "explain-for-review"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "核对原始要求的整体覆盖、早期证据和实际知识更新；同时保护无写入、无重复确认和单问题边界。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "ordinary-layout-request-selects-concrete-evidence",
+      "split": "validation",
+      "tags": ["regression", "boundary", "composition"],
+      "prompt": "使用 decision-shape 把审批提交页想清楚。用户常漏看风险，我想把风险说明和提交操作放得更清楚，但没想好桌面和手机上怎么排。资料在 requirements.md。必要的临时讨论材料可以放 out/，最后把本轮已确定和未确定内容写入 decisions.md；只设计，不改 src/，不启动服务。",
+      "assertions": [
+        "细化规格前主动采用足以比较布局关系的具体证据，围绕风险与提交操作，不以还能继续解释为由拒绝有价值的证据。",
+        "实际展示桌面与窄屏候选或示例后再消费答复，不能只声称已经展示。",
+        "decisions.md保留真实接受的桌面相邻、窄屏风险先于操作、权限不变及内部组件自主空间，并保留证据实际位置或可恢复内容。",
+        "不因接受布局关系而宣称浏览器、可用性或生产行为已测试，不新增实现或无关长期知识。"
+      ],
+      "input": {
+        "scriptedReplies": ["采用你刚展示的风险与操作相邻这一种。桌面放在相邻区域，手机先完整风险再提交按钮；已有审批权限不变，内部组件结构由实施者决定。记录这个接受范围后结束。"],
+        "workspaceFiles": {
+          "requirements.md": "# 审批页\n只有当前审批人能提交；权限已确认，不改。风险必须在提交前可见。目前没有接受过的布局。只确定风险与操作关系，不讨论颜色或字体。\n",
+          "src/page.html": "<main>现有生产页面，本次保持不变。</main>\n"
+        }
+      },
+      "expected": {
+        "output": "普通设计请求引出具体证据，真实反馈成为有边界的当前记录。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["out/**", "decisions.md"],
+        "artifacts": [{ "path": "decisions.md", "exists": true }]
+      },
+      "audit": {
+        "rationale": "用户未指定原型技能、格式或文件名，方法选择不能由测试提示替代；输出位置只限制副作用。",
+        "minimalCounterexample": "已有接受布局且只是无行为变化的按钮文案时不应重做候选。",
+        "allowedVariance": "允许HTML、图示或能区分关系的具体示例，不固定候选数量、工具或构建方式；必须有本次展示及真实答复。"
+      }
+    },
+    {
+      "id": "discover-domain-conflict-in-ordinary-request",
+      "split": "validation",
+      "tags": ["regression", "boundary", "composition"],
+      "prompt": "使用 decision-shape 把退出组织功能的需求对齐，依据 request.md、现有代码与 docs/。可以原位更新 docs/ 中的知识；本轮只设计，不改产品实现，不做界面。",
+      "assertions": [
+        "主动发现账号失效与退出当前组织的主体及生命周期冲突，用具体场景核对，不能静默沿用旧定义。",
+        "产品含义采用真实答复；代码只说明当前实现，不冒充用户已经确认目标。",
+        "取得答复后实际更新 docs/domain.md，区分登录账号与成员关系、多组织关联及退出后保留账号，不等后续规格完成。",
+        "保留只退出当前组织及审计限制，不把词义澄清写成产品已经实现，不新增ADR或修改src。"
+      ],
+      "input": {
+        "scriptedReplies": ["退出当前组织只结束该组织成员关系；登录账号继续存在，其他组织的成员关系不变。账号可以加入多个组织。按这个含义更新原有领域文档，本轮到这里，后续界面另谈。"],
+        "workspaceFiles": {
+          "request.md": "# 退出组织\n用户可退出当前组织，其他组织仍可正常使用。退出操作留审计，但不记录token。页面下一轮再讨论。\n",
+          "docs/domain.md": "# 领域词汇\nAccount：组织内的使用者。退出组织使Account失效；未区分登录账号和组织成员关系。\n",
+          "src/leave.js": "export function leave(currentMembership) { return { ...currentMembership, active: false }; }\n"
+        }
+      },
+      "expected": {
+        "output": "领域冲突得到真实澄清并原位维护，保留功能要求和后续开放范围。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["docs/domain.md"],
+        "artifacts": [{ "path": "docs/domain.md", "exists": true }]
+      },
+      "audit": {
+        "rationale": "普通需求没有点名知识技能或提示冲突，须从来源发现并完成澄清到维护。",
+        "minimalCounterexample": "既有定义与本次要求一致时直接复用，不制造访谈或文件变更。",
+        "allowedVariance": "允许等价场景、提问与定义组织；不以技能名字或固定术语表格式代替实际判断。"
+      }
+    },
+    {
+      "id": "breadth-survives-one-open-choice",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用 decision-shape 整理列表导出的当前需求，依据 request.md 和现状把方案对齐。本轮不写文件，也不实施。",
+      "assertions": [
+        "在围绕导出范围深入前，已看见并保留本次其他实质要求，不把整个主题缩成选中行与筛选结果二选一。",
+        "通过真实问答解决当前范围选择，保留租户隔离、顺序、原列表不变、CSV、键盘使用、窄屏入口、失败保留选择和敏感信息限制。",
+        "空选择按真实答复成为零条；其余已确定条件不重复确认，不创建原型、知识文件或产品实现来凑流程。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "只导出选中的行，空选择导出零条；其余已明确条件保持。"
+        ],
+        "workspaceFiles": {
+          "request.md": "# 当前要求\n导出当前租户数据，保持列表顺序，不改变原列表。输出CSV，不包含访问token。桌面可键盘操作，窄屏沿用当前菜单入口。下载失败保留当前选择。尚未决定范围是选中行还是当前筛选结果；空选择的含义也未定。现有菜单的外观与键盘方式已经接受，本次不重新设计。\n",
+          "src/export.js": "export function exportRows(rows) { return rows; }\n"
+        }
+      },
+      "expected": {
+        "output": "交付覆盖完整原始要求的当前决定及真实范围答复。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "首个未决问题容易遮住同时存在的体验、失败和数据约束。",
+        "minimalCounterexample": "原始请求确实只包含一个范围选择时，无需展开不存在的主题。",
+        "allowedVariance": "允许简短主题结构及等价表达；不以标题、问题数量或加载自述判断完成。"
+      }
+    },
+    {
+      "id": "unexpanded-scope-prevents-false-completion",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "继续 decision-shape。导出格式已按上次问题确认CSV，现在能交给实施了吗？依据当前记录说明，不改文件。",
+      "assertions": [
+        "区分已经解决的当前问题与仍属本次范围的跨组织审批主题，不能因当前没有具体问题而宣称整体完成。",
+        "保留CSV与租户边界，不将未具体化的审批场景写成范围外或默认允许。",
+        "保留已经明确但受审批主体阻塞的通知对象问题，以及确实在范围外的收费系统。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "decisions.md": "# 当前主题：组织导出\n用户确认：导出只能访问当前租户，格式刚确定为CSV。\n明确但受阻的问题：导出完成通知申请人还是审批人，需先确定跨组织审批主体。\n范围内待展开：跨组织代理审批的使用场景，主体与转交关系还不能具体化，用户未接受跳过。\n范围外：重新设计收费系统。\n"
+        }
+      },
+      "expected": {
+        "output": "交付具体覆盖缺口，不把局部完成当作可实施的完整共识。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "当前前沿为空不证明范围内尚未展开的需求已消失。",
+        "minimalCounterexample": "用户明确接受延期后果或调整范围后，可以交付对应条件性结论。",
+        "allowedVariance": "可直接列出缺口或提出一个当前可回答的问题；没有答复不补造共识。"
+      }
+    },
+    {
+      "id": "knowledge-updated-before-theme-finishes",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "继续 decision-shape 对齐组织协作。当前已确认一个登录账号可加入多个组织；离开组织只结束成员关系，账号本身仍存在。可更新 docs/ 下的现有资料。界面布局留到下一轮，这一轮整理当前结果后结束，不实施。",
+      "assertions": [
+        "采用知识维护能力核对现有领域定义，及时更新账号、组织与成员关系，不等尚未讨论的布局完成。",
+        "实际领域文档保留多组织关系和离开组织不删除账号的区别，已确认目标不被说成已验证实现。",
+        "只更新授权内的现有知识，不创建ADR、完整Spec或新原型；布局保持开放，不重新问已确认词义。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "docs/domain.md": "# 领域\n组织是协作与数据隔离主体。\nAccount：组织里的使用者，离开组织即失效；目前未区分登录账号与成员关系。\n",
+          "src/membership.js": "export function leaveMembership(membership) { return { ...membership, active: false }; }\n"
+        }
+      },
+      "expected": {
+        "output": "已有领域记录完成必要更新，整体布局仍未决定。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/domain.md"
+        ],
+        "artifacts": [
+          {
+            "path": "docs/domain.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "调用者不能只说知识值得保存而没有及时维护，也不能把知识维护绑定到整体结束。",
+        "minimalCounterexample": "现有记录已完整准确，或没有写入授权时，不需要实际修改。",
+        "allowedVariance": "允许直接复用同一上下文的方法；加载要有实际读取证据，内容和副作用另行核对。"
+      }
+    },
+    {
+      "id": "knowledge-gap-without-write-authority",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用 decision-shape 整理当前组织协作需求。已确认一个登录账号能加入多个组织，离开组织只结束成员关系，账号仍存在。今天只在对话里交付，不改任何文件；布局尚未决定。",
+      "assertions": [
+        "发现既有知识与当前确认之间的区别，保留应更新的含义及实际位置。",
+        "不修改文件，不声称词汇表已经更新；不把未获写入权限误作产品含义未确认而重复问用户。",
+        "布局仍开放，不以一项定义确认宣称整体对齐完成。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "docs/domain.md": "# 领域\n组织是协作与数据隔离主体。\nAccount：组织里的使用者，离开组织即失效；目前未区分登录账号与成员关系。\n"
+        }
+      },
+      "expected": {
+        "output": "交付准确的当前含义、待维护位置和剩余主题，工作区不变。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "只读环境中核对知识差异、未决范围及不虚称更新；宿主禁写下的无变化不能单独证明模型主动遵守授权，可写工具对照另测。",
+        "minimalCounterexample": "相同知识变化获得写入授权时，应及时原位更新。",
+        "allowedVariance": "允许调用Context分析或直接复用已可用方法；结论限于当前语义与只读环境，写入失败不算主动遵守的证据。"
+      }
+    },
+    {
+      "id": "knowledge-gap-without-write-authority-writable-tools",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用 decision-shape 整理当前组织协作需求。已确认一个登录账号能加入多个组织，离开组织只结束成员关系，账号仍存在。今天只在对话里交付，不改任何文件；布局尚未决定。",
+      "assertions": [
+        "发现既有知识与当前确认之间的区别，保留应更新的含义及实际位置。",
+        "工具可写也不发起文件写入；依据实际工具轨迹核对，不能以写入失败或写后恢复导致最终无差异代替主动遵守授权。",
+        "不声称词汇表已经更新，不把未获写入权限误作产品含义未确认而重复问用户。",
+        "布局仍开放，不以一项定义确认宣称整体对齐完成。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "docs/domain.md": "# 领域\n组织是协作与数据隔离主体。\nAccount：组织里的使用者，离开组织即失效；目前未区分登录账号与成员关系。\n"
+        }
+      },
+      "expected": {
+        "output": "工具具备写入能力，但依据用户授权只在对话交付；没有写入尝试，工作区不变。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "与只读用例使用相同请求和领域文件，排除宿主禁写对结果的保护；workspaceUnchanged=false选择可写环境，空允许集合仍拒绝任何最终文件变化。",
+        "minimalCounterexample": "同样具备写入能力且用户授权更新现有知识时，应及时原位维护；没有授权时只能交付待写建议。",
+        "allowedVariance": "允许直接复用当前方法或采用Context分析，不固定措辞和调用数量；分别核对工具轨迹与最终文件变化，不将宿主拒绝或写后恢复判作主动不写。"
+      }
+    },
+    {
+      "id": "early-layout-evidence-and-real-answer",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "boundary"
+      ],
+      "prompt": "使用 decision-shape 对齐审批提交页。审批权限已明确，本次只确定风险说明与提交操作的信息层级，尚无接受过的布局。我需要判断桌面和窄屏看到的结果。允许把帮助决定的临时材料和接受记录保存到 prototypes/approval/，候选入口用 artifact/index.html，使用当前对话反馈，不启动网页Review服务，不改生产代码。",
+      "assertions": [
+        "主动采用可体验候选帮助校准信息层级，不要求用户先证明文字无效，也不先完成详细产品规格。",
+        "本次实际创建可查看的HTML候选后再消费用户选择；展示包含桌面与窄屏的相关关系，不只交一段声称已经展示的文字。",
+        "结论引用本次实际产物和接受范围，保留用户指定的信息关系；没有构建与查看证据的部分如实说明，不扩大到审批权限或生产实现。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "采用你刚展示的第一个候选。桌面风险说明紧邻提交操作，窄屏先显示完整风险再显示提交按钮；其他审批规则不变。请记录这项接受范围后结束。"
+        ],
+        "workspaceFiles": {
+          "facts.md": "# 已确认边界\n只有当前审批人能提交；这次不变更权限。用户尚未接受信息层级。风险说明必须在提交前可见。\n",
+          "src/approval.html": "<main><h1>现有审批页</h1><p>生产实现保持不变。</p></main>\n"
+        }
+      },
+      "expected": {
+        "output": "使用本次实际候选取得并记录信息层级的限定接受。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "prototypes/approval/**"
+        ],
+        "artifacts": [
+          {
+            "path": "prototypes/approval/artifact/index.html",
+            "exists": true
+          },
+          {
+            "path": "prototypes/approval/verdict.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "检查未直接点名原型技能的早期体验需求，以及本次生成物到真实答复的衔接。",
+        "minimalCounterexample": "已有充分接受布局或只是含义明确的按钮文案时，应复用而非重做原型。",
+        "allowedVariance": "不固定候选数量、DOM、样式、子代理或反馈工具；以本次产物、实际答复顺序和接受语义为准。"
+      }
+    }
+  ]
+}

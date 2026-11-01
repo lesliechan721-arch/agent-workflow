@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-grill",
+    "participants": ["explain-for-review"],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "复杂呈现可借助独立能力，但当前提问、真实答复和确认仍由Grill负责；普通问题不增加文件或重复确认。"
+    },
+    "runtime": { "isolation": "strict" }
+  },
+  "cases": [
+    {
+      "id": "migration-reading-returns-to-current-question",
+      "split": "validation",
+      "tags": ["regression", "boundary", "composition"],
+      "prompt": "使用 decision-grill 帮我决定迁移窗口采用A还是B。依据 migration.md，我分不清时间、责任和失败后的关系。先做一个能反复查原文和这些关系的本地阅读页 out/reading.html，再问我当前选择。只允许写该阅读页；不改方案、不实现产品、不启动服务。",
+      "assertions": [
+        "实际生成可读的呈现，保留A与B的时间窗口、失败责任、停止条件及成本，不能用声称已解释代替文件或遗漏不利条件。",
+        "呈现既有材料时保持候选状态，原始来源可达；不新增自动回滚、代用户选择或把阅读视图变为产品原型。",
+        "使用呈现继续同一选择的问答，真实答复后准确记录B和限定接受范围；没有新增含义时不再请求机械确认。",
+        "没有修改源文、创建额外记录或启动生产实现；采用辅助呈现不扩大Grill的职责。"
+      ],
+      "input": {
+        "scriptedReplies": ["采用B，接受30天维护成本；旧凭据到期前可人工撤销迁移，到期后不能恢复。其他责任和停止条件沿用原文，不新增自动回滚。请在对话中记录后结束。"],
+        "workspaceFiles": {
+          "migration.md": "# 候选迁移方案，待选择\n目标：优先减少消费者迁移失败，可接受最多30天同时维护新旧凭据。\nA：第0天发新凭据，第7天旧凭据失效。平台组提供新凭据并修复发行失败；各消费者组负责更新自己的客户端，未更新者第7天停止访问。维护成本为每周2人时。\nB：第0天发新凭据，第30天旧凭据失效。责任与A相同，未更新者第30天停止访问；维护成本为每周2人时，持续30天。\n共同边界：发现新凭据权限错误时暂停后续迁移，由平台组修复；旧凭据仍有效期间可由管理员人工撤销迁移，旧凭据到期后不能恢复。不承诺自动回滚。\n"
+        }
+      },
+      "expected": {
+        "output": "既有方案通过可查证阅读页呈现，实际回答形成当前决定，来源和权限保持。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["out/reading.html"],
+        "artifacts": [{ "path": "out/reading.html", "exists": true }]
+      },
+      "audit": {
+        "rationale": "删除旧呈现reference后，复杂解释必须仍可到达，且不能夺走问答与确认责任。",
+        "minimalCounterexample": "只有一项已明确的短对照时无需额外呈现；需要新行为证据时应返回原型需要而不是编造解释。",
+        "allowedVariance": "页面结构、图表和文字形式可不同；不按技能名称自述或固定DOM判定，依据实际呈现、读取、答复与文件影响。"
+      }
+    },
+    {
+      "id": "simple-choice-remains-a-single-question",
+      "split": "validation",
+      "tags": ["regression", "boundary"],
+      "prompt": "使用 decision-grill 只确定试点先覆盖20人还是50人。20人一周支持得过来，50人能更早发现协作问题但支持成本翻倍；我优先保证一周内能支持。直接在对话里问这一题，不写文件。",
+      "assertions": [
+        "用短对照说明主要代价及与当前优先级一致的推荐，提问当前一项选择。",
+        "收到选择后交付20人的当前决定，不创建阅读页、原型或知识文件，也不因辅助能力可用而扩大流程。",
+        "确认含义未改变时不重新询问；不把试点范围扩大成全部产品用户上限。"
+      ],
+      "input": {
+        "scriptedReplies": ["先20人，这只限定本次试点，不是产品人数上限。记录后结束。"],
+        "workspaceFiles": {}
+      },
+      "expected": {
+        "output": "一次实际答复形成有范围的试点决定，不增加呈现或确认负担。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "复杂呈现能力可用不应使所有提问都绕行解释或文件流程。",
+        "minimalCounterexample": "来源包含多个难以理解的时间、责任和例外关系时可采用解释能力。",
+        "allowedVariance": "允许简表或场景，不限定确切字数；以是否完成当前决定和保持只读为准。"
+      }
+    }
+  ]
+}

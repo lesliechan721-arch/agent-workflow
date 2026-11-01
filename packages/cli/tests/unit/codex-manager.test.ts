@@ -226,7 +226,7 @@ describe('Codex manager resolver', () => {
     expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
   });
 
-  it('blocks system Codex 0.150 for a project operation without managed fallback', async () => {
+  it.each(['user', 'project'] as const)('blocks system Codex 0.150 for a %s operation without managed fallback', async (scope) => {
     const executable = await writePathCodex(isolation, 'project-system-bin', 'linux');
     const authorizer = vi.fn(() => true);
 
@@ -236,9 +236,9 @@ describe('Codex manager resolver', () => {
       platform: 'linux',
       runner: async () => result('codex-cli 0.150.0'),
       authorizer,
-      operationRequirement: getCodexOperationRequirement('project'),
+      operationRequirement: getCodexOperationRequirement(scope),
       requiresNativeMaterialization: false,
-    })).rejects.toMatchObject({ code: 'codexProjectPluginVersionTooLow' });
+    })).rejects.toMatchObject({ code: 'codexSystemCliUnsupported' });
     expect(authorizer).not.toHaveBeenCalled();
     expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
   });
@@ -246,7 +246,7 @@ describe('Codex manager resolver', () => {
   it.each([
     ['unparseable', result('Codex development build')],
     ['probe failure', result('', 'probe failed', 2)],
-  ])('uses the project-contract unsupported code for %s system evidence', async (
+  ])('uses the system CLI unsupported code for %s project evidence', async (
     _label,
     probeResult,
   ) => {
@@ -258,7 +258,7 @@ describe('Codex manager resolver', () => {
       runner: async () => probeResult,
       operationRequirement: getCodexOperationRequirement('project'),
       requiresNativeMaterialization: false,
-    })).rejects.toMatchObject({ code: 'codexProjectPluginUnsupported' });
+    })).rejects.toMatchObject({ code: 'codexSystemCliUnsupported' });
   });
 
   it('assumes an App consumer when project activation has no system CLI and needs no native write', async () => {
@@ -295,7 +295,7 @@ describe('Codex manager resolver', () => {
   });
 
   it.each([
-    ['too old', result('codex-cli 0.1.0')],
+    ['too old', result('codex-cli 0.150.999')],
     ['unparseable', result('Codex development build')],
     ['probe failure', result('', 'probe failed', 2)],
   ])('blocks an unsupported system Codex (%s) without managed fallback', async (_label, probeResult) => {
@@ -378,7 +378,7 @@ describe('Codex manager resolver', () => {
   it('blocks a Windows .bat launcher without probing or managed fallback', async () => {
     const binRoot = path.join(isolation.layout.fixtureCwd, 'batch-prefix');
     await fs.ensureDir(binRoot);
-    await fs.writeFile(path.join(binRoot, 'codex.bat'), '@echo off\r\n');
+    await fs.writeFile(path.join(binRoot, 'codex.BAT'), '@echo off\r\n');
     const runner = vi.fn(async () => result('codex-cli 0.151.0'));
     const authorizer = vi.fn(() => true);
 
@@ -693,6 +693,7 @@ describe('Codex manager resolver', () => {
       '--prod',
       '--ignore-scripts',
       '--ignore-workspace',
+      '--config.node-linker=hoisted',
       `--registry=${MANAGED_CODEX_REGISTRY}`,
       `--store-dir=${path.join(isolation.layout.awHomeDir, 'runtimes', '.pnpm-store')}`,
       expect.stringMatching(/^--config\.userconfig=/u),

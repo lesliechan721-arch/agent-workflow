@@ -12,7 +12,7 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const helperArch = process.arch === 'x64' ? 'x64' : process.arch === 'arm64' ? 'arm64' : null
-const helperPath = helperArch
+const defaultHelperPath = helperArch
   ? path.join(
       repoRoot,
       'packages',
@@ -35,10 +35,11 @@ function encodeConfig(executable, args, parentPid = process.pid) {
 }
 
 function startHelper(executable, args, options = {}) {
+  const { helperPath = defaultHelperPath, ...spawnOptions } = options
   const child = spawn(helperPath, ['--config', encodeConfig(executable, args)], {
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
-    ...options,
+    ...spawnOptions,
   })
   let stdout = ''
   let stderr = ''
@@ -116,13 +117,13 @@ function observeOutcome(run) {
   )
 }
 
-async function checkStdioAndExitCode() {
+async function checkStdioAndExitCode(options) {
   const started = startHelper(process.execPath, ['-e', [
     "let input = '';",
     "process.stdin.setEncoding('utf8');",
     "process.stdin.on('data', (chunk) => { input += chunk; });",
     "process.stdin.on('end', () => { process.stdout.write(`out:${input}`); process.stderr.write('err:ok'); process.exitCode = 7; });",
-  ].join('')])
+  ].join('')], options)
   started.child.stdin.end('input')
   const close = await started.closed
   const output = started.output()
@@ -131,47 +132,54 @@ async function checkStdioAndExitCode() {
   }
 }
 
-async function checkFastSuccess() {
-  const started = startHelper(process.execPath, ['-e', 'process.exit(0)'])
+async function checkFastSuccess(options) {
+  const started = startHelper(process.execPath, ['-e', 'process.exit(0)'], options)
   const close = await started.closed
   if (close.code !== 0 || close.signal !== null) throw new Error('fastSuccessMismatch')
 }
 
-async function checkSuccessfulRootCleansChild() {
+async function checkSuccessfulRootCleansChild(options) {
   const script = [
     "const { spawn } = require('node:child_process');",
     "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });",
     'process.stdout.write(`pid:${child.pid}\\n`);',
     'child.unref();',
   ].join('')
-  const started = startHelper(process.execPath, ['-e', script])
+  const started = startHelper(process.execPath, ['-e', script], options)
   const match = await waitForOutput(started, /pid:(\d+)/u)
   const close = await started.closed
   if (close.code !== 0) throw new Error('successfulRootExitMismatch')
   await waitForProcessExit(Number(match[1]))
 }
 
-async function checkNestedChildCleanup() {
-  const grandchild = "process.stdout.write(`pid:${process.pid}\\n`); setInterval(() => {}, 1000);"
+export function nestedCleanupFixture() {
+  // Insurance must outlast the helper startup and descendant cleanup deadlines.
+  const watchdog = `setTimeout(() => process.exit(124), ${checkTimeoutMs * 3}).unref();`
+  const grandchild = `${watchdog} process.send(process.pid); setInterval(() => {}, 1000);`
   const intermediate = [
+    watchdog,
     "const { spawn } = require('node:child_process');",
-    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });`,
-    'child.unref();',
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], windowsHide: true });`,
+    "child.once('message', (pid) => { process.send(pid); child.disconnect(); child.unref(); });",
     'setInterval(() => {}, 1000);',
   ].join('')
-  const root = [
+  return [
+    watchdog,
     "const { spawn } = require('node:child_process');",
-    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(intermediate)}], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });`,
-    'child.unref();',
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(intermediate)}], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], windowsHide: true });`,
+    "child.once('message', (pid) => { process.stdout.write(`pids:${child.pid},${pid}\\n`); child.disconnect(); child.unref(); });",
   ].join('')
-  const started = startHelper(process.execPath, ['-e', root])
-  const match = await waitForOutput(started, /pid:(\d+)/u)
-  const close = await started.closed
-  if (close.code !== 0) throw new Error('nestedRootExitMismatch')
-  await waitForProcessExit(Number(match[1]))
 }
 
-async function checkForcedHelperExit() {
+export async function checkNestedChildCleanup({ startHelper: start = startHelper, ...options } = {}) {
+  const started = start(process.execPath, ['-e', nestedCleanupFixture()], options)
+  const match = await waitForOutput(started, /pids:(\d+),(\d+)/u)
+  const close = await started.closed
+  if (close.code !== 0) throw new Error('nestedRootExitMismatch')
+  await Promise.all([waitForProcessExit(Number(match[1])), waitForProcessExit(Number(match[2]))])
+}
+
+async function checkForcedHelperExit(options) {
   const script = [
     "const { spawn } = require('node:child_process');",
     "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });",
@@ -179,7 +187,7 @@ async function checkForcedHelperExit() {
     'child.unref();',
     'setInterval(() => {}, 1000);',
   ].join('')
-  const started = startHelper(process.execPath, ['-e', script])
+  const started = startHelper(process.execPath, ['-e', script], options)
   const match = await waitForOutput(started, /pids:(\d+),(\d+)/u)
   if (!started.child.kill('SIGKILL')) throw new Error('forcedHelperExitKillRejected')
   await started.closed
@@ -189,7 +197,9 @@ async function checkForcedHelperExit() {
 export async function checkProductionTimeoutCleanup(tempRoot, dependencies = {}) {
   const pidPath = path.join(tempRoot, 'timeout-cleanup-pids.txt')
   const timeoutMs = dependencies.timeoutMs ?? 3_000
-  const runManagedProcess = dependencies.runProcessTree ?? runProcessTree
+  const runManagedProcess = dependencies.runProviderProcess
+    ? candidateProcessRunner(dependencies)
+    : dependencies.runProcessTree ?? runProcessTree
   const readPids = dependencies.waitForRecordedPids ?? waitForRecordedPids
   const waitForExit = dependencies.waitForProcessExit ?? waitForProcessExit
   const outcome = observeOutcome(() => runManagedProcess({
@@ -208,7 +218,9 @@ export async function checkProductionTimeoutCleanup(tempRoot, dependencies = {})
 
 export async function checkProductionAbortCleanup(tempRoot, dependencies = {}) {
   const pidPath = path.join(tempRoot, 'abort-cleanup-pids.txt')
-  const runManagedProcess = dependencies.runProcessTree ?? runProcessTree
+  const runManagedProcess = dependencies.runProviderProcess
+    ? candidateProcessRunner(dependencies)
+    : dependencies.runProcessTree ?? runProcessTree
   const readPids = dependencies.waitForRecordedPids ?? waitForRecordedPids
   const waitForExit = dependencies.waitForProcessExit ?? waitForProcessExit
   const controller = new AbortController()
@@ -228,7 +240,7 @@ export async function checkProductionAbortCleanup(tempRoot, dependencies = {}) {
   await Promise.all(pids.map(waitForExit))
 }
 
-async function checkParentCrash(tempRoot) {
+async function checkParentCrash(tempRoot, { helperPath = defaultHelperPath } = {}) {
   const pidPath = path.join(tempRoot, 'parent-crash-pids.txt')
   const target = [
     "const { spawn } = require('node:child_process');",
@@ -262,41 +274,90 @@ async function checkParentCrash(tempRoot) {
   await Promise.all(pids.map(waitForProcessExit))
 }
 
-export async function runWindowsJobQualification() {
+export const WINDOWS_JOB_REQUIRED_CHECKS = [
+  'stdio-exit-code',
+  'fast-success',
+  'successful-root-child-cleanup',
+  'nested-child-cleanup',
+  'forced-helper-exit-cleanup',
+  'production-timeout-cleanup',
+  'production-abort-cleanup',
+  'parent-crash-cleanup',
+]
+
+// Keep the existing local perf-runner contract while using the installed Eval
+// runner for candidate qualification. Both timeout and abort reach that runner.
+export function candidateProcessRunner({ runProviderProcess, helperPath, env = process.env }) {
+  if (typeof runProviderProcess !== 'function' || !path.isAbsolute(helperPath ?? '')) {
+    throw new Error('candidateRunnerAndHelperRequired')
+  }
+  return async (options) => {
+    const result = await runProviderProcess({
+      executable: options.command,
+      args: options.args,
+      cwd: os.tmpdir(),
+      env,
+      timeoutMs: options.timeoutMs ?? 30_000,
+      maxBufferBytes: 1024 * 1024,
+      signal: options.signal,
+    }, {}, {
+      containment: 'verified-observed',
+      createWindowsJobInvocation(executable, args) {
+        const config = { schemaVersion: 1, executable, args: [...args], parentPid: process.pid }
+        return { command: helperPath, args: ['--config', encodeConfig(executable, args)], config }
+      },
+    })
+    if (!result.descendantCleanupGuaranteed || result.containmentMode !== 'verified-observed') {
+      throw new Error('candidateManagedContainmentRequired')
+    }
+    if (result.cancelled && result.terminationReason === 'abort') throw options.signal.reason
+    if (result.timedOut && result.terminationReason === 'timeout') {
+      throw new ProcessTreeTimeoutError(options.label, options.timeoutMs, result.stdout, result.stderr)
+    }
+    throw new Error('candidateProductionTerminationMismatch')
+  }
+}
+
+export async function runWindowsJobQualification(options = {}) {
   const report = {
     schemaVersion: 1,
     kind: 'windows-job-containment',
     platform: process.platform,
     arch: process.arch,
+    runner: options.runProviderProcess ? 'candidate-eval' : 'local-perf',
     status: 'failed',
     checks: [],
   }
   let tempRoot
   try {
-    if (process.platform !== 'win32' || !helperPath) throw new Error('requiresSupportedWindowsHost')
+    const helperPath = options.helperPath ?? defaultHelperPath
+    if (process.platform !== 'win32' || !helperArch) throw new Error('requiresSupportedWindowsHost')
+    if (!path.isAbsolute(helperPath ?? '')) throw new Error('absoluteHelperPathRequired')
+    const helper = { ...options, helperPath }
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aw-windows-job-qualification-'))
     const checks = [
-      ['stdio-exit-code', checkStdioAndExitCode],
-      ['fast-success', checkFastSuccess],
-      ['successful-root-child-cleanup', checkSuccessfulRootCleansChild],
-      ['nested-child-cleanup', checkNestedChildCleanup],
-      ['forced-helper-exit-cleanup', checkForcedHelperExit],
-      ['production-timeout-cleanup', () => checkProductionTimeoutCleanup(tempRoot)],
-      ['production-abort-cleanup', () => checkProductionAbortCleanup(tempRoot)],
+      ['stdio-exit-code', () => checkStdioAndExitCode(helper)],
+      ['fast-success', () => checkFastSuccess(helper)],
+      ['successful-root-child-cleanup', () => checkSuccessfulRootCleansChild(helper)],
+      ['nested-child-cleanup', () => checkNestedChildCleanup(helper)],
+      ['forced-helper-exit-cleanup', () => checkForcedHelperExit(helper)],
+      ['production-timeout-cleanup', () => checkProductionTimeoutCleanup(tempRoot, helper)],
+      ['production-abort-cleanup', () => checkProductionAbortCleanup(tempRoot, helper)],
+      ['parent-crash-cleanup', () => checkParentCrash(tempRoot, helper)],
     ]
     for (const [id, check] of checks) {
-      await check()
-      report.checks.push({ id, passed: true })
+      try {
+        await check()
+        report.checks.push({ id, passed: true })
+      } catch (error) {
+        report.checks.push({ id, passed: false, code: error instanceof Error ? error.message : 'unknownFailure' })
+      }
     }
-    await checkParentCrash(tempRoot)
-    report.checks.push({ id: 'parent-crash-cleanup', passed: true })
-    report.status = 'passed'
+    if (report.checks.every((check) => check.passed)) report.status = 'passed'
   } catch (error) {
-    report.checks.push({
-      id: 'qualification-failure',
-      passed: false,
-      code: error instanceof Error ? error.message : 'unknownFailure',
-    })
+    for (const id of WINDOWS_JOB_REQUIRED_CHECKS) {
+      report.checks.push({ id, passed: false, code: error instanceof Error ? error.message : 'unknownFailure' })
+    }
   } finally {
     if (tempRoot) await rm(tempRoot, { recursive: true, force: true })
   }

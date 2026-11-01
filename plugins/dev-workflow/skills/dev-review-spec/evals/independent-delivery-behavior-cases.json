@@ -25,7 +25,8 @@
         "原始已接受资料参与审查，即使Spec没有引用它。",
         "指出具体保留关系缺失及关闭条件。",
         "不写默认报告目录、不修改Spec。",
-        "独立上下文不可用时如实声明。"
+        "独立上下文不可用时如实声明。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -37,7 +38,7 @@
       },
       "expected": {
         "output": "发现规格遗漏已确认布局关系，不能仅因Spec自洽就通过。",
-        "workspaceUnchanged": true,
+        "workspaceUnchanged": false,
         "allowedWorkspaceChanges": []
       },
       "audit": {
@@ -55,17 +56,18 @@
       "prompt": "只审 docs/contract.md 是否足够开发。不得修改。",
       "assertions": [
         "指出不可达来源和验收受影响。",
-        "保持只读，默认对话交付。"
+        "保持只读，默认对话交付。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
         "workspaceFiles": {
-          "docs/contract.md": "# 接口\n按../shared/schema.md的规定返回数据，并满足既有超时策略。当前目录没有该schema，超时也未给出处。\n"
+          "docs/contract.md": "# 接口\n按[返回类型](../shared/schema.md)的规定返回数据，并满足既有超时策略。\n"
         }
       },
       "expected": {
         "output": "报告无法核对的重要接口来源，并区分确定文档缺口与未知实现，不虚构新接口。",
-        "workspaceUnchanged": true,
+        "workspaceUnchanged": false,
         "allowedWorkspaceChanges": []
       },
       "audit": {

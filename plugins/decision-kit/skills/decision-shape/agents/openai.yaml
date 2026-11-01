@@ -1,6 +1,6 @@
 interface:
   display_name: decision-shape
-  short_description: "组织当前主题的材料问答与可体验证据，整合有确认依据的决定"
-  default_prompt: "使用 $decision-shape 组织当前主题对齐，按缺口采用 Grill 或 Prototype，并保留真实确认与边界。"
+  short_description: "先检查需求全貌，再组织问答、原型和知识维护，保留完整确认与缺口"
+  default_prompt: "使用 $decision-shape 对齐当前需求，先检查整体覆盖，再按缺口组织问答、原型、知识维护与材料呈现，交付有来源的完整决定和未解决事项。"
 policy:
   allow_implicit_invocation: true

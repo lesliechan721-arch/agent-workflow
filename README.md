@@ -67,6 +67,7 @@ aw status --scope user
 | [`decision-kit`](plugins/decision-kit/) | 澄清关键歧义、逐轮推演重要决定，制作决策原型，并维护项目领域词汇与重要决定 | Codex / Claude Code |
 | [`dev-workflow`](plugins/dev-workflow/) | 独立完成设计或组织完整开发交付，组合 `decision-kit`、`human-content`、项目规范、实施与双轴 Review | Codex / Claude Code |
 | [`human-content`](plugins/human-content/) | 解释已有复杂材料，提供保留原意、状态和完整来源的文字、图表或交互阅读页 | Codex / Claude Code |
+| [`frontend-design`](plugins/frontend-design/) | 按网页用途选择视觉方向，设计与改进布局、排版、响应式和交互细节，保留已有系统约束 | Codex / Claude Code |
 | [`git-toolkit`](plugins/git-toolkit/) | 创建精确本地提交、隔离 worktree，或协调 merge 双方意图 | Codex / Claude Code |
 | [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中执行大范围只读探索，并更稳妥地编排通用子代理 | Codex |
 
@@ -75,8 +76,8 @@ aw status --scope user
 | 插件 | 适合什么场景 | 平台 |
 | --- | --- | --- |
 | [`agent-content-toolkit`](plugins/agent-content-toolkit/) | 编写、整理或只读评审 AGENTS.md、prompt、role instructions 和 references 等 Agent-facing 内容 | Codex / Claude Code |
-| [`agent-skill-toolkit`](plugins/agent-skill-toolkit/) | 创建、评审或简化 Agent Skill；设计 Eval 用例、审核 Eval，或评审跨 Skill 架构；依赖 `agent-content-toolkit` | Codex / Claude Code |
-| [`aw-development-toolkit`](plugins/aw-development-toolkit/) | 创建或维护 AW Catalog 与 Plugin Source，并只读评审 AW Plugin、Catalog、workflow 或 portfolio；Catalog 发布只由手动入口执行 | Codex / Claude Code |
+| [`agent-skill-toolkit`](plugins/agent-skill-toolkit/) | 创建 Agent Skill、设计与审核 Eval；由用户启动单体、工作流和公开能力评审或简化；依赖 `agent-content-toolkit` | Codex / Claude Code |
+| [`aw-development-toolkit`](plugins/aw-development-toolkit/) | 创建或维护 AW Catalog 与 Plugin Source，提供来源、物化和领域工具；Catalog 发布只由手动入口执行 | Codex / Claude Code |
 | [`aw-skill-eval-runner`](plugins/aw-skill-eval-runner/) | 准备、独立审核并按授权执行 AW Skill Eval，验证结果并按需归因异常 | Codex / Claude Code |
 
 ## 使用示例
@@ -108,10 +109,10 @@ aw status --scope user
 ### 创建一个只包含本次改动的提交
 
 ```text
-把刚才修改的三个文件提交，使用仓库现有提交规范。
+$git-commit 把刚才修改的三个文件提交，使用仓库现有提交规范。
 ```
 
-`git-commit` 会保护范围外的 index 和 worktree 状态，创建并验证本地提交；它不会 push。
+`git-commit` 由用户手动调用，会保护范围外的 index 和 worktree 状态，创建并验证本地提交；它不会 push，也不默认追加测试、构建或代码评审。用户或仓库明确要求的提交门禁和 Git hooks 仍会执行。
 
 ### 探索陌生代码库
 
@@ -136,6 +137,8 @@ aw status --scope user
 - **模型调用**：模型根据 Skill 的名称和描述判断是否适用。
 - **用户显式调用**：适合授权敏感或明确改变流程的能力。
 - **Slash Command**：为常用宏流程提供稳定入口；复杂逻辑仍保存在 Skill 中。
+
+`git-commit`、`review-agent-skill`、`simplify-agent-skill` 和 `publish-aw-catalog` 由用户显式启动；Author 的日常自检不自动启动专项评审。Codex 使用 `$skill-name`，Claude Code 使用对应插件的 `/plugin-name:skill-name`。
 
 AW 在安装时保留 Codex 和 Claude Code 的原生调用元数据，不使用 CLI 配置覆盖 Skill 的触发策略。
 
@@ -211,7 +214,26 @@ project 配置按 Catalog logical identity 共享，不绑定 Git URL、SSH/HTTP
 
 该 runtime 位于 `AW_HOME` 的可删除弱缓存中，不加入 `PATH`，也不检测 Codex App。只修改已有 shared native 的 project activation 时不需要 manager；项目 intent 缺少 shared native package 时仍需要兼容的 system 或 AW-managed CLI。cleanup 和 uninstall 在没有可证明的 AW-owned native residue 时不会探测、提示或下载；移除失败会保留 residue，用户可重试命令、升级 AW，或安装兼容的官方 Codex CLI 后恢复。AW 不直接删除 Codex 私有 plugin storage，也不删除 foreign 内容。
 
+### 托管命令
+
+插件脚本和用户工具共用 `aw command run <command-id> -- <args...>` 稳定入口，升级资源路径不会改变同一 producer 的 ID。查看及维护用户工具：
+
+```bash
+aw command install ./review-adapter --name review-adapter --runner node --entry adapter.mjs
+aw command list --json
+aw command show <command-id> --json
+aw command run <command-id> -- --region example
+aw command update <cmdu-id> --from ./review-adapter --yes
+aw command remove <cmdu-id> --yes
+```
+
+install 复制完整运行目录；原开发目录移动后，已安装工具继续可用。update 保留用户 ID，remove 后重新 install 使用新 ID。run 原样传递 argv 和 stdio，不接受 runner/env/cwd 临时覆盖，不隐式下载或安装。独立插件包由 `aw command package sync/remove` 显式维护；平台卸载保留共享包，并报告精确移除入口。完整字段、权限、所有权及恢复见 [托管命令合同](docs/managed-commands.md)。
+
+Codex/Claude 静态原生 Skill 的命令共用 user 身份与配置；在项目中启用插件仍引用同一命令 ID。Claude 保留原生安装方式，项目配置不会覆盖共享启动定义。AW-owned 动态 Skill 则使用其实际 user/project 作用域。
+
 ### User 与 Project 插件恢复
+
+Codex native plugin 和 project activation 统一要求最低版本 `0.151.0`。AW-managed runtime 固定为已 qualification 的 `0.151.0`。PATH 中没有 system CLI 且操作只需修改 project activation 时，AW 不下载 manager。此时 AW 未观察到 system loader 或 Codex App，只把 project activation support 标为 `assumed`。
 
 User 与 Project 分别保存相同格式的 Intent v3。个人声明位于 `<AW_HOME>/plugin-intents.json`；项目声明位于仓库根的 `.agent-workflows/plugin-intents.json`。声明只保存 source-qualified 插件根和 Catalog logical identity，不保存 Agent、配置或安装现场：
 
@@ -243,12 +265,14 @@ TUI 首页以“插件清单”进入个人或当前项目范围；同一清单�
 ```bash
 aw config list codex-enhance -s user
 aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-6-luna","reasoningEffort":"high"}'
-aw config set codex-enhance advisorDebugProfile -s user --value-json '{"model":"gpt-6-astra","reasoningEffort":"high"}'
+aw config set codex-enhance advisorGeneralProfile -s user --value-json '{"model":"gpt-6-astra","reasoningEffort":"high"}'
 ```
 
-profile 的 executor 缺省为 native。Advisor 的 design、debug、review 专属 profile 可缺省；缺省时使用 `advisorProfile`，显式非法配置须修正。全部 shared native profile 只支持 user 配置。保存但不应用时，外部新调用仍使用安装产物的旧生效值；`--apply --yes` 会重新生成共享 Skill，并影响启用该插件的项目。原生宿主可能需要刷新或新会话。`advisorPolicy` 已删除，旧 off 和次数设置不再生效；仍需的限制应在当前任务或上游指令中提供。具体配置项、前台外部执行和升级边界见 [`codex-enhance` README](plugins/codex-enhance/README.md)。
+profile 的 executor 缺省为 native。Guide、Advisor 和 Explore 各有内建档位与按顺序匹配的自定义配置；外部 profile 可省略 model/reasoningEffort，表示后端默认。全部 shared native profile 只支持 user 配置。保存不改变安装产物，`--apply --yes` 才重新生成共享 Skill，并影响启用该插件的项目；原生宿主可能需要刷新或新会话。
 
-外部执行器可选 Codex、Claude Code、Oracle 或自定义 Adapter v4，支持后端参数、普通环境值和宿主环境引用。外部 profile 可省略模型与推理级别。配置需要支持 `aw.plugin-config.v4` 的 CLI；从旧协议升级时先更新执行器配置，再 sync 或 reinstall。命令使用 `--prompt TEXT` 或 `--prompt -`，指令文件可选；bundle 可用 `--file` 选择材料，workspace 模式在任务正文中说明关注路径。
+外部执行器可选 Codex、Claude Code、Oracle、Antigravity、绝对入口 custom，或引用稳定 commandId 的 custom-managed；自定义接入使用 Adapter v5。任务和消息只接受文本或直接文件参数，不从 -/stdin 读取。result 支持普通报告和 `--output-file PATH`，完整写入并关闭新文件后消费；--export 返回参数错误。bundle 通过 --file 选择材料，workspace 在任务正文中说明关注路径。
+
+配置需要支持 aw.plugin-config.v4 和托管命令能力的 CLI。升级、重装或删除 Guide 及托管 adapter 前，先完成或 stop 活跃任务；相同 ID 不承诺旧 run 跨版本可继续。具体配置、权限和使用边界见 [Codex Enhance README](plugins/codex-enhance/README.md)。
 
 ## 安装范围
 
@@ -275,13 +299,13 @@ Codex project scope 不复制 static Skill、MCP、Hook、App 或其它 native p
 aw install aw-development-toolkit --scope user --target codex --target claude-code
 ```
 
-使用 `develop-aw` 建立或维护 Workspace 和其中的 canonical Plugin Source。删除先检查 Workspace、插件名、inventory 和反向依赖，再使用公开 `aw plugin remove`；receipt 返回后检查剩余 inventory，空 inventory 不检查已删除对象。删除不会自动 publish。`review-aw` 先复用匹配的 final；完整审核需要准备时，说明 build/renderer 与隔离输出后运行 `aw review prepare`，随后只读审核。用户明确禁止执行时只做限定的源码审核。远端发布只由手动调用的 `publish-aw-catalog` 执行；它使用 CLI 的 Workspace、remote 和 branch 默认解析，并且只在用户授权完整 `planDigest` 后 apply。Workspace、聚合验证、publish plan/apply、失败恢复见[Catalog 作者指南](docs/catalog-authoring.md)；manifest、单插件命令和 Plugin Source 边界见[插件作者指南](docs/plugin-authoring.md)。
+涉及 AW 插件及其 Skill 的分析、创建、修改、评审协作、简化协作、验证和物化时采用 `develop-aw`，按本次结果选择源码或实际产物；也用它维护 Workspace 和 canonical Plugin Source。删除先检查 Workspace、插件名、inventory 和反向依赖，再使用公开 `aw plugin remove`；receipt 返回后检查剩余 inventory，空 inventory 不检查已删除对象。删除不会自动 publish。专项评审由用户显式启动 `review-agent-skill`；完整审核先复用匹配的 final，不足时说明 build/renderer 与隔离输出后运行 `aw review prepare`，再针对实际产物判断。标准 Agent Skills 导出另需显式 Portable 声明和 `aw skill materialize`；不把它设为普通源码分析或原生包审核的前提。用户明确禁止执行时只做限定的源码审核。远端发布只由手动调用的 `publish-aw-catalog` 执行，并只在用户授权完整 `planDigest` 后 apply。Workspace、聚合验证、publish plan/apply、失败恢复见[Catalog 作者指南](docs/catalog-authoring.md)；manifest、单插件命令和 Plugin Source 边界见[插件作者指南](docs/plugin-authoring.md)。
 
 当前作者合同固定为 Plugin Manifest v3、Catalog snapshot schema 7 和 Catalog Sources Config schema 2。Agent 作者入口先运行 `aw self check --from <skill-root> --json`，并以 capability receipt 判断兼容性；不使用 CLI version gate。每个 Catalog 命令自行定位 Workspace；静态 `aw catalog status --json` 不 build 或 fetch。Development source 使用 `aw catalog dev activate|status|deactivate --json` 管理；activate 会 build、validate、注册 managed Path source 并 sync。activate 影响现有引用或影响未知时使用 `--yes`；deactivate 检测到 installation、lifecycle、config 或 marketplace 引用，或 inventory 不完整时也使用 `--yes`，其 schema 4 receipt 返回脱敏的 inventory v2 `impact`。
 
 远端 Catalog 发布先运行 `aw catalog publish plan`，确认 Workspace identity、source HEAD、remote identity、branch、parent、tag、snapshot digest、`expectedCommit` 和 `planDigest`。`planDigest` 绑定 canonical `{ descriptor, expectedCommit }`。确认后再使用 `aw catalog publish apply --expected-plan-digest <digest> --yes`。apply 用 digest 唯一定位 schema v2 `.aw/publish/<version>/journal.json`，不依赖当前 metadata version。相同 plan 可在当前 HEAD 或 dirty state 改变后对账或续跑；Workspace identity、remote identity 和 branch 仍必须相同。不同 plan 必须提高 Catalog version。
 
-Skill-local Eval 作者合同使用 Manifest v1。profile 的 `plugins` 提供公共非敏感配置；可选 `configByScope.user/project` 为已选插件提供顶层字段覆盖。`aw skill eval prepare` 按 plugin、Skill、suite、profile 和 case 选择，以隔离配置物化静态、动态和共享 Codex native Skill，并生成输入完整的 `EvalSpec v1`，但不安装插件或运行模型。`@lesliechan721/agent-skill-eval` 是 `EvalSpec v1 → EvalAudit v1 → EvalResult v2` 的唯一机器 owner；Result v2 要求 `processManagement` 证据，不兼容 Result v1。执行前必须有精确绑定 provider、workspace、current/optional previous target、case digest 和全部 selected cases 的 passing Audit，并运行 `aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]`。所有真实 run 在 output 和模型前检查 permission、macOS Codex 可执行入口与 keychain，以及进程管理能力。默认 managed 模式要求 Full Access 语义和可用的进程树检查；单次提权不等于 Full Access。只有用户明确接受本次风险时，才可增加一次性的 unmanaged flag；该模式只尽力终止直接 child，不保证后代清理，也不能绕过 cmux Codex wrapper 或 keychain 检查。完整边界见[架构说明](docs/architecture.md)。普通成功路径不运行 `aw skill eval doctor --json` 或 `aw-skill-eval inspect-result <result.json> --spec <spec.json> --audit <audit.json>`，clean success 不要求 triage；只有安装或升级、用户明确请求诊断、模型已启动后的 run 失败，或结果异常及将驱动生产 Skill 修改时，才进入相应高级诊断或独立 result-triage。
+Skill-local Eval 作者合同使用 Manifest v1。profile 的 `plugins` 提供公共非敏感配置；可选 `configByScope.user/project` 为已选插件提供顶层字段覆盖。`aw skill eval prepare` 按 plugin、Skill、suite、profile 和 case 选择，以隔离配置物化静态、动态和共享 Codex native Skill，并生成输入完整的 `EvalSpec v1`，但不安装插件或运行模型。`@lesliechan721/agent-skill-eval` 是 `EvalSpec v1 → EvalAudit v1 → EvalResult v2` 的唯一机器 owner；Result v2 要求 `processManagement` 证据，不兼容 Result v1。执行前必须有精确绑定 provider、workspace、current/optional previous target、case digest 和全部 selected cases 的 passing Audit，并运行 `aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]`。所有真实 run 在 output 和模型前检查 permission、macOS Codex 可执行入口与 keychain，以及进程管理能力。默认 managed 模式要求 Full Access 语义和可用的进程树检查；单次提权不等于 Full Access。只有用户明确接受本次风险时，才可增加一次性的 unmanaged flag；该模式只尽力终止直接 child，不保证后代清理，也不能绕过 cmux Codex wrapper 或 keychain 检查。完整边界见[架构说明](docs/architecture.md)。普通成功路径不运行 `aw skill eval doctor --json` 或 `aw-skill-eval inspect-result <result.json> --spec <spec.json> --audit <audit.json>`。doctor 用于安装或升级、用户明确请求诊断，或模型已启动后的 run 失败；inspect-result 用于异常结果分组。执行或评分失败、current 混合、baseline 回归，或结果将驱动生产 Skill 修改时，执行独立 result-triage；其余 clean success 交付后结束。
 
 Eval 准备可加 `--config-file <file>`，为已选插件提供本次非敏感配置覆盖，例如已安装 adapter 的绝对路径。实际输入保存在 source binding。workflow provider 可使用公共 instruction-v2 transport，以及有界的 fixture setup、交互和收尾动作；这些动作只建立真实前提或检查实际产物，模型执行与独立评分仍由 Eval Engine 管理。配置、协议和动作边界见[架构说明](docs/architecture.md#agent-skill-eval-执行与-runner-边界)。
 
@@ -289,7 +313,7 @@ Eval 准备可加 `--config-file <file>`，为已选插件提供本次非敏感�
 
 本官方仓库本身也是普通 Catalog Workspace，使用与第三方相同的 marker、metadata、inventory、Core validator、publish plan/apply、publisher 和 publication journal 合同。以下 `pnpm` 命令只面向本 monorepo 维护者，用于编排 CLI/Core/npm/Product Release；它们不是第二套 Catalog contract：
 
-Review 默认只交付人读 `report.md`。用户明确要求归档时，本次请求的顶层 Reviewer 使用 `aw review publish`；下层 Reviewer 只返回材料。归档只写不可变的 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`，不重新评审、不运行或封存 Eval、也不更新 README。完整参数以 `aw review publish --help` 为准；workflow publication 还必须传入其 `scope.json`。只有用户明确要求且环境提供兼容的 AW-owned Release Checker 时，才生成独立的机器 `release-check.json`；它只是可选附件。
+Review 按当前请求在对话或指定文件中交付设计判断、findings 和未覆盖项。报告不构成插件发布门禁，也不自动更新 production README。
 
 ```bash
 make install
@@ -314,17 +338,37 @@ pnpm release:install:local -- <cli.tgz> <eval.tgz> <core.tgz> <windows-x64.tgz> 
 
 Windows Job helper 以 Go 源码和预编译的 x64/arm64 PE 分发。两个 PE 分别进入 `@lesliechan721/aw-windows-job-win32-x64` 和 `@lesliechan721/aw-windows-job-win32-arm64`；Eval 包本身不包含 PE。npm 根据 `os`、`cpu` 和 Eval 的 optional dependency 只安装匹配平台的包。普通 `pnpm build` 只校验 manifest、源码 digest、binary digest 和 PE 架构，不要求 Go。修改 helper 源码或 toolchain 后，维护者运行 `pnpm --filter @lesliechan721/agent-skill-eval windows-job:refresh`；该命令固定交叉编译环境，并在 manifest 记录当前精确 Go 版本。强 release verification 运行 `pnpm windows-job:reproducibility`，要求安装该精确 Go 版本，使用本机 toolchain 重建两个 PE 并逐字节比较；Go 缺失、版本不同或结果不一致时停止。真实 Windows 行为仍用对应架构的 `pnpm qualification:windows-job` 验证。
 
-Codex native qualification 是显式、本机、离线的维护者入口，不进入普通 test、build 或 release。现有 `0.151.0` project activation 行为使用 `pnpm qualification:codex-project-native`。性能和 scoped list 合同分别对本机已有的三个精确 binary 运行；命令不会自动下载：
+Codex native qualification 是显式、本机、离线的维护者入口，不进入普通 test、build 或 release。现有 `0.151.0` project activation 行为使用 `pnpm qualification:codex-project-native`。性能和 scoped list 合同分别对本机已有的两个精确 binary 运行；命令不会自动下载：
 
 ```bash
-CODEX_QUALIFICATION_VERSION=0.145.0 CODEX_QUALIFICATION_CLI=/path/to/codex-0.145.0 pnpm qualification:codex-native-performance
 CODEX_QUALIFICATION_VERSION=0.151.0 CODEX_QUALIFICATION_CLI=/path/to/codex-0.151.0 pnpm qualification:codex-native-performance
 CODEX_QUALIFICATION_VERSION=0.153.0 CODEX_QUALIFICATION_CLI=/path/to/codex-0.153.0 pnpm qualification:codex-native-performance
 ```
 
-每次运行只使用临时 home、临时项目和 local marketplace，并阻断 proxy。三个版本都必须支持 marketplace-scoped JSON list；`0.153.0` 的 local scoped list 不得依赖远程 Catalog。代表性 local native install 运行五次，中位数必须低于 15 秒；精确 binary 缺失时保留未运行缺口。该 qualification 不接入 app-server plugin/reconcile，也不证明运行中的 Codex App 会自动刷新。
+每次运行只使用临时 home、临时项目和 local marketplace，并阻断 proxy。两个版本都必须支持 marketplace-scoped JSON list；`0.153.0` 的 local scoped list 不得依赖远程 Catalog。代表性 local native install 运行五次，中位数必须低于 15 秒；精确 binary 缺失时保留未运行缺口。该 qualification 不接入 app-server plugin/reconcile，也不证明运行中的 Codex App 会自动刷新。
 
-正常发布只使用一个非交互入口。渠道必须是 `beta` 或 `release`，并显式选择 CLI、Catalog 或两者：
+官方发布使用 GitHub Actions。PR/main 自动运行 CI；main 的精确提交通过后，分别比较 CLI 五包与 Catalog 的实际生产内容。有变化的产品自动准备 beta，版本提交和源码 tag 只放在 `release-source/<product>/<version>` 分支，main 不接收自动版本提交。默认稳定版后从下一 patch beta 开始；显式修改稳定目标可指定 major/minor。CLI 和 Catalog 各自发布、各自保留成功结果。
+
+自动 beta 发布复用其精确 main 来源已通过的 CI 检查，不重复运行完整源码验证。源码 tag 记录 CI run/attempt，发布时重新查询并核对必要检查；证据缺失或查询失败时运行完整验证。候选构建、版本与产物校验、跨平台产物 smoke 仍必须通过。手动准备的候选和正式版继续运行完整验证。
+
+正式版在 `Release CLI` 或 `Release Catalog` 的 Actions 页面选择 `source`，填写精确稳定版本和 main 提交 SHA。入口准备候选后推送 `release/cli/v<version>` 或 `release/catalog/v<version>`，触发该产品的验证与发布。也可在已有工具构建的干净 checkout 中运行以下维护命令；它会推送候选分支和 tag：
+
+```bash
+pnpm release:actions source --product cli --version 0.2.1 --source <main-sha>
+pnpm release:actions source --product catalog --version 0.5.1 --source <main-sha>
+```
+
+每个候选只构建一次，六种 OS/CPU 的 Node 24 smoke 和精确 Node 22.0.0 最低版本 smoke 消费同一恢复包。任一门禁未通过就不发布。CLI 使用五包 npm Trusted Publisher；Catalog 消费原 snapshot/plan，不重新构建。Windows Job qualification 使用候选 helper；Catalog 的 fake native runner 不表示真实 Codex/Claude 已通过 qualification。
+
+首次启用需要以下仓库外部配置：
+
+- GitHub App 的安装范围仅为本仓库，授予 Contents write；设置变量 `RELEASE_APP_ID` 和 secret `RELEASE_APP_PRIVATE_KEY`。未设置 `RELEASE_APP_ID` 时，main CI 仍执行全部验证，但跳过自动 beta 发布；配置 App 后启用自动发布。用 branch/tag ruleset 保护 main 和非发布 refs，App 不获得 main bypass。App token 本身不能按 ref 缩小权限；入口只推送规定的候选 refs。App 推送会触发 tag workflow，默认 GITHUB_TOKEN 不具有这一行为。见 [GitHub 触发规则](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)。
+- 五个公开 npm 包分别配置 Trusted Publisher：当前仓库、`release-cli.yml`、environment `npm`。发布 job 使用 GitHub-hosted Linux、Node 24、npm 11.6.2 和 OIDC，不需要长期 npm token。见 [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)。
+- 确认六种 hosted runner 可用于本仓库，并允许 30 天 artifact 保留期。可设置 repository variable `AW_TEST_WORKERS` 调整普通测试并发；串行和性能入口保持固定约束。
+
+恢复包先于首次远端写入上传，按精确 run/artifact ID 与 digest 恢复；最终状态另存。CLI 部分成功时在 `Release CLI` 中选择 `repair-cli` 并填写原源码 tag；只缺完成 tag 使用 `repair-cli-tag`。Catalog 选择 `resume` 并填写原 tag，继续原 plan。普通 CLI 重跑不续传已尝试版本。恢复包缺失、损坏或超过 30 天保留期时使用新版本；不要删除占号 tag 或重建旧 plan。本地和 Actions 不同时操作同一候选。
+
+本地一体维护入口继续可用。渠道必须是 `beta` 或 `release`，并显式选择 CLI、Catalog 或两者：
 
 ```bash
 pnpm release -- beta --cli
@@ -350,7 +394,7 @@ aw catalog version --bump patch --workspace-root .
 
 产品源码必须先提交，且工作树必须干净。命令先选择 Catalog beta，再调用上述公共 version mutation；需要变化时创建一个精确只包含 `plugins/marketplace-source.json` 的 commit。CLI/plugin metadata 使用单独白名单 commit。没有 Catalog version 变化时不创建空 commit。随后运行所选轴的完整验证，在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 plan，并按 `Windows x64 → Windows arm64 → Eval → Core → CLI → cli-v<version> tag → Catalog` 发布启用的轴。Catalog 轴最后调用与普通 Workspace 相同的 publisher；CLI tag 只推送到 `origin`，当前分支不自动推送。
 
-Catalog beta 只比较 source metadata、`catalog-v` tag 和 publication journal。beta 已使用时，命令在同一 stable base 选择下一个未使用的 `beta.N`；stable metadata 进入 beta 渠道时也选择该 base 的 beta。stable 发布可把 beta metadata 提升为同 base stable。Plugin beta 和 stable 使用每个当前 Plugin 在目标 branch 的 first-parent 发布历史中最近的 manifest entry。tip 缺少 Plugin 时，plan 按需回溯；Plugin 移除后重加继续使用删除前的基线。beta 在历史基线缺失或 stable base 提高时为 `beta.1`，同 base 同 contentDigest 复用，同 base 内容变化递增，base 降低拒绝；stable 在 contentDigest 改变但 version 未提高或 version 降低时拒绝。Catalog-only 不查询或发布 npm package，也不创建 CLI tag 或 `.release/attempted.json`。
+本地 Catalog 候选号继续读取 source metadata、`catalog-v` tag 和 publication journal，已占用 beta 使用新序号。官方插件版本由 Core 统一分配，合并 latest/beta 的完整成功历史，未变化插件复用完整版本；稳定插件变化自动推进自身 patch，已有 beta base 内递增，显式较高 base 开新线。删除重加继续使用历史；同版本不同内容拒绝。第三方 publisher 未提供官方历史时保持其原 channel 历史行为。Catalog-only 不发布 npm package，也不创建 CLI tag 或 `.release/attempted.json`。
 
 远端 npm 发布失败或结果不确定后，不要直接重试单个 `npm publish`，也不要删除 `.release/attempted.json`。beta CLI 的普通恢复是用相同轴重新运行 `pnpm release`；工具保留稳定 target，自动选择下一个 beta，并重新发布五个包。稳定 CLI 仍需指定 `--cli-bump`。若要补发原候选中确认缺失的包，保留 prepared state 并运行 `pnpm release -- --repair-cli`；命令会核验 source、artifact 和 registry 中已存在的包，只补缺失包，最后核验整组并补 CLI tag。若五个 npm 包已经完整发布而只缺 tag，可运行 `pnpm release -- --repair-cli-tag`。Catalog 使用 schema v2 `.aw/publish/<version>/journal.json` 和 pending `repository/`。相同 journal plan 可对账或续跑，不同 plan 必须提升 Catalog version。`prepared` 或 `uncertain` 的 journal 或 repo 缺失或损坏时，停止并提升版本，不盲目重建或复用。`published` journal 缺失时，远端 immutable tag 仍占用版本。成功时先保存 published journal，再尽力删除 repo；清理失败只报告 warning。
 

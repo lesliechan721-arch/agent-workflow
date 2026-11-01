@@ -1,4 +1,5 @@
 export * from './manifest.js'
 export type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js'
 export * from './workspace.js'
+export * from './catalog-file-modes.js'
 export * from './catalog-workspace-resolution.js'

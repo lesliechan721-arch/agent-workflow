@@ -32,11 +32,397 @@
     "interface": { "$ref": "#/$defs/interface" },
     "extensions": { "$ref": "#/$defs/extensions" },
     "artifacts": { "$ref": "#/$defs/artifacts" },
+    "managedCommands": { "$ref": "#/$defs/managedCommands" },
     "buildConfig": { "$ref": "#/$defs/buildConfig" },
     "scripts": { "$ref": "#/$defs/scripts" },
     "config": { "$ref": "#/$defs/config" }
   },
   "$defs": {
+    "commandName": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,63}$"
+    },
+    "commandRelativeFile": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/|\\./|[A-Za-z]:)(?!.*(?:\\\\|[\\u0000-\\u001f\\u007f-\\u009f]))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\/$).+$"
+    },
+    "commandEnvironment": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "commandEnvironmentSource": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      }
+    },
+    "commandDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "runner",
+        "entry"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/commandName"
+        },
+        "variant": {
+          "$ref": "#/$defs/commandName"
+        },
+        "runner": {
+          "enum": [
+            "node",
+            "executable"
+          ]
+        },
+        "entry": {
+          "$ref": "#/$defs/commandRelativeFile"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "maxItems": 128
+        },
+        "env": {
+          "$ref": "#/$defs/commandEnvironment"
+        },
+        "envFrom": {
+          "$ref": "#/$defs/commandEnvironmentSource"
+        },
+        "cwd": {
+          "enum": [
+            "caller",
+            "resource"
+          ]
+        }
+      }
+    },
+    "managedCommandReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "set",
+        "key"
+      ],
+      "properties": {
+        "set": {
+          "$ref": "#/$defs/commandName"
+        },
+        "key": {
+          "$ref": "#/$defs/commandName"
+        },
+        "variant": {
+          "$ref": "#/$defs/commandName"
+        }
+      }
+    },
+    "managedCommandPermission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/managedCommandReference"
+        },
+        "argsPrefix": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_./:@%+=,-]+$"
+          }
+        }
+      }
+    },
+    "permissionCommands": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "type": "string",
+            "minLength": 1
+          },
+          {
+            "$ref": "#/$defs/managedCommandPermission"
+          }
+        ]
+      }
+    },
+    "managedCommandProducer": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "artifactId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "artifact"
+            },
+            "artifactId": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "platform",
+            "skillKey"
+          ],
+          "properties": {
+            "kind": {
+              "const": "static-skill"
+            },
+            "platform": {
+              "enum": [
+                "codex",
+                "claude"
+              ]
+            },
+            "skillKey": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "packageKey"
+          ],
+          "properties": {
+            "kind": {
+              "const": "package"
+            },
+            "packageKey": {
+              "$ref": "#/$defs/commandName"
+            }
+          }
+        }
+      ]
+    },
+    "managedCommandPackage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "scope",
+        "platforms",
+        "sourceDir"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/commandName"
+        },
+        "scope": {
+          "enum": [
+            "user",
+            "project"
+          ]
+        },
+        "platforms": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "codex",
+              "claude"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "sourceDir": {
+          "$ref": "#/$defs/pluginPath"
+        },
+        "render": {
+          "const": true
+        },
+        "refreshKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "managedCommandSet": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "set",
+            "producer",
+            "mode",
+            "entries"
+          ],
+          "properties": {
+            "set": {
+              "$ref": "#/$defs/commandName"
+            },
+            "producer": {
+              "$ref": "#/$defs/managedCommandProducer"
+            },
+            "mode": {
+              "const": "static"
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/commandDefinition"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "set",
+            "producer",
+            "mode",
+            "refreshKeys"
+          ],
+          "properties": {
+            "set": {
+              "$ref": "#/$defs/commandName"
+            },
+            "producer": {
+              "$ref": "#/$defs/managedCommandProducer"
+            },
+            "mode": {
+              "const": "dynamic"
+            },
+            "refreshKeys": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            }
+          }
+        }
+      ]
+    },
+    "managedCommands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "packages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/managedCommandPackage"
+          }
+        },
+        "sets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/managedCommandSet"
+          }
+        }
+      }
+    },
+    "permissionOverrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "codex": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "allow": {
+                  "$ref": "#/$defs/permissionCommands"
+                },
+                "ask": {
+                  "$ref": "#/$defs/permissionCommands"
+                },
+                "deny": {
+                  "$ref": "#/$defs/permissionCommands"
+                }
+              }
+            }
+          ]
+        },
+        "claude": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "allow": {
+                  "$ref": "#/$defs/permissionCommands"
+                },
+                "ask": {
+                  "$ref": "#/$defs/permissionCommands"
+                },
+                "deny": {
+                  "$ref": "#/$defs/permissionCommands"
+                },
+                "sandbox": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "excludedCommands"
+                  ],
+                  "properties": {
+                    "excludedCommands": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/managedCommandPermission"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
     "semver": {
       "type": "string",
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\\.(?:0|[1-9][0-9]*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
@@ -149,11 +535,25 @@
     "permission": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name"],
+      "required": [
+        "name"
+      ],
       "properties": {
-        "name": { "type": "string" }, "allow": { "$ref": "#/$defs/stringArray" },
-        "ask": { "$ref": "#/$defs/stringArray" }, "deny": { "$ref": "#/$defs/stringArray" },
-        "agentOverrides": { "$ref": "#/$defs/platformOverrides" }
+        "name": {
+          "type": "string"
+        },
+        "allow": {
+          "$ref": "#/$defs/permissionCommands"
+        },
+        "ask": {
+          "$ref": "#/$defs/permissionCommands"
+        },
+        "deny": {
+          "$ref": "#/$defs/permissionCommands"
+        },
+        "agentOverrides": {
+          "$ref": "#/$defs/permissionOverrides"
+        }
       }
     },
     "hook": {

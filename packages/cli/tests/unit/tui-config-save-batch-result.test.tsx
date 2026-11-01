@@ -1,5 +1,6 @@
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import {
@@ -103,6 +104,63 @@ async function escape(instance: ReturnType<typeof render>): Promise<void> {
 }
 
 describe('TUI config save batch result', () => {
+  it('shows a shared package as retained after cleanup using the unchanged command result schema', async () => {
+    const producer = { sourceId: 'team', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo',
+      kind: 'package' as const, key: 'tools', platform: null, scope: 'user' as const, projectRoot: null };
+    const recovery = `aw command package remove ${getCommandPackageId(producer)} --yes`;
+    const commandResult = { producer, state: 'partial', commandIds: ['installed-command'], removedCommandIds: [],
+      errors: [{ code: 'commandResourceUnavailable', message: 'The retained package is unavailable.' }], recoveryActions: [recovery] };
+    const value = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status()),
+      captureEvidence: vi.fn(async () => ({ catalog: { configDigest: 'config', compositeDigest: 'composite' } })),
+      executeIntent: vi.fn().mockResolvedValue({ platforms: ['codex'], plugins: [pluginId], warnings: [],
+        recoveryActions: [recovery], targetResults: [], commandResults: [commandResult] }),
+    });
+    await value.load();
+    const review = await value.buildOperationReview({ kind: 'pluginWrite', action: 'cleanup', pluginId, platform: 'codex', scope: 'user' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 28 }} />);
+    await nextTurn(3);
+    await value.executeOperation(review.reviewToken);
+    await nextTurn(3);
+    expect(instance.lastFrame()).toContain('保留命令包 tools');
+    expect(instance.lastFrame()).toContain('所有项目共用');
+    expect(value.snapshot.result).toMatchObject({ state: 'partial', summary: { action: 'cleanup', commandResults: [commandResult], recoveryActions: [recovery] } });
+  });
+  it('keeps a retained command package visible in config Review and Result without a platform target', async () => {
+    const producer = { sourceId: 'team', sourceIdentity: `sha256:${'a'.repeat(64)}`,
+      pluginName: 'demo', kind: 'package' as const, key: 'tools', platform: null,
+      scope: 'user' as const, projectRoot: null };
+    const commandResult = { producer, state: 'failed', commandIds: [], removedCommandIds: [],
+      errors: [{ code: 'commandPackageApplyFailed', message: 'The command package could not be refreshed.' }],
+      recoveryActions: ['aw command package sync team/demo tools --scope user --yes'] };
+    const value = new TuiController({
+      loadStatus: vi.fn().mockResolvedValue(status()),
+      captureEvidence: vi.fn(async () => ({
+        catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
+        config: { scope: 'user', storeDigest: 'sha256:store', impactState: 'known', affectedTargets: [],
+          commandPackages: [{ producer, packageId: `pkg_${'1'.repeat(64)}`, packageKey: 'tools', refreshKeys: ['mode'], declared: true, installed: true }] },
+      })),
+      executeIntent: vi.fn().mockResolvedValue({ configWrite: 'succeeded', overallState: 'partial',
+        apply: { state: 'partial', targetResults: [], commandResults: [commandResult] } }),
+    });
+    await value.load();
+    const review = await value.buildOperationReview({
+      kind: 'configSave', pluginId, scope: 'user', projectLayer: 'shared', apply: true,
+      updates: { mode: 'fast' }, changes: [{ key: 'mode', title: '模式', before: 'safe', after: 'fast' }],
+    });
+    expect(review.configImpact?.affectedTargetCount).toBe(1);
+    expect(review.changes).toContainEqual(expect.objectContaining({ title: '刷新命令包 tools' }));
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+    await value.executeOperation(review.reviewToken);
+    await nextTurn(3);
+    expect(value.snapshot.result).toMatchObject({ state: 'partial', summary: {
+      commandResults: [commandResult], configApplyRetryAvailable: true,
+    } });
+    expect(instance.lastFrame()).toContain('命令包 tools');
+    expect(instance.lastFrame()).toContain('失败');
+    expect(value.snapshot.result && 'summary' in value.snapshot.result
+      ? value.snapshot.result.summary?.targets : undefined).toBeUndefined();
+  });
   it('opens the usable settings overview from a portable missing-config blocker', async () => {
     const dependencies: TuiControllerDependencies = {
       loadStatus: vi.fn().mockResolvedValue(status()),

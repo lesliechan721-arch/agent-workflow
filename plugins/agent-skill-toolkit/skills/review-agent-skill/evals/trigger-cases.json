@@ -5,14 +5,13 @@
     "unitUnderTest": "review-agent-skill",
     "participants": [
       "agent-content",
-      "audit-agent-skill-evals",
-      "review-agent-architecture"
+      "audit-agent-skill-evals"
     ],
     "policy": {
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
+      "rationale": "成对比较相同任务的显式调用与普通请求，保留手动时机控制；任务质量由独立的 conversation suites 判断。"
     },
     "runtime": {
       "observeSpawnAgent": false,
@@ -26,64 +25,132 @@
       "id": "single_full",
       "split": "train",
       "tags": [
-        "representative"
+        "boundary",
+        "regression"
       ],
       "input": {
         "query": "只读 full review 这个 Agent Skill 的触发、资源和过度控制，给出有依据的问题。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "explicit_single_full",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$review-agent-skill 只读 full review 这个 Agent Skill 的触发、资源和过度控制，给出有依据的问题。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "单 Skill 设计评价。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "只审多个插件的入口架构时由 architecture 主导。"
+        "rationale": "用户显式选择手动入口，任务属于其对应范围。",
+        "allowedVariance": "显式注入/加载与执行质量分别判断；此用例不证明任务质量。",
+        "minimalCounterexample": "去掉显式调用而保留同一任务文字时，不应自动加载目标。"
       }
     },
     {
       "id": "delta_review",
       "split": "train",
       "tags": [
-        "representative"
+        "boundary",
+        "regression"
       ],
       "input": {
         "query": "复核上轮这个 Skill 的问题是否修好，只看本次差量和回归。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "explicit_delta_review",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$review-agent-skill 复核上轮这个 Skill 的问题是否修好，只看本次差量和回归。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "delta 属于单 Skill review。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "直接应用补丁时改用 author。"
+        "rationale": "用户显式选择手动入口，任务属于其对应范围。",
+        "allowedVariance": "显式注入/加载与执行质量分别判断；此用例不证明任务质量。",
+        "minimalCounterexample": "去掉显式调用而保留同一任务文字时，不应自动加载目标。"
       }
     },
     {
       "id": "too_heavy",
       "split": "validation",
       "tags": [
-        "representative"
+        "boundary",
+        "regression"
       ],
       "input": {
         "query": "这个 Skill 内容都对但很重，只分析哪些约束可能多余，不要修改。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "explicit_too_heavy",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$review-agent-skill 这个 Skill 内容都对但很重，只分析哪些约束可能多余，不要修改。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "最小控制是 Review 范围。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "要求实际消融并应用简化则 simplify 主导。"
+        "rationale": "用户显式选择手动入口，任务属于其对应范围。",
+        "allowedVariance": "显式注入/加载与执行质量分别判断；此用例不证明任务质量。",
+        "minimalCounterexample": "去掉显式调用而保留同一任务文字时，不应自动加载目标。"
       }
     },
     {
       "id": "resource_check",
       "split": "validation",
       "tags": [
-        "representative"
+        "boundary",
+        "regression"
       ],
       "input": {
         "query": "检查这个 Skill 的三个 reference 是否真的按需读取，不修改。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "explicit_resource_check",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$review-agent-skill 检查这个 Skill 的三个 reference 是否真的按需读取，不修改。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "包内资源评审。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "只润色普通用户 README 不使用。"
+        "rationale": "用户显式选择手动入口，任务属于其对应范围。",
+        "allowedVariance": "显式注入/加载与执行质量分别判断；此用例不证明任务质量。",
+        "minimalCounterexample": "去掉显式调用而保留同一任务文字时，不应自动加载目标。"
       }
     },
     {
@@ -97,9 +164,9 @@
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "创建不自动附带独立 Review。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "已有草稿只要求评价时使用。"
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
       }
     },
     {
@@ -113,9 +180,9 @@
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "执行能力由 Runner 承担。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "要求据结果评价 Skill 时可使用。"
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
       }
     },
     {
@@ -129,9 +196,9 @@
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "普通代码审查不属于本工具。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "代码是被审 Skill 的组成且请求包质量时才相关。"
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
       }
     },
     {
@@ -145,9 +212,205 @@
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "纯解释不是设计评审。",
-        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
-        "minimalCounterexample": "要风险、缺陷或评分时使用。"
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "architecture_portfolio",
+      "split": "train",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "input": {
+        "query": "评审这一组 Agent 插件是否拆得太碎，用户需要记住的 Skill 入口是否过多。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "explicit_architecture_portfolio",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$review-agent-skill 评审这一组 Agent 插件是否拆得太碎，用户需要记住的 Skill 入口是否过多。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "用户显式选择手动入口，任务属于其对应范围。",
+        "allowedVariance": "显式注入/加载与执行质量分别判断；此用例不证明任务质量。",
+        "minimalCounterexample": "去掉显式调用而保留同一任务文字时，不应自动加载目标。"
+      }
+    },
+    {
+      "id": "architecture_workflow",
+      "split": "train",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "input": {
+        "query": "只读评审这三个 Skill 的交接路径和权限边界，不修改任何内容。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "explicit_architecture_workflow",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$review-agent-skill 只读评审这三个 Skill 的交接路径和权限边界，不修改任何内容。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "用户显式选择手动入口，任务属于其对应范围。",
+        "allowedVariance": "显式注入/加载与执行质量分别判断；此用例不证明任务质量。",
+        "minimalCounterexample": "去掉显式调用而保留同一任务文字时，不应自动加载目标。"
+      }
+    },
+    {
+      "id": "architecture_public_surface",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "input": {
+        "query": "比较现有公开 Skill 与 reference 分支划分，给出更少入口但同样安全的方案。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "explicit_architecture_public_surface",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$review-agent-skill 比较现有公开 Skill 与 reference 分支划分，给出更少入口但同样安全的方案。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "用户显式选择手动入口，任务属于其对应范围。",
+        "allowedVariance": "显式注入/加载与执行质量分别判断；此用例不证明任务质量。",
+        "minimalCounterexample": "去掉显式调用而保留同一任务文字时，不应自动加载目标。"
+      }
+    },
+    {
+      "id": "architecture_contracts",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "input": {
+        "query": "审核多个 Skill 之间 JSON handoff 是否真的有消费者，不改文件。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "explicit_architecture_contracts",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$review-agent-skill 审核多个 Skill 之间 JSON handoff 是否真的有消费者，不改文件。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "用户显式选择手动入口，任务属于其对应范围。",
+        "allowedVariance": "显式注入/加载与执行质量分别判断；此用例不证明任务质量。",
+        "minimalCounterexample": "去掉显式调用而保留同一任务文字时，不应自动加载目标。"
+      }
+    },
+    {
+      "id": "architecture_leaf_quality",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "仅检查这一份 SKILL.md 及直接引用文件的质量，不涉及其它组件。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "architecture_app_architecture",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "评审电商服务的数据库分片架构，与 Agent 或 Skill 无关。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "architecture_implement_plugin",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "直接实现一个插件组件，按已有设计写文件，不进行架构 review。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
+      }
+    },
+    {
+      "id": "architecture_read_help",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只解释当前工具命令的参数，不做设计判断。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "用户未显式选择此手动入口；普通分析或其它已允许能力可完成请求。",
+        "allowedVariance": "只观察是否加载目标，不限制其它合法能力；不把未加载理解为任务应停止。",
+        "minimalCounterexample": "在此技能适用的任务范围内，用户显式调用 $review-agent-skill 时应加载；仅提到名称或普通任务意图不足以启动。"
       }
     }
   ]

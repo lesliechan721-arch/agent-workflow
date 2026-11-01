@@ -11,7 +11,6 @@
 | Skill `README.md` | Skill 用户 | 适用场景、工作方式、结果和限制 |
 | `SKILL.md` | Agent | 触发条件、执行流程、不变量和完成条件 |
 | `evals/**` | 维护者 | 触发、行为、组合与回归评测 |
-| `reports/reviews/**` | 维护者与审核者 | 不可变的 Review archive；`manifest.json` 是 record binding 真值 |
 
 README 说明用户能获得什么、何时使用以及会产生什么影响。不要复制 `SKILL.md` 的内部算法、完整触发规则或逐步执行合同。
 
@@ -26,7 +25,6 @@ README 说明用户能获得什么、何时使用以及会产生什么影响。�
 - 不以“完整合同见 `SKILL.md`”代替用户说明。README 本身必须足以帮助用户决定是否使用。
 - 平台、scope、版本和配置 schema 以 manifest 为真值；调用策略以平台原生元数据和 `SKILL.md` frontmatter 为真值。README 只做一致的人读摘要。
 - 不写迁移过程、CI 结果、contract test、runner、batch、trace、coverage、被评估 commit 或正式报告摘要。
-- `aw review publish` 只把已有材料归档到 `reports/reviews/**`；`manifest.json` 是 archive 的文件与目标 binding 真值。它不更新 production README。
 
 ## 插件 README
 
@@ -115,4 +113,4 @@ Skill README 应帮助用户回答：什么时候使用、它会怎样工作、�
 - README 属于 production source。日常开发保持当前稳定 target，并用 `aw plugin status` 报告变化；release train 开始时由 workspace release workflow 设置新 target。
 - 脚手架负责生成可用起稿，不以固定 heading 或 prose snapshot 代替人工内容审查。
 - 作者验证继续检查 README 存在、非空、链接有效并与 manifest/调用元数据一致。
-- 正式报告归档和 README 维护是两条独立流程；任何评审、Release Check 或归档命令都不得自动改写 README。
+- Review 报告按任务交付；评审不得自动改写 production README。

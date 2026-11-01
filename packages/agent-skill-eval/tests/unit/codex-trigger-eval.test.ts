@@ -24,8 +24,6 @@ function suite(
     forbidMultipleSkillLoads: false,
     profiles: ['project-default'],
     defaultRuns: 1,
-    releaseSplits: ['validation'],
-    requiredForRelease: true,
     perRunTimeoutMs: 10_000,
     ...overrides,
   }

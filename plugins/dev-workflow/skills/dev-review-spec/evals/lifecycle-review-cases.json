@@ -25,7 +25,8 @@
       "assertions": [
         "核对本地完整规格与原始要求，允许当前任务引用本地材料。",
         "不因尚未实现、未提交或没有docs/design而报告规格必须永久化；仍检查真实遗漏与引用可达。",
-        "只读报告，当前独立上下文可直接执行，不重复建立同职责审查。"
+        "只读报告，当前独立上下文可直接执行，不重复建立同职责审查。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -41,7 +42,7 @@
       },
       "expected": {
         "output": "给出任务范围的实际内容判断与限制，位置本身不是缺陷。",
-        "workspaceUnchanged": true,
+        "workspaceUnchanged": false,
         "allowedWorkspaceChanges": []
       },
       "audit": {
@@ -61,7 +62,8 @@
       "assertions": [
         "识别最终公共资料将失去唯一必要定义的缺口，说明丢失的条件和后果。",
         "建议保留足够的当前合同/理由或可靠可达依据，不要求搬运整份任务历史。",
-        "不删本地文件，不擅自声明代码已经实现该承诺。"
+        "不删本地文件，不擅自声明代码已经实现该承诺。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -72,7 +74,7 @@
       },
       "expected": {
         "output": "报告特定长期依据缺口，而非把所有本地Spec当成错误。",
-        "workspaceUnchanged": true,
+        "workspaceUnchanged": false,
         "allowedWorkspaceChanges": []
       },
       "audit": {

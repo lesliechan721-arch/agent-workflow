@@ -162,6 +162,51 @@
         "minimalCounterexample": "用户请求重建不清楚的任务边界时需要更多分析。",
         "allowedVariance": "允许等价实现；按任务结果、修改范围、来源和结论强度判断。场景前提不充当实际执行证据。"
       }
+    },
+    {
+      "id": "explicit-decision-record-keeps-relevant-history",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "依据 notes.md 整理 guide.md 与 decisions.md，供后续 Agent 使用。guide.md 是当前执行说明；decisions.md 是我明确要求保留的设计决定记录，需要说明比较过的方案、选择原因与重新考虑的条件。只改这两个文件，不执行其方法。",
+      "assertions": [
+        "执行说明保留原始字符串标识、缺值不视为零、重复标识的歧义处理和必要原因，不混入无执行用途的起草往返。",
+        "指定决定记录保留比较过的自动接入与手动入口方案、当前选择及原因、重新考虑的前提，不因包含历史或取舍而删除。",
+        "不把重新考虑的条件写成当前已批准的自动接入，不发明验证结果，保持指定文件范围。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "notes.md": "# 报告比较的决定\n当前用户主动选择后才比较两份给定报告。标识按原始字符串匹配：001 和 1 是不同对象；缺值不当作零；重复标识说明歧义，不猜配对。\n曾比较每次构建后自动比较与用户手动比较，当前选择手动：报告由用户线下提供，构建时没有这两份输入。以后如果构建能稳定产出并提供两份报告，才重新评估，不表示自动启用。\n起草时换过两次章节顺序，又改回原顺序。\n",
+          "guide.md": "# 比较报告\n按 notes.md 的当前规则完成比较。\n",
+          "decisions.md": "# 设计决定\n待整理。\n"
+        }
+      },
+      "expected": {
+        "output": "分别交付当前执行说明和指定决定记录，保留各自需要的依据。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "guide.md",
+          "decisions.md"
+        ],
+        "artifacts": [
+          {
+            "path": "guide.md",
+            "exists": true
+          },
+          {
+            "path": "decisions.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "同一段取舍对执行正文无增益，但在明确请求的决定记录中有用途，不能用统一过程禁令裁剪。",
+        "minimalCounterexample": "只请求执行说明时不额外创建决定记录；仍有效的精确标识原因在两种请求中都保留。",
+        "allowedVariance": "允许等价组织和指针，不锁标题、篇幅或词语，不要求保留无用途的排版往返。"
+      }
     }
   ]
 }

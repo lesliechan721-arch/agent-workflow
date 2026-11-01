@@ -1,3 +1,6 @@
+# Keep source and generated contract bytes identical across checkout platforms.
+* text=auto eol=lf
+
 # Windows Job source bytes are part of the committed artifact digest.
 packages/agent-skill-eval/native/windows/job-helper/*.go text eol=lf
 packages/agent-skill-eval/native/windows/job-helper/go.mod text eol=lf

@@ -5,6 +5,13 @@ import { isDeepStrictEqual } from 'node:util';
 import fs from 'fs-extra';
 
 import {
+  catalogFileMode,
+  listCatalogBundleFiles as listBundleFiles,
+  readCatalogExecutableFiles,
+  writeCatalogExecutableFiles,
+} from './catalog-file-modes.js';
+
+import {
   assertCatalogVersion,
   assertStrictSemVer,
   compareStrictSemVer,
@@ -567,17 +574,12 @@ function generatedOutputMarker(options: {
   };
 }
 
-async function listBundleFiles(root: string, relative = ''): Promise<string[]> {
-  const result: string[] = [];
-  for (const entry of await fs.readdir(path.join(root, relative), { withFileTypes: true })) {
-    const child = relative ? path.posix.join(relative, entry.name) : entry.name;
-    if (entry.isDirectory()) result.push(...await listBundleFiles(root, child));
-    else result.push(child);
-  }
-  return result.sort();
-}
-
-async function catalogPathRecord(root: string, relative: string, versionNeutral: boolean): Promise<{
+async function catalogPathRecord(
+  root: string,
+  relative: string,
+  versionNeutral: boolean,
+  executableFiles?: ReadonlySet<string>,
+): Promise<{
   path: string;
   kind: 'file' | 'symlink';
   mode: '100644' | '100755' | '120000';
@@ -608,12 +610,14 @@ async function catalogPathRecord(root: string, relative: string, versionNeutral:
   } else {
     digest = sha256(await fs.readFile(filePath));
   }
-  return { path: relative, kind: 'file', mode: (stat.mode & 0o100) === 0 ? '100644' : '100755', digest };
+  return { path: relative, kind: 'file', mode: catalogFileMode(relative, stat.mode, executableFiles), digest };
 }
 
 async function calculateEntryDigest(root: string, versionNeutral: boolean): Promise<string> {
   const files = await listBundleFiles(root);
-  return sha256(stableStringify(await Promise.all(files.map((file) => catalogPathRecord(root, file, versionNeutral)))));
+  const executableFiles = await readCatalogExecutableFiles(root, files);
+  return sha256(stableStringify(await Promise.all(files.map((file) =>
+    catalogPathRecord(root, file, versionNeutral, executableFiles)))));
 }
 
 async function expectedCatalogEntry(plugin: PluginMeta, pluginRoot: string) {
@@ -742,6 +746,7 @@ export async function buildCatalogWorkspace(options: {
           dependencies: closure.slice(0, -1),
           outputRoot,
         });
+        await writeCatalogExecutableFiles(outputRoot);
         bundledPlugins.push(await readPluginManifest(outputRoot, { mode: 'bundle' }));
       }
       const byPlatform = (platform: 'claude' | 'codex'): PluginMeta[] => bundledPlugins
@@ -831,51 +836,91 @@ function stableVersionBase(version: string, fieldName: string): string {
   return `${parsed.major}.${parsed.minor}.${parsed.patch}`;
 }
 
-function resolvePublishedPluginVersions(options: {
+/**
+ * Assign versions for planning and snapshot preparation with the same content comparison.
+ * Official history includes removed Plugins. Baseline declarations come from main source,
+ * before generated candidate metadata changes.
+ */
+export function resolvePublishedPluginVersions(options: {
   channel: CatalogChannel;
-  plugins: readonly PluginMeta[];
-  contentDigests: ReadonlyMap<string, string>;
-  previous: CatalogManifestV7 | null;
-  previousPluginEntries: readonly CatalogManifestV7Entry[];
+  entries: readonly Pick<CatalogManifestV7Entry, 'name' | 'version' | 'contentDigest'>[];
+  previousPluginEntries?: readonly CatalogManifestV7Entry[];
+  officialPluginHistory?: readonly CatalogManifestV7Entry[];
+  sourcePluginVersionsAtBaseline?: Readonly<Record<string, string>>;
 }): Record<string, string> {
-  const previousEntries = new Map(options.previousPluginEntries.map((entry) => [entry.name, entry]));
-  for (const entry of options.previous?.entries ?? []) previousEntries.set(entry.name, entry);
+  const official = options.officialPluginHistory !== undefined;
+  const previousEntries = new Map<string, CatalogManifestV7Entry>();
+  const historicalContents = new Map<string, string>();
+  for (const entry of [...options.previousPluginEntries ?? [], ...options.officialPluginHistory ?? []]) {
+    if (official) {
+      assertCatalogVersion(entry.version, `${entry.name} previous published version`);
+      const key = `${entry.name}@${entry.version}`;
+      const content = historicalContents.get(key);
+      if (content !== undefined && content !== entry.contentDigest) {
+        throw new Error(`Plugin ${entry.name} version ${entry.version} maps to different content in published history.`);
+      }
+      historicalContents.set(key, entry.contentDigest);
+      const previous = previousEntries.get(entry.name);
+      if (previous && compareStrictSemVer(previous.version, entry.version) >= 0) continue;
+    }
+    previousEntries.set(entry.name, entry);
+  }
   const versions: Record<string, string> = {};
-  for (const plugin of options.plugins) {
-    const name = plugin.manifest.name;
-    const sourceVersion = assertStablePluginVersion(plugin.manifest.version, `${name} source version`);
-    const contentDigest = options.contentDigests.get(name);
+  for (const entry of options.entries) {
+    const { name, contentDigest } = entry;
     if (!contentDigest) throw new Error(`Missing release content digest for plugin ${JSON.stringify(name)}.`);
+    const sourceVersion = assertStablePluginVersion(entry.version, `${name} source version`);
     const previous = previousEntries.get(name);
     if (!previous) {
       versions[name] = options.channel === 'beta' ? `${sourceVersion}-beta.1` : sourceVersion;
       continue;
     }
     const previousVersion = assertStrictSemVer(previous.version, `${name} previous published version`);
-    if (options.channel === 'latest') {
-      const comparison = compareStrictSemVer(sourceVersion, previousVersion);
-      if (comparison < 0) {
-        throw new Error(`Plugin ${name} source version ${sourceVersion} must not be lower than previous ${previousVersion}.`);
-      }
-      if (comparison === 0 && previous.contentDigest !== contentDigest) {
-        throw new Error(`Plugin ${name} version ${sourceVersion} maps to different content. Increase the source plugin version.`);
-      }
-      versions[name] = sourceVersion;
-      continue;
-    }
     const previousBase = stableVersionBase(previousVersion, `${name} previous published version`);
     const baseComparison = compareStrictSemVer(sourceVersion, previousBase);
-    if (baseComparison < 0) {
+    const parsedPrevious = parseStrictSemVer(previousVersion, `${name} previous published version`);
+    const baselineSourceVersion = options.sourcePluginVersionsAtBaseline?.[name];
+    if (official && baselineSourceVersion !== undefined
+      && sourceVersion !== assertStablePluginVersion(baselineSourceVersion, `${name} baseline source version`)) {
+      if (baseComparison < 0) {
+        throw new Error(`Plugin ${name} explicit source version ${sourceVersion} must not be lower than published base ${previousBase}.`);
+      }
+      if (baseComparison === 0 && parsedPrevious.prerelease.length === 0) {
+        throw new Error(`Plugin ${name} explicit source version ${sourceVersion} is already published as stable. Select a higher base.`);
+      }
+    }
+    if (options.channel === 'latest') {
+      const comparison = compareStrictSemVer(sourceVersion, previousVersion);
+      if (!official && comparison < 0) {
+        throw new Error(`Plugin ${name} source version ${sourceVersion} must not be lower than previous ${previousVersion}.`);
+      }
+      if (!official && comparison === 0 && previous.contentDigest !== contentDigest) {
+        throw new Error(`Plugin ${name} version ${sourceVersion} maps to different content. Increase the source plugin version.`);
+      }
+      let version = sourceVersion;
+      if (official && baseComparison <= 0) {
+        version = previousBase;
+        if (parsedPrevious.prerelease.length === 0 && previous.contentDigest !== contentDigest) {
+          version = `${parsedPrevious.major}.${parsedPrevious.minor}.${parsedPrevious.patch + 1}`;
+        }
+      }
+      versions[name] = version;
+      continue;
+    }
+    if (!official && baseComparison < 0) {
       throw new Error(`Plugin ${name} source version ${sourceVersion} must not be lower than previous base ${previousBase}.`);
     }
     if (baseComparison > 0) {
       versions[name] = `${sourceVersion}-beta.1`;
       continue;
     }
-    const parsedPrevious = parseStrictSemVer(previousVersion, `${name} previous published version`);
     if (parsedPrevious.prerelease.length === 0) {
       if (previous.contentDigest !== contentDigest) {
-        throw new Error(`Plugin ${name} stable version ${sourceVersion} maps to different content. Increase the source plugin version.`);
+        if (!official) {
+          throw new Error(`Plugin ${name} stable version ${sourceVersion} maps to different content. Increase the source plugin version.`);
+        }
+        versions[name] = `${parsedPrevious.major}.${parsedPrevious.minor}.${parsedPrevious.patch + 1}-beta.1`;
+        continue;
       }
       versions[name] = previousVersion;
       continue;
@@ -887,7 +932,7 @@ function resolvePublishedPluginVersions(options: {
     }
     versions[name] = previous.contentDigest === contentDigest
       ? previousVersion
-      : `${sourceVersion}-beta.${Number(parsedPrevious.prerelease[1]) + 1}`;
+      : `${previousBase}-beta.${Number(parsedPrevious.prerelease[1]) + 1}`;
   }
   return versions;
 }
@@ -910,6 +955,8 @@ export async function preparePublishedCatalogWorkspace(options: {
   outputPath?: string;
   previousSnapshotRoot?: string;
   historicalPluginEntries?: readonly CatalogManifestV7Entry[];
+  officialPluginHistory?: readonly CatalogManifestV7Entry[];
+  sourcePluginVersionsAtBaseline?: Readonly<Record<string, string>>;
   adapter: CatalogWorkspaceBuildAdapter;
   reservedImports?: ReservedImportRegistry;
 }): Promise<{
@@ -952,13 +999,12 @@ export async function preparePublishedCatalogWorkspace(options: {
     });
     temporaryRoot = built.outputRoot;
     const development = await validateCatalogSnapshotComplete(temporaryRoot);
-    const contentDigests = new Map(development.manifest.entries.map((entry) => [entry.name, entry.contentDigest]));
     const overrides = resolvePublishedPluginVersions({
       channel,
-      plugins: catalogWorkspace.plugins,
-      contentDigests,
-      previous: previous?.manifest ?? null,
-      previousPluginEntries: options.historicalPluginEntries ?? [],
+      entries: development.manifest.entries,
+      previousPluginEntries: [...options.historicalPluginEntries ?? [], ...previous?.manifest.entries ?? []],
+      officialPluginHistory: options.officialPluginHistory,
+      sourcePluginVersionsAtBaseline: options.sourcePluginVersionsAtBaseline,
     });
     await rewritePublishedPluginVersions(temporaryRoot, overrides);
     const bundledPlugins = await Promise.all(

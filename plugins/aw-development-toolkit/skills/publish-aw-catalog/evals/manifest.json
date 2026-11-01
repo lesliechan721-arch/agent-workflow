@@ -20,11 +20,7 @@
         "project-default"
       ],
       "runs": 3,
-      "timeoutMs": 180000,
-      "requiredForRelease": true,
-      "releaseSplits": [
-        "validation"
-      ]
+      "timeoutMs": 180000
     }
   ]
 }

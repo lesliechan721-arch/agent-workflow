@@ -1,6 +1,11 @@
 {
   "name": "@lesliechan721/aw-windows-job-win32-x64",
   "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lesliechan721-arch/agent-workflow.git",
+    "directory": "packages/aw-windows-job-win32-x64"
+  },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/",

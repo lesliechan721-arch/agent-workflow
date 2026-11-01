@@ -1,6 +1,6 @@
 # 方法归属与资料生命周期 Eval
 
-`method-lifecycle-workflow` 使用现有 Engine 的 `prepare/grade` provider，注册在本 Skill 的 manifest。`project-lifecycle` profile 提供 dev-workflow、decision-kit 和用于实际展示的 browser-use；它不改变生产插件依赖。新 suite 尚未设为发布必需，旧 suite 的门禁保持。
+`method-lifecycle-workflow` 使用现有 Engine 的 `prepare/grade` provider，注册在本 Skill 的 manifest。`project-lifecycle` profile 提供 dev-workflow、decision-kit 和用于实际展示的 browser-use；它不改变生产插件依赖。该 suite 的执行仍需独立 Audit 和本次模型运行授权。
 
 | 场景 | 实际前提与结果 |
 | --- | --- |

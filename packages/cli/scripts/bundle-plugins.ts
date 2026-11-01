@@ -130,11 +130,13 @@ async function assertPackageVersions(repoRoot: string): Promise<void> {
   }
 }
 
-async function removeGeneratedEmptyDirectories(currentDir: string): Promise<void> {
+async function removeGeneratedEmptyDirectories(currentDir: string, preservedRoots: readonly string[] = []): Promise<void> {
+  if (preservedRoots.includes(path.resolve(currentDir))) return;
   for (const entry of await fs.readdir(currentDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const entryPath = path.join(currentDir, entry.name);
-    await removeGeneratedEmptyDirectories(entryPath);
+    if (preservedRoots.includes(path.resolve(entryPath))) continue;
+    await removeGeneratedEmptyDirectories(entryPath, preservedRoots);
     if ((await fs.readdir(entryPath)).length === 0) {
       await fs.remove(entryPath);
     }
@@ -188,7 +190,8 @@ export async function bundlePlugins(
         strictRequirements: options.strictRequirements,
       },
     );
-    await removeGeneratedEmptyDirectories(bundledPluginRoot);
+    await removeGeneratedEmptyDirectories(bundledPluginRoot, (result.plugin.manifest.managedCommands?.packages ?? [])
+      .map((entry) => path.resolve(bundledPluginRoot, entry.sourceDir)));
     bundledPlugins.push(result.plugin);
     runtimeProjection[result.plugin.manifest.name] = result.runtimeProjection;
 

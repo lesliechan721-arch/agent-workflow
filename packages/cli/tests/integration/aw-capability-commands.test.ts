@@ -21,7 +21,7 @@ afterEach(async () => {
 describe('AW capability CLI commands', () => {
   it('emits one self describe JSON object', async () => {
     const result = await runCliEntry(['self', 'describe', '--json'])
-    expect(result.exitCode).toBe(0)
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0)
     expect(result.stderr).toBe('')
     expect(result.parseJsonStdout()).toMatchObject({
       schemaVersion: 1,
@@ -38,28 +38,31 @@ describe('AW capability CLI commands', () => {
     })
   })
 
-  it('returns a single failure JSON object and exit 1 for missing capabilities', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-self-check-missing-'))
-    tempDirs.push(root)
-    const capabilities = ['aw.future-feature.v3']
-    await fs.writeJson(path.join(root, 'aw-plugin-requirements.json'), {
-      schemaVersion: 1,
-      kind: 'aw-plugin-requirements',
-      plugin: { name: 'future', version: '1.0.0' },
-      requiredCapabilities: capabilities,
-      digest: computeAwCapabilitySetDigest(capabilities),
-    })
-    const result = await runCliEntry(['self', 'check', '--from', root, '--json'], { cwd: root })
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toBe('')
-    expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
-      command: 'self:check',
-      ok: false,
-      plugin: { name: 'future' },
-      missingCapabilities: capabilities,
-    })
-  })
+  it.each(['aw.future-feature.v3', 'aw.review-publication.v1'])(
+    'returns a single failure JSON object and exit 1 for unsupported %s',
+    async (capability) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-self-check-missing-'))
+      tempDirs.push(root)
+      const capabilities = [capability]
+      await fs.writeJson(path.join(root, 'aw-plugin-requirements.json'), {
+        schemaVersion: 1,
+        kind: 'aw-plugin-requirements',
+        plugin: { name: 'future', version: '1.0.0' },
+        requiredCapabilities: capabilities,
+        digest: computeAwCapabilitySetDigest(capabilities),
+      })
+      const result = await runCliEntry(['self', 'check', '--from', root, '--json'], { cwd: root })
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toBe('')
+      expect(result.parseJsonStdout()).toMatchObject({
+        schemaVersion: 1,
+        command: 'self:check',
+        ok: false,
+        plugin: { name: 'future' },
+        missingCapabilities: capabilities,
+      })
+    },
+  )
 
   it('returns a single failure JSON object when no candidate exists', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-self-check-empty-'))
@@ -89,7 +92,7 @@ describe('AW capability CLI commands', () => {
     const result = await runCliEntry([
       'self', 'check', '--from', path.join(pluginRoot, 'skills', 'commit', 'SKILL.md'), '--json',
     ], { cwd: root })
-    expect(result.exitCode).toBe(0)
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0)
     expect(result.stderr).toBe('')
     expect(result.parseJsonStdout()).toMatchObject({
       command: 'self:check',
@@ -112,7 +115,7 @@ describe('AW capability CLI commands', () => {
     )
 
     const result = await runCliEntry(['self', 'check', '--from', pluginRoot, '--json'], { cwd: root })
-    expect(result.exitCode).toBe(0)
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0)
     expect(result.stderr).toBe('')
     expect(result.parseJsonStdout()).toMatchObject({
       command: 'self:check',
@@ -131,7 +134,7 @@ describe('AW capability CLI commands', () => {
     const result = await runCliEntry([
       'plugin', 'requirements', 'plugins/git-commit', '--workspace-root', root, '--json',
     ], { cwd: root })
-    expect(result.exitCode).toBe(0)
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0)
     expect(result.stderr).toBe('')
     expect(result.parseJsonStdout()).toMatchObject({
       schemaVersion: 1,
@@ -216,7 +219,7 @@ describe('AW capability CLI commands', () => {
       'plugin', 'requirements', 'plugins/git-commit', '--workspace-root', root,
       '--add', 'aw.future-feature.v3', '--json',
     ], { cwd: root })
-    expect(added.exitCode).toBe(0)
+    expect(added.exitCode, added.stdout + added.stderr).toBe(0)
     expect(added.parseJsonStdout()).toMatchObject({
       mutation: { action: 'add', capability: 'aw.future-feature.v3', changed: true },
       declared: ['aw.future-feature.v3'],

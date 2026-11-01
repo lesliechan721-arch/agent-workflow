@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "develop-aw",
+    "participants": [
+      "review-agent-skill",
+      "simplify-agent-skill",
+      "author-agent-skill"
+    ],
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "防止源视图误判、缺产物时虚假完整结论和未授权准备；保持合法的公开Skill组合。"
+    },
+    "runtime": {
+      "isolation": "strict",
+      "observeSpawnAgent": false,
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "aw_source_skill_full",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "为当前任务解析 AW Workspace 中 plugins/demo-plugin/skills/demo-skill 的 source、provider 与指定 Codex/project final；缺少 final 时准备隔离副本，交付来源绑定。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "按实际 AW 来源或物化需要选择适配能力；它不拥有质量裁决。",
+        "minimalCounterexample": "完整独立包且无需追溯 AW 来源时，不需要该适配路径。"
+      }
+    },
+    {
+      "id": "aw_source_skill_design",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只用静态 inspection 解析这个 AW 插件的源 Skill、共享 provider 和可修改位置，不执行插件代码、不生成运行包。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "按实际 AW 来源或物化需要选择适配能力；它不拥有质量裁决。",
+        "minimalCounterexample": "完整独立包且无需追溯 AW 来源时，不需要该适配路径。"
+      }
+    },
+    {
+      "id": "standalone_package_only",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "仅审核我提供的独立标准Skill文件夹；没有AW项目，也不追溯其他来源。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "按实际 AW 来源或物化需要选择适配能力；它不拥有质量裁决。",
+        "minimalCounterexample": "目标改为需要解析 AW source/final/profile 时适配能力可用。"
+      }
+    },
+    {
+      "id": "ordinary_code_review",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "review这个普通Python函数的逻辑错误，不涉及任何Agent Skill或AW项目。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "按实际 AW 来源或物化需要选择适配能力；它不拥有质量裁决。",
+        "minimalCounterexample": "目标改为需要解析 AW source/final/profile 时适配能力可用。"
+      }
+    },
+    {
+      "id": "aw_skill_analysis",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "分析这个 AW 插件中的 Skill 为什么职责混乱，先给调整建议，不执行构建。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "AW 插件及其 Skill 的相关任务需要 AW 领域方法；采用哪些证据和操作仍由本次结果与限制决定。",
+        "minimalCounterexample": "若提供的是不需追溯 AW 来源的独立标准包，则直接使用通用方法。"
+      }
+    },
+    {
+      "id": "aw_skill_simplification",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "$simplify-agent-skill 简化这个 AW 插件里的 Skill，保留功能和当前修改；不运行模型实验。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "AW 插件及其 Skill 的相关任务需要 AW 领域方法；采用哪些证据和操作仍由本次结果与限制决定。",
+        "minimalCounterexample": "若提供的是不需追溯 AW 来源的独立标准包，则直接使用通用方法。"
+      }
+    },
+    {
+      "id": "aw_skill_authoring",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "$author-agent-skill 修改这个 AW 插件里的 Skill，让它处理新增的输入类型，并检查受影响内容。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "AW 插件及其 Skill 的相关任务需要 AW 领域方法；采用哪些证据和操作仍由本次结果与限制决定。",
+        "minimalCounterexample": "若提供的是不需追溯 AW 来源的独立标准包，则直接使用通用方法。"
+      }
+    },
+    {
+      "id": "aw_portable_export",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把这个 AW 插件里的 Skill 导出为标准 Agent Skills，供另一种 Agent 使用；不要安装到我的环境。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "AW 插件及其 Skill 的相关任务需要 AW 领域方法；采用哪些证据和操作仍由本次结果与限制决定。",
+        "minimalCounterexample": "若提供的是不需追溯 AW 来源的独立标准包，则直接使用通用方法。"
+      }
+    }
+  ]
+}

@@ -4,11 +4,15 @@ import { canonicalizePluginConfigValues } from '@lesliechan721/aw-plugin-core/ma
 
 import type { PlatformName, PluginConfigValue, Scope } from '../types.js';
 import type { OwnedSharedLocator, OwnerIdentity } from '../utils/ownership.js';
+import type { ProducerIdentity } from '../types.js';
+import type { InstalledCommandSet } from '../utils/managed-command-store.js';
+import type { RetainedManagedCommandPackage } from '../utils/managed-command-materialization.js';
 
 export interface OperationArtifactFile {
   relativePath: string;
   contentBase64: string;
   contentDigest: string;
+  mode?: number;
 }
 
 export interface OperationPlanEvidence {
@@ -24,6 +28,32 @@ export interface OperationPlanEvidence {
 }
 
 export type OperationAction =
+  | (RetainedManagedCommandPackage & {
+      kind: 'retainManagedCommandPackage';
+      pluginId: string;
+      platform?: undefined;
+      scope: Scope;
+    })
+  | {
+      kind: 'materializeNativeSkill';
+      artifactId?: string;
+      pluginId: string;
+      platform: PlatformName;
+      scope: Scope;
+      skillKey: string;
+      files: OperationArtifactFile[];
+      contentDigest: string;
+    }
+  | {
+      kind: 'syncManagedCommandPackage';
+      pluginId: string;
+      platform?: undefined;
+      scope: Scope;
+      producer: ProducerIdentity;
+      sets: InstalledCommandSet[];
+      files: Array<OperationArtifactFile & { mode: number }>;
+      contentDigest: string;
+    }
   | {
       kind: 'ensureNativeRegistration';
       pluginId: string;
@@ -190,7 +220,7 @@ export function createBatchIntentCompatiblePlanFingerprint(
   plan: OperationPlan,
   ignoredTargetKeys: ReadonlySet<string> = new Set(),
 ): string {
-  const targetKey = (target: { pluginId: string; platform: PlatformName; scope: Scope }): string =>
+  const targetKey = (target: { pluginId: string; platform?: PlatformName; scope: Scope }): string =>
     `${target.pluginId}\0${target.platform}\0${target.scope}`;
   return createOperationPlan({
     intentChanges: plan.intentChanges.map(({ scope }) => ({

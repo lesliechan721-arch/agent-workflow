@@ -24,7 +24,8 @@
       "assertions": [
         "当前已独立时直接审查，不仅因需要审查而另建相同职责子代理。",
         "发现相等边界冲突并说明关闭条件。",
-        "保持只读，不自行进行Spec修订或批准。"
+        "保持只读，不自行进行Spec修订或批准。",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -35,7 +36,7 @@
       },
       "expected": {
         "output": "当前代理直接给出边界冲突证据。",
-        "workspaceUnchanged": true,
+        "workspaceUnchanged": false,
         "allowedWorkspaceChanges": []
       },
       "audit": {

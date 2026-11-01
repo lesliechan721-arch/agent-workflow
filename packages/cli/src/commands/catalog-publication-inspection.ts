@@ -1,3 +1,4 @@
+import { realpath } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import os from 'node:os';
@@ -18,6 +19,7 @@ import {
   type CatalogWorkspaceBuildAdapter,
 } from '@lesliechan721/aw-plugin-core';
 
+import { readGitBlobsBatch } from '../../authoring/scripts/lib/plugin-version-check.mjs';
 import { bundleLocalPlugin, createCatalogRuntimeImportResolver } from '../../scripts/plugin-staging.js';
 import { redactString } from '../output/redact.js';
 import { sanitizeCatalogSourceErrorMessage } from '../utils/catalog-public-error.js';
@@ -99,7 +101,8 @@ function directRemoteGitEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
   return {
     ...sanitizedGitEnvironment(source),
     GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: os.devNull,
+    // Git for Windows maps /dev/null itself; Node's device path is not a Git path.
+    GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_ATTR_NOSYSTEM: '1',
     GIT_TERMINAL_PROMPT: '0',
   };
@@ -233,7 +236,12 @@ export async function publicationGit(
   sensitiveValues: readonly string[] = [],
 ): Promise<string> {
   try {
-    const result = await execFileAsync('git', ['-c', `core.hooksPath=${os.devNull}`, ...args], {
+    // Keep maintenance in the foreground before callers remove temporary repositories.
+    // Pending repositories and verification trees can exceed Windows MAX_PATH.
+    const result = await execFileAsync('git', [
+      '-c', 'core.hooksPath=/dev/null', '-c', 'core.longpaths=true',
+      '-c', 'gc.autoDetach=false', '-c', 'maintenance.autoDetach=false', ...args,
+    ], {
       cwd,
       env,
       encoding: 'utf8',
@@ -269,7 +277,10 @@ export async function publicationGitExit(
   env: NodeJS.ProcessEnv,
 ): Promise<boolean> {
   try {
-    await execFileAsync('git', ['-c', `core.hooksPath=${os.devNull}`, ...args], {
+    await execFileAsync('git', [
+      '-c', 'core.hooksPath=/dev/null', '-c', 'core.longpaths=true',
+      '-c', 'gc.autoDetach=false', '-c', 'maintenance.autoDetach=false', ...args,
+    ], {
       cwd,
       env,
       encoding: 'utf8',
@@ -297,12 +308,17 @@ export async function materializeSourceHead(options: {
   const archivePath = path.join(options.temporaryRoot, 'source-head.tar');
   await fs.ensureDir(options.outputRoot);
   await publicationGit(options.repoRoot, [
+    '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
     'archive', '--format=tar', `--output=${archivePath}`, options.sourceHead,
   ], options.env, 'sourceArchiveFailed', 'Could not archive the committed source HEAD.');
   const tarEnv = { ...options.env };
   delete tarEnv.TAR_OPTIONS;
   try {
-    await execFileAsync('tar', ['-xf', archivePath, '-C', options.outputRoot], {
+    await execFileAsync('tar', [
+      '-xf', path.relative(options.temporaryRoot, archivePath),
+      '-C', path.relative(options.temporaryRoot, options.outputRoot),
+    ], {
+      cwd: options.temporaryRoot,
       env: tarEnv,
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
@@ -405,21 +421,41 @@ async function materializePublishedCatalogMetadata(options: {
 }): Promise<void> {
   await fs.remove(options.outputRoot);
   await fs.ensureDir(options.outputRoot);
-  for (const relative of [GENERATED_OUTPUT_MARKER_FILENAME, CATALOG_MANIFEST_FILENAME]) {
-    const record = await publicationGit(options.repositoryRoot, [
-      'ls-tree', options.commit, '--', relative,
-    ], options.env, 'remoteBranchInvalid', 'Could not inspect published Catalog history.');
+  const metadataPaths = [GENERATED_OUTPUT_MARKER_FILENAME, CATALOG_MANIFEST_FILENAME];
+  const records = (await publicationGit(options.repositoryRoot, [
+    'ls-tree', options.commit, '--', ...metadataPaths,
+  ], options.env, 'remoteBranchInvalid', 'Could not inspect published Catalog history.')).split('\n');
+  const metadata = metadataPaths.map((relative) => {
+    const record = records.find((value) => value.endsWith(`\t${relative}`)) ?? '';
     const match = /^(100644|100755) blob ([0-9a-f]+)\t(.+)$/u.exec(record);
-    if (!match || match[3] !== relative) {
+    if (records.length !== metadataPaths.length || !match || match[3] !== relative) {
       throw new CatalogPublicationInspectionError(
         'remoteSnapshotInvalid',
         'Published Catalog history metadata must contain regular files.',
       );
     }
-    const content = await publicationGit(options.repositoryRoot, [
-      'cat-file', 'blob', match[2]!,
-    ], options.env, 'remoteBranchInvalid', 'Could not read published Catalog history.');
-    await fs.writeFile(path.join(options.outputRoot, relative), `${content}\n`);
+    return { relative, objectId: match[2]! };
+  });
+  let contents: Map<string, Buffer>;
+  try {
+    contents = await readGitBlobsBatch(options.repositoryRoot, metadata.map((entry) => entry.objectId), {
+      env: options.env,
+      argsPrefix: ['-c', 'core.hooksPath=/dev/null', '-c', 'core.longpaths=true'],
+    });
+  } catch (error) {
+    const details = sanitizeCatalogPublicationMessage(
+      error instanceof Error ? error.message : String(error),
+      options.env,
+      [options.repositoryRoot],
+    ).replace(/\s+/gu, ' ').trim();
+    throw new CatalogPublicationInspectionError(
+      'remoteBranchInvalid',
+      `Could not read published Catalog history.${details ? ` ${details.slice(0, 2_000)}` : ''}`,
+      { cause: error },
+    );
+  }
+  for (const { relative, objectId } of metadata) {
+    await fs.writeFile(path.join(options.outputRoot, relative), contents.get(objectId)!);
   }
 }
 
@@ -475,6 +511,8 @@ export async function prepareCatalogPublicationInspection(options: {
   remote?: string;
   remoteUrl?: string;
   branch?: string;
+  officialPluginHistory?: readonly CatalogManifestV7Entry[];
+  sourcePluginVersionsAtBaseline?: Readonly<Record<string, string>>;
   env: NodeJS.ProcessEnv;
 }): Promise<CatalogPublicationPreparation> {
   if (options.remote !== undefined && options.remoteUrl !== undefined) {
@@ -496,14 +534,14 @@ export async function prepareCatalogPublicationInspection(options: {
   let safeFetchUrl = '';
   let safePushUrl = '';
   try {
-    const catalogWorkspaceRoot = await fs.realpath(path.resolve(options.workspaceRoot));
-    const repoRoot = await publicationGit(
+    const catalogWorkspaceRoot = await realpath(path.resolve(options.workspaceRoot));
+    const repoRoot = await realpath(await publicationGit(
       catalogWorkspaceRoot,
       ['rev-parse', '--show-toplevel'],
       env,
       'gitWorkspaceInvalid',
       'Catalog Workspace must be inside a real Git worktree.',
-    );
+    ));
     await publicationGit(
       repoRoot,
       ['check-ref-format', '--branch', branch],
@@ -605,7 +643,7 @@ export async function prepareCatalogPublicationInspection(options: {
     const repositoryRoot = path.join(temporaryRoot, 'repository');
     await fs.ensureDir(repositoryRoot);
     await publicationGit(repositoryRoot, ['init', '--quiet'], env, 'temporaryRepositoryFailed', 'Could not create the isolated publication repository.');
-    await publicationGit(repositoryRoot, ['config', 'core.hooksPath', os.devNull], env, 'temporaryRepositoryFailed', 'Could not disable publication hooks.');
+    await publicationGit(repositoryRoot, ['config', 'core.hooksPath', '/dev/null'], env, 'temporaryRepositoryFailed', 'Could not disable publication hooks.');
     await publicationGit(repositoryRoot, ['config', 'core.symlinks', 'true'], env, 'temporaryRepositoryFailed', 'Could not configure the isolated publication repository.');
     await publicationGit(repositoryRoot, ['remote', 'add', 'publish', pushUrl], env, 'temporaryRepositoryFailed', 'Could not configure the publication remote.');
     const initialRefs = parseRemoteRefs(await publicationGit(repositoryRoot, [
@@ -622,6 +660,7 @@ export async function prepareCatalogPublicationInspection(options: {
       previousSnapshotRoot = path.join(temporaryRoot, 'previous');
       await fs.ensureDir(previousSnapshotRoot);
       await publicationGit(repositoryRoot, [
+        '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
         '--work-tree', previousSnapshotRoot, 'checkout', '--quiet', 'refs/aw/catalog-parent', '--', '.',
       ], env, 'remoteBranchInvalid', 'Could not read the published Catalog snapshot.');
       const previous = await validatePublishedCatalogSnapshotForWorkspace(
@@ -650,6 +689,8 @@ export async function prepareCatalogPublicationInspection(options: {
         sourceHead,
         previousSnapshotRoot,
         historicalPluginEntries,
+        officialPluginHistory: options.officialPluginHistory,
+        sourcePluginVersionsAtBaseline: options.sourcePluginVersionsAtBaseline,
         adapter: publicationBuildAdapter,
         reservedImports: CLI_RESERVED_IMPORTS,
       });
@@ -791,14 +832,14 @@ export async function inspectCatalogPublicationLiveContext(options: {
   let safeFetchUrl = '';
   let safePushUrl = '';
   try {
-    const catalogWorkspaceRoot = await fs.realpath(path.resolve(options.workspaceRoot));
-    const repoRoot = await publicationGit(
+    const catalogWorkspaceRoot = await realpath(path.resolve(options.workspaceRoot));
+    const repoRoot = await realpath(await publicationGit(
       catalogWorkspaceRoot,
       ['rev-parse', '--show-toplevel'],
       env,
       'gitWorkspaceInvalid',
       'Catalog Workspace must be inside a real Git worktree.',
-    );
+    ));
     await publicationGit(
       repoRoot,
       ['check-ref-format', '--branch', branch],
@@ -941,15 +982,15 @@ export async function inspectCatalogPublicationApplyContext(options: {
   let safeFetchUrl = '';
   let safePushUrl = '';
   try {
-    const catalogWorkspaceRoot = await fs.realpath(path.resolve(options.workspaceRoot));
+    const catalogWorkspaceRoot = await realpath(path.resolve(options.workspaceRoot));
     const marker = await readCatalogWorkspaceMarker(catalogWorkspaceRoot);
-    const repoRoot = await publicationGit(
+    const repoRoot = await realpath(await publicationGit(
       catalogWorkspaceRoot,
       ['rev-parse', '--show-toplevel'],
       env,
       'gitWorkspaceInvalid',
       'Catalog Workspace must be inside a real Git worktree.',
-    );
+    ));
     const catalogWorkspaceRelative = path.relative(repoRoot, catalogWorkspaceRoot);
     if (
       catalogWorkspaceRelative === '..'
@@ -1081,6 +1122,75 @@ export async function listCatalogPublicationVersions(options: {
   }
 }
 
+export async function readCatalogPublicationPluginHistory(options: {
+  workspaceRoot: string;
+  remote?: string;
+  remoteUrl?: string;
+  branches: readonly string[];
+  env: NodeJS.ProcessEnv;
+}): Promise<CatalogManifestV7Entry[]> {
+  const marker = await readCatalogWorkspaceMarker(options.workspaceRoot);
+  const resolved = await resolveRemoteUrlForInspection(options);
+  const branchRefs = [...new Set(options.branches.map((branch) =>
+    `refs/heads/${assertSafeBranchValue(branch)}`))];
+  if (branchRefs.length === 0) throw new Error('Catalog Plugin history requires at least one branch.');
+  const sensitiveValues = remoteSensitiveValues(resolved.remoteUrl);
+  const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-plugin-history-'));
+  try {
+    await publicationGit(temporaryRoot, ['init', '--quiet'], resolved.env, 'temporaryRepositoryFailed', 'Could not create the Catalog history repository.');
+    await publicationGit(temporaryRoot, ['remote', 'add', 'publish', resolved.remoteUrl], resolved.env, 'temporaryRepositoryFailed', 'Could not configure the Catalog history remote.');
+    const refs = parseRemoteRefs(await publicationGit(temporaryRoot, [
+      'ls-remote', 'publish', ...branchRefs,
+    ], resolved.env, 'remoteReadFailed', 'Could not inspect published Catalog history.', sensitiveValues));
+    const visited = new Set<string>();
+    const entries: CatalogManifestV7Entry[] = [];
+    const metadataRoot = path.join(temporaryRoot, 'history-metadata');
+    for (const [index, branchRef] of branchRefs.entries()) {
+      const tip = refs.get(branchRef);
+      if (!tip) continue;
+      const localRef = `refs/aw/catalog-history-${index}`;
+      await publicationGit(temporaryRoot, [
+        'fetch', '--quiet', '--no-tags', 'publish', `${branchRef}:${localRef}`,
+      ], resolved.env, 'remoteBranchInvalid', 'Could not fetch published Catalog history.', sensitiveValues);
+      const fetchedTip = await publicationGit(temporaryRoot, ['rev-parse', localRef], resolved.env, 'remoteBranchInvalid', 'Could not inspect published Catalog history.');
+      if (fetchedTip !== tip) {
+        throw new CatalogPublicationInspectionError('remoteDrift', 'Catalog history changed during inspection. Retry preparation.');
+      }
+      const commits = (await publicationGit(temporaryRoot, [
+        'rev-list', '--first-parent', tip,
+      ], resolved.env, 'remoteBranchInvalid', 'Could not inspect published Catalog history.')).split('\n').filter(Boolean);
+      for (const commit of commits) {
+        if (visited.has(commit)) continue;
+        visited.add(commit);
+        await materializePublishedCatalogMetadata({
+          repositoryRoot: temporaryRoot,
+          commit,
+          outputRoot: metadataRoot,
+          env: resolved.env,
+        });
+        try {
+          const metadata = await validatePublishedCatalogSnapshotMetadata(metadataRoot);
+          if (metadata.workspaceIdentity !== marker.workspaceIdentity) {
+            throw new Error('Published Catalog snapshot belongs to a different Workspace identity.');
+          }
+          entries.push(...metadata.manifest.entries);
+        } catch (error) {
+          throw inspectionError('remoteSnapshotInvalid', error);
+        }
+      }
+    }
+    const finalRefs = parseRemoteRefs(await publicationGit(temporaryRoot, [
+      'ls-remote', 'publish', ...branchRefs,
+    ], resolved.env, 'remoteReadFailed', 'Could not recheck published Catalog history.', sensitiveValues));
+    if (branchRefs.some((ref) => refs.get(ref) !== finalRefs.get(ref))) {
+      throw new CatalogPublicationInspectionError('remoteDrift', 'Catalog history changed during inspection. Retry preparation.');
+    }
+    return entries;
+  } finally {
+    await fs.remove(temporaryRoot);
+  }
+}
+
 export async function readCatalogPublicationBranchState(options: {
   workspaceRoot: string;
   remote?: string;
@@ -1116,6 +1226,7 @@ export async function readCatalogPublicationBranchState(options: {
     const snapshotRoot = path.join(temporaryRoot, 'snapshot');
     await fs.ensureDir(snapshotRoot);
     await publicationGit(temporaryRoot, [
+      '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
       '--work-tree', snapshotRoot, 'checkout', '--quiet', 'refs/aw/catalog-parent', '--', '.',
     ], resolved.env, 'remoteBranchInvalid', 'Could not read the published Catalog snapshot.');
     const validation = await validatePublishedCatalogSnapshotForWorkspace(

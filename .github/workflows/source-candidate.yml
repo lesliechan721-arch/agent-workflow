@@ -1,0 +1,80 @@
+name: Prepare a source candidate
+
+on:
+  workflow_call:
+    inputs:
+      product:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      source:
+        type: string
+        required: true
+    secrets:
+      RELEASE_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+      RELEASE_PRODUCT: ${{ inputs.product }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      SOURCE_HEAD: ${{ inputs.source }}
+      GIT_AUTHOR_NAME: aw-release[bot]
+      GIT_AUTHOR_EMAIL: aw-release[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: aw-release[bot]
+      GIT_COMMITTER_EMAIL: aw-release[bot]@users.noreply.github.com
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the public Catalog version mutation tool
+        if: inputs.product == 'catalog'
+        run: pnpm build
+      - uses: actions/create-github-app-token@v3
+        id: app
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - name: Set temporary HTTPS authentication
+        run: |
+          cat > "$RUNNER_TEMP/aw-release-askpass" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GH_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          SH
+          chmod 700 "$RUNNER_TEMP/aw-release-askpass"
+          echo "GIT_ASKPASS=$RUNNER_TEMP/aw-release-askpass" >> "$GITHUB_ENV"
+      - name: Create the candidate branch and immutable source tag
+        run: pnpm release:actions source --product "$RELEASE_PRODUCT" --version "$RELEASE_VERSION" --source "$SOURCE_HEAD"
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GIT_TERMINAL_PROMPT: '0'
+      - name: Remove temporary authentication
+        if: always()
+        run: rm -f "$RUNNER_TEMP/aw-release-askpass"

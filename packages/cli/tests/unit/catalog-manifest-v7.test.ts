@@ -2,7 +2,9 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { writeCatalogExecutableFiles } from '@lesliechan721/aw-plugin-core';
 
 import type { PluginMeta } from '../../src/types.js';
 import {
@@ -207,5 +209,28 @@ describe('catalog manifest schema 7', () => {
     await expect(calculateCatalogEntryContentDigest(symlinkRoot)).resolves.not.toBe(
       await calculateCatalogEntryContentDigest(fileRoot),
     );
+  });
+
+  it.skipIf(process.platform === 'win32')('uses the bundled executable inventory for both CLI digests on Windows', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-portable-modes-'));
+    tempDirs.push(pluginRoot);
+    const runtimePath = path.join(pluginRoot, 'runtime.mjs');
+    await fs.writeFile(runtimePath, '#!/usr/bin/env node\n');
+    await fs.chmod(runtimePath, 0o755);
+    await writeCatalogExecutableFiles(pluginRoot);
+    const artifact = await calculateCatalogEntryArtifactDigest(pluginRoot);
+    const content = await calculateCatalogEntryContentDigest(pluginRoot);
+    await fs.chmod(runtimePath, 0o644);
+
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    try {
+      await expect(calculateCatalogEntryArtifactDigest(pluginRoot)).resolves.toBe(artifact);
+      await expect(calculateCatalogEntryContentDigest(pluginRoot)).resolves.toBe(content);
+      await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'aw-executable-files.json'), []);
+      await expect(calculateCatalogEntryArtifactDigest(pluginRoot)).resolves.not.toBe(artifact);
+      await expect(calculateCatalogEntryContentDigest(pluginRoot)).resolves.not.toBe(content);
+    } finally {
+      platform.mockRestore();
+    }
   });
 });

@@ -7,7 +7,10 @@
       "dev-workflow",
       "dev-review-spec",
       "dev-implement",
-      "dev-review-code"
+      "dev-review-code",
+      "explain-for-review",
+      "decision-grill",
+      "dev-design"
     ],
     "policy": {
       "optimization": "balanced",
@@ -45,7 +48,7 @@
         "core-positive"
       ],
       "input": {
-        "query": "根据这次原型反馈写一份轻量开发规格，别写成任务清单。",
+        "query": "根据已经接受的原型和已确认需求写一份轻量开发规格，别写成任务清单。",
         "expectedLoad": true
       }
     },
@@ -91,7 +94,7 @@
         "minimalCounterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
       },
       "input": {
-        "query": "按这个 Spec 开始实现。",
+        "query": "按这个已确认且没有规范缺口的 Spec 实现一个函数，只实现并验证，不修订规格。",
         "expectedLoad": false
       }
     },

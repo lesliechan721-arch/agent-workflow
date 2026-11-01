@@ -30,9 +30,18 @@ async function main(): Promise<void> {
 
   const runner: PluginProcessRunner | undefined = cleanupFailureReadyPath ? {
     async run(_invocation, options) {
-      await fs.outputFile(cleanupFailureReadyPath, 'ready\n');
       return new Promise((_resolve, reject) => {
-        options.signal?.addEventListener('abort', () => reject(new Error('synthetic cleanup failure')), { once: true });
+        const finish = (error: unknown): void => {
+          clearTimeout(deadline);
+          options.signal?.removeEventListener('abort', onAbort);
+          reject(error);
+        };
+        const onAbort = (): void => finish(new Error('synthetic cleanup failure'));
+        // An unresolved Promise does not keep the host alive while the parent waits to interrupt it.
+        const deadline = setTimeout(() => finish(new Error('interrupt fixture timed out')), 10_000);
+        options.signal?.addEventListener('abort', onAbort, { once: true });
+        if (options.signal?.aborted) onAbort();
+        else void fs.outputFile(cleanupFailureReadyPath, 'ready\n').catch(finish);
       });
     },
   } : undefined;

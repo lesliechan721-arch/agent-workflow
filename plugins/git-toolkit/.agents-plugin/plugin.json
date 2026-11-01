@@ -29,7 +29,8 @@
   "scripts": {
     "tests": {
       "node": [
-        "./scripts/evals.test.mjs"
+        "./scripts/evals.test.mjs",
+        "./skills/git-commit/evals/provider-contract.test.mjs"
       ]
     }
   }

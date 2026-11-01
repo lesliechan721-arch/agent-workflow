@@ -226,6 +226,9 @@ async function overlayDirectory(
 function assertNoUnresolvedTemplates(candidate: CandidateTree): void {
   for (const [relativePath, content] of Object.entries(candidate.tree.files)) {
     const text = content.toString('utf8');
+    if (text.includes('{{aw.command:')) {
+      throw new Error('managedCommandPortableUnsupported: Portable Skills cannot reference local managed commands.');
+    }
     if (/\{\{[^{}]+\}\}/u.test(text)) {
       throw new Error(`Portable Skill "${candidate.tree.skillKey}" contains an unresolved template in "${relativePath}".`);
     }

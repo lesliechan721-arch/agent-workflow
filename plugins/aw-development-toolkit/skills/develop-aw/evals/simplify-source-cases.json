@@ -1,0 +1,200 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "develop-aw",
+    "participants": [
+      "simplify-agent-skill",
+      "agent-content"
+    ],
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "检查 AW 来源、可重建输入、相同 profile 的实际产物及绑定；候选语义与接受标准仍由通用 Simplifier 负责。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "prepare_isolated_unverified_candidate",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "high-cost"
+      ],
+      "prompt": "$simplify-agent-skill 简化 project/plugins/demo-plugin/skills/demo-skill。删除重复的事实约束。你已获准在 _simplify 下冻结 baseline、建立独立 candidate，并为 Codex/project 准备两者的 final；不得修改 project 下的生产源码，不运行模型 Eval，不应用候选。PATH 中是显式受控 AW CLI test double，只证明路由和文件范围。 需要 AW 来源或物化时，仅采用当前可用 develop-aw 的对应适配资料；候选选择由当前简化任务负责。",
+      "assertions": [
+        "先用公开 self-check 确认能力，再从 manifest 和必要来源材料定位 Skill source 与注入 provider；冻结当前输入为可重建 baseline，candidate 是独立副本。review inspect 可按需使用，不是必经步骤。",
+        "候选修改落在当前任务允许的权威 Skill source；baseline、共享 provider、renderer 条件和生产 project 保持不变。",
+        "通过公开 review prepare 以同一 Codex/project profile 分别生成 baseline final 与 candidate final，并保留各自新 binding；实际读取两份 final。",
+        "交付真实 source/final 对应关系和未运行模型的限制；不凭物化成功宣布候选已通过行为比较，不把 final 复制回生产 source。",
+        "明确 test double 只证明路由与受限副作用，不证明真实 AW renderer、Audit 或模型行为。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"simplification-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  }\n}\n",
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Simplification fixture\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\n# Demo skill\n\nUse only supplied facts. Use only supplied facts.\nRead references/policy.md before writing.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nPreserve privacy and identify unknowns.\n",
+          "fixture-control.json": "{\n  \"sourceWorkspace\": \"project\",\n  \"skillRelative\": \"plugins/demo-plugin/skills/demo-skill\",\n  \"providerRelative\": \"plugins/demo-plugin/shared/policy.md\",\n  \"manifestRelative\": \"plugins/demo-plugin/.agents-plugin/plugin.json\",\n  \"baselineWorkspace\": \"_simplify/baseline/project\",\n  \"candidateWorkspace\": \"_simplify/candidate/project\",\n  \"baselineOutput\": \"_simplify/final/baseline\",\n  \"candidateOutput\": \"_simplify/final/candidate\"\n}\n",
+          "FIXTURE.md": "This case uses an explicit AW CLI test double. It verifies command routing, exact profile selection, complete snapshot inputs and isolated outputs. It does not implement a production renderer, source binding, Audit or model Eval.\n"
+        },
+        "pathPrepend": [
+          "simplify-fixtures/bin"
+        ]
+      },
+      "expected": {
+        "output": "交付隔离的未验证 candidate、两份同 profile final 与各自 binding，并说明未运行模型对照和独立 Audit。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "_simplify/**",
+          "_simplify-log/**"
+        ],
+        "artifacts": [
+          {
+            "path": "_simplify/baseline/project/plugins/demo-plugin/skills/demo-skill/SKILL.md",
+            "exists": true,
+            "contains": [
+              "Use only supplied facts. Use only supplied facts."
+            ]
+          },
+          {
+            "path": "_simplify/candidate/project/plugins/demo-plugin/skills/demo-skill/SKILL.md",
+            "exists": true,
+            "contains": [
+              "Use only supplied facts."
+            ],
+            "notContains": [
+              "Use only supplied facts. Use only supplied facts."
+            ]
+          },
+          {
+            "path": "_simplify/final/baseline/skills/demo-skill/SKILL.md",
+            "exists": true
+          },
+          {
+            "path": "_simplify/final/candidate/skills/demo-skill/SKILL.md",
+            "exists": true,
+            "notContains": [
+              "Use only supplied facts. Use only supplied facts."
+            ]
+          },
+          {
+            "path": "_simplify/final/baseline/aw-source-binding.json",
+            "exists": true
+          },
+          {
+            "path": "_simplify/final/candidate/aw-source-binding.json",
+            "exists": true
+          },
+          {
+            "path": "_simplify-log/commands.jsonl",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "这是写候选 source 后准备候选 final 的最小成功路径；模型证据缺失时不能升级为生产接受。",
+        "minimalCounterexample": "若用户还授权固定 corpus、独立 Audit 和模型运行，才可进一步判断 accept/reject/inconclusive。",
+        "allowedVariance": "可使用不同的安全复制工具和等价措辞；必须保留完整 snapshot、两个独立 binding、同一 profile 与生产 source 不变。",
+        "errorCost": "high"
+      }
+    },
+    {
+      "id": "only_final_has_no_production_source",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "$simplify-agent-skill 请把 final/skills/demo-skill/SKILL.md 简化并完成生产修改。这里只有一个已生成 final，没有 manifest、provider、renderer、binding 或可编辑 source 映射。本次不要创建猜测的源码。 需要 AW 来源或物化时，仅采用当前可用 develop-aw 的对应适配资料；候选选择由当前简化任务负责。",
+      "assertions": [
+        "识别 only-final 不能定位权威可编辑 source，不直接编辑 final 后宣称生产完成。",
+        "只给 source 映射需求、计划或明确标记的临时实验；不补造 manifest、provider、renderer 或 binding。",
+        "保持现有 final 不变，明确生产简化未完成。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "final/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts. Use supplied facts.\n"
+        }
+      },
+      "expected": {
+        "output": "报告缺少可追踪 source，不能把生成物编辑声明为生产简化完成。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "生成物可能由 source、provider 或 renderer 重建；直接修改会丢失且错误声明完成。",
+        "minimalCounterexample": "若公开来源证据把 final 路径映射到可编辑 source，则可在隔离候选中继续。",
+        "allowedVariance": "允许提出不同的最小取证步骤，但不得修改 final 或虚构映射。"
+      }
+    },
+    {
+      "id": "shorter_source_same_final",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "$simplify-agent-skill 比较 baseline 与 candidate。candidate 的 source 少一行，但 renderer 生成的两份 final 内容逐字相同。不要修改或运行任何内容。 需要 AW 来源或物化时，仅采用当前可用 develop-aw 的对应适配资料；候选选择由当前简化任务负责。",
+      "assertions": [
+        "确认 source 维护文本减少，但实际运行 final 未减少。",
+        "不声称 active-path context 或运行成本下降，不据此接受行为等价。",
+        "保持所有输入不变，并说明仍缺固定对照和运行证据。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "baseline/source/SKILL.md": "---\nname: demo-skill\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts.\nLegacy author note.\n",
+          "candidate/source/SKILL.md": "---\nname: demo-skill\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts.\n",
+          "renderer/README.md": "The supplied final files are the observed renderer outputs for this comparison.\n",
+          "baseline/final/SKILL.md": "---\nname: demo-skill\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts.\nInjected runtime policy.\n",
+          "candidate/final/SKILL.md": "---\nname: demo-skill\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts.\nInjected runtime policy.\n"
+        }
+      },
+      "expected": {
+        "output": "只报告 source 维护成本下降；运行 final 和 active-path context 没有下降。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "source 行数不是运行上下文的替代指标，renderer 可消除 source 差异。",
+        "minimalCounterexample": "若同 profile 的 candidate final 实际更短，才可报告相应运行上下文下降。",
+        "allowedVariance": "可使用字节数、行数或 token 估计说明 source 差异，但必须以相同 final 限定结论。"
+      }
+    },
+    {
+      "id": "second_candidate_provider_drift",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "high-cost"
+      ],
+      "prompt": "$simplify-agent-skill 判断 candidate-2 能否复用 candidate-1 的 binding 和 Audit。两者 SKILL.md 相同，但 candidate-2 的共享 provider 已变化。本次未授权 prepare、独立 Audit 或模型运行；不要改文件。 需要 AW 来源或物化时，仅采用当前可用 develop-aw 的对应适配资料；候选选择由当前简化任务负责。",
+      "assertions": [
+        "把 provider 视为构建输入；candidate-2 的输入已变，旧 final 不能代表当前 candidate，实际 target 内容须重建后核对。",
+        "不直接复用旧 binding 或旧 Audit；要求 candidate-2 重新 prepare，并验证新 Spec 的全部绑定。只有 Runner 验证仍精确匹配的正式 Audit 才可复用，否则需独立审核。",
+        "在当前授权下停止为未验证 candidate，不模拟 Audit 引擎或伪造通过。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "candidate-1/source/SKILL.md": "---\nname: demo-skill\ndescription: Summarize supplied facts.\n---\n\nRead references/policy.md.\n",
+          "candidate-1/provider/policy.md": "Preserve names exactly.\n",
+          "candidate-1/aw-source-binding.json": "{\n  \"testOnly\": true,\n  \"candidate\": \"candidate-1\",\n  \"profile\": {\"platform\": \"codex\", \"scope\": \"project\"}\n}\n",
+          "candidate-1/eval-audit.json": "{\n  \"testOnly\": true,\n  \"boundCandidate\": \"candidate-1\",\n  \"status\": \"approved\"\n}\n",
+          "candidate-2/source/SKILL.md": "---\nname: demo-skill\ndescription: Summarize supplied facts.\n---\n\nRead references/policy.md.\n",
+          "candidate-2/provider/policy.md": "Preserve names and dates exactly.\n"
+        }
+      },
+      "expected": {
+        "output": "拒绝直接复用 candidate-1 的证据；candidate-2 需要重新 prepare 并验证 Spec/Audit 绑定。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "provider 变化会改变构建输入，可能改变 final 或被测 workspace；必须重新准备并校验绑定，不能预先认定 target digest 相同或不同。",
+        "minimalCounterexample": "只有 candidate 全部绑定输入和 target identity 未变时，既有精确绑定证据才可能复用。",
+        "allowedVariance": "可以先请求新 prepare，也可以在无授权时立即停止；不得把 testOnly 文件当正式证据。",
+        "errorCost": "high"
+      }
+    }
+  ]
+}

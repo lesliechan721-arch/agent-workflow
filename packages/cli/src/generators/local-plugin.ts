@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
+import { validateManagedCommandSources } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { renderResolvedHooksArtifact } from './hooks.js';
 import { buildGeneratedName } from './shared.js';
@@ -17,6 +18,7 @@ import type {
 } from '../utils/catalog-runtime-projection.js';
 import { resolveCanonicalRuntimeSourceIdentity } from '../utils/catalog-runtime-projection.js';
 import { getArtifactSourceBundleRelativePath } from '../utils/artifact-sources.js';
+import { validateManagedCommandPackageClosure } from '../utils/managed-command-closure.js';
 import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import {
   assertManifestPlatformSupport,
@@ -79,7 +81,7 @@ const PLATFORM_MANIFEST_DIRS: Readonly<Record<PlatformName, string>> = {
   codex: '.codex-plugin',
 };
 
-const EXACT_PNPM_PACKAGE_MANAGER_PATTERN = /^pnpm@\d+\.\d+\.\d+$/u;
+const EXACT_PNPM_VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
 
 function assertLocalPluginStagingPathForTests(
   targetPath: string,
@@ -167,15 +169,18 @@ export async function validateStagingPackageManager(packageRoot: string): Promis
       'scripts.node.packageRoot.package.json',
     ),
   ]);
-  const supportedPackageManager = cliPackageJson.packageManager;
+  // pnpm pack removes packageManager, but preserves runtime dependencies.
+  const dependencies = cliPackageJson.dependencies as { pnpm?: unknown } | undefined;
+  const supportedPnpmVersion = dependencies?.pnpm;
   if (
-    typeof supportedPackageManager !== 'string'
-    || !EXACT_PNPM_PACKAGE_MANAGER_PATTERN.test(supportedPackageManager)
+    typeof supportedPnpmVersion !== 'string'
+    || !EXACT_PNPM_VERSION_PATTERN.test(supportedPnpmVersion)
   ) {
     throw new Error(
-      'Invalid @lesliechan721/aw packageManager: expected an exact "pnpm@<version>" declaration.',
+      'Invalid @lesliechan721/aw dependencies.pnpm: expected an exact "<major>.<minor>.<patch>" version.',
     );
   }
+  const supportedPackageManager = `pnpm@${supportedPnpmVersion}`;
   if (packageJson.packageManager !== supportedPackageManager) {
     throw new Error(
       'Invalid scripts.node.packageRoot.package.json.packageManager: '
@@ -482,6 +487,21 @@ async function copyArtifactSourceDirectories(
       );
     }
   }
+}
+
+async function copyManagedCommandPackages(plugin: PluginMeta, outputRoot: string): Promise<void> {
+  await validateManagedCommandSources(plugin.rootDir, plugin.manifest);
+  for (const commandPackage of plugin.manifest.managedCommands?.packages ?? []) {
+    const relativePath = stripDotSlash(commandPackage.sourceDir);
+    await fs.copy(path.join(plugin.rootDir, relativePath), path.join(outputRoot, relativePath), {
+      overwrite: true,
+      dereference: false,
+    });
+    const entries = (plugin.manifest.managedCommands?.sets ?? []).flatMap((set) =>
+      set.producer.kind === 'package' && set.producer.packageKey === commandPackage.key && set.mode === 'static' ? set.entries : []);
+    await validateManagedCommandPackageClosure(path.join(outputRoot, relativePath), entries);
+  }
+  await validateManagedCommandSources(outputRoot, plugin.manifest);
 }
 
 async function copyPortableStaticSkills(plugin: PluginMeta, outputRoot: string): Promise<void> {
@@ -2036,6 +2056,7 @@ export async function bundleLocalPlugin(
       await copyBundleRootFile(plugin.rootDir, outputRoot, filePath);
     }
     await copyArtifactSourceDirectories(plugin, outputRoot);
+    await copyManagedCommandPackages(plugin, outputRoot);
     await copyProductionPackageRoot(plugin, outputRoot);
     await materializeArtifactRuntimeImports(artifactRuntimeProjection.projections);
     await writeJsonFile(

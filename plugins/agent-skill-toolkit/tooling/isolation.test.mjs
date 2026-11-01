@@ -26,9 +26,6 @@ test('delivered tools run with only Node and package files under an OS filesyste
     await writeFile(outside, 'This file must not be readable in the sandbox.');
     const repository = path.resolve(import.meta.dirname, '../../..');
     await buildTools(path.join(runtime, 'bundle'));
-    await mkdir(path.join(runtime, 'inputs'));
-    await writeFile(path.join(runtime, 'inputs', 'result.schema.json'), '{"type":"object"}\n');
-    await writeFile(path.join(runtime, 'inputs', 'reader.mjs'), 'import schema from "./result.schema.json";\n');
     const program = `
       import assert from 'node:assert/strict';
       import fs from 'node:fs';
@@ -44,21 +41,17 @@ test('delivered tools run with only Node and package files under an OS filesyste
         socket.on('error', e => { socket.destroy(); ['EPERM', 'EACCES'].includes(e.code) ? resolve() : reject(e); });
       });
       const author = 'bundle/skills/author-agent-skill/scripts/';
-      const audit = 'bundle/skills/review-agent-skill/scripts/audit-output-contracts.mjs';
       function run(entry, args) {
         const result = spawnSync(process.execPath, [entry, ...args], { encoding: 'utf8', timeout: 15000 });
         assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
         return result.stdout;
       }
-      for (const entry of [author + 'init-skill.mjs', author + 'check-skill.mjs', audit]) run(entry, ['--help']);
+      for (const entry of [author + 'init-skill.mjs', author + 'check-skill.mjs']) run(entry, ['--help']);
       const init = JSON.parse(run(author + 'init-skill.mjs', ['created-skill', '--description', 'Summarize supplied records.', '--format', 'json']));
       assert.equal(init.ok, true); assert.equal(init.state, 'scaffold');
       const check = JSON.parse(run(author + 'check-skill.mjs', ['created-skill', '--format', 'json']));
       assert.equal(check.ok, true); assert.equal(check.complete, true);
-      const scanned = JSON.parse(run(audit, ['inputs', '--format', 'json']));
-      assert.equal(scanned.version, 2); assert.equal(scanned.complete, true); assert(scanned.candidates.length > 0);
-      assert(scanned.candidates.every(c => c.businessUse === 'not-assessed'));
-      console.log(JSON.stringify({ filesystemDenied: true, networkDenied: true, commands: ['init-skill', 'check-skill', 'audit-output-contracts'] }));
+      console.log(JSON.stringify({ filesystemDenied: true, networkDenied: true, commands: ['init-skill', 'check-skill'] }));
     `;
     await writeFile(path.join(runtime, 'verify.mjs'), program);
     const policy = `(version 1)
@@ -85,7 +78,7 @@ test('delivered tools run with only Node and package files under an OS filesyste
     assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message || `sandbox exited with ${result.signal}`);
     assert.deepEqual(JSON.parse(result.stdout), {
       filesystemDenied: true, networkDenied: true,
-      commands: ['init-skill', 'check-skill', 'audit-output-contracts'],
+      commands: ['init-skill', 'check-skill'],
     });
   } finally {
     await rm(fixture, { recursive: true, force: true });

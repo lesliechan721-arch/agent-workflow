@@ -5,6 +5,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { atomicReplaceSafeFile } from './safe-fs.js';
+import { readSafeOperationError, type SafeOperationErrorMetadata } from './safe-operation-diagnostic.js';
 
 import type { PlatformName, Scope } from '../types.js';
 
@@ -87,7 +88,7 @@ export type OwnedComponent =
       kind: 'skill-directory';
       validateHealth?: boolean;
       // A pristine markerless catalog tree is absent, not deletion-authorized ownership.
-      pristineTree?: Array<{ relativePath: string; contentDigest: string }>;
+      pristineTree?: Array<{ relativePath: string; contentDigest: string; mode?: number }>;
     } & OwnedPathComponent)
   | ({ kind: 'owned-text-file' } & OwnedPathComponent)
   | {
@@ -148,13 +149,14 @@ export interface OwnedComponentExecutor {
   }>): Promise<void>;
   skillDirectoryMatchesPristineTree?(options: {
     actualPath: string;
-    files: ReadonlyArray<{ relativePath: string; contentDigest: string }>;
+    files: ReadonlyArray<{ relativePath: string; contentDigest: string; mode?: number }>;
   }): Promise<boolean>;
 }
 
 export interface CleanupFailure extends OwnershipError {
   phase: 'probe' | 'mutation' | 'verify' | 'remove' | 'post-probe';
   quarantinePath?: string;
+  operationDiagnostic?: SafeOperationErrorMetadata;
 }
 
 export interface CleanupResult {
@@ -897,7 +899,11 @@ export async function cleanupOwnedComponents(options: {
         await options.executor.removeShared(component);
       }
     } catch (error) {
-      result.failures.push({ label, phase: 'remove', message: errorMessage(error) });
+      const operationDiagnostic = readSafeOperationError(error);
+      result.failures.push({
+        label, phase: 'remove', message: errorMessage(error),
+        ...(operationDiagnostic ? { operationDiagnostic } : {}),
+      });
       pushUnique(result.residual, label);
       continue;
     }

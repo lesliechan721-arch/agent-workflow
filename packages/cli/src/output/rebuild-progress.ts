@@ -112,6 +112,19 @@ export function createRebuildProgressFeed(limit = 50): RebuildProgressFeed {
 
   return {
     addEvent(event) {
+      if (event.type === 'managed-command:producer' && event.source
+        && typeof event.source.plugin === 'string'
+        && SAFE_PLUGIN_NAME_PATTERN.test(event.source.plugin)
+        && (event.source.scope === 'project' || event.source.scope === 'user') && event.data) {
+        const data = event.data as Record<string, unknown>;
+        if (typeof data.packageKey !== 'string' || !/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u.test(data.packageKey)
+          || !['start', 'success', 'failure'].includes(String(data.phase))) return;
+        const target = `${event.source.plugin} · 命令包 ${data.packageKey} · ${event.source.scope === 'user' ? '个人默认' : '当前项目'}`;
+        const phase = data.phase === 'start' ? '刷新命令包'
+          : data.phase === 'success' ? '命令包已完成' : '命令包失败';
+        publish({ current: { target, phase }, messages: [...snapshot.messages, `${target} · ${phase}`] });
+        return;
+      }
       if (!isRebuildActionEvent(event)) return;
       const entry = actionLine(event);
       publish({ current: entry.current, messages: [...snapshot.messages, entry.line] });

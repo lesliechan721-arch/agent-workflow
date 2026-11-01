@@ -6,6 +6,11 @@
   "engines": {
     "node": ">=22"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lesliechan721-arch/agent-workflow.git",
+    "directory": "packages/agent-skill-eval"
+  },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -29,7 +34,7 @@
     "windows-job:reproducibility": "node scripts/reproduce-windows-job-helper.mjs",
     "windows-job:verify": "node scripts/verify-windows-job-helper.mjs",
     "test": "pnpm run test:unit",
-    "test:unit": "node ../../scripts/test/run-vitest.mjs run --project pure --maxWorkers=2 && node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated --maxWorkers=2 && node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism",
+    "test:unit": "node ../../scripts/test/run-vitest.mjs run --project pure && node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated && node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism",
     "test:dist": "node ../../scripts/test/run-vitest.mjs run --config vitest.dist.config.ts",
     "prepublishOnly": "node ../../scripts/release/reject-direct-publish.mjs"
   },

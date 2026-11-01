@@ -52,9 +52,31 @@
         "./skills/codex-explore/evals/provider-contract.test.mjs",
         "./skills/codex-subagent-guide/evals/provider-contract.test.mjs",
         "./skills/codex-subagent-guide/evals/role-boundary-provider.test.mjs",
-        "./scripts/subagent-runtime.test.mjs",
+        "./scripts/subagent-integration-communication.test.mjs",
+        "./scripts/subagent-integration-initialization.test.mjs",
+        "./scripts/subagent-integration-reports.test.mjs",
+        "./scripts/subagent-integration-results.test.mjs",
+        "./scripts/subagent-integration-recovery.test.mjs",
+        "./scripts/subagent-integration-resume.test.mjs",
+        "./scripts/subagent-integration-resume-output.test.mjs",
+        "./scripts/subagent-runtime-logic.test.mjs",
+        "./scripts/subagent-plan.test.mjs",
+        "./scripts/codex-executable.test.mjs",
+        "./scripts/codex-profile.test.mjs",
+        "./scripts/antigravity-adapter.test.mjs",
+        "./scripts/subagent-adapter-common.test.mjs",
+        "./scripts/subagent-protocol-v5.test.mjs",
+        "./scripts/subagent-bridge-v5.test.mjs",
+        "./scripts/subagent-platform.test.mjs",
+        "./scripts/subagent-platform-failures.test.mjs",
+        "./scripts/subagent-storage.test.mjs",
         "./scripts/file-selection.test.mjs",
-        "./scripts/adapters-v4.test.mjs"
+        "./scripts/adapters-integration-inputs.test.mjs",
+        "./scripts/adapters-integration-protocol.test.mjs",
+        "./scripts/adapters-integration-control.test.mjs",
+        "./scripts/adapters-integration-recovery.test.mjs",
+        "./scripts/adapter-permissions.test.mjs",
+        "./scripts/antigravity-permissions.test.mjs"
       ]
     },
     "node": {
@@ -72,20 +94,7 @@
         "type": "object",
         "properties": {
           "executor": {
-            "type": "string",
-            "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；旧 profile 省略时按 native 解释。",
-            "valueRef": {
-              "field": "subagentCommands",
-              "key": "key",
-              "label": "title",
-              "include": [
-                "native"
-              ]
-            },
-            "validation": {
-              "minLength": 1
-            }
+            "$ref": "#/config/definitions/agentExecutor"
           }
         },
         "additionalProperties": false,
@@ -210,6 +219,21 @@
           "minLength": 1
         },
         "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。"
+      },
+      "agentExecutor": {
+        "type": "string",
+        "title": "执行器",
+        "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
+        "valueRef": {
+          "field": "subagentCommands",
+          "key": "key",
+          "include": [
+            "native"
+          ]
+        },
+        "validation": {
+          "minLength": 1
+        }
       }
     },
     "fields": {
@@ -290,17 +314,6 @@
         },
         "required": true
       },
-      "advisorProfile": {
-        "$ref": "#/config/definitions/agentProfile",
-        "title": "General 咨询配置",
-        "description": "通用第二意见的完整执行配置；专属配置缺省时使用，仅支持 user scope。",
-        "default": {
-          "executor": "native",
-          "model": "gpt-6-astra",
-          "reasoningEffort": "high"
-        },
-        "required": true
-      },
       "subagentCommands": {
         "type": "array",
         "title": "外部执行器",
@@ -309,13 +322,6 @@
           "type": "object",
           "properties": {
             "key": {
-              "type": "string",
-              "required": true,
-              "validation": {
-                "minLength": 1
-              }
-            },
-            "title": {
               "type": "string",
               "required": true,
               "validation": {
@@ -339,6 +345,11 @@
                     "value": "claude-code"
                   },
                   {
+                    "id": "antigravity",
+                    "title": "antigravity",
+                    "value": "antigravity"
+                  },
+                  {
                     "id": "oracle",
                     "title": "oracle",
                     "value": "oracle"
@@ -347,9 +358,24 @@
                     "id": "custom",
                     "title": "custom",
                     "value": "custom"
+                  },
+                  {
+                    "id": "custom-managed",
+                    "title": "自定义（托管命令）",
+                    "value": "custom-managed"
                   }
                 ]
               }
+            },
+            "communication": {
+              "type": "boolean",
+              "title": "父子通讯",
+              "description": "省略时开启；设为 false 时不建立 AW 通讯桥，也不注入通讯工具和指令。开启仍须通过本次适配器能力检查。"
+            },
+            "resume": {
+              "type": "boolean",
+              "title": "恢复执行",
+              "description": "省略时开启；允许向已结束的代理发送新消息来恢复原会话。与父子通讯独立，开启仍须通过适配器能力检查。"
             },
             "args": {
               "type": "array",
@@ -410,11 +436,68 @@
                   "codexProfile": {
                     "type": "string",
                     "title": "Codex 配置 Profile",
-                    "description": "已有 Codex profile 的名称，传入 --profile；留空使用后端默认。AW 显式 model/effort 仍优先。",
+                    "description": "从本次有效 CODEX_HOME 读取同名 .config.toml，将支持字段转换为运行时覆盖；未支持字段提示后忽略。不保留原生用户配置层身份，可能覆盖项目配置。AW 显式 model/effort 仍优先。",
                     "validation": {
                       "minLength": 1,
                       "pattern": "^[^\\x00]*[^\\s\\x00][^\\x00]*$",
                       "maxLength": 4096
+                    }
+                  },
+                  "codexCliSource": {
+                    "type": "string",
+                    "title": "Codex CLI 来源",
+                    "description": "省略时使用 auto：先查 PATH，仅没有可执行入口时查 App 内嵌 CLI。cli 只查 PATH；app 只查 App。选定入口失败后不切换来源。",
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "auto",
+                          "title": "auto",
+                          "value": "auto",
+                          "recommended": true
+                        },
+                        {
+                          "id": "cli",
+                          "title": "cli",
+                          "value": "cli"
+                        },
+                        {
+                          "id": "app",
+                          "title": "app",
+                          "value": "app"
+                        }
+                      ]
+                    }
+                  },
+                  "codexBypassHookTrust": {
+                    "type": "boolean",
+                    "title": "跳过 Codex Hook 信任检查",
+                    "description": "省略时关闭。设为 true 会执行本次线程已启用但未受信任或内容已修改的普通 hook，范围不限于所选 profile；仍保留禁用状态和管理策略。它不授予工具审批或沙箱绕过权限。"
+                  },
+                  "permissionMode": {
+                    "type": "string",
+                    "title": "权限模式",
+                    "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "default",
+                          "title": "默认",
+                          "value": "default",
+                          "recommended": true
+                        },
+                        {
+                          "id": "auto",
+                          "title": "自动",
+                          "value": "auto"
+                        },
+                        {
+                          "id": "full-access",
+                          "title": "完整权限",
+                          "value": "full-access"
+                        }
+                      ]
                     }
                   }
                 }
@@ -424,6 +507,66 @@
                   "mode": {
                     "type": "string",
                     "const": "workspace"
+                  },
+                  "permissionMode": {
+                    "type": "string",
+                    "title": "权限模式",
+                    "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "default",
+                          "title": "默认",
+                          "value": "default",
+                          "recommended": true
+                        },
+                        {
+                          "id": "auto",
+                          "title": "自动",
+                          "value": "auto"
+                        },
+                        {
+                          "id": "full-access",
+                          "title": "完整权限",
+                          "value": "full-access"
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "antigravity": {
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "const": "workspace"
+                  },
+                  "permissionMode": {
+                    "type": "string",
+                    "title": "权限模式",
+                    "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "default",
+                          "title": "默认",
+                          "value": "default",
+                          "recommended": true
+                        },
+                        {
+                          "id": "auto",
+                          "title": "自动",
+                          "value": "auto"
+                        },
+                        {
+                          "id": "full-access",
+                          "title": "完整权限",
+                          "value": "full-access"
+                        }
+                      ]
+                    }
                   }
                 }
               },
@@ -495,6 +638,38 @@
                     }
                   }
                 }
+              },
+              "custom-managed": {
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "required": true,
+                    "choices": {
+                      "allowCustom": false,
+                      "presets": [
+                        {
+                          "id": "workspace",
+                          "title": "workspace",
+                          "value": "workspace"
+                        },
+                        {
+                          "id": "bundle",
+                          "title": "bundle",
+                          "value": "bundle"
+                        }
+                      ]
+                    }
+                  },
+                  "commandId": {
+                    "type": "string",
+                    "title": "托管命令 ID",
+                    "required": true,
+                    "validation": {
+                      "pattern": "^(?:cmdp_[0-9a-f]{16}|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$",
+                      "maxLength": 41
+                    }
+                  }
+                }
               }
             }
           }
@@ -505,20 +680,206 @@
         "default": [],
         "required": true
       },
-      "advisorDesignProfile": {
-        "$ref": "#/config/definitions/agentProfile",
-        "title": "Design 设计咨询配置",
-        "description": "design 咨询的完整执行配置；缺省时使用 advisorProfile，不继承其属性，仅支持 user scope。"
+      "subagentRetentionHours": {
+        "type": "number",
+        "title": "执行记录保留小时数",
+        "description": "从执行结束计算，默认保留 24 小时；0 表示永不过期且不进行过期扫描。配置 apply 后从下次命令生效。",
+        "validation": {
+          "integer": true,
+          "minimum": 0,
+          "maximum": 2501999792
+        },
+        "default": 24,
+        "required": true
       },
-      "advisorDebugProfile": {
+      "advisorGeneralProfile": {
         "$ref": "#/config/definitions/agentProfile",
-        "title": "Debug 诊断咨询配置",
-        "description": "debug 咨询的完整执行配置；缺省时使用 advisorProfile，不继承其属性，仅支持 user scope。"
+        "title": "general 咨询配置",
+        "description": "general 难度咨询的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "default": {
+          "executor": "native",
+          "model": "gpt-6-astra",
+          "reasoningEffort": "high"
+        },
+        "required": true
       },
-      "advisorReviewProfile": {
+      "advisorAdvancedProfile": {
         "$ref": "#/config/definitions/agentProfile",
-        "title": "Review 审查咨询配置",
-        "description": "review 咨询的完整执行配置；缺省时使用 advisorProfile，不继承其属性，仅支持 user scope。"
+        "title": "advanced 咨询配置",
+        "description": "advanced 难度咨询的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "default": {
+          "executor": "native",
+          "model": "gpt-6-astra",
+          "reasoningEffort": "xhigh"
+        },
+        "required": true
+      },
+      "advisorExpertProfile": {
+        "$ref": "#/config/definitions/agentProfile",
+        "title": "expert 咨询配置",
+        "description": "expert 难度咨询的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "default": {
+          "executor": "native",
+          "model": "gpt-6-astra",
+          "reasoningEffort": "max"
+        },
+        "required": true
+      },
+      "taskCustomProfiles": {
+        "type": "array",
+        "title": "通用委派自定义配置",
+        "description": "按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位，仅支持 user scope。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "applicability": {
+              "type": "string",
+              "title": "适用范围",
+              "required": true,
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "executor": {
+              "$ref": "#/config/definitions/agentExecutor"
+            }
+          },
+          "additionalProperties": false,
+          "variants": {
+            "discriminator": "executor",
+            "missing": "native",
+            "cases": {
+              "native": {
+                "properties": {
+                  "model": {
+                    "$ref": "#/config/definitions/agentModel",
+                    "required": true
+                  },
+                  "reasoningEffort": {
+                    "$ref": "#/config/definitions/agentReasoningEffort",
+                    "required": true
+                  }
+                }
+              }
+            },
+            "otherwise": {
+              "properties": {
+                "model": {
+                  "$ref": "#/config/definitions/agentModel"
+                },
+                "reasoningEffort": {
+                  "$ref": "#/config/definitions/agentReasoningEffort"
+                }
+              }
+            }
+          }
+        },
+        "default": [],
+        "required": true
+      },
+      "exploreCustomProfiles": {
+        "type": "array",
+        "title": "探索自定义配置",
+        "description": "按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位，仅支持 user scope。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "applicability": {
+              "type": "string",
+              "title": "适用范围",
+              "required": true,
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "executor": {
+              "$ref": "#/config/definitions/agentExecutor"
+            }
+          },
+          "additionalProperties": false,
+          "variants": {
+            "discriminator": "executor",
+            "missing": "native",
+            "cases": {
+              "native": {
+                "properties": {
+                  "model": {
+                    "$ref": "#/config/definitions/agentModel",
+                    "required": true
+                  },
+                  "reasoningEffort": {
+                    "$ref": "#/config/definitions/agentReasoningEffort",
+                    "required": true
+                  }
+                }
+              }
+            },
+            "otherwise": {
+              "properties": {
+                "model": {
+                  "$ref": "#/config/definitions/agentModel"
+                },
+                "reasoningEffort": {
+                  "$ref": "#/config/definitions/agentReasoningEffort"
+                }
+              }
+            }
+          }
+        },
+        "default": [],
+        "required": true
+      },
+      "advisorCustomProfiles": {
+        "type": "array",
+        "title": "咨询自定义配置",
+        "description": "按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位，仅支持 user scope。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "applicability": {
+              "type": "string",
+              "title": "适用范围",
+              "required": true,
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "executor": {
+              "$ref": "#/config/definitions/agentExecutor"
+            }
+          },
+          "additionalProperties": false,
+          "variants": {
+            "discriminator": "executor",
+            "missing": "native",
+            "cases": {
+              "native": {
+                "properties": {
+                  "model": {
+                    "$ref": "#/config/definitions/agentModel",
+                    "required": true
+                  },
+                  "reasoningEffort": {
+                    "$ref": "#/config/definitions/agentReasoningEffort",
+                    "required": true
+                  }
+                }
+              }
+            },
+            "otherwise": {
+              "properties": {
+                "model": {
+                  "$ref": "#/config/definitions/agentModel"
+                },
+                "reasoningEffort": {
+                  "$ref": "#/config/definitions/agentReasoningEffort"
+                }
+              }
+            }
+          }
+        },
+        "default": [],
+        "required": true
       }
     },
     "presentation": {
@@ -529,7 +890,8 @@
           "fields": [
             "quickProfile",
             "standardProfile",
-            "deepProfile"
+            "deepProfile",
+            "exploreCustomProfiles"
           ]
         },
         {
@@ -539,17 +901,19 @@
             "simpleTaskProfile",
             "generalTaskProfile",
             "complexTaskProfile",
-            "advancedTaskProfile"
+            "advancedTaskProfile",
+            "taskCustomProfiles",
+            "subagentRetentionHours"
           ]
         },
         {
           "id": "codex-advisor",
           "title": "codex-advisor",
           "fields": [
-            "advisorProfile",
-            "advisorDesignProfile",
-            "advisorDebugProfile",
-            "advisorReviewProfile"
+            "advisorGeneralProfile",
+            "advisorAdvancedProfile",
+            "advisorExpertProfile",
+            "advisorCustomProfiles"
           ]
         },
         {
@@ -577,6 +941,16 @@
           ],
           "separator": "/",
           "missing": "未设置"
+        },
+        "executorKey": {
+          "kind": "join",
+          "parts": [
+            {
+              "path": "/key"
+            }
+          ],
+          "separator": "",
+          "missing": "未设置"
         }
       },
       "fieldViews": {
@@ -601,17 +975,17 @@
         "advancedTaskProfile": {
           "summary": "modelAndEffort"
         },
-        "advisorProfile": {
+        "advisorGeneralProfile": {
           "summary": "modelAndEffort"
         },
-        "advisorDesignProfile": {
+        "advisorAdvancedProfile": {
           "summary": "modelAndEffort"
         },
-        "advisorDebugProfile": {
+        "advisorExpertProfile": {
           "summary": "modelAndEffort"
         },
-        "advisorReviewProfile": {
-          "summary": "modelAndEffort"
+        "subagentCommands": {
+          "itemSummary": "executorKey"
         }
       }
     }
@@ -639,7 +1013,7 @@
           "quickProfile",
           "standardProfile",
           "deepProfile",
-          "subagentCommands"
+          "exploreCustomProfiles"
         ],
         "skillKey": "codex-explore",
         "sourceDirs": [
@@ -684,14 +1058,9 @@
           "generalTaskProfile",
           "complexTaskProfile",
           "advancedTaskProfile",
-          "quickProfile",
-          "standardProfile",
-          "deepProfile",
-          "advisorProfile",
-          "advisorDesignProfile",
-          "advisorDebugProfile",
-          "advisorReviewProfile",
-          "subagentCommands"
+          "taskCustomProfiles",
+          "subagentCommands",
+          "subagentRetentionHours"
         ],
         "skillKey": "codex-subagent-guide",
         "sourceDirs": [
@@ -699,18 +1068,8 @@
         ],
         "runtimeConfig": {
           "keys": [
-            "simpleTaskProfile",
-            "generalTaskProfile",
-            "complexTaskProfile",
-            "advancedTaskProfile",
-            "quickProfile",
-            "standardProfile",
-            "deepProfile",
-            "advisorProfile",
-            "advisorDesignProfile",
-            "advisorDebugProfile",
-            "advisorReviewProfile",
-            "subagentCommands"
+            "subagentCommands",
+            "subagentRetentionHours"
           ]
         }
       },
@@ -748,11 +1107,10 @@
           "present"
         ],
         "refreshKeys": [
-          "advisorProfile",
-          "advisorDesignProfile",
-          "advisorDebugProfile",
-          "advisorReviewProfile",
-          "subagentCommands"
+          "advisorGeneralProfile",
+          "advisorAdvancedProfile",
+          "advisorExpertProfile",
+          "advisorCustomProfiles"
         ],
         "skillKey": "codex-advisor",
         "sourceDirs": [
@@ -783,7 +1141,8 @@
         "aw.plugin-config.v4",
         "aw.plugin-config-unique-by.v1",
         "aw.plugin-config-value-ref.v1",
-        "aw.installed-runtime-config.v2"
+        "aw.installed-runtime-config.v2",
+        "aw.managed-commands.v1"
       ]
     }
   },
@@ -797,5 +1156,87 @@
       }
     },
     "cacheable": true
+  },
+  "managedCommands": {
+    "sets": [
+      {
+        "set": "guide",
+        "producer": {
+          "kind": "artifact",
+          "artifactId": "codex-subagent-guide-skill"
+        },
+        "mode": "static",
+        "entries": [
+          {
+            "key": "subagent",
+            "variant": "default",
+            "runner": "node",
+            "entry": "scripts/subagent.mjs"
+          }
+        ]
+      }
+    ]
+  },
+  "extensions": {
+    "permissions": [
+      {
+        "name": "subagent-commands",
+        "allow": [
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "start"
+            ]
+          },
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "send"
+            ]
+          },
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "wait"
+            ]
+          },
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "result"
+            ]
+          },
+          {
+            "command": {
+              "set": "guide",
+              "key": "subagent",
+              "variant": "default"
+            },
+            "argsPrefix": [
+              "stop"
+            ]
+          }
+        ],
+        "agentOverrides": {
+          "claude": null
+        }
+      }
+    ]
   }
 }

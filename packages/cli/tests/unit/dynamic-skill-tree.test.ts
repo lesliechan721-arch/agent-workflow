@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+import { execFileSync } from 'node:child_process';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -30,6 +31,41 @@ afterEach(async () => {
 });
 
 describe('dynamic skill tree', () => {
+  // Test Value Gate: native command entries must remain executable after Skill
+  // materialization, while renderer text cannot inherit execution permission.
+  it.skipIf(process.platform === 'win32')('preserves source execution modes and clears renderer overrides', async () => {
+    const root = await makeTempRoot();
+    const source = path.join(root, 'source');
+    await fs.outputFile(path.join(source, 'SKILL.md'), '# Executable source\n');
+    await fs.outputFile(path.join(source, 'agents/openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
+    const script = '#!/usr/bin/env node\nprocess.stdout.write("ready");\n';
+    for (const relative of ['scripts/run', 'scripts/overridden']) {
+      await fs.outputFile(path.join(source, relative), script);
+      await fs.chmod(path.join(source, relative), 0o751);
+    }
+    const artifact = { target: 'codex.skill' as const, skillKey: 'example', state: 'present' as const, content: { files: {} } };
+    const original = await createDynamicSkillExpectedTree({ artifact, sourceDirs: [source] });
+    const tree = await createDynamicSkillExpectedTree({
+      artifact: { ...artifact, content: { files: { 'scripts/overridden': script, 'scripts/generated': script } } },
+      sourceDirs: [source],
+    });
+    expect(createDynamicSkillTreeContentDigest(tree)).not.toBe(createDynamicSkillTreeContentDigest(original));
+    const target = path.join(root, 'runtime/example');
+    await writeDynamicSkillTree(target, original);
+    await writeDynamicSkillTree(target, tree);
+    expect((await fs.stat(path.join(target, 'scripts/run'))).mode & 0o777).toBe(0o755);
+    expect(execFileSync(path.join(target, 'scripts/run'), { encoding: 'utf8' })).toBe('ready');
+    for (const relative of ['scripts/overridden', 'scripts/generated']) {
+      expect((await fs.stat(path.join(target, relative))).mode & 0o111).toBe(0);
+    }
+    expect(createDynamicSkillTreeContentDigest((await readDynamicSkillTree(target, 'codex.skill'))!))
+      .toBe(createDynamicSkillTreeContentDigest(tree));
+    await fs.chmod(path.join(target, 'scripts/run'), 0o644);
+    expect(createDynamicSkillTreeContentDigest((await readDynamicSkillTree(target, 'codex.skill'))!))
+      .not.toBe(createDynamicSkillTreeContentDigest(tree));
+    await expect(skillDirectoryMatchesExpectedTree(target, tree)).resolves.toBe(false);
+  });
+
   it('merges ordered static directories, preserves binary files, and applies dynamic overrides last', async () => {
     const root = await makeTempRoot();
     const common = path.join(root, 'common');

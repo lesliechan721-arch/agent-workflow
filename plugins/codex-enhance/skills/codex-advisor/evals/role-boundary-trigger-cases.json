@@ -86,7 +86,7 @@
         "boundary"
       ],
       "input": {
-        "query": "用户已明确要求本次独立咨询，请使用advisorProfile检查当前算法边界。",
+        "query": "用户已明确要求本次独立咨询，请使用advisorGeneralProfile检查当前算法边界。",
         "expectedLoad": true
       },
       "audit": {

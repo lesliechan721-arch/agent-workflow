@@ -12,16 +12,17 @@
 - Catalog 生成和消费只使用 snapshot schema 7；Catalog source config 只使用 schema 2。旧 manifest、Catalog 或 source schema 只可作为拒绝 fixture 或历史记录，不是受支持作者合同。
 - 创建或修改插件能力时只维护源码层；平台产物由 CLI、adapter 和发布流程生成。
 - 插件和 Skill 的 production README 使用[插件与 Skill README 规范](readme-standard.md)。
+- Frontend Design 的作者依据见[来源与取舍](frontend-design-sources.md)；该记录不进入插件运行包。
 
 ## 同步规则
 
 改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发或安装流程，或任何影响插件作者使用方式的能力时，必须同时检查公开 CLI、canonical registry 和 `aw-development-toolkit`。
 
-已安装配置读取使用 `aw.installed-runtime-config.v2`、keys-only target 声明和 schema 2 单产物资源。旧 resourceVersion/artifactIds、v1 helper 和 expectedRevision 须按 [插件作者指南](plugin-authoring.md#已安装配置读取) 更新。Codex Enhance 外部执行使用 Adapter v4；它与 Eval Engine 的 instruction-v2 是不同合同，不联动改号。Config Definition v4 的结构能力由 Core、公开 schema、registry、CLI 与 TUI 共用实现，先交付支持新 capability 的 CLI，再分发依赖该能力的插件。升级后通过正常 build/sync/reinstall 更新资源，保留 ownership、native receipt、Status 和 cleanup 边界。
+已安装配置读取使用 `aw.installed-runtime-config.v2`、keys-only target 声明和 schema 2 单产物资源。旧 resourceVersion/artifactIds、v1 helper 和 expectedRevision 须按 [插件作者指南](plugin-authoring.md#已安装配置读取) 更新。托管命令的声明、身份、管理、主机与恢复见 [托管命令合同](managed-commands.md)，作者 registry 增加 managed-commands surface。Codex Enhance 外部执行使用 Adapter v5；它与 Eval Engine 的 instruction-v2 是不同合同，不联动改号。Config Definition v4 的结构能力由 Core、公开 schema、registry、CLI 与 TUI 共用实现，先交付支持新 capability 的 CLI，再分发依赖该能力的插件。升级后通过正常 build/sync/reinstall 更新资源，保留 ownership、native receipt、Status 和 cleanup 边界。
 
-Codex Enhance 的注册配置、Adapter v4、前台生命周期、内建后端及验证边界记录在 [适配器说明](../plugins/codex-enhance/skills/codex-subagent-guide/adapters.md)。该文件是唯一长期适配器说明，不另建 docs/codex-enhance-adapters.md 副本。普通调用按 Guide 的外部 reference 执行；调用模型填写复杂选择式时读 file-selection reference，适配器作者接入公共解析命令时读适配器文档。修改调用或结果含义时同步相应 Skill、角色资源和 README；本地任务草案不作为发行后的唯一规范来源。
+Codex Enhance 的注册配置、Adapter v5、worker 生命周期与通信/输出合同、内建后端及验证边界记录在 [适配器说明](../plugins/codex-enhance/skills/codex-subagent-guide/docs/README.md)。该目录按公共协议和后端实现维护唯一长期合同，不在仓库 docs 中另建副本。普通调用按 Guide 的外部 reference 执行；调用模型填写复杂选择式时读 file-selection reference，适配器作者接入公共解析命令时读适配器文档。修改调用或结果含义时同步相应 Skill、角色资源和 README；本地任务草案不作为发行后的唯一规范来源。
 
-`aw review publish` 是独立的不可变归档入口：只把已有的人读 `report.md`、可选 machine result、checks/evidence、独立 `release-check.json` 和 workflow scope 写入 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`。人读 Review 只拥有设计、复杂度和 findings；Release Check 只拥有机器 readiness；Publication 只拥有 target/digest 绑定和 archive。该入口不得重评、封存 Eval、更新 README 或维护可变 index。
+Review 按任务交付人读报告，说明质量判断、findings、证据范围和未知项。报告不构成发布门禁；实际发布按 Catalog plan/apply 和 Product Release 合同执行。
 
 Eval 的机器真值由 `@lesliechan721/agent-skill-eval` 提供，固定流程是 Manifest v1 准备 `EvalSpec v1`，独立 Auditor 产生精确绑定 provider、workspace、current/optional previous target、case digest 和 selected cases 的 `EvalAudit v1`，Engine 产生带必需 `processManagement` 证据的 `EvalResult v2`。Result v1 不再兼容。`runs` 和 `timeoutMs` 改变不影响 Audit 复用；旧版字符串 `workspace` v1 Spec 必须重新 prepare 和 Audit。`author-agent-skill` 设计或修改 Eval assets，`audit-agent-skill-evals` 独立审核 cases 或结果；AW 格式和辅助 validator 由 `aw-skill-eval-runner` 拥有。插件不得复制 schema、digest、validator 或执行实现。
 
@@ -29,17 +30,18 @@ Eval 的机器真值由 `@lesliechan721/agent-skill-eval` 提供，固定流程�
 
 - 通过公开 `aw` CLI 安装相应插件后，`agent-content-toolkit`、`agent-skill-toolkit`、`aw-development-toolkit` 和 `aw-skill-eval-runner` 分别处理 Agent-facing 内容、Skill、AW Catalog/Plugin 与 AW Eval 运行。仓库不把插件源码投影为 `.claude/skills`。
 - `agent-content-toolkit` 提供 `agent-content`，按请求写入或只读评审 Agent-facing 内容。
-- `agent-skill-toolkit` 提供 `author-agent-skill`、`review-agent-skill`、`simplify-agent-skill`、`audit-agent-skill-evals` 与 `review-agent-architecture`，并依赖 `agent-content-toolkit`。
-- `aw-development-toolkit` 提供 `develop-aw`、准备并只读审核产物的 `review-aw` 和仅用户显式调用的 `publish-aw-catalog`，并依赖两个通用工具插件。完整审核请求涵盖必要本地 prepare，先说明构建/渲染和隔离输出；静态只读限制仍优先。Publisher 使用 CLI 的 Workspace、remote 和 branch 默认解析，但仍须对完整 `planDigest` 授权。
-- 使用默认模型 Eval 执行器时还需要 `aw-skill-eval-runner`。CLI 的普通 Eval 作者入口是 `aw skill eval prepare`；它只生成输入完整的 Spec，不运行模型。实际执行使用 `aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]`，且单份运行前 Audit 必须与当前 Spec 的 provider、workspace、current/optional previous target、case digest 和 selected cases 精确绑定并通过。所有真实 run 在 output 和模型前执行 permission、macOS Codex 可执行入口与 keychain，以及进程管理预检。默认 managed 模式要求 Full Access 语义和可用的进程树检查；单次提权不等于 Full Access。只有用户明确接受本次风险时，才可增加一次性的 unmanaged flag；它只尽力终止直接 child，不保证后代清理，也不能绕过 cmux Codex wrapper 或 macOS keychain 检查。完整边界见[架构说明](architecture.md)。中断后重新 prepare、Audit 和 run，不维护 checkpoint ledger。`aw skill eval doctor --json` 只用于安装或升级、用户明确请求诊断，或模型已启动后的 run 失败；`aw-skill-eval inspect-result <result.json> --spec <spec.json> --audit <audit.json>` 只用于异常结果的分组检查。普通路径不运行这两个命令，clean success 不要求 triage。
-- `develop-aw` 与 `review-aw` 处理既有合法 Catalog Workspace 中的 canonical `<workspace-root>/plugins/<name>`；Review 可选其中的源 Skill，由 CLI 按声明解析归属。缺少 Workspace 时，只有用户明确要求初始化，`develop-aw` 才进入 Catalog 初始化分支；否则报告缺口并固定当前目标。不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
+- `agent-skill-toolkit` 提供 Author、合并的 Reviewer、Simplifier 与 Eval Auditor，并依赖 `agent-content-toolkit`。Author 负责创建、修改及当前范围的自检与修复，不编排 Review 或模型实验。`review-agent-skill` 按单体、工作流或公开能力范围评审；它与 `simplify-agent-skill` 均由用户显式启动。通用方法不依赖 AW 的对象、命令或来源绑定；共享规范直接读取，自检与独立判断分别报告。
+- `aw-development-toolkit` 提供 `develop-aw` 和仅用户显式调用的 `publish-aw-catalog`，并依赖两个通用工具插件。凡任务涉及 AW 插件及其 Skill 的分析、创建、修改、评审、简化、验证或物化，均可采用 `develop-aw`；它提供来源、可写 source/provider、profile、平台产物和领域依据，不接管通用任务的判断。所需证据按任务选择：源码分析不要求构建，完整产物不足时在已有授权内说明并执行本地 prepare。`aw review prepare` 供通用方法取得实际运行包；Portable 导出另要求 `distributions.agentSkills` 并使用 `aw skill materialize`。Publisher 使用 CLI 默认解析，仍须对完整 `planDigest` 授权。
+- 使用默认模型 Eval 执行器时还需要 `aw-skill-eval-runner`。CLI 的普通 Eval 作者入口是 `aw skill eval prepare`；它只生成输入完整的 Spec，不运行模型。实际执行使用 `aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]`，且单份运行前 Audit 必须与当前 Spec 的 provider、workspace、current/optional previous target、case digest 和 selected cases 精确绑定并通过。所有真实 run 在 output 和模型前执行 permission、macOS Codex 可执行入口与 keychain，以及进程管理预检。默认 managed 模式要求 Full Access 语义和可用的进程树检查；单次提权不等于 Full Access。只有用户明确接受本次风险时，才可增加一次性的 unmanaged flag；它只尽力终止直接 child，不保证后代清理，也不能绕过 cmux Codex wrapper 或 macOS keychain 检查。完整边界见[架构说明](architecture.md)。中断后重新 prepare、Audit 和 run，不维护 checkpoint ledger。`aw skill eval doctor --json` 只用于安装或升级、用户明确请求诊断，或模型已启动后的 run 失败；`aw-skill-eval inspect-result <result.json> --spec <spec.json> --audit <audit.json>` 只用于异常结果的分组检查。普通路径不运行这两个命令。独立 result-triage 按 Runner 的结果用途与异常条件执行；其余 clean success 交付后结束。
+- `develop-aw` 的来源与物化方法处理既有合法 Catalog Workspace 中的 canonical `<workspace-root>/plugins/<name>`；Review 可选其中的源 Skill，由 CLI 按声明解析归属。缺少 Workspace 时，只有用户明确要求初始化，`develop-aw` 才进入 Catalog 初始化分支；否则报告缺口并固定当前目标。不含 AW manifest 的 repo-local 或 portable Skill 可直接采用通用方法；专项评审由用户显式启动 `review-agent-skill`。
 - `aw-development-toolkit` 是 Agent-facing Developer Assistant，不是 SDK 或规范真值。它只能编排已安装 `aw` CLI 的公开作者命令；第三方 workspace 不要求有本仓库的 `packages/cli`、`node_modules` 或 release 脚本。
 - AW Plugin 作者工具统一使用公开 CLI：`aw plugin capabilities`、`aw plugin init`、`aw plugin add-skill`、`aw plugin remove`、`aw plugin validate`、`aw plugin test`、`aw plugin build`、`aw plugin status` 和 AW 适配检查 `aw skill validate`。Catalog 作者工具使用公开 `aw catalog` 命令。Agent 插件不复制 AW manifest、Catalog 或校验实现。
-- 普通 Skill 的创建和静态包检查由 `agent-skill-toolkit` 的独立 init/check 工具提供；audit 只提供引用线索，不确认业务消费或删除资格。其权威源码、锁定依赖与独立打包器位于插件 `tooling/`，运行包只依赖 Node 和随包文件。通用工具不调用或复制 AW/skills-ref；AW caller 仍负责 Workspace、manifest、source→final 与 AW-specific validate/test/build。六个脚本副本和四个许可文件由 staging build 生成，不手工维护。
+- 普通 Skill 的创建和静态包检查由 `agent-skill-toolkit` 的独立 init/check 工具提供。固定输出的用途通过现有搜索和真实消费者核对，不另维护引用审计脚本。工具的权威源码、锁定依赖与独立打包器位于插件 `tooling/`，运行包只依赖 Node 和随包文件。通用工具不调用或复制 AW/skills-ref；AW 方法负责 Workspace、manifest、来源与产物对应及平台验证。四个脚本副本和三个许可文件由 staging build 生成，不手工维护。
+- AW 来源、物化及与通用 Reviewer/Simplifier 的集成用例由 `aw-development-toolkit/skills/develop-aw/evals` 维护；通用插件只维护通用方法用例。用例的运行器格式属于测试基础设施，不成为 Skill 运行期的领域依赖。迁移 suite 时同步修改被测对象、参与者、fixture 路径和 Oracle 范围，保留通用 split 和执行安全约束，并重新取得实际运行证据。
 - 已安装作者 Skill 先用 `aw self check --from <skill-root> --json` 消费同层 runtime requirements receipt；不使用 CLI 版本字符串推断兼容性。每个 runtime receipt 必须来自最终 materialized Skill，不能由 source 文档手写替代。
 - Workspace v1 插件根固定为 `<workspace-root>/plugins/<plugin-name>`。所有作者命令使用 `--workspace-root`，不接受任意 `--plugin-root`。`validate`、`test` 和 `build` 仍接受 plugin directory 参数，但该目录必须是 workspace inventory 中的 canonical plugin。作者命令拒绝 workspace/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型。`status --base` 和 `remove` 要求 Git；`status --all` 保留 `plugins/` 扫描语义。
-- 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。
-- Reviewer 默认只在聊天中交付人读 Review。用户明确要求 AW 归档时，由本次顶层 AW Reviewer 使用 `aw review publish`；通用 Reviewer 交付内容及用户指定的报告文件，不导入 AW 归档流程。修订已有记录时创建新 record 并使用 `--supersedes`。人读 Review 不拥有 readiness；兼容的 AW-owned Release Checker 生成的 `release-check.json` 只能作为可选附件。
+- 模型 Eval 的准入与运行由专用工作流负责。人读 Review 按请求交付，不自动修改 production README。
+- Reviewer 默认在对话中交付人读 Review；用户指定报告文件时写入该位置。判断对应实际 source/final 与验证范围，不代替模型 Eval、发布计划授权或发布验证。
 
 ## Catalog build-time 文件复用
 
@@ -64,11 +66,14 @@ manifest `dependencies` 声明安装或升级某插件时必须同时满足的�
 ## 本仓库 Product Release 编排
 
 - 使用 `pnpm plugin:test <plugin>` 运行单插件确定性测试；使用 `pnpm plugin:test --all` 检查全部插件。
+- PR/main 与发布候选共用三系统插件测试；Windows 按 `--test-shard <index/total>` 分片，全部分片成功才允许复用验证证据。平台专属用例在原生 runner 上执行，真实模型与长时资格仍单独启用；命令及验证边界见[测试指南](testing.md)。
 - 日常开发运行 `aw plugin status`。production bundle 变化且稳定目标未变时，`unreleasedChanges` 是有效状态。
 - `pnpm release` 是本 monorepo 对 Eval、Core、CLI npm packages、CLI tag 和可选 Catalog publication 的 Product Release 编排。它不是第二套 Catalog schema、publisher 或恢复合同。
 - 本仓库官方 `pnpm build` 使用 `--strict-requirements` 语义；`release:verify:catalog:core` 通过该 build 覆盖 strict 门禁。第三方公开 `aw catalog build` 默认只 advisory。
 - 选择 Catalog 轴时，`pnpm release` 通过公共 `aw catalog version` mutation 选择 metadata beta，并最终调用与第三方 Workspace 相同的 Catalog publish plan/apply、publication journal、tag 和失败恢复合同。具体 Catalog 行为以[Catalog 作者指南](catalog-authoring.md)和 Core validator 为准。
-- 正常产品发布只使用 `pnpm release`。它只提交指定的发布元数据，并从已提交的 source HEAD 生成和消费 immutable prepared state；npm repair 仍只属于 CLI package 轴。
+- 官方 Actions 使用独立 CLI/Catalog 源码 tag，main CI 成功后按生产内容自动准备 beta；手动 `source` 准备精确正式版。候选分支只包含允许的版本修改，main 不接收自动版本 commit。操作和外部配置见 [README](../README.md#本仓库维护与官方发版)。`pnpm release` 保留本地维护用途。
+- 官方编排向 Core 唯一版本 owner 提供 latest/beta 的完整 first-parent 成功历史。未变化插件保留完整 stable/beta 版本，变化插件独立 patch 或递增 beta；不把 Catalog 版本赋给全部插件。删除重加保留历史，同版本不同内容阻断。第三方未提供官方历史时继续使用原 channel 合同。
+- Actions 六平台只消费同一候选 tar，发布前保存 CLI attempt 或 Catalog pending journal/repository，发布和恢复继续使用公共 publisher。缺失或损坏的已尝试恢复包必须提升版本；npm repair 仍只属于 CLI package 轴。
 - 新工作流的 generated standards、schemas 和 handoff contracts 必须通过 check-only contract test；CI 不自动改写生成文件。
 - CLI 作者 validator 的 JavaScript import scanner 是唯一实现；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。
 - 三层插件应分别验证，并增加同时安装三个插件的组合测试。

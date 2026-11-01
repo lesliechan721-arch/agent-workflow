@@ -1,41 +1,145 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
-import { randomBytes } from 'node:crypto';
+import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { LIMITS, fail, redact, validateRequest, validateResult } from './contracts.mjs';
-import { safePath, readText, readStdin, executablePaths, readJson } from './files.mjs';
+import { isDeepStrictEqual } from 'node:util';
+import { LIMITS, fail } from './contracts.mjs';
+import { safePath, readText, readInputFile, executablePaths } from './files.mjs';
 import { validateEnvironmentConfig } from './plan.mjs';
 import { validateSelectors } from '../file-selection/contracts.mjs';
-import { processTable, observeTree, stopOwnedTree } from './processes.mjs';
+import { sameSourceIdentity } from './store.mjs';
 
 export function resolveAdapterEnvironment(source = process.env, executor = {}) {
   validateEnvironmentConfig(executor);
   const host = { ...source };
-  const environment = Object.fromEntries(Object.entries(host).filter(([key, value]) => typeof value === 'string' && !key.startsWith('AW_PLUGIN_') && !key.startsWith('AW_SUBAGENT_')));
+  const managed = executor.adapter === 'custom-managed';
+  const environment = Object.fromEntries(Object.entries(host).filter(([key, value]) => typeof value === 'string' &&
+    !(managed ? /^AW_(?:PLUGIN|SUBAGENT|COMMAND)_/i.test(key) : key.startsWith('AW_PLUGIN_') || key.startsWith('AW_SUBAGENT_') || /^AW_COMMAND_/i.test(key))));
   const referenced = {};
   const secretValues = [];
   for (const [target, origin] of Object.entries(executor.envFrom ?? {})) {
-    if (!Object.hasOwn(host, origin) || typeof host[origin] !== 'string') fail('environmentSourceMissing', 'A configured envFrom host variable is missing. Set the source variable before running.');
-    if (host[origin].includes('\0')) fail('environmentInvalid', 'An envFrom host value contains NUL.');
-    referenced[target] = host[origin];
-    secretValues.push(host[origin]);
+    const sourceKey = managed && process.platform === 'win32' ? Object.keys(host).find((key) => key.toUpperCase() === origin.toUpperCase()) : origin;
+    if (sourceKey === undefined || !Object.hasOwn(host, sourceKey) || typeof host[sourceKey] !== 'string') fail('environmentSourceMissing', 'A configured envFrom host variable is missing. Set the source variable before running.');
+    if (host[sourceKey].includes('\0')) fail('environmentInvalid', 'An envFrom host value contains NUL.');
+    referenced[target] = host[sourceKey];
+    secretValues.push(host[sourceKey]);
   }
-  return { environment: { ...environment, ...(executor.env ?? {}), ...referenced }, secretValues };
+  for (const [target, value] of Object.entries({ ...(executor.env ?? {}), ...referenced })) {
+    if (managed && process.platform === 'win32') for (const key of Object.keys(environment)) {
+      if (key.toUpperCase() === target.toUpperCase()) delete environment[key];
+    }
+    environment[target] = value;
+  }
+  return { environment, secretValues };
 }
 export function adapterEnvironment(source = process.env, executor = {}) {
   return resolveAdapterEnvironment(source, executor).environment;
 }
 
+export async function validateCommandHost(environment) {
+  const raw = environment.AW_COMMAND_HOST;
+  if (raw === undefined) fail('managedCommandHostMissing', 'Start this executor through the generated AW command to supply its managed command host.');
+  let host;
+  try {
+    host = JSON.parse(raw);
+    if (!host || Array.isArray(host) || Object.keys(host).length !== 4 || host.schemaVersion !== 1 ||
+      !['nodeExecutable', 'cliEntry', 'awHome'].every((key) => typeof host[key] === 'string' && host[key].isWellFormed() && !host[key].includes('\0') && path.isAbsolute(host[key])) ||
+      host.awHome !== environment.AW_HOME) throw new Error();
+    const [cli, home] = await Promise.all([fs.lstat(host.cliEntry), fs.stat(host.awHome)]);
+    if (!cli.isFile() || cli.isSymbolicLink() || !home.isDirectory()) throw new Error();
+    await fs.access(host.cliEntry, constants.R_OK);
+    const node = await fs.stat(host.nodeExecutable);
+    if (!node.isFile()) throw new Error();
+    await fs.access(host.nodeExecutable, constants.X_OK);
+  } catch { fail('managedCommandHostInvalid', 'The managed command host is invalid. Use the generated AW command with its fixed AW_HOME.'); }
+  return host;
+}
+
+async function managedLaunch(host, commandId, environment, workspace) {
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(host.nodeExecutable, [host.cliEntry, 'command', 'show', commandId, '--json'], {
+      cwd: workspace, env: { ...environment, AW_HOME: host.awHome, AW_COMMAND_HOST: JSON.stringify(host) },
+      stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+    });
+    const chunks = []; let bytes = 0;
+    const timer = setTimeout(() => { child.kill(); reject(new Error('Command inspection timed out.')); }, 10000);
+    child.stdout.on('data', (chunk) => {
+      bytes += chunk.length;
+      if (bytes > 1024 * 1024) { child.kill(); reject(new Error('Command inspection exceeded its limit.')); }
+      else chunks.push(chunk);
+    });
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      try {
+        const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (code !== 0 || value.schemaVersion !== 1 || value.command !== 'command.show' || value.ok !== true ||
+          value.overallState !== 'completed' || value.commands?.length !== 1) throw new Error();
+        resolve(value.commands[0]);
+      } catch { reject(new Error('Command inspection failed.')); }
+    });
+  }).catch(() => fail('managedCommandUnavailable', 'The original managed command is unavailable. Repair it before sending input.'));
+  const launch = result.launch;
+  if (result.id !== commandId || result.availability !== 'ready' || !path.isAbsolute(result.resourceRoot ?? '') ||
+    !result.owner || !['user', 'plugin'].includes(result.owner.kind) || !launch ||
+    !['node', 'executable'].includes(launch.runner) || typeof launch.entry !== 'string' || !launch.entry ||
+    !Array.isArray(launch.args) || launch.args.some((value) => typeof value !== 'string') ||
+    !launch.env || typeof launch.env !== 'object' || Array.isArray(launch.env) ||
+    !launch.envFrom || typeof launch.envFrom !== 'object' || Array.isArray(launch.envFrom) ||
+    !['caller', 'resource'].includes(launch.cwd)) fail('managedCommandUnavailable', 'The original managed command has no complete launch definition.');
+  return { id: result.id, owner: result.owner, resourceRoot: result.resourceRoot,
+    launch: { runner: launch.runner, entry: launch.entry, args: launch.args, env: launch.env, envFrom: launch.envFrom, cwd: launch.cwd } };
+}
+
+export function executionConfiguration(prepared, request) {
+  const { prompt, sessionId, ...configuration } = prepared.request;
+  return { schema: 1, selected: prepared.selected, request: configuration,
+    ...(prepared.commandHost ? { commandHost: prepared.commandHost, managedLaunch: prepared.managedLaunch } : {}),
+    ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }) };
+}
+
+export async function prepareResume(configuration, text, sessionId, options = {}) {
+  if (configuration?.schema !== 1 || !configuration.selected || !configuration.request ||
+    !path.isAbsolute(configuration.selected.resourceRoot ?? '') || configuration.request.type !== 'start' ||
+    configuration.request.resume !== true) fail('resumeConfigurationUnavailable', 'The saved execution configuration is unavailable.');
+  const selected = configuration.selected;
+  const installed = options.runtimeSnapshot;
+  if (!installed || installed.resourceRoot !== selected.resourceRoot ||
+    !sameSourceIdentity(installed.installedIdentity, selected.installedIdentity)) fail('resumeExecutionChanged', 'The original installed runtime cannot be verified. Sync or reinstall the original Guide before sending input.');
+  await safePath(selected.resourceRoot, 'directory');
+  await safePath(path.join(selected.resourceRoot, 'scripts', 'worker.mjs'));
+  await safePath(configuration.request.workspace, 'directory');
+  const source = { ...(options.environment ?? process.env) };
+  let host;
+  if (selected.executor.adapter === 'custom-managed') {
+    host = await validateCommandHost({ ...source, AW_HOME: configuration.commandHost?.awHome,
+      AW_COMMAND_HOST: JSON.stringify(configuration.commandHost) });
+  }
+  const resolved = resolveAdapterEnvironment(source, selected.executor);
+  if (host) Object.assign(resolved.environment, { AW_COMMAND_HOST: JSON.stringify(host), AW_HOME: host.awHome });
+  let frozenLaunch;
+  if (host) {
+    frozenLaunch = await managedLaunch(host, selected.executor.commandId, resolved.environment, configuration.request.workspace);
+    if (!isDeepStrictEqual(frozenLaunch, configuration.managedLaunch)) fail('resumeExecutionChanged', 'The original managed command launch changed. Start a new run with the intended configuration.');
+  }
+  const executable = host ? { command: host.nodeExecutable, args: [host.cliEntry, 'command', 'run', selected.executor.commandId, '--'] }
+    : await executablePaths(selected.command, selected.entrypoint);
+  const { fileSelectors, fileResolver, ...wire } = configuration.request;
+  return { selected, executable, request: { ...wire, prompt: text, sessionId }, ...resolved,
+    ...(host ? { commandHost: host, managedLaunch: frozenLaunch } : {}), configuration };
+}
+
 export async function prepareRun(selected, request, options = {}) {
   const fileSelectors = request.files ?? [];
   if (selected.mode === 'workspace' && fileSelectors.length) fail('filesNotAllowedInWorkspace', 'Workspace execution does not accept --file. Describe the focus paths in the prompt.');
-  if (request.prompt === undefined) fail('argumentsRequired', 'Supply --profile and --prompt TEXT or --prompt -.');
+  const hasText = request.prompt !== undefined, hasFile = request.promptFile !== undefined;
+  if (hasText === hasFile || request.prompt === '-' || request.promptFile === '-') fail('argumentsInvalid', 'Supply exactly one of --prompt TEXT or --prompt-file PATH.');
+  const callerCwd = options.callerCwd ?? process.cwd();
   if (selected.mode === 'bundle') validateSelectors(fileSelectors);
-  const workspace = await fs.realpath(path.resolve(request.workspace ?? process.cwd())).catch(() => fail('workspaceMissing', 'The workspace is missing.'));
+  const workspace = await fs.realpath(path.resolve(callerCwd, request.workspace ?? callerCwd)).catch(() => fail('workspaceMissing', 'The workspace is missing.'));
   await safePath(workspace, 'directory');
   let task;
-  if (request.prompt === '-') task = await readStdin(options.stdin ?? process.stdin);
+  if (hasFile) task = await readInputFile(request.promptFile, LIMITS.taskBytes, 'taskTooLarge', callerCwd);
   else {
     if (typeof request.prompt !== 'string' || !request.prompt.isWellFormed() || request.prompt.includes('\0')) fail('promptInvalid', 'The prompt must be valid UTF-8 text without NUL.');
     if (Buffer.byteLength(request.prompt) > LIMITS.taskBytes) fail('taskTooLarge', 'The prompt exceeds the 256 KiB limit. Use a smaller task.');
@@ -44,227 +148,35 @@ export async function prepareRun(selected, request, options = {}) {
   if (!task.trim()) fail('inputEmpty', 'The prompt is empty. Supply a task.');
   let prompt = task;
   if (request.instructionsFile !== undefined) {
-    if (typeof request.instructionsFile !== 'string' || !request.instructionsFile || request.instructionsFile === '-') fail('instructionsInvalid', 'Use a readable instruction file path; stdin is reserved for --prompt -.');
-    const instructions = await readText(request.instructionsFile, LIMITS.instructionBytes, 'instructionsTooLarge');
-    prompt = `执行指令：\n${instructions}\n\n本次任务：\n${task}`;
+    if (typeof request.instructionsFile !== 'string' || !request.instructionsFile || request.instructionsFile === '-') fail('instructionsInvalid', 'Use a readable instruction file path.');
+    const instructions = await readText(path.resolve(callerCwd, request.instructionsFile), LIMITS.instructionBytes, 'instructionsTooLarge');
+    prompt = `Instructions:\n${instructions}\n\nTask:\n${task}`;
   }
+  const source = { ...(options.environment ?? process.env) };
+  const host = selected.executor.adapter === 'custom-managed' ? await validateCommandHost(source) : undefined;
   let executable;
-  try { executable = await executablePaths(selected.command, selected.entrypoint); }
+  try {
+    executable = host ? { command: host.nodeExecutable, args: [host.cliEntry, 'command', 'run', selected.executor.commandId, '--'] } : selected.executor.adapter === 'custom'
+      ? { command: selected.command, ...(selected.entrypoint ? { entrypoint: selected.entrypoint } : {}) }
+      : await executablePaths(selected.command, selected.entrypoint);
+  }
   catch (error) {
-    if (selected.executor.adapter !== 'custom') fail('installedRuntimeMissing', 'The installed adapter resource is missing or unreadable. Sync or reinstall the Guide.', ['sync', 'reinstall']);
+    if (!['custom', 'custom-managed'].includes(selected.executor.adapter)) fail('installedRuntimeMissing', 'The installed adapter resource is missing or unreadable. Sync or reinstall the Guide.', ['sync', 'reinstall']);
     throw error;
   }
   const wire = {
-    protocolVersion: 4, execution: { ...selected.execution }, mode: selected.mode,
-    workspace, prompt, args: [...selected.executor.args],
+    protocolVersion: 5, type: 'start', execution: { ...selected.execution }, mode: selected.mode,
+    workspace, prompt, args: [...selected.executor.args], communication: selected.communication, resume: selected.resume,
+    ...(selected.permissionMode === undefined ? {} : { permissionMode: selected.permissionMode }),
+    ...(selected.codex ? { codex: { ...selected.codex } } : {}),
     ...(selected.mode === 'bundle' ? {
       fileSelectors: [...fileSelectors],
       fileResolver: { command: process.execPath, args: [path.join(selected.resourceRoot, 'scripts', 'resolve-files.mjs')] },
     } : {}),
   };
-  validateRequest(wire);
-  return { selected, executable, originalWorkspace: workspace, request: wire, ...resolveAdapterEnvironment(options.environment ?? process.env, selected.executor) };
-}
-
-export function previewResult(prepared) {
-  return {
-    preview: true, execution: prepared.request.execution, mode: prepared.request.mode,
-    workspace: prepared.request.workspace, args: prepared.request.args,
-    ...(prepared.request.mode === 'bundle' ? { fileSelectors: prepared.request.fileSelectors } : {}),
-    environmentNames: Object.keys(prepared.selected.executor.env ?? {}),
-    environmentReferences: { ...(prepared.selected.executor.envFrom ?? {}) },
-  };
-}
-
-export function formatPreview(preview) {
-  const lines = [`PREVIEW · ${preview.execution.profile} → ${preview.execution.executor} · ${preview.mode}`, `工作目录：${preview.workspace}`,
-    `参数：${JSON.stringify(preview.args)}`];
-  for (const key of ['model', 'reasoningEffort']) lines.push(`${key}：${preview.execution[key] ?? '后端默认'}`);
-  if (preview.environmentNames.length) lines.push(`env 变量：${preview.environmentNames.join(', ')}`);
-  if (Object.keys(preview.environmentReferences).length) lines.push(`envFrom 来源：${JSON.stringify(preview.environmentReferences)}`);
-  if (preview.mode === 'bundle') {
-    lines.push(`文件选择式（${preview.fileSelectors.length}）：`);
-    for (const selector of preview.fileSelectors) lines.push(JSON.stringify(selector.length > 2048 ? `${selector.slice(0, 2048)}… [显示省略 ${selector.length - 2048} 个字符]` : selector));
-    lines.push('未展开文件选择；未检查匹配文件；未启动解析器或后端。');
-  } else lines.push('未启动后端。');
-  return `${lines.join('\n')}\n`;
-}
-
-export function formatResult(result, execution, mode) {
-  const lines = [`${result.state.toUpperCase()} · ${execution.profile} → ${execution.executor} · ${mode}`];
-  if (result.state === 'unknown') lines.push('未确认服务终态。不要自动重新提交。');
-  if (result.state !== 'completed') {
-    if (result.code && /^[A-Za-z][A-Za-z0-9]*$/.test(result.code)) lines.push(`原因：${result.code}`);
-    lines.push(`已知生成状态：${result.generationStarted === true ? '已开始' : result.generationStarted === false ? '未开始' : '未确认'}`);
-    if (result.sessionId) lines.push(`会话：${JSON.stringify(result.sessionId)}`);
-  }
-  if (result.temporaryDirectory) lines.push(`本地收尾未确认或临时清理失败；保留目录：${result.temporaryDirectory}`);
-  if (result.text) lines.push('', ...(result.state === 'unknown' ? ['部分结果：'] : []), result.text);
-  return `${lines.join('\n')}\n`;
-}
-
-export function classifyResult(result, { adapterExitCode, localTreeStopped, interrupted }) {
-  try { validateResult(result); } catch { return { state: 'unknown', code: 'adapterResultInvalid' }; }
-  if (!localTreeStopped) return { state: 'unknown', code: 'localTreeStopUnconfirmed' };
-  if (result.state === 'completed') {
-    if (interrupted || adapterExitCode !== 0 || result.backendExitCode !== 0 || result.generationStarted !== true || !result.text.trim()) return { state: 'unknown', code: 'completionUnconfirmed' };
-    return { state: 'completed' };
-  }
-  if (result.state === 'cancelled') return interrupted && (result.generationStarted === false || result.remoteStopConfirmed === true) ? { state: 'cancelled' } : { state: 'unknown', code: 'remoteStopUnconfirmed' };
-  if ((interrupted || result.remoteStopConfirmed === false) && result.generationStarted !== false && result.remoteStopConfirmed !== true) return { state: 'unknown', code: 'remoteStopUnconfirmed' };
-  if (result.state === 'failed') return { state: 'failed' };
-  return { state: 'unknown', code: result.code ?? 'serviceTerminalMissing' };
-}
-
-/** One foreground child and one private result file. No persistent identity or recovery store. */
-export async function runForeground(prepared, options = {}) {
-  // Fail before launching if the environment cannot observe and stop this process tree.
-  await processTable();
-  const temporaryRoot = await fs.realpath(options.temporaryRoot ?? os.tmpdir());
-  await safePath(temporaryRoot, 'directory');
-  const directory = await fs.mkdtemp(path.join(temporaryRoot, 'aw-subagent-'));
-  await fs.chmod(directory, 0o700);
-  const directoryIdentity = await fs.lstat(directory);
-  const resultFile = path.join(directory, 'result.json');
-  const token = randomBytes(24).toString('hex');
-  const environment = {
-    ...prepared.environment, AW_SUBAGENT_PROCESS_TOKEN: token,
-    AW_SUBAGENT_TEMP_DIR: directory, AW_SUBAGENT_RESULT_FILE: resultFile,
-  };
-  let child;
-  let tracked = [];
-  let observationFailed = false;
-  let interrupted = false;
-  let stopping;
-  let finishStop;
-  const stopCompleted = new Promise((resolve) => { finishStop = resolve; });
-  let outputBytes = 0;
-  let overflow = false;
-  const diagnostics = [];
-  let timer;
-  let monitor;
-  let monitorBusy = Promise.resolve();
-  let localTreeStopped = false;
-  let cleanupAttempted = false;
-  let finalResult;
-  let outputClosed = false;
-  let outputCloseTimer;
-  const stop = () => {
-    interrupted = true;
-    if (!child || stopping) return;
-    child.kill('SIGTERM');
-    stopping = (async () => {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      await monitorBusy;
-      cleanupAttempted = true;
-      const stopped = await stopOwnedTree(child.pid, tracked, token);
-      tracked = stopped.tracked;
-      localTreeStopped = stopped.stopped;
-    })().catch(() => { observationFailed = true; }).finally(() => { finishStop({ code: child.exitCode }); });
-  };
-  process.on('SIGINT', stop);
-  process.on('SIGTERM', stop);
-  options.signal?.addEventListener('abort', stop, { once: true });
-  try {
-    if (options.signal?.aborted) fail('runCancelledBeforeStart', 'The invocation was stopped before the adapter started.');
-    child = spawn(prepared.executable.command, prepared.executable.entrypoint ? [prepared.executable.entrypoint] : [], {
-      cwd: prepared.originalWorkspace,
-      shell: false, detached: false, env: environment, stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    const exited = new Promise((resolve) => {
-      child.once('error', () => resolve({ code: null, spawnFailed: true }));
-      child.once('exit', (code, signal) => resolve({ code, signal }));
-    });
-    const closed = new Promise((resolve) => { child.once('close', () => resolve(true)); });
-    for (const stream of [child.stdout, child.stderr]) stream.on('data', (chunk) => {
-      outputBytes += chunk.length;
-      if (outputBytes > LIMITS.logBytes) { overflow = true; stop(); return; }
-      diagnostics.push(chunk);
-    });
-    child.stdin.on('error', () => {});
-    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); }).catch(() => fail('adapterStartFailed', 'The registered adapter could not start.'));
-    tracked = await observeTree(child.pid, [], token);
-    if (!tracked.some((row) => row.pid === child.pid)) fail('processObservationFailed', 'The adapter process is not visible to the process observer.');
-    monitor = setInterval(() => {
-      monitorBusy = monitorBusy.then(async () => { tracked = await observeTree(child.pid, tracked, token); }).catch(() => { observationFailed = true; stop(); });
-    }, 250);
-    timer = setTimeout(stop, options.deadlineMs ?? LIMITS.deadlineMs);
-    child.stdin.end(JSON.stringify(prepared.request));
-    const { code } = await Promise.race([exited, stopCompleted]);
-    clearTimeout(timer); clearInterval(monitor);
-    await monitorBusy;
-    if (stopping) await stopping;
-    if (!stopping) {
-      cleanupAttempted = true;
-      const stopped = await stopOwnedTree(child.pid, tracked, token).catch(() => ({ stopped: false, tracked }));
-      localTreeStopped = stopped.stopped; tracked = stopped.tracked;
-    }
-    // Descendants can retain these pipes after the adapter exits. Their lifetime
-    // must not hold this invocation open after its own stop attempt has ended.
-    outputClosed = await Promise.race([
-      closed,
-      new Promise((resolve) => { outputCloseTimer = setTimeout(() => resolve(false), 500); }),
-    ]);
-    clearTimeout(outputCloseTimer);
-    if (!outputClosed) {
-      localTreeStopped = false;
-      child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
-      child.unref();
-    }
-    let result;
-    try {
-      const stat = await fs.lstat(resultFile);
-      if (!stat.isFile() || (stat.mode & 0o077) !== 0) fail('resultNotPrivate', 'The adapter result must be a private regular file.');
-      result = await readJson(resultFile, LIMITS.resultBytes);
-    } catch { /* A wrapper exit or ordinary text cannot establish the service outcome. */ }
-    const classified = classifyResult(result, { adapterExitCode: code, localTreeStopped: localTreeStopped && !observationFailed, interrupted });
-    if (overflow) Object.assign(classified, { state: 'unknown', code: 'adapterOutputTooLarge' });
-    let resultValid = false;
-    try { validateResult(result); resultValid = true; } catch { /* Retain only labelled partial text. */ }
-    const safeResult = result?.protocolVersion === 4 ? {
-      protocolVersion: 4,
-      generationStarted: resultValid ? result.generationStarted : null,
-      backendExitCode: Number.isSafeInteger(result.backendExitCode) ? result.backendExitCode : null,
-      text: typeof result.text === 'string' && Buffer.byteLength(result.text) <= LIMITS.outputBytes ? result.text : '',
-      ...Object.fromEntries(['code', 'message', 'sessionId', 'model'].filter((key) => typeof result[key] === 'string').map((key) => [key, result[key]])),
-      ...(typeof result.remoteStopConfirmed === 'boolean' ? { remoteStopConfirmed: result.remoteStopConfirmed } : {}),
-    } : { protocolVersion: 4, generationStarted: null, backendExitCode: null, text: '' };
-    const final = {
-      ...safeResult, ...classified, localTreeStopped: localTreeStopped && !observationFailed,
-      adapterExitCode: code, diagnostics: Buffer.concat(diagnostics).toString('utf8'),
-      restrictions: !outputClosed ? ['Output pipes did not close; local work can still be active.'] : [],
-      ...(interrupted ? { stopRequested: true } : {}),
-      ...(!localTreeStopped ? { temporaryDirectory: directory } : {}),
-    };
-    finalResult = { ...final };
-    for (const key of ['text', 'diagnostics', 'code', 'message', 'sessionId', 'model']) if (typeof final[key] === 'string') finalResult[key] = redact(final[key], environment, prepared.secretValues);
-    return finalResult;
-  } catch (error) {
-    if (!child) throw error;
-    finalResult = { protocolVersion: 4, state: child.pid ? 'unknown' : 'failed', generationStarted: child.pid ? null : false,
-      backendExitCode: null, text: '', code: child.pid ? 'foregroundUnconfirmed' : 'adapterStartFailed',
-      localTreeStopped: false, adapterExitCode: child.exitCode, diagnostics: '', restrictions: [],
-      ...(interrupted ? { stopRequested: true } : {}), temporaryDirectory: directory };
-    return finalResult;
-  } finally {
-    clearTimeout(timer); clearTimeout(outputCloseTimer); clearInterval(monitor);
-    process.off('SIGINT', stop); process.off('SIGTERM', stop);
-    options.signal?.removeEventListener('abort', stop);
-    await monitorBusy;
-    if (child?.pid && !localTreeStopped && !cleanupAttempted) {
-      // The dedicated live child handle remains owned even if the process observer fails.
-      if (!child.killed && child.exitCode === null) child.kill('SIGTERM');
-      const stopped = await stopOwnedTree(child.pid, tracked, token).catch(() => ({ stopped: false }));
-      localTreeStopped = stopped.stopped;
-    }
-    if (!child?.pid) localTreeStopped = true;
-    if (finalResult) finalResult.localTreeStopped = localTreeStopped && !observationFailed;
-    const current = await fs.lstat(directory).catch(() => undefined);
-    if ((!child || localTreeStopped) && current?.dev === directoryIdentity.dev && current?.ino === directoryIdentity.ino) {
-      try { await fs.rm(directory, { recursive: true }); if (finalResult) delete finalResult.temporaryDirectory; }
-      catch {
-        if (finalResult) { finalResult.temporaryDirectory = directory; finalResult.restrictions.push('Local execution ended, but temporary-file cleanup failed.'); }
-      }
-    }
-  }
+  const resolved = resolveAdapterEnvironment(source, selected.executor);
+  if (host) Object.assign(resolved.environment, { AW_COMMAND_HOST: JSON.stringify(host), AW_HOME: host.awHome });
+  const frozenLaunch = host ? await managedLaunch(host, selected.executor.commandId, resolved.environment, workspace) : undefined;
+  return { selected, executable, originalWorkspace: workspace, request: wire, ...resolved,
+    ...(host ? { commandHost: host, managedLaunch: frozenLaunch } : {}) };
 }

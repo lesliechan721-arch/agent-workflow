@@ -103,7 +103,8 @@ test('requested subsets are exact and each consumer reads only its declared conf
       Object.defineProperty(input, 'config', { get() { throw new Error('role-only read config'); } });
     } else {
       const key = id.replace(/-skill$/, '');
-      for (const otherKey of ['simpleTaskProfile', 'advisorProfile', 'quickProfile']) {
+      for (const otherKey of ['simpleTaskProfile', 'advisorGeneralProfile', 'quickProfile',
+        'taskCustomProfiles', 'advisorCustomProfiles', 'exploreCustomProfiles', 'subagentCommands']) {
         if (!SKILL_CONFIG_KEYS[key].includes(otherKey)) {
           Object.defineProperty(input.config.values, otherKey, { get() { throw new Error(`read ${otherKey}`); } });
         }

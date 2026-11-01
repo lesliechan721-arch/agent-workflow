@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { validateManagedCommandSources } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   MarketplaceManifest,
@@ -8,6 +9,7 @@ import type {
   PluginMeta,
   PlatformPluginManifest,
   PluginManifestSource,
+  NormalizedPluginManifest,
 } from '../types.js';
 import {
   assertActualNativePluginCapability,
@@ -28,6 +30,7 @@ import {
   validateSkillDirectory,
 } from './dynamic-skill-tree.js';
 import { validateRuntimeSkillClosure } from './runtime-skill-closure.js';
+import { validateManagedCommandPackageClosure } from './managed-command-closure.js';
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 export const CATALOG_MANIFEST_FILENAME = 'catalog-manifest.json';
@@ -497,8 +500,14 @@ async function validateRuntimeBareImportResolvesInBundle(
 
 async function validateAwRuntimeLayout(
   pluginRoot: string,
-  manifest: PluginManifestSource,
+  manifest: NormalizedPluginManifest,
 ): Promise<void> {
+  await validateManagedCommandSources(pluginRoot, manifest);
+  for (const commandPackage of manifest.managedCommands?.packages ?? []) {
+    const entries = (manifest.managedCommands?.sets ?? []).flatMap((set) =>
+      set.producer.kind === 'package' && set.producer.packageKey === commandPackage.key && set.mode === 'static' ? set.entries : []);
+    await validateManagedCommandPackageClosure(path.join(pluginRoot, stripDotSlash(commandPackage.sourceDir)), entries);
+  }
   if (manifest.scripts?.tests) {
     throw new Error('Invalid bundle source manifest: scripts.tests must not be included in runtime bundle.');
   }

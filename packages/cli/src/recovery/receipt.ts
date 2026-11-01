@@ -1,4 +1,4 @@
-import type { Scope } from '../types.js';
+import type { CommandProducerResult, Scope } from '../types.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
 import type { IntentObservation } from '../intent/intent-store.js';
 
@@ -33,6 +33,7 @@ export interface RecoveryReceipt {
   blockers: RecoveryDiagnostic[];
   errors: RecoveryDiagnostic[];
   targetResults: RecoveryTarget[];
+  commandResults?: CommandProducerResult[];
   remainingTargets: Array<{ pluginId: string; agent: AgentId; scope: Scope; delivery: RecoveryDelivery | null }>;
   recoveryActions: string[];
   declarationChanged: boolean;

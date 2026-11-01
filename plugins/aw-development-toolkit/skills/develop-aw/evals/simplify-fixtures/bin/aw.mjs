@@ -69,6 +69,7 @@ function completeSnapshot(snapshot) {
     snapshot.manifest,
     path.join(snapshot.skill, 'SKILL.md'),
     snapshot.provider,
+    ...(control.additionalInputs ?? []).map(relative => path.join(snapshot.workspace, relative)),
   ];
   if (!required.every((file) => fs.existsSync(file) && fs.lstatSync(file).isFile() && !fs.lstatSync(file).isSymbolicLink())) {
     return false;
@@ -78,6 +79,7 @@ function completeSnapshot(snapshot) {
     'plugins/marketplace-source.json',
     control.manifestRelative,
     control.providerRelative,
+    ...(control.additionalInputs ?? []),
   ];
   if (snapshot.kind === 'baseline') unchanged.push(path.join(control.skillRelative, 'SKILL.md'));
   return unchanged.every((relative) => fs.readFileSync(path.join(snapshot.workspace, relative)).equals(

@@ -26,7 +26,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "给 skill/SKILL.md 做删减计划；没有 baseline 或模型 Eval，本次不改文件也不运行。",
+      "prompt": "$simplify-agent-skill 给 skill/SKILL.md 做删减计划；没有 baseline 或模型 Eval，本次不改文件也不运行。",
       "assertions": [
         "识别重复和伪handoff作为候选，保留不补造事实",
         "不必先完成12维full review，不自动调用Runner",
@@ -53,7 +53,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "比较 baseline/SKILL.md 与 candidate/SKILL.md。stats.txt 是未验证的手工统计；本次只分析，不运行、不应用候选。",
+      "prompt": "$simplify-agent-skill 比较 baseline/SKILL.md 与 candidate/SKILL.md。stats.txt 是未验证的手工统计；本次只分析，不运行、不应用候选。",
       "assertions": [
         "可以指出删除的是精确重复、文本更短",
         "不把手工统计当有效 EvalResult，不宣称已验证无回归",
@@ -82,7 +82,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只分析这两个候选；不要改文件。用户要求一直保留“不发布和不读取凭据”的边界。",
+      "prompt": "$simplify-agent-skill 只分析这两个候选；不要改文件。用户要求一直保留“不发布和不读取凭据”的边界。",
       "assertions": [
         "候选不仅更短而且改变授权/范围，拒绝作为等价简化",
         "无需模型Eval即可指出违反明确保留行为",

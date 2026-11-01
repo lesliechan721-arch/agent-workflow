@@ -15,7 +15,7 @@ import {
 } from './plugin-root.mjs';
 
 const execFileAsync = promisify(execFile);
-const EXPECTED_MANIFEST_CONTRACT_VERSION = 16;
+const EXPECTED_MANIFEST_CONTRACT_VERSION = 17;
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const GIT_OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const MAX_GIT_BLOB_BYTES = 50 * 1024 * 1024;
@@ -255,7 +255,7 @@ export async function readGitBlobsBatch(repoRoot, objectIds, options = {}) {
   }
   if (uniqueObjectIds.length === 0) return new Map();
 
-  const child = spawn('git', ['cat-file', '--batch'], {
+  const child = spawn(options.command ?? 'git', [...(options.argsPrefix ?? []), 'cat-file', '--batch'], {
     cwd: repoRoot,
     env: options.env ?? process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -390,7 +390,7 @@ export async function readGitBlobsBatch(repoRoot, objectIds, options = {}) {
     throw codedError('gitFailed', `Git cat-file batch ended from signal ${exitResult.value.signal}${stderr ? `: ${stderr}` : '.'}`);
   }
   if (exitResult.value.code !== 0 || stderr) {
-    throw codedError('gitFailed', `Git cat-file batch failed${stderr ? `: ${stderr}` : ` with exit code ${exitResult.value.code}.`}`);
+    throw codedError('gitFailed', `Git cat-file batch failed with exit code ${exitResult.value.code}${stderr ? `: ${stderr}` : '.'}`);
   }
   return readResult.value;
 }

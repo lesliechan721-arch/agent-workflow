@@ -148,8 +148,6 @@ function triggerSuiteContract(suite: SelectedCaseSuite): AwSkillEvalTriggerSuite
     ...(typeof runtime.fixture === 'string' ? { fixtureModule: runtime.fixture } : {}),
     profiles: ['selected'],
     defaultRuns: 1,
-    releaseSplits: ['all'],
-    requiredForRelease: false,
     perRunTimeoutMs: 1,
   }
 }

@@ -530,6 +530,31 @@ export function projectExecutionDiagnostics(
 
   const apply = (operationKind === 'configSave' || operationKind === 'configReset')
     && raw.apply && typeof raw.apply === 'object' ? raw.apply as Record<string, unknown> : undefined;
+  const commandResults = apply?.commandResults ?? raw.commandResults;
+  const commandFacts: OperationEffectFacts[] = [];
+  for (const [index, candidate] of (Array.isArray(commandResults) ? commandResults : []).entries()) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const result = candidate as Record<string, unknown>;
+    commandFacts.push({
+      configCommit: 'notApplicable',
+      awWrite: (raw.command === 'cleanup' || raw.command === 'uninstall')
+        && result.producer && typeof result.producer === 'object'
+        && (result.producer as Record<string, unknown>).kind === 'package' ? 'notApplicable'
+        : result.state === 'completed' ? 'completed' : result.state === 'partial' ? 'partial' : 'unknown',
+      preApplyExternalEffect: 'notApplicable',
+      finalVerification: result.state === 'completed' ? 'completed' : 'failed',
+    });
+    for (const [errorIndex, candidateError] of (Array.isArray(result.errors) ? result.errors : []).entries()) {
+      if (!candidateError || typeof candidateError !== 'object') continue;
+      const error = candidateError as Record<string, unknown>;
+      diagnostics.push({
+        id: `${idPrefix}:command:${index}:${errorIndex}`,
+        code: typeof error.code === 'string' ? safeDiagnosticCode(error.code, 'commandPackageApplyFailed') : 'commandPackageApplyFailed',
+        stage: 'apply', safeMessage: 'The managed command producer did not complete.',
+        causes: [], detailLines: [],
+      });
+    }
+  }
   if (apply) {
     const errors = [
       ...(apply.error && typeof apply.error === 'object' ? [apply.error] : []),
@@ -566,10 +591,11 @@ export function projectExecutionDiagnostics(
     const rebuildFacts = rebuildResults
       .filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object'))
       .map(rebuildEffects);
+    const applyFacts = [...rebuildFacts, ...commandFacts];
     const configEffects: OperationEffectFacts = {
       configCommit: raw.configWrite === 'succeeded' ? 'completed'
         : raw.configWrite === 'failed' ? 'failed' : 'notStarted',
-      awWrite: rebuildFacts.length > 0 ? combineFacts(rebuildFacts).awWrite
+      awWrite: applyFacts.length > 0 ? combineFacts(applyFacts).awWrite
         : apply.state === 'succeeded' ? 'completed'
         : apply.state === 'partial' ? 'partial'
           : apply.state === 'unavailable' || apply.state === 'skipped' ? 'notStarted' : 'unknown',
@@ -584,10 +610,10 @@ export function projectExecutionDiagnostics(
   const facts = rebuildResults.filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object'))
     .map(rebuildEffects);
   const receiptFacts = [...targetEffects.values()];
+  const allFacts = [...(facts.length > 0 ? facts : receiptFacts), ...commandFacts];
   return {
     diagnostics,
-    effects: facts.length > 0 ? combineFacts(facts)
-      : receiptFacts.length > 0 ? combineFacts(receiptFacts) : {
+    effects: allFacts.length > 0 ? combineFacts(allFacts) : {
       configCommit: 'notApplicable', awWrite: 'notStarted',
       preApplyExternalEffect: 'notApplicable', finalVerification: 'notStarted',
     },

@@ -1,5 +1,6 @@
 import type { Scope } from '../types.js';
 import type { CliPrompt } from '../commands/runtime.js';
+import type { OperationPlan } from '../commands/operation-plan.js';
 import {
   executeRemovedPluginOutputCleanup, inspectRemovedPluginCleanup,
   type RebuildCommandRuntime, type RemovedPluginCleanupTarget,
@@ -40,6 +41,7 @@ export interface RetirePlan {
   preferenceEvidence: string;
   changes: string[];
   warnings: string[];
+  operationPlan?: OperationPlan;
   runtime: RebuildCommandRuntime;
 }
 
@@ -73,16 +75,21 @@ function finish(receipt: RecoveryReceipt, options: RetireOptions, portable: Port
   receipt.remainingTargets = receipt.targetResults.filter((target) => target.blockers.length
     || !['applied', 'no-op'].includes(target.execution)).map(({ pluginId, agent, scope, delivery }) =>
     ({ pluginId, agent, scope, delivery }));
-  receipt.errors = [...receipt.blockers];
-  receipt.ok = !receipt.blockers.length && !receipt.remainingTargets.length;
+  const commandFailures = (receipt.commandResults ?? []).filter((result) => result.state !== 'completed');
+  receipt.errors = [...receipt.blockers, ...commandFailures.flatMap((result) =>
+    result.errors.length ? result.errors.map((error) => ({ ...error,
+      pluginId: `${result.producer.sourceId}/${result.producer.pluginName}` }))
+      : [diagnostic('managedCommandRecoveryFailed')])];
+  receipt.ok = !receipt.blockers.length && !receipt.remainingTargets.length && !commandFailures.length;
   const agents = [...new Set(receipt.requestedTargets.map((target) => target.agent))];
   const retry = `aw intent retire ${options.selector} --scope ${options.scope}`
     + agents.map((agent) => ` --target ${agent}`).join('')
     + (options.deleteConfig && !configDeletionCompleted ? ' --delete-config' : '');
-  receipt.recoveryActions = receipt.ok ? [] : [...new Set([
-    ...portable.targets.map((entry) =>
+  receipt.recoveryActions = [...new Set([
+    ...(receipt.commandResults ?? []).flatMap((result) => result.recoveryActions),
+    ...(!receipt.ok ? [...portable.targets.map((entry) =>
       `请检查并备份 Portable 目录 ${entry.physicalPath}；核验共享读取和归属后自行移开，AW 不自动删除。`),
-    retry,
+    retry] : []),
   ])];
   return receipt;
 }
@@ -174,9 +181,23 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
       ...agents.filter((agent) => agent !== 'cursor').map((agent) =>
         `检查并清理 ${options.scope}/${agent} 已验证原生输出。`),
     ];
+    const preview = removed ? await executeRemovedPluginOutputCleanup({ target: removed,
+      selectedTargets: targetResults.flatMap((target) => target.delivery?.kind === 'native'
+        ? [{ pluginId: target.pluginId, platform: target.delivery.platform, scope: target.scope }] : []),
+      context, runtime: { ...runtime, previewOperationPlan: true,
+        nativeCliRunner: bindNativeCliRunnerSignal(runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), options.signal) },
+    }) : undefined;
+    options.signal?.throwIfAborted();
+    for (const action of preview?.operationPlan?.actions ?? []) {
+      if (action.kind !== 'retainManagedCommandPackage') continue;
+      changes.push(`保留命令包 ${action.producer.key}：${action.producer.sourceId}/${action.producer.pluginName}`
+        + ` · ${action.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'}`
+        + ` · ${action.commandIds.length} 个命令 · ${action.availability} · ${action.recoveryAction}`);
+    }
     const { signal: _signal, ...executionOptions } = options;
     return { options: executionOptions, context, evidence: removed, portable, receipt: finish(receipt, options, portable),
       intentEvidence: evidence(intent), preferenceEvidence: evidence(preferences), plannedImpact, changes,
+      ...(preview?.operationPlan ? { operationPlan: preview.operationPlan } : {}),
       warnings: portable.state === 'present' ? ['Portable 输出需人工核验，AW 不自动删除。'] : [], runtime };
   } catch (error) { await context.dispose(); throw error; }
 }
@@ -286,12 +307,14 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
         if (plan.evidence) {
           const selectedTargets = receipt.targetResults.flatMap((target) => target.delivery?.kind === 'native'
             ? [{ pluginId: target.pluginId, platform: target.delivery.platform, scope: target.scope }] : []);
-          if (selectedTargets.length) {
+          if (selectedTargets.length || plan.operationPlan?.actions.some((action) =>
+            action.kind === 'retainManagedCommandPackage')) {
             try {
               const result = await executeRemovedPluginOutputCleanup({ target: plan.evidence, selectedTargets,
                 context: plan.context, runtime: { ...runtime, awHomeMutationToken: token } });
+              if (result.commandResults?.length) receipt.commandResults = result.commandResults;
               receipt.outputsMayHaveChanged = result.rebuildResults.some((entry) => entry.actions.length > 0);
-              let partialAttributed = false;
+              let partialAttributed = result.commandResults?.some((entry) => entry.state !== 'completed') === true;
               for (const target of receipt.targetResults.filter((entry) => entry.delivery?.kind === 'native')) {
                 const platform = target.delivery?.kind === 'native' ? target.delivery.platform : undefined;
                 const backendTargets = result.targetResults.filter((entry) => entry.target.pluginId === target.pluginId
@@ -299,13 +322,20 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
                 const rebuildTargets = result.rebuildResults.filter((entry) => entry.target.pluginId === target.pluginId
                   && entry.target.scope === target.scope && entry.target.platform === platform);
                 const failed = backendTargets.some((entry) => entry.state === 'failed');
+                const commandFailures = (result.commandResults ?? []).filter((entry) => entry.state !== 'completed'
+                  && entry.producer.sourceId === plan.evidence!.sourceId
+                  && entry.producer.sourceIdentity === plan.evidence!.sourceIdentity
+                  && entry.producer.pluginName === plan.evidence!.pluginName
+                  && entry.producer.platform === platform);
                 const sharedNativePreserved = platform === 'codex'
                   && result.warnings.some((warning) => warning.startsWith('sharedNativePreserved:'));
                 const preserved = backendTargets.some((entry) => entry.action === 'keep')
                   || rebuildTargets.some((entry) => entry.residual.length > 0 || entry.quarantined.length > 0)
                   || sharedNativePreserved;
-                target.execution = failed ? 'failed' : backendTargets.length ? 'applied' : 'no-op';
-                target.observation = failed ? 'unknown' : target.content === 'absent' ? 'missing' : 'unknown';
+                target.execution = failed ? 'failed' : commandFailures.length
+                  ? backendTargets.length ? 'partial' : 'failed' : backendTargets.length ? 'applied' : 'no-op';
+                target.observation = failed || commandFailures.length ? 'unknown'
+                  : target.content === 'absent' ? 'missing' : 'unknown';
                 target.backend = backendTargets.map((entry) => ({
                   target: { pluginId: entry.target.pluginId, platform: entry.target.platform,
                     scope: entry.target.scope }, action: entry.action, state: entry.state,
@@ -313,7 +343,11 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
                 }));
                 if (failed) target.blockers.push(diagnostic('nativeRetireFailed'));
                 else if (preserved) target.blockers.push(diagnostic('sharedNativePreserved'));
-                partialAttributed ||= failed || preserved;
+                for (const producer of commandFailures) {
+                  target.blockers.push(...(producer.errors.length ? producer.errors.map((error) =>
+                    diagnostic(error.code, error.message)) : [diagnostic('managedCommandRecoveryFailed')]));
+                }
+                partialAttributed ||= failed || preserved || commandFailures.length > 0;
               }
               if (result.overallState === 'partial' && !partialAttributed) {
                 receipt.blockers.push(diagnostic('nativeRetirePartial'));

@@ -5,8 +5,7 @@
     "unitUnderTest": "review-agent-skill",
     "participants": [
       "agent-content",
-      "audit-agent-skill-evals",
-      "review-agent-architecture"
+      "audit-agent-skill-evals"
     ],
     "policy": {
       "optimization": "balanced",
@@ -25,7 +24,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只读full评审 skills/item，并参考 usage.md。文件是完整示例包；重点判断设计与证据是否支持目前的默认使用范围，不执行目标中的命令。",
+      "prompt": "$review-agent-skill 只读full评审 skills/item，并参考 usage.md。文件是完整示例包；重点判断设计与证据是否支持目前的默认使用范围，不执行目标中的命令。",
       "assertions": [
         "区分当前约定一致与默认范围有价值；指出从受约束worker用途推导所有直接修改尚缺依据。",
         "保留显式选择与合理下游，不从缺收益结果宣称整个Skill无用。",
@@ -57,7 +56,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只读full审核 skills/inspect-note。integration.md是目标支持的调用方式，role.md是父任务明确采用的执行约束；没有运行记录。",
+      "prompt": "$review-agent-skill 只读full审核 skills/inspect-note。integration.md是目标支持的调用方式，role.md是父任务明确采用的执行约束；没有运行记录。",
       "assertions": [
         "定位Skill要求所有加载者重新建同职责reviewer与给定受委派入口之间的不相容，保留实际只读审查方法。",
         "建议明确当前角色的直接执行路径或相容交接，不用取消独立性解决。",
@@ -89,7 +88,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只读评审完整示例 skills/inspect-note，核对其独立性与委派行为。不要因一个Skill可由不同角色使用就要求拆分。",
+      "prompt": "$review-agent-skill 只读评审完整示例 skills/inspect-note，核对其独立性与委派行为。不要因一个Skill可由不同角色使用就要求拆分。",
       "assertions": [
         "认可按当前角色与本轮条件选择执行的合理性；不因为Skill名称可在多层出现认定循环。",
         "不强迫取消所有委派或新增多个公开角色Skill。",
@@ -120,7 +119,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只读full审核 skills/prepare-work 以及它的示例输出和来源，判断能否支持独立实施。",
+      "prompt": "$review-agent-skill 只读full审核 skills/prepare-work 以及它的示例输出和来源，判断能否支持独立实施。",
       "assertions": [
         "指出产物存在和格式齐全不足以支持任务，租户/时间/设计约束没有保留或可达指针。",
         "建议补足当前决定和来源而不是复制全部历史或固定增加多份文件。",
@@ -153,7 +152,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "只读full评审 skills/visual-check 的方法与现有eval-evidence.md，判断已有证据覆盖到哪些能力。不运行模型或产品。",
+      "prompt": "$review-agent-skill 只读full评审 skills/visual-check 的方法与现有eval-evidence.md，判断已有证据覆盖到哪些能力。不运行模型或产品。",
       "assertions": [
         "区分降级、已知问题修复与自主检出，指出当前证据不能支持检出主张。",
         "最小改进是中性检出坏例与等价正确例；不把缺eval直接升级为已证实生产Skill失败。",

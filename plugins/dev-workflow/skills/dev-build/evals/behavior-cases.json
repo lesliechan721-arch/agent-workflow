@@ -134,6 +134,41 @@
         "minimalCounterexample": "用户明确只准子代理实施时应说明能力缺失并暂停。",
         "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
       }
+    },
+    {
+      "id": "reuse-complete-work-items-before-dispatch",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "使用 dev-build 准备这次多上下文实施。两个 Ticket 和 Spec 均已确认，请核对下一批可派发工作；本次不派发、不实施，也不要改写已有材料。",
+      "assertions": [
+        "核对现有任务的结果、接口、依赖、写入和验收后直接复用，不重新生成另一套任务。",
+        "指出 T2 依赖 T1 的已集成接口，不因多文件或多上下文机械并行。",
+        "本轮仅给出派发判断，保持代码、规格和任务原样。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          ".dev-workflows/export/spec.md": "# 已确认导出\nformatRow 把合法记录转换为 id,name 两列；exportRows 按输入顺序用 formatRow 生成 CSV，无副作用。合法记录的 id 和 name 均为非空 ASCII 字母或数字，不含逗号与换行；本范围不包含通用 CSV 转义。只支持现有内存记录，不新增配置。\n",
+          "src/format-row.js": "export const formatRow = row => `${row.id},${row.name}`;\n",
+          "src/export.js": "export const exportRows = () => \"\";\n",
+          ".dev-workflows/export/tickets/T1.md": "# T1 格式化一行\n依据 ../spec.md 的两列合同，代码 src/format-row.js。结果 formatRow({id:\"1\",name:\"A\"}) 为 \"1,A\"，不修改输入；无外部依赖。只允许修改 src/format-row.js，局部实现自主决定，不改变列合同。由协调者集成并验证 T2 消费此接口。\n",
+          ".dev-workflows/export/tickets/T2.md": "# T2 导出记录\n依据 ../spec.md，使用 T1 的 formatRow；T1 集成后可开展。只允许修改 src/export.js。验收 exportRows([{id:\"1\",name:\"A\"},{id:\"2\",name:\"B\"}]) 为 \"1,A\\n2,B\"，空输入为空字符串，输入不变。协调者验证组合结果；可自主选择局部循环，不改变顺序或公开接口。\n"
+        }
+      },
+      "expected": {
+        "output": "说明可派发项、真实依赖与已有任务足够的依据。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "分解是可交接材料不足时的补足，不是所有多任务请求的重复阶段。",
+        "minimalCounterexample": "缺少共享接口、范围或验收时必须先补足任务再派发。",
+        "allowedVariance": "允许任何能说明实际接手条件的表达，不锁调用次数；本例不证明真实委派。"
+      }
     }
   ]
 }

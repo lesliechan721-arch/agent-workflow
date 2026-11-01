@@ -6,14 +6,12 @@ import { build } from 'esbuild';
 import { assertPathChain, isMain, ToolError } from './src/common.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const SKILLS = ['author-agent-skill', 'review-agent-skill', 'review-agent-architecture', 'simplify-agent-skill'];
+const SKILLS = ['author-agent-skill', 'review-agent-skill', 'simplify-agent-skill'];
 export const GENERATED_FILES = Object.freeze([
   ['author-agent-skill', 'scripts/init-skill.mjs', 'init-skill'],
   ['author-agent-skill', 'scripts/check-skill.mjs', 'check-skill'],
   ['review-agent-skill', 'scripts/check-skill.mjs', 'check-skill'],
   ['simplify-agent-skill', 'scripts/check-skill.mjs', 'check-skill'],
-  ['review-agent-skill', 'scripts/audit-output-contracts.mjs', 'audit-output-contracts'],
-  ['review-agent-architecture', 'scripts/audit-output-contracts.mjs', 'audit-output-contracts'],
   ...SKILLS.map(skill => [skill, 'assets/tooling-NOTICE.txt', 'notice']),
 ]);
 
@@ -33,7 +31,7 @@ async function licenseNotice() {
 export async function bundleTools() {
   const bundles = new Map();
   const builtins = new Set([...builtinModules, ...builtinModules.map(name => name.startsWith('node:') ? name : `node:${name}`)]);
-  for (const entry of ['init-skill', 'check-skill', 'audit-output-contracts']) {
+  for (const entry of ['init-skill', 'check-skill']) {
     const result = await build({
       absWorkingDir: ROOT,
       entryPoints: [`src/${entry}.mjs`],

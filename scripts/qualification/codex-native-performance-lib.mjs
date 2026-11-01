@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 
-export const CODEX_CONTRACT_VERSIONS = ['0.145.0', '0.151.0', '0.153.0']
+export const CODEX_CONTRACT_VERSIONS = ['0.151.0', '0.153.0']
 export const INSTALL_MEDIAN_BUDGET_MS = 15_000
 
 const marketplaceName = 'aw-native-performance'

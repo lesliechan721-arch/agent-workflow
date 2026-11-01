@@ -74,7 +74,7 @@
         "minimalCounterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
       },
       "input": {
-        "query": "把这份草案改写成正式 Spec。",
+        "query": "把这些已经确认的内容改写成正式 Spec，本次只编写，不做独立审查。",
         "expectedLoad": false
       }
     },
@@ -108,7 +108,7 @@
         "minimalCounterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
       },
       "input": {
-        "query": "按这个 Spec 开始实现功能。",
+        "query": "已有完整有效的规格和独立审查，只按该 Spec 实现一个函数并验证，本次不重新审查规格。",
         "expectedLoad": false
       }
     }

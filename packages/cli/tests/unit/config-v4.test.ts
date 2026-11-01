@@ -45,35 +45,87 @@ function fixture() {
 describe('Config Definition v4 CLI boundaries', () => {
   // Test Value Gate: use the shipped plugin schema, writer and runtime snapshot so
   // convenience fields cannot be accepted in the wrong branch or lost on apply.
-  it('saves Codex Enhance engine/profile options and pro into installed runtime values', async () => {
+  it('saves Codex Enhance backend options and keeps profile values out of installed runtime', async () => {
     const { store, plugin, save } = fixture();
     const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/codex-enhance/.agents-plugin/plugin.json'));
     plugin.manifest.config = normalizePluginConfigDefinition(source.config);
     const commands = [
-      { key: 'oracle-web', title: 'Browser', adapter: 'oracle', oracleEngine: 'browser' },
-      { key: 'oracle-default', title: 'Default', adapter: 'oracle' },
-      { key: 'codex-review', title: 'Review', adapter: 'codex', codexProfile: 'review profile' },
-      { key: 'codex-default', title: 'Default', adapter: 'codex' },
+      { key: 'oracle-web', adapter: 'oracle', oracleEngine: 'browser' },
+      { key: 'oracle-default', adapter: 'oracle' },
+      { key: 'codex-review', adapter: 'codex', codexProfile: 'review profile' },
+      { key: 'codex-default', adapter: 'codex' },
+      { key: 'codex-app', adapter: 'codex', codexCliSource: 'app', codexBypassHookTrust: true, communication: false, resume: true },
+      { key: 'codex-cli', adapter: 'codex', codexCliSource: 'cli', codexBypassHookTrust: false, communication: true, resume: false },
+      { key: 'codex-auto', adapter: 'codex', codexCliSource: 'auto', codexBypassHookTrust: true, codexProfile: 'advanced' },
+      { key: 'agy', adapter: 'antigravity', communication: false, args: ['--model', 'backend-default'],
+        env: { ORDINARY: 'literal' }, envFrom: { TOKEN: 'HOST_TOKEN' } },
+      { key: 'custom', adapter: 'custom', mode: 'workspace', command: process.execPath, communication: true },
+      ...['codex', 'claude-code', 'antigravity'].flatMap((adapter) =>
+        ['default', 'auto', 'full-access'].map((permissionMode) => ({
+          key: `${adapter}-${permissionMode}-permission`, adapter, permissionMode, communication: false,
+        }))),
     ];
-    const advisorProfile = { executor: 'oracle-web', reasoningEffort: 'pro' };
-    await save({ subagentCommands: commands, advisorProfile });
+    const advisorGeneralProfile = { executor: 'oracle-web', reasoningEffort: 'pro' };
+    await save({ subagentCommands: commands, advisorGeneralProfile });
     const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
-    expect(config.values).toMatchObject({ subagentCommands: commands, advisorProfile });
-    plugin.manifest.artifacts = { targets: [{ id: 'runtime', platform: 'codex', target: 'codex.skill', delivery: { mode: 'aw-extension' },
-      scopes: ['user'], states: ['present'], skillKey: 'runtime', refreshKeys: ['advisorProfile', 'subagentCommands'],
-      runtimeConfig: { keys: ['advisorProfile', 'subagentCommands'] } }] };
+    expect(config.values).toMatchObject({ subagentCommands: commands, advisorGeneralProfile });
+    plugin.manifest.artifacts = source.artifacts;
     const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
-      logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['runtime'],
+      logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['codex-subagent-guide-skill'],
       config: { ...config, mode: 'artifact-render', targetScope: 'user' } });
-    expect(snapshots.runtime!.effectiveValues).toEqual({ subagentCommands: commands, advisorProfile });
+    expect(snapshots['codex-subagent-guide-skill']!.effectiveValues).toEqual({ subagentCommands: commands, subagentRetentionHours: 24 });
     const file = resolvePluginConfigStorePath(store);
     const before = await fs.readFile(file);
     for (const invalid of [
       { ...commands[0], oracleEngine: 'auto' }, { ...commands[0], adapter: 'codex' },
       { ...commands[2], adapter: 'oracle' }, { ...commands[2], adapter: 'claude-code' },
       ...['', '  ', '\0', 'x'.repeat(4097)].map((codexProfile) => ({ ...commands[2], codexProfile })),
+      ...['codex', 'claude-code', 'antigravity', 'oracle', 'custom'].flatMap((adapter) =>
+        ['false', 0, null].map((communication) => ({ key: 'invalid', adapter, communication,
+          ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) }))),
+      ...['false', 0, null].map((resume) => ({ ...commands[4], resume })),
+      ...['cli-path', false, null].map((codexCliSource) => ({ ...commands[4], codexCliSource })),
+      ...['false', 0, null].map((codexBypassHookTrust) => ({ ...commands[4], codexBypassHookTrust })),
+      ...['claude-code', 'antigravity', 'oracle', 'custom'].flatMap((adapter) => [
+        { key: 'foreign', adapter, codexCliSource: 'auto',
+          ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) },
+        { key: 'foreign', adapter, codexBypassHookTrust: false,
+          ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) },
+      ]),
+      ...['codex', 'claude-code', 'antigravity'].flatMap((adapter) =>
+        ['skip', '', false, null].map((permissionMode) => ({ key: 'invalid', adapter, permissionMode }))),
+      ...['oracle', 'custom'].flatMap((adapter) =>
+        ['default', 'auto', 'full-access'].map((permissionMode) => ({ key: 'invalid', adapter, permissionMode,
+          ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) }))),
+      { ...commands[7], mode: 'bundle' },
+      { ...commands[7], command: process.execPath },
     ]) {
       await expect(save({ subagentCommands: [commands[0], { ...invalid, key: 'invalid' }] })).rejects.toThrow();
+      expect(await fs.readFile(file)).toEqual(before);
+    }
+  });
+
+  // Test Value Gate: persisted retention and installed snapshots control deletion;
+  // zero must survive saving, and invalid values must preserve the prior file.
+  it('saves Guide retention hours including zero and rejects invalid ranges atomically', async () => {
+    const { store, plugin, save } = fixture();
+    const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/codex-enhance/.agents-plugin/plugin.json'));
+    plugin.manifest.config = normalizePluginConfigDefinition(source.config);
+    plugin.manifest.artifacts = source.artifacts;
+    const maximum = Math.floor(Number.MAX_SAFE_INTEGER / 3_600_000);
+    for (const subagentRetentionHours of [maximum, 1, 0]) {
+      await save({ subagentRetentionHours });
+      const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
+      expect(config.values.subagentRetentionHours).toBe(subagentRetentionHours);
+      const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
+        logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['codex-subagent-guide-skill'],
+        config: { ...config, mode: 'artifact-render', targetScope: 'user' } });
+      expect(snapshots['codex-subagent-guide-skill']!.effectiveValues).toEqual({ subagentCommands: [], subagentRetentionHours });
+    }
+    const file = resolvePluginConfigStorePath(store);
+    const before = await fs.readFile(file);
+    for (const subagentRetentionHours of [-1, 0.5, maximum + 1, Number.NaN, Number.POSITIVE_INFINITY, 'invalid', null]) {
+      await expect(save({ subagentRetentionHours })).rejects.toThrow();
       expect(await fs.readFile(file)).toEqual(before);
     }
   });

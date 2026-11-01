@@ -1,6 +1,8 @@
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
@@ -50,9 +52,105 @@ import {
 } from '../../src/utils/plugin-config.js';
 import { buildConfigGroups, buildConfigPage } from '../../src/tui/model.js';
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
+import { syncPluginManagedCommandPackage } from '../../src/utils/managed-command-materialization.js';
+import { createDefaultPluginProcessRunner, defaultPluginProcessRunner,
+  type PluginScriptInvocation } from '../../src/utils/plugin-scripts.js';
+import { listManagedCommandPackages } from '../../src/utils/managed-command-store.js';
+import { analyzePluginConfigMutationImpact } from '../../src/utils/plugin-config-impact.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
+
+describe('managed Skill command config impact', () => {
+  it('applies shared Claude static commands through the current project activation without changing native scope', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.config = normalizePluginConfigDefinition({ schemaVersion: 4, fields: { mode: { type: 'string', default: 'safe' } } });
+    fixture.plugin.manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+    fixture.plugin.manifest.managedCommands = { packages: [], sets: [{ set: 'tools', mode: 'dynamic', refreshKeys: ['mode'],
+      producer: { kind: 'static-skill', platform: 'claude', skillKey: 'provider' } }] };
+    const applyTargets = [{ pluginName: fixture.plugin.manifest.name, platform: 'claude' as const, scope: 'project' as const }];
+    const reinstall = createReinstallMock();
+    const options = { ...fixture, applyTargets, reinstallCommandImpl: reinstall };
+    await expect(applyPluginConfigWrite({ ...options, scope: 'user', request: { updates: { mode: 'fast' } } }))
+      .rejects.toMatchObject({ code: 'sharedNativeConfigApplyConfirmationRequired' });
+    expect(reinstall).not.toHaveBeenCalled();
+    expect(await applyPluginConfigWrite({ ...options, scope: 'user', sharedNativeApplyConfirmed: true, request: { updates: { mode: 'fast' } } }))
+      .toMatchObject({ apply: { state: 'succeeded', targetResults: [{ target: { platform: 'claude', scope: 'project' } }] } });
+    expect(reinstall.mock.calls[0]![1]).toMatchObject({ platform: 'claude', scope: 'project' });
+    expect(await applyPluginConfigWrite({ ...options, scope: 'project', request: { updates: { mode: 'safe' } } }))
+      .toMatchObject({ configWrite: 'succeeded', apply: { state: 'skipped', reason: 'noEffectiveConfigChange' } });
+    expect(reinstall).toHaveBeenCalledOnce();
+    expect(await resetPluginConfigWithHelper({ ...options, pluginName: fixture.plugin.manifest.name, scope: 'user', sharedNativeApplyConfirmed: true }))
+      .toMatchObject({ apply: { state: 'succeeded' } });
+    expect(reinstall.mock.calls[1]![1]).toMatchObject({ platform: 'claude', scope: 'project' });
+    await expect(replayConfigRuntimeWrites({ ...options, scope: 'user' }))
+      .rejects.toMatchObject({ code: 'sharedNativeConfigApplyConfirmationRequired' });
+  });
+  // Test Value Gate: command-set-only keys and referenced registry changes must reach the real producer scope.
+  it.each(['artifact-owned', 'artifact-native', 'artifact-claude', 'static-native', 'static-claude'] as const)(
+    'includes dynamic set dependencies for %s without treating project overrides as shared native input', async (kind) => {
+      const fixture = await createFixture();
+      const native = kind === 'artifact-native' || kind.startsWith('static');
+      const platform = kind.endsWith('claude') ? 'claude' : 'codex';
+      fixture.plugin.manifest.requires = { aw: { capabilities: ['aw.managed-commands.v1'] } };
+      fixture.plugin.manifest.config = normalizePluginConfigDefinition({ schemaVersion: 4, fields: {
+        registry: { type: 'array', default: [{ id: 'local', title: 'Old' }], validation: { uniqueBy: 'id' }, items: {
+          type: 'object', properties: { id: { type: 'string', required: true }, title: { type: 'string', required: true } }, additionalProperties: false,
+        } },
+        selected: { type: 'string', default: 'local', valueRef: { field: 'registry', key: 'id', label: 'title' } },
+      } });
+      fixture.plugin.manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+      if (kind.startsWith('artifact')) fixture.plugin.manifest.artifacts = { targets: [{
+        id: 'provider', target: platform === 'claude' ? 'claude.skill' : 'codex.skill', platform, scopes: native ? ['user'] : ['user', 'project'],
+        ...(platform === 'codex' ? { delivery: native ? { mode: 'codex-native', identity: 'shared', renderProfile: 'user' } : { mode: 'aw-extension' } } : {}),
+        states: ['present'], refreshKeys: [], skillKey: 'provider',
+      }] };
+      fixture.plugin.manifest.managedCommands = { packages: [], sets: [{ set: 'tools', mode: 'dynamic', refreshKeys: ['selected'],
+        producer: kind.startsWith('artifact') ? { kind: 'artifact', artifactId: 'provider' }
+          : { kind: 'static-skill', platform, skillKey: 'provider' },
+      }] };
+      const visibleTargets = [{ pluginName: fixture.plugin.manifest.name, platform, scope: 'project' as const }];
+      const analyze = (scope: Scope) => analyzePluginConfigMutationImpact({ ...fixture, scope, visibleTargets,
+        commandDiscovery: { packages: [], errors: [] }, mutation: { kind: 'patch', updates: { registry: [{ id: 'local', title: 'New' }] } } });
+      const userImpact = await analyze('user');
+      expect(userImpact).toMatchObject({ impactState: 'known', noEffectiveChange: false, affectedTargets: visibleTargets });
+      expect(userImpact.sharedNativeRenderTargets).toEqual(native ? [expect.objectContaining({ skillKey: 'provider', refreshKeys: ['selected'] })] : []);
+      const projectImpact = await analyze('project');
+      expect(projectImpact.affectedTargets).toEqual(native ? [] : visibleTargets);
+      expect(projectImpact.noEffectiveChange).toBe(native);
+    },
+  );
+});
+
+async function createManagedPackageFixture() {
+  const fixture = await createFixture();
+  fixture.plugin.sourceId = 'fixture';
+  fixture.plugin.sourceIdentity = `sha256:${'a'.repeat(64)}`;
+  fixture.plugin.pluginId = 'fixture/configurable-plugin';
+  fixture.plugin.catalogLogicalIdentity = 'fixture/catalog';
+  fixture.plugin.manifest.config = normalizePluginConfigDefinition({ schemaVersion: 4,
+    fields: { mode: { type: 'string', default: 'safe' } } });
+  fixture.plugin.manifest.managedCommands = {
+    packages: ['personal', 'workspace', 'uninstalled'].map((key) => ({
+      key, scope: key === 'workspace' ? 'project' : 'user', platforms: ['codex', 'claude'],
+      sourceDir: 'tools', render: true, refreshKeys: ['mode'],
+    })),
+    sets: [],
+  };
+  fixture.plugin.manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
+  await fs.outputFile(path.join(fixture.plugin.rootDir, 'tools', 'tool.mjs'), 'process.exit(0);\n');
+  await fs.outputFile(path.join(fixture.plugin.rootDir, 'scripts', 'render.mjs'), [
+    "import fs from 'node:fs';",
+    'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+    `fs.appendFileSync(${JSON.stringify(path.join(fixture.root, 'renders'))}, 'render\\n');`,
+    'console.log(JSON.stringify({version:2, artifacts: context.requestedArtifactIds.map(id => ({',
+    'id, target:"aw.command-package", kind:"commandPackage", state:"present", refreshKeys:["mode"],',
+    'files:{"config.json":JSON.stringify({mode:context.config.values.mode, source:context.config.sources.mode})}',
+    '}))}));',
+  ].join('\n'));
+  await fs.outputJson(fixture.plugin.manifestPath, fixture.plugin.manifest);
+  return fixture;
+}
 
 function locationKey(platform: PlatformName, scope: Scope): string {
   return `${platform}:${scope}`;
@@ -288,6 +386,86 @@ afterEach(async () => {
 });
 
 describe('config write full reinstall apply', () => {
+  // Test Value Gate: real package sync must preserve cancellation and cleanup evidence through config apply, while ordinary renderer failures remain partial.
+  it.each(['cancel', 'cleanup', 'ordinary'] as const)(
+    'preserves config and real package %s semantics through the renderer boundary', async (mode) => {
+      const fixture = await createManagedPackageFixture();
+      const secret = 'private-renderer-token';
+      fixture.plugin.manifest.config!.fields.token = { type: 'string', sensitive: true };
+      await fs.outputJson(fixture.plugin.manifestPath, fixture.plugin.manifest);
+      await writePluginConfigStore({ ...fixture, pluginName: fixture.plugin.manifest.name,
+        sourceId: fixture.plugin.sourceId, sourceIdentity: fixture.plugin.sourceIdentity,
+        logicalIdentity: fixture.plugin.catalogLogicalIdentity, scope: 'user', values: { token: secret } });
+      const renderSuccess = async (invocation: PluginScriptInvocation) => {
+        const context = await fs.readJson(invocation.env.AW_PLUGIN_CONTEXT!);
+        return { exitCode: 0, signal: null, timedOut: false, stderr: '', stdout: JSON.stringify({
+          version: 2, artifacts: context.requestedArtifactIds.map((id: string) => ({
+            id, target: 'aw.command-package', kind: 'commandPackage', state: 'present',
+            refreshKeys: ['mode'], files: { 'config.json': JSON.stringify({ mode: context.config.values.mode }) },
+          })),
+        }) };
+      };
+      const run = vi.spyOn(defaultPluginProcessRunner, 'run').mockImplementation(renderSuccess);
+      try {
+        for (const packageKey of ['personal', 'uninstalled']) {
+          expect(await syncPluginManagedCommandPackage({ ...fixture, packageKey, scope: 'user' }))
+            .toMatchObject({ state: 'completed' });
+        }
+        run.mockClear();
+        const controller = new AbortController();
+        const failure = mode === 'cancel' ? new DOMException('package refresh cancelled', 'AbortError')
+          : new Error(`Process tree cleanup unconfirmed: ${fixture.cwd} ${secret}.`);
+        const child = Object.assign(new EventEmitter(), {
+          pid: 321, exitCode: 0, signalCode: null, stdin: new PassThrough(),
+          stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(() => true),
+        });
+        const cleanupRunner = createDefaultPluginProcessRunner({
+          platform: 'linux',
+          spawn: (() => { queueMicrotask(() => child.emit('exit', 0, null)); return child; }) as unknown as typeof import('node:child_process').spawn,
+          observeProcessTree: () => ({ pid: 321, onFailure: () => () => undefined, dispose: () => undefined }),
+          terminateProcessTree: async () => { throw failure; },
+        });
+        const contexts: Array<{ event: string; changedConfigKeys: string[] }> = [];
+        run.mockImplementation(async (invocation, options) => {
+          contexts.push(await fs.readJson(invocation.env.AW_PLUGIN_CONTEXT!));
+          if (contexts.length > 1) return renderSuccess(invocation);
+          if (mode === 'cancel') { controller.abort(failure); throw failure; }
+          if (mode === 'cleanup') return cleanupRunner.run(invocation, options);
+          throw new Error('ordinary renderer preparation failure');
+        });
+        const outcome = await applyPluginConfigWrite({
+          ...fixture, scope: 'user', applyTargets: [], request: { updates: { mode: 'fast' } },
+          rebuildRuntime: { signal: controller.signal, scriptTimeoutMs: 1234 },
+        }).then((receipt) => ({ receipt }), (error: unknown) => ({ error }));
+        expect(run.mock.calls[0]?.[1]).toMatchObject({ signal: controller.signal, timeoutMs: 1234 });
+        expect(contexts[0]).toMatchObject({ event: 'refresh', changedConfigKeys: ['mode'] });
+        if (mode === 'ordinary') {
+          expect(run).toHaveBeenCalledTimes(2);
+          expect(outcome).toMatchObject({ receipt: { configWrite: 'succeeded', apply: {
+            state: 'partial', commandResults: [
+              { state: 'failed', errors: [{ code: 'commandResourceInvalid' }] }, { state: 'completed' },
+            ],
+          } } });
+        } else {
+          expect(run).toHaveBeenCalledOnce();
+          expect(outcome).toMatchObject({ error: { configWrite: 'succeeded',
+            ...(mode === 'cleanup' ? { operationDiagnostic: {
+              code: 'pluginProcessCleanupFailed', safeMessage: 'Plugin process cleanup could not be confirmed.',
+            } } : { message: 'package refresh cancelled' }),
+          } });
+          if ('error' in outcome) {
+            expect((outcome.error as Error).message).not.toContain(fixture.cwd);
+            expect((outcome.error as Error).message).not.toContain(secret);
+          }
+          if (mode === 'cleanup') expect(controller.signal.aborted).toBe(false);
+        }
+        expect((await readPluginConfigStore({ ...fixture, pluginName: fixture.plugin.manifest.name,
+          sourceId: fixture.plugin.sourceId, sourceIdentity: fixture.plugin.sourceIdentity,
+          logicalIdentity: fixture.plugin.catalogLogicalIdentity, scope: 'user' })).values.mode).toBe('fast');
+      } finally { run.mockRestore(); }
+    },
+  );
+
   // Test Value Gate: config apply cannot install an absent project target.
   it('does not install an absent dynamic target when config is saved', async () => {
     const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
@@ -303,6 +481,110 @@ describe('config write full reinstall apply', () => {
     expect(reinstall).not.toHaveBeenCalled();
   });
 
+  it('does not install a newly declared package from an unaffected platform activation', async () => {
+    const fixture = await createManagedPackageFixture();
+    mocks.visible.add('codex:user');
+    const receipt = await applyPluginConfigWrite({
+      ...fixture, scope: 'user', request: { updates: { mode: 'fast' } },
+    });
+    expect(receipt.apply).toMatchObject({ state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] });
+    expect(receipt.apply.commandResults).toBeUndefined();
+    expect((await listManagedCommandPackages(fixture.env)).packages).toEqual([]);
+    expect(await fs.pathExists(path.join(fixture.root, 'renders'))).toBe(false);
+  });
+  it('refreshes a shared package once across two platform applies and the retained package pass', async () => {
+    const fixture = await createManagedPackageFixture();
+    fixture.plugin.manifest.managedCommands!.packages = fixture.plugin.manifest.managedCommands!.packages
+      .filter((entry) => entry.key === 'personal');
+    await fs.outputJson(fixture.plugin.manifestPath, fixture.plugin.manifest);
+    const receipt = await replayConfigRuntimeWrites({
+      ...fixture, scope: 'user',
+      applyTargets: ['codex', 'claude'].map((platform) => ({
+        pluginName: fixture.plugin.manifest.name, platform: platform as PlatformName, scope: 'user',
+      })),
+      reinstallCommandImpl: async (_names, raw, runtime) => {
+        const commandResult = await syncPluginManagedCommandPackage({ ...fixture, packageKey: 'personal', scope: 'user',
+          managedCommandProducerCache: runtime!.managedCommandProducerCache });
+        return { ...rebuildResult({ pluginName: fixture.plugin.manifest.name,
+          platform: raw.platform as PlatformName, scope: 'user' }, 'succeeded'), commandResults: [commandResult] };
+      },
+    });
+    expect(receipt.apply.state, JSON.stringify(receipt.apply)).toBe('succeeded');
+    expect(receipt.apply.commandResults).toHaveLength(1);
+    expect((await fs.readFile(path.join(fixture.root, 'renders'), 'utf8')).trim().split('\n')).toHaveLength(1);
+  });
+  it('refreshes retained user and current project packages without activation and preserves other projects', async () => {
+    const fixture = await createManagedPackageFixture();
+    const otherProject = path.join(fixture.root, 'other-project');
+    await fs.ensureDir(otherProject);
+    await execFileAsync('git', ['init', '-q'], { cwd: otherProject });
+    for (const target of [
+      { packageKey: 'personal', scope: 'user' as const, cwd: fixture.cwd },
+      { packageKey: 'workspace', scope: 'project' as const, cwd: fixture.cwd },
+      { packageKey: 'workspace', scope: 'project' as const, cwd: otherProject },
+    ]) {
+      const installed = await syncPluginManagedCommandPackage({ ...fixture, ...target });
+      expect(installed.errors).toEqual([]);
+      expect(installed.state).toBe('completed');
+    }
+    const receipt = await applyPluginConfigWrite({
+      ...fixture, scope: 'user', request: { updates: { mode: 'safe' } },
+    });
+    expect(receipt).toMatchObject({ overallState: 'succeeded', apply: {
+      state: 'succeeded', targetResults: [], commandResults: [
+        { state: 'completed' }, { state: 'completed' },
+      ],
+    } });
+    const listed = await listManagedCommandPackages(fixture.env);
+    expect(listed.packages).toHaveLength(3);
+    expect(listed.packages.some((entry) => entry.producer.key === 'uninstalled')).toBe(false);
+    for (const entry of listed.packages) {
+      const config = await fs.readJson(path.join(entry.resourceRoot, 'config.json'));
+      expect(config).toEqual({ mode: 'safe', source: entry.producer.projectRoot === otherProject ? 'default' : 'user' });
+    }
+    const projectWrite = await applyPluginConfigWrite({
+      ...fixture, scope: 'project', request: { updates: { mode: 'fast' } },
+    });
+    expect(projectWrite.apply.commandResults?.map((result) => result.producer.key)).toEqual(['workspace']);
+    const reset = await resetPluginConfigWithHelper({
+      ...fixture, pluginName: fixture.plugin.manifest.name, scope: 'user',
+    });
+    expect(reset.apply.commandResults?.map((result) => result.producer.key)).toEqual(['personal']);
+    const afterReset = await listManagedCommandPackages(fixture.env);
+    for (const entry of afterReset.packages) {
+      const config = await fs.readJson(path.join(entry.resourceRoot, 'config.json'));
+      expect(config).toEqual(entry.producer.projectRoot === fixture.cwd
+        ? { mode: 'fast', source: 'project' } : { mode: 'safe', source: 'default' });
+    }
+  });
+
+  it('keeps committed config and reports a removed declaration beside successful retained package refresh', async () => {
+    const fixture = await createManagedPackageFixture();
+    for (const packageKey of ['personal', 'uninstalled']) {
+      const installed = await syncPluginManagedCommandPackage({ ...fixture, packageKey, scope: 'user' });
+      expect(installed.errors).toEqual([]);
+      expect(installed.state).toBe('completed');
+    }
+    fixture.plugin.manifest.managedCommands!.packages = fixture.plugin.manifest.managedCommands!.packages
+      .filter((entry) => entry.key !== 'uninstalled');
+    const receipt = await applyPluginConfigWrite({
+      ...fixture, scope: 'user', request: { updates: { mode: 'fast' } },
+    });
+    expect(receipt).toMatchObject({ configWrite: 'succeeded', overallState: 'partial', apply: {
+      state: 'partial', targetResults: [], commandResults: expect.arrayContaining([
+        expect.objectContaining({ producer: expect.objectContaining({ key: 'personal' }), state: 'completed' }),
+        expect.objectContaining({ producer: expect.objectContaining({ key: 'uninstalled' }), state: 'failed',
+          errors: [expect.objectContaining({ code: 'commandPackageDeclarationMissing' })],
+          recoveryActions: [expect.stringMatching(/^aw command package remove pkg_[a-f0-9]{64} --yes$/u)],
+        }),
+      ]),
+    } });
+    expect((await resolveEffectivePluginConfig({
+      ...fixture, pluginName: fixture.plugin.manifest.name, manifest: fixture.plugin.manifest,
+      sourceId: fixture.plugin.sourceId, sourceIdentity: fixture.plugin.sourceIdentity, targetScope: 'user',
+    })).values.mode).toBe('fast');
+    expect((await listManagedCommandPackages(fixture.env)).packages).toHaveLength(2);
+  });
   it('checks cross-field candidate updates and preserves the store when referenced keys are removed', async () => {
     const fixture = await createFixture('reference-config', { codexProjectManaged: false });
     fixture.plugin.sourceId = 'reference-source';

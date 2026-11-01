@@ -1,3 +1,5 @@
+import { vitestWorkerOptions } from './scripts/test-workers.mjs';
+
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -10,8 +12,7 @@ export default defineConfig({
     setupFiles: ['tests/setup/test-isolation.ts'],
     pool: 'forks',
     fileParallelism: false,
-    maxWorkers: 1,
-    minWorkers: 1,
+    ...vitestWorkerOptions({ serial: true }),
     hookTimeout: 120_000,
     testTimeout: 120_000,
   },

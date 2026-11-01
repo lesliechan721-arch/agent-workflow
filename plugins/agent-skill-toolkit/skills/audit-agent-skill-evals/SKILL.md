@@ -18,7 +18,7 @@ metadata:
 
 区分正在测什么：加载、首次入口、允许辅助、检出、已知修复、范围控制和任务产物分别需要证据。只限制多做不能证明会做；提示错误位置的修复例不能证明自主检出。检查一个最小条件改变后结果应不同的对照，并提供等价正确例防止过度纠正。
 
-细查 fixture、观测方式、错误代价或比较条件时使用 [Eval 审核标准](references/eval-audit-standard.md)。源审核可直接进行；只有请求正式机器准入时，才使用 [正式准入](references/formal-admission.md)。
+细查 fixture、观测方式、错误代价或比较条件时使用 Eval 审核标准（`references/eval-audit-standard.md`）。源审核可直接进行；只有请求正式机器准入时，才使用 正式准入（`references/formal-admission.md`）。
 
 ## 解释运行结果
 

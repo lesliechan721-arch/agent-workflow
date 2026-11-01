@@ -1,5 +1,5 @@
 interface:
-  display_name: "Isolating Work With Git Worktrees"
+  display_name: isolating-work-with-git-worktrees
   short_description: "安全创建或复用 Git worktree，保护当前工作区并确认隔离起点与生命周期边界"
   default_prompt: "使用 $isolating-work-with-git-worktrees：安全创建或复用 Git worktree，保护当前工作区并确认隔离起点与生命周期边界。"
 

@@ -1,25 +1,18 @@
 # Codex Subagent Guide
 
-为已获授权的委派选择执行配置、传递上下文并等待结果。调用方可指定 profile、角色、模型和约束；执行者直接完成任务，当前负责人核对结果。
+本 Skill 用于**实际委派**：选择配置、准备独立任务输入、等待与续接，并验收或清理执行。核心方法在 [SKILL.md](SKILL.md)。
 
-适用于需要实际委派的有界任务。只讨论是否委派，或执行者只需完成已经分配的工作时，不要使用本 Skill。已有完整调度与生命周期策略时，直接沿用，不要加载或使用本 Skill。
+按分支读取资料，不必在普通委派开始时加载所有引用：
 
-native 直接使用宿主可用工具与角色，默认干净上下文。外部模式可以使用内建 Codex、Claude Code、Oracle 或自定义适配器。配置或角色更新后，宿主可能需要刷新或新会话。
+- 调用方已选执行配置时直接调度；需要自行选择时，读取 [执行配置](references/execution-profiles.md)，优先按数组顺序匹配自定义配置，未匹配时使用内建档位。
+- 选择**非 native** 执行器时，读取 [外部委派](references/external-delegation.md)：配置模式、稳定 AW 入口下的 `start`/`wait`/`result`/`stop`，以及文件输入/导出、简短回执、通信、诊断和到期边界。
+- **准备发送或回复**且本次通信能力为 `true`，**恢复已结束且恢复能力为 `true` 的任务**，或**实际收到过程消息、投递缺口**时，读取 [通信与恢复](references/communication.md)。仅有 `communication=true` 不要求预读。
+- 使用 bundle 的 `--file` 时，读取 [文件选择](references/file-selection.md)，核对选择与外发范围。
 
-外部短任务可以直接传入提示词。在任务目录执行，并把示例中的 Guide 路径换为实际安装路径：
+默认 [任务指令](assets/task-instructions.md) 是外部执行的可选角色资源；[子侧通信说明](assets/communication-instructions.md) 仅由实际配置了通信能力的 adapter 交给子代理，主代理不需预读。任务和消息仅接受文本或文件，完整结果可直接导出到新文件。升级、重装或删除 Guide 及托管 adapter 前，先完成或停止活跃任务。
 
-```bash
-node /absolute/installed/guide/scripts/subagent.mjs run \
-  --profile generalTaskProfile \
-  --prompt '检查指定模块的错误处理，说明依据；不要修改项目。'
-```
+外部任务保存在 `~/.aw-subagent`，保留期由 `subagentRetentionHours` 控制，默认 24 小时；`0` 表示永不过期且不扫描。恢复复用原句柄、执行器、配置和后端 session，只保留最新一次执行；需要旧结果时先导出。同一用户可凭句柄跨父会话恢复，是否可用以实际 `resume` 能力和停止证据为准。消息正文最多 24 KiB，长消息使用文件输入；普通 wait/result 总回执最多 32 KiB，大报告直接导出。
 
-profile 需要选择已配置外部执行器。长任务可用 --prompt - 从 stdin 输入；--instructions-file 可选，不传时不会自动补入角色指令。已有通用角色可复用 [task-instructions.md](assets/task-instructions.md)。
+外部入口的 `--help` 显示操作总览，`<操作> --help` 显示当前操作的参数与示例。正常信息默认省略，最终报告不重复 ready 阶段已报告的诊断；需要查看完整诊断时，在该次命令加 `--diagnostics`，导出时也可使用。
 
-workspace 不接受 --file，关注路径写进任务；bundle 使用 --file 按固定的 AW 文件选择协议 v1 选择文件、目录或 glob，各适配器承担同一规则的实现责任。preview 只展示未解析选择式，不检查匹配文件或冻结后续内容。
-
-结果包含调用状态和完整回答，当前负责人仍须核对业务完成情况。等待超时继续同一 session，不重复生成；终态或远端停止不明时报告 UNKNOWN。前台调用不保证脱离宿主或跨会话恢复。
-
-外部调用可能使用网络、认证和模型额度。项目写入、材料外发及必要临时分析写入都使用本次实际许可。模式、文件选择和只读指令不提供技术隔离保证。保存设置须 apply 后才对新调用生效；资源缺失或损坏可通过正常 sync/reinstall 恢复。
-
-执行方法见 [SKILL.md](SKILL.md) 和 [外部调用说明](references/external-delegation.md)。
+开发或维护执行器时，读取 [适配器说明](docs/README.md)。

@@ -1581,16 +1581,22 @@ describe('manifest utils', () => {
           'require("fs");',
           'require("fs/promises");',
           'require("node:fs");',
+          'require("node:test");',
+          'import "node:test/reporters";',
+          'require("test");',
           'require("fs/not-a-builtin");',
           'require("node:fs/not-a-builtin");',
+          'import "node:not-a-builtin";',
         ].join('\n'),
       },
     })).toEqual({
       files: ['scripts/entry.mjs'],
-      bareSpecifiers: ['fs'],
+      bareSpecifiers: ['fs', 'test'],
       errors: [
+        'Runtime import "test" from "scripts/entry.mjs" is not declared in dependencies.',
         'Runtime import "fs/not-a-builtin" from "scripts/entry.mjs" is not declared in dependencies.',
         'Unsupported import specifier "node:fs/not-a-builtin" from "scripts/entry.mjs".',
+        'Unsupported import specifier "node:not-a-builtin" from "scripts/entry.mjs".',
       ],
     });
   });

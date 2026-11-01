@@ -124,17 +124,6 @@ import {
 } from './portable/commands.js';
 import { SkillsCliError } from './portable/skills-cli.js';
 import {
-  computeReviewComponentDigest,
-  listReviewRecords,
-  parseReviewAttachment,
-  publishReviewRecord,
-  showReviewRecord,
-  verifyReviewRecord,
-  type ReviewAttachmentInput,
-  type ReviewPublicationKind,
-  type ReviewRecord,
-} from './commands/review-publication.js';
-import {
   createReviewInspectionFailure,
   getReviewInspectionExitCode,
   inspectReviewTarget,
@@ -147,7 +136,6 @@ import {
   prepareReviewTarget,
   type ReviewPreparationV1,
 } from './commands/review-preparation.js';
-import { resolveRepoRoot } from './utils/state-paths.js';
 import {
   runCatalogBuildCommand,
   runCatalogInitCommand,
@@ -192,6 +180,7 @@ import { runRecovery } from './recovery/coordinator.js';
 import { runRetire } from './recovery/retirement.js';
 import type { RecoveryReceipt } from './recovery/receipt.js';
 import { normalizeAgents } from './intent/deployment-preferences.js';
+import { registerManagedCommandCli, runManagedCommandCli } from './commands/managed-commands.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type {
@@ -261,11 +250,7 @@ function renderReviewInspection(
   receipt: ReviewInspectionReceipt | ReviewInspectionFailureReceipt,
 ): void {
   writeLine(write, `Review inspection (${receipt.view}): ${receipt.ok ? 'ok' : 'failed'}`);
-  if (receipt.view === 'review') {
-    renderReviewSkills(write, receipt.skills, receipt.issues);
-    return;
-  }
-  for (const issue of receipt.issues) writeLine(write, `${issue.code}: ${issue.message}`);
+  renderReviewSkills(write, receipt.skills, receipt.issues);
 }
 
 function renderReviewPreparation(
@@ -275,13 +260,6 @@ function renderReviewPreparation(
   writeLine(write, `Review preparation: ${receipt.ok ? 'complete' : 'failed'}`);
   if (receipt.sourceBindingPath) writeLine(write, `Source binding: ${receipt.sourceBindingPath}`);
   renderReviewSkills(write, receipt.skills, receipt.issues);
-}
-
-function requestedReviewView(argv: readonly string[]): ReviewInspectionView {
-  const inline = argv.find((token) => token.startsWith('--view='));
-  if (inline === '--view=release') return 'release';
-  const index = argv.indexOf('--view');
-  return index >= 0 && argv[index + 1] === 'release' ? 'release' : 'review';
 }
 
 function createReviewPreparationFailure(
@@ -942,8 +920,14 @@ function renderRecoveryReceipt(write: (text: string) => void, value: RecoveryRec
   for (const target of value.targetResults) {
     writeLine(write, `${target.pluginId} / ${target.agent} [${target.scope}]: ${target.execution}; ${target.content ?? target.observation}`);
   }
+  for (const result of value.commandResults ?? []) {
+    const producer = result.producer;
+    writeLine(write, `托管命令 ${producer.sourceId}/${producer.pluginName}/${producer.key} [${producer.scope}]: ${result.state}`);
+  }
   const diagnostics = new Map([...value.blockers, ...value.errors,
-    ...value.targetResults.flatMap((target) => target.blockers)].map((item) => [`${item.code}:${item.message}`, item]));
+    ...value.targetResults.flatMap((target) => target.blockers),
+    ...(value.commandResults ?? []).flatMap((result) => result.errors),
+  ].map((item) => [`${item.code}:${item.message}`, item]));
   for (const item of diagnostics.values()) writeLine(write, `${item.code}: ${item.message}`);
   for (const action of value.recoveryActions) writeLine(write, action);
 }
@@ -1128,6 +1112,7 @@ function writeConfigApplyNotice(
 ): void {
   const sanitizeMessage = (message: string): string => redactString(message)
     .replace(/https?:\/\/\S+/giu, '[REDACTED URL]')
+    .replace(/file:\/\/\S+/giu, '[REDACTED PATH]')
     .replace(/(?:file:\/\/)?(?:\/[\w.@+-]+){2,}/gu, '[REDACTED PATH]')
     .replace(/[A-Za-z]:\\(?:[^\s\\]+\\)+[^\s\\]*/gu, '[REDACTED PATH]');
   const writeTargetFailures = (): void => {
@@ -1272,6 +1257,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   const plugin = program
     .command('plugin')
     .description('Create and validate AW plugin source');
+
+  registerManagedCommandCli(program, () => createActionContext('command', {}), {
+    cliEntry: fileURLToPath(import.meta.url),
+    cliVersion: resolveCliVersion(),
+  }, (code) => { commandExitState.exitCode = code; });
 
   const self = program
     .command('self')
@@ -1466,15 +1456,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   const review = program
     .command('review')
-    .description('Publish and inspect immutable review records');
-
-  const reviewRecordDir = (repoRoot: string, record: ReviewRecord): string =>
-    path.relative(fs.realpathSync(repoRoot), record.root).split(path.sep).join('/');
-
-  const reviewJsonRecord = (repoRoot: string, record: ReviewRecord) => ({
-    recordDir: reviewRecordDir(repoRoot, record),
-    manifest: record.manifest,
-  });
+    .description('Inspect and prepare Skill review materializations');
 
   review
     .command('inspect')
@@ -1506,8 +1488,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     )
     .addOption(strictValueOption(
       '--view <view>',
-      'select review or release view',
-      ['review', 'release'],
+      'select the review navigation view',
+      ['review'],
     ).default('review'))
     .option('--json', 'emit one Review inspection JSON object', false)
     .action(async (target: string, rawOptions: {
@@ -1540,7 +1522,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         else renderReviewInspection(io.stdout, receipt);
         commandExitState.exitCode = 0;
       } catch (error) {
-        const receipt = createReviewInspectionFailure(error, rawOptions.view);
+        const receipt = createReviewInspectionFailure(error);
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
         else renderReviewInspection(io.stdout, receipt);
         commandExitState.exitCode = getReviewInspectionExitCode(error);
@@ -1596,182 +1578,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       if (rawOptions.json) writeJsonReceipt(io.stdout, result.receipt);
       else renderReviewPreparation(io.stdout, result.receipt);
       commandExitState.exitCode = result.exitCode;
-    });
-
-  review
-    .command('digest')
-    .description('Compute one canonical workflow component digest')
-    .argument('<path>', 'repository file or directory')
-    .option('--json', 'emit one component digest JSON object', false)
-    .action(async (componentPath: string, rawOptions: { json?: boolean }) => {
-      const repoRoot = await resolveRepoRoot(cwd);
-      const result = await computeReviewComponentDigest({ repoRoot, path: componentPath });
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, {
-          schemaVersion: 1,
-          command: 'review:digest',
-          ok: true,
-          ...result,
-        });
-        return;
-      }
-      writeLine(io.stdout, `${result.path}: ${result.digest}`);
-    });
-
-  review
-    .command('publish')
-    .description('Publish one immutable review record')
-    .requiredOption('--kind <skill|workflow|aw-plugin|aw-workflow>', 'review target kind')
-    .requiredOption('--target <path-or-id>', 'review target path or ID')
-    .requiredOption('--report <report.md>', 'review report Markdown file')
-    .option('--scope <scope.json>', 'workflow scope JSON file')
-    .option('--result <review-result.json>', 'review result JSON file')
-    .option(
-      '--check <kind=path>',
-      'archive one JSON check attachment',
-      (value: string, previous: ReviewAttachmentInput[]) => [
-        ...previous,
-        parseReviewAttachment(value, 'Check'),
-      ],
-      [],
-    )
-    .option(
-      '--evidence <kind=path>',
-      'archive one JSON evidence attachment',
-      (value: string, previous: ReviewAttachmentInput[]) => [
-        ...previous,
-        parseReviewAttachment(value, 'Evidence'),
-      ],
-      [],
-    )
-    .option('--release-check <release-check.json>', 'release check JSON file')
-    .option('--supersedes <review-id>', 'review ID that this record supersedes')
-    .option('--json', 'emit one review record JSON object', false)
-    .action(async (rawOptions: {
-      kind: string;
-      target: string;
-      report: string;
-      scope?: string;
-      result?: string;
-      check: ReviewAttachmentInput[];
-      evidence: ReviewAttachmentInput[];
-      releaseCheck?: string;
-      supersedes?: string;
-      json?: boolean;
-    }) => {
-      const repoRoot = await resolveRepoRoot(cwd);
-      const record = await publishReviewRecord({
-        repoRoot,
-        kind: rawOptions.kind as ReviewPublicationKind,
-        target: rawOptions.target,
-        report: rawOptions.report,
-        ...(rawOptions.scope === undefined ? {} : { scope: rawOptions.scope }),
-        ...(rawOptions.result === undefined ? {} : { result: rawOptions.result }),
-        ...(rawOptions.check.length === 0 ? {} : { checks: rawOptions.check }),
-        ...(rawOptions.evidence.length === 0 ? {} : { evidence: rawOptions.evidence }),
-        ...(rawOptions.releaseCheck === undefined ? {} : { releaseCheck: rawOptions.releaseCheck }),
-        ...(rawOptions.supersedes === undefined ? {} : { supersedes: rawOptions.supersedes }),
-      });
-      const recordDir = reviewRecordDir(repoRoot, record);
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, {
-          schemaVersion: 1,
-          command: 'review:publish',
-          ok: true,
-          ...reviewJsonRecord(repoRoot, record),
-          existing: record.existing,
-        });
-        return;
-      }
-      writeLine(
-        io.stdout,
-        `${record.existing ? 'Existing' : 'Published'} review ${record.manifest.reviewId}: ${recordDir}`,
-      );
-    });
-
-  review
-    .command('verify')
-    .description('Verify one archived review record')
-    .argument('<report-dir>', 'review record directory')
-    .option('--json', 'emit one review record JSON object', false)
-    .action(async (reportDir: string, rawOptions: { json?: boolean }) => {
-      const repoRoot = await resolveRepoRoot(cwd);
-      const record = await verifyReviewRecord({ repoRoot, reportDir });
-      const relativeRecordDir = reviewRecordDir(repoRoot, record);
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, {
-          schemaVersion: 1,
-          command: 'review:verify',
-          ok: true,
-          ...reviewJsonRecord(repoRoot, record),
-        });
-        return;
-      }
-      writeLine(io.stdout, `Verified review ${record.manifest.reviewId}: ${relativeRecordDir}`);
-    });
-
-  review
-    .command('list')
-    .description('List immutable review records')
-    .option('--kind <kind>', 'filter by review target kind')
-    .option('--target <id>', 'filter by review target ID')
-    .option('--json', 'emit one review records JSON object', false)
-    .action(async (rawOptions: { kind?: string; target?: string; json?: boolean }) => {
-      const repoRoot = await resolveRepoRoot(cwd);
-      const records = await listReviewRecords({
-        repoRoot,
-        ...(rawOptions.kind === undefined ? {} : { kind: rawOptions.kind as ReviewPublicationKind }),
-        ...(rawOptions.target === undefined ? {} : { targetId: rawOptions.target }),
-      });
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, {
-          schemaVersion: 1,
-          command: 'review:list',
-          ok: true,
-          records: records.map((record) => reviewJsonRecord(repoRoot, record)),
-        });
-        return;
-      }
-      for (const record of records) {
-        writeLine(
-          io.stdout,
-          [
-            record.manifest.reviewId,
-            record.manifest.target.kind,
-            record.manifest.target.id,
-            record.manifest.publishedAt,
-          ].join(' '),
-        );
-      }
-    });
-
-  review
-    .command('show')
-    .description('Show one immutable review record')
-    .argument('<review-id>', 'review record ID')
-    .option('--json', 'emit one review record JSON object', false)
-    .action(async (reviewId: string, rawOptions: { json?: boolean }) => {
-      const repoRoot = await resolveRepoRoot(cwd);
-      const record = await showReviewRecord({ repoRoot, reviewId });
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, {
-          schemaVersion: 1,
-          command: 'review:show',
-          ok: true,
-          ...reviewJsonRecord(repoRoot, record),
-        });
-        return;
-      }
-      const manifest = record.manifest;
-      writeLine(io.stdout, `Review: ${manifest.reviewId}`);
-      writeLine(io.stdout, `Target: ${manifest.target.kind} ${manifest.target.id}`);
-      writeLine(io.stdout, `Published: ${manifest.publishedAt}`);
-      writeLine(io.stdout, `Report: ${manifest.report.path}`);
-      writeLine(io.stdout, `Result: ${manifest.result?.path ?? 'none'}`);
-      writeLine(io.stdout, `Checks: ${manifest.checks.map((entry) => entry.kind).join(', ') || 'none'}`);
-      writeLine(io.stdout, `Evidence: ${manifest.evidence.map((entry) => entry.kind).join(', ') || 'none'}`);
-      writeLine(io.stdout, `Release check: ${manifest.releaseCheck?.path ?? 'none'}`);
-      writeLine(io.stdout, `Supersedes: ${manifest.supersedes ?? 'none'}`);
     });
 
   skill
@@ -1860,6 +1666,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         else {
           const sanitize = (value: string): string => redactString(value)
             .replace(/https?:\/\/\S+/giu, '[REDACTED URL]')
+            .replace(/file:\/\/\S+/giu, '[REDACTED PATH]')
             .replace(/(?:file:\/\/)?(?:\/[\w.@+-]+){2,}/gu, '[REDACTED PATH]')
             .replace(/[A-Za-z]:\\(?:[^\s\\]+\\)+[^\s\\]*/gu, '[REDACTED PATH]');
           const lines = new Set<string>();
@@ -3746,6 +3553,12 @@ export async function runCli(
     ...createDefaultIo(),
     ...options.io,
   };
+  if (argv[0] === 'command') {
+    return runManagedCommandCli(argv.slice(1), createCliExecutionContext({ ...options, io }), {
+      cliEntry: fileURLToPath(import.meta.url),
+      cliVersion: resolveCliVersion(),
+    });
+  }
   const reviewCommand = argv[0] === 'review' && ['inspect', 'prepare'].includes(argv[1] ?? '')
     ? argv[1] as 'inspect' | 'prepare'
     : null;
@@ -3939,7 +3752,6 @@ export async function runCli(
         const receipt = reviewCommand === 'inspect'
           ? createReviewInspectionFailure(
               new Error(error.message),
-              requestedReviewView(argv),
               'invalidArguments',
             )
           : createReviewPreparationFailure(error.message);
@@ -4052,7 +3864,6 @@ export async function runCli(
       } else if (jsonAuthoringCommand === 'review:inspect') {
         writeJsonReceipt(io.stdout, createReviewInspectionFailure(
           error,
-          requestedReviewView(argv),
         ));
       } else if (jsonAuthoringCommand === 'review:prepare') {
         writeJsonReceipt(io.stdout, createReviewPreparationFailure(message, 'reviewPreparationFailed'));
@@ -4069,7 +3880,6 @@ export async function runCli(
       writeJsonReceipt(io.stdout, jsonAuthoringCommand === 'review:inspect'
         ? createReviewInspectionFailure(
             new Error(error.message),
-            requestedReviewView(argv),
             'invalidArguments',
           )
         : jsonAuthoringCommand === 'review:prepare'

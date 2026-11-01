@@ -43,10 +43,10 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "按 contract.md 只读审核 cases.jsonl 与 skill.md。没有指定 AW Runner，本次只审源标签。",
+      "prompt": "按 contract.md 只读审核 cases.jsonl 与 skill.md。没有指定执行运行器，本次只审源标签。",
       "assertions": [
         "两条标签与给定合同一致，允许多种正确输出和方法。",
-        "不要求 AW 字段或 Spec 才能做源审核，不称已执行或正式准入。"
+        "不要求运行器字段或执行合同才能做源审核，不称已执行或正式准入。"
       ],
       "input": {
         "workspaceFiles": {

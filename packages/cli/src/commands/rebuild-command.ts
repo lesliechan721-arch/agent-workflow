@@ -10,6 +10,7 @@ import type {
   PluginMeta,
   RebuildReceiptOverallState,
   ReceiptTargetResult,
+  CommandProducerResult,
   Scope,
 } from '../types.js';
 import fs from 'fs-extra';
@@ -31,6 +32,7 @@ import {
 } from '../utils/native-cli.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
 import { readPluginManifest } from '../utils/manifest.js';
+import { discoverRetainedManagedCommandPackages, retainedManagedCommandPackageResult } from '../utils/managed-command-materialization.js';
 import { resolveAwHome, resolveCodexPaths } from '../utils/paths.js';
 import { resolveCliPackageRoot } from '../utils/paths.js';
 import { supportsPlatform } from '../utils/platform-support.js';
@@ -43,6 +45,7 @@ import {
   type CodexReconcilerLiveEvidence,
 } from '../utils/codex-reconciler.js';
 import { parseCodexConfig, readCodexConfigFile } from '../utils/codex-config.js';
+import { isCanonicalCodexMarketplaceRegistration } from '../utils/codex-shared-native.js';
 import {
   executeRebuildComponentCleanup,
   executeRebuildOperation,
@@ -61,6 +64,7 @@ import {
   executeCodexReconcileActivations,
   inspectCodexPluginRegistrationLive,
   inspectCodexSharedNativeLive,
+  hasPreparedStaticNativeCommandDrift,
   inspectNativeMarketplaceRegistrations,
   postcheckCodexReconcileActivations,
   type CodexPluginRegistrationLiveInspection,
@@ -286,6 +290,7 @@ export interface RebuildCommandResult {
   warnings: string[];
   rebuildResults: RebuildResult[];
   targetResults: ReceiptTargetResult[];
+  commandResults?: CommandProducerResult[];
   overallState: RebuildReceiptOverallState;
   receiptTargets: Array<{
     pluginName: string;
@@ -297,7 +302,7 @@ export interface RebuildCommandResult {
   dependencyPlan?: ReconcileOperationPlan;
   codexReconcilePlans?: CodexReconcilePlan[];
   /** In-memory physical output paths from the prepared targets; never persisted. */
-  nativeFootprints?: Array<{ path: string; pluginId: string; platform: PlatformName; scope: Scope; shared: boolean }>;
+  nativeFootprints?: Array<{ path: string; pluginId: string; platform: PlatformName; scope: Scope; shared: boolean; sharedMarketplace?: boolean }>;
   operationPlan?: OperationPlan;
   codexManagerPreview?: CodexManagerPreview;
   offlineCleanupPlans?: OfflineCleanupTargetEvidence[];
@@ -688,6 +693,7 @@ async function runSingleSourceRebuildCommand(options: {
 }): Promise<RebuildCommandResult> {
   const runtime: RebuildExecutionContext = {
     signal: options.runtime?.signal,
+    scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
     env: options.runtime?.env ?? process.env,
     nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
     reporter: options.runtime?.reporter ?? createNoopReporter(),
@@ -697,6 +703,8 @@ async function runSingleSourceRebuildCommand(options: {
     codexUserActivationDesired: options.runtime?.codexUserActivationDesired,
     codexObservationSession: options.runtime?.codexObservationSession,
     preApplyExecutionCache: options.runtime?.preApplyExecutionCache,
+    managedCommandProducerCache: options.runtime?.managedCommandProducerCache ?? new Map(),
+    commandResults: options.runtime?.commandResults ?? [],
   };
   const env = runtime.env;
   const selected = selectedPlatforms(options.commandOptions.platform);
@@ -894,6 +902,7 @@ async function runSingleSourceRebuildCommand(options: {
     warnings: [...new Set(warnings)],
     rebuildResults: results,
     targetResults: results.map(toTargetResult),
+    ...(runtime.commandResults?.length ? { commandResults: runtime.commandResults } : {}),
     overallState: successful.length === results.length
       ? 'succeeded'
       : successful.length > 0 ? 'partial' : 'failed',
@@ -943,6 +952,10 @@ function preparedNativeFootprints(
         platform: target.identity.platform,
         scope: target.identity.scope,
         shared: component.kind === 'shared-config' || component.kind === 'managed-block',
+        ...(component.kind === 'shared-config'
+          && (component.locator.kind === 'codex-marketplace'
+            || component.locator.kind === 'claude-marketplace')
+          ? { sharedMarketplace: true } : {}),
       }] : [];
     }));
 }
@@ -956,6 +969,7 @@ function mergeRebuildCommandResults(results: RebuildCommandResult[]): RebuildCom
     warnings: [...new Set(results.flatMap((result) => result.warnings))],
     rebuildResults,
     targetResults: results.flatMap((result) => result.targetResults),
+    ...(results.some((result) => result.commandResults?.length) ? { commandResults: results.flatMap((result) => result.commandResults ?? []) } : {}),
     overallState: rebuildResults.every((result) => result.status === 'succeeded')
       ? results.some((result) => result.overallState === 'partial') ? 'partial' : 'succeeded'
       : rebuildResults.some((result) => result.status === 'succeeded') ? 'partial' : 'failed',
@@ -1578,6 +1592,7 @@ async function cleanupOfflineOwnedComponents(options: {
               && action.scope === target.scope
               && action.registration === activationAction.target);
           }
+          if (action.kind === 'retainManagedCommandPackage') return true;
           return false;
         });
       }
@@ -1656,6 +1671,7 @@ async function cleanupOfflineOwnedComponents(options: {
     plugins: results.filter((result) => result.status === 'succeeded').map((result) => result.target.pluginName),
     warnings: [...new Set(warnings)],
     rebuildResults: results,
+    commandResults: context.commandResults ?? [],
     targetResults: results.map(toTargetResult),
     overallState: results.every((result) => result.status === 'succeeded') ? 'succeeded' : 'failed',
     receiptTargets: results.map((result) => ({
@@ -1696,10 +1712,11 @@ function createOfflineCleanupOperationPlan(
   evidence: readonly OfflineCleanupTargetEvidence[],
   requirements?: { scope: Scope; view: NativeDemandView },
   warnings: readonly string[] = [],
+  retainedPackages: readonly OperationAction[] = [],
 ): OperationPlan {
   return createOperationPlan({
     intentChanges: [],
-    actions: evidence.flatMap((target) => target.plan.actions.flatMap((action): OperationAction[] =>
+    actions: [...retainedPackages, ...evidence.flatMap((target) => target.plan.actions.flatMap((action): OperationAction[] =>
       action.action === 'removeOwnedOutput'
         ? [{
             kind: 'removeOwnedArtifact',
@@ -1717,7 +1734,7 @@ function createOfflineCleanupOperationPlan(
               scope: target.scope,
               enabled: false,
             }]
-          : [])),
+          : []))],
     changes: evidence.flatMap((target) => target.plan.actions.flatMap((action) =>
       action.action === 'removeOwnedOutput'
         ? [`${target.pluginId}:${target.platform}:${target.scope}:${action.action}:${action.target}`]
@@ -2339,7 +2356,31 @@ export async function executeRemovedPluginOutputCleanup(options: {
 }): Promise<RebuildCommandResult> {
   const selected = options.selectedTargets.filter((target) =>
     target.pluginId === options.target.pluginId && target.scope === options.context.scope);
-  if (selected.length === 0) return mergeRebuildCommandResults([]);
+  const retainedPackages = await discoverRetainedManagedCommandPackages({
+    selectors: [{ sourceId: options.target.sourceId, pluginName: options.target.pluginName }],
+    scope: options.context.scope,
+    cwd: options.context.executionCwd,
+    env: options.context.env,
+  });
+  const retainedActions: OperationAction[] = retainedPackages.map((entry) => ({
+    ...entry, kind: 'retainManagedCommandPackage', pluginId: options.target.pluginId,
+    scope: entry.producer.scope,
+  }));
+  const withRetainedPackages = (result: RebuildCommandResult,
+    evidence: readonly OfflineCleanupTargetEvidence[] = []): RebuildCommandResult => {
+    result.operationPlan = createOfflineCleanupOperationPlan(evidence, undefined, [], retainedActions);
+    const commandResults = [...new Map([
+      ...retainedPackages.map(retainedManagedCommandPackageResult), ...(result.commandResults ?? []),
+    ].map((entry) => [JSON.stringify(entry.producer), entry])).values()];
+    if (commandResults.length > 0) {
+      result.commandResults = commandResults;
+      if (result.overallState === 'succeeded' && commandResults.some((entry) => entry.state !== 'completed')) {
+        result.overallState = 'partial';
+      }
+    }
+    return result;
+  };
+  if (selected.length === 0) return withRetainedPackages(mergeRebuildCommandResults([]));
   const inventoryReader = options.runtime?.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
   const inventory = await inventoryReader({
@@ -2378,7 +2419,17 @@ export async function executeRemovedPluginOutputCleanup(options: {
     ...(current.marketplaceName ? { marketplaceName: current.marketplaceName } : {}),
     nativeRegistration: entry.platform === 'codex',
   }));
-  const result = await cleanupOfflineOwnedComponents({
+  const result = options.runtime?.previewOperationPlan
+    ? await previewOfflineOwnedComponents({
+        targets,
+        evidence,
+        cwd: options.context.executionCwd,
+        env: options.context.env,
+        nativeCliRunner: options.runtime?.nativeCliRunner,
+        codexManagerPreviewer: options.runtime?.codexManagerPreviewer,
+        onPreviewStage: options.runtime?.onPreviewStage,
+      })
+    : await cleanupOfflineOwnedComponents({
     targets,
     evidence,
     inventoryErrors: inventory.errors.filter((error) => !error.kind.startsWith('config')),
@@ -2389,7 +2440,7 @@ export async function executeRemovedPluginOutputCleanup(options: {
     executeCleanupOperation: options.runtime?.executeCleanupOperation,
     removeObsoleteInstallationContracts: options.runtime?.removeObsoleteInstallationContracts,
   });
-  result.operationPlan = createOfflineCleanupOperationPlan(evidence);
+  withRetainedPackages(result, evidence);
   const residual = [
     ...current.blockers.filter((blocker) => !blocker.includes('Config')),
     ...(current.nativeState === 'installed' || current.nativeState === 'unknown'
@@ -2423,6 +2474,16 @@ async function runRebuildCommandInSession(
     executionInput.selectedTargets.some((selected) =>
       selected.pluginId === target.pluginId && selected.platform === target.platform && selected.scope === target.scope);
   const runtimeEnv = executionInput.context.env;
+  const retainSelectors = options.command === 'cleanup' ? options.pluginNames.map(parsePluginId) : [];
+  const primarySourceId = retainSelectors.some((selector) => !selector.sourceId)
+    ? await readCatalogSourcesConfigSnapshot(runtimeEnv)
+        .then((snapshot) => snapshot.config.sources.find((source) => source.primary)?.id)
+        .catch(() => undefined)
+    : undefined;
+  const retainedPackages = options.command === 'cleanup'
+    ? await discoverRetainedManagedCommandPackages({ selectors: retainSelectors.map((selector) => ({ ...selector, sourceId: selector.sourceId ?? primarySourceId })), all: options.all, scope: options.commandOptions.scope, cwd: options.commandOptions.cwd, env: runtimeEnv })
+    : [];
+  const retainedPackageActions: OperationAction[] = retainedPackages.map((entry) => ({ ...entry, kind: 'retainManagedCommandPackage', pluginId: `${entry.producer.sourceId}/${entry.producer.pluginName}`, scope: entry.producer.scope }));
   const readInventory = options.runtime?.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
   let ordinaryInventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>> | undefined;
@@ -2653,7 +2714,7 @@ async function runRebuildCommandInSession(
       && cleanupSelectionErrors.length === 0
       && legacyLiveTargets.length === 0) {
       const result = mergeRebuildCommandResults([]);
-      const operationPlan = createOfflineCleanupOperationPlan([], { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings]);
+      const operationPlan = createOfflineCleanupOperationPlan([], { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings], retainedPackageActions);
       if (options.runtime?.expectedPlanFingerprint) {
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
@@ -2759,7 +2820,7 @@ async function runRebuildCommandInSession(
         && candidate.platform === target.platform
         && candidate.scope === target.scope)
         ?? intentOnlyOfflineCleanupEvidence(target));
-      const operationPlan = createOfflineCleanupOperationPlan(forceEvidence, { scope: options.commandOptions.scope, view: cleanupRequirements! }, cleanupInventoryWarnings(cleanupInventory!, forceCleanupTargets));
+      const operationPlan = createOfflineCleanupOperationPlan(forceEvidence, { scope: options.commandOptions.scope, view: cleanupRequirements! }, cleanupInventoryWarnings(cleanupInventory!, forceCleanupTargets), retainedPackageActions);
       if (options.runtime?.expectedPlanFingerprint) {
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
@@ -2868,7 +2929,7 @@ async function runRebuildCommandInSession(
     }
     if (cleanupTargets.length === 0) {
       const result = mergeRebuildCommandResults([]);
-      const operationPlan = createOfflineCleanupOperationPlan([], { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings]);
+      const operationPlan = createOfflineCleanupOperationPlan([], { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings], retainedPackageActions);
       if (options.runtime?.expectedPlanFingerprint) {
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
@@ -2908,7 +2969,7 @@ async function runRebuildCommandInSession(
       && candidate.platform === target.platform
       && candidate.scope === target.scope)
       ?? intentOnlyOfflineCleanupEvidence(target));
-    const operationPlan = createOfflineCleanupOperationPlan(evidence, { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, cleanupTargets), ...cleanupUnavailableWarnings]);
+    const operationPlan = createOfflineCleanupOperationPlan(evidence, { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, cleanupTargets), ...cleanupUnavailableWarnings], retainedPackageActions);
     if (options.runtime?.expectedPlanFingerprint) {
       assertOperationPlanFingerprint(
         options.runtime.expectedPlanFingerprint,
@@ -3462,14 +3523,18 @@ async function runRebuildCommandInSession(
       }
       const executionContext: RebuildExecutionContext = {
         signal: options.runtime?.signal,
+        scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
         env: runtimeEnv,
         nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
+        codexManager: options.runtime?.codexManager,
         reporter: options.runtime?.reporter ?? createNoopReporter(),
         debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
         expectedCatalogConfigDigest: catalog.configDigest,
         codexObservationSession: options.runtime?.codexObservationSession,
         codexObservationScopeByMarketplace,
         preApplyExecutionCache: options.runtime?.preApplyExecutionCache,
+        managedCommandProducerCache: options.runtime?.managedCommandProducerCache,
+        commandResults: options.runtime?.commandResults,
       };
       const inspection = createRebuildIntegration({
         context: executionContext,
@@ -4099,8 +4164,14 @@ async function runRebuildCommandInSession(
               target.pluginId === entry.pluginId).map((target) => target.resolvedScope))],
             surface,
           });
-          const sharedNative: CodexReconcilerLiveEvidence['sharedNative'] = sharedInspection?.sharedNative
+          let sharedNative: CodexReconcilerLiveEvidence['sharedNative'] = sharedInspection?.sharedNative
             ?? { state: 'unobserved' };
+          if (options.command === 'sync' && sharedNative.state === 'usable'
+            && await hasPreparedStaticNativeCommandDrift({ plugin: entry.plugin,
+              cwd: options.commandOptions.cwd, env: runtimeEnv, context: executionContext,
+              marketplaceRoot: path.join(resolveAwHome(runtimeEnv), 'marketplaces', entry.source.sourceId) })) {
+            sharedNative = { state: 'replaceable', reason: 'renderDrift', diagnostic: 'projectionRenderDrift', version: sharedNative.version };
+          }
           const projectionEntries: Array<{
             scope: Scope;
             artifactKey: string;
@@ -4398,6 +4469,8 @@ async function runRebuildCommandInSession(
                     : `shared:${component.label}`),
             });
           } catch (error) {
+            options.runtime?.signal?.throwIfAborted();
+            if (error instanceof Error && error.name === 'AbortError') throw error;
             preparedTargetErrors.set(key, error);
           }
         }
@@ -4515,7 +4588,7 @@ async function runRebuildCommandInSession(
             plan.postcheck.support === 'observed'
             && plan.postcheck.plugins.length > 0);
         const previewActivationScope: Scope = provisionalCodexPlans.some((plan) =>
-          plan.requirement.requiresProjectPluginContract) ? 'project' : 'user';
+          plan.requirement.scope === 'project') ? 'project' : 'user';
         const previewConsumer = previewActivationOnly
           ? await (
               options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
@@ -4955,6 +5028,78 @@ async function runRebuildCommandInSession(
             preflightTargets,
           );
         }
+        if (options.command !== 'cleanup'
+          && options.command !== 'uninstall'
+          && !executionContext.codexManager) {
+          const removalTargets = [];
+          for (const [key, prepared] of lockedPreparation.preparedTargets) {
+            const target = prepared.target;
+            if (target.identity.platform !== 'codex'
+              || target.writeNativeRequired
+              || operationPreparationFailures.has(key)) continue;
+            const nativeComponents = target.ownedComponents.filter((component) =>
+              component.kind === 'native-plugin'
+              || (component.kind === 'shared-config' && component.locator.kind === 'codex-marketplace'));
+            if (nativeComponents.length === 0) continue;
+            const inspected = await inspectOwnedComponents({
+              components: nativeComponents,
+              executor: lockedPreparation.integration.driver.ownership,
+              nativeProbe: lockedPreparation.integration.driver.probeNative,
+            });
+            let requiresManager = inspected.components.some((component) =>
+              component.state === 'present'
+              || (component.state === 'partial' && component.component.kind !== 'native-plugin'));
+            if (!requiresManager && inspected.components.some((component) =>
+              component.component.kind === 'native-plugin'
+              && (component.state === 'partial' || component.state === 'error'))) {
+              try {
+                const config = await readCodexConfigFile(
+                  resolveCodexPaths(target.identity.cwd, 'user', runtimeEnv).configTomlPath,
+                );
+                requiresManager = Boolean(target.identity.marketplaceName && target.identity.marketplaceRoot
+                  && isCanonicalCodexMarketplaceRegistration(
+                    config.snapshot.marketplaces[target.identity.marketplaceName],
+                    target.identity.marketplaceRoot,
+                  ));
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                operationPreparationFailures.set(key, failedResult(options.command, target.identity, message));
+                continue;
+              }
+            }
+            if (requiresManager) {
+              removalTargets.push({ key, target });
+            }
+          }
+          if (removalTargets.length > 0) {
+            try {
+              const managerOptions = {
+                cwd: options.commandOptions.cwd,
+                env: runtimeEnv,
+                runner: executionContext.nativeCliRunner,
+                authorizer: options.runtime?.managedCodexAuthorizer,
+                operationRequirement: getCodexOperationRequirement(options.commandOptions.scope),
+              };
+              if (options.runtime?.codexManagerResolver) {
+                executionContext.codexManager = await options.runtime.codexManagerResolver(managerOptions);
+              } else {
+                const consumer = await (
+                  options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
+                )({ ...managerOptions, requiresNativeMaterialization: true });
+                if (consumer.support !== 'observed') {
+                  throw new Error('Codex native removal requires an observed CLI consumer.');
+                }
+                executionContext.codexManager = consumer.manager;
+              }
+              executionContext.codexObservationSession?.setManager(executionContext.codexManager);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              for (const { key, target } of removalTargets) {
+                operationPreparationFailures.set(key, failedResult(options.command, target.identity, message));
+              }
+            }
+          }
+        }
         for (const pluginName of new Set(lockedPlan.targets.flatMap((target) =>
           target.platform === 'claude'
           && (target.action === 'install'
@@ -5190,7 +5335,9 @@ async function runRebuildCommandInSession(
           && plannedNativeAction !== undefined
           && (plannedNativeAction.action === 'reuse'
             || plannedNativeAction.action === 'none')
-          && !hasCodexExtensionMutation;
+          && !hasCodexExtensionMutation
+          && !lockedPreparation.preparedTargets.get(key)?.target.ownedComponents.some((component) =>
+            component.kind === 'native-plugin');
         if (failedDependency || failedConsumer || planned.action === 'block') {
           const code = failedConsumer
             ? 'dependencyStillRequired'
@@ -5796,13 +5943,28 @@ export async function runRebuildCommand(
   if (!executionInput) {
     throw new Error('nativeExecutionInputRequired: Native execution requires an explicit scope context and complete demand.');
   }
+  const commandResults = options.runtime?.commandResults ?? [];
+  options = { ...options, runtime: { ...options.runtime, commandResults, managedCommandProducerCache: options.runtime?.managedCommandProducerCache ?? new Map() } };
+  const withCommands = (result: RebuildCommandResult): RebuildCommandResult => {
+    const byProducer = new Map<string, CommandProducerResult>();
+    const retained = (result.operationPlan?.actions ?? []).flatMap((action) => action.kind === 'retainManagedCommandPackage' ? [retainedManagedCommandPackageResult(action)] : []);
+    for (const entry of [...(result.commandResults ?? []), ...commandResults, ...retained]) {
+      const key = JSON.stringify(entry.producer);
+      const previous = byProducer.get(key);
+      byProducer.set(key, { ...entry, removedCommandIds: [...new Set([...(previous?.removedCommandIds ?? []), ...entry.removedCommandIds])].filter((id) => !entry.commandIds.includes(id)), errors: [...(previous?.errors ?? []), ...entry.errors], recoveryActions: [...new Set([...(previous?.recoveryActions ?? []), ...entry.recoveryActions])] });
+    }
+    const commands = [...byProducer.values()];
+    if (commands.length === 0) return result;
+    const failed = commands.some((entry) => entry.state !== 'completed');
+    return { ...result, commandResults: commands, overallState: failed ? result.targetResults.some((entry) => entry.state === 'completed') || commands.some((entry) => entry.state === 'completed') ? 'partial' : 'failed' : result.overallState };
+  };
   const scopedOptions: RebuildCommandInvocation = {
     ...options,
     commandOptions: { ...options.commandOptions, cwd: executionInput.context.executionCwd },
     runtime: { ...options.runtime, env: executionInput.context.env },
   };
   if (scopedOptions.runtime?.codexObservationSession) {
-    return runRebuildCommandInSession(scopedOptions);
+    return withCommands(await runRebuildCommandInSession(scopedOptions));
   }
   const env = executionInput.context.env;
   const session = await createCodexNativeObservationSession({
@@ -5812,10 +5974,10 @@ export async function runRebuildCommand(
     manager: scopedOptions.runtime?.codexManager,
   });
   try {
-    return await runRebuildCommandInSession({
+    return withCommands(await runRebuildCommandInSession({
       ...scopedOptions,
       runtime: { ...scopedOptions.runtime, codexObservationSession: session },
-    });
+    }));
   } finally {
     await session.dispose();
   }

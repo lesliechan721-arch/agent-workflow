@@ -13,9 +13,10 @@ import {
   type WindowsJobInvocation,
 } from './process-tree.js';
 import { resolveAwHome } from './paths.js';
+import { readEnvironmentValue } from './state-paths.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { assertTestWritablePath } from './test-path-fence.js';
-import { attachSafeOperationError } from './safe-operation-diagnostic.js';
+import { attachSafeOperationError, readSafeOperationError } from './safe-operation-diagnostic.js';
 import {
   collectSensitiveTokenRepresentations,
   containsBlockedSensitiveToken,
@@ -27,6 +28,11 @@ export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 1_800_000;
 const OUTPUT_LIMIT = 64 * 1024;
 const WINDOWS_JOB_CLOSE_TIMEOUT_MS = 4_500;
+const WINDOWS_SYSTEM_ENV_KEYS = [
+  'SystemRoot', 'windir', 'SystemDrive', 'ComSpec', 'PATHEXT',
+  'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+  'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432',
+] as const;
 
 export interface PluginScriptInvocation { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin?: string }
 export interface PluginProcessResult { exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean; stdoutTruncated?: boolean }
@@ -68,29 +74,52 @@ export function buildNodeScriptInvocation(options: { entryPath: string; cwd: str
   return { command: process.execPath, args: [options.entryPath, ...(options.args ?? [])], cwd: options.cwd, env: options.env, ...(options.stdin === undefined ? {} : { stdin: options.stdin }) };
 }
 
+export async function preparePluginScriptDirectories(tempDir: string): Promise<void> {
+  const home = path.join(tempDir, 'home');
+  await Promise.all([
+    fs.ensureDir(home),
+    fs.ensureDir(path.join(tempDir, 'tmp')),
+    ...(process.platform === 'win32' ? [
+      fs.ensureDir(path.join(home, 'AppData', 'Roaming')),
+      fs.ensureDir(path.join(home, 'AppData', 'Local')),
+    ] : []),
+  ]);
+}
+
 export function buildPluginScriptSpawnEnv(options: {
   commandEnv: NodeJS.ProcessEnv; contextPath: string; tempDir: string; plugin: { name: string; version: string };
   event: string; platform?: PlatformName; distribution?: DistributionName; scope: Scope; bundleRoot: string;
   isolatedHomes?: { awHome: string; codexHome: string; claudeHome: string };
 }): NodeJS.ProcessEnv {
   const input = options.commandEnv;
+  const home = path.join(options.tempDir, 'home');
   const output: NodeJS.ProcessEnv = {
     AW_HOME: options.isolatedHomes?.awHome ?? resolveAwHome(input),
     CODEX_HOME: options.isolatedHomes?.codexHome ?? path.join(options.tempDir, 'codex-home'),
     CLAUDE_CONFIG_DIR: options.isolatedHomes?.claudeHome ?? path.join(options.tempDir, 'claude-home'),
-    HOME: path.join(options.tempDir, 'home'), USERPROFILE: path.join(options.tempDir, 'home'),
+    HOME: home, USERPROFILE: home,
     XDG_CONFIG_HOME: path.join(options.tempDir, 'xdg-config'), XDG_CACHE_HOME: path.join(options.tempDir, 'xdg-cache'),
     XDG_STATE_HOME: path.join(options.tempDir, 'xdg-state'), XDG_DATA_HOME: path.join(options.tempDir, 'xdg-data'),
     XDG_RUNTIME_DIR: path.join(options.tempDir, 'xdg-runtime'),
-    PATH: input.PATH ?? input.Path ?? '',
+    PATH: readEnvironmentValue(input, 'PATH') ?? (process.platform === 'win32' ? '' : input.Path ?? ''),
     AW_PLUGIN_CONTEXT: options.contextPath, AW_PLUGIN_ROOT: options.bundleRoot, AW_PLUGIN_NAME: options.plugin.name,
     AW_PLUGIN_VERSION: options.plugin.version, AW_PLUGIN_EVENT: options.event, AW_PLUGIN_SCOPE: options.scope,
   };
   if (options.platform) output.AW_PLUGIN_PLATFORM = options.platform;
   if (options.distribution) output.AW_PLUGIN_DISTRIBUTION = options.distribution;
   if (process.platform === 'win32') {
-    output.TEMP = path.join(options.tempDir, 'tmp'); output.TMP = output.TEMP;
-    if (input.SystemRoot) output.SystemRoot = input.SystemRoot; if (input.ComSpec) output.ComSpec = input.ComSpec;
+    // Native Windows hosts need system installation paths to load their runtime
+    // and modules. Keep user state and module-path overrides out of this list.
+    for (const key of WINDOWS_SYSTEM_ENV_KEYS) {
+      const value = readEnvironmentValue(input, key, 'win32');
+      if (value !== undefined) output[key] = value;
+    }
+    output.HOMEDRIVE = path.parse(home).root.replace(/[\\/]$/u, '');
+    output.HOMEPATH = home.slice(output.HOMEDRIVE.length);
+    output.APPDATA = path.join(home, 'AppData', 'Roaming');
+    output.LOCALAPPDATA = path.join(home, 'AppData', 'Local');
+    output.TEMP = path.join(options.tempDir, 'tmp');
+    output.TMP = output.TEMP;
   } else { output.TMPDIR = path.join(options.tempDir, 'tmp'); }
   return output;
 }
@@ -306,7 +335,9 @@ export function createDefaultPluginProcessRunner(
       const windowsJobInvocation = platform === 'win32' && createWindowsJobInvocationImpl
         ? createWindowsJobInvocationImpl(invocation.command, invocation.args)
         : undefined;
-      const child = spawnImpl(windowsJobInvocation?.command ?? invocation.command, windowsJobInvocation?.args ?? invocation.args, { cwd: invocation.cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
+      // Keep long Catalog snapshot directories accessible to libuv's Windows cwd resolution.
+      const cwd = platform === 'win32' ? path.win32.toNamespacedPath(invocation.cwd) : invocation.cwd;
+      const child = spawnImpl(windowsJobInvocation?.command ?? invocation.command, windowsJobInvocation?.args ?? invocation.args, { cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
       let stdout = ''; let stderr = ''; let timedOut = false; let aborted = false; let settled = false; let terminating = false;
       let stdoutBytes = 0; let stdoutTruncated = false;
       let inputCompleted = child.stdin === null; let inputError: unknown;
@@ -324,6 +355,13 @@ export function createDefaultPluginProcessRunner(
         settled = true;
         cleanup();
         reject(error);
+      };
+      const failCleanup = (cause: unknown): void => {
+        const failure = new Error(cause instanceof Error ? cause.message : 'Plugin process cleanup could not be confirmed.', { cause });
+        settleImmediately(attachSafeOperationError(failure, readSafeOperationError(cause) ?? {
+          code: 'pluginProcessCleanupFailed',
+          safeMessage: 'Plugin process cleanup could not be confirmed.',
+        }));
       };
       const settleIfComplete = (): void => {
         if (settled || !childExited || !cleanupCompleted || !inputCompleted) return;
@@ -356,33 +394,39 @@ export function createDefaultPluginProcessRunner(
               throw new Error('Windows Job helper did not accept termination.');
             }
           } catch (error) {
-            settleImmediately(error);
+            failCleanup(error);
             return;
           }
           windowsJobCloseTimer = setTimeout(
-            () => settleImmediately(new Error('Windows Job helper exit could not be confirmed.')),
+            () => failCleanup(new Error('Windows Job helper exit could not be confirmed.')),
             WINDOWS_JOB_CLOSE_TIMEOUT_MS,
           );
           windowsJobCloseTimer.unref();
           return;
         }
-        const termination = child.pid === undefined
-          ? Promise.resolve(direct('SIGKILL'))
-          : terminateProcessTreeImpl(
-              child.pid,
-              direct,
-              {},
-              {
-                observation,
-                requireConfirmedCleanup,
-                ...(allowUnobservedWindowsProcessOnNormalCompletion
-                  ? { allowUnobservedWindowsProcessOnNormalCompletion: true }
-                  : {}),
-              },
-            );
+        let termination: Promise<unknown>;
+        try {
+          termination = child.pid === undefined
+            ? Promise.resolve(direct('SIGKILL'))
+            : terminateProcessTreeImpl(
+                child.pid,
+                direct,
+                {},
+                {
+                  observation,
+                  requireConfirmedCleanup,
+                  ...(allowUnobservedWindowsProcessOnNormalCompletion
+                    ? { allowUnobservedWindowsProcessOnNormalCompletion: true }
+                    : {}),
+                },
+              );
+        } catch (error) {
+          failCleanup(error);
+          return;
+        }
         void Promise.resolve(termination).then(
           () => { cleanupCompleted = true; settleIfComplete(); },
-          (error: unknown) => settleImmediately(error),
+          failCleanup,
         );
       }
       child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
@@ -489,7 +533,7 @@ export async function runPreApplyScript(options: {
     };
     const tempRoot = assertTestWritablePath(path.join(awHome, 'tmp'), 'preApply temp root'); await fs.ensureDir(tempRoot);
     tempDir = await fs.mkdtemp(path.join(tempRoot, 'plugin-pre-apply-'));
-    await fs.ensureDir(path.join(tempDir, 'home')); await fs.ensureDir(path.join(tempDir, 'tmp'));
+    await preparePluginScriptDirectories(tempDir);
     const env = buildPluginScriptSpawnEnv({ commandEnv: options.context.env, contextPath: '', tempDir, plugin: payload.plugin, event: 'preApply', platform: options.platform, scope: options.scope, bundleRoot: options.plugin.rootDir }); delete env.AW_PLUGIN_CONTEXT;
     sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values);
     const invocation = buildNodeScriptInvocation({ entryPath, cwd: options.plugin.rootDir, env, stdin: `${JSON.stringify(payload)}\n` });

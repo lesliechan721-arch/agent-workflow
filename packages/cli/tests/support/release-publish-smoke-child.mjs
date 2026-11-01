@@ -47,6 +47,7 @@ try {
     withSnapshot: async (callback) => callback(descriptor.build),
     resolveCandidates: async () => descriptor.candidates,
     readPackageVersions: async () => [],
+    readPackageChannelVersion: async () => null,
     assertCliTagAvailable: async () => undefined,
     computeTarballTreeDigest: async (file) => {
       if (file.includes('windows-x64')) return 'windows-x64-tree';

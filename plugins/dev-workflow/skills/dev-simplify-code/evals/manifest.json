@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "defaults": {},
+  "profiles": {
+    "project-default": {
+      "scope": "project",
+      "plugins": {
+        "dev-workflow": {}
+      }
+    }
+  },
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "cases": "trigger-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 180000
+    },
+    {
+      "id": "conversation",
+      "kind": "conversation",
+      "cases": "conversation-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000
+    }
+  ]
+}

@@ -13,7 +13,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "按任务依据、独立交接和真实结果判断加载价值；同时核对无必要方法时的额外成本。"
+      "rationale": "按显式入口与未选入口区分触发；完整工作意图或 caller 委派不能代替用户选择，实际共享方法与结果由行为用例检查。"
     },
     "runtime": {
       "observeSpawnAgent": false,
@@ -33,12 +33,12 @@
       ],
       "input": {
         "query": "已批准 Spec，请协调多个工作项、集成验证和最终 Review；委派已获准，不要重新对齐需求。",
-        "expectedLoad": true
+        "expectedLoad": false
       },
       "audit": {
-        "rationale": "多工作项到独立审查需要协调责任。",
-        "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
-        "minimalCounterexample": "只要求完成一个已分配单元且无需总体接纳时使用实现能力即可。"
+        "rationale": "未由用户显式选择本宏；完整任务意图或上层委派不等于启动手动入口。已启动的上层可采用自带共享方法。",
+        "allowedVariance": "不加载本手动宏，仍可完成普通处理或使用可达的叶子能力；方法执行质量由行为用例检查。",
+        "minimalCounterexample": "用户明确调用 $dev-build，且请求未仅讨论该能力时应加载。"
       }
     },
     {
@@ -80,13 +80,29 @@
         "boundary"
       ],
       "input": {
-        "query": "使用 dev-build 完成这个小改动并组织实际验证和最终独立 Review；任务无需分解。",
+        "query": "使用 $dev-build 完成这个小改动并组织实际验证和最终独立 Review；任务无需分解。",
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "完整交付责任由用户明确交给 Build，内部可直接完成机械修改。",
+        "rationale": "用户显式选择本宏；是否加载与实际任务完成分开判断。",
         "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
         "minimalCounterexample": "仅要求改动而没有协调或正式交付需求时无需宏。"
+      }
+    },
+    {
+      "id": "explicit_build_coordination",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 $dev-build。已批准 Spec，请协调多个工作项、集成验证和最终 Review；委派已获准，不要重新对齐需求。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "用户显式选择实施协调宏，仍需保留本轮范围、集成和核验责任。",
+        "allowedVariance": "目标 Skill 是否加载；不对合理后续辅助能力施加全局禁止。",
+        "minimalCounterexample": "只要求完成一个已分配单元且无需总体接纳时使用实现能力即可。"
       }
     }
   ]

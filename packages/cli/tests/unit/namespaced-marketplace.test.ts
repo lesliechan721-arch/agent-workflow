@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   projectMarketplaceManifestForPlatform,
   readStrictNamespacedMarketplaceRoot,
-  replayNamespacedCodexNativeRenderProjections,
+  replayNamespacedMarketplacePluginProjections,
   replayNamespacedCodexSkillOverlays,
 } from '../../src/utils/local-marketplace.js';
 import type { MarketplaceManifest } from '../../src/types.js';
@@ -978,6 +978,66 @@ describe('namespaced marketplace root', () => {
       && reference.location.startsWith(sourceRoot))).toEqual([]);
   });
 
+  it('preserves unselected static copies and their platform entries while replacing selected copies', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const stagingRoot = path.join(isolation.layout.rootDir, 'static-projection-staging');
+    for (const [root, names, version] of [
+      [sourceRoot, ['selected', 'unselected', 'removed'], '1.0.0'],
+      [stagingRoot, ['selected', 'unselected', 'added'], '2.0.0'],
+    ] as const) {
+      await createMarketplaceRoot(root);
+      for (const name of names) {
+        for (const platform of ['agents', 'codex', 'claude']) {
+          await fs.outputJson(path.join(root, 'plugins', name, `.${platform}-plugin`, 'plugin.json'), {
+            name, version,
+          });
+        }
+        await fs.outputFile(path.join(root, 'plugins', name, `${version}.txt`), `${name} ${version}\n`);
+      }
+      for (const [platform, relativePath] of [
+        ['CODEX', '.agents/plugins/marketplace.json'],
+        ['CLAUDE', '.claude-plugin/marketplace.json'],
+      ] as const) {
+        const manifestPath = path.join(root, relativePath);
+        const manifest = await fs.readJson(manifestPath);
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          plugins: names.filter((name) => name !== 'unselected'
+            || platform === (root === sourceRoot ? 'CLAUDE' : 'CODEX')).map((name) => ({
+            name, source: `./plugins/${name}`, description: `${name} ${version}`,
+            category: 'workflow', strict: true,
+            policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: [platform] },
+          })),
+        });
+      }
+    }
+
+    await replayNamespacedMarketplacePluginProjections({
+      sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+      rematerializedPluginIds: new Set(['official/selected']),
+    });
+
+    await expect(fs.readJson(path.join(stagingRoot, 'plugins', 'selected', '.codex-plugin', 'plugin.json')))
+      .resolves.toMatchObject({ version: '2.0.0' });
+    await expect(fs.readJson(path.join(stagingRoot, 'plugins', 'unselected', '.claude-plugin', 'plugin.json')))
+      .resolves.toMatchObject({ version: '1.0.0' });
+    await expect(fs.readFile(path.join(stagingRoot, 'plugins', 'unselected', '1.0.0.txt'), 'utf8'))
+      .resolves.toBe('unselected 1.0.0\n');
+    await expect(fs.pathExists(path.join(stagingRoot, 'plugins', 'unselected', '2.0.0.txt'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(stagingRoot, 'plugins', 'removed'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(stagingRoot, 'plugins', 'added', '2.0.0.txt'))).resolves.toBe(true);
+    for (const [relativePath, expectedNames] of [
+      ['.agents/plugins/marketplace.json', ['added', 'selected']],
+      ['.claude-plugin/marketplace.json', ['added', 'selected', 'unselected']],
+    ] as const) {
+      const manifest = await fs.readJson(path.join(stagingRoot, relativePath)) as MarketplaceManifest;
+      expect(manifest.plugins.map((entry) => entry.name).sort()).toEqual(expectedNames);
+      const retained = manifest.plugins.find((entry) => entry.name === 'unselected');
+      if (retained) expect(retained.description).toBe('unselected 1.0.0');
+    }
+  });
+
   it('preserves a complete native dynamic projection and its original drift receipt', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
@@ -989,7 +1049,7 @@ describe('namespaced marketplace root', () => {
       configDigest: nativeDigest('d'),
     });
 
-    await replayNamespacedCodexNativeRenderProjections({
+    await replayNamespacedMarketplacePluginProjections({
       sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
     });
 
@@ -1001,6 +1061,28 @@ describe('namespaced marketplace root', () => {
     ), 'utf8')).resolves.toBe(fixture.receiptContent);
   });
 
+  // Test Value Gate: a one-platform write must not bless damaged or overlapping native resources as preserved output.
+  it.each(['missing-receipt', 'overlapping-platform-root', 'overlapping-manifest-root'] as const)('rejects unrequested platform preservation with %s while both-platform replacement remains recoverable', async (damage) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const stagingRoot = path.join(isolation.layout.rootDir, 'cross-platform-damaged');
+    await createMarketplaceRoot(sourceRoot);
+    await createNativeProjectionFixture({ sourceRoot, stagingRoot });
+    const sourcePluginRoot = path.join(sourceRoot, 'plugins', 'native-projection');
+    const stagingPluginRoot = path.join(stagingRoot, 'plugins', 'native-projection');
+    await fs.outputJson(path.join(stagingPluginRoot, '.claude-plugin/plugin.json'), { name: 'native-projection', version: '2.0.0', skills: './claude/skills' });
+    const codexManifestPath = path.join(sourcePluginRoot, '.codex-plugin/plugin.json');
+    if (damage === 'missing-receipt') await fs.remove(path.join(sourcePluginRoot, '.agents-plugin/aw-codex-native-render.json'));
+    else {
+      const manifest = await fs.readJson(codexManifestPath);
+      await fs.writeJson(codexManifestPath, { ...manifest, skills: damage === 'overlapping-platform-root' ? './claude/skills' : './.codex-plugin/skills' });
+    }
+    const invocation = { sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw', rematerializedPluginIds: new Set(['official/native-projection']) };
+    await expect(replayNamespacedMarketplacePluginProjections({ ...invocation, rematerializedPluginPlatforms: new Map([['official/native-projection', new Set(['claude' as const])]]) })).rejects.toThrow(/marketplaceProjectionInvalid/u);
+    await expect(replayNamespacedMarketplacePluginProjections({ ...invocation, rematerializedPluginPlatforms: new Map([['official/native-projection', new Set(['codex', 'claude'] as const)]]) })).resolves.toBeUndefined();
+    expect((await fs.readJson(path.join(stagingPluginRoot, '.claude-plugin/plugin.json'))).version).toBe('2.0.0');
+  });
+
   it('preserves an empty native target and the absent Codex skills field', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
@@ -1008,7 +1090,7 @@ describe('namespaced marketplace root', () => {
     await createMarketplaceRoot(sourceRoot);
     const fixture = await createNativeProjectionFixture({ sourceRoot, stagingRoot, empty: true });
 
-    await replayNamespacedCodexNativeRenderProjections({
+    await replayNamespacedMarketplacePluginProjections({
       sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
     });
 
@@ -1032,7 +1114,7 @@ describe('namespaced marketplace root', () => {
       scopes: ['project'],
     });
 
-    await replayNamespacedCodexNativeRenderProjections({
+    await replayNamespacedMarketplacePluginProjections({
       sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
     });
 
@@ -1064,7 +1146,7 @@ describe('namespaced marketplace root', () => {
     const fixture = await createNativeProjectionFixture({ sourceRoot, stagingRoot });
     await changeStaging(stagingRoot);
 
-    await replayNamespacedCodexNativeRenderProjections({
+    await replayNamespacedMarketplacePluginProjections({
       sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
     });
 
@@ -1093,7 +1175,7 @@ describe('namespaced marketplace root', () => {
     const manifest = await fs.readJson(manifestPath);
     await fs.writeJson(manifestPath, { ...manifest, version: '2.0.0' });
 
-    await replayNamespacedCodexNativeRenderProjections({
+    await replayNamespacedMarketplacePluginProjections({
       sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
       rematerializedPluginIds: new Set(['official/native-projection']),
     });
@@ -1123,7 +1205,7 @@ describe('namespaced marketplace root', () => {
         ), '# damaged\n');
       }
 
-      await replayNamespacedCodexNativeRenderProjections({
+      await replayNamespacedMarketplacePluginProjections({
         sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
       });
 
@@ -1156,7 +1238,7 @@ describe('namespaced marketplace root', () => {
     });
     await fs.writeFile(receiptPath, serializeCodexNativeRenderReceipt(conflicting));
 
-    await expect(replayNamespacedCodexNativeRenderProjections({
+    await expect(replayNamespacedMarketplacePluginProjections({
       sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
     })).rejects.toThrow('codexNativeProjectionIdentityMismatch');
   });
@@ -1190,7 +1272,7 @@ describe('namespaced marketplace root', () => {
       await fs.writeJson(manifestPath, { ...manifest, skills: '/unsafe/skills' });
     }
 
-    await expect(replayNamespacedCodexNativeRenderProjections({
+    await expect(replayNamespacedMarketplacePluginProjections({
       sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
     })).rejects.toThrow(expectedError);
   });
@@ -1209,7 +1291,7 @@ describe('namespaced marketplace root', () => {
       await fs.outputFile(outside, 'outside\n');
       await fs.symlink(outside, path.join(sourcePluginRoot, 'unsafe-link'));
 
-      await expect(replayNamespacedCodexNativeRenderProjections({
+      await expect(replayNamespacedMarketplacePluginProjections({
         sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
       })).rejects.toThrow('codexNativeProjectionUnsafe');
     },
@@ -1232,10 +1314,10 @@ describe('namespaced marketplace root', () => {
       return realReadFile(filePath, ...args as never[]);
     }) as typeof fs.readFile);
     try {
-      await expect(replayNamespacedCodexNativeRenderProjections({
+      await expect(replayNamespacedMarketplacePluginProjections({
         sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
       })).rejects.toThrow('EIO projection read');
-      await expect(replayNamespacedCodexNativeRenderProjections({
+      await expect(replayNamespacedMarketplacePluginProjections({
         sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
         rematerializedPluginIds: new Set(['official/native-projection']),
       })).resolves.toBeUndefined();
@@ -1261,10 +1343,10 @@ describe('namespaced marketplace root', () => {
         path.join(skillRoot, 'unsafe-link'),
       );
 
-      await expect(replayNamespacedCodexNativeRenderProjections({
+      await expect(replayNamespacedMarketplacePluginProjections({
         sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
       })).rejects.toThrow('codexNativeProjectionUnsafe');
-      await expect(replayNamespacedCodexNativeRenderProjections({
+      await expect(replayNamespacedMarketplacePluginProjections({
         sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
         rematerializedPluginIds: new Set(['official/native-projection']),
       })).resolves.toBeUndefined();

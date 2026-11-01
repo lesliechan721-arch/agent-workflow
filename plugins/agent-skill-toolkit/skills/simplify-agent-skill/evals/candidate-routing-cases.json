@@ -11,7 +11,7 @@
       "optimization": "precision-first",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "通用 Simplifier 应直接处理完整标准 Skill，并沿用调用方已提供的项目适配上下文，不内嵌 AW 命令或递归重启适配器。"
+      "rationale": "直接处理完整标准 Skill，复用已提供的源码和构建条件，不强制引入项目适配层。"
     },
     "runtime": {
       "isolation": "strict"
@@ -24,10 +24,10 @@
       "tags": [
         "regression"
       ],
-      "prompt": "简化 skills/summarize/SKILL.md 中逐字重复的句子。它是独立标准 Agent Skill，没有 AW manifest、provider 或 renderer。你已获准只写 candidate/summarize/SKILL.md；不要修改原文件，也不要运行模型 Eval。",
+      "prompt": "$simplify-agent-skill 简化 skills/summarize/SKILL.md 中逐字重复的句子。它是独立标准 Agent Skill，所需内容已经完整提供，无需生成步骤。你已获准只写 candidate/summarize/SKILL.md；不要修改原文件，也不要运行模型 Eval。",
       "assertions": [
         "直接从完整可消费 Skill 建立隔离 candidate，只删除逐字重复并保持原文件不变。",
-        "不要求 AW Workspace、manifest、review prepare 或项目适配器，不把通用简化方法绑定到 AW 命令。",
+        "直接使用当前完整包，不要求额外项目、构建系统或适配入口。",
         "没有模型对照或独立 Audit，只交付未验证 candidate，不声称安全接受。"
       ],
       "input": {
@@ -36,7 +36,7 @@
         }
       },
       "expected": {
-        "output": "交付独立标准 Skill 的未验证隔离 candidate，不引入 AW 构建路径。",
+        "output": "交付独立标准 Skill 的未验证隔离 candidate，不添加无关构建步骤。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "candidate/summarize/**"
@@ -56,39 +56,39 @@
         ]
       },
       "audit": {
-        "rationale": "完整独立 Skill 可直接建立候选；强制 AW 适配会增加无效依赖和上下文。",
-        "minimalCounterexample": "若 Skill 来自 AW provider 或 renderer，则调用方必须先提供对应项目适配上下文。",
-        "allowedVariance": "候选目录创建方式可不同，但只允许声明的路径变化，且不得调用 AW 构建路径。"
+        "rationale": "完整独立 Skill 可直接建立候选，额外适配会增加无效依赖。",
+        "minimalCounterexample": "若实际消费内容由其他源码生成，需要先确认权威修改位置和生成方法。",
+        "allowedVariance": "候选目录创建方式可不同，只允许声明的路径变化。"
       }
     },
     {
-      "id": "reuse_supplied_adapter_context",
+      "id": "reuse_supplied_build_context",
       "split": "validation",
       "tags": [
         "regression"
       ],
-      "prompt": "上游项目适配器已经建立 candidate/source/SKILL.md，并在 adapter-context.md 给出可写源、冻结 baseline、相同 profile 的 final 重建责任和允许路径。删除 candidate source 的逐字重复并返回给上游；不要重新启动 develop-aw、不要自己准备 AW final、不要改 baseline。",
+      "prompt": "$simplify-agent-skill 已有 candidate/summarize/SKILL.md，build-context.md 给出权威源码、冻结 baseline、现有构建安排和允许路径。删除候选中的逐字重复并交付修改；本次不运行或更换构建流程，不改 baseline。",
       "assertions": [
-        "沿用已有适配上下文，只修改已授权 candidate source，不递归重启项目适配器。",
-        "不在通用 Simplifier 内嵌 AW 命令或自行生成 final/binding；把 final 重建责任返回给现有上游。",
-        "保留 baseline 和 Oracle；当前只交付未验证 source candidate。"
+        "复用已给定的源码和范围，只修改授权候选，不重新进行发现、冻结或创建候选。",
+        "交付本次源码变化和仍需生成产物的状态，不自行执行或接管已有构建流程。",
+        "保留 baseline 与原始要求，只交付未验证候选。"
       ],
       "input": {
         "workspaceFiles": {
-          "adapter-context.md": "Writable source: candidate/source/SKILL.md\nFrozen baseline: baseline/source/SKILL.md\nProfile: codex/project\nUpstream owns final rebuild and binding.\nAllowed change: candidate/source/SKILL.md only.\n",
-          "baseline/source/SKILL.md": "---\nname: summarize\ndescription: Summarize supplied text.\n---\n\nUse supplied text only. Use supplied text only.\n",
-          "candidate/source/SKILL.md": "---\nname: summarize\ndescription: Summarize supplied text.\n---\n\nUse supplied text only. Use supplied text only.\n"
+          "build-context.md": "Writable source: candidate/summarize/SKILL.md\nFrozen baseline: baseline/summarize/SKILL.md\nAn existing build job will rebuild the distributable package from the returned candidate. Do not run or replace that job in this task.\nAllowed change: candidate/summarize/SKILL.md only.\n",
+          "baseline/summarize/SKILL.md": "---\nname: summarize\ndescription: Summarize supplied text.\n---\n\nUse supplied text only. Use supplied text only.\n",
+          "candidate/summarize/SKILL.md": "---\nname: summarize\ndescription: Summarize supplied text.\n---\n\nUse supplied text only. Use supplied text only.\n"
         }
       },
       "expected": {
-        "output": "返回未验证 source candidate，并要求既有上游按已固定 profile 重建 final。",
+        "output": "返回未验证候选的源码变更，说明实际生成包仍待已有构建流程提供。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
-          "candidate/source/SKILL.md"
+          "candidate/summarize/SKILL.md"
         ],
         "artifacts": [
           {
-            "path": "candidate/source/SKILL.md",
+            "path": "candidate/summarize/SKILL.md",
             "exists": true,
             "contains": [
               "Use supplied text only."
@@ -100,9 +100,9 @@
         ]
       },
       "audit": {
-        "rationale": "递归重启适配器会重复发现、冻结和授权步骤，并可能改变既有 baseline。",
-        "minimalCounterexample": "若上游未提供可写 source 或 final 重建责任，则应停止并请求缺少的适配信息。",
-        "allowedVariance": "可用不同编辑方式；不得改 baseline、生成 AW final 或重新调用项目适配器。"
+        "rationale": "已有材料足以完成当前编辑，重复发现或重新制作基线会增加无效步骤并破坏既定范围。",
+        "minimalCounterexample": "权威源码或允许路径尚不明确时，应先确认缺少的信息；不能直接编辑生成副本。",
+        "allowedVariance": "允许等价编辑方式，保持基线和生成流程不变，不将源码检查报告为运行验证。"
       }
     }
   ]

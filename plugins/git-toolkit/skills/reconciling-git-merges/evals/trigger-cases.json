@@ -349,14 +349,12 @@
       "input": {
         "query": "当前改动已经完成。请核对暂存范围并创建一个新的本地 Git commit。",
         "expected": {
-          "loadedSkills": [
-            "git-commit"
-          ]
+          "loadedSkills": []
         },
         "workspaceFixture": "commit_ready"
       },
       "audit": {
-        "rationale": "用户目标属于相邻 Skill git-commit，不属于 reconciling-git-merges。",
+        "rationale": "普通提交不涉及 merge，也未显式调用 git-commit；不应加载这两个技能。",
         "minimalCounterexample": "仅将目标改为协调 Git merge 的冲突或相关语义交互，标签应翻转为加载 merge Skill。"
       }
     }

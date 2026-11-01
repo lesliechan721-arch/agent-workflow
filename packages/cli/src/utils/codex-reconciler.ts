@@ -370,7 +370,7 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
   const extensionRemovals: CodexExtensionPlanAction[] = [];
   const warnings: string[] = [];
   const postcheckPlugins: CodexReconcilePostcheckDescriptor['plugins'] = [];
-  let projectContractRequired = input.scope === 'project'
+  let projectObservationRequired = input.scope === 'project'
     || sortedTargets.some((target) => target.resolvedScope === 'project');
 
   for (const target of sortedTargets) {
@@ -388,7 +388,7 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
     const userDesired = hasNative && scopes.includes('user');
     const projectDesired = hasNative && scopes.includes('project');
     const nativeDesiredSomewhere = userDesired || projectDesired;
-    projectContractRequired ||= projectDesired;
+    projectObservationRequired ||= projectDesired;
 
     const action = nativeAction({ operation: input.operation, target: { ...target, desiredScopes: scopes }, evidence });
     if (hasNative || action !== 'none') {
@@ -483,7 +483,7 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
     { scope: 'user' as const, codexPluginId },
     { scope: 'project' as const, codexPluginId },
   ]);
-  const requirement = getCodexOperationRequirement(projectContractRequired ? 'project' : 'user');
+  const requirement = getCodexOperationRequirement(projectObservationRequired ? 'project' : 'user');
   const support = input.activationSupport ?? 'observed';
   if (support === 'assumed') warnings.push('codexProjectActivationAssumed');
 

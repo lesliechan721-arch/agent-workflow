@@ -16,7 +16,7 @@ aw skill eval prepare git-toolkit \
 aw-skill-eval run /tmp/aw-eval-specs/<spec-dir>/spec.json --audit /tmp/aw-eval-specs/<spec-dir>/audit.json
 ```
 
-该命令生成 `EvalResult v2`。随后运行 `aw-skill-eval result validate <result> --spec <spec> --audit <audit>`。clean success 不要求 triage。只有 execution/grade 失败、混合结果、baseline 回归，或结果将驱动生产 Skill 修改时，才由全新上下文做 result-triage；默认在聊天中返回，用户指定时可写 `triage.md`。triage 不是 Release Check 的机器输入。发布检查范围只从当前 `evals/manifest.json` 的 `requiredForRelease` 和 `releaseSplits` 派生。
+该命令生成 `EvalResult v2`。随后运行 `aw-skill-eval result validate <result> --spec <spec> --audit <audit>`。clean success 不要求 triage。只有 execution/grade 失败、混合结果、baseline 回归，或结果将驱动生产 Skill 修改时，才由全新上下文做 result-triage；默认在聊天中返回，用户指定时可写 `triage.md`。
 
 `trigger-cases.json` 使用 selected cases v1 trigger 合同，并同时观察 Git 插件内的三个 Skill。运行触发评估时，每条查询至少运行三次。重点检查另一个独立任务需要保护当前未提交工作时会触发，而继续当前 checkout 中的同一任务不会仅因工作区 dirty 而触发；跨分支构建、测试或复现即使不修改源码也可触发。不需要独立 checkout 的只读查询和例行 worktree 管理不触发。merge 协调请求应只路由到 `reconciling-git-merges`。
 
@@ -33,14 +33,16 @@ aw skill eval prepare git-toolkit isolating-work-with-git-worktrees --suite rout
 1. 当前工作区有无关本地修改且无项目路径约定时，是否保护原状态，并在手动创建时固定使用 `.worktrees/<分支或任务名>/`；若 `.worktrees/` 未被忽略，是否在 Git metadata 可写时停止且不创建 worktree 或分支；
 2. 已有平台隔离时，是否直接复用，不让默认路径覆盖环境提供的生命周期；
 3. 仓库级隔离请求是否创建完整 clone，而不是 linked worktree，并保持主仓库不变；
-4. 修改前已有测试失败时，是否正确标记为基线问题。
+4. 本次只要求检查起点且失败后停止时，是否正确报告已有基线失败并保持源码不变。此例不评价获得修复授权后是否继续工作。
+
+provider 直接使用用例声明的 prompt，仅附加临时目录安全边界，不替换任务目标。
 
 fixture 只覆盖这些高价值边界，不枚举所有 `git worktree` 命令与低概率故障模式。Engine 负责 variant/attempt 循环、timeout、进程树和最终 EvalResult，默认对每个 behavior case 运行 3 次。
 
 ## AW 验证
 
 ```bash
-pnpm plugin:test git
+pnpm plugin:test git-toolkit
 aw skill eval prepare git-toolkit isolating-work-with-git-worktrees --suite router --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/git-worktree-router-validation --json
 aw skill eval prepare git-toolkit isolating-work-with-git-worktrees --suite router --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/git-worktree-router-sanity --json
 aw skill eval prepare git-toolkit isolating-work-with-git-worktrees --suite behavior --profile project-default --runs 3 --output /tmp/aw-eval-specs/git-worktree-behavior --json

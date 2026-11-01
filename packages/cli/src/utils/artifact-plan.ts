@@ -11,16 +11,15 @@ import type {
   CodexAgentRoleArtifact,
   CodexSkillArtifact,
   DeveloperInstructionsBlockArtifact,
-  PlatformName,
-  DistributionName,
+  ArtifactRenderSurfaceName,
   NormalizedPluginManifest,
-  PluginArtifactTargetDefinition,
   Scope,
 } from '../types.js';
 import type { ResolvedArtifactRenderConfig } from './artifact-renderer.js';
 import { assertPlatformFieldSupported } from './manifest.js';
 import { validatePortableSkillName } from './dynamic-skill-tree.js';
-import { resolveArtifactRequest } from './artifact-request.js';
+import { artifactDeclarationSurface, artifactRequestDeclarations, resolveArtifactRequest, type ArtifactRequestDeclaration } from './artifact-request.js';
+import { normalizeCommandDefinitions, normalizeCommandRelativeFile } from '@lesliechan721/aw-plugin-core/manifest';
 
 const SUPPORTED_ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
@@ -28,6 +27,8 @@ const SUPPORTED_ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.skill',
   'claude.skill',
   'agent-skills.skill',
+  'aw.command-set',
+  'aw.command-package',
 ]);
 const SUPPORTED_ARTIFACT_STATES = new Set<ArtifactState>(['present', 'disabled']);
 const TARGET_ORDER: ArtifactTarget[] = [
@@ -43,10 +44,12 @@ const ARTIFACT_KIND_BY_TARGET: Record<ArtifactTarget, ArtifactPlanArtifact['kind
   'codex.skill': 'skill',
   'claude.skill': 'skill',
   'agent-skills.skill': 'skill',
+  'aw.command-set': 'commandSet',
+  'aw.command-package': 'commandPackage',
 };
 
 export type ValidatedArtifactPlanArtifact = ArtifactPlanArtifact & {
-  declaration: PluginArtifactTargetDefinition;
+  declaration: ArtifactRequestDeclaration;
   logicalIdentity: string;
   configDigest: string;
 };
@@ -133,12 +136,12 @@ function resolvePlanObject(plan: unknown): ArtifactPlan {
 
 function getDeclaredTargets(options: {
   manifest: NormalizedPluginManifest;
-  platform: PlatformName | DistributionName;
+  platform: ArtifactRenderSurfaceName;
   scope: Scope;
-}): Map<string, PluginArtifactTargetDefinition> {
-  const output = new Map<string, PluginArtifactTargetDefinition>();
+}): Map<string, ArtifactRequestDeclaration> {
+  const output = new Map<string, ArtifactRequestDeclaration>();
 
-  for (const [index, target] of (options.manifest.artifacts?.targets ?? []).entries()) {
+  for (const [index, target] of artifactRequestDeclarations(options.manifest).entries()) {
     if (target.platform) {
       assertPlatformFieldSupported({
         pluginName: options.manifest.name,
@@ -147,7 +150,7 @@ function getDeclaredTargets(options: {
         requiredPlatform: target.platform,
       });
     }
-    if ((target.platform ?? target.distribution) !== options.platform || !target.scopes.includes(options.scope)) {
+    if (artifactDeclarationSurface(target) !== options.platform || !target.scopes.includes(options.scope)) {
       continue;
     }
     if (
@@ -169,7 +172,7 @@ function getDeclaredTargets(options: {
 function normalizeRefreshKeys(options: {
   value: unknown;
   fieldName: string;
-  declaration: PluginArtifactTargetDefinition;
+  declaration: ArtifactRequestDeclaration;
 }): string[] {
   if (!Array.isArray(options.value)) {
     throw new Error(`Invalid ${options.fieldName}: expected an array.`);
@@ -349,9 +352,9 @@ function targetRequiresCodexProjectConfig(target: ArtifactTarget): boolean {
 function normalizeArtifact(options: {
   artifact: unknown;
   index: number;
-  platform: PlatformName | DistributionName;
+  platform: ArtifactRenderSurfaceName;
   pluginName: string;
-  declarationMap: Map<string, PluginArtifactTargetDefinition>;
+  declarationMap: Map<string, ArtifactRequestDeclaration>;
   renderConfig: Pick<ResolvedArtifactRenderConfig, 'values' | 'sources' | 'issues'>;
   digestSalt: string;
 }): ValidatedArtifactPlanArtifact {
@@ -367,6 +370,43 @@ function normalizeArtifact(options: {
   if (!SUPPORTED_ARTIFACT_TARGETS.has(target)) {
     throw new Error(`Invalid ${fieldName}.target: unsupported target "${target}".`);
   }
+  const declaration = options.declarationMap.get(`${id}:${target}`);
+  if (!declaration) {
+    throw new Error(`Invalid ${fieldName}: artifact "${id}" target "${target}" is not declared for this surface/scope.`);
+  }
+  if (target === 'aw.command-set' || target === 'aw.command-package') {
+    assertAllowedObjectKeys(options.artifact, fieldName, target === 'aw.command-set'
+      ? ['id', 'target', 'kind', 'platform', 'state', 'refreshKeys', 'entries', 'disabledReason']
+      : ['id', 'target', 'kind', 'state', 'refreshKeys', 'files']);
+    if (options.artifact.kind !== (target === 'aw.command-set' ? 'commandSet' : 'commandPackage')) {
+      throw new Error(`Invalid ${fieldName}.kind: unexpected command target kind.`);
+    }
+    if (declaration.platform ? options.artifact.platform !== declaration.platform : Object.hasOwn(options.artifact, 'platform')) {
+      throw new Error(`Invalid ${fieldName}.platform: command target must preserve its declared surface.`);
+    }
+    const state = options.artifact.state;
+    if ((state !== 'present' && state !== 'disabled') || !declaration.states.includes(state)) {
+      throw new Error(`Invalid ${fieldName}.state: state is not declared.`);
+    }
+    const refreshKeys = normalizeRefreshKeys({ value: options.artifact.refreshKeys, fieldName: `${fieldName}.refreshKeys`, declaration });
+    let normalized: ArtifactPlanArtifact;
+    if (target === 'aw.command-set') {
+      const entries = normalizeCommandDefinitions(options.artifact.entries, `${fieldName}.entries`);
+      if (state === 'disabled' && entries.length !== 0) throw new Error(`Invalid ${fieldName}.entries: disabled sets must be empty.`);
+      if (state === 'present' && Object.hasOwn(options.artifact, 'disabledReason')) throw new Error(`Invalid ${fieldName}.disabledReason: only disabled sets may include this field.`);
+      const disabledReason = validateDisabledReason(options.artifact.disabledReason, `${fieldName}.disabledReason`);
+      normalized = { id, target, kind: 'commandSet', ...(declaration.platform ? { platform: declaration.platform } : {}), state, refreshKeys, entries, ...(disabledReason ? { disabledReason } : {}) };
+    } else {
+      if (state !== 'present') throw new Error(`Invalid ${fieldName}.state: command packages must be present.`);
+      const content = validateSkillArtifactContent({ files: options.artifact.files }, fieldName);
+      for (const [file, text] of Object.entries(content?.files ?? {})) {
+        normalizeCommandRelativeFile(file, `${fieldName}.files`);
+        if (text.includes('\0') || Buffer.from(text, 'utf8').toString('utf8') !== text) throw new Error(`Invalid ${fieldName}.files: generated configuration must be Unicode text without NUL.`);
+      }
+      normalized = { id, target, kind: 'commandPackage', state: 'present', refreshKeys, files: content?.files ?? {} };
+    }
+    return { ...normalized, declaration, logicalIdentity: `${options.pluginName}:${id}:${target}`, configDigest: createArtifactConfigDigest({ artifact: normalized, renderConfig: options.renderConfig, digestSalt: options.digestSalt }) };
+  }
   assertAllowedObjectKeys(
     options.artifact,
     fieldName,
@@ -377,15 +417,8 @@ function normalizeArtifact(options: {
         : ['id', target === 'agent-skills.skill' ? 'distribution' : 'platform', 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'skillKey', 'content'],
   );
 
-  const declaration = options.declarationMap.get(`${id}:${target}`);
-  if (!declaration) {
-    throw new Error(
-      `Invalid ${fieldName}: artifact "${id}" target "${target}" is not declared for this platform/scope.`,
-    );
-  }
-
   const surfaceField = target === 'agent-skills.skill' ? 'distribution' : 'platform';
-  const surface = ensureNonEmptyString(options.artifact[surfaceField], `${fieldName}.${surfaceField}`) as PlatformName | DistributionName;
+  const surface = ensureNonEmptyString(options.artifact[surfaceField], `${fieldName}.${surfaceField}`) as Exclude<ArtifactRenderSurfaceName, 'managed-commands'>;
   if (surface !== options.platform) {
     throw new Error(
       `Invalid ${fieldName}.${surfaceField}: expected "${options.platform}" but received "${surface}".`,
@@ -565,7 +598,7 @@ export function validateArtifactPlan(options: {
   pluginName?: string;
   manifest: NormalizedPluginManifest;
   plan: unknown;
-  platform: PlatformName | DistributionName;
+  platform: ArtifactRenderSurfaceName;
   scope: Scope;
   requestedArtifactIds: readonly string[];
   renderConfig: Pick<ResolvedArtifactRenderConfig, 'values' | 'sources' | 'issues'>;

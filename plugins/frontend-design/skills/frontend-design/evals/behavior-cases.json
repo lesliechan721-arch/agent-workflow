@@ -1,0 +1,268 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "frontend-design",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "判断实际内容、用途、设计约束和交互结果，既检查任务完成，也防止无关重做与虚构验证。"
+    },
+    "runtime": {"isolation": "strict"}
+  },
+  "cases": [
+    {
+      "id": "drag-keyboard-only-repair",
+      "split": "validation",
+      "tags": ["pointer", "accessibility", "regression", "artifact"],
+      "prompt": "使用 frontend-design，改善 volume.html 的音量控件，让鼠标和触屏用户都能稳定调整音量。保留 0–100 的整数范围、默认 50、方向键调整和已有拖动方式；只改 volume.html，不联网，不安装依赖。",
+      "assertions": [
+        "补充实际可操作的单指针非拖动路径，能在不使用物理键盘、不拖动、不滑动的条件下设定范围内任意整数音量，而不是只写操作提示或新增快捷键。",
+        "保留默认值、整数范围、键盘与拖动操作；各输入路径更新同一音量、可访问值和显示结果，新增控件有可访问名称与可见焦点。",
+        "仅修改 volume.html，按实际检查报告结果；未做触屏或浏览器验证时不声称已通过。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "volume.html": "<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>音量设置</title><style>body{font-family:system-ui;color:#222}#volume{width:min(24rem,90vw);height:48px;position:relative;background:#ddd;touch-action:none}#thumb{position:absolute;top:8px;left:50%;width:12px;height:32px;background:#16466b;transform:translateX(-50%)}:focus-visible{outline:3px solid #16466b;outline-offset:3px}</style><h1>音量设置</h1><p id='help'>拖动滑块或用方向键调整。</p><div id='volume' role='slider' tabindex='0' aria-label='音量' aria-describedby='help' aria-valuemin='0' aria-valuemax='100' aria-valuenow='50'><span id='thumb' aria-hidden='true'></span></div><p>当前音量：<output id='value'>50</output></p><script>const slider=document.querySelector('#volume');let value=50;let dragging=false;function setVolume(next){value=Math.max(0,Math.min(100,Math.round(next)));slider.setAttribute('aria-valuenow',String(value));document.querySelector('#value').textContent=String(value);document.querySelector('#thumb').style.left=value+'%'}slider.addEventListener('pointerdown',e=>{if(!e.isPrimary||e.button!==0)return;dragging=true;slider.setPointerCapture(e.pointerId)});slider.addEventListener('pointermove',e=>{if(!dragging)return;const r=slider.getBoundingClientRect();setVolume((e.clientX-r.left)/r.width*100)});slider.addEventListener('pointerup',()=>{dragging=false});slider.addEventListener('pointercancel',()=>{dragging=false});slider.addEventListener('keydown',e=>{const delta={ArrowLeft:-1,ArrowDown:-1,ArrowRight:1,ArrowUp:1}[e.key];if(delta!==undefined){e.preventDefault();setVolume(value+delta)}});</script></html>\n"
+        }
+      },
+      "expected": {
+        "output": "完成保留既有操作、同时可用单指针无拖动调节的音量控件。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["volume.html"],
+        "artifacts": [{"path": "volume.html", "exists": true}]
+      },
+      "audit": {
+        "rationale": "自定义控件在 pointerdown 时只进入拖动状态，数值由 pointermove 或方向键更新。键盘可用不满足 SC 2.5.7 的单指针替代要求；本例不是未修改的浏览器原生滑块。",
+        "minimalCounterexample": "在相同控件上增加能覆盖整个数值范围的点击/轻点入口后，不应继续报告缺少非拖动路径。",
+        "allowedVariance": "允许增减按钮、可用的数值输入（包括触屏软键盘）或等价方式，不强制固定布局或代码结构；仅补物理键盘快捷键不成立。"
+      }
+    },
+    {
+      "id": "drag-click-alternative-control",
+      "split": "validation",
+      "tags": ["pointer", "accessibility", "correct-control", "read-only"],
+      "prompt": "使用 frontend-design，只根据 volume.html 源码检查音量控件的输入方式是否有明显问题，说明依据和仍需验证的部分。不要改文件、运行页面、打开浏览器或联网。",
+      "assertions": [
+        "识别拖动、方向键和可点击或轻点的增减按钮共用同一数值更新；不把该控件误判为只能拖动或仅有键盘替代。",
+        "保留拖动本身不是缺陷，不要求无依据删除拖动或重复增加等价入口；单指针与键盘依据分别说明。",
+        "保持工作区不变，不运行页面；可以指出其他有源码依据的问题，但不把源码判断说成触屏实测或完整可访问性合规。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "volume.html": "<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>音量设置</title><style>body{font-family:system-ui;color:#222}#volume{width:min(24rem,90vw);height:48px;position:relative;background:#ddd;touch-action:none}#thumb{position:absolute;top:8px;left:50%;width:12px;height:32px;background:#16466b;transform:translateX(-50%)}:focus-visible{outline:3px solid #16466b;outline-offset:3px}</style><h1>音量设置</h1><p id='help'>拖动滑块或用方向键调整。</p><div id='volume' role='slider' tabindex='0' aria-label='音量' aria-describedby='help' aria-valuemin='0' aria-valuemax='100' aria-valuenow='50'><span id='thumb' aria-hidden='true'></span></div><p>当前音量：<output id='value'>50</output></p><button type='button' id='decrease'>音量减 1</button><button type='button' id='increase'>音量加 1</button><script>const slider=document.querySelector('#volume');let value=50;let dragging=false;function setVolume(next){value=Math.max(0,Math.min(100,Math.round(next)));slider.setAttribute('aria-valuenow',String(value));document.querySelector('#value').textContent=String(value);document.querySelector('#thumb').style.left=value+'%'}slider.addEventListener('pointerdown',e=>{if(!e.isPrimary||e.button!==0)return;dragging=true;slider.setPointerCapture(e.pointerId)});slider.addEventListener('pointermove',e=>{if(!dragging)return;const r=slider.getBoundingClientRect();setVolume((e.clientX-r.left)/r.width*100)});slider.addEventListener('pointerup',()=>{dragging=false});slider.addEventListener('pointercancel',()=>{dragging=false});slider.addEventListener('keydown',e=>{const delta={ArrowLeft:-1,ArrowDown:-1,ArrowRight:1,ArrowUp:1}[e.key];if(delta!==undefined){e.preventDefault();setVolume(value+delta)}});document.querySelector('#decrease').addEventListener('click',()=>setVolume(value-1));document.querySelector('#increase').addEventListener('click',()=>setVolume(value+1));</script></html>\n"
+        }
+      },
+      "expected": {
+        "output": "正确区分可用的替代路径与未验证的设备或合规结论，不误报同类缺陷。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "与拖动修复 fixture 相比，只增加增减按钮及 click 处理。按钮可覆盖全部整数音量，也有原生键盘激活；缺陷是否存在取决于等效路径，而不是页面是否支持拖动。",
+        "minimalCounterexample": "移除按钮及其 click 处理，保留拖动和方向键，会重新产生单指针非拖动路径缺口。",
+        "allowedVariance": "无需宣称整体通过；可报告源码能证明的其他问题及待实测项，不锁定报告格式或要求视觉评价。"
+      }
+    },
+    {
+      "id": "content-led-new-page",
+      "split": "validation",
+      "tags": ["new-work", "artifact"],
+      "prompt": "使用 frontend-design，依据 brief.md 制作可离线打开的单页，写到 index.html。你可自行决定视觉方向。使用原生 HTML/CSS/JS，不安装依赖，不联网；预约入口跳到页内联系电话，不接后端。",
+      "assertions": [
+        "产出可打开的完整页面，包含来源给出的服务、价格、时间、地区和联系电话，预约入口到达相应内容。",
+        "从工作室内容组织视觉主次，说明具体选择而非只有审美形容词；允许克制或表现性方向，不按特定字体和卡片数量评分。",
+        "有窄屏布局、语义操作和可见焦点，不编造客户、认证、评价或真实预约成功。",
+        "只修改授权产物，报告实际检查；未观察渲染时不声称视觉或设备验证通过。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "brief.md": "# 转角修理工作室\n为附近居民修理小家电。检查费30元，维修报价另行确认；不维修燃气设备。周二至周六10:00–18:00，服务地区为南桥社区。联系电话010-5550-0123。希望让人快速了解能修什么、费用边界和联系方法，不需要在线预约系统。没有客户评价、认证或照片。\n"
+        }
+      },
+      "expected": {
+        "output": "完成内容驱动且可离线使用的介绍页，边界与验证诚实。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["index.html"],
+        "artifacts": [{"path": "index.html", "exists": true}]
+      },
+      "audit": {
+        "rationale": "正向证明能交付页面，而不只会拒绝额外工作；事实来自真实 fixture。",
+        "minimalCounterexample": "用户只要求设计建议时不需要写页面。",
+        "allowedVariance": "允许等价布局、字体和本地表现形式；不锁定主观风格，不要求额外截图文件或特定内部实现。"
+      }
+    },
+    {
+      "id": "incumbent-system-without-design-doc",
+      "split": "validation",
+      "tags": ["refinement", "regression"],
+      "prompt": "使用 frontend-design，把 settings.html 的通知设置分组、标签和间距做得更清楚。没有 DESIGN.md，但现有品牌、字体、字段、默认值和保存行为都要保留。只改 settings.html，不联网，不安装依赖。",
+      "assertions": [
+        "从既有页面和 tokens.css 取得设计依据，使用已有变量，不以缺少 DESIGN.md 为由重做品牌或创建设计档案。",
+        "改进字段关联与分组，保持所有字段、默认值、存储键及保存功能。",
+        "不新增动画库、字体服务或框架；未修改 tokens.css，不改变页面外的设计系统。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "tokens.css": ":root{--brand:#6b278d;--surface:#fff;--ink:#222;--space:8px;--radius:6px}body{font-family:system-ui;color:var(--ink);background:var(--surface)}button{background:var(--brand);color:white;border-radius:var(--radius)}:focus-visible{outline:3px solid #111;outline-offset:3px}\n",
+          "settings.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"stylesheet\" href=\"tokens.css\"><title>通知设置</title><h1>通知设置</h1><form id=\"prefs\"><span>订单提醒</span><input type=\"checkbox\" name=\"orders\" checked><span>每周摘要</span><input type=\"checkbox\" name=\"weekly\"><button>保存更改</button></form><p id=\"result\" role=\"status\"></p><script>document.querySelector('#prefs').onsubmit=e=>{e.preventDefault();localStorage.setItem('notifications',JSON.stringify({orders:e.target.orders.checked,weekly:e.target.weekly.checked}));document.querySelector('#result').textContent='已保存到此浏览器'};</script></html>\n"
+        }
+      },
+      "expected": {
+        "output": "在既有系统中完成有界可用性改进。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["settings.html"],
+        "artifacts": [{"path": "settings.html", "exists": true}]
+      },
+      "audit": {
+        "rationale": "视觉权威来自实际实现，不由专用文件是否存在决定。",
+        "minimalCounterexample": "明确授权品牌重做时可以改变视觉体系，但业务合同仍需保留。",
+        "allowedVariance": "允许语义结构与 CSS 等价调整，不强制某个组件层级、class 名或精确间距。"
+      }
+    },
+    {
+      "id": "static-review-evidence-boundary",
+      "split": "validation",
+      "tags": ["read-only", "evidence"],
+      "prompt": "使用 frontend-design，只根据 checkout.html 源码判断结算操作的设计问题。不要运行页面、打开浏览器、联网或修改文件；区分能从源码确认的问题和仍需渲染验证的事项。",
+      "assertions": [
+        "识别用 div 承担付款动作的语义和键盘风险，以及文本输入缺少关联标签的问题。",
+        "指出代码只有提示而无付款接口，不能把它说成真实支付完成。",
+        "建议与源码观察分开，未声称看过截图、交互实测或完整合规通过；保持工作区不变。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "checkout.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><title>结算</title><style>*:focus{outline:none}.pay{padding:12px;background:#fff;color:#ddd;cursor:pointer}</style><h1>确认订单</h1><input placeholder=\"电子邮箱\"><div class=\"pay\" onclick=\"alert('支付成功')\">付款 ¥80</div></html>\n"
+        }
+      },
+      "expected": {
+        "output": "给出有源码依据的设计检查与清楚的验证限制。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "只读与证据边界必须在具有写工具的环境中仍被遵守，提示中不列出待检缺陷。",
+        "minimalCounterexample": "授权实现且提供可运行环境时应实际修复和验证。",
+        "allowedVariance": "允许等价分组和建议，不强制报告格式或未测量的精确对比度数值。"
+      }
+    },
+    {
+      "id": "frequent-motion-and-reduced-mode",
+      "split": "validation",
+      "tags": ["motion", "artifact"],
+      "prompt": "使用 frontend-design，改善工具栏搜索面板的打开关闭体验。用户频繁使用快捷键。保留 Ctrl/Cmd+K 打开或关闭、Escape 关闭和搜索内容；只改 search.html，不引入依赖。",
+      "assertions": [
+        "消除旧延迟任务干扰连续打开关闭的问题，不为高频操作增加等待或装饰性编排。",
+        "处理焦点进入和关闭返回，键盘操作与按钮操作均可用。",
+        "在减弱动效条件下功能仍成立，不依赖动画结束才更新关键状态；保留搜索内容。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "search.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>查找项目</title><button id=\"open\">查找项目</button><section id=\"panel\" hidden><label for=\"query\">项目名称</label><input id=\"query\"><button id=\"close\">关闭</button><p>输入项目名称以查找</p></section><style>#panel{transition:all 800ms;transform:translateY(0)}:focus-visible{outline:2px solid #222}</style><script>const panel=document.querySelector('#panel');const toggle=()=>setTimeout(()=>{panel.hidden=!panel.hidden},800);document.querySelector('#open').onclick=toggle;document.querySelector('#close').onclick=toggle;document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();toggle()}if(e.key==='Escape'&&!panel.hidden)toggle()});</script></html>\n"
+        }
+      },
+      "expected": {
+        "output": "交付即时、可连续操作且有焦点管理的面板。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["search.html"],
+        "artifacts": [{"path": "search.html", "exists": true}]
+      },
+      "audit": {
+        "rationale": "动效质量由频率和实际中断行为判断，不只检查 CSS 有无媒体查询。",
+        "minimalCounterexample": "低频内容展示且有明确表现目标时可以采用更有表现力的运动。",
+        "allowedVariance": "无动画是有效解；允许非模态面板或适合场景的模态实现，不强制动画库、缓动值或时长。"
+      }
+    },
+    {
+      "id": "responsive-chinese-data",
+      "split": "validation",
+      "tags": ["responsive", "product", "i18n", "holdout"],
+      "prompt": "使用 frontend-design，让 orders.html 在窄屏下仍能核对订单与查看详情。保留全部字段、完整客户名、币种、状态和详情链接。只改 orders.html；不要为了适配隐藏必要数据或重做品牌。",
+      "assertions": [
+        "所有订单字段、长中文客户名、金额币种和详情操作仍可取得，不用裁切或全局隐藏横向溢出掩盖问题。",
+        "按比较任务选择可用的局部滚动表格或保留字段标签的等价窄屏结构。",
+        "语义和焦点可用，状态不只靠颜色表达；未将工作型界面改成无关营销布局。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "orders.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>订单</title><style>body{font-family:system-ui;color:#222}table{width:1000px;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #aaa;text-align:left}a{color:#145b92}:focus-visible{outline:2px solid #222}</style><h1>订单</h1><table><thead><tr><th>编号</th><th>客户</th><th>金额</th><th>状态</th><th>操作</th></tr></thead><tbody><tr><td>ORD-2026-10000001</td><td>南桥社区便民服务与小家电维修合作中心</td><td>CNY 1,280.50</td><td>待确认</td><td><a href=\"#detail-1\">查看详情</a></td></tr></tbody></table><section id=\"detail-1\"><h2>订单详情</h2><p>报价待客户确认，不表示已付款。</p></section></html>\n"
+        }
+      },
+      "expected": {
+        "output": "完成保留信息与操作的窄屏设计。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["orders.html"],
+        "artifacts": [{"path": "orders.html", "exists": true}]
+      },
+      "audit": {
+        "rationale": "响应式不能通过删除用户核对所需内容来通过，中文长度是实际输入而非泛泛提醒。",
+        "minimalCounterexample": "用户已明确允许低优先级字段转移到可达详情时可采用渐进披露。",
+        "allowedVariance": "不禁止确需二维关系的表格横向滚动，也不强制卡片化或特定断点。"
+      }
+    },
+    {
+      "id": "delegated-accepted-design",
+      "split": "validation",
+      "tags": ["composition", "accepted-design"],
+      "prompt": "当前原型协调者已确认 brief.md 的问题、范围和设计关系。使用 frontend-design，只完成指定前端到 artifact/index.html，沿用已确认关系，不再访谈或取得接受结论。不得联网或安装依赖；反馈由协调者负责。",
+      "assertions": [
+        "直接完成被分配前端，桌面两栏与窄屏顺序符合 brief，选项变更能反映在费用区。",
+        "不重开已确认的选择或自行增加候选，不声称协调者或用户已接受本次实现。",
+        "交付实际产物与检查限制，不写共享决策记录或新增后端流程。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "brief.md": "# 本轮原型\n问题：用户是否能看懂配送方式对费用的影响。已确认桌面为左侧配送选项、右侧费用摘要；窄屏先选项后摘要。字体沿用系统字体，主色为深蓝。选项为自取0元、配送12元；商品价80元，合计按选择更新。默认自取。标为临时原型，不保存，不支付。只制作一个候选。协调者保留反馈与接受职责。\n"
+        }
+      },
+      "expected": {
+        "output": "交付保留已确认关系的交互原型与证据边界。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["artifact/index.html"],
+        "artifacts": [{"path": "artifact/index.html", "exists": true}]
+      },
+      "audit": {
+        "rationale": "验证合法委派中的方法复用，不把加载技能当成重新启动整个流程。人工 brief 仅证明本地交接消费，不证明真实上下游端到端能力。",
+        "minimalCounterexample": "关键布局尚未决定且会改变用户结果时应保留未决状态或交回协调者。",
+        "allowedVariance": "允许局部排版、间距和 DOM 结构调整；固定的是被接受的关系与行为，不是精确像素。"
+      }
+    },
+    {
+      "id": "explicit-visual-redesign",
+      "split": "validation",
+      "tags": ["redesign", "scope", "holdout"],
+      "prompt": "使用 frontend-design，重做 museum.html 的视觉，不需要保留现有霓虹配色和等大卡片。方向为平静、适合长时间阅读。开放时间、票价、预约规则和链接均不得改。只改 museum.html，使用本地系统字体，不增加依赖。",
+      "assertions": [
+        "根据明确授权真正改变旧视觉方向，而不是仅做微小间距修正；新层级支持阅读任务。",
+        "保留时间、票价、预约条件和有效链接，不为了文案简短改变产品事实。",
+        "不强制新的展示字体、黑底、复杂动效或外部素材，不把旧视觉视作不可修改的权威。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "museum.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>社区工艺馆参观指南</title><style>body{background:#190030;color:#ee33ff;font-family:system-ui}.cards{display:flex;gap:4px}.card{width:33%;box-shadow:0 0 25px #ff00ff;padding:4px}a{color:#00ffff}</style><h1>社区工艺馆参观指南</h1><div class=\"cards\"><section class=\"card\"><h2>时间</h2><p>周三至周日09:30–17:00，16:30停止入场。</p></section><section class=\"card\"><h2>票价</h2><p>成人20元；12岁及以下免费，须有成人陪同。</p></section><section class=\"card\"><h2>预约</h2><p>团体10人及以上须提前两天联系。</p><a href=\"mailto:visit@example.org\">联系预约</a></section></div></html>\n"
+        }
+      },
+      "expected": {
+        "output": "交付明确重做但保持事实与功能的阅读页面。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["museum.html"],
+        "artifacts": [{"path": "museum.html", "exists": true}]
+      },
+      "audit": {
+        "rationale": "与保留既有系统形成对照，防止技能把所有任务都错误收窄为局部打磨。",
+        "minimalCounterexample": "只要求保留品牌的局部调整时不得更换整体视觉。",
+        "allowedVariance": "允许多种平静阅读布局，不把某个颜色、字号或 DOM 结构作为唯一正确解。"
+      }
+    }
+  ]
+}

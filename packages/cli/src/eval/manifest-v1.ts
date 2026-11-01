@@ -29,9 +29,6 @@ export interface AwSkillEvalManifestV1Suite {
   profiles?: string[]
   runs?: number
   timeoutMs?: number
-  requiredForRelease?: boolean
-  releaseSplits?: string[]
-  releaseProcessManagement?: 'managed-only' | 'allow-unmanaged-confirmed'
   provider?:
     | { type: 'custom-process'; command: [string, ...string[]] }
     | { type: 'codex-workflow'; command: [string, ...string[]]; allowedModels: string[] }
@@ -89,9 +86,9 @@ function relativePath(value: unknown, label: string): string {
   return value
 }
 
-function safeIdArray(value: unknown, label: string, allowEmpty = false): string[] {
-  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
-    throw new Error(`${label} must be ${allowEmpty ? 'an array' : 'a non-empty array'}.`)
+function safeIdArray(value: unknown, label: string): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${label} must be a non-empty array.`)
   }
   const result = value.map((entry, index) => safeId(entry, `${label}[${index}]`))
   if (new Set(result).size !== result.length) throw new Error(`${label} must contain unique values.`)
@@ -291,8 +288,7 @@ function parseSuites(value: unknown, profileIds: ReadonlySet<string>): AwSkillEv
     const label = `eval manifest.suites[${index}]`
     const row = record(entry, label)
     onlyKeys(row, [
-      'id', 'kind', 'cases', 'profiles', 'runs', 'timeoutMs', 'requiredForRelease',
-      'releaseSplits', 'releaseProcessManagement', 'provider',
+      'id', 'kind', 'cases', 'profiles', 'runs', 'timeoutMs', 'provider',
     ], label)
     const id = safeId(row.id, `${label}.id`)
     if (
@@ -306,21 +302,6 @@ function parseSuites(value: unknown, profileIds: ReadonlySet<string>): AwSkillEv
     const profiles = row.profiles === undefined ? undefined : safeIdArray(row.profiles, `${label}.profiles`)
     const unknownProfile = profiles?.find((profile) => !profileIds.has(profile))
     if (unknownProfile) throw new Error(`${label} references unknown profile ${JSON.stringify(unknownProfile)}.`)
-    if (row.requiredForRelease !== undefined && typeof row.requiredForRelease !== 'boolean') {
-      throw new Error(`${label}.requiredForRelease must be boolean.`)
-    }
-    const releaseSplits = row.releaseSplits === undefined
-      ? undefined
-      : safeIdArray(row.releaseSplits, `${label}.releaseSplits`, true)
-    if (
-      row.releaseProcessManagement !== undefined
-      && row.releaseProcessManagement !== 'managed-only'
-      && row.releaseProcessManagement !== 'allow-unmanaged-confirmed'
-    ) {
-      throw new Error(
-        `${label}.releaseProcessManagement must be managed-only or allow-unmanaged-confirmed.`,
-      )
-    }
     const provider = row.provider === undefined ? undefined : parseProvider(row.provider, `${label}.provider`)
     if ((row.kind === 'custom-process' || row.kind === 'codex-workflow') && !provider) {
       throw new Error(`${label} ${row.kind} requires provider.`)
@@ -340,11 +321,6 @@ function parseSuites(value: unknown, profileIds: ReadonlySet<string>): AwSkillEv
       ...(row.timeoutMs === undefined
         ? {}
         : { timeoutMs: positiveInteger(row.timeoutMs, `${label}.timeoutMs`) }),
-      ...(row.requiredForRelease === undefined ? {} : { requiredForRelease: row.requiredForRelease }),
-      ...(releaseSplits ? { releaseSplits } : {}),
-      ...(row.releaseProcessManagement === undefined
-        ? {}
-        : { releaseProcessManagement: row.releaseProcessManagement }),
       ...(provider ? { provider } : {}),
     } as AwSkillEvalManifestV1Suite
   })

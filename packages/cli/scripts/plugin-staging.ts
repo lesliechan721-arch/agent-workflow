@@ -2,6 +2,8 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import { writeCatalogExecutableFiles } from '@lesliechan721/aw-plugin-core';
+
 export {
   bundleLocalPlugin,
   prepareLocalPluginBundleSource,
@@ -133,6 +135,7 @@ export async function stageCatalogArtifacts(
     assertStablePluginVersion(plugin.manifest.version, `${plugin.manifest.name} source version`);
   }
   const plugins = sourcePlugins;
+  await Promise.all(plugins.map((plugin) => writeCatalogExecutableFiles(plugin.rootDir)));
   const entries = await Promise.all(plugins.map((plugin) =>
     createCatalogManifestV7Entry(
       plugin,

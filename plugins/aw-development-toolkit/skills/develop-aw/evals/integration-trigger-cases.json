@@ -1,0 +1,185 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "develop-aw",
+    "participants": [
+      "review-agent-skill",
+      "agent-content"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "plugin_review",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "只读评审这个 AW 插件的 manifest 与已有 materialized profiles，不重建。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "被测对象为 develop-aw：AW 插件、Catalog 与 Skill 操作采用领域方法；是否显式启动通用 Reviewer 不改变 AW 适配的适用性。",
+        "minimalCounterexample": "目标改为不需 AW 来源或产物的独立包、普通文件或已有 EvalSpec 执行时，无需加载 develop-aw。",
+        "allowedVariance": "只检查目标加载，来源适配和其它合法能力不受此负例禁止。"
+      }
+    },
+    {
+      "id": "explicit_plugin_review",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$review-agent-skill 只读评审这个 AW 插件的 manifest 与已有 materialized profiles，不重建。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "被测对象为 develop-aw：AW 插件、Catalog 与 Skill 操作采用领域方法；是否显式启动通用 Reviewer 不改变 AW 适配的适用性。",
+        "minimalCounterexample": "目标改为不需 AW 来源或产物的独立包、普通文件或已有 EvalSpec 执行时，无需加载 develop-aw。",
+        "allowedVariance": "加载不证明完成质量；具体产物检查由 conversation suites 观察。"
+      }
+    },
+    {
+      "id": "catalog_review",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "只读检查 AW Catalog inventory、依赖和 snapshot currentness，别联网或 build。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "被测对象为 develop-aw：AW 插件、Catalog 与 Skill 操作采用领域方法；是否显式启动通用 Reviewer 不改变 AW 适配的适用性。",
+        "minimalCounterexample": "目标改为不需 AW 来源或产物的独立包、普通文件或已有 EvalSpec 执行时，无需加载 develop-aw。",
+        "allowedVariance": "只检查目标加载，来源适配和其它合法能力不受此负例禁止。"
+      }
+    },
+    {
+      "id": "explicit_catalog_review",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$review-agent-skill 只读检查 AW Catalog inventory、依赖和 snapshot currentness，别联网或 build。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "被测对象为 develop-aw：AW 插件、Catalog 与 Skill 操作采用领域方法；是否显式启动通用 Reviewer 不改变 AW 适配的适用性。",
+        "minimalCounterexample": "目标改为不需 AW 来源或产物的独立包、普通文件或已有 EvalSpec 执行时，无需加载 develop-aw。",
+        "allowedVariance": "加载不证明完成质量；具体产物检查由 conversation suites 观察。"
+      }
+    },
+    {
+      "id": "workflow_review",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "审核两个 AW 插件之间的运行时引用和 Skill 交接，不修改。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "被测对象为 develop-aw：AW 插件、Catalog 与 Skill 操作采用领域方法；是否显式启动通用 Reviewer 不改变 AW 适配的适用性。",
+        "minimalCounterexample": "目标改为不需 AW 来源或产物的独立包、普通文件或已有 EvalSpec 执行时，无需加载 develop-aw。",
+        "allowedVariance": "只检查目标加载，来源适配和其它合法能力不受此负例禁止。"
+      }
+    },
+    {
+      "id": "explicit_workflow_review",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "$review-agent-skill 审核两个 AW 插件之间的运行时引用和 Skill 交接，不修改。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "被测对象为 develop-aw：AW 插件、Catalog 与 Skill 操作采用领域方法；是否显式启动通用 Reviewer 不改变 AW 适配的适用性。",
+        "minimalCounterexample": "目标改为不需 AW 来源或产物的独立包、普通文件或已有 EvalSpec 执行时，无需加载 develop-aw。",
+        "allowedVariance": "加载不证明完成质量；具体产物检查由 conversation suites 观察。"
+      }
+    },
+    {
+      "id": "develop_request",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "创建并构建 AW 插件，不进行独立 Review。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "被测对象为 develop-aw：AW 插件、Catalog 与 Skill 操作采用领域方法；是否显式启动通用 Reviewer 不改变 AW 适配的适用性。",
+        "minimalCounterexample": "目标改为不需 AW 来源或产物的独立包、普通文件或已有 EvalSpec 执行时，无需加载 develop-aw。",
+        "allowedVariance": "只检查目标加载，来源适配和其它合法能力不受此负例禁止。"
+      }
+    },
+    {
+      "id": "single_portable",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只审查这份可移植 Agent Skill，明确不涉及 AW packaging 或 profiles。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "被测对象为 develop-aw：AW 插件、Catalog 与 Skill 操作采用领域方法；是否显式启动通用 Reviewer 不改变 AW 适配的适用性。",
+        "minimalCounterexample": "若任务要求处理当前 AW 插件或 Skill 的来源、构建或平台产物，应加载 develop-aw。",
+        "allowedVariance": "只检查目标加载，来源适配和其它合法能力不受此负例禁止。"
+      }
+    },
+    {
+      "id": "eval_execution",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只执行已有 Spec 并返回运行结果，不做 AW 质量评审。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "被测对象为 develop-aw：AW 插件、Catalog 与 Skill 操作采用领域方法；是否显式启动通用 Reviewer 不改变 AW 适配的适用性。",
+        "minimalCounterexample": "若任务要求处理当前 AW 插件或 Skill 的来源、构建或平台产物，应加载 develop-aw。",
+        "allowedVariance": "只检查目标加载，来源适配和其它合法能力不受此负例禁止。"
+      }
+    },
+    {
+      "id": "ordinary_toml",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只解析普通 TOML 看语法，不是 AW 配置。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "被测对象为 develop-aw：AW 插件、Catalog 与 Skill 操作采用领域方法；是否显式启动通用 Reviewer 不改变 AW 适配的适用性。",
+        "minimalCounterexample": "若任务要求处理当前 AW 插件或 Skill 的来源、构建或平台产物，应加载 develop-aw。",
+        "allowedVariance": "只检查目标加载，来源适配和其它合法能力不受此负例禁止。"
+      }
+    }
+  ]
+}

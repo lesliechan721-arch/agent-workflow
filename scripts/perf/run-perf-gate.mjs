@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 
 import { runProcessTree } from './process-tree.mjs';
 
@@ -39,14 +40,14 @@ function resolvePnpmInvocation(args) {
   };
 }
 
-function runChild(label, args, timeoutMs) {
+function runChild(label, args, timeoutMs, env) {
   const invocation = resolvePnpmInvocation(args);
   return runProcessTree({
     label,
     command: invocation.command,
     args: invocation.args,
     cwd: repositoryRoot,
-    env: process.env,
+    env,
     timeoutMs,
     onStdout: (text) => process.stdout.write(text),
     onStderr: (text) => process.stderr.write(text),
@@ -54,7 +55,7 @@ function runChild(label, args, timeoutMs) {
 }
 
 export function assertExpectedPerfSummaries(output) {
-  const names = output
+  const names = stripVTControlCharacters(output)
     .split(/\r?\n/u)
     .filter((line) => line.startsWith(SUMMARY_PREFIX))
     .map((line) => {
@@ -90,6 +91,8 @@ export async function runPerfGate(dependencies = {}) {
   const executeChild = dependencies.runChild ?? runChild;
   const now = dependencies.now ?? (() => performance.now());
   const log = dependencies.log ?? ((text) => console.log(text));
+  const env = { ...(dependencies.env ?? process.env), AW_TEST_WORKERS: '' };
+  log('AW_TEST_WORKERS {"runner":"performance-gate","maxWorkers":1,"source":"serial constraint"}');
   const performanceResult = await executeChild('performance Vitest', [
     '--filter',
     '@lesliechan721/aw',
@@ -98,10 +101,11 @@ export async function runPerfGate(dependencies = {}) {
     'run',
     '--config',
     'vitest.perf.config.ts',
-  ], PERF_HARD_TIMEOUT_MS);
+  ], PERF_HARD_TIMEOUT_MS, env);
   assertExpectedPerfSummaries(performanceResult.stdout);
 
   const fastUnitStartedAt = now();
+  log('AW_TEST_WORKERS {"runner":"fast-unit-baseline","maxWorkers":2,"source":"performance baseline"}');
   await executeChild('fast unit lane', [
     '--filter',
     '@lesliechan721/aw',
@@ -110,7 +114,9 @@ export async function runPerfGate(dependencies = {}) {
     'run',
     '--config',
     'vitest.fast.config.ts',
-  ], FAST_UNIT_HARD_TIMEOUT_MS);
+    '--maxWorkers=2',
+    '--minWorkers=1',
+  ], FAST_UNIT_HARD_TIMEOUT_MS, env);
   const fastUnitWallMs = Math.round((now() - fastUnitStartedAt) * 100) / 100;
   log(`${SUMMARY_PREFIX}${JSON.stringify({
     name: 'unit-fast-wall',

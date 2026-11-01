@@ -217,7 +217,8 @@ describe('local-plugin generator', () => {
     const packageRoot = path.join(repoRoot, 'package-root');
     const cliPackageJson = await fs.readJson(
       path.join(resolveCliPackageRoot(), 'package.json'),
-    ) as { packageManager: string };
+    ) as { dependencies: { pnpm: string } };
+    const supportedPackageManager = `pnpm@${cliPackageJson.dependencies.pnpm}`;
     await fs.ensureDir(packageRoot);
     await fs.writeJson(path.join(packageRoot, 'package.json'), {
       name: 'staging-package',
@@ -225,7 +226,7 @@ describe('local-plugin generator', () => {
     });
 
     await expect(validateStagingPackageManager(packageRoot)).rejects.toThrow(
-      `expected "${cliPackageJson.packageManager}"`,
+      `expected "${supportedPackageManager}"`,
     );
 
     await fs.writeJson(path.join(packageRoot, 'package.json'), {
@@ -234,16 +235,16 @@ describe('local-plugin generator', () => {
       packageManager: 'pnpm@9.0.0',
     });
     await expect(validateStagingPackageManager(packageRoot)).rejects.toThrow(
-      `expected "${cliPackageJson.packageManager}"`,
+      `expected "${supportedPackageManager}"`,
     );
 
     await fs.writeJson(path.join(packageRoot, 'package.json'), {
       name: 'staging-package',
       version: '1.0.0',
-      packageManager: cliPackageJson.packageManager,
+      packageManager: supportedPackageManager,
     });
     await expect(validateStagingPackageManager(packageRoot)).resolves.toBe(
-      cliPackageJson.packageManager,
+      supportedPackageManager,
     );
   });
 
@@ -953,6 +954,30 @@ describe('local-plugin generator', () => {
     expect(generateCodexPermissionArtifacts('git-commit', permissions)[0].content).toContain(
       'prefix_rule(pattern = ["git","commit"], decision = "prompt")',
     );
+  });
+
+  it('resolves managed permissions to the same narrow command in both platforms', () => {
+    const id = `cmdp_${'a'.repeat(16)}`;
+    const command = { set: 'guide', key: 'subagent', variant: 'default' };
+    const entry = { command, argsPrefix: ['wait'] };
+    const permissions = [{ name: 'guide', allow: [entry, entry], sandbox: { excludedCommands: [entry] } }];
+    const resolve = (reference: typeof command) => {
+      expect(reference).toEqual(command);
+      return id;
+    };
+    expect(mergeClaudePermissions(permissions, resolve)).toEqual({
+      allow: [`Bash(aw command run ${id} -- wait *)`], ask: [], deny: [],
+      excludedCommands: [`aw command run ${id} -- wait *`],
+    });
+    const rule = generateCodexPermissionArtifacts('guide', permissions, resolve)[0].content;
+    expect(rule).toContain(`prefix_rule(pattern = ["aw","command","run","${id}","--","wait"], decision = "allow")`);
+    expect(rule.match(/prefix_rule/gu)).toHaveLength(1);
+    expect(mergeClaudePermissions([{ name: 'sandbox-only', sandbox: { excludedCommands: [entry] } }], resolve).allow)
+      .toEqual([]);
+    expect(() => mergeClaudePermissions(permissions)).toThrow('commandReferenceInvalid');
+    expect(() => mergeClaudePermissions(permissions, () => 'other')).toThrow('commandReferenceInvalid');
+    expect(() => mergeClaudePermissions([{ name: 'unsafe', allow: [{ command, argsPrefix: ['wait *'] }] }], resolve))
+      .toThrow();
   });
 
   it('rejects permission prefixes with shell control characters', () => {

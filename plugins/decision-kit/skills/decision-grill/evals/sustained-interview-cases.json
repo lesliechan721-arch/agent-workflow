@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-grill",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "开放访谈过早结束会静默遗漏决定；无视单题范围或暂停要求会增加无效互动。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "open-topic-continues-without-nudges",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "autonomous-followup",
+        "platform-codex"
+      ],
+      "prompt": "使用 decision-grill，先只读 docs/sharing-context.md，再通过问答帮我把合作方资料共享方案想清楚。每轮只问一题，暂时不要写文件。",
+      "assertions": [
+        "读取并采用资料中已知的目标和可行能力，不把已给事实重新当作用户问题。",
+        "在用户要求暂停前，两次接受当前题推荐后均主动提出新的范围内重要问题，并等待实际答复；不能只说以后还可以讨论，或把用户回复本身当成继续指令。",
+        "后续问题基于已确认决定展开新的选择或重要后果；不要求固定问题顺序或固定推荐，但不能重问同一已定选择、猜测未答的下游决定。",
+        "用户的两次接受只确认实际提出的题目；最后暂停时保留当前未答问题及仍需展开的重要主题，不宣称整个共享方案已对齐。",
+        "用户要求暂停后停止提问，不写文件或实施共享方案。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "docs/sharing-context.md": "# 合作方资料共享背景\n\n目标是让公司成员与长期合作方交换交付材料，减少人工转发。现有文件按项目保存，公司成员已有登录账号。团队确认可以在本期实现登录访问，也可以实现免登录链接；尚未形成对外共享方案。当前没有既定的分享规则需要兼容。\n"
+        },
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "本题采用你刚给出的推荐，仅确认这一题。"
+            ],
+            "unexpectedQuestionAnswer": "这一项尚未决定，请保留为未决。"
+          },
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "本题采用你刚给出的推荐，仅确认这一题。"
+            ],
+            "unexpectedQuestionAnswer": "这一项尚未决定，请保留为未决。"
+          },
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "先停在这里，剩余问题保留未决，我稍后再讨论。"
+            ],
+            "unexpectedQuestionAnswer": "先停在这里，剩余问题保留未决。"
+          }
+        ]
+      },
+      "expected": {
+        "output": "依据已有事实展开访谈，两次局部确认后主动继续提出新问题；收到暂停要求后，交付已定内容和仍开放的范围，不把局部答复扩大为整体批准。",
+        "workspaceUnchanged": true
+      }
+    },
+    {
+      "id": "frontier-survives-question-batches",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "question-batches",
+        "platform-codex"
+      ],
+      "prompt": "使用 decision-grill，只确定内部报告的五项呈现偏好：日期格式、默认排序方向、每页行数、导出时是否包含摘要、图表主题。各项现有实现均可在本期完成，互不影响；目标是让常用报告便于阅读和导出，没有其他待决范围。每轮问三项，最后不足三项时只问剩余项，暂不写文件。",
+      "assertions": [
+        "遵循用户的批量要求，第一轮只问五项中的三项，并为各项提供可接受的推荐；不要求固定排序或固定推荐值。",
+        "第一轮答复只确认本轮三项；没有用户催促也会在第二轮实际询问其余两项，而非遗漏、擅自默认或仅列为以后可选的工作。",
+        "第二轮答复后准确记录五项被接受的推荐，不扩大范围，不重问已确认事项或机械要求再次确认。",
+        "不写文件，不把偏好访谈扩大为报告系统的实现或整体产品设计。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 3,
+            "answersByIndex": [
+              "本题采用你刚给出的推荐，仅确认这一题。",
+              "本题采用你刚给出的推荐，仅确认这一题。",
+              "本题采用你刚给出的推荐，仅确认这一题。"
+            ],
+            "unexpectedQuestionAnswer": "这项尚未回答，请保留为未决。"
+          },
+          {
+            "expectedQuestionCount": 2,
+            "answersByIndex": [
+              "本题采用你刚给出的推荐，仅确认这一题。",
+              "本题采用你刚给出的推荐，仅确认这一题。"
+            ],
+            "unexpectedQuestionAnswer": "这项尚未回答，请保留为未决。"
+          }
+        ]
+      },
+      "expected": {
+        "output": "两轮完成五项独立选择，题数上限不导致剩余问题丢失；最终记录只包含用户实际接受的五项偏好。",
+        "workspaceUnchanged": true
+      }
+    },
+    {
+      "id": "blocked-evidence-keeps-other-decisions-open",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "evidence-boundary",
+        "platform-codex"
+      ],
+      "prompt": "使用 decision-grill，先只读 docs/archive-context.md，帮我通过问答收敛文档归档的压缩策略。每轮一题，暂不写文件或执行实验。",
+      "assertions": [
+        "识别压缩算法选择缺少真实耗时证据，保留需要测量的问题及足以决定的条件，不捏造性能数据或阈值。",
+        "仍然向用户询问压缩失败后的处理取舍或决定该取舍的优先级；不能因算法分支缺少证据而直接结束整场访谈。",
+        "依据实际答复记录压缩失败时保留原始文件完成归档及接受额外存储的条件，把算法选择继续列为未决。",
+        "按用户要求结束，不把未决算法写成已选定，也不执行实验、写文件或实施归档流程。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "docs/archive-context.md": "# 归档背景\n\n产品必须保留原始内容，不能因压缩失败丢失文件。团队尚未测量候选压缩算法的真实耗时，发布前需要实测才能选择算法。\n\n压缩失败时，技术上既可以保存原始文件并完成本次归档，也可以拒绝本次提交并让用户重试。前者保持提交可用但占用更多存储，后者保持每份归档都经过压缩但增加重试负担；两条路径都能保证原始内容不丢失。目前没有确认哪项代价优先。\n"
+        },
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "压缩失败时保留原始文件完成归档，接受额外存储；算法选型等实测再定。这次就到这里。"
+            ],
+            "unexpectedQuestionAnswer": "算法等实测，先记录为未决；这次到这里。"
+          }
+        ]
+      },
+      "expected": {
+        "output": "缺少算法实测只阻塞相关分支，仍取得失败处理的真实选择；结束时保留测量需求与未决状态。",
+        "workspaceUnchanged": true
+      }
+    },
+    {
+      "id": "vague-answer-needs-a-concrete-consequence",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "answer-depth",
+        "platform-codex"
+      ],
+      "prompt": "使用 decision-grill，只讨论受邀外部伙伴能否下载项目文件。已经确定伙伴必须登录、只能访问被邀请的项目，并可在线查看文件。允许下载能支持离线查看，但撤销访问后无法收回本地副本；禁止下载能减少文件外流，但离线时无法查看。每轮只问一题，暂不写文件。",
+      "assertions": [
+        "直接围绕下载这一项选择提问，采用已确认的登录、项目范围和在线查看规则，不重开这些决定。",
+        "用户说还没想好具体规则、只想安全一点后，不将它当成接受推荐或明确委托；用下载副本无法收回与离线无法查看的具体后果继续核对。",
+        "依据第二次实际答复记录允许在线查看、禁止下载及接受离线无法查看的代价，不增加其他权限限制。",
+        "用户要求记录后结束时结束，不重问已明确答案，不写文件。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "我还没想好具体规则，只觉得要安全一点。"
+            ],
+            "unexpectedQuestionAnswer": "尚未决定，请保留为未决。"
+          },
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "允许在线查看，禁止下载；我接受用户离线时无法查看。记录后结束。"
+            ],
+            "unexpectedQuestionAnswer": "只确认在线查看、禁止下载及离线不可查看，记录后结束。"
+          }
+        ]
+      },
+      "expected": {
+        "output": "用具体后果澄清含糊方向，获得真实的下载规则及代价接受，再在原范围内结束。",
+        "workspaceUnchanged": true
+      }
+    }
+  ]
+}

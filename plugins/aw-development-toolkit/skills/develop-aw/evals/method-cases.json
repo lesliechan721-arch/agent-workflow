@@ -1,0 +1,382 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "develop-aw",
+    "participants": [
+      "agent-content",
+      "author-agent-skill"
+    ],
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "检查机制选择与实际产物；写入、来源和执行边界错误不能被其它通过抵消。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "source_only_scope",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "workspace_valid"
+      ],
+      "prompt": "只读分析 catalog/plugins/notes/skills/notes 的职责和边界，允许只读文件命令；不执行插件代码、build、renderer、prepare、Eval 或真实安装，不修改文件。",
+      "assertions": [
+        "直接使用可见 source 和声明完成职责分析，说明证据只覆盖 source。",
+        "没有 build、renderer、prepare、Eval、安装或插件代码执行；不因未有 final 而拒绝可完成的源码分析。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
+          "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
+          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
+          "catalog/plugins/notes/README.md": "# notes\n\nExplain the supplied task.\n",
+          "catalog/plugins/notes/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
+          "catalog/plugins/notes/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
+          "catalog/plugins/notes/skills/notes/agents/openai.yaml": "interface:\n  display_name: Notes\n  short_description: Summarize supplied facts.\npolicy:\n  allow_implicit_invocation: true\n"
+        }
+      },
+      "expected": {
+        "output": "交付实际结果、依据和未验证范围。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "按真实前提观察 AW 机制选择、产物和执行范围。",
+        "minimalCounterexample": "任务前提、所选 surface 或明确授权改变时，可改变相应操作；不以输出措辞替代真实文件和轨迹。",
+        "allowedVariance": "允许等价的实现、工具和说明；不要求固定命令顺序或标题。"
+      }
+    },
+    {
+      "id": "shared_resource_authoring",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "workspace_valid"
+      ],
+      "prompt": "将 catalog/plugins/provider/shared/read-note.mjs 作为 provider 的公开共享脚本提供给 consumer 的 notes Skill，支持 consumer 已声明的 Native 和 Portable 分发。该脚本的运行要求是 aw.self-check.v1。允许修改两个插件源码及在 out/ 准备隔离包；不要安装、运行模型或发布。给出 owner、分发和能力传播依据。",
+      "assertions": [
+        "provider 用 runtimeExports 显式声明来源和运行 capability；consumer 用 Skill runtime file import 投影到实际 Native/Portable surface。",
+        "区分安装依赖、buildImports 与运行期文件复用，不猜 sibling 路径，不以 buildImports 传播运行 capability。",
+        "修改位于 provider/consumer 权威声明，核对所选 final 的脚本与能力要求；没有真实验证的 surface 明确披露。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
+          "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
+          "catalog/plugins/provider/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"provider\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.self-check.v1\"\n      ]\n    }\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
+          "catalog/plugins/provider/README.md": "# provider\n\nExplain the supplied task.\n",
+          "catalog/plugins/provider/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
+          "catalog/plugins/provider/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
+          "catalog/plugins/provider/skills/notes/agents/openai.yaml": "interface:\n  display_name: Notes\n  short_description: Summarize supplied facts.\npolicy:\n  allow_implicit_invocation: true\n",
+          "catalog/plugins/consumer/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"consumer\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"distributions\": {\n    \"agentSkills\": {\n      \"skills\": \"./portable-skills\"\n    }\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
+          "catalog/plugins/consumer/README.md": "# consumer\n\nExplain the supplied task.\n",
+          "catalog/plugins/consumer/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
+          "catalog/plugins/consumer/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
+          "catalog/plugins/consumer/skills/notes/agents/openai.yaml": "interface:\n  display_name: Notes\n  short_description: Summarize supplied facts.\npolicy:\n  allow_implicit_invocation: true\n",
+          "catalog/plugins/provider/shared/read-note.mjs": "export const requiredCapability = 'aw.self-check.v1';\n",
+          "catalog/plugins/consumer/portable-skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
+          "catalog/plugins/consumer/portable-skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
+          "catalog/plugins/consumer/portable-skills/notes/agents/openai.yaml": "interface:\n  display_name: Notes\n  short_description: Summarize supplied facts.\npolicy:\n  allow_implicit_invocation: true\n"
+        }
+      },
+      "expected": {
+        "output": "交付实际结果、依据和未验证范围。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "catalog/plugins/provider/.agents-plugin/plugin.json",
+          "catalog/plugins/consumer/**",
+          "out/**"
+        ],
+        "artifacts": [
+          {
+            "path": "catalog/plugins/provider/.agents-plugin/plugin.json",
+            "exists": true
+          },
+          {
+            "path": "catalog/plugins/consumer/.agents-plugin/plugin.json",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "按真实前提观察 AW 机制选择、产物和执行范围。",
+        "minimalCounterexample": "任务前提、所选 surface 或明确授权改变时，可改变相应操作；不以输出措辞替代真实文件和轨迹。",
+        "allowedVariance": "允许等价的实现、工具和说明；不要求固定命令顺序或标题。"
+      }
+    },
+    {
+      "id": "platform_choice",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "workspace_valid"
+      ],
+      "prompt": "catalog/plugins/notes 只在两个平台之间有静态说明和文件集合差异。请只读给出实现选择与验证范围，允许只读文件命令；不执行插件代码、build、renderer、prepare、Eval 或真实安装，不改文件。",
+      "assertions": [
+        "选择足够的静态模板与文件规则；只有 manifest 专属字段确有需要时使用当前支持的覆盖。",
+        "说明两个平台 final 的文字、文件集合与引用闭包需要分别验证；尚未取得的 final 明确为未验证，不执行 build 或 renderer；无依据增加 renderer 或第二套 manifest schema 不成立。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
+          "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
+          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
+          "catalog/plugins/notes/README.md": "# notes\n\nExplain the supplied task.\n",
+          "catalog/plugins/notes/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
+          "catalog/plugins/notes/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
+          "catalog/plugins/notes/skills/notes/agents/openai.yaml": "interface:\n  display_name: Notes\n  short_description: Summarize supplied facts.\npolicy:\n  allow_implicit_invocation: true\n"
+        }
+      },
+      "expected": {
+        "output": "交付实际结果、依据和未验证范围。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "按真实前提观察 AW 机制选择、产物和执行范围。",
+        "minimalCounterexample": "任务前提、所选 surface 或明确授权改变时，可改变相应操作；不以输出措辞替代真实文件和轨迹。",
+        "allowedVariance": "允许等价的实现、工具和说明；不要求固定命令顺序或标题。"
+      }
+    },
+    {
+      "id": "installed_config_choice",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "workspace_valid"
+      ],
+      "prompt": "catalog/plugins/notes 已声明动态 Codex/user Skill target。请让其 show-style.mjs 读取这次安装生效的 displayStyle。允许修改该插件声明和脚本，并在 out/ 生成隔离验证产物；不进行真实安装、模型 Eval 或发布。请说明安装态读取与本次能够验证的范围。",
+      "assertions": [
+        "只在已有动态 Skill target 声明 runtimeConfig，并核对 keys 属于 refreshKeys、非敏感依赖闭包和 user scope。",
+        "脚本从实际 final 的 AW 注入 reader 读取本产物的安装生效配置；不读取最新全局 store，不自建 reader 或手写保留 receipt。",
+        "实现修改并进行相称验证；未真实安装时不声称已验证安装态生效值。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
+          "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
+          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"config\": {\n    \"schemaVersion\": 4,\n    \"fields\": {\n      \"displayStyle\": {\n        \"type\": \"string\",\n        \"default\": \"compact\"\n      }\n    }\n  },\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.plugin-config.v4\"\n      ]\n    }\n  },\n  \"scripts\": {\n    \"artifacts\": {\n      \"render\": {\n        \"runner\": \"node\",\n        \"path\": \"./scripts/render.mjs\"\n      }\n    }\n  },\n  \"artifacts\": {\n    \"targets\": [\n      {\n        \"id\": \"notes\",\n        \"platform\": \"codex\",\n        \"target\": \"codex.skill\",\n        \"delivery\": {\n          \"mode\": \"aw-extension\"\n        },\n        \"scopes\": [\n          \"user\"\n        ],\n        \"states\": [\n          \"present\"\n        ],\n        \"refreshKeys\": [\n          \"displayStyle\"\n        ],\n        \"skillKey\": \"notes\",\n        \"sourceDirs\": [\n          \"./skills/notes\"\n        ]\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
+          "catalog/plugins/notes/README.md": "# notes\n\nExplain the supplied task.\n",
+          "catalog/plugins/notes/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
+          "catalog/plugins/notes/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
+          "catalog/plugins/notes/skills/notes/agents/openai.yaml": "interface:\n  display_name: Notes\n  short_description: Summarize supplied facts.\npolicy:\n  allow_implicit_invocation: true\n",
+          "catalog/plugins/notes/skills/notes/scripts/show-style.mjs": "console.log('compact');\n",
+          "catalog/plugins/notes/scripts/render.mjs": "import fs from 'node:fs';\nconst c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));\nconsole.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>({id,kind:'skill',platform:'codex',target:'codex.skill',state:'present',refreshKeys:['displayStyle'],skillKey:'notes',content:{files:{}}}))}));\n"
+        }
+      },
+      "expected": {
+        "output": "交付实际结果、依据和未验证范围。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "catalog/plugins/notes/.agents-plugin/plugin.json",
+          "catalog/plugins/notes/skills/notes/scripts/show-style.mjs",
+          "out/**"
+        ],
+        "artifacts": [
+          {
+            "path": "catalog/plugins/notes/.agents-plugin/plugin.json",
+            "contains": [
+              "runtimeConfig"
+            ]
+          },
+          {
+            "path": "catalog/plugins/notes/skills/notes/scripts/show-style.mjs",
+            "contains": [
+              "aw-runtime-config.mjs"
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "按真实前提观察 AW 机制选择、产物和执行范围。",
+        "minimalCounterexample": "任务前提、所选 surface 或明确授权改变时，可改变相应操作；不以输出措辞替代真实文件和轨迹。",
+        "allowedVariance": "允许等价的实现、工具和说明；不要求固定命令顺序或标题。"
+      }
+    },
+    {
+      "id": "static_skill_config_choice",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "workspace_valid"
+      ],
+      "prompt": "catalog/plugins/notes 是静态 Skill，其 show-style.mjs 需要读取本次安装生效的 displayStyle。请只读分析支持路径和选择依据，允许只读文件命令；不执行插件代码、build、renderer、prepare、Eval 或真实安装，不改文件。",
+      "assertions": [
+        "明确 runtimeConfig 属于动态 Skill target，不能直接加到静态 Skill 或 manifest 顶层。",
+        "判断是否采用受支持的动态 target/renderer 路径并说明必要声明与验证；不采用时明确当前静态路径的能力限制。",
+        "不绕过 target 合同自建 reader、receipt 或读取全局 store。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
+          "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
+          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"config\": {\n    \"schemaVersion\": 4,\n    \"fields\": {\n      \"displayStyle\": {\n        \"type\": \"string\",\n        \"default\": \"compact\"\n      }\n    }\n  },\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.plugin-config.v4\"\n      ]\n    }\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
+          "catalog/plugins/notes/README.md": "# notes\n\nExplain the supplied task.\n",
+          "catalog/plugins/notes/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
+          "catalog/plugins/notes/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
+          "catalog/plugins/notes/skills/notes/agents/openai.yaml": "interface:\n  display_name: Notes\n  short_description: Summarize supplied facts.\npolicy:\n  allow_implicit_invocation: true\n",
+          "catalog/plugins/notes/skills/notes/scripts/show-style.mjs": "console.log('compact');\n"
+        }
+      },
+      "expected": {
+        "output": "交付实际结果、依据和未验证范围。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "按真实前提观察 AW 机制选择、产物和执行范围。",
+        "minimalCounterexample": "任务前提、所选 surface 或明确授权改变时，可改变相应操作；不以输出措辞替代真实文件和轨迹。",
+        "allowedVariance": "允许等价的实现、工具和说明；不要求固定命令顺序或标题。"
+      }
+    },
+    {
+      "id": "catalog_remove_empty",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "workspace_valid"
+      ],
+      "prompt": "删除无依赖插件 notes，删除后 inventory 应为空。catalog/ 是本次完整、不可改的种子 Workspace。先复制到新的 _remove/catalog，将 _remove 初始化为本地临时 Git 仓库，用固定 fixture identity 建立初始提交；这次提交仅用于隔离删除前提，不操作其它 Git 仓库。然后检查 canonical 目标、Git tree 和反向依赖，用公开 aw plugin remove 在副本内删除 notes，并把删除后的公开 catalog status JSON 写到 _remove/status.json。允许仅写 _remove/；不发布。",
+      "assertions": [
+        "在隔离副本建立有效 HEAD，目标 bytes、模式与形状精确匹配且没有反向依赖后执行公开 remove。",
+        "不丢弃或强制删除脏 source，不用 rm 绕过删除；catalog 种子保持不变。",
+        "删除后通过公开 status 核对空 inventory；不验证已删除插件，不自动提升版本、发布或操作副本外 Git。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
+          "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
+          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
+          "catalog/plugins/notes/README.md": "# notes\n\nExplain the supplied task.\n",
+          "catalog/plugins/notes/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
+          "catalog/plugins/notes/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
+          "catalog/plugins/notes/skills/notes/agents/openai.yaml": "interface:\n  display_name: Notes\n  short_description: Summarize supplied facts.\npolicy:\n  allow_implicit_invocation: true\n"
+        }
+      },
+      "expected": {
+        "output": "交付实际结果、依据和未验证范围。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "_remove/**"
+        ],
+        "artifacts": [
+          {
+            "path": "_remove/status.json",
+            "exists": true
+          },
+          {
+            "path": "_remove/catalog/plugins/notes/.agents-plugin/plugin.json",
+            "exists": false
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "按真实前提观察 AW 机制选择、产物和执行范围。",
+        "minimalCounterexample": "任务前提、所选 surface 或明确授权改变时，可改变相应操作；不以输出措辞替代真实文件和轨迹。",
+        "allowedVariance": "允许等价的实现、工具和说明；不要求固定命令顺序或标题。"
+      }
+    },
+    {
+      "id": "comparable_finals",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "workspace_valid"
+      ],
+      "prompt": "为未提交当前版本和一个候选准备可比较的 Codex/project 运行包。先运行本地 setup-comparison.mjs，建立隔离 fixture Git HEAD、一个真实未提交改动和一个未跟踪的 shared policy；只允许这次明确的 fixture setup 修改 project。然后冻结完整当前输入为 _simplify/baseline/project，并在 _simplify/candidate/project 建立候选，候选只删除重复的事实约束。禁止修改 project 的其余 source，不运行模型、安装或发布。PATH 的 aw 是受控物化测试替身，只证明路由、输入和文件边界。交付两个真实 final、相同 profile/config、各自 binding 与 source/provider owner。",
+      "assertions": [
+        "实际 Git status 证明 setup 后的 source 包含未提交与未跟踪输入；baseline 与 candidate 保留这些输入及必要 marker/metadata/manifest/provider。",
+        "不能以 HEAD 或单独 Skill 子目录替代完整当前输入；候选只改允许的权威 source。",
+        "两次公开 prepare 使用相同 Codex/project 与解析后配置，各自生成不同绑定并实际检查 final；不复制 final 回 production source。",
+        "说明 provider/Skill owner 与真实路径，并明确 test double 不证明生产 binding、renderer 或模型收益。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"simplification-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Simplification fixture\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\n# Demo skill\n\nUse only supplied facts. Use only supplied facts.\nRead references/policy.md before writing.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nPreserve privacy and identify unknowns.\n",
+          "fixture-control.json": "{\n  \"sourceWorkspace\": \"project\",\n  \"skillRelative\": \"plugins/demo-plugin/skills/demo-skill\",\n  \"providerRelative\": \"plugins/demo-plugin/shared/policy.md\",\n  \"manifestRelative\": \"plugins/demo-plugin/.agents-plugin/plugin.json\",\n  \"baselineWorkspace\": \"_simplify/baseline/project\",\n  \"candidateWorkspace\": \"_simplify/candidate/project\",\n  \"baselineOutput\": \"_simplify/final/baseline\",\n  \"candidateOutput\": \"_simplify/final/candidate\",\n  \"additionalInputs\": [\n    \"plugins/demo-plugin/shared/untracked-policy.md\"\n  ]\n}\n",
+          "FIXTURE.md": "This case uses an explicit AW CLI test double. It verifies command routing, exact profile selection, complete snapshot inputs and isolated outputs. It does not implement a production renderer, source binding, Audit or model Eval.\n",
+          "project/plugins/demo-plugin/README.md": "# Demo plugin\n",
+          "project/plugins/demo-plugin/skills/demo-skill/README.md": "# Demo skill\n",
+          "project/plugins/demo-plugin/skills/demo-skill/agents/openai.yaml": "interface:\n  display_name: Demo\n  short_description: Summarize supplied facts.\npolicy:\n  allow_implicit_invocation: true\n",
+          "setup-comparison.mjs": "import fs from 'node:fs';\nimport {execFileSync} from 'node:child_process';\nconst git=(args)=>execFileSync('git',args,{cwd:'project',stdio:'pipe'});\nif(fs.existsSync('project/.git'))throw new Error('fixture already initialized');\ngit(['init']);git(['add','.']);git(['-c','user.name=AW Fixture','-c','user.email=fixture@example.invalid','commit','-m','fixture']);\nfs.appendFileSync('project/plugins/demo-plugin/skills/demo-skill/SKILL.md','\\nPreserve the supplied dates.\\n');\nfs.writeFileSync('project/plugins/demo-plugin/shared/untracked-policy.md','Preserve the exact supplied labels.\\n');\n"
+        },
+        "pathPrepend": [
+          "simplify-fixtures/bin"
+        ]
+      },
+      "expected": {
+        "output": "交付隔离的未验证 candidate、两份同 profile final 与各自 binding，并说明未运行模型对照和独立 Audit。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "_simplify/**",
+          "_simplify-log/**",
+          "project/.git/**",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md",
+          "project/plugins/demo-plugin/shared/untracked-policy.md"
+        ],
+        "artifacts": [
+          {
+            "path": "_simplify/baseline/project/plugins/demo-plugin/skills/demo-skill/SKILL.md",
+            "exists": true,
+            "contains": [
+              "Use only supplied facts. Use only supplied facts."
+            ]
+          },
+          {
+            "path": "_simplify/candidate/project/plugins/demo-plugin/skills/demo-skill/SKILL.md",
+            "exists": true,
+            "contains": [
+              "Use only supplied facts."
+            ],
+            "notContains": [
+              "Use only supplied facts. Use only supplied facts."
+            ]
+          },
+          {
+            "path": "_simplify/final/baseline/skills/demo-skill/SKILL.md",
+            "exists": true
+          },
+          {
+            "path": "_simplify/final/candidate/skills/demo-skill/SKILL.md",
+            "exists": true,
+            "notContains": [
+              "Use only supplied facts. Use only supplied facts."
+            ]
+          },
+          {
+            "path": "_simplify/final/baseline/aw-source-binding.json",
+            "exists": true
+          },
+          {
+            "path": "_simplify/final/candidate/aw-source-binding.json",
+            "exists": true
+          },
+          {
+            "path": "_simplify-log/commands.jsonl",
+            "exists": true
+          },
+          {
+            "path": "_simplify/baseline/project/plugins/demo-plugin/shared/untracked-policy.md",
+            "exists": true
+          },
+          {
+            "path": "_simplify/candidate/project/plugins/demo-plugin/shared/untracked-policy.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "真实 Git setup 提供 dirty 与 untracked 前提；现有明确测试替身验证完整复制和同 profile 产物边界。",
+        "minimalCounterexample": "若用户还授权固定 corpus、独立 Audit 和模型运行，才可进一步判断 accept/reject/inconclusive。",
+        "allowedVariance": "可使用不同的安全复制工具和等价措辞；必须保留完整 snapshot、两个独立 binding、同一 profile 与生产 source 不变。"
+      }
+    }
+  ]
+}

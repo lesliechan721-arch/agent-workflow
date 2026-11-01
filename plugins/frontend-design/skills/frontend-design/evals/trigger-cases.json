@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "frontend-design",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "medium",
+      "rationale": "保护真实界面设计任务的发现，同时避免把机械修改、后端与无界面内容工作扩大成设计流程。"
+    }
+  },
+  "cases": [
+    {
+      "id": "new_landing",
+      "split": "validation",
+      "tags": ["positive", "new-work"],
+      "input": {"query": "为本地修理工作室做一个预约介绍页，让服务内容和预约入口清楚，又有自己的视觉特色。", "expectedLoad": true},
+      "audit": {"rationale": "需要内容驱动的视觉方向与页面实现。", "minimalCounterexample": "只把已有按钮链接改到指定地址时不需要设计方法。", "allowedVariance": "可以作为直接入口或允许的辅助能力，不要求第一个加载。"}
+    },
+    {
+      "id": "dense_product_ui",
+      "split": "validation",
+      "tags": ["positive", "product"],
+      "input": {"query": "这个订单后台太难扫描，帮我改善表格密度、异常状态和窄屏操作，不要做成营销页。", "expectedLoad": true},
+      "audit": {"rationale": "工作型界面的层级、状态和适配需要设计判断。", "minimalCounterexample": "只修改订单查询 SQL 不需要本技能。", "allowedVariance": "允许保留常规后台布局，不以新颖程度判断触发。"}
+    },
+    {
+      "id": "bounded_component_polish",
+      "split": "validation",
+      "tags": ["positive", "refinement"],
+      "input": {"query": "保留当前品牌和组件库，改善日期选择器的焦点、点击区和打开关闭体验。", "expectedLoad": true},
+      "audit": {"rationale": "局部交互也有前端设计增量，不要求完整页面。", "minimalCounterexample": "日期常量精确替换且无界面判断时普通编辑即可。", "allowedVariance": "可与实施或浏览器能力组合，不要求重做视觉方向。"}
+    },
+    {
+      "id": "delegated_prototype_ui",
+      "split": "validation",
+      "tags": ["positive", "composition"],
+      "input": {"query": "原型问题和接受范围已定。你只负责按现有 brief 完成两种搜索结果布局的前端，反馈由调用者取得。", "expectedLoad": true},
+      "audit": {"rationale": "前端设计是已委派原型构建的合法辅助方法。", "minimalCounterexample": "只安排访谈次序且没有界面工作时不需要加载。", "allowedVariance": "无需成为协调入口；是否加载与是否取得用户接受分开判定。"}
+    },
+    {
+      "id": "reading_layout",
+      "split": "validation",
+      "tags": ["positive", "reading", "holdout"],
+      "input": {"query": "知识库页面有长标题、代码块和目录，调整阅读节奏及手机布局，保留所有正文。", "expectedLoad": true},
+      "audit": {"rationale": "要求实际网页的排版和响应式，不是正文摘要。", "minimalCounterexample": "只总结文档内容而不处理界面时不应加载。", "allowedVariance": "可辅助保真呈现能力，不强制特定页面结构。"}
+    },
+    {
+      "id": "backend_only",
+      "split": "validation",
+      "tags": ["negative", "boundary"],
+      "input": {"query": "为订单 API 增加分页参数校验，只改服务端，不涉及网页。", "expectedLoad": false},
+      "audit": {"rationale": "没有视觉、交互或前端设计对象。", "minimalCounterexample": "增加分页控件布局与状态要求时可加载。", "allowedVariance": "其他开发能力可以加载，本断言只检查 frontend-design。"}
+    },
+    {
+      "id": "mechanical_token_edit",
+      "split": "validation",
+      "tags": ["negative", "boundary"],
+      "input": {"query": "只把 tokens.css 中 --space-card 从 16px 改成 20px，值已确定，不需要重新设计。", "expectedLoad": false},
+      "audit": {"rationale": "精确机械替换没有新增设计判断。", "minimalCounterexample": "用户要求重新判断卡片间距与层级时可加载。", "allowedVariance": "允许直接编辑和相关回归检查，不用本技能引入额外分析。"}
+    },
+    {
+      "id": "prose_summary_only",
+      "split": "validation",
+      "tags": ["negative", "boundary", "holdout"],
+      "input": {"query": "把这段前端团队会议记录概括成三句话，直接回复文字，不生成页面。", "expectedLoad": false},
+      "audit": {"rationale": "主题含前端不代表任务需要界面设计。", "minimalCounterexample": "要求把记录制作成有阅读导航的网页并设计版式时可辅助加载。", "allowedVariance": "只判断当前请求，不假定后续会新增界面任务。"}
+    }
+  ]
+}

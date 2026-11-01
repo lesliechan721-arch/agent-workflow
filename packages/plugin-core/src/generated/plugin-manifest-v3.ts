@@ -17,6 +17,16 @@ export type PluginPath = string
 export type StringArray = string[]
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "commandName".
+ */
+export type CommandName = string
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "permissionCommands".
+ */
+export type PermissionCommands = (string | ManagedCommandPermission)[]
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "artifactTarget".
  */
 export type ArtifactTarget = ({
@@ -83,6 +93,41 @@ requiredCapabilities: Capabilities
 capabilitySetDigest: string
 }
 }[]
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "managedCommandSet".
+ */
+export type ManagedCommandSet = ({
+set: CommandName
+producer: ManagedCommandProducer
+mode: "static"
+entries: CommandDefinition[]
+} | {
+set: CommandName
+producer: ManagedCommandProducer
+mode: "dynamic"
+refreshKeys: string[]
+})
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "managedCommandProducer".
+ */
+export type ManagedCommandProducer = ({
+kind: "artifact"
+artifactId: string
+} | {
+kind: "static-skill"
+platform: ("codex" | "claude")
+skillKey: string
+} | {
+kind: "package"
+packageKey: CommandName
+})
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "commandRelativeFile".
+ */
+export type CommandRelativeFile = string
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "config".
@@ -203,6 +248,7 @@ marketplace: Marketplace
 interface?: Interface
 extensions?: Extensions
 artifacts?: Artifacts
+managedCommands?: ManagedCommands
 buildConfig?: BuildConfig
 scripts?: Scripts
 config?: Config
@@ -291,10 +337,48 @@ codex?: ({
  */
 export interface Permission {
 name: string
-allow?: StringArray
-ask?: StringArray
-deny?: StringArray
-agentOverrides?: PlatformOverrides
+allow?: PermissionCommands
+ask?: PermissionCommands
+deny?: PermissionCommands
+agentOverrides?: PermissionOverrides
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "managedCommandPermission".
+ */
+export interface ManagedCommandPermission {
+command: ManagedCommandReference
+argsPrefix?: string[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "managedCommandReference".
+ */
+export interface ManagedCommandReference {
+set: CommandName
+key: CommandName
+variant?: CommandName
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "permissionOverrides".
+ */
+export interface PermissionOverrides {
+codex?: (null | {
+name?: string
+allow?: PermissionCommands
+ask?: PermissionCommands
+deny?: PermissionCommands
+})
+claude?: (null | {
+name?: string
+allow?: PermissionCommands
+ask?: PermissionCommands
+deny?: PermissionCommands
+sandbox?: {
+excludedCommands: ManagedCommandPermission[]
+}
+})
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
@@ -342,6 +426,60 @@ export interface RuntimeConfig {
  * @minItems 1
  */
 keys: [string, ...(string)[]]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "managedCommands".
+ */
+export interface ManagedCommands {
+packages?: ManagedCommandPackage[]
+sets?: ManagedCommandSet[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "managedCommandPackage".
+ */
+export interface ManagedCommandPackage {
+key: CommandName
+scope: ("user" | "project")
+/**
+ * @minItems 1
+ */
+platforms: [("codex" | "claude"), ...(("codex" | "claude"))[]]
+sourceDir: PluginPath
+render?: true
+refreshKeys?: string[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "commandDefinition".
+ */
+export interface CommandDefinition {
+key: CommandName
+variant?: CommandName
+runner: ("node" | "executable")
+entry: CommandRelativeFile
+/**
+ * @maxItems 128
+ */
+args?: string[]
+env?: CommandEnvironment
+envFrom?: CommandEnvironmentSource
+cwd?: ("caller" | "resource")
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "commandEnvironment".
+ */
+export interface CommandEnvironment {
+[k: string]: string
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "commandEnvironmentSource".
+ */
+export interface CommandEnvironmentSource {
+[k: string]: string
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema

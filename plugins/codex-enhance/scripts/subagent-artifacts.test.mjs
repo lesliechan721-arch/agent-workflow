@@ -28,11 +28,18 @@ function skill(plan, id) {
   return plan.artifacts.find((item) => item.id === id).content.files['SKILL.md'];
 }
 
+function profileText(plan, id) {
+  return id === 'codex-subagent-guide-skill'
+    ? plan.artifacts.find((item) => item.id === id).content.files['references/execution-profiles.md']
+    : skill(plan, id);
+}
+
 function profiles(text) {
-  return Object.fromEntries(text.split('\n').filter((line) => /^\| (simple|general|complex|advanced|quick|standard|deep|design|debug|review) \|/.test(line))
+  return Object.fromEntries(text.split('\n').filter((line) => /^\| (simple|general|complex|advanced|quick|standard|deep|expert) \|/.test(line))
     .map((line) => {
       const cells = line.split('|').map((cell) => cell.trim());
-      return [cells[1], Object.fromEntries(['profile', 'executor', 'model', 'reasoningEffort']
+      assert.equal(cells.length, 7);
+      return [cells[1], Object.fromEntries(['executor', 'model', 'reasoningEffort']
         .map((key, i) => [key, cells[i + 3].startsWith('`') ? JSON.parse(cells[i + 3].slice(1, -1)) : cells[i + 3]]))];
     }));
 }
@@ -58,9 +65,9 @@ test('shares one profile definition, preserves defaults and declares exact consu
   assert.equal(manifest.schemaVersion, 3);
   assert.equal(manifest.config.schemaVersion, 4);
   assert.deepEqual(new Set(Object.keys(manifest.config.fields)), new Set(CONFIG_KEYS));
-  const profile = manifest.config.definitions?.agentProfile ?? manifest.config.fields.advisorProfile;
+  const profile = manifest.config.definitions?.agentProfile ?? manifest.config.fields.advisorGeneralProfile;
   if (manifest.config.definitions) {
-    assert.deepEqual(new Set(Object.keys(manifest.config.definitions)), new Set(['agentProfile', 'agentModel', 'agentReasoningEffort']));
+    assert.deepEqual(new Set(Object.keys(manifest.config.definitions)), new Set(['agentProfile', 'agentModel', 'agentReasoningEffort', 'agentExecutor']));
   }
   assert.equal(profile.additionalProperties, false);
   assert.deepEqual(Object.keys(profile.properties), ['executor']);
@@ -71,8 +78,9 @@ test('shares one profile definition, preserves defaults and declares exact consu
   const engine = manifest.config.fields.subagentCommands.items.variants.cases.oracle.properties.oracleEngine;
   assert.equal(engine.choices.presets.find((preset) => preset.value === 'browser').recommended, true);
   assert.equal(Object.hasOwn(engine, 'default'), false);
-  assert.deepEqual(profile.properties.executor.valueRef, {
-    field: 'subagentCommands', key: 'key', label: 'title', include: ['native'],
+  const executor = manifest.config.definitions?.agentExecutor ?? profile.properties.executor;
+  assert.deepEqual(executor.valueRef, {
+    field: 'subagentCommands', key: 'key', include: ['native'],
   });
   assert.notEqual(profile.properties.executor.required, true);
   for (const property of ['model', 'reasoningEffort']) {
@@ -94,7 +102,8 @@ test('shares one profile definition, preserves defaults and declares exact consu
     simpleTaskProfile: ['gpt-6-luna', 'max'], generalTaskProfile: ['gpt-6.1-sol', 'medium'],
     complexTaskProfile: ['gpt-6.1-sol', 'xhigh'], advancedTaskProfile: ['gpt-6-astra', 'high'],
     quickProfile: ['gpt-6-luna', 'medium'], standardProfile: ['gpt-6-luna', 'high'],
-    deepProfile: ['gpt-6-luna', 'xhigh'], advisorProfile: ['gpt-6-astra', 'high'],
+    deepProfile: ['gpt-6-luna', 'xhigh'], advisorGeneralProfile: ['gpt-6-astra', 'high'],
+    advisorAdvancedProfile: ['gpt-6-astra', 'xhigh'], advisorExpertProfile: ['gpt-6-astra', 'max'],
   };
   for (const key of CONFIG_KEYS.filter((key) => key.endsWith('Profile'))) {
     const field = manifest.config.fields[key];
@@ -116,11 +125,64 @@ test('shares one profile definition, preserves defaults and declares exact consu
     }
   }
   assert.deepEqual(manifest.config.presentation.groups.find((group) => group.id === 'codex-advisor').fields,
-    ['advisorProfile', 'advisorDesignProfile', 'advisorDebugProfile', 'advisorReviewProfile']);
+    ['advisorGeneralProfile', 'advisorAdvancedProfile', 'advisorExpertProfile', 'advisorCustomProfiles']);
   assert.deepEqual(manifest.config.fields.subagentCommands.default, []);
   assert.equal(manifest.config.fields.subagentCommands.validation.uniqueBy, 'key');
+  assert.equal(Object.hasOwn(manifest.config.fields.subagentCommands.items.properties, 'title'), false);
+  assert.equal(manifest.config.presentation.fieldViews.subagentCommands.itemSummary, 'executorKey');
+  assert.deepEqual(manifest.config.presentation.summaries.executorKey.parts, [{ path: '/key' }]);
+  for (const key of ['taskCustomProfiles', 'exploreCustomProfiles', 'advisorCustomProfiles']) {
+    const field = manifest.config.fields[key];
+    assert.deepEqual(field.default, []);
+    assert.equal(field.type, 'array');
+    assert.deepEqual(Object.keys(field.items.properties), ['applicability', 'executor']);
+    assert.equal(field.items.properties.applicability.required, true);
+    assert.equal(field.items.properties.applicability.validation.minLength, 1);
+    assert.deepEqual(field.items.variants, profile.variants);
+  }
   assert.deepEqual(manifest.marketplace.policy.products, ['CODEX']);
   assert.ok(manifest.requires.aw.capabilities.includes('aw.installed-runtime-config.v2'));
+  assert.ok(manifest.requires.aw.capabilities.includes('aw.managed-commands.v1'));
+  assert.deepEqual(manifest.managedCommands.packages ?? [], []);
+  assert.equal(manifest.managedCommands.sets.length, 1);
+  const [guideSet] = manifest.managedCommands.sets;
+  assert.equal(guideSet.set, 'guide');
+  assert.deepEqual(guideSet.producer, { kind: 'artifact', artifactId: 'codex-subagent-guide-skill' });
+  assert.equal(guideSet.mode, 'static');
+  assert.equal(guideSet.entries.length, 1);
+  const [guideCommand] = guideSet.entries;
+  const { variant = 'default', args = [], env = {}, envFrom = {}, cwd = 'caller' } = guideCommand;
+  const commandReference = { set: guideSet.set, key: guideCommand.key, variant };
+  assert.deepEqual(commandReference, { set: 'guide', key: 'subagent', variant: 'default' });
+  assert.equal(guideCommand.runner, 'node');
+  assert.equal(guideCommand.entry, 'scripts/subagent.mjs');
+  // Source omits launch defaults; a bundle can make them explicit without
+  // changing the Guide's public invocation or caller-directory behavior.
+  assert.deepEqual(args, []);
+  assert.deepEqual(env, {});
+  assert.deepEqual(envFrom, {});
+  assert.equal(cwd, 'caller');
+  assert.equal(manifest.extensions.permissions.length, 1);
+  const [permission] = manifest.extensions.permissions;
+  assert.equal(permission.name, 'subagent-commands');
+  assert.deepEqual(permission.allow.map((entry) => ({
+    command: { variant: 'default', ...entry.command },
+    argsPrefix: entry.argsPrefix,
+  })).sort((a, b) => a.argsPrefix[0].localeCompare(b.argsPrefix[0])),
+  ['start', 'send', 'wait', 'result', 'stop'].sort().map((verb) => ({
+    command: commandReference, argsPrefix: [verb],
+  })));
+  assert.deepEqual(permission.ask ?? [], []);
+  assert.deepEqual(permission.deny ?? [], []);
+  assert.equal(permission.agentOverrides.claude, null);
+  assert.equal(permission.agentOverrides.codex, undefined);
+  const managed = manifest.config.fields.subagentCommands.items.variants.cases['custom-managed'];
+  assert.deepEqual(Object.keys(managed.properties), ['mode', 'commandId']);
+  assert.equal(managed.properties.commandId.required, true);
+  const commandPattern = new RegExp(managed.properties.commandId.validation.pattern);
+  assert.ok(commandPattern.test(`cmdp_${'a'.repeat(16)}`));
+  assert.ok(commandPattern.test('cmdu_4ba70354-0867-4ecb-a927-120c1933f514'));
+  assert.equal(commandPattern.test('guide'), false);
   assert.ok(manifest.requires.aw.capabilities.includes('aw.plugin-config.v4'));
   assert.equal(manifest.requires.aw.capabilities.includes('aw.installed-runtime-config.v1'), false);
   assert.deepEqual(manifest.artifacts.targets.map((item) => item.id), ids);
@@ -129,7 +191,7 @@ test('shares one profile definition, preserves defaults and declares exact consu
     if (target.target === 'codex.skill') {
       assert.deepEqual(target.delivery, { mode: 'codex-native', identity: 'shared', renderProfile: 'user' });
       assert.deepEqual(target.refreshKeys, SKILL_CONFIG_KEYS[target.skillKey]);
-      assert.deepEqual(target.runtimeConfig, target.skillKey === 'codex-subagent-guide' ? { keys: CONFIG_KEYS } : undefined);
+      assert.deepEqual(target.runtimeConfig, target.skillKey === 'codex-subagent-guide' ? { keys: ['subagentCommands', 'subagentRetentionHours'] } : undefined);
     } else {
       assert.deepEqual(target.refreshKeys, []);
       assert.equal(target.runtimeConfig, undefined);
@@ -137,46 +199,64 @@ test('shares one profile definition, preserves defaults and declares exact consu
   }
 });
 
-// Test Value Gate: tables contain profile data actually delivered to the parent model.
-test('renders four task profiles, three exploration profiles and only configured consultations', async () => {
+// Test Value Gate: inspect delivered tables, defaults and the lazy resource boundary.
+test('renders complete builtin profiles and keeps Guide tables in its reference', async () => {
   const defaults = await renderArtifactPlan(context());
-  assert.equal(Object.keys(profiles(skill(defaults, 'codex-subagent-guide-skill'))).length, 4);
-  assert.equal(Object.keys(profiles(skill(defaults, 'codex-explore-skill'))).length, 3);
-  assert.deepEqual(profiles(skill(defaults, 'codex-advisor-skill')), {
-    general: { profile: 'advisorProfile', executor: 'native', model: 'gpt-6-astra', reasoningEffort: 'high' },
+  assert.equal(Object.keys(profiles(profileText(defaults, 'codex-subagent-guide-skill'))).length, 4);
+  assert.equal(Object.keys(profiles(skill(defaults, 'codex-subagent-guide-skill'))).length, 0);
+  assert.equal(Object.keys(profiles(profileText(defaults, 'codex-explore-skill'))).length, 3);
+  assert.deepEqual(profiles(profileText(defaults, 'codex-advisor-skill')), {
+    general: { executor: 'native', model: 'gpt-6-astra', reasoningEffort: 'high' },
+    advanced: { executor: 'native', model: 'gpt-6-astra', reasoningEffort: 'xhigh' },
+    expert: { executor: 'native', model: 'gpt-6-astra', reasoningEffort: 'max' },
   });
-  const values = {
+  for (const key of CONFIG_KEYS) {
+    for (const id of skillIds) assert.equal(profileText(defaults, id).includes(key), false);
+  }
+  const configured = await renderArtifactPlan(context({
     advancedTaskProfile: { model: 'advanced-specialist', reasoningEffort: 'ultra' },
-    advisorProfile: { model: 'general-consultant', reasoningEffort: 'medium' },
-    advisorDebugProfile: { executor: 'external-debug', model: 'debug-specialist', reasoningEffort: 'max' },
-    subagentCommands: [{ key: 'external-debug', title: 'Debug', adapter: 'custom', mode: 'workspace', command: '/adapter' }],
-  };
-  const configured = await renderArtifactPlan(context(values));
-  assert.deepEqual(profiles(skill(configured, 'codex-subagent-guide-skill')).advanced,
-    { profile: 'advancedTaskProfile', executor: 'native', model: 'advanced-specialist', reasoningEffort: 'ultra' });
-  assert.deepEqual(profiles(skill(configured, 'codex-advisor-skill')), {
-    general: { profile: 'advisorProfile', executor: 'native', model: 'general-consultant', reasoningEffort: 'medium' },
-    debug: { profile: 'advisorDebugProfile', executor: 'external-debug', model: 'debug-specialist', reasoningEffort: 'max' },
-  });
-  assert.equal(Object.hasOwn(values.advancedTaskProfile, 'executor'), false);
-  const independent = await renderArtifactPlan(context({ advancedTaskProfile: values.advancedTaskProfile }));
-  assert.deepEqual(profiles(skill(independent, 'codex-advisor-skill')), profiles(skill(defaults, 'codex-advisor-skill')));
+    advisorAdvancedProfile: { executor: 'external', model: 'specialist', reasoningEffort: 'max' },
+  }));
+  assert.deepEqual(profiles(profileText(configured, 'codex-subagent-guide-skill')).advanced,
+    { executor: 'native', model: 'advanced-specialist', reasoningEffort: 'ultra' });
+  assert.deepEqual(profiles(profileText(configured, 'codex-advisor-skill')).advanced,
+    { executor: 'external', model: 'specialist', reasoningEffort: 'max' });
 });
 
-// Test Value Gate: the installed configuration projection must not advertise absent
-// profile keys outside its table. Inspect rendered data, not fixed prose or source text.
-test('advertises only configured advisor profile keys throughout the rendered Skill', async () => {
-  const optionalKeys = ['advisorDesignProfile', 'advisorDebugProfile', 'advisorReviewProfile'];
-  for (let mask = 0; mask < 1 << optionalKeys.length; mask++) {
-    const configuredKeys = optionalKeys.filter((_key, index) => mask & (1 << index));
-    const values = Object.fromEntries(configuredKeys.map((key) => [key, {
-      model: `specialist-${key}`, reasoningEffort: 'high',
-    }]));
-    const plan = await renderArtifactPlan({ ...context(values), requestedArtifactIds: ['codex-advisor-skill'] });
-    const text = skill(plan, 'codex-advisor-skill');
-    const advertisedKeys = new Set([...text.matchAll(/\badvisor(?:Design|Debug|Review)?Profile\b/g)]
-      .map(([key]) => key));
-    assert.deepEqual(advertisedKeys, new Set(['advisorProfile', ...configuredKeys]));
+// Test Value Gate: custom data preserves order and escaping, appears only in its
+// consumer, and never expands the Guide body or leaves an unresolved template.
+test('renders custom configuration arrays only in each consumer configuration location', async () => {
+  const baseline = await renderArtifactPlan(context());
+  for (const [field, id] of [
+    ['taskCustomProfiles', 'codex-subagent-guide-skill'],
+    ['exploreCustomProfiles', 'codex-explore-skill'],
+    ['advisorCustomProfiles', 'codex-advisor-skill'],
+  ]) {
+    const applicability = '数据库|锁`\n<details>';
+    const custom = [
+      { applicability, executor: 'external' },
+      { applicability: '其它数据库任务', model: 'custom-model', reasoningEffort: 'max' },
+    ];
+    const plan = await renderArtifactPlan(context({ [field]: custom }));
+    const text = profileText(plan, id);
+    const lines = text.split('\n');
+    const start = lines.findIndex((line) => line === '| 适用范围 | executor | model | reasoningEffort |');
+    assert.ok(start >= 0);
+    const rows = lines.slice(start + 2, start + 4).map((line) => line.split('|').slice(1, -1)
+      .map((cell) => cell.trim().startsWith('`') ? JSON.parse(cell.trim().slice(1, -1)) : cell.trim()));
+    assert.deepEqual(rows, [[applicability, 'external', '后端默认', '后端默认'],
+      ['其它数据库任务', 'native', 'custom-model', 'max']]);
+    assert.equal(profileText(baseline, id).split('\n').includes('| 适用范围 | executor | model | reasoningEffort |'), false);
+    for (const otherId of skillIds.filter((candidate) => candidate !== id)) {
+      assert.deepEqual(plan.artifacts.find((item) => item.id === otherId),
+        baseline.artifacts.find((item) => item.id === otherId));
+    }
+    assert.equal(skill(plan, 'codex-subagent-guide-skill'), skill(baseline, 'codex-subagent-guide-skill'));
+    for (const artifact of plan.artifacts) {
+      for (const body of Object.values(artifact.content.files)) {
+        assert.doesNotMatch(body, /<!-- (?:generic|explore|advisor)-profiles -->/);
+      }
+    }
   }
 });
 
@@ -184,16 +264,20 @@ test('advertises only configured advisor profile keys throughout the rendered Sk
 // preserve custom modes and omit private commands and environment values.
 test('renders adapter modes only in the Guide external reference', async () => {
   const subagentCommands = [
-    { key: 'codex', title: '工程服务', adapter: 'codex', env: { PUBLIC_VALUE: 'literal-value' } },
-    { key: 'claude', title: '本地服务', adapter: 'claude-code', mode: 'workspace' },
-    { key: 'oracle', title: '材料服务', adapter: 'oracle', envFrom: { SECRET: 'HOST_SECRET' } },
-    { key: 'custom', title: '自定义服务', adapter: 'custom', mode: 'bundle', command: '/not-invoked/adapter' },
+    { key: 'codex', adapter: 'codex', env: { PUBLIC_VALUE: 'literal-value' } },
+    { key: 'claude', adapter: 'claude-code', mode: 'workspace' },
+    { key: 'agy', adapter: 'antigravity', communication: false },
+    { key: 'oracle', adapter: 'oracle', envFrom: { SECRET: 'HOST_SECRET' } },
+    { key: 'custom', adapter: 'custom', mode: 'bundle', command: '/not-invoked/adapter' },
+    { key: 'managed', adapter: 'custom-managed', mode: 'workspace', commandId: `cmdp_${'a'.repeat(16)}` },
   ];
   const expected = [
-    ['codex', '工程服务', 'codex', 'workspace'],
-    ['claude', '本地服务', 'claude-code', 'workspace'],
-    ['oracle', '材料服务', 'oracle', 'bundle'],
-    ['custom', '自定义服务', 'custom', 'bundle'],
+    ['codex', 'workspace'],
+    ['claude', 'workspace'],
+    ['agy', 'workspace'],
+    ['oracle', 'bundle'],
+    ['custom', 'bundle'],
+    ['managed', 'workspace'],
   ];
   for (const scope of ['user', 'project']) {
     const baseline = await renderArtifactPlan({ ...context(), scope, requestedArtifactIds: ids });
@@ -206,7 +290,7 @@ test('renders adapter modes only in the Guide external reference', async () => {
     }
     const reference = plan.artifacts.find((item) => item.id === 'codex-subagent-guide-skill')
       .content.files['references/external-delegation.md'];
-    for (const privateValue of ['literal-value', 'HOST_SECRET', '/not-invoked/adapter']) {
+    for (const privateValue of ['literal-value', 'HOST_SECRET', '/not-invoked/adapter', `cmdp_${'a'.repeat(16)}`]) {
       assert.equal(reference.includes(privateValue), false);
     }
   }
@@ -214,24 +298,23 @@ test('renders adapter modes only in the Guide external reference', async () => {
 
 // Test Value Gate: refreshed artifacts must remove old executor data and mode.
 test('refreshes executor data from each render request and handles an empty registry', async () => {
-  const initial = { key: 'service', title: '已配置服务', adapter: 'custom', mode: 'bundle', command: '/not-invoked/adapter' };
+  const initial = { key: 'service', adapter: 'custom', mode: 'bundle', command: '/not-invoked/adapter' };
   const render = (subagentCommands) => renderArtifactPlan({
     ...context({ subagentCommands }), requestedArtifactIds: ['codex-subagent-guide-skill'],
   });
-  assert.deepEqual(externalRows(await render([initial])), [['service', '已配置服务', 'custom', 'bundle']]);
-  assert.deepEqual(externalRows(await render([{ ...initial, mode: 'workspace' }])), [['service', '已配置服务', 'custom', 'workspace']]);
+  assert.deepEqual(externalRows(await render([initial])), [['service', 'bundle']]);
+  assert.deepEqual(externalRows(await render([{ ...initial, mode: 'workspace' }])), [['service', 'workspace']]);
   assert.deepEqual(externalRows(await render([])), []);
   assert.deepEqual(externalRows(await renderArtifactPlan(context())), []);
 });
 
 // Test Value Gate: configured values must not inject Markdown columns or markup.
-test('escapes executor keys and titles without losing their configured values', async () => {
+test('escapes executor keys without losing their configured values', async () => {
   const key = 'service|`<alias>';
-  const title = '服务|`$&\n下一行<!-- data -->';
   const plan = await renderArtifactPlan({ ...context({ subagentCommands: [
-    { key, title, adapter: 'custom', mode: 'bundle', command: '/not-invoked/adapter' },
+    { key, adapter: 'custom', mode: 'bundle', command: '/not-invoked/adapter' },
   ] }), requestedArtifactIds: ['codex-subagent-guide-skill'] });
-  assert.deepEqual(externalRows(plan), [[key, title, 'custom', 'bundle']]);
+  assert.deepEqual(externalRows(plan), [[key, 'bundle']]);
 });
 
 // Test Value Gate: external omitted values must survive as backend defaults;
@@ -240,20 +323,20 @@ test('renders omitted external model and effort without inventing configured val
   const plan = await renderArtifactPlan(context({
     generalTaskProfile: { executor: 'external' },
     complexTaskProfile: { executor: 'external', model: 'backend-model' },
-    advisorDebugProfile: { executor: 'external', reasoningEffort: 'high' },
+    advisorAdvancedProfile: { executor: 'external', reasoningEffort: 'high' },
   }));
-  assert.deepEqual(profiles(skill(plan, 'codex-subagent-guide-skill')).general,
-    { profile: 'generalTaskProfile', executor: 'external', model: '后端默认', reasoningEffort: '后端默认' });
-  assert.deepEqual(profiles(skill(plan, 'codex-subagent-guide-skill')).complex,
-    { profile: 'complexTaskProfile', executor: 'external', model: 'backend-model', reasoningEffort: '后端默认' });
-  assert.deepEqual(profiles(skill(plan, 'codex-advisor-skill')).debug,
-    { profile: 'advisorDebugProfile', executor: 'external', model: '后端默认', reasoningEffort: 'high' });
+  assert.deepEqual(profiles(profileText(plan, 'codex-subagent-guide-skill')).general,
+    { executor: 'external', model: '后端默认', reasoningEffort: '后端默认' });
+  assert.deepEqual(profiles(profileText(plan, 'codex-subagent-guide-skill')).complex,
+    { executor: 'external', model: 'backend-model', reasoningEffort: '后端默认' });
+  assert.deepEqual(profiles(skill(plan, 'codex-advisor-skill')).advanced,
+    { executor: 'external', model: '后端默认', reasoningEffort: 'high' });
 });
 
 // Test Value Gate: malformed native profiles must not advertise backend defaults.
 test('does not fill missing properties in configured native profile objects', async () => {
-  for (const advisorDebugProfile of [{}, { model: 'incomplete' }, null]) {
-    await assert.rejects(renderArtifactPlan(context({ advisorDebugProfile })));
+  for (const advisorAdvancedProfile of [{}, { model: 'incomplete' }, null]) {
+    await assert.rejects(renderArtifactPlan(context({ advisorAdvancedProfile })));
   }
 });
 
@@ -262,14 +345,15 @@ test('renders custom model and effort values as escaped data', async () => {
   const model = 'provider|alias`$&\nsecond-line<!-- unsafe -->';
   const configured = await renderArtifactPlan(context({ standardProfile: { model, reasoningEffort: 'max' } }));
   assert.deepEqual(profiles(skill(configured, 'codex-explore-skill')).standard,
-    { profile: 'standardProfile', executor: 'native', model, reasoningEffort: 'max' });
+    { executor: 'native', model, reasoningEffort: 'max' });
 });
 
 test('preserves model-callable metadata for the three platform Skills', async () => {
   const plan = await renderArtifactPlan(context());
   for (const id of skillIds) {
     const artifact = plan.artifacts.find((item) => item.id === id);
-    const yaml = await readFile(path.join(sourceRoot(id), 'agents/openai.yaml'), 'utf8');
+    const yaml = artifact.content.files['agents/openai.yaml'];
+    assert.equal(typeof yaml, 'string');
     const text = artifact.content.files['SKILL.md'];
     // Static contract exception: Codex consumes invocation metadata and Skill frontmatter; behavior test is not suitable because this renderer does not run a Codex host.
     assert.match(yaml, /allow_implicit_invocation:\s*true/);
@@ -289,4 +373,49 @@ test('rejects invalid target requests and unsupported platforms', async () => {
       /requestedArtifactIds|Unknown requested artifact/);
   }
   await assert.rejects(renderArtifactPlan({ ...context(), platform: 'claude' }), /Unsupported platform: claude/);
+});
+
+// Test Value Gate: links in the actual artifact must reach delivered resources.
+// This checks the installable file graph, not document wording or model behavior.
+test('delivered Skill links resolve inside each artifact resource root', async () => {
+  const plan = await renderArtifactPlan(context());
+  for (const artifact of plan.artifacts) {
+    const files = artifact.content.files;
+    for (const [name, body] of Object.entries(files)) {
+      if (!name.endsWith('.md')) continue;
+      for (const [, reference] of body.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+        if (/^[a-z][a-z0-9+.-]*:/.test(reference) || reference.startsWith('#')) continue;
+        const target = reference.split('#', 1)[0];
+        const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(name), target));
+        assert.equal(Object.hasOwn(files, resolved), true, `${artifact.skillKey}: ${name} -> ${reference}`);
+      }
+    }
+  }
+});
+
+// Test Value Gate: an install can render successfully yet miss a worker or a
+// helper import. Inspect the delivered module graph without starting a backend.
+test('delivered Guide contains its executable entries and relative module closure', async () => {
+  const plan = await renderArtifactPlan(context());
+  const files = plan.artifacts.find((item) => item.id === 'codex-subagent-guide-skill').content.files;
+  for (const entry of ['subagent.mjs', 'worker.mjs', 'scan-expired.mjs', 'message.mjs', 'message-mcp.mjs',
+    'adapters/codex-v5.mjs', 'adapters/codex-profile.mjs', 'adapters/claude-code-v5.mjs',
+    'adapters/antigravity-v5.mjs', 'adapters/oracle-v5.mjs']) {
+    assert.equal(typeof files[`scripts/${entry}`], 'string', `Missing executable entry: ${entry}`);
+  }
+  // The native helper is reached by URL at runtime and has no JavaScript import
+  // edge. It must remain a byte-preserving resource of the installed Guide.
+  assert.equal(files['scripts/runtime/windows-job.ps1'], await readFile(path.join(
+    sourceRoot('codex-subagent-guide-skill'), 'scripts/runtime/windows-job.ps1'), 'utf8'));
+  for (const [name, body] of Object.entries(files)) {
+    if (!name.endsWith('.mjs')) continue;
+    for (const [, reference] of body.matchAll(/(?:from\s*|import\s*\(\s*|import\s*)['"]([^'"\n]+)['"]/g)) {
+      if (!reference.startsWith('.')) continue;
+      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(name), reference));
+      // AW injects this reserved reader after rendering. The actual materialized
+      // artifact is checked separately; a renderer must not supply its own copy.
+      if (resolved === 'scripts/aw-runtime-config.mjs') continue;
+      assert.equal(Object.hasOwn(files, resolved), true, `${name} -> ${reference}`);
+    }
+  }
 });

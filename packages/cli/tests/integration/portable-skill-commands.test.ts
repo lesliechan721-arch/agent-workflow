@@ -32,6 +32,7 @@ import {
   createDependencyCatalogSnapshotFixture,
 } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { writeSkillsCliFixture } from '../helpers/skills-cli-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function configurePortableCatalog(options: {
@@ -136,26 +137,23 @@ async function installFakeSkills(env: NodeJS.ProcessEnv, root: string, options: 
   version?: string;
 } = {}): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
   const bin = path.join(root, 'fake-skills-bin');
-  const executable = path.join(bin, 'skills');
   const log = path.join(root, 'skills-calls.jsonl');
   const added = path.join(root, 'skills-added');
   const attempted = path.join(root, 'skills-attempted');
   await fs.ensureDir(bin);
-  await fs.writeFile(executable, [
+  const fixture = await writeSkillsCliFixture(bin, [
     '#!/usr/bin/env node',
-    "const fs = require('node:fs');",
+    "import fs from 'node:fs';",
     "fs.appendFileSync(process.env.FAKE_SKILLS_LOG, JSON.stringify({args: process.argv.slice(2), cwd: process.cwd()}) + '\\n');",
     "if (process.argv[2] === '--version') { console.log(process.env.FAKE_SKILLS_VERSION); process.exit(0); }",
     "if (process.argv[2] === 'add') { fs.writeFileSync(process.env.FAKE_SKILLS_ATTEMPTED, '1'); if (process.env.FAKE_SKILLS_ADD_WRITES === '1') fs.writeFileSync(process.env.FAKE_SKILLS_ADDED, '1'); if (Number(process.env.FAKE_SKILLS_ADD_EXIT || '0')) process.exit(Number(process.env.FAKE_SKILLS_ADD_EXIT)); fs.writeFileSync(process.env.FAKE_SKILLS_ADDED, '1'); process.exit(0); }",
     "if (process.argv[2] === 'list') { if (fs.existsSync(process.env.FAKE_SKILLS_ATTEMPTED) && Number(process.env.FAKE_SKILLS_LIST_EXIT_AFTER_ADD || '0')) process.exit(Number(process.env.FAKE_SKILLS_LIST_EXIT_AFTER_ADD)); console.log(fs.existsSync(process.env.FAKE_SKILLS_ADDED) ? process.env.FAKE_SKILLS_AFTER : process.env.FAKE_SKILLS_BEFORE); process.exit(0); }",
     'process.exit(2);',
-  ].join('\n'));
-  await fs.chmod(executable, 0o755);
+  ].join('\n'), env);
   return {
     log,
     env: {
-      ...env,
-      PATH: `${bin}${path.delimiter}${env.PATH ?? ''}`,
+      ...fixture.env,
       FAKE_SKILLS_LOG: log,
       FAKE_SKILLS_ADDED: added,
       FAKE_SKILLS_ATTEMPTED: attempted,
@@ -178,14 +176,13 @@ async function installTargetAwareFakeSkills(
   installed: Record<string, string[]>,
 ): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
   const bin = path.join(root, 'target-aware-skills-bin');
-  const executable = path.join(bin, 'skills');
   const log = path.join(root, 'target-aware-skills-calls.jsonl');
   const state = path.join(root, 'target-aware-skills-state.json');
   await fs.ensureDir(bin);
   await fs.writeJson(state, installed);
-  await fs.writeFile(executable, [
+  const fixture = await writeSkillsCliFixture(bin, [
     '#!/usr/bin/env node',
-    "const fs = require('node:fs');",
+    "import fs from 'node:fs';",
     "const args = process.argv.slice(2);",
     "fs.appendFileSync(process.env.FAKE_SKILLS_LOG, JSON.stringify({args, cwd: process.cwd()}) + '\\n');",
     "if (args[0] === '--version') { console.log('1.5.23'); process.exit(0); }",
@@ -203,13 +200,11 @@ async function installTargetAwareFakeSkills(
     "  fs.writeFileSync(process.env.FAKE_SKILLS_STATE, JSON.stringify(state)); process.exit(0);",
     "}",
     'process.exit(2);',
-  ].join('\n'));
-  await fs.chmod(executable, 0o755);
+  ].join('\n'), env);
   return {
     log,
     env: {
-      ...env,
-      PATH: `${bin}${path.delimiter}${env.PATH ?? ''}`,
+      ...fixture.env,
       FAKE_SKILLS_LOG: log,
       FAKE_SKILLS_STATE: state,
     },

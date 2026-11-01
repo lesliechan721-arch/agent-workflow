@@ -1,16 +1,62 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { LIMITS, fail, redact, safeError, validateRequest, validateResult } from '../runtime/contracts.mjs';
-import { safePath, readLimited, readStdin, textFromBytes, atomicJson } from '../runtime/files.mjs';
-import { processTable, observeTree, stopOwnedTree } from '../runtime/processes.mjs';
+import { LIMITS, fail, redact, safeError, fields, text, absolutePath, validateCommunication, validateInitialization, identifier } from '../runtime/contracts.mjs';
+import { summarizeDiagnostics } from '../runtime/diagnostics.mjs';
+import { safePath, readLimited, textFromBytes } from '../runtime/files.mjs';
+import { createFrameDecoder, createFrameWriter, createProtocolState } from '../runtime/protocol.mjs';
+import { safeSpawn, resolveSafeCommand } from '../runtime/platform.mjs';
+import { createChildBridge } from '../runtime/adapter-channel.mjs';
+import { observeTree, stopOwnedTree } from '../runtime/processes.mjs';
+
+export { summarizeDiagnostics };
+
+/** Resolve once in the effective backend environment, before capability preparation. */
+export async function negotiateExecutable(context, command, args = [], options = {}) {
+  try {
+    const executable = await resolveSafeCommand(command, args, { cwd: context.request.workspace, env: context.environment, ...options });
+    context.executable = executable;
+    if (executable.env) context.environment = { ...executable.env };
+    context.initialization = { environment: { status: 'available' }, capabilities: {} };
+    return executable;
+  } catch (error) {
+    const safe = safeError(error);
+    context.initialization = { environment: { status: 'unavailable', code: safe.code }, capabilities: {} };
+    fail(safe.code, `${safe.message} Install or repair the selected CLI or PATH, or correct the executor, then start a new run.`);
+  }
+}
+
+function validateNegotiation(value, context) {
+  if (!fields(value, ['environment', 'capabilities', 'executable']) || !fields(value.capabilities, ['communication', 'resume'])) fail('protocolInvalid', 'The adapter initialization candidate is invalid.');
+  validateInitialization({ environment: value.environment, capabilities: {} });
+  context.initialization = { environment: structuredClone(value.environment), capabilities: {} };
+  if (value.environment.status !== 'available') fail(value.environment.code, 'The selected CLI is unavailable. Install or repair the CLI or PATH, or correct the executor, then start a new run.');
+  const resume = value.capabilities.resume;
+  if (!fields(resume, ['supported']) || typeof resume.supported !== 'boolean') fail('protocolInvalid', 'The adapter resume candidate is invalid.');
+  const capability = value.capabilities.communication;
+  if (!fields(capability, capability?.supported === true ? ['supported', 'transport', 'passiveDelivery'] : ['supported'])
+      || typeof capability.supported !== 'boolean') fail('protocolInvalid', 'The adapter communication candidate is invalid.');
+  if (capability.supported) {
+    const { supported: _supported, ...details } = capability;
+    validateCommunication({ status: 'enabled', ...details });
+  }
+  const executable = value.executable ?? context.executable;
+  if (executable && (!fields(executable, ['command', 'args', 'env']) || !absolutePath(executable.command)
+      || !Array.isArray(executable.args) || executable.args.some((argument) => !text(argument))
+      || Object.hasOwn(executable, 'env') && (!fields(executable.env, Object.keys(executable.env ?? {})) || Object.values(executable.env).some((entry) => !text(entry))))) fail('protocolInvalid', 'The negotiated executable is invalid.');
+  context.executable = executable;
+  if (executable?.env) context.environment = { ...executable.env };
+  context.resume = { status: !context.request.resume ? 'disabled' : resume.supported ? 'enabled' : 'unsupported' };
+  context.initialization.capabilities.resume = structuredClone(context.resume);
+  if (context.request.sessionId && !resume.supported) fail('resumeUnsupported', 'The selected backend cannot resume this session with the saved configuration.');
+  context.communicationCandidate = structuredClone(capability);
+}
 
 export function rejectOption(option) {
   fail('adapterArgumentConflict', `The adapter owns ${option}. Remove it from args.`);
 }
 
-/** Check owned controls, not a general backend option allowlist. */
+/** Protect invocation controls while leaving ordinary options to the backend. */
 export function checkArguments(args, { owned, commands = [], short = {}, booleans = [], values = [], variadic = [], onOption }) {
   let valueExpected = false;
   let variadicExpected = false;
@@ -20,10 +66,7 @@ export function checkArguments(args, { owned, commands = [], short = {}, boolean
     if (variadicExpected && !argument.startsWith('-')) continue;
     variadicExpected = false;
     if (argument === '--' || argument === '-') rejectOption(argument);
-    if (!argument.startsWith('-')) {
-      // A bare backend command or prompt can replace the one owned invocation.
-      fail('adapterArgumentConflict', 'args must contain backend options and their values, not a command or prompt.');
-    }
+    if (!argument.startsWith('-')) fail('adapterArgumentConflict', 'args must contain backend options and their values, not a command or prompt.');
     if (argument.startsWith('--')) {
       const equals = argument.indexOf('=');
       const option = equals < 0 ? argument : argument.slice(0, equals);
@@ -34,8 +77,6 @@ export function checkArguments(args, { owned, commands = [], short = {}, boolean
       valueExpected = equals < 0 && !variadicExpected && (values.includes(option) || (!booleans.includes(option) && typeof value === 'string' && !value.startsWith('-')));
       continue;
     }
-    // Public short aliases accept both separate and attached values. Boolean
-    // aliases can be clustered; a value-taking alias owns the cluster suffix.
     for (let offset = 1; offset < argument.length; offset++) {
       const option = `-${argument[offset]}`;
       if (owned.includes(option)) rejectOption(option);
@@ -48,8 +89,6 @@ export function checkArguments(args, { owned, commands = [], short = {}, boolean
         break;
       }
       if (kind !== 'boolean') {
-        // Unknown options remain the backend's error responsibility. A command
-        // immediately after one cannot be used as a control escape.
         const next = args[index + 1];
         if (commands.includes(next)) rejectOption(next);
         valueExpected = offset + 1 === argument.length && typeof next === 'string' && !next.startsWith('-');
@@ -76,142 +115,350 @@ export async function finalOutput(target) {
   return value;
 }
 
-async function runBackend(command, args, request, environment, control, onSpawn, deadlineMs) {
-  // The runner controls this marker. The backend inherits the full effective
-  // environment so its normal auth, hooks, plugins and tools keep working.
-  const token = environment.AW_SUBAGENT_PROCESS_TOKEN;
-  if (!/^[a-f0-9]{48}$/.test(token ?? '')) fail('processMarkerMissing', 'Run this adapter through the installed Guide runner.');
-  await processTable();
-  if (control.interrupted) fail('adapterStoppedBeforeSubmission', 'The adapter was stopped before backend startup.');
-  const child = spawn(command, args, { shell: false, detached: false, cwd: request.workspace, env: environment, stdio: ['pipe', 'pipe', 'pipe'] });
-  control.child = child;
-  let exitCode = null;
-  let exited = false;
-  let closed = false;
-  let observationFailed = false;
-  let bytes = 0;
-  let overflow = false;
-  let known = [];
-  let observation = Promise.resolve();
-  const stdout = [];
-  const stderr = [];
-  let spawnError;
-  child.once('error', (error) => { spawnError = error; });
-  const exit = new Promise((resolve) => {
-    child.once('error', () => { exited = true; resolve(); });
-    child.once('exit', (code) => { exited = true; exitCode = code; resolve(); });
-  });
-  const close = new Promise((resolve) => child.once('close', () => { closed = true; resolve(); }));
-  const collect = (destination, chunk) => {
-    bytes += chunk.length;
-    if (bytes > LIMITS.logBytes) { overflow = true; child.kill('SIGTERM'); return; }
-    destination.push(chunk);
-  };
-  child.stdout.on('data', (chunk) => collect(stdout, chunk));
-  child.stderr.on('data', (chunk) => collect(stderr, chunk));
-  child.stdin.on('error', () => {});
-  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); }).catch((error) => {
-    fail(error.code === 'ENOENT' ? 'backendExecutableMissing' : 'backendStartFailed', `${command} could not start. Check its installation, PATH, and supported arguments.`);
-  });
-  onSpawn();
-  const observe = () => {
-    observation = observation.then(async () => {
-      try { known = await observeTree(child.pid, known, token); }
-      catch { observationFailed = true; child.kill('SIGTERM'); }
-    });
-  };
-  observe();
-  const observer = setInterval(observe, 100);
-  const deadline = setTimeout(() => { control.timedOut = true; child.kill('SIGTERM'); }, deadlineMs);
-  child.stdin.end(request.prompt);
-  let stopped = false;
-  try {
-    // A stopped child can keep pipes open through descendants. Do not mistake
-    // exit for close, and do not wait without a local cleanup boundary.
-    await Promise.race([exit, new Promise((resolve) => {
-      const interval = setInterval(() => {
-        if (control.interrupted || control.timedOut || overflow || observationFailed) { clearInterval(interval); resolve(); }
-        else if (exited) { clearInterval(interval); resolve(); }
-      }, 50);
-    })]);
-    clearInterval(observer);
-    await observation;
-    const remaining = await observeTree(child.pid, known, token);
-    const table = await processTable();
-    const active = remaining.some((identity) => table.some((row) => row.pid === identity.pid && row.started === identity.started));
-    stopped = active ? (await stopOwnedTree(child.pid, remaining, token)).stopped : true;
-    if (!closed) {
-      let closeTimer;
-      await Promise.race([close, new Promise((resolve) => { closeTimer = setTimeout(resolve, 1000); })]);
-      clearTimeout(closeTimer);
-    }
-    if (!closed) { stopped = false; child.stdout.destroy(); child.stderr.destroy(); child.stdin.destroy(); }
-  } catch { stopped = false; }
-  finally { clearInterval(observer); clearTimeout(deadline); control.child = undefined; }
-  return { code: exitCode, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), stopped: stopped && !observationFailed, overflow, spawnError };
+const instructionSections = ['common', 'mcp', 'command', 'command-argument', 'in-turn', 'turn-boundary', 'none', 'active-receive'];
+
+function quoteCommand(parts, shell, preferBare = false) {
+  // agy treats a quoted executable as requiring a full-line permission match.
+  if (shell === 'posix') return parts.map((part) => preferBare && !['MESSAGE_TEXT', 'MESSAGE_FILE'].includes(part) && /^[A-Za-z0-9_./:@%+=,-]+$/.test(part)
+    ? part : `'${part.replaceAll("'", "'\\''")}'`).join(' ');
+  if (shell === 'powershell') return `& ${parts.map((part) => `'${part.replaceAll("'", "''")}'`).join(' ')}`;
+  fail('communicationShellUnsupported', 'Communication commands require a verified posix or powershell command tool.');
 }
 
-export async function executeAdapter(request, environment, backend, { deadlineMs = LIMITS.deadlineMs } = {}) {
-  const result = { protocolVersion: 4, state: 'failed', generationStarted: false, backendExitCode: null, text: '' };
-  const control = { interrupted: false, timedOut: false };
-  const onSignal = () => { control.interrupted = true; control.child?.kill('SIGTERM'); };
-  process.on('SIGINT', onSignal); process.on('SIGTERM', onSignal);
-  let resultFile;
-  try {
-    const directory = environment.AW_SUBAGENT_TEMP_DIR;
-    if (!directory) fail('adapterDirectoryMissing', 'Run this adapter through the installed Guide runner.');
-    await safePath(directory, 'directory');
-    if (((await fs.stat(directory)).mode & 0o077) !== 0) fail('directoryNotPrivate', 'The adapter run directory must have mode 0700.');
-    resultFile = await privateOutputPath(directory, environment.AW_SUBAGENT_RESULT_FILE);
-    validateRequest(request);
-    if (request.mode !== backend.mode) fail('adapterModeUnsupported', `${backend.command} requires ${backend.mode} mode.`);
-    await safePath(request.workspace, 'directory');
-    const outputFile = await privateOutputPath(directory, path.join(directory, `${backend.command}-answer.md`));
-    const args = backend.arguments(request, outputFile, environment);
-    await backend.preflight?.(request, control);
-    const run = await runBackend(backend.command, args, request, environment, control, () => { result.generationStarted = null; }, deadlineMs);
-    result.backendExitCode = run.code;
-    Object.assign(result, await backend.result(request, run, outputFile));
-    if (result.state !== 'completed' && !result.message && !run.overflow) {
-      // Keep a bounded actual backend error for repair. The outer runner also
-      // removes resolved envFrom values, which are deliberately absent here.
-      try {
-        const diagnostic = textFromBytes(run.stderr).trim();
-        const loggedError = textFromBytes(run.stdout).split('\n').filter((line) => /^\s*(?:ERROR:|error:)/i.test(line)).slice(-2).join('\n');
-        if (diagnostic || loggedError) result.message = redact((diagnostic || loggedError).slice(-8192), environment);
-      } catch { /* Invalid diagnostic bytes do not establish a service terminal. */ }
-    }
-    if (!run.stopped) Object.assign(result, { state: 'unknown', code: 'localTreeStopUnconfirmed' });
-    else if (run.overflow) Object.assign(result, { state: 'unknown', code: 'adapterOutputTooLarge' });
-    else if (control.interrupted || control.timedOut) Object.assign(result, { state: 'unknown', code: control.timedOut ? 'adapterDeadlineExceeded' : 'remoteStopUnconfirmed', remoteStopConfirmed: false });
-  } catch (error) {
-    const safe = safeError(error);
-    result.state = result.generationStarted === false && !['protocolInvalid', 'protocolTooLarge'].includes(safe.code) ? 'failed' : 'unknown';
-    result.code = safe.code;
-    const selectionError = /^fileSelection(?:InputInvalid|PathMissing|Empty|ReadFailed|LimitExceeded|Failed|Unsupported)$/.test(safe.code);
-    result.message = redact(selectionError && typeof error.message === 'string' ? error.message : safe.message, environment);
-    if (control.interrupted) {
-      result.state = result.generationStarted === false ? 'cancelled' : 'unknown';
-      if (result.generationStarted !== false) result.remoteStopConfirmed = false;
-    }
-  } finally { process.off('SIGINT', onSignal); process.off('SIGTERM', onSignal); }
-  result.text = redact(result.text, environment);
-  if (result.message) result.message = redact(result.message.slice(0, 8192), environment);
-  if (resultFile) await atomicJson(resultFile, validateResult(result));
+/** The installed template is the only source of model-facing communication prose. */
+export async function renderCommunicationInstructions(communication, bridge, bindings = {}, templateUrl = new URL('../../assets/communication-instructions.md', import.meta.url)) {
+  validateCommunication(communication);
+  if (communication.status !== 'enabled') return '';
+  if (!fields(bindings, ['sendTool', 'receiveTool', 'shell', 'sendTextMode'])
+    || Object.hasOwn(bindings, 'sendTextMode') && (communication.transport !== 'command' || bindings.sendTextMode !== 'argument')) fail('runtimeResourceInvalid', 'The communication instruction bindings are invalid.');
+  let template;
+  try { template = textFromBytes(await readLimited(fileURLToPath(templateUrl), LIMITS.instructionBytes, 'runtimeResourceInvalid')); }
+  catch { fail('runtimeResourceMissing', 'The installed communication template is missing or unreadable. Run source sync or reinstall this plugin.', ['source sync', 'reinstall']); }
+  const sections = new Map();
+  const expression = /<!-- aw:([a-z-]+) -->\s*([\s\S]*?)\s*<!-- \/aw:\1 -->/g;
+  for (const match of template.matchAll(expression)) {
+    if (!instructionSections.includes(match[1]) || sections.has(match[1])) fail('runtimeResourceInvalid', 'The communication template sections are invalid.');
+    sections.set(match[1], match[2]);
+  }
+  if (sections.size !== instructionSections.length || template.replace(expression, '').trim()) fail('runtimeResourceInvalid', 'The communication template is incomplete. Run source sync or reinstall this plugin.', ['source sync', 'reinstall']);
+  const values = {};
+  if (communication.transport === 'mcp') {
+    values.SEND = bindings.sendTool ?? 'send_parent';
+    values.RECEIVE = bindings.receiveTool ?? 'receive_parent';
+    if (![values.SEND, values.RECEIVE].every((value) => typeof value === 'string' && /^[A-Za-z0-9_.-]+$/.test(value))) fail('runtimeResourceInvalid', 'The registered MCP tool names are invalid.');
+  } else {
+    if (!bridge?.script || !text(bridge.script.command) || !Array.isArray(bridge.script.args) || bridge.script.args.some((value) => !text(value))) fail('runtimeResourceInvalid', 'The communication command binding is missing.');
+    const invocation = [bridge.script.command, ...bridge.script.args];
+    const argumentMode = bindings.sendTextMode === 'argument';
+    values.SEND = quoteCommand([...invocation, 'send', '--text', 'MESSAGE_TEXT'], bindings.shell, argumentMode);
+    values.SENDFILE = quoteCommand([...invocation, 'send', '--text-file', 'MESSAGE_FILE'], bindings.shell, argumentMode);
+    values.RECEIVE = quoteCommand([...invocation, 'receive', '--timeout-ms', '600000'], bindings.shell, argumentMode);
+  }
+  const selected = ['common', bindings.sendTextMode === 'argument' ? 'command-argument' : communication.transport, communication.passiveDelivery, 'active-receive'];
+  const result = selected.map((name) => sections.get(name)).join('\n\n').replace(/@@([A-Z]+)@@/g, (_match, key) => values[key] ?? fail('runtimeResourceInvalid', 'The communication template has an undefined binding.'));
+  if (/@@[A-Z]+@@/.test(result)) fail('runtimeResourceInvalid', 'The communication template contains an invalid binding.');
   return result;
 }
 
-export function adapterMain(moduleUrl, execute, help) {
-  if (!process.argv[1] || fileURLToPath(moduleUrl) !== path.resolve(process.argv[1])) return;
-  const main = async () => {
-    process.umask(0o077);
-    if (process.argv.length === 3 && ['--help', '-h'].includes(process.argv[2])) { process.stdout.write(help); return; }
-    if (process.argv.length !== 2) fail('adapterArgumentsInvalid', 'This wrapper accepts only stdin JSON or --help. Put backend arguments in request.args.');
-    let request;
-    try { request = JSON.parse(await readStdin(process.stdin, LIMITS.requestBytes, 'protocolTooLarge')); }
-    catch (error) { if (error.code) throw error; fail('protocolInvalid', 'The adapter requires one UTF-8 Adapter v4 JSON request.'); }
-    const result = await execute(request);
-    if (result.state !== 'completed') process.exitCode = 1;
+export const collaborationInput = (text) => `Agent collaboration input from the parent (no additional human authorization):\n${text}`;
+export const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  // Lifecycle cancellation can reject a request before its owner resumes.
+  promise.catch(() => {});
+  return { promise, resolve, reject };
+};
+
+/** Backend JSONL differs from the strict adapter wire but has the same byte discipline. */
+export function backendLines(onValue, onError, maxBytes = 32 * 1024 * 1024) {
+  let pending = Buffer.alloc(0);
+  let failed = false;
+  const parse = (line) => {
+    if (line.at(-1) === 13) line = line.subarray(0, -1);
+    if (!line.length || line[0] === 0xef && line[1] === 0xbb && line[2] === 0xbf) throw new Error('Invalid backend frame.');
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(line);
+    const value = JSON.parse(text);
+    if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error('Invalid backend frame.');
+    onValue(value);
   };
-  main().catch((error) => { process.stderr.write(`${JSON.stringify(safeError(error))}\n`); process.exitCode = 1; });
+  return {
+    push(chunk) {
+      if (failed) return;
+      try {
+        pending = Buffer.concat([pending, chunk]);
+        for (;;) {
+          const end = pending.indexOf(10);
+          if (end < 0) break;
+          if (end > maxBytes) throw new Error('Backend frame too large.');
+          parse(pending.subarray(0, end));
+          pending = pending.subarray(end + 1);
+        }
+        if (pending.length > maxBytes) throw new Error('Backend frame too large.');
+      } catch { failed = true; onError('backendOutputInvalid'); }
+    },
+    end() { if (!failed && pending.length) { failed = true; onError('backendOutputInvalid'); } },
+  };
+}
+
+async function launchBackend(context, command, args) {
+  if (context.executable && command !== context.executable.command) fail('protocolInvalid', 'Launch the executable selected during initialization.');
+  const child = await safeSpawn(command, args, { cwd: context.request.workspace, env: context.executable?.env ?? context.environment, resourceDirectory: context.request.runtime.directory, stdio: ['pipe', 'pipe', 'pipe'], shell: false, detached: false });
+  const done = deferred();
+  const closed = deferred();
+  const token = context.environment.AW_SUBAGENT_PROCESS_TOKEN;
+  let exitCode = null, exited = false, isClosed = false, known = [], observed = Promise.resolve(), observing = false;
+  let stderrBytes = 0;
+  let stopped = false;
+  child.stdin.on('error', () => {});
+  child.once('error', () => { exited = true; done.resolve(); closed.resolve(); context.abort('backendStartFailed'); });
+  child.once('exit', (code) => { exitCode = code; exited = true; done.resolve(); });
+  child.once('close', () => { isClosed = true; closed.resolve(); });
+  child.stderr.on('data', (chunk) => {
+    stderrBytes += chunk.length;
+    if (stderrBytes > LIMITS.logBytes) context.abort('adapterDiagnosticTooLarge');
+    context.onBackendStderr?.(chunk);
+    // Raw backend diagnostics can contain credentials and unbounded service events.
+    // The protocol result carries a bounded safe failure code instead.
+  });
+  const observe = () => {
+    if (observing) return;
+    observing = true;
+    observed = observed.then(async () => {
+      try { known = await observeTree(child.pid, known, token); }
+      catch { context.abort('processObservationFailed'); }
+      finally { observing = false; }
+    });
+  };
+  const observer = setInterval(observe, 200);
+  let writeQueue = Promise.resolve();
+  const backend = {
+    child,
+    done: done.promise,
+    get exitCode() { return exitCode; },
+    get exited() { return exited; },
+    write(value) {
+      const data = typeof value === 'string' ? value : `${JSON.stringify(value)}\n`;
+      const write = writeQueue.then(() => new Promise((resolve, reject) => {
+        if (exited || child.stdin.destroyed || child.stdin.writableEnded) return reject(Object.assign(new Error('The backend input is closed.'), { code: 'backendInputClosed' }));
+        child.stdin.write(data, (error) => error ? reject(error) : resolve());
+      }));
+      writeQueue = write.catch(() => {});
+      return write;
+    },
+    async end() { await writeQueue; if (!child.stdin.destroyed) child.stdin.end(); },
+    async cleanup(force = false) {
+      clearInterval(observer);
+      await observed;
+      try {
+        known = await observeTree(child.pid, known, token);
+        const result = await stopOwnedTree(child.pid, known, token);
+        stopped = result.stopped;
+      } catch { stopped = false; }
+      if (force && !exited) child.kill('SIGTERM');
+      if (!isClosed) {
+        let timer;
+        await Promise.race([closed.promise, new Promise((resolve) => { timer = setTimeout(resolve, 1000); })]);
+        clearTimeout(timer);
+      }
+      if (!isClosed) { child.stdout.destroy(); child.stderr.destroy(); child.stdin.destroy(); stopped = false; }
+      return stopped;
+    },
+  };
+  context.backend = backend;
+  const identity = await child.identityReady;
+  if (!identity) fail('backendIdentityUnavailable', 'The backend exited before its process identity could be verified.');
+  known = [child.processIdentity].filter(Boolean);
+  observe();
+  return backend;
+}
+
+/** One reader serves control while independent backend and output tasks wait. */
+export function adapterMain(moduleUrl, descriptor, help) {
+  if (!process.argv[1] || fileURLToPath(moduleUrl) !== path.resolve(process.argv[1])) return;
+  process.umask(0o077);
+  if (process.argv.length === 3 && ['--help', '-h'].includes(process.argv[2])) { process.stdout.write(help); return; }
+  if (process.argv.length !== 2) { process.stderr.write('adapterArgumentsInvalid: This adapter accepts v5 JSONL on stdin or --help.\n'); process.exitCode = 1; return; }
+  const state = createProtocolState();
+  const writer = createFrameWriter(process.stdout, { direction: 'adapter' });
+  const deliveries = new Set();
+  let context, task, closingTask, protocolFailed = false, finished = false, ready = false, closing = false, deadlineTimer, stopTimer;
+  const emit = async (value) => {
+    const frame = { protocolVersion: 5, ...value };
+    state.acceptAdapter(frame);
+    await writer.write(frame);
+  };
+  const shutdown = (reason, code) => {
+    if (!context || finished || context.signal.aborted) return;
+    context.stopReason = reason;
+    context.errorCode = code ?? (reason === 'deadline' ? 'adapterDeadlineExceeded' : reason === 'requested' ? 'remoteStopUnconfirmed' : 'channelClosed');
+    context.controller.abort();
+    if (ready) void context.beginClosing(reason === 'requested' || reason === 'deadline' ? 'cancelled' : 'error').catch(() => {});
+    void Promise.resolve().then(() => context.onStop?.()).catch(() => {});
+    armClosingTimer();
+  };
+  const armClosingTimer = () => {
+    if (stopTimer) return;
+    // This bounds shutdown only. It never limits a running model turn.
+    stopTimer = setTimeout(() => {
+      context.errorCode ??= 'backendShutdownUnconfirmed';
+      context.stopReason ??= 'channelError';
+      context.controller.abort();
+      void context.backend?.cleanup(true);
+      context.stopped.resolve();
+    }, 25000);
+  };
+  const run = async (request) => {
+    const controller = new AbortController();
+    context = {
+      request, environment: process.env, controller, signal: controller.signal, generationStarted: false,
+      stopReason: null, errorCode: null, backend: null, bridge: null, stopped: deferred(),
+      communication: null, resume: null, sessionId: null, initialization: null, executable: null, communicationCandidate: null, prompt: request.prompt, diagnostics: [],
+      emit, abort: (code) => shutdown('channelError', code),
+      async bindSession(sessionId) {
+        if (!identifier(sessionId) || request.sessionId && request.sessionId !== sessionId || context.sessionId && context.sessionId !== sessionId) fail('backendSessionMismatch', 'The backend must preserve the requested session.');
+        if (context.sessionId === sessionId) return;
+        context.sessionId = sessionId;
+        if (context.resume?.status === 'enabled') await emit({ type: 'session', sessionId });
+      },
+      async ready(diagnostics = []) {
+        if (context.signal.aborted) return;
+        if (!context.communication) fail('communicationNotPrepared', 'Prepare communication before reporting ready.');
+        context.initialization.capabilities.communication = structuredClone(context.communication);
+        validateInitialization(context.initialization, { ready: true });
+        context.diagnostics.push(...diagnostics);
+        const safe = summarizeDiagnostics(context.diagnostics, context.environment);
+        await emit({ type: 'ready', initialization: context.initialization, ...(safe.length ? { diagnostics: safe } : {}) });
+        ready = true;
+      },
+      async prepareCommunication({ submitInput, canSubmitInput, instructionBindings } = {}) {
+        if (context.communication) fail('communicationAlreadyPrepared', 'Communication must be prepared once.');
+        if (!request.communication) {
+          context.communication = { status: 'disabled' };
+          context.initialization.capabilities.communication = context.communication;
+          return;
+        }
+        const capability = context.communicationCandidate;
+        if (!capability) fail('initializationMissing', 'Negotiate the environment and capabilities before preparing communication.');
+        if (!capability.supported) {
+          context.communication = { status: 'unsupported' };
+          context.initialization.capabilities.communication = context.communication;
+          return;
+        }
+        const { supported: _supported, ...details } = capability;
+        const communication = validateCommunication({ status: 'enabled', ...details });
+        if (request.mode === 'bundle') fail('protocolInvalid', 'Bundle runs cannot enable communication.');
+        if (communication.passiveDelivery !== 'none' && typeof submitInput !== 'function') fail('bridgeInvalid', 'Passive communication requires an input submission method.');
+        context.bridge = await createChildBridge({
+          directory: path.join(request.runtime.directory, 'communication'), deadlineAt: request.run.deadlineAt,
+          toolkit: request.runtime.toolkit,
+          emitParentMessage: async (text) => {
+            try { await emit({ type: 'message', text }); }
+            catch (error) { context.abort('channelWriteFailed'); throw error; }
+          }, submitInput: communication.passiveDelivery === 'none' ? undefined : submitInput, canSubmitInput,
+        });
+        try {
+          const instructions = await renderCommunicationInstructions(communication, context.bridge, instructionBindings);
+          context.prompt = `${request.prompt}\n\n${instructions}`;
+          context.communication = communication;
+        } catch (error) { await context.bridge.close('error'); throw error; }
+        return context.bridge;
+      },
+      async beginClosing(reason) {
+        if (!ready) return;
+        if (closing) return closingTask;
+        closing = true;
+        armClosingTimer();
+        closingTask = (async () => {
+          await context.bridge?.close(reason);
+          await Promise.allSettled([...deliveries]);
+          await emit({ type: 'closing', reason });
+        })();
+        return closingTask;
+      },
+    };
+    context.spawn = (command, args) => launchBackend(context, command, args);
+    if (request.run.deadlineAt !== null) {
+      const tick = () => {
+        if (finished || context.signal.aborted) return;
+        const remaining = request.run.deadlineAt - Date.now();
+        if (remaining <= 0) shutdown('deadline');
+        else deadlineTimer = setTimeout(tick, Math.min(remaining, 2147483647));
+      };
+      tick();
+    }
+    let result;
+    try {
+      if (!/^[a-f0-9]{48}$/.test(process.env.AW_SUBAGENT_PROCESS_TOKEN ?? '')) fail('processMarkerMissing', 'Run this adapter through the Guide runner.');
+      if (request.mode !== descriptor.mode) fail('adapterModeUnsupported', `This adapter requires ${descriptor.mode} mode.`);
+      if (descriptor.permissionMode === true ? !Object.hasOwn(request, 'permissionMode') : Object.hasOwn(request, 'permissionMode')) fail('protocolInvalid', 'The permission mode must match the selected adapter.');
+      if (descriptor.codex === true ? !Object.hasOwn(request, 'codex') : Object.hasOwn(request, 'codex')) fail('protocolInvalid', 'The Codex configuration must match the selected adapter.');
+      await safePath(request.workspace, 'directory');
+      await safePath(request.runtime.directory, 'directory');
+      if (context.signal.aborted) throw Object.assign(new Error('The task was stopped before submission.'), { code: context.errorCode });
+      if (typeof descriptor.negotiate !== 'function') fail('initializationNegotiationMissing', 'The adapter must negotiate the environment and capabilities before model input.');
+      validateNegotiation(await descriptor.negotiate(context), context);
+      if (context.signal.aborted) throw Object.assign(new Error('The task was stopped before submission.'), { code: context.errorCode });
+      result = await descriptor.execute(context);
+    } catch (error) {
+      const safe = safeError(error);
+      result = { state: context.generationStarted === false ? 'failed' : 'unknown', code: safe.code, message: redact(safe.message, process.env).slice(0, 2048), text: '' };
+    }
+    try {
+      if (context.backend) {
+        const stopped = await context.backend.cleanup();
+        result.backendExitCode = context.backend.exitCode;
+        if (!stopped) Object.assign(result, { state: 'unknown', code: 'localTreeStopUnconfirmed' });
+      }
+      if (context.signal.aborted) {
+        const beforeSubmission = context.generationStarted === false;
+        Object.assign(result, {
+          state: beforeSubmission ? ['requested', 'deadline'].includes(context.stopReason) ? 'cancelled' : 'failed' : 'unknown',
+          code: context.errorCode, ...(beforeSubmission ? {} : { remoteStopConfirmed: false }),
+        });
+      }
+      if (result.state === 'completed' && (result.backendExitCode !== 0 || context.generationStarted !== true || !result.text?.trim())) Object.assign(result, { state: 'unknown', code: 'serviceTerminalConflict' });
+      await context.beginClosing(result.state === 'completed' ? 'completed' : result.state === 'cancelled' ? 'cancelled' : 'failed');
+      await context.bridge?.close('error');
+      await Promise.allSettled([...deliveries]);
+      if (!ready && result.state === 'unknown' && context.generationStarted === false) result.state = 'failed';
+      const final = { type: 'result', generationStarted: context.generationStarted, backendExitCode: context.backend?.exitCode ?? null, ...result };
+      if (context.initialization) final.initialization = context.initialization;
+      const diagnostics = summarizeDiagnostics(context.diagnostics, context.environment);
+      if (diagnostics.length) final.diagnostics = diagnostics;
+      final.text = redact(final.text ?? '', process.env);
+      if (final.message) final.message = redact(final.message, process.env).slice(0, 2048);
+      await emit(final);
+    } finally {
+      finished = true;
+      clearTimeout(deadlineTimer); clearTimeout(stopTimer);
+      process.stdin.destroy();
+    }
+  };
+  const protocolError = () => {
+    if (protocolFailed) return;
+    protocolFailed = true;
+    if (context) shutdown('channelError', 'protocolInvalid');
+    else { process.stderr.write('protocolInvalid: Invalid Adapter v5 input.\n'); process.exitCode = 1; process.stdin.destroy(); }
+  };
+  const decoder = createFrameDecoder({ direction: 'worker', onFrame(frame) {
+    try {
+      state.acceptWorker(frame);
+      if (frame.type === 'start') {
+        task = run(frame);
+        task.catch((error) => { const safe = safeError(error); process.stderr.write(`${safe.code}: ${redact(safe.message, process.env)}\n`); process.exitCode = 1; process.stdin.destroy(); });
+      } else if (frame.type === 'stop') shutdown(frame.reason);
+      else if (frame.type === 'message') {
+        const delivery = closing ? Promise.resolve({ status: 'notSubmitted', code: 'runClosed' }) : context.bridge.acceptInput({ id: frame.id, text: frame.text });
+        const pending = delivery.then((value) => emit({ type: 'delivery', id: frame.id, ...value })).catch(() => shutdown('channelError', 'deliveryFailed'));
+        deliveries.add(pending);
+        pending.finally(() => deliveries.delete(pending));
+      }
+    } catch { protocolError(); }
+  } });
+  process.stdin.on('data', (chunk) => { if (protocolFailed) return; try { decoder.push(chunk); } catch { protocolError(); } });
+  process.stdin.on('end', () => { try { decoder.end(); } catch { protocolError(); } if (!context) { protocolError(); return; } if (!finished) shutdown('channelError', 'channelClosed'); });
+  process.stdin.on('error', () => { if (!finished) shutdown('channelError', 'channelClosed'); });
+  process.stdout.on('error', () => shutdown('channelError', 'channelWriteFailed'));
+  process.on('SIGINT', () => shutdown('requested'));
+  process.on('SIGTERM', () => shutdown('requested'));
 }

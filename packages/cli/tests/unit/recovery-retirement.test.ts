@@ -2,14 +2,16 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { normalizeCommandDefinition, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
 
 const backend = vi.hoisted(() => ({
-  inspect: vi.fn(), execute: vi.fn(), portable: vi.fn(), resetConfig: vi.fn(),
+  inspect: vi.fn(), preview: vi.fn(), execute: vi.fn(), portable: vi.fn(), resetConfig: vi.fn(),
 }));
 vi.mock('../../src/commands/rebuild-command.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/commands/rebuild-command.js')>(),
   inspectRemovedPluginCleanup: backend.inspect,
-  executeRemovedPluginOutputCleanup: backend.execute,
+  executeRemovedPluginOutputCleanup: (options: Parameters<typeof import('../../src/commands/rebuild-command.js')['executeRemovedPluginOutputCleanup']>[0]) =>
+    options.runtime?.previewOperationPlan ? backend.preview(options) : backend.execute(options),
 }));
 vi.mock('../../src/portable/recovery.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/portable/recovery.js')>(),
@@ -26,6 +28,8 @@ import { observePreferences, writePreferences } from '../../src/intent/deploymen
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { SkillsCliError } from '../../src/portable/skills-cli.js';
+import { createOperationPlan } from '../../src/commands/operation-plan.js';
+import { resolveManagedCommand, syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
 
 function removedEvidence() {
   return { pluginId: 'local/demo', pluginName: 'demo', sourceId: 'local',
@@ -44,6 +48,7 @@ function location() {
 beforeEach(() => {
   backend.inspect.mockReset().mockImplementation(async () => removedEvidence());
   backend.execute.mockReset();
+  backend.preview.mockReset().mockResolvedValue(undefined);
   backend.portable.mockReset().mockResolvedValue({ state: 'absent', targets: [], blockers: [] });
   backend.resetConfig.mockReset();
 });
@@ -350,5 +355,115 @@ describe('retire strong state and residue', () => {
     expect(result.declarationChanged).toBe(false);
     expect((await observeIntent(options)).value.roots).toEqual([{ pluginId: 'local/demo' }]);
     expect(backend.execute).not.toHaveBeenCalled();
+  });
+});
+
+// Test Value Gate: retirement must retain an independent installed package, show its exact
+// removal action in Review and successful receipts, and preserve producer failure as partial work.
+describe('retire managed command results', () => {
+  const inventoryCatalogSourceReferences = async () =>
+    ({ inventorySchemaVersion: 1 as const, references: [], errors: [] });
+
+  async function installedPackage() {
+    const options = location();
+    const producer: ProducerIdentity = { sourceId: 'local', sourceIdentity: `sha256:${'a'.repeat(64)}`,
+      pluginName: 'demo', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null };
+    const sourceDirectory = path.join(options.cwd, 'retained-command-source');
+    await fs.outputFile(path.join(sourceDirectory, 'run.mjs'), 'process.exit(0);\n');
+    const installed = await syncManagedCommandPackage({ producer, sourceDirectory,
+      sets: [{ set: 'tools', state: 'present', entries: [normalizeCommandDefinition({ key: 'run',
+        runner: 'node', entry: 'run.mjs', args: ['--fixed'] })] }], env: options.env });
+    const recoveryAction = `aw command package remove ${installed.id} --yes`;
+    const action = { kind: 'retainManagedCommandPackage' as const, pluginId: 'local/demo', scope: 'user' as const,
+      producer, packageId: installed.id, commandIds: installed.commandIds,
+      availability: 'ready' as const, errors: [], recoveryAction };
+    const operationPlan = createOperationPlan({ intentChanges: [], actions: [action], changes: [], warnings: [],
+      evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] } });
+    const commandResult = { producer, state: 'completed' as const, commandIds: installed.commandIds,
+      removedCommandIds: [], errors: [], recoveryActions: [recoveryAction] };
+    backend.preview.mockResolvedValue({ operationPlan, commandResults: [commandResult] });
+    return { options, installed, action, commandResult, recoveryAction };
+  }
+
+  it('shows retained package removal in Review and successful receipt while the command stays usable', async () => {
+    const { options, installed, action, commandResult, recoveryAction } = await installedPackage();
+    await addRoot(options, 'local/demo', 'sha256:logical');
+    backend.execute.mockResolvedValue({ overallState: 'succeeded', rebuildResults: [], targetResults: [],
+      platforms: [], plugins: [], warnings: [], receiptTargets: [], commandResults: [commandResult] });
+    const plan = await prepareRetire({ ...options, selector: 'local/demo', yes: true },
+      { inventoryCatalogSourceReferences });
+    expect(plan.operationPlan?.actions).toContainEqual(action);
+    expect(plan.changes.join('\n')).toContain('保留命令包 tools');
+    expect(plan.changes.join('\n')).toContain('所有项目共用');
+    expect(plan.changes.join('\n')).toContain(recoveryAction);
+
+    const result = await executeRetire(plan);
+
+    expect(result).toMatchObject({ ok: true, declarationChanged: true, outputsMayHaveChanged: false,
+      commandResults: [commandResult] });
+    expect(result.recoveryActions).toEqual([recoveryAction]);
+    expect(result.remainingTargets).toEqual([]);
+    const command = await resolveManagedCommand(installed.commandIds[0]!, options.env);
+    expect(command.view.availability).toBe('ready');
+    expect(command.launch.args).toEqual(['--fixed']);
+    expect(await fs.readFile(path.join(command.resourceRoot, 'run.mjs'), 'utf8')).toBe('process.exit(0);\n');
+  });
+
+  it.each(['partial', 'failed'] as const)('keeps a %s platform producer visible after its cleanup succeeds', async (state) => {
+    const { options, commandResult } = await installedPackage();
+    await addRoot(options, 'local/demo', 'sha256:logical');
+    const recoveryAction = 'aw cleanup local/demo --scope user --target codex --force --yes';
+    const failed = { ...commandResult, producer: { ...commandResult.producer,
+      kind: 'static-skill' as const, platform: 'codex' as const }, state,
+    errors: [{ code: 'commandBindingInvalid', message: 'Command binding is invalid.' }],
+    recoveryActions: [recoveryAction] };
+    backend.inspect.mockImplementation(async () => ({ ...removedEvidence(), sourceIdentity: failed.producer.sourceIdentity }));
+    backend.execute.mockResolvedValue({ overallState: 'partial', rebuildResults: [],
+      targetResults: [{ target: { pluginId: 'local/demo', pluginName: 'demo', platform: 'codex', scope: 'user' },
+        action: 'cleanup', state: 'completed' }], platforms: ['codex'], plugins: ['local/demo'], warnings: [],
+      receiptTargets: [], commandResults: [failed] });
+
+    const result = await runRetire({ ...options, selector: 'local/demo', targets: ['codex'], yes: true },
+      { inventoryCatalogSourceReferences });
+
+    expect(result).toMatchObject({ ok: false, declarationChanged: true, commandResults: [failed],
+      targetResults: [{ agent: 'codex', execution: 'partial', observation: 'unknown',
+        blockers: [expect.objectContaining({ code: 'commandBindingInvalid' })] }],
+      remainingTargets: [expect.objectContaining({ pluginId: 'local/demo', agent: 'codex' })] });
+    expect(result.errors).toContainEqual(expect.objectContaining({ code: 'commandBindingInvalid', pluginId: 'local/demo' }));
+    expect(result.recoveryActions).toContain(recoveryAction);
+    expect(result.recoveryActions).toContain('aw intent retire local/demo --scope user --target codex');
+  });
+
+  it.each([
+    { state: 'partial', codexFailed: false },
+    { state: 'failed', codexFailed: false },
+    { state: 'failed', codexFailed: true },
+  ] as const)('keeps an unclassified $state package global (Codex cleanup failed=$codexFailed)', async ({ state, codexFailed }) => {
+    const { options, commandResult, recoveryAction } = await installedPackage();
+    await addRoot(options, 'local/demo', 'sha256:logical');
+    const failed = { ...commandResult, state,
+      errors: [{ code: 'commandBindingInvalid', message: 'Command binding is invalid.' }] };
+    backend.execute.mockResolvedValue({ overallState: 'partial', rebuildResults: [],
+      targetResults: (['codex', 'claude'] as const).map((platform) => ({
+        target: { pluginId: 'local/demo', pluginName: 'demo', platform, scope: 'user' },
+        action: 'cleanup', state: codexFailed && platform === 'codex' ? 'failed' : 'completed',
+      })), platforms: ['codex', 'claude'], plugins: ['local/demo'], warnings: [],
+      receiptTargets: [], commandResults: [failed] });
+
+    const result = await runRetire({ ...options, selector: 'local/demo', targets: ['codex', 'claude-code'], yes: true },
+      { inventoryCatalogSourceReferences });
+
+    expect(result).toMatchObject({ ok: false, declarationChanged: true,
+      commandResults: [failed] });
+    expect(result.remainingTargets).toEqual(codexFailed
+      ? [expect.objectContaining({ agent: 'codex' })] : []);
+    expect(result.targetResults.find((target) => target.agent === 'claude-code'))
+      .toMatchObject({ execution: 'applied', blockers: [] });
+    expect(result.targetResults.find((target) => target.agent === 'codex')).toMatchObject(codexFailed
+      ? { execution: 'failed', blockers: [expect.objectContaining({ code: 'nativeRetireFailed' })] }
+      : { execution: 'applied', blockers: [] });
+    expect(result.errors).toContainEqual(expect.objectContaining({ code: 'commandBindingInvalid', pluginId: 'local/demo' }));
+    expect(result.recoveryActions).toContain(recoveryAction);
   });
 });

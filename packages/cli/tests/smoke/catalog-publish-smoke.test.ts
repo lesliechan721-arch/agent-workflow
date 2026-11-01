@@ -7,6 +7,11 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import { afterEach, expect, it } from 'vitest';
 
+import {
+  prepareCatalogRelease,
+  publishCatalogRelease,
+  resolveCatalogPluginBaseVersions,
+} from '../../../../scripts/release/catalog-publication.mjs';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -99,4 +104,59 @@ it('publishes the built public CLI Catalog through an arbitrary branch and Git p
       snapshotDigest: receipt.snapshotDigest,
     },
   });
+});
+
+it('uses the compiled Core version owner to prepare only changed official Plugin bases', async () => {
+  temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-official-catalog-base-smoke-'));
+  const workspaceRoot = path.join(temporaryRoot, 'workspace');
+  const remoteUrl = path.join(temporaryRoot, 'catalog.git');
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+  const cliDistRoot = path.join(repoRoot, 'packages', 'cli', 'dist');
+  const cliEntry = path.join(cliDistRoot, 'index.js');
+  const env = getCurrentSourceTestIsolation().env;
+  await Promise.all([
+    fs.ensureDir(workspaceRoot),
+    execFileAsync('git', ['init', '--bare', '--quiet', remoteUrl]),
+  ]);
+  await execFileAsync('git', ['init', '--quiet'], { cwd: workspaceRoot });
+  await runAw(cliEntry, workspaceRoot, [
+    'catalog', 'init', '--workspace-root', workspaceRoot, '--catalog-version', '1.0.0',
+    '--owner-url', 'https://catalog.example.com/base-smoke',
+  ]);
+  for (const name of ['unchanged-plugin', 'changed-plugin']) {
+    await runAw(cliEntry, workspaceRoot, [
+      'plugin', 'init', name, '--description', 'Base smoke.', '--no-skills',
+      '--workspace-root', workspaceRoot,
+    ]);
+  }
+  async function commitSource() {
+    await execFileAsync('git', ['add', '--all'], { cwd: workspaceRoot });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '--quiet', '-m', 'source',
+    ], { cwd: workspaceRoot });
+  }
+  await commitSource();
+  const plan = await prepareCatalogRelease('latest', { repoRoot: workspaceRoot, remoteUrl, env });
+  await publishCatalogRelease({
+    channel: 'stable', expectedPlanDigest: plan.planDigest,
+  }, { repoRoot: workspaceRoot, remoteUrl, env });
+
+  const manifestPath = path.join(workspaceRoot, 'plugins', 'changed-plugin', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  await fs.writeJson(manifestPath, { ...manifest, description: 'Changed production content.' }, { spaces: 2 });
+  await runAw(cliEntry, workspaceRoot, [
+    'catalog', 'version', '1.0.1-beta.1', '--workspace-root', workspaceRoot,
+  ]);
+  await commitSource();
+  await runAw(cliEntry, workspaceRoot, ['catalog', 'build', '--workspace-root', workspaceRoot]);
+  const sourceHead = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspaceRoot })).stdout.trim();
+  await expect(resolveCatalogPluginBaseVersions({
+    channel: 'stable', repoRoot: workspaceRoot, remoteUrl, sourceHead, env,
+    withSnapshot: async (callback: (snapshot: Record<string, string>) => Promise<unknown>) => callback({
+      catalogOutputRoot: path.join(workspaceRoot, '.aw', 'catalog'),
+      corePackageRoot: path.join(repoRoot, 'packages', 'plugin-core'),
+      cliDistRoot,
+    }),
+  })).resolves.toEqual({ 'changed-plugin': '0.1.1' });
 });

@@ -1,3 +1,4 @@
+import { configReferenceKey, configReferenceSelection, configReferenceMessage, type ConfigReferenceContext } from './config-references.js';
 import { Box, Text, useInput } from 'ink';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -6,6 +7,7 @@ import {
   type PluginConfigLeafArrayField,
   type PluginConfigLeafObjectField,
   type PluginConfigScalar,
+  type PluginConfigScalarField,
   type PluginConfigScalarArray,
   type PluginConfigScalarObject,
 } from '@lesliechan721/aw-plugin-core';
@@ -31,6 +33,8 @@ export function ConfigLeafEditor(props: {
   rowBudget: number;
   active: boolean;
   error?: string;
+  referenceContext?: ConfigReferenceContext;
+  referenceNotice?: (scalar: PluginConfigScalarField, value: unknown) => string | undefined;
   onConfirm: (value: LeafValue) => boolean;
   onCancel: () => void;
   onDraftChange: (revision: string | undefined) => void;
@@ -66,7 +70,7 @@ export function ConfigLeafEditor(props: {
     setFocus(0);
     setScreen({ kind: 'value', rowId, key,
       input: rowId === undefined ? '' : String(rows.find((row) => row.id === rowId)?.value ?? ''),
-      mode: scalar.type === 'boolean' || scalar.choices || scalar.const !== undefined ? 'choices' : 'custom' });
+      mode: scalar.valueRef || scalar.type === 'boolean' || scalar.choices || scalar.const !== undefined ? 'choices' : 'custom' });
   };
   const saveScalar = (candidate: PluginConfigScalar): void => {
     const invalid = validatePluginConfigValue(scalar, candidate);
@@ -96,7 +100,8 @@ export function ConfigLeafEditor(props: {
       openValue();
     } else { setScreen({ kind: 'key', input: '' }); setError(undefined); }
   };
-  const choices: Array<{ title: string; value?: PluginConfigScalar; custom?: boolean }> = scalar.const !== undefined
+  const reference = scalar.valueRef ? configReferenceSelection(props.referenceContext, scalar) : undefined;
+  const choices: Array<{ title: string; value?: PluginConfigScalar; custom?: boolean }> = reference ? reference.choices : scalar.const !== undefined
     ? [{ title: `固定值 · ${presentConfigValue({ definition: scalar, value: scalar.const }).text}`, value: scalar.const }]
     : [
         ...(scalar.choices?.presets ?? []).map((preset) => ({ title: preset.title, value: preset.value })),
@@ -137,7 +142,7 @@ export function ConfigLeafEditor(props: {
     const count = screen.kind === 'tools' ? isArray ? 3 : 1
       : screen.kind === 'value' ? choices.length : rows.length + 3;
     if (key.upArrow || key.downArrow) {
-      setFocus((index) => (index + (key.upArrow ? -1 : 1) + count) % count); return;
+      if (count) setFocus((index) => (index + (key.upArrow ? -1 : 1) + count) % count); return;
     }
     if (screen.kind === 'list' && input === 'a') { setFocus(rows.length); return; }
     if (screen.kind === 'list' && input === 'c') { confirm(); return; }
@@ -173,7 +178,11 @@ export function ConfigLeafEditor(props: {
       description={error ?? 'Enter 使用输入 · Ctrl-U 清空 · Esc 取消这一项'} status={error ? 'error' : undefined} />
     {hint ? <Text wrap="wrap">{hint}</Text> : null}
   </Box>;
+  const referenceValue = screen.kind === 'value' ? rows.find((row) => row.id === screen.rowId)?.value : undefined;
+  const referenceError = scalar.valueRef ? props.referenceNotice?.(scalar, referenceValue)
+    ?? configReferenceMessage(scalar, props.referenceContext?.selections[configReferenceKey(scalar)], referenceValue) : undefined;
   if (screen.kind === 'value') return <Box flexDirection="column">
+    {referenceError ? <Text>{referenceError}</Text> : null}
     {choices.map((choice, index) => <ChoiceRow key={index} title={safeConfigText(choice.title)} focused={focus === index}
       selected={choice.value !== undefined && String(choice.value) === screen.input} compact />)}
     {error ? <Text>{error}</Text> : null}

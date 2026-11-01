@@ -60,10 +60,10 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "依据 requirements.md 新建普通 Skill skills/status-brief，只从用户给定状态文本提取结果。不要 AW 项目、脚本、Eval、安装或模型运行。只允许写该 Skill 目录。",
+      "prompt": "依据 requirements.md 新建普通 Skill skills/status-brief，只从用户给定状态文本提取结果。不要插件项目、脚本、Eval、安装或模型运行。只允许写该 Skill 目录。",
       "assertions": [
         "交付 name=status-brief 且与目录一致的完整 SKILL.md，方法能处理正常、无错误和缺输入。",
-        "新包不创建无用途脚本、Eval、AW manifest 或设计 JSON。",
+        "新包不创建无用途脚本、Eval、插件 manifest 或设计 JSON。",
         "使用已有自带工具时如实说明结果；无工具结果不冒称检查或模型运行通过。"
       ],
       "input": {
@@ -90,7 +90,7 @@
       },
       "audit": {
         "rationale": "验证明确任务的方法、产物和证据边界，不以内部阶段或固定术语评分。",
-        "minimalCounterexample": "只有源码注入型项目时才需要现有项目适配，普通包不需要 AW。",
+        "minimalCounterexample": "只有实际内容由项目生成时才需要相应生成方法，完整普通包可直接使用。",
         "allowedVariance": "允许等价措辞、代码和组织；机械结果按文件/调用核验，语义按任务目标核验。源设计不等于已执行。"
       }
     },

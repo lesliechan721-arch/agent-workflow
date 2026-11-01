@@ -14,6 +14,7 @@
 | 整体清理已删除插件 | `aw intent retire --scope` | 健康 Active 中已删除的 root 在当前 scope 清单卡和操作列提供独立停用入口。Review 明示本 scope 需求和偏好的修改、共用原生安装的影响，以及不能安全删除的 Portable 剩余项；结果列出剩余目标，可再次按精确 root/Agent 准备。 |
 | 处理当前 scope 受阻或未确认位置 | 来源管理、插件详情与安全诊断 | 插件清单 → 统一插件详情或对应问题 → 已有安全处理动作。来源、配置和输出冲突分别沿问题动作处理，不把所有受阻项都引向来源。未确认位置及无效或不可读的当前范围声明提供安全详情和重新检查；当前 scope 重新检查不自动安装、恢复或清理 foreign 内容。返回后可继续查看剩余位置。 |
 | 修复当前 scope 或所选异常插件 | 精确 selector 的 `sync` 或 `reinstall` | 清单中勾选 root 后用“同步所选插件”发起精确同步；`c` 对当前 scope 全部声明发起同步。准备、Review、进度和结果沿同一 coordinator，Review 取消不写入。结果以实际回执显示变更；带诊断的未确认目标仍可只读重查，只有可靠缺失且失败或部分完成的精确 plugin/Agent pair 可重新准备，冲突和未知不会变成重试。插件维护入口也进入同一流程。混合个人／项目恢复任务须分别选定范围并独立准备，不自动跨范围执行。 |
+| 插件托管命令与包变化 | 插件写入、`config … --apply` | 现有设置编辑支持 custom-managed 分支；安装/配置 Review 展示 producer、固定参数、共享影响、权限与沙箱例外，Progress/Result 同时投影 commandResults 和平台结果。平台卸载报告保留的共享包及显式移除入口。 |
 | 处理受阻修复项 | 设置、来源、状态检查和精确维护 | 恢复任务 → 对应问题的处理入口。版本改变需明确选择更新并重新显示操作汇总；无法确认版本时可重新检查和查看诊断。可执行子集完成后，剩余目标继续提供处理入口，不自动升级或删除。 |
 | 更新一个或多个插件 | `sync` | 插件库的可更新筛选、插件详情的“更新到 X”或恢复任务。只有已验证的 Active 或 session 候选清单、严格版本比较和 capability 兼容都成立时才显示目标版本；Catalog 版本本身不构成插件更新。候选需要启用时，先确认来源切换，再重新规划并确认精确插件更新。 |
 | 手动批量维护 | 多个 selector | 插件库 → 选择多个插件（`m`）。手动批次固定一种 action；`selected` 使用共同 scope 和平台，`targets` 沿用各自的精确 scope 和单个平台。更新和恢复任务复用已存在的精确目标，不把失败目标扩张为统一范围。 |
@@ -22,8 +23,9 @@
 | 批量部分失败 | 精确 selector 的新写入 | 结果 → 仅处理剩余项 → 新确认。只从失败 requested target，或失败依赖的 `requiredBy` 根计算新的精确目标；无法定位时只保留诊断。重试重新读取状态、Intent、Catalog 和依赖，并显示新的操作汇总。 |
 | 被共用的依赖和平台输出 | 依赖计划与 rebuild | 同一来源的恢复或更新任务以一次 typed write 处理全部根目标；被共用的依赖和平台输出只处理一次，并保留非本次目标的有效动态输出。不同来源独立执行。 |
 | 查看关系与移除影响 | 依赖 overview | 插件详情 → 依赖关系。任一方向有已知边才提供入口；正反向图同时保留已知声明和已验证关系，边证据与节点状态分别显示。Enter 打开统一插件详情，返回保留图中上下文；完整引用使用公共 Reader。检查范围只含当前项目和个人位置，其他项目未检查；有声明但本次尚未确认依赖可用的关系仍可阅读。内部 `availablePlacementReferences` 只由 Status v8 的 `ready` 依赖和现场 consumer 证据生成；它不是历史已应用绑定，也不改变现有移除或清理保护。 |
-| 查看和修改设置 | `config`、`config set`、`--preset` | 插件设置先显示实际 effective 值和来源；选择字段后直接编辑完整值，再显式选择合法的 user 或 project 写入层并回到原分组。支持标量、对象属性、一维标量／浅层对象数组和 Manifest 预设。配置卡分开显示实际值、来源、待保存和无效状态；对象及对象数组可用声明式实际值摘要，完整原值仍可读。唯一合法保存目标不再多问一次；仅 user 字段不会在 project 层提供编辑。 |
-| 编辑有序配置列表 | `config set` 的完整 JSON 数组 | 数组编辑器本地增删改排，标量／对象元素复用值编辑器；取消元素保留其它项，取消列表保留总览草稿。使用整个列表通过 Core 校验后只选一次 scope，再到保存汇总。128 项、262144 字节和对象 32 属性由 Core 统一限制；不按索引写盘。 |
+| 查看和修改设置 | `config`、`config set`、`--preset` | 插件设置先显示实际 effective 值和来源；普通字段编辑完整值后选合法的 user 或 project 写入层，含 valueRef 的字段先选层再按该层候选编辑，确认后不重复选层。支持标量、对象属性、一维标量／浅层对象数组和 Manifest 预设。配置卡分开显示实际值、来源、待保存和无效状态；对象及对象数组可用声明式实际值摘要，完整原值仍可读。唯一合法保存目标直接采用；仅 user 字段不会在 project 层提供编辑。 |
+| 编辑有序配置列表 | `config set` 的完整 JSON 数组 | 数组编辑器本地增删改排，标量／对象元素复用值编辑器；取消元素保留其它项，取消列表保留总览草稿。完整列表通过 Core 校验后到保存汇总；scope 只选择一次，含 valueRef 的列表在编辑前选择，其余在确认列表后选择。128 项、262144 字节和对象 32 属性由 Core 统一限制；不按索引写盘。 |
+| 选择引用配置值 | `valueRef` 与公共配置候选校验 | 动态选项包括 include 与完整来源数组的 key，同层已确认草稿可立即使用；label 仅用于显示。跨层未保存来源须先保存，不能作为合法候选。无候选、失效原值或来源无效时显示原因并允许返回修复；实际跨层草稿依赖可取消引用草稿、先保存来源，再重做引用。 |
 | 保存、应用、unset 和 reset 设置 | `config … --apply`、`config unset`、`config reset` | `s` 进入保存汇总，显示各字段与目标的真实差异；整层 reset 在设置选项，字段 unset 在编辑器。保存汇总只列 config impact 分析返回的实际 target。已确认无消费者时只保存；范围未知时明确说明并允许仅保存或重查；检查报错时只提供重查或返回。apply 失败后设置仍已保存，重新应用需要新确认。无来源或 schema 时可从已保存设置进入精确整层 reset。 |
 | 修复或管理来源 | `catalog source …` | 插件来源 → 详情、编辑或完整草稿。统一检查按真实状态选择验证深度，显示处理对象与结果，不启用候选；添加、更新、设主、移除和来源切换各自显示操作汇总。设置页中的来源修复返回原草稿并重新验证，绝不自动提交。 |
 | 安装通用 Skills | `skill install` | 插件详情 → 通用 Skills → Skill、Agent、scope → 确认与结果。Agent 可自动选择可用项或由用户明确指定，自动选择不等于选择全部。正常候选两行，名称／勾选和 short-description；缺失短描述时使用可信 description 的有界首句。例外和同名来源消歧保留，Enter/Space 都勾选，初始 Controller 草稿不变。 |
@@ -52,10 +54,11 @@
 | JSON、stdin 精确值、debug、日志路径、非交互授权和自动化参数 | 这些是机器接口，TUI 不模拟其输出模式。 |
 
 | 任意目录的 Skill materialize、validate 和 Eval | 它们属于作者工具，不是向 Agent 安装插件的消费流程。 |
-| `review inspect`、`review prepare` 和 Review 报告归档 | 它们属于作者审核工具，由 CLI 和 Review Skill 编排；不复用 TUI 安装操作的准备、确认或进度流程。 |
+| `review inspect` 和 `review prepare` | 它们属于作者审核工具，由 CLI 和 Review Skill 编排；不复用 TUI 安装操作的准备、确认或进度流程。 |
 | 插件 init、add-skill、validate、test、build、requirements | 不建设单插件作者工作区；开发技能调用 CLI。 |
 | Catalog Store | TUI 提供只读概览、保留规则、精确预览和显式确认清理。实际删除复用 CLI 的安全清理服务、AW_HOME 写锁和逐项复核。 |
 | Catalog Workspace、开发来源、Catalog 发布、单插件作者流程和 CLI npm 发布 | 这些是作者和发布流程，继续由开发技能和 CLI 承担；TUI 不提供这些入口。 |
+| `command install/update/remove/list/show/run` 与 `command package sync/remove` | 工具目录托管、透明进程调用和独立包维护通过 CLI 提供；不增加命令管理页面。插件安装和配置 apply 中的命令变化继续由现有 Review、Progress、Result 展示。 |
 | 自描述和任意文件维护 | TUI 不复制机器输出或任意文件操作接口。 |
 
 ## 实现验证索引
@@ -69,7 +72,7 @@
 - `packages/cli/tests/unit/rebuild-task-command.test.ts`
 - `packages/cli/tests/unit/tui-dependency-graph-v7.test.tsx`
 - `packages/cli/tests/unit/tui-config-experience-v7.test.tsx`
-- `packages/cli/tests/unit/tui-console-app-v5.test.tsx` 与 `packages/cli/tests/unit/tui-route-registry-v7.test.ts`
+- `packages/cli/tests/unit/tui-console-app-v5-*.test.tsx` 中的导航、插件、配置、来源、依赖和操作场景，以及 `packages/cli/tests/unit/tui-route-registry-v7.test.ts`
 - `packages/cli/tests/unit/tui-scoped-inventory.test.tsx` 与 `scripts/test/tui-pty.py` 的 scoped-inventory 场景
 
 新增或改变消费能力时，必须更新本表，说明 TUI 入口和失败恢复路径，或说明保留 CLI 的理由。新增 TUI 路由必须同时接入生产路由定义、渲染、实体失效处理和按键合同。

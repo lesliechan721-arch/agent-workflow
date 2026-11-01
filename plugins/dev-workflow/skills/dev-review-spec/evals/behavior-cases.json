@@ -21,33 +21,38 @@
         "representative",
         "independent-spec-review"
       ],
-      "prompt": "本用例在新的独立审查上下文中开始：当前未参与文档起草或修订，也未继承作者工作历史。正式审查 docs/specs/session-expiry.md，判断是否可以批准。使用独立 reviewer，不要修改文件。",
+      "prompt": "本次在新的审查会话中开始，未参与起草或修订。使用 dev-review-spec 对照 requirements.md 和 project.md 审查 docs/specs/session-expiry.md，只报告质量及覆盖，不修改文件。",
       "assertions": [
         "当前合格独立上下文直接完成审查，没有仅因加载 Skill 再转派相同职责；缺少 spawn 工具不妨碍这次 Spec 审查。",
         "报告当前规格的实质问题、版本、来源和覆盖限制，不要求 Assurance 或固定状态词。",
-        "在同一轮指出可验证验收缺失，以及文件步骤和模型状态流程属于过度规定",
+        "对照实际需求指出精确过期行为和可验证验收缺失；根据当前直接判定用途及工程自由，指出强制文件安排和持久四阶段流程的无依据约束及代价。",
         "每个 blocker 说明材料影响和可验证关闭条件，偏好性建议与 blocker 分开",
-        "不修改被审 Spec"
+        "不修改被审 Spec",
+        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
         "scriptedReplies": [],
         "workspaceFiles": {
-          "docs/specs/session-expiry.md": "# Session Expiry Spec\n\n## Goal\n让会话过期。\n\n## 实施步骤\n1. 修改 src/auth/session.ts。\n2. 按 pending -> checking -> retrying -> expired 推进。\n\n## 验收\n系统正常工作。\n"
+          "docs/specs/session-expiry.md": "# Session Expiry Spec v1\n\n## Goal\n让会话过期。\n\n## 实施步骤\n1. 必须修改 src/auth/session.ts，文件组织不得调整。\n2. 每次请求必须持久保存 pending -> checking -> retrying -> expired 四阶段状态，再据此判断过期。\n\n## 验收\n系统正常工作。\n",
+          "requirements.md": "# 用户确认\n比较同一服务端时钟的毫秒时间戳 now 与 expiresAt；now >= expiresAt 时拒绝请求并提示已过期，此前保持成功行为。只需当前会话的过期判定，内部文件和函数组织由实现者决定。\n",
+          "project.md": "# 当前事实\n每次请求已有 expiresAt 和服务端时钟可供判定；没有多阶段业务流程或跨进程恢复要求。直接比较即可得到当前是否过期。\n"
         }
       },
       "expected": {
         "output": "由当前已合格的独立 reviewer 直接核对当前 Spec，指出可观察验收缺口、无依据的实施步骤和状态流程，并说明材料影响与关闭条件；必要来源或独立审查能力不足时明确覆盖限制。默认对话报告，不修改文件。",
-        "workspaceUnchanged": true,
+        "workspaceUnchanged": false,
         "artifacts": [
           {
             "path": "docs/specs/session-expiry.md",
-            "exists": true,
-            "contains": [
-              "pending -> checking",
-              "系统正常工作"
-            ]
+            "exists": true
           }
-        ]
+        ],
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "给出原始要求与实际消费者，使过度规定的结论有证据，不凭文件清单或状态机术语判错。",
+        "allowedVariance": "可用等价问题组织及表述；独立性须有实际上下文证据，不能只引用场景角色声明。",
+        "minimalCounterexample": "原需求确有持久流程或已确认该布局时，应保留必要设计，不因机制名称判错。"
       }
     },
     {
@@ -64,13 +69,16 @@
         "目标是当前完整 Spec，而不只是旧 finding",
         "上一份报告中的文件清单和 SessionStateMachine 偏好不升级为 blocker",
         "报告比较已解决、仍存在和新发现，分别说明当前判断和覆盖限制",
-        "覆盖当前 spec-review.md，并保持 Spec 不变"
+        "覆盖当前 spec-review.md，并保持 Spec 不变",
+        "依据实际 requirements.md、原审查版本与当前规范核对相等边界的结果，不能把“覆盖边界测试”的标题当成缺陷已关闭。"
       ],
       "input": {
         "scriptedReplies": [],
         "workspaceFiles": {
-          "docs/dev/invite-expiry/spec.md": "# Invite expiry Spec\n\n## Outcome\n邀请 7 天后过期。\n\n## User-visible behavior\n第 7 天前可以接受；过期后服务端拒绝。\n\n## Acceptance\n覆盖过期前、边界时刻和过期后。\n\n## Agent discretion\n内部文件和函数组织由实现者决定。\n",
-          "docs/dev/invite-expiry/spec-review.md": "# Spec Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n\n## Findings\n\n缺少过期后的服务端行为。\n\n## 非阻塞建议\n\n可以列出每个实现文件，或新增 SessionStateMachine 详细说明。\n"
+          "docs/dev/invite-expiry/spec.md": "# 邀请 Spec v2\n对照根目录 requirements.md。\nnow >= expiresAt 时服务端拒绝并返回已过期错误；now < expiresAt 时保持原成功行为。\n验收：到期前1毫秒成功，恰好到期拒绝，到期后1毫秒拒绝。文件、函数、缓存和测试组织由实现者选择，不新增持久状态机。\nexpiresAt = createdAt + 604800000（连续7×24小时）；旧邀请同样计算，无批量迁移。\n",
+          "docs/dev/invite-expiry/spec-review.md": "# Spec Review\n\n原检查目标：spec-v1.md；原始依据：根目录 requirements.md。\n\n- Assurance: `Standard`\n- Result: `blocked`\n\n## Findings\n\n缺少过期后的服务端行为。\n\n## 非阻塞建议\n\n可以列出每个实现文件，或新增 SessionStateMachine 详细说明。\n",
+          "requirements.md": "# 已确认要求\n邀请使用同一服务端时钟的毫秒时间戳；now >= expiresAt 时拒绝并返回已过期错误，now < expiresAt 时保持现有成功行为。文件、函数、缓存和测试组织由实施者选择，不新增持久状态机。\nexpiresAt = createdAt + 604800000，即连续7×24小时；旧邀请沿用创建时间，无批量迁移。\n",
+          "docs/dev/invite-expiry/spec-v1.md": "# 邀请 Spec v1\n采用 expiresAt 判断过期；未过期保持成功。过期拒绝及等值行为尚未定义，工程组织自主。\n"
         }
       },
       "expected": {
@@ -85,6 +93,11 @@
             "exists": true
           }
         ]
+      },
+      "audit": {
+        "rationale": "原版本、用户要求和当前明确边界支持关闭判断；文件清单和更完整状态机不是新增要求。",
+        "allowedVariance": "允许等价数学表达、报告结构及合理证据限制，不要求固定通过词；场景声明不充当隔离证明。",
+        "minimalCounterexample": "当前仍只说测试边界而未定义边界结果时，应继续报告缺口，不能按提示认定关闭。"
       }
     },
     {
@@ -97,16 +110,19 @@
       "prompt": "你已被安排为本轮新的全面复审者。本用例在新的独立审查上下文中开始：当前未参与文档起草或修订，也未继承作者工作历史。重新正式审查 docs/dev/session-expiry/spec.md。上一轮材料 blocker 已修复；覆盖当前 spec-review.md，不要修改 Spec。",
       "assertions": [
         "当前就是本轮安排的新独立 reviewer；读取 references/rereview.md 后直接完整复审，不再次创建下一级 reviewer。",
-        "旧 blocker 的关闭由当前 Acceptance 证据确认",
+        "旧 blocker 的关闭由当前明确的 now >= expiresAt 行为及前、等、后验收结果确认。",
         "精确文件清单、SessionStateMachine 或更优写法不作为新 blocker",
         "若提及这些偏好，只能放入非阻塞建议",
-        "不修改被审 Spec"
+        "不修改被审 Spec",
+        "依据实际 requirements.md、原审查版本与当前规范核对相等边界的结果，不能把“覆盖边界测试”的标题当成缺陷已关闭。"
       ],
       "input": {
         "scriptedReplies": [],
         "workspaceFiles": {
-          "docs/dev/session-expiry/spec.md": "# Session expiry Spec\n\n## Outcome\n会话在 expiresAt 到达后失效。\n\n## User-visible behavior\n未过期请求保持现有行为；过期请求由服务端拒绝并返回明确错误。\n\n## Acceptance\n覆盖过期前、边界时刻和过期后。\n\n## Agent discretion\n文件、函数、缓存和测试组织由实现者决定。\n",
-          "docs/dev/session-expiry/spec-review.md": "# Spec Review\n\n- Result: `blocked`\n\n## Findings\n\n缺少边界时刻的行为。\n\n## 非阻塞建议\n\n建议列出所有文件，并考虑 SessionStateMachine 以获得更完整的设计。\n"
+          "docs/dev/session-expiry/spec.md": "# 会话 Spec v2\n对照根目录 requirements.md。\nnow >= expiresAt 时服务端拒绝并返回已过期错误；now < expiresAt 时保持原成功行为。\n验收：到期前1毫秒成功，恰好到期拒绝，到期后1毫秒拒绝。文件、函数、缓存和测试组织由实现者选择，不新增持久状态机。\n",
+          "docs/dev/session-expiry/spec-review.md": "# Spec Review\n\n原检查目标：spec-v1.md；原始依据：根目录 requirements.md。\n\n- Result: `blocked`\n\n## Findings\n\n缺少边界时刻的行为。\n\n## 非阻塞建议\n\n建议列出所有文件，并考虑 SessionStateMachine 以获得更完整的设计。\n",
+          "requirements.md": "# 已确认要求\n会话使用同一服务端时钟的毫秒时间戳；now >= expiresAt 时拒绝并返回已过期错误，now < expiresAt 时保持现有成功行为。文件、函数、缓存和测试组织由实施者选择，不新增持久状态机。\n",
+          "docs/dev/session-expiry/spec-v1.md": "# 会话 Spec v1\n采用 expiresAt 判断过期；未过期保持成功。过期拒绝及等值行为尚未定义，工程组织自主。\n"
         }
       },
       "expected": {
@@ -123,9 +139,9 @@
         ]
       },
       "audit": {
-        "rationale": "旧 blocker 已关闭；更详细的文件清单、额外状态机或更优写法只是 reviewer 偏好，不能成为新的批准 blocker。",
-        "allowedVariance": "可以省略偏好性建议或将其单独呈现；不得仅因表达或架构偏好认定存在实质问题。结论措辞和标题不固定，必要证据或独立审查能力不足须如实说明。",
-        "minimalCounterexample": "如果当前 Spec 仍缺少会改变用户行为、实现边界或验收的材料内容，应报告对应实质问题。"
+        "rationale": "原版本、用户要求和当前明确边界支持关闭判断；文件清单和更完整状态机不是新增要求。",
+        "allowedVariance": "允许等价数学表达、报告结构及合理证据限制，不要求固定通过词；场景声明不充当隔离证明。",
+        "minimalCounterexample": "当前仍只说测试边界而未定义边界结果时，应继续报告缺口，不能按提示认定关闭。"
       }
     }
   ]

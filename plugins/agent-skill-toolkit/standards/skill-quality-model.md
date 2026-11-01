@@ -6,15 +6,16 @@
 | --- | --- | --- |
 | CONTENT.FACT / LOAD / POINTER / CONTROL / OUTPUT / VALIDATION | agent-content-toolkit/skills/agent-content/SKILL.md | 共同内容方法内联；通用内容、Skill 作者与审稿 |
 | CONTENT.REFERENCE | agent-content-toolkit/skills/agent-content/references/reference-design.md | 创建与评价参考材料 |
-| SKILL.INVOCATION | references/skill-invocation.md | Author、Skill Review、Architecture；构建时投影 |
-| SKILL.COMPOSITION | references/skill-composition.md | Author、Skill Review、Simplifier、Architecture；构建时投影 |
+| SKILL.INVOCATION | references/skill-invocation.md | Author、Reviewer；构建时投影 |
+| SKILL.COMPOSITION | references/skill-composition.md | Author、Reviewer、Simplifier；构建时投影 |
 | SKILL.DESIGN | skills/author-agent-skill/references/design-and-validation.md | 作者方法，不作独立裁决 |
 | REVIEW.METHOD / EVIDENCE / SCORE | skills/review-agent-skill/references/review-standard.md、evidence-and-severity.md、review-dimensions.md | 只读问题判断、证据与评分 |
 | EVAL.DESIGN | skills/author-agent-skill/references/eval-design.md | 通用 case 写作，不拥有 runner 方言 |
 | EVAL.AUDIT | skills/audit-agent-skill-evals/references/eval-audit-standard.md | 用例资格、对照与结果解释 |
 | EVAL.ADMISSION | skills/audit-agent-skill-evals/references/formal-admission.md | 实际运行器要求的正式独立准入 |
 | SIMPLIFY.ACCEPT | skills/simplify-agent-skill/references/ablation-acceptance.md | 有限预算下的对照接受 |
-| ARCH.PORTFOLIO | skills/review-agent-architecture/references/public-surface-review.md | 公开入口、依赖及用户选择成本 |
+| ARCH.WORKFLOW | skills/review-agent-skill/references/architecture-review.md | 有界任务路径、交接与失败恢复 |
+| ARCH.PORTFOLIO | skills/review-agent-skill/references/public-surface-review.md | 公开入口、依赖及用户选择成本 |
 
 共享格式、调用和组合规则只维护一处，按 manifest 以相同文件名投影到实际消费者：`skill-format.md`、`skill-invocation.md`、`skill-composition.md`。Author 不另设别名；本地作者方法不要求 Reviewer 激活 Author。运行器格式由当前运行器提供。
 
@@ -24,7 +25,6 @@
 | --- | --- | --- |
 | references/skill-format.md | Author、Skill Review、Simplifier | 普通包与作者检查基线 |
 | skills/author-agent-skill/references/trigger-development.md | Author | 发现、调用、description 与执行问题分层；重复观察、训练/验证与候选选择 |
-| skills/author-agent-skill/references/development-iteration.md | Author | 授权内持续开发及有界验证 |
 
 统一格式以标准字段为主，只收录常用调用差异。共享资料按问题读取，投影不意味着每次全部加载。
 

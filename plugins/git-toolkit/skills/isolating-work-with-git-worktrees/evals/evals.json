@@ -21,7 +21,7 @@
       "tags": [],
       "input": {
         "name": "preserve-dirty-workspace-and-use-default-path",
-        "prompt": "仓库当前检出 main，存在与任务无关且未提交的本地修改。环境没有平台原生隔离，项目也没有 worktree 路径约定；候选路径 .worktrees/hotfix-login 已确认被 ignore 规则排除，不需要重新判断。请从 origin/main 创建 hotfix-login 分支并在独立 worktree 中实现修复；不要 stash、reset、提交或改动当前工作区中的任何内容。"
+        "prompt": "仓库当前检出 main，存在与任务无关且未提交的本地修改。环境没有平台原生隔离，项目也没有 worktree 路径约定；候选路径 .worktrees/hotfix-login 已确认被 ignore 规则排除，不需要重新判断。请从 origin/main 创建 hotfix-login 分支，在独立 worktree 中把 app.txt 改为 login=fixed，并运行 node test.mjs；不要 stash、reset、提交或改动当前工作区中的任何内容。"
       },
       "expected": {
         "outcome": "Agent 使用仓库根目录下已确认被忽略的 .worktrees/hotfix-login/，并确认新分支基于 origin/main。当前工作区的 HEAD、index、tracked/untracked 修改保持不变，不使用 stash、reset 或 force；实际运行 node test.mjs。"
@@ -53,7 +53,7 @@
       ],
       "input": {
         "name": "reuse-existing-isolation",
-        "prompt": "当前会话已经位于平台创建的 linked worktree 中，分支和基点都符合任务要求。请继续实现功能，不要创建新的 worktree。"
+        "prompt": "当前会话已经位于平台创建的 linked worktree 中，feature 分支和基点都符合任务要求。请在这里把 feature.txt 改为 feature=done，不要创建新的 worktree。"
       },
       "expected": {
         "outcome": "Agent 识别并复用现有隔离，不因为默认路径规则而迁移或再创建 .worktrees/；在开始修改前确认当前路径、分支、基点和初始状态，并保持 primary worktree 不变。"
@@ -89,14 +89,14 @@
       ],
       "input": {
         "name": "report-dirty-baseline",
-        "prompt": "为 feature 分支建立隔离 worktree 并开始修复测试。新工作区在任何任务修改前就有一个现有测试失败。"
+        "prompt": "请从 origin/main 为 feature 分支建立隔离 worktree。本次只检查起点：在任何任务修改前运行 node test.mjs；若检查失败，停止并报告是否属于修改前的基线问题，暂不修复。"
       },
       "expected": {
-        "outcome": "Agent 在基于 origin/main 的隔离 worktree 中实际运行 node test.mjs，将失败记录为基线问题，不把它归因于本次修改，也不宣称工作区初始状态正常；后续是否继续由任务目标和用户授权决定。"
+        "outcome": "Agent 在隔离 worktree 中实际运行 node test.mjs，将已有失败报告为基线问题，并按本次请求停止；不修改 app.txt，也不将已有失败归因于本次工作。"
       },
       "audit": {
-        "rationale": "Skill 要求在任务操作前检查初始状态，并先报告已有失败而不归因于本次工作。",
-        "minimalCounterexample": "若基线检查通过，则可以继续任务修改，不应报告已有失败。"
+        "rationale": "验证基线失败归因及用户明确要求的停止边界；此用例不评价获得修复授权后是否继续工作。",
+        "minimalCounterexample": "若用户要求报告后继续修复，则允许任务修改，不能套用本例的停止断言。"
       }
     }
   ]

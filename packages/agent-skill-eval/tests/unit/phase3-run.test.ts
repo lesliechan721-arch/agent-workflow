@@ -121,11 +121,11 @@ async function reviewEvalFixture(): Promise<{
     'plugins',
     'aw-development-toolkit',
     'skills',
-    'review-aw',
+    'develop-aw',
     'evals',
   )
   const document = JSON.parse(await readFile(
-    path.join(evalRoot, 'materialized-review-cases.json'),
+    path.join(evalRoot, 'review-materialization-cases.json'),
     'utf8',
   )) as { cases: Array<{ id: string; input: { workspaceFiles: Record<string, string> } }> }
   const evalCase = document.cases.find((entry) => entry.id === 'reuse_current_final')
@@ -177,7 +177,7 @@ async function simplificationEvalFixture(): Promise<{
     'evals',
   )
   const document = JSON.parse(await readFile(
-    path.join(evalRoot, 'simplification-cases.json'),
+    path.join(evalRoot, 'simplify-source-cases.json'),
     'utf8',
   )) as { cases: Array<{ id: string; input: { workspaceFiles: Record<string, string> } }> }
   const evalCase = document.cases.find((entry) => entry.id === 'prepare_isolated_unverified_candidate')
@@ -1379,6 +1379,45 @@ describe('EvalSpec v1 execution', () => {
     })
   })
 
+  it('preserves explicit deny-all authorization with writable conversation tools', () => {
+    const document = parseSelectedCases({
+      version: 1,
+      suite: { kind: 'conversation', unitUnderTest: 'fixture-skill' },
+      cases: [{
+        id: 'no-write', split: 'validation', tags: [], prompt: 'Inspect without editing.',
+        assertions: ['Does not attempt a write.'],
+        expected: { workspaceUnchanged: false, allowedWorkspaceChanges: [] },
+      }],
+    })
+    const adapted = adaptConversationProviderCase(document, document.cases[0]!)
+    const value = adapted.value as Record<string, unknown>
+    const normalize = (candidate: Record<string, unknown>) => normalizeConversationProviderCase({
+      value: candidate, expectedSkill: 'fixture-skill', fixtureRoot: process.cwd(),
+    })
+    expect(value).toMatchObject({
+      sandbox: 'workspace-write',
+      review: { workspace_unchanged: false, allowed_workspace_changes: [] },
+    })
+    expect(normalize(value)).toMatchObject({
+      sandbox: 'workspace-write', workspaceUnchanged: false,
+      allowedWorkspaceChanges: [], artifacts: [],
+    })
+
+    const review = value.review as Record<string, unknown>
+    const { allowed_workspace_changes: _allowlist, ...missingAllowlist } = review
+    expect(() => normalize({ ...value, review: missingAllowlist })).toThrow('requires explicit')
+    expect(() => normalize({
+      ...value, review: { ...review, allowed_workspace_changes: ['out/**'] },
+    })).toThrow('requires non-empty review.artifacts')
+    expect(() => normalize({
+      ...value,
+      review: {
+        ...review, allowed_workspace_changes: ['out/**'],
+        artifacts: [{ path: 'outside.txt', exists: true }],
+      },
+    })).toThrow('outside review.allowed_workspace_changes')
+  })
+
   it('normalizes every registered conversation corpus through the actual adapter', async () => {
     const repositoryRoot = path.resolve('../..')
     const manifests = await evalManifestPaths(path.join(repositoryRoot, 'plugins'))
@@ -1392,18 +1431,19 @@ describe('EvalSpec v1 execution', () => {
         if (suite.kind !== 'conversation') continue
         conversationCount += 1
         const fixtureRoot = path.dirname(manifestPath)
+        const casesPath = path.join(fixtureRoot, suite.cases!)
         const document = parseSelectedCases(JSON.parse(await readFile(
-          path.join(fixtureRoot, suite.cases!),
+          casesPath,
           'utf8',
         )))
         for (const evalCase of document.cases) {
           const adapted = adaptConversationProviderCase(document, evalCase)
-          normalizeConversationProviderCase({
+          expect(() => normalizeConversationProviderCase({
             value: adapted.value as Record<string, unknown>,
             expectedSkill: document.suite.unitUnderTest,
             fixtureRoot,
             suitePathPrepend: adapted.suitePathPrepend as string[],
-          })
+          }), `${path.relative(repositoryRoot, casesPath)}: ${evalCase.id}`).not.toThrow()
           caseCount += 1
         }
       }
@@ -1503,7 +1543,7 @@ describe('EvalSpec v1 execution', () => {
       expect(result.value.ok, args.join(' ')).toBe(false)
     }
 
-    const accepted = await runReviewFixtureCli(data, [
+    const acceptedArgs = [
       'review', 'inspect', source,
       '--workspace-root', workspace,
       '--skill', 'demo-skill',
@@ -1511,9 +1551,27 @@ describe('EvalSpec v1 execution', () => {
       '--scope', 'project',
       '--materialization', binding,
       '--json',
-    ])
+    ]
+    const accepted = await runReviewFixtureCli(data, acceptedArgs)
     expect(accepted.code).toBe(0)
-    expect(accepted.value).toMatchObject({ skills: [{ state: 'ready' }] })
+    expect(accepted.value).toMatchObject({ schemaVersion: 2, view: 'review', skills: [{ state: 'ready' }] })
+    const explicitReview = await runReviewFixtureCli(data, [...acceptedArgs, '--view', 'review'])
+    expect(explicitReview.code).toBe(0)
+    expect(explicitReview.value).toEqual(accepted.value)
+
+    for (const viewArgs of [['--view', 'release'], ['--view=release']]) {
+      const result = await runReviewFixtureCli(data, ['review', 'inspect', source, ...viewArgs, '--json'])
+      expect(result.code).toBe(2)
+      expect(result.value).toMatchObject({
+        schemaVersion: 2,
+        command: 'review:inspect',
+        view: 'review',
+        ok: false,
+        sources: expect.any(Array),
+        skills: [],
+        issues: [{ code: 'invalidArguments' }],
+      })
+    }
   })
 
   it('preserves review fixture source, provider, and supplied final bytes', async () => {

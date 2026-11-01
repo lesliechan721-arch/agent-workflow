@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { readEnvironmentValue } from '../utils/state-paths.js';
-import { renderNpmCmdShim, resolveWindowsPathCommand } from '../utils/windows-claude-shim.js';
+import { renderNpmCmdShim, resolveWindowsPathCommand } from '../utils/windows-npm-shim.js';
 
 function renderPnpmCmdShim(target: string, nodePath?: string): string {
   // pnpm@10.33.0 uses @zkochan/cmd-shim@7.0.0 for its Node package bins.

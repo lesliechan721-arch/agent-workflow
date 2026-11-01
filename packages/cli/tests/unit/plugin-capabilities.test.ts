@@ -63,7 +63,7 @@ describe('plugin capabilities command', () => {
     expect(result.surface).toBeNull();
     expect(Object.keys(result.capabilities)).toEqual([
       'manifest', 'build-config', 'extensions', 'slash-commands',
-      'mcp-apps', 'config', 'pre-apply', 'artifacts',
+      'mcp-apps', 'config', 'pre-apply', 'managed-commands', 'artifacts',
     ]);
     expect(output.stderr()).toBe('');
   });

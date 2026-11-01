@@ -170,3 +170,9 @@ test('reports a missing exact binary without downloading it', async () => {
   assert.equal(report.result, 'missing')
   assert.equal(report.errorCode, 'exactCodexBinaryMissing')
 })
+
+test('rejects versions outside the current native qualification contract', async () => {
+  for (const requiredVersion of ['0.145.0', '0.150.0', '0.151.0-beta.1']) {
+    await assert.rejects(runCodexNativePerformanceQualification({ requiredVersion }))
+  }
+})

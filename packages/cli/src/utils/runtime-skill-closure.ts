@@ -12,7 +12,7 @@ const URI_SCHEME_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:/u;
 const ASCII_PUNCTUATION_PATTERN = /^[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]$/u;
 const LINE_MARKER_PATTERN = /:\d+(?::\d+)?$/u;
 
-type RuntimeSkillReferenceSource = 'markdown-link' | 'inline-command' | 'plain-text';
+type RuntimeSkillReferenceSource = 'markdown-link' | 'inline-code' | 'inline-command' | 'plain-text';
 
 interface RuntimeSkillReference {
   lexicalTarget: string;
@@ -48,6 +48,7 @@ interface MarkdownDestination {
 
 interface MarkdownScanResult {
   proseForLinks: string;
+  inlineCodeSnippets: string[];
   commandSnippets: string[];
 }
 
@@ -167,7 +168,7 @@ function findClosingCodeSpan(content: string, start: number, markerLength: numbe
 
 function partitionInlineCode(
   content: string,
-  commandSnippets: string[],
+  inlineCodeSnippets: string[],
 ): string {
   let proseForLinks = '';
   let cursor = 0;
@@ -193,7 +194,7 @@ function partitionInlineCode(
     }
     proseForLinks += content.slice(cursor, opening);
     const end = closing + markerLength;
-    commandSnippets.push(content.slice(opening + markerLength, closing));
+    inlineCodeSnippets.push(content.slice(opening + markerLength, closing));
     proseForLinks += maskMarkdownCode(content.slice(opening, end));
     cursor = end;
   }
@@ -202,6 +203,7 @@ function partitionInlineCode(
 
 function scanMarkdown(content: string): MarkdownScanResult {
   const lines = splitMarkdownLines(content);
+  const inlineCodeSnippets: string[] = [];
   const commandSnippets: string[] = [];
   let proseWithoutInlineCode = '';
   let lineIndex = 0;
@@ -253,7 +255,8 @@ function scanMarkdown(content: string): MarkdownScanResult {
   }
 
   return {
-    proseForLinks: partitionInlineCode(proseWithoutInlineCode, commandSnippets),
+    proseForLinks: partitionInlineCode(proseWithoutInlineCode, inlineCodeSnippets),
+    inlineCodeSnippets,
     commandSnippets,
   };
 }
@@ -741,7 +744,7 @@ function isLexicallyLocalReference(
   reference: RuntimeSkillReference,
   pathTarget: string,
 ): boolean {
-  if (reference.source === 'markdown-link' || reference.source === 'plain-text') {
+  if (reference.source !== 'inline-command') {
     return true;
   }
   return (
@@ -877,7 +880,6 @@ async function assertRegularSkillLocalFile(options: {
 function resolveMarkdownTargetFromOrigin(origin: string, pathTarget: string): string {
   if (
     origin === 'SKILL.md'
-    || CORE_RESOURCE_ROOT_PATTERN.test(pathTarget)
     || pathTarget.includes('\\')
     || path.posix.isAbsolute(pathTarget)
     || WINDOWS_DRIVE_PATH_PATTERN.test(pathTarget)
@@ -885,6 +887,32 @@ function resolveMarkdownTargetFromOrigin(origin: string, pathTarget: string): st
     return pathTarget;
   }
   return path.posix.normalize(path.posix.join(path.posix.dirname(origin), pathTarget));
+}
+
+async function isResourceCodePath(
+  skillRoot: string,
+  origin: string,
+  value: string,
+  rootEntries: ReadonlySet<string>,
+): Promise<boolean> {
+  if (/\s/u.test(value)) return false;
+  const { pathTarget: local } = stripReferenceSuffix(value);
+  if (!local || local.endsWith('/') || local === '.' || local === '..') return false;
+  const unprefixed = local.replace(/^(?:\.\.?\/)+/u, '');
+  const first = unprefixed.split('/')[0]!;
+  if (unprefixed === 'SKILL.md') return true;
+  if (
+    unprefixed.includes('/')
+    && (/^(?:references|assets|scripts|docs)$/u.test(first)
+      || rootEntries.has(first))
+  ) return true;
+  if (path.posix.extname(local) && rootEntries.has(local.replace(/^\.\//u, ''))) return true;
+  if (origin === 'SKILL.md' || local.includes('\\')) return false;
+  const fromDocument = path.posix.normalize(path.posix.join(path.posix.dirname(origin), local));
+  if (fromDocument === '..' || fromDocument.startsWith('../') || path.posix.isAbsolute(fromDocument)) return false;
+  // Recognize a legacy document-relative pointer, then validate its unchanged
+  // path from the Skill root instead of silently accepting the old base.
+  return pathExistsWithoutFollowingSymlinks(skillRoot, fromDocument);
 }
 
 function isAgentFacingTextResource(relativeTarget: string): boolean {
@@ -907,15 +935,29 @@ export async function validateRuntimeSkillClosure(
   }
   const pending = ['SKILL.md'];
   const visited = new Set<string>();
+  const rootEntries = new Set(await fs.readdir(skillRoot));
+  for (const target of options.declaredGeneratedFiles ?? []) {
+    rootEntries.add(target.split('/')[0]!);
+  }
   while (pending.length > 0) {
     const origin = pending.shift()!;
     if (visited.has(origin)) continue;
     visited.add(origin);
     const content = await fs.readFile(path.join(skillRoot, ...origin.split('/')), 'utf8');
     const scan = scanMarkdown(content);
+    const codeReferences: RuntimeSkillReference[] = [];
+    const inlineCommands: string[] = [];
+    for (const snippet of scan.inlineCodeSnippets) {
+      if (await isResourceCodePath(skillRoot, origin, snippet, rootEntries)) {
+        codeReferences.push({ lexicalTarget: snippet, source: 'inline-code' });
+      } else {
+        inlineCommands.push(snippet);
+      }
+    }
     const references = [
       ...extractMarkdownReferences(scan.proseForLinks),
-      ...extractCommandReferences(scan.commandSnippets, origin !== 'SKILL.md'),
+      ...codeReferences,
+      ...extractCommandReferences([...scan.commandSnippets, ...inlineCommands], origin !== 'SKILL.md'),
       ...extractPlainTextReferences(scan.proseForLinks),
     ];
     const seen = new Set<string>();

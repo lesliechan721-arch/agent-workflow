@@ -135,6 +135,48 @@
         "minimalCounterexample": "用户明确重新授权当前修复时可以执行新的一轮。",
         "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
       }
+    },
+    {
+      "id": "manual-workflow-composes-methods-without-macro-calls",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "manual-composition"
+      ],
+      "prompt": "使用 $dev-workflow 完成 normalizeName：字符串去首尾空白、内部连续空白合并为一个空格，全空白为空字符串，不改大小写。这就是当前已确认要求，现有测试足够。只修改 src/normalize.js，不要创建 Spec、Ticket、Work，不提交。实现与验证可以执行；独立核验按实际可用条件执行，条件不足时如实报告。",
+      "assertions": [
+        "复用当前有效要求，采用本包实施与核验方法，不重新对齐已确定行为或强制生成流程文件。",
+        "不调用dev-build、dev-design或dev-review-loop手动入口，不因其不可由模型触发而跳过工作。",
+        "实际实现满足trim、collapse、empty，运行现有全部测试且不改预期。",
+        "根据实际可用条件提供独立核验结果或真实缺口，不把作者自检当作独立通过，不额外写文件或提交。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          ".gitignore": "/.dev-workflows/\n",
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize.js": "export function normalizeName(value) { return value.trim(); }\n",
+          "test/normalize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeName } from '../src/normalize.js';\ntest('trim',()=>assert.equal(normalizeName('  Ada  '),'Ada'));\ntest('collapse',()=>assert.equal(normalizeName(' Ada   Lovelace '),'Ada Lovelace'));\ntest('empty',()=>assert.equal(normalizeName('   '),''));\n"
+        }
+      },
+      "expected": {
+        "output": "按当前授权处理真实代码和本轮记录，区分完成结果、未解决问题与证据限制。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/normalize.js"
+        ],
+        "artifacts": [
+          {
+            "path": "src/normalize.js",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "验证显式上层入口能够采用自带方法，同时保持写入和独立核验边界。",
+        "allowedVariance": "允许等价实现和报告组织；核对实际采用共享方法、未调用其他手动宏，以及代码行为、现有测试和写入范围，独立核验按实际条件报告。",
+        "minimalCounterexample": "用户未显式选择Workflow且只请求一个普通修改时，应采用直接实施能力，不自动启动Workflow。"
+      }
     }
   ]
 }
