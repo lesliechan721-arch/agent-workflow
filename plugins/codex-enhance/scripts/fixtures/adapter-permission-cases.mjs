@@ -28,7 +28,7 @@ test('permission modes map precisely and default preserves explicit arguments', 
   assert.equal(auto.thread.config.approval_policy, 'on-request');
   assert.equal(auto.thread.config.approvals_reviewer, 'auto_review');
   assert.equal(auto.thread.config.sandbox_mode, 'read-only');
-  assert.equal(auto.thread.config.model, 'kept-model');
+  assert.equal(auto.thread.model, 'kept-model');
   assert.equal(auto.thread.config.bypass_hook_trust, false);
   const full = await codexConfiguration({ ...request, permissionMode: 'full-access' }, environment);
   assert.equal(full.thread.config.approval_policy, 'never');

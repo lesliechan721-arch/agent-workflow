@@ -5,53 +5,57 @@ import { fail } from '../runtime/contracts.mjs';
 export const hookEvents = Object.fromEntries(['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PreCompact', 'PostCompact', 'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'SubagentStart', 'SubagentStop', 'Stop', 'Interrupt'].map((name) => [name, name.replace(/[A-Z]/g, (letter, index) => `${index ? '_' : ''}${letter.toLowerCase()}`)]));
 export const table = (value) => value !== null && typeof value === 'object' && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 
-export function convertHooks(value, { validate, ignored }) {
-  validate(value, 'object', 'hooks');
-  const result = Object.create(null);
+function mergeStateRecord(base, overlay) {
+  const result = { ...base, ...overlay };
+  for (const [key, value] of Object.entries(overlay)) {
+    if (table(base?.[key]) && table(value)) result[key] = mergeStateRecord(base[key], value);
+  }
+  return result;
+}
+
+/** Preserve definitions verbatim: trust hashes cover the complete handler. */
+export function convertHooks(value, { invalid, unsupported }) {
+  if (!table(value)) invalid('hooks', 'Hooks must be a table for source-state mapping.');
+  const result = Object.assign(Object.create(null), value);
   for (const [event, groups] of Object.entries(value)) {
     if (event === 'state') {
-      validate(groups, 'object', 'hooks.state');
+      if (!table(groups)) invalid('hooks.state', 'Hook state must be a table.');
       result.state = Object.create(null);
-      for (const [key, state] of Object.entries(groups)) {
-        validate(state, 'object', 'hooks.state');
-        const converted = Object.create(null);
-        for (const [field, item] of Object.entries(state)) {
-          if (field === 'enabled' || field === 'trusted_hash') converted[field] = validate(item, field === 'enabled' ? 'boolean' : 'string', `hooks.state.${field}`);
-          else ignored(`hooks.state.${field}`);
-        }
-        if (key.trim()) result.state[key.trim()] = { ...result.state[key.trim()], ...converted };
+      for (const [index, [key, state]] of Object.entries(groups).entries()) {
+        const field = `hooks.state[${index}]`;
+        if (!table(state)) invalid(field, 'A hook state record must be a table.');
+        if (Object.hasOwn(state, 'enabled') && typeof state.enabled !== 'boolean') invalid(`${field}.enabled`, 'Hook enabled state must be a boolean.');
+        if (Object.hasOwn(state, 'trusted_hash') && typeof state.trusted_hash !== 'string') invalid(`${field}.trusted_hash`, 'Hook trust state must be a string.');
+        if (key.trim()) result.state[key.trim()] = mergeStateRecord(result.state[key.trim()], state);
       }
       continue;
     }
-    if (!Object.hasOwn(hookEvents, event)) { ignored(`hooks.${event}`); continue; }
-    validate(groups, 'array', `hooks.${event}`);
-    let unsupported = false;
-    const converted = groups.map((group) => {
-      validate(group, 'object', `hooks.${event}`);
-      if (Object.keys(group).some((key) => !['matcher', 'hooks'].includes(key))) unsupported = true;
-      if (Object.hasOwn(group, 'matcher')) validate(group.matcher, 'string', `hooks.${event}.matcher`);
-      if (Object.hasOwn(group, 'hooks')) validate(group.hooks, 'array', `hooks.${event}.hooks`);
-      const handlers = (group.hooks ?? []).map((handler) => {
-        validate(handler, 'object', `hooks.${event}.hooks`);
-        validate(handler.type, 'string', `hooks.${event}.type`);
-        if (!['command', 'mcp_tool'].includes(handler.type)) { unsupported = true; return handler; }
-        if (handler.type === 'mcp_tool' && event === 'SessionEnd') unsupported = true;
-        const fields = handler.type === 'command'
-          ? { type: 'string', command: 'string', commandWindows: 'string', command_windows: 'string', statusMessage: 'string', timeout: 'uint', additionalContextLimit: 'uint', async: 'boolean' }
-          : { type: 'string', server: 'string', tool: 'string', input: 'jsonObject', timeout: 'uint', statusMessage: 'string' };
-        for (const required of handler.type === 'command' ? ['command'] : ['server', 'tool']) validate(handler[required], 'string', `hooks.${event}.${required}`);
-        if (Object.hasOwn(handler, 'commandWindows') && Object.hasOwn(handler, 'command_windows')) fail('profileValueInvalid', 'A hook command alias is specified twice.');
-        const output = Object.create(null);
-        for (const [field, item] of Object.entries(handler)) {
-          if (!Object.hasOwn(fields, field)) { unsupported = true; continue; }
-          output[field] = validate(item, fields[field], `hooks.${event}.${field}`);
+    const known = Object.hasOwn(hookEvents, event);
+    const field = known ? `hooks.${event}` : 'hooks.<event>';
+    if (!Array.isArray(groups)) {
+      if (known) invalid(field, 'Hook event groups must be an array for source-state mapping.');
+      continue;
+    }
+    for (const [groupIndex, group] of groups.entries()) {
+      const groupField = `${field}[${groupIndex}]`;
+      if (!table(group)) {
+        if (known) invalid(groupField, 'A hook group must be a table for source-state mapping.');
+        continue;
+      }
+      if (Object.hasOwn(group, 'hooks') && !Array.isArray(group.hooks)) {
+        if (known) invalid(`${groupField}.hooks`, 'Hook handlers must be an array for source-state mapping.');
+        continue;
+      }
+      for (const [handlerIndex, handler] of (group.hooks ?? []).entries()) {
+        const handlerField = `${groupField}.hooks[${handlerIndex}]`;
+        if (!table(handler)) {
+          if (known) invalid(handlerField, 'A hook handler must be a table for source-state mapping.');
+          continue;
         }
-        return output;
-      });
-      return { ...(Object.hasOwn(group, 'matcher') ? { matcher: group.matcher } : {}), ...(Object.hasOwn(group, 'hooks') ? { hooks: handlers } : {}) };
-    });
-    if (unsupported) ignored(`hooks.${event}`, 'The complete event override is ignored because its definition contains unsupported fields or handlers. Other native hook sources remain active.');
-    else result[event] = converted;
+        if (handler.type === 'prompt' || handler.type === 'agent') unsupported(`${handlerField}.type`, 'This hook handler cannot execute in the supported Codex backend.');
+        if (event === 'SessionEnd' && handler.type === 'mcp_tool') unsupported(`${handlerField}.type`, 'The Codex backend does not execute MCP tool handlers for SessionEnd.');
+      }
+    }
   }
   return result;
 }
@@ -63,7 +67,7 @@ function mergeStates(target, incoming) {
     const key = rawKey.trim();
     if (!key) continue;
     if (!table(state) || state.enabled !== undefined && typeof state.enabled !== 'boolean' || state.trusted_hash !== undefined && typeof state.trusted_hash !== 'string') fail('profileHookStateUnavailable', 'A hook state record cannot be read without loss.');
-    target[key] = { ...target[key], ...(state.enabled !== undefined ? { enabled: state.enabled } : {}), ...(state.trusted_hash !== undefined ? { trusted_hash: state.trusted_hash } : {}) };
+    target[key] = mergeStateRecord(target[key], state);
   }
 }
 
@@ -96,6 +100,16 @@ export function mapHookState(configuration, response, platform = process.platfor
   for (const [event, groups] of Object.entries(hooks)) {
     if (event === 'state') continue;
     const profileOwned = configuration.profilePath && !Object.hasOwn(configuration.rawHooks ?? {}, event);
+    if (!Object.hasOwn(hookEvents, event)) {
+      // Unknown configuration is native-owned. Only reject when migrating its
+      // source states would require inventing an event identifier.
+      const knownStates = new Set(Object.values(hookEvents));
+      const owners = [source, ...(profileOwned ? [configuration.profilePath] : [])];
+      const unmapped = Object.keys(states).some((key) => owners.some((owner) => key.startsWith(`${owner}:`) && !knownStates.has(key.slice(owner.length + 1).split(':', 1)[0])));
+      const hasHandlers = Array.isArray(groups) && groups.some((group) => Array.isArray(group?.hooks) && group.hooks.length > 0);
+      if (profileOwned && hasHandlers && unmapped) fail('profileHookMappingUnsupported', 'An unknown hook event has source state that cannot be mapped without changing trust.');
+      continue;
+    }
     for (const [groupIndex, group] of groups.entries()) {
       for (const [handlerIndex] of (group.hooks ?? []).entries()) {
         const suffix = `${hookEvents[event]}:${groupIndex}:${handlerIndex}`;

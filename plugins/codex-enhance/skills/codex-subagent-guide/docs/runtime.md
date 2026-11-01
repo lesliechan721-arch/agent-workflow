@@ -11,7 +11,7 @@
 
 `--help`/`-h` 只显示五个操作的总览、子命令帮助入口及通用输出开关；`start|send|wait|result|stop --help`（或 `-h`）显示当前操作的参数、默认值、必要约束和示例。帮助在读取安装配置、扫描运行目录或启动 worker 前返回，不要求任务必填参数。参数解析错误指向相应子命令帮助。
 
-五个操作都支持布尔参数 `--diagnostics`，不允许重复，仅作用于本次命令，不保存为任务配置。默认隐藏正常诊断：`codexExecutableSelected`、`communicationPermissionAdded`、`communicationPermissionExisting`、`profileFieldIrrelevant`、`hookTrustBypassed`；启动窗口结束时，`starting` 已表达未就绪，默认不再附加 `startupNotReady`。该开关不改变执行权限、配置或退出码。
+五个操作都支持布尔参数 `--diagnostics`，不允许重复，仅作用于本次命令，不保存为任务配置。默认隐藏正常诊断：`codexExecutableSelected`、`communicationPermissionAdded`、`communicationPermissionExisting`、旧结果中的 `profileFieldIrrelevant`、`hookTrustBypassed`；启动窗口结束时，`starting` 已表达未就绪，默认不再附加 `startupNotReady`。该开关不改变执行权限、配置或退出码。
 
 相同 code、field、message 的诊断在同一报告中只显示一次。默认最终报告省略已通过 ready 回执报告的相同诊断，保留终态新增告警；未报告的初始化诊断随首次 ready 或终态交付。worker 保留 snapshot 的 ready 诊断作为比较依据，终态完整诊断保存在固定结果。初始化失败、终态新增告警和结果失败原因仍可随固定结果重读。`--diagnostics` 可再次显示正常信息及已报告诊断；文件导出采用同一显示规则，完整诊断导出使用 `result --diagnostics --output-file PATH`。
 
