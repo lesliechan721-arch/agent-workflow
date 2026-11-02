@@ -219,7 +219,7 @@ worker 消失、后端终态不明、输出超限、协议冲突或本地收尾�
 
 ## 操作系统与安装闭包
 
-Windows 支持指原生 Windows 进程和文件系统上的完整 start/send/wait/result/stop 闭环。不能用 WSL、交叉编译、mock 或仅通过文件选择测试替代运行证据。实现复用仓库已有平台能力时须核对其生命周期；当前 Eval 的 Windows Job helper 只提供可参考的既有机制，不自动证明适合本次后台 worker。
+Windows 支持指原生 Windows 进程和文件系统上的完整 start/send/wait/result/stop 闭环。不能用 WSL、交叉编译、mock 或仅通过文件选择测试替代运行证据。插件与 Eval 共用原生程序源码，但保留各自的启动入口和生命周期。插件从自身安装资源解析 helper，不读取 Eval package 或开发 checkout。
 
 | 边界 | 必须保持的行为 |
 | --- | --- |
@@ -231,6 +231,14 @@ Windows 支持指原生 Windows 进程和文件系统上的完整 start/send/wai
 | 私有资源 | POSIX 目录/文件分别使用 0700/0600；Windows 用当前用户的受保护目录与实际访问控制取得等效保密边界，mode 数字或 chmod 成功本身不构成证据。身份校验使用当前 OS 的用户与归属事实，不能把 Unix uid 设为通用前提 |
 | 文件提交与回收 | 私有状态仍完整写入后原子发布；Windows 的占用或访问拒绝须明确报告，不能先删除旧状态再写入。--output-file 的完整导出由调用者保留，run TTL 不删除该文件。扫描不跟随 symlink、junction 或其他重解析链接；无法证明归属或停止时保留资源，不能因为删除失败扩大清理范围 |
 | 安装闭包 | worker、adapter、工具桥接及必要的平台 helper 来自当前安装 resourceRoot 和正式依赖。按目标架构分发并校验；不要求运行时访问开发 checkout、临时下载 helper 或增加系统服务 |
+
+Windows 文件、ACL 和进程操作使用固定的版本化 JSON stdin/stdout 协议；输入最多 256 KiB，输出最多 8 MiB，每次调用最多 30 秒。响应必须通过 schema、结果形状及退出码检查。ACL 保护和验证继续按 18 KiB 输入分批；每个目标分别检查，下一条命令、下一轮等待和删除前重新验证。批次失败后仍逐项隔离坏目标。根目录通过无覆盖移动发布；已有文件或目录不能被替换。
+
+进程表查询包含当前 PID 与已有归属链、待确认身份的 PID。相关进程仍存在但不能读取时，观察或清理失败，保留运行资料；不能将拒绝访问当作退出。时间身份保留 CIM 的微秒精度，停止时在同一个打开句柄上校验创建时间和用户 SID。当前用户 SID 仍通过系统 `whoami.exe` 查询并在进程内缓存。
+
+每个附加的 adapter/backend 使用独占、命名且私有的 Windows Job。helper 先以 suspended 状态创建 root，加入 Job，写入并验证私有 ready 文件，再恢复 root。配置文件带 schemaVersion 和 SID，加载后删除；原环境、cwd、argv 和 stdio 直接继承，保留 PSModulePath/WinPSModulePath 的值与缺失状态。ready 失败或名称碰撞不执行 backend。root 正常退出、父进程退出或 helper 终止后清理全部后代；保留 root 退出码，containment 失败使用 250，父进程提前退出使用 251。短命观察和停止以 Job accounting 为清理依据；helper 缺失或失败时不回退为仅按 PID/PPID 执行。
+
+仅 Codex App 发现保留固定 PowerShell 查询；独立 Windows 安全测试也可用系统工具核验 ACL。原生诊断按文件、ACL、进程和 Job 操作计时；Job 持有期间的总寿命不计入原生 API 耗时，启动到 ready 单独记录。
 
 Windows 原子 JSON 发布对 rename 的 EPERM、EACCES 和 EBUSY 最多重试五次，总退避等待为 620ms；每次复用同一份已保护的临时文件，不先删除旧文件，也不重发后端输入。持续失败保留错误。worker 能保存最终结果时，文件错误的 diagnostic 块包含操作名及运行资源类别，不包含绝对路径、动态文件名、原始错误正文或堆栈。
 
