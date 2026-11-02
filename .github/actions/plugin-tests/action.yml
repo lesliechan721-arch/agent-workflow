@@ -72,6 +72,6 @@ runs:
     - name: Run the Windows plugin file shard
       if: runner.os == 'Windows'
       shell: pwsh
-      run: pnpm plugin:test --all --test-concurrency 1 --test-shard "$env:TEST_SHARD" --native-mode source-candidate --native-archive ".native/windows-job/${{ steps.native-tool.outputs.version }}/lesliechan721-aw-windows-job-win32-${{ inputs.arch }}-${{ steps.native-tool.outputs.version }}.tgz"
+      run: pnpm plugin:test --all --test-concurrency 1 --test-shard "$env:TEST_SHARD" --native-mode source-candidate --native-archive "$env:GITHUB_WORKSPACE/.native/windows-job/${{ steps.native-tool.outputs.version }}/lesliechan721-aw-windows-job-win32-${{ inputs.arch }}-${{ steps.native-tool.outputs.version }}.tgz"
       env:
         AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS: '1'

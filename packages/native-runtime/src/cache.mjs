@@ -30,13 +30,12 @@ async function rejectWindowsReparsePoints(paths) {
   });
 }
 
-/** No downloaded helper, shell command interpolation, or package code is used here. */
-export async function checkNativePath(target, leaf = 'directory', allowMissing = false) {
+async function inspectNativePath(target, leaf, allowMissing, checked) {
   const absolute = path.resolve(target);
   const parsed = path.parse(absolute);
   const parts = absolute.slice(parsed.root.length).split(path.sep).filter(Boolean);
   let current = parsed.root;
-  const checked = [current];
+  checked.add(current);
   for (let i = 0; i < parts.length; i += 1) {
     current = path.join(current, parts[i]);
     const found = await stat(current);
@@ -46,10 +45,27 @@ export async function checkNativePath(target, leaf = 'directory', allowMissing =
     }
     const expectedFile = i === parts.length - 1 && leaf === 'file';
     if (found.isSymbolicLink() || !(expectedFile ? found.isFile() : found.isDirectory())) reject();
-    checked.push(current);
+    checked.add(current);
   }
-  await rejectWindowsReparsePoints(checked);
   return absolute;
+}
+
+/** No downloaded helper, shell command interpolation, or package code is used here. */
+export async function checkNativePath(target, leaf = 'directory', allowMissing = false) {
+  const checked = new Set();
+  const absolute = await inspectNativePath(target, leaf, allowMissing, checked);
+  await rejectWindowsReparsePoints([...checked]);
+  return absolute;
+}
+
+async function checkCandidatePaths(candidate) {
+  const checked = new Set();
+  await inspectNativePath(candidate, 'directory', true, checked);
+  await inspectNativePath(path.join(candidate, markerName), 'file', true, checked);
+  await inspectNativePath(path.join(candidate, executableName), 'file', true, checked);
+  // Check every ancestor and both leaves before either file is read. One
+  // PowerShell process per inspection avoids repeated startup on cache hits.
+  await rejectWindowsReparsePoints([...checked]);
 }
 
 async function ensureDirectory(directory) {
@@ -69,8 +85,13 @@ async function ensureDirectory(directory) {
 
 export async function readNativeFile(file, maximum) {
   await checkNativePath(file, 'file');
+  return await readRegularFile(file, maximum);
+}
+
+async function readRegularFile(file, maximum) {
   const before = await lstat(file);
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > maximum) reject();
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink > 1 || before.size > maximum) reject();
+  if (before.nlink === 0) reject('nativeFileChanged');
   const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = await handle.stat();
@@ -86,8 +107,8 @@ export async function readNativeFile(file, maximum) {
     }
     if (total > maximum || total !== opened.size) reject('nativeFileChanged');
     const after = await lstat(file);
-    if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1) reject();
-    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size) reject('nativeFileChanged');
+    if (!after.isFile() || after.isSymbolicLink() || after.nlink > 1) reject();
+    if (after.nlink === 0 || after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size) reject('nativeFileChanged');
     return bytes.subarray(0, total);
   } finally { await handle.close(); }
 }
@@ -101,16 +122,16 @@ function marker(variant) {
 }
 
 async function ownedCandidate(candidate, variant) {
-  await checkNativePath(candidate);
   const names = await readdir(candidate);
   if (!names.includes(markerName) || names.some((name) => ![markerName, executableName].includes(name))) reject('nativeCacheForeign');
   let value;
-  try { value = JSON.parse((await readNativeFile(path.join(candidate, markerName), 512)).toString('utf8')); }
+  try { value = JSON.parse((await readRegularFile(path.join(candidate, markerName), 512)).toString('utf8')); }
   catch (error) { if (error instanceof NativeToolError && error.code !== 'nativeCacheMiss') throw error; reject('nativeCacheForeign'); }
   if (!value || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(['kind', 'schemaVersion', 'sha256'])
     || value.schemaVersion !== 1 || value.kind !== 'aw-native-artifact' || value.sha256 !== variant.file.sha256) reject('nativeCacheForeign');
   const binary = await stat(path.join(candidate, executableName));
-  if (binary && (!binary.isFile() || binary.isSymbolicLink() || binary.nlink !== 1)) reject();
+  if (binary && (!binary.isFile() || binary.isSymbolicLink() || binary.nlink > 1)) reject();
+  if (binary?.nlink === 0) reject('nativeFileChanged');
 }
 
 export async function readNativeCandidate(cacheRoot, descriptor, variant) {
@@ -126,13 +147,13 @@ export async function readNativeCandidate(cacheRoot, descriptor, variant) {
 
 async function inspectNativeCandidate(cacheRoot, descriptor, variant) {
   const candidate = nativeCandidatePath(cacheRoot, variant);
-  await checkNativePath(candidate, 'directory', true);
+  await checkCandidatePaths(candidate);
   if (!await stat(candidate)) return { state: 'missing' };
   await ownedCandidate(candidate, variant);
   const binaryStat = await stat(path.join(candidate, executableName));
   if (!binaryStat || binaryStat.size !== variant.file.size) return { state: 'corrupt' };
   try {
-    const bytes = await readNativeFile(path.join(candidate, executableName), variant.file.size);
+    const bytes = await readRegularFile(path.join(candidate, executableName), variant.file.size);
     validateNativeBinary(bytes, variant);
     return { state: 'ready', protocol: descriptor.tool.protocol, executable: path.join(candidate, executableName), sha256: variant.file.sha256 };
   } catch (error) {
@@ -157,9 +178,18 @@ export async function publishNativeCandidate(cacheRoot, descriptor, variant, byt
     if (existing.state === 'corrupt') {
       // Keep the validated marker and directory intact. Concurrent repairers
       // atomically replace the same owned regular file with identical locked bytes.
-      await ownedCandidate(candidate, variant);
-      await checkNativePath(path.join(candidate, executableName), 'file', true);
-      await rename(path.join(staging, executableName), path.join(candidate, executableName));
+      const current = await readNativeCandidate(cacheRoot, descriptor, variant);
+      if (current.state === 'ready') return current;
+      if (current.state !== 'corrupt') reject('nativeCachePublicationFailed');
+      try { await rename(path.join(staging, executableName), path.join(candidate, executableName)); }
+      catch (error) {
+        if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error?.code)) throw error;
+        // Windows can deny replacement while another repairer reads the file.
+        // Accept only a fully validated winner; preserve every other failure.
+        const winner = await readNativeCandidate(cacheRoot, descriptor, variant);
+        if (winner.state === 'ready') return winner;
+        throw error;
+      }
       const repaired = await readNativeCandidate(cacheRoot, descriptor, variant);
       if (repaired.state === 'ready') return repaired;
       reject('nativeCachePublicationFailed');

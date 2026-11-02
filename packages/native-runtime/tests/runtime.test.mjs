@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { access, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
+import { access, link, mkdir, readFile, readdir, symlink, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { importNativeTool, resolveNativeTool, resolveNativeRegistryConfig, readNativeToolTestConfig } from '../src/index.mjs';
 import { nativeToolDescriptorDigest, parseNativeToolDescriptor, validateNativeBinary } from '../src/descriptor.mjs';
@@ -158,6 +158,24 @@ test('empty foreign and symlink cache directories are never overwritten', async 
   await symlink(outside, other.cacheRoot, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(importNativeTool(other), code('nativeCacheUnsafe'));
   assert.deepEqual(await readdir(outside), []);
+});
+
+// Test Value Gate: cache inspection must reject linked leaves before returning
+// an executable, and must preserve the external file that shares those bytes.
+test('cache hits reject hard-linked marker and executable leaves', async (t) => {
+  for (const name of ['.aw-native-artifact.json', 'native.exe']) {
+    const input = await tempFixture(t);
+    const ready = await importNativeTool(input);
+    const leaf = path.join(path.dirname(ready.executable), name);
+    const bytes = await readFile(leaf);
+    const outside = path.join(input.directory, 'outside');
+    await writeFile(outside, bytes);
+    await unlink(leaf);
+    await link(outside, leaf);
+    await assert.rejects(resolveNativeTool({ ...input, mode: 'cache-only' }), code('nativeCacheUnsafe'));
+    assert.deepEqual(await readFile(outside), bytes);
+    assert.deepEqual(await readFile(leaf), bytes);
+  }
 });
 
 test('malicious archives and unlocked bytes fail before candidate publication', async (t) => {

@@ -8,6 +8,7 @@ import {
   refreshWindowsJobArtifacts,
   verifyWindowsJobArtifacts,
   verifyWindowsJobReproducibility,
+  windowsJobArtifactContract,
 } from './windows-job-helper-artifacts.mjs'
 
 async function fixture(t) {
@@ -86,4 +87,36 @@ test('packs deterministic platform archives accepted by the shared resolver', as
   const ready = await resolveNativeTool({ descriptor: first.descriptor, platform: 'win32', arch: 'x64', cacheRoot: path.join(options.nativeRoot, 'cache'), mode: 'source-candidate', archivePath })
   assert.equal(ready.state, 'ready')
   assert.equal(ready.sha256, first.descriptor.variants.find((variant) => variant.arch === 'x64').file.sha256)
+})
+
+// Test Value Gate: CI must accept its source candidate without registry access,
+// and reject a consumer lock that does not match those exact archive bytes.
+test('checks every consumer against the current candidate without published packages', async (t) => {
+  const { packWindowsJobCandidate } = await import('./pack.mjs')
+  const { verifyNativeReferences } = await import('../../scripts/release/verify-native-references.mjs')
+  const options = await fixture(t)
+  options.helperSourceRoot = path.join(windowsJobArtifactContract.toolRoot, 'job-helper')
+  await refreshWindowsJobArtifacts(options)
+  const selected = await packWindowsJobCandidate({ ...options, writeLock: false })
+  const repoRoot = path.join(options.nativeRoot, 'consumers')
+  const descriptors = [
+    'packages/agent-skill-eval/src/native/windows-job.lock.json',
+    'packages/cli/src/native/windows-job.lock.json',
+    'plugins/consumer/native-tools/windows-job.lock.json',
+  ]
+  for (const relative of descriptors) {
+    await mkdir(path.dirname(path.join(repoRoot, relative)), { recursive: true })
+    await writeFile(path.join(repoRoot, relative), JSON.stringify(selected.descriptor))
+  }
+  await mkdir(path.join(repoRoot, 'plugins/consumer/.agents-plugin'), { recursive: true })
+  await writeFile(path.join(repoRoot, 'plugins/consumer/.agents-plugin/plugin.json'), JSON.stringify({
+    nativeTools: { definitions: [{ descriptor: './native-tools/windows-job.lock.json' }] },
+  }))
+  const checkOptions = { repoRoot, candidateRoot: selected.root,
+    runCommand: async () => { throw new Error('Candidate checks must not invoke published reference verification.') } }
+  await verifyNativeReferences({ cli: true, catalog: true }, checkOptions)
+  const changed = structuredClone(selected.descriptor)
+  changed.variants.find((variant) => variant.arch === 'arm64').transport.archiveIntegrity = `sha512-${Buffer.alloc(64).toString('base64')}`
+  await writeFile(path.join(repoRoot, descriptors[2]), JSON.stringify(changed))
+  await assert.rejects(verifyNativeReferences({ cli: true, catalog: true }, checkOptions), { code: 'nativeArchiveIntegrityMismatch' })
 })

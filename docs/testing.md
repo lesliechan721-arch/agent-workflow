@@ -30,7 +30,7 @@ Windows x64 CI 的普通 integration 分为三个独立 runner 的 Vitest shard�
 
 Linux Node 22/24 的普通测试按 Node 版本和 unit/integration 分为四个独立 runner。每个 runner 正式 build 后运行对应入口；unit 入口包含三个 package 的单元测试及 `test:workers`，随后运行 `test:types`；integration 入口包含普通 integration 和串行 process-lifecycle。各入口保留原有 worker 约束。
 
-Linux Node 24 的 release verification 独立运行 `release:verify:delivery`、`test:perf:gate`、`release:verify:cli:after-delivery`、Catalog bootstrap 和 `release:verify:publish`。delivery 负责 Go 可复现构建、一次正式 strict Catalog build、dist contract 和 build smoke，job 不再单独前置 build。CLI 的 fetch smoke 已包含 Catalog publish smoke。普通测试与该 job 合起来保留完整 `release:verify` 的覆盖；本地及候选发布的独立验证入口保持完整验证。
+Linux Node 24 的 release verification 等待独立 Windows Job 候选及两架构资格成功，再运行 `release:verify:delivery`、`test:perf:gate`、`test:smoke:cli:after-delivery`、Catalog bootstrap 和 `release:verify:publish`。delivery 负责一次正式 strict Catalog build、dist contract 和 build smoke，job 不再单独前置 build。CLI 的 fetch smoke 已包含 Catalog publish smoke。PR/main 下载本次运行的 `windows-job-candidate` artifact，通过 `verify-native-references.mjs --all --candidate <directory>` 将 CLI、Eval 和插件的文本锁与两架构 archive 逐项校验，不查询 npm。固定 Go 构建、可复现验证与真实 Windows 资格由独立原生工作流负责。本地及候选发布的 `release:verify:*` 入口继续验证已发布的 npm 引用，发布准备也保留此门禁。
 
 Linux Node 24 的插件测试使用独立 job，自行构建并将本次 CLI 加入 PATH。四个普通测试 runner、release verification、插件测试及全部平台任务都是自动 beta 的必需依赖。CI job 名称变化时同步更新 `scripts/release/actions-inspection.mjs` 的必要检查列表；任一必要任务失败、取消、跳过、未完成或缺失时，候选发布都不能复用 main CI 验证。
 
