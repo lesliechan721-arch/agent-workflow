@@ -1,8 +1,11 @@
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
+import https from 'node:https';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { importNativeTool } from '@lesliechan721/aw-native-runtime';
 
 import type { PluginManifestSource, PluginMeta } from '../../src/types.js';
 import {
@@ -20,6 +23,8 @@ import {
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import * as processTree from '../../src/utils/process-tree.js';
+import { fixture } from '../../../native-runtime/tests/fixtures.mjs';
 
 const roots: string[] = [];
 
@@ -73,10 +78,84 @@ async function pluginFixture(
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
 });
 
 describe('portable materializer', () => {
+  it.skipIf(process.platform === 'win32').each(['static', 'empty-cache', 'ready-cache'] as const)(
+    'keeps Windows author materialization offline (%s)',
+    async (kind) => {
+      const root = await tempRoot('aw-portable-native-admission-');
+      const manifest = baseManifest('native-admission');
+      const marker = path.join(root, 'renderer-started');
+      if (kind !== 'static') {
+        manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+        manifest.artifacts = { targets: [{
+          id: 'portable', distribution: 'agent-skills', target: 'agent-skills.skill',
+          kind: 'skill', scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'portable',
+        }] };
+      }
+      const plugin = await pluginFixture(root, manifest);
+      await writeSkill(plugin.rootDir, 'portable');
+      if (kind !== 'static') {
+        await fs.outputFile(path.join(plugin.rootDir, 'render.mjs'), `
+          import fs from 'node:fs';
+          fs.writeFileSync(${JSON.stringify(marker)}, 'started');
+          console.log(JSON.stringify({ version: 2, artifacts: [{
+            id: 'portable', distribution: 'agent-skills', target: 'agent-skills.skill',
+            kind: 'skill', state: 'present', refreshKeys: [], skillKey: 'portable',
+            content: { files: {
+              'SKILL.md': '---\\nname: portable\\ndescription: Portable fixture.\\n---\\nBody.\\n',
+              'README.md': '# Portable\\n',
+            } },
+          }] }));
+        `);
+      }
+      const native = fixture();
+      const descriptorPath = path.join(root, 'native.lock.json');
+      const archivePath = path.join(root, 'native.tgz');
+      const cacheRoot = path.join(root, 'aw-home', 'native-artifacts', 'v1');
+      await fs.writeJson(descriptorPath, native.descriptor);
+      await fs.writeFile(archivePath, native.archive);
+      if (kind === 'ready-cache') {
+        await importNativeTool({ descriptor: native.descriptor, archivePath, cacheRoot, platform: 'win32', arch: 'x64' });
+      }
+      const env = { ...process.env, AW_HOME: path.join(root, 'aw-home'),
+        AW_TEST_RUNNER_PROCESS_TREE: '1',
+        AW_NATIVE_TEST_CONFIG: JSON.stringify({ mode: 'network', cacheRoot, descriptorPath }),
+      };
+      const transports = [vi.spyOn(http, 'request'), vi.spyOn(https, 'request')];
+      for (const transport of transports) {
+        transport.mockImplementation(() => { throw new Error('Native transport must stay offline.'); });
+      }
+      const prepare = processTree.prepareWindowsJobHelper;
+      const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+      vi.spyOn(processTree, 'prepareWindowsJobHelper').mockImplementation(async (options) => {
+        platform.mockRestore();
+        expect(options.mode).toBe('cache-only');
+        return prepare({ ...options, arch: 'x64' });
+      });
+      const result = materializePortableSkills({
+        plugins: [plugin], pluginId: plugin.pluginId!, scope: 'user', cwd: root, env,
+      });
+      if (kind === 'empty-cache') {
+        const failure = await result.catch((error: unknown) => error) as Error & { code: string };
+        expect(failure.code).toBe('nativeCacheMiss');
+        expect(failure.message).toContain(`aw native prefetch '${descriptorPath}'`);
+        expect(failure.message).toContain(`aw native import '${descriptorPath}' --archive`);
+      } else {
+        const materialized = await result;
+        expect(materialized.candidates.map((candidate) => candidate.name)).toEqual(['portable']);
+        await materialized.cleanup();
+      }
+      platform.mockRestore();
+      for (const transport of transports) expect(transport).not.toHaveBeenCalled();
+      await expect(fs.pathExists(marker)).resolves.toBe(kind === 'ready-cache');
+      await expect(fs.pathExists(cacheRoot)).resolves.toBe(kind === 'ready-cache');
+    },
+  );
+
   it.each(['static', 'dynamic'] as const)(
     'rejects local managed command references in %s Portable content before publishing output',
     async (kind) => {

@@ -44,6 +44,7 @@ Workspace 使用用户明确位置、canonical `<root>/plugins/<name>` 的归属
 | 创建、修改、注册或验证 Plugin | Plugin 开发（`references/plugin-development.md`） |
 | 选择组件、配置、安装态配置读取或生命周期脚本 | 组件方法（`references/plugin-components.md`） |
 | 声明稳定命令入口、命令包或其权限 | 托管命令（`references/managed-commands.md`） |
+| 给受控命令或测试声明原生工具、核对离线恢复与发布引用 | 原生工具（`references/native-tools.md`） |
 | 编译 Node 工具、共享文件、注入或生成 Skill 资源 | 构建与共享（`references/build-and-sharing.md`） |
 | 处理平台差异、模板、文件选择、动态投影或能力要求 | 平台投影（`references/platform-projection.md`） |
 | 维护 Workspace、inventory、依赖、版本或删除 Plugin | Catalog 维护（`references/catalog-development.md`） |

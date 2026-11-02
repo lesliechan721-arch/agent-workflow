@@ -1,48 +1,19 @@
 import type { ChildProcess, spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
 import { PassThrough } from 'node:stream'
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { resolveWindowsJobHelperPath } from '../../src/windows-job.js'
 import {
   readWindowsNativeProcessStart,
   readWindowsNativeProcessTable,
   type WindowsNativeOptions,
 } from '../../src/windows-native.js'
 
-let fixtureRoot: string
-let helperPath: string
-let manifest: { schemaVersion: number; binaries: Record<string, unknown> }
+const helperPath = 'C:\\fixture\\native.exe'
 
-beforeEach(async () => {
-  fixtureRoot = await mkdtemp(path.join(os.tmpdir(), 'aw-windows-native-test-'))
-  helperPath = path.join(fixtureRoot, 'aw-windows-job.exe')
-  const bytes = Buffer.alloc(128)
-  bytes.write('MZ')
-  bytes.writeUInt32LE(0x40, 0x3c)
-  bytes.write('PE\0\0', 0x40)
-  bytes.writeUInt16LE(0x8664, 0x44)
-  manifest = {
-    schemaVersion: 1,
-    binaries: {
-      x64: {
-        goarch: 'amd64', path: 'x64/aw-windows-job.exe', peMachine: '0x8664',
-        sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-      },
-    },
-  }
-  await writeFile(helperPath, bytes)
-  await writeFile(path.join(fixtureRoot, 'manifest.json'), JSON.stringify(manifest))
-})
-
-afterEach(async () => {
+afterEach(() => {
   vi.useRealTimers()
-  await rm(fixtureRoot, { recursive: true, force: true })
 })
 
 function nativeFixture(response: unknown, options: {
@@ -67,11 +38,7 @@ function nativeFixture(response: unknown, options: {
   const invoke = vi.fn(() => child)
   return {
     options: {
-      arch: 'x64',
-      resolvePackage: (specifier) => {
-        expect(specifier).toBe('@lesliechan721/aw-windows-job-win32-x64/aw-windows-job.exe')
-        return helperPath
-      },
+      helperPath,
       spawn: invoke as unknown as typeof spawn,
     },
     kill,
@@ -157,34 +124,10 @@ describe('Windows native process operations', () => {
     expect(fixture.invoke).not.toHaveBeenCalled()
   })
 
-  it.each(['missing manifest', 'bad hash', 'wrong PE architecture', 'unknown schema'])(
-    'does not execute a platform package with %s', async (failure) => {
-      const manifestPath = path.join(fixtureRoot, 'manifest.json')
-      if (failure === 'missing manifest') await rm(manifestPath)
-      if (failure === 'bad hash') await writeFile(helperPath, Buffer.alloc(128))
-      if (failure === 'wrong PE architecture') {
-        const bytes = await readFile(helperPath)
-        bytes.writeUInt16LE(0xaa64, 0x44)
-        await writeFile(helperPath, bytes)
-        const binary = manifest.binaries.x64 as Record<string, unknown>
-        binary.sha256 = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
-        await writeFile(manifestPath, JSON.stringify(manifest))
-      }
-      if (failure === 'unknown schema') {
-        manifest.schemaVersion = 2
-        await writeFile(manifestPath, JSON.stringify(manifest))
-      }
-      const fixture = nativeFixture(null)
-      await expect(readWindowsNativeProcessStart(42, fixture.options)).rejects.toThrow('invalid')
-      expect(fixture.invoke).not.toHaveBeenCalled()
-    },
-  )
-
-  it('rejects unsupported architectures and symbolic-link helpers', async () => {
-    expect(() => resolveWindowsJobHelperPath({ arch: 'ia32' })).toThrow('unsupported')
-    if (process.platform === 'win32') return
-    const linkPath = path.join(fixtureRoot, 'linked.exe')
-    await symlink(helperPath, linkPath)
-    expect(() => resolveWindowsJobHelperPath({ arch: 'x64', resolvePackage: () => linkPath })).toThrow('missing')
+  it('requires a prepared path and does not resolve or fetch tools during an operation', async () => {
+    const fixture = nativeFixture(null)
+    await expect(readWindowsNativeProcessStart(42, { spawn: fixture.options.spawn }))
+      .rejects.toThrow('requires a prepared helper')
+    expect(fixture.invoke).not.toHaveBeenCalled()
   })
 })

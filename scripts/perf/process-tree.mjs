@@ -1,9 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { lstatSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readNativeTool } from '../../packages/native-runtime/src/reader.mjs';
 
 const DEFAULT_TERMINATION_GRACE_MS = 1_000;
 const DEFAULT_CLEANUP_SETTLE_MS = 500;
@@ -13,15 +10,6 @@ const TASKKILL_TIMEOUT_MS = 400;
 const TEST_RUN_ID_ENV = 'AW_TEST_RUN_ID';
 const TEST_TREE_ID_ENV = 'AW_TEST_PROCESS_TREE_ID';
 const WINDOWS_JOB_CONFIG_SCHEMA_VERSION = 1;
-const require = createRequire(import.meta.url);
-const WINDOWS_JOB_PACKAGES = {
-  x64: '@lesliechan721/aw-windows-job-win32-x64/aw-windows-job.exe',
-  arm64: '@lesliechan721/aw-windows-job-win32-arm64/aw-windows-job.exe',
-};
-const WINDOWS_JOB_PACKAGE_ROOT = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '../../packages/agent-skill-eval',
-);
 
 export class ProcessTreeTimeoutError extends Error {
   constructor(label, timeoutMs, stdout, stderr) {
@@ -30,39 +18,12 @@ export class ProcessTreeTimeoutError extends Error {
   }
 }
 
-function isRegularFile(filePath) {
-  try {
-    const stats = lstatSync(filePath);
-    return stats.isFile() && !stats.isSymbolicLink();
-  } catch {
-    return false;
-  }
-}
-
 export function resolveWindowsJobHelperPath(options = {}) {
-  const arch = options.arch ?? process.arch;
-  if (arch !== 'x64' && arch !== 'arm64') {
-    throw new Error(`Windows Job containment is unsupported on architecture ${arch}.`);
+  const tool = readNativeTool('windows-job', 'aw.windows-job.v1', options.environment);
+  if (tool.state !== 'ready') {
+    throw new Error(`Windows Job containment helper is unavailable (${tool.code}).`);
   }
-  const packageRoot = options.packageRoot ?? WINDOWS_JOB_PACKAGE_ROOT;
-  let platformHelper;
-  const resolvePackage = options.resolvePackage ?? (options.packageRoot ? undefined : require.resolve);
-  if (resolvePackage) {
-    try {
-      platformHelper = resolvePackage(WINDOWS_JOB_PACKAGES[arch]);
-    } catch {
-      // Source checkouts can use the committed artifact before workspace packages are built.
-    }
-  }
-  const candidates = [
-    ...(platformHelper ? [platformHelper] : []),
-    path.join(packageRoot, 'native', 'windows', arch, 'aw-windows-job.exe'),
-  ];
-  const helperPath = candidates.find(isRegularFile);
-  if (!helperPath) {
-    throw new Error(`Windows Job containment helper is missing for architecture ${arch}.`);
-  }
-  return helperPath;
+  return tool.executable;
 }
 
 export function createWindowsJobInvocation(executable, args, options = {}) {
@@ -783,8 +744,7 @@ function runWindowsJobProcessTree(options, dependencies) {
   let invocation;
   try {
     invocation = createInvocation(options.command, options.args ?? [], {
-      arch: dependencies.arch,
-      packageRoot: dependencies.windowsJobPackageRoot,
+      environment: options.env,
       parentPid: process.pid,
     });
   } catch (error) {

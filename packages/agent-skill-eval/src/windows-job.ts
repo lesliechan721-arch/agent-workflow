@@ -1,17 +1,9 @@
-import { createHash } from 'node:crypto'
-import { lstatSync, readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import path from 'node:path'
+import { readFile } from 'node:fs/promises'
 import process from 'node:process'
-import { fileURLToPath } from 'node:url'
+import { parseNativeToolDescriptor, resolveNativeTool } from '@lesliechan721/aw-native-runtime'
+import type { NativeToolMode, NativeToolRegistry } from '@lesliechan721/aw-native-runtime'
 
 export const WINDOWS_JOB_HELPER_CONFIG_SCHEMA_VERSION = 1
-
-const require = createRequire(import.meta.url)
-const WINDOWS_JOB_PACKAGES = {
-  x64: '@lesliechan721/aw-windows-job-win32-x64/aw-windows-job.exe',
-  arm64: '@lesliechan721/aw-windows-job-win32-arm64/aw-windows-job.exe',
-} as const
 
 export interface WindowsJobHelperConfig {
   schemaVersion: typeof WINDOWS_JOB_HELPER_CONFIG_SCHEMA_VERSION
@@ -26,73 +18,44 @@ export interface WindowsJobInvocation {
   config: WindowsJobHelperConfig
 }
 
-function assertWindowsJobArch(arch: string): 'x64' | 'arm64' {
-  if (arch === 'x64' || arch === 'arm64') return arch
-  throw new Error(`Windows Job containment is unsupported on architecture ${arch}.`)
-}
-
-function isRegularFile(filePath: string): boolean {
-  try {
-    const stats = lstatSync(filePath)
-    return stats.isFile() && !stats.isSymbolicLink()
-  } catch {
-    return false
-  }
-}
-
-function verifyWindowsHelper(helperPath: string, manifestPath: string, arch: 'x64' | 'arm64'): void {
-  const invalid = (): never => {
-    throw new Error('Windows native helper is invalid. Sync or reinstall the package.')
-  }
-  try {
-    if (!isRegularFile(helperPath) || !isRegularFile(manifestPath)) invalid()
-    if (lstatSync(manifestPath).size > 64 * 1024 || lstatSync(helperPath).size > 64 * 1024 * 1024) invalid()
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-    const binary = manifest?.binaries?.[arch]
-    const machine = arch === 'x64' ? 0x8664 : 0xaa64
-    if (manifest?.schemaVersion !== 1 || !binary ||
-      binary.goarch !== (arch === 'x64' ? 'amd64' : 'arm64') ||
-      binary.path !== `${arch}/aw-windows-job.exe` ||
-      binary.peMachine !== `0x${machine.toString(16)}` ||
-      typeof binary.sha256 !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(binary.sha256)) invalid()
-    const bytes = readFileSync(helperPath)
-    if (bytes.length < 0x40 || bytes.toString('ascii', 0, 2) !== 'MZ') invalid()
-    const peOffset = bytes.readUInt32LE(0x3c)
-    if (peOffset < 0x40 || peOffset > bytes.length - 6 ||
-      bytes.toString('ascii', peOffset, peOffset + 4) !== 'PE\0\0' ||
-      bytes.readUInt16LE(peOffset + 4) !== machine ||
-      `sha256:${createHash('sha256').update(bytes).digest('hex')}` !== binary.sha256) invalid()
-  } catch {
-    invalid()
-  }
-}
-
-export function resolveWindowsJobHelperPath(options: {
+export interface PrepareWindowsJobHelperOptions {
+  cacheRoot: string
   arch?: string
-  moduleUrl?: string
-  resolvePackage?: (specifier: string) => string
-} = {}): string {
-  const arch = assertWindowsJobArch(options.arch ?? process.arch)
-  const moduleDirectory = path.dirname(fileURLToPath(options.moduleUrl ?? import.meta.url))
-  let packagePath: string | undefined
-  const resolvePackage = options.resolvePackage ?? (options.moduleUrl ? undefined : require.resolve)
-  if (resolvePackage) {
-    try {
-      packagePath = resolvePackage(WINDOWS_JOB_PACKAGES[arch])
-    } catch {
-      // Source checkouts can use the committed artifact before workspace packages are built.
-    }
+  mode?: NativeToolMode
+  descriptorPath?: string | URL
+  archivePath?: string
+  registry?: string | NativeToolRegistry
+  sourceEnv?: NodeJS.ProcessEnv
+}
+
+/** Foreground admission. Low-level process operations only receive its resolved path. */
+export async function prepareWindowsJobHelper(options: PrepareWindowsJobHelperOptions): Promise<string> {
+  if (!options.cacheRoot) throw new Error('Windows native execution requires an explicit native cache root.')
+  const descriptor = parseNativeToolDescriptor(JSON.parse(await readFile(
+    options.descriptorPath ?? new URL('./native/windows-job.lock.json', import.meta.url),
+    'utf8',
+  )))
+  if (descriptor.tool.protocol !== 'aw.windows-job.v1') {
+    throw new Error('Windows native helper protocol is invalid.')
   }
-  const nativeRoot = path.join(moduleDirectory, '..', 'native', 'windows')
-  const helperPath = packagePath ?? path.join(nativeRoot, arch, 'aw-windows-job.exe')
-  const manifestPath = packagePath
-    ? path.join(path.dirname(packagePath), 'manifest.json')
-    : path.join(nativeRoot, 'manifest.json')
-  if (!isRegularFile(helperPath)) {
-    throw new Error(`Windows Job containment helper is missing for architecture ${arch}. Sync or reinstall the package.`)
-  }
-  verifyWindowsHelper(helperPath, manifestPath, arch)
-  return helperPath
+  const tool = await resolveNativeTool({
+    descriptor,
+    cacheRoot: options.cacheRoot,
+    platform: 'win32',
+    arch: options.arch ?? process.arch,
+    mode: options.mode ?? 'network',
+    ...(options.archivePath ? { archivePath: options.archivePath } : {}),
+    registryEnvironment: options.sourceEnv,
+    ...(options.registry ? { registry: options.registry } : {}),
+  })
+  return tool.executable
+}
+
+/** Identity probes and diagnostics must never download executable code. */
+export async function resolveWindowsJobHelperPath(
+  options: Omit<PrepareWindowsJobHelperOptions, 'mode' | 'archivePath' | 'registry'>,
+): Promise<string> {
+  return prepareWindowsJobHelper({ ...options, mode: 'cache-only' })
 }
 
 export function encodeWindowsJobHelperConfig(config: WindowsJobHelperConfig): string {
@@ -136,16 +99,17 @@ export function createWindowsJobInvocation(
   executable: string,
   args: readonly string[],
   options: {
-    arch?: string
-    helperPath?: string
-    moduleUrl?: string
+    helperPath: string
     parentPid?: number
-  } = {},
+  },
 ): WindowsJobInvocation {
   if (/\.(?:cmd|bat)$/iu.test(executable)) {
     throw new Error(
       'Windows Job containment requires an executable file; .cmd and .bat targets are unsupported.',
     )
+  }
+  if (!options.helperPath || options.helperPath.includes('\0')) {
+    throw new Error('Windows Job containment requires a prepared native helper.')
   }
   const config: WindowsJobHelperConfig = {
     schemaVersion: WINDOWS_JOB_HELPER_CONFIG_SCHEMA_VERSION,
@@ -154,7 +118,7 @@ export function createWindowsJobInvocation(
     parentPid: options.parentPid ?? process.pid,
   }
   return {
-    command: options.helperPath ?? resolveWindowsJobHelperPath(options),
+    command: options.helperPath,
     args: ['--config', encodeWindowsJobHelperConfig(config)],
     config,
   }

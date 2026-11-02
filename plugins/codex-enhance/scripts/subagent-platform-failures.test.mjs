@@ -3,17 +3,17 @@ import childProcess from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
 import { promisify } from 'node:util';
-import { prepareWindowsNativeResources, windowsNativeSpawn } from './fixtures/windows-native-host.mjs';
+import { useWindowsNativeFixture, windowsNativeSpawn } from './fixtures/windows-native-host.mjs';
 import { safeError } from '../skills/codex-subagent-guide/scripts/runtime/contracts.mjs';
 
 // Replace only the native host boundary before the runtime captures execFile.
 // This file runs in its own Node test process; the native platform tests use the
 // real host. The same runtime instance observes failure, recovery, and caching.
 let executeNative;
-await prepareWindowsNativeResources(import.meta.url, createRequire(import.meta.url).resolve('../skills/codex-subagent-guide/scripts/runtime/platform.mjs'));
+useWindowsNativeFixture();
 const originalExecFile = childProcess.execFile;
 const originalSpawn = childProcess.spawn;
 let api;
@@ -438,39 +438,29 @@ test('scratch cleanup batches native tree checks and retains files when verifica
   t.diagnostic('Windows native hosts per nested scratch removal: owner/ACL verification 1; descendant checks 3 -> 1');
 });
 
-// Test Value Gate: the bundled executable must match its declared hash and PE
-// architecture before any native operation can run. No PATH fallback is valid.
-test('native helper resolution rejects missing, linked, damaged and wrong-architecture resources', async (t) => {
-  const { createHash } = await import('node:crypto');
-  const { resolveWindowsNativeHelper } = await import('../skills/codex-subagent-guide/scripts/runtime/windows-native.mjs');
-  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-native-resource-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const manifest = { schemaVersion: 1, binaries: {} };
-  for (const [arch, machine, goarch] of [['x64', 0x8664, 'amd64'], ['arm64', 0xaa64, 'arm64']]) {
-    const bytes = Buffer.alloc(128);
-    bytes.write('MZ'); bytes.writeUInt32LE(64, 0x3c); bytes.write('PE\0\0', 64); bytes.writeUInt16LE(machine, 68);
-    await fs.mkdir(path.join(root, arch));
-    await fs.writeFile(path.join(root, arch, 'aw-windows-job.exe'), bytes);
-    manifest.binaries[arch] = { goarch, path: `${arch}/aw-windows-job.exe`, peMachine: `0x${machine.toString(16)}`, sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}` };
+// Test Value Gate: required native operations accept only the tool prepared by
+// AW. Missing or mismatched context cannot launch a helper or select a fallback.
+test('native operations reject absent or invalid AW context and keep the selected tool fixed', async () => {
+  const entry = new URL('../skills/codex-subagent-guide/scripts/runtime/windows-native.mjs', import.meta.url).href;
+  const execute = promisify(originalExecFile);
+  const tool = { state: 'ready', protocol: 'aw.windows-job.v1', executable: path.resolve('fixture-native/aw-windows-job.exe'), sha256: `sha256:${'1'.repeat(64)}` };
+  const context = (value) => JSON.stringify({ schemaVersion: 1, tools: { 'windows-job': value } });
+  const script = `import { windowsNativeOperation } from ${JSON.stringify(entry)};
+try { await windowsNativeOperation('pathCheck', { target: process.cwd(), kind: 'directory' }); process.exitCode = 1; }
+catch (error) { process.stdout.write(error.code); }`;
+  for (const raw of [undefined, '{', '{}', JSON.stringify({ schemaVersion: 1, tools: {} }), context({ ...tool, protocol: 'other.v1' }), context({ state: 'unavailable', protocol: tool.protocol, code: 'nativeCacheMiss' })]) {
+    const environment = { ...process.env };
+    if (raw === undefined) delete environment.AW_NATIVE_TOOL_CONTEXT;
+    else environment.AW_NATIVE_TOOL_CONTEXT = raw;
+    const result = await execute(process.execPath, ['--input-type=module', '--eval', script], { env: environment });
+    assert.equal(result.stdout, 'platformUnavailable');
   }
-  const save = () => fs.writeFile(path.join(root, 'manifest.json'), JSON.stringify(manifest));
-  await save();
-  for (const arch of ['x64', 'arm64']) assert.equal(await resolveWindowsNativeHelper({ root, arch }), path.join(root, arch, 'aw-windows-job.exe'));
-  await assert.rejects(resolveWindowsNativeHelper({ root, arch: 'ia32' }), { code: 'platformUnavailable' });
-  const target = path.join(root, 'x64', 'aw-windows-job.exe');
-  const bytes = await fs.readFile(target);
-  await fs.writeFile(target, Buffer.concat([bytes, Buffer.from('tampered')]));
-  await assert.rejects(resolveWindowsNativeHelper({ root, arch: 'x64' }), { code: 'platformUnavailable' });
-  manifest.binaries.x64.sha256 = manifest.binaries.arm64.sha256;
-  await save();
-  await fs.copyFile(path.join(root, 'arm64', 'aw-windows-job.exe'), target);
-  await assert.rejects(resolveWindowsNativeHelper({ root, arch: 'x64' }), { code: 'platformUnavailable' });
-  await fs.unlink(target);
-  await assert.rejects(resolveWindowsNativeHelper({ root, arch: 'x64' }), { code: 'platformUnavailable' });
-  if (process.platform !== 'win32') {
-    await fs.symlink(path.join(root, 'arm64', 'aw-windows-job.exe'), target);
-    await assert.rejects(resolveWindowsNativeHelper({ root, arch: 'x64' }), { code: 'platformUnavailable' });
-  }
+  const selected = await execute(process.execPath, ['--input-type=module', '--eval', `
+import { windowsJobExecutable } from ${JSON.stringify(entry)};
+const first = await windowsJobExecutable();
+process.env.AW_NATIVE_TOOL_CONTEXT = '{}';
+process.stdout.write(JSON.stringify([first, await windowsJobExecutable()]));`], { env: { ...process.env, AW_NATIVE_TOOL_CONTEXT: context(tool) } });
+  assert.deepEqual(JSON.parse(selected.stdout), [tool.executable, tool.executable]);
 });
 
 // Test Value Gate: only the fixed versioned input/output contract can authorize

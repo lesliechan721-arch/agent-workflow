@@ -1,11 +1,12 @@
 import process from 'node:process'
+import { readNativeToolTestConfig } from '@lesliechan721/aw-native-runtime'
 import { assertCodexEvalKeychainWrapperAbsent } from './codex-eval-isolation.js'
 import type { EvalResultProcessManagement } from './eval-result.js'
 import {
   assertProcessTreeInspectionAvailable,
   type ProcessTreeDependencies,
 } from './process-tree.js'
-import { resolveWindowsJobHelperPath } from './windows-job.js'
+import { prepareWindowsJobHelper } from './windows-job.js'
 
 const FULL_ACCESS_PERMISSION_PROFILE = 'danger-full-access'
 const UNMANAGED_LIMITATION =
@@ -26,7 +27,7 @@ export interface EvalProcessManagementDependencies {
   }) => Promise<string | null>
   readUserKeychainSearchList?: () => Promise<string>
   inspectProcessTree?: () => Promise<void>
-  resolveWindowsJobHelper?: () => string
+  prepareWindowsJobHelper?: () => Promise<string> | string
   processTree?: ProcessTreeDependencies
 }
 
@@ -61,6 +62,8 @@ export async function resolveEvalProcessManagement(options: {
   allowUnmanaged: boolean
   codexBin?: string
   sourceEnv?: NodeJS.ProcessEnv
+  nativeCacheRoot?: string
+  onWindowsJobHelperPrepared?: (helperPath: string) => void
   dependencies?: EvalProcessManagementDependencies
 }): Promise<EvalResultProcessManagement> {
   const sourceEnv = options.sourceEnv ?? process.env
@@ -100,7 +103,19 @@ export async function resolveEvalProcessManagement(options: {
 
   try {
     if (platform === 'win32') {
-      (dependencies.resolveWindowsJobHelper ?? resolveWindowsJobHelperPath)()
+      const environment = { ...process.env, ...sourceEnv }
+      const testConfig = dependencies.prepareWindowsJobHelper
+        ? undefined : readNativeToolTestConfig(environment)
+      const helperPath = dependencies.prepareWindowsJobHelper
+        ? await dependencies.prepareWindowsJobHelper()
+        : await prepareWindowsJobHelper({
+            cacheRoot: testConfig?.cacheRoot ?? options.nativeCacheRoot ?? '',
+            sourceEnv,
+            mode: testConfig?.mode ?? (environment.AW_TEST_RUNNER_PROCESS_TREE === '1' ? 'cache-only' : 'network'),
+            ...(testConfig?.archivePath ? { archivePath: testConfig.archivePath } : {}),
+            ...(testConfig?.descriptorPath ? { descriptorPath: testConfig.descriptorPath } : {}),
+          })
+      options.onWindowsJobHelperPrepared?.(helperPath)
     } else if (dependencies.inspectProcessTree) await dependencies.inspectProcessTree()
     else {
       await assertProcessTreeInspectionAvailable({

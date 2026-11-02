@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "tool": {
+    "id": "@lesliechan721/windows-job",
+    "version": "1.0.0",
+    "protocol": "aw.windows-job.v1"
+  },
+  "variants": [
+    {
+      "platform": "win32",
+      "arch": "arm64",
+      "transport": {
+        "kind": "npm",
+        "package": "@lesliechan721/aw-windows-job-win32-arm64",
+        "version": "1.0.0",
+        "archiveIntegrity": "sha512-Fk7wZIYc7V2MgYU6VpadvXy9pn/7472laolbkAe+L+oSQNMPB9S/D6JxbtG4/vVs6fDOeH6Xa8JB/hk3AlQAPg==",
+        "entry": "package/dist/aw-windows-job.exe"
+      },
+      "file": {
+        "sha256": "sha256:f32dda3f5d2a46c6d0ead77f3f2f6b348fa62f13c3a6460bf522a18a03d05a24",
+        "size": 3223040,
+        "format": "pe",
+        "machine": "0xaa64"
+      },
+      "limits": {
+        "archiveBytes": 8388608,
+        "expandedBytes": 16777216,
+        "entries": 32
+      }
+    },
+    {
+      "platform": "win32",
+      "arch": "x64",
+      "transport": {
+        "kind": "npm",
+        "package": "@lesliechan721/aw-windows-job-win32-x64",
+        "version": "1.0.0",
+        "archiveIntegrity": "sha512-hBjPvoPGPA6qOKoR6r0cS3NoNpx3onMKABwtMLkZzelp7mQ5aIPOgQlYj0ouKRs8/BWl2MlbBcSeFhWhcGWd0Q==",
+        "entry": "package/dist/aw-windows-job.exe"
+      },
+      "file": {
+        "sha256": "sha256:3d43fe627039c4726faf32979d420333df89850cb16cfe7666e9a5160f0513f8",
+        "size": 3401728,
+        "format": "pe",
+        "machine": "0x8664"
+      },
+      "limits": {
+        "archiveBytes": 8388608,
+        "expandedBytes": 16777216,
+        "entries": 32
+      }
+    }
+  ]
+}

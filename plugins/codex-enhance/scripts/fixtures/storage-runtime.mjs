@@ -1,16 +1,16 @@
 import childProcess from 'node:child_process';
 import fs from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
-import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { prepareWindowsNativeResources, windowsNativeSpawn } from './windows-native-host.mjs';
+import { useWindowsNativeFixture, windowsNativeSpawn } from './windows-native-host.mjs';
 import { promisify } from 'node:util';
 
 // Rules use real files and replace native ACL and process operations. Identity
 // stays native so scanner processes read the same resource owner. The native
 // storage test leaves every operation connected to the real host.
-await prepareWindowsNativeResources(new URL('../storage.test.mjs', import.meta.url), createRequire(import.meta.url).resolve('../../skills/codex-subagent-guide/scripts/runtime/platform.mjs'));
+useWindowsNativeFixture({ preserveContext: true });
 const originalExecFile = childProcess.execFile;
 const originalSpawn = childProcess.spawn;
 const executeNative = promisify(originalExecFile);

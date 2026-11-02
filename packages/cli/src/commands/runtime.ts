@@ -15,7 +15,7 @@ import {
   createNoopReporter,
 } from '../output/reporter.js';
 import type { NativeCliInvocation, NativeCliRunner } from '../utils/native-cli.js';
-import { NativeCliError, getDefaultNativeCliRunner } from '../utils/native-cli.js';
+import { NativeCliError, getDefaultNativeCliRunner, retainNativeCliRunnerBackend } from '../utils/native-cli.js';
 import { resolveAwHome } from '../utils/paths.js';
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import type { Scope } from '../types.js';
@@ -918,7 +918,7 @@ function createInstrumentedNativeCliRunner(options: {
   reporter: CommandReporter;
   debugLogger: DebugLogger;
 }): NativeCliRunner {
-  return async (invocation) => {
+  return retainNativeCliRunnerBackend(async (invocation) => {
     const startedAt = Date.now();
     const identity = nativeEventIdentity(invocation);
     await emitRuntimeEvent(options, {
@@ -951,7 +951,7 @@ function createInstrumentedNativeCliRunner(options: {
       });
       throw error;
     }
-  };
+  }, options.baseRunner);
 }
 
 async function emitRuntimeEvent(

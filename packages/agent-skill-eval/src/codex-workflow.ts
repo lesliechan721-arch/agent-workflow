@@ -1915,6 +1915,7 @@ const instructionV2Transport: CodexWorkflowTransport = {
     const grader = input.request.evaluation ? createCodexGrader({
       sourceEnv: input.sourceEnv, codexRuntime: input.codexRuntime, codexBin: input.codexBin,
       ...(input.request.model ? { model: input.request.model } : {}), processManagement: input.processManagement,
+      windowsJobHelperPath: input.processTree?.windowsJobHelperPath,
     }) : undefined
     const evaluation = input.request.evaluation ? new WorkflowEvaluation(input.request.evaluation, input.input.workspacePath, async (prompt) => {
       const outputDir = path.join(input.input.outputDir, 'workflow-judges', String(++judgeNumber))
@@ -2085,6 +2086,7 @@ const defaultTransport: CodexWorkflowTransport = {
       codexBin: input.codexBin,
       ...(input.request.model ? { model: input.request.model } : {}),
       processManagement: input.processManagement,
+      windowsJobHelperPath: input.processTree?.windowsJobHelperPath,
     }) : undefined
     const evaluation = input.request.evaluation ? new WorkflowEvaluation(
       input.request.evaluation,
@@ -2137,6 +2139,7 @@ const defaultTransport: CodexWorkflowTransport = {
         sensitiveEnvironmentNames: input.codexRuntime.sensitiveEnvironmentNames,
         isolation: 'standard',
         processManagement: input.processManagement,
+        windowsJobHelperPath: input.processTree?.windowsJobHelperPath,
         configOverrides,
         ...(containment ? { hostReadContainmentProfile: containment } : {}),
       })

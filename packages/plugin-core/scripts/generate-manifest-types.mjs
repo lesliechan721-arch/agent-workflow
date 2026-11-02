@@ -13,6 +13,15 @@ const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'))
 const typeSchema = structuredClone(schema)
 delete typeSchema.$defs.configJoinSummary.properties.parts.minItems
 delete typeSchema.$defs.configJoinSummary.properties.parts.maxItems
+// Collection cardinality is checked at runtime; normalized collections use arrays.
+for (const collection of [
+  typeSchema.$defs.nativeTools.properties.definitions,
+  typeSchema.$defs.nativeTools.properties.consumers,
+  typeSchema.$defs.nativeToolConsumer.properties.tools,
+]) {
+  delete collection.minItems
+  delete collection.maxItems
+}
 const generated = (await compile(typeSchema, 'PluginManifestSourceV3', {
   bannerComment: '/* This file is generated. Run `pnpm generate` in packages/plugin-core to update it. */',
   declareExternallyReferenced: true,

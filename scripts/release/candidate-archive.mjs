@@ -65,12 +65,12 @@ function assertManifest(manifest) {
   }
   if (manifest.product === 'cli') {
     if (!paths.has('cli/prepared/descriptor.json') || !paths.has('cli/attempted.json')
-      || manifest.files.filter((entry) => entry.path.endsWith('.tgz')).length !== 5) {
-      throw new Error('CLI recovery requires the descriptor, attempt, and all five packages.');
+      || manifest.files.filter((entry) => entry.path.endsWith('.tgz')).length !== 3) {
+      throw new Error('CLI recovery requires the descriptor, attempt, and all three packages.');
     }
   } else if (!paths.has('catalog/publication/journal.json')
-    || manifest.files.filter((entry) => entry.path.startsWith('tools/')).length !== 5) {
-    throw new Error('Catalog recovery requires its journal and five smoke tool packages.');
+    || manifest.files.filter((entry) => entry.path.startsWith('tools/')).length !== 3) {
+    throw new Error('Catalog recovery requires its journal and three smoke tool packages.');
   }
 }
 

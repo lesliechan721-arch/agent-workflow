@@ -16,6 +16,8 @@ Codex 和 Claude 的 shared native（包括全部 static-skill producer）均使
 
 目录须自包含，先 bundle 依赖，不链接回开发目录。entry 留在 producer 内，runner 使用 node 或 executable，不提供 shell runner。静态 entries 不需要 renderer；配置决定集合或包文件时声明相应 refreshKeys，采用 Artifact renderer（`references/aw-artifact-renderer.md`）。
 
+命令需要原生制品时，采用原生工具（`references/native-tools.md`）声明文本锁和消费者。AW 在入口启动前按已安装 producer 准备；命令保持原业务参数和输出。不要在脚本中增加下载器或公开 prepare 命令。
+
 命令及生成文件只用非敏感配置，秘密通过 envFrom 引用宿主环境。独立包使用 args/env 或普通配置文件，不使用 Skill runtimeConfig reader，也不在执行时读最新 store。仅保存配置不改变运行行为；apply 后分别核对保存与 producer 刷新结果，partial 不等于全部生效。
 
 ## 引用与权限

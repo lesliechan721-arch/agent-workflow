@@ -1,12 +1,10 @@
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { fail } from './contracts.mjs';
 
 const spawnNative = spawn;
-const nativeRoot = fileURLToPath(new URL('./native/windows/', import.meta.url));
+// Keep one prepared tool for this process, including background operations.
+let windowsJobTool;
 const inputLimit = 256 * 1024;
 const outputLimit = 8 * 1024 * 1024;
 const timeoutMs = 30000;
@@ -51,37 +49,23 @@ function validResult(operation, result, input) {
   }
 }
 
-export async function resolveWindowsNativeHelper({ arch = process.arch, root = nativeRoot } = {}) {
-  const unavailable = () => fail('platformUnavailable', 'The Windows native helper is missing or invalid. Sync or reinstall the plugin.');
-  if (!['x64', 'arm64'].includes(arch)) unavailable();
-  const executable = path.join(root, arch, 'aw-windows-job.exe');
-  const manifestPath = path.join(root, 'manifest.json');
-  try {
-    for (const [target, limit] of [[manifestPath, 64 * 1024], [executable, 64 * 1024 * 1024]]) {
-      const stat = await fs.lstat(target);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > limit) unavailable();
-    }
-    for (const target of [root, path.join(root, arch)]) {
-      const stat = await fs.lstat(target);
-      if (!stat.isDirectory() || stat.isSymbolicLink()) unavailable();
-    }
-    const manifest = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await fs.readFile(manifestPath)));
-    const binary = manifest?.binaries?.[arch];
-    const machine = arch === 'x64' ? 0x8664 : 0xaa64;
-    if (manifest?.schemaVersion !== 1 || !binary || binary.goarch !== (arch === 'x64' ? 'amd64' : 'arm64') || binary.path !== `${arch}/aw-windows-job.exe` || binary.peMachine !== `0x${machine.toString(16)}` || !/^sha256:[a-f0-9]{64}$/.test(binary.sha256 ?? '')) unavailable();
-    const bytes = await fs.readFile(executable);
-    if (bytes.length < 0x40 || bytes.toString('ascii', 0, 2) !== 'MZ') unavailable();
-    const offset = bytes.readUInt32LE(0x3c);
-    if (offset < 0x40 || offset > bytes.length - 6 || bytes.toString('ascii', offset, offset + 4) !== 'PE\0\0' || bytes.readUInt16LE(offset + 4) !== machine || `sha256:${createHash('sha256').update(bytes).digest('hex')}` !== binary.sha256) unavailable();
-    return executable;
-  } catch { unavailable(); }
+export async function windowsJobExecutable() {
+  windowsJobTool ??= import('./native-tool-reader.mjs')
+    .then(({ readNativeTool }) => {
+      const tool = readNativeTool('windows-job', 'aw.windows-job.v1');
+      if (tool.state !== 'ready') throw new Error();
+      return tool;
+    }).catch(() => {
+      fail('platformUnavailable', 'The Windows native tool context is missing or invalid. Run this command through AW.');
+    });
+  return (await windowsJobTool).executable;
 }
 
 export async function windowsNativeOperation(operation, input = {}) {
   if (!validInput(operation, input)) fail('platformOperationFailed', 'A native Windows operation input is invalid.');
   const payload = Buffer.from(JSON.stringify({ schemaVersion: 1, operation, input }));
   if (payload.length > inputLimit) fail('platformOperationFailed', 'A native Windows operation input is too large.');
-  const executable = await resolveWindowsNativeHelper();
+  const executable = await windowsJobExecutable();
   const started = performance.now();
   const failure = (reason, code = null, signal = null) => {
     fail('platformOperationFailed', `A native Windows identity, access-control, or process operation failed. ${JSON.stringify({ operation, reason, elapsedMs: Math.round(performance.now() - started), timeoutMs, exitCode: Number.isSafeInteger(code) ? code : null, signal: ['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGABRT', 'SIGBREAK'].includes(signal) ? signal : null })}`);

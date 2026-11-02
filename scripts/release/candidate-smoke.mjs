@@ -9,14 +9,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bytesDigest, verifyCandidateDirectory } from './candidate-archive.mjs';
 import { computePackageTarballTreeDigest } from './common.mjs';
 import { validateLocalTarballBundle } from './install-local-tarball.mjs';
-import { runWindowsJobQualification, WINDOWS_JOB_REQUIRED_CHECKS } from '../qualification/windows-job-containment.mjs';
 
 const PACKAGE_NAMES = [
   '@lesliechan721/aw',
   '@lesliechan721/agent-skill-eval',
   '@lesliechan721/aw-plugin-core',
-  '@lesliechan721/aw-windows-job-win32-x64',
-  '@lesliechan721/aw-windows-job-win32-arm64',
 ];
 const scriptPath = fileURLToPath(import.meta.url);
 
@@ -96,7 +93,7 @@ async function npmEntry(env) {
 
 export async function installCandidatePackages(bundleRoot, manifest, root, env, options = {}) {
   const entries = manifest.files.filter((entry) => entry.path.endsWith('.tgz'));
-  if (entries.length !== 5) throw new Error('Candidate smoke requires exactly five tarballs.');
+  if (entries.length !== 3) throw new Error('Candidate smoke requires exactly three tarballs.');
   const packages = new Map();
   for (const [index, entry] of entries.entries()) {
     const tarball = path.join(bundleRoot, entry.path);
@@ -108,15 +105,15 @@ export async function installCandidatePackages(bundleRoot, manifest, root, env, 
     await capture('tar', ['-xzf', 'candidate.tgz'], { cwd: unpack, env });
     const unpackedRoot = path.join(unpack, 'package');
     const metadata = JSON.parse(await fs.readFile(path.join(unpackedRoot, 'package.json'), 'utf8'));
-    if (!PACKAGE_NAMES.includes(metadata.name) || packages.has(metadata.name)) throw new Error('Candidate tarballs must contain each of the five release packages once.');
+    if (!PACKAGE_NAMES.includes(metadata.name) || packages.has(metadata.name)) throw new Error('Candidate tarballs must contain each of the three release packages once.');
     packages.set(metadata.name, { metadata, tarball, unpackedRoot });
   }
-  const bundle = Object.fromEntries(['cliTarballPath', 'evalTarballPath', 'coreTarballPath', 'windowsX64TarballPath', 'windowsArm64TarballPath'].map((key, index) => [key, packages.get(PACKAGE_NAMES[index])?.tarball]));
+  const bundle = Object.fromEntries(['cliTarballPath', 'evalTarballPath', 'coreTarballPath'].map((key, index) => [key, packages.get(PACKAGE_NAMES[index])?.tarball]));
   await validateLocalTarballBundle(bundle, { readPackageJson: async (tarball) => [...packages.values()].find((entry) => entry.tarball === tarball)?.metadata });
   if (manifest.product === 'cli' && packages.get(PACKAGE_NAMES[0]).metadata.version !== manifest.version) throw new Error('CLI candidate version differs from its tarballs.');
 
   // Install only third-party dependencies through npm. Candidate package names
-  // never enter a registry request, including Eval's optional platform packages.
+  // never enter a registry request.
   const installDependencies = options.installDependencies ?? (async (directory) => {
     await capture(process.execPath, [await npmEntry(env), 'install', '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=false', '--omit=dev'], { cwd: directory, env });
   });
@@ -191,22 +188,20 @@ async function checkInstalledImportsAndPaths(root, env) {
   assert.equal(paths.resolveClaudePaths(root, 'user', env).configDir, env.AW_CLAUDE_HOME);
 }
 
-async function checkHelpers(root) {
-  for (const [index, arch, machine] of [[3, 'x64', 0x8664], [4, 'arm64', 0xaa64]]) {
-    const packageRoot = packagePath(root, PACKAGE_NAMES[index]);
-    const metadata = JSON.parse(await fs.readFile(path.join(packageRoot, 'package.json'), 'utf8'));
-    assert.deepEqual(metadata.os, ['win32']);
-    assert.deepEqual(metadata.cpu, [arch]);
-    const bytes = await fs.readFile(path.join(packageRoot, 'dist', 'aw-windows-job.exe'));
-    const manifest = JSON.parse(await fs.readFile(path.join(packageRoot, 'dist', 'manifest.json'), 'utf8'));
-    assert.equal(manifest.schemaVersion, 1);
-    assert.equal(manifest.binaries[arch].sha256, bytesDigest(bytes));
-    assert.equal(manifest.binaries[arch].peMachine, `0x${machine.toString(16)}`);
-    assert.equal(bytes.subarray(0, 2).toString('ascii'), 'MZ');
-    const peOffset = bytes.readUInt32LE(0x3c);
-    assert.equal(bytes.subarray(peOffset, peOffset + 4).toString('ascii'), 'PE\0\0');
-    assert.equal(bytes.readUInt16LE(peOffset + 4), machine);
+async function checkTextOnlyPackages(root) {
+  async function inspect(directory) {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      if (entry.name === 'node_modules') continue;
+      const target = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) throw new Error('Candidate product contains a symlink.');
+      if (entry.isDirectory()) await inspect(target);
+      else if (entry.isFile()) {
+        const bytes = await fs.readFile(target);
+        assert.notEqual(bytes.subarray(0, 2).toString('ascii'), 'MZ', 'CLI products must not contain PE files');
+      }
+    }
   }
+  for (const name of PACKAGE_NAMES) await inspect(packagePath(root, name));
 }
 
 async function checkCatalog(root, bundleRoot, candidate, env, record) {
@@ -293,6 +288,21 @@ async function checkCatalog(root, bundleRoot, candidate, env, record) {
   }
 }
 
+export async function probeInstalledCatalogCandidate({ root, bundleRoot, candidate, env, minimumNode = false, platform = process.platform, arch = process.arch }, materialize = checkCatalog, record = () => {}) {
+  if (candidate.product !== 'catalog' || minimumNode) return;
+  if (platform === 'win32') {
+    const native = await candidateCliImport(root, 'commands/native-artifacts');
+    const descriptorPath = path.join(packagePath(root, PACKAGE_NAMES[0]), 'dist', 'src', 'native', 'windows-job.lock.json');
+    const receipt = await native.prepareNativeArtifacts({
+      action: 'prefetch', descriptorPath, platform, arch,
+      cacheRoot: path.join(env.AW_HOME, 'native-artifacts', 'v1'),
+    }, { cwd: root, env });
+    assert.ok(receipt.ok, `Catalog candidate native preparation failed: ${receipt.errors.map((error) => error.code).join(', ')}`);
+    record('catalog-native-prepare', { descriptorDigest: receipt.descriptorDigest, variants: receipt.variants });
+  }
+  await materialize(root, bundleRoot, candidate, env, record);
+}
+
 // Run in a fresh Node process: imported candidate code sees only isolated homes
 // and its own installed dependency closure.
 export async function probeInstalledCandidate({ root, bundleRoot, candidate, minimumNode = false }) {
@@ -301,18 +311,9 @@ export async function probeInstalledCandidate({ root, bundleRoot, candidate, min
   try {
     await checkInstalledEntrypoints(root, process.env); record('installed-bins');
     await checkInstalledImportsAndPaths(root, process.env); record('esm-imports-and-config-paths');
-    await checkHelpers(root); record('platform-helper-packages');
-    if (candidate.product === 'catalog' && !minimumNode) await checkCatalog(root, bundleRoot, candidate, process.env, record);
-    if (process.platform === 'win32' && !minimumNode) {
-      const helperPath = path.join(packagePath(root, `@lesliechan721/aw-windows-job-win32-${process.arch}`), 'dist', 'aw-windows-job.exe');
-      const resolver = await candidateImport(root, PACKAGE_NAMES[1], 'dist/windows-job.js');
-      assert.equal(resolver.resolveWindowsJobHelperPath(), helperPath);
-      const evaluator = await candidateImport(root, PACKAGE_NAMES[1]);
-      const qualification = await runWindowsJobQualification({ helperPath, runProviderProcess: evaluator.runProviderProcess });
-      record('windows-job-qualification', { passed: qualification.status === 'passed', qualification });
-      assertRequiredChecks(qualification.checks, WINDOWS_JOB_REQUIRED_CHECKS);
-      assert.equal(qualification.status, 'passed');
-    }
+    await checkTextOnlyPackages(root); record('text-only-packages');
+    await probeInstalledCatalogCandidate({ root, bundleRoot, candidate, minimumNode, env: process.env }, checkCatalog, record);
+
   } catch (error) {
     checks.push({ id: 'installed-probe-failure', passed: false, message: error instanceof Error ? error.message : String(error) });
   }
@@ -320,10 +321,20 @@ export async function probeInstalledCandidate({ root, bundleRoot, candidate, min
 }
 
 function requiredCandidateChecks(options) {
-  const required = ['native-host', 'candidate-integrity', 'five-package-closure', 'installed-bins', 'esm-imports-and-config-paths', 'platform-helper-packages'];
+  const required = ['native-host', 'candidate-integrity', 'three-package-closure', 'installed-bins', 'esm-imports-and-config-paths', 'text-only-packages'];
   if (!options.minimumNode && options.product === 'catalog') required.push('catalog-validate', 'catalog-path-consumption', 'catalog-git-consumption', 'catalog-dependencies', 'catalog-codex-materialize', 'catalog-claude-materialize', 'catalog-codex-native-projection', 'catalog-claude-native-projection');
-  if (!options.minimumNode && options.os === 'win32') required.push('windows-job-qualification');
+  if (!options.minimumNode && options.product === 'catalog' && options.os === 'win32') required.push('catalog-native-prepare');
   return required;
+}
+
+export function candidateSmokeEnvironment(root, environment = process.env) {
+  const env = { ...environment, HOME: path.join(root, 'home'), USERPROFILE: path.join(root, 'home'), AW_HOME: path.join(root, 'aw-home'), AW_CODEX_HOME: path.join(root, 'codex-home'), CODEX_HOME: path.join(root, 'codex-home'), AW_CLAUDE_HOME: path.join(root, 'claude-home'), CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'), XDG_CONFIG_HOME: path.join(root, 'xdg-config'), XDG_CACHE_HOME: path.join(root, 'xdg-cache'), npm_config_cache: path.join(root, 'npm-cache'), npm_config_userconfig: path.join(root, 'npmrc'), NODE_PATH: '', NODE_OPTIONS: '', GIT_CONFIG_GLOBAL: path.join(root, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
+  // A caller's source-test cache or ready context cannot replace this
+  // installed candidate's lock and isolated native cache.
+  for (const key of Object.keys(env)) {
+    if (['AW_NATIVE_TEST_CONFIG', 'AW_NATIVE_TOOL_CONTEXT', 'AW_NATIVE_RESOLVER_MODE'].includes(key.toUpperCase())) delete env[key];
+  }
+  return env;
 }
 
 export async function runCandidateSmoke(options) {
@@ -342,9 +353,9 @@ export async function runCandidateSmoke(options) {
     report.candidateDigest = bytesDigest(await fs.readFile(path.join(options.bundleRoot, 'candidate.json')));
     record('candidate-integrity');
     root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-candidate-smoke-')));
-    const env = { ...process.env, HOME: path.join(root, 'home'), USERPROFILE: path.join(root, 'home'), AW_HOME: path.join(root, 'aw-home'), AW_CODEX_HOME: path.join(root, 'codex-home'), CODEX_HOME: path.join(root, 'codex-home'), AW_CLAUDE_HOME: path.join(root, 'claude-home'), CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'), XDG_CONFIG_HOME: path.join(root, 'xdg-config'), XDG_CACHE_HOME: path.join(root, 'xdg-cache'), npm_config_cache: path.join(root, 'npm-cache'), npm_config_userconfig: path.join(root, 'npmrc'), NODE_PATH: '', NODE_OPTIONS: '', GIT_CONFIG_GLOBAL: path.join(root, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
+    const env = candidateSmokeEnvironment(root);
     for (const directory of [env.HOME, env.AW_HOME, env.AW_CODEX_HOME, env.AW_CLAUDE_HOME]) await fs.mkdir(directory, { recursive: true });
-    await installCandidatePackages(options.bundleRoot, candidate, root, env); record('five-package-closure');
+    await installCandidatePackages(options.bundleRoot, candidate, root, env); record('three-package-closure');
     const probe = { root, bundleRoot: options.bundleRoot, candidate, minimumNode: options.minimumNode === true };
     const input = path.join(root, 'probe.json');
     await fs.writeFile(input, JSON.stringify(probe));

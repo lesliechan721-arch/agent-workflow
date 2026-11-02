@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
-import { validateManagedCommandSources } from '@lesliechan721/aw-plugin-core/manifest';
+import { preparePluginNativeTools, validateManagedCommandSources } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { renderResolvedHooksArtifact } from './hooks.js';
 import { buildGeneratedName } from './shared.js';
@@ -912,6 +912,10 @@ async function collectAwRuntimeFiles(plugin: PluginMeta): Promise<string[]> {
   addPreApplyRuntimeEntry(plugin, rootFiles, nodeEntries);
   addHelperRuntimeEntries(plugin, rootFiles, nodeEntries);
   addArtifactRendererRuntimeEntry(plugin, rootFiles, nodeEntries);
+  if (plugin.manifest.nativeTools) {
+    rootFiles.add(stripDotSlash(plugin.manifest.nativeTools.reader));
+    for (const definition of plugin.manifest.nativeTools.definitions) rootFiles.add(stripDotSlash(definition.descriptor));
+  }
 
   const closureFiles = await collectRuntimeClosureFiles(plugin, [...nodeEntries]);
   for (const filePath of closureFiles) {
@@ -1543,6 +1547,7 @@ async function createStagedPlugin(
       },
     });
 
+    const nativeReader = await preparePluginNativeTools(stagingPluginRoot, plugin.manifest);
     const sourceBuild = plugin.manifest.scripts?.node?.build;
     const declaredBuildImports = plugin.manifest.buildConfig?.buildImports ?? [];
     if (declaredBuildImports.length > 0 && !sourceBuild) {
@@ -1551,6 +1556,8 @@ async function createStagedPlugin(
       );
     }
     const buildEnv: NodeJS.ProcessEnv = { ...commandEnv };
+    for (const key of Object.keys(buildEnv)) if (key.toUpperCase() === 'AW_PLUGIN_NATIVE_READER') delete buildEnv[key];
+    if (nativeReader) buildEnv.AW_PLUGIN_NATIVE_READER = nativeReader;
     const buildImportProvenance: RuntimeImportProvenance[] = [];
     const buildImportProjections: BuildImportProjection[] = [];
     for (const buildImport of declaredBuildImports) {

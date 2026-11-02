@@ -85,6 +85,8 @@ import {
   type RebuildReceiptJson,
 } from './output/command-receipt.js';
 import { resolveCliPackageRoot } from './utils/paths.js';
+import { prepareNativeCliExecution } from './utils/native-cli.js';
+import { resolveAwHome } from './utils/state-paths.js';
 import {
   findConfigFieldEntry,
   formatPluginConfigSetRecoveryCommand,
@@ -191,6 +193,7 @@ import {
 import type { ManagedCodexAuthorizer } from './utils/codex-manager.js';
 import { prepareSkillEval } from './commands/skill-eval.js';
 import { registerManagedCommandCli, runManagedCommandCli } from './commands/managed-commands.js';
+import { registerNativeArtifactCli } from './commands/native-artifacts.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type {
@@ -1564,6 +1567,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     cliVersion: resolveCliVersion(),
   }, (code) => { commandExitState.exitCode = code; });
 
+  registerNativeArtifactCli(program, () => createActionContext('native', {}),
+    (code) => { commandExitState.exitCode = code; });
+
   const self = program
     .command('self')
     .description('Describe and check this AW executable');
@@ -1662,7 +1668,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .requiredOption('--json', 'emit one provider doctor JSON object')
     .action(async () => {
       try {
-        writeJsonReceipt(io.stdout, await doctorEvalProviders({ sourceEnv: env }));
+        writeJsonReceipt(io.stdout, await doctorEvalProviders({
+          sourceEnv: env,
+          nativeCacheRoot: path.join(resolveAwHome(env), 'native-artifacts', 'v1'),
+        }));
       } catch (error) {
         writeJsonReceipt(io.stdout, {
           ok: false,
@@ -2118,9 +2127,17 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .description('Run deterministic Node tests declared by one source plugin')
     .argument('<plugin-directory>', 'source plugin directory')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from plugin directory)')
+    .option('--native-mode <mode>', 'fixture | cache-only | network | source-candidate (default: fixture)')
+    .option('--native-archive <path>', 'explicit fixture or current-source candidate archive')
+    .option('--native-cache <path>', 'explicit isolated native artifact cache')
+    .option('--native-fixture-context <path>', 'explicit fixture context JSON, only with fixture mode')
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (pluginDirectory: string, rawOptions: {
       workspaceRoot?: string;
+      nativeMode?: string;
+      nativeArchive?: string;
+      nativeCache?: string;
+      nativeFixtureContext?: string;
       json?: boolean;
     }) => {
       try {
@@ -2132,6 +2149,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         commandExitState.exitCode = await runPluginTestCommand({
           ...workspace,
           pluginDirectory: path.resolve(cwd, pluginDirectory),
+          nativeMode: rawOptions.nativeMode,
+          nativeArchive: rawOptions.nativeArchive ? path.resolve(cwd, rawOptions.nativeArchive) : undefined,
+          nativeCache: rawOptions.nativeCache ? path.resolve(cwd, rawOptions.nativeCache) : undefined,
+          nativeFixtureContext: rawOptions.nativeFixtureContext ? path.resolve(cwd, rawOptions.nativeFixtureContext) : undefined,
           json: rawOptions.json,
           io,
         });
@@ -2643,8 +2664,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       awHomeMutationToken: AwHomeMutationToken,
       catalogOperationContext: CatalogOperationContext,
     ) => Promise<T> | T,
+    apply = false,
   ) => (async () => {
     const parsed = parsePluginId(selector);
+    if (apply) await prepareNativeCliExecution({ env: context.env, runner: context.nativeCliRunner });
     return withAwHomeMutationLock({
       env: context.env,
       action: async (awHomeMutationToken) => {
@@ -3210,6 +3233,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
+    .option('-y, --yes', 'confirm changes to installed native tool declarations', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3220,6 +3244,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         scope?: string;
         platform?: string;
         allowManagedCodexInstall?: boolean;
+        yes?: boolean;
         json?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
@@ -3599,6 +3624,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           }],
         });
             },
+            rawOptions.apply === true,
           );
         });
       } catch (error) {
@@ -3698,6 +3724,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           }],
         });
             },
+            rawOptions.apply === true,
           );
         if (pluginName && key) {
           return {

@@ -12,6 +12,7 @@ import { getPluginAuthoringAcceptedValues } from '@lesliechan721/aw-plugin-core/
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import { nativeToolFixture } from '../helpers/native-tools.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -3853,6 +3854,37 @@ describe('authoring tools', () => {
       '---\nname: helper\ndescription: Runs the managed helper.\n---\n{{aw.command:tools/run}} check\n');
     await fs.outputFile(path.join(pluginDir, 'agent-skills/skills/helper/README.md'), '# Helper\n');
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({ stdout: expect.stringContaining('managedCommandPortableUnsupported') });
+  });
+
+  // Test Value Gate: the source validator must generate only the declared native reader
+  // in its temporary package candidate, without hiding other missing runtime imports.
+  it('validates an uncommitted native reader in the managed package candidate without writing to source', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-author-native-reader-'));
+    tempDirs.push(tempRoot);
+    const descriptor = nativeToolFixture().closure.definitions[0]!.descriptor;
+    const manifest = createBaseManifest('native-reader-author', {
+      requires: { aw: { capabilities: ['aw.managed-commands.v1', 'aw.native-tools.v1'] } },
+      nativeTools: {
+        reader: './command/native-reader.mjs',
+        definitions: [{ key: 'job', protocol: descriptor.tool.protocol, descriptor: './native-tools/job.lock.json' }],
+        consumers: [{ kind: 'managed-command-set', key: 'tools', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] }],
+      },
+      managedCommands: {
+        packages: [{ key: 'command', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './command' }],
+        sets: [{ set: 'tools', producer: { kind: 'package', packageKey: 'command' }, mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'entry.mjs' }] }],
+      },
+    });
+    const entry = 'import { readNativeTool } from "./native-reader.mjs";\nexport { readNativeTool };\n';
+    const { pluginDir } = await writeSourcePlugin(tempRoot, 'native-reader-author', manifest, {
+      'command/entry.mjs': entry,
+      'native-tools/job.lock.json': descriptor as unknown as Record<string, unknown>,
+    });
+    await expect(runValidatePlugin(pluginDir, ['--json'])).resolves.toMatchObject({ stdout: expect.stringContaining('"ok": true') });
+    expect(await fs.readdir(path.join(pluginDir, 'command'))).toEqual(['entry.mjs']);
+    expect(await fs.readFile(path.join(pluginDir, 'command/entry.mjs'), 'utf8')).toBe(entry);
+    await fs.appendFile(path.join(pluginDir, 'command/entry.mjs'), 'import "./missing.mjs";\n');
+    await expect(runValidatePlugin(pluginDir, ['--json'])).rejects.toMatchObject({ stdout: expect.stringContaining('Unable to resolve relative import \\"./missing.mjs\\"') });
+    expect(await fs.readdir(path.join(pluginDir, 'command'))).toEqual(['entry.mjs']);
   });
 
   // Test Value Gate: shared native commands must stay user-scoped while project

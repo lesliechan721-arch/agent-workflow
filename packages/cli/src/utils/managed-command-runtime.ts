@@ -5,6 +5,8 @@ import path from 'node:path';
 import { validateCommandEnvironment, type CommandLaunch } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { resolveAwHomeCanonical } from './state-paths.js';
+import { prepareNativeToolContext, type NativeToolContext } from './native-tool-context.js';
+import type { resolveNativeTool, NativeToolMode } from '@lesliechan721/aw-native-runtime';
 import { ManagedCommandError, resolveManagedCommand } from './managed-command-store.js';
 
 export interface CommandHost {
@@ -19,6 +21,7 @@ export function buildManagedCommandEnvironment(options: {
   hostEnvironment: NodeJS.ProcessEnv;
   host: CommandHost;
   platform?: NodeJS.Platform;
+  nativeContext?: NativeToolContext;
 }): NodeJS.ProcessEnv {
   const platform = options.platform ?? process.platform;
   try { validateCommandEnvironment(options.launch.env, options.launch.envFrom, platform); }
@@ -32,7 +35,7 @@ export function buildManagedCommandEnvironment(options: {
     result[name] = value;
   };
   for (const [name, value] of Object.entries(original)) {
-    if (/^AW_(?:PLUGIN|COMMAND)_/iu.test(name)) continue;
+    if (/^AW_(?:PLUGIN|COMMAND|NATIVE)_/iu.test(name)) continue;
     put(name, value);
   }
   for (const [name, value] of Object.entries(options.launch.env)) put(name, value);
@@ -44,42 +47,51 @@ export function buildManagedCommandEnvironment(options: {
     if (value === undefined) throw new ManagedCommandError('commandEnvironmentSourceMissing', `The command environment source ${source} is missing.`);
     put(name, value);
   }
+  if (options.nativeContext && Object.keys(options.nativeContext.tools).length > 0) put('AW_NATIVE_TOOL_CONTEXT', JSON.stringify(options.nativeContext));
+  put('AW_NATIVE_RESOLVER_MODE', 'cache-only');
   put('AW_HOME', options.host.awHome);
   put('AW_COMMAND_HOST', JSON.stringify(options.host));
   return result;
 }
 
-export async function prepareManagedCommandRun(options: {
+export interface ManagedCommandRunOptions {
   id: string;
   args: string[];
   cwd: string;
   cliEntry: string;
   env?: NodeJS.ProcessEnv;
-}): Promise<{ executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }> {
+  platform?: NodeJS.Platform;
+  arch?: string;
+  nativeMode?: NativeToolMode;
+  nativeResolver?: typeof resolveNativeTool;
+}
+
+export async function prepareManagedCommandRun(options: ManagedCommandRunOptions): Promise<{ executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }> {
   const hostEnvironment = { ...(options.env ?? process.env) };
   const awHome = await resolveAwHomeCanonical(hostEnvironment);
-  const { launch, resourceRoot } = await resolveManagedCommand(options.id, hostEnvironment);
+  const { launch, resourceRoot, producer, set } = await resolveManagedCommand(options.id, hostEnvironment);
+  // Reject host-detectable binding errors before native preparation can access the network.
+  const host: CommandHost = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry: path.resolve(options.cliEntry), awHome };
+  const environment = buildManagedCommandEnvironment({ launch, hostEnvironment, host, platform: options.platform });
+  const inheritedCacheOnly = Object.entries(hostEnvironment).some(([key, value]) => key.toUpperCase() === 'AW_NATIVE_RESOLVER_MODE' && value === 'cache-only');
+  let nativeContext: NativeToolContext;
+  try {
+    nativeContext = await prepareNativeToolContext({ closure: producer?.nativeTools, kind: 'managed-command-set', key: set ?? '', awHome,
+      platform: options.platform, arch: options.arch, mode: inheritedCacheOnly ? 'cache-only' : options.nativeMode ?? 'network', resolve: options.nativeResolver, registryEnvironment: hostEnvironment });
+  } catch (error) {
+    throw new ManagedCommandError(error && typeof error === 'object' && 'code' in error ? String(error.code) : 'nativeToolUnavailable', 'The required native tool could not be prepared. Import its locked archive or retry.');
+  }
+  if (Object.keys(nativeContext.tools).length > 0) environment.AW_NATIVE_TOOL_CONTEXT = JSON.stringify(nativeContext);
   const absoluteEntry = path.resolve(resourceRoot, launch.entry);
   return {
     executable: launch.runner === 'node' ? process.execPath : absoluteEntry,
     args: [...(launch.runner === 'node' ? [absoluteEntry] : []), ...launch.args, ...options.args],
     cwd: launch.cwd === 'resource' ? resourceRoot : options.cwd,
-    env: buildManagedCommandEnvironment({ launch, hostEnvironment, host: {
-      schemaVersion: 1,
-      nodeExecutable: process.execPath,
-      cliEntry: path.resolve(options.cliEntry),
-      awHome,
-    } }),
+    env: environment,
   };
 }
 
-export async function runManagedCommand(options: {
-  id: string;
-  args: string[];
-  cwd: string;
-  cliEntry: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<number> {
+export async function runManagedCommand(options: ManagedCommandRunOptions): Promise<number> {
   const invocation = await prepareManagedCommandRun(options);
   return new Promise<number>((resolve, reject) => {
     const child = spawn(invocation.executable, invocation.args, {

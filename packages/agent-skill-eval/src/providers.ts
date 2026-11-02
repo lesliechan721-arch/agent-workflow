@@ -110,6 +110,7 @@ export interface BuiltinEvalProviderDependencies {
   model?: string
   codexRuntime?: CodexEvalRuntimeConfig
   processManagement?: CodexEvalProcessManagementEvidence
+  windowsJobHelperPath?: string
 }
 
 export interface BuiltinEvalProvider {
@@ -544,6 +545,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
             codexRuntime: runtime,
             sourceEnv,
             processManagement,
+            windowsJobHelperPath: dependencies.windowsJobHelperPath,
             timeoutMs: control.remaining('isolation probe'),
             signal: control.signal,
           })
@@ -558,6 +560,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
           codexRuntime: runtime,
           sourceEnv,
           processManagement,
+          windowsJobHelperPath: dependencies.windowsJobHelperPath,
           workRoot: path.join(input.outputDir, '.codex-trigger-work'),
           manageTimeout: true,
           timeoutMs: control.remaining('evaluation'),
@@ -614,6 +617,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
             })),
           ],
           processManagement,
+          windowsJobHelperPath: dependencies.windowsJobHelperPath,
           manageTimeout: true,
           signal: control.signal,
         })
@@ -646,6 +650,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
           forbiddenHostRoots: [input.outputDir],
           environmentFixtures: [],
           processManagement,
+          windowsJobHelperPath: dependencies.windowsJobHelperPath,
           manageTimeout: true,
           ...(input.signal ? { signal: input.signal } : {}),
         })

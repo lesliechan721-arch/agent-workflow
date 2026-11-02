@@ -6,24 +6,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import test from 'node:test';
+import { nativeTest as test } from './fixtures/native-test.mjs';
 import { promisify } from 'node:util';
 import { assertNoReparsePath, currentUserIdentity, protectPrivatePath, protectPrivatePaths, resolveSafeCommand, safeSpawn, verifyPrivatePath, verifyPrivatePaths, windowsOperation } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 import { observeTree, ownsProcess, processIdentity, processTable, stopOwnedTree } from '../skills/codex-subagent-guide/scripts/runtime/processes.mjs';
-import { resolveWindowsNativeHelper, windowsNativeOperation } from '../skills/codex-subagent-guide/scripts/runtime/windows-native.mjs';
+import { windowsJobExecutable, windowsNativeOperation } from '../skills/codex-subagent-guide/scripts/runtime/windows-native.mjs';
 import { createRun, removeScratch, storeContext } from '../skills/codex-subagent-guide/scripts/runtime/store.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
-// Only this test uses the static platform-module alias directly. Other moved
-// fixtures copy the complete resource source, including bundle-local PE files.
-const require = createRequire(import.meta.url);
-const platformEntry = require.resolve('../skills/codex-subagent-guide/scripts/runtime/platform.mjs');
-const helperSource = path.join(guideRuntimeScripts(import.meta.url), 'runtime/native');
-const helperTarget = path.join(path.dirname(platformEntry), 'native');
-if (helperSource !== helperTarget && !await fs.lstat(helperTarget).catch((error) => { if (error.code === 'ENOENT') return null; throw error; })) await fs.cp(helperSource, helperTarget, { recursive: true });
-
+const platformUrl = pathToFileURL(path.join(guideRuntimeScripts(import.meta.url), 'runtime/platform.mjs')).href;
 async function temporary(t, beforeRemove = async () => {}) {
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-subagent-platform-'));
   t.after(async () => { await beforeRemove(); await fs.rm(directory, { recursive: true, force: true }); });
@@ -182,7 +174,7 @@ test('native Windows job preserves backend module paths and their absence', { sk
 
 // Test Value Gate: a fresh plugin home must initialize the real identity,
 // private ACL and Job boundary without resources from another installation.
-test('native Windows isolated home loads platform and job APIs without a host cache', { skip: process.platform !== 'win32', timeout: 120000 }, async (t) => {
+test('native Windows isolated home uses its prepared tool for platform and Job APIs', { skip: process.platform !== 'win32', timeout: 120000 }, async (t) => {
   const directory = await temporary(t);
   const home = path.join(directory, 'home');
   const temp = path.join(directory, 'tmp');
@@ -200,6 +192,8 @@ test('native Windows isolated home loads platform and job APIs without a host ca
     ...Object.fromEntries(Object.entries(process.env).filter(([name]) => systemKeys.has(name.toLowerCase()))),
     HOME: home, USERPROFILE: home, HOMEDRIVE: drive, HOMEPATH: home.slice(drive.length),
     APPDATA: appData, LOCALAPPDATA: localAppData, TEMP: temp, TMP: temp,
+    AW_NATIVE_TOOL_CONTEXT: process.env.AW_NATIVE_TOOL_CONTEXT,
+    AW_NATIVE_RESOLVER_MODE: 'cache-only',
     AW_SUBAGENT_PROCESS_TOKEN: randomBytes(24).toString('hex'),
   };
   const safeCodes = [
@@ -249,7 +243,7 @@ test('native Windows isolated home loads platform and job APIs without a host ca
   ].join('\n');
   let receipt;
   try {
-    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', source, pathToFileURL(platformEntry).href, probe], {
+    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', source, platformUrl, probe], {
       cwd: directory, env: environment, shell: false, windowsHide: true,
       timeout: 90000, maxBuffer: 64 * 1024,
     });
@@ -353,8 +347,7 @@ test('POSIX shared group never claims complete stop from an empty sampled tree',
 // Native observers must not become task members and block scratch cleanup.
 test('POSIX stopped backend is confirmed while its private-group caller stays alive', { skip: process.platform === 'win32', timeout: 40000 }, async (t) => {
   const directory = await temporary(t);
-  const platformUrl = pathToFileURL(platformEntry).href;
-  const processesUrl = pathToFileURL(path.join(path.dirname(platformEntry), 'processes.mjs')).href;
+  const processesUrl = new URL('./processes.mjs', platformUrl).href;
   const code = `
     import { once } from 'node:events';
     import { safeSpawn } from ${JSON.stringify(platformUrl)};
@@ -535,7 +528,7 @@ test('native Windows run creation preserves occupied and unsafe roots', { skip: 
 test('native Windows Job rejects name collisions and occupied ready paths before execution', { skip: process.platform !== 'win32', timeout: 90000 }, async (t) => {
   const directory = await temporary(t);
   await protectPrivatePath(directory);
-  const helper = await resolveWindowsNativeHelper();
+  const helper = await windowsJobExecutable();
   const owner = await currentUserIdentity();
   const name = `Local\\aw-subagent-${randomBytes(16).toString('hex')}`;
   async function launch(label, jobName, code, occupied = false) {

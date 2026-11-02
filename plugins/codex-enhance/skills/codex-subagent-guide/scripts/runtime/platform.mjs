@@ -6,7 +6,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fail } from './contracts.mjs';
-import { resolveWindowsNativeHelper, windowsNativeOperation } from './windows-native.mjs';
+import { windowsJobExecutable, windowsNativeOperation } from './windows-native.mjs';
 
 const execFileAsync = promisify(execFile);
 const launches = new Map();
@@ -340,7 +340,7 @@ async function windowsJobLaunch(invocation, options) {
     const environment = invocation.env ?? options.env ?? process.env;
     await fs.writeFile(configuration, JSON.stringify({ schemaVersion: 1, executable: invocation.command, args: invocation.args, parentPid: process.pid, name: scope.name, status, sid: owner.sid }), { mode: 0o600, flag: 'wx' });
     await protectPrivatePath(configuration, 'file');
-    const helper = await resolveWindowsNativeHelper();
+    const helper = await windowsJobExecutable();
     return {
       command: helper, args: ['--plugin-config', configuration],
       env: { ...environment }, directory, status, scope,

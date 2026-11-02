@@ -52,6 +52,8 @@ Catalog beta 候选只读取 source metadata、`catalog-v<version>` tag 和 publ
 
 ## 发布计划、授权和恢复
 
+使用 `nativeTools` 的插件发布前须按[原生工具合同](native-tools.md)验证全部 variant 可取得且匹配。`aw native verify <descriptor> --all-variants --json` 是第三方共用入口；普通 Catalog build 只处理文本声明和 reader，不下载 PE，也不要求 Go。Catalog publication 不发布原生 npm 包。
+
 远端发布使用两个公开命令。Publisher 先让 CLI 从当前位置向上定位最近的 Workspace。Remote 按显式参数、`origin`、唯一 remote 的顺序选择；多个且无 `origin` 时必须明确选择。Branch 使用显式值或固定默认 `catalog`，不从当前 Git branch 推断。无论使用哪种默认，apply 都必须取得完整 `planDigest` 的一次授权。
 
 ```bash

@@ -2,7 +2,6 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ExecFileOptions } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createHash } from 'node:crypto';
 
 import fs from 'fs-extra';
 import { afterAll, afterEach, beforeEach, describe, expect, it, type TestContext } from 'vitest';
@@ -63,8 +62,6 @@ let packedCliPromise: Promise<{
   cliTarballPath: string;
   evalTarballPath: string;
   coreTarballPath: string;
-  windowsX64TarballPath: string;
-  windowsArm64TarballPath: string;
   tempRoot: string;
 }> | null = null;
 
@@ -209,8 +206,6 @@ async function preparePackedCli(): Promise<{
   cliTarballPath: string;
   evalTarballPath: string;
   coreTarballPath: string;
-  windowsX64TarballPath: string;
-  windowsArm64TarballPath: string;
   tempRoot: string;
 }> {
   if (packedCliPromise) {
@@ -249,31 +244,23 @@ async function preparePackedCli(): Promise<{
     const tarballs = (await fs.readdir(packDir))
       .filter((entry) => entry.endsWith('.tgz'))
       .sort();
-    expect(tarballs).toHaveLength(5);
+    expect(tarballs).toHaveLength(3);
     const cliTarballName = tarballs.find((entry) =>
       /-aw-\d/u.test(entry));
     const evalTarballName = tarballs.find((entry) => entry.includes('-agent-skill-eval-'));
     const coreTarballName = tarballs.find((entry) => entry.includes('-aw-plugin-core-'));
-    const windowsX64TarballName = tarballs.find((entry) => entry.includes('-aw-windows-job-win32-x64-'));
-    const windowsArm64TarballName = tarballs.find((entry) => entry.includes('-aw-windows-job-win32-arm64-'));
     expect(cliTarballName).toBeDefined();
     expect(evalTarballName).toBeDefined();
     expect(coreTarballName).toBeDefined();
-    expect(windowsX64TarballName).toBeDefined();
-    expect(windowsArm64TarballName).toBeDefined();
     const cliTarballPath = path.join(packDir, cliTarballName!);
     const evalTarballPath = path.join(packDir, evalTarballName!);
     const coreTarballPath = path.join(packDir, coreTarballName!);
-    const windowsX64TarballPath = path.join(packDir, windowsX64TarballName!);
-    const windowsArm64TarballPath = path.join(packDir, windowsArm64TarballName!);
 
     return {
       packageRoot: await unpackTarball(cliTarballPath, unpackDir),
       cliTarballPath,
       evalTarballPath,
       coreTarballPath,
-      windowsX64TarballPath,
-      windowsArm64TarballPath,
       tempRoot,
     };
   })();
@@ -488,55 +475,32 @@ afterAll(async () => {
 });
 
 describe('pack smoke', () => {
-  it('packs one Windows Job helper in each platform tarball and none in Eval', smokeCase(async () => {
-    const { evalTarballPath, windowsX64TarballPath, windowsArm64TarballPath } = await preparePackedCli();
-    const platformUnpackRoot = await createSmokeTempRoot(
-      'aw-platform-pack-smoke-',
-      'platform package smoke unpack root',
-    );
-    const x64UnpackRoot = path.join(platformUnpackRoot, 'x64');
-    const arm64UnpackRoot = path.join(platformUnpackRoot, 'arm64');
-    await Promise.all([fs.ensureDir(x64UnpackRoot), fs.ensureDir(arm64UnpackRoot)]);
-    const [evalEntries, x64Entries, arm64Entries] = await Promise.all([
-      listTarballEntries(evalTarballPath),
-      listTarballEntries(windowsX64TarballPath),
-      listTarballEntries(windowsArm64TarballPath),
-    ]);
-    expect(evalEntries).not.toContain('aw-windows-job.exe');
-    const expectedEntries = new Set([
-      'package/dist/aw-windows-job.exe',
-      'package/dist/manifest.json',
-      'package/package.json',
-    ]);
-    expect(new Set(x64Entries.trim().split(/\r?\n/u))).toEqual(expectedEntries);
-    expect(new Set(arm64Entries.trim().split(/\r?\n/u))).toEqual(expectedEntries);
-
-    const [x64PackageRoot, arm64PackageRoot] = await Promise.all([
-      unpackTarball(windowsX64TarballPath, x64UnpackRoot),
-      unpackTarball(windowsArm64TarballPath, arm64UnpackRoot),
-    ]);
-    for (const [arch, packageRoot, machine] of [
-      ['x64', x64PackageRoot, 0x8664],
-      ['arm64', arm64PackageRoot, 0xaa64],
-    ] as const) {
-      await expect(fs.readJson(path.join(packageRoot, 'package.json'))).resolves.toMatchObject({
-        name: `@lesliechan721/aw-windows-job-win32-${arch}`,
-        os: ['win32'],
-        cpu: [arch],
-        exports: { './aw-windows-job.exe': './dist/aw-windows-job.exe' },
-      });
-      const bytes = await fs.readFile(path.join(packageRoot, 'dist', 'aw-windows-job.exe'));
-      const manifest = await fs.readJson(path.join(packageRoot, 'dist', 'manifest.json'));
-      expect(manifest.schemaVersion).toBe(1);
-      expect(manifest.binaries[arch].sha256).toBe(`sha256:${createHash('sha256').update(bytes).digest('hex')}`);
-      expect(manifest.binaries[arch].peMachine).toBe(`0x${machine.toString(16)}`);
-      expect(bytes.subarray(0, 2).toString('ascii')).toBe('MZ');
-      const peOffset = bytes.readUInt32LE(0x3c);
-      expect(bytes.subarray(peOffset, peOffset + 4).toString('ascii')).toBe('PE\0\0');
-      expect(bytes.readUInt16LE(peOffset + 4)).toBe(machine);
+  it('packs three CLI products with text native locks and no PE files', smokeCase(async () => {
+    const bundle = await preparePackedCli();
+    for (const [name, tarball] of [
+      ['eval', bundle.evalTarballPath], ['core', bundle.coreTarballPath], ['cli', bundle.cliTarballPath],
+    ]) {
+      const unpack = await createSmokeTempRoot(`aw-${name}-pack-`, 'text-only product unpack root');
+      const packageRoot = await unpackTarball(tarball, unpack);
+      const files = await listFilesRecursively(packageRoot);
+      expect(files.some((file) => file.endsWith('.exe'))).toBe(false);
+      for (const file of files) {
+        const bytes = await fs.readFile(path.join(packageRoot, file));
+        expect(bytes.subarray(0, 2).toString('ascii')).not.toBe('MZ');
+      }
+      const metadata = await fs.readJson(path.join(packageRoot, 'package.json'));
+      expect(metadata.dependencies?.['@lesliechan721/aw-native-runtime']).toBeUndefined();
+      expect(metadata.optionalDependencies).toBeUndefined();
+      if (name !== 'core') {
+        const lock = name === 'cli' ? 'dist/src/native/windows-job.lock.json' : 'dist/native/windows-job.lock.json';
+        await expect(fs.readJson(path.join(packageRoot, lock))).resolves.toMatchObject({
+          schemaVersion: 1, tool: { id: '@lesliechan721/windows-job', protocol: 'aw.windows-job.v1' },
+        });
+      }
     }
   }), 300_000);
 
+  // A cold Windows npm install can use four minutes before authoring starts.
   it('runs external authoring workflow from installed tarballs', smokeCase(async () => {
     const startedAt = Date.now();
     const markStage = (stage: string): void => {
@@ -544,8 +508,7 @@ describe('pack smoke', () => {
     };
     markStage('prepare tarballs start');
     const {
-      packageRoot, cliTarballPath, evalTarballPath, coreTarballPath,
-      windowsX64TarballPath, windowsArm64TarballPath, tempRoot,
+      packageRoot, cliTarballPath, evalTarballPath, coreTarballPath, tempRoot,
     } = await preparePackedCli();
     markStage('prepare tarballs end');
     const installPrefix = path.join(tempRoot, 'install-prefix');
@@ -580,9 +543,6 @@ describe('pack smoke', () => {
           evalTarballPath,
           coreTarballPath,
           cliTarballPath,
-          ...(process.platform === 'win32'
-            ? [process.arch === 'arm64' ? windowsArm64TarballPath : windowsX64TarballPath]
-            : []),
         ],
         {
           cwd: tempRoot,
@@ -954,6 +914,56 @@ describe('pack smoke', () => {
       '--workspace-root', standaloneWorkspace,
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
     const packedPluginDirectory = path.join('plugins', 'packed-build');
+    const packedPluginRoot = path.join(standaloneWorkspace, packedPluginDirectory);
+    const packedManifestPath = path.join(packedPluginRoot, '.agents-plugin', 'plugin.json');
+    const packedManifest = await fs.readJson(packedManifestPath);
+    packedManifest.requires = { aw: { capabilities: ['aw.managed-commands.v1', 'aw.native-tools.v1'] } };
+    packedManifest.managedCommands = {
+      packages: [{ key: 'native-tool', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './command' }],
+      sets: [{ set: 'native-tools', producer: { kind: 'package', packageKey: 'native-tool' }, mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'entry.mjs' }] }],
+    };
+    packedManifest.nativeTools = {
+      reader: './command/native-reader.mjs',
+      definitions: [{ key: 'job', protocol: 'fixture.job.v1', descriptor: './native-tools/job.lock.json' }],
+      consumers: [
+        { kind: 'managed-command-set', key: 'native-tools', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] },
+        { kind: 'plugin-test', key: 'node', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] },
+      ],
+    };
+    packedManifest.scripts = { tests: { node: ['./scripts/native.test.mjs'] } };
+    const nativeDigest = `sha256:${'a'.repeat(64)}`;
+    await Promise.all([
+      fs.writeJson(packedManifestPath, packedManifest, { spaces: 2 }),
+      fs.outputJson(path.join(packedPluginRoot, 'native-tools', 'job.lock.json'), {
+        schemaVersion: 1,
+        tool: { id: '@fixture/job', version: '1.0.0', protocol: 'fixture.job.v1' },
+        variants: (['x64', 'arm64'] as const).map((arch) => ({
+          platform: 'win32', arch,
+          transport: { kind: 'npm', package: `@fixture/job-win32-${arch}`, version: '1.0.0', archiveIntegrity: `sha512-${Buffer.alloc(64).toString('base64')}`, entry: 'package/dist/job.exe' },
+          file: { sha256: nativeDigest, size: 256, format: 'pe', machine: arch === 'x64' ? '0x8664' : '0xaa64' },
+          limits: { archiveBytes: 4096, expandedBytes: 4096, entries: 8 },
+        })),
+      }, { spaces: 2 }),
+      fs.outputFile(path.join(packedPluginRoot, 'command', 'entry.mjs'), [
+        "import { readNativeTool } from './native-reader.mjs';",
+        "if (process.platform === 'win32') readNativeTool('job', 'fixture.job.v1');",
+        'process.stdout.write(JSON.stringify(process.argv.slice(2)));',
+      ].join('\n')),
+      fs.outputFile(path.join(packedPluginRoot, 'scripts', 'native.test.mjs'), [
+        "import assert from 'node:assert/strict';",
+        "import { test } from 'node:test';",
+        "import { readNativeTool } from '../command/native-reader.mjs';",
+        "test('uses the AW generated reader and explicit platform binding', () => {",
+        "  if (process.platform === 'win32') assert.equal(readNativeTool('job', 'fixture.job.v1').state, 'ready');",
+        "  else assert.throws(() => readNativeTool('job', 'fixture.job.v1'), { code: 'nativeContextInvalid' });",
+        '});',
+      ].join('\n')),
+    ]);
+    const nativeFixturePath = path.join(tempRoot, 'native-fixture-context.json');
+    await fs.writeJson(nativeFixturePath, {
+      schemaVersion: 1,
+      tools: { job: { state: 'ready', protocol: 'fixture.job.v1', executable: process.execPath, sha256: nativeDigest } },
+    });
     await expect(execAw([
       'plugin', 'validate', packedPluginDirectory,
       '--workspace-root', standaloneWorkspace, '--json',
@@ -963,7 +973,8 @@ describe('pack smoke', () => {
     });
     await expect(execAw([
       'plugin', 'test', packedPluginDirectory,
-      '--workspace-root', standaloneWorkspace, '--json',
+      '--workspace-root', standaloneWorkspace, '--native-mode', 'fixture',
+      '--native-fixture-context', nativeFixturePath, '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv })).resolves.toMatchObject({
       stdout: expect.stringMatching(/"ok":\s*true/u),
       stderr: '',
@@ -975,6 +986,11 @@ describe('pack smoke', () => {
     await execAw([
       'catalog', 'build', '--workspace-root', standaloneWorkspace,
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
+    const nativeSnapshotRoot = path.join(standaloneWorkspace, '.aw', 'catalog', 'plugins', 'packed-build');
+    await expect(fs.pathExists(path.join(nativeSnapshotRoot, 'command', 'native-reader.mjs'))).resolves.toBe(true);
+    await expect(fs.readJson(path.join(nativeSnapshotRoot, 'native-tools', 'job.lock.json'))).resolves.toMatchObject({ tool: { protocol: 'fixture.job.v1' } });
+    await expect(fs.pathExists(path.join(packedPluginRoot, 'command', 'native-reader.mjs'))).resolves.toBe(false);
+    expect((await listFilesRecursively(nativeSnapshotRoot)).some((file) => file.endsWith('.exe'))).toBe(false);
     await expect(execAw([
       'catalog', 'validate', path.join(standaloneWorkspace, '.aw', 'catalog'), '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv })).resolves.toMatchObject({
@@ -992,7 +1008,7 @@ describe('pack smoke', () => {
     });
     const developmentSourceId = developmentSourceReceipt.source.id as string;
     const projectInstallBeforeTrust = await execAw([
-      'install', `${developmentSourceId}/packed-build`, '-p', 'codex', '--scope', 'project', '--json',
+      'install', `${developmentSourceId}/packed-build`, '-p', 'codex', '--scope', 'project', '--yes', '--json',
     ], {
       cwd: standaloneWorkspace,
       env: externalAuthoringEnv,
@@ -1023,7 +1039,7 @@ describe('pack smoke', () => {
       '',
     ].join('\n'));
     const externalInstall = await execAw([
-      'install', `${developmentSourceId}/packed-build`, '-p', 'both', '--scope', 'project', '--json',
+      'install', `${developmentSourceId}/packed-build`, '-p', 'both', '--scope', 'project', '--yes', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024 }).catch(async (error: unknown) => {
       const failure = error as { stdout?: string; stderr?: string };
       const claudeInstalled = await fs.readJson(path.join(
@@ -1462,7 +1478,7 @@ describe('pack smoke', () => {
     expect(evalHelp.stderr).toBe('');
 
     expect((await fs.lstat(installedEvalRoot)).isSymbolicLink()).toBe(false);
-  }), 300_000);
+  }), process.platform === 'win32' ? 600_000 : 300_000);
 
   it('packs the CLI tarball without the staged plugins-dist snapshot', smokeCase(async () => {
     const packageRoot = path.join(repoRoot(), 'packages', 'cli');

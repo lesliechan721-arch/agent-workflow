@@ -1,6 +1,6 @@
 {
   "name": "@lesliechan721/aw-windows-job-win32-x64",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lesliechan721-arch/agent-workflow.git",
@@ -23,7 +23,7 @@
     "dist/"
   ],
   "scripts": {
-    "build": "node ../agent-skill-eval/scripts/copy-windows-job-platform-package.mjs x64",
     "prepublishOnly": "node ../../scripts/release/reject-direct-publish.mjs"
-  }
+  },
+  "description": "Windows Job native artifact; built and released independently with native-tools/windows-job."
 }

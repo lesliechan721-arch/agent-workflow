@@ -44,7 +44,7 @@ import {
   createCodexNativeObservationSession,
   type CodexNativeObservationSession,
 } from '../utils/codex-native-observation.js';
-import type { CodexManager } from '../utils/native-cli.js';
+import { prepareNativeCliExecution, type CodexManager } from '../utils/native-cli.js';
 import {
   readCatalogSourcesConfigSnapshot,
   recoverInvalidCatalogSourcesConfig,
@@ -3722,6 +3722,12 @@ export function createTuiControllerDependencies(
           });
         }
         throw new TuiOperationBlockedError('invalidSourceMutation', '来源操作缺少候选输入。');
+      }
+      if (intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch'
+        || intent.kind === 'pluginWriteTask'
+        || intent.kind === 'configSave' && (intent.apply || intent.retryApply)
+        || intent.kind === 'configSaveBatch' && intent.apply) {
+        await prepareNativeCliExecution({ env: context.env, runner: context.nativeCliRunner });
       }
       const codexObservationSession = intent.kind === 'pluginWrite'
         || intent.kind === 'pluginWriteBatch'

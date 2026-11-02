@@ -85,15 +85,11 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
       npm: axes.cli ? {
         version: '1.2.0',
         packages: [
-          { name: '@lesliechan721/aw-windows-job-win32-x64', path: 'artifacts/windows-x64.tgz', contentDigest: sha256(windowsX64Bytes) },
-          { name: '@lesliechan721/aw-windows-job-win32-arm64', path: 'artifacts/windows-arm64.tgz', contentDigest: sha256(windowsArm64Bytes) },
           { name: '@lesliechan721/agent-skill-eval', path: 'artifacts/eval.tgz', contentDigest: sha256(evalBytes) },
           { name: '@lesliechan721/aw-plugin-core', path: 'artifacts/core.tgz', contentDigest: sha256(coreBytes) },
           { name: '@lesliechan721/aw', path: 'artifacts/cli.tgz', contentDigest: sha256(cliBytes) },
         ],
         treeDigests: {
-          '@lesliechan721/aw-windows-job-win32-x64': 'windows-x64-tree',
-          '@lesliechan721/aw-windows-job-win32-arm64': 'windows-arm64-tree',
           '@lesliechan721/agent-skill-eval': 'eval-tree',
           '@lesliechan721/aw-plugin-core': 'core-tree',
           '@lesliechan721/aw': 'cli-tree',
@@ -205,10 +201,6 @@ describe('local prepared release', () => {
     }, null, 2)}\n`);
     await fs.writeFile(path.join(root, 'packages', 'agent-skill-eval', 'package.json'), `${JSON.stringify({
       name: '@lesliechan721/agent-skill-eval', version: '1.2.0',
-      optionalDependencies: {
-        '@lesliechan721/aw-windows-job-win32-x64': 'workspace:1.2.0',
-        '@lesliechan721/aw-windows-job-win32-arm64': 'workspace:1.2.0',
-      },
     }, null, 2)}\n`);
     await fs.writeFile(path.join(root, 'packages', 'aw-windows-job-win32-x64', 'package.json'), `${JSON.stringify({
       name: '@lesliechan721/aw-windows-job-win32-x64', version: '1.2.0',
@@ -222,14 +214,6 @@ describe('local prepared release', () => {
     await fs.writeFile(path.join(root, 'pnpm-lock.yaml'), [
       'lockfileVersion: 9.0',
       'importers:',
-      '  packages/agent-skill-eval:',
-      '    optionalDependencies:',
-      "      '@lesliechan721/aw-windows-job-win32-x64':",
-      '        specifier: workspace:1.2.0',
-      '        version: link:../aw-windows-job-win32-x64',
-      "      '@lesliechan721/aw-windows-job-win32-arm64':",
-      '        specifier: workspace:1.2.0',
-      '        version: link:../aw-windows-job-win32-arm64',
       '  packages/cli:',
       "    dependencies:",
       "      '@lesliechan721/agent-skill-eval':",
@@ -258,12 +242,8 @@ describe('local prepared release', () => {
     expect(cli.version).toBe('1.2.1');
     expect(evalPackage.version).toBe('1.2.1');
     expect(corePackage.version).toBe('1.2.1');
-    expect(windowsX64Package.version).toBe('1.2.1');
-    expect(windowsArm64Package.version).toBe('1.2.1');
-    expect(evalPackage.optionalDependencies['@lesliechan721/aw-windows-job-win32-x64'])
-      .toBe('workspace:1.2.1');
-    expect(evalPackage.optionalDependencies['@lesliechan721/aw-windows-job-win32-arm64'])
-      .toBe('workspace:1.2.1');
+    expect(windowsX64Package.version).toBe('1.2.0');
+    expect(windowsArm64Package.version).toBe('1.2.0');
     expect(cli.dependencies['@lesliechan721/agent-skill-eval']).toBe('workspace:1.2.1');
     expect(cli.dependencies['@lesliechan721/aw-plugin-core']).toBe('workspace:1.2.1');
     expect(await fs.readFile(path.join(root, 'pnpm-lock.yaml'), 'utf8'))
@@ -278,6 +258,7 @@ describe('local prepared release', () => {
       throw new Error('CLI state must not be read');
     });
     const descriptor = await prepareLocalRelease('beta', {
+      verifyNativeReferences: async () => {},
       repoRoot: root,
       releaseRoot,
       axes: { cli: false, catalog: true },
@@ -592,10 +573,6 @@ describe('local prepared release', () => {
     }));
     await fs.writeFile(path.join(evalRoot, 'package.json'), JSON.stringify({
       name: '@lesliechan721/agent-skill-eval', version: '1.2.0',
-      optionalDependencies: {
-        '@lesliechan721/aw-windows-job-win32-x64': 'workspace:1.2.0',
-        '@lesliechan721/aw-windows-job-win32-arm64': 'workspace:1.2.0',
-      },
     }));
     await fs.writeFile(path.join(coreRoot, 'package.json'), JSON.stringify({
       name: '@lesliechan721/aw-plugin-core', version: '1.2.0',
@@ -627,6 +604,7 @@ describe('local prepared release', () => {
       return output;
     };
     const prepareOptions = {
+      verifyNativeReferences: async () => {},
       repoRoot: root,
       releaseRoot,
       assertClean: async () => undefined,
@@ -663,9 +641,9 @@ describe('local prepared release', () => {
   });
 
   it.each([
-    [{ cli: true, catalog: false }, ['windows-x64', 'windows-arm64', 'eval', 'core', 'cli']],
+    [{ cli: true, catalog: false }, ['eval', 'core', 'cli']],
     [{ cli: false, catalog: true }, ['catalog']],
-    [{ cli: true, catalog: true }, ['windows-x64', 'windows-arm64', 'eval', 'core', 'cli', 'catalog']],
+    [{ cli: true, catalog: true }, ['eval', 'core', 'cli', 'catalog']],
   ] as const)('publishes enabled axes in eval, CLI, Catalog order: %j', async (axes, expected) => {
     const fixture = await publicationFixture(axes);
     const events: string[] = [];
@@ -679,7 +657,7 @@ describe('local prepared release', () => {
     expect(events).toEqual(expected);
   });
 
-  it.each(['windows-x64', 'eval', 'cli'] as const)('stops before Catalog when %s publication is uncertain and requires a bump', async (failure) => {
+  it.each(['eval', 'core', 'cli'] as const)('stops before Catalog when %s publication is uncertain and requires a bump', async (failure) => {
     const fixture = await publicationFixture({ cli: true, catalog: true });
     const events: string[] = [];
     const publishCatalog = vi.fn();
@@ -693,7 +671,7 @@ describe('local prepared release', () => {
       publishCatalog,
     })).rejects.toThrow('run pnpm release again with --cli-bump');
     expect(publishCatalog).not.toHaveBeenCalled();
-    const order = ['windows-x64', 'windows-arm64', 'eval', 'core', 'cli'];
+    const order = ['eval', 'core', 'cli'];
     expect(events).toEqual(order.slice(0, order.indexOf(failure) + 1));
     expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))
       .toMatchObject({ candidates: { cli: '1.2.0' } });
@@ -716,8 +694,6 @@ describe('local prepared release', () => {
       descriptorDigest: calculateCanonicalDigest(fixture.descriptor),
     }));
     const published = new Set([
-      '@lesliechan721/aw-windows-job-win32-x64',
-      '@lesliechan721/aw-windows-job-win32-arm64',
       '@lesliechan721/agent-skill-eval',
       '@lesliechan721/aw-plugin-core',
     ]);
@@ -753,8 +729,6 @@ describe('local prepared release', () => {
 
     expect(runNpmCommand).toHaveBeenCalledTimes(1);
     expect(verified).toEqual([
-      '@lesliechan721/aw-windows-job-win32-x64',
-      '@lesliechan721/aw-windows-job-win32-arm64',
       '@lesliechan721/agent-skill-eval',
       '@lesliechan721/aw-plugin-core',
       '@lesliechan721/aw',
@@ -817,7 +791,7 @@ describe('local prepared release', () => {
       assertPublishedPackageMatches: async () => undefined,
       runNpmCommand,
     })).rejects.toThrow('newer');
-    expect(channelReads).toHaveLength(5);
+    expect(channelReads).toHaveLength(3);
     expect(runNpmCommand).not.toHaveBeenCalled();
     expect(await fs.readFile(attemptPath, 'utf8')).toBe(attemptBytes);
   });
@@ -908,7 +882,7 @@ describe('local prepared release', () => {
       publishCatalog: async () => { events.push('catalog'); },
     });
 
-    expect(events).toEqual(['cli', 'cli', 'cli', 'cli', 'cli', 'catalog']);
+    expect(events).toEqual(['cli', 'cli', 'cli', 'catalog']);
     expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))
       .toMatchObject({ candidates: { cli: candidates.cli } });
   });
@@ -934,7 +908,7 @@ describe('local prepared release', () => {
       publishCatalog: async () => { events.push('catalog'); },
     });
 
-    expect(events).toEqual(['cli', 'cli', 'cli', 'cli', 'cli', 'catalog']);
+    expect(events).toEqual(['cli', 'cli', 'cli', 'catalog']);
     expect(JSON.parse(await fs.readFile(path.join(failed.root, 'attempted.json'), 'utf8')))
       .toMatchObject({ candidates: { cli: '1.2.1' } });
   });

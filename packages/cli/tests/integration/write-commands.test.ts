@@ -2,6 +2,7 @@ import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.
 import { describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
+import { readNativeToolTestConfig, resolveNativeTool } from '@lesliechan721/aw-native-runtime';
 import { createElement } from 'react';
 import { render } from 'ink-testing-library';
 
@@ -62,6 +63,7 @@ import { listManagedCommands, resolveManagedCommand } from '../../src/utils/mana
 import { PassThrough } from 'node:stream';
 import {
   AW_RUNTIME_CONFIG_BINDING_PATH,
+  preparePluginNativeTools,
   type RuntimeConfigBinding,
 } from '@lesliechan721/aw-plugin-core';
 import {
@@ -9130,8 +9132,8 @@ describe('five namespaced write commands', () => {
     expect(preview.operationPlan?.actions).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'removeActivation', scope: 'project' }),
     ]));
-    const cleaned = await cleanupWriteCommand(selectors, { ...user, yes: true }, {
-      ...runtime, expectedPlanFingerprint: preview.operationPlan!.planFingerprint,
+    const cleaned = await cleanupWriteCommand(selectors, user, {
+      ...runtime, preApplyConfirmed: true, expectedPlanFingerprint: preview.operationPlan!.planFingerprint,
     });
     expect(cleaned.overallState, JSON.stringify(cleaned.targetResults)).toBe('succeeded');
     expect(cleaned.removedPluginCleanupIds).toEqual(['official/demo']);
@@ -16172,18 +16174,31 @@ describe('five namespaced write commands', () => {
     // Test Value Gate: one real public installation closes generated Skill/permission IDs, AW wrapping, and a live fake v5 backend.
     const { isolation, runtime, runPublic } = await prepareCodexEnhancePublicCommandFixture();
     const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
-    const helpers = await import(pathToFileURL(path.join(repositoryRoot, 'plugins/codex-enhance/scripts/fixtures/subagent-integration.mjs')).href);
+    const runtimeSourceRoot = path.join(isolation.layout.fixtureCwd, 'guide-runtime-source');
+    await fs.copy(path.join(repositoryRoot, 'plugins/codex-enhance'), runtimeSourceRoot);
+    await preparePluginNativeTools(runtimeSourceRoot, (await readPluginManifest(runtimeSourceRoot)).manifest);
+    const helpers = await import(pathToFileURL(path.join(runtimeSourceRoot, 'scripts/fixtures/subagent-integration.mjs')).href);
     const { openRun, storeContext } = await import(pathToFileURL(path.join(
-      repositoryRoot, 'plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/store.mjs',
+      runtimeSourceRoot, 'skills/codex-subagent-guide/scripts/runtime/store.mjs',
     )).href);
-    const cleanups: Array<() => Promise<void>> = [];
+    const cleanups: Array<() => Promise<void>> = [() => fs.remove(runtimeSourceRoot)];
     const fixture = await helpers.fixture({ signal: new AbortController().signal, diagnostic: () => {}, after: (cleanup: () => Promise<void>) => { cleanups.push(cleanup); } });
     const cliEntry = path.join(repositoryRoot, 'packages/cli/dist/index.js');
     const scenario = path.join(fixture.directory, 'public-managed-scenario');
     await fs.ensureDir(scenario);
     await fs.writeJson(path.join(scenario, 'scenario.json'), { echo: true, finalText: 'Public Guide final result.', adapterLifetimeMs: 60000, backendLifetimeMs: 60000 });
+    if (process.platform === 'win32') {
+      const native = readNativeToolTestConfig(isolation.env);
+      if (!native?.archivePath) throw new Error('The public Guide test requires an explicit local native archive for its isolated AW_HOME.');
+      await resolveNativeTool({
+        descriptor: await fs.readJson(path.join(repositoryRoot, 'plugins/codex-enhance/native-tools/windows-job.lock.json')),
+        cacheRoot: path.join(isolation.env.AW_HOME!, 'native-artifacts', 'v1'),
+        mode: 'source-candidate', archivePath: native.archivePath,
+      });
+    }
     const environment = {
       ...isolation.env,
+      AW_NATIVE_RESOLVER_MODE: 'cache-only',
       HOME: fixture.homeRoot,
       USERPROFILE: fixture.homeRoot,
       TMPDIR: fixture.temporaryRoot,
@@ -16214,7 +16229,7 @@ describe('five namespaced write commands', () => {
       const preview = await installWriteCommand(['team/codex-enhance'], { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project' }, { ...runtime, previewOperationPlan: true });
       const review = buildOperationReviewProjection({ intent: { kind: 'pluginWrite', action: 'install', pluginId: 'team/codex-enhance', platform: 'codex', scope: 'project' }, evidence: { catalog: { configDigest: 'fixture', compositeDigest: 'fixture' }, operationPlan: preview.operationPlan } });
       expect(review.changes).toContainEqual(expect.objectContaining({ title: 'guide/subagent/default', description: expect.stringContaining('node · scripts/subagent.mjs') }));
-      const installed = await runPublic(['install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project']);
+      const installed = await runPublic(['install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project', '--yes']);
       expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
       guideId = (await listManagedCommands(isolation.env)).commands.find((command) => command.name === 'guide/subagent/default')!.id;
       expect(guideId).toMatch(/^cmdp_[0-9a-f]{16}$/u);
@@ -16332,6 +16347,7 @@ describe('five namespaced write commands', () => {
     });
     const projectInstall = await runPublic([
       'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project',
+      '--yes',
     ]);
     expect(projectInstall, JSON.stringify(projectInstall, null, 2))
       .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
@@ -16441,6 +16457,7 @@ describe('five namespaced write commands', () => {
     ));
     const projectInstall = await runPublic([
       'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project',
+      '--yes',
     ]);
     expect(projectInstall, JSON.stringify(projectInstall, null, 2))
       .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
@@ -16469,6 +16486,7 @@ describe('five namespaced write commands', () => {
       .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
     expect(await runPublic([
       'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project',
+      '--yes',
     ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
 
     const [userConfig, projectConfig] = await Promise.all([

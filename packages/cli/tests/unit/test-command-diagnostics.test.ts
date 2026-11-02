@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
+import { readNativeTool } from '@lesliechan721/aw-native-runtime';
 import { describe, expect, it, vi } from 'vitest';
 
 import { sanitizeTestDiagnostic, TestCommandDiagnostics } from '../helpers/test-command-diagnostics.js';
@@ -121,9 +122,9 @@ describe('test command diagnostics', () => {
       spawned.mockRestore();
       await scope.finish();
       expect(directories).toEqual([root]);
-      expect(executables).toEqual([process.platform === 'win32'
-        ? path.resolve(packageRoot, '../agent-skill-eval/native/windows', process.arch, 'aw-windows-job.exe')
-        : process.execPath]);
+      const helper = process.platform === 'win32' ? readNativeTool('windows-job', 'aw.windows-job.v1') : undefined;
+      if (helper) expect(helper.state).toBe('ready');
+      expect(executables).toEqual([helper?.state === 'ready' ? helper.executable : process.execPath]);
     }
     expect(Object.getPrototypeOf(failure)).toBe(Error.prototype);
     expect(failure).toMatchObject({
@@ -308,11 +309,17 @@ describe('test command diagnostics', () => {
       path.resolve(packageRoot, '../../scripts/test/run-vitest.mjs'),
       'run', '--config', config, '--maxWorkers=1', '--no-file-parallelism',
     ], { cwd: packageRoot }));
-    const outcome = running.then(() => undefined, (error: unknown) => error);
+    let completed = false;
+    const outcome = running.then(
+      () => { completed = true; return undefined; },
+      (error: unknown) => { completed = true; return error; },
+    );
     let pids: Record<string, number> | undefined;
     try {
-      const deadline = Date.now() + 5_000;
-      while (!pids && Date.now() < deadline) {
+      // This includes a cold nested Vitest startup on Windows arm64. The
+      // cancellation budget below starts only after the child reports ready.
+      const deadline = Date.now() + 15_000;
+      while (!pids && !completed && Date.now() < deadline) {
         try {
           pids = await fs.readJson(pidFile) as Record<string, number>;
         } catch (error) {
@@ -320,6 +327,7 @@ describe('test command diagnostics', () => {
           await new Promise((resolve) => setTimeout(resolve, 20));
         }
       }
+      if (!pids && completed) throw new Error(`Nested runner exited before readiness: ${String(await outcome)}`);
       expect(pids).toBeDefined();
       const started = Date.now();
       controller.abort(new Error('intentional outer cancellation'));
@@ -337,5 +345,5 @@ describe('test command diagnostics', () => {
         }
       }
     }
-  });
+  }, 30_000);
 });

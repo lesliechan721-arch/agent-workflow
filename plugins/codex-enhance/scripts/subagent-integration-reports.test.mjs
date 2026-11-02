@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { nativeTest as test } from './fixtures/native-test.mjs';
 import assert from 'node:assert/strict';
 import { fixture, eventually, terminalPattern, testTimeoutMs, blocks, field, records, bounded, successful } from './fixtures/subagent-integration.mjs';
 import { validateFrame } from '../skills/codex-subagent-guide/scripts/runtime/protocol.mjs';

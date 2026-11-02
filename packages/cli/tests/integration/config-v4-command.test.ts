@@ -16,7 +16,8 @@ import { createConfigV4Definition } from '../helpers/config-v4-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
-import { listManagedCommandPackages, listManagedCommands, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
+import { listManagedCommandPackages, listManagedCommands, readInstalledCommandProducer, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
+import { nativeToolFixture } from '../helpers/native-tools.js';
 
 describe('Config Definition v4 public command', () => {
   // Test Value Gate: the shared native payload uses user config even when its only native installation is project scoped.
@@ -144,6 +145,91 @@ describe('Config Definition v4 public command', () => {
     expect(await runSafeCli(['command', 'run', command.id, '--', 'check'], { cwd, env: { ...env, CAPTURE_FILE: capture }, io: output.io, interactive: false, nativeCliRunner })).toBe(0);
     expect(await fs.readJson(capture)).toEqual(['applied', 'check']);
   });
+  // Test Value Gate: the public config command must preserve its committed value
+  // while refusing a binding change, then refresh after a reviewed package sync.
+  it('requires package sync to adopt a changed native binding before config apply', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const env = isolation.env;
+    const sourceRoot = path.join(cwd, 'native-config-source');
+    const pluginRoot = path.join(sourceRoot, 'plugins/demo');
+    const marker = path.join(cwd, 'native-config-renders');
+    const required = nativeToolFixture();
+    const preferred = nativeToolFixture({ policy: 'preferred' });
+    expect(preferred.closure.definitions).toEqual(required.closure.definitions);
+    await fs.outputFile(path.join(pluginRoot, 'tools/tool.mjs'), 'process.exit(0);\n');
+    await fs.outputFile(path.join(pluginRoot, 'scripts/render.mjs'), [
+      "import fs from 'node:fs';",
+      "const context=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
+      `fs.appendFileSync(${JSON.stringify(marker)}, 'render\\n');`,
+      "console.log(JSON.stringify({version:2,artifacts:context.requestedArtifactIds.map(id=>({id,target:'aw.command-package',kind:'commandPackage',state:'present',refreshKeys:['mode'],files:{'config.json':JSON.stringify({mode:context.config.values.mode})}}))}));",
+    ].join('\n'));
+    const writeSnapshot = async (native: ReturnType<typeof nativeToolFixture>, version: string) => {
+      for (const [relative, content] of Object.entries(native.files)) await fs.outputFile(path.join(pluginRoot, relative), content);
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'Native config fixture\n', (manifest) => {
+        manifest.version = version;
+        manifest.config = { schemaVersion: 4, fields: { mode: { type: 'string', default: 'safe' } } };
+        manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
+        manifest.managedCommands = {
+          packages: [{ key: 'tools', sourceDir: './tools', scope: 'user', platforms: ['codex', 'claude'], render: true, refreshKeys: ['mode'] }],
+          sets: [{ set: 'tools', producer: { kind: 'package', packageKey: 'tools' }, mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'tool.mjs' }] }],
+        };
+        manifest.nativeTools = { reader: native.closure.reader,
+          definitions: native.closure.definitions.map((definition) => ({ key: definition.key, protocol: definition.protocol, descriptor: definition.descriptorPath })),
+          consumers: structuredClone(native.closure.consumers) };
+      });
+    };
+    const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => ({ exitCode: 0,
+      stdout: invocation.args.includes('--version') ? 'codex-cli 0.200.0' : '{"installed":[],"available":[]}', stderr: '' }));
+    const run = async (args: string[], confirmation?: { accepted: boolean; messages: string[] }) => {
+      const output = createCapturedCliIo();
+      const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: Boolean(confirmation), nativeCliRunner,
+        ...(confirmation ? { prompt: { confirm: async ({ message }: { message: string }) => {
+          confirmation.messages.push(message);
+          return { action: 'select' as const, cancelled: false, value: confirmation.accepted };
+        } } } : {}),
+      });
+      return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
+    };
+    await writeSnapshot(required, '1.0.0');
+    const snapshot = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: snapshot.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
+    const packageSync = ['command', 'package', 'sync', 'team/demo', 'tools', '--scope', 'user'];
+    const installed = await run([...packageSync, '--yes']);
+    expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { overallState: 'completed' } });
+    const resourceRoot = installed.payload.packages[0].resourceRoot;
+    const before = await readInstalledCommandProducer(resourceRoot);
+    const commandId = installed.payload.commands[0].id;
+    const binding = await resolveManagedCommand(commandId, env);
+    await fs.remove(marker);
+
+    await writeSnapshot(preferred, '2.0.0');
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
+    const set = (value: string) => run(['config', 'set', 'team/demo', 'mode', '--scope', 'user', '--value-json', JSON.stringify(value), '--apply', '--yes']);
+    const blocked = await set('fast');
+    expect(blocked, JSON.stringify(blocked)).toMatchObject({ exitCode: 1, stderr: '', payload: {
+      configWrite: 'succeeded', overallState: 'partial', apply: { state: 'partial', commandResults: [
+        { state: 'failed', errors: [{ code: 'nativeToolSyncRequired' }], recoveryActions: [expect.stringContaining('command package sync')] },
+      ] },
+    } });
+    const store = resolvePluginConfigStorePath({ sourceId: 'team', pluginName: 'demo', scope: 'user', cwd, env });
+    expect((await fs.readJson(store)).values.mode).toBe('fast');
+    expect(await fs.pathExists(marker)).toBe(false);
+    expect(await readInstalledCommandProducer(resourceRoot)).toEqual(before);
+    expect(await resolveManagedCommand(commandId, env)).toEqual(binding);
+
+    const confirmation = { accepted: true, messages: [] as string[] };
+    const synced = await run(packageSync, confirmation);
+    expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { overallState: 'completed' } });
+    expect(confirmation.messages).toHaveLength(1);
+    for (const value of ['required', 'preferred', 'fallback=portable', required.closure.definitions[0]!.descriptorDigest]) expect(confirmation.messages[0]).toContain(value);
+    expect((await readInstalledCommandProducer(resourceRoot)).nativeTools).toEqual(preferred.closure);
+    expect(await set('next')).toMatchObject({ exitCode: 0, payload: { configWrite: 'succeeded', apply: { state: 'succeeded' } } });
+    expect(await fs.readJson(path.join(resourceRoot, 'config.json'))).toEqual({ mode: 'next' });
+    expect((await readInstalledCommandProducer(resourceRoot)).nativeTools).toEqual(preferred.closure);
+  });
+
   it('returns Config Mutation v7 command results for retained packages and preserves a committed config on discovery failure', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;

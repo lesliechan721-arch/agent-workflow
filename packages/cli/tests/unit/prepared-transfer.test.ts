@@ -22,14 +22,11 @@ const head = 'a'.repeat(40);
 const version = '1.2.0-beta.7';
 const targets = { schemaVersion: 2, cli: '1.2.0' };
 const packageNames = [
-  '@lesliechan721/aw-windows-job-win32-x64',
-  '@lesliechan721/aw-windows-job-win32-arm64',
   '@lesliechan721/agent-skill-eval',
   '@lesliechan721/aw-plugin-core',
   '@lesliechan721/aw',
 ];
 const packageDirectories = [
-  'aw-windows-job-win32-x64', 'aw-windows-job-win32-arm64',
   'agent-skill-eval', 'plugin-core', 'cli',
 ];
 const hash = (value: string) => `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
@@ -49,13 +46,9 @@ async function fixture() {
     await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({
       name: packageNames[index],
       version: targets.cli,
-      ...(index === 2 ? { optionalDependencies: {
+      ...(index === 2 ? { dependencies: {
         [packageNames[0]]: `workspace:${targets.cli}`,
         [packageNames[1]]: `workspace:${targets.cli}`,
-      } } : {}),
-      ...(index === 4 ? { dependencies: {
-        [packageNames[2]]: `workspace:${targets.cli}`,
-        [packageNames[3]]: `workspace:${targets.cli}`,
       } } : {}),
     }));
     await fs.writeFile(path.join(root, 'package', 'index.js'), `export const packageIndex = ${index};\n`);
@@ -66,8 +59,7 @@ async function fixture() {
     inputDigest: await computeBuildInputDigest(snapshotRoot),
     outputDigest: await computeBuildOutputDigest(snapshotRoot),
     cliPackageDigest: await computeCliPackageDigest(snapshotRoot),
-    windowsX64PackageRoot: packageRoots[0], windowsArm64PackageRoot: packageRoots[1],
-    evalPackageRoot: packageRoots[2], corePackageRoot: packageRoots[3], cliPackageRoot: packageRoots[4],
+    evalPackageRoot: packageRoots[0], corePackageRoot: packageRoots[1], cliPackageRoot: packageRoots[2],
   };
   const pack = (index: number) => async ({ destination }: { destination: string }) => {
     const root = packageRoots[index]!;
@@ -78,6 +70,7 @@ async function fixture() {
   };
   const sourceOptions = {
     repoRoot, releaseRoot,
+    verifyNativeReferences: async () => {},
     axes: { cli: true, catalog: false },
     assertClean: async () => undefined,
     assertTargetsMatchHead: async () => undefined,
@@ -91,8 +84,7 @@ async function fixture() {
     ...sourceOptions,
     exactCandidates: { cli: version, catalog: null },
     resolveCandidates,
-    packWindowsJobX64: pack(0), packWindowsJobArm64: pack(1),
-    packEval: pack(2), packCore: pack(3), packCli: pack(4),
+    packEval: pack(0), packCore: pack(1), packCli: pack(2),
   });
   expect(resolveCandidates).not.toHaveBeenCalled();
   const intent = await markPreparedCliAttempt(sourceOptions);
@@ -127,8 +119,8 @@ function publicationOptions(value: Awaited<ReturnType<typeof fixture>>, imported
 }
 
 describe('portable prepared CLI release', () => {
-  // Test Value Gate: use real five-package archives to protect the saved candidate and recovery boundary.
-  it('moves the exact five-package candidate and unchanged intent without old paths or another build', async () => {
+  // Test Value Gate: use real three-package archives to protect the saved candidate and recovery boundary.
+  it('moves the exact three-package candidate and unchanged intent without old paths or another build', async () => {
     const value = await fixture();
     const imported = await importPreparedRelease(value.importOptions);
     expect(imported.descriptor.candidates).toEqual({ cli: version, catalog: null });

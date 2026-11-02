@@ -17,17 +17,7 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const helperArch = process.arch === 'x64' ? 'x64' : process.arch === 'arm64' ? 'arm64' : null
-const defaultHelperPath = helperArch
-  ? path.join(
-      repoRoot,
-      'packages',
-      'agent-skill-eval',
-      'native',
-      'windows',
-      helperArch,
-      'aw-windows-job.exe',
-    )
-  : null
+const defaultHelperPath = null
 const checkTimeoutMs = 10_000
 
 function encodeConfig(executable, args, parentPid = process.pid) {

@@ -23,8 +23,6 @@ import {
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 const packages = [
-  ['aw-windows-job-win32-x64', '@lesliechan721/aw-windows-job-win32-x64'],
-  ['aw-windows-job-win32-arm64', '@lesliechan721/aw-windows-job-win32-arm64'],
   ['agent-skill-eval', '@lesliechan721/agent-skill-eval'],
   ['plugin-core', '@lesliechan721/aw-plugin-core'],
   ['cli', '@lesliechan721/aw'],
@@ -44,21 +42,16 @@ async function git(root: string, ...args: string[]): Promise<string> {
 }
 
 async function packageTarball(root: string, name: string, version: string, payload: string,
-  options: { thirdParty?: string; executable?: boolean; optionalVersion?: string } = {}): Promise<string> {
+  options: { thirdParty?: string; executable?: boolean; internalVersion?: string } = {}): Promise<string> {
   const directory = await fs.mkdtemp(path.join(root, 'pack-'));
   const manifest = {
     name, version, engines: { node: '>=22' }, bin: { fixture: './dist/index.js' },
     exports: './dist/index.js',
     dependencies: {
       thirdparty: options.thirdParty ?? '1.0.0',
-      ...(name === packages[4][1] ? { [packages[2][1]]: version, [packages[3][1]]: version } : {}),
+      ...(name === packages[2][1] ? { [packages[0][1]]: options.internalVersion ?? version, [packages[1][1]]: version } : {}),
     },
-    ...(name === packages[2][1] ? {
-      optionalDependencies: {
-        [packages[0][1]]: options.optionalVersion ?? version,
-        [packages[1][1]]: options.optionalVersion ?? version,
-      },
-    } : {}),
+
   };
   await writeJson(path.join(directory, 'package', 'package.json'), manifest);
   await fs.mkdir(path.join(directory, 'package', 'dist'));
@@ -112,7 +105,7 @@ async function fixture(published = true) {
     schemaVersion: 3, name: 'demo', version: '1.0.0',
   });
   await fs.mkdir(path.join(repoRoot, 'packages', 'cli', 'src'), { recursive: true });
-  await writeJson(path.join(repoRoot, 'packages', 'cli', 'package.json'), { name: packages[4][1], version: '1.0.0' });
+  await writeJson(path.join(repoRoot, 'packages', 'cli', 'package.json'), { name: packages[2][1], version: '1.0.0' });
   await fs.writeFile(path.join(repoRoot, 'packages', 'cli', 'src', 'index.ts'), 'export const value = 1;\n');
   const baselineSource = await commit(repoRoot, 'initial source');
   await git(repoRoot, 'remote', 'add', 'origin', remote);
@@ -401,11 +394,11 @@ describe('automatic beta product planning', () => {
     expect(f.builds).toBe(1);
   });
 
-  it('keeps a partial five-package completion out of the successful source baseline', async () => {
+  it('keeps a partial three-package completion out of the successful source baseline', async () => {
     const f = await fixture();
     const source = await f.change({ cli: true });
     await f.publishCli('1.0.1-beta.7', source, 'export const value = 2;\n');
-    f.registry.get(packages[4][1])!.delete('1.0.1-beta.7');
+    f.registry.get(packages[2][1])!.delete('1.0.1-beta.7');
     const result = await planAutomaticBeta(f.options);
     expect(result.products.cli).toMatchObject({ changed: true, version: '1.0.1-beta.8', baselineSource: f.baselineSource });
   });
@@ -559,7 +552,7 @@ describe('automatic beta product planning', () => {
 });
 
 describe('release production package normalization', () => {
-  it('normalizes all five release versions and both Eval Windows dependencies, while retaining actual dependencies and modes', async () => {
+  it('normalizes the three CLI release versions and internal dependencies, while retaining actual dependencies and modes', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-beta-package-test-'));
     roots.push(root);
     const old = await packagesAt(root, '1.0.0', 'production\n');
@@ -570,11 +563,11 @@ describe('release production package normalization', () => {
     }
     const original = await computePackageTarballTreeDigest(candidate[2].tarballPath, { normalizeReleaseMetadata: true });
     for (const change of [{ thirdParty: '2.0.0' }, { executable: false }]) {
-      const changed = await packageTarball(root, packages[2][1], '1.0.1-beta.4', 'production\n', change);
+      const changed = await packageTarball(root, packages[0][1], '1.0.1-beta.4', 'production\n', change);
       expect(await computePackageTarballTreeDigest(changed, { normalizeReleaseMetadata: true })).not.toBe(original);
     }
-    const invalid = await packageTarball(root, packages[2][1], '1.0.1-beta.4', 'production\n', { optionalVersion: '1.0.0' });
+    const invalid = await packageTarball(root, packages[2][1], '1.0.1-beta.4', 'production\n', { internalVersion: '1.0.0' });
     await expect(computePackageTarballTreeDigest(invalid, { normalizeReleaseMetadata: true }))
-      .rejects.toThrow('must optionally depend');
+      .rejects.toThrow('must depend');
   });
 });

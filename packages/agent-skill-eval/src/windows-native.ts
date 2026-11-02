@@ -1,7 +1,5 @@
 import { spawn } from 'node:child_process'
 
-import { resolveWindowsJobHelperPath } from './windows-job.js'
-
 const MAX_INPUT_BYTES = 256 * 1024
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 const OPERATION_TIMEOUT_MS = 30_000
@@ -16,9 +14,7 @@ export interface WindowsNativeProcessRow {
 }
 
 export interface WindowsNativeOptions {
-  arch?: string
-  moduleUrl?: string
-  resolvePackage?: (specifier: string) => string
+  helperPath?: string
   spawn?: typeof spawn
   /** A caller can reduce the fixed protocol deadline. */
   timeoutMs?: number
@@ -54,7 +50,8 @@ async function runOperation(
     timeoutMs <= 0 || timeoutMs > OPERATION_TIMEOUT_MS) {
     throw new Error('Invalid Windows native helper input.')
   }
-  const helperPath = resolveWindowsJobHelperPath(options)
+  const helperPath = options.helperPath
+  if (!helperPath) throw new Error('Windows native operation requires a prepared helper.')
   return new Promise((resolve, reject) => {
     let settled = false
     let outputBytes = 0

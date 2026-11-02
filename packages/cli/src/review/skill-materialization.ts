@@ -30,6 +30,8 @@ import {
 } from '../utils/managed-command-materialization.js';
 import { validateManagedCommandResource } from '../utils/managed-command-store.js';
 import { createAwPluginRequirementsReceipt } from '../utils/manifest.js';
+import { resolveAwHome } from '../utils/paths.js';
+import { prepareWindowsJobHelper } from '../utils/process-tree.js';
 import { injectInstalledRuntimeConfig } from '../utils/runtime-config.js';
 import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
 
@@ -138,6 +140,7 @@ export async function prepareIsolatedSkillCommandReferences(options: {
         if (producerRef.kind === 'package') {
           const commandPackage = await prepareManagedCommandPackage({
             ...options, packageKey: producerRef.packageKey, scope: producer.scope, event: 'materialize',
+            nativeMode: 'cache-only',
           });
           candidates.push({ producer: commandPackage.producer, sets: commandPackage.sets });
           await commandPackage.cleanup();
@@ -155,6 +158,13 @@ export async function prepareIsolatedSkillCommandReferences(options: {
         let resourceRoot: string;
         let render: Awaited<ReturnType<typeof runArtifactRenderer>> | undefined;
         if (requestedArtifactIds.length > 0) {
+          if (process.platform === 'win32') {
+            await prepareWindowsJobHelper({
+              cacheRoot: path.join(resolveAwHome(options.env), 'native-artifacts', 'v1'),
+              sourceEnv: options.env,
+              mode: 'cache-only',
+            });
+          }
           render = await runArtifactRenderer({
             plugin: options.plugin,
             platform: options.platform,

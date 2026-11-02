@@ -556,8 +556,6 @@ describe('bundle layout validation', () => {
   it.each([
     'package.json',
     'release/version-targets.json',
-    'packages/aw-windows-job-win32-x64/package.json',
-    'packages/aw-windows-job-win32-arm64/package.json',
     'packages/agent-skill-eval/package.json',
     'packages/plugin-core/package.json',
     'packages/cli/package.json',
@@ -609,7 +607,7 @@ describe('bundle layout validation', () => {
       repoRoot,
       outputRoot: path.join(repoRoot, 'embedded'),
     })).rejects.toThrow(
-      'Invalid release versions: release/version-targets.json cli 1.0.0 must match all five public package versions',
+      'Invalid release versions: release/version-targets.json cli 1.0.0 must match all three public package versions',
     );
   });
 

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
+import { prepareNativeTestEnvironment } from './native-test-environment.mjs';
 import { runProcessTree } from '../perf/process-tree.mjs';
 import { formatTestWorkers, vitestWorkerInvocation } from '../../packages/cli/scripts/test-workers.mjs';
 
@@ -24,6 +25,7 @@ function resolveVitestEntry(cwd) {
 export async function runVitest(args = process.argv.slice(2)) {
   const workers = vitestWorkerInvocation(args);
   process.stderr.write(formatTestWorkers('vitest', workers));
+  const nativeEnvironment = await prepareNativeTestEnvironment();
   const startedAt = performance.now();
   const correlationRunId = process.env[TEST_RUN_ID_ENV] || undefined;
   const runId = randomUUID();
@@ -52,7 +54,7 @@ export async function runVitest(args = process.argv.slice(2)) {
       args: [resolveVitestEntry(process.cwd()), ...args],
       cwd: process.cwd(),
       env: {
-        ...process.env,
+        ...nativeEnvironment,
         [TEST_RUNNER_PROCESS_TREE_ENV]: '1',
         [TEST_RUN_ID_ENV]: runId,
       },

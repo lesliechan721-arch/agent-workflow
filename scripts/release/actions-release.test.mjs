@@ -11,8 +11,6 @@ import { bytesDigest, extractCandidate } from './candidate-archive.mjs';
 import { captureCommand } from './common.mjs';
 
 const packages = [
-  ['aw-windows-job-win32-x64', '@lesliechan721/aw-windows-job-win32-x64'],
-  ['aw-windows-job-win32-arm64', '@lesliechan721/aw-windows-job-win32-arm64'],
   ['agent-skill-eval', '@lesliechan721/agent-skill-eval'],
   ['plugin-core', '@lesliechan721/aw-plugin-core'],
   ['cli', '@lesliechan721/aw'],
@@ -38,11 +36,8 @@ async function fixture(t) {
   for (const [index, [directory, name]] of packages.entries()) {
     const manifest = {
       name, version: base,
-      ...(index === 2 ? { optionalDependencies: {
+      ...(index === 2 ? { dependencies: {
         [packages[0][1]]: `workspace:${base}`, [packages[1][1]]: `workspace:${base}`,
-      } } : {}),
-      ...(index === 4 ? { dependencies: {
-        [packages[2][1]]: `workspace:${base}`, [packages[3][1]]: `workspace:${base}`,
       } } : {}),
     };
     await json(path.join(repoRoot, 'packages', directory, 'package.json'), manifest);
@@ -58,9 +53,8 @@ async function fixture(t) {
   await fs.writeFile(path.join(repoRoot, 'pnpm-lock.yaml'), [
     "lockfileVersion: '9.0'", 'importers:',
     '  packages/cli:', '    dependencies:',
-    ...packages.slice(2, 4).flatMap(([, name]) => [`      '${name}':`, `        specifier: workspace:${base}`, '        version: link:../fixture']),
-    '  packages/agent-skill-eval:', '    optionalDependencies:',
-    ...packages.slice(0, 2).flatMap(([, name]) => [`      '${name}':`, `        specifier: workspace:${base}`, '        version: link:../fixture']), '',
+    ...packages.slice(0, 2).flatMap(([, name]) => [`      '${name}':`, `        specifier: workspace:${base}`, '        version: link:../fixture']),
+    '',
   ].join('\n'));
   await git(repoRoot, 'add', '.');
   await git(repoRoot, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-m', 'source');
@@ -73,8 +67,7 @@ async function fixture(t) {
     inputDigest: await computeBuildInputDigest(repoRoot),
     outputDigest: await computeBuildOutputDigest(repoRoot),
     cliPackageDigest: await computeCliPackageDigest(repoRoot),
-    windowsX64PackageRoot: packageRoots[0], windowsArm64PackageRoot: packageRoots[1],
-    evalPackageRoot: packageRoots[2], corePackageRoot: packageRoots[3], cliPackageRoot: packageRoots[4],
+    evalPackageRoot: packageRoots[0], corePackageRoot: packageRoots[1], cliPackageRoot: packageRoots[2],
   };
   const pack = (index) => async ({ destination }) => {
     await fs.copyFile(path.join(packageRoots[index], 'package.json'), path.join(packageRoots[index], 'package/package.json'));
@@ -92,7 +85,8 @@ test('Actions hands the exact CLI archive to a fresh publisher and saves its con
   const { repoRoot, temporary, snapshot, pack } = value;
   const prepared = await runActionsRelease(['prepare', '--product', 'cli', '--tag', tag], {
     repoRoot, log() {}, withSnapshot: async (callback) => callback(snapshot),
-    packWindowsJobX64: pack(0), packWindowsJobArm64: pack(1), packEval: pack(2), packCore: pack(3), packCli: pack(4),
+    verifyNativeReferences: async () => {},
+    packEval: pack(0), packCore: pack(1), packCli: pack(2),
   });
   const archive = path.join(temporary, 'candidate.tar');
   await fs.copyFile(path.join(repoRoot, '.release/actions/candidate.tar'), archive);
@@ -139,5 +133,5 @@ test('Actions hands the exact CLI archive to a fresh publisher and saves its con
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(restored, 'cli/prepared/descriptor.json'), 'utf8')), original);
   assert.equal(JSON.parse(await fs.readFile(path.join(restored, 'cli/attempted.json'), 'utf8')).publicationStarted, true);
   await assert.rejects(runActionsRelease(args, options), /attempt|repair/iu);
-  assert.equal(writes.length, 5);
+  assert.equal(writes.length, 3);
 });

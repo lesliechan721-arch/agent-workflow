@@ -47,6 +47,7 @@ export function deriveAwCapabilitiesFromManifest(
   const capabilities: RegisteredAwCapabilityId[] = []
   if ((manifest as { schemaVersion?: number }).schemaVersion === 3) capabilities.push('aw.plugin-manifest.v3')
   if (manifest.skills) capabilities.push('aw.plugin-skills.v1')
+  if (manifest.nativeTools) capabilities.push('aw.native-tools.v1')
   if (manifest.buildConfig) capabilities.push('aw.plugin-build-config.v1')
   if (manifest.config) capabilities.push('aw.plugin-config.v2')
   if (manifest.config && 'schemaVersion' in manifest.config

@@ -97,8 +97,8 @@ export function synchronizeCliLockfile(contents, currentVersion, nextVersion) {
   normalizeStableTargetVersion(currentVersion);
   normalizeStableTargetVersion(nextVersion);
   const specifier = new RegExp(`^([ \\t]*specifier: workspace:)${currentVersion.replaceAll('.', '\\.')}(?=\\r?$)`, 'gm');
-  if ([...contents.matchAll(specifier)].length !== 4) {
-    throw new Error(`pnpm-lock.yaml must contain four exact specifier: workspace:${currentVersion} entries.`);
+  if ([...contents.matchAll(specifier)].length !== 2) {
+    throw new Error(`pnpm-lock.yaml must contain two exact specifier: workspace:${currentVersion} entries.`);
   }
   return contents.replace(specifier, (_match, prefix) => `${prefix}${nextVersion}`);
 }
@@ -242,16 +242,6 @@ async function applyReleaseTargets(requested, options, exact = false) {
   const cliPackages = requested.cli ? await Promise.all([
     readCliPackage(
       repoRoot,
-      'packages/aw-windows-job-win32-x64/package.json',
-      '@lesliechan721/aw-windows-job-win32-x64',
-    ),
-    readCliPackage(
-      repoRoot,
-      'packages/aw-windows-job-win32-arm64/package.json',
-      '@lesliechan721/aw-windows-job-win32-arm64',
-    ),
-    readCliPackage(
-      repoRoot,
       'packages/agent-skill-eval/package.json',
       '@lesliechan721/agent-skill-eval',
     ),
@@ -264,13 +254,13 @@ async function applyReleaseTargets(requested, options, exact = false) {
   ]) : [];
   if (requested.cli && cliPackages.some((entry) => entry.version !== current.cli)) {
     throw new Error(
-      `CLI release target ${current.cli} must match all five public package manifests ` +
+      `CLI release target ${current.cli} must match all three public package manifests ` +
       'before release metadata can update it.',
     );
   }
   if (
     requested.cli
-    && cliPackages[4].manifest.dependencies?.['@lesliechan721/agent-skill-eval']
+    && cliPackages[2].manifest.dependencies?.['@lesliechan721/agent-skill-eval']
       !== `workspace:${current.cli}`
   ) {
     throw new Error(
@@ -280,32 +270,12 @@ async function applyReleaseTargets(requested, options, exact = false) {
   }
   if (
     requested.cli
-    && cliPackages[4].manifest.dependencies?.['@lesliechan721/aw-plugin-core']
+    && cliPackages[2].manifest.dependencies?.['@lesliechan721/aw-plugin-core']
       !== `workspace:${current.cli}`
   ) {
     throw new Error(
       `packages/cli/package.json must exactly depend on ` +
       `@lesliechan721/aw-plugin-core@workspace:${current.cli}.`,
-    );
-  }
-  if (
-    requested.cli
-    && cliPackages[2].manifest.optionalDependencies?.['@lesliechan721/aw-windows-job-win32-x64']
-      !== `workspace:${current.cli}`
-  ) {
-    throw new Error(
-      `packages/agent-skill-eval/package.json must exactly optionally depend on ` +
-      `@lesliechan721/aw-windows-job-win32-x64@workspace:${current.cli}.`,
-    );
-  }
-  if (
-    requested.cli
-    && cliPackages[2].manifest.optionalDependencies?.['@lesliechan721/aw-windows-job-win32-arm64']
-      !== `workspace:${current.cli}`
-  ) {
-    throw new Error(
-      `packages/agent-skill-eval/package.json must exactly optionally depend on ` +
-      `@lesliechan721/aw-windows-job-win32-arm64@workspace:${current.cli}.`,
     );
   }
   const next = current === null ? null : {
@@ -344,17 +314,7 @@ async function applyReleaseTargets(requested, options, exact = false) {
               '@lesliechan721/aw-plugin-core': `workspace:${next.cli}`,
             },
           }
-        : entry.name === '@lesliechan721/agent-skill-eval'
-          ? {
-              ...entry.manifest,
-              version: next.cli,
-              optionalDependencies: {
-                ...entry.manifest.optionalDependencies,
-                '@lesliechan721/aw-windows-job-win32-x64': `workspace:${next.cli}`,
-                '@lesliechan721/aw-windows-job-win32-arm64': `workspace:${next.cli}`,
-              },
-            }
-          : { ...entry.manifest, version: next.cli };
+        : { ...entry.manifest, version: next.cli };
       changes.push({
         path: entry.packagePath,
         contents: `${JSON.stringify(manifest, null, 2)}\n`,

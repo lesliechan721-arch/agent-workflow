@@ -5,6 +5,7 @@ import type {
 import {
   withAwHomeMutationLock,
 } from '../utils/aw-home-mutation-lock.js';
+import { prepareNativeCliExecution } from '../utils/native-cli.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import {
   normalizeCleanupCommandOptions,
@@ -248,6 +249,9 @@ async function runPublicWriteCommand(options: {
         ...(options.all === undefined ? {} : { all: options.all }),
       })
     : (async () => {
+        if (!runtime.awHomeMutationToken) {
+          await prepareNativeCliExecution({ env: runtime.env, runner: runtime.nativeCliRunner });
+        }
         return withAwHomeMutationLock({
           env: runtime.env,
           token: runtime.awHomeMutationToken,
@@ -312,7 +316,11 @@ export async function taskWriteCommand(
     : runtime;
   const execution = taskRuntime.previewOperationPlan === true
     ? runRebuildTaskCommand(targets, options, taskRuntime)
-    : withAwHomeMutationLock({
+    : (async () => {
+      if (!taskRuntime.awHomeMutationToken && targets.length > 0) {
+        await prepareNativeCliExecution({ env: taskRuntime.env, runner: taskRuntime.nativeCliRunner });
+      }
+      return withAwHomeMutationLock({
         env: taskRuntime.env,
         token: taskRuntime.awHomeMutationToken,
         action: (token) => runRebuildTaskCommand(targets, options, {
@@ -320,6 +328,7 @@ export async function taskWriteCommand(
           awHomeMutationToken: token,
         }),
       });
+    })();
   return execution.catch((error) => mergeWriteCommandResults(targets.map((target) =>
     failedWriteCommandResult(target.method, [target.pluginId], {
       ...commandOptions,
