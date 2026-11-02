@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { nativeToolFixture } from '../helpers/native-tools.js';
 import { runCli } from '../../src/index.js';
 import { createIsolatedTestEnv, type IsolatedTestEnvironment } from '../helpers/test-isolation.js';
 import type { CommandManagementResult } from '../../src/commands/managed-commands.js';
@@ -147,4 +148,16 @@ describe('managed command CLI', () => {
       expect(await fs.readFile(marker, 'utf8')).toBe('forwarded');
     } finally { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
   });
+  // Test Value Gate: offline exact removal must disclose the former native authority in its public receipt.
+  it('includes the complete former native declaration when removing an exact package', async () => {
+    const fixture = nativeToolFixture();
+    for (const [relative, content] of Object.entries(fixture.files)) await fs.mkdir(path.dirname(path.join(source, relative)), { recursive: true }).then(() => fs.writeFile(path.join(source, relative), content));
+    const producer: ProducerIdentity = { sourceId: 'retired', sourceIdentity: `sha256:${'b'.repeat(64)}`, pluginName: 'toolkit', kind: 'package', key: 'tool', platform: null, scope: 'user', projectRoot: null };
+    const installed = await syncManagedCommandPackage({ producer, sourceDirectory: source, sets: [{ set: 'tools', state: 'present', entries: [normalizeCommandDefinition({ key: 'run', runner: 'node', entry: 'entry.mjs' })] }], nativeTools: fixture.closure, env: isolated.env });
+    const removed = await invoke(['package', 'remove', installed.id, '--yes', '--json']);
+    expect(removed.exitCode).toBe(0);
+    expect(removed.receipt.nativeToolChanges).toEqual([{ producer, before: fixture.closure, after: null }]);
+    await expect(fs.lstat(installed.resourceRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
 });

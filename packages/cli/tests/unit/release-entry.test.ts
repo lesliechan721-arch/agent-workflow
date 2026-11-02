@@ -64,8 +64,6 @@ describe('one-command release entry', () => {
         ? [
             'release/version-targets.json',
             'packages/cli/package.json',
-            'packages/aw-windows-job-win32-x64/package.json',
-            'packages/aw-windows-job-win32-arm64/package.json',
             'packages/agent-skill-eval/package.json',
             'packages/plugin-core/package.json',
             'pnpm-lock.yaml',
@@ -86,8 +84,6 @@ describe('one-command release entry', () => {
       'add', '--',
       'release/version-targets.json',
       'packages/cli/package.json',
-      'packages/aw-windows-job-win32-x64/package.json',
-      'packages/aw-windows-job-win32-arm64/package.json',
       'packages/agent-skill-eval/package.json',
       'packages/plugin-core/package.json',
       'pnpm-lock.yaml',

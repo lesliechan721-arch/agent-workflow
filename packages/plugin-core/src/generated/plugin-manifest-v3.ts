@@ -130,6 +130,28 @@ packageKey: CommandName
 export type CommandRelativeFile = string
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "nativeToolBinding".
+ */
+export type NativeToolBinding = ({
+key: CommandName
+/**
+ * @minItems 1
+ * @maxItems 1
+ */
+platforms: ["win32"]
+policy: "required"
+} | {
+key: CommandName
+/**
+ * @minItems 1
+ * @maxItems 1
+ */
+platforms: ["win32"]
+policy: "preferred"
+fallback: CommandName
+})
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "config".
  */
 export type Config = (ConfigV2 | ConfigV3 | ConfigV4)
@@ -249,6 +271,7 @@ interface?: Interface
 extensions?: Extensions
 artifacts?: Artifacts
 managedCommands?: ManagedCommands
+nativeTools?: NativeTools
 buildConfig?: BuildConfig
 scripts?: Scripts
 config?: Config
@@ -480,6 +503,28 @@ export interface CommandEnvironment {
  */
 export interface CommandEnvironmentSource {
 [k: string]: string
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "nativeTools".
+ */
+export interface NativeTools {
+reader?: PluginPath
+definitions: {
+key: CommandName
+protocol: string
+descriptor: PluginPath
+}[]
+consumers: NativeToolConsumer[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "nativeToolConsumer".
+ */
+export interface NativeToolConsumer {
+kind: ("managed-command-set" | "plugin-test")
+key: CommandName
+tools: NativeToolBinding[]
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema

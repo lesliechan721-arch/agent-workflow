@@ -50,8 +50,6 @@ try {
     readPackageChannelVersion: async () => null,
     assertCliTagAvailable: async () => undefined,
     computeTarballTreeDigest: async (file) => {
-      if (file.includes('windows-x64')) return 'windows-x64-tree';
-      if (file.includes('windows-arm64')) return 'windows-arm64-tree';
       if (file.includes('eval')) return 'eval-tree';
       return file.includes('core') ? 'core-tree' : 'cli-tree';
     },

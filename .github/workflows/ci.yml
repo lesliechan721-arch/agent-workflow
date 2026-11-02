@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # Cancel old PR checks. A main run can already be preparing a release candidate.
 concurrency:
@@ -76,13 +77,6 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
-      - name: Read the exact Go toolchain
-        id: go
-        run: node --input-type=module -e 'import fs from "node:fs"; const manifest = JSON.parse(fs.readFileSync("packages/agent-skill-eval/native/windows/manifest.json", "utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${manifest.build.goVersion.replace(/^go/, "")}\n`);'
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ steps.go.outputs.version }}
-          cache: false
       - run: pnpm install --frozen-lockfile
       # Delivery builds the strict Catalog and dist contracts once. Source tests
       # and types run in linux-tests; beta requires both jobs to pass.
@@ -211,6 +205,19 @@ jobs:
       - name: Check the native runtime
         run: node -e 'if (process.platform !== process.env.EXPECTED_OS || process.arch !== process.env.EXPECTED_ARCH) throw new Error("Unexpected runner architecture"); console.log(process.platform, process.arch, process.version);'
       - run: pnpm install --frozen-lockfile
+      - name: Read the Windows source candidate toolchain
+        if: matrix.os == 'win32'
+        id: native-tool
+        run: node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\n`);'
+      - uses: actions/setup-go@v6
+        if: matrix.os == 'win32'
+        with:
+          go-version: ${{ steps.native-tool.outputs.go }}
+          cache: false
+      - run: pnpm native:windows-job:prepare
+        if: matrix.os == 'win32'
+      - run: node native-tools/windows-job/test-environment.mjs --github-env
+        if: matrix.os == 'win32'
       - run: pnpm build
       - run: pnpm test:integration
         if: matrix.integration_shard == ''
@@ -237,8 +244,11 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  native-windows-job:
+    uses: ./.github/workflows/windows-job.yml
+
   beta:
-    needs: [linux-tests, release-verification, plugin-tests, platform]
+    needs: [linux-tests, release-verification, plugin-tests, platform, native-windows-job]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.RELEASE_APP_ID != ''
     uses: ./.github/workflows/beta.yml
     with:

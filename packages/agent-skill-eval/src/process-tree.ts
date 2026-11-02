@@ -71,6 +71,7 @@ export interface ProcessTreeDependencies {
     options: { timeout: number; windowsHide: boolean; maxBuffer: number },
     callback: (error: Error | null, stdout: string) => void,
   ) => unknown;
+  windowsJobHelperPath?: string;
   windowsProcessTable?: (requiredPids: readonly number[]) => Promise<WindowsNativeProcessRow[]>;
   createSentinel?: (
     markerEnvironmentVariable: string,
@@ -525,7 +526,9 @@ async function readWindowsProcessTable(
     ...pendingPids,
   ])];
   try {
-    const rows = await (state.dependencies.windowsProcessTable ?? readWindowsNativeProcessTable)(requiredPids);
+    const rows = state.dependencies.windowsProcessTable
+      ? await state.dependencies.windowsProcessTable(requiredPids)
+      : await readWindowsNativeProcessTable(requiredPids, { helperPath: state.dependencies.windowsJobHelperPath });
     return new Map(rows.map((row) => [row.pid, {
       ppid: row.ppid,
       startTime: row.started,

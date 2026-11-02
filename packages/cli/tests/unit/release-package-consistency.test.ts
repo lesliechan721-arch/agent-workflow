@@ -39,9 +39,9 @@ afterEach(async () => {
 
 describe('published package file consistency', () => {
   it.each([
-    '@lesliechan721/aw-windows-job-win32-x64',
-    '@lesliechan721/aw-windows-job-win32-arm64',
-  ])('normalizes Windows Job release package metadata for %s', async (packageName) => {
+    '@lesliechan721/agent-skill-eval',
+    '@lesliechan721/aw-plugin-core',
+  ])('normalizes CLI product package metadata for %s', async (packageName) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-package-consistency-'));
     roots.push(root);
     const tarball = await packageTarball(root, 'release-package', 'fixture\n', packageName);

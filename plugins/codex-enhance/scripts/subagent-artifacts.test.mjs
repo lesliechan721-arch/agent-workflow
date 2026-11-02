@@ -403,14 +403,7 @@ test('delivered Guide contains its executable entries and relative module closur
     'adapters/antigravity-v5.mjs', 'adapters/oracle-v5.mjs']) {
     assert.equal(typeof files[`scripts/${entry}`], 'string', `Missing executable entry: ${entry}`);
   }
-  // Runtime PE files remain in sourceDirs; putting them in the JSON text
-  // overlay would replace their original bytes during materialization.
-  const manifest = 'scripts/runtime/native/windows/manifest.json';
-  assert.equal(files[manifest], await readFile(path.join(
-    sourceRoot('codex-subagent-guide-skill'), manifest), 'utf8'));
-  for (const arch of ['x64', 'arm64']) {
-    assert.equal(Object.hasOwn(files, `scripts/runtime/native/windows/${arch}/aw-windows-job.exe`), false);
-  }
+  assert.equal(Object.keys(files).some((name) => name.endsWith('.exe')), false);
   for (const [name, body] of Object.entries(files)) {
     if (!name.endsWith('.mjs')) continue;
     for (const [, reference] of body.matchAll(/(?:from\s*|import\s*\(\s*|import\s*)['"]([^'"\n]+)['"]/g)) {

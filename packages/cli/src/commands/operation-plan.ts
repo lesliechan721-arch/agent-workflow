@@ -5,6 +5,7 @@ import { canonicalizePluginConfigValues } from '@lesliechan721/aw-plugin-core/ma
 import type { PlatformName, PluginConfigValue, Scope } from '../types.js';
 import type { OwnedSharedLocator, OwnerIdentity } from '../utils/ownership.js';
 import type { ProducerIdentity } from '../types.js';
+import type { NativeToolClosure } from '@lesliechan721/aw-plugin-core/manifest';
 import type { InstalledCommandSet } from '../utils/managed-command-store.js';
 import type { RetainedManagedCommandPackage } from '../utils/managed-command-materialization.js';
 
@@ -27,7 +28,11 @@ export interface OperationPlanEvidence {
   }>;
 }
 
-export type OperationAction =
+import type { NativeToolChange } from '../utils/native-tool-review.js';
+
+export type OperationAction = OperationActionDefinition & { nativeToolChanges?: NativeToolChange[] };
+
+type OperationActionDefinition =
   | (RetainedManagedCommandPackage & {
       kind: 'retainManagedCommandPackage';
       pluginId: string;
@@ -51,6 +56,7 @@ export type OperationAction =
       scope: Scope;
       producer: ProducerIdentity;
       sets: InstalledCommandSet[];
+      nativeTools?: NativeToolClosure;
       files: Array<OperationArtifactFile & { mode: number }>;
       contentDigest: string;
     }

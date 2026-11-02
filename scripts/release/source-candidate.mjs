@@ -12,18 +12,13 @@ const SOURCE_TAG = new RegExp(`^release/(cli|catalog)/v(${VERSION})$`);
 const CATALOG_METADATA = 'plugins/marketplace-source.json';
 const CLI_TARGETS = 'release/version-targets.json';
 const CLI_PACKAGES = [
-  ['aw-windows-job-win32-x64', '@lesliechan721/aw-windows-job-win32-x64'],
-  ['aw-windows-job-win32-arm64', '@lesliechan721/aw-windows-job-win32-arm64'],
   ['agent-skill-eval', '@lesliechan721/agent-skill-eval'],
   ['plugin-core', '@lesliechan721/aw-plugin-core'],
   ['cli', '@lesliechan721/aw'],
 ].map(([directory, name]) => ({ path: `packages/${directory}/package.json`, name }));
 const INTERNAL_DEPENDENCIES = {
-  'packages/agent-skill-eval/package.json': {
-    optionalDependencies: [CLI_PACKAGES[0].name, CLI_PACKAGES[1].name],
-  },
   'packages/cli/package.json': {
-    dependencies: [CLI_PACKAGES[2].name, CLI_PACKAGES[3].name],
+    dependencies: [CLI_PACKAGES[0].name, CLI_PACKAGES[1].name],
   },
 };
 
@@ -208,7 +203,7 @@ async function assertCandidateMetadata(repoRoot, candidateHead, parsed) {
   for (const entry of CLI_PACKAGES) {
     const { value } = await readJson(repoRoot, candidateHead, entry.path);
     if (value.name !== entry.name || value.version !== baseVersion) {
-      throw new Error(`CLI source tag must match all five package stable versions: ${entry.path}.`);
+      throw new Error(`CLI source tag must match all three package stable versions: ${entry.path}.`);
     }
     for (const [field, names] of Object.entries(INTERNAL_DEPENDENCIES[entry.path] ?? {})) {
       for (const name of names) {

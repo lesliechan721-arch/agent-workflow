@@ -1,5 +1,6 @@
 import type { PlatformSelection, Scope } from '../types.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
+import { prepareNativeCliExecution } from '../utils/native-cli.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readPluginIntentState } from '../utils/plugin-intent-state.js';
 import { syncCatalogSourceGeneration } from '../utils/catalog-generation-service.js';
@@ -272,6 +273,9 @@ export async function syncCommand(
         );
       });
     }
+  }
+  if (!runtime.awHomeMutationToken && selection.groups.length > 0) {
+    await prepareNativeCliExecution({ env, runner: runtime.nativeCliRunner });
   }
   return withAwHomeMutationLock({
     env,

@@ -559,6 +559,7 @@ async function runTriggerOnce(options: {
   timeoutMs: number;
   sourceEnv: NodeJS.ProcessEnv;
   processManagement: CodexEvalProcessManagementEvidence;
+  windowsJobHelperPath?: string;
   workRoot?: string;
   allowMissingSkills?: boolean;
   manageTimeout?: boolean;
@@ -746,6 +747,7 @@ async function runTriggerOnce(options: {
       sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
       isolation: options.suite.isolation,
       processManagement: options.processManagement,
+      windowsJobHelperPath: options.windowsJobHelperPath,
       configOverrides: options.suite.observeSpawnAgent
         ? [
           'features.multi_agent=true',
@@ -1055,6 +1057,7 @@ export async function runCodexTriggerProviderCase(options: {
   codexRuntime: CodexEvalRuntimeConfig;
   sourceEnv?: NodeJS.ProcessEnv;
   processManagement?: CodexEvalProcessManagementEvidence;
+  windowsJobHelperPath?: string;
   workRoot?: string;
   manageTimeout?: boolean;
   signal?: AbortSignal;
@@ -1071,6 +1074,7 @@ export async function runCodexTriggerProviderCase(options: {
     codexRuntime: options.codexRuntime,
     timeoutMs: options.timeoutMs ?? options.suite.perRunTimeoutMs,
     sourceEnv: options.sourceEnv ?? process.env,
+    windowsJobHelperPath: options.windowsJobHelperPath,
     processManagement: options.processManagement ?? {
       mode: 'unmanaged-confirmed',
       inspectionAvailable: false,

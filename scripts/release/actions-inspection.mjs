@@ -6,7 +6,6 @@ import { bytesDigest } from './candidate-archive.mjs';
 import { captureCommand, repoRoot as defaultRepoRoot, runReleaseGit } from './common.mjs';
 
 const PACKAGE_NAMES = [
-  '@lesliechan721/aw-windows-job-win32-x64', '@lesliechan721/aw-windows-job-win32-arm64',
   '@lesliechan721/agent-skill-eval', '@lesliechan721/aw-plugin-core', '@lesliechan721/aw',
 ];
 
@@ -54,6 +53,9 @@ const REQUIRED_MAIN_CI_JOBS = [
   'Windows x64 / Node 24 / plugins 1 of 3',
   'Windows x64 / Node 24 / plugins 2 of 3',
   'Windows x64 / Node 24 / plugins 3 of 3',
+  'native-windows-job / Windows Job / fixed-toolchain candidate',
+  'native-windows-job / Windows Job / Windows x64 source qualification',
+  'native-windows-job / Windows Job / Windows arm64 source qualification',
   'darwin arm64 / Node 24',
   'win32 x64 / Node 24 / integration 1 of 3',
   'win32 x64 / Node 24 / integration 2 of 3',
@@ -184,7 +186,7 @@ export async function readRemoteCompletion(candidate, options = {}) {
         const result = await (options.captureCommand ?? captureCommand)('npm', ['view', packageName, 'versions', '--json'], { cwd: repoRoot, env: options.env });
         return JSON.parse(result.stdout);
       }))(name);
-      if (!Array.isArray(versions) || !versions.includes(candidate.version)) throw new Error('CLI completion tag exists without all five published packages.');
+      if (!Array.isArray(versions) || !versions.includes(candidate.version)) throw new Error('CLI completion tag exists without all three published packages.');
     }
     return true;
   }

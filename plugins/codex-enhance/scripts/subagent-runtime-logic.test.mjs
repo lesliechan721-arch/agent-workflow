@@ -6,16 +6,16 @@ import path from 'node:path';
 import childProcess from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
-import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
 import { validateDiagnostics } from '../skills/codex-subagent-guide/scripts/runtime/contracts.mjs';
-import { prepareWindowsNativeResources, windowsNativeSpawn } from './fixtures/windows-native-host.mjs';
+import { useWindowsNativeFixture, windowsNativeSpawn } from './fixtures/windows-native-host.mjs';
 import { field } from './fixtures/windows-qualification.mjs';
 
 // Queue and output selection tests use real runtime modules and real files.
 // Windows identity, ACL, directory-move and process-table calls are replaced;
 // the native runtime suite owns their real OS behavior and worker lifecycle.
-await prepareWindowsNativeResources(import.meta.url, createRequire(import.meta.url).resolve('../skills/codex-subagent-guide/scripts/runtime/platform.mjs'));
+useWindowsNativeFixture();
 const originalExecFile = childProcess.execFile;
 const originalSpawn = childProcess.spawn;
 let commands, store, files, output, cli;

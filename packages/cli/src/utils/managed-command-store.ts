@@ -12,6 +12,8 @@ import {
   normalizeUserCommandDefinition,
   normalizeProducerIdentity,
   COMMAND_PRODUCER_RECORD_FILE,
+  validateNativeToolClosureFiles,
+  type NativeToolClosure,
   type CommandIdentity,
   type CommandLaunch,
   type ProducerIdentity,
@@ -295,7 +297,12 @@ export function normalizeInstalledCommandProducer(value: unknown): InstalledComm
   } catch { fail('commandBindingInvalid', 'The installed command producer record is invalid.'); }
 }
 export async function readInstalledCommandProducer(resourceRoot: string): Promise<InstalledCommandProducer> {
-  return normalizeInstalledCommandProducer(await readJson(resourceRoot, path.join(resourceRoot, COMMAND_PRODUCER_RECORD), 'commandBindingInvalid'));
+  const record = normalizeInstalledCommandProducer(await readJson(resourceRoot, path.join(resourceRoot, COMMAND_PRODUCER_RECORD), 'commandBindingInvalid'));
+  if (record.nativeTools) {
+    try { await validateNativeToolClosureFiles(resourceRoot, record.nativeTools); }
+    catch { fail('commandBindingInvalid', 'The installed native tool closure does not match its files. Run producer sync or reinstall.'); }
+  }
+  return record;
 }
 export async function writeInstalledCommandProducer(resourceRoot: string, record: InstalledCommandProducer): Promise<void> {
   await writeJson(resourceRoot, path.join(resourceRoot, COMMAND_PRODUCER_RECORD), normalizeInstalledCommandProducer(record));
@@ -344,20 +351,21 @@ async function prepareManagedCommandIdentities(root: string, records: InstalledC
   return candidates;
 }
 export async function assertManagedCommandBindingIdentities(options: {
-  producers: Array<Pick<InstalledCommandProducer, 'producer' | 'sets'>>; env?: NodeJS.ProcessEnv;
+  producers: Array<Pick<InstalledCommandProducer, 'producer' | 'sets' | 'nativeTools'>>; env?: NodeJS.ProcessEnv;
 }): Promise<void> {
   if (options.producers.length === 0) return;
-  const records = options.producers.map((producer) => normalizeInstalledCommandProducer({ ...producer, schemaVersion: 1 }));
+  const records = options.producers.map((record) => normalizeInstalledCommandProducer({ schemaVersion: 1, producer: record.producer, sets: record.sets, ...(record.nativeTools ? { nativeTools: record.nativeTools } : {}) }));
   await prepareManagedCommandIdentities(await managedCommandRoot(options.env), records);
 }
 export async function publishManagedCommandBindings(options: {
-  producer: ProducerIdentity; resourceRoot: string; sets: InstalledCommandSet[]; env?: NodeJS.ProcessEnv;
+  producer: ProducerIdentity; resourceRoot: string; sets: InstalledCommandSet[]; nativeTools?: NativeToolClosure; env?: NodeJS.ProcessEnv;
 }): Promise<string[]> {
-  const record = normalizeInstalledCommandProducer({ schemaVersion: 1, producer: options.producer, sets: options.sets });
+  const record = normalizeInstalledCommandProducer({ schemaVersion: 1, producer: options.producer, sets: options.sets, ...(options.nativeTools ? { nativeTools: options.nativeTools } : {}) });
   const root = await managedCommandRoot(options.env);
   const resourceRoot = path.resolve(options.resourceRoot);
   for (const set of record.sets) for (const entry of set.entries) await validateManagedCommandResource(resourceRoot, entry);
   const candidates = await prepareManagedCommandIdentities(root, [record]);
+  if (record.nativeTools) await validateNativeToolClosureFiles(resourceRoot, record.nativeTools);
   await writeInstalledCommandProducer(resourceRoot, record);
   await revokeManagedCommandBindings(record.producer, options.env);
   for (const [id, identity] of candidates) await writeJson(root, path.join(root, 'bindings', `${id}.json`), { schemaVersion: 1, id, identity, resourceRoot });
@@ -382,7 +390,7 @@ export async function removeManagedCommandPackage(id: string, env: NodeJS.Proces
   return { producer, removedCommandIds };
 }
 export async function syncManagedCommandPackage(options: {
-  producer: ProducerIdentity; sourceDirectory: string; sets: InstalledCommandSet[]; env?: NodeJS.ProcessEnv;
+  producer: ProducerIdentity; sourceDirectory: string; sets: InstalledCommandSet[]; nativeTools?: NativeToolClosure; env?: NodeJS.ProcessEnv;
 }): Promise<{ id: string; resourceRoot: string; commandIds: string[]; removedCommandIds: string[] }> {
   const producer = normalizeProducerIdentity(options.producer);
   if (producer.kind !== 'package') fail('commandOwnerMismatch', 'A package producer is required.');
@@ -397,9 +405,10 @@ export async function syncManagedCommandPackage(options: {
   try {
     const resourceRoot = path.join(staging, 'resource');
     await copyManagedCommandDirectory(options.sourceDirectory, resourceRoot, options.env);
-    const record = normalizeInstalledCommandProducer({ schemaVersion: 1, producer, sets: options.sets });
+    const record = normalizeInstalledCommandProducer({ schemaVersion: 1, producer, sets: options.sets, ...(options.nativeTools ? { nativeTools: options.nativeTools } : {}) });
     for (const set of record.sets) for (const entry of set.entries) await validateManagedCommandResource(resourceRoot, entry);
     await prepareManagedCommandIdentities(root, [record]);
+    if (record.nativeTools) await validateNativeToolClosureFiles(resourceRoot, record.nativeTools);
     await writeInstalledCommandProducer(resourceRoot, record);
     await writeJson(root, path.join(staging, 'owner.json'), { schemaVersion: 1, owner: 'agent-workflows', kind: 'plugin-command-package', producer });
     const removed = await revokeManagedCommandBindings(producer, options.env);
@@ -409,7 +418,7 @@ export async function syncManagedCommandPackage(options: {
     }
     await fs.rename(staging, packageRoot);
     const installedRoot = path.join(packageRoot, 'resource');
-    const commandIds = await publishManagedCommandBindings({ producer, resourceRoot: installedRoot, sets: record.sets, env: options.env });
+    const commandIds = await publishManagedCommandBindings({ producer, resourceRoot: installedRoot, sets: record.sets, nativeTools: record.nativeTools, env: options.env });
     return { id, resourceRoot: installedRoot, commandIds, removedCommandIds: removed.filter((commandId) => !commandIds.includes(commandId)) };
   } finally {
     await safePath(root, staging);
@@ -426,7 +435,7 @@ export async function assertManagedCommandProducerOwnership(producer: ProducerId
   try { await verifyManagedCommandArtifactEvidence({ producer, resourceRoot, env }); }
   catch { fail('commandOwnerMismatch', 'The command producer has no matching live ownership or native receipt evidence.'); }
 }
-export async function resolveManagedCommand(id: string, env: NodeJS.ProcessEnv = process.env): Promise<{ view: ManagedCommandView; launch: CommandLaunch; resourceRoot: string }> {
+export async function resolveManagedCommand(id: string, env: NodeJS.ProcessEnv = process.env): Promise<{ view: ManagedCommandView; launch: CommandLaunch; resourceRoot: string; producer?: InstalledCommandProducer; set?: string }> {
   if (!isManagedCommandId(id)) throw new ManagedCommandError('invalidArguments', 'A canonical managed command ID is required.', true);
   const root = await managedCommandRoot(env);
   if (USER_ID.test(id)) {
@@ -447,7 +456,7 @@ export async function resolveManagedCommand(id: string, env: NodeJS.ProcessEnv =
   if (!entry) fail('commandBindingInvalid', 'The command is absent or disabled in the installed producer.');
   const { key: _key, variant: _variant, ...launch } = entry;
   await validateManagedCommandResource(binding.resourceRoot, launch);
-  return { resourceRoot: binding.resourceRoot, launch, view: { id, name: `${binding.identity.set}/${entry.key}/${entry.variant}`, owner: { kind: 'plugin', producer: record.producer }, availability: 'ready', resourceRoot: binding.resourceRoot, launch, errors: [], recoveryActions: [] } };
+  return { resourceRoot: binding.resourceRoot, launch, producer: record, set: binding.identity.set, view: { id, name: `${binding.identity.set}/${entry.key}/${entry.variant}`, owner: { kind: 'plugin', producer: record.producer }, availability: 'ready', resourceRoot: binding.resourceRoot, launch, errors: [], recoveryActions: [] } };
 }
 export async function inspectManagedCommand(id: string, env: NodeJS.ProcessEnv = process.env): Promise<ManagedCommandView> {
   try { return (await resolveManagedCommand(id, env)).view; }

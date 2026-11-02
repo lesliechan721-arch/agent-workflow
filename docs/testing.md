@@ -75,7 +75,7 @@ CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。�
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
 | `pnpm test:smoke:authoring:external` | 从三个已安装 tarball 在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → install source/plugin -p both`，并验证隔离 homes 内的 receipt 和安装结果 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
-| `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `Windows x64 → Windows arm64 → Eval → Core → CLI → CLI tag → Catalog`、显式轴和不确定远端失败 |
+| `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `Eval → Core → CLI → CLI tag → Catalog`、显式轴和不确定远端失败 |
 | `pnpm test:release:automation` | 在已有正式 build 后验证精确 source tag、临时 bare remote、artifact 恢复与真实 smoke harness 边界；不访问官方发布目标 |
 | `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
@@ -103,7 +103,9 @@ Harness 的确定性测试可以使用 fake executable，但 fake 只验证 runn
 
 Native performance qualification 必须通过 `CODEX_QUALIFICATION_VERSION` 选择 `0.151.0` 或 `0.153.0`，并通过 `CODEX_QUALIFICATION_CLI` 提供本机已有的精确 binary。runner 不自动下载。每个 sample 使用新的临时 home、项目和 local marketplace。两个版本都验证 marketplace-scoped JSON list；`0.153.0` 还要求该 local list 在阻断 proxy 时成功。代表性 local native install 的五次同机中位数必须低于 15 秒；有可比较旧实现证据时，也可接受改善至少 70%。binary 缺失或版本不精确时必须报告未运行或失败，不能用 fake harness 代替。
 
-Windows 原生 helper 的确定性测试验证有界 JSON、配置编码、Windows argv quoting、manifest、PE header、架构选择、坏摘要和资源缺失、调用路由和关闭等待合同。普通 `pnpm build` 只运行源码 manifest/hash/PE 和插件资源副本校验，不要求 Go。CLI 与 Catalog 的强 release verification 都运行 `pnpm windows-job:reproducibility`；它要求 manifest 记录的精确 Go 版本，并使用固定 `GOAMD64=v1`、`GOARM64=v8.0`、关闭用户 Go env/flags/experiments/toolchain 自动选择、隔离 module/workspace/cache 后重建两个 PE，再逐字节比较。Go 缺失、版本不同或 binary 不可复现时停止 release。真实支持证据只能来自对应架构的 Windows 主机。`pnpm qualification:windows-job` 同时执行 Eval 与插件 Job 检查；timeout 必须进入生产 runner，abort 必须进入生产 AbortSignal 接线，forced helper exit 是独立场景。每个清理场景确认记录的 root 和后代 PID 已退出。真实 ACL 反向构造、独立系统读取、旧 CIM/.NET 时间身份对照和无覆盖根发布由插件平台测试验证。新增 Go Windows 行为测试须在真实 Windows 上运行，交叉编译只证明可构建。macOS 交叉编译或 mock 成功不能关闭这些 qualification gap。
+Windows 原生制品的普通确定性测试使用共享 resolver 的合成 PE、真实临时目录、本地 registry fixture 或预置隔离 cache，验证固定描述符、archive 限制、当前架构选择、坏摘要、foreign 路径保留、并发发布、离线 import 和 required 无业务副作用。所有入口显式选择 fixture、cache-only、network 或 source-candidate；普通测试默认前两者，不从 PATH、已安装平台包或源码 PE 推断模式。非 Windows 日常 build/test 不取得 PE、不创建 native cache，也不要求 Go。
+
+Windows Job 独立生产资格使用 `pnpm native:windows-job:prepare` 构建两架构候选，`pnpm native:windows-job:reproduce` 按固定 Go 版本、固定环境和隔离 cache 重建，逐字节比较。只有该生产流程需要 Go。真实 x64/arm64 runner 使用 source-candidate 运行 `pnpm qualification:windows-job` 以及原生插件测试。timeout、AbortSignal、forced helper exit、ACL、Job 分配、进程身份和后代回收均须通过对应真实入口；交叉编译、合成 PE 或 fake 不能关闭 Windows 资格缺口。消费者发布前使用公共 native verify 核对所有已发布引用，不重新构建或发布 helper。
 
 含 `buildImports` 或 `skillRuntimeFiles.import` 的 synthetic fixture 必须显式构造同一 source set 的 catalog runtime resolver。`plugin:test` 和 eval materialization 通过真实入口验证 resolver 注入；单插件 helper 缺 resolver 的 fail-closed 行为在最低 unit 层验证，不建立 sibling layout fallback。
 
@@ -175,7 +177,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 
 `pnpm build:dev` 只用于本地开发。它按 Eval、Core、CLI TypeScript 和 plugin bundle 分别计算生产输入与输出 identity；test、Vitest config、docs、change metadata、Eval 和 report 不进入 key。每个 TypeScript 目标使用独立 `tsBuildInfoFile`。输入文件删除、输出损坏、cache metadata 或 `tsbuildinfo` 损坏时，只 clean 并重建该目标。CLI key 还绑定 Eval 和 Core 输出 identity，plugin bundle 使用独立 key 和输出验证。
 
-Release unit/integration 覆盖 schema 2 CLI target 更新的 package 同步、Catalog exact version mutation、local prepared artifacts、CLI attempted marker、Catalog publication journal、启用轴的 `Windows x64 → Windows arm64 → Eval → Core → CLI → CLI tag → Catalog` 顺序，以及 Catalog-only 不访问 npm/CLI tag 的边界。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
+Release unit/integration 覆盖 schema 2 CLI target 更新的 package 同步、Catalog exact version mutation、local prepared artifacts、CLI attempted marker、Catalog publication journal、启用轴的 `Eval → Core → CLI → CLI tag → Catalog` 顺序，以及 Catalog-only 不访问 npm/CLI tag 的边界。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
 
 一键发布还必须覆盖参数互斥、白名单元数据 commit、所选轴远端隔离、空远端首个 beta 候选、所选轴无候选短路，以及注解 CLI tag 的创建、幂等补发和冲突拒绝。tag integration 使用本地 bare Git remote；不得写真实 `origin`。
 

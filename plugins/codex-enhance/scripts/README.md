@@ -6,7 +6,15 @@
 pnpm plugin:test codex-enhance --test-concurrency 1
 ```
 
-这个入口可在 macOS、Linux 和 Windows 原生 runner 上复用。平台专属用例在其他系统上明确跳过；跳过不算该平台已验证。测试使用本地 fake backend，不调用真实模型。
+macOS/Linux 的普通测试使用默认 `fixture` 模式，不取得 Windows 制品，也不要求 Go。Windows 普通 fixture 测试须用 `--native-mode fixture --native-fixture-context <context.json>` 显式提供 ready fixture 上下文；用例只替换原生进程边界，真实 Windows 测试会跳过。fixture 上下文不提供原生支持证据。
+
+真实 Windows 测试由 AW runner 按本插件的 `node` consumer binding 解析工具。使用已预置隔离缓存时运行：
+
+```sh
+pnpm plugin:test codex-enhance --native-mode cache-only --native-cache <cache-dir> --test-concurrency 1
+```
+
+显式联网集成使用 `--native-mode network`。工具源码已变化时，使用本次候选的 `--native-mode source-candidate --native-archive <archive.tgz>`，不下载旧版本。全部模式都只使用 runner 注入的原生上下文，不搜索 PATH、平台 package 或源码 PE。平台专属用例在其他系统上明确跳过；跳过不算该平台已验证。测试使用本地 fake backend，不调用真实模型。
 
 | 范围 | 测试入口 | 平台 |
 | --- | --- | --- |
@@ -28,8 +36,10 @@ pnpm plugin:test codex-enhance --test-concurrency 1
 `subagent-windows-file-boundaries.mjs` 是长期保留的显式原生资格入口。它需要 Windows 和两个不同的真实固定卷，不加入普通插件测试的默认链：
 
 ```sh
-node plugins/codex-enhance/scripts/subagent-windows-file-boundaries.mjs
+node <prepared-plugin>/scripts/subagent-windows-file-boundaries.mjs
 ```
+
+使用 AW 已构建的临时插件，继承资格 runner 按当前候选准备的 `AW_NATIVE_TOOL_CONTEXT` 和 `AW_NATIVE_RESOLVER_MODE=cache-only`。不从源码目录直接启动，也不在该脚本中下载工具。
 
 覆盖真实 `FileShare.None` 占用时原子更新失败、原值保留与解锁恢复，以及跨卷的 start/send/wait/result/export、中文与 CRLF 保真、主动停止和所属进程清理。运行目录或 `%SystemRoot%/Temp` 中至少一处必须与系统临时目录位于不同卷。脚本检查原生卷身份；没有所需卷时失败，不用另一个目录冒充跨卷。
 
@@ -42,7 +52,7 @@ node plugins/codex-enhance/scripts/subagent-windows-file-boundaries.mjs
 macOS/Linux：
 
 ```sh
-AW_SUBAGENT_LONG_RUN_MS=1805000 node --test --test-name-pattern='long-running default run' plugins/codex-enhance/scripts/subagent-integration-recovery.test.mjs
+AW_SUBAGENT_LONG_RUN_MS=1805000 node --test --test-name-pattern='long-running default run' <prepared-plugin>/scripts/subagent-integration-recovery.test.mjs
 ```
 
 Windows PowerShell：
@@ -50,7 +60,7 @@ Windows PowerShell：
 ```powershell
 $env:AW_SUBAGENT_LONG_RUN_MS = '1805000'
 try {
-  node --test --test-name-pattern='long-running default run' plugins/codex-enhance/scripts/subagent-integration-recovery.test.mjs
+  node --test --test-name-pattern='long-running default run' <prepared-plugin>/scripts/subagent-integration-recovery.test.mjs
 } finally {
   Remove-Item Env:AW_SUBAGENT_LONG_RUN_MS
 }
@@ -58,6 +68,6 @@ try {
 
 这项资格实际等待超过 30 分钟，普通反馈不启用。只有相关生命周期或平台实现变化需要新原生证据时才重跑。
 
-PR/main 和发布候选共用 `.github/actions/plugin-tests` 复合 action。Linux x64、macOS arm64 运行全部插件；Windows x64 通过 `--test-shard 1/3`、`2/3`、`3/3` 按测试文件分片，每片串行，全部成功才通过。Adapter 原生集成测试分为三个文件，Runtime 原生集成测试按通信、初始化、恢复、报告和结果分为五个文件，全部进入普通分片。Node 按文件路径排序后轮流分配，新增或重命名文件时需检查三片的耗时分布；一个文件内的用例不会拆到多片。各 Windows 分片都启用原生调用诊断。第一片保留文件占用与跨卷资格。分片不缩短单个用例的原生耗时，也不启用真实 30 分钟等待。
+PR/main 和发布候选共用 `.github/actions/plugin-tests` 复合 action。Linux x64、macOS arm64 运行全部插件；Windows x64 显式使用本次源码候选，通过 `--test-shard 1/3`、`2/3`、`3/3` 按测试文件分片，每片串行，全部成功才通过。Adapter 原生集成测试分为四个文件，Runtime 原生集成测试按通信、初始化、恢复、会话恢复、恢复输出、报告和结果分为七个文件。普通 Windows fixture 模式的跳过不代替这些原生用例。Node 按文件路径排序后轮流分配，新增或重命名文件时需检查三片的耗时分布；一个文件内的用例不会拆到多片。各 Windows 分片都启用原生调用诊断。第一片保留文件占用与跨卷资格。分片不缩短单个用例的原生耗时，也不启用真实 30 分钟等待。
 
 自动 beta 只复用相同 main SHA 已成功的全部平台与分片；未取得可复用证据的发布候选会重新执行这套流程。原生资格仅证明实际运行的 OS/CPU，不外推其他架构或真实模型。

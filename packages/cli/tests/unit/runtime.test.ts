@@ -96,6 +96,38 @@ describe('command runtime', () => {
     expect(JSON.stringify([reportEvent.mock.calls, debugLog.mock.calls])).not.toContain(sentinel);
   });
 
+  it('keeps Windows native admission before writes after diagnostic runner wrapping', async () => {
+    const [{ runCli }, { execFileNativeCliRunner }] = await Promise.all([
+      import('../../src/index.js'),
+      import('../../src/utils/native-cli.js'),
+    ]);
+    const isolation = getCurrentSourceTestIsolation();
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    let exitCode: number;
+    try {
+      Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'win32' });
+      exitCode = await runCli(['install', 'team/missing', '--platform', 'codex', '--scope', 'user', '--yes', '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: {
+          ...isolation.env,
+          AW_TEST_RUNNER_PROCESS_TREE: '1',
+          AW_NATIVE_TEST_CONFIG: '{invalid-json',
+        },
+        nativeCliRunner: execFileNativeCliRunner,
+        interactive: false,
+        io: { stdout: (value) => stdout.push(value), stderr: (value) => stderr.push(value) },
+      });
+    } finally {
+      Object.defineProperty(process, 'platform', originalPlatform);
+    }
+    expect(exitCode!).toBe(1);
+    const receipt = JSON.parse(stdout.join(''));
+    expect(receipt.targetResults).toEqual([expect.objectContaining({ errorCode: 'nativeTestConfigInvalid' })]);
+    await expect(fs.pathExists(isolation.layout.awHomeDir)).resolves.toBe(false);
+  });
+
   it('uses the injected prompt output sink instead of stdout', async () => {
     const { createReadlinePrompt } = await import('../../src/commands/runtime.js');
     const input = Readable.from(['\n']);

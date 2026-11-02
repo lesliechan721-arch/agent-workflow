@@ -21,6 +21,9 @@ importers:
         specifier: ^1.0.3
         version: 1.0.3
     devDependencies:
+      '@lesliechan721/aw-native-runtime':
+        specifier: workspace:*
+        version: link:../native-runtime
       '@types/fs-extra':
         specifier: ^11.0.4
         version: 11.0.4
@@ -33,13 +36,6 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@24.12.2)(yaml@2.8.3)
-    optionalDependencies:
-      '@lesliechan721/aw-windows-job-win32-arm64':
-        specifier: workspace:0.1.0
-        version: link:../aw-windows-job-win32-arm64
-      '@lesliechan721/aw-windows-job-win32-x64':
-        specifier: workspace:0.1.0
-        version: link:../aw-windows-job-win32-x64
 
   packages/aw-windows-job-win32-arm64: {}
 
@@ -84,6 +80,9 @@ importers:
         specifier: ^2.8.3
         version: 2.8.3
     devDependencies:
+      '@lesliechan721/aw-native-runtime':
+        specifier: workspace:*
+        version: link:../native-runtime
       '@types/fs-extra':
         specifier: ^11.0.4
         version: 11.0.4
@@ -109,6 +108,8 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@24.12.2)(yaml@2.8.3)
 
+  packages/native-runtime: {}
+
   packages/plugin-core:
     dependencies:
       ajv:
@@ -124,6 +125,9 @@ importers:
         specifier: ^2.8.1
         version: 2.8.3
     devDependencies:
+      '@lesliechan721/aw-native-runtime':
+        specifier: workspace:*
+        version: link:../native-runtime
       '@types/fs-extra':
         specifier: ^11.0.4
         version: 11.0.4

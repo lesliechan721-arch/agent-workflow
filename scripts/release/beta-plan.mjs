@@ -12,8 +12,6 @@ import {
   packCli,
   packCore,
   packEval,
-  packWindowsJobArm64,
-  packWindowsJobX64,
   RELEASE_NETWORK_TIMEOUT_MS,
   repoRoot as defaultRepoRoot,
   resolveRegistryUrl,
@@ -26,8 +24,6 @@ import { resolveMainSource } from './source-candidate.mjs';
 
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/u;
 const CLI_PACKAGES = [
-  ['aw-windows-job-win32-x64', '@lesliechan721/aw-windows-job-win32-x64', packWindowsJobX64],
-  ['aw-windows-job-win32-arm64', '@lesliechan721/aw-windows-job-win32-arm64', packWindowsJobArm64],
   ['agent-skill-eval', '@lesliechan721/agent-skill-eval', packEval],
   ['plugin-core', '@lesliechan721/aw-plugin-core', packCore],
   ['cli', '@lesliechan721/aw', packCli],
@@ -238,7 +234,7 @@ async function catalogProductionContent(root, manifest) {
 async function compareCli(artifacts, baseline, root, options) {
   if (!Array.isArray(artifacts) || artifacts.length !== CLI_PACKAGES.length
     || new Set(artifacts.map((artifact) => artifact.name)).size !== CLI_PACKAGES.length) {
-    throw new Error('Production comparison requires all five candidate npm packages.');
+    throw new Error('Production comparison requires all three candidate npm packages.');
   }
   let changed = baseline === null;
   for (const [directory, name] of CLI_PACKAGES) {

@@ -105,7 +105,7 @@ async function absent(filePath) {
   }
 }
 
-/** Export only the descriptor, its five bound tarballs, and the unchanged attempt. */
+/** Export only the descriptor, its three bound tarballs, and the unchanged attempt. */
 export async function exportPreparedRelease(options = {}) {
   if (typeof options.destination !== 'string' || options.destination === '') {
     throw new Error('Prepared export requires a destination directory.');

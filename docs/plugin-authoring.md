@@ -183,6 +183,8 @@ Skill 使用 set/key/variant 逻辑引用；同一引用用于权限。AW 在最
 
 ## Build、Portable 和信任边界
 
+声明原生工具时读取[原生工具合同](native-tools.md)。`nativeTools` 将文本锁绑定到受控命令 set 或 Node 测试；AW 生成 reader，并在消费者启动前准备当前平台制品。普通 validate/build/materialization 保持离线。插件不携带 PE 或私有下载器，公开业务参数不增加 prepare、download 或路径字段。发布前使用 `aw native verify <descriptor> --all-variants --json` 验证全部已发布引用。
+
 Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输入。不要隐式安装工具或读取真实用户配置。`buildConfig.runtimeExports`、`buildImports`、`skillRuntimeFiles.import` 和 artifact `runtimeImports` 是 typed build-time reuse edge；它们不自动形成 manifest dependency。
 
 每个 `buildConfig.runtimeExports[]` 必须使用 `{ name, source, requires: { aw: { capabilities: [] } } }`。Provider 作者显式声明该 export 的完整 runtime capability 集合；空数组合法。Core 只规范化、排序、去重并计算稳定 capability set digest，不扫描 export 内容推断 metadata。`skillRuntimeFiles.import` 和 artifact `runtimeImports` 把实际使用 export 的 capability 合并到 consumer 最终 bundle、Catalog entry 和每个 Skill receipt；`buildImports` 不传播。Consumer 自有 `skillRuntimeFiles.source` 和 `generatedSkillRuntimeFiles` 继续由顶层 `requires.aw.capabilities` 负责。

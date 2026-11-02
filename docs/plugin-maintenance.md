@@ -15,6 +15,8 @@
 
 ## 同步规则
 
+原生工具的声明、producer 审阅、受控启动、离线恢复和独立发布以[原生工具合同](native-tools.md)为准。`packages/native-runtime` 是嵌入产品包的私有共享实现；Core 只使用其离线 parser/reader。原生 Go 源和显式候选位于 `native-tools/windows-job/`；生成 PE 不写回源码、Skill 或 Catalog。
+
 改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发或安装流程，或任何影响插件作者使用方式的能力时，必须同时检查公开 CLI、canonical registry 和 `aw-development-toolkit`。
 
 已安装配置读取使用 `aw.installed-runtime-config.v2`、keys-only target 声明和 schema 2 单产物资源。旧 resourceVersion/artifactIds、v1 helper 和 expectedRevision 须按 [插件作者指南](plugin-authoring.md#已安装配置读取) 更新。托管命令的声明、身份、管理、主机与恢复见 [托管命令合同](managed-commands.md)，作者 registry 增加 managed-commands surface。Codex Enhance 外部执行使用 Adapter v5；它与 Eval Engine 的 instruction-v2 是不同合同，不联动改号。Config Definition v4 的结构能力由 Core、公开 schema、registry、CLI 与 TUI 共用实现，先交付支持新 capability 的 CLI，再分发依赖该能力的插件。升级后通过正常 build/sync/reinstall 更新资源，保留 ownership、native receipt、Status 和 cleanup 边界。

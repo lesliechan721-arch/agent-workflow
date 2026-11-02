@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -60,15 +60,15 @@ describe('published Eval package contract', () => {
     expect(help.stdout).toContain('doctor --json')
   })
 
-  it.each([
-    ['x64', 0x8664],
-    ['arm64', 0xaa64],
-  ] as const)('ships the %s Windows Job helper in the published dist', async (arch, machine) => {
-    const helperPath = resolveWindowsJobHelperPath({ arch })
-    const bytes = await readFile(helperPath)
-    const peOffset = bytes.readUInt32LE(0x3c)
-    expect(bytes.subarray(0, 2).toString('ascii')).toBe('MZ')
-    expect(bytes.readUInt16LE(peOffset + 4)).toBe(machine)
+  it('ships its text lock and embedded resolver without Windows executables', async () => {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'eval-dist-native-')))
+    roots.push(root)
+    const cacheRoot = path.join(root, 'cache')
+    await expect(resolveWindowsJobHelperPath({ cacheRoot, arch: 'x64' }))
+      .rejects.toMatchObject({ code: 'nativeCacheMiss' })
+    await expect(stat(cacheRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+    const names = await readdir(path.resolve('dist'), { recursive: true })
+    expect(names.filter((name) => /\.exe$/iu.test(name))).toEqual([])
   })
 
   it.skipIf(process.platform === 'win32')(

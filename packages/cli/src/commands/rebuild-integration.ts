@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { captureNativeToolChanges } from '../utils/native-tool-review.js';
+import { forceOfflineCleanupEvidence } from './offline-cleanup-evidence.js';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -6,7 +8,7 @@ import { catalogFileMode, type RuntimeConfigSnapshot } from '@lesliechan721/aw-p
 import { COMMAND_PRODUCER_RECORD_FILE, getManagedCommandArtifactTargets, getCommandPackageId, type ManagedCommandProducerRef } from '@lesliechan721/aw-plugin-core/manifest';
 import os from 'node:os';
 import {
-  commandSetsForProducer, createManagedCommandReferenceResolver, discoverRetainedManagedCommandPackages, retainedManagedCommandPackageResult, managedCommandProducerIdentity,
+  injectNativeToolClosureFiles, nativeToolsForCommandSets, commandSetsForProducer, createManagedCommandReferenceResolver, discoverRetainedManagedCommandPackages, retainedManagedCommandPackageResult, managedCommandProducerIdentity,
   prepareManagedCommandPackage, resolveSkillManagedCommandReferences, type ManagedCommandCandidate,
 } from '../utils/managed-command-materialization.js';
 import { assertManagedCommandBindingIdentities, normalizeInstalledCommandProducer, managedCommandDiagnostic, ManagedCommandError, publishManagedCommandBindings, revokeManagedCommandBindings, syncManagedCommandPackage, readInstalledCommandProducer, listManagedCommands } from '../utils/managed-command-store.js';
@@ -298,7 +300,7 @@ async function commandPackageActions(options: {
       }
       await visit(prepared.resourceRoot, '');
       files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
-          return { action: { kind: 'syncManagedCommandPackage' as const, pluginId: pluginActionId(options.plugin), scope: declaration.scope, producer: prepared.producer, sets: prepared.sets, files, contentDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}` }, candidate: { producer: prepared.producer, sets: prepared.sets } };
+          return { action: { kind: 'syncManagedCommandPackage' as const, pluginId: pluginActionId(options.plugin), scope: declaration.scope, producer: prepared.producer, sets: prepared.sets, nativeTools: prepared.nativeTools, files, contentDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}` }, candidate: { producer: prepared.producer, sets: prepared.sets, nativeTools: prepared.nativeTools } };
         } finally { await prepared.cleanup(); }
       })();
       cache.set(getCommandPackageId(producer), preparation);
@@ -324,8 +326,9 @@ async function prepareSkillCommandCandidate(options: {
     if (!options.tree.files[entry.entry]) throw new Error(`commandResourceInvalid: command entry ${entry.entry} is missing from the final Skill.`);
     if (process.platform !== 'win32' && entry.runner === 'executable' && options.tree.fileModes?.[entry.entry] !== 0o755) throw new Error(`commandRunnerUnsupported: command entry ${entry.entry} has no executable source file.`);
   }
-  options.tree.files[COMMAND_PRODUCER_RECORD_FILE] = Buffer.from(`${JSON.stringify({ schemaVersion: 1, producer, sets }, null, 2)}\n`);
-  return { producer, sets };
+  const nativeTools = injectNativeToolClosureFiles(options.tree.files, await nativeToolsForCommandSets(options.plugin, sets));
+  options.tree.files[COMMAND_PRODUCER_RECORD_FILE] = Buffer.from(`${JSON.stringify({ schemaVersion: 1, producer, sets, ...(nativeTools ? { nativeTools } : {}) }, null, 2)}\n`);
+  return { producer, sets, nativeTools };
 }
 
 async function prepareStaticNativeSkillActions(options: {
@@ -4586,7 +4589,7 @@ function createNativeDriver(options: {
     const producers: ManagedCommandCandidate[] = [];
     for (const target of targets) for (const action of target.operationActions ?? []) {
       if (action.kind === 'syncManagedCommandPackage') {
-        producers.push({ producer: action.producer, sets: action.sets });
+        producers.push({ producer: action.producer, sets: action.sets, nativeTools: action.nativeTools });
       } else if (action.kind === 'materializeNativeSkill'
         || (action.kind === 'writeOwnedArtifact' && action.artifactKind === 'skill-directory')) {
         const file = action.files?.find((entry) => entry.relativePath === COMMAND_PRODUCER_RECORD_FILE);
@@ -4633,7 +4636,7 @@ function createNativeDriver(options: {
               await fs.outputFile(destination, content);
               await fs.chmod(destination, file.mode);
             }
-            const result = await syncManagedCommandPackage({ producer: action.producer, sourceDirectory: resourceRoot, sets: action.sets, env: options.context.env });
+            const result = await syncManagedCommandPackage({ producer: action.producer, sourceDirectory: resourceRoot, sets: action.sets, nativeTools: action.nativeTools, env: options.context.env });
             await options.context.reporter.event({ type: 'managed-command:producer', source: { plugin: action.producer.pluginName, scope: action.producer.scope }, data: { packageKey: action.producer.key, phase: 'success' } });
             return { producer: action.producer, state: 'completed', commandIds: result.commandIds, removedCommandIds: result.removedCommandIds, errors: [], recoveryActions: [] };
           } catch (error) {
@@ -6125,6 +6128,30 @@ export function createRebuildIntegration(options: {
         ...(write.additionalActions ?? []),
       ]));
       finalizeOwnedArtifactActions(operationActions);
+      const removed = input.command === 'cleanup' || input.command === 'uninstall';
+      if (input.readOnlyInspectionPlan !== true && (removed || operationActions.length > 0)) {
+        let skillComponents = allComponents.filter((component) => component.kind === 'skill-directory');
+        if (removed && skillComponents.length > 0) {
+          const inspection = await inspectOwnedComponents({ components: skillComponents, executor: driver.ownership });
+          skillComponents = inspection.components.flatMap((entry) =>
+            entry.state === 'present' && entry.component.kind === 'skill-directory' ? [entry.component] : []);
+        }
+        const nativeToolChanges = await captureNativeToolChanges({ actions: operationActions, sourceId: input.sourceId,
+          pluginName: input.plugin.manifest.name, platform: input.platform, scope: input.scope, projectRoot: input.cwd,
+          removed, env: options.context.env, resourceRoots: skillComponents.map((component) => component.path) });
+        if (nativeToolChanges.length > 0 && removed && operationActions.length === 0) {
+          // Ordinary owned Skill removal can have no renderer action. Reuse the
+          // existing owner/path evidence so its native impact enters Review.
+          const evidence = await forceOfflineCleanupEvidence({ reason: 'bundleUnavailable',
+            pluginId: input.pluginId ?? pluginActionId(input.plugin), pluginName: input.plugin.manifest.name,
+            sourceId: input.sourceId!, sourceIdentity: input.sourceIdentity!, platform: input.platform, scope: input.scope,
+            components: skillComponents });
+          operationActions.push(...evidence.plan.actions.map((action): OperationAction => ({ kind: 'removeOwnedArtifact',
+            pluginId: evidence.pluginId, platform: input.platform, scope: input.scope,
+            path: action.target, ownerFingerprint: evidence.targetFingerprint })));
+        }
+        if (nativeToolChanges.length > 0) operationActions[0]!.nativeToolChanges = nativeToolChanges;
+      }
       const target: DesiredTarget = {
         plugin: input.plugin,
         identity: {

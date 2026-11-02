@@ -628,6 +628,45 @@ describe('EvalSpec v1 execution', () => {
     })
   })
 
+  it('stops a Windows native preparation failure before run output and provider execution', async () => {
+    const data = await fixture()
+    const execute = vi.fn()
+    const prepare = vi.fn(async () => { throw new Error('nativeArchiveIntegrityMismatch') })
+    await expect(runEvalSpec(data.specPath, {
+      auditPath: data.auditPath,
+      sourceEnv: { CODEX_PERMISSION_PROFILE: ':danger-full-access', CODEX_HOME: process.env.CODEX_HOME },
+      processManagementDependencies: {
+        platform: 'win32',
+        prepareWindowsJobHelper: prepare,
+      },
+      executeCustomProvider: execute,
+    })).rejects.toThrow('nativeArchiveIntegrityMismatch')
+    expect(prepare).toHaveBeenCalledOnce()
+    expect(execute).not.toHaveBeenCalled()
+    await expect(readdir(path.join(data.root, 'output'))).rejects.toThrow()
+  })
+
+  it('passes the admitted helper to the provider without adding it to result evidence', async () => {
+    const data = await fixture()
+    const helperPath = 'C:\\fixture\\native.exe'
+    const execute = vi.fn(async (input: { processTree?: { windowsJobHelperPath?: string } }) => {
+      expect(input.processTree?.windowsJobHelperPath).toBe(helperPath)
+      return { usage: null, grade: { passed: true, score: 1 } }
+    })
+    const result = await runEvalSpec(data.specPath, {
+      auditPath: data.auditPath,
+      sourceEnv: { CODEX_PERMISSION_PROFILE: ':danger-full-access', CODEX_HOME: process.env.CODEX_HOME },
+      processManagementDependencies: {
+        platform: 'win32',
+        prepareWindowsJobHelper: async () => helperPath,
+      },
+      executeCustomProvider: execute as never,
+    })
+    expect(execute).toHaveBeenCalledOnce()
+    expect(result.result.processManagement).toMatchObject({ mode: 'managed' })
+    expect(JSON.stringify(result.result)).not.toContain('native.exe')
+  })
+
   it('blocks a macOS keychain wrapper before output or provider execution in every process mode', async () => {
     for (const allowUnmanagedProcesses of [false, true]) {
       const data = await fixture()

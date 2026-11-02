@@ -422,7 +422,7 @@ export interface PluginRequirements { aw: { capabilities?: string[] } }
 export type PluginManifestSource = PluginManifestSourceV3;
 export type NormalizedPluginManifest = Omit<
   PluginManifestSourceV3,
-  'requires' | 'extensions' | 'artifacts' | 'buildConfig' | 'scripts' | 'config' | 'managedCommands'
+  'requires' | 'extensions' | 'artifacts' | 'buildConfig' | 'scripts' | 'config' | 'managedCommands' | 'nativeTools'
 > & {
   requires?: PluginRequirements;
   extensions?: PluginExtensions;
@@ -431,6 +431,7 @@ export type NormalizedPluginManifest = Omit<
   scripts?: PluginScriptsConfig;
   config?: PluginConfigSchema;
   managedCommands?: ManagedCommands;
+  nativeTools?: import('./native-tools.js').NativeTools;
 };
 export interface PluginMeta {
   sourceId?: CatalogSourceId;

@@ -90,12 +90,14 @@ export {
   createWindowsJobInvocation,
   encodeWindowsJobHelperConfig,
   quoteWindowsCommandLineArgument,
+  prepareWindowsJobHelper,
   resolveWindowsJobHelperPath,
   WINDOWS_JOB_HELPER_CONFIG_SCHEMA_VERSION,
 } from './windows-job.js'
 export type {
   WindowsJobHelperConfig,
   WindowsJobInvocation,
+  PrepareWindowsJobHelperOptions,
 } from './windows-job.js'
 export { readWindowsNativeProcessStart, readWindowsNativeProcessTable } from './windows-native.js'
 export type { WindowsNativeOptions, WindowsNativeProcessRow } from './windows-native.js'

@@ -219,7 +219,7 @@ worker 消失、后端终态不明、输出超限、协议冲突或本地收尾�
 
 ## 操作系统与安装闭包
 
-Windows 支持指原生 Windows 进程和文件系统上的完整 start/send/wait/result/stop 闭环。不能用 WSL、交叉编译、mock 或仅通过文件选择测试替代运行证据。插件与 Eval 共用原生程序源码，但保留各自的启动入口和生命周期。插件从自身安装资源解析 helper，不读取 Eval package 或开发 checkout。
+Windows 支持指原生 Windows 进程和文件系统上的完整 start/send/wait/result/stop 闭环。不能用 WSL、交叉编译、mock 或仅通过文件选择测试替代运行证据。插件与 Eval 共用原生程序源码，但保留各自的启动入口和生命周期。AW 在托管命令启动前按已安装 producer 的文本锁准备当前架构的 helper，插件只读取生成的原生工具上下文，不读取 Eval package、开发 checkout 或原生 cache。后台进程继承已准备路径；嵌套 AW 调用按自身声明只使用有效缓存。
 
 | 边界 | 必须保持的行为 |
 | --- | --- |

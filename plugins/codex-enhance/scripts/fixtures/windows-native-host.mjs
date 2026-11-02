@@ -1,5 +1,3 @@
-import fs from 'node:fs/promises';
-import { guideRuntimeScripts } from './guide-runtime-resources.mjs';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
@@ -38,8 +36,14 @@ export function windowsNativeSpawn(execute, fallback) {
   };
 }
 
-export async function prepareWindowsNativeResources(from, runtimeEntry) {
-  const source = path.join(guideRuntimeScripts(from), 'runtime/native');
-  const target = path.join(path.dirname(runtimeEntry), 'native');
-  if (source !== target && !await fs.lstat(target).catch((error) => { if (error.code === 'ENOENT') return null; throw error; })) await fs.cp(source, target, { recursive: true });
+// The executable is never opened: windowsNativeSpawn replaces its process
+// boundary. This context is explicit and does not populate a native cache.
+export function useWindowsNativeFixture({ preserveContext = false } = {}) {
+  if (!preserveContext || !process.env.AW_NATIVE_TOOL_CONTEXT) {
+    process.env.AW_NATIVE_TOOL_CONTEXT = JSON.stringify({ schemaVersion: 1, tools: {
+      'windows-job': { state: 'ready', protocol: 'aw.windows-job.v1',
+        executable: path.resolve('fixture-native/aw-windows-job.exe'), sha256: `sha256:${'0'.repeat(64)}` },
+    } });
+  }
+  process.env.AW_NATIVE_RESOLVER_MODE = 'cache-only';
 }

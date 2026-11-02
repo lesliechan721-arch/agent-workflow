@@ -75,7 +75,7 @@ renderer 只在 Guide 的 external-delegation 中生成执行器表，只显示 
 
 AW 在物化时注入安装态 JSON 和配置 reader（保留文件名 .aw-runtime-config.json、scripts/aw-runtime-config.mjs）；插件不伪造或覆盖保留资源。reader 从本产物返回 installedIdentity、获准的 effectiveValues（subagentCommands 和 subagentRetentionHours）和 resourceRoot，不读最新 store 或同名 sibling。保存未 apply 时新调用继续用旧安装资源，活跃调用也不重读配置换后端。缺失或损坏通过正常 sync/reinstall 恢复。
 
-Windows 原生资源随 Guide 一同安装，位于 `scripts/runtime/native/windows`，包含 manifest 及 x64、arm64 PE。运行时按当前 Node 架构选择普通文件，校验 SHA-256 和 PE 架构后执行；不使用 PATH、下载或 PowerShell 替代文件、进程和 Job 操作。资源缺失、摘要错误或架构不支持时，先完成或停止活跃任务，再通过正常 sync/reinstall 修复。用户无需安装 Go，也无需增加配置项。
+Guide 用文本锁声明 Windows Job 工具，并将全部托管命令绑定为 Windows required 消费者。AW 在启动命令前取得并校验当前 Node 架构的工具，通过生成的 reader 注入已解析路径；插件不保存 PE、不下载工具，也不搜索 PATH 或 Eval package。缓存有效时可离线运行；缓存缺失且取得失败时，命令在业务副作用前停止，可通过 AW 的离线导入或显式预取恢复。后台 worker、adapter 和扫描器继承已解析上下文，嵌套 AW 只使用有效缓存。一次执行中不更换工具或 backend；升级、重装或删除 producer 前，先结束活跃任务。用户无需安装 Go，也无需增加 Guide 参数或配置项。
 
 ## 资料保留与恢复配置
 
@@ -141,7 +141,7 @@ CLI 已传入 model 或 effort 时，args 不能再次设置同一后端控制�
 
 变量名为 `[A-Za-z_][A-Za-z0-9_]*`，值不得包含 NUL。env 只保存普通字面值，不能保存密钥。envFrom 只存来源名；解析后的秘密不进入安装资源、stdin JSON、执行器表。继承其余普通宿主环境及后端认证设置，最终环境通过 spawn.env 交给 adapter，再按实际后端接口使用。
 
-`AW_PLUGIN_CONTEXT`、`AW_PLUGIN_*` 作者上下文、`AW_SUBAGENT_*` 运行控制项不能借 env/envFrom 注入。custom-managed 还拒绝 AW_COMMAND_*、AW_AGENT_SKILL_EVAL_PROCESS_MARKER 和 AW_HOME/AW_CODEX_HOME/AW_CLAUDE_HOME 的目标或来源名，跨 OS 按 ASCII 大小写不敏感检查；普通 command/entrypoint custom 保留既有校验范围。本次私有目录、工具绑定与进程归属标记由运行层设置；现有 Eval 进程标记按原合同继承但不可覆盖。诊断脱敏已解析 envFrom 值及可识别凭据，不输出完整 env 或请求。受信任适配器可能读取宿主凭据，环境过滤不构成隔离。
+`AW_PLUGIN_CONTEXT`、`AW_PLUGIN_*` 作者上下文、`AW_SUBAGENT_*` 运行控制项和 `AW_NATIVE_*` 原生工具上下文不能借 env/envFrom 注入。AW_NATIVE_* 的目标和来源名在全部 adapter 中按 ASCII 大小写不敏感检查。custom-managed 还拒绝 AW_COMMAND_*、AW_AGENT_SKILL_EVAL_PROCESS_MARKER 和 AW_HOME/AW_CODEX_HOME/AW_CLAUDE_HOME 的目标或来源名，跨 OS 按 ASCII 大小写不敏感检查；普通 command/entrypoint custom 保留既有校验范围。本次私有目录、工具绑定与进程归属标记由运行层设置；现有 Eval 进程标记按原合同继承但不可覆盖。诊断脱敏已解析 envFrom 值及可识别凭据，不输出完整 env 或请求。受信任适配器可能读取宿主凭据，环境过滤不构成隔离。
 
 ## 内建后端的共同要求
 

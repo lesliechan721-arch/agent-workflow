@@ -15,15 +15,11 @@ import {
   packCli,
   packCore,
   packEval,
-  packWindowsJobArm64,
-  packWindowsJobX64,
   readPackageJson,
   releaseRoot,
   repoRoot as defaultRepoRoot,
   resolveRegistryUrl,
   resolveReleaseHead,
-  windowsArm64PackageJsonPath,
-  windowsX64PackageJsonPath,
   withReleaseBuildSnapshot,
   writePackageJson,
 } from './common.mjs';
@@ -42,6 +38,7 @@ import {
 import { calculateCanonicalDigest } from './release-model.mjs';
 import { assertVersionTargetsMatchHead, readVersionTargets } from './release-target.mjs';
 import { assertPortablePreparedBinding } from './prepared-transfer.mjs';
+import { verifyNativeReferences } from './verify-native-references.mjs';
 
 export { exportPreparedRelease, importPreparedRelease } from './prepared-transfer.mjs';
 
@@ -49,15 +46,11 @@ export const preparedReleaseRoot = path.join(releaseRoot, 'prepared');
 export const preparedDescriptorPath = path.join(preparedReleaseRoot, 'descriptor.json');
 export const releaseAttemptPath = path.join(releaseRoot, 'attempted.json');
 const CLI_PACKAGES = [
-  '@lesliechan721/aw-windows-job-win32-x64',
-  '@lesliechan721/aw-windows-job-win32-arm64',
   '@lesliechan721/agent-skill-eval',
   '@lesliechan721/aw-plugin-core',
   '@lesliechan721/aw',
 ];
 const CLI_PACKAGE_JSON_PATHS = [
-  windowsX64PackageJsonPath,
-  windowsArm64PackageJsonPath,
   evalPackageJsonPath,
   corePackageJsonPath,
   cliPackageJsonPath,
@@ -353,37 +346,18 @@ export function assertSelectedCandidates(axes, candidates) {
 }
 
 async function stampCandidatePackages(snapshot, candidateVersion) {
-  const windowsX64Path = path.join(snapshot.windowsX64PackageRoot, 'package.json');
-  const windowsArm64Path = path.join(snapshot.windowsArm64PackageRoot, 'package.json');
-  const evalPath = path.join(snapshot.evalPackageRoot, 'package.json');
-  const corePath = path.join(snapshot.corePackageRoot, 'package.json');
-  const cliPath = path.join(snapshot.cliPackageRoot, 'package.json');
-  const [windowsX64Package, windowsArm64Package, evalPackage, corePackage, cliPackage] = await Promise.all([
-    readPackageJson(windowsX64Path),
-    readPackageJson(windowsArm64Path),
-    readPackageJson(evalPath),
-    readPackageJson(corePath),
-    readPackageJson(cliPath),
-  ]);
-  windowsX64Package.version = candidateVersion;
-  windowsArm64Package.version = candidateVersion;
-  evalPackage.version = candidateVersion;
-  evalPackage.optionalDependencies['@lesliechan721/aw-windows-job-win32-x64'] = candidateVersion;
-  evalPackage.optionalDependencies['@lesliechan721/aw-windows-job-win32-arm64'] = candidateVersion;
-  corePackage.version = candidateVersion;
-  cliPackage.version = candidateVersion;
-  cliPackage.dependencies['@lesliechan721/agent-skill-eval'] = candidateVersion;
-  cliPackage.dependencies['@lesliechan721/aw-plugin-core'] = candidateVersion;
-  delete evalPackage.awRelease;
-  delete corePackage.awRelease;
-  delete cliPackage.awRelease;
-  await Promise.all([
-    writePackageJson(windowsX64Path, windowsX64Package),
-    writePackageJson(windowsArm64Path, windowsArm64Package),
-    writePackageJson(evalPath, evalPackage),
-    writePackageJson(corePath, corePackage),
-    writePackageJson(cliPath, cliPackage),
-  ]);
+  const entries = [snapshot.evalPackageRoot, snapshot.corePackageRoot, snapshot.cliPackageRoot];
+  for (const root of entries) {
+    const manifestPath = path.join(root, 'package.json');
+    const manifest = await readPackageJson(manifestPath);
+    manifest.version = candidateVersion;
+    if (root === snapshot.cliPackageRoot) {
+      manifest.dependencies['@lesliechan721/agent-skill-eval'] = candidateVersion;
+      manifest.dependencies['@lesliechan721/aw-plugin-core'] = candidateVersion;
+    }
+    delete manifest.awRelease;
+    await writePackageJson(manifestPath, manifest);
+  }
 }
 
 function descriptorArtifact(root, name, filePath, contentDigest) {
@@ -398,6 +372,7 @@ export async function prepareLocalRelease(channel, options = {}) {
   const localReleaseRoot = options.releaseRoot ?? releaseRoot;
   const localPreparedRoot = options.preparedRoot ?? path.join(localReleaseRoot, 'prepared');
   const axes = options.axes ?? { cli: true, catalog: true };
+  await (options.verifyNativeReferences ?? verifyNativeReferences)(axes, { ...options, repoRoot });
   await (options.assertClean ?? assertTrackedHeadClean)(repoRoot, options);
   if (axes.cli) {
     await (options.assertTargetsMatchHead ?? assertVersionTargetsMatchHead)(repoRoot, options);
@@ -441,56 +416,26 @@ export async function prepareLocalRelease(channel, options = {}) {
       let npm = null;
       if (candidates.cli !== null) {
         await stampCandidatePackages(snapshot, candidates.cli);
-        const [windowsX64Tarball, windowsArm64Tarball, evalTarball, coreTarball, cliTarball] = await Promise.all([
-          (options.packWindowsJobX64 ?? packWindowsJobX64)({ snapshot, destination: artifactRoot, quiet: true }),
-          (options.packWindowsJobArm64 ?? packWindowsJobArm64)({ snapshot, destination: artifactRoot, quiet: true }),
+        const tarballs = await Promise.all([
           (options.packEval ?? packEval)({ snapshot, destination: artifactRoot, quiet: true }),
           (options.packCore ?? packCore)({ snapshot, destination: artifactRoot, quiet: true }),
           (options.packCli ?? packCli)({ snapshot, destination: artifactRoot, quiet: true }),
         ]);
         npm = {
           version: candidates.cli,
-          packages: [
-            descriptorArtifact(temporaryRoot, CLI_PACKAGES[0], windowsX64Tarball, await fileDigest(windowsX64Tarball)),
-            descriptorArtifact(temporaryRoot, CLI_PACKAGES[1], windowsArm64Tarball, await fileDigest(windowsArm64Tarball)),
-            descriptorArtifact(temporaryRoot, CLI_PACKAGES[2], evalTarball, await fileDigest(evalTarball)),
-            descriptorArtifact(temporaryRoot, CLI_PACKAGES[3], coreTarball, await fileDigest(coreTarball)),
-            descriptorArtifact(temporaryRoot, CLI_PACKAGES[4], cliTarball, await fileDigest(cliTarball)),
-          ],
-          treeDigests: {
-            [CLI_PACKAGES[0]]: await (options.computeTarballTreeDigest
-              ?? computePackageTarballTreeDigest)(windowsX64Tarball, {
-                normalizeReleaseMetadata: true,
-                expectedPackageName: CLI_PACKAGES[0],
-                expectedVersion: candidates.cli,
-              }),
-            [CLI_PACKAGES[1]]: await (options.computeTarballTreeDigest
-              ?? computePackageTarballTreeDigest)(windowsArm64Tarball, {
-                normalizeReleaseMetadata: true,
-                expectedPackageName: CLI_PACKAGES[1],
-                expectedVersion: candidates.cli,
-              }),
-            [CLI_PACKAGES[2]]: await (options.computeTarballTreeDigest
-              ?? computePackageTarballTreeDigest)(evalTarball, {
-                normalizeReleaseMetadata: true,
-                expectedPackageName: CLI_PACKAGES[2],
-                expectedVersion: candidates.cli,
-              }),
-            [CLI_PACKAGES[3]]: await (options.computeTarballTreeDigest
-              ?? computePackageTarballTreeDigest)(coreTarball, {
-                normalizeReleaseMetadata: true,
-                expectedPackageName: CLI_PACKAGES[3],
-                expectedVersion: candidates.cli,
-              }),
-            [CLI_PACKAGES[4]]: await (options.computeTarballTreeDigest
-              ?? computePackageTarballTreeDigest)(cliTarball, {
-                normalizeReleaseMetadata: true,
-                expectedPackageName: CLI_PACKAGES[4],
-                expectedVersion: candidates.cli,
-              }),
-          },
+          packages: await Promise.all(tarballs.map(async (tarball, index) =>
+            descriptorArtifact(temporaryRoot, CLI_PACKAGES[index], tarball, await fileDigest(tarball)))),
+          treeDigests: Object.fromEntries(await Promise.all(tarballs.map(async (tarball, index) => [
+            CLI_PACKAGES[index],
+            await (options.computeTarballTreeDigest ?? computePackageTarballTreeDigest)(tarball, {
+              normalizeReleaseMetadata: true,
+              expectedPackageName: CLI_PACKAGES[index],
+              expectedVersion: candidates.cli,
+            }),
+          ]))),
         };
       }
+
       let catalog = null;
       if (candidates.catalog !== null) {
         const mode = channel === 'stable' ? 'latest' : 'beta';

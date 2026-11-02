@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { readNativeTool } from '@lesliechan721/aw-native-runtime';
 
 import { createExecFileNativeCliRunner, NativeCliError } from '../../src/utils/native-cli.js';
 import { createWindowsJobInvocation, observeProcessTree } from '../../src/utils/process-tree.js';
@@ -179,10 +180,11 @@ export class TestCommandDiagnostics {
           void this.save();
         };
         const runner = createExecFileNativeCliRunner({
-          // Build/pack can delete platform package dist while this helper is running.
-          createWindowsJobInvocation: (executable, argv) => createWindowsJobInvocation(executable, argv, {
-            moduleUrl: new URL('../../../agent-skill-eval/src/windows-job.ts', import.meta.url).href,
-          }),
+          createWindowsJobInvocation: (executable, argv) => {
+            const helper = readNativeTool('windows-job', 'aw.windows-job.v1', options.env ?? process.env);
+            if (helper.state !== 'ready') throw new Error(`Windows test helper is unavailable (${helper.code}).`);
+            return createWindowsJobInvocation(executable, argv, { helperPath: helper.executable });
+          },
           observeProcessTree: (pid) => observeProcessTree(pid, marker, {
             markerEnvironmentVariable: markerVariable,
           }),

@@ -97,7 +97,7 @@ describe('Eval process management preflight', () => {
 
   it('admits Windows managed mode through the Job helper without process-table inspection', async () => {
     const inspectProcessTree = vi.fn(async () => undefined)
-    const resolveWindowsJobHelper = vi.fn(() => 'C:\\aw\\aw-windows-job.exe')
+    const prepareWindowsJobHelper = vi.fn(() => 'C:\\aw\\aw-windows-job.exe')
 
     await expect(resolveEvalProcessManagement({
       allowUnmanaged: false,
@@ -105,7 +105,7 @@ describe('Eval process management preflight', () => {
       dependencies: {
         platform: 'win32',
         inspectProcessTree,
-        resolveWindowsJobHelper,
+        prepareWindowsJobHelper,
       },
     })).resolves.toMatchObject({
       mode: 'managed',
@@ -113,7 +113,7 @@ describe('Eval process management preflight', () => {
       descendantCleanupGuaranteed: false,
       limitation: expect.stringContaining('Job containment'),
     })
-    expect(resolveWindowsJobHelper).toHaveBeenCalledOnce()
+    expect(prepareWindowsJobHelper).toHaveBeenCalledOnce()
     expect(inspectProcessTree).not.toHaveBeenCalled()
   })
 
@@ -123,9 +123,25 @@ describe('Eval process management preflight', () => {
       sourceEnv: { CODEX_PERMISSION_PROFILE: ':danger-full-access' },
       dependencies: {
         platform: 'win32',
-        resolveWindowsJobHelper: () => { throw new Error('helper missing') },
+        prepareWindowsJobHelper: () => { throw new Error('helper missing') },
       },
     })).rejects.toThrow('Full Access process management is unavailable')
+  })
+
+  it('does not prepare a Windows helper for restricted or explicit unmanaged execution', async () => {
+    const prepareWindowsJobHelper = vi.fn(async () => { throw new Error('must not prepare') })
+    const dependencies = { platform: 'win32' as const, prepareWindowsJobHelper }
+    await expect(resolveEvalProcessManagement({
+      allowUnmanaged: false,
+      sourceEnv: { CODEX_PERMISSION_PROFILE: ':read-only' },
+      dependencies,
+    })).rejects.toThrow('does not identify a Full Access')
+    await expect(resolveEvalProcessManagement({
+      allowUnmanaged: true,
+      sourceEnv: { CODEX_PERMISSION_PROFILE: ':read-only' },
+      dependencies,
+    })).resolves.toMatchObject({ mode: 'unmanaged-confirmed' })
+    expect(prepareWindowsJobHelper).not.toHaveBeenCalled()
   })
 
   it('blocks an injected keychain before process inspection', async () => {

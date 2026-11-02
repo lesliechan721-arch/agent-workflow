@@ -243,6 +243,7 @@ function selectCandidates(
 
 function classifyMaterializationError(error: unknown): never {
   if (error instanceof PortableCommandError || error instanceof SkillsCliError) throw error;
+  if (error && typeof error === 'object' && 'code' in error && error.code === 'nativeCacheMiss') throw error;
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes('does not declare distributions.agentSkills')) {
     throw new PortableCommandError('portableUnsupported', '插件不支持 Agent Skills distribution。');

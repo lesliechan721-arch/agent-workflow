@@ -1,11 +1,10 @@
-import test from 'node:test';
+import { nativeTest as test } from './fixtures/native-test.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { channel } from 'node:diagnostics_channel';
 import { createChildBridge, createChildChannel, invokeChildTool } from '../skills/codex-subagent-guide/scripts/runtime/adapter-channel.mjs';
@@ -15,11 +14,9 @@ import { runMessageMcp } from '../skills/codex-subagent-guide/scripts/message-mc
 import { messageBodies } from './fixtures/message-bodies.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
-const require = createRequire(import.meta.url);
-const messageScript = require.resolve('../skills/codex-subagent-guide/scripts/message.mjs');
-const mcpScript = require.resolve('../skills/codex-subagent-guide/scripts/message-mcp.mjs');
-const scripts = path.dirname(messageScript);
-const sourceScripts = guideRuntimeScripts(import.meta.url);
+const scripts = guideRuntimeScripts(import.meta.url);
+const messageScript = path.join(scripts, 'message.mjs');
+const mcpScript = path.join(scripts, 'message-mcp.mjs');
 const windows = process.platform === 'win32';
 const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const id = (value) => value.toString(16).padStart(32, '0');
@@ -95,7 +92,6 @@ async function fixture(t, options = {}) {
   await fs.mkdir(path.join(installed, 'runtime'), { recursive: true });
   await fs.mkdir(path.join(installed, 'file-selection'));
   for (const name of ['runtime/adapter-channel.mjs', 'runtime/contracts.mjs', 'runtime/files.mjs', 'runtime/platform.mjs', 'runtime/windows-native.mjs', 'file-selection/contracts.mjs']) await fs.copyFile(path.join(scripts, name), path.join(installed, name));
-  await fs.cp(path.join(sourceScripts, 'runtime/native'), path.join(installed, 'runtime/native'), { recursive: true });
   for (const entry of [messageScript, mcpScript]) await fs.copyFile(entry, path.join(installed, path.basename(entry)));
   const toolkit = { module: path.join(installed, 'runtime/adapter-channel.mjs'), command: process.execPath, messageScript: path.join(installed, 'message.mjs'), mcpScript: path.join(installed, 'message-mcp.mjs') };
   const messages = [];

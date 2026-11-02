@@ -17,10 +17,10 @@ const help = `Usage: aw-skill-eval <command>
 Commands:
   spec validate <spec.json>
   audit validate <audit.json> --spec <spec.json>
-  run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
+  run <spec.json> --audit <audit.json> [--allow-unmanaged-processes] [--native-cache-root <path>]
   result validate <result.json> --spec <spec.json> --audit <audit.json>
   inspect-result <result.json> --spec <spec.json> --audit <audit.json>
-  doctor --json
+  doctor --json [--native-cache-root <path>]
 `
 
 function requirePath(value: string | undefined, usage: string): string {
@@ -80,10 +80,14 @@ async function main(argv: string[]): Promise<void> {
   }
   const [command, action, value, ...extra] = argv
   if (command === 'doctor') {
-    if (action !== '--json' || value !== undefined || extra.length > 0) {
+    const doctorOptions = value === undefined ? extra : [value, ...extra]
+    if (action !== '--json' || (doctorOptions.length !== 0 &&
+      (doctorOptions.length !== 2 || doctorOptions[0] !== '--native-cache-root'))) {
       throw new Error('Usage: aw-skill-eval doctor --json')
     }
-    process.stdout.write(`${JSON.stringify(await doctorEvalProviders(), null, 2)}\n`)
+    process.stdout.write(`${JSON.stringify(await doctorEvalProviders({
+      ...(doctorOptions.length ? { nativeCacheRoot: requirePath(doctorOptions[1], 'Missing native cache root.') } : {}),
+    }), null, 2)}\n`)
     return
   }
   if (command === 'spec') {
@@ -115,21 +119,25 @@ async function main(argv: string[]): Promise<void> {
     return
   }
   if (command === 'run') {
-    const usage = 'Usage: aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]'
+    const usage = 'Usage: aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes] [--native-cache-root <path>]'
     const runPath = requirePath(action, usage)
     const runOptions = value === undefined ? [...extra] : [value, ...extra]
     const allowUnmanagedCount = runOptions.filter((entry) =>
       entry === '--allow-unmanaged-processes').length
     const allowUnmanagedProcesses = allowUnmanagedCount === 1
     const auditPath = optionPath(runOptions, '--audit', usage)
-    const expectedLength = allowUnmanagedProcesses ? 3 : 2
+    const cacheOptionIndex = runOptions.indexOf('--native-cache-root')
+    const nativeCacheRoot = cacheOptionIndex === -1 ? undefined : optionPath(runOptions, '--native-cache-root', usage)
+    const expectedLength = 2 + (allowUnmanagedProcesses ? 1 : 0) + (nativeCacheRoot ? 2 : 0)
     if (
       allowUnmanagedCount > 1
       || runOptions.length !== expectedLength
       || runOptions.some((entry, index) =>
         entry !== '--audit'
         && entry !== '--allow-unmanaged-processes'
-        && index !== runOptions.indexOf('--audit') + 1)
+        && entry !== '--native-cache-root'
+        && index !== runOptions.indexOf('--audit') + 1
+        && index !== cacheOptionIndex + 1)
     ) throw new Error(usage)
     const controller = new AbortController()
     let receivedSignal: NodeJS.Signals | null = null
@@ -146,6 +154,7 @@ async function main(argv: string[]): Promise<void> {
       const result = await runEvalSpec(runPath, {
         auditPath,
         allowUnmanagedProcesses,
+        nativeCacheRoot,
         signal: controller.signal,
         onProcessManagementResolved: (evidence) => {
           if (evidence.mode !== 'unmanaged-confirmed') return

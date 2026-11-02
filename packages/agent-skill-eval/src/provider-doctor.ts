@@ -2,6 +2,7 @@ import { constants as fsConstants } from 'node:fs'
 import { access } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
+import { readNativeToolTestConfig } from '@lesliechan721/aw-native-runtime'
 import { resolveCodexEvalRuntimeConfig } from './codex-eval-runtime-config.js'
 import { BUILTIN_EVAL_PROVIDER_IDS, type BuiltinEvalProviderId } from './providers.js'
 import { CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST } from './custom-process.js'
@@ -57,7 +58,8 @@ export interface EvalProviderDoctorOptions {
   processTree?: ProcessTreeDependencies
   canAccess?: (candidate: string) => Promise<boolean>
   checkCleanup?: (platform: NodeJS.Platform) => Promise<boolean>
-  resolveWindowsJobHelper?: () => string
+  resolveWindowsJobHelper?: () => Promise<string> | string
+  nativeCacheRoot?: string
   readUserKeychainSearchList?: () => Promise<string>
 }
 
@@ -112,7 +114,14 @@ export async function doctorEvalProviders(
     options.checkCleanup ?? (async (currentPlatform: NodeJS.Platform) => {
       try {
         if (currentPlatform === 'win32') {
-          (options.resolveWindowsJobHelper ?? resolveWindowsJobHelperPath)()
+          if (options.resolveWindowsJobHelper) await options.resolveWindowsJobHelper()
+          else {
+            const testConfig = readNativeToolTestConfig({ ...process.env, ...sourceEnv })
+            await resolveWindowsJobHelperPath({
+              cacheRoot: testConfig?.cacheRoot ?? options.nativeCacheRoot ?? '',
+              ...(testConfig?.descriptorPath ? { descriptorPath: testConfig.descriptorPath } : {}),
+            })
+          }
         } else {
           await assertProcessTreeInspectionAvailable({
             ...options.processTree,
