@@ -245,6 +245,11 @@ jobs:
           retention-days: 7
 
   native-windows-job:
+    # GitHub validates the callee's publish permissions even when that job is skipped.
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     uses: ./.github/workflows/windows-job.yml
 
   beta:
