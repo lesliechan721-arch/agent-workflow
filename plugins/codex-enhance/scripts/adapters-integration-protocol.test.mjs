@@ -40,13 +40,13 @@ test('Codex: native configuration warning is safe and does not enable strict val
   assert.equal(JSON.stringify(run.frames).includes('SYNTHETIC_CONFIG_SECRET'), false);
 });
 
-test('Codex: known ineffective config fails before starting the backend', { skip: !supported, timeout: testTimeoutMs }, async (t) => {
+test('Codex: configuration identity override fails before starting the backend', { skip: !supported, timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t, 'codex');
-  f.request.args = ['-c', 'agents.job_max_runtime_seconds=900'];
+  f.request.args = ['-c', 'allow_symlinked_codex_home=true'];
   const run = f.start(); run.send(f.request);
   const result = await run.waitFor('result');
   assert.equal(result.state, 'failed'); assert.equal(result.generationStarted, false);
-  assert(result.diagnostics.some((entry) => entry.field === 'agents.job_max_runtime_seconds'));
+  assert(result.diagnostics.some((entry) => entry.field === 'allow_symlinked_codex_home'));
   assert.equal(run.frames.some((frame) => frame.type === 'ready'), false);
   assert.equal((await run.exit).code, 0);
   await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });

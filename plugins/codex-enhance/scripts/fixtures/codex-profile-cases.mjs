@@ -99,15 +99,36 @@ future={enabled=true}
   assert.equal(c.argv.includes('--strict-config'), false);
 });
 
-test('rejects precise blacklist leaves and AW controls without exposing values', async (t) => {
+test('omits client-only and deprecated settings without changing profile files or sibling settings', async (t) => {
+  // Test Value Gate: shared interactive profiles must still produce usable
+  // backend configuration without forwarding inert settings or changing disk.
+  const ignored = [
+    'tui={}', 'desktop={}', 'file_opener="secret"',
+    'js_repl_node_path="secret"', 'js_repl_node_module_dirs=["secret"]',
+    'agents.job_max_runtime_seconds=30', 'orchestrator.skills=true',
+    'ghost_snapshot.ignore_large_untracked_files=1', 'ghost_snapshot.ignore_untracked_files_over_bytes=1',
+    'ghost_snapshot.ignore_large_untracked_dirs=1', 'ghost_snapshot.large_untracked_dir_warning_threshold=1',
+    'ghost_snapshot.disable_warnings=true',
+  ];
+  const siblings = ['agents.research.future=true', 'orchestrator.mcp=true', 'ghost_snapshot.future="keep"'];
+  const text = [...ignored, ...siblings].join('\n');
+  const f = await profile(t, text);
+  for (const input of [f.request, request([...ignored, ...siblings].flatMap((value) => ['-c', value]))]) {
+    const diagnostics = [];
+    const c = await codexConfiguration({ ...input, execution: { model: 'task-model', reasoningEffort: 'low' } }, f.environment, diagnostics);
+    const launch = Object.assign({}, ...c.argv.filter((_, index) => c.argv[index - 1] === '-c').map(parseConfigArgument));
+    assert.deepEqual(plain(launch), { orchestrator: { mcp: true }, ghost_snapshot: { future: 'keep' } });
+    assert.deepEqual(c.thread.config, { agents: { research: { future: true } }, model_reasoning_effort: 'low', bypass_hook_trust: false });
+    assert.equal(c.thread.model, 'task-model');
+    assert.equal(c.turn.effort, 'low');
+    assert.deepEqual(diagnostics, []);
+  }
+  assert.equal(await fs.readFile(f.file, 'utf8'), text);
+});
+
+test('rejects configuration identity changes and AW controls without exposing values', async (t) => {
   const forbidden = [
     ['allow_symlinked_codex_home', 'true'], ['profile', '"secret"'], ['profiles', '{secret={model="x"}}'],
-    ['js_repl_node_path', '"secret"'], ['js_repl_node_module_dirs', '["secret"]'],
-    ['tui', '{}'], ['desktop', '{}'], ['file_opener', '"secret"'],
-    ['agents.job_max_runtime_seconds', '30'], ['orchestrator.skills', 'true'],
-    ['ghost_snapshot.ignore_large_untracked_files', '1'], ['ghost_snapshot.ignore_untracked_files_over_bytes', '1'],
-    ['ghost_snapshot.ignore_large_untracked_dirs', '1'], ['ghost_snapshot.large_untracked_dir_warning_threshold', '1'],
-    ['ghost_snapshot.disable_warnings', 'true'],
   ];
   for (const [field, value] of forbidden) {
     for (const explicit of [false, true]) {
@@ -118,10 +139,10 @@ test('rejects precise blacklist leaves and AW controls without exposing values',
     }
   }
   for (const field of ['cwd', 'bypass_hook_trust']) assert.throws(() => convertProfile(parseConfigArgument(`${field}="secret"`)), { code: 'adapterArgumentsInvalid' });
-  const f = await profile(t, '[agents]\njob_max_runtime_seconds=30\n[agents.research]\nfuture=true');
-  f.request.args = ['-c', 'agents={}'];
+  const f = await profile(t, 'profiles={secret={model="x"}}');
+  f.request.args = ['-c', 'profiles={}'];
   await assert.rejects(codexConfiguration(f.request, f.environment), { code: 'profileFieldUnsupported' });
-  await assert.rejects(codexConfiguration(request(['-c', 'agents.job_max_runtime_seconds=30', '-c', 'agents=0']), f.environment), { code: 'profileFieldUnsupported' });
+  await assert.rejects(codexConfiguration(request(['-c', 'profiles={secret={model="x"}}', '-c', 'profiles={}']), f.environment), { code: 'profileFieldUnsupported' });
   assert.equal(convertProfile(parseProfile('[agents.research]\nfuture=true')).agents.research.future, true);
   assert.equal(convertProfile(parseProfile('[orchestrator]\nmcp=true')).orchestrator.mcp, true);
 });
