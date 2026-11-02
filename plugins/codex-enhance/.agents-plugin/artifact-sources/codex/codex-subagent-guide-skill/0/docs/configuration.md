@@ -147,6 +147,6 @@ CLI 已传入 model 或 effort 时，args 不能再次设置同一后端控制�
 
 通信仅在本次工具与调度配置就绪后报告 enabled。恢复独立协商，真实 session 可用时及时发送 session 帧，不能只依赖最终 result.sessionId。不能可靠恢复原 session 和当前工具绑定时报告 unsupported 或实际失败，不降级新会话；详见 [session 合同](protocol.md#session恢复绑定)。普通父输入不隐含强制 interrupt；轮次边界和提交竞态由 adapter 处理。
 
-保留 cwd、模型、推理强度、配置、args、env/envFrom、认证、项目指令、hooks、插件、MCP、工具权限及审批。显式 args、model、effort 无法映射时在首次模型提交前报错；Codex profile 完整透传，已知无效或与 AW 控制冲突的配置报错；阶段路由、路径和非严格校验边界见 [Codex 实现](codex.md#codex-profile-转换)。不复制 Eval 的权限配置，不自动关闭工具；权限提升只按明确选择的 permissionMode 或 args，受后端管理策略及本次授权约束。
+保留 cwd、模型、推理强度、配置、args、env/envFrom、认证、项目指令、hooks、插件、MCP、工具权限及审批。显式 args、model、effort 无法映射时在首次模型提交前报错；Codex profile 省略已列明的界面和废弃设置，其余完整透传，已知无效或与 AW 控制冲突的配置报错；省略清单、阶段路由、路径和非严格校验边界见 [Codex 实现](codex.md#codex-profile-转换)。不复制 Eval 的权限配置，不自动关闭工具；权限提升只按明确选择的 permissionMode 或 args，受后端管理策略及本次授权约束。
 
 后端缺失、必要接口不支持、认证或模型错误按真实结果报告。实际版本可供诊断，精确版本字符串不证明资格。所有首版支持路径须有本次独立后端进程的实际退出证据；不以 adapter 退出代替。

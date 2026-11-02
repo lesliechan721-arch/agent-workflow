@@ -1371,12 +1371,7 @@ var absolutePaths = ["model_instructions_file", "experimental_compact_prompt_fil
 var unsupportedFields = {
   allow_symlinked_codex_home: "Runtime overrides cannot preserve the required host user-layer identity.",
   profile: "Use the profile-v2 selection entry instead of a configuration profile selector.",
-  profiles: "Legacy profile definitions cannot be used as profile-v2 runtime overrides.",
-  js_repl_node_path: "The Codex backend marks this deprecated setting as ignored.",
-  js_repl_node_module_dirs: "The Codex backend marks this deprecated setting as ignored.",
-  tui: "This execution mode has no terminal UI consumer.",
-  desktop: "This execution mode has no desktop UI consumer.",
-  file_opener: "This execution mode has no file-opener consumer."
+  profiles: "Legacy profile definitions cannot be used as profile-v2 runtime overrides."
 };
 function normalizeAliases(value) {
   if (!table(value)) return value;
@@ -1520,17 +1515,16 @@ function convertProfile(document, { diagnostics = [], explicit = false, baseDir 
   for (const key of ["cwd", "bypass_hook_trust"]) {
     if (Object.hasOwn(document, key)) controlled(key, key === "cwd" ? "AW controls the workspace for this task." : "AW controls hook trust bypass. Use the executor codexBypassHookTrust setting.");
   }
-  if (table(document.agents) && Object.hasOwn(document.agents, "job_max_runtime_seconds")) unsupported("agents.job_max_runtime_seconds", "The Codex backend accepts this removed agent-job setting for compatibility but does not execute it.");
-  if (table(document.orchestrator) && Object.hasOwn(document.orchestrator, "skills")) unsupported("orchestrator.skills", "The Codex backend ignores this deprecated setting.");
-  if (table(document.ghost_snapshot)) {
-    for (const field of ["ignore_large_untracked_files", "ignore_untracked_files_over_bytes", "ignore_large_untracked_dirs", "large_untracked_dir_warning_threshold", "disable_warnings"]) {
-      if (Object.hasOwn(document.ghost_snapshot, field)) unsupported(`ghost_snapshot.${field}`, "The Codex backend ignores this deprecated setting.");
-    }
-  }
   if (Object.hasOwn(document, "mcp_servers") && !table(document.mcp_servers)) invalid("mcp_servers", "MCP servers must be a table for the AW private binding merge.");
   if (privateMcpServer && table(document.mcp_servers) && Object.hasOwn(document.mcp_servers, privateMcpServer)) controlled("mcp_servers.<private>", "The configuration conflicts with the AW private MCP binding.");
   if (Object.hasOwn(document, "model") && typeof document.model !== "string") invalid("model", "The model mapping must be a string.");
   const result = mergeConfiguration({}, document, { platform });
+  for (const field of ["tui", "desktop", "file_opener", "js_repl_node_path", "js_repl_node_module_dirs"]) delete result[field];
+  if (table(result.agents)) delete result.agents.job_max_runtime_seconds;
+  if (table(result.orchestrator)) delete result.orchestrator.skills;
+  if (table(result.ghost_snapshot)) {
+    for (const field of ["ignore_large_untracked_files", "ignore_untracked_files_over_bytes", "ignore_large_untracked_dirs", "large_untracked_dir_warning_threshold", "disable_warnings"]) delete result.ghost_snapshot[field];
+  }
   if (Object.hasOwn(result, "hooks")) result.hooks = convertHooks(result.hooks, { invalid, unsupported });
   const paths = platform === "win32" ? path.win32 : path.posix;
   const resolvePath = (value, field) => {
