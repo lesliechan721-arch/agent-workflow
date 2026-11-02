@@ -2,9 +2,12 @@
 * text=auto eol=lf
 
 # Windows Job source bytes are part of the committed artifact digest.
+packages/agent-skill-eval/native/windows/job-helper/**/*.go text eol=lf
 packages/agent-skill-eval/native/windows/job-helper/*.go text eol=lf
 packages/agent-skill-eval/native/windows/job-helper/go.mod text eol=lf
 
 # These are committed PE artifacts, not text files.
 packages/agent-skill-eval/native/windows/x64/aw-windows-job.exe binary
 packages/agent-skill-eval/native/windows/arm64/aw-windows-job.exe binary
+plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/native/windows/x64/aw-windows-job.exe binary
+plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/native/windows/arm64/aw-windows-job.exe binary

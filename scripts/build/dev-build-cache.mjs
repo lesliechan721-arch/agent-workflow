@@ -28,6 +28,7 @@ const TARGETS = [
     outputRoots: ['packages/aw-windows-job-win32-x64/dist'],
     requiredOutputs: [
       { path: 'packages/aw-windows-job-win32-x64/dist/aw-windows-job.exe', type: 'file' },
+      { path: 'packages/aw-windows-job-win32-x64/dist/manifest.json', type: 'file' },
     ],
     packageName: '@lesliechan721/aw-windows-job-win32-x64',
     scriptName: 'build',
@@ -44,6 +45,7 @@ const TARGETS = [
     outputRoots: ['packages/aw-windows-job-win32-arm64/dist'],
     requiredOutputs: [
       { path: 'packages/aw-windows-job-win32-arm64/dist/aw-windows-job.exe', type: 'file' },
+      { path: 'packages/aw-windows-job-win32-arm64/dist/manifest.json', type: 'file' },
     ],
     packageName: '@lesliechan721/aw-windows-job-win32-arm64',
     scriptName: 'build',

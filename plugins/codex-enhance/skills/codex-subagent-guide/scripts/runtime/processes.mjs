@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { fail } from './contracts.mjs';
-import { currentUserIdentity, launchedProcess, windowsJobMembers, windowsOperation } from './platform.mjs';
+import { currentUserIdentity, launchedProcess, windowsJobMembers } from './platform.mjs';
+import { windowsNativeOperation } from './windows-native.mjs';
 
 const supported = new Set(['darwin', 'linux', 'win32']);
 // Use the fixed native observer. Host restrictions are an explicit failure;
@@ -43,18 +44,10 @@ function posixRows(stdout) {
   });
 }
 
-export async function processTable() {
+export async function processTable(requiredPids = []) {
   if (!supported.has(process.platform)) fail('platformUnsupported', 'External runs require macOS, Linux, or native Windows.');
   if (process.platform === 'win32') {
-    const rows = await windowsOperation([
-      '$rows = @(Get-CimInstance Win32_Process | ForEach-Object {',
-      '  if ($null -ne $_.CreationDate) {',
-      '    [PSCustomObject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; pgid = $null; started = $_.CreationDate.ToUniversalTime().Ticks.ToString() }',
-      '  }',
-      '})',
-      'ConvertTo-Json -InputObject $rows -Compress',
-    ].join('\n'), {}, 'processTable');
-    if (!Array.isArray(rows) || rows.some((row) => !Number.isSafeInteger(row.pid) || !Number.isSafeInteger(row.ppid) || !/^\d+$/.test(row.started)) || !rows.some((row) => row.pid === process.pid)) fail('processObservationFailed', 'The native Windows process observer cannot verify the current process.');
+    const rows = await windowsNativeOperation('processTable', { requiredPids: [...new Set([process.pid, ...requiredPids])] });
     return rows;
   }
   let stdout;
@@ -67,14 +60,7 @@ export async function processTable() {
 
 export async function processIdentity(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) fail('processIdentityInvalid', 'The process identifier must be a positive safe integer.');
-  if (process.platform === 'win32') return windowsOperation([
-    '  $item = Get-CimInstance Win32_Process -Filter ("ProcessId=" + [int]$data.pid)',
-    '  if ($null -eq $item) { $null | ConvertTo-Json -Compress; return }',
-    '  $owner = Invoke-CimMethod -InputObject $item -MethodName GetOwnerSid',
-    '  $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
-    "  if ($owner.ReturnValue -ne 0 -or $owner.Sid -ne $sid) { throw 'The process does not belong to the current user.' }",
-    '  [PSCustomObject]@{ pid = [int]$item.ProcessId; ppid = [int]$item.ParentProcessId; pgid = $null; started = $item.CreationDate.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress',
-  ].join('\n'), { pid }, 'processIdentity');
+  if (process.platform === 'win32') return windowsNativeOperation('processIdentity', { pid });
   let stdout;
   try { ({ stdout } = await observePosix(['-p', `${process.pid},${pid}`, '-o', 'pid=,ppid=,pgid=,lstart='], 65536)); }
   catch { fail('processObservationFailed', 'The process start identity could not be observed.'); }
@@ -149,7 +135,7 @@ async function taggedProcesses(token) {
 export async function observeTree(rootPid, known, token) {
   const launch = launchedProcess(rootPid);
   if (launch?.token === token) await launch.ready;
-  const table = await processTable();
+  const table = await processTable([rootPid, ...known.map((row) => row.pid), ...(launch?.identity ? [launch.identity.pid] : [])]);
   const result = [...known];
   if (launch?.identity && launch.token === token && !result.some((item) => item.pid === rootPid && item.started === launch.identity.started)) result.push(launch.identity);
   if (process.platform === 'win32' && rootPid === process.pid && /^[a-f0-9]{48}$/.test(token ?? '') && process.env.AW_SUBAGENT_PROCESS_TOKEN === token) {
@@ -188,24 +174,7 @@ export async function observeTree(rootPid, known, token) {
 }
 
 async function stopWindowsProcess(identity) {
-  // Keep the original process handle open while checking and stopping it.
-  // Stop-Process/taskkill by PID alone would leave a PID-reuse race.
-  await windowsOperation([
-    '$native = $null',
-    'try {',
-    '  try { $native = [Diagnostics.Process]::GetProcessById([int]$data.pid) } catch [ArgumentException] { $false | ConvertTo-Json -Compress; return }',
-    '  $handle = $native.Handle',
-    // CIM datetimes have microsecond precision; the native handle has 100 ns.
-    '  $nativeTicks = $native.StartTime.ToUniversalTime().Ticks',
-    '  if (($nativeTicks - ($nativeTicks % 10)).ToString() -ne $data.started) { $false | ConvertTo-Json -Compress; return }',
-    '  $item = Get-CimInstance Win32_Process -Filter ("ProcessId=" + [int]$data.pid)',
-    '  if ($null -eq $item) { $false | ConvertTo-Json -Compress; return }',
-    '  $owner = Invoke-CimMethod -InputObject $item -MethodName GetOwnerSid',
-    "  if ($owner.ReturnValue -ne 0 -or $owner.Sid -ne $data.sid) { throw 'The process owner changed.' }",
-    '  if (!$native.HasExited) { $native.Kill() }',
-    '  $true | ConvertTo-Json -Compress',
-    '} finally { if ($null -ne $native) { $native.Dispose() } }',
-  ].join('\n'), { pid: identity.pid, started: identity.started, sid: identity.owner.sid }, 'processStop');
+  await windowsNativeOperation('processStop', { pid: identity.pid, started: identity.started, sid: identity.owner.sid });
 }
 
 export async function stopOwnedTree(rootPid, known, token) {
@@ -217,7 +186,7 @@ export async function stopOwnedTree(rootPid, known, token) {
     await windowsJobMembers(scope, true);
     const root = tracked.find((row) => row.pid === rootPid && row.scope?.name === scope.name);
     if (root && await ownsProcess(root, token)) await stopWindowsProcess(root);
-    const table = await processTable();
+    const table = await processTable(tracked.map((row) => row.pid));
     return { stopped: !tracked.some((identity) => table.some((row) => row.pid === identity.pid && row.started === identity.started)), tracked };
   }
   for (const signal of ['SIGTERM', 'SIGKILL']) {
@@ -231,7 +200,7 @@ export async function stopOwnedTree(rootPid, known, token) {
     await new Promise((resolve) => setTimeout(resolve, signal === 'SIGTERM' ? 250 : 100));
     tracked = await observeTree(rootPid, tracked, token);
   }
-  const table = await processTable();
+  const table = await processTable(tracked.map((row) => row.pid));
   let stopped = Boolean(scope) && !tracked.some((identity) => table.some((row) => row.pid === identity.pid && row.started === identity.started));
   if (scope?.kind === 'posix-group') {
     const isAncestor = (row) => scope.excluded.some((ancestor) => ancestor.pid === row.pid && ancestor.started === row.started);

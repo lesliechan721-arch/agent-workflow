@@ -97,6 +97,8 @@ export type {
   WindowsJobHelperConfig,
   WindowsJobInvocation,
 } from './windows-job.js'
+export { readWindowsNativeProcessStart, readWindowsNativeProcessTable } from './windows-native.js'
+export type { WindowsNativeOptions, WindowsNativeProcessRow } from './windows-native.js'
 export {
   BUILTIN_EVAL_PROVIDER_IDS,
   createConversationGraderPrompt,

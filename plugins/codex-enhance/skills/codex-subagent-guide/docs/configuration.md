@@ -14,7 +14,7 @@
 | [protocol.mjs](../scripts/runtime/protocol.mjs) | 严格 v5 JSONL、大小及状态合同。 |
 | [adapter-channel.mjs](../scripts/runtime/adapter-channel.mjs) | 子侧发送、显式收件和自动输入共用调度。 |
 | [message.mjs](../scripts/message.mjs) / [message-mcp.mjs](../scripts/message-mcp.mjs) | 脚本与 MCP 工具包装，不拥有另一份队列。 |
-| [processes.mjs](../scripts/runtime/processes.mjs) / [platform.mjs](../scripts/runtime/platform.mjs) | 本机安全启动、私有资源、进程归属和停止；Windows 使用同产物的 [windows-job.ps1](../scripts/runtime/windows-job.ps1) 持有本次原生 Job。 |
+| [processes.mjs](../scripts/runtime/processes.mjs) / [platform.mjs](../scripts/runtime/platform.mjs) | 本机安全启动、私有资源、进程归属和停止；Windows 使用同产物的 [原生 wrapper](../scripts/runtime/windows-native.mjs) 和当前架构的 `aw-windows-job.exe` 持有本次 Job。 |
 | [resolve-files.mjs](../scripts/resolve-files.mjs) | bundle 公共文件选择 v1；通用运行层不扫描材料。 |
 | [contracts.mjs](../scripts/runtime/contracts.mjs) / [files.mjs](../scripts/runtime/files.mjs) | 限值、路径、原子文件及安全诊断。 |
 | 内建 `adapters/*-v5.mjs` | Codex、Claude Code、Oracle、Antigravity 后端映射；真实支持范围分别验证。 |
@@ -74,6 +74,8 @@ Config Definition v4 的有限对象分支、标量 const 和叶级数组/KV 由
 renderer 只在 Guide 的 external-delegation 中生成执行器表，只显示 key、mode；不展示未经本次初始化的能力，不把表塞进所有 Skill 或角色。profile 表对外部省略的 model/effort 显示“后端默认”；native 不补造这样的缺省配置。Guide 的档位表位于按需读取的 execution-profiles reference；Advisor 显示 general / advanced / expert，依次对应 advisorGeneralProfile / advisorAdvancedProfile / advisorExpertProfile，保留 native、gpt-6-astra 和 high / xhigh / max 默认值。
 
 AW 在物化时注入安装态 JSON 和配置 reader（保留文件名 .aw-runtime-config.json、scripts/aw-runtime-config.mjs）；插件不伪造或覆盖保留资源。reader 从本产物返回 installedIdentity、获准的 effectiveValues（subagentCommands 和 subagentRetentionHours）和 resourceRoot，不读最新 store 或同名 sibling。保存未 apply 时新调用继续用旧安装资源，活跃调用也不重读配置换后端。缺失或损坏通过正常 sync/reinstall 恢复。
+
+Windows 原生资源随 Guide 一同安装，位于 `scripts/runtime/native/windows`，包含 manifest 及 x64、arm64 PE。运行时按当前 Node 架构选择普通文件，校验 SHA-256 和 PE 架构后执行；不使用 PATH、下载或 PowerShell 替代文件、进程和 Job 操作。资源缺失、摘要错误或架构不支持时，先完成或停止活跃任务，再通过正常 sync/reinstall 修复。用户无需安装 Go，也无需增加配置项。
 
 ## 资料保留与恢复配置
 

@@ -72,8 +72,10 @@ function createBuilders(repoRoot: string, builds: string[], generations: Map<str
       generations.set(target.id, generation);
       if (target.id === 'windows-job-x64') {
         await write('packages/aw-windows-job-win32-x64/dist/aw-windows-job.exe', 'x64 fixture\n');
+        await write('packages/aw-windows-job-win32-x64/dist/manifest.json', '{}\n');
       } else if (target.id === 'windows-job-arm64') {
         await write('packages/aw-windows-job-win32-arm64/dist/aw-windows-job.exe', 'arm64 fixture\n');
+        await write('packages/aw-windows-job-win32-arm64/dist/manifest.json', '{}\n');
       } else if (target.id === 'agent-skill-eval') {
         await write('packages/agent-skill-eval/dist/index.js', `export const generation = ${generation}\n`);
         await write('packages/agent-skill-eval/dist/bin.js', 'export {}\n');

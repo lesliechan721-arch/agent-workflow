@@ -3,23 +3,28 @@ import childProcess from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { syncBuiltinESMExports } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
 import { promisify } from 'node:util';
+import { prepareWindowsNativeResources, windowsNativeSpawn } from './fixtures/windows-native-host.mjs';
 import { safeError } from '../skills/codex-subagent-guide/scripts/runtime/contracts.mjs';
 
 // Replace only the native host boundary before the runtime captures execFile.
 // This file runs in its own Node test process; the native platform tests use the
 // real host. The same runtime instance observes failure, recovery, and caching.
 let executeNative;
+await prepareWindowsNativeResources(import.meta.url, createRequire(import.meta.url).resolve('../skills/codex-subagent-guide/scripts/runtime/platform.mjs'));
 const originalExecFile = childProcess.execFile;
+const originalSpawn = childProcess.spawn;
 let api;
 try {
   childProcess.execFile = Object.assign(() => {}, { [promisify.custom]: (...args) => executeNative(...args) });
+  childProcess.spawn = windowsNativeSpawn((...args) => executeNative(...args), originalSpawn);
   syncBuiltinESMExports();
   api = await import('../skills/codex-subagent-guide/scripts/runtime/platform.mjs');
 } finally {
   childProcess.execFile = originalExecFile;
+  childProcess.spawn = originalSpawn;
   syncBuiltinESMExports();
 }
 
@@ -139,12 +144,12 @@ test('owned run reads verify entry and concrete execution without caching owners
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   let reject = false;
   const verifications = [];
-  const api = windowsHostFixture(t, async (_command, _args, options) => {
-    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
+  const api = windowsHostFixture(t, async (_command, _args, options, request) => {
+    const input = request.input;
     if (!input.resources) return { stdout: JSON.stringify('S-1-5-21-123-456-789-1001') };
     verifications.push(input);
     if (reject) throw new Error('unsafe native resource');
-    return { stdout: 'true' };
+    return { result: true };
   });
   const owner = await api.currentUserIdentity();
   const run = await ownedExecution(root, owner, 'a'.repeat(11));
@@ -166,12 +171,12 @@ test('multi-run reads isolate unsafe owners and scans silently preserve damaged 
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   let unsafe;
   const verifications = [];
-  const api = windowsHostFixture(t, async (_command, _args, options) => {
-    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
-    if (options.env.AW_SUBAGENT_NATIVE_OPERATION === 'processTable') return { stdout: JSON.stringify([{ pid: process.pid, ppid: process.ppid, started: '1' }]) };
+  const api = windowsHostFixture(t, async (_command, _args, options, request) => {
+    const input = request.input;
+    if (request.operation === 'processTable') return { result: [{ pid: process.pid, ppid: process.ppid, pgid: null, started: '1' }] };
     if (input.resources) verifications.push(input.resources);
     if (input.resources?.some(({ target }) => target === unsafe)) throw new Error('unsafe ACL');
-    return { stdout: 'true' };
+    return { result: true };
   });
   const owner = await api.currentUserIdentity();
   const { openRuns, scanExpired } = await import('../skills/codex-subagent-guide/scripts/runtime/store.mjs');
@@ -209,18 +214,19 @@ test('multi-run reads isolate unsafe owners and scans silently preserve damaged 
 
 // Test Value Gate: 128 candidate runs with long Unicode paths must fit each
 // native transport input and leave a 129th run outside this bounded scan.
-test('large owner scans bound encoded native inputs and the number of runs', async (t) => {
+test('large owner scans bound native stdin batches and the number of runs', async (t) => {
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-owner-input-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const root = path.join(directory, '长路径'.repeat(20));
   await fs.mkdir(root);
   const payloads = [];
-  const api = windowsHostFixture(t, async (_command, _args, options) => {
-    const encoded = options.env.AW_SUBAGENT_PLATFORM_INPUT;
-    assert.ok(encoded.length < 32767, 'A native input must fit the Windows environment variable.');
-    const input = JSON.parse(Buffer.from(encoded, 'base64').toString());
+  const api = windowsHostFixture(t, async (_command, _args, options, request) => {
+    assert.equal(request.schemaVersion, 1);
+    assert.equal(options.env.AW_SUBAGENT_PLATFORM_INPUT, undefined);
+    assert.ok(Buffer.byteLength(JSON.stringify(request.input)) <= 18 * 1024, 'ACL work keeps its bounded batch size.');
+    const input = request.input;
     payloads.push(input);
-    return { stdout: 'true' };
+    return { result: true };
   });
   const owner = await api.currentUserIdentity();
   const runs = [];
@@ -240,15 +246,15 @@ test('multi-target wait rechecks permissions after a polling delay', async (t) =
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const runs = [];
   let batches = 0;
-  const api = windowsHostFixture(t, async (_command, _args, options) => {
-    if (options.env.AW_SUBAGENT_NATIVE_OPERATION === 'processTable') return { stdout: JSON.stringify([{ pid: process.pid, ppid: process.ppid, started: '1' }]) };
-    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
+  const api = windowsHostFixture(t, async (_command, _args, options, request) => {
+    if (request.operation === 'processTable') return { result: [{ pid: process.pid, ppid: process.ppid, pgid: null, started: '1' }] };
+    const input = request.input;
     if (input.resources?.filter(({ target }) => path.basename(target) === 'current.json').length === 2) {
       batches++;
       if (batches === 2) await fs.writeFile(path.join(runs[0].directory, 'events', 'message.json'), JSON.stringify({ type: 'message', text: 'Healthy target message.' }));
     }
     if (batches >= 2 && input.resources?.some(({ target }) => target === path.join(runs[1].directory, 'owner.json'))) throw new Error('changed ACL');
-    return { stdout: 'true' };
+    return { result: true };
   });
   const owner = await api.currentUserIdentity();
   for (const id of ['a'.repeat(11), 'b'.repeat(11)]) {
@@ -274,11 +280,11 @@ test('run creation protects prepared resources before entry publication', async 
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-create-batch-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const operations = [];
-  const api = windowsHostFixture(t, async (_command, _args, options) => {
-    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
+  const api = windowsHostFixture(t, async (_command, _args, options, request) => {
+    const input = request.input;
     if (Object.keys(input).length === 0) return { stdout: JSON.stringify('S-1-5-21-123-456-789-1001') };
     operations.push(input);
-    return { stdout: 'true' };
+    return { result: true };
   });
   const owner = await api.currentUserIdentity();
   const { createRun, readOwner, publishRun } = await import('../skills/codex-subagent-guide/scripts/runtime/store.mjs');
@@ -304,7 +310,7 @@ test('batched JSON publication preserves old state on protection failure and cle
   let reject = true;
   windowsHostFixture(t, async () => {
     if (reject) throw new Error('private ACL failure');
-    return { stdout: 'true' };
+    return { result: true };
   });
   const { atomicJsonFiles } = await import('../skills/codex-subagent-guide/scripts/runtime/files.mjs');
   const first = path.join(directory, 'first.json');
@@ -331,9 +337,9 @@ test('batched JSON publication preserves old state on protection failure and cle
 test('atomic JSON replacement recovers from transient Windows sharing failures', async (t) => {
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-json-retry-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  windowsHostFixture(t, async (_command, _args, options) => {
-    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
-    return { stdout: Object.keys(input).length ? 'true' : JSON.stringify('S-1-5-21-123-456-789-1001') };
+  windowsHostFixture(t, async (_command, _args, options, request) => {
+    const input = request.input;
+    return { result: true };
   });
   const { atomicJson } = await import('../skills/codex-subagent-guide/scripts/runtime/files.mjs');
   const target = path.join(directory, 'owner.json');
@@ -360,9 +366,9 @@ test('atomic JSON replacement recovers from transient Windows sharing failures',
 test('atomic JSON replacement bounds Windows retries and preserves permanent failures', async (t) => {
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-json-failure-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  windowsHostFixture(t, async (_command, _args, options) => {
-    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
-    return { stdout: Object.keys(input).length ? 'true' : JSON.stringify('S-1-5-21-123-456-789-1001') };
+  windowsHostFixture(t, async (_command, _args, options, request) => {
+    const input = request.input;
+    return { result: true };
   });
   const { atomicJson } = await import('../skills/codex-subagent-guide/scripts/runtime/files.mjs');
   const target = path.join(directory, 'owner.json');
@@ -412,11 +418,11 @@ test('scratch cleanup batches native tree checks and retains files when verifica
   await fs.writeFile(path.join(nested, 'second'), 'two');
   let rejectTree = true;
   const operations = [];
-  const api = windowsHostFixture(t, async (_command, _args, options) => {
-    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString());
+  const api = windowsHostFixture(t, async (_command, _args, options, request) => {
+    const input = request.input;
     operations.push(input);
     if (rejectTree && !input.resources) throw new Error('unsafe descendant');
-    return { stdout: 'true' };
+    return { result: true };
   });
   const { removeScratch } = await import('../skills/codex-subagent-guide/scripts/runtime/store.mjs');
   const run = { directory, meta: { localTreeStopped: true, owner: await api.currentUserIdentity() } };
@@ -430,4 +436,130 @@ test('scratch cleanup batches native tree checks and retains files when verifica
   assert.deepEqual(operations.slice(2), operations.slice(0, 2));
   assert.equal(await fs.lstat(scratch).catch(() => null), null);
   t.diagnostic('Windows native hosts per nested scratch removal: owner/ACL verification 1; descendant checks 3 -> 1');
+});
+
+// Test Value Gate: the bundled executable must match its declared hash and PE
+// architecture before any native operation can run. No PATH fallback is valid.
+test('native helper resolution rejects missing, linked, damaged and wrong-architecture resources', async (t) => {
+  const { createHash } = await import('node:crypto');
+  const { resolveWindowsNativeHelper } = await import('../skills/codex-subagent-guide/scripts/runtime/windows-native.mjs');
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-native-resource-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const manifest = { schemaVersion: 1, binaries: {} };
+  for (const [arch, machine, goarch] of [['x64', 0x8664, 'amd64'], ['arm64', 0xaa64, 'arm64']]) {
+    const bytes = Buffer.alloc(128);
+    bytes.write('MZ'); bytes.writeUInt32LE(64, 0x3c); bytes.write('PE\0\0', 64); bytes.writeUInt16LE(machine, 68);
+    await fs.mkdir(path.join(root, arch));
+    await fs.writeFile(path.join(root, arch, 'aw-windows-job.exe'), bytes);
+    manifest.binaries[arch] = { goarch, path: `${arch}/aw-windows-job.exe`, peMachine: `0x${machine.toString(16)}`, sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}` };
+  }
+  const save = () => fs.writeFile(path.join(root, 'manifest.json'), JSON.stringify(manifest));
+  await save();
+  for (const arch of ['x64', 'arm64']) assert.equal(await resolveWindowsNativeHelper({ root, arch }), path.join(root, arch, 'aw-windows-job.exe'));
+  await assert.rejects(resolveWindowsNativeHelper({ root, arch: 'ia32' }), { code: 'platformUnavailable' });
+  const target = path.join(root, 'x64', 'aw-windows-job.exe');
+  const bytes = await fs.readFile(target);
+  await fs.writeFile(target, Buffer.concat([bytes, Buffer.from('tampered')]));
+  await assert.rejects(resolveWindowsNativeHelper({ root, arch: 'x64' }), { code: 'platformUnavailable' });
+  manifest.binaries.x64.sha256 = manifest.binaries.arm64.sha256;
+  await save();
+  await fs.copyFile(path.join(root, 'arm64', 'aw-windows-job.exe'), target);
+  await assert.rejects(resolveWindowsNativeHelper({ root, arch: 'x64' }), { code: 'platformUnavailable' });
+  await fs.unlink(target);
+  await assert.rejects(resolveWindowsNativeHelper({ root, arch: 'x64' }), { code: 'platformUnavailable' });
+  if (process.platform !== 'win32') {
+    await fs.symlink(path.join(root, 'arm64', 'aw-windows-job.exe'), target);
+    await assert.rejects(resolveWindowsNativeHelper({ root, arch: 'x64' }), { code: 'platformUnavailable' });
+  }
+});
+
+// Test Value Gate: only the fixed versioned input/output contract can authorize
+// a filesystem, process or Job result. Failed exits never supply valid evidence.
+test('native protocol bounds input and output and rejects invalid success evidence', async (t) => {
+  const { windowsNativeOperation } = await import('../skills/codex-subagent-guide/scripts/runtime/windows-native.mjs');
+  let response = { result: true };
+  let calls = 0;
+  const target = path.resolve(os.tmpdir());
+  windowsHostFixture(t, async (command, args, options, request) => {
+    calls++;
+    assert.equal(path.basename(command), 'aw-windows-job.exe');
+    assert.deepEqual(args, ['--operation']);
+    assert.equal(options.shell, false);
+    assert.equal(options.env.AW_SUBAGENT_PLATFORM_INPUT, undefined);
+    assert.equal(request.schemaVersion, 1);
+    return response;
+  });
+  assert.equal(await windowsNativeOperation('pathCheck', { target, kind: 'directory' }), true);
+  for (const input of [() => windowsNativeOperation('script', {}), () => windowsNativeOperation('pathCheck', { target, kind: 'directory', script: 'PRIVATE' }), () => windowsNativeOperation('rootPublish', { source: `${path.parse(target).root}${'a'.repeat(256 * 1024)}`, destination: target })]) await assert.rejects(input, { code: 'platformOperationFailed' });
+  assert.equal(calls, 1, 'Invalid or oversized input must not launch a helper.');
+  for (const [scenario, reason] of [
+    [{ stdout: '{"schemaVersion":2,"result":true}' }, 'invalidResult'],
+    [{ stdout: '{"schemaVersion":1,"result":true,"extra":1}' }, 'invalidResult'],
+    [{ result: false }, 'invalidResult'],
+    [{ stdout: '{"schemaVersion":1,"result":true}\n{}' }, 'invalidJson'],
+    [{ stdout: Buffer.from([0xff]) }, 'invalidJson'],
+    [{ stdout: 'x'.repeat(8 * 1024 * 1024 + 1) }, 'outputLimit'],
+    [{ result: true, code: 7 }, 'processExit'],
+    [{ error: new Error('PRIVATE_NATIVE_ERROR') }, 'launchFailed'],
+  ]) {
+    response = scenario;
+    await assert.rejects(windowsNativeOperation('pathCheck', { target, kind: 'directory' }), (error) => {
+      assert.equal(error.code, 'platformOperationFailed');
+      assert.match(error.message, new RegExp(`"reason":"${reason}"`));
+      assert.equal(error.message.includes('PRIVATE'), false);
+      return true;
+    });
+  }
+  for (const result of [[{ pid: process.pid, ppid: process.ppid, pgid: null, started: 12 }], [{ pid: process.pid, ppid: process.ppid, pgid: 1, started: '10' }], []]) {
+    response = { result };
+    await assert.rejects(windowsNativeOperation('processTable', { requiredPids: [process.pid] }), { code: 'platformOperationFailed' });
+  }
+});
+
+// Test Value Gate: the finite protocol deadline must reject an unresponsive
+// helper and terminate it, so an operation cannot wait indefinitely.
+test('native protocol terminates an operation at its deadline', async (t) => {
+  const { windowsNativeOperation } = await import('../skills/codex-subagent-guide/scripts/runtime/windows-native.mjs');
+  let launched;
+  const started = new Promise((resolve) => { launched = resolve; });
+  windowsHostFixture(t, async () => { launched(); return new Promise(() => {}); });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const operation = windowsNativeOperation('processTable', { requiredPids: [process.pid] });
+  await started;
+  const rejected = assert.rejects(operation, (error) => error.code === 'platformOperationFailed' && error.message.includes('"reason":"timeout"'));
+  t.mock.timers.tick(30000);
+  await rejected;
+});
+
+// Test Value Gate: failure to read an owned PID cannot prove it exited. The
+// worker observation and expiry paths must retain state and never signal it.
+test('required process identities remain mandatory through observation and expiry caches', async (t) => {
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-required-process-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const requiredPid = 424242;
+  const requests = [];
+  let inaccessible = false;
+  const api = windowsHostFixture(t, async (_command, _args, _options, request) => {
+    if (request.operation === 'processTable') {
+      requests.push(request.input.requiredPids);
+      if (inaccessible && request.input.requiredPids.includes(requiredPid)) throw new Error('Access denied.');
+      return { result: [{ pid: process.pid, ppid: process.ppid, pgid: null, started: '10' }] };
+    }
+    assert.notEqual(request.operation, 'processStop');
+    return { result: true };
+  });
+  const owner = await api.currentUserIdentity();
+  const { workerAlive, removeExpired } = await import('../skills/codex-subagent-guide/scripts/runtime/store.mjs');
+  const { observeTree, stopOwnedTree } = await import('../skills/codex-subagent-guide/scripts/runtime/processes.mjs');
+  const context = { root, owner, retentionHours: 1, sourceIdentity };
+  assert.equal(await workerAlive(context, { worker: { pid: process.pid, started: '10' } }), true);
+  inaccessible = true;
+  const run = await ownedExecution(root, owner, 'a'.repeat(11), { worker: { pid: requiredPid, started: '10' }, localTreeStopped: true, terminalAt: Date.now() - 3600001 });
+  await assert.rejects(workerAlive(context, run.meta), { code: 'runObservationFailed' });
+  await assert.rejects(removeExpired(context, run), { code: 'runObservationFailed' });
+  const known = [{ ...run.meta.worker, ownership: run.meta.token, owner }];
+  await assert.rejects(observeTree(requiredPid, known, run.meta.token), { code: 'platformOperationFailed' });
+  await assert.rejects(stopOwnedTree(requiredPid, known, run.meta.token), { code: 'platformOperationFailed' });
+  assert.ok(requests.slice(1).every((pids) => pids.includes(process.pid) && pids.includes(requiredPid)));
+  assert.ok(await fs.stat(path.join(run.directory, 'owner.json')));
 });

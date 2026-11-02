@@ -1,4 +1,5 @@
-import { lstatSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { lstatSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import process from 'node:process'
@@ -39,6 +40,33 @@ function isRegularFile(filePath: string): boolean {
   }
 }
 
+function verifyWindowsHelper(helperPath: string, manifestPath: string, arch: 'x64' | 'arm64'): void {
+  const invalid = (): never => {
+    throw new Error('Windows native helper is invalid. Sync or reinstall the package.')
+  }
+  try {
+    if (!isRegularFile(helperPath) || !isRegularFile(manifestPath)) invalid()
+    if (lstatSync(manifestPath).size > 64 * 1024 || lstatSync(helperPath).size > 64 * 1024 * 1024) invalid()
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    const binary = manifest?.binaries?.[arch]
+    const machine = arch === 'x64' ? 0x8664 : 0xaa64
+    if (manifest?.schemaVersion !== 1 || !binary ||
+      binary.goarch !== (arch === 'x64' ? 'amd64' : 'arm64') ||
+      binary.path !== `${arch}/aw-windows-job.exe` ||
+      binary.peMachine !== `0x${machine.toString(16)}` ||
+      typeof binary.sha256 !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(binary.sha256)) invalid()
+    const bytes = readFileSync(helperPath)
+    if (bytes.length < 0x40 || bytes.toString('ascii', 0, 2) !== 'MZ') invalid()
+    const peOffset = bytes.readUInt32LE(0x3c)
+    if (peOffset < 0x40 || peOffset > bytes.length - 6 ||
+      bytes.toString('ascii', peOffset, peOffset + 4) !== 'PE\0\0' ||
+      bytes.readUInt16LE(peOffset + 4) !== machine ||
+      `sha256:${createHash('sha256').update(bytes).digest('hex')}` !== binary.sha256) invalid()
+  } catch {
+    invalid()
+  }
+}
+
 export function resolveWindowsJobHelperPath(options: {
   arch?: string
   moduleUrl?: string
@@ -55,14 +83,15 @@ export function resolveWindowsJobHelperPath(options: {
       // Source checkouts can use the committed artifact before workspace packages are built.
     }
   }
-  const candidates = [
-    ...(packagePath ? [packagePath] : []),
-    path.join(moduleDirectory, '..', 'native', 'windows', arch, 'aw-windows-job.exe'),
-  ]
-  const helperPath = candidates.find(isRegularFile)
-  if (!helperPath) {
-    throw new Error(`Windows Job containment helper is missing for architecture ${arch}.`)
+  const nativeRoot = path.join(moduleDirectory, '..', 'native', 'windows')
+  const helperPath = packagePath ?? path.join(nativeRoot, arch, 'aw-windows-job.exe')
+  const manifestPath = packagePath
+    ? path.join(path.dirname(packagePath), 'manifest.json')
+    : path.join(nativeRoot, 'manifest.json')
+  if (!isRegularFile(helperPath)) {
+    throw new Error(`Windows Job containment helper is missing for architecture ${arch}. Sync or reinstall the package.`)
   }
+  verifyWindowsHelper(helperPath, manifestPath, arch)
   return helperPath
 }
 

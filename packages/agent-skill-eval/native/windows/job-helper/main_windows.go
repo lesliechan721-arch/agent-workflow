@@ -205,7 +205,7 @@ func assignProcess(job syscall.Handle, process syscall.Handle) error {
 
 func resumeProcess(thread syscall.Handle) error {
 	value, _, errno := procResumeThread.Call(uintptr(thread))
-	if value == ^uintptr(0) {
+	if uint32(value) == ^uint32(0) {
 		return win32CallError("ResumeThread", errno)
 	}
 	return nil
@@ -273,6 +273,9 @@ func run(config launchConfig) (uint32, error) {
 		return helperContainmentFailureExitCode, err
 	}
 	defer syscall.CloseHandle(job)
+	cleanup := func(exitCode uint32) error {
+		return terminateAndWaitForEmptyJob(job, exitCode)
+	}
 	child, err := createSuspendedProcess(config)
 	if err != nil {
 		return helperContainmentFailureExitCode, err
@@ -285,34 +288,34 @@ func run(config launchConfig) (uint32, error) {
 		return helperContainmentFailureExitCode, err
 	}
 	if err := resumeProcess(child.Thread); err != nil {
-		_ = terminateAndWaitForEmptyJob(job, helperContainmentFailureExitCode)
+		_ = cleanup(helperContainmentFailureExitCode)
 		return helperContainmentFailureExitCode, err
 	}
 
 	for {
 		rootExited, err := waitStatus(child.Process)
 		if err != nil {
-			_ = terminateAndWaitForEmptyJob(job, helperContainmentFailureExitCode)
+			_ = cleanup(helperContainmentFailureExitCode)
 			return helperContainmentFailureExitCode, fmt.Errorf("wait for root process: %w", err)
 		}
 		if rootExited {
 			var exitCode uint32
 			if err := syscall.GetExitCodeProcess(child.Process, &exitCode); err != nil {
-				_ = terminateAndWaitForEmptyJob(job, helperContainmentFailureExitCode)
+				_ = cleanup(helperContainmentFailureExitCode)
 				return helperContainmentFailureExitCode, fmt.Errorf("read root exit code: %w", err)
 			}
-			if err := terminateAndWaitForEmptyJob(job, helperContainmentFailureExitCode); err != nil {
+			if err := cleanup(helperContainmentFailureExitCode); err != nil {
 				return helperContainmentFailureExitCode, err
 			}
 			return exitCode, nil
 		}
 		parentExited, err := waitStatus(parent)
 		if err != nil {
-			_ = terminateAndWaitForEmptyJob(job, helperContainmentFailureExitCode)
+			_ = cleanup(helperContainmentFailureExitCode)
 			return helperContainmentFailureExitCode, fmt.Errorf("wait for parent process: %w", err)
 		}
 		if parentExited {
-			if err := terminateAndWaitForEmptyJob(job, helperParentExitedExitCode); err != nil {
+			if err := cleanup(helperParentExitedExitCode); err != nil {
 				return helperContainmentFailureExitCode, err
 			}
 			return helperParentExitedExitCode, errors.New("parent process exited before the root process")
@@ -322,6 +325,21 @@ func run(config launchConfig) (uint32, error) {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--operation" {
+		if err := runOperation(); err != nil {
+			// Operation diagnostics must not expose caller paths, SIDs or input.
+			fmt.Fprintln(os.Stderr, "aw-windows-job: native operation failed")
+			syscall.ExitProcess(helperContainmentFailureExitCode)
+		}
+		syscall.ExitProcess(0)
+	}
+	if len(os.Args) == 3 && os.Args[1] == "--plugin-config" {
+		exitCode, err := runPluginJob(os.Args[2])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "aw-windows-job: plugin job failed")
+		}
+		syscall.ExitProcess(exitCode)
+	}
 	if len(os.Args) != 3 || os.Args[1] != "--config" {
 		fmt.Fprintln(os.Stderr, "aw-windows-job: expected --config <base64url-json>")
 		syscall.ExitProcess(helperContainmentFailureExitCode)

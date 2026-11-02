@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceDigest": "sha256:579833fd69b5e995c8078584bda37b044dd635eb56499fa2a14f07cf7cce2233",
+  "sourceDigest": "sha256:e2936366af170cf9c601b38a5d70435eb8341f462a6cb11814d86c0f9e132ac3",
   "build": {
     "goVersion": "go1.25.7",
     "cgoEnabled": false,
@@ -44,13 +44,13 @@
       "goarch": "amd64",
       "path": "x64/aw-windows-job.exe",
       "peMachine": "0x8664",
-      "sha256": "sha256:a34dd213c9eebed9c1726d0278505fe02e212ea6c2121f28f32f3948351c7f8f"
+      "sha256": "sha256:3d43fe627039c4726faf32979d420333df89850cb16cfe7666e9a5160f0513f8"
     },
     "arm64": {
       "goarch": "arm64",
       "path": "arm64/aw-windows-job.exe",
       "peMachine": "0xaa64",
-      "sha256": "sha256:2f23c78a17f045317b32ad10090c9363949423281f291a22213b635af7ac653e"
+      "sha256": "sha256:f32dda3f5d2a46c6d0ead77f3f2f6b348fa62f13c3a6460bf522a18a03d05a24"
     }
   }
 }

@@ -1,14 +1,16 @@
 import childProcess from 'node:child_process';
 import fs from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
-import { syncBuiltinESMExports } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { prepareWindowsNativeResources, windowsNativeSpawn } from './windows-native-host.mjs';
 import { promisify } from 'node:util';
 
 // Rules use real files and replace native ACL and process operations. Identity
 // stays native so scanner processes read the same resource owner. The native
 // storage test leaves every operation connected to the real host.
+await prepareWindowsNativeResources(new URL('../storage.test.mjs', import.meta.url), createRequire(import.meta.url).resolve('../../skills/codex-subagent-guide/scripts/runtime/platform.mjs'));
 const originalExecFile = childProcess.execFile;
 const originalSpawn = childProcess.spawn;
 const executeNative = promisify(originalExecFile);
@@ -31,15 +33,14 @@ function spawnStorage(command, ...args) {
 
 let store, files, processes;
 try {
-  childProcess.execFile = Object.assign(() => {}, { [promisify.custom]: async (command, args, options) => {
-    if (nativeHost || path.basename(command).toLowerCase() === 'whoami.exe') return executeNative(command, args, options);
-    const operation = options.env.AW_SUBAGENT_NATIVE_OPERATION;
-    if (operation === 'processTable') return { stdout: JSON.stringify([{ pid: process.pid, ppid: process.ppid, started: '1' }]) };
-    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString('utf8'));
+  childProcess.execFile = Object.assign(() => {}, { [promisify.custom]: executeNative });
+  const simulatedNative = windowsNativeSpawn(async (_command, _args, _options, { operation, input }) => {
+    if (operation === 'processTable') return { result: [{ pid: process.pid, ppid: process.ppid, pgid: null, started: '1' }] };
     if (operation === 'rootPublish') await fs.rename(input.source, input.destination);
     else if (!['aclVerify', 'aclProtect', 'pathCheck', 'pathTree'].includes(operation)) throw new Error(`Unexpected storage host operation: ${operation}`);
-    return { stdout: 'true' };
-  } });
+    return { result: true };
+  }, spawnStorage);
+  childProcess.spawn = (...args) => nativeHost ? originalSpawn(...args) : simulatedNative(...args);
   syncBuiltinESMExports();
   [store, files, processes] = await Promise.all([
     import('../../skills/codex-subagent-guide/scripts/runtime/store.mjs'),
