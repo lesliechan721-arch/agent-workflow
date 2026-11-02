@@ -47,7 +47,7 @@ AW 不自动添加或依赖 `--strict-config`，不另做全量 schema 严格校
 
 无法读取、TOML 语法错、黑名单、AW 控制冲突、必须转换的结构无效、不能无损表达或启动 argv 过长，在启动后端前失败。初始化或 thread/start、thread/resume 实际报错时停止，不发首轮、不删字段重试、不切换后端。修正配置或换用所需 Codex 后重新开始任务。未提供的字段保持缺失，null 不代表删除。
 
-诊断沿用 Adapter v5 的 `{code, field?, message}` 与 ready/result/快照补报。保留字段路径和具体原因，动态 key 必要时使用位置或占位符，禁止泄露值、token、header、命令参数、可信摘要、原始 config/read 或后端错误正文。错误区分 profile 不可读、黑名单、AW 控制冲突、转换与后端失败；不再用 profileFieldIgnored/profileFieldIrrelevant 删除本次配置后继续执行。
+诊断沿用 Adapter v5 的 `{code, field?, message}` 与 ready/result/快照补报。保留字段路径和具体原因，动态 key 必要时使用位置或占位符，禁止泄露值、token、header、命令参数、可信摘要、原始 config/read 或后端错误正文。错误区分 profile 不可读、黑名单、AW 控制冲突、转换与后端失败。下表列出的界面和废弃设置直接省略，不产生诊断。
 
 完整透传会使过去被 AW 忽略的设置开始生效，或明确报错，包括工具、代理及认证设置。升级后应按所需行为核对 profile。Adapter v5 与已有恢复合同不变，不新增配置副本、信任账本或锁。
 
@@ -73,7 +73,7 @@ profile effort 是线程默认值；任务显式 effort 同时覆盖默认并在
 
 features 按直接子项分流：已确认线程消费的 hooks 使用 `config["features.hooks"]`；其它子项初始全部放启动，包括完整的结构化 feature。不能在请求中发送只有 hooks 的 features 整表，否则会覆盖启动 feature 表。后续只有取得线程消费者证据后才移动路由，不因此限制未知 feature。
 
-其余未被黑名单拒绝的字段默认启动 `-c key=<TOML value>`。必须启动的已知配置包括：
+其余未被黑名单拒绝且未列为省略的字段默认启动 `-c key=<TOML value>`。必须启动的已知配置包括：
 
 | 类别 | 字段 |
 | --- | --- |
@@ -97,22 +97,29 @@ MCP cwd、带路径 command、权限路径表达式、遥测证书等按各自�
 
 MCP 完整表与 AW 私有 server 合并，当前私有名称冲突报错；若用户表因 TOML 表示需要放在启动通道，私有 server 使用单字段请求覆盖，避免替换启动表；communication=false 不注入该 server。仅私有 receive_parent 保留既有输出预算，不改用户工具预算。基础/项目的 MCP、插件、工具、技能和代理仍由 Codex 发现。
 
+### 省略的界面和废弃设置
+
+以下 12 个字段从本次运行配置中移除，profile 文件和显式 `-c` 参数采用相同规则；不修改原始文件，也不删除同表的其他字段。
+
+| 字段或条件 | 原因 |
+| --- | --- |
+| js_repl_node_path/js_repl_node_module_dirs | 上游已废弃并忽略 |
+| agents.job_max_runtime_seconds | 已移除，原生仅为兼容而接受的空操作；不限制其它 agents 字段 |
+| orchestrator.skills | 兼容性空操作，原生使用 cloud.skills |
+| ghost_snapshot.ignore_large_untracked_files、ignore_large_untracked_dirs、disable_warnings 及前两项旧别名 ignore_untracked_files_over_bytes、large_untracked_dir_warning_threshold | 已移除的快照设置，原生只接受而不生效 |
+| tui/desktop/file_opener | 本 app-server 执行模式没有纯客户端消费者 |
+
 ### 明确拒绝的配置
 
 | 字段或条件 | 原因 |
 | --- | --- |
 | allow_symlinked_codex_home | 只读取基础用户配置层，运行时覆盖无法复制来源身份 |
 | 配置内 profile/profiles | 旧式选择机制，区别于合法的 raw --profile/-p 入口 |
-| js_repl_node_path/js_repl_node_module_dirs | 上游已废弃并忽略 |
-| agents.job_max_runtime_seconds | 已移除，原生仅为兼容而接受的空操作；不限制其它 agents 字段 |
-| orchestrator.skills | 兼容性空操作，原生使用 cloud.skills |
-| ghost_snapshot.ignore_large_untracked_files、ignore_large_untracked_dirs、disable_warnings 及前两项旧别名 ignore_untracked_files_over_bytes、large_untracked_dir_warning_threshold | 已移除的快照设置，原生只接受而不生效 |
-| tui/desktop/file_opener | 本 app-server 执行模式没有纯客户端消费者 |
 | hook prompt/agent；SessionEnd+mcp_tool | 已核验后端不能执行 |
 | 配置内 cwd、AW-owned workspace/协议参数、私有 MCP 名称 | AW 控制冲突，不是 Codex 全局不支持 |
 | 配置内 bypass_hook_trust、raw hook bypass flag | 必须通过 executor codexBypassHookTrust 控制 |
 
-每项命中都会终止任务，不删除字段继续运行。没有列入黑名单的配置继续交 Codex。未知 hook 事件或成员也不因 AW 列表而丢弃；确需迁移来源状态、但无法确定事件状态标识时，以 profileHookMappingUnsupported 失败，不猜测或伪称后端不支持。无须迁移的未知配置原样传递。
+本表每项命中都会终止任务。除上表列出的界面和废弃设置外，没有列入黑名单的配置继续交 Codex。未知 hook 事件或成员也不因 AW 列表而丢弃；确需迁移来源状态、但无法确定事件状态标识时，以 profileHookMappingUnsupported 失败，不猜测或伪称后端不支持。无须迁移的未知配置原样传递。
 
 ### Hooks 状态、信任与 bypass
 
