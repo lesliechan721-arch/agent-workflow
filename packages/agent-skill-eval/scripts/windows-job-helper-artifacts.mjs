@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 const execFileAsync = promisify(execFile)
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const defaultNativeRoot = path.join(packageRoot, 'native', 'windows')
-const sourceFiles = ['config.go', 'go.mod', 'main_windows.go']
+const defaultPluginNativeRoot = path.resolve(packageRoot, '../../plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/native/windows')
 const buildFlags = ['-trimpath', '-buildvcs=false', '-ldflags=-buildid=']
 const fixedEnvironment = {
   CGO_ENABLED: '0',
@@ -55,17 +55,52 @@ function artifactPaths(options = {}) {
     nativeRoot,
     helperSourceRoot: options.helperSourceRoot ?? path.join(nativeRoot, 'job-helper'),
     manifestPath: options.manifestPath ?? path.join(nativeRoot, 'manifest.json'),
+    pluginNativeRoot: options.pluginNativeRoot ?? (
+      options.nativeRoot === undefined ? defaultPluginNativeRoot : undefined
+    ),
   }
+}
+
+async function sourceFiles(helperSourceRoot, relative = '') {
+  const result = []
+  for (const entry of await readdir(path.join(helperSourceRoot, relative), { withFileTypes: true })) {
+    const name = relative ? `${relative}/${entry.name}` : entry.name
+    if (entry.isSymbolicLink()) throw new Error('Windows helper source must not contain symbolic links.')
+    if (entry.isDirectory()) result.push(...await sourceFiles(helperSourceRoot, name))
+    else if (entry.isFile() && (entry.name === 'go.mod' || (
+      entry.name.endsWith('.go') && !entry.name.endsWith('_test.go')
+    ))) result.push(name)
+  }
+  return result.sort()
 }
 
 async function sourceDigest(helperSourceRoot) {
   const hash = createHash('sha256')
-  for (const name of sourceFiles) {
+  for (const name of await sourceFiles(helperSourceRoot)) {
     const bytes = await readFile(path.join(helperSourceRoot, name))
     hash.update(`${name}\0${bytes.length}\0`)
     hash.update(bytes)
   }
   return `sha256:${hash.digest('hex')}`
+}
+
+async function readRegularFile(target) {
+  const stats = await lstat(target)
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error('Windows helper resources must be regular files.')
+  }
+  return readFile(target)
+}
+
+async function verifyPluginCopies({ nativeRoot, manifestPath, pluginNativeRoot }, manifest) {
+  if (pluginNativeRoot === undefined) return
+  for (const relative of ['manifest.json', ...Object.values(manifest.binaries).map((entry) => entry.path)]) {
+    const source = relative === 'manifest.json' ? manifestPath : path.join(nativeRoot, relative)
+    const copied = await readRegularFile(path.join(pluginNativeRoot, relative))
+    if (!copied.equals(await readRegularFile(source))) {
+      throw new Error(`Plugin Windows helper resource does not match the source artifact: ${relative}.`)
+    }
+  }
 }
 
 function buildEnvironment(goarch, temporaryRoot, inheritedEnvironment = process.env) {
@@ -135,8 +170,9 @@ function peMachine(bytes, label) {
 }
 
 export async function verifyWindowsJobArtifacts(options = {}) {
-  const { nativeRoot, helperSourceRoot, manifestPath } = artifactPaths(options)
-  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+  const paths = artifactPaths(options)
+  const { nativeRoot, helperSourceRoot, manifestPath } = paths
+  const manifest = JSON.parse(await readRegularFile(manifestPath))
   if (
     manifest?.schemaVersion !== 1 ||
     manifest.sourceDigest !== await sourceDigest(helperSourceRoot) ||
@@ -164,16 +200,17 @@ export async function verifyWindowsJobArtifacts(options = {}) {
     ) {
       throw new Error(`Windows Job helper manifest is invalid for ${arch}.`)
     }
-    const bytes = await readFile(path.join(nativeRoot, relativePath))
+    const bytes = await readRegularFile(path.join(nativeRoot, relativePath))
     if (sha256(bytes) !== entry.sha256 || peMachine(bytes, relativePath) !== expected.machine) {
       throw new Error(`Windows Job helper binary does not match its manifest for ${arch}.`)
     }
   }
+  await verifyPluginCopies(paths, manifest)
   return manifest
 }
 
 export async function refreshWindowsJobArtifacts(options = {}) {
-  const { nativeRoot, helperSourceRoot, manifestPath } = artifactPaths(options)
+  const { nativeRoot, helperSourceRoot, manifestPath, pluginNativeRoot } = artifactPaths(options)
   const runGo = options.runGo ?? runGoDefault
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'aw-windows-job-build-'))
   try {
@@ -217,6 +254,13 @@ export async function refreshWindowsJobArtifacts(options = {}) {
       },
       binaries: manifestBinaries,
     }, null, 2)}\n`)
+    if (pluginNativeRoot !== undefined) {
+      for (const relative of ['manifest.json', ...Object.values(manifestBinaries).map((entry) => entry.path)]) {
+        const destination = path.join(pluginNativeRoot, relative)
+        await mkdir(path.dirname(destination), { recursive: true })
+        await copyFile(relative === 'manifest.json' ? manifestPath : path.join(nativeRoot, relative), destination)
+      }
+    }
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
   }

@@ -6,8 +6,9 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { atomicJson, atomicJsonFiles, readJson, safePath } from './files.mjs';
 import { fail, STATES, runId, validateResult, validateInitialization, validateDiagnostics } from './contracts.mjs';
-import { currentUserIdentity, protectPrivatePath, protectPrivatePaths, verifyPrivatePath, verifyPrivatePaths, assertNoReparseTree, windowsOperation } from './platform.mjs';
+import { currentUserIdentity, protectPrivatePath, protectPrivatePaths, verifyPrivatePath, verifyPrivatePaths, assertNoReparseTree } from './platform.mjs';
 import { processTable } from './processes.mjs';
+import { windowsNativeOperation } from './windows-native.mjs';
 
 export const CACHE_MS = 86400000;
 export const terminal = (state) => STATES.includes(state);
@@ -63,10 +64,10 @@ async function prepareRoot(context) {
       const staging = await fs.mkdtemp(`${context.root}-`);
       try {
         await protectPrivatePath(staging, 'directory');
-        // .NET Framework Directory.Move uses MoveFile without replacement.
+        // MoveFile publishes without replacing an existing resource.
         // Publish the protected root only if no file or directory occupies it.
         try {
-          await windowsOperation('[IO.Directory]::Move($data.source, $data.destination); $true | ConvertTo-Json -Compress', { source: staging, destination: context.root }, 'rootPublish');
+          await windowsNativeOperation('rootPublish', { source: staging, destination: context.root });
         } catch (error) {
           const published = await fs.lstat(context.root).catch((probe) => { if (probe.code === 'ENOENT') return null; throw probe; });
           if (!published) throw error;
@@ -276,9 +277,16 @@ export function checkExpiry(meta, context) {
   if (expired(meta, Date.now(), context)) fail('runExpired', 'The run result has expired.');
 }
 
-async function getTable(context) {
-  if (!context.table) {
-    try { context.table = await processTable(); }
+async function getTable(context, identities) {
+  const requiredPids = [...new Set([process.pid, ...identities.map((identity) => identity?.pid).filter((pid) => Number.isSafeInteger(pid) && pid > 0)])];
+  const previous = context.tableEvidence && context.tableEvidence.table === context.table ? context.tableEvidence.requiredPids : [];
+  const checked = new Set([...previous, ...(context.table?.map((row) => row.pid) ?? [])]);
+  if (!context.table || process.platform === 'win32' && requiredPids.some((pid) => !checked.has(pid))) {
+    try {
+      const requested = [...new Set([...previous, ...requiredPids])];
+      context.table = await processTable(requested);
+      context.tableEvidence = { table: context.table, requiredPids: requested };
+    }
     catch { fail('runObservationFailed', 'The original worker identity could not be checked.'); }
   }
   return context.table;
@@ -286,7 +294,7 @@ async function getTable(context) {
 
 export async function workerAlive(context, meta) {
   if (!Number.isSafeInteger(meta.worker?.pid) || !meta.worker?.started) fail('runObservationFailed', 'The worker startup identity is unavailable.');
-  return (await getTable(context)).some((row) => row.pid === meta.worker.pid && row.started === meta.worker.started);
+  return (await getTable(context, [meta.worker])).some((row) => row.pid === meta.worker.pid && row.started === meta.worker.started);
 }
 
 async function fixLostTime(context, run) {
@@ -413,8 +421,8 @@ export async function removeExpired(context, run) {
     latest.meta.terminalAt !== run.meta.terminalAt || latest.meta.localTreeStopped !== run.meta.localTreeStopped ||
     JSON.stringify(latest.meta.worker) !== JSON.stringify(run.meta.worker) ||
     JSON.stringify(latest.meta.processes) !== JSON.stringify(run.meta.processes) || !expired(latest.meta, Date.now(), context)) return false;
-  const table = await getTable(context);
   const identities = [latest.meta.worker, ...latest.meta.processes];
+  const table = await getTable(context, identities);
   if (identities.some((identity) => !Number.isSafeInteger(identity?.pid) || identity.pid <= 0 || typeof identity.started !== 'string' || !identity.started ||
     table.some((row) => row.pid === identity.pid && row.started === identity.started))) return false;
   // A recorded stopped tree is required: a missing root alone does not prove its descendants stopped.

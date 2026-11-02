@@ -188,7 +188,8 @@ async function runtimeResourceFiles(root, relative) {
   for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
     const name = `${relative}/${entry.name}`;
     if (entry.isDirectory()) Object.assign(result, await runtimeResourceFiles(root, name));
-    else if (entry.isFile() && !entry.name.endsWith('.test.mjs')) {
+    // PE resources stay in sourceDirs, whose copy step preserves their bytes.
+    else if (entry.isFile() && !entry.name.endsWith('.test.mjs') && !entry.name.endsWith('.exe')) {
       result[name] = await readFile(path.join(root, name), 'utf8');
     }
   }

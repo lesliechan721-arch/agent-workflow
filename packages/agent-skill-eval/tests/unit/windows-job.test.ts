@@ -162,13 +162,9 @@ describe('Windows Job helper contract', () => {
     ['x64', 0x8664],
     ['arm64', 0xaa64],
   ] as const)('resolves a regular %s PE helper with the expected machine', async (arch, machine) => {
-    const expectedSpecifier = `@lesliechan721/aw-windows-job-win32-${arch}/aw-windows-job.exe`
     const helperPath = resolveWindowsJobHelperPath({
       arch,
-      resolvePackage: (specifier) => {
-        expect(specifier).toBe(expectedSpecifier)
-        return path.join(nativeRoot, arch, 'aw-windows-job.exe')
-      },
+      moduleUrl: new URL('../../src/windows-job.ts', import.meta.url).href,
     })
     const bytes = await readFile(helperPath)
     const peOffset = bytes.readUInt32LE(0x3c)
@@ -284,6 +280,10 @@ describe('Windows Job helper contract', () => {
         path.join(fixtureArm64PackageRoot, 'package.json'),
       )
       await cp(nativeRoot, path.join(fixturePackageRoot, 'native', 'windows'), { recursive: true })
+      const pluginNativeRelative = 'plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/native/windows'
+      await cp(path.join(repositoryRoot, pluginNativeRelative), path.join(fixtureRepositoryRoot, pluginNativeRelative), {
+        recursive: true,
+      })
       await cp(path.join(packageRoot, 'scripts'), path.join(fixturePackageRoot, 'scripts'), {
         recursive: true,
       })
@@ -314,6 +314,10 @@ describe('Windows Job helper contract', () => {
         'x64',
         'aw-windows-job.exe',
       )))
+      for (const platformPackageRoot of [fixtureX64PackageRoot, fixtureArm64PackageRoot]) {
+        await expect(readFile(path.join(platformPackageRoot, 'dist', 'manifest.json')))
+          .resolves.toEqual(await readFile(path.join(fixturePackageRoot, 'native', 'windows', 'manifest.json')))
+      }
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true })
     }

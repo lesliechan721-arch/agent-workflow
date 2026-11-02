@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
 
 import fs from 'fs-extra';
 import { parse as parseYaml } from 'yaml';
@@ -14,6 +15,7 @@ import {
   activateSmokeBuildSnapshot,
   cleanupSmokeBuildSnapshot,
   createSmokeBuildSnapshot,
+  importSmokeSnapshotModule,
   type SmokeBuildSnapshot,
 } from '../support/smoke-build-snapshot.js';
 
@@ -155,6 +157,67 @@ afterEach(async () => {
 });
 
 describe('plugin scripts staging smoke', () => {
+  // Test Value Gate: binary resources can be intact in the bundle but corrupted
+  // by renderer text overlays or missing from a detached command installation.
+  it('preserves both native helpers through the real Guide renderer, installed tree and managed command', async () => {
+    const snapshot = await requireBuildSnapshot();
+    const temporary = await makeTempRepo();
+    const bundle = path.join(temporary, 'detached-plugin');
+    await fs.copy(path.join(snapshot.catalogOutputRoot, 'plugins', 'codex-enhance'), bundle);
+    const env = {
+      ...process.env,
+      AW_HOME: path.join(temporary, 'aw-home'),
+      AW_CODEX_HOME: path.join(temporary, 'codex-home'),
+      AW_CLAUDE_HOME: path.join(temporary, 'claude-home'),
+    };
+    const manifests = await importSmokeSnapshotModule<typeof import('../../src/utils/manifest.js')>(
+      path.join(snapshot.cliDistRoot, 'src', 'utils', 'manifest.js'));
+    const renderer = await importSmokeSnapshotModule<typeof import('../../src/utils/artifact-renderer.js')>(
+      path.join(snapshot.cliDistRoot, 'src', 'utils', 'artifact-renderer.js'));
+    const skills = await importSmokeSnapshotModule<typeof import('../../src/utils/dynamic-skill-tree.js')>(
+      path.join(snapshot.cliDistRoot, 'src', 'utils', 'dynamic-skill-tree.js'));
+    const commands = await importSmokeSnapshotModule<typeof import('../../src/utils/managed-command-store.js')>(
+      path.join(snapshot.cliDistRoot, 'src', 'utils', 'managed-command-store.js'));
+    const plugin = { ...await manifests.readPluginManifest(bundle, { mode: 'bundle' }), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}` };
+    const rendered = await renderer.runArtifactRenderer({
+      event: 'materialize', plugin, platform: 'codex', scope: 'user', cwd: temporary,
+      commandEnv: env, requestedArtifactIds: ['codex-subagent-guide-skill'],
+    });
+    const artifact = rendered.plan.artifacts.find((item) => item.target === 'codex.skill');
+    if (!artifact || artifact.target !== 'codex.skill') throw new Error('Guide renderer did not return a Skill.');
+    const sourceDirs = rendered.context.artifactSources.find((item) => item.id === artifact.id)?.sourceDirs;
+    expect(sourceDirs?.length).toBeGreaterThan(0);
+    const tree = await skills.createDynamicSkillExpectedTree({ artifact, sourceDirs, sourceRequirementsReceiptPolicy: 'allow' });
+    const installed = path.join(temporary, 'installed-guide');
+    await skills.writeDynamicSkillTree(installed, tree);
+    const commandId = await commands.installUserCommand({
+      name: 'detached-guide', sourceDirectory: installed,
+      launch: { runner: 'node', entry: 'scripts/subagent.mjs' }, env,
+    });
+    const command = await commands.resolveManagedCommand(commandId, env);
+    for (const resourceRoot of [installed, command.resourceRoot]) {
+      const nativeRoot = path.join(resourceRoot, 'scripts', 'runtime', 'native', 'windows');
+      const manifestBytes = await fs.readFile(path.join(nativeRoot, 'manifest.json'));
+      const canonicalManifest = await fs.readFile(path.join(repoRoot(), 'packages', 'agent-skill-eval', 'native', 'windows', 'manifest.json'));
+      expect(manifestBytes).toEqual(canonicalManifest);
+      const manifest = JSON.parse(manifestBytes.toString('utf8'));
+      const helper = await importSmokeSnapshotModule<{
+        resolveWindowsNativeHelper(options: { arch: string }): Promise<string>;
+      }>(path.join(resourceRoot, 'scripts', 'runtime', 'windows-native.mjs'));
+      for (const [arch, machine] of [['x64', 0x8664], ['arm64', 0xaa64]] as const) {
+        const executable = await helper.resolveWindowsNativeHelper({ arch });
+        expect(executable).toBe(path.join(nativeRoot, arch, 'aw-windows-job.exe'));
+        const bytes = await fs.readFile(executable);
+        const canonical = await fs.readFile(path.join(repoRoot(), 'packages', 'agent-skill-eval', 'native', 'windows', arch, 'aw-windows-job.exe'));
+        expect(bytes).toEqual(canonical);
+        expect(manifest.binaries[arch].sha256).toBe(`sha256:${createHash('sha256').update(bytes).digest('hex')}`);
+        const offset = bytes.readUInt32LE(0x3c);
+        expect(bytes.toString('ascii', offset, offset + 4)).toBe('PE\0\0');
+        expect(bytes.readUInt16LE(offset + 4)).toBe(machine);
+      }
+    }
+  }, 120_000);
+
   it('runs real scripts.node staging through the snapshot compiled entry', async () => {
     const root = repoRoot();
     const snapshot = await requireBuildSnapshot();

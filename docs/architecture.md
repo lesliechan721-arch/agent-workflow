@@ -468,6 +468,18 @@ wait 只为未读事件、首次 ready、首次终态和必要错误返回，纯
 
 正常命令以当前生效保留配置启动静默独立扫描，最多一个扫描，前台不等待。执行记录过期且归属/停止证据充分才删除具体目录；同 run 本轮有执行内容时只清内容，删空也不清入口。入口 mtime 年龄须严格超过 max(2 × TTL, 24 小时)，且初次检查为空、非递归删除空执行容器成功后，才删已知入口及空 run。恢复准备先尽力刷新入口 mtime，不延长结果 TTL；扫描不写运行状态、不停进程、不递归删 run，失败不影响回执或退出码。不增加 run registry、全局账本、调度锁或强一致协议。升级、重装或删除 Guide/托管 adapter 前先完成或 stop 活跃任务。原生 macOS/Linux/Windows、实际宿主规则匹配与后端资格分别验证，本机或 fake 通过不外推。
 
+## Windows 原生辅助程序
+
+`packages/agent-skill-eval/native/windows/job-helper` 是文件安全、进程观察和 Job 管理的唯一 Go 源。预编译的 `aw-windows-job.exe` 使用固定操作集合和有界 UTF-8 JSON，不接收脚本文本。文件和进程操作每批启动一个短命进程；每次执行的 Job 仍由独占监护进程持有，不使用共享后台服务、权限缓存或新增锁。
+
+- CLI/Eval 从当前架构的 optional 平台包解析 helper；平台包同时保存 manifest。Codex Enhance 随自身 bundle 携带 x64、arm64 PE 和相同 manifest，运行时不依赖 Eval 安装或仓库布局。两种分发分别发布，普通 build 和安装不需要 Go。入口按 `process.arch` 选择资源，检查普通文件、摘要和 PE 架构；缺失、损坏或不支持时拒绝执行，通过正常 sync/reinstall 恢复，不查询 PATH 或下载替代程序。
+- 文件操作拒绝路径链和树中的重解析点与错误节点。ACL 初始化只用于调用方本次成功独占创建的资源；Windows 新对象可能默认归属于 token 中的组，初始化将 owner 设为当前用户，并使用同一已打开句柄回读 owner 和受保护 DACL。已有资源只验证，不重新初始化；每个目标单独验证。NULL、空、foreign、inherited、deny 和不支持的 ACE 均不能证明私有访问。祖先检查只在当前批次复用，下一次读取和删除前重新验证。运行根目录使用无覆盖移动发布，与 JSON 文件的替换发布区分；已有文件或目录占据根时保留现场并验证现有根，仅清理本次空 staging。
+- 进程快照中的 PID/PPID 只是观察结果。已有归属链或待确认 PID 无法读取时，清理保持未确认。CLI 锁保留完整 100 ns 的 `win32:<.NET ticks>`；插件和 Eval 保留 CIM 的微秒精度，时间以十进制字符串传输。旧 `instance:<token>` 与启动时间身份不可比较，活跃 PID 不因两者字符串不同而失去锁。停止进程在同一个句柄上核对创建时间和 token SID，再终止并等待。
+- Eval 保留 `--config`、stdio、argv 和退出码合同。插件使用独立的私有命名 Job、owner SID、受保护 DACL、名称碰撞拒绝和 ready 通道。两者均先以 suspended 状态创建 root，成功加入 KILL_ON_JOB_CLOSE Job 后才恢复执行；失败不得降级为仅按 PID/PPID 执行。父进程退出、超时、取消和正常 root 退出后均收回后代，停止后的 Job accounting 必须确认空。插件后端继承原环境、工作目录和 stdio，包括 PowerShell 模块路径的有值和缺失状态。
+- artifact refresh 从唯一 Go 源构建并同步插件资源。源码摘要覆盖全部生产 Go 文件；普通校验核对源 manifest、PE 及插件副本。强 CLI 和 Catalog 发布验证使用 manifest 规定的精确 Go 工具链和固定环境逐字节重建。插件 renderer 只对文本生成 `content.files`，PE 通过 `sourceDirs` 按字节复制。
+
+低频 Codex App 注册包发现和用户剪贴板操作继续使用固定 PowerShell 查询。`whoami.exe` 继续读取当前 SID，并只在单进程内缓存成功结果。CI 的外层 `pwsh`、独立 ACL 核验、文件占用及跨卷资格不属于产品重复启动 PowerShell 的替换范围。
+
 ## Agent Skill Eval 执行与 Runner 边界
 
 - Skill-local `evals/manifest.json` 的准备合同是 CLI 拥有的 Manifest v1。`aw skill eval prepare` 通过 Catalog Workspace 解析 canonical plugin，并按一个 plugin、Skill、suite、profile 和可选 case/split 选择生成输入完整的 `EvalSpec v1` 目录。该目录包含 runtime target、可选 previous target、筛选后的 cases、Eval-owned fixture，以及移除被测 Skill 后的完整 subject workspace。`plugins` 选择参与插件并提供公共配置；可选 `configByScope.user` 和 `configByScope.project` 只能覆盖 `plugins` 已选插件，并按顶层字段替换公共配置。未覆盖字段继承公共配置。profile 的 sensitive config 值不得进入 Spec。

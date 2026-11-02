@@ -13,11 +13,13 @@ import { protectPrivatePath } from '../skills/codex-subagent-guide/scripts/runti
 import { runMessage } from '../skills/codex-subagent-guide/scripts/message.mjs';
 import { runMessageMcp } from '../skills/codex-subagent-guide/scripts/message-mcp.mjs';
 import { messageBodies } from './fixtures/message-bodies.mjs';
+import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
 const require = createRequire(import.meta.url);
 const messageScript = require.resolve('../skills/codex-subagent-guide/scripts/message.mjs');
 const mcpScript = require.resolve('../skills/codex-subagent-guide/scripts/message-mcp.mjs');
 const scripts = path.dirname(messageScript);
+const sourceScripts = guideRuntimeScripts(import.meta.url);
 const windows = process.platform === 'win32';
 const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const id = (value) => value.toString(16).padStart(32, '0');
@@ -92,7 +94,8 @@ async function fixture(t, options = {}) {
   const installed = path.join(root, "moved ' install", 'scripts');
   await fs.mkdir(path.join(installed, 'runtime'), { recursive: true });
   await fs.mkdir(path.join(installed, 'file-selection'));
-  for (const name of ['runtime/adapter-channel.mjs', 'runtime/contracts.mjs', 'runtime/files.mjs', 'runtime/platform.mjs', 'file-selection/contracts.mjs']) await fs.copyFile(path.join(scripts, name), path.join(installed, name));
+  for (const name of ['runtime/adapter-channel.mjs', 'runtime/contracts.mjs', 'runtime/files.mjs', 'runtime/platform.mjs', 'runtime/windows-native.mjs', 'file-selection/contracts.mjs']) await fs.copyFile(path.join(scripts, name), path.join(installed, name));
+  await fs.cp(path.join(sourceScripts, 'runtime/native'), path.join(installed, 'runtime/native'), { recursive: true });
   for (const entry of [messageScript, mcpScript]) await fs.copyFile(entry, path.join(installed, path.basename(entry)));
   const toolkit = { module: path.join(installed, 'runtime/adapter-channel.mjs'), command: process.execPath, messageScript: path.join(installed, 'message.mjs'), mcpScript: path.join(installed, 'message-mcp.mjs') };
   const messages = [];

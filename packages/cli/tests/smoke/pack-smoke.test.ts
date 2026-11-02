@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ExecFileOptions } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 
 import fs from 'fs-extra';
 import { afterAll, afterEach, beforeEach, describe, expect, it, type TestContext } from 'vitest';
@@ -504,10 +505,11 @@ describe('pack smoke', () => {
     expect(evalEntries).not.toContain('aw-windows-job.exe');
     const expectedEntries = new Set([
       'package/dist/aw-windows-job.exe',
+      'package/dist/manifest.json',
       'package/package.json',
     ]);
-    expect(new Set(x64Entries.trim().split('\n'))).toEqual(expectedEntries);
-    expect(new Set(arm64Entries.trim().split('\n'))).toEqual(expectedEntries);
+    expect(new Set(x64Entries.trim().split(/\r?\n/u))).toEqual(expectedEntries);
+    expect(new Set(arm64Entries.trim().split(/\r?\n/u))).toEqual(expectedEntries);
 
     const [x64PackageRoot, arm64PackageRoot] = await Promise.all([
       unpackTarball(windowsX64TarballPath, x64UnpackRoot),
@@ -524,6 +526,10 @@ describe('pack smoke', () => {
         exports: { './aw-windows-job.exe': './dist/aw-windows-job.exe' },
       });
       const bytes = await fs.readFile(path.join(packageRoot, 'dist', 'aw-windows-job.exe'));
+      const manifest = await fs.readJson(path.join(packageRoot, 'dist', 'manifest.json'));
+      expect(manifest.schemaVersion).toBe(1);
+      expect(manifest.binaries[arch].sha256).toBe(`sha256:${createHash('sha256').update(bytes).digest('hex')}`);
+      expect(manifest.binaries[arch].peMachine).toBe(`0x${machine.toString(16)}`);
       expect(bytes.subarray(0, 2).toString('ascii')).toBe('MZ');
       const peOffset = bytes.readUInt32LE(0x3c);
       expect(bytes.subarray(peOffset, peOffset + 4).toString('ascii')).toBe('PE\0\0');

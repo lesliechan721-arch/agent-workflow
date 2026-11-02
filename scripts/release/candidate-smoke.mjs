@@ -198,6 +198,10 @@ async function checkHelpers(root) {
     assert.deepEqual(metadata.os, ['win32']);
     assert.deepEqual(metadata.cpu, [arch]);
     const bytes = await fs.readFile(path.join(packageRoot, 'dist', 'aw-windows-job.exe'));
+    const manifest = JSON.parse(await fs.readFile(path.join(packageRoot, 'dist', 'manifest.json'), 'utf8'));
+    assert.equal(manifest.schemaVersion, 1);
+    assert.equal(manifest.binaries[arch].sha256, bytesDigest(bytes));
+    assert.equal(manifest.binaries[arch].peMachine, `0x${machine.toString(16)}`);
     assert.equal(bytes.subarray(0, 2).toString('ascii'), 'MZ');
     const peOffset = bytes.readUInt32LE(0x3c);
     assert.equal(bytes.subarray(peOffset, peOffset + 4).toString('ascii'), 'PE\0\0');

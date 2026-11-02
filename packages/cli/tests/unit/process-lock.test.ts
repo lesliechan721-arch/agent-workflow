@@ -160,7 +160,7 @@ describe('process lock lease', () => {
       schemaVersion: 1,
       token: '00000000-0000-0000-0000-000000000000',
       pid: process.pid,
-      processStartIdentity: 'old-process-start',
+      processStartIdentity: 'win32:638000000000000001',
       acquiredAt: new Date(Date.now() - 2_000).toISOString(),
     });
     const old = new Date(Date.now() - 2_000);
@@ -169,9 +169,63 @@ describe('process lock lease', () => {
       lockPath: target,
       malformedOwnerGraceMs: 1,
       pollMs: 1,
-      processStartIdentityReader: async () => 'new-process-start',
+      processStartIdentityReader: async () => 'win32:638000000000000002',
     });
-    expect(lease.owner.processStartIdentity).toBe('new-process-start');
+    expect(lease.owner.processStartIdentity).toBe('win32:638000000000000002');
+    await lease.release();
+  });
+
+  it.each([
+    ['instance:00000000-0000-0000-0000-000000000000', 'win32:638000000000000001'],
+    ['win32:638000000000000001', 'instance:00000000-0000-0000-0000-000000000000'],
+    ['win32:638000000000000001', null],
+    ['win32:638000000000000001', 'linux:123'],
+  ])('keeps a live owner when its identity cannot be compared (%s)', async (saved, current) => {
+    const target = lockPath(`incomparable-${saved.split(':')[0]}-${current?.split(':')[0] ?? 'unknown'}`);
+    const owner = {
+      schemaVersion: 1,
+      token: '00000000-0000-0000-0000-000000000000',
+      pid: process.pid,
+      processStartIdentity: saved,
+      acquiredAt: new Date(Date.now() - 2_000).toISOString(),
+    };
+    await fs.outputJson(path.join(target, 'owner.json'), owner);
+    const old = new Date(Date.now() - 2_000);
+    await fs.utimes(target, old, old);
+
+    await expect(acquireProcessLock({
+      lockPath: target,
+      processStartIdentityReader: async () => current,
+      timeoutMs: 15,
+      pollMs: 1,
+    })).rejects.toThrow('Timed out waiting for process lock');
+    expect(await fs.readJson(path.join(target, 'owner.json'))).toEqual(owner);
+  });
+
+  it('recovers an instance owner after its process has exited', async () => {
+    let exitedPid: number | undefined;
+    await new Promise<void>((resolve, reject) => {
+      const child = execFile(process.execPath, ['-e', ''], (error) => error ? reject(error) : resolve());
+      exitedPid = child.pid;
+    });
+    expect(exitedPid).toBeDefined();
+    const target = lockPath('exited-instance');
+    await fs.outputJson(path.join(target, 'owner.json'), {
+      schemaVersion: 1,
+      token: '00000000-0000-0000-0000-000000000000',
+      pid: exitedPid,
+      processStartIdentity: 'instance:00000000-0000-0000-0000-000000000000',
+      acquiredAt: new Date(Date.now() - 2_000).toISOString(),
+    });
+    const old = new Date(Date.now() - 2_000);
+    await fs.utimes(target, old, old);
+    const lease = await acquireProcessLock({
+      lockPath: target,
+      processStartIdentityReader: async () => null,
+      timeoutMs: 100,
+      pollMs: 1,
+    });
+    expect(lease.owner.pid).toBe(process.pid);
     await lease.release();
   });
 
@@ -343,13 +397,13 @@ describe('process lock lease', () => {
       schemaVersion: 1,
       token: '00000000-0000-0000-0000-000000000000',
       pid: process.pid,
-      processStartIdentity: 'old-start',
+      processStartIdentity: 'win32:638000000000000003',
       acquiredAt: new Date(Date.now() - 2_000).toISOString(),
     };
     const newOwner = {
       ...oldOwner,
       token: '11111111-1111-1111-1111-111111111111',
-      processStartIdentity: 'new-start',
+      processStartIdentity: 'win32:638000000000000004',
     };
     await fs.outputJson(ownerPath, oldOwner);
     const old = new Date(Date.now() - 2_000);
@@ -361,7 +415,7 @@ describe('process lock lease', () => {
       timeoutMs: 40,
       pollMs: 2,
       malformedOwnerGraceMs: 1,
-      processStartIdentityReader: async () => 'new-start',
+      processStartIdentityReader: async () => 'win32:638000000000000004',
       testHooks: {
         async afterStaleObserve() {
           entered.resolve();
@@ -383,7 +437,7 @@ describe('process lock lease', () => {
       schemaVersion: 1,
       token: '00000000-0000-0000-0000-000000000000',
       pid: process.pid,
-      processStartIdentity: 'old-start',
+      processStartIdentity: 'win32:638000000000000003',
       acquiredAt: new Date(Date.now() - 2_000).toISOString(),
     });
     const old = new Date(Date.now() - 2_000);
@@ -400,7 +454,7 @@ describe('process lock lease', () => {
       lockPath: target,
       fileSystem,
       malformedOwnerGraceMs: 1,
-      processStartIdentityReader: async () => 'new-start',
+      processStartIdentityReader: async () => 'win32:638000000000000004',
     })).rejects.toThrow('simulated claim read failure');
     await expect(fs.pathExists(ownerPath)).resolves.toBe(true);
   });
@@ -412,7 +466,7 @@ describe('process lock lease', () => {
       schemaVersion: 1,
       token: '00000000-0000-0000-0000-000000000000',
       pid: process.pid,
-      processStartIdentity: 'old-start',
+      processStartIdentity: 'win32:638000000000000003',
       acquiredAt: new Date(Date.now() - 2_000).toISOString(),
     });
     const old = new Date(Date.now() - 2_000);
@@ -428,7 +482,7 @@ describe('process lock lease', () => {
       lockPath: target,
       fileSystem,
       malformedOwnerGraceMs: 1,
-      processStartIdentityReader: async () => 'new-start',
+      processStartIdentityReader: async () => 'win32:638000000000000004',
       testHooks: {
         async afterOwnerClaim(claimPath) {
           const claimed = await fs.readJson(claimPath);

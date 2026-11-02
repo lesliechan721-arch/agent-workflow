@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
+import { readWindowsNativeProcessStart } from '@lesliechan721/agent-skill-eval';
 
 const execFileAsync = promisify(execFile);
 const PROCESS_INSTANCE_TOKEN = crypto.randomUUID();
@@ -105,11 +106,9 @@ export async function readProcessStartIdentity(pid: number): Promise<string | nu
     } catch { return null; }
   }
   if (process.platform === 'win32') {
-    const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     try {
-      const result = await execFileAsync(powershell, ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks`], { timeout: 1_000 });
-      const value = String(result.stdout).trim();
-      return /^\d+$/.test(value) ? `win32:${value}` : null;
+      const value = await readWindowsNativeProcessStart(pid);
+      return value === null ? null : `win32:${value}`;
     } catch { return null; }
   }
   return null;
@@ -159,7 +158,13 @@ async function ownerIsRecoverable(
 ): Promise<boolean> {
   if (!processIsAlive(owner.pid)) return true;
   const current = await identityReader(owner.pid);
-  return current !== null && current !== owner.processStartIdentity;
+  if (current === null || current === owner.processStartIdentity) return false;
+  // An instance fallback cannot be compared with a native creation-time identity.
+  if (current.startsWith('instance:') || owner.processStartIdentity.startsWith('instance:')) return false;
+  const identityKind = (value: string): string | undefined => /^(win32|linux):[0-9]+$/u.exec(value)?.[1]
+    ?? (/^darwin:.+$/u.test(value) ? 'darwin' : undefined);
+  const kind = identityKind(current);
+  return kind !== undefined && kind === identityKind(owner.processStartIdentity);
 }
 
 async function releaseClaimWasCompleted(

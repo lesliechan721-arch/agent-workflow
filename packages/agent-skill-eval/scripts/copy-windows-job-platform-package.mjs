@@ -13,10 +13,12 @@ const evalPackageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)
 const packageRoot = path.resolve(evalPackageRoot, '..', `aw-windows-job-win32-${arch}`)
 const outputRoot = path.join(packageRoot, 'dist')
 
-await verifyWindowsJobArtifacts()
+const nativeRoot = path.join(evalPackageRoot, 'native', 'windows')
+await verifyWindowsJobArtifacts({ nativeRoot })
 await fs.rm(outputRoot, { recursive: true, force: true })
 await fs.mkdir(outputRoot, { recursive: true })
 await fs.copyFile(
-  path.join(evalPackageRoot, 'native', 'windows', arch, 'aw-windows-job.exe'),
+  path.join(nativeRoot, arch, 'aw-windows-job.exe'),
   path.join(outputRoot, 'aw-windows-job.exe'),
 )
+await fs.copyFile(path.join(nativeRoot, 'manifest.json'), path.join(outputRoot, 'manifest.json'))
