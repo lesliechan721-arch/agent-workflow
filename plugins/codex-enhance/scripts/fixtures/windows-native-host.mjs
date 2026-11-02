@@ -5,8 +5,10 @@ import { PassThrough, Writable } from 'node:stream';
 // Replace the subprocess boundary, preserving the actual UTF-8 stdin and
 // stdout protocol used by the runtime. Other child processes stay native.
 export function windowsNativeSpawn(execute, fallback) {
+  // Imported source candidates use native.exe in the resolver cache.
+  const executable = JSON.parse(process.env.AW_NATIVE_TOOL_CONTEXT).tools['windows-job'].executable;
   return (command, args, options) => {
-    if (path.basename(command) !== 'aw-windows-job.exe' || args[0] !== '--operation') return fallback(command, args, options);
+    if (command !== executable || args[0] !== '--operation') return fallback(command, args, options);
     const child = new EventEmitter();
     child.stdout = new PassThrough();
     let closed = false;

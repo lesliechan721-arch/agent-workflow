@@ -500,6 +500,7 @@ describe('pack smoke', () => {
     }
   }), 300_000);
 
+  // A cold Windows npm install can use four minutes before authoring starts.
   it('runs external authoring workflow from installed tarballs', smokeCase(async () => {
     const startedAt = Date.now();
     const markStage = (stage: string): void => {
@@ -1477,7 +1478,7 @@ describe('pack smoke', () => {
     expect(evalHelp.stderr).toBe('');
 
     expect((await fs.lstat(installedEvalRoot)).isSymbolicLink()).toBe(false);
-  }), 300_000);
+  }), process.platform === 'win32' ? 600_000 : 300_000);
 
   it('packs the CLI tarball without the staged plugins-dist snapshot', smokeCase(async () => {
     const packageRoot = path.join(repoRoot(), 'packages', 'cli');

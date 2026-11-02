@@ -39,6 +39,8 @@ test('non-Windows and cache-only misses never create a cache', async (t) => {
 
 test('offline import starts with no helper and a cache hit needs no registry', async (t) => {
   const input = await tempFixture(t);
+  // Bootstrap stdin must preserve Unicode and treat path punctuation as data.
+  input.cacheRoot = path.join(input.directory, '原生缓存 😀 \' $;');
   const result = await importNativeTool(input);
   assert.equal(result.state, 'ready');
   assert.deepEqual(await readFile(result.executable), input.binary);

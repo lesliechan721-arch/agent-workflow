@@ -3,7 +3,7 @@ import { lstat, mkdir, open, readdir, rename, rmdir, unlink } from 'node:fs/prom
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { NativeToolError, validateNativeBinary } from './descriptor.mjs';
+import { NATIVE_TOOL_LIMITS, NativeToolError, validateNativeBinary } from './descriptor.mjs';
 
 const executableName = 'native.exe';
 const markerName = '.aw-native-artifact.json';
@@ -18,13 +18,15 @@ async function rejectWindowsReparsePoints(paths) {
   if (process.platform !== 'win32' || paths.length === 0) return;
   const systemRoot = process.env.SystemRoot;
   if (!systemRoot || !path.win32.isAbsolute(systemRoot)) reject();
-  const input = JSON.stringify(paths);
+  // Windows paths cannot contain NUL. Avoid PowerShell module discovery here.
+  const input = paths.join('\0');
   if (Buffer.byteLength(input) > 64 * 1024) reject();
-  const script = '$ErrorActionPreference="Stop";$p=[Console]::In.ReadToEnd()|ConvertFrom-Json;foreach($v in $p){if(([IO.File]::GetAttributes($v)-band[IO.FileAttributes]::ReparsePoint)-ne 0){exit 2}}';
+  const script = '$ErrorActionPreference="Stop";[Console]::InputEncoding=[Text.Encoding]::UTF8;$p=[Console]::In.ReadToEnd().Split([char]0);foreach($v in $p){if(([IO.File]::GetAttributes($v)-band[IO.FileAttributes]::ReparsePoint)-ne 0){exit 2}}';
   await new Promise((resolve, rejectPromise) => {
     const child = execFile(path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
-      { windowsHide: true, timeout: 10_000, maxBuffer: 4096 }, (error) => error ? rejectPromise(new NativeToolError('nativeCacheUnsafe')) : resolve());
+      // Use the same bounded startup budget as other native operations.
+      { windowsHide: true, timeout: NATIVE_TOOL_LIMITS.timeoutMs, maxBuffer: 4096 }, (error) => error ? rejectPromise(new NativeToolError('nativeCacheUnsafe')) : resolve());
     child.stdin.on('error', () => {});
     child.stdin.end(input);
   });
