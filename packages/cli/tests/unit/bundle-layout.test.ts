@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { validatePluginManifest, validatePluginConfigValue } from '@lesliechan721/aw-plugin-core';
 import type { PluginManifest } from '@lesliechan721/aw-plugin-core';
@@ -242,6 +242,42 @@ describe('bundle layout validation', () => {
       code: 'awCapabilityUnsupported',
       missingCapabilities: ['aw.future-feature.v3'],
     });
+  });
+
+  it('scans unchanged source Skill requirements once in build-free mode', async () => {
+    // Test Value Gate: build-free bundling must not repeat source Skill I/O without a build that can change it.
+    const repoRoot = await makeTempRepo();
+    const skillPath = path.join(repoRoot, 'plugins', 'git-commit', 'skills', 'commit', 'SKILL.md');
+    const read = vi.spyOn(fs, 'readFile');
+    try {
+      await bundlePlugins({ repoRoot, outputRoot: path.join(repoRoot, 'embedded') });
+      expect(read.mock.calls.filter(([file]) => file === skillPath)).toHaveLength(1);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('checks requirements introduced by a staging build', async () => {
+    // Test Value Gate: reusing the source scan must not bypass checks on generated Skill commands.
+    const repoRoot = await makeTempRepo();
+    await writePackageRuntimeFixture(repoRoot);
+    await updateFixturePluginManifest(repoRoot, (manifest) => {
+      manifest.scripts.node.build = { runner: 'node', path: './scripts/build.mjs' };
+    });
+    await fs.outputFile(path.join(repoRoot, 'plugins', 'git-commit', 'scripts', 'build.mjs'), '');
+    await expect(bundlePlugins({
+      repoRoot,
+      outputRoot: path.join(repoRoot, 'embedded'),
+      buildMode: 'staging',
+      strictRequirements: true,
+      stagingRunner: {
+        ...createFakeStagingRunner(),
+        async runNodeBuild({ pluginRoot }) {
+          await fs.appendFile(path.join(pluginRoot, 'skills', 'commit', 'SKILL.md'),
+            '\n```sh\naw unknown-group unknown-command\n```\n');
+        },
+      },
+    })).rejects.toMatchObject({ code: 'awCapabilityStrictRequirements' });
   });
 
   it('omits .DS_Store path segments from the plugin bundle but keeps other hidden files', async () => {

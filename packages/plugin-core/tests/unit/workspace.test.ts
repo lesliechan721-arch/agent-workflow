@@ -15,6 +15,7 @@ import {
   resolveCatalogVersionMutation,
   resolveCatalogWorkspaceOutputPath,
   validateCatalogSnapshotComplete,
+  validateCatalogSnapshotTransport,
   validatePublishedCatalogSnapshot,
   validatePublishedCatalogSnapshotMetadata,
 } from '../../src/workspace.js'
@@ -446,6 +447,39 @@ describe('AW Catalog Workspace v1', () => {
     await fs.writeJson(claudePath, claude)
     await expect(validateCatalogSnapshotComplete(built.outputRoot))
       .rejects.toThrow(/Claude marketplace metadata or plugin inventory/u)
+  })
+
+  it('bounds payload reads while validating both Catalog entry digests', async () => {
+    // Test Value Gate: Catalog validation must retain both digest checks without duplicate payload I/O.
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: {
+        async build({ outputRoot }) {
+          await writeBundle(outputRoot, manifest)
+          await fs.writeFile(path.join(outputRoot, 'payload.bin'), Buffer.from([0, 128, 255]))
+          const manifestPath = path.join(outputRoot, '.agents-plugin', 'plugin.json')
+          await fs.writeFile(manifestPath, '\uFEFF' + await fs.readFile(manifestPath, 'utf8'))
+        },
+      },
+    })
+    const payload = path.join(built.outputRoot, 'plugins', String(manifest.name), 'payload.bin')
+    const read = vi.spyOn(fs, 'readFile')
+    try {
+      const validated = await validateCatalogSnapshotTransport(built.outputRoot)
+      expect(validated.manifest.entries[0]).toMatchObject({
+        artifactDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        contentDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+      })
+      // One snapshot hash and one shared entry-digest pass.
+      expect(read.mock.calls.filter(([file]) => file === payload)).toHaveLength(2)
+    } finally {
+      read.mockRestore()
+    }
+    await fs.appendFile(payload, 'changed')
+    await expect(validateCatalogSnapshotTransport(built.outputRoot)).rejects.toThrow(/artifactDigest/u)
   })
 
   it.skipIf(process.platform === 'win32')('validates executable Catalog bundles after Windows drops Unix mode bits', async () => {
