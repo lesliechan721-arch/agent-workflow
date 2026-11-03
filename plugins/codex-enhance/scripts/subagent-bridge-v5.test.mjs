@@ -390,6 +390,23 @@ test('fixed explicit deadline wakes receive, while null leaves the bridge open',
   assert.equal((await open.invoke('send', { text: 'still open' })).outcome, 'submitted');
 });
 
+// Test Value Gate: close may remove binding.json between the local path check
+// and the actual permission check. Windows must exercise its real ACL helper.
+test('bridge close during binding verification returns closed', async (t) => {
+  const f = await fixture(t); const lstat = fs.lstat.bind(fs); let raced = false;
+  t.mock.method(fs, 'lstat', async (target, ...args) => {
+    const stat = await lstat(target, ...args);
+    if (target === f.bindingFile && !raced) {
+      raced = true;
+      await f.bridge.close('cancelled');
+    }
+    return stat;
+  });
+  assert.equal((await f.invoke('receive')).outcome, 'closed');
+  assert.equal(raced, true);
+  await assert.rejects(lstat(path.dirname(f.bindingFile)), { code: 'ENOENT' });
+});
+
 test('an abandoned receive releases the shared receiver instead of blocking later tools', async (t) => {
   const f = await fixture(t); const controller = new AbortController();
   const abandoned = f.invoke('receive', { signal: controller.signal });

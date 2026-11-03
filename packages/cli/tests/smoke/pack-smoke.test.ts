@@ -273,7 +273,9 @@ async function preparePackedCli(): Promise<{
       await fs.writeJson(path.join(nativePackage, 'package.json'), { ...template, version });
       await fs.copyFile(helper.executable, path.join(nativePackage, 'dist/aw-windows-job.exe'));
       windowsJobTarballPath = path.join(tempRoot, 'windows-platform.tgz');
-      await execFileAsync('tar', ['-czf', windowsJobTarballPath, '-C', nativeSource, 'package']);
+      await execFileAsync('tar', [
+        '-czf', path.basename(windowsJobTarballPath), '-C', path.basename(nativeSource), 'package',
+      ], { cwd: tempRoot });
     }
 
     return {

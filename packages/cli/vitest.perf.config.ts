@@ -2,12 +2,17 @@ import { vitestWorkerOptions } from './scripts/test-workers.mjs';
 
 import { defineConfig } from 'vitest/config';
 
+import base from './vitest.config.js';
+
 export default defineConfig({
+  resolve: base.resolve,
   test: {
+    server: base.test?.server,
     fileParallelism: false,
     ...vitestWorkerOptions({ serial: true }),
     projects: [
       {
+        extends: true,
         test: {
           name: 'process-lifecycle',
           environment: 'node',
@@ -23,6 +28,7 @@ export default defineConfig({
         },
       },
       {
+        extends: true,
         test: {
           name: 'performance',
           environment: 'node',

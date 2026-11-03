@@ -28,12 +28,19 @@ it.skipIf(needsWindowsCandidate)('loads Eval with native ESM for explicit candid
     await fs.outputJson(path.join(cliRoot, 'package.json'), { type: 'module' });
     await fs.outputJson(path.join(evalRoot, 'package.json'), { type: 'module' });
     await fs.copy(path.join(packageRoot, 'vitest.config.ts'), path.join(cliRoot, 'vitest.config.ts'));
+    const intentConfig = 'vitest.intent-round-trip-child.config.ts';
+    const perfConfig = 'vitest.perf.config.ts';
+    for (const config of [intentConfig, perfConfig]) {
+      await fs.copy(path.join(packageRoot, config), path.join(cliRoot, config));
+    }
     await fs.copy(path.join(packageRoot, 'scripts', 'test-workers.mjs'), path.join(cliRoot, 'scripts', 'test-workers.mjs'));
     await fs.outputFile(path.join(cliRoot, 'tests', 'setup', 'test-isolation.ts'), '');
     const source = await fs.readFile(path.join(packageRoot, '..', 'agent-skill-eval', 'src', 'windows-job.ts'), 'utf8');
     await fs.outputFile(path.join(evalRoot, 'src', 'windows-job.ts'), source);
     await fs.outputFile(path.join(evalRoot, 'src', 'index.ts'), 'export { resolveWindowsJobHelperPath } from "./windows-job.js";\n');
     const fixture = path.join(cliRoot, 'tests', 'integration', 'eval-dependency.test.ts');
+    const intentFixture = path.join(cliRoot, 'tests', 'integration', 'fixtures', 'intent-round-trip-child.ts');
+    const perfFixture = path.join(cliRoot, 'tests', 'perf', 'performance-budget.test.ts');
     await fs.outputFile(fixture, [
       'import { expect, it } from "vitest";',
       'import { resolveWindowsJobHelperPath } from "@lesliechan721/agent-skill-eval";',
@@ -46,17 +53,20 @@ it.skipIf(needsWindowsCandidate)('loads Eval with native ESM for explicit candid
       'for (const key of Object.keys(process.env)) if (key.toUpperCase() === "AW_NATIVE_TOOL_CONTEXT") delete process.env[key];',
       // This context selects the test boundary. Its path must never become the production resolver result.
       'if (process.env.AW_EVAL_BOUNDARY_COMPILED) process.env.AW_NATIVE_TOOL_CONTEXT = JSON.stringify({ schemaVersion: 1, tools: { "windows-job": { state: "ready", protocol: "aw.windows-job.v1", executable: "foreign-context.exe" } } });',
-      'const selection = process.env.AW_EVAL_BOUNDARY_CONFIG ? ["--config", process.env.AW_EVAL_BOUNDARY_CONFIG] : ["--config", "vitest.config.ts", "--project", "integration"];',
+      'const selection = ["--config", process.env.AW_EVAL_BOUNDARY_CONFIG || "vitest.config.ts"];',
+      'const project = process.env.AW_EVAL_BOUNDARY_PROJECT || (!process.env.AW_EVAL_BOUNDARY_CONFIG ? "integration" : undefined);',
+      'if (project) selection.push("--project", project);',
       `process.argv = [process.execPath, ${JSON.stringify(path.join(vitestRoot, 'vitest.mjs'))}, "run", ...selection, "--maxWorkers=1", "--no-file-parallelism"];`,
       `await import(${JSON.stringify(pathToFileURL(path.join(vitestRoot, 'vitest.mjs')).href)});`,
     ].join('\n'));
-    const run = async (compiled: boolean, config?: string): Promise<void> => {
+    const run = async (compiled: boolean, config?: string, project?: string): Promise<void> => {
       const result = await scope.command(process.execPath, [launch], {
         cwd: cliRoot,
         env: {
           ...process.env,
           AW_EVAL_BOUNDARY_COMPILED: compiled ? '1' : '',
           AW_EVAL_BOUNDARY_CONFIG: config ?? '',
+          AW_EVAL_BOUNDARY_PROJECT: project ?? '',
         },
         timeoutMs: 20_000,
       });
@@ -67,6 +77,10 @@ it.skipIf(needsWindowsCandidate)('loads Eval with native ESM for explicit candid
       basePackageRoot: cliRoot,
     });
     await run(false, nestedConfig);
+    await fs.copy(fixture, intentFixture);
+    await fs.copy(fixture, perfFixture);
+    await run(false, intentConfig);
+    await run(false, perfConfig, 'performance');
 
     await fs.outputFile(path.join(evalRoot, 'dist', 'index.js'), ts.transpileModule(source, {
       compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
@@ -88,9 +102,15 @@ it.skipIf(needsWindowsCandidate)('loads Eval with native ESM for explicit candid
       '  await expect(resolveWindowsJobHelperPath({ platform: "win32", arch: "x64" })).rejects.toMatchObject({ code: "nativePackageUnavailable" });',
       '});',
     ].join('\n'));
+    await fs.copy(fixture, intentFixture);
+    await fs.copy(fixture, perfFixture);
     await run(true);
     await fs.outputFile(executable, 'fixture bytes; never executed');
     await run(true, nestedConfig);
+    await fs.outputFile(executable, 'fixture bytes; never executed');
+    await run(true, intentConfig);
+    await fs.outputFile(executable, 'fixture bytes; never executed');
+    await run(true, perfConfig, 'performance');
   } finally {
     await scope.finish();
     await fs.remove(root);
