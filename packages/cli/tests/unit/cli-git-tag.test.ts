@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { CLI_RELEASE_PACKAGES } from '../../../../scripts/release/common.mjs';
 
 import {
   assertPublishedCliArtifactsMatch,
@@ -9,6 +10,24 @@ const version = '0.1.0-beta.1';
 const sourceHead = 'a'.repeat(40);
 
 describe('CLI Git tag publisher', () => {
+  it.each([false, true])('bounds registry read retries when unavailability is persistent=%s', async (persistent) => {
+    const descriptor = {
+      axes: { cli: true }, candidates: { cli: version },
+      npm: { packages: CLI_RELEASE_PACKAGES.map(({ name }, index) => ({ name, path: `artifacts/${index}.tgz` })) },
+    };
+    let time = 0;
+    let failures = 0;
+    const result = assertPublishedCliArtifactsMatch('/prepared', descriptor, {
+      now: () => time, visibilityTimeoutMs: 20, visibilityRetryMs: 5,
+      waitForVisibility: async (duration: number) => { time += duration; },
+      assertPublishedPackageMatches: async (name: string) => {
+        if (name.endsWith('win32-arm64') && (persistent || failures++ < 2)) throw new Error('E404');
+      },
+    });
+    if (persistent) await expect(result).rejects.toThrow(`Registry verification failed for @lesliechan721/aw-windows-job-win32-arm64@${version}: E404`);
+    else await expect(result).resolves.toBeUndefined();
+  });
+
   it('accepts an expected remote tag after an uncertain push result', async () => {
     const readRemoteTag = vi.fn()
       .mockResolvedValueOnce(null)

@@ -5,7 +5,7 @@ export const OUTPUT_LIMIT = 32768;
 export const STDERR_LIMIT = 1024;
 const attribute = (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 const routineDiagnostics = new Set(['codexExecutableSelected', 'communicationPermissionExisting',
-  'communicationPermissionAdded', 'profileFieldIrrelevant', 'hookTrustBypassed']);
+  'communicationPermissionAdded', 'communicationPermissionSession', 'profileFieldIrrelevant', 'hookTrustBypassed']);
 const sameDiagnostic = (left, right) => left.code === right.code && left.field === right.field && left.message === right.message;
 
 export function textBlock(kind, text, attributes = {}) {

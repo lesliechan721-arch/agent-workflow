@@ -1801,11 +1801,13 @@ export async function bundleLocalPlugin(
 
   try {
     plugin = buildPlugin.plugin;
-    const requirements = await resolvePluginRequirements({
-      pluginRoot: plugin.rootDir,
-      manifest: plugin.manifest,
-      implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES,
-    });
+    const requirements = buildOptions.buildMode === 'build-free'
+      ? sourceRequirements
+      : await resolvePluginRequirements({
+          pluginRoot: plugin.rootDir,
+          manifest: plugin.manifest,
+          implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES,
+        });
     if (!historicalComparison) {
       assertPluginRequirementsSupported(
         plugin.manifest.name,

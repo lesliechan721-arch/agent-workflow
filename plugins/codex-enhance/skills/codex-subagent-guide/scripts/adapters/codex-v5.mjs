@@ -35,7 +35,7 @@ export async function codexConfiguration(request, environment = process.env, dia
   const turn = {};
   const extras = [];
   const server = `aw_parent_${request.run.id}`;
-  const conversion = { diagnostics, environment, baseDir: request.workspace, privateMcpServer: server };
+  const conversion = { diagnostics, environment, baseDir: request.workspace, privateMcpServer: request.communication === false ? undefined : server };
   const addRaw = (value) => {
     raw = mergeConfiguration(raw, convertProfile(value, { ...conversion, explicit: true }));
   };
@@ -183,13 +183,6 @@ export async function executeCodex(context) {
     setImmediate(maybeComplete);
     return delivery;
   } });
-  if (bridge) {
-    const binding = { command: bridge.mcpServer.command, args: bridge.mcpServer.args, required: true, tools: { receive_parent: { output_token_limit: 32768 } } };
-    // A whole request table would replace an existing startup override table.
-    // The AW-generated server name contains no dots or TOML quoting characters.
-    if (configuration.startupMcp) configuration.thread.config[`mcp_servers.${server}`] = binding;
-    else configuration.thread.config.mcp_servers = { ...configuration.thread.config.mcp_servers, [server]: binding };
-  }
   const executable = context.executable;
   watchPermissionFallback(context);
   const backend = await context.spawn(executable.command, [...(executable.args ?? []), ...configuration.argv]);
@@ -230,11 +223,34 @@ export async function executeCodex(context) {
   try {
     await rpc.call('initialize', { clientInfo: { name: 'aw-subagent', version: '5' }, capabilities: {} });
     await rpc.notify('initialized');
+    let inherited;
     if (configuration.thread.config.hooks) {
       let layers;
       try { layers = await rpc.call('config/read', { cwd: context.request.workspace, includeLayers: true }); }
       catch { fail('profileHookStateUnavailable', 'The backend could not return raw hook state layers.'); }
       mapHookState(configuration, layers);
+      inherited = layers.config;
+    }
+    if (bridge) {
+      const fullAccess = (config) => config?.approval_policy === 'never' && config?.sandbox_mode === 'danger-full-access';
+      // Resume can restore persisted permissions instead of current defaults.
+      // Only explicit overrides establish full access before that response.
+      if (!context.request.sessionId && !fullAccess(configuration.thread.config) && inherited === undefined) {
+        try { inherited = (await rpc.call('config/read', { cwd: context.request.workspace, includeLayers: false }))?.config; }
+        catch (error) {
+          // An unavailable read cannot establish full access. Keep the precise
+          // tool grants; a lost connection still retains its failure evidence.
+          if (!error.rpcError) throw error;
+        }
+      }
+      const approval = fullAccess({ ...(!context.request.sessionId ? inherited : {}), ...configuration.thread.config }) ? {} : { approval_mode: 'approve' };
+      const tools = { receive_parent: { ...approval, output_token_limit: 32768 } };
+      if (approval.approval_mode) tools.send_parent = { ...approval };
+      const binding = { command: bridge.mcpServer.command, args: bridge.mcpServer.args, required: true, tools };
+      // A whole request table would replace an existing startup override table.
+      // The AW-generated server name contains no dots or TOML quoting characters.
+      if (configuration.startupMcp) configuration.thread.config[`mcp_servers.${server}`] = binding;
+      else configuration.thread.config.mcp_servers = { ...configuration.thread.config.mcp_servers, [server]: binding };
     }
     const response = context.request.sessionId
       ? await rpc.call('thread/resume', { ...configuration.thread, threadId: context.request.sessionId })

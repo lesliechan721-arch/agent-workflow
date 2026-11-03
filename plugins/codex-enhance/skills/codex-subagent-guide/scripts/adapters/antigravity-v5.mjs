@@ -1,11 +1,36 @@
 #!/usr/bin/env node
-import { LIMITS, identifier, object, text as validText } from '../runtime/contracts.mjs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { LIMITS, fail, identifier, object, text as validText } from '../runtime/contracts.mjs';
 import { adapterMain, backendLines, collaborationInput, deferred, negotiateExecutable } from './common.mjs';
 import { antigravityArguments, antigravityFullAccess } from './antigravity-arguments.mjs';
 import { watchPermissionFallback } from './permission-mode.mjs';
 import { prepareAntigravityPermission } from './antigravity-permissions.mjs';
+import { communicationCommand } from '../runtime/managed-host.mjs';
 
 export { antigravityArguments, checkAntigravityArguments } from './antigravity-arguments.mjs';
+
+const execFileAsync = promisify(execFile);
+
+async function checkAntigravityVersion(context, executable) {
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync(executable.command, [...executable.args, '--version'], {
+      cwd: context.request.workspace, env: executable.env ?? context.environment,
+      encoding: 'utf8', timeout: 5000, maxBuffer: 65536, windowsHide: true,
+      killSignal: 'SIGKILL', signal: context.signal,
+    }));
+  } catch {
+    context.initialization.environment = { status: 'unavailable', code: 'antigravityVersionCheckFailed' };
+    fail('antigravityVersionCheckFailed', 'The agy version query failed. Repair agy 1.4.10 or later on the selected PATH, then start a new run.');
+  }
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(stdout.trim());
+  const version = match?.slice(1).map(Number);
+  if (!version?.every(Number.isSafeInteger) || version[0] < 1 || version[0] === 1 && (version[1] < 4 || version[1] === 4 && version[2] < 10)) {
+    context.initialization.environment = { status: 'unavailable', code: 'antigravityVersionUnsupported' };
+    fail('antigravityVersionUnsupported', 'The Antigravity adapter requires agy 1.4.10 or later with session --settings support. Upgrade the selected agy, then start a new run.');
+  }
+}
 
 export async function negotiateAntigravityCommunication() {
   return { supported: true, transport: 'command', passiveDelivery: 'turn-boundary' };
@@ -14,6 +39,7 @@ export async function negotiateAntigravityCommunication() {
 export async function negotiateAntigravity(context) {
   antigravityArguments(context.request);
   const executable = await negotiateExecutable(context, 'agy');
+  await checkAntigravityVersion(context, executable);
   const communication = context.request.communication ? await negotiateAntigravityCommunication(context) : { supported: false };
   return { environment: { status: 'available' }, executable, capabilities: { communication, resume: { supported: true } } };
 }
@@ -58,14 +84,17 @@ export async function executeAntigravity(context) {
       maybeComplete();
     }
   };
+  const commandBinding = context.request.communication ? await communicationCommand(context.environment) : undefined;
   const bridge = await context.prepareCommunication({
+    commandBinding,
     instructionBindings: { shell: process.platform === 'win32' ? 'powershell' : 'posix', sendTextMode: 'argument' },
     canSubmitInput: () => firstSent && !active && !pending && terminalSucceeded() && !context.signal.aborted,
     submitInput: ({ text }, { signal }) => sendInput(collaborationInput(text), signal),
   });
   if (bridge && !antigravityFullAccess(context.request)) {
-    const permission = await prepareAntigravityPermission({ environment: context.environment, command: bridge.script.command, script: bridge.script.args[0] });
-    context.diagnostics.push({ code: permission.status === 'added' ? 'communicationPermissionAdded' : 'communicationPermissionExisting', message: permission.status === 'added' ? 'The exact Antigravity user allow rule was added and will remain for later runs.' : 'The exact Antigravity user allow rule already exists and was reused.' });
+    const permission = await prepareAntigravityPermission({ environment: context.environment, command: commandBinding.command, args: commandBinding.args, directory: context.request.runtime.directory });
+    args.push('--settings', permission.settingsFile);
+    context.diagnostics.push({ code: 'communicationPermissionSession', message: 'Exact Antigravity communication allow rules were prepared for this session. No communication rules were saved to user settings.' });
   }
   if (context.signal.aborted) return { state: 'cancelled', code: context.errorCode, text: '' };
   watchPermissionFallback(context);
@@ -105,7 +134,7 @@ export async function executeAntigravity(context) {
       if (!initializationError && (!sessionId || result.conversation_id !== sessionId)) return invalid('backendSessionMismatch');
       if (Buffer.byteLength(result.response) > LIMITS.outputBytes) return invalid('adapterOutputTooLarge');
       if (initializationError && !firstSent) { terminal = result; completed.resolve(); initialized.resolve(); return; }
-      if (!active || pending || result.num_turns !== inputCount || acceptedCount !== inputCount) return invalid('backendInputAcceptanceInvalid');
+      if (!active || pending || acceptedCount !== inputCount) return invalid('backendInputAcceptanceInvalid');
       terminal = result;
       response = result.response;
       deniedActions = result.denied_actions?.length ?? 0;

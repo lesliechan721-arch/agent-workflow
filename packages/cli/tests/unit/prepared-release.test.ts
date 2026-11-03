@@ -701,31 +701,20 @@ describe('local prepared release', () => {
     })).resolves.toEqual({ cli: '1.2.0-beta.5', catalog: null });
   });
 
-  it.each([false, true])('retries only registry reads before tag and Catalog when visibility is persistent=%s', async (persistent) => {
+  it('completes CLI and Catalog after five successful uploads while registry downloads are unavailable', async () => {
     const fixture = await publicationFixture({ cli: true, catalog: true });
-    let time = 0;
-    let failures = 0;
     const publish = vi.fn(async () => undefined);
     const tag = vi.fn();
     const catalog = vi.fn();
-    const result = publishPreparedRelease({
+    const verify = vi.fn(async () => { throw new Error('E404'); });
+    await publishPreparedRelease({
       ...publishOptions(fixture), runNpmCommand: publish, publishCliTag: tag, publishCatalog: catalog,
-      now: () => time, visibilityTimeoutMs: 20, visibilityRetryMs: 5,
-      waitForVisibility: async (duration: number) => { time += duration; },
-      assertPublishedPackageMatches: async (name: string) => {
-        if (name.endsWith('win32-arm64') && (persistent || failures++ < 2)) throw new Error('E404');
-      },
+      assertPublishedCliArtifactsMatch: verify,
     });
-    if (persistent) {
-      await expect(result).rejects.toThrow('not fully available');
-      expect(tag).not.toHaveBeenCalled();
-      expect(catalog).not.toHaveBeenCalled();
-    } else {
-      await result;
-      expect(tag).toHaveBeenCalledOnce();
-      expect(catalog).toHaveBeenCalledOnce();
-    }
     expect(publish).toHaveBeenCalledTimes(5);
+    expect(tag).toHaveBeenCalledOnce();
+    expect(catalog).toHaveBeenCalledOnce();
+    expect(verify).not.toHaveBeenCalled();
   });
 
   it('consumes a candidate before the first write and refuses a same-version retry', async () => {

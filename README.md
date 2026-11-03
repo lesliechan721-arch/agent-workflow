@@ -402,9 +402,9 @@ aw catalog version 0.2.0-beta.1 --workspace-root .
 aw catalog version --bump patch --workspace-root .
 ```
 
-产品源码必须先提交，且工作树必须干净。命令先选择 Catalog beta，再调用上述公共 version mutation；需要变化时创建一个精确只包含 `plugins/marketplace-source.json` 的 commit。CLI/plugin metadata 使用单独白名单 commit。没有 Catalog version 变化时不创建空 commit。随后运行所选轴的完整验证，在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 plan，并按 `两个 Windows 平台包 → Eval → Core → CLI → 五包可见性校验 → cli-v<version> 完成 tag → Catalog` 发布。五包使用相同版本和渠道；任一已存在同版本包都占用候选版本。Catalog 轴最后调用与普通 Workspace 相同的 publisher；CLI tag 只推送到 `origin`，当前分支不自动推送。
+产品源码必须先提交，且工作树必须干净。命令先选择 Catalog beta，再调用上述公共 version mutation；需要变化时创建一个精确只包含 `plugins/marketplace-source.json` 的 commit。CLI/plugin metadata 使用单独白名单 commit。没有 Catalog version 变化时不创建空 commit。随后运行所选轴的完整验证，在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 plan，并按 `两个 Windows 平台包 → Eval → Core → CLI → cli-v<version> 完成 tag → Catalog` 发布。五包使用相同版本和渠道；任一已存在同版本包都占用候选版本。Catalog 轴最后调用与普通 Workspace 相同的 publisher；CLI tag 只推送到 `origin`，当前分支不自动推送。
 
-CLI 完成 tag 前，在总时限内重新读取五包 metadata 和归档，并重新验证缓存。短暂不可见可重试读取，不重新执行 publish；超时保留候选与已有远端写入，使用原候选显式 repair 或提升版本恢复。这项检查不保证所有地区或第三方镜像同时可见。
+五包 `npm publish` 全部成功后即写 CLI 完成 tag，并允许同批 Catalog 继续。普通发布不额外下载远端包作校验。完成 tag 不保证 npm 已传播完成，发布后立即安装仍可能需要等待。显式 CLI repair 仍核验已有远端包，以确认原候选已完整发布。
 
 Catalog 工具链按本次发布场景固定，恢复包保存精确版本与完整五包 tarball，恢复不重新查询浮动标签：
 

@@ -137,7 +137,7 @@ test('Actions hands the exact CLI archive to a fresh publisher and saves its con
   const writes = [];
   const published = new Set();
   const options = {
-    assertPublishedCliArtifactsMatch: async (_root, descriptor) => { assert.equal(published.size, 5); assert.equal(descriptor.npm.packages.length, 5); },
+    assertPublishedCliArtifactsMatch: async () => { throw new Error('Registry download unavailable'); },
     repoRoot: publisher, registryUrl: 'https://registry.example.invalid/', log() {},
     env: { ...process.env, GITHUB_REPOSITORY: 'owner/repo', GITHUB_RUN_ID: '12', GITHUB_RUN_ATTEMPT: '1' },
     withSnapshot: async () => { throw new Error('Publication must consume the saved candidate without building.'); },
@@ -177,7 +177,7 @@ test('Actions hands the exact CLI archive to a fresh publisher and saves its con
 });
 
 // Test Value Gate: a deferred Catalog source tag must not trigger publication
-// until the exact same-batch CLI completion tag and all five packages exist.
+// until the exact same-batch CLI completion tag exists, without waiting for npm.
 test('same-batch Catalog starts only after the exact CLI has completed', async (t) => {
   const value = await fixture(t);
   const { repoRoot, git, sourceHead } = value;
@@ -193,7 +193,7 @@ test('same-batch Catalog starts only after the exact CLI has completed', async (
   await git(repoRoot, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'tag.gpgsign=false', 'tag', '-a', '-m', `Release batch\n\nAW-Catalog: ${catalogTag}`, tag);
   await git(repoRoot, 'branch', catalogBranch);
   await git(repoRoot, 'push', 'origin', 'main', `refs/tags/${tag}`, `refs/heads/${catalogBranch}`);
-  const options = { repoRoot, log() {}, readPackageVersions: async () => [version] };
+  const options = { repoRoot, log() {}, readPackageVersions: async () => { throw new Error('npm metadata unavailable'); } };
   await assert.rejects(runActionsRelease(['complete-batch', '--product', 'cli', '--tag', tag], options), /must complete/u);
   assert.equal((await git(repoRoot, 'ls-remote', 'origin', `refs/tags/${catalogTag}`)).stdout.trim(), '');
   await git(repoRoot, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'tag.gpgsign=false', 'tag', '-a', '-m', 'CLI complete', `cli-v${version}`, head);

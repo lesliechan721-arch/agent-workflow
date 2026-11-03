@@ -41,6 +41,7 @@ function backend(context, args) {
       }
       const respond = (result) => emit({ id: input.id, result });
       if (input.method === 'initialize' || input.method === 'thread/unsubscribe') respond({});
+      else if (input.method === 'config/read') respond({ config: {} });
       else if (input.method === 'thread/resume' || input.method === 'thread/start') {
         if (scenario === 'resume rejection') emit({ id: input.id, error: { code: -32602, message: 'Session unavailable.' } });
         else respond({ thread: { id: scenario === 'resume mismatch' ? 'other-thread' : 'thread-fixture', ...(scenario === 'resume active' ? { status: { type: 'active' } } : {}) } });

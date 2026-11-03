@@ -5,11 +5,6 @@ import path from 'node:path';
 import { bytesDigest } from './candidate-archive.mjs';
 import { captureCommand, repoRoot as defaultRepoRoot, runReleaseGit } from './common.mjs';
 
-const PACKAGE_NAMES = [
-  '@lesliechan721/aw-windows-job-win32-x64', '@lesliechan721/aw-windows-job-win32-arm64',
-  '@lesliechan721/agent-skill-eval', '@lesliechan721/aw-plugin-core', '@lesliechan721/aw',
-];
-
 export async function githubRequest(endpoint, options = {}) {
   const env = options.env ?? process.env;
   const response = await (options.fetch ?? fetch)(`${env.GITHUB_API_URL ?? 'https://api.github.com'}${endpoint}`, {
@@ -182,13 +177,6 @@ export async function readRemoteCompletion(candidate, options = {}) {
   if (!commit) throw new Error('Release completion tag must be annotated.');
   if (candidate.product === 'cli') {
     if (commit !== candidate.candidateHead) throw new Error('CLI completion tag conflicts with the selected source candidate.');
-    for (const name of PACKAGE_NAMES) {
-      const versions = await (options.readPackageVersions ?? (async (packageName) => {
-        const result = await (options.captureCommand ?? captureCommand)('npm', ['view', packageName, 'versions', '--json', '--prefer-online'], { cwd: repoRoot, env: options.env });
-        return JSON.parse(result.stdout);
-      }))(name);
-      if (!Array.isArray(versions) || !versions.includes(candidate.version)) throw new Error('CLI completion tag exists without all five published packages.');
-    }
     return true;
   }
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-complete-'));

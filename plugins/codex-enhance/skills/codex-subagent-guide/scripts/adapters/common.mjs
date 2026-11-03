@@ -330,7 +330,7 @@ export function adapterMain(moduleUrl, descriptor, help) {
         await emit({ type: 'ready', initialization: context.initialization, ...(safe.length ? { diagnostics: safe } : {}) });
         ready = true;
       },
-      async prepareCommunication({ submitInput, canSubmitInput, instructionBindings } = {}) {
+      async prepareCommunication({ submitInput, canSubmitInput, instructionBindings, commandBinding } = {}) {
         if (context.communication) fail('communicationAlreadyPrepared', 'Communication must be prepared once.');
         if (!request.communication) {
           context.communication = { status: 'disabled' };
@@ -357,6 +357,7 @@ export function adapterMain(moduleUrl, descriptor, help) {
           }, submitInput: communication.passiveDelivery === 'none' ? undefined : submitInput, canSubmitInput,
         });
         try {
+          if (commandBinding) context.bridge.script = { command: commandBinding.command, args: [...commandBinding.args, ...context.bridge.script.args.slice(1)] };
           const instructions = await renderCommunicationInstructions(communication, context.bridge, instructionBindings);
           context.prompt = `${request.prompt}\n\n${instructions}`;
           context.communication = communication;

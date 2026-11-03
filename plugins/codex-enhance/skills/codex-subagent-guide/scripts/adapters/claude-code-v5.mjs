@@ -8,9 +8,9 @@ import { permissionMode, watchPermissionFallback } from './permission-mode.mjs';
 
 const valueOptions = ['--agent', '--agents', '--append-system-prompt', '--debug-file', '--effort', '--fallback-model', '--json-schema', '--max-budget-usd', '--model', '--name', '--permission-mode', '--plugin-dir', '--remote-control-session-name-prefix', '--session-id', '--setting-sources', '--settings', '--system-prompt', '--system-prompt-file', '--append-system-prompt-file'];
 
-function denyRules(args) {
+function permissionOptions(args) {
   const rules = [];
-  let collecting = false; let settings;
+  let collecting = false; let settings, mode, bypass = false;
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];
     if (argument.startsWith('-')) {
@@ -22,12 +22,16 @@ function denyRules(args) {
         if (equals >= 0) rules.push(argument.slice(equals + 1));
       } else if (option === '--settings') {
         settings = equals >= 0 ? argument.slice(equals + 1) : args[++index];
+      } else if (option === '--permission-mode') {
+        mode = equals >= 0 ? argument.slice(equals + 1) : args[++index];
+      } else if (argument === '--dangerously-skip-permissions') {
+        bypass = true;
       } else if (equals < 0 && (valueOptions.includes(option) || ['-d', '-n'].includes(option))) index++;
     } else if (collecting) rules.push(argument);
   }
   // CLI lists accept commas, spaces and separate argv values. Keep scoped rules
   // intact: text inside Bash(...) is not a second bare tool-name deny rule.
-  return { settings, rules: rules.flatMap((value) => {
+  return { settings, mode, bypass, rules: rules.flatMap((value) => {
     const result = []; let depth = 0; let start = 0;
     for (let index = 0; index <= value.length; index++) {
       if (value[index] === '(') depth++;
@@ -41,18 +45,36 @@ function denyRules(args) {
   }) };
 }
 
+function claudeFullAccess(request, options, settings) {
+  const mode = permissionMode(request);
+  if (mode === 'full-access') return true;
+  if (mode !== 'default') return false;
+  options ??= permissionOptions(request.args);
+  return options.bypass || (options.mode ?? (settings?.permissions?.disableBypassPermissionsMode === 'disable' ? undefined : settings?.permissions?.defaultMode)) === 'bypassPermissions';
+}
+
 export async function negotiateClaudeCommunication(context) {
+  if (context.request.communication === false) return { supported: false };
+  const capability = { supported: true, transport: 'mcp', passiveDelivery: 'turn-boundary' };
+  const restrictions = permissionOptions(context.request.args);
+  context.claudeCommunicationFullAccess = claudeFullAccess(context.request, restrictions);
+  if (context.claudeCommunicationFullAccess) return capability;
   const server = `mcp__aw_parent_${context.request.run.id}`;
   const tools = [`${server}__send_parent`, `${server}__receive_parent`];
-  const restrictions = denyRules(context.request.args);
+  let settings;
   if (restrictions.settings !== undefined) {
-    let settings;
     try {
       const value = restrictions.settings.trim();
       const json = value.startsWith('{') ? value : new TextDecoder('utf-8', { fatal: true }).decode(await readLimited(path.resolve(context.request.workspace, value), 2 * 1024 * 1024, 'claudeSettingsInvalid'));
       settings = JSON.parse(json);
-      if (!settings || Array.isArray(settings) || typeof settings !== 'object' || settings.permissions?.deny !== undefined && (!Array.isArray(settings.permissions.deny) || settings.permissions.deny.some((rule) => typeof rule !== 'string'))) throw new Error('Invalid settings.');
-    } catch { fail('claudeSettingsInvalid', 'The explicit Claude --settings value must be a readable JSON object with valid permissions.deny rules.'); }
+      if (!settings || Array.isArray(settings) || typeof settings !== 'object') throw new Error('Invalid settings.');
+    } catch { fail('claudeSettingsInvalid', 'The explicit Claude --settings value must be a readable JSON object.'); }
+    context.claudeCommunicationFullAccess = claudeFullAccess(context.request, restrictions, settings);
+    if (context.claudeCommunicationFullAccess) return capability;
+    for (const kind of ['deny', 'ask']) {
+      const rules = settings.permissions?.[kind];
+      if (rules !== undefined && (!Array.isArray(rules) || rules.some((rule) => typeof rule !== 'string'))) fail('claudeSettingsInvalid', 'The explicit Claude --settings permissions.deny and permissions.ask must contain string rules.');
+    }
     // Claude ignores settings-file MCP rules with input specifiers. Only whole
     // tool-name denies establish an unavailable communication entry here.
     restrictions.rules.push(...(settings.permissions?.deny ?? []));
@@ -60,15 +82,33 @@ export async function negotiateClaudeCommunication(context) {
   // Claude's documented bare-name deny rules use full-name '*' matching and
   // also accept a bare MCP server name. Scoped input rules stay with Claude.
   // https://code.claude.com/docs/en/permissions#tool-name-wildcards
-  for (const rule of restrictions.rules) {
+  const conflicts = [...restrictions.rules.map((rule) => ({ rule, kind: 'deny' })), ...(settings?.permissions?.ask ?? []).map((rule) => ({ rule, kind: 'ask' }))];
+  for (const { rule, kind } of conflicts) {
     if (rule.includes('(')) continue;
     const pattern = new RegExp(`^${rule.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
-    if (rule === server || tools.some((tool) => pattern.test(tool))) fail('communicationToolDenied', 'A Claude deny rule blocks an AW parent send or receive tool. Remove that restriction or set communication:false.');
+    if (rule === server || tools.some((tool) => pattern.test(tool))) fail(kind === 'deny' ? 'communicationToolDenied' : 'communicationToolApprovalRequired', 'A Claude deny or ask rule blocks an AW parent send or receive tool. Remove that restriction or set communication:false.');
   }
-  return { supported: true, transport: 'mcp', passiveDelivery: 'turn-boundary' };
+  return capability;
 }
 
-export function claudeArguments(request, mcpServer) {
+function mergeAllowedTools(args, tools) {
+  const kept = [], allowed = [];
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index];
+    const equals = argument.indexOf('=');
+    const option = equals < 0 ? argument : argument.slice(0, equals);
+    if (option === '--allowedTools' || option === '--allowed-tools') {
+      if (equals >= 0) allowed.push(argument.slice(equals + 1));
+      else while (index + 1 < args.length && !args[index + 1].startsWith('-')) allowed.push(args[++index]);
+    } else {
+      kept.push(argument);
+      if (equals < 0 && (valueOptions.includes(option) || ['-d', '-n'].includes(option)) && index + 1 < args.length) kept.push(args[++index]);
+    }
+  }
+  return [...kept, '--allowedTools', ...allowed, ...tools];
+}
+
+export function claudeArguments(request, mcpServer, { fullAccess } = {}) {
   const mode = permissionMode(request);
   checkArguments(request.args, {
     owned: ['--print', '-p', '--output-format', '--input-format', '--continue', '-c', '--resume', '-r', '--fork-session', '--from-pr', '--cloud', '--remote', '--environment', '--teleport', '--worktree', '-w', '--tmux', '--help', '-h', '--version', '-v', '--replay-user-messages', '--permission-prompt-tool', '--session-id'],
@@ -89,7 +129,10 @@ export function claudeArguments(request, mcpServer) {
   if (request.execution.model !== undefined) args.push('--model', request.execution.model);
   if (request.execution.reasoningEffort !== undefined) args.push('--effort', request.execution.reasoningEffort);
   if (request.sessionId) args.push('--resume', request.sessionId);
-  if (mcpServer) args.push('--mcp-config', JSON.stringify({ mcpServers: { [`aw_parent_${request.run.id}`]: mcpServer } }));
+  if (mcpServer) {
+    args.push('--mcp-config', JSON.stringify({ mcpServers: { [`aw_parent_${request.run.id}`]: mcpServer } }));
+    if (request.communication !== false && !(fullAccess ?? claudeFullAccess(request))) return mergeAllowedTools(args, [`mcp__aw_parent_${request.run.id}__send_parent`, `mcp__aw_parent_${request.run.id}__receive_parent`]);
+  }
   return args;
 }
 
@@ -140,7 +183,7 @@ export async function executeClaude(context) {
   }, canSubmitInput: () => firstSent && !active && terminal !== undefined && !context.signal.aborted,
   instructionBindings: { sendTool: `mcp__aw_parent_${context.request.run.id}__send_parent`, receiveTool: `mcp__aw_parent_${context.request.run.id}__receive_parent` } });
   watchPermissionFallback(context);
-  backend = await context.spawn(context.executable.command, [...(context.executable.args ?? []), ...claudeArguments(context.request, bridge?.mcpServer)]);
+  backend = await context.spawn(context.executable.command, [...(context.executable.args ?? []), ...claudeArguments(context.request, bridge?.mcpServer, { fullAccess: context.claudeCommunicationFullAccess })]);
   const lines = backendLines((value) => {
     if (value.type === 'system' && value.subtype === 'init') {
       if (permissionMode(context.request) === 'auto' && value.permissionMode !== undefined && value.permissionMode !== 'auto') { context.abort('permissionModeUnavailable'); return; }

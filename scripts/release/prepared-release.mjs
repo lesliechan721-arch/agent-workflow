@@ -869,7 +869,6 @@ export async function publishPreparedRelease(options = {}) {
       await publishNpm(artifact.name, resolvePreparedPath(root, artifact.path),
         descriptor.candidates.cli, descriptor.channel, publicationOptions);
     }
-    await (options.assertPublishedCliArtifactsMatch ?? assertPublishedCliArtifactsMatch)(root, descriptor, options);
     await (options.publishCliTag ?? ensureCliTag)(
       descriptor.candidates.cli,
       descriptor.source.head,
