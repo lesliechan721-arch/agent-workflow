@@ -196,7 +196,17 @@ describe('plugin scripts staging smoke', () => {
     const nativeTools = materialization.injectNativeToolClosureFiles(
       tree.files, await materialization.nativeToolsForCommandSets(plugin, sets),
     );
-    expect(nativeTools?.consumers).toEqual([expect.objectContaining({ key: 'guide' })]);
+    expect(nativeTools?.consumers).toEqual(
+      ['guide', 'guide-communication'].map((key) => ({
+        kind: 'managed-command-set',
+        key,
+        tools: [{
+          key: 'windows-job',
+          platforms: ['win32'],
+          policy: 'required',
+        }],
+      })),
+    );
     const installed = path.join(temporary, 'installed-skills', tree.skillKey);
     await skills.writeDynamicSkillTree(installed, tree);
     await ownership.writeSkillOwnerMarker({
