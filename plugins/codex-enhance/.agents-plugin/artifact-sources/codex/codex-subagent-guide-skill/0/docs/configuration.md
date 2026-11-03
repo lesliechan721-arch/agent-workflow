@@ -11,6 +11,7 @@
 | [subagent.mjs](../scripts/subagent.mjs) | start/send/wait/result/stop 参数、安装 reader、英文文字输出和退出码。 |
 | [worker.mjs](../scripts/worker.mjs) | 本次持续执行和收尾；宿主须允许 start 返回后存活。 |
 | [plan.mjs](../scripts/runtime/plan.mjs) / [runner.mjs](../scripts/runtime/runner.mjs) | 精确选择 executor、入口、模式、输入和环境。 |
+| [managed-host.mjs](../scripts/runtime/managed-host.mjs) | 核验受保护 AW 主机，查询已安装命令及固定通信绑定。 |
 | [protocol.mjs](../scripts/runtime/protocol.mjs) | 严格 v5 JSONL、大小及状态合同。 |
 | [adapter-channel.mjs](../scripts/runtime/adapter-channel.mjs) | 子侧发送、显式收件和自动输入共用调度。 |
 | [message.mjs](../scripts/message.mjs) / [message-mcp.mjs](../scripts/message-mcp.mjs) | 脚本与 MCP 工具包装，不拥有另一份队列。 |
@@ -101,13 +102,15 @@ Codex、Claude Code、Antigravity 的 `permissionMode` 可选 default / auto / f
 
 | 模式 | Codex app-server | Claude Code | Antigravity |
 | --- | --- | --- | --- |
-| default | 不增加权限覆盖 | 不增加权限参数 | 不增加权限参数 |
+| default | 保留全局权限配置 | 保留原权限模式 | 保留原权限模式 |
 | auto | 首次 thread/start.config 设置 approval_policy=on-request、approvals_reviewer=auto_review，保留有效沙箱和网络限制 | --permission-mode auto | --mode auto |
 | full-access | 首次 thread/start.config 设置 approval_policy=never、sandbox_mode=danger-full-access，等价 --dangerously-bypass-approvals-and-sandbox | --dangerously-skip-permissions | --dangerously-skip-permissions |
 
 default 保留用户 args、profile 及后端正常加载的用户、项目和管理配置；用户显式 full-access 不会被撤销。这是保留用户选择，不是 AW 默认提权。auto/full-access 高于 Codex profile 同类默认值，其它字段保留；后续轮次沿用同一线程配置，不写用户 Codex config。Codex --full-auto 的 on-request + workspace-write 不等于 auto_review；Claude --allow-dangerously-skip-permissions 只允许以后切换，不能证明启动时已进入完整权限。
 
-非 default 时，args 中重复控制本模式的显式参数在后端启动或 settings 写入前返回 `adapterArgumentConflict`，即使值相同也拒绝。Codex 包括审批策略、reviewer、full-auto、完整 bypass；full-access 另包括沙箱模式及别名，auto 可保留显式沙箱限制。短选项、--name=value、分离值及 -c 同类叶子都检查。Claude 包括 --permission-mode 和主动跳过审批入口；agy 包括 --mode、--dangerously-skip-permissions。原 model/effort 冲突规则不变。
+通信专用许可独立于全局模式：非完整权限时，Codex 为本次两个私有 MCP 工具注入 approval_mode=approve，Claude 合并精确工具 --allowedTools，agy 通过本次 --settings 注入独立通信命令 ID 的 allow，保留原 allow，不写用户 settings。communication=false 跳过专属许可；已从正常参数、profile 或可可靠取得的生效信息确认完整权限时，跳过额外授权和专属冲突预检，仍建立当前 bridge、提示及绑定校验。不能可靠确认时保留原模式并使用精确许可，不猜测完整权限。agy 每次启动/恢复另行校验稳定版本 >=1.4.10；版本不可用时在建桥前返回环境不可用，通信关闭和 full-access 也不跳过。各后端的识别来源、恢复限制与真实验收见 [Codex](codex.md)、[Claude Code](claude-code.md) 和 [Antigravity](antigravity.md)。
+
+非 default 时，args 中重复控制本模式的显式参数在后端启动或授权准备前返回 `adapterArgumentConflict`，即使值相同也拒绝。Codex 包括审批策略、reviewer、full-auto、完整 bypass；full-access 另包括沙箱模式及别名，auto 可保留显式沙箱限制。短选项、--name=value、分离值及 -c 同类叶子都检查。Claude 包括 --permission-mode 和主动跳过审批入口；agy 包括 --mode、--dangerously-skip-permissions。原 model/effort 冲突规则不变。
 
 权限模式、communication 和 codexBypassHookTrust 独立。关闭通讯仍应用权限模式；full-access 不启用 hook bypass，auto 不改变 hook 信任或禁用记录。Claude/agy 不额外关闭用户终端沙箱。完整权限不取得 OS 管理员权限；后端仍执行不可覆盖的管理限制、显式 Ask/Deny 和关键路径保护，拒绝时报告实际失败。
 

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "codex-enhance",
-  "version": "0.2.0-beta.23",
+  "version": "0.2.0-beta.24",
   "description": "在 Codex 中组织已授权的通用委派、只读技术第二意见和大范围事实调查。",
   "marketplace": {
     "category": "workflow",
@@ -3823,6 +3823,26 @@
             "cwd": "caller"
           }
         ]
+      },
+      {
+        "set": "guide-communication",
+        "producer": {
+          "kind": "artifact",
+          "artifactId": "codex-subagent-guide-skill"
+        },
+        "mode": "static",
+        "entries": [
+          {
+            "key": "message",
+            "variant": "default",
+            "runner": "node",
+            "entry": "scripts/message.mjs",
+            "args": [],
+            "env": {},
+            "envFrom": {},
+            "cwd": "caller"
+          }
+        ]
       }
     ]
   },
@@ -3838,6 +3858,19 @@
       {
         "kind": "managed-command-set",
         "key": "guide",
+        "tools": [
+          {
+            "key": "windows-job",
+            "platforms": [
+              "win32"
+            ],
+            "policy": "required"
+          }
+        ]
+      },
+      {
+        "kind": "managed-command-set",
+        "key": "guide-communication",
         "tools": [
           {
             "key": "windows-job",
