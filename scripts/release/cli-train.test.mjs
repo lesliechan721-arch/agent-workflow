@@ -6,10 +6,11 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { captureCommand, CLI_RELEASE_PACKAGES } from './common.mjs';
+import { assertPublishedCliArtifactsMatch } from './cli-git-tag.mjs';
 import { prepareLocalRelease, publishPreparedRelease } from './prepared-release.mjs';
 
 // Test Value Gate: a fresh five-package train must prepare before any registry
-// native version exists, then publish once and verify actual registry archives.
+// native version exists, then publish once and verify saved artifacts for repair.
 test('prepares and publishes a fresh five-package train through an isolated registry', { timeout: 120_000 }, async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-train-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -96,5 +97,6 @@ test('prepares and publishes a fresh five-package train through an isolated regi
   assert.equal(published.size, 0);
   assert.equal(descriptor.npm.packages.length, 5);
   await publishPreparedRelease(options);
+  await assertPublishedCliArtifactsMatch(path.join(root, '.release/prepared'), descriptor, options);
   assert.deepEqual(events, [...CLI_RELEASE_PACKAGES.map((entry) => entry.name), 'tag']);
 });

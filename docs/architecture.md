@@ -590,14 +590,14 @@ Catalog-only 取得工具时重新验证 npm metadata，对短暂读取失败作
 - Core 是唯一插件版本分配 owner。官方流程提供 `catalog/latest`、`catalog/beta` 完整 first-parent 成功历史，按完整 SemVer 最高 entry 恢复每插件基线；同版本不同 contentDigest 拒绝。未变化插件复用完整版本，包括 stable；稳定插件变化默认推进该插件 patch，已有 beta base 内变化递增，显式提高 base 从 beta.1 开始，stable 将仅 beta 交付的插件转正。删除重加保留历史。候选源码只写必要稳定 base，prepare 固定完整版本到 snapshot/plan，apply 不重选。第三方未提供官方历史时，仍使用所选 channel 的最近 first-parent entry 和原来的版本冲突规则。发布 commit 的 parent 始终属于目标 channel。
 - 所选轴无候选时在远端写入前失败。CLI 和 Catalog 远端状态独立读取。Catalog-only 不发布 npm、不创建 CLI tag，也不编译 Go；准备时读取对应 npm 渠道，确认并固定已完成 CLI 的完整五包工具链。
 - 本地发布和未复用 main CI 的 Actions 候选在元数据 commit 后运行所选轴的完整 release verify，再从更新后的干净 source HEAD 生成 `.release/prepared/descriptor.json`。自动 beta 按上述条件复用 main CI。Catalog snapshot 和 publication plan 只读取已提交的 Workspace metadata，并由与 `aw catalog publish plan` 相同的公共 preparation service 生成；publication 不接受独立 Catalog version override。
-- 发布顺序是 `Windows x64/arm64 平台包 → Eval → Core → CLI → 五包 registry 可见性校验 → CLI 完成 tag → Catalog`。CLI tag 是 `origin` 上指向 prepared source commit 的注解 `cli-v<version>`；Catalog 继续使用独立 channel ref 和 `catalog-v<version>` tag。
+- 发布顺序是 `Windows x64/arm64 平台包 → Eval → Core → CLI → CLI 完成 tag → Catalog`。CLI tag 是 `origin` 上指向 prepared source commit 的注解 `cli-v<version>`；Catalog 继续使用独立 channel ref 和 `catalog-v<version>` tag。
 - beta CLI 选择候选时，把 registry 中五个包已出现的最高 beta 和本地已尝试 beta 都视为已占用。部分发布或第一次写入结果不确定后，普通发布保留稳定 target 并选择下一个 beta，再以新 beta 重新发布五个包。稳定 CLI 失败仍要求提升稳定 target。
 - `pnpm release -- --repair-cli` 是同一 CLI 候选的显式补发入口。它只接受与 `attempted.json` 精确绑定且未变化的 prepared descriptor、source commit、build 和 tarball；逐包核验已存在的远端 tarball，只发布 registry 明确缺失的包，最后重新核验整组五包并补 CLI tag。内容冲突或查询不确定时停止；它不发布 Catalog。
 - `pnpm release -- --repair-cli-tag` 只从有效 prepared descriptor 核验并补发 CLI tag。它不准备新候选或修改分支。
 
 五包版本占用检查拒绝任一已存在同版本包。准备先构建两个平台包，再打包精确引用同版本依赖的 Eval、Core 和 CLI；候选 smoke 实际解析和调用适用 helper，安装退出 0 不能证明 optional dependency 完整。五包使用相同渠道和 npm/OIDC 配置，平台包的 Trusted Publisher 也指向实际 CLI 发布工作流。原生构建和资格可作为可复用 job，不承担独立发布职责。
 
-普通发布和 repair 在创建 CLI 完成 tag 前核验五包的具体版本 metadata 与归档，按总时限重新读取短暂不可见的结果；读取时重新验证缓存，不能使用 prefer-offline。重试不执行 publish，不增加持久状态。超时后保留原候选和已成功写入，使用既有显式 repair 或新版本入口恢复。一个 runner 的可见性通过不代表所有地区或第三方镜像同时可见。
+普通发布在五包 `npm publish` 全部成功后创建 CLI 完成 tag，不等待 registry 可见性。普通发布不额外下载远端包作校验。完成 tag 表示五包上传成功，不保证 npm 传播完成。Actions 读取 CLI 完成状态只核对注解 tag 和精确 candidate head，不再查询 npm 版本列表；同批 Catalog 使用保存的工具 artifact。显式 repair 仍在补完成 tag 前核验已有远端包，避免部分发布被标记为完整；查询不确定或校验失败时保留原候选，使用既有 repair 或新版本恢复。读取重试不执行 publish，不增加持久状态。
 
 CLI 成功、Catalog 失败时保留 CLI 成功，Catalog 按原 journal plan 恢复；CLI 失败时不发布依赖本次候选的 Catalog。不撤回已发布包，不增加 npm/Git 事务、补偿或跨产品 ledger。Catalog contentDigest、owner marker、构建和发布 artifact 摘要继续用于现有内容身份、恢复与清理边界。
 

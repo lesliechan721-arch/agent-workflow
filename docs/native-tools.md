@@ -76,7 +76,7 @@ CLI 产品包含同版本的五个包：
 
 原生源码、工具链或平台包生产逻辑变化属于 CLI 产品变化。发布准备构建两架构平台包，再打包 Eval、Core、CLI；pack 后依赖必须是精确 registry 版本，不保留 workspace 或本机文件引用。显式原生构建、真实 Windows x64/arm64 资格及候选 smoke 使用本次构建产物。普通开发 build/test 不要求 Go 或真实 EXE。
 
-发布顺序为两个平台包 → Eval → Core → CLI → 五包 registry 可见性校验 → CLI 完成 tag。可见性校验在总时限内重新读取 metadata 和归档，重新验证缓存；重试只读取，不重复 publish。整组与证据进入现有 prepared descriptor、attempt 和 Actions 恢复包。任一包发布失败或结果不确定后，普通恢复提升 CLI 版本并重新准备整组；显式 CLI repair 只补发原 descriptor 和 attempt 中确认缺失的包。没有独立的 Windows Job 发布或 repair。
+发布顺序为两个平台包 → Eval → Core → CLI → CLI 完成 tag。五包上传成功后即可写完成 tag；普通发布不额外下载远端包作校验。显式 repair 仍核验已有远端包，重试只读取，不重复 publish。整组与证据进入现有 prepared descriptor、attempt 和 Actions 恢复包。任一包发布失败或结果不确定后，普通恢复提升 CLI 版本并重新准备整组；显式 CLI repair 只补发原 descriptor 和 attempt 中确认缺失的包。没有独立的 Windows Job 发布或 repair。
 
 官方 Catalog-only 发布在准备时按 beta/latest 选定已完成的同渠道 CLI，并固定完整五包。正式渠道必须是无 prerelease 的 stable；缺少可用版本时先发布对应渠道 CLI。同批 CLI/Catalog 使用本次五包 artifact，在本地解析所有自有包依赖；Catalog 远端写入等待 CLI 整组发布及完成 tag。Catalog-only 不编译 Go、不发布 npm。工具选择和恢复详见[架构说明](architecture.md#release-flow)与 [README 发版流程](../README.md#本仓库维护与官方发版)。
 

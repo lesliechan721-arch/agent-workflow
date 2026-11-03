@@ -75,7 +75,7 @@ CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。�
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
 | `pnpm test:smoke:authoring:external` | 从同一版本候选工具包在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → install source/plugin -p both`，并验证隔离 homes 内的 receipt 和安装结果 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
-| `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `两个 Windows 平台包 → Eval → Core → CLI → 五包可见性校验 → CLI 完成 tag → Catalog`、显式轴和不确定远端失败 |
+| `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `两个 Windows 平台包 → Eval → Core → CLI → CLI 完成 tag → Catalog`、显式轴和不确定远端失败 |
 | `pnpm test:release:automation` | 在已有正式 build 后验证精确 source tag、临时 bare remote、artifact 恢复与真实 smoke harness 边界；不访问官方发布目标 |
 | `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
@@ -109,7 +109,7 @@ Windows 工具的确定性测试使用显式 reader context、隔离的包依赖
 
 Windows Job 显式生产资格使用 `pnpm native:windows-job:prepare` 构建当前 CLI 版本的两架构候选，`pnpm native:windows-job:reproduce` 按固定 Go 版本、固定环境和隔离 Go cache 重建，逐字节比较。真实 x64/arm64 runner 从本次 candidate 解包适用平台包，运行 `pnpm qualification:windows-job` 及 source-candidate 原生插件测试。timeout、AbortSignal、forced helper exit、ACL、Job 分配、进程身份和后代回收均须通过对应真实入口；交叉编译、合成 fixture 或 fake 不能关闭 Windows 资格缺口。平台包随本次 CLI 产品统一发布，没有消费者文本锁或独立发布验证。
 
-发布自动化通过隔离 registry 或受控远端边界验证首次发布五包、部分发布与显式 repair、短暂 metadata/归档不可见和时限失败。可见性重试只能读取，成功前不得创建 CLI 完成 tag 或写入依赖本次 CLI 的 Catalog。Catalog 工具链测试区分同批本地五包、beta-only 和 stable-only，验证恢复使用固定版本与 tarball、渠道错误提前失败、CLI 成功后 Catalog 失败保留 CLI 成功；普通测试不访问真实 registry。
+发布自动化通过隔离 registry 或受控远端边界验证首次发布五包、部分发布与显式 repair，以及 repair 校验的短暂 metadata/归档不可见和时限失败。普通发布在五包上传成功后创建完成 tag 并允许同批 Catalog 继续，不等待远端下载校验。显式 repair 仍须核验已有远端包。可见性重试只能读取。Catalog 工具链测试区分同批本地五包、beta-only 和 stable-only，验证恢复使用固定版本与 tarball、渠道错误提前失败、CLI 成功后 Catalog 失败保留 CLI 成功；普通测试不访问真实 registry。
 
 含 `buildImports` 或 `skillRuntimeFiles.import` 的 synthetic fixture 必须显式构造同一 source set 的 catalog runtime resolver。`plugin:test` 和 eval materialization 通过真实入口验证 resolver 注入；单插件 helper 缺 resolver 的 fail-closed 行为在最低 unit 层验证，不建立 sibling layout fallback。
 
@@ -181,7 +181,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 
 `pnpm build:dev` 只用于本地开发。它按 Eval、Core、CLI TypeScript 和 plugin bundle 分别计算生产输入与输出 identity；test、Vitest config、docs、change metadata、Eval 和 report 不进入 key。每个 TypeScript 目标使用独立 `tsBuildInfoFile`。输入文件删除、输出损坏、cache metadata 或 `tsbuildinfo` 损坏时，只 clean 并重建该目标。CLI key 还绑定 Eval 和 Core 输出 identity，plugin bundle 使用独立 key 和输出验证。
 
-Release unit/integration 覆盖 schema 2 CLI target 更新的五包同步、Catalog exact version mutation、local prepared artifacts、CLI attempted marker、Catalog publication journal、启用轴的 `两个 Windows 平台包 → Eval → Core → CLI → 五包可见性校验 → CLI 完成 tag → Catalog` 顺序，以及 Catalog-only 只读 npm 取得工具、不发布 npm 包或创建 CLI tag 的边界。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
+Release unit/integration 覆盖 schema 2 CLI target 更新的五包同步、Catalog exact version mutation、local prepared artifacts、CLI attempted marker、Catalog publication journal、启用轴的 `两个 Windows 平台包 → Eval → Core → CLI → CLI 完成 tag → Catalog` 顺序，以及 Catalog-only 只读 npm 取得工具、不发布 npm 包或创建 CLI tag 的边界。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
 
 一键发布还必须覆盖参数互斥、白名单元数据 commit、所选轴远端隔离、空远端首个 beta 候选、所选轴无候选短路，以及注解 CLI tag 的创建、幂等补发和冲突拒绝。tag integration 使用本地 bare Git remote；不得写真实 `origin`。
 

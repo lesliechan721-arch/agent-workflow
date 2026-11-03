@@ -152,9 +152,11 @@ export async function assertPublishedCliArtifactsMatch(root, descriptor, options
   const now = options.now ?? Date.now;
   const deadline = now() + (options.visibilityTimeoutMs ?? RELEASE_NETWORK_TIMEOUT_MS);
   const wait = options.waitForVisibility ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  let checkingPackage;
   for (;;) {
     try {
       for (const artifact of descriptor.npm.packages) {
+        checkingPackage = artifact.name;
         if (now() >= deadline) throw new Error('Registry visibility deadline expired.');
         await (options.assertPublishedPackageMatches ?? assertPublishedPackageTarballMatchesCandidate)(
           artifact.name, descriptor.candidates.cli, CLI_PACKAGES.get(artifact.name),
@@ -165,10 +167,11 @@ export async function assertPublishedCliArtifactsMatch(root, descriptor, options
       return;
     } catch (error) {
       if (error?.code === 'releasePackageMismatch') throw error;
-      if (now() >= deadline) {
-        throw new Error('The five CLI packages are not fully available from the registry. Use explicit CLI repair with the unchanged prepared release, or publish a new version.', { cause: error });
+      if (now() < deadline) {
+        await wait(Math.min(options.visibilityRetryMs ?? 2000, Math.max(1, deadline - now())));
+        if (now() < deadline) continue;
       }
-      await wait(Math.min(options.visibilityRetryMs ?? 2000, Math.max(1, deadline - now())));
+      throw new Error(`Registry verification failed for ${checkingPackage}@${descriptor.candidates.cli}: ${error.message}`, { cause: error });
     }
   }
 }
