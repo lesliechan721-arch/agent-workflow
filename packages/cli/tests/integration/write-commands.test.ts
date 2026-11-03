@@ -72,6 +72,7 @@ import {
 } from '../helpers/catalog-source-fixture.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { stubCodexFileSelectionForNativeFixture } from '../helpers/codex-enhance-native-fixture.js';
+import { defaultPluginProcessRunner } from '../../src/utils/plugin-scripts.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
@@ -16438,9 +16439,43 @@ describe('five namespaced write commands', () => {
     ))).snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
   });
 
-  it('restores codex-enhance project activation after user scope uninstall through public commands', async () => {
+  it('restores codex-enhance project activation after user scope uninstall through public commands', async ({ onTestFinished }) => {
     // Test Value Gate: a real project-to-user-to-project lifecycle restores project activation and cleans its roles after user uninstall.
-    const { isolation, runPublic } = await prepareCodexEnhancePublicCommandFixture();
+    // Keep timing local to this lifecycle test. Start events identify an unfinished stage after a timeout.
+    let timingSequence = 0;
+    const measure = async <T>(
+      stage: 'fixture' | 'command' | 'renderer',
+      name: string,
+      operation: () => Promise<T>,
+    ): Promise<T> => {
+      const timing = { stage, name, sequence: ++timingSequence };
+      const startedAt = performance.now();
+      console.log('AW_TEST_TIMING', JSON.stringify({ ...timing, event: 'start' }));
+      try {
+        return await operation();
+      } finally {
+        console.log('AW_TEST_TIMING', JSON.stringify({
+          ...timing,
+          event: 'finish',
+          durationMs: Math.round(performance.now() - startedAt),
+        }));
+      }
+    };
+    const runRenderer = defaultPluginProcessRunner.run.bind(defaultPluginProcessRunner);
+    const rendererSpy = vi.spyOn(defaultPluginProcessRunner, 'run').mockImplementation(
+      (invocation, options) => measure(
+        'renderer',
+        path.basename(invocation.args[0] ?? invocation.command),
+        () => runRenderer(invocation, options),
+      ),
+    );
+    onTestFinished(() => rendererSpy.mockRestore());
+    const { isolation, runPublic: runFixtureCommand } = await measure(
+      'fixture', 'codex-enhance', prepareCodexEnhancePublicCommandFixture,
+    );
+    const runPublic = (args: string[]) => measure(
+      'command', args.join(' '), () => runFixtureCommand(args),
+    );
     const rolePaths = ['codex-explore', 'codex-subagent', 'codex-advisor'].map((role) => path.join(
       isolation.layout.fixtureCwd, '.codex', 'agents', `aw-codex-enhance-${role}.toml`,
     ));
@@ -16493,5 +16528,5 @@ describe('five namespaced write commands', () => {
     expect((await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
     ))).snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
-  });
+  }, 30_000);
 });
