@@ -217,6 +217,7 @@ Codex 优化的主要门禁是确定性计数，不是 500ms fake runner 断言�
 - 使用测试提供的隔离 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 和 workspace。
 - 三个 package 的 Vitest 入口由统一进程树 wrapper 运行。正常结束、`SIGINT` 和 `SIGTERM` 会清理本次 wrapper 通过 PID 与 start identity 证实的进程树；清理期间再次收到中断信号时立即升级强制清理。只有确认清理成功时才返回标准信号退出码，清理无法验证时必须报告错误并以 `1` 退出。wrapper 自身被 `SIGKILL`、宿主崩溃或断电时不承诺清理。
 - 普通 Windows 测试未提供原生 context 时，wrapper 使用已有系统进程身份检查和 `taskkill` 清理，不要求 Go 或候选 EXE。显式原生测试提供本次候选 context 时使用 Job；损坏或 unavailable 的显式 context 仍阻断。source 测试准备还将当前架构候选接入 Eval 的正常依赖上下文，供生产入口解析，不让生产解析器读取测试 context。
+- CLI 源码测试显式提供原生 context 时，先完成同次 build；测试通过 Node ESM 加载该次 Eval dist，使平台包解析与已安装产品一致。无 context 的普通 unit 继续加载 Eval source。
 - 合成长驻 detached 测试子进程必须设置有界的自退出时限，防止测试宿主被强制终止后永久遗留；行为断言仍必须证明正常路径会在更短的既定期限内主动清理。
 - 平台命令使用 fake native runner。
 - 需要进程树检查的测试在允许 POSIX/Windows 进程检查的环境运行。
