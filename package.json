@@ -6,7 +6,6 @@
     "node": ">=22"
   },
   "scripts": {
-    "test:acceptance:native-cli": "node .github/scripts/native-cli-acceptance.mjs",
     "build": "node scripts/build/run-build.mjs",
     "build:ensure": "node scripts/build/ensure-build.mjs",
     "build:dev": "node scripts/build/run-dev-build.mjs",
