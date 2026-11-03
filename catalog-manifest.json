@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.58",
+  "catalogVersion": "0.1.0-beta.60",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "692176b7546a37878f9c6d658ed738691502b8c0"
+    "sourceHead": "be2a03147dac1a139684c3701f27bacd06b82a77"
   },
   "entries": [
     {
@@ -117,7 +117,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.10",
+      "version": "0.1.0-beta.11",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -141,9 +141,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:76db1e822fab86221dda723a5f4cda1a0a58a5122c0e5f3ddcb482bcda912e71",
-      "manifestDigest": "sha256:610ee0c9058b5b3eaf5a2d4a531085db91af87c5482b63a7e991450c9b8eeea6",
-      "contentDigest": "sha256:b1ebf400df15ef5844ab6ce3d70911c4414704a5d1a0ce84e81f5b1b7075aab9"
+      "artifactDigest": "sha256:35c713860ad21a6cb272d78807a4d065e0e16e435c81e4b8ade2370db95cec12",
+      "manifestDigest": "sha256:6a5342cc243d9a44166537148401a33f646c49096b65709b22fdd9261a8cb32d",
+      "contentDigest": "sha256:080a8e00e9c2273e2aaed2b871ec7486a2b3bd92a1b4f7dcbd69415e59040037"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -249,7 +249,7 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.22",
+      "version": "0.2.0-beta.23",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -257,6 +257,7 @@
             "aw.dynamic-artifacts.v2",
             "aw.installed-runtime-config.v2",
             "aw.managed-commands.v1",
+            "aw.native-tools.v2",
             "aw.plugin-build-config.v1",
             "aw.plugin-config-array.v1",
             "aw.plugin-config-summary.v1",
@@ -269,9 +270,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:47b722bfdf8de3cbbff32f1cb9b6d3f22e31f32eabe0f2a24fadaaad9420a5a4",
-      "manifestDigest": "sha256:d492e2c0fa01f1de55f8c3e0a80b22bc382d481677354318e08752cf87581a5c",
-      "contentDigest": "sha256:680655338921a4a96eb73a6a0fc114ad246bf32ed18808c5b7e38678ea5fab9f"
+      "artifactDigest": "sha256:3dedb39af54ff7fbf8b6c98c3700424a8b4b04d8b0067079a54bc6af0cb6769f",
+      "manifestDigest": "sha256:235a2272552898646bc8145b6b95e5938b0884bd96cce5d46dba14aa58b42f46",
+      "contentDigest": "sha256:e849c4645b8b52ca18cccd8354e97b74bf7d11c75fca4ee2222f6bab25f517af"
     },
     {
       "name": "decision-kit",

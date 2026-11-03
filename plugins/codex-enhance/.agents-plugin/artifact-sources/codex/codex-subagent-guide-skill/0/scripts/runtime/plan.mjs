@@ -11,12 +11,12 @@ export const ADAPTERS = Object.freeze({
 });
 export const commandIdPattern = /^(?:cmdp_[0-9a-f]{16}|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
 const variableName = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const protectedVariable = (key) => key.startsWith('AW_PLUGIN_') || key.startsWith('AW_SUBAGENT_') || key === 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
+const protectedVariable = (key) => /^AW_NATIVE_/i.test(key) || key.startsWith('AW_PLUGIN_') || key.startsWith('AW_SUBAGENT_') || key === 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
 const plainObject = (value) => value && typeof value === 'object' && !Array.isArray(value);
 
 export function validateEnvironmentConfig(executor) {
   const managed = executor.adapter === 'custom-managed';
-  const protectedName = (key) => managed ? /^(?:AW_PLUGIN_|AW_SUBAGENT_|AW_COMMAND_)/i.test(key) || /^(?:AW_AGENT_SKILL_EVAL_PROCESS_MARKER|AW_HOME|AW_CODEX_HOME|AW_CLAUDE_HOME)$/i.test(key) : protectedVariable(key);
+  const protectedName = (key) => managed ? /^(?:AW_PLUGIN_|AW_SUBAGENT_|AW_COMMAND_|AW_NATIVE_)/i.test(key) || /^(?:AW_AGENT_SKILL_EVAL_PROCESS_MARKER|AW_HOME|AW_CODEX_HOME|AW_CLAUDE_HOME)$/i.test(key) : protectedVariable(key);
   for (const field of ['env', 'envFrom']) {
     const values = Object.hasOwn(executor, field) ? executor[field] : {};
     if (!plainObject(values) || Object.entries(values).some(([key, value]) => !variableName.test(key) || protectedName(key) || typeof value !== 'string' || value.includes('\0') || !value.isWellFormed() || (field === 'envFrom' && (!variableName.test(value) || protectedName(value))))) fail('environmentInvalid', 'Use valid ordinary environment names and host references; AW control variables cannot be customized.');
