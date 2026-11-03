@@ -2,7 +2,7 @@
 
 本文件定义 CLI 的稳定产品合同和模块边界。TypeScript 实现方式见[编码约定](coding-conventions.md)，测试选择见[测试指南](testing.md)，单 Plugin Source 见[插件作者指南](plugin-authoring.md)，官方与第三方共用的 Catalog Workspace 见[Catalog 作者指南](catalog-authoring.md)，本仓库维护流程见[插件维护指南](plugin-maintenance.md)。
 
-公开包 `@lesliechan721/aw-plugin-core` 拥有 plugin manifest 的版本、JSON Schema 和运行时结构验证合同。CLI 依赖同版本 core，并在该结构合同之上提供平台 adapter、Catalog、作者工具和 transport。Eval、Core 与 CLI 组成 CLI 产品。Windows Job 的平台制品使用独立版本和发布流程；消费者只固定已经发布的文本锁。原生声明和运行合同见[原生工具](native-tools.md)。
+公开包 `@lesliechan721/aw-plugin-core` 拥有 plugin manifest 的版本、JSON Schema 和运行时结构验证合同。CLI 依赖同版本 Core，并在该结构合同之上提供平台 adapter、Catalog 和作者工具。Eval、Core、CLI 和两个 Windows Job 平台包组成同版本 CLI 产品。Eval 精确引用平台可选依赖，CLI 复用 Eval 的工具解析能力；Core 保持平台无关。原生协议声明和运行合同见[原生工具](native-tools.md)。
 
 ## 设计边界
 
@@ -10,7 +10,7 @@
 - Catalog 是公开产品，支持 Git 和本地路径等多个来源。来源独立解析、独立报告错误；一个来源失败不要求其它来源回滚，也不要求 npm 与 Git 形成强一致事务。
 - `catalog-sources.json`、`catalog-state.json` 和 plugin config 是强配置。它们必须以原子替换提交。普通配置和 owner marker 写入只在 allowed root 内检查现有祖先的 symlink/type，使用同目录独占临时文件，关闭后 rename。version-scoped publication journal 是强恢复和门禁状态，也必须原子写入。插件输出、依赖现场、Catalog store snapshot 和 release prepared 目录都是弱状态，可删除和重建。
 - 外部平台和用户编辑的插件目录不受 AW 完全控制。写操作应提供可观察结果和恢复入口，不建立无法兑现的全局补偿或完全正确保证。
-- 正式 `pnpm build`、`build:ensure`、release verification 和 build snapshot 始终使用 release 强缓存、clean build、generation stamp 和完整输出摘要。日常 `build:dev` 使用可删除的四目标弱缓存，分别处理 Eval、Core、CLI TypeScript 和 plugin bundle；损坏时只重建受影响目标，不建立发布状态。日常构建只处理原生文本锁和 reader，不获取 PE、不创建原生缓存，也不要求 Go。
+- 正式 `pnpm build`、`build:ensure`、release verification 和 build snapshot 始终使用 release 强缓存、clean build、generation stamp 和完整输出摘要。日常 `build:dev` 使用可删除的四目标弱缓存，分别处理 Eval、Core、CLI TypeScript 和 plugin bundle；损坏时只重建受影响目标，不建立发布状态。普通 build/test 只处理原生协议声明和 reader，不取得 EXE，也不要求 Go；显式原生构建、资格和 CLI 发布候选消费本次原生产物。
 
 ## CLI Source Layout (`packages/cli/src`)
 
@@ -470,15 +470,15 @@ wait 只为未读事件、首次 ready、首次终态和必要错误返回，纯
 
 ## Windows 原生辅助程序
 
-`native-tools/windows-job/` 拥有文件安全、进程观察和 Job 管理的唯一 Go 源、固定工具链、独立版本和候选制品。`aw-windows-job.exe` 使用固定操作集合和有界 UTF-8 JSON，不接收脚本文本。文件和进程操作每批启动一个短命进程；每次执行的 Job 仍由独占监护进程持有，不使用共享后台服务、权限缓存或新增锁。
+`native-tools/windows-job/` 拥有文件安全、进程观察和 Job 管理的唯一 Go 源、固定工具链和候选制品。工具与 CLI 产品同版本。`aw-windows-job.exe` 使用固定操作集合和有界 UTF-8 JSON，不接收脚本文本。文件和进程操作每批启动一个短命进程；每次执行的 Job 仍由独占监护进程持有，不使用共享后台服务、权限缓存或新增锁。
 
-- Core 拥有 `nativeTools` 声明、消费者绑定、完整 producer 闭包和离线 bundle 校验，不含网络实现。私有共享 Node runtime 拥有唯一 descriptor parser、平台选择、npm archive transport、PE 校验、内容缓存和 reader；这些模块嵌入 CLI/Eval，Core 只嵌入离线部分，不增加公开 npm 产品。插件只携带文本锁和生成 reader。
-- CLI/Eval 在受控前台入口显式准备当前架构制品。托管命令按已安装 producer 的 descriptor、digest、消费者、平台、策略和 fallback 准备，并注入受保护上下文。required 失败在业务副作用前停止；preferred 仅使用已经通过相同 protocol 合同的 portable backend。低层查询、锁身份读取和后台清理不触发联网。缓存命中重新核对普通节点、大小、SHA-256、PE 和 machine，不查询 registry。
-- 原生缓存是可重建弱状态，默认位于 `<AW_HOME>/native-artifacts/v1`，不持强配置写锁，不增加锁或账本。下载与离线 import 使用同一有界校验和无覆盖发布。foreign 或不安全节点保留；不回退到 PATH、源码 PE、旧副本或全局 node_modules。具体作者、获取、隔离测试和恢复合同见[原生工具](native-tools.md)。
+- Core 拥有 `aw.native-tools.v2` 的协议声明、消费者绑定、producer 闭包和离线 bundle 校验。`definitions` 每项只有 key 和 protocol；闭包只包含 reader、definitions 和 consumers。私有共享 Node runtime 提供生成 reader。插件只保存协议需求和消费者绑定，不保存 descriptor、包版本或 EXE 摘要。
+- Eval 的 `prepareWindowsJobHelper(options = {})` 和 `resolveWindowsJobHelperPath(options = {})` 使用 Eval 自身的 `import.meta.resolve` 依赖上下文解析适用平台包，不读取 `NODE_PATH`，CLI 复用该能力。托管命令按已安装 producer 的协议、消费者、平台、策略和 fallback 准备，并注入 schema 1 `AW_NATIVE_TOOL_CONTEXT`；ready 结果为 `{ state: "ready", protocol, executable }`。required 失败在业务副作用前停止；preferred 仅使用已经通过相同 protocol 合同的 backend。宿主不支持的协议正常报错。
+- 运行工具不访问 registry，不使用 AW 下载、预取、离线 import、原生 registry 配置或 native cache。缺 optional dependency 时，只有需要工具的操作在启动前失败，并提示重装当前 CLI/Eval 且包含 optional dependencies；普通查询继续可用。离线安装沿用包管理器缓存或完整同版本依赖包。解析不搜索 PATH、全局包、仓库 EXE 或旧 AW cache。旧缓存不读取、不迁移，也不主动遍历删除。具体作者和恢复合同见[原生工具](native-tools.md)。
 - 文件操作拒绝路径链和树中的重解析点与错误节点。ACL 初始化只用于调用方本次成功独占创建的资源；Windows 新对象可能默认归属于 token 中的组，初始化将 owner 设为当前用户，并使用同一已打开句柄回读 owner 和受保护 DACL。已有资源只验证，不重新初始化；每个目标单独验证。NULL、空、foreign、inherited、deny 和不支持的 ACE 均不能证明私有访问。祖先检查只在当前批次复用，下一次读取和删除前重新验证。运行根目录使用无覆盖移动发布，与 JSON 文件的替换发布区分；已有文件或目录占据根时保留现场并验证现有根，仅清理本次空 staging。
 - 进程快照中的 PID/PPID 只是观察结果。已有归属链或待确认 PID 无法读取时，清理保持未确认。CLI 锁保留完整 100 ns 的 `win32:<.NET ticks>`；插件和 Eval 保留 CIM 的微秒精度，时间以十进制字符串传输。旧 `instance:<token>` 与启动时间身份不可比较，活跃 PID 不因两者字符串不同而失去锁。停止进程在同一个句柄上核对创建时间和 token SID，再终止并等待。
 - Eval 保留 `--config`、stdio、argv 和退出码合同。插件使用独立的私有命名 Job、owner SID、受保护 DACL、名称碰撞拒绝和 ready 通道。两者均先以 suspended 状态创建 root，成功加入 KILL_ON_JOB_CLOSE Job 后才恢复执行；失败不得降级为仅按 PID/PPID 执行。父进程退出、超时、取消和正常 root 退出后均收回后代，停止后的 Job accounting 必须确认空。插件后端继承原环境、工作目录和 stdio，包括 PowerShell 模块路径的有值和缺失状态。
-- 只有显式原生构建向 ignored staging 输出两架构 PE、平台 archive 和规范 descriptor；源码树、Catalog 和普通 CLI/Eval/Core 包没有 PE。Windows Job 发布前执行固定工具链重建和两架构真实资格。CLI/Catalog 发布只验证被引用的已发布 archive，不重新发布 helper，也不要求 Go。
+- 显式原生构建向 ignored staging 输出两架构 EXE、平台 archive 和构建证据；EXE 只进入对应 `os/cpu` 平台包，源码树、Catalog 和三个通用 npm 包没有 EXE。安装不编译 Go，也不运行下载或复制 EXE 的 postinstall。CLI 发布准备构建本次工具，并以同一组五包通过固定工具链重建、两架构真实资格和六平台候选 smoke。Catalog-only 使用固定的已完成渠道 CLI，不编译 Go。升级 CLI 配套工具不改变插件声明，无须插件重新发布、重装或单独 Review；插件改变协议或消费者时仍走现有 Review。
 
 低频 Codex App 注册包发现和用户剪贴板操作继续使用固定 PowerShell 查询。`whoami.exe` 继续读取当前 SID，并只在单进程内缓存成功结果。CI 的外层 `pwsh`、独立 ACL 核验、文件占用及跨卷资格不属于产品重复启动 PowerShell 的替换范围。
 
@@ -489,7 +489,7 @@ wait 只为未读事件、首次 ready、首次终态和必要错误返回，纯
 - `prepare` 复用真实 bundle、依赖、profile config 和平台 materialization，但不启动 provider、模型或真实 native CLI。普通 target 和 role 读取 profile scope 的合并配置；共享 `codex-native` Skill 按其生产合同读取 user scope 的合并配置。物化结果保留参与插件的静态与动态 Skill、共享 native Skill、role 配置和完整 runtime tree。source binding 的 profile digest 绑定实际使用的各 scope 合并配置。它先在 staging 中验证路径、摘要和最终输入，再原子发布到 Workspace 外或 `<workspace>/.aw/evals/**` 中尚不存在的窄目录；`.aw/evals` 根、已有、过宽或含符号链接的目标 fail closed。
 - Eval 执行的唯一机器 owner 是 npm package `@lesliechan721/agent-skill-eval` 的 `aw-skill-eval` bin。公开机器合同只包括 `EvalSpec v1`、`EvalAudit v1` 和 `EvalResult v2`。Engine 提供 `spec validate`、绑定 Spec 的 `audit validate`、绑定 Spec 与 Audit 的 `result validate`，以及唯一执行入口 `aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]`；CLI 不提供第二个 `run` wrapper。成功的 `spec validate` receipt 在 `calculated.providerDigest` 公开正式 provider 摘要，Auditor 只复制该值，不实现摘要算法。
 - 单份 `EvalAudit v1` 必须与当前 Spec 的 provider、workspace、current target、可选 previous target、case digest 和全部 selected case 精确绑定，且状态为 `pass`、没有 blocked case，才准许执行。workspace 摘要绑定全部普通目录和普通文件；空目录的新增、删除或重命名会使绑定失效，符号链接和其它特殊节点被拒绝。prepare、Spec validation 和运行快照使用同一算法。`runs` 和 `timeoutMs` 改变不影响 Audit 复用；旧版使用字符串 `workspace` 的 v1 Spec 必须重新 prepare 和 Audit。`EvalResult v2` 不兼容 Result v1；它绑定 Spec、Audit、target、case 和 provider 选择，保存每次运行的状态、耗时、usage、grade 和错误，并要求顶层 `processManagement` 记录本次 managed 或已确认 unmanaged 模式。
-- 所有真实 provider run 都在创建 output 或启动模型前完成同一执行预检。macOS 必须先解析本次选中的 Codex 可执行入口，再只读检查用户 keychain search list；Engine 随后使用这个已解析的绝对入口，Eval fixture 的 PATH 不能替换它。入口是 cmux Codex shim/wrapper、存在 `accountsKeychainExport`，或检查失败时停止。Engine 不自动寻找替代 Codex，也不修改 keychain；调用方可显式用 `AW_SKILL_EVAL_CODEX_BIN` 选择原生 Codex 可执行文件。默认 managed 模式要求当前会话不是已知 restricted permission profile。macOS/Linux 通过进程检查观察和确认协作式后代清理，但不是 OS 强制 containment，因此 Result 不声明保证清理后代。Windows 在创建 run 输出及启动模型前，由共享 resolver 按包内文本锁准备当前架构 helper；调用者显式提供隔离 cache root，standalone 使用 --native-cache-root。helper 创建 KILL_ON_JOB_CLOSE Job，并以 suspended 状态创建和分配 root；分配失败时 root 不恢复执行。helper 正常退出前终止后代并确认 Job 为空，调用方提前退出或强制结束 helper 时，最后一个 Job handle 关闭并清理 Job。Eval 包只含文本锁和嵌入 resolver，不含 PE。原生工具独立发布并绑定源码、精确 Go toolchain、固定构建环境与两个 PE digest；CLI/Eval 发布前校验已发布引用。原生工具资格在真实 Windows x64/arm64 上使用本次 source-candidate 执行；普通 test/build 不运行资格，也不要求 Go。macOS 交叉编译和 mock 不是 Windows 运行证据。单次 `sandbox_permissions=require_escalated` 不等于 Full Access，不能修复其它边界。
+- 所有真实 provider run 都在创建 output 或启动模型前完成同一执行预检。macOS 必须先解析本次选中的 Codex 可执行入口，再只读检查用户 keychain search list；Engine 随后使用这个已解析的绝对入口，Eval fixture 的 PATH 不能替换它。入口是 cmux Codex shim/wrapper、存在 `accountsKeychainExport`，或检查失败时停止。Engine 不自动寻找替代 Codex，也不修改 keychain；调用方可显式用 `AW_SKILL_EVAL_CODEX_BIN` 选择原生 Codex 可执行文件。默认 managed 模式要求当前会话不是已知 restricted permission profile。macOS/Linux 通过进程检查观察和确认协作式后代清理，但不是 OS 强制 containment，因此 Result 不声明保证清理后代。Windows 在创建 run 输出及启动模型前，由 Eval 从自身的已安装可选依赖解析当前架构 helper；CLI 复用此能力。缺依赖时提示重装当前 CLI/Eval 并包含 optional dependencies，不联网补包。helper 创建 KILL_ON_JOB_CLOSE Job，并以 suspended 状态创建和分配 root；分配失败时 root 不恢复执行。helper 正常退出前终止后代并确认 Job 为空，调用方提前退出或强制结束 helper 时，最后一个 Job handle 关闭并清理 Job。Eval 包不含 EXE，精确引用同版本的两个平台可选依赖。两个平台包与 Eval、Core、CLI 一起准备和发布；原生工具资格在真实 Windows x64/arm64 上使用本次 source-candidate 执行；普通 test/build 不运行资格，也不要求 Go。macOS 交叉编译和 mock 不是 Windows 运行证据。单次 `sandbox_permissions=require_escalated` 不等于 Full Access，不能修复其它边界。
 - 原生 Codex app-server 的 macOS/Linux managed 进程树持续检查 marker，允许工具宿主使用独立进程组；清理按 marker、PID 和启动时间确认归属，并保留检查失败与清理未确认的失败边界。下述 `custom-process` 的同进程组合同不用于原生 Codex。
 - POSIX marker 采样区分“匹配”“缺失”和单进程环境不可读。`ps` 的命令降级输出不直接证明 marker 缺失；仅对当前进程树中的可疑 PID 在同一采样预算内复查一次，并保留启动时间身份校验。复查后已退出或为僵尸的进程不触发 marker 丢失；仍存活且缺 marker 或持续不可读时失败，诊断中的不可读 marker 匹配值为 `null`。
 - Trigger 执行或清理失败时仍保存脱敏的 `provider-evidence.json` 和 `provider-trace.json`，但不产生成功 grade。原生 POSIX 进程检查失败时，evidence 附带首次失败和最后清理检查的相关进程元数据、触发分支与 PID；不保存进程命令、环境或 marker 值。
@@ -560,7 +560,7 @@ Portable 输出的每个 Skill 保留实际来源插件；依赖 Skill 不能归
 
 官方自动发布由 GitHub Actions 分产品执行。本地维护入口 `pnpm release` 继续要求 `beta|release` 渠道和 `--cli|--catalog|--all` 中一个显式发布轴。
 
-`ci.yml` 验证 PR/main，只有同一 main SHA 的必要检查通过后才调用 `beta.yml`。规划复查该 SHA 仍为 main tip，分别比较 CLI 三包规范化生产树和 Catalog 完整生产内容。成功基线来自三包完整 npm 结果与 `cli-v*`，或 immutable Catalog snapshot 的 `release.sourceHead`；失败候选只占号。main 的旧声明不会降低已用版本线；稳定版后默认进入下一 patch beta，显式版本变更可以指定更高 base。
+`ci.yml` 验证 PR/main，只有同一 main SHA 的必要检查通过后才调用 `beta.yml`。规划复查该 SHA 仍为 main tip，分别比较 CLI 五包的规范化生产输入（包括原生源码、工具链和平台包生产逻辑）和 Catalog 完整生产内容。成功基线来自五包完整 npm 结果与 `cli-v*`，或 immutable Catalog snapshot 的 `release.sourceHead`；失败候选只占号。main 的旧声明不会降低已用版本线；稳定版后默认进入下一 patch beta，显式版本变更可以指定更高 base。
 
 自动 beta 的源码 tag 是 annotated tag，message 以 `Automatic beta` 开头，并包含 `AW-CI: <run-id>/<attempt>`。候选发布只在该记录指向同仓库 `ci.yml` 的 main push、SHA 等于已验证的候选 main 来源，且该次 attempt 的全部必要 CI jobs 成功时复用源码验证；此时 main 的 beta job 本身可以仍在运行。复用时仍构建精确候选、验证版本和产物，并执行完整的候选 smoke。手动候选、稳定版、记录缺失、检查失败或缺失以及 API 查询失败都运行所选产品的完整 release verify。CI job 名称变化时同步更新 `actions-inspection.mjs` 的必要检查列表；未更新会回退到完整验证。
 
@@ -568,22 +568,42 @@ Portable 输出的每个 Skill 保留实际来源插件；依赖 Skill 不能归
 
 候选位于 `release-source/<cli|catalog>/<version>`，源码触发 tag 为 `release/<cli|catalog>/v<version>`。候选 commit 是固定 main 来源本身或其仅含允许版本字段修改的直接子 commit。main 不接收自动版本 commit。严格稳定版或 `x.y.z-beta.N` tag 固定产品和版本；tag 不覆盖，完成 tag `cli-v*` 和产物 tag `catalog-v*` 保持原含义。历史交付来源若因 squash merge 失去 main 祖先关系，可通过完整 Git tree 相同的最近 main first-parent commit 证明。对于发布后继续修改再 squash 的历史，规划器还获取远端 `refs/pull/*/head`：PR head 的完整 tree 必须与 main first-parent commit 相同，交付 commit 相对其与 PR head 的唯一共同祖先只能有允许的版本字段变化。历史源码保留该共同祖先，用于版本声明、插件基线和内容差异；对应 main commit 仅用于交付排序。仅本机可见的分支不提供这项证据，缺少证明时仍拒绝非版本变化。此兼容不适用于新候选，也不代替实际发布产物比较。
 
-`release-cli.yml` 与 `release-catalog.yml` 分别串行发布，同一产品 stable/beta 共用队列，不自动取消在途发布。准备后先上传白名单 tar 恢复包，再由六种 OS/CPU 的 Node 24 smoke 和精确 Node 22.0.0 最低版本 smoke 消费同一候选，全部成功后才远端写入。原生工具 Windows 门禁使用本次源码候选；消费者 Windows 集成显式准备已锁定制品；fake native runner 的 Catalog smoke 不提供真实 Codex/Claude qualification 证据。App token 用于推送候选 refs；npm 最终 job 使用 OIDC，Catalog 使用无凭据 HTTPS identity 和临时 ASKPASS。
+`release-cli.yml` 与 `release-catalog.yml` 分别串行发布，同一产品 stable/beta 共用队列，不自动取消在途发布。准备后先上传白名单 tar 恢复包，再由六种 OS/CPU 的 Node 24 smoke 和精确 Node 22.0.0 最低版本 smoke 消费同一候选，全部成功后才远端写入。原生工具 Windows 门禁使用本次源码候选；Windows 集成从同一候选五包安装并解析工具；fake native runner 的 Catalog smoke 不提供真实 Codex/Claude qualification 证据。App token 用于推送候选 refs；npm 最终 job 使用 OIDC，Catalog 使用无凭据 HTTPS identity 和临时 ASKPASS。
+
+官方 Actions 和本仓库 `pnpm release` 按本次实际发布轴选择 Catalog 工具链：
+
+| 场景 | 工具链 | Catalog 远端写入前提 |
+| --- | --- | --- |
+| 同源、同渠道的 CLI 与 Catalog 同批发布 | 编排显式固定本次 CLI 版本与完整五包 artifact | 本次 CLI 整组发布和完成 tag 成功 |
+| 只发 beta Catalog | 准备时解析 npm `beta`，固定已完成的 beta CLI 五包 | 五包可取得，所需能力可用 |
+| 只发正式 Catalog | 准备时解析 npm `latest`，固定已完成的无 prerelease stable CLI 五包 | 五包可取得，所需能力可用 |
+
+同批候选安装将五个自有包的依赖全部解析到本地 artifact；每个 runner 只安装适用平台包，另一架构由对应 runner 验证。第三方依赖沿用包管理器。Catalog 内容来自本次源码，build、validate、物化 smoke 和 publisher 使用所选 CLI。不能只安装 CLI tarball，再让 Eval、Core 或平台包回到 npm 解析。同批 Catalog 不需要从 npm 重新安装刚发布工具；自动 beta 显式关联同批 CLI 候选，并在 CLI 完成后启动依赖它的 Catalog 发布。
+
+Catalog-only 取得工具时重新验证 npm metadata，对短暂读取失败作有总时限的只读重试；五包版本、渠道和完成证据随 tarball 一起进入恢复包，后续 runner 和恢复不再查询浮动标签。缺少可用 CLI、渠道不符、整组未完成或能力不支持时，在 Catalog 远端写入前停止，提示先发布对应渠道 CLI；不跨渠道回退，也不暗用当前未发布源码 CLI。第三方直接使用 `aw catalog` 仍使用当前安装的兼容 CLI。Catalog 元数据不永久绑定工具版本，用户运行时跟随自己实际启动的 CLI。
+
+本地同一待恢复 plan 先核验现有 prepared descriptor、五包摘要和 journal 绑定，再使用原工具验证并续跑；不重新解析浮动标签。candidate 来源工具在恢复、替换 prepared 和 Catalog 写入前，须核对精确 CLI version 与 candidate head 的完成 tag；失败保留原 CLI repair 材料，先修复 CLI。使用原渠道的 `pnpm release <beta|release> --catalog` 恢复。缺失或损坏的恢复材料要求提升 Catalog version；`--all` 或 `--plugin` 引入新 CLI 或源码变化前，同样须先提升 Catalog version。
 
 - `release/version-targets.json` 使用 schema 2，且只保存 CLI 稳定 target。`plugins/marketplace-source.json.catalog.version` 是唯一可写 Catalog version 真值，并表示下一次精确候选。`aw catalog version <exact>` 和 `aw catalog version --bump major|minor|patch` 是唯一公开 Catalog version mutation；bump 以当前 stable SemVer base 为输入。
-- `--cli-bump` 更新 CLI target 和三个 public package；`--catalog-bump` 只编排公共 Catalog version mutation；可重复的 `--plugin <name>=major|minor|patch` 更新所选插件。CLI/plugin metadata 和自动 Catalog metadata 使用独立白名单 commit；Catalog commit 精确只包含 `plugins/marketplace-source.json`。没有版本变化时不创建空 commit。
+- `--cli-bump` 更新 CLI target 和五个 public package；`--catalog-bump` 只编排公共 Catalog version mutation；可重复的 `--plugin <name>=major|minor|patch` 更新所选插件。CLI/plugin metadata 和自动 Catalog metadata 使用独立白名单 commit；Catalog commit 精确只包含 `plugins/marketplace-source.json`。没有版本变化时不创建空 commit。
 - Catalog beta 版本只读取 source metadata、immutable `catalog-v<version>` tag 和 publication journal。当前 exact version 只有同一 journal plan 时可复用；beta 已使用时在同一 base 选择下一个未使用的 `beta.N`。stable metadata 在 beta 渠道选择该 base 的 beta；stable 发布可以把 beta metadata 提升为同 base stable。
 - Core 是唯一插件版本分配 owner。官方流程提供 `catalog/latest`、`catalog/beta` 完整 first-parent 成功历史，按完整 SemVer 最高 entry 恢复每插件基线；同版本不同 contentDigest 拒绝。未变化插件复用完整版本，包括 stable；稳定插件变化默认推进该插件 patch，已有 beta base 内变化递增，显式提高 base 从 beta.1 开始，stable 将仅 beta 交付的插件转正。删除重加保留历史。候选源码只写必要稳定 base，prepare 固定完整版本到 snapshot/plan，apply 不重选。第三方未提供官方历史时，仍使用所选 channel 的最近 first-parent entry 和原来的版本冲突规则。发布 commit 的 parent 始终属于目标 channel。
-- 所选轴无候选时在远端写入前失败。CLI 和 Catalog 远端状态独立读取。Catalog-only 不查询或发布 npm package，不要求 CLI tag，也不执行 provider-side CLI compatibility gate。
+- 所选轴无候选时在远端写入前失败。CLI 和 Catalog 远端状态独立读取。Catalog-only 不发布 npm、不创建 CLI tag，也不编译 Go；准备时读取对应 npm 渠道，确认并固定已完成 CLI 的完整五包工具链。
 - 本地发布和未复用 main CI 的 Actions 候选在元数据 commit 后运行所选轴的完整 release verify，再从更新后的干净 source HEAD 生成 `.release/prepared/descriptor.json`。自动 beta 按上述条件复用 main CI。Catalog snapshot 和 publication plan 只读取已提交的 Workspace metadata，并由与 `aw catalog publish plan` 相同的公共 preparation service 生成；publication 不接受独立 Catalog version override。
-- 发布顺序是 `Eval → Core → CLI → CLI tag → Catalog`。CLI tag 是 `origin` 上指向 prepared source commit 的注解 `cli-v<version>`；Catalog 继续使用独立 channel ref 和 `catalog-v<version>` tag。
-- beta CLI 选择候选时，把 registry 中三个包已出现的最高 beta 和本地已尝试 beta 都视为已占用。部分发布或第一次写入结果不确定后，普通发布保留稳定 target 并选择下一个 beta，再以新 beta 重新发布三个包。稳定 CLI 失败仍要求提升稳定 target。
-- `pnpm release -- --repair-cli` 是同一 CLI 候选的显式补发入口。它只接受与 `attempted.json` 精确绑定且未变化的 prepared descriptor、source commit、build 和 tarball；逐包核验已存在的远端 tarball，只发布 registry 明确缺失的包，最后重新核验整组三包并补 CLI tag。内容冲突或查询不确定时停止；它不发布 Catalog。
+- 发布顺序是 `Windows x64/arm64 平台包 → Eval → Core → CLI → 五包 registry 可见性校验 → CLI 完成 tag → Catalog`。CLI tag 是 `origin` 上指向 prepared source commit 的注解 `cli-v<version>`；Catalog 继续使用独立 channel ref 和 `catalog-v<version>` tag。
+- beta CLI 选择候选时，把 registry 中五个包已出现的最高 beta 和本地已尝试 beta 都视为已占用。部分发布或第一次写入结果不确定后，普通发布保留稳定 target 并选择下一个 beta，再以新 beta 重新发布五个包。稳定 CLI 失败仍要求提升稳定 target。
+- `pnpm release -- --repair-cli` 是同一 CLI 候选的显式补发入口。它只接受与 `attempted.json` 精确绑定且未变化的 prepared descriptor、source commit、build 和 tarball；逐包核验已存在的远端 tarball，只发布 registry 明确缺失的包，最后重新核验整组五包并补 CLI tag。内容冲突或查询不确定时停止；它不发布 Catalog。
 - `pnpm release -- --repair-cli-tag` 只从有效 prepared descriptor 核验并补发 CLI tag。它不准备新候选或修改分支。
 
-`.release/prepared/` 在 gitignore 下，是可删除的弱状态；未尝试的新版本可以重新 prepare。`.release/attempted.json` 只服务 CLI/npm 安全门禁。本地 prepare/发布仍校验强 build generation；跨 runner 导出/导入完整 descriptor、三包、原 build 证据和 attempt，按受信 artifact 中的 descriptor digest、精确 source/version 和每个产物摘要核验。导入产生进程内绑定供 publish/repair 使用，不重建本机 generation，也不改写保存的 descriptor。attempt 在上传恢复包前保存 `publicationStarted:false` 写意图，首次 npm 写入前原子更新为 true；普通重跑不能消费已使用意图。Actions 还检查原运行和历史 publish job，防止失败 job 重跑复用旧初始包。
+五包版本占用检查拒绝任一已存在同版本包。准备先构建两个平台包，再打包精确引用同版本依赖的 Eval、Core 和 CLI；候选 smoke 实际解析和调用适用 helper，安装退出 0 不能证明 optional dependency 完整。五包使用相同渠道和 npm/OIDC 配置，平台包的 Trusted Publisher 也指向实际 CLI 发布工作流。原生构建和资格可作为可复用 job，不承担独立发布职责。
 
-Actions 恢复包只保存 CLI 候选或 Catalog journal/pending repo 与固定工具三包；不保存凭据、任意 node_modules 或用户 home。白名单 regular-file tar 保留 `.git` 和 executable mode，解包前验证 archive digest、路径、类型和完整文件清单。通过精确 run/artifact identity 查找原候选，最终状态另存；保留 30 天。已尝试候选缺失、损坏或过期时提升版本，不能把空 runner 解释为首次发布。CLI partial npm 使用原候选显式 repair，只缺完成 tag 使用 tag repair；Catalog 复用保存的原 plan 对账。
+普通发布和 repair 在创建 CLI 完成 tag 前核验五包的具体版本 metadata 与归档，按总时限重新读取短暂不可见的结果；读取时重新验证缓存，不能使用 prefer-offline。重试不执行 publish，不增加持久状态。超时后保留原候选和已成功写入，使用既有显式 repair 或新版本入口恢复。一个 runner 的可见性通过不代表所有地区或第三方镜像同时可见。
+
+CLI 成功、Catalog 失败时保留 CLI 成功，Catalog 按原 journal plan 恢复；CLI 失败时不发布依赖本次候选的 Catalog。不撤回已发布包，不增加 npm/Git 事务、补偿或跨产品 ledger。Catalog contentDigest、owner marker、构建和发布 artifact 摘要继续用于现有内容身份、恢复与清理边界。
+
+`.release/prepared/` 在 gitignore 下，是可删除的弱状态；未尝试的新版本可以重新 prepare。`.release/attempted.json` 只服务 CLI/npm 安全门禁。本地 prepare/发布仍校验强 build generation；跨 runner 导出/导入完整 descriptor、五包、原 build/资格证据和 attempt，按受信 artifact 中的 descriptor digest、精确 source/version 和每个产物摘要核验。导入产生进程内绑定供 publish/repair 使用，不重建本机 generation，也不改写保存的 descriptor。attempt 在上传恢复包前保存 `publicationStarted:false` 写意图，首次 npm 写入前原子更新为 true；普通重跑不能消费已使用意图。Actions 还检查原运行和历史 publish job，防止失败 job 重跑复用旧初始包。
+
+Actions 恢复包只保存 CLI 候选或 Catalog journal/pending repo 与固定版本的工具五包；不保存凭据、任意 node_modules 或用户 home。白名单 regular-file tar 保留 `.git` 和 executable mode，解包前验证 archive digest、路径、类型和完整文件清单。通过精确 run/artifact identity 查找原候选，最终状态另存；保留 30 天。已尝试候选缺失、损坏或过期时提升版本，不能把空 runner 解释为首次发布。CLI partial npm 使用原候选显式 repair，只缺完成 tag 使用 tag repair；Catalog 复用保存的原 plan 对账。
 
 Catalog 使用 schema v2 `.aw/publish/<version>/journal.json` version-scoped journal；pending 隔离 repo 位于同目录的 `repository/`。状态是 `prepared | uncertain | published`。journal 是强恢复和门禁状态；pending repo 是同版本恢复必须保留的暂存 artifact。新 plan 先在同父 `.<version>.<uuid>.tmp/` 写完并核验 journal、repo 和授权绑定，再单次原子 rename 为版本目录。失败只清理本次 temp；正式目录的并发等价 plan 幂等返回，不同 plan 要求提升版本。旧 `<version>.json` 和 `<version>.repo` 不参与读取或迁移。
 

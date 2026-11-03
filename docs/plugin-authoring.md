@@ -183,7 +183,7 @@ Skill 使用 set/key/variant 逻辑引用；同一引用用于权限。AW 在最
 
 ## Build、Portable 和信任边界
 
-声明原生工具时读取[原生工具合同](native-tools.md)。`nativeTools` 将文本锁绑定到受控命令 set 或 Node 测试；AW 生成 reader，并在消费者启动前准备当前平台制品。普通 validate/build/materialization 保持离线。插件不携带 PE 或私有下载器，公开业务参数不增加 prepare、download 或路径字段。发布前使用 `aw native verify <descriptor> --all-variants --json` 验证全部已发布引用。
+声明原生工具时读取[原生工具合同](native-tools.md)。`aw.native-tools.v2` 的 `nativeTools.definitions` 只声明 key 和 protocol，并将需求绑定到受控命令 set 或 Node 测试。AW 生成 reader，在消费者启动前从当前 CLI 的 Eval 依赖解析适用平台工具。插件不携带 EXE、版本锁、摘要或下载器，公开业务参数不增加工具路径。普通 validate/build 和静态 materialization 不取得 EXE；Windows 动态 renderer 和真实测试需要已安装的配套 helper。缺少 optional dependency 时，重新安装当前 CLI 并包含 optional dependencies。更新 CLI 的配套工具无需重新发布插件。
 
 Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输入。不要隐式安装工具或读取真实用户配置。`buildConfig.runtimeExports`、`buildImports`、`skillRuntimeFiles.import` 和 artifact `runtimeImports` 是 typed build-time reuse edge；它们不自动形成 manifest dependency。
 

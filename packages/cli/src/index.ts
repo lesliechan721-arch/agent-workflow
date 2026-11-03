@@ -86,7 +86,6 @@ import {
 } from './output/command-receipt.js';
 import { resolveCliPackageRoot } from './utils/paths.js';
 import { prepareNativeCliExecution } from './utils/native-cli.js';
-import { resolveAwHome } from './utils/state-paths.js';
 import {
   findConfigFieldEntry,
   formatPluginConfigSetRecoveryCommand,
@@ -193,7 +192,6 @@ import {
 import type { ManagedCodexAuthorizer } from './utils/codex-manager.js';
 import { prepareSkillEval } from './commands/skill-eval.js';
 import { registerManagedCommandCli, runManagedCommandCli } from './commands/managed-commands.js';
-import { registerNativeArtifactCli } from './commands/native-artifacts.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type {
@@ -1567,9 +1565,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     cliVersion: resolveCliVersion(),
   }, (code) => { commandExitState.exitCode = code; });
 
-  registerNativeArtifactCli(program, () => createActionContext('native', {}),
-    (code) => { commandExitState.exitCode = code; });
-
   const self = program
     .command('self')
     .description('Describe and check this AW executable');
@@ -1670,7 +1665,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       try {
         writeJsonReceipt(io.stdout, await doctorEvalProviders({
           sourceEnv: env,
-          nativeCacheRoot: path.join(resolveAwHome(env), 'native-artifacts', 'v1'),
         }));
       } catch (error) {
         writeJsonReceipt(io.stdout, {
@@ -2127,17 +2121,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .description('Run deterministic Node tests declared by one source plugin')
     .argument('<plugin-directory>', 'source plugin directory')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from plugin directory)')
-    .option('--native-mode <mode>', 'fixture | cache-only | network | source-candidate (default: fixture)')
-    .option('--native-archive <path>', 'explicit fixture or current-source candidate archive')
-    .option('--native-cache <path>', 'explicit isolated native artifact cache')
-    .option('--native-fixture-context <path>', 'explicit fixture context JSON, only with fixture mode')
+    .option('--native-mode <mode>', 'fixture | installed | source-candidate (default: fixture)')
+    .option('--native-context <path>', 'explicit tool context JSON for fixture or source-candidate mode')
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (pluginDirectory: string, rawOptions: {
       workspaceRoot?: string;
       nativeMode?: string;
-      nativeArchive?: string;
-      nativeCache?: string;
-      nativeFixtureContext?: string;
+      nativeContext?: string;
       json?: boolean;
     }) => {
       try {
@@ -2150,9 +2140,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           ...workspace,
           pluginDirectory: path.resolve(cwd, pluginDirectory),
           nativeMode: rawOptions.nativeMode,
-          nativeArchive: rawOptions.nativeArchive ? path.resolve(cwd, rawOptions.nativeArchive) : undefined,
-          nativeCache: rawOptions.nativeCache ? path.resolve(cwd, rawOptions.nativeCache) : undefined,
-          nativeFixtureContext: rawOptions.nativeFixtureContext ? path.resolve(cwd, rawOptions.nativeFixtureContext) : undefined,
+          nativeContext: rawOptions.nativeContext ? path.resolve(cwd, rawOptions.nativeContext) : undefined,
           json: rawOptions.json,
           io,
         });

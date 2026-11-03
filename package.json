@@ -44,8 +44,8 @@
     "release:verify:delivery": "pnpm test:smoke:build",
     "release:verify:cli:checks": "pnpm test && pnpm test:types && pnpm test:perf:gate",
     "test:smoke:cli:after-delivery": "pnpm eval:runtime-owner:verify && pnpm test:smoke:pack:cli && pnpm test:smoke:plugin-scripts && pnpm test:smoke:fetch",
-    "release:verify:cli:after-delivery": "pnpm test:smoke:cli:after-delivery && pnpm release:verify:native:cli",
-    "release:verify:catalog:after-delivery": "pnpm test:smoke:publish:catalog && pnpm test:smoke:bootstrap:catalog && pnpm release:verify:native:catalog",
+    "release:verify:cli:after-delivery": "pnpm test:smoke:cli:after-delivery",
+    "release:verify:catalog:after-delivery": "pnpm test:smoke:publish:catalog && pnpm test:smoke:bootstrap:catalog",
     "release:verify:cli:core": "pnpm run release:verify:cli:checks && pnpm run release:verify:delivery && pnpm run release:verify:cli:after-delivery",
     "release:verify:catalog:core": "pnpm run release:verify:delivery && pnpm run release:verify:catalog:after-delivery",
     "test:release:automation": "node --test --test-concurrency=1 scripts/release/*.test.mjs",
@@ -61,13 +61,9 @@
     "release:local": "pnpm run release:verify:cli && pnpm run release:install:local",
     "native:windows-job:build": "node native-tools/windows-job/build.mjs",
     "native:windows-job:pack": "node native-tools/windows-job/pack.mjs",
-    "native:windows-job:prepare": "pnpm native:windows-job:build && pnpm native:windows-job:pack && node native-tools/windows-job/sync-locks.mjs",
+    "native:windows-job:prepare": "pnpm native:windows-job:build && pnpm native:windows-job:pack",
     "native:windows-job:reproduce": "node native-tools/windows-job/reproduce.mjs",
-    "native:windows-job:test": "node --test native-tools/windows-job/*.test.mjs",
-    "native:windows-job:release": "node native-tools/windows-job/release.mjs",
-    "release:verify:native:cli": "node scripts/release/verify-native-references.mjs --cli",
-    "release:verify:native:catalog": "node scripts/release/verify-native-references.mjs --catalog",
-    "native:windows-job:version": "node native-tools/windows-job/version.mjs"
+    "native:windows-job:test": "node --test native-tools/windows-job/*.test.mjs"
   },
   "dependencies": {
     "yaml": "^2.8.3"

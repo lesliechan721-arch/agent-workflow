@@ -152,11 +152,6 @@ it('uses the compiled Core version owner to prepare only changed official Plugin
   await runAw(cliEntry, workspaceRoot, ['catalog', 'build', '--workspace-root', workspaceRoot]);
   const sourceHead = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspaceRoot })).stdout.trim();
   await expect(resolveCatalogPluginBaseVersions({
-    channel: 'stable', repoRoot: workspaceRoot, remoteUrl, sourceHead, env,
-    withSnapshot: async (callback: (snapshot: Record<string, string>) => Promise<unknown>) => callback({
-      catalogOutputRoot: path.join(workspaceRoot, '.aw', 'catalog'),
-      corePackageRoot: path.join(repoRoot, 'packages', 'plugin-core'),
-      cliDistRoot,
-    }),
+    channel: 'stable', repoRoot: workspaceRoot, remoteUrl, sourceHead, env, cliDistRoot,
   })).resolves.toEqual({ 'changed-plugin': '0.1.1' });
 });

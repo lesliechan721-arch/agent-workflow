@@ -394,7 +394,7 @@ describe('config write full reinstall apply', () => {
     const native = nativeToolFixture();
     for (const [relative, content] of Object.entries(native.files)) await fs.outputFile(path.join(fixture.plugin.rootDir, relative), content);
     fixture.plugin.manifest.nativeTools = { reader: native.closure.reader,
-      definitions: native.closure.definitions.map((definition) => ({ key: definition.key, protocol: definition.protocol, descriptor: definition.descriptorPath })),
+      definitions: native.closure.definitions.map((definition) => ({ key: definition.key, protocol: definition.protocol })),
       consumers: structuredClone(native.closure.consumers) };
     await applyPluginConfigWrite({ ...fixture, scope: 'user', apply: false, request: { updates: { mode: 'saved' } } });
     const installed = await syncPluginManagedCommandPackage({ ...fixture, packageKey: 'personal', scope: 'user' });

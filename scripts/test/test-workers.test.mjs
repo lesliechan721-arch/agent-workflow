@@ -8,6 +8,7 @@ import { after, test } from 'node:test';
 
 import { parseTestWorkerCount, resolveTestWorkers } from '../../packages/cli/scripts/test-workers.mjs';
 import { EXPECTED_PERF_SUMMARY_NAMES, runPerfGate } from '../perf/run-perf-gate.mjs';
+import { prepareNativeTestEnvironment } from './native-test-environment.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const roots = [];
@@ -58,11 +59,15 @@ async function fixture() {
   return root;
 }
 
-async function launch(root, { workers = '', args = [], expected = 1 } = {}) {
+async function launch(root, { workers = '', args = [], expected = 1, withoutNativeContext = false } = {}) {
   const probe = await fs.mkdtemp(path.join(root, 'probe-'));
+  const env = { ...process.env, AW_TEST_WORKERS: workers, AW_TEST_METRICS_DIR: '', PROBE_ROOT: probe, EXPECT_PARALLEL: String(expected) };
+  if (withoutNativeContext) {
+    for (const key of Object.keys(env)) if (key.toUpperCase() === 'AW_NATIVE_TOOL_CONTEXT') delete env[key];
+  }
   const result = spawnSync(process.execPath, [path.join(repoRoot, 'scripts/test/run-vitest.mjs'), 'run', ...args], {
     cwd: root,
-    env: { ...process.env, AW_TEST_WORKERS: workers, AW_TEST_METRICS_DIR: '', PROBE_ROOT: probe, EXPECT_PARALLEL: String(expected) },
+    env,
     encoding: 'utf8',
     timeout: 20000,
   });
@@ -76,6 +81,18 @@ async function launch(root, { workers = '', args = [], expected = 1 } = {}) {
   }
   return { ...result, peak, events };
 }
+
+test('ordinary Windows test preparation needs no native context and rejects malformed explicit input', async () => {
+  assert.deepEqual(await prepareNativeTestEnvironment({}, 'win32'), {});
+  await assert.rejects(prepareNativeTestEnvironment({ AW_NATIVE_TOOL_CONTEXT: '{}' }, 'win32'), /nativeContextInvalid/u);
+});
+
+test('real Windows Vitest startup runs without a Go candidate or native context', { skip: process.platform !== 'win32' }, async () => {
+  const root = await fixture();
+  const result = await launch(root, { workers: '1', expected: 1, withoutNativeContext: true });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.peak, 1);
+});
 
 test('real Vitest startup uses defaults, environment values, and explicit precedence', async () => {
   const root = await fixture();

@@ -13,7 +13,6 @@ import { processTable, observeTree, stopOwnedTree } from './runtime/processes.mj
 import { storeContext, readExecution, recordFiles, readRecord, saveGap, removeScratch, delay } from './runtime/store.mjs';
 
 export async function runWorker(directory) {
-  process.env.AW_NATIVE_RESOLVER_MODE = 'cache-only';
   const startedAt = Date.now();
   const context = await storeContext({ root: path.dirname(path.dirname(path.dirname(directory))) });
   const run = await readExecution(context, directory);
@@ -35,8 +34,6 @@ export async function runWorker(directory) {
     if (run.meta.worker || Date.now() >= bootstrapEnd) fail('workerIdentityInvalid', 'The worker process does not match its recorded identity.');
     await delay(20);
   }
-  prepared.environment.AW_NATIVE_RESOLVER_MODE = 'cache-only';
-  if (prepared.executable.env) prepared.executable.env.AW_NATIVE_RESOLVER_MODE = 'cache-only';
   await fs.unlink(path.join(directory, 'launch.json'));
   const request = { ...prepared.request,
     run: { id: run.meta.id, name: run.meta.name, deadlineAt: prepared.deadlineMs === undefined ? null : startedAt + prepared.deadlineMs },

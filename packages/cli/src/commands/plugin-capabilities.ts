@@ -128,11 +128,11 @@ const adapterFacts: Readonly<Partial<Record<
   },
   'native-tools': {
     nativeTools: {
-      requires: 'aw.native-tools.v1. Complete installed descriptor and consumer evidence is reviewed before producer publication.',
+      requires: 'aw.native-tools.v2. Installed protocol requirements and consumer bindings are reviewed before producer publication.',
       provenance: ['CLI installed producer evidence and managed command host'],
     },
     'nativeTools.consumers[].kind': {
-      requires: 'Managed command sets prepare before spawn; plugin tests explicitly select fixture, cache-only, network, or source-candidate mode.',
+      requires: 'Managed command sets prepare the installed host tool before spawn; plugin tests use the installed host tool or an explicit test fixture.',
       conflicts: 'Uncontrolled hooks, MCP entry paths, implicit package discovery, or source sync changing installed command evidence.',
     },
     'nativeTools.consumers[].tools[].fallback': {

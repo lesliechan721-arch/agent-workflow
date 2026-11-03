@@ -199,9 +199,7 @@ export async function runPluginTestCommand(options: {
   workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom;
   pluginDirectory: string;
   nativeMode?: string;
-  nativeArchive?: string;
-  nativeCache?: string;
-  nativeFixtureContext?: string;
+  nativeContext?: string;
   json?: boolean;
   io: AuthoringCommandIo;
 }): Promise<number> {
@@ -212,9 +210,7 @@ export async function runPluginTestCommand(options: {
   let stdout = '';
   let stderr = '';
   const exitCode = await runPluginScriptTests([plugin.manifest.name, '--native-mode', options.nativeMode ?? 'fixture',
-    ...(options.nativeArchive ? ['--native-archive', options.nativeArchive] : []),
-    ...(options.nativeCache ? ['--native-cache', options.nativeCache] : []),
-    ...(options.nativeFixtureContext ? ['--native-fixture-context', options.nativeFixtureContext] : []),
+    ...(options.nativeContext ? ['--native-context', options.nativeContext] : []),
   ], {
     repoRoot: catalogWorkspace.workspaceRoot,
     stdout: (text) => { stdout += text; },

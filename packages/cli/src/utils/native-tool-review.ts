@@ -13,8 +13,7 @@ export interface NativeToolChange {
 export function describeNativeToolClosure(closure: NativeToolClosure): string[] {
   return closure.consumers.flatMap((consumer) => consumer.tools.map((binding) => {
     const definition = closure.definitions.find((entry) => entry.key === binding.key)!;
-    const packages = definition.descriptor.variants.map((variant) => `${variant.platform}/${variant.arch} ${variant.transport.package}@${variant.transport.version}`).join(', ');
-    return `${definition.key} · ${definition.protocol} · ${definition.descriptorDigest} · ${packages} · ${consumer.kind}/${consumer.key} · ${binding.platforms.join(',')} · ${binding.policy}${binding.policy === 'preferred' ? ` · fallback=${binding.fallback}` : ''}`;
+    return `${definition.key} · ${definition.protocol} · ${consumer.kind}/${consumer.key} · ${binding.platforms.join(',')} · ${binding.policy}${binding.policy === 'preferred' ? ` · fallback=${binding.fallback}` : ''}`;
   }));
 }
 

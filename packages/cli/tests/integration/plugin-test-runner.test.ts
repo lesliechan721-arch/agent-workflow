@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { nativeToolFixture } from '../helpers/native-tools.js';
+import { runCliEntry } from '../helpers/cli-entry.js';
 import { runPluginScriptTests } from '../../scripts/test-plugin-scripts.js';
 
 const tempDirs: string[] = [];
@@ -1135,69 +1136,109 @@ describe('plugin script test runner', () => {
   });
 });
 
-// Test Value Gate: the public test path must prepare declared tools, keep ordinary tests offline,
-// reject malformed fixtures, and execute identical cases for both preferred backends.
+// Test Value Gate: observe injected host tools, preferred backends, and refusal before consumer side effects.
 describe('plugin test native preparation', () => {
-  async function prepareNativeTest(policy: 'required' | 'preferred' = 'required') {
+  async function prepareNativeTest(policy: 'required' | 'preferred' = 'required', protocol = 'aw.windows-job.v1') {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({ repoRoot, testEntries: ['./scripts/native.test.mjs'] });
     const manifest = await readManifest(repoRoot);
-    const fixture = nativeToolFixture({ kind: 'plugin-test', consumer: 'node', policy });
-    manifest.requires = { aw: { capabilities: ['aw.native-tools.v1'] } };
-    manifest.nativeTools = { definitions: [{ key: 'job', protocol: 'fixture.job.v1', descriptor: './native/job.lock.json' }], consumers: fixture.closure.consumers };
+    const fixture = nativeToolFixture({ kind: 'plugin-test', consumer: 'node', policy, protocol });
+    manifest.requires = { aw: { capabilities: ['aw.native-tools.v2'] } };
+    manifest.nativeTools = { definitions: fixture.closure.definitions, consumers: fixture.closure.consumers };
     await writeManifest(repoRoot, manifest);
-    await fs.outputJson(path.join(pluginRoot(repoRoot), 'native/job.lock.json'), fixture.closure.definitions[0]!.descriptor);
+    const startedFile = path.join(repoRoot, 'consumer-started');
     await writeNodeTestFile(repoRoot, 'native.test.mjs', [
-      'import test from "node:test";', 'import assert from "node:assert/strict";', 'import fs from "node:fs";', 'import path from "node:path";',
+      'import test from "node:test";', 'import assert from "node:assert/strict";', 'import fs from "node:fs";',
       'test("native contract", () => {',
+      ` fs.writeFileSync(${JSON.stringify(startedFile)}, "started");`,
       ' const context=JSON.parse(process.env.AW_NATIVE_TOOL_CONTEXT);',
       ' assert.deepEqual(Object.keys(context.tools), ["job"]);',
-      ' assert.equal(context.tools.job.protocol,"fixture.job.v1");',
+      ' assert.equal(context.tools.job.protocol,"aw.windows-job.v1");',
       ' assert.equal(process.env.aw_native_other,undefined);',
-      ' assert.equal(process.env.AW_NATIVE_RESOLVER_MODE,"cache-only");',
-      ' assert.equal(fs.existsSync(path.join(process.env.AW_HOME,"native-artifacts")),false);',
       ' console.log("native-backend="+context.tools.job.state);',
       '});',
     ].join('\n'));
-    return { repoRoot, fixture };
+    return { repoRoot, startedFile };
   }
-  const ready = { state: 'ready' as const, protocol: 'fixture.job.v1', executable: process.execPath, sha256: `sha256:${'a'.repeat(64)}` };
+  const ready = { state: 'ready' as const, protocol: 'aw.windows-job.v1', executable: process.execPath };
+
+  // Test Value Gate: use the public command and real Node consumer so option
+  // parsing and author-command forwarding cannot drift from the test runner.
+  it.each(['fixture', 'source-candidate'])('passes native context through public plugin test in %s mode', async (mode) => {
+    const { repoRoot, startedFile } = await prepareNativeTest();
+    const contextFile = path.join(repoRoot, 'native-context.json');
+    await fs.writeJson(contextFile, { schemaVersion: 1, tools: { job: ready } });
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    let result: Awaited<ReturnType<typeof runCliEntry>>;
+    try {
+      result = await runCliEntry(['plugin', 'test', pluginRoot(repoRoot), '--workspace-root', repoRoot,
+        '--native-mode', mode, '--native-context', contextFile, '--json'], { cwd: repoRoot });
+    } finally { platform.mockRestore(); }
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
+    expect(result.parseJsonStdout()).toMatchObject({ command: 'plugin:test', ok: true, stdout: expect.stringContaining('native-backend=ready') });
+    expect(await fs.readFile(startedFile, 'utf8')).toBe('started');
+  });
+
+  it('refuses an unsupported protocol before a public source-candidate consumer starts', async () => {
+    const protocol = 'example.unsupported.v1';
+    const { repoRoot, startedFile } = await prepareNativeTest('required', protocol);
+    const contextFile = path.join(repoRoot, 'native-context.json');
+    await fs.writeJson(contextFile, { schemaVersion: 1, tools: { job: { ...ready, protocol } } });
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    let result: Awaited<ReturnType<typeof runCliEntry>>;
+    try {
+      result = await runCliEntry(['plugin', 'test', pluginRoot(repoRoot), '--workspace-root', repoRoot,
+        '--native-mode', 'source-candidate', '--native-context', contextFile, '--json'], { cwd: repoRoot });
+    } finally { platform.mockRestore(); }
+    expect(result.exitCode).toBe(1);
+    expect(result.parseJsonStdout()).toMatchObject({ command: 'plugin:test', ok: false, stderr: expect.stringContaining(protocol) });
+    expect(await fs.pathExists(startedFile)).toBe(false);
+  });
 
   it('runs both preferred backends from identical bundled cases in explicit fixture mode', async () => {
     const { repoRoot } = await prepareNativeTest('preferred');
     const contextFile = path.join(repoRoot, 'native-context.json');
     await fs.writeJson(contextFile, { schemaVersion: 1, tools: { job: ready } });
     const output = captureOutput();
-    const resolver = vi.fn(async () => ready);
-    expect(await runPluginScriptTests(['git-commit', '--platform', 'codex', '--native-mode', 'fixture', '--native-fixture-context', contextFile], {
-      repoRoot, nativePlatform: 'win32', nativeResolver: resolver, env: { ...process.env, aw_native_other: 'untrusted', AW_NATIVE_TOOL_CONTEXT: 'untrusted' }, ...output,
+    const prepare = vi.fn(async () => process.execPath);
+    expect(await runPluginScriptTests(['git-commit', '--platform', 'codex', '--native-context', contextFile], {
+      repoRoot, nativePlatform: 'win32', nativePrepare: prepare, env: { ...process.env, aw_native_other: 'untrusted', AW_NATIVE_TOOL_CONTEXT: 'untrusted' }, ...output,
     })).toBe(0);
-    expect(resolver).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
     expect(output.readStdout()).toContain('native-backend=ready');
     expect(output.readStdout()).toContain('native-backend=unavailable');
     expect(output.readStdout()).toContain('"mode":"fixture","backend":"portable"');
     await fs.writeJson(contextFile, { schemaVersion: 1, tools: { job: { ...ready, extra: true } } });
-    expect(await runPluginScriptTests(['git-commit', '--platform', 'codex', '--native-fixture-context', contextFile], { repoRoot, nativePlatform: 'win32', ...captureOutput() })).toBe(1);
+    expect(await runPluginScriptTests(['git-commit', '--platform', 'codex', '--native-context', contextFile], { repoRoot, nativePlatform: 'win32', ...captureOutput() })).toBe(1);
   });
 
-  it.each(['fixture', 'cache-only', 'network', 'source-candidate'] as const)('passes explicit %s mode to the shared resolver', async (mode) => {
-    const { repoRoot, fixture } = await prepareNativeTest();
-    const resolver = vi.fn(async (_options: unknown) => ready);
-    const archive = path.join(repoRoot, 'candidate.tgz');
-    const cache = path.join(repoRoot, 'isolated-native-cache');
-    const args = ['git-commit', '--platform', 'codex', '--native-mode', mode, '--native-cache', cache,
-      ...(mode === 'source-candidate' ? ['--native-archive', archive] : [])];
-    expect(await runPluginScriptTests(args, { repoRoot, nativePlatform: 'win32', nativeResolver: resolver, ...captureOutput() })).toBe(0);
-    expect(resolver).toHaveBeenCalledOnce();
-    expect(resolver.mock.calls[0]![0]).toMatchObject({ mode, cacheRoot: cache, descriptor: fixture.closure.definitions[0]!.descriptor,
-      ...(mode === 'source-candidate' ? { archivePath: archive } : {}) });
+  it('uses the installed Eval dependency and stops before starting a consumer when it is missing', async () => {
+    const { repoRoot, startedFile } = await prepareNativeTest();
+    const prepare = vi.fn(async () => process.execPath);
+    const args = ['git-commit', '--platform', 'codex', '--native-mode', 'installed'];
+    expect(await runPluginScriptTests(args, { repoRoot, nativePlatform: 'win32', nativePrepare: prepare, ...captureOutput() })).toBe(0);
+    expect(await fs.readFile(startedFile, 'utf8')).toBe('started');
+    await fs.remove(startedFile);
+    const missing = async () => { throw Object.assign(new Error('Reinstall the current CLI/Eval with optional dependencies.'), { code: 'nativeToolDependencyMissing' }); };
+    const output = captureOutput();
+    expect(await runPluginScriptTests(args, { repoRoot, nativePlatform: 'win32', nativePrepare: missing, ...output })).toBe(1);
+    expect(await fs.pathExists(startedFile)).toBe(false);
+    expect(output.readStderr()).toContain('optional dependencies');
   });
 
-  it('keeps non-Windows tests offline without a native cache', async () => {
+  it('requires an explicit Windows fixture before starting a test consumer', async () => {
+    const { repoRoot, startedFile } = await prepareNativeTest();
+    expect(await runPluginScriptTests(['git-commit', '--platform', 'codex'], {
+      repoRoot, nativePlatform: 'win32', ...captureOutput(),
+    })).toBe(1);
+    expect(await fs.pathExists(startedFile)).toBe(false);
+  });
+
+  it('keeps non-Windows tests independent of Windows packages', async () => {
     const { repoRoot } = await prepareNativeTest();
-    await writeNodeTestFile(repoRoot, 'native.test.mjs', 'import test from "node:test"; import assert from "node:assert/strict"; import fs from "node:fs"; import path from "node:path"; test("offline",()=>{assert.equal(process.env.AW_NATIVE_TOOL_CONTEXT,undefined); assert.equal(fs.existsSync(path.join(process.env.AW_HOME,"native-artifacts")),false);});');
-    const resolver = vi.fn(async () => ready);
-    expect(await runPluginScriptTests(['git-commit', '--platform', 'codex'], { repoRoot, nativePlatform: 'darwin', nativeResolver: resolver, ...captureOutput() })).toBe(0);
-    expect(resolver).not.toHaveBeenCalled();
+    await writeNodeTestFile(repoRoot, 'native.test.mjs', 'import test from "node:test"; import assert from "node:assert/strict"; test("no Windows tool",()=>{assert.equal(process.env.AW_NATIVE_TOOL_CONTEXT,undefined);});');
+    const prepare = vi.fn(async () => process.execPath);
+    expect(await runPluginScriptTests(['git-commit', '--platform', 'codex'], { repoRoot, nativePlatform: 'darwin', nativePrepare: prepare, ...captureOutput() })).toBe(0);
+    expect(prepare).not.toHaveBeenCalled();
   });
 });

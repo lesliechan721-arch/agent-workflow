@@ -12,7 +12,6 @@ import { sanitizeCatalogSourceError } from '../utils/catalog-public-error.js';
 import { describeNativeToolClosure, type NativeToolChange } from '../utils/native-tool-review.js';
 import { managedCommandProducerIdentity, nativeToolsForCommandSets, syncPluginManagedCommandPackage } from '../utils/managed-command-materialization.js';
 import { prepareWindowsJobHelper } from '../utils/process-tree.js';
-import { resolveAwHome } from '../utils/state-paths.js';
 import { runManagedCommand } from '../utils/managed-command-runtime.js';
 import {
   ManagedCommandError,
@@ -264,7 +263,7 @@ export async function runManagedCommandCli(args: string[], context: CliExecution
       }
       if (nativeReview) for (const phase of ['before', 'after'] as const) if (nativeReview[phase]) message += ` Native ${nativeReview.producer.sourceId}/${nativeReview.producer.pluginName} ${phase}: ${describeNativeToolClosure(nativeReview[phase]!).join('; ')}.`;
       await confirm(context, options, message);
-      if (process.platform === 'win32' && action === 'package.sync') await prepareWindowsJobHelper({ cacheRoot: path.join(resolveAwHome(context.env), 'native-artifacts', 'v1'), sourceEnv: context.env });
+      if (process.platform === 'win32' && action === 'package.sync') await prepareWindowsJobHelper();
       await withAwHomeMutationLock({ env: context.env, action: execute });
     }
   } catch (error) {

@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { publishPreparedRelease } from '../../../../scripts/release/prepared-release.mjs';
 import { runRelease } from '../../../../scripts/release/release.mjs';
@@ -41,6 +42,9 @@ try {
     attemptPath: config.attemptPath,
     remoteUrl: config.remoteUrl,
     assertClean: async () => undefined,
+    assertPublishedPackageMatches: async () => undefined,
+    installSavedCatalogToolchain: async () => ({ cliDistRoot: fileURLToPath(new URL('../../dist', import.meta.url)) }),
+    prepareCatalogToolchain: async () => ({ cliDistRoot: fileURLToPath(new URL('../../dist', import.meta.url)), toolchain: descriptor.catalog?.toolchain, tarballPaths: [] }),
     resolveHead: async () => descriptor.source.head,
     readTargets: async () => config.targets,
     assertPackageVersions: async () => ({ targetVersion: config.targets.cli }),
@@ -50,6 +54,8 @@ try {
     readPackageChannelVersion: async () => null,
     assertCliTagAvailable: async () => undefined,
     computeTarballTreeDigest: async (file) => {
+      if (file.includes('windows-x64')) return 'windows-x64-tree';
+      if (file.includes('windows-arm64')) return 'windows-arm64-tree';
       if (file.includes('eval')) return 'eval-tree';
       return file.includes('core') ? 'core-tree' : 'cli-tree';
     },

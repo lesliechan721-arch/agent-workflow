@@ -46,6 +46,8 @@ describe('one-command release entry', () => {
     expect(parseReleaseArgs(['--repair-cli-tag'])).toEqual({ repairCliTag: true });
     expect(() => parseReleaseArgs(['beta'])).toThrow('Select exactly one');
     expect(() => parseReleaseArgs(['beta', '--cli', '--catalog'])).toThrow('exactly one');
+    expect(parseReleaseArgs(['beta', '--cli', '--native-candidate', '/tmp/native'])).toMatchObject({ nativeCandidateRoot: '/tmp/native' });
+    expect(() => parseReleaseArgs(['beta', '--catalog', '--native-candidate', '/tmp/native'])).toThrow('--native-candidate requires --cli');
     expect(() => parseReleaseArgs(['beta', '--catalog', '--cli-bump', 'patch']))
       .toThrow('--cli-bump requires');
     expect(() => parseReleaseArgs(['--repair-cli-tag', '--cli']))
@@ -66,6 +68,8 @@ describe('one-command release entry', () => {
             'packages/cli/package.json',
             'packages/agent-skill-eval/package.json',
             'packages/plugin-core/package.json',
+            'packages/aw-windows-job-win32-x64/package.json',
+            'packages/aw-windows-job-win32-arm64/package.json',
             'pnpm-lock.yaml',
             'plugins/git-toolkit/.agents-plugin/plugin.json',
             '',
@@ -86,6 +90,8 @@ describe('one-command release entry', () => {
       'packages/cli/package.json',
       'packages/agent-skill-eval/package.json',
       'packages/plugin-core/package.json',
+      'packages/aw-windows-job-win32-x64/package.json',
+      'packages/aw-windows-job-win32-arm64/package.json',
       'pnpm-lock.yaml',
       'plugins/git-toolkit/.agents-plugin/plugin.json',
     ], expect.any(Object));
@@ -202,7 +208,7 @@ describe('one-command release entry', () => {
     expect(runVerification).not.toHaveBeenCalled();
   });
 
-  it('runs Catalog-only without CLI target, npm, or CLI tag checks', async () => {
+  it('runs Catalog-only with selected tooling and without npm writes or CLI tag creation', async () => {
     const forbidden = vi.fn(async () => {
       throw new Error('CLI-only service must not run');
     });
@@ -211,6 +217,7 @@ describe('one-command release entry', () => {
       candidates: { cli: null, catalog: '2.0.0' },
     };
     await expect(runRelease(['release', '--catalog'], {
+      prepareCatalogToolchain: async () => ({ cliDistRoot: '/selected/aw/dist', toolchain: { version: '0.1.0', channel: 'stable' }, tarballPaths: [] }),
       repoRoot: '/repo',
       assertClean: async () => undefined,
       assertTargetsMatchHead: forbidden,

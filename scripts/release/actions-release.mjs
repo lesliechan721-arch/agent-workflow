@@ -7,10 +7,10 @@ const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 
 export function parseActionsArgs(argv) {
   const [command, ...args] = argv;
-  if (!['beta', 'source', 'inspect', 'prepare', 'unpack', 'publish'].includes(command)) throw new Error('Expected beta, source, inspect, prepare, unpack, or publish.');
+  if (!['beta', 'source', 'inspect', 'prepare', 'unpack', 'publish', 'complete-batch'].includes(command)) throw new Error('Expected beta, source, inspect, prepare, unpack, or publish.');
   const result = { command };
   const booleans = new Set(['repair-cli', 'repair-cli-tag']);
-  const values = new Set(['product', 'version', 'source', 'tag', 'archive', 'digest']);
+  const values = new Set(['product', 'version', 'source', 'tag', 'archive', 'digest', 'cli-archive', 'cli-digest', 'native-candidate-root']);
   for (let index = 0; index < args.length; index += 1) {
     const key = args[index].replace(/^--/u, '');
     if (!args[index].startsWith('--') || Object.hasOwn(result, key)) throw new Error('Invalid or duplicate release argument.');
@@ -49,6 +49,47 @@ async function compiled(name, options) {
   return import(pathToFileURL(path.join(dist, 'src/commands', `${name}.js`)).href);
 }
 
+async function tagMessage(tag, options) {
+  const { runReleaseGit } = await import('./common.mjs');
+  return (await (options.runGit ?? runReleaseGit)(['for-each-ref', '--format=%(contents)', `refs/tags/${tag}`], { ...options, cwd: options.repoRoot })).stdout;
+}
+
+async function batchCli(candidate, options) {
+  const match = /^AW-CLI: (release\/cli\/v[^\s]+)$/mu.exec(await tagMessage(candidate.tag, options));
+  if (!match) return null;
+  const cli = await candidateFor({ product: 'cli', tag: match[1] }, options);
+  if (cli.sourceHead !== candidate.sourceHead || cli.channel !== candidate.channel) throw new Error('Catalog and CLI batch source or channel differ.');
+  const inspection = await import('./actions-inspection.mjs');
+  if (!await inspection.readRemoteCompletion(cli, options)) throw new Error('This Catalog batch requires its completed CLI publication first.');
+  return { candidate: cli, recovery: await inspection.findRecoveryArtifact(cli, options) };
+}
+
+async function completeBatch(candidate, options) {
+  if (candidate.product !== 'cli') throw new Error('Only CLI completion can release a dependent Catalog candidate.');
+  const match = /^AW-Catalog: (release\/catalog\/v[^\s]+)$/mu.exec(await tagMessage(candidate.tag, options));
+  if (!match) return;
+  const { readRemoteCompletion } = await import('./actions-inspection.mjs');
+  if (!await readRemoteCompletion(candidate, options)) throw new Error('CLI publication must complete before Catalog starts.');
+  const { parseSourceTag, validateSourceCandidate } = await import('./source-candidate.mjs');
+  const parsed = parseSourceTag(match[1]);
+  if (parsed.channel !== candidate.channel) throw new Error('CLI and Catalog batch channels differ.');
+  const { runReleaseGit } = await import('./common.mjs');
+  const git = (args) => (options.runGit ?? runReleaseGit)(args, { ...options, cwd: options.repoRoot });
+  const branch = `release-source/catalog/${parsed.version}`;
+  await git(['fetch', '--no-tags', options.remote ?? 'origin', `refs/heads/${branch}:refs/heads/${branch}`]);
+  const remote = await git(['ls-remote', options.remote ?? 'origin', `refs/tags/${match[1]}`]);
+  if (remote.stdout.trim()) {
+    await git(['fetch', '--no-tags', options.remote ?? 'origin', `refs/tags/${match[1]}:refs/tags/${match[1]}`]);
+    const existing = await validateSourceCandidate({ ...options, tag: match[1] });
+    if (existing.sourceHead !== candidate.sourceHead || !String(await tagMessage(match[1], options)).includes(`AW-CLI: ${candidate.tag}`)) throw new Error('The dependent Catalog tag conflicts with this CLI batch.');
+    return;
+  }
+  await git(['-c', 'user.name=AW Release', '-c', 'user.email=aw-release@users.noreply.github.com', '-c', 'tag.gpgSign=false', 'tag', '--annotate', '--message', `Release batch\n\nAW-CLI: ${candidate.tag}`, match[1], `refs/heads/${branch}`]);
+  const catalog = await validateSourceCandidate({ ...options, tag: match[1] });
+  if (catalog.sourceHead !== candidate.sourceHead) throw new Error('CLI and Catalog batch sources differ.');
+  await git(['push', '--no-follow-tags', options.remote ?? 'origin', `refs/tags/${match[1]}`]);
+}
+
 async function prepareCandidate(candidate, options) {
   const repoRoot = options.repoRoot ?? defaultRoot;
   const destination = path.join(repoRoot, '.release/actions/candidate');
@@ -71,13 +112,29 @@ async function prepareCandidate(candidate, options) {
     metadata.intentDigest = intent.intentDigest;
   } else {
     const { prepareCatalogRelease } = await import('./catalog-publication.mjs');
-    const { packCliBundle } = await import('./pack-cli.mjs');
-    const plan = await prepareCatalogRelease(candidate.channel === 'stable' ? 'latest' : 'beta', options);
+    const { prepareCatalogToolchain } = await import('./catalog-toolchain.mjs');
+    const batch = await batchCli(candidate, options);
+    let cliBundle;
+    if (batch) {
+      if (!options.cliArchive || !options.cliDigest) throw new Error('This Catalog requires its explicit CLI candidate artifact.');
+      const batchRoot = path.join(repoRoot, '.release/actions/cli-batch');
+      const { extractCandidate, verifyCandidateDirectory } = await import('./candidate-archive.mjs');
+      await extractCandidate(options.cliArchive, batchRoot, options.cliDigest);
+      const saved = await verifyCandidateDirectory(batchRoot, batch.candidate);
+      const descriptor = JSON.parse(await fs.readFile(path.join(batchRoot, 'cli/prepared/descriptor.json'), 'utf8'));
+      const packages = new Map(descriptor.npm.packages.map((entry) => [entry.name, path.join(batchRoot, 'cli', 'prepared', entry.path)]));
+      cliBundle = { version: saved.version, candidateHead: saved.candidateHead,
+        cliTarballPath: packages.get('@lesliechan721/aw'), evalTarballPath: packages.get('@lesliechan721/agent-skill-eval'), coreTarballPath: packages.get('@lesliechan721/aw-plugin-core'),
+        windowsJobTarballPaths: ['x64', 'arm64'].map((arch) => packages.get(`@lesliechan721/aw-windows-job-win32-${arch}`)) };
+    }
+    const selected = await (options.prepareCatalogToolchain ?? prepareCatalogToolchain)(candidate.channel, { ...options, destination: path.join(repoRoot, '.release/actions/selected-tools'), cliBundle });
+    const plan = await prepareCatalogRelease(candidate.channel === 'stable' ? 'latest' : 'beta', { ...options, cliDistRoot: selected.cliDistRoot });
     if (plan.sourceHead !== candidate.candidateHead || plan.catalogVersion !== candidate.version) throw new Error('Catalog plan does not match its exact source candidate.');
     await fs.cp(path.join(repoRoot, '.aw/publish', candidate.version), path.join(destination, 'catalog/publication'), { recursive: true, errorOnExist: true, force: false });
     const tools = path.join(destination, 'tools');
     await fs.mkdir(tools);
-    await packCliBundle({ destination: tools });
+    for (const tarball of selected.tarballPaths) await fs.copyFile(tarball, path.join(tools, path.basename(tarball)));
+    metadata.toolchain = selected.toolchain;
     metadata.planDigest = plan.planDigest;
   }
   await sealCandidateDirectory(destination, metadata);
@@ -179,8 +236,13 @@ async function publishCandidate(args, options) {
   } else {
     // The publisher is loaded from the saved tooling packages. A fresh runner
     // does not rebuild the CLI or the already prepared Catalog snapshot.
+    if (candidate.toolchain?.source === 'candidate') {
+      const { assertToolchainCompletion } = await import('./catalog-toolchain.mjs');
+      await assertToolchainCompletion(candidate.toolchain.version, { ...options, expectedCliHead: candidate.toolchain.candidateHead });
+    }
     const { installCandidatePackages } = await import('./candidate-smoke.mjs');
     const toolsRoot = path.join(options.repoRoot ?? defaultRoot, '.release/actions/catalog-tools');
+    await fs.rm(toolsRoot, { recursive: true, force: true });
     await fs.mkdir(toolsRoot, { recursive: true });
     await installCandidatePackages(root, candidate, toolsRoot, options.env ?? process.env);
     const toolingOptions = { ...options, cliDistRoot: path.join(toolsRoot, 'node_modules/@lesliechan721/aw/dist') };
@@ -202,6 +264,9 @@ async function publishCandidate(args, options) {
 export async function runActionsRelease(argv = process.argv.slice(2), supplied = {}) {
   const args = parseActionsArgs(argv);
   const options = { repoRoot: defaultRoot, env: process.env, ...supplied };
+  options.cliArchive ??= args['cli-archive'];
+  options.cliDigest ??= args['cli-digest'];
+  options.nativeCandidateRoot ??= args['native-candidate-root'];
   options.releaseRoot ??= path.join(options.repoRoot, '.release');
   if (args.command === 'unpack') {
     const { extractCandidate } = await import('./candidate-archive.mjs');
@@ -211,6 +276,11 @@ export async function runActionsRelease(argv = process.argv.slice(2), supplied =
     const { prepareSourceCandidate } = await import('./source-candidate.mjs');
     const { parseSourceTag } = await import('./source-candidate.mjs');
     const parsed = parseSourceTag(`release/${args.product}/v${args.version}`);
+    if (args.product === 'catalog') {
+      const { prepareCatalogToolchain } = await import('./catalog-toolchain.mjs');
+      const selected = await (options.prepareCatalogToolchain ?? prepareCatalogToolchain)(parsed.channel, options);
+      options.cliDistRoot = selected.cliDistRoot;
+    }
     const pluginBaseVersions = args.product === 'catalog'
       ? await (await import('./catalog-publication.mjs')).resolveCatalogPluginBaseVersions({ ...options, channel: parsed.channel, sourceHead: args.source })
       : undefined;
@@ -229,26 +299,37 @@ export async function runActionsRelease(argv = process.argv.slice(2), supplied =
       && env.GITHUB_SHA === plan.sourceHead && env.GITHUB_RUN_ID && env.GITHUB_RUN_ATTEMPT
       ? `${env.GITHUB_RUN_ID}/${env.GITHUB_RUN_ATTEMPT}` : undefined;
     const results = [];
-    for (const product of ['cli', 'catalog']) {
+    const both = plan.products.cli.changed && !plan.products.cli.error && plan.products.catalog.changed && !plan.products.catalog.error;
+    let deferredCatalog;
+    if (both) options.cliDistRoot ??= path.join(options.repoRoot, 'packages/cli/dist');
+    if (!both && plan.products.catalog.changed && !plan.products.catalog.error) {
+      const { prepareCatalogToolchain } = await import('./catalog-toolchain.mjs');
+      const selected = await (options.prepareCatalogToolchain ?? prepareCatalogToolchain)('beta', options);
+      options.cliDistRoot = selected.cliDistRoot;
+    }
+    for (const product of both ? ['catalog', 'cli'] : ['cli', 'catalog']) {
       const selected = plan.products[product];
-      if (selected.error) {
-        results.push({ product, error: selected.error });
-        continue;
-      }
+      if (selected.error) { results.push({ product, error: selected.error }); continue; }
       if (!selected.changed) continue;
       try {
-        results.push(await prepareSourceCandidate({ ...options, product, version: selected.version,
+        const candidate = await prepareSourceCandidate({ ...options, product, version: selected.version,
           sourceHead: plan.sourceHead, pluginBaseVersions: selected.pluginBaseVersions,
-          ciRun, push: true, requireMainTip: true }));
-      } catch (error) {
-        results.push({ product, error: error.message });
-      }
+          ciRun, push: !(both && product === 'catalog'), requireMainTip: true,
+          ...(both && product === 'cli' ? { catalogCandidateTag: deferredCatalog?.tag } : {}) });
+        if (both && product === 'catalog') {
+          deferredCatalog = candidate;
+          const { runReleaseGit } = await import('./common.mjs');
+          await (options.runGit ?? runReleaseGit)(['push', '--no-follow-tags', options.remote ?? 'origin', `refs/heads/${candidate.branch}`], { ...options, cwd: options.repoRoot });
+        }
+        results.push(candidate);
+      } catch (error) { results.push({ product, error: error.message }); if (both) break; }
     }
     await summary({ candidates: results }, options);
     if (results.some((entry) => entry.error)) throw new Error('At least one product candidate could not be created. Other successful candidates remain valid.');
     return plan;
   }
   const candidate = await candidateFor(args, options);
+  if (args.command === 'complete-batch') return completeBatch(candidate, options);
   if (args.command === 'inspect') {
     const { readRemoteCompletion, findRecoveryArtifact, canReuseMainCi } = await import('./actions-inspection.mjs');
     const completed = await readRemoteCompletion(candidate, options);
@@ -256,7 +337,8 @@ export async function runActionsRelease(argv = process.argv.slice(2), supplied =
       : await findRecoveryArtifact(candidate, options);
     const reuseMainCi = !completed && recovery.recovery_artifact === '' && await canReuseMainCi(candidate, options);
     await summary({ ...candidate, completed, ...recovery, reuseMainCi }, options);
-    return outputs({ ...recovery, completed: String(completed), version: candidate.version, reuse_main_ci: String(reuseMainCi) }, options);
+    const batch = candidate.product === 'catalog' && !completed ? await batchCli(candidate, options) : null;
+    return outputs({ ...recovery, ...(batch ? { cli_recovery_run: batch.recovery.recovery_run, cli_recovery_artifact: batch.recovery.recovery_artifact, cli_recovery_digest: batch.recovery.recovery_digest, cli_recovery_archive: batch.recovery.recovery_archive } : {}), completed: String(completed), version: candidate.version, reuse_main_ci: String(reuseMainCi) }, options);
   }
   if (args.command === 'prepare') return prepareCandidate(candidate, options);
   return publishCandidate(args, options);

@@ -3,11 +3,16 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
-  "exports": {
-    ".": { "types": "./src/index.d.mts", "import": "./src/index.mjs" },
-    "./descriptor": { "types": "./src/descriptor.d.mts", "import": "./src/descriptor.mjs" },
-    "./reader": { "types": "./src/reader.d.mts", "import": "./src/reader.mjs" }
+  "engines": {
+    "node": ">=22"
   },
-  "scripts": { "test": "node --test tests/*.test.mjs" }
+  "exports": {
+    "./reader": {
+      "types": "./src/reader.d.mts",
+      "import": "./src/reader.mjs"
+    }
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
 }

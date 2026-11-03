@@ -36,7 +36,7 @@ const PLUGIN_BUMP_PATTERN = /^([a-z0-9]+(?:-[a-z0-9]+)*)=(major|minor|patch)$/u;
 const usage = [
   'pnpm release -- beta|release --cli|--catalog|--all',
   '[--cli-bump major|minor|patch] [--catalog-bump major|minor|patch]',
-  '[--plugin <name>=major|minor|patch]',
+  '[--plugin <name>=major|minor|patch] [--native-candidate <directory>]',
   'or: pnpm release -- --repair-cli',
   'or: pnpm release -- --repair-cli-tag',
 ].join(' ');
@@ -72,6 +72,7 @@ export function parseReleaseArgs(argv) {
     axes: { cli: false, catalog: false },
     cliBump: null,
     catalogBump: null,
+    nativeCandidateRoot: null,
     plugins: new Map(),
   };
   while (args.length > 0) {
@@ -83,6 +84,12 @@ export function parseReleaseArgs(argv) {
         cli: token === '--cli' || token === '--all',
         catalog: token === '--catalog' || token === '--all',
       };
+      continue;
+    }
+    if (token === '--native-candidate') {
+      const value = args.shift();
+      if (parsed.nativeCandidateRoot !== null || !value || value.startsWith('--')) throw new Error('--native-candidate requires one directory.');
+      parsed.nativeCandidateRoot = path.resolve(value);
       continue;
     }
     if (token === '--cli-bump') {
@@ -106,6 +113,7 @@ export function parseReleaseArgs(argv) {
     throw new Error(`Unknown release argument ${JSON.stringify(token)}. Usage: ${usage}`);
   }
   if (parsed.axis === null) throw new Error('Select exactly one of --cli, --catalog, or --all.');
+  if (parsed.nativeCandidateRoot !== null && !parsed.axes.cli) throw new Error('--native-candidate requires --cli or --all.');
   if (parsed.cliBump !== null && !parsed.axes.cli) {
     throw new Error('--cli-bump requires --cli or --all.');
   }
@@ -129,6 +137,8 @@ function releaseMetadataPaths(parsed) {
     paths.add('packages/cli/package.json');
     paths.add('packages/agent-skill-eval/package.json');
     paths.add('packages/plugin-core/package.json');
+    paths.add('packages/aw-windows-job-win32-x64/package.json');
+    paths.add('packages/aw-windows-job-win32-arm64/package.json');
     paths.add('pnpm-lock.yaml');
   }
   for (const name of parsed.plugins.keys()) paths.add(`plugins/${name}/.agents-plugin/plugin.json`);
@@ -196,7 +206,7 @@ export async function commitCatalogVersionMetadata(options = {}) {
 export async function prepareCatalogReleaseMetadata(parsed, options = {}) {
   if (!parsed.axes.catalog) return null;
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
-  let serviceReady = options.mutateCatalogVersion !== undefined
+  let serviceReady = options.cliDistRoot !== undefined || options.mutateCatalogVersion !== undefined
     || options.catalogVersionService !== undefined;
   const mutate = async (mutation) => {
     if (!serviceReady) {
@@ -242,6 +252,7 @@ export async function prepareCatalogReleaseMetadata(parsed, options = {}) {
 }
 
 async function runReleaseVerification(axes, options = {}) {
+  if (!axes.cli && axes.catalog && options.cliDistRoot && !options.runVerification) return 'selected-cli-catalog-validation';
   const script = axes.cli && axes.catalog
     ? 'release:verify'
     : axes.cli ? 'release:verify:cli' : 'release:verify:catalog';
@@ -279,7 +290,21 @@ export async function runRelease(argv = process.argv.slice(2), options = {}) {
   if (parsed.repairCliTag) return repairCliTag(options);
 
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  if (parsed.nativeCandidateRoot) options = { ...options, nativeCandidateRoot: parsed.nativeCandidateRoot };
   await (options.assertClean ?? assertTrackedHeadClean)(repoRoot, options);
+  if (parsed.axes.catalog) {
+    const { prepareCatalogToolchain, restorePendingCatalogToolchain } = await import('./catalog-toolchain.mjs');
+    const recovered = parsed.catalogBump === null
+      ? await (options.restorePendingCatalogToolchain ?? restorePendingCatalogToolchain)(parsed.channel, { ...options, repoRoot })
+      : null;
+    if (recovered && (parsed.axes.cli || parsed.plugins.size > 0)) {
+      throw new Error('A pending Catalog plan must keep its original tools and source. Use --catalog to resume it, or increase the Catalog version.');
+    }
+    if (!parsed.axes.cli) {
+      const selected = recovered ?? await (options.prepareCatalogToolchain ?? prepareCatalogToolchain)(parsed.channel, { ...options, repoRoot });
+      options = { ...options, cliDistRoot: selected.cliDistRoot, selectedCatalogToolchain: selected };
+    }
+  }
   if (parsed.axes.cli) {
     await (options.assertTargetsMatchHead ?? assertVersionTargetsMatchHead)(repoRoot, options);
   }

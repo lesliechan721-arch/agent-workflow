@@ -137,6 +137,83 @@ test('Windows host failures retain only safe execution and parse diagnostics', a
   }
 });
 
+// Test Value Gate: bridge close can remove a resource after the JS path check
+// but before the Windows helper opens it. Missing bindings mean closed; a
+// native failure alone must not authorize tool access or resource deletion.
+test('bridge close during native ACL verification returns closed', async (t) => {
+  const { createChildBridge, invokeChildTool } = await import('../skills/codex-subagent-guide/scripts/runtime/adapter-channel.mjs');
+  for (const phase of ['directory', 'binding', 'response']) {
+    await t.test(phase, async (t) => {
+      const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-bridge-native-close-'));
+      let bridge; let armed = false; let raced = false;
+      t.after(async () => { try { await bridge?.close('completed'); } finally { await fs.rm(root, { recursive: true, force: true }); } });
+      const directory = path.join(root, 'bridge'); const bindingFile = path.join(directory, 'binding.json');
+      const api = windowsHostFixture(t, async (_command, _args, _options, request) => {
+        if (!request) return { stdout: '"fixture","S-1-5-21-123-456-789-1001"\r\n' };
+        const target = request.input.resources?.[0]?.target;
+        const matches = phase === 'directory' ? target === directory : phase === 'binding' ? target === bindingFile : target?.endsWith('.response.json');
+        if (armed && request.operation === 'aclVerify' && matches) {
+          armed = false; raced = true;
+          await bridge.close('cancelled');
+          await assert.rejects(fs.lstat(target), { code: 'ENOENT' });
+          // Go reports both a removed path and a refused ACL as exit 250.
+          return { code: 250 };
+        }
+        return { result: true };
+      });
+      await api.protectPrivatePath(root);
+      const tool = path.join(root, 'tool.mjs'); await fs.writeFile(tool, '');
+      const toolkit = { module: tool, command: tool, messageScript: tool, mcpScript: tool };
+      bridge = await createChildBridge({ directory, deadlineAt: null, toolkit, emitParentMessage: async () => assert.fail('Receive cannot send a message.') });
+      armed = true;
+      assert.deepEqual(await invokeChildTool({ bindingFile, operation: 'receive', timeoutMs: 0 }), { outcome: 'closed' });
+      assert.equal(raced, true);
+      await assert.rejects(fs.lstat(directory), { code: 'ENOENT' });
+    });
+  }
+});
+
+// Test Value Gate: only a confirmed missing binding permits the native-close
+// fallback. Preserve helper diagnostics and any resource that is still present.
+test('native bridge failures preserve errors when binding removal is unconfirmed', async (t) => {
+  const { invokeChildTool } = await import('../skills/codex-subagent-guide/scripts/runtime/adapter-channel.mjs');
+  for (const scenario of ['present', 'invalidJson', 'EACCES', 'replacement']) {
+    await t.test(scenario, async (t) => {
+      const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-bridge-native-error-'));
+      t.after(() => fs.rm(directory, { recursive: true, force: true }));
+      const bindingFile = path.join(directory, 'binding.json'); const preserved = path.join(directory, 'preserved.txt');
+      await fs.writeFile(bindingFile, JSON.stringify({ binding: 'a'.repeat(32), pid: process.pid }));
+      await fs.writeFile(preserved, 'preserve');
+      const lstat = fs.lstat.bind(fs); let failed = false;
+      if (scenario === 'EACCES') t.mock.method(fs, 'lstat', async (target, ...args) => {
+        if (failed && target === bindingFile) throw Object.assign(new Error('The binding cannot be inspected.'), { code: 'EACCES' });
+        return lstat(target, ...args);
+      });
+      windowsHostFixture(t, async (_command, _args, _options, request) => {
+        if (!request) return { stdout: '"fixture","S-1-5-21-123-456-789-1001"\r\n' };
+        if (request.operation === 'aclVerify' && request.input.resources.some(({ target }) => target === bindingFile)) {
+          if (scenario === 'replacement') { await fs.unlink(bindingFile); await fs.mkdir(bindingFile); }
+          failed = true;
+          return scenario === 'invalidJson' ? { stdout: 'invalid JSON' } : { code: 250 };
+        }
+        return { result: true };
+      });
+      await assert.rejects(invokeChildTool({ bindingFile, operation: 'receive', timeoutMs: 0 }), (error) => {
+        assert.equal(error.code, 'platformOperationFailed');
+        const diagnostic = JSON.parse(error.message.slice(error.message.indexOf('{')));
+        assert.equal(diagnostic.operation, 'aclVerify');
+        assert.equal(diagnostic.reason, scenario === 'invalidJson' ? 'invalidJson' : 'processExit');
+        assert.equal(diagnostic.exitCode, scenario === 'invalidJson' ? null : 250);
+        return true;
+      });
+      assert.equal(failed, true);
+      assert.equal((await lstat(bindingFile)).isDirectory(), scenario === 'replacement');
+      assert.equal(await fs.readFile(preserved, 'utf8'), 'preserve');
+      assert.deepEqual((await fs.readdir(directory)).sort(), ['binding.json', 'preserved.txt']);
+    });
+  }
+});
+
 // Test Value Gate: entry and execution ownership must be checked on every
 // read, including after previously valid native ACL evidence changes.
 test('owned run reads verify entry and concrete execution without caching ownership', async (t) => {
@@ -443,12 +520,12 @@ test('scratch cleanup batches native tree checks and retains files when verifica
 test('native operations reject absent or invalid AW context and keep the selected tool fixed', async () => {
   const entry = new URL('../skills/codex-subagent-guide/scripts/runtime/windows-native.mjs', import.meta.url).href;
   const execute = promisify(originalExecFile);
-  const tool = { state: 'ready', protocol: 'aw.windows-job.v1', executable: path.resolve('fixture-native/aw-windows-job.exe'), sha256: `sha256:${'1'.repeat(64)}` };
+  const tool = { state: 'ready', protocol: 'aw.windows-job.v1', executable: path.resolve('fixture-native/aw-windows-job.exe') };
   const context = (value) => JSON.stringify({ schemaVersion: 1, tools: { 'windows-job': value } });
   const script = `import { windowsNativeOperation } from ${JSON.stringify(entry)};
 try { await windowsNativeOperation('pathCheck', { target: process.cwd(), kind: 'directory' }); process.exitCode = 1; }
 catch (error) { process.stdout.write(error.code); }`;
-  for (const raw of [undefined, '{', '{}', JSON.stringify({ schemaVersion: 1, tools: {} }), context({ ...tool, protocol: 'other.v1' }), context({ state: 'unavailable', protocol: tool.protocol, code: 'nativeCacheMiss' })]) {
+  for (const raw of [undefined, '{', '{}', JSON.stringify({ schemaVersion: 1, tools: {} }), context({ ...tool, protocol: 'other.v1' }), context({ state: 'unavailable', protocol: tool.protocol, code: 'nativePackageUnavailable' })]) {
     const environment = { ...process.env };
     if (raw === undefined) delete environment.AW_NATIVE_TOOL_CONTEXT;
     else environment.AW_NATIVE_TOOL_CONTEXT = raw;

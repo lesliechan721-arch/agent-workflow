@@ -4,6 +4,18 @@ inputs:
   arch:
     description: Native Node.js architecture.
     required: true
+  candidate-artifact-id:
+    description: Exact saved CLI candidate artifact ID for release tests.
+    default: ''
+  candidate-run-id:
+    description: Run that owns the saved CLI candidate artifact.
+    default: ''
+  candidate-archive:
+    description: Saved candidate archive filename.
+    default: candidate.tar
+  candidate-digest:
+    description: Exact saved candidate archive digest.
+    default: ''
   shard:
     description: Node test file shard for Windows.
     default: ''
@@ -27,20 +39,37 @@ runs:
       if: runner.os == 'Windows'
       id: native-tool
       shell: bash
-      run: node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\nversion=${tool.version}\n`);'
+      run: node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\nversion=${JSON.parse(fs.readFileSync("packages/cli/package.json","utf8")).version}\n`);'
     - uses: actions/setup-go@v6
-      if: runner.os == 'Windows'
+      if: runner.os == 'Windows' && inputs.candidate-artifact-id == ''
       with:
         go-version: ${{ steps.native-tool.outputs.go }}
         cache: false
     - name: Build this source candidate for Windows integration
-      if: runner.os == 'Windows'
+      if: runner.os == 'Windows' && inputs.candidate-artifact-id == ''
       shell: bash
       run: pnpm native:windows-job:prepare
+    - uses: actions/download-artifact@v8
+      if: runner.os == 'Windows' && inputs.candidate-artifact-id != ''
+      with:
+        artifact-ids: ${{ inputs.candidate-artifact-id }}
+        run-id: ${{ inputs.candidate-run-id }}
+        github-token: ${{ github.token }}
+        path: .release/actions/plugin-candidate-download
     - name: Prepare the current native candidate test context
       if: runner.os == 'Windows'
       shell: bash
-      run: node native-tools/windows-job/test-environment.mjs --github-env
+      env:
+        CANDIDATE_ARTIFACT: ${{ inputs.candidate-artifact-id }}
+        CANDIDATE_ARCHIVE: ${{ inputs.candidate-archive }}
+        CANDIDATE_DIGEST: ${{ inputs.candidate-digest }}
+      run: |
+        args=()
+        if [ -n "$CANDIDATE_ARTIFACT" ]; then
+          node scripts/release/actions-release.mjs unpack --archive ".release/actions/plugin-candidate-download/$CANDIDATE_ARCHIVE" --digest "$CANDIDATE_DIGEST"
+          args+=(--prepared-candidate .release/actions/candidate)
+        fi
+        node native-tools/windows-job/test-environment.mjs --context-file "$RUNNER_TEMP/aw-native-context.json" --github-env "${args[@]}"
     - shell: bash
       run: pnpm build
     - name: Expose the built CLI on POSIX
@@ -72,6 +101,6 @@ runs:
     - name: Run the Windows plugin file shard
       if: runner.os == 'Windows'
       shell: pwsh
-      run: pnpm plugin:test --all --test-concurrency 1 --test-shard "$env:TEST_SHARD" --native-mode source-candidate --native-archive "$env:GITHUB_WORKSPACE/.native/windows-job/${{ steps.native-tool.outputs.version }}/lesliechan721-aw-windows-job-win32-${{ inputs.arch }}-${{ steps.native-tool.outputs.version }}.tgz"
+      run: pnpm plugin:test --all --test-concurrency 1 --test-shard "$env:TEST_SHARD" --native-mode source-candidate --native-context "$env:RUNNER_TEMP/aw-native-context.json"
       env:
         AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS: '1'

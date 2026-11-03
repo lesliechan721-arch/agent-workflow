@@ -4,6 +4,8 @@ import path from 'node:path';
 
 import {
   assertPublishedPackageTarballMatchesCandidate,
+  CLI_RELEASE_PACKAGES,
+  WINDOWS_JOB_PACKAGE_NAMES,
   assertPublicPackageVersions,
   assertReleaseWorktreeClean,
   captureCommand,
@@ -33,28 +35,21 @@ import {
 } from './catalog-publication.mjs';
 import {
   assertCliTagAvailable,
+  assertPublishedCliArtifactsMatch,
   ensureCliTag,
 } from './cli-git-tag.mjs';
 import { calculateCanonicalDigest } from './release-model.mjs';
 import { assertVersionTargetsMatchHead, readVersionTargets } from './release-target.mjs';
 import { assertPortablePreparedBinding } from './prepared-transfer.mjs';
-import { verifyNativeReferences } from './verify-native-references.mjs';
+import { prepareWindowsJobTarballs } from './pack-cli.mjs';
 
 export { exportPreparedRelease, importPreparedRelease } from './prepared-transfer.mjs';
 
 export const preparedReleaseRoot = path.join(releaseRoot, 'prepared');
 export const preparedDescriptorPath = path.join(preparedReleaseRoot, 'descriptor.json');
 export const releaseAttemptPath = path.join(releaseRoot, 'attempted.json');
-const CLI_PACKAGES = [
-  '@lesliechan721/agent-skill-eval',
-  '@lesliechan721/aw-plugin-core',
-  '@lesliechan721/aw',
-];
-const CLI_PACKAGE_JSON_PATHS = [
-  evalPackageJsonPath,
-  corePackageJsonPath,
-  cliPackageJsonPath,
-];
+const CLI_PACKAGES = CLI_RELEASE_PACKAGES.map((entry) => entry.name);
+const CLI_PACKAGE_JSON_PATHS = CLI_RELEASE_PACKAGES.map((entry) => path.join(defaultRepoRoot, entry.relativePath));
 
 function digest(value) {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
@@ -355,6 +350,10 @@ async function stampCandidatePackages(snapshot, candidateVersion) {
       manifest.dependencies['@lesliechan721/agent-skill-eval'] = candidateVersion;
       manifest.dependencies['@lesliechan721/aw-plugin-core'] = candidateVersion;
     }
+    if (root === snapshot.evalPackageRoot) {
+      manifest.optionalDependencies = { ...manifest.optionalDependencies,
+        ...Object.fromEntries(WINDOWS_JOB_PACKAGE_NAMES.map((name) => [name, candidateVersion])) };
+    }
     delete manifest.awRelease;
     await writePackageJson(manifestPath, manifest);
   }
@@ -372,8 +371,16 @@ export async function prepareLocalRelease(channel, options = {}) {
   const localReleaseRoot = options.releaseRoot ?? releaseRoot;
   const localPreparedRoot = options.preparedRoot ?? path.join(localReleaseRoot, 'prepared');
   const axes = options.axes ?? { cli: true, catalog: true };
-  await (options.verifyNativeReferences ?? verifyNativeReferences)(axes, { ...options, repoRoot });
   await (options.assertClean ?? assertTrackedHeadClean)(repoRoot, options);
+  if (axes.catalog) {
+    const { restorePendingCatalogToolchain } = await import('./catalog-toolchain.mjs');
+    const recovered = options.selectedCatalogToolchain?.recoveredPlan ? options.selectedCatalogToolchain
+      : await (options.restorePendingCatalogToolchain ?? restorePendingCatalogToolchain)(channel, { ...options, repoRoot, releaseRoot: localReleaseRoot, preparedRoot: localPreparedRoot });
+    if (recovered) {
+      if (axes.cli) throw new Error('A pending Catalog plan must keep its original tools. Use --catalog to resume it, or increase the Catalog version.');
+      options = { ...options, cliDistRoot: recovered.cliDistRoot, selectedCatalogToolchain: recovered };
+    }
+  }
   if (axes.cli) {
     await (options.assertTargetsMatchHead ?? assertVersionTargetsMatchHead)(repoRoot, options);
   }
@@ -412,17 +419,30 @@ export async function prepareLocalRelease(channel, options = {}) {
     const artifactRoot = path.join(temporaryRoot, 'artifacts');
     await fs.mkdir(artifactRoot, { recursive: true });
     await Promise.all([fs.chmod(temporaryRoot, 0o700), fs.chmod(artifactRoot, 0o700)]);
-    const descriptor = await (options.withSnapshot ?? withReleaseBuildSnapshot)(async (snapshot) => {
+    const withSnapshot = axes.cli ? (options.withSnapshot ?? withReleaseBuildSnapshot) : (callback) => callback(null);
+    const descriptor = await withSnapshot(async (snapshot) => {
       let npm = null;
       if (candidates.cli !== null) {
         await stampCandidatePackages(snapshot, candidates.cli);
-        const tarballs = await Promise.all([
+        const native = await (options.prepareWindowsJobTarballs ?? prepareWindowsJobTarballs)({
+          ...options, repoRoot, snapshot, version: candidates.cli, destination: artifactRoot,
+        });
+        await (options.assertWindowsJobCandidateEvidence
+          ?? (await import('../../native-tools/windows-job/evidence.mjs')).assertWindowsJobCandidateEvidence)(native);
+        const nativeEvidence = [];
+        for (const fileName of ['candidate.json', 'reproducibility.json', 'qualification-x64.json', 'qualification-arm64.json']) {
+          const destination = path.join(artifactRoot, fileName);
+          await fs.copyFile(path.join(native.root, fileName), destination);
+          nativeEvidence.push(descriptorArtifact(temporaryRoot, fileName, destination, await fileDigest(destination)));
+        }
+        const tarballs = [...native.tarballPaths, ...await Promise.all([
           (options.packEval ?? packEval)({ snapshot, destination: artifactRoot, quiet: true }),
           (options.packCore ?? packCore)({ snapshot, destination: artifactRoot, quiet: true }),
           (options.packCli ?? packCli)({ snapshot, destination: artifactRoot, quiet: true }),
-        ]);
+        ])];
         npm = {
           version: candidates.cli,
+          nativeEvidence,
           packages: await Promise.all(tarballs.map(async (tarball, index) =>
             descriptorArtifact(temporaryRoot, CLI_PACKAGES[index], tarball, await fileDigest(tarball)))),
           treeDigests: Object.fromEntries(await Promise.all(tarballs.map(async (tarball, index) => [
@@ -439,16 +459,38 @@ export async function prepareLocalRelease(channel, options = {}) {
       let catalog = null;
       if (candidates.catalog !== null) {
         const mode = channel === 'stable' ? 'latest' : 'beta';
+        const { prepareCatalogToolchain, assertToolchainChannel } = await import('./catalog-toolchain.mjs');
+        const byName = new Map(npm?.packages.map((entry) => [entry.name, path.join(temporaryRoot, entry.path)]) ?? []);
+        const selected = options.selectedCatalogToolchain ?? await (options.prepareCatalogToolchain ?? prepareCatalogToolchain)(channel, {
+          ...options, repoRoot, destination: path.join(temporaryRoot, 'catalog-toolchain'),
+          ...(npm ? { cliBundle: { version: candidates.cli, candidateHead: sourceHead,
+            cliTarballPath: byName.get('@lesliechan721/aw'), evalTarballPath: byName.get('@lesliechan721/agent-skill-eval'),
+            coreTarballPath: byName.get('@lesliechan721/aw-plugin-core'),
+            windowsJobTarballPaths: ['x64', 'arm64'].map((arch) => byName.get(`@lesliechan721/aw-windows-job-win32-${arch}`)),
+          } } : {}),
+        });
+        assertToolchainChannel(selected.toolchain.version, channel);
+        if (selected.toolchain.channel !== channel || selected.tarballPaths.length !== 5) throw new Error('Catalog requires the complete same-channel CLI toolchain.');
+        const tools = [];
+        for (const [index, tarball] of selected.tarballPaths.entries()) {
+          const target = path.join(artifactRoot, `catalog-tool-${index}.tgz`);
+          await fs.copyFile(tarball, target);
+          tools.push(descriptorArtifact(temporaryRoot, path.basename(target), target, await fileDigest(target)));
+        }
         const plan = await (options.prepareCatalog ?? prepareCatalogRelease)(mode, {
-          ...options,
-          repoRoot,
+          ...options, repoRoot, cliDistRoot: selected.cliDistRoot,
         });
         if (plan.catalogVersion !== candidates.catalog) {
           throw new Error('Prepared Catalog version does not match source metadata.');
         }
+        if (selected.recoveredPlan && (plan.catalogVersion !== selected.recoveredPlan.version
+          || plan.planDigest !== selected.recoveredPlan.planDigest)) {
+          throw new Error('The pending Catalog plan changed. Increase the Catalog version.');
+        }
         catalog = {
           version: candidates.catalog,
           publication: { planDigest: plan.planDigest },
+          toolchain: selected.toolchain, tools,
         };
       }
       return {
@@ -458,7 +500,7 @@ export async function prepareLocalRelease(channel, options = {}) {
         axes: { cli: candidates.cli !== null, catalog: candidates.catalog !== null },
         candidates,
         ...(options.exactCandidates ? { selection: 'exact' } : {}),
-        build: {
+        build: snapshot === null ? { toolchainVersion: catalog.toolchain.version } : {
           generationId: snapshot.generationId,
           inputDigest: snapshot.inputDigest,
           outputDigest: snapshot.outputDigest,
@@ -468,8 +510,13 @@ export async function prepareLocalRelease(channel, options = {}) {
         catalog,
       };
     }, { repoRoot });
+    await fs.rm(path.join(temporaryRoot, 'catalog-toolchain'), { recursive: true, force: true });
     await fs.writeFile(path.join(temporaryRoot, 'descriptor.json'), `${JSON.stringify(descriptor, null, 2)}\n`);
     await (options.assertClean ?? assertTrackedHeadClean)(repoRoot, options);
+    if (descriptor.axes.catalog && !descriptor.axes.cli) {
+      const { assertCandidateToolchainCompleted } = await import('./catalog-toolchain.mjs');
+      await assertCandidateToolchainCompleted(descriptor.catalog.toolchain, { ...options, repoRoot });
+    }
     await fs.rm(localPreparedRoot, { recursive: true, force: true });
     await fs.rename(temporaryRoot, localPreparedRoot);
     return descriptor;
@@ -513,6 +560,8 @@ export async function readPreparedDescriptor(options = {}) {
     || (descriptor.axes.catalog && (
       descriptor.catalog?.version !== descriptor.candidates.catalog
       || !/^sha256:[0-9a-f]{64}$/u.test(descriptor.catalog?.publication?.planDigest ?? '')
+      || descriptor.catalog?.toolchain?.channel !== descriptor.channel
+      || !Array.isArray(descriptor.catalog?.tools) || descriptor.catalog.tools.length !== 5
     ))
     || (!descriptor.axes.catalog && descriptor.catalog !== null)
   ) {
@@ -546,7 +595,12 @@ function resolvePreparedPath(root, relativePath) {
 
 export async function assertPreparedCliArtifacts(root, descriptor, options = {}) {
   if (descriptor.npm) {
-    for (const artifact of descriptor.npm.packages) {
+    const evidence = descriptor.npm.nativeEvidence;
+    if (!Array.isArray(evidence) || evidence.map((entry) => entry.name).join(',')
+      !== 'candidate.json,reproducibility.json,qualification-x64.json,qualification-arm64.json') {
+      throw new Error('Prepared CLI candidate is missing its native build and Windows qualification evidence; prepare again.');
+    }
+    for (const artifact of [...descriptor.npm.packages, ...evidence]) {
       const artifactPath = resolvePreparedPath(root, artifact.path);
       const [stats, realPath, realRoot] = await Promise.all([
         fs.lstat(artifactPath), fs.realpath(artifactPath), fs.realpath(root),
@@ -560,6 +614,7 @@ export async function assertPreparedCliArtifacts(root, descriptor, options = {})
       }
       const actual = await fileDigest(artifactPath);
       if (actual !== artifact.contentDigest) throw new Error('Prepared npm artifact digest changed; prepare again.');
+      if (!descriptor.npm.packages.includes(artifact)) continue;
       const treeDigest = await (options.computeTarballTreeDigest
         ?? computePackageTarballTreeDigest)(artifactPath, {
           normalizeReleaseMetadata: true,
@@ -680,6 +735,15 @@ async function assertLiveSourceBinding(descriptor, repoRoot, options = {}) {
 }
 
 async function assertPreparedBuildBinding(root, descriptor, repoRoot, options = {}) {
+  if (descriptor.axes.catalog) {
+    for (const artifact of descriptor.catalog.tools ?? []) {
+      const target = resolvePreparedPath(root, artifact.path);
+      const stats = await fs.lstat(target);
+      if (!stats.isFile() || stats.isSymbolicLink()) throw new Error('Saved Catalog toolchain must contain regular files.');
+      if (await fileDigest(target) !== artifact.contentDigest) throw new Error('Saved Catalog toolchain changed; prepare a new candidate.');
+    }
+  }
+  if (!descriptor.axes.cli) return;
   if (options.portable) {
     assertPortablePreparedBinding(root, descriptor, options);
     return;
@@ -753,6 +817,7 @@ export async function repairPreparedCliRelease(options = {}) {
     await assertPublishedCliArtifact(root, descriptor, artifact, index, options);
   }
 
+  await (options.assertPublishedCliArtifactsMatch ?? assertPublishedCliArtifactsMatch)(root, descriptor, options);
   await assertLiveSourceBinding(descriptor, repoRoot, options);
   return (options.publishCliTag ?? ensureCliTag)(
     descriptor.candidates.cli,
@@ -804,6 +869,7 @@ export async function publishPreparedRelease(options = {}) {
       await publishNpm(artifact.name, resolvePreparedPath(root, artifact.path),
         descriptor.candidates.cli, descriptor.channel, publicationOptions);
     }
+    await (options.assertPublishedCliArtifactsMatch ?? assertPublishedCliArtifactsMatch)(root, descriptor, options);
     await (options.publishCliTag ?? ensureCliTag)(
       descriptor.candidates.cli,
       descriptor.source.head,
@@ -811,10 +877,13 @@ export async function publishPreparedRelease(options = {}) {
     );
   }
   if (descriptor.axes.catalog) {
+    const { assertCandidateToolchainCompleted, installSavedCatalogToolchain } = await import('./catalog-toolchain.mjs');
+    await assertCandidateToolchainCompleted(descriptor.catalog.toolchain, { ...options, repoRoot });
+    const selected = await (options.installSavedCatalogToolchain ?? installSavedCatalogToolchain)(root, descriptor.catalog, { ...options, repoRoot });
     await (options.publishCatalog ?? publishCatalogRelease)({
       channel: descriptor.channel,
       expectedPlanDigest: descriptor.catalog.publication.planDigest,
-    }, { ...publicationOptions, repoRoot });
+    }, { ...publicationOptions, repoRoot, cliDistRoot: selected.cliDistRoot });
   }
   return descriptor;
 }

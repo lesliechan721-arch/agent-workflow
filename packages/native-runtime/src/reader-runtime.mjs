@@ -20,10 +20,10 @@ export function readNativeTool(key, protocol, environment = process.env) {
   for (const [name, value] of Object.entries(context.tools)) {
     if (!name || !record(value) || typeof value.protocol !== 'string' || !value.protocol) reject();
     if (value.state === 'ready') {
-      if (Object.keys(value).sort().join(',') !== 'executable,protocol,sha256,state'
+      if (Object.keys(value).sort().join(',') !== 'executable,protocol,state'
         || typeof value.executable !== 'string' || value.executable.length > 32_768
         || !/^(?:\/[^\x00]*|[A-Za-z]:[\\/][^\x00]*|\\\\[^\x00]+)$/.test(value.executable)
-        || /[\x00-\x1f\x7f]/.test(value.executable) || !/^sha256:[a-f0-9]{64}$/.test(value.sha256)) reject();
+        || /[\x00-\x1f\x7f]/.test(value.executable)) reject();
     } else if (value.state === 'unavailable') {
       if (Object.keys(value).sort().join(',') !== 'code,protocol,state'
         || typeof value.code !== 'string' || !/^[a-zA-Z][a-zA-Z0-9]{0,95}$/.test(value.code)) reject();

@@ -11,6 +11,8 @@ describe('pack-cli script', () => {
     const evalTarballPath = path.join(destination, 'agent-skill-eval.tgz');
     const cliTarballPath = path.join(destination, 'aw.tgz');
     const coreTarballPath = path.join(destination, 'aw-plugin-core.tgz');
+    const windowsJobTarballPaths = ['windows-x64.tgz', 'windows-arm64.tgz'];
+    const prepareWindowsJobTarballs = vi.fn(async () => ({ tarballPaths: windowsJobTarballPaths }));
     const packEval = vi.fn(async () => evalTarballPath);
     const packCli = vi.fn(async () => cliTarballPath);
     const packCore = vi.fn(async () => coreTarballPath);
@@ -20,6 +22,7 @@ describe('pack-cli script', () => {
 
     await expect(packCliBundle({
       destination,
+      prepareWindowsJobTarballs,
       packEval,
       packCore,
       packCli,
@@ -28,6 +31,7 @@ describe('pack-cli script', () => {
       evalTarballPath,
       coreTarballPath,
       cliTarballPath,
+      windowsJobTarballPaths,
     });
     expect(withBuildSnapshot).toHaveBeenCalledOnce();
     expect(packEval).toHaveBeenCalledWith({ destination, snapshot });

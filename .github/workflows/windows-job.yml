@@ -2,12 +2,14 @@ name: Windows Job source candidate
 
 on:
   workflow_dispatch:
-    inputs:
-      publish:
-        description: Publish both immutable native platform packages after qualification.
-        type: boolean
-        default: false
   workflow_call:
+    inputs:
+      source-ref:
+        type: string
+        default: ''
+      release-tag:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -26,6 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.source-ref || github.ref }}
           persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
@@ -35,16 +38,19 @@ jobs:
           node-version: '24'
           cache: pnpm
       - id: tool
-        run: node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\nversion=${tool.version}\n`);'
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\nversion=${process.env.RELEASE_TAG ? process.env.RELEASE_TAG.split("/v").at(-1) : JSON.parse(fs.readFileSync("packages/cli/package.json","utf8")).version}\n`);'
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ steps.tool.outputs.go }}
           cache: false
       - run: pnpm install --frozen-lockfile
       - run: pnpm native:windows-job:test
-      - run: pnpm native:windows-job:build
-      - run: pnpm native:windows-job:pack
-      - run: pnpm native:windows-job:reproduce
+      - run: pnpm native:windows-job:build -- --version "${{ steps.tool.outputs.version }}"
+      - run: pnpm native:windows-job:pack -- --version "${{ steps.tool.outputs.version }}"
+      - run: pnpm native:windows-job:reproduce -- --candidate ".native/windows-job/${{ steps.tool.outputs.version }}"
       - uses: actions/upload-artifact@v7
         with:
           name: windows-job-candidate
@@ -69,6 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.source-ref || github.ref }}
           persist-credentials: false
       - name: Prepare a separate fixed volume for arm64 qualification
         id: workspace
@@ -106,7 +113,8 @@ jobs:
       - id: tool
         shell: bash
         working-directory: ${{ steps.workspace.outputs.root }}
-        run: node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\n`);'
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\n`);'
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ steps.tool.outputs.go }}
@@ -119,7 +127,7 @@ jobs:
         working-directory: ${{ steps.workspace.outputs.root }}
       - run: pnpm build
         working-directory: ${{ steps.workspace.outputs.root }}
-      - run: pnpm qualification:windows-job
+      - run: node native-tools/windows-job/qualify.mjs --candidate ".native/windows-job/${{ needs.candidate.outputs.version }}"
         working-directory: ${{ steps.workspace.outputs.root }}
       - uses: actions/upload-artifact@v7
         with:
@@ -143,59 +151,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot detach qualification volume.' }
           Remove-Item -LiteralPath $env:QUALIFICATION_VHD
 
-  publish:
-    name: Windows Job / publish
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
+  qualified:
     needs: [candidate, qualification]
     runs-on: ubuntu-24.04
-    environment: npm-native
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
     steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@11.6.2
       - uses: actions/download-artifact@v8
         with:
           name: windows-job-candidate
-          path: .native/windows-job/${{ needs.candidate.outputs.version }}/
+          path: candidate
       - uses: actions/download-artifact@v8
         with:
           pattern: windows-job-qualification-*
           merge-multiple: true
-          path: .native/windows-job/${{ needs.candidate.outputs.version }}/
-      - run: pnpm install --frozen-lockfile
-      - name: Reject a prior publisher attempt for this tool version
-        run: node native-tools/windows-job/actions-publication.mjs
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-      - name: Save the version-scoped write intent
-        id: intent
-        run: pnpm native:windows-job:release -- --prepare
-      - name: Save the publication boundary before any remote write
-        uses: actions/upload-artifact@v7
-        with:
-          name: windows-job-publication-intent
-          path: .release/native/windows-job/${{ needs.candidate.outputs.version }}/attempted.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-      - run: pnpm native:windows-job:release -- --publish --attempt-digest "${{ steps.intent.outputs.attempt_digest }}"
+          path: candidate
       - uses: actions/upload-artifact@v7
-        if: always()
         with:
-          name: windows-job-publication-attempt
-          path: .release/native/windows-job/${{ needs.candidate.outputs.version }}/attempted.json
+          name: windows-job-qualified
+          path: candidate/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30

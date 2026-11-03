@@ -914,7 +914,6 @@ async function collectAwRuntimeFiles(plugin: PluginMeta): Promise<string[]> {
   addArtifactRendererRuntimeEntry(plugin, rootFiles, nodeEntries);
   if (plugin.manifest.nativeTools) {
     rootFiles.add(stripDotSlash(plugin.manifest.nativeTools.reader));
-    for (const definition of plugin.manifest.nativeTools.definitions) rootFiles.add(stripDotSlash(definition.descriptor));
   }
 
   const closureFiles = await collectRuntimeClosureFiles(plugin, [...nodeEntries]);

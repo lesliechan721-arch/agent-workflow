@@ -631,7 +631,7 @@ describe('EvalSpec v1 execution', () => {
   it('stops a Windows native preparation failure before run output and provider execution', async () => {
     const data = await fixture()
     const execute = vi.fn()
-    const prepare = vi.fn(async () => { throw new Error('nativeArchiveIntegrityMismatch') })
+    const prepare = vi.fn(async () => { throw new Error('nativePackageUnavailable') })
     await expect(runEvalSpec(data.specPath, {
       auditPath: data.auditPath,
       sourceEnv: { CODEX_PERMISSION_PROFILE: ':danger-full-access', CODEX_HOME: process.env.CODEX_HOME },
@@ -640,7 +640,7 @@ describe('EvalSpec v1 execution', () => {
         prepareWindowsJobHelper: prepare,
       },
       executeCustomProvider: execute,
-    })).rejects.toThrow('nativeArchiveIntegrityMismatch')
+    })).rejects.toThrow('nativePackageUnavailable')
     expect(prepare).toHaveBeenCalledOnce()
     expect(execute).not.toHaveBeenCalled()
     await expect(readdir(path.join(data.root, 'output'))).rejects.toThrow()

@@ -6,9 +6,10 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 
 import fs from 'fs-extra';
-import { readNativeTool, type NativeToolMode, type resolveNativeTool } from '@lesliechan721/aw-native-runtime';
+import { readNativeTool } from '@lesliechan721/aw-native-runtime/reader';
+import type { prepareWindowsJobHelper } from '@lesliechan721/agent-skill-eval';
 import { getNativeToolConsumerClosure, loadPluginNativeToolClosure } from '@lesliechan721/aw-plugin-core/manifest';
-import { prepareNativeToolContext, removeNativeToolEnvironment } from '../src/utils/native-tool-context.js';
+import { assertSupportedNativeToolProtocol, prepareNativeToolContext, removeNativeToolEnvironment } from '../src/utils/native-tool-context.js';
 
 import { formatTestWorkers, nodeTestWorkerOptions } from './test-workers.mjs';
 import { pluginTestReporterUrl } from './plugin-test-reporter.mjs';
@@ -44,11 +45,12 @@ import type {
 import type { NormalizedPluginManifest } from '../src/types.js';
 
 type PluginTestPlatformSelection = PlatformName | 'both';
+type NativeTestMode = 'fixture' | 'installed' | 'source-candidate';
 
 export interface PluginTestRunnerOptions {
   repoRoot?: string;
   nativePlatform?: NodeJS.Platform;
-  nativeResolver?: typeof resolveNativeTool;
+  nativePrepare?: typeof prepareWindowsJobHelper;
   env?: NodeJS.ProcessEnv;
   testConfigValues?: Record<string, PluginConfigValue>;
   stdout?: (text: string) => void;
@@ -65,10 +67,8 @@ interface ParsedArgs {
   testShard?: string;
   testFile?: string;
   excludeTestFile?: string;
-  nativeMode: NativeToolMode;
-  nativeArchive?: string;
-  nativeCache?: string;
-  nativeFixtureContext?: string;
+  nativeMode: NativeTestMode;
+  nativeContext?: string;
 }
 
 interface PreparedPluginTestBundle {
@@ -143,14 +143,12 @@ function parseArgs(args: string[]): ParsedArgs {
       parsed.platform = value;
     } else if (arg === '--native-mode') {
       const mode = args[++index];
-      if (!['fixture', 'cache-only', 'network', 'source-candidate'].includes(mode ?? '')) throw new Error('--native-mode must be fixture, cache-only, network, or source-candidate.');
-      parsed.nativeMode = mode as NativeToolMode;
-    } else if (arg === '--native-archive' || arg === '--native-cache' || arg === '--native-fixture-context') {
+      if (!['fixture', 'installed', 'source-candidate'].includes(mode ?? '')) throw new Error('--native-mode must be fixture, installed, or source-candidate.');
+      parsed.nativeMode = mode as NativeTestMode;
+    } else if (arg === '--native-context') {
       const value = args[++index];
       if (!value || value.startsWith('-')) throw new Error(`${arg} requires an explicit path.`);
-      if (arg === '--native-archive') parsed.nativeArchive = path.resolve(value);
-      else if (arg === '--native-cache') parsed.nativeCache = path.resolve(value);
-      else parsed.nativeFixtureContext = path.resolve(value);
+      parsed.nativeContext = path.resolve(value);
     } else if (arg === '--test-name') {
       parsed.testName = args[++index];
       if (!parsed.testName) {
@@ -196,9 +194,7 @@ function parseArgs(args: string[]): ParsedArgs {
   if (parsed.all && positional.length !== 0) {
     throw new Error('Use either <plugin> or --all, not both.');
   }
-  if (parsed.nativeFixtureContext && parsed.nativeMode !== 'fixture') throw new Error('--native-fixture-context requires --native-mode fixture.');
-  if (parsed.nativeArchive && !['fixture', 'source-candidate'].includes(parsed.nativeMode)) throw new Error('--native-archive requires fixture or source-candidate mode.');
-  if (parsed.nativeFixtureContext && parsed.nativeArchive) throw new Error('Use one native fixture input.');
+  if (parsed.nativeContext && parsed.nativeMode === 'installed') throw new Error('--native-context requires fixture or source-candidate mode.');
   parsed.pluginName = positional[0];
   return parsed;
 }
@@ -602,9 +598,9 @@ function runNodeTest(options: {
 
 async function runPreparedPluginTests(options: {
   prepared: PreparedPluginTestBundle;
-  native: Pick<ParsedArgs, 'nativeMode' | 'nativeArchive' | 'nativeCache' | 'nativeFixtureContext'>;
+  native: Pick<ParsedArgs, 'nativeMode' | 'nativeContext'>;
   nativePlatform?: NodeJS.Platform;
-  nativeResolver?: typeof resolveNativeTool;
+  nativePrepare?: typeof prepareWindowsJobHelper;
   scope: Scope;
   platform: PlatformName;
   testName?: string;
@@ -692,8 +688,9 @@ async function runPreparedPluginTests(options: {
     const closure = getNativeToolConsumerClosure(await loadPluginNativeToolClosure(bundleRoot, options.prepared.manifest), 'plugin-test', 'node');
     const nativePlatform = options.nativePlatform ?? process.platform;
     let nativeContext: import('../src/utils/native-tool-context.js').NativeToolContext;
-    if (closure && options.native.nativeFixtureContext && nativePlatform === 'win32') {
-      const fixturePath = options.native.nativeFixtureContext;
+    if (closure && nativePlatform === 'win32' && options.native.nativeMode !== 'installed') {
+      const fixturePath = options.native.nativeContext;
+      if (!fixturePath) throw new Error('Windows fixture and source-candidate tests require --native-context <file>.');
       const stat = await fs.lstat(fixturePath);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024) throw new Error('nativeContextInvalid');
       const text = await fs.readFile(fixturePath, 'utf8');
@@ -701,17 +698,16 @@ async function runPreparedPluginTests(options: {
       const expected = closure.definitions.map((definition) => definition.key).sort();
       if (!fixture.tools || JSON.stringify(Object.keys(fixture.tools).sort()) !== JSON.stringify(expected)) throw new Error('nativeContextInvalid');
       for (const definition of closure.definitions) {
+        assertSupportedNativeToolProtocol(definition.protocol);
         const tool = readNativeTool(definition.key, definition.protocol, { AW_NATIVE_TOOL_CONTEXT: text });
         if (tool.state !== 'ready' && closure.consumers.some((consumer) => consumer.tools.some((binding) => binding.key === definition.key && binding.policy === 'required'))) throw new Error('nativeContextInvalid');
       }
       nativeContext = fixture;
     } else {
-      nativeContext = await prepareNativeToolContext({ closure, kind: 'plugin-test', key: 'node', awHome,
-        platform: nativePlatform, mode: options.native.nativeMode, archivePath: options.native.nativeArchive,
-        cacheRoot: options.native.nativeCache, resolve: options.nativeResolver, registryEnvironment: options.env });
+      nativeContext = await prepareNativeToolContext({ closure, kind: 'plugin-test', key: 'node',
+        platform: nativePlatform, prepare: options.nativePrepare });
     }
     if (nativeContext.tools && Object.keys(nativeContext.tools).length > 0) spawnEnv.AW_NATIVE_TOOL_CONTEXT = JSON.stringify(nativeContext);
-    spawnEnv.AW_NATIVE_RESOLVER_MODE = 'cache-only';
     spawnEnv.AW_PLUGIN_TEST_NATIVE_MODE = options.native.nativeMode;
     // This opt-in belongs to the test runner, not the plugin lifecycle's
     // environment contract. Keep all other host variables isolated.
@@ -736,7 +732,7 @@ async function runPreparedPluginTests(options: {
     };
     progress({ event: 'start', files: entries, shard: options.testShard });
     const preferred = closure?.consumers.flatMap((consumer) => consumer.tools.filter((binding) => binding.policy === 'preferred' && binding.platforms.includes(nativePlatform as 'win32'))) ?? [];
-    if (['network', 'source-candidate'].includes(options.native.nativeMode) && preferred.some((binding) => nativeContext.tools[binding.key]?.state !== 'ready')) throw new Error('nativePreferredContractUnavailable');
+    if (options.native.nativeMode !== 'fixture' && preferred.some((binding) => nativeContext.tools[binding.key]?.state !== 'ready')) throw new Error('nativePreferredContractUnavailable');
     const backendEnvironments = [spawnEnv];
     if (preferred.some((binding) => nativeContext.tools[binding.key]?.state === 'ready')) {
       const portableContext = { schemaVersion: 1, tools: { ...nativeContext.tools } };
@@ -808,7 +804,7 @@ async function preparePluginSelection(options: {
 async function runPreparedPluginSelection(options: {
   selection: PreparedPluginTestSelection;
   nativePlatform?: NodeJS.Platform;
-  nativeResolver?: typeof resolveNativeTool;
+  nativePrepare?: typeof prepareWindowsJobHelper;
   parsed: ParsedArgs;
   env: NodeJS.ProcessEnv;
   testConfigValues?: Record<string, PluginConfigValue>;
@@ -833,7 +829,7 @@ async function runPreparedPluginSelection(options: {
           prepared,
           native: options.parsed,
           nativePlatform: options.nativePlatform,
-          nativeResolver: options.nativeResolver,
+          nativePrepare: options.nativePrepare,
           scope: options.parsed.scope,
           platform,
           testName: options.parsed.testName,
@@ -906,7 +902,7 @@ export async function runPluginScriptTests(
           const pluginExitCode = await runPreparedPluginSelection({
             selection,
             nativePlatform: options.nativePlatform,
-            nativeResolver: options.nativeResolver,
+            nativePrepare: options.nativePrepare,
             parsed,
             env,
             testConfigValues: options.testConfigValues,
@@ -934,7 +930,7 @@ export async function runPluginScriptTests(
         const pluginExitCode = await runPreparedPluginSelection({
           selection,
           nativePlatform: options.nativePlatform,
-          nativeResolver: options.nativeResolver,
+          nativePrepare: options.nativePrepare,
           parsed,
           env,
           testConfigValues: options.testConfigValues,
@@ -960,7 +956,7 @@ export async function runPluginScriptTests(
     return await runPreparedPluginSelection({
       selection,
       nativePlatform: options.nativePlatform,
-      nativeResolver: options.nativeResolver,
+      nativePrepare: options.nativePrepare,
       parsed,
       env,
       testConfigValues: options.testConfigValues,

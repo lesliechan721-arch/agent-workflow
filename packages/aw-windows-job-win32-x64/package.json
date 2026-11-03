@@ -1,6 +1,6 @@
 {
   "name": "@lesliechan721/aw-windows-job-win32-x64",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lesliechan721-arch/agent-workflow.git",
@@ -8,13 +8,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "registry": "https://registry.npmjs.org/",
-    "os": [
-      "win32"
-    ],
-    "cpu": [
-      "x64"
-    ]
+    "registry": "https://registry.npmjs.org/"
   },
   "exports": {
     "./aw-windows-job.exe": "./dist/aw-windows-job.exe"
@@ -25,5 +19,11 @@
   "scripts": {
     "prepublishOnly": "node ../../scripts/release/reject-direct-publish.mjs"
   },
-  "description": "Windows Job native artifact; built and released independently with native-tools/windows-job."
+  "description": "Windows Job helper included with the AW CLI and Eval product.",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ]
 }

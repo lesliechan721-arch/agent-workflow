@@ -5,12 +5,9 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
-import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import { sealCandidateDirectory, verifyCandidateDirectory } from './candidate-archive.mjs';
-import { fixture as nativeFixture } from '../../packages/native-runtime/tests/fixtures.mjs';
 import {
   assertCandidateHost,
   assertRequiredChecks,
@@ -22,7 +19,7 @@ import {
 } from './candidate-smoke.mjs';
 
 const execFileAsync = promisify(execFile);
-const names = ['aw', 'agent-skill-eval', 'aw-plugin-core'].map((name) => `@lesliechan721/${name}`);
+const names = ['aw', 'agent-skill-eval', 'aw-plugin-core', 'aw-windows-job-win32-x64', 'aw-windows-job-win32-arm64'].map((name) => `@lesliechan721/${name}`);
 
 // These tests protect artifact provenance, native CPU/Node evidence, and the
 // registry boundary. They do not replace the real six-platform artifact smoke.
@@ -55,6 +52,8 @@ async function fixture(t, bins = false) {
     await fs.mkdir(packageRoot, { recursive: true });
     const metadata = { name, version: '9.2.0-beta.3', type: 'module' };
     if (index === 0) metadata.dependencies = { [names[1]]: metadata.version, [names[2]]: metadata.version, ...(bins ? {} : { 'third-party-demo': '^1.0.0' }) };
+    if (index === 1) metadata.optionalDependencies = Object.fromEntries(names.slice(3).map((name) => [name, metadata.version]));
+    if (index >= 3) { metadata.os = ['win32']; metadata.cpu = [index === 3 ? 'x64' : 'arm64']; }
     if (bins && index < 2) {
       const bin = index === 0 ? 'aw' : 'aw-skill-eval';
       metadata.bin = { [bin]: './bin.js' };
@@ -70,7 +69,7 @@ async function fixture(t, bins = false) {
   return { root, bundle, manifest };
 }
 
-test('candidate installation consumes all three tarballs and sends only third-party dependencies to npm', async (t) => {
+test('candidate installation consumes all five tarballs and sends only third-party dependencies to npm', async (t) => {
   const { root, bundle, manifest } = await fixture(t);
   const installRoot = path.join(root, 'installed');
   await fs.mkdir(installRoot);
@@ -82,7 +81,7 @@ test('candidate installation consumes all three tarballs and sends only third-pa
     },
   });
   assert.deepEqual(requested, [{ 'third-party-demo': '^1.0.0' }]);
-  for (const name of names) {
+  for (const name of names.slice(0, 3)) {
     const installed = path.join(installRoot, 'node_modules', ...name.split('/'));
     assert.equal((await fs.lstat(installed)).isSymbolicLink(), false);
     assert.equal(await fs.readFile(path.join(installed, 'candidate-marker'), 'utf8'), name);
@@ -96,10 +95,10 @@ test('an incomplete or modified candidate fails before package installation', as
   const report = await runCandidateSmoke({ bundleRoot: bundle, product: 'cli', os: process.platform, arch: process.arch });
   assert.equal(report.status, 'failed');
   assert.ok(report.checks.some((check) => check.id === 'candidate-smoke-failure'));
-  assert.ok(!report.checks.some((check) => check.id === 'three-package-closure' && check.passed));
+  assert.ok(!report.checks.some((check) => check.id === 'five-package-closure' && check.passed));
 });
 
-test('all three package versions must match the CLI candidate', async (t) => {
+test('all five package versions must match the CLI candidate', async (t) => {
   const { root, bundle, manifest } = await fixture(t);
   const installRoot = path.join(root, 'installed');
   await fs.mkdir(installRoot);
@@ -123,7 +122,7 @@ test('installation links candidate bins and applies executable permissions witho
   }
 });
 
-test('Catalog tools retain their own three-package version independently of the Catalog release', async (t) => {
+test('Catalog tools retain their own five-package version independently of the Catalog release', async (t) => {
   const { root, bundle, manifest } = await fixture(t);
   const installRoot = path.join(root, 'installed');
   await fs.mkdir(installRoot);
@@ -133,106 +132,53 @@ test('Catalog tools retain their own three-package version independently of the 
   assert.equal(result.version, '9.2.0-beta.3');
 });
 
-async function nativeCatalogFixture(t) {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-native-smoke-')));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const cli = path.join(root, 'node_modules', '@lesliechan721', 'aw');
-  await fs.mkdir(path.join(cli, 'dist', 'src', 'native'), { recursive: true });
-  await fs.writeFile(path.join(cli, 'package.json'), JSON.stringify({ type: 'module' }));
-  // Exercise the installed candidate's real preparation API and embedded
-  // resolver. Only its small module/dependency closure is needed by this probe.
-  for (const relative of ['src/commands/native-artifacts.js', 'src/utils/state-paths.js', 'src/utils/test-path-fence.js', 'native-runtime']) {
-    const destination = path.join(cli, 'dist', relative);
-    await fs.mkdir(path.dirname(destination), { recursive: true });
-    await fs.cp(new URL(`../../packages/cli/dist/${relative}`, import.meta.url), destination, { recursive: true });
-  }
-  const copied = new Set();
-  async function copyDependency(name, require) {
-    if (copied.has(name)) return;
-    copied.add(name);
-    let dependencyRoot = path.dirname(require.resolve(name));
-    let metadata;
-    while (true) {
-      try { metadata = JSON.parse(await fs.readFile(path.join(dependencyRoot, 'package.json'), 'utf8')); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (metadata?.name === name) break;
-      assert.notEqual(dependencyRoot, path.dirname(dependencyRoot), `Cannot locate ${name}`);
-      dependencyRoot = path.dirname(dependencyRoot);
-    }
-    const manifestPath = path.join(dependencyRoot, 'package.json');
-    await fs.cp(path.dirname(manifestPath), path.join(root, 'node_modules', name), { recursive: true });
-    for (const dependency of Object.keys(metadata.dependencies ?? {})) await copyDependency(dependency, createRequire(manifestPath));
-  }
-  await copyDependency('fs-extra', createRequire(new URL('../../packages/cli/package.json', import.meta.url)));
-  const input = nativeFixture();
-  const descriptorPath = path.join(cli, 'dist', 'src', 'native', 'windows-job.lock.json');
-  await fs.writeFile(descriptorPath, JSON.stringify(input.descriptor));
+// Test Value Gate: the real installer must complete while the registry rejects
+// every self-owned package. Third-party dependency requests stay available.
+test('candidate installation succeeds when the registry rejects all five own packages', async (t) => {
+  const { root, bundle, manifest } = await fixture(t);
+  const thirdRoot = path.join(root, 'third', 'package');
+  await fs.mkdir(thirdRoot, { recursive: true });
+  await fs.writeFile(path.join(thirdRoot, 'package.json'), JSON.stringify({ name: 'third-party-demo', version: '1.0.0' }));
+  await execFileAsync('tar', ['-czf', path.join(root, 'third.tgz'), '-C', path.dirname(thirdRoot), 'package']);
+  const tarball = await fs.readFile(path.join(root, 'third.tgz'));
   const requests = [];
   let registry;
   const server = createServer((request, response) => {
-    requests.push(request.url);
-    if (request.url === '/%40example%2Fjob-win32-x64/1.2.3') {
+    const url = decodeURIComponent(request.url);
+    requests.push(url);
+    if (url.includes('@lesliechan721') || url.includes('aw-windows-job')) {
+      response.writeHead(403); response.end('Self-owned package requests are forbidden.');
+    } else if (url === '/third.tgz') response.end(tarball);
+    else if (url === '/third-party-demo') {
       response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify({ name: '@example/job-win32-x64', version: '1.2.3', dist: { tarball: `${registry}archive.tgz` } }));
-    } else if (request.url === '/archive.tgz') response.end(input.archive);
-    else { response.statusCode = 404; response.end(); }
+      response.end(JSON.stringify({ name: 'third-party-demo', 'dist-tags': { latest: '1.0.0' }, versions: { '1.0.0': { name: 'third-party-demo', version: '1.0.0', dist: { tarball: `${registry}third.tgz` } } } }));
+    } else { response.writeHead(404); response.end(); }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   registry = `http://127.0.0.1:${server.address().port}/`;
-  const env = { ...process.env, AW_HOME: path.join(root, 'aw-home'), AW_NATIVE_REGISTRY_CONFIG: JSON.stringify({ url: registry }) };
-  const cacheRoot = path.join(env.AW_HOME, 'native-artifacts', 'v1');
-  const runtime = await import(pathToFileURL(path.join(cli, 'dist', 'native-runtime', 'index.mjs')).href);
-  return { root, cli, descriptorPath, env, cacheRoot, requests, runtime, ...input };
-}
-
-// Test Value Gate: a Windows Catalog candidate must populate its isolated
-// cache from its own installed lock before a cache-only renderer can start.
-test('Windows Catalog smoke prepares the installed lock before materializing in the same empty cache', async (t) => {
-  const input = await nativeCatalogFixture(t);
-  const foreignCache = path.join(input.root, 'source-test-cache');
-  const env = candidateSmokeEnvironment(input.root, {
-    ...input.env,
-    AW_TEST_RUNNER_PROCESS_TREE: '1',
-    AW_NATIVE_TEST_CONFIG: JSON.stringify({ mode: 'cache-only', cacheRoot: foreignCache, descriptorPath: path.join(input.root, 'source-test.lock.json') }),
-    AW_NATIVE_TOOL_CONTEXT: JSON.stringify({ schemaVersion: 1, tools: { 'windows-job': { state: 'unavailable', code: 'source-test-context' } } }),
-    AW_NATIVE_RESOLVER_MODE: 'source-candidate',
-  });
-  await assert.rejects(fs.access(input.cacheRoot));
-  const events = [];
-  await probeInstalledCatalogCandidate({ ...input, env, candidate: { product: 'catalog' }, platform: 'win32', arch: 'x64' }, async (_root, _bundle, _candidate, rendererEnv) => {
-    events.push('renderer');
-    assert.equal(rendererEnv, env);
-    const testConfig = input.runtime.readNativeToolTestConfig(rendererEnv);
-    const descriptor = JSON.parse(await fs.readFile(testConfig?.descriptorPath ?? input.descriptorPath, 'utf8'));
-    const ready = await input.runtime.resolveNativeTool({ descriptor, cacheRoot: testConfig?.cacheRoot ?? path.join(rendererEnv.AW_HOME, 'native-artifacts', 'v1'), platform: 'win32', arch: 'x64', mode: 'cache-only' });
-    assert.deepEqual(await fs.readFile(ready.executable), input.binary);
-    const output = path.join(input.root, 'rendered', 'SKILL.md');
-    await fs.mkdir(path.dirname(output));
-    await execFileAsync(process.execPath, ['--input-type=module', '-e', 'import fs from "node:fs/promises"; await fs.writeFile(process.argv[1], "rendered skill");', output], { env });
-    assert.equal(await fs.readFile(output, 'utf8'), 'rendered skill');
-  }, (id) => events.push(id));
-  assert.deepEqual(events, ['catalog-native-prepare', 'renderer']);
-  assert.deepEqual(input.requests, ['/%40example%2Fjob-win32-x64/1.2.3', '/archive.tgz']);
-  await assert.rejects(fs.access(foreignCache));
+  const installed = path.join(root, 'installed');
+  await fs.mkdir(installed);
+  await installCandidatePackages(bundle, manifest, installed, { ...process.env, npm_config_registry: registry, npm_config_cache: path.join(root, 'npm-cache'), npm_config_userconfig: path.join(root, 'npmrc') });
+  assert.ok(requests.includes('/third-party-demo'));
+  assert.ok(requests.includes('/third.tgz'));
+  assert.ok(!requests.some((url) => url.includes('@lesliechan721')));
+  const dependency = path.join(installed, 'node_modules/@lesliechan721/aw/node_modules/third-party-demo/package.json');
+  assert.equal(JSON.parse(await fs.readFile(dependency, 'utf8')).version, '1.0.0');
+  for (const name of names.slice(3)) {
+    const target = path.join(installed, 'node_modules', ...name.split('/'));
+    if (process.platform === 'win32' && name.endsWith(`-${process.arch}`)) await fs.access(target);
+    else await assert.rejects(fs.access(target));
+  }
 });
 
-test('failed Catalog native preparation blocks materialization; other smoke modes do not prepare', async (t) => {
-  const input = await nativeCatalogFixture(t);
-  input.descriptor.variants[0].transport.archiveIntegrity = `sha512-${Buffer.alloc(64).toString('base64')}`;
-  await fs.writeFile(input.descriptorPath, JSON.stringify(input.descriptor));
-  let renderers = 0;
-  const render = async () => { renderers += 1; };
-  const options = { ...input, candidate: { product: 'catalog' }, platform: 'win32', arch: 'x64' };
-  await assert.rejects(probeInstalledCatalogCandidate(options, render), /nativeArchiveIntegrity/u);
-  assert.equal(renderers, 0);
-  await assert.rejects(fs.access(input.cacheRoot));
-  const requests = input.requests.length;
-  await probeInstalledCatalogCandidate({ ...options, platform: 'darwin' }, render);
-  await probeInstalledCatalogCandidate({ ...options, platform: 'linux' }, render);
-  await probeInstalledCatalogCandidate({ ...options, minimumNode: true }, render);
-  await probeInstalledCatalogCandidate({ ...options, candidate: { product: 'cli' } }, render);
-  assert.equal(renderers, 2);
-  assert.equal(input.requests.length, requests);
-  await assert.rejects(fs.access(input.cacheRoot));
+test('Catalog materialization uses the installed toolchain without a native prefetch stage', async () => {
+  const calls = [];
+  const input = { root: '/installed', bundleRoot: '/bundle', candidate: { product: 'catalog' }, env: {} };
+  await probeInstalledCatalogCandidate(input, async (...args) => calls.push(args));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], input.root);
+  await probeInstalledCatalogCandidate({ ...input, minimumNode: true }, async () => calls.push(null));
+  await probeInstalledCatalogCandidate({ ...input, candidate: { product: 'cli' } }, async () => calls.push(null));
+  assert.equal(calls.length, 1);
 });

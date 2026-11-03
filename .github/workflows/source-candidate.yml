@@ -47,9 +47,6 @@ jobs:
           node-version: '24'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Build the public Catalog version mutation tool
-        if: inputs.product == 'catalog'
-        run: pnpm build
       - uses: actions/create-github-app-token@v3
         id: app
         with:

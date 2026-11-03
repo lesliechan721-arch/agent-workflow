@@ -52,7 +52,6 @@ import type { Digest } from './types.js'
 export interface RunEvalSpecOptions {
   auditPath: string
   allowUnmanagedProcesses?: boolean
-  nativeCacheRoot?: string
   processManagementDependencies?: EvalProcessManagementDependencies
   onProcessManagementResolved?: (evidence: EvalResultProcessManagement) => void
   signal?: AbortSignal
@@ -507,7 +506,6 @@ export async function runEvalSpec(
     allowUnmanaged: options.allowUnmanagedProcesses ?? false,
     codexBin,
     sourceEnv,
-    nativeCacheRoot: options.nativeCacheRoot,
     onWindowsJobHelperPrepared: (helperPath) => { windowsJobHelperPath = helperPath },
     dependencies: {
       ...options.processManagementDependencies,

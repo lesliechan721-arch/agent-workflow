@@ -886,10 +886,12 @@ export function runProcessTree(options, dependencies = {}) {
   const metrics = options.metrics;
   const platform = dependencies.platform ?? process.platform;
   if (platform !== 'win32') return runPosixProcessTree(options, dependencies);
-  const useLegacyWindowsContainment = Boolean(
+  const hasNativeContext = Object.keys(options.env ?? process.env)
+    .some((key) => key.toUpperCase() === 'AW_NATIVE_TOOL_CONTEXT');
+  const useSystemWindowsCleanup = Boolean(
     dependencies.snapshotWindowsProcessTree || dependencies.taskkillProcessTree,
-  );
-  if (!useLegacyWindowsContainment) {
+  ) || (!hasNativeContext && !dependencies.createWindowsJobInvocation);
+  if (!useSystemWindowsCleanup) {
     return runWindowsJobProcessTree(options, dependencies);
   }
   const snapshotProcessTree = platform === 'win32'

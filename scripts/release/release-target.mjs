@@ -6,7 +6,7 @@ import {
   calculateCanonicalDigest,
   normalizeStableTargetVersion,
 } from './release-model.mjs';
-import { repoRoot as defaultRepoRoot, runReleaseGit } from './common.mjs';
+import { CLI_RELEASE_PACKAGES, WINDOWS_JOB_PACKAGE_NAMES, repoRoot as defaultRepoRoot, runReleaseGit } from './common.mjs';
 
 const BUMPS = new Set(['major', 'minor', 'patch']);
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -97,8 +97,8 @@ export function synchronizeCliLockfile(contents, currentVersion, nextVersion) {
   normalizeStableTargetVersion(currentVersion);
   normalizeStableTargetVersion(nextVersion);
   const specifier = new RegExp(`^([ \\t]*specifier: workspace:)${currentVersion.replaceAll('.', '\\.')}(?=\\r?$)`, 'gm');
-  if ([...contents.matchAll(specifier)].length !== 2) {
-    throw new Error(`pnpm-lock.yaml must contain two exact specifier: workspace:${currentVersion} entries.`);
+  if ([...contents.matchAll(specifier)].length !== 4) {
+    throw new Error(`pnpm-lock.yaml must contain four exact specifier: workspace:${currentVersion} entries.`);
   }
   return contents.replace(specifier, (_match, prefix) => `${prefix}${nextVersion}`);
 }
@@ -239,28 +239,17 @@ export async function setReleaseTargets(targets, options = {}) {
 async function applyReleaseTargets(requested, options, exact = false) {
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
   const current = requested.cli ? await readVersionTargets(repoRoot) : null;
-  const cliPackages = requested.cli ? await Promise.all([
-    readCliPackage(
-      repoRoot,
-      'packages/agent-skill-eval/package.json',
-      '@lesliechan721/agent-skill-eval',
-    ),
-    readCliPackage(
-      repoRoot,
-      'packages/plugin-core/package.json',
-      '@lesliechan721/aw-plugin-core',
-    ),
-    readCliPackage(repoRoot, 'packages/cli/package.json', '@lesliechan721/aw'),
-  ]) : [];
+  const cliPackages = requested.cli ? await Promise.all(CLI_RELEASE_PACKAGES.map((entry) =>
+    readCliPackage(repoRoot, entry.relativePath, entry.name))) : [];
   if (requested.cli && cliPackages.some((entry) => entry.version !== current.cli)) {
     throw new Error(
-      `CLI release target ${current.cli} must match all three public package manifests ` +
+      `CLI release target ${current.cli} must match all five public package manifests ` +
       'before release metadata can update it.',
     );
   }
   if (
     requested.cli
-    && cliPackages[2].manifest.dependencies?.['@lesliechan721/agent-skill-eval']
+    && cliPackages[4].manifest.dependencies?.['@lesliechan721/agent-skill-eval']
       !== `workspace:${current.cli}`
   ) {
     throw new Error(
@@ -270,13 +259,20 @@ async function applyReleaseTargets(requested, options, exact = false) {
   }
   if (
     requested.cli
-    && cliPackages[2].manifest.dependencies?.['@lesliechan721/aw-plugin-core']
+    && cliPackages[4].manifest.dependencies?.['@lesliechan721/aw-plugin-core']
       !== `workspace:${current.cli}`
   ) {
     throw new Error(
       `packages/cli/package.json must exactly depend on ` +
       `@lesliechan721/aw-plugin-core@workspace:${current.cli}.`,
     );
+  }
+  if (requested.cli) {
+    for (const name of WINDOWS_JOB_PACKAGE_NAMES) {
+      if (cliPackages[2].manifest.optionalDependencies?.[name] !== `workspace:${current.cli}`) {
+        throw new Error(`Eval must exactly optionally depend on ${name}@workspace:${current.cli}.`);
+      }
+    }
   }
   const next = current === null ? null : {
     ...current,
@@ -314,7 +310,12 @@ async function applyReleaseTargets(requested, options, exact = false) {
               '@lesliechan721/aw-plugin-core': `workspace:${next.cli}`,
             },
           }
-        : { ...entry.manifest, version: next.cli };
+        : entry.name === '@lesliechan721/agent-skill-eval'
+          ? { ...entry.manifest, version: next.cli, optionalDependencies: {
+              ...entry.manifest.optionalDependencies,
+              ...Object.fromEntries(WINDOWS_JOB_PACKAGE_NAMES.map((name) => [name, `workspace:${next.cli}`])),
+            } }
+          : { ...entry.manifest, version: next.cli };
       changes.push({
         path: entry.packagePath,
         contents: `${JSON.stringify(manifest, null, 2)}\n`,

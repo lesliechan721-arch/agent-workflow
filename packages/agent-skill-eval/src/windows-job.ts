@@ -1,7 +1,6 @@
-import { readFile } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
 import process from 'node:process'
-import { parseNativeToolDescriptor, resolveNativeTool } from '@lesliechan721/aw-native-runtime'
-import type { NativeToolMode, NativeToolRegistry } from '@lesliechan721/aw-native-runtime'
+import { fileURLToPath } from 'node:url'
 
 export const WINDOWS_JOB_HELPER_CONFIG_SCHEMA_VERSION = 1
 
@@ -19,43 +18,38 @@ export interface WindowsJobInvocation {
 }
 
 export interface PrepareWindowsJobHelperOptions {
-  cacheRoot: string
+  platform?: NodeJS.Platform
   arch?: string
-  mode?: NativeToolMode
-  descriptorPath?: string | URL
-  archivePath?: string
-  registry?: string | NativeToolRegistry
-  sourceEnv?: NodeJS.ProcessEnv
 }
 
-/** Foreground admission. Low-level process operations only receive its resolved path. */
-export async function prepareWindowsJobHelper(options: PrepareWindowsJobHelperOptions): Promise<string> {
-  if (!options.cacheRoot) throw new Error('Windows native execution requires an explicit native cache root.')
-  const descriptor = parseNativeToolDescriptor(JSON.parse(await readFile(
-    options.descriptorPath ?? new URL('./native/windows-job.lock.json', import.meta.url),
-    'utf8',
-  )))
-  if (descriptor.tool.protocol !== 'aw.windows-job.v1') {
-    throw new Error('Windows native helper protocol is invalid.')
-  }
-  const tool = await resolveNativeTool({
-    descriptor,
-    cacheRoot: options.cacheRoot,
-    platform: 'win32',
-    arch: options.arch ?? process.arch,
-    mode: options.mode ?? 'network',
-    ...(options.archivePath ? { archivePath: options.archivePath } : {}),
-    registryEnvironment: options.sourceEnv,
-    ...(options.registry ? { registry: options.registry } : {}),
-  })
-  return tool.executable
-}
-
-/** Identity probes and diagnostics must never download executable code. */
-export async function resolveWindowsJobHelperPath(
-  options: Omit<PrepareWindowsJobHelperOptions, 'mode' | 'archivePath' | 'registry'>,
+/** Prepare the helper installed with this Eval package before starting consumers. */
+export async function prepareWindowsJobHelper(
+  options: PrepareWindowsJobHelperOptions = {},
 ): Promise<string> {
-  return prepareWindowsJobHelper({ ...options, mode: 'cache-only' })
+  return resolveWindowsJobHelperPath(options)
+}
+
+export async function resolveWindowsJobHelperPath(
+  options: PrepareWindowsJobHelperOptions = {},
+): Promise<string> {
+  const platform = options.platform ?? process.platform
+  const arch = options.arch ?? process.arch
+  if (platform !== 'win32' || (arch !== 'x64' && arch !== 'arm64')) {
+    throw Object.assign(new Error(`Windows Job helper does not support ${platform}/${arch}.`), {
+      code: 'nativePlatformUnsupported',
+    })
+  }
+  const packageName = `@lesliechan721/aw-windows-job-win32-${arch}`
+  try {
+    const executable = fileURLToPath(import.meta.resolve(`${packageName}/aw-windows-job.exe`))
+    if (!(await stat(executable)).isFile()) throw new Error('Windows Job helper is not a file.')
+    return executable
+  } catch {
+    throw Object.assign(new Error(
+      `Windows Job helper dependency ${packageName} is unavailable. ` +
+      'Reinstall the current AW CLI or Eval package with optional dependencies included.',
+    ), { code: 'nativePackageUnavailable' })
+  }
 }
 
 export function encodeWindowsJobHelperConfig(config: WindowsJobHelperConfig): string {

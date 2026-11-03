@@ -86,10 +86,15 @@ jobs:
       - run: pnpm test:smoke:cli:after-delivery
       - uses: actions/download-artifact@v8
         with:
-          name: windows-job-candidate
+          name: windows-job-qualified
           path: .native/windows-job-candidate
-      - name: Verify consumer locks against the current native candidate
-        run: node scripts/release/verify-native-references.mjs --all --candidate .native/windows-job-candidate
+      - name: Verify this native candidate and both real Windows qualifications
+        run: |
+          node --input-type=module - <<'JS'
+          import { readCandidate } from './native-tools/windows-job/candidate.mjs';
+          import { assertWindowsJobCandidateEvidence } from './native-tools/windows-job/evidence.mjs';
+          await assertWindowsJobCandidateEvidence(await readCandidate('.native/windows-job-candidate'));
+          JS
       - run: pnpm test:smoke:bootstrap:catalog
       - run: pnpm release:verify:publish
       - name: Save failed test diagnostics
@@ -223,7 +228,7 @@ jobs:
           cache: false
       - run: pnpm native:windows-job:prepare
         if: matrix.os == 'win32'
-      - run: node native-tools/windows-job/test-environment.mjs --github-env
+      - run: node native-tools/windows-job/test-environment.mjs --context-file "$RUNNER_TEMP/aw-native-context.json" --github-env
         if: matrix.os == 'win32'
       - run: pnpm build
       - run: pnpm test:integration
@@ -252,11 +257,9 @@ jobs:
           retention-days: 7
 
   native-windows-job:
-    # GitHub validates the callee's publish permissions even when that job is skipped.
     permissions:
       contents: read
       actions: read
-      id-token: write
     uses: ./.github/workflows/windows-job.yml
 
   beta:

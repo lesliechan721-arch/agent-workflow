@@ -35,7 +35,6 @@ import {
 import { withResolvedCatalogPlugin } from '../utils/multi-source-catalog.js';
 import type { CatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
-import { resolveAwHome } from '../utils/paths.js';
 import { prepareWindowsJobHelper } from '../utils/process-tree.js';
 import {
   assertNoSensitiveConfigInFiles,
@@ -386,11 +385,7 @@ async function materializePluginCandidates(options: {
   }
   await assertRuntimeImports(options.plugin);
   if (process.platform === 'win32') {
-    await prepareWindowsJobHelper({
-      cacheRoot: path.join(resolveAwHome(options.env), 'native-artifacts', 'v1'),
-      sourceEnv: options.env,
-      mode: 'cache-only',
-    });
+    await prepareWindowsJobHelper();
   }
   const rendered = await runArtifactRenderer({
     event: 'materialize',
