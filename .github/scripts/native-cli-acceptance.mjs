@@ -50,6 +50,7 @@ if (command === 'prepare') {
   const { calculateCanonicalDigest, normalizeStableTargetVersion } = await import('../../scripts/release/release-model.mjs');
   const version = normalizeStableTargetVersion(JSON.parse(await fs.readFile(path.join(repoRoot, 'packages/cli/package.json'), 'utf8')).version);
   // Source package versions are stable targets. exactCandidates skips version occupancy reads.
+  assert.ok(process.env.npm_execpath, 'Run preparation through pnpm test:acceptance:native-cli.');
   const options = { repoRoot, releaseRoot, nativeCandidateRoot: path.resolve(repoRoot, args['--native-candidate']) };
   const descriptor = await prepareLocalRelease('stable', {
     ...options, axes: { cli: true, catalog: false }, exactCandidates: { cli: version, catalog: null },

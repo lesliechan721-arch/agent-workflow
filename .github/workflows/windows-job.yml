@@ -207,7 +207,7 @@ jobs:
         id: prepare
         env:
           NATIVE_VERSION: ${{ needs.candidate.outputs.version }}
-        run: node .github/scripts/native-cli-acceptance.mjs prepare --native-candidate ".native/windows-job/$NATIVE_VERSION"
+        run: pnpm test:acceptance:native-cli prepare --native-candidate ".native/windows-job/$NATIVE_VERSION"
       - uses: actions/upload-artifact@v7
         with:
           name: native-cli-acceptance-candidate
