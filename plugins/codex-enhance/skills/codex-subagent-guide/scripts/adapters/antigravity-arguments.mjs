@@ -5,14 +5,14 @@ import { permissionMode } from './permission-mode.mjs';
 const owned = new Set([
   '--input-format', '--output-format', '--print', '-p', '--prompt', '--prompt-interactive', '-i',
   '--continue', '-c', '--conversation', '--project', '--new-project', '--remote-control',
-  '--print-timeout', '--cwd', '--workdir', '--gemini_dir', '--app_data_dir',
+  '--print-timeout', '--settings', '--cwd', '--workdir', '--gemini_dir', '--app_data_dir',
   '--help', '-h', '--version', '-v', '-V', '--', '-',
 ]);
 const booleans = new Set(['--sandbox', '--dangerously-skip-permissions', '--disable-slash-commands']);
 const values = new Set(['--model', '--effort', '--agent', '--mode', '--add-dir', '--json-schema', '--log-file']);
 const efforts = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
-/** The public agy 1.4.7 options; unverified options cannot change AW controls. */
+/** The public agy 1.4.10+ options; unverified options cannot change AW controls. */
 export function checkAntigravityArguments(request) {
   const mode = permissionMode(request);
   const seen = new Set();

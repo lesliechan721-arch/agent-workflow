@@ -132,6 +132,7 @@ input.on('line',async line=>{
     respond({});
    }
   }
+  else if(value.method==='config/read')respond({config:{}});
   else if(value.method==='thread/start'||value.method==='thread/resume') {
    communicationServer = Object.entries(value.params.config?.mcp_servers ?? {}).find(([key]) => key.startsWith('aw_parent_'))?.[1]
     ?? Object.entries(value.params.config ?? {}).find(([key]) => key.startsWith('mcp_servers.aw_parent_'))?.[1];

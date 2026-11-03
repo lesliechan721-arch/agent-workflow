@@ -10,7 +10,13 @@ Codex 固定 workspace，通过 app-server 管理本次 thread/turn、正式输�
 
 首次执行通过 thread/start 建立会话，恢复通过 app-server 的 thread/resume 传入绑定 threadId，并保留原 cwd 和执行配置；确认实际返回 ID 一致后才提交本次新消息。原线程仍有 active/inProgress turn 时明确失败，不投递、不 fork、不新建回退。使用 --ephemeral 时不保留可恢复会话，resume 报 unsupported；配置关闭时为 disabled。
 
-得到真实 thread ID 时及时发送 session 帧。每次恢复以同一 run 的私有 AW MCP server key 替换为当前 bridge 的 command/args，重新注入必要通信说明，避免模型调用旧绑定；不复制聊天历史或重复初始任务。只有私有 receive_parent 设置 tools.receive_parent.output_token_limit=32768，不改其它工具或全局用户配置。真实 CLI 必须支持所用 API、持久化及工具预算；本地协议或 fake 通过不构成真实会话恢复和完整工具交付验收。
+得到真实 thread ID 时及时发送 session 帧。每次恢复以同一 run 的私有 AW MCP server key 替换为当前 bridge 的 command/args，重新注入必要通信说明，避免模型调用旧绑定；不复制聊天历史或重复初始任务。私有 receive_parent 始终保留 tools.receive_parent.output_token_limit=32768，不改其它工具预算。真实 CLI 必须支持所用 API、持久化及工具预算；本地协议或 fake 通过不构成真实会话恢复和完整工具交付验收。
+
+通信开启且不能可靠确认完整权限时，在首次 thread/start.config 或 thread/resume.config 中，仅为当前 `aw_parent_<runId>` 的 send_parent、receive_parent 设置 `approval_mode="approve"`。已有 MCP 表和用户字段保持原合并方式；不设置全局 approval_policy=never 或扩大沙箱。通信关闭时不注入私有 server、不为通信读取配置或准备许可。
+
+executor full-access 或 args/profile 同时明确 approval_policy=never、sandbox_mode=danger-full-access 时，跳过工具 approval_mode；单独 never 和 auto 不算完整权限。新线程可通过正常 config/read 取得有效继承配置，并与本次覆盖合并判断。恢复的持久会话策略可能不同于 cwd 当前配置，不能以 config/read 推断原线程策略；没有本次明确完整设置时按无法预先确认处理，保留精确许可。不读取 rollout 猜策略，不二次 resume 或在活动 turn 中更新权限。
+
+管理限制、strict_auto_review、工具禁用和真实审批失败仍由后端执行。配置字段明确被拒绝时在首次输入前失败，不删字段、不扩大权限、不重发；请求接受或 READY 不证明实际免审批，两项工具须用固定版本分别实测。
 
 ## Codex CLI 来源
 
@@ -95,7 +101,7 @@ features 按直接子项分流：已确认线程消费的 hooks 使用 `config["
 
 MCP cwd、带路径 command、权限路径表达式、遥测证书等按各自原生类型与消费者核对。能保持原生含义则等价传递；已知路径表示无法可靠转换时报 profileConversionUnsupported，提示绝对路径。命令名、整串命令、args、URL、环境值、提示词与项目文件名候选不按普通路径重写。未知字段不按名字猜路径，也不保证未来字段的来源语义。
 
-MCP 完整表与 AW 私有 server 合并，当前私有名称冲突报错；若用户表因 TOML 表示需要放在启动通道，私有 server 使用单字段请求覆盖，避免替换启动表；communication=false 不注入该 server。仅私有 receive_parent 保留既有输出预算，不改用户工具预算。基础/项目的 MCP、插件、工具、技能和代理仍由 Codex 发现。
+MCP 完整表与 AW 私有 server 合并，当前私有名称冲突报错；若用户表因 TOML 表示需要放在启动通道，私有 server 使用单字段请求覆盖，避免替换启动表；communication=false 不注入该 server。私有工具许可及 receive_parent 输出预算按本文件的通信规则注入，不改用户工具预算。基础/项目的 MCP、插件、工具、技能和代理仍由 Codex 发现。
 
 ### 省略的界面和废弃设置
 

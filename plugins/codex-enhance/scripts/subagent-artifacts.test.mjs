@@ -144,7 +144,14 @@ test('shares one profile definition, preserves defaults and declares exact consu
   assert.ok(manifest.requires.aw.capabilities.includes('aw.installed-runtime-config.v2'));
   assert.ok(manifest.requires.aw.capabilities.includes('aw.managed-commands.v1'));
   assert.deepEqual(manifest.managedCommands.packages ?? [], []);
-  assert.equal(manifest.managedCommands.sets.length, 1);
+  assert.equal(manifest.managedCommands.sets.length, 2);
+  const communicationSet = manifest.managedCommands.sets.find((entry) => entry.set === 'guide-communication');
+  assert.deepEqual(communicationSet.producer, { kind: 'artifact', artifactId: 'codex-subagent-guide-skill' });
+  assert.equal(communicationSet.mode, 'static');
+  assert.equal(communicationSet.entries.length, 1);
+  const { args: messageArgs = [], env: messageEnv = {}, envFrom: messageEnvFrom = {}, variant: messageVariant = 'default', cwd: messageCwd = 'caller', ...messageEntry } = communicationSet.entries[0];
+  assert.deepEqual(messageEntry, { key: 'message', runner: 'node', entry: 'scripts/message.mjs' });
+  assert.deepEqual([messageArgs, messageEnv, messageEnvFrom, messageVariant, messageCwd], [[], {}, {}, 'default', 'caller']);
   const [guideSet] = manifest.managedCommands.sets;
   assert.equal(guideSet.set, 'guide');
   assert.deepEqual(guideSet.producer, { kind: 'artifact', artifactId: 'codex-subagent-guide-skill' });

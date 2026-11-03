@@ -345,7 +345,7 @@ test('command help bypasses required task inputs and diagnostics parses for ever
 // late warnings remain visible, and explicit diagnostics can recover full evidence.
 test('result display filters routine diagnostics and retains new warnings', async (t) => {
   const f = await fixture(t);
-  const normal = ['codexExecutableSelected', 'communicationPermissionExisting', 'communicationPermissionAdded', 'profileFieldIrrelevant', 'hookTrustBypassed']
+  const normal = ['codexExecutableSelected', 'communicationPermissionExisting', 'communicationPermissionAdded', 'communicationPermissionSession', 'profileFieldIrrelevant', 'hookTrustBypassed']
     .map((code) => ({ code, message: `Routine ${code}.` }));
   const warning = { code: 'profileFieldIgnored', field: 'features.unknown', message: 'Unsupported override.' };
   const late = { code: 'backendActionDenied', message: 'A tool action was denied.' };
