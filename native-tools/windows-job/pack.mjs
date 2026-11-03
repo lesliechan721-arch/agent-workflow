@@ -1,17 +1,13 @@
-import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gzipSync } from 'node:zlib'
-import { parseNativeToolDescriptor, nativeToolDescriptorDigest } from '../../packages/native-runtime/src/descriptor.mjs'
-import { verifyWindowsJobArtifacts, windowsJobArtifactContract } from './windows-job-helper-artifacts.mjs'
+import { bytesDigest, readCandidate, writeAtomicJson } from './candidate.mjs'
+import { refreshWindowsJobArtifacts, verifyWindowsJobArtifacts, verifyWindowsJobReproducibility, windowsJobArtifactContract } from './windows-job-helper-artifacts.mjs'
 
-const { toolRoot, defaultNativeRoot } = windowsJobArtifactContract
-const repoRoot = path.resolve(toolRoot, '../..')
-const hash = (bytes, algorithm = 'sha256') => createHash(algorithm).update(bytes).digest(algorithm === 'sha512' ? 'base64' : 'hex')
+const defaultRepoRoot = path.resolve(windowsJobArtifactContract.toolRoot, '../..')
 
-// The archive has two fixed regular files. Zero timestamps, uid and gid make
-// its digest independent of the host, filesystem metadata and pack tooling.
+// Zero timestamps, uid and gid make the two-file archive independent of the host.
 function archiveFile(name, bytes, mode) {
   const header = Buffer.alloc(512)
   header.write(name, 0, 100)
@@ -27,47 +23,65 @@ function archiveFile(name, bytes, mode) {
   return Buffer.concat([header, bytes, Buffer.alloc((512 - bytes.length % 512) % 512)])
 }
 
+async function candidateOptions(options) {
+  const repoRoot = options.repoRoot ?? defaultRepoRoot
+  const version = options.version ?? JSON.parse(await readFile(path.join(repoRoot, 'packages/cli/package.json'), 'utf8')).version
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/u.test(version ?? '')) throw new Error('Windows Job candidate requires an exact stable or beta.N CLI version.')
+  return { ...options, repoRoot, version, nativeRoot: options.nativeRoot ?? path.join(repoRoot, '.native/windows-job', version) }
+}
+
 export async function packWindowsJobCandidate(options = {}) {
-  const tool = JSON.parse(await readFile(path.join(toolRoot, 'tool.json'), 'utf8'))
-  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/u.test(tool.version)) throw new Error('Windows Job version must be exact stable SemVer or beta.N.')
-  const nativeRoot = options.nativeRoot ?? defaultNativeRoot
-  const manifest = await verifyWindowsJobArtifacts({ ...options, nativeRoot })
-  const variants = []
+  const selected = await candidateOptions(options)
+  const { repoRoot, nativeRoot, version } = selected
+  const manifest = await verifyWindowsJobArtifacts(selected)
   const packages = []
   for (const arch of ['x64', 'arm64']) {
     const template = JSON.parse(await readFile(path.join(repoRoot, 'packages', `aw-windows-job-win32-${arch}`, 'package.json'), 'utf8'))
     const { scripts, devDependencies, ...metadata } = template
-    const packageJson = Buffer.from(`${JSON.stringify({ ...metadata, version: tool.version }, null, 2)}\n`)
+    const packageJson = Buffer.from(`${JSON.stringify({ ...metadata, version, os: ['win32'], cpu: [arch] }, null, 2)}\n`)
     const bytes = await readFile(path.join(nativeRoot, manifest.binaries[arch].path))
     const archive = gzipSync(Buffer.concat([
       archiveFile('package/package.json', packageJson, 0o644),
       archiveFile('package/dist/aw-windows-job.exe', bytes, 0o755),
       Buffer.alloc(1024),
     ]), { level: 9 })
-    // gzip records the producer's OS. Use the unspecified value so the same
-    // tar bytes have one immutable archive integrity on every build host.
     archive[9] = 255
-    const archiveName = `${template.name.replace(/^@/u, '').replace('/', '-')}-${tool.version}.tgz`
+    const archiveName = `${template.name.replace(/^@/u, '').replace('/', '-')}-${version}.tgz`
     await mkdir(nativeRoot, { recursive: true })
     await writeFile(path.join(nativeRoot, archiveName), archive)
-    variants.push({
-      platform: 'win32', arch,
-      transport: { kind: 'npm', package: template.name, version: tool.version, archiveIntegrity: `sha512-${hash(archive, 'sha512')}`, entry: 'package/dist/aw-windows-job.exe' },
-      file: { sha256: `sha256:${hash(bytes)}`, size: bytes.length, format: 'pe', machine: manifest.binaries[arch].peMachine },
-      limits: { archiveBytes: 8 * 1024 * 1024, expandedBytes: 16 * 1024 * 1024, entries: 32 },
-    })
-    packages.push({ name: template.name, arch, path: archiveName, contentDigest: `sha256:${hash(archive)}` })
+    packages.push({ name: template.name, arch, path: archiveName, contentDigest: bytesDigest(archive) })
   }
-  const descriptor = parseNativeToolDescriptor({ schemaVersion: 1, tool: { id: tool.id, version: tool.version, protocol: tool.protocol }, variants })
-  const candidate = { schemaVersion: 1, kind: 'windows-job-candidate', version: tool.version, sourceDigest: manifest.sourceDigest, goVersion: manifest.build.goVersion, descriptorDigest: nativeToolDescriptorDigest(descriptor), packages }
-  await writeFile(path.join(nativeRoot, 'windows-job.lock.json'), `${JSON.stringify(descriptor, null, 2)}\n`)
-  await writeFile(path.join(nativeRoot, 'candidate.json'), `${JSON.stringify(candidate, null, 2)}\n`)
-  // This is a byte lock, not evidence that the packages exist in a registry.
-  if (options.writeLock !== false) await writeFile(path.join(toolRoot, 'windows-job.lock.json'), `${JSON.stringify(descriptor, null, 2)}\n`)
-  return { root: nativeRoot, descriptor, candidate }
+  const candidate = { schemaVersion: 1, kind: 'windows-job-candidate', version, sourceDigest: manifest.sourceDigest, goVersion: manifest.build.goVersion, packages }
+  await writeAtomicJson(path.join(nativeRoot, 'candidate.json'), candidate)
+  const result = await readCandidate(nativeRoot, selected)
+  return { ...result, tarballPaths: packages.map((entry) => path.join(nativeRoot, entry.path)) }
+}
+
+export async function buildWindowsJobCandidate(options = {}) {
+  const selected = await candidateOptions(options)
+  await refreshWindowsJobArtifacts(selected)
+  const result = await packWindowsJobCandidate(selected)
+  await verifyWindowsJobReproducibility(selected)
+  await writeAtomicJson(path.join(result.root, 'reproducibility.json'), {
+    schemaVersion: 1, kind: 'windows-job-reproducibility', status: 'passed',
+    candidateDigest: result.candidateDigest, sourceDigest: result.candidate.sourceDigest,
+    goVersion: result.candidate.goVersion, architectures: ['x64', 'arm64'],
+  })
+  return result
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { const result = await packWindowsJobCandidate(); console.log(`Packed Windows Job ${result.candidate.version} into ${result.root}.`) }
-  catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1 }
+  try {
+    const args = process.argv.slice(2).filter((arg) => arg !== '--')
+    const options = {}
+    while (args.length) {
+      const flag = args.shift()
+      const value = args.shift()
+      if (flag === '--version' && value && options.version === undefined) options.version = value
+      else if (flag === '--out' && value && options.nativeRoot === undefined) options.nativeRoot = path.resolve(value)
+      else throw new Error('Expected [--version <CLI version>] [--out <candidate directory>].')
+    }
+    const result = await packWindowsJobCandidate(options)
+    console.log(`Packed Windows Job for CLI ${result.candidate.version} into ${result.root}.`)
+  } catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1 }
 }

@@ -11,7 +11,7 @@ import {
   type WindowsJobInvocation,
 } from './process-tree.js';
 import type { SafeOperationErrorMetadata } from './safe-operation-diagnostic.js';
-import { getCodexHome, resolveAwHome } from './state-paths.js';
+import { getCodexHome } from './state-paths.js';
 import { resolveWindowsClaudeCommand } from './windows-claude-shim.js';
 import { resolveWindowsNpmCommand } from './windows-npm-shim.js';
 
@@ -184,10 +184,7 @@ export async function prepareNativeCliExecution(options: {
 } = {}): Promise<void> {
   if (process.platform !== 'win32'
     || !usesDefaultNativeCliBackend(options.runner ?? getDefaultNativeCliRunner())) return;
-  await prepareWindowsJobHelper({
-    cacheRoot: path.join(resolveAwHome(options.env), 'native-artifacts', 'v1'),
-    sourceEnv: options.env,
-  });
+  await prepareWindowsJobHelper();
 }
 
 function readNativeCliErrorCode(error: unknown): number | string | undefined {
@@ -555,10 +552,7 @@ export function createExecFileNativeCliRunner(
         ? createWindowsJobInvocationImpl(executableCommand, executableArgs)
         : usesDefaultWindowsJob
           ? createWindowsJobInvocation(executableCommand, executableArgs, {
-              helperPath: await prepareWindowsJobHelper({
-                cacheRoot: path.join(resolveAwHome(invocation.env), 'native-artifacts', 'v1'),
-                mode: 'cache-only',
-              }),
+              helperPath: await prepareWindowsJobHelper(),
             })
           : undefined
       : undefined;

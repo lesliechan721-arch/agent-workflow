@@ -1,21 +1,15 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import {
-  nativeToolDescriptorDigest,
-  parseNativeToolDescriptor,
-  type NativeToolDescriptor,
-} from '@lesliechan721/aw-native-runtime/descriptor';
 import { createNativeToolReaderSource } from '@lesliechan721/aw-native-runtime/reader';
 
 import { resolveCanonicalRuntimeSourceIdentity } from './runtime-export-source.js';
 import type { NormalizedPluginManifest } from './types.js';
 
-export type { NativeToolDescriptor, NativeToolVariant } from '@lesliechan721/aw-native-runtime/descriptor';
 export { createNativeToolReaderSource } from '@lesliechan721/aw-native-runtime/reader';
 export const DEFAULT_NATIVE_TOOL_READER = './.aw/native-tool-reader.mjs';
-export const NATIVE_TOOLS_CAPABILITY = 'aw.native-tools.v1';
-export interface NativeToolDefinition { key: string; protocol: string; descriptor: string }
+export const NATIVE_TOOLS_CAPABILITY = 'aw.native-tools.v2';
+export interface NativeToolDefinition { key: string; protocol: string }
 export type NativeToolBinding = {
   key: string;
   platforms: ['win32'];
@@ -26,18 +20,7 @@ export interface NativeToolConsumer {
   tools: NativeToolBinding[];
 }
 export interface NativeTools { reader: string; definitions: NativeToolDefinition[]; consumers: NativeToolConsumer[] }
-export interface NativeToolClosureDefinition {
-  key: string;
-  protocol: string;
-  descriptorPath: string;
-  descriptor: NativeToolDescriptor;
-  descriptorDigest: string;
-}
-export interface NativeToolClosure {
-  reader: string;
-  definitions: NativeToolClosureDefinition[];
-  consumers: NativeToolConsumer[];
-}
+export type NativeToolClosure = NativeTools;
 
 function object(value: unknown, field: string, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid ${field}: expected an object.`);
@@ -76,7 +59,7 @@ function normalizeConsumers(value: unknown): NativeToolConsumer[] {
     if (input.kind !== 'managed-command-set' && input.kind !== 'plugin-test') throw new Error('Invalid nativeTools consumer.kind.');
     const tools = array(input.tools, 'nativeTools consumer.tools', 32).map((value): NativeToolBinding => {
       const binding = object(value, 'nativeTools binding', ['key', 'platforms', 'policy', 'fallback']);
-      if (!Array.isArray(binding.platforms) || binding.platforms.length !== 1 || binding.platforms[0] !== 'win32') throw new Error('Invalid nativeTools binding.platforms: v1 supports win32 only.');
+      if (!Array.isArray(binding.platforms) || binding.platforms.length !== 1 || binding.platforms[0] !== 'win32') throw new Error('Invalid nativeTools binding.platforms: only win32 is supported.');
       const base = { key: name(binding.key, 'nativeTools binding.key'), platforms: ['win32'] as ['win32'] };
       if (binding.policy === 'preferred') return { ...base, policy: 'preferred', fallback: name(binding.fallback, 'nativeTools binding.fallback') };
       if (binding.policy !== 'required' || binding.fallback !== undefined) throw new Error('Invalid nativeTools binding: required forbids fallback; preferred requires fallback.');
@@ -100,12 +83,11 @@ export function normalizeNativeTools(value: unknown): NativeTools {
   const reader = relativeFile(input.reader === undefined ? DEFAULT_NATIVE_TOOL_READER : input.reader, 'nativeTools.reader');
   if (!reader.endsWith('.mjs')) throw new Error('Invalid nativeTools.reader: expected an .mjs file.');
   const definitions = array(input.definitions, 'nativeTools.definitions', 32).map((value) => {
-    const entry = object(value, 'nativeTools definition', ['key', 'protocol', 'descriptor']);
-    return { key: name(entry.key, 'nativeTools definition.key'), protocol: protocol(entry.protocol, 'nativeTools definition.protocol'), descriptor: relativeFile(entry.descriptor, 'nativeTools definition.descriptor') };
+    const entry = object(value, 'nativeTools definition', ['key', 'protocol']);
+    return { key: name(entry.key, 'nativeTools definition.key'), protocol: protocol(entry.protocol, 'nativeTools definition.protocol') };
   }).sort((a, b) => compare(a.key, b.key));
   unique(definitions.map((entry) => entry.key), 'nativeTools.definitions');
   unique(definitions.map((entry) => entry.key.toLowerCase()), 'nativeTools.definitions generated file names');
-  if (definitions.some((entry) => entry.descriptor.toLowerCase() === reader.toLowerCase())) throw new Error('Invalid nativeTools: reader conflicts with a descriptor.');
   const consumers = normalizeConsumers(input.consumers);
   validateReferences(definitions, consumers);
   return { reader, definitions, consumers };
@@ -123,31 +105,13 @@ export function validateNativeToolsManifest(manifest: NormalizedPluginManifest, 
 }
 
 export function normalizeNativeToolClosure(value: unknown): NativeToolClosure {
-  const input = object(value, 'native tool closure', ['reader', 'definitions', 'consumers']);
-  relativeFile(input.reader, 'native tool closure.reader');
-  const definitions = array(input.definitions, 'native tool closure.definitions', 32).map((value) => {
-    const entry = object(value, 'native tool closure definition', ['key', 'protocol', 'descriptorPath', 'descriptor', 'descriptorDigest']);
-    const descriptor = parseNativeToolDescriptor(entry.descriptor);
-    if (entry.descriptorDigest !== nativeToolDescriptorDigest(descriptor)) throw new Error('nativeDescriptorDigestMismatch');
-    if (entry.protocol !== descriptor.tool.protocol) throw new Error('nativeProtocolMismatch');
-    return { key: name(entry.key, 'native tool closure definition.key'), protocol: descriptor.tool.protocol, descriptorPath: relativeFile(entry.descriptorPath, 'native tool closure definition.descriptorPath'), descriptor, descriptorDigest: entry.descriptorDigest as string };
-  }).sort((a, b) => compare(a.key, b.key));
-  const normalized = normalizeNativeTools({ reader: input.reader, definitions: definitions.map((entry) => ({ key: entry.key, protocol: entry.protocol, descriptor: entry.descriptorPath })), consumers: input.consumers });
-  return { reader: normalized.reader, definitions, consumers: normalized.consumers };
+  return normalizeNativeTools(value);
 }
 
 export async function loadPluginNativeToolClosure(pluginRoot: string, manifest: NormalizedPluginManifest): Promise<NativeToolClosure | undefined> {
   if (!manifest.nativeTools) return undefined;
   validateNativeToolsManifest(manifest);
-  const definitions = await Promise.all(manifest.nativeTools.definitions.map(async (entry) => {
-    const source = await resolveCanonicalRuntimeSourceIdentity(pluginRoot, entry.descriptor, 'nativeTools descriptor');
-    const stat = await fs.stat(source.sourceRealPath);
-    if (stat.size > 64 * 1024) throw new Error('nativeDescriptorTooLarge');
-    const descriptor = parseNativeToolDescriptor(JSON.parse(await fs.readFile(source.sourceRealPath, 'utf8')));
-    if (entry.protocol !== descriptor.tool.protocol) throw new Error('nativeProtocolMismatch');
-    return { key: entry.key, protocol: entry.protocol, descriptorPath: entry.descriptor, descriptor, descriptorDigest: nativeToolDescriptorDigest(descriptor) };
-  }));
-  const closure = normalizeNativeToolClosure({ reader: manifest.nativeTools.reader, definitions, consumers: manifest.nativeTools.consumers });
+  const closure = normalizeNativeToolClosure(manifest.nativeTools);
   if (await fs.pathExists(path.resolve(pluginRoot, closure.reader))) {
     await validateNativeToolReader(pluginRoot, closure.reader);
   }
@@ -168,16 +132,13 @@ export function getNativeToolConsumerClosure(
   return { reader: normalized.reader, definitions: normalized.definitions.filter((entry) => tools.has(entry.key)), consumers };
 }
 
-/** Returns producer-relative files and complete evidence for the selected consumers. */
+/** Returns the generated reader and protocol requirements for the selected consumers. */
 export function materializeNativeToolClosureFiles(closure: NativeToolClosure): { closure: NativeToolClosure; files: Record<string, string> } {
   const normalized = normalizeNativeToolClosure(closure);
-  const files: Record<string, string> = { [DEFAULT_NATIVE_TOOL_READER.slice(2)]: createNativeToolReaderSource() };
-  const definitions = normalized.definitions.map((entry) => {
-    const descriptorPath = `./.aw/native-tools/${entry.key}.lock.json`;
-    files[descriptorPath.slice(2)] = `${JSON.stringify(entry.descriptor, null, 2)}\n`;
-    return { ...entry, descriptorPath };
-  });
-  return { closure: { reader: DEFAULT_NATIVE_TOOL_READER, definitions, consumers: normalized.consumers }, files };
+  return {
+    closure: { ...normalized, reader: DEFAULT_NATIVE_TOOL_READER },
+    files: { [DEFAULT_NATIVE_TOOL_READER.slice(2)]: createNativeToolReaderSource() },
+  };
 }
 
 async function writeGeneratedFile(root: string, relative: string, content: string): Promise<void> {
@@ -215,12 +176,6 @@ export async function preparePluginNativeTools(pluginRoot: string, manifest: Nor
 
 export async function validateNativeToolClosureFiles(root: string, closure: NativeToolClosure): Promise<void> {
   const normalized = normalizeNativeToolClosure(closure);
-  for (const entry of normalized.definitions) {
-    const source = await resolveCanonicalRuntimeSourceIdentity(root, entry.descriptorPath, 'native tool descriptor evidence');
-    if ((await fs.stat(source.sourceRealPath)).size > 64 * 1024) throw new Error('nativeDescriptorTooLarge');
-    const descriptor = parseNativeToolDescriptor(JSON.parse(await fs.readFile(source.sourceRealPath, 'utf8')));
-    if (nativeToolDescriptorDigest(descriptor) !== entry.descriptorDigest) throw new Error('nativeDescriptorDigestMismatch');
-  }
   await validateNativeToolReader(root, normalized.reader);
 }
 

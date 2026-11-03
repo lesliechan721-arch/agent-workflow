@@ -214,13 +214,12 @@ describe('plugin scripts staging smoke', () => {
     expect(commandId).toBeDefined();
     const command = await commands.resolveManagedCommand(commandId!, env);
     expect((await commands.readInstalledCommandProducer(command.resourceRoot)).nativeTools).toEqual(nativeTools);
-    const canonicalLock = await fs.readJson(path.join(bundle, 'native-tools', 'windows-job.lock.json'));
-    expect(canonicalLock.variants.map((variant: { arch: string }) => variant.arch).sort()).toEqual(['arm64', 'x64']);
-    expect(await fs.readJson(path.join(command.resourceRoot, '.aw', 'native-tools', 'windows-job.lock.json'))).toEqual(canonicalLock);
+    expect(nativeTools?.definitions).toEqual([{ key: 'windows-job', protocol: 'aw.windows-job.v1' }]);
+    expect(await fs.pathExists(path.join(command.resourceRoot, '.aw', 'native-tools'))).toBe(false);
     const reader = await importSmokeSnapshotModule<{
       readNativeTool(key: string, protocol: string, environment: Record<string, string>): unknown;
     }>(path.join(command.resourceRoot, '.aw', 'native-tool-reader.mjs'));
-    const unavailable = { state: 'unavailable', protocol: 'aw.windows-job.v1', code: 'fixtureCacheMiss' };
+    const unavailable = { state: 'unavailable', protocol: 'aw.windows-job.v1', code: 'nativeToolDependencyMissing' };
     expect(reader.readNativeTool('windows-job', unavailable.protocol, {
       AW_NATIVE_TOOL_CONTEXT: JSON.stringify({ schemaVersion: 1, tools: { 'windows-job': unavailable } }),
     })).toEqual(unavailable);

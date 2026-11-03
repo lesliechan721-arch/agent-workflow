@@ -62,6 +62,7 @@ let packedCliPromise: Promise<{
   cliTarballPath: string;
   evalTarballPath: string;
   coreTarballPath: string;
+  windowsJobTarballPath?: string;
   tempRoot: string;
 }> | null = null;
 
@@ -206,6 +207,7 @@ async function preparePackedCli(): Promise<{
   cliTarballPath: string;
   evalTarballPath: string;
   coreTarballPath: string;
+  windowsJobTarballPath?: string;
   tempRoot: string;
 }> {
   if (packedCliPromise) {
@@ -228,9 +230,11 @@ async function preparePackedCli(): Promise<{
     const staleDistPath = path.join(packageRoot, 'dist', 'stale-build-sentinel.js');
     await fs.outputFile(staleDistPath, 'export const stale = true;\n', 'utf8');
     const snapshotEntriesBefore = await listBuildSnapshotEntries(root);
-    const packInvocation = createTestPnpmInvocation(['pack:cli', '--pack-destination', packDir]);
     await execFileAsync(
-      packInvocation.command, packInvocation.args,
+      process.execPath, ['--input-type=module', '--eval',
+        'const { withReleaseBuildSnapshot, packEval, packCore, packCli } = await import(process.argv[1]); ' +
+        'await withReleaseBuildSnapshot(async (snapshot) => { for (const pack of [packEval, packCore, packCli]) await pack({ snapshot, destination: process.argv[2] }); });',
+        pathToFileURL(path.join(root, 'scripts/release/common.mjs')).href, packDir],
       {
         cwd: root,
         env: process.env,
@@ -256,11 +260,28 @@ async function preparePackedCli(): Promise<{
     const evalTarballPath = path.join(packDir, evalTarballName!);
     const coreTarballPath = path.join(packDir, coreTarballName!);
 
+    let windowsJobTarballPath: string | undefined;
+    if (process.platform === 'win32') {
+      const { readNativeTool } = await import('../../../../packages/native-runtime/src/reader.mjs');
+      const helper = readNativeTool('windows-job', 'aw.windows-job.v1', process.env);
+      if (helper.state !== 'ready') throw new Error('Windows pack smoke requires its explicit source candidate helper.');
+      const nativeSource = path.join(tempRoot, 'native-package');
+      const nativePackage = path.join(nativeSource, 'package');
+      await fs.ensureDir(path.join(nativePackage, 'dist'));
+      const template = await fs.readJson(path.join(root, 'packages', `aw-windows-job-win32-${process.arch}`, 'package.json'));
+      const version = (await fs.readJson(path.join(root, 'packages/cli/package.json'))).version;
+      await fs.writeJson(path.join(nativePackage, 'package.json'), { ...template, version });
+      await fs.copyFile(helper.executable, path.join(nativePackage, 'dist/aw-windows-job.exe'));
+      windowsJobTarballPath = path.join(tempRoot, 'windows-platform.tgz');
+      await execFileAsync('tar', ['-czf', windowsJobTarballPath, '-C', nativeSource, 'package']);
+    }
+
     return {
       packageRoot: await unpackTarball(cliTarballPath, unpackDir),
       cliTarballPath,
       evalTarballPath,
       coreTarballPath,
+      windowsJobTarballPath,
       tempRoot,
     };
   })();
@@ -475,7 +496,7 @@ afterAll(async () => {
 });
 
 describe('pack smoke', () => {
-  it('packs three CLI products with text native locks and no PE files', smokeCase(async () => {
+  it('packs three universal CLI products with exact native optional dependencies and no PE files', smokeCase(async () => {
     const bundle = await preparePackedCli();
     for (const [name, tarball] of [
       ['eval', bundle.evalTarballPath], ['core', bundle.coreTarballPath], ['cli', bundle.cliTarballPath],
@@ -490,13 +511,13 @@ describe('pack smoke', () => {
       }
       const metadata = await fs.readJson(path.join(packageRoot, 'package.json'));
       expect(metadata.dependencies?.['@lesliechan721/aw-native-runtime']).toBeUndefined();
-      expect(metadata.optionalDependencies).toBeUndefined();
-      if (name !== 'core') {
-        const lock = name === 'cli' ? 'dist/src/native/windows-job.lock.json' : 'dist/native/windows-job.lock.json';
-        await expect(fs.readJson(path.join(packageRoot, lock))).resolves.toMatchObject({
-          schemaVersion: 1, tool: { id: '@lesliechan721/windows-job', protocol: 'aw.windows-job.v1' },
+      if (name === 'eval') {
+        expect(metadata.optionalDependencies).toEqual({
+          '@lesliechan721/aw-windows-job-win32-x64': metadata.version,
+          '@lesliechan721/aw-windows-job-win32-arm64': metadata.version,
         });
-      }
+      } else expect(metadata.optionalDependencies).toBeUndefined();
+      expect(files.some((file) => file.endsWith('windows-job.lock.json'))).toBe(false);
     }
   }), 300_000);
 
@@ -508,7 +529,7 @@ describe('pack smoke', () => {
     };
     markStage('prepare tarballs start');
     const {
-      packageRoot, cliTarballPath, evalTarballPath, coreTarballPath, tempRoot,
+      packageRoot, cliTarballPath, evalTarballPath, coreTarballPath, windowsJobTarballPath, tempRoot,
     } = await preparePackedCli();
     markStage('prepare tarballs end');
     const installPrefix = path.join(tempRoot, 'install-prefix');
@@ -537,9 +558,11 @@ describe('pack smoke', () => {
           'install',
           ...npmDiagnosticsArgs,
           '--global',
-          '--omit=optional',
+          ...(process.platform === 'win32' ? [] : ['--omit=optional']),
+          '--ignore-scripts',
           '--prefix',
           installPrefix,
+          ...(windowsJobTarballPath ? [windowsJobTarballPath] : []),
           evalTarballPath,
           coreTarballPath,
           cliTarballPath,
@@ -917,36 +940,25 @@ describe('pack smoke', () => {
     const packedPluginRoot = path.join(standaloneWorkspace, packedPluginDirectory);
     const packedManifestPath = path.join(packedPluginRoot, '.agents-plugin', 'plugin.json');
     const packedManifest = await fs.readJson(packedManifestPath);
-    packedManifest.requires = { aw: { capabilities: ['aw.managed-commands.v1', 'aw.native-tools.v1'] } };
+    packedManifest.requires = { aw: { capabilities: ['aw.managed-commands.v1', 'aw.native-tools.v2'] } };
     packedManifest.managedCommands = {
       packages: [{ key: 'native-tool', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './command' }],
       sets: [{ set: 'native-tools', producer: { kind: 'package', packageKey: 'native-tool' }, mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'entry.mjs' }] }],
     };
     packedManifest.nativeTools = {
       reader: './command/native-reader.mjs',
-      definitions: [{ key: 'job', protocol: 'fixture.job.v1', descriptor: './native-tools/job.lock.json' }],
+      definitions: [{ key: 'job', protocol: 'aw.windows-job.v1' }],
       consumers: [
         { kind: 'managed-command-set', key: 'native-tools', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] },
         { kind: 'plugin-test', key: 'node', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] },
       ],
     };
     packedManifest.scripts = { tests: { node: ['./scripts/native.test.mjs'] } };
-    const nativeDigest = `sha256:${'a'.repeat(64)}`;
     await Promise.all([
       fs.writeJson(packedManifestPath, packedManifest, { spaces: 2 }),
-      fs.outputJson(path.join(packedPluginRoot, 'native-tools', 'job.lock.json'), {
-        schemaVersion: 1,
-        tool: { id: '@fixture/job', version: '1.0.0', protocol: 'fixture.job.v1' },
-        variants: (['x64', 'arm64'] as const).map((arch) => ({
-          platform: 'win32', arch,
-          transport: { kind: 'npm', package: `@fixture/job-win32-${arch}`, version: '1.0.0', archiveIntegrity: `sha512-${Buffer.alloc(64).toString('base64')}`, entry: 'package/dist/job.exe' },
-          file: { sha256: nativeDigest, size: 256, format: 'pe', machine: arch === 'x64' ? '0x8664' : '0xaa64' },
-          limits: { archiveBytes: 4096, expandedBytes: 4096, entries: 8 },
-        })),
-      }, { spaces: 2 }),
       fs.outputFile(path.join(packedPluginRoot, 'command', 'entry.mjs'), [
         "import { readNativeTool } from './native-reader.mjs';",
-        "if (process.platform === 'win32') readNativeTool('job', 'fixture.job.v1');",
+        "if (process.platform === 'win32') readNativeTool('job', 'aw.windows-job.v1');",
         'process.stdout.write(JSON.stringify(process.argv.slice(2)));',
       ].join('\n')),
       fs.outputFile(path.join(packedPluginRoot, 'scripts', 'native.test.mjs'), [
@@ -954,15 +966,15 @@ describe('pack smoke', () => {
         "import { test } from 'node:test';",
         "import { readNativeTool } from '../command/native-reader.mjs';",
         "test('uses the AW generated reader and explicit platform binding', () => {",
-        "  if (process.platform === 'win32') assert.equal(readNativeTool('job', 'fixture.job.v1').state, 'ready');",
-        "  else assert.throws(() => readNativeTool('job', 'fixture.job.v1'), { code: 'nativeContextInvalid' });",
+        "  if (process.platform === 'win32') assert.equal(readNativeTool('job', 'aw.windows-job.v1').state, 'ready');",
+        "  else assert.throws(() => readNativeTool('job', 'aw.windows-job.v1'), { code: 'nativeContextInvalid' });",
         '});',
       ].join('\n')),
     ]);
-    const nativeFixturePath = path.join(tempRoot, 'native-fixture-context.json');
+    const nativeFixturePath = path.join(tempRoot, 'native-test-context.json');
     await fs.writeJson(nativeFixturePath, {
       schemaVersion: 1,
-      tools: { job: { state: 'ready', protocol: 'fixture.job.v1', executable: process.execPath, sha256: nativeDigest } },
+      tools: { job: { state: 'ready', protocol: 'aw.windows-job.v1', executable: process.execPath } },
     });
     await expect(execAw([
       'plugin', 'validate', packedPluginDirectory,
@@ -974,7 +986,7 @@ describe('pack smoke', () => {
     await expect(execAw([
       'plugin', 'test', packedPluginDirectory,
       '--workspace-root', standaloneWorkspace, '--native-mode', 'fixture',
-      '--native-fixture-context', nativeFixturePath, '--json',
+      '--native-context', nativeFixturePath, '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv })).resolves.toMatchObject({
       stdout: expect.stringMatching(/"ok":\s*true/u),
       stderr: '',
@@ -988,7 +1000,7 @@ describe('pack smoke', () => {
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
     const nativeSnapshotRoot = path.join(standaloneWorkspace, '.aw', 'catalog', 'plugins', 'packed-build');
     await expect(fs.pathExists(path.join(nativeSnapshotRoot, 'command', 'native-reader.mjs'))).resolves.toBe(true);
-    await expect(fs.readJson(path.join(nativeSnapshotRoot, 'native-tools', 'job.lock.json'))).resolves.toMatchObject({ tool: { protocol: 'fixture.job.v1' } });
+    expect((await listFilesRecursively(nativeSnapshotRoot)).some((file) => file.endsWith('.lock.json'))).toBe(false);
     await expect(fs.pathExists(path.join(packedPluginRoot, 'command', 'native-reader.mjs'))).resolves.toBe(false);
     expect((await listFilesRecursively(nativeSnapshotRoot)).some((file) => file.endsWith('.exe'))).toBe(false);
     await expect(execAw([

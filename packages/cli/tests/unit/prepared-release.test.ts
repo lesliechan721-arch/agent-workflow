@@ -13,7 +13,7 @@ import {
   resolvePreparedCandidates,
   selectCatalogReleaseCandidate,
 } from '../../../../scripts/release/prepared-release.mjs';
-import { captureCommand } from '../../../../scripts/release/common.mjs';
+import { captureCommand, CLI_RELEASE_PACKAGES } from '../../../../scripts/release/common.mjs';
 import { calculateCanonicalDigest } from '../../../../scripts/release/release-model.mjs';
 import { updateReleaseTargets } from '../../../../scripts/release/release-target.mjs';
 import {
@@ -84,12 +84,20 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
       build,
       npm: axes.cli ? {
         version: '1.2.0',
+        nativeEvidence: await Promise.all(['candidate.json', 'reproducibility.json', 'qualification-x64.json', 'qualification-arm64.json'].map(async (name) => {
+          await fs.writeFile(path.join(artifacts, name), '{}');
+          return { name, path: `artifacts/${name}`, contentDigest: sha256('{}') };
+        })),
         packages: [
+          { name: '@lesliechan721/aw-windows-job-win32-x64', path: 'artifacts/windows-x64.tgz', contentDigest: sha256(windowsX64Bytes) },
+          { name: '@lesliechan721/aw-windows-job-win32-arm64', path: 'artifacts/windows-arm64.tgz', contentDigest: sha256(windowsArm64Bytes) },
           { name: '@lesliechan721/agent-skill-eval', path: 'artifacts/eval.tgz', contentDigest: sha256(evalBytes) },
           { name: '@lesliechan721/aw-plugin-core', path: 'artifacts/core.tgz', contentDigest: sha256(coreBytes) },
           { name: '@lesliechan721/aw', path: 'artifacts/cli.tgz', contentDigest: sha256(cliBytes) },
         ],
         treeDigests: {
+          '@lesliechan721/aw-windows-job-win32-x64': 'windows-x64-tree',
+          '@lesliechan721/aw-windows-job-win32-arm64': 'windows-arm64-tree',
           '@lesliechan721/agent-skill-eval': 'eval-tree',
           '@lesliechan721/aw-plugin-core': 'core-tree',
           '@lesliechan721/aw': 'cli-tree',
@@ -97,6 +105,8 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
       } : null,
       catalog: axes.catalog ? {
         version: '2.3.0', publication: { planDigest: catalogPublication.planDigest },
+      toolchain: { version: '1.2.0', channel: 'stable', source: 'registry' },
+      tools: Array.from({ length: 5 }, (_, index) => ({ name: `tool-${index}`, path: 'artifacts/cli.tgz', contentDigest: sha256(cliBytes) })),
       } : null,
     },
   };
@@ -105,6 +115,7 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
 function publishOptions(fixture: Awaited<ReturnType<typeof publicationFixture>>) {
   return {
     readDescriptor: async () => fixture,
+    installSavedCatalogToolchain: async () => ({ cliDistRoot: '/selected-cli/dist' }),
     assertClean: async () => undefined,
     resolveHead: async () => head,
     readTargets: async () => targets,
@@ -113,6 +124,7 @@ function publishOptions(fixture: Awaited<ReturnType<typeof publicationFixture>>)
     readPackageVersions: async () => [],
     readPackageChannelVersion: async () => null,
     resolveCandidates: async () => fixture.descriptor.candidates,
+    assertPublishedPackageMatches: async () => undefined,
     assertCliTagAvailable: async () => undefined,
     publishCliTag: async () => undefined,
     computeTarballTreeDigest: async (file: string) => {
@@ -201,6 +213,7 @@ describe('local prepared release', () => {
     }, null, 2)}\n`);
     await fs.writeFile(path.join(root, 'packages', 'agent-skill-eval', 'package.json'), `${JSON.stringify({
       name: '@lesliechan721/agent-skill-eval', version: '1.2.0',
+      optionalDependencies: { '@lesliechan721/aw-windows-job-win32-x64': 'workspace:1.2.0', '@lesliechan721/aw-windows-job-win32-arm64': 'workspace:1.2.0' },
     }, null, 2)}\n`);
     await fs.writeFile(path.join(root, 'packages', 'aw-windows-job-win32-x64', 'package.json'), `${JSON.stringify({
       name: '@lesliechan721/aw-windows-job-win32-x64', version: '1.2.0',
@@ -222,6 +235,9 @@ describe('local prepared release', () => {
       "      '@lesliechan721/aw-plugin-core':",
       '        specifier: workspace:1.2.0',
       '        version: link:../plugin-core',
+      '  packages/agent-skill-eval:',
+      '    optionalDependencies:',
+      ...['x64', 'arm64'].flatMap((arch) => [`      '@lesliechan721/aw-windows-job-win32-${arch}':`, '        specifier: workspace:1.2.0', '        version: link:../fixture']),
       '',
     ].join('\n'));
 
@@ -242,8 +258,8 @@ describe('local prepared release', () => {
     expect(cli.version).toBe('1.2.1');
     expect(evalPackage.version).toBe('1.2.1');
     expect(corePackage.version).toBe('1.2.1');
-    expect(windowsX64Package.version).toBe('1.2.0');
-    expect(windowsArm64Package.version).toBe('1.2.0');
+    expect(windowsX64Package.version).toBe('1.2.1');
+    expect(windowsArm64Package.version).toBe('1.2.1');
     expect(cli.dependencies['@lesliechan721/agent-skill-eval']).toBe('workspace:1.2.1');
     expect(cli.dependencies['@lesliechan721/aw-plugin-core']).toBe('workspace:1.2.1');
     expect(await fs.readFile(path.join(root, 'pnpm-lock.yaml'), 'utf8'))
@@ -258,7 +274,7 @@ describe('local prepared release', () => {
       throw new Error('CLI state must not be read');
     });
     const descriptor = await prepareLocalRelease('beta', {
-      verifyNativeReferences: async () => {},
+      prepareCatalogToolchain: async () => ({ cliDistRoot: '/selected-cli/dist', toolchain: { version: '1.2.0-beta.1', channel: 'beta', source: 'registry' }, tarballPaths: await Promise.all(Array.from({ length: 5 }, async (_, index) => { const file = path.join(root, `tool-${index}.tgz`); await fs.writeFile(file, 'tool'); return file; })) }),
       repoRoot: root,
       releaseRoot,
       axes: { cli: false, catalog: true },
@@ -278,7 +294,7 @@ describe('local prepared release', () => {
       },
     });
     expect(descriptor.source.targetsDigest).toBeNull();
-    expect(descriptor.catalog).toEqual({
+    expect(descriptor.catalog).toMatchObject({
       version: candidate,
       publication: { planDigest: sha256('catalog-plan') },
     });
@@ -550,7 +566,7 @@ describe('local prepared release', () => {
     })).rejects.toThrow('CLI train stable target 1.2.0 is only partially published');
   });
 
-  it('writes an overwriteable ignored descriptor and stages all tarballs from one snapshot', async () => {
+  it('writes an overwriteable ignored CLI descriptor and stages all five tarballs from one snapshot', async () => {
     const root = await temporaryRoot();
     const releaseRoot = path.join(root, '.release');
     const evalRoot = path.join(root, 'eval');
@@ -604,29 +620,29 @@ describe('local prepared release', () => {
       return output;
     };
     const prepareOptions = {
-      verifyNativeReferences: async () => {},
       repoRoot: root,
       releaseRoot,
+      axes: { cli: true, catalog: false },
       assertClean: async () => undefined,
       assertTargetsMatchHead: async () => undefined,
       readTargets: async () => targets,
       assertPackageVersions: async () => ({ targetVersion: targets.cli }),
       resolveHead: async () => head,
-      resolveCandidates: async () => ({ cli: '1.2.0', catalog: '2.3.0' }),
+      resolveCandidates: async () => ({ cli: '1.2.0', catalog: null }),
       withSnapshot: async (callback: (value: typeof snapshot) => unknown) => callback(snapshot),
       packEval: pack('eval', evalRoot),
-      packWindowsJobX64: pack('windows-x64', windowsX64Root),
-      packWindowsJobArm64: pack('windows-arm64', windowsArm64Root),
+      prepareWindowsJobTarballs: async ({ destination }: { destination: string }) => {
+        const tarballPaths = await Promise.all([pack('windows-x64', windowsX64Root), pack('windows-arm64', windowsArm64Root)].map((run) => run({ destination, snapshot })));
+        for (const name of ['candidate.json', 'reproducibility.json', 'qualification-x64.json', 'qualification-arm64.json']) await fs.writeFile(path.join(root, name), '{}');
+        return { root, tarballPaths };
+      },
+      assertWindowsJobCandidateEvidence: async () => undefined,
       packCore: pack('core', coreRoot),
       packCli: pack('cli', cliRoot),
       computeTarballTreeDigest: async (file: string) => sha256(await fs.readFile(file)),
-      prepareCatalog: async (mode: string) => {
-        expect(mode).toBe('latest');
-        return catalogPublicationPlan();
-      },
     };
     const descriptor = await prepareLocalRelease('stable', prepareOptions);
-    expect(descriptor.axes).toEqual({ cli: true, catalog: true });
+    expect(descriptor.axes).toEqual({ cli: true, catalog: false });
     expect(descriptor.build.generationId).toBe('generation-1');
     expect(await fs.readdir(path.join(releaseRoot, 'prepared'))).toContain('descriptor.json');
     await fs.writeFile(path.join(releaseRoot, 'prepared', 'stale'), 'stale');
@@ -641,9 +657,9 @@ describe('local prepared release', () => {
   });
 
   it.each([
-    [{ cli: true, catalog: false }, ['eval', 'core', 'cli']],
+    [{ cli: true, catalog: false }, ['windows-x64', 'windows-arm64', 'eval', 'core', 'cli']],
     [{ cli: false, catalog: true }, ['catalog']],
-    [{ cli: true, catalog: true }, ['eval', 'core', 'cli', 'catalog']],
+    [{ cli: true, catalog: true }, ['windows-x64', 'windows-arm64', 'eval', 'core', 'cli', 'catalog']],
   ] as const)('publishes enabled axes in eval, CLI, Catalog order: %j', async (axes, expected) => {
     const fixture = await publicationFixture(axes);
     const events: string[] = [];
@@ -657,7 +673,7 @@ describe('local prepared release', () => {
     expect(events).toEqual(expected);
   });
 
-  it.each(['eval', 'core', 'cli'] as const)('stops before Catalog when %s publication is uncertain and requires a bump', async (failure) => {
+  it.each(['windows-x64', 'windows-arm64', 'eval', 'core', 'cli'] as const)('stops before Catalog when %s publication is uncertain and requires a bump', async (failure) => {
     const fixture = await publicationFixture({ cli: true, catalog: true });
     const events: string[] = [];
     const publishCatalog = vi.fn();
@@ -671,10 +687,45 @@ describe('local prepared release', () => {
       publishCatalog,
     })).rejects.toThrow('run pnpm release again with --cli-bump');
     expect(publishCatalog).not.toHaveBeenCalled();
-    const order = ['eval', 'core', 'cli'];
+    const order = ['windows-x64', 'windows-arm64', 'eval', 'core', 'cli'];
     expect(events).toEqual(order.slice(0, order.indexOf(failure) + 1));
     expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))
       .toMatchObject({ candidates: { cli: '1.2.0' } });
+  });
+
+  it('counts a native-only version as occupied for the entire train', async () => {
+    await expect(resolvePreparedCandidates('beta', targets, {
+      axes: { cli: true, catalog: false },
+      readPackageVersions: async (name: string) => name.endsWith('win32-arm64') ? ['1.2.0-beta.4'] : [],
+      readPackageChannelVersion: async () => null,
+    })).resolves.toEqual({ cli: '1.2.0-beta.5', catalog: null });
+  });
+
+  it.each([false, true])('retries only registry reads before tag and Catalog when visibility is persistent=%s', async (persistent) => {
+    const fixture = await publicationFixture({ cli: true, catalog: true });
+    let time = 0;
+    let failures = 0;
+    const publish = vi.fn(async () => undefined);
+    const tag = vi.fn();
+    const catalog = vi.fn();
+    const result = publishPreparedRelease({
+      ...publishOptions(fixture), runNpmCommand: publish, publishCliTag: tag, publishCatalog: catalog,
+      now: () => time, visibilityTimeoutMs: 20, visibilityRetryMs: 5,
+      waitForVisibility: async (duration: number) => { time += duration; },
+      assertPublishedPackageMatches: async (name: string) => {
+        if (name.endsWith('win32-arm64') && (persistent || failures++ < 2)) throw new Error('E404');
+      },
+    });
+    if (persistent) {
+      await expect(result).rejects.toThrow('not fully available');
+      expect(tag).not.toHaveBeenCalled();
+      expect(catalog).not.toHaveBeenCalled();
+    } else {
+      await result;
+      expect(tag).toHaveBeenCalledOnce();
+      expect(catalog).toHaveBeenCalledOnce();
+    }
+    expect(publish).toHaveBeenCalledTimes(5);
   });
 
   it('consumes a candidate before the first write and refuses a same-version retry', async () => {
@@ -694,6 +745,8 @@ describe('local prepared release', () => {
       descriptorDigest: calculateCanonicalDigest(fixture.descriptor),
     }));
     const published = new Set([
+      '@lesliechan721/aw-windows-job-win32-x64',
+      '@lesliechan721/aw-windows-job-win32-arm64',
       '@lesliechan721/agent-skill-eval',
       '@lesliechan721/aw-plugin-core',
     ]);
@@ -728,7 +781,9 @@ describe('local prepared release', () => {
     });
 
     expect(runNpmCommand).toHaveBeenCalledTimes(1);
-    expect(verified).toEqual([
+    expect(verified).toEqual([...CLI_RELEASE_PACKAGES.map((entry: { name: string }) => entry.name),
+      '@lesliechan721/aw-windows-job-win32-x64',
+      '@lesliechan721/aw-windows-job-win32-arm64',
       '@lesliechan721/agent-skill-eval',
       '@lesliechan721/aw-plugin-core',
       '@lesliechan721/aw',
@@ -791,7 +846,7 @@ describe('local prepared release', () => {
       assertPublishedPackageMatches: async () => undefined,
       runNpmCommand,
     })).rejects.toThrow('newer');
-    expect(channelReads).toHaveLength(3);
+    expect(channelReads).toHaveLength(5);
     expect(runNpmCommand).not.toHaveBeenCalled();
     expect(await fs.readFile(attemptPath, 'utf8')).toBe(attemptBytes);
   });
@@ -882,7 +937,7 @@ describe('local prepared release', () => {
       publishCatalog: async () => { events.push('catalog'); },
     });
 
-    expect(events).toEqual(['cli', 'cli', 'cli', 'catalog']);
+    expect(events).toEqual(['cli', 'cli', 'cli', 'cli', 'cli', 'catalog']);
     expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))
       .toMatchObject({ candidates: { cli: candidates.cli } });
   });
@@ -908,7 +963,7 @@ describe('local prepared release', () => {
       publishCatalog: async () => { events.push('catalog'); },
     });
 
-    expect(events).toEqual(['cli', 'cli', 'cli', 'catalog']);
+    expect(events).toEqual(['cli', 'cli', 'cli', 'cli', 'cli', 'catalog']);
     expect(JSON.parse(await fs.readFile(path.join(failed.root, 'attempted.json'), 'utf8')))
       .toMatchObject({ candidates: { cli: '1.2.1' } });
   });

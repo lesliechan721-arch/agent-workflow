@@ -3861,12 +3861,12 @@ describe('authoring tools', () => {
   it('validates an uncommitted native reader in the managed package candidate without writing to source', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-author-native-reader-'));
     tempDirs.push(tempRoot);
-    const descriptor = nativeToolFixture().closure.definitions[0]!.descriptor;
+    const protocol = nativeToolFixture().closure.definitions[0]!.protocol;
     const manifest = createBaseManifest('native-reader-author', {
-      requires: { aw: { capabilities: ['aw.managed-commands.v1', 'aw.native-tools.v1'] } },
+      requires: { aw: { capabilities: ['aw.managed-commands.v1', 'aw.native-tools.v2'] } },
       nativeTools: {
         reader: './command/native-reader.mjs',
-        definitions: [{ key: 'job', protocol: descriptor.tool.protocol, descriptor: './native-tools/job.lock.json' }],
+        definitions: [{ key: 'job', protocol }],
         consumers: [{ kind: 'managed-command-set', key: 'tools', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] }],
       },
       managedCommands: {
@@ -3877,7 +3877,6 @@ describe('authoring tools', () => {
     const entry = 'import { readNativeTool } from "./native-reader.mjs";\nexport { readNativeTool };\n';
     const { pluginDir } = await writeSourcePlugin(tempRoot, 'native-reader-author', manifest, {
       'command/entry.mjs': entry,
-      'native-tools/job.lock.json': descriptor as unknown as Record<string, unknown>,
     });
     await expect(runValidatePlugin(pluginDir, ['--json'])).resolves.toMatchObject({ stdout: expect.stringContaining('"ok": true') });
     expect(await fs.readdir(path.join(pluginDir, 'command'))).toEqual(['entry.mjs']);

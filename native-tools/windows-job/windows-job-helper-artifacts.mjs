@@ -9,7 +9,9 @@ import { fileURLToPath } from 'node:url'
 const execFileAsync = promisify(execFile)
 const toolRoot = path.dirname(fileURLToPath(import.meta.url))
 const tool = JSON.parse(await readFile(path.join(toolRoot, 'tool.json'), 'utf8'))
-const defaultNativeRoot = path.resolve(toolRoot, '../../.native/windows-job', tool.version)
+const repoRoot = path.resolve(toolRoot, '../..')
+const cliPackage = JSON.parse(await readFile(path.join(repoRoot, 'packages/cli/package.json'), 'utf8'))
+const defaultNativeRoot = path.join(repoRoot, '.native/windows-job', cliPackage.version)
 const buildFlags = ['-trimpath', '-buildvcs=false', '-ldflags=-buildid=']
 const fixedEnvironment = {
   CGO_ENABLED: '0',
@@ -53,7 +55,7 @@ function artifactPaths(options = {}) {
   const nativeRoot = options.nativeRoot ?? defaultNativeRoot
   return {
     nativeRoot,
-    helperSourceRoot: options.helperSourceRoot ?? path.join(toolRoot, 'job-helper'),
+    helperSourceRoot: options.helperSourceRoot ?? path.join(options.repoRoot ?? repoRoot, 'native-tools/windows-job/job-helper'),
     manifestPath: options.manifestPath ?? path.join(nativeRoot, 'manifest.json'),
   }
 }
@@ -165,6 +167,7 @@ export async function verifyWindowsJobArtifacts(options = {}) {
     !Array.isArray(manifest.build?.flags) ||
     JSON.stringify(manifest.build.flags) !== JSON.stringify(buildFlags) ||
     manifest.build.cgoEnabled !== false ||
+    manifest.build.goVersion !== (options.goVersion ?? tool.goVersion) ||
     !/^go\d+\.\d+(?:\.\d+)?(?:[a-z0-9.-]+)?$/u.test(manifest.build.goVersion) ||
     manifest.build.cacheMode !== cacheMode ||
     JSON.stringify(manifest.build.temporaryEnvironment) !==

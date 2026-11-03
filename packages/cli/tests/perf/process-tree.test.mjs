@@ -64,7 +64,6 @@ function nativeToolEnvironment(executable) {
       schemaVersion: 1,
       tools: { 'windows-job': {
         state: 'ready', protocol: 'aw.windows-job.v1', executable,
-        sha256: `sha256:${'a'.repeat(64)}`,
       } },
     }),
   };
@@ -644,9 +643,9 @@ describe('performance gate process tree cleanup', () => {
       .toThrow('nativeContextInvalid');
     expect(() => resolveWindowsJobHelperPath({ environment: {
       AW_NATIVE_TOOL_CONTEXT: JSON.stringify({ schemaVersion: 1, tools: {
-        'windows-job': { state: 'unavailable', protocol: 'aw.windows-job.v1', code: 'nativeCacheMiss' },
+        'windows-job': { state: 'unavailable', protocol: 'aw.windows-job.v1', code: 'nativePackageUnavailable' },
       } }),
-    } })).toThrow('helper is unavailable (nativeCacheMiss)');
+    } })).toThrow('helper is unavailable (nativePackageUnavailable)');
     expect(() => createWindowsJobInvocation('target.cmd', [], {
       helperPath: 'aw-windows-job.exe',
     })).toThrow('.cmd and .bat targets are unsupported');
@@ -654,7 +653,7 @@ describe('performance gate process tree cleanup', () => {
       label: 'missing Windows Job helper fixture',
       command: 'target.exe',
       args: [],
-      env: {},
+      env: { AW_NATIVE_TOOL_CONTEXT: '{}' },
       timeoutMs: 1_000,
     }, {
       platform: 'win32',

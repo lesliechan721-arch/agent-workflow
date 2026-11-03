@@ -47,7 +47,6 @@ import { getArtifactSourceBundleRelativePath, resolveCommandSourceDirectory } fr
 import { resolveArtifactRequest } from './artifact-request.js';
 import { validateArtifactPlan } from './artifact-plan.js';
 import { createArtifactRuntimeConfigSnapshots } from './runtime-config.js';
-import { resolveAwHome } from './state-paths.js';
 import type { RuntimeConfigSnapshot } from '@lesliechan721/aw-plugin-core';
 
 export type ArtifactRenderEvent = 'install' | 'refresh' | 'materialize';
@@ -523,7 +522,6 @@ function assertRefreshKeysForEvent(
 }
 
 async function runArtifactRendererProcess(options: {
-  nativeCacheRoot: string;
   invocation: PluginScriptInvocation;
   timeoutMs: number;
   sensitiveValues: readonly string[];
@@ -540,7 +538,6 @@ async function runArtifactRendererProcess(options: {
     : defaultPluginProcessRunner.run(options.invocation, {
         ...runOptions,
         sensitiveValues: options.sensitiveValues,
-        nativeCacheRoot: options.nativeCacheRoot,
       });
 }
 
@@ -631,7 +628,6 @@ export async function runArtifactRenderer(options: {
     });
 
     const result = await runArtifactRendererProcess({
-      nativeCacheRoot: path.join(resolveAwHome(commandEnv), 'native-artifacts', 'v1'),
       invocation,
       timeoutMs,
       sensitiveValues: writtenContext.sensitiveValues,

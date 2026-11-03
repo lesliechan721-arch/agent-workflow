@@ -193,7 +193,6 @@ test('native Windows isolated home uses its prepared tool for platform and Job A
     HOME: home, USERPROFILE: home, HOMEDRIVE: drive, HOMEPATH: home.slice(drive.length),
     APPDATA: appData, LOCALAPPDATA: localAppData, TEMP: temp, TMP: temp,
     AW_NATIVE_TOOL_CONTEXT: process.env.AW_NATIVE_TOOL_CONTEXT,
-    AW_NATIVE_RESOLVER_MODE: 'cache-only',
     AW_SUBAGENT_PROCESS_TOKEN: randomBytes(24).toString('hex'),
   };
   const safeCodes = [

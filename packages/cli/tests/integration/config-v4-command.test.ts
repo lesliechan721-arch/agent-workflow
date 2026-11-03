@@ -175,7 +175,7 @@ describe('Config Definition v4 public command', () => {
           sets: [{ set: 'tools', producer: { kind: 'package', packageKey: 'tools' }, mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'tool.mjs' }] }],
         };
         manifest.nativeTools = { reader: native.closure.reader,
-          definitions: native.closure.definitions.map((definition) => ({ key: definition.key, protocol: definition.protocol, descriptor: definition.descriptorPath })),
+          definitions: native.closure.definitions.map((definition) => ({ key: definition.key, protocol: definition.protocol })),
           consumers: structuredClone(native.closure.consumers) };
       });
     };
@@ -223,7 +223,7 @@ describe('Config Definition v4 public command', () => {
     const synced = await run(packageSync, confirmation);
     expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { overallState: 'completed' } });
     expect(confirmation.messages).toHaveLength(1);
-    for (const value of ['required', 'preferred', 'fallback=portable', required.closure.definitions[0]!.descriptorDigest]) expect(confirmation.messages[0]).toContain(value);
+    for (const value of ['required', 'preferred', 'fallback=portable', 'aw.windows-job.v1']) expect(confirmation.messages[0]).toContain(value);
     expect((await readInstalledCommandProducer(resourceRoot)).nativeTools).toEqual(preferred.closure);
     expect(await set('next')).toMatchObject({ exitCode: 0, payload: { configWrite: 'succeeded', apply: { state: 'succeeded' } } });
     expect(await fs.readJson(path.join(resourceRoot, 'config.json'))).toEqual({ mode: 'next' });

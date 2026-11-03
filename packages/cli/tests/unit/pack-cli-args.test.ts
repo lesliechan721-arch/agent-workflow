@@ -11,6 +11,8 @@ describe('pack CLI arguments', () => {
     expect(parsePackCliArgs(['--', '--pack-destination', 'relative-pack'])).toEqual({
       destination: 'relative-pack',
     });
+    expect(parsePackCliArgs(['--native-candidate', '/tmp/native-candidate'])).toEqual({ destination: undefined, nativeCandidateRoot: '/tmp/native-candidate' });
+    expect(() => parsePackCliArgs(['--native-candidate'])).toThrow('Missing value');
     expect(() => parsePackCliArgs(['--pack-destination'])).toThrow('Missing value');
     expect(() => parsePackCliArgs(['--unexpected'])).toThrow('Unknown argument');
   });

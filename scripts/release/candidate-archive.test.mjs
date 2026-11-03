@@ -17,14 +17,14 @@ async function fixture(t, product = 'cli') {
   if (product === 'cli') {
     await write('cli/prepared/descriptor.json', '{}');
     await write('cli/attempted.json', '{}');
-    for (let index = 0; index < 3; index += 1) await write(`cli/prepared/artifacts/package-${index}.tgz`, `package-${index}`);
+    for (let index = 0; index < 5; index += 1) await write(`cli/prepared/artifacts/package-${index}.tgz`, `package-${index}`);
   } else {
     await write('catalog/publication/journal.json', '{}');
     await write('catalog/publication/repository/.git/HEAD', 'ref: refs/heads/catalog/beta\n');
     await write('catalog/publication/repository/runner.mjs', '#!/usr/bin/env node\n', 0o755);
-    for (let index = 0; index < 3; index += 1) await write(`tools/package-${index}.tgz`, `package-${index}`);
+    for (let index = 0; index < 5; index += 1) await write(`tools/package-${index}.tgz`, `package-${index}`);
   }
-  const metadata = { product, version: '1.0.1-beta.1', sourceHead: '1'.repeat(40), candidateHead: '2'.repeat(40) };
+  const metadata = { channel: 'beta', ...(product === 'catalog' ? { toolchain: { version: '2.0.0-beta.1', channel: 'beta', source: 'registry' } } : {}), product, version: '1.0.1-beta.1', sourceHead: '1'.repeat(40), candidateHead: '2'.repeat(40) };
   await sealCandidateDirectory(root, metadata);
   return { temporary, root, metadata, write, archive: path.join(temporary, 'candidate.tar'), unpacked: path.join(temporary, 'unpacked') };
 }
@@ -34,7 +34,7 @@ test('candidate archives preserve exact files, hidden Git state, and executable 
   const digest = await archiveCandidate(f.root, f.archive);
   await extractCandidate(f.archive, f.unpacked, digest);
   const imported = await verifyCandidateDirectory(f.unpacked, f.metadata);
-  assert.equal(imported.files.length, 6);
+  assert.equal(imported.files.length, 8);
   assert.equal(await fs.readFile(path.join(f.unpacked, 'catalog/publication/repository/.git/HEAD'), 'utf8'), 'ref: refs/heads/catalog/beta\n');
   if (process.platform !== 'win32') assert.equal((await fs.stat(path.join(f.unpacked, 'catalog/publication/repository/runner.mjs'))).mode & 0o777, 0o755);
 });

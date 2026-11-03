@@ -87,7 +87,7 @@ async function readCandidate(root, options) {
 async function copyPrepared(root, descriptor, destination) {
   await fs.mkdir(path.join(destination, 'artifacts'), { recursive: true, mode: 0o700 });
   await fs.copyFile(path.join(root, 'descriptor.json'), path.join(destination, 'descriptor.json'));
-  for (const artifact of descriptor.npm.packages) {
+  for (const artifact of [...descriptor.npm.packages, ...descriptor.npm.nativeEvidence]) {
     const source = path.join(root, artifact.path);
     const target = path.join(destination, artifact.path);
     await fs.copyFile(source, target);
@@ -105,7 +105,7 @@ async function absent(filePath) {
   }
 }
 
-/** Export only the descriptor, its three bound tarballs, and the unchanged attempt. */
+/** Export the descriptor, five bound tarballs, native evidence, and unchanged attempt. */
 export async function exportPreparedRelease(options = {}) {
   if (typeof options.destination !== 'string' || options.destination === '') {
     throw new Error('Prepared export requires a destination directory.');

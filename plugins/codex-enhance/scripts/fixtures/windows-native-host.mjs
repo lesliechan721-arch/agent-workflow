@@ -44,8 +44,7 @@ export function useWindowsNativeFixture({ preserveContext = false } = {}) {
   if (!preserveContext || !process.env.AW_NATIVE_TOOL_CONTEXT) {
     process.env.AW_NATIVE_TOOL_CONTEXT = JSON.stringify({ schemaVersion: 1, tools: {
       'windows-job': { state: 'ready', protocol: 'aw.windows-job.v1',
-        executable: path.resolve('fixture-native/aw-windows-job.exe'), sha256: `sha256:${'0'.repeat(64)}` },
+        executable: path.resolve('fixture-native/aw-windows-job.exe') },
     } });
   }
-  process.env.AW_NATIVE_RESOLVER_MODE = 'cache-only';
 }

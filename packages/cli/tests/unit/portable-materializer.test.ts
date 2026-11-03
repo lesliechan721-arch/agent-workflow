@@ -1,11 +1,8 @@
 import os from 'node:os';
 import path from 'node:path';
-import http from 'node:http';
-import https from 'node:https';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { importNativeTool } from '@lesliechan721/aw-native-runtime';
 
 import type { PluginManifestSource, PluginMeta } from '../../src/types.js';
 import {
@@ -24,7 +21,6 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import * as processTree from '../../src/utils/process-tree.js';
-import { fixture } from '../../../native-runtime/tests/fixtures.mjs';
 
 const roots: string[] = [];
 
@@ -83,8 +79,8 @@ afterEach(async () => {
 });
 
 describe('portable materializer', () => {
-  it.skipIf(process.platform === 'win32').each(['static', 'empty-cache', 'ready-cache'] as const)(
-    'keeps Windows author materialization offline (%s)',
+  it.skipIf(process.platform === 'win32').each(['static', 'missing-dependency', 'ready-dependency'] as const)(
+    'prepares the installed Windows helper before renderer startup (%s)',
     async (kind) => {
       const root = await tempRoot('aw-portable-native-admission-');
       const manifest = baseManifest('native-admission');
@@ -112,47 +108,29 @@ describe('portable materializer', () => {
           }] }));
         `);
       }
-      const native = fixture();
-      const descriptorPath = path.join(root, 'native.lock.json');
-      const archivePath = path.join(root, 'native.tgz');
-      const cacheRoot = path.join(root, 'aw-home', 'native-artifacts', 'v1');
-      await fs.writeJson(descriptorPath, native.descriptor);
-      await fs.writeFile(archivePath, native.archive);
-      if (kind === 'ready-cache') {
-        await importNativeTool({ descriptor: native.descriptor, archivePath, cacheRoot, platform: 'win32', arch: 'x64' });
-      }
-      const env = { ...process.env, AW_HOME: path.join(root, 'aw-home'),
-        AW_TEST_RUNNER_PROCESS_TREE: '1',
-        AW_NATIVE_TEST_CONFIG: JSON.stringify({ mode: 'network', cacheRoot, descriptorPath }),
-      };
-      const transports = [vi.spyOn(http, 'request'), vi.spyOn(https, 'request')];
-      for (const transport of transports) {
-        transport.mockImplementation(() => { throw new Error('Native transport must stay offline.'); });
-      }
-      const prepare = processTree.prepareWindowsJobHelper;
+      const env = { ...process.env, AW_HOME: path.join(root, 'aw-home') };
       const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-      vi.spyOn(processTree, 'prepareWindowsJobHelper').mockImplementation(async (options) => {
+      const prepare = vi.spyOn(processTree, 'prepareWindowsJobHelper').mockImplementation(async () => {
         platform.mockRestore();
-        expect(options.mode).toBe('cache-only');
-        return prepare({ ...options, arch: 'x64' });
+        if (kind === 'missing-dependency') throw Object.assign(new Error('Reinstall the current CLI/Eval package and include optional dependencies.'), { code: 'nativePackageUnavailable' });
+        return process.execPath;
       });
       const result = materializePortableSkills({
         plugins: [plugin], pluginId: plugin.pluginId!, scope: 'user', cwd: root, env,
       });
-      if (kind === 'empty-cache') {
+      if (kind === 'missing-dependency') {
         const failure = await result.catch((error: unknown) => error) as Error & { code: string };
-        expect(failure.code).toBe('nativeCacheMiss');
-        expect(failure.message).toContain(`aw native prefetch '${descriptorPath}'`);
-        expect(failure.message).toContain(`aw native import '${descriptorPath}' --archive`);
+        expect(failure.code).toBe('nativePackageUnavailable');
+        expect(failure.message).toContain('optional dependencies');
       } else {
         const materialized = await result;
         expect(materialized.candidates.map((candidate) => candidate.name)).toEqual(['portable']);
         await materialized.cleanup();
       }
       platform.mockRestore();
-      for (const transport of transports) expect(transport).not.toHaveBeenCalled();
-      await expect(fs.pathExists(marker)).resolves.toBe(kind === 'ready-cache');
-      await expect(fs.pathExists(cacheRoot)).resolves.toBe(kind === 'ready-cache');
+      expect(prepare).toHaveBeenCalledTimes(kind === 'static' ? 0 : 1);
+      await expect(fs.pathExists(marker)).resolves.toBe(kind === 'ready-dependency');
+      await expect(fs.pathExists(path.join(env.AW_HOME, 'native-artifacts'))).resolves.toBe(false);
     },
   );
 

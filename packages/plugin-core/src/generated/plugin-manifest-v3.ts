@@ -513,7 +513,6 @@ reader?: PluginPath
 definitions: {
 key: CommandName
 protocol: string
-descriptor: PluginPath
 }[]
 consumers: NativeToolConsumer[]
 }

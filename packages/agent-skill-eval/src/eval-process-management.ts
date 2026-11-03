@@ -1,5 +1,4 @@
 import process from 'node:process'
-import { readNativeToolTestConfig } from '@lesliechan721/aw-native-runtime'
 import { assertCodexEvalKeychainWrapperAbsent } from './codex-eval-isolation.js'
 import type { EvalResultProcessManagement } from './eval-result.js'
 import {
@@ -62,7 +61,6 @@ export async function resolveEvalProcessManagement(options: {
   allowUnmanaged: boolean
   codexBin?: string
   sourceEnv?: NodeJS.ProcessEnv
-  nativeCacheRoot?: string
   onWindowsJobHelperPrepared?: (helperPath: string) => void
   dependencies?: EvalProcessManagementDependencies
 }): Promise<EvalResultProcessManagement> {
@@ -103,18 +101,9 @@ export async function resolveEvalProcessManagement(options: {
 
   try {
     if (platform === 'win32') {
-      const environment = { ...process.env, ...sourceEnv }
-      const testConfig = dependencies.prepareWindowsJobHelper
-        ? undefined : readNativeToolTestConfig(environment)
       const helperPath = dependencies.prepareWindowsJobHelper
         ? await dependencies.prepareWindowsJobHelper()
-        : await prepareWindowsJobHelper({
-            cacheRoot: testConfig?.cacheRoot ?? options.nativeCacheRoot ?? '',
-            sourceEnv,
-            mode: testConfig?.mode ?? (environment.AW_TEST_RUNNER_PROCESS_TREE === '1' ? 'cache-only' : 'network'),
-            ...(testConfig?.archivePath ? { archivePath: testConfig.archivePath } : {}),
-            ...(testConfig?.descriptorPath ? { descriptorPath: testConfig.descriptorPath } : {}),
-          })
+        : await prepareWindowsJobHelper({ platform })
       options.onWindowsJobHelperPrepared?.(helperPath)
     } else if (dependencies.inspectProcessTree) await dependencies.inspectProcessTree()
     else {

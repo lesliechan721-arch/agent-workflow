@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { readNativeTool } from '@lesliechan721/aw-native-runtime';
+import { readNativeTool } from '@lesliechan721/aw-native-runtime/reader';
 
 import { createExecFileNativeCliRunner, NativeCliError } from '../../src/utils/native-cli.js';
 import { createWindowsJobInvocation, observeProcessTree } from '../../src/utils/process-tree.js';

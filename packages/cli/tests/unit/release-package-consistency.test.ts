@@ -26,6 +26,9 @@ async function packageTarball(
   await fs.writeFile(path.join(source, 'package', 'package.json'), `${JSON.stringify({
     name: packageName,
     version: '1.0.0',
+    ...(packageName === '@lesliechan721/agent-skill-eval' ? { optionalDependencies: {
+      '@lesliechan721/aw-windows-job-win32-x64': '1.0.0', '@lesliechan721/aw-windows-job-win32-arm64': '1.0.0',
+    } } : {}),
   })}\n`);
   await fs.writeFile(path.join(source, 'package', 'dist', 'index.js'), contents);
   const tarballPath = path.join(root, `${name}.tgz`);
@@ -79,7 +82,7 @@ describe('published package file consistency', () => {
     expect(calls[0]).toMatchObject({
       command: 'npm',
       args: [
-        'pack', '@scope/fixture@1.0.0', '--ignore-scripts', '--json',
+        'pack', '@scope/fixture@1.0.0', '--ignore-scripts', '--prefer-online', '--json',
         '--pack-destination', root, '--registry', 'https://registry.example.test/',
       ],
       options: {
@@ -104,6 +107,8 @@ describe('published package file consistency', () => {
       path.join(root, 'package.json'),
       candidate,
       {
+        registryUrl: 'https://registry.example.test/',
+        captureCommand: async () => ({ stdout: JSON.stringify({ name: '@scope/fixture', version: '1.0.0', dist: { tarball: 'https://registry.example.test/fixture.tgz', integrity: 'sha512-fixture' } }), stderr: '' }),
         downloadExactPackageTarball: async (_name, _version, _manifest, destination) => {
           downloadRoot = destination;
           const target = path.join(destination, 'fixture.tgz');
@@ -118,6 +123,28 @@ describe('published package file consistency', () => {
     await expect(fs.stat(downloadRoot)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('shares one deadline between metadata and archive reads', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-package-deadline-'));
+    roots.push(root);
+    const candidate = await packageTarball(root, 'candidate', 'fixture');
+    let now = 0;
+    await assertPublishedPackageTarballMatchesCandidate('@scope/fixture', '1.0.0', '/unused/package.json', candidate, {
+      registryUrl: 'https://registry.example.test/', visibilityDeadline: 10, now: () => now,
+      captureCommand: async (_command, args, options) => {
+        expect(args).toContain('--prefer-online');
+        expect(options.timeoutMs).toBe(10);
+        now = 8;
+        return { stdout: JSON.stringify({ name: '@scope/fixture', version: '1.0.0', dist: { tarball: 'https://registry.example.test/fixture.tgz', integrity: 'sha512-fixture' } }), stderr: '' };
+      },
+      downloadExactPackageTarball: async (_name, _version, _manifest, destination, options) => {
+        expect(options.timeoutMs).toBe(2);
+        const target = path.join(destination, 'fixture.tgz');
+        await fs.copyFile(candidate, target);
+        return { tarballPath: target, registryUrl: 'https://registry.example.test/' };
+      },
+    });
+  });
+
   it('fails closed when an exact registry version has different production files', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-package-consistency-'));
     roots.push(root);
@@ -130,6 +157,8 @@ describe('published package file consistency', () => {
       path.join(root, 'package.json'),
       candidate,
       {
+        registryUrl: 'https://registry.example.test/',
+        captureCommand: async () => ({ stdout: JSON.stringify({ name: '@scope/fixture', version: '1.0.0', dist: { tarball: 'https://registry.example.test/fixture.tgz', integrity: 'sha512-fixture' } }), stderr: '' }),
         downloadExactPackageTarball: async (_name, _version, _manifest, destination) => {
           const target = path.join(destination, 'fixture.tgz');
           await fs.copyFile(published, target);

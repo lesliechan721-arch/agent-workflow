@@ -40,7 +40,7 @@ export interface PluginProcessRunner {
   run(invocation: PluginScriptInvocation, options: { timeoutMs: number; signal?: AbortSignal; maxStdoutBytes?: number }): Promise<PluginProcessResult>;
 }
 
-interface DefaultPluginProcessRunOptions { nativeCacheRoot?: string; timeoutMs: number; signal?: AbortSignal; sensitiveValues?: readonly string[]; maxStdoutBytes?: number }
+interface DefaultPluginProcessRunOptions { timeoutMs: number; signal?: AbortSignal; sensitiveValues?: readonly string[]; maxStdoutBytes?: number }
 
 class PluginProcessInputError extends Error {
   constructor(cause: unknown) {
@@ -331,9 +331,7 @@ export function createDefaultPluginProcessRunner(
         ? createWindowsJobInvocationImpl(invocation.command, invocation.args)
         : usesDefaultWindowsJob
           ? createWindowsJobInvocation(invocation.command, invocation.args, {
-              helperPath: await resolveWindowsJobHelperPath({
-                cacheRoot: options.nativeCacheRoot ?? path.join(resolveAwHome(invocation.env), 'native-artifacts', 'v1'),
-              }),
+              helperPath: await resolveWindowsJobHelperPath(),
             })
           : undefined
       : undefined;

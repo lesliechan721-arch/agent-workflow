@@ -36,6 +36,13 @@ export const corePackageRoot = path.join(repoRoot, 'packages', 'plugin-core');
 export const cliPackageJsonPath = path.join(repoRoot, 'packages', 'cli', 'package.json');
 export const cliPackageRoot = path.join(repoRoot, 'packages', 'cli');
 export const cliDistRoot = path.join(cliPackageRoot, 'dist');
+export const WINDOWS_JOB_PACKAGE_NAMES = ['x64', 'arm64'].map((arch) => `@lesliechan721/aw-windows-job-win32-${arch}`);
+export const CLI_RELEASE_PACKAGES = [
+  ...WINDOWS_JOB_PACKAGE_NAMES.map((name, index) => ({ name, relativePath: `packages/aw-windows-job-win32-${['x64', 'arm64'][index]}/package.json` })),
+  { name: EVAL_PACKAGE_NAME, relativePath: 'packages/agent-skill-eval/package.json' },
+  { name: CORE_PACKAGE_NAME, relativePath: 'packages/plugin-core/package.json' },
+  { name: CLI_PACKAGE_NAME, relativePath: 'packages/cli/package.json' },
+];
 export const catalogReleaseStagingRoot = path.join(releaseRoot, 'catalog-staging');
 
 const cachedCatalogModules = new Map();
@@ -522,6 +529,7 @@ export async function computePackageTarballTreeDigest(tarballPath, options = {})
         CLI_PACKAGE_NAME,
         EVAL_PACKAGE_NAME,
         CORE_PACKAGE_NAME,
+        ...WINDOWS_JOB_PACKAGE_NAMES,
       ].includes(packageJson.name)) {
         throw new Error(`Unsupported release package ${JSON.stringify(packageJson.name)}.`);
       }
@@ -555,6 +563,19 @@ export async function computePackageTarballTreeDigest(tarballPath, options = {})
         throw new Error(`Packed ${packageJson.name} must not depend on ${CORE_PACKAGE_NAME}.`);
       }
 
+      if (packageJson.name === EVAL_PACKAGE_NAME) {
+        for (const name of WINDOWS_JOB_PACKAGE_NAMES) {
+          if (packageJson.optionalDependencies?.[name] !== packageJson.version) {
+            throw new Error(`Packed ${EVAL_PACKAGE_NAME} must optionally depend on ${name}@${packageJson.version}.`);
+          }
+          packageJson.optionalDependencies[name] = RELEASE_VERSION_SENTINEL;
+        }
+      }
+      const nativeIndex = WINDOWS_JOB_PACKAGE_NAMES.indexOf(packageJson.name);
+      if (nativeIndex >= 0 && (JSON.stringify(packageJson.os) !== '["win32"]'
+        || JSON.stringify(packageJson.cpu) !== JSON.stringify([['x64', 'arm64'][nativeIndex]]))) {
+        throw new Error(`Packed ${packageJson.name} must declare its exact Windows OS and CPU.`);
+      }
       packageJson.version = RELEASE_VERSION_SENTINEL;
       delete packageJson.awRelease;
       normalizedContents = Buffer.from(`${JSON.stringify(packageJson, null, 2)}\n`);
@@ -601,6 +622,7 @@ export async function downloadExactPackageTarball(
     'pack',
     `${packageName}@${version}`,
     '--ignore-scripts',
+    '--prefer-online',
     '--json',
     '--pack-destination',
     destination,
@@ -633,6 +655,34 @@ export async function assertPublishedPackageTarballMatchesCandidate(
 ) {
   const computeDigest = options.computePackageTarballTreeDigest ?? computePackageTarballTreeDigest;
   const candidateTreeDigest = await computeDigest(candidateTarballPath);
+  const registryUrl = options.registryUrl ?? await resolveRegistryUrl(packageJsonPath, options.env ?? process.env);
+  const now = options.now ?? Date.now;
+  const deadline = options.visibilityDeadline ?? (now() + (options.timeoutMs ?? RELEASE_NETWORK_TIMEOUT_MS));
+  const remaining = () => {
+    const timeout = deadline - now();
+    if (timeout <= 0) throw new Error(`Registry verification timed out for ${packageName}@${version}.`);
+    return timeout;
+  };
+  const metadataResult = await (options.captureCommand ?? captureCommand)('npm', [
+    'view', `${packageName}@${version}`, '--json', '--prefer-online', '--registry', registryUrl,
+  ], { timeoutMs: remaining(), env: options.env });
+  const metadata = JSON.parse(metadataResult.stdout);
+  if (metadata.name !== packageName || metadata.version !== version || !metadata.dist?.tarball
+    || typeof metadata.dist.integrity !== 'string') {
+    throw Object.assign(new Error(`Registry metadata for ${packageName}@${version} is incomplete.`), { code: 'releasePackageMismatch' });
+  }
+  const nativeIndex = WINDOWS_JOB_PACKAGE_NAMES.indexOf(packageName);
+  if (nativeIndex >= 0 && (JSON.stringify(metadata.os) !== '["win32"]'
+    || JSON.stringify(metadata.cpu) !== JSON.stringify([['x64', 'arm64'][nativeIndex]]))) {
+    throw Object.assign(new Error(`Registry metadata for ${packageName}@${version} has incorrect OS or CPU.`), { code: 'releasePackageMismatch' });
+  }
+
+  const expectedDependencies = packageName === CLI_PACKAGE_NAME ? [EVAL_PACKAGE_NAME, CORE_PACKAGE_NAME] : [];
+  const expectedOptional = packageName === EVAL_PACKAGE_NAME ? WINDOWS_JOB_PACKAGE_NAMES : [];
+  if (expectedDependencies.some((name) => metadata.dependencies?.[name] !== version)
+    || expectedOptional.some((name) => metadata.optionalDependencies?.[name] !== version)) {
+    throw Object.assign(new Error(`Registry metadata for ${packageName}@${version} has incorrect CLI product dependencies.`), { code: 'releasePackageMismatch' });
+  }
   return withOwnedTemporaryDirectory(
     path.join(os.tmpdir(), 'aw-registry-package-'),
     async (temporaryRoot) => {
@@ -643,13 +693,13 @@ export async function assertPublishedPackageTarballMatchesCandidate(
         version,
         packageJsonPath,
         temporaryRoot,
-        options,
+        { ...options, timeoutMs: remaining() },
       );
       const publishedTreeDigest = await computeDigest(tarballPath);
       if (candidateTreeDigest !== publishedTreeDigest) {
-        throw new Error(
+        throw Object.assign(new Error(
           `Published ${packageName}@${version} has different package files from the release candidate.`,
-        );
+        ), { code: 'releasePackageMismatch' });
       }
       return { candidateTreeDigest, publishedTreeDigest, registryUrl };
     },
@@ -980,25 +1030,27 @@ export async function findLatestTarball(directoryPath = tarballDir) {
 }
 
 export async function assertPublicPackageVersions(repoRootPath = repoRoot) {
-  const [rootPackageJson, targets, evalPackageJson, corePackageJson, cliPackageJson] = await Promise.all([
+  const [rootPackageJson, targets, ...packages] = await Promise.all([
     readPackageJson(path.join(repoRootPath, 'package.json')),
     readPackageJson(path.join(repoRootPath, 'release', 'version-targets.json')),
-    readPackageJson(path.join(repoRootPath, 'packages', 'agent-skill-eval', 'package.json')),
-    readPackageJson(path.join(repoRootPath, 'packages', 'plugin-core', 'package.json')),
-    readPackageJson(path.join(repoRootPath, 'packages', 'cli', 'package.json')),
+    ...CLI_RELEASE_PACKAGES.map((entry) => readPackageJson(path.join(repoRootPath, entry.relativePath))),
   ]);
   if (Object.hasOwn(rootPackageJson, 'version')) throw new Error('package.json must not declare a version; release/version-targets.json is the release target source.');
   if (targets?.schemaVersion !== 2 || Object.keys(targets).sort().join('\n') !== ['cli', 'schemaVersion'].join('\n')) throw new Error('release/version-targets.json must use schemaVersion 2 with only the CLI target.');
   const targetVersion = assertValidVersion(targets.cli);
   assertVersionKind(targetVersion, 'stable');
-  const evalVersion = assertValidVersion(evalPackageJson.version);
-  const coreVersion = assertValidVersion(corePackageJson.version);
-  const cliVersion = assertValidVersion(cliPackageJson.version);
-  if ([evalVersion, coreVersion, cliVersion].some((version) => version !== targetVersion)) throw new Error('Version mismatch: CLI, Eval and Core must match release/version-targets.json.');
+  if (packages.some((manifest, index) => manifest.name !== CLI_RELEASE_PACKAGES[index].name || assertValidVersion(manifest.version) !== targetVersion)) {
+    throw new Error('Version mismatch: all five CLI product packages must match release/version-targets.json.');
+  }
+  const evalPackageJson = packages[2];
+  const cliPackageJson = packages[4];
   for (const name of [EVAL_PACKAGE_NAME, CORE_PACKAGE_NAME]) {
     if (cliPackageJson.dependencies?.[name] !== `workspace:${targetVersion}`) throw new Error(`${CLI_PACKAGE_NAME} must exactly depend on ${name}@workspace:${targetVersion}.`);
   }
-  return { targetVersion, evalVersion, coreVersion, cliVersion };
+  for (const name of WINDOWS_JOB_PACKAGE_NAMES) {
+    if (evalPackageJson.optionalDependencies?.[name] !== `workspace:${targetVersion}`) throw new Error(`${EVAL_PACKAGE_NAME} must exactly optionally depend on ${name}@workspace:${targetVersion}.`);
+  }
+  return { targetVersion, evalVersion: targetVersion, coreVersion: targetVersion, cliVersion: targetVersion };
 }
 
 async function packCliFromSnapshot(snapshot, destination, options = {}) {

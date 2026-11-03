@@ -6,7 +6,7 @@ import { validateCommandEnvironment, type CommandLaunch } from '@lesliechan721/a
 
 import { resolveAwHomeCanonical } from './state-paths.js';
 import { prepareNativeToolContext, type NativeToolContext } from './native-tool-context.js';
-import type { resolveNativeTool, NativeToolMode } from '@lesliechan721/aw-native-runtime';
+import type { prepareWindowsJobHelper } from '@lesliechan721/agent-skill-eval';
 import { ManagedCommandError, resolveManagedCommand } from './managed-command-store.js';
 
 export interface CommandHost {
@@ -48,7 +48,6 @@ export function buildManagedCommandEnvironment(options: {
     put(name, value);
   }
   if (options.nativeContext && Object.keys(options.nativeContext.tools).length > 0) put('AW_NATIVE_TOOL_CONTEXT', JSON.stringify(options.nativeContext));
-  put('AW_NATIVE_RESOLVER_MODE', 'cache-only');
   put('AW_HOME', options.host.awHome);
   put('AW_COMMAND_HOST', JSON.stringify(options.host));
   return result;
@@ -62,24 +61,22 @@ export interface ManagedCommandRunOptions {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   arch?: string;
-  nativeMode?: NativeToolMode;
-  nativeResolver?: typeof resolveNativeTool;
+  prepareNativeTool?: typeof prepareWindowsJobHelper;
 }
 
 export async function prepareManagedCommandRun(options: ManagedCommandRunOptions): Promise<{ executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }> {
   const hostEnvironment = { ...(options.env ?? process.env) };
   const awHome = await resolveAwHomeCanonical(hostEnvironment);
   const { launch, resourceRoot, producer, set } = await resolveManagedCommand(options.id, hostEnvironment);
-  // Reject host-detectable binding errors before native preparation can access the network.
+  // Reject invalid bindings before native preparation or consumer startup.
   const host: CommandHost = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry: path.resolve(options.cliEntry), awHome };
   const environment = buildManagedCommandEnvironment({ launch, hostEnvironment, host, platform: options.platform });
-  const inheritedCacheOnly = Object.entries(hostEnvironment).some(([key, value]) => key.toUpperCase() === 'AW_NATIVE_RESOLVER_MODE' && value === 'cache-only');
   let nativeContext: NativeToolContext;
   try {
-    nativeContext = await prepareNativeToolContext({ closure: producer?.nativeTools, kind: 'managed-command-set', key: set ?? '', awHome,
-      platform: options.platform, arch: options.arch, mode: inheritedCacheOnly ? 'cache-only' : options.nativeMode ?? 'network', resolve: options.nativeResolver, registryEnvironment: hostEnvironment });
+    nativeContext = await prepareNativeToolContext({ closure: producer?.nativeTools, kind: 'managed-command-set', key: set ?? '',
+      platform: options.platform, arch: options.arch, prepare: options.prepareNativeTool });
   } catch (error) {
-    throw new ManagedCommandError(error && typeof error === 'object' && 'code' in error ? String(error.code) : 'nativeToolUnavailable', 'The required native tool could not be prepared. Import its locked archive or retry.');
+    throw new ManagedCommandError(error && typeof error === 'object' && 'code' in error ? String(error.code) : 'nativeToolUnavailable', 'The required native tool could not be prepared. Reinstall the current CLI/Eval package and include optional dependencies.');
   }
   if (Object.keys(nativeContext.tools).length > 0) environment.AW_NATIVE_TOOL_CONTEXT = JSON.stringify(nativeContext);
   const absoluteEntry = path.resolve(resourceRoot, launch.entry);

@@ -7,8 +7,8 @@ import {
   cliDistRoot,
   repoRoot as defaultRepoRoot,
   resolveReleaseHead,
-  withReleaseBuildSnapshot,
 } from './common.mjs';
+import { loadCatalogToolchainCore } from './catalog-toolchain.mjs';
 
 export const CATALOG_CHANNEL_BRANCHES = {
   latest: 'catalog/latest',
@@ -115,34 +115,39 @@ export async function resolveCatalogPluginBaseVersions({ channel, ...options }) 
   if (options.sourceHead !== undefined && options.sourceHead !== sourceHead) {
     throw new Error('Catalog Plugin base preparation must use the checked out source HEAD.');
   }
-  const result = await (options.withSnapshot ?? withReleaseBuildSnapshot)(async (snapshot) => {
-    const [core, service] = await Promise.all([
-      import(pathToFileURL(path.join(snapshot.corePackageRoot, 'dist', 'index.js')).href),
-      loadCatalogPublicationService({ ...options, cliDistRoot: snapshot.cliDistRoot }),
-    ]);
-    const current = await core.validateCatalogSnapshotComplete(snapshot.catalogOutputRoot);
+  if (typeof options.cliDistRoot !== 'string' || options.cliDistRoot === '') throw new Error('Catalog Plugin base preparation requires the explicitly selected CLI toolchain.');
+  const distRoot = path.resolve(options.cliDistRoot);
+  const [core, service, authoring] = await Promise.all([
+    loadCatalogToolchainCore(distRoot, { env }),
+    loadCatalogPublicationService(options),
+    import(pathToFileURL(path.join(distRoot, 'src/authoring/workspace-commands.js')).href),
+  ]);
+  const stateRoot = path.join(repoRoot, '.aw');
+  await fs.mkdir(stateRoot, { recursive: true });
+  const stateStats = await fs.lstat(stateRoot);
+  if (!stateStats.isDirectory() || stateStats.isSymbolicLink()) throw new Error('Catalog build state must be a regular local directory.');
+  const temporaryRoot = await fs.mkdtemp(path.join(stateRoot, '.catalog-plugin-base-'));
+  try {
+    const built = await authoring.runCatalogBuildCommand({ workspaceRoot: repoRoot, workspaceRootResolvedFrom: 'explicit', out: path.join(temporaryRoot, 'snapshot'), force: true, io: { stdout() {}, stderr() {} } });
+    const current = await core.validateCatalogSnapshotComplete(built.outputRoot);
     const officialPluginHistory = await service.readCatalogPublicationPluginHistory({
-      workspaceRoot: repoRoot,
-      remoteUrl: resolveCatalogMaintenanceRemote(options),
-      branches: Object.values(CATALOG_CHANNEL_BRANCHES),
-      env,
+      workspaceRoot: repoRoot, remoteUrl: resolveCatalogMaintenanceRemote(options),
+      branches: Object.values(CATALOG_CHANNEL_BRANCHES), env,
     });
-    const versions = core.resolvePublishedPluginVersions({
-      channel: mode,
-      entries: current.manifest.entries,
-      officialPluginHistory,
-      sourcePluginVersionsAtBaseline: options.sourcePluginVersionsAtBaseline,
-    });
-    return Object.fromEntries(current.manifest.entries.flatMap((entry) => {
+    const versions = core.resolvePublishedPluginVersions({ channel: mode, entries: current.manifest.entries,
+      officialPluginHistory, sourcePluginVersionsAtBaseline: options.sourcePluginVersionsAtBaseline });
+    const result = Object.fromEntries(current.manifest.entries.flatMap((entry) => {
       const baseVersion = versions[entry.name].split('-', 1)[0];
       return baseVersion === entry.version ? [] : [[entry.name, baseVersion]];
     }));
-  }, { repoRoot });
-  await assertReleaseWorktreeClean({ cwd: repoRoot });
-  if (await resolveReleaseHead({ cwd: repoRoot, env }) !== sourceHead) {
-    throw new Error('Catalog source HEAD changed during Plugin base preparation.');
+    await assertReleaseWorktreeClean({ cwd: repoRoot });
+    if (await resolveReleaseHead({ cwd: repoRoot, env }) !== sourceHead) {
+      throw new Error('Catalog source HEAD changed during Plugin base preparation.');
+    }
+    return result;
+  } finally {
+    await fs.rm(temporaryRoot, { recursive: true, force: true });
   }
-  return result;
 }
 
 export async function publishCatalogRelease({ channel, expectedPlanDigest }, options = {}) {

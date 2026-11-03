@@ -31,8 +31,8 @@
     "schemas/"
   ],
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && pnpm run generate:check && tsc -p tsconfig.json && node ../native-runtime/scripts/embed.mjs . --offline",
-    "build:dev": "pnpm run generate:check && tsc -p tsconfig.dev.json && node ../native-runtime/scripts/embed.mjs . --offline",
+    "build": "node scripts/clean-dist.mjs && pnpm run generate:check && tsc -p tsconfig.json && node ../native-runtime/scripts/embed.mjs .",
+    "build:dev": "pnpm run generate:check && tsc -p tsconfig.dev.json && node ../native-runtime/scripts/embed.mjs .",
     "generate": "node scripts/generate-manifest-types.mjs",
     "generate:check": "node scripts/generate-manifest-types.mjs --check",
     "test": "node ../../scripts/test/run-vitest.mjs run",

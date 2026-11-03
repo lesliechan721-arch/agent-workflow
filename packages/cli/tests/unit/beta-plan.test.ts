@@ -22,6 +22,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
+const nativeNames = ['x64', 'arm64'].map((arch) => `@lesliechan721/aw-windows-job-win32-${arch}`);
 const packages = [
   ['agent-skill-eval', '@lesliechan721/agent-skill-eval'],
   ['plugin-core', '@lesliechan721/aw-plugin-core'],
@@ -47,6 +48,7 @@ async function packageTarball(root: string, name: string, version: string, paylo
   const manifest = {
     name, version, engines: { node: '>=22' }, bin: { fixture: './dist/index.js' },
     exports: './dist/index.js',
+    ...(name === packages[0][1] ? { optionalDependencies: Object.fromEntries(nativeNames.map((name) => [name, version])) } : {}),
     dependencies: {
       thirdparty: options.thirdParty ?? '1.0.0',
       ...(name === packages[2][1] ? { [packages[0][1]]: options.internalVersion ?? version, [packages[1][1]]: version } : {}),
@@ -110,7 +112,7 @@ async function fixture(published = true) {
   const baselineSource = await commit(repoRoot, 'initial source');
   await git(repoRoot, 'remote', 'add', 'origin', remote);
   await git(repoRoot, 'push', '--quiet', 'origin', 'main');
-  const registry = new Map<string, Map<string, string>>(packages.map(([, name]) => [name, new Map()]));
+  const registry = new Map<string, Map<string, string>>([...packages.map(([, name]) => name), ...nativeNames].map((name) => [name, new Map()]));
   const initialPackages = await packagesAt(root, '1.0.0', 'export const value = 1;\n');
   const initialCatalog = await catalogAt(path.join(root, 'initial-catalog'));
 
@@ -126,6 +128,7 @@ async function fixture(published = true) {
     await git(repoRoot, 'push', '--quiet', 'origin', `refs/tags/cli-v${version}`);
     await git(repoRoot, 'checkout', '--quiet', 'main');
     expect(await git(repoRoot, 'rev-parse', 'HEAD')).toBe(originalHead);
+    for (const name of nativeNames) registry.get(name)!.set(version, 'native-evidence-not-downloaded-by-planner');
     for (const artifact of await packagesAt(root, version, payload)) registry.get(artifact.name)!.set(version, artifact.tarballPath);
   }
 
@@ -218,6 +221,26 @@ async function fixture(published = true) {
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+});
+
+// Test Value Gate: native production inputs must select the CLI axis even when
+// the three JavaScript package trees stay unchanged. No Go build is needed here.
+it.each([
+  ['job-helper/helper_windows.go', true],
+  ['windows-job-helper-artifacts.mjs', true],
+  ['job-helper/go.mod', true],
+  ['windows-job-helper-artifacts.test.mjs', false],
+  ['job-helper/helper_windows_test.go', false],
+])('selects CLI only for Windows helper production input %s', async (relative, changed) => {
+  const f = await fixture();
+  const source = path.join(f.repoRoot, 'native-tools/windows-job', relative as string);
+  await fs.mkdir(path.dirname(source), { recursive: true });
+  await fs.writeFile(source, 'package main\nconst changed = true\n');
+  const sourceHead = await commit(f.repoRoot, 'change native production source');
+  await git(f.repoRoot, 'push', '--quiet', 'origin', 'main');
+  const plan = await planAutomaticBeta({ ...f.options, sourceHead });
+  expect(plan.products.cli.changed).toBe(changed);
+  expect(plan.products.catalog.changed).toBe(false);
 });
 
 describe('automatic beta product planning', () => {
@@ -394,7 +417,7 @@ describe('automatic beta product planning', () => {
     expect(f.builds).toBe(1);
   });
 
-  it('keeps a partial three-package completion out of the successful source baseline', async () => {
+  it('keeps a partial five-package completion out of the successful source baseline', async () => {
     const f = await fixture();
     const source = await f.change({ cli: true });
     await f.publishCli('1.0.1-beta.7', source, 'export const value = 2;\n');
@@ -543,7 +566,7 @@ describe('automatic beta product planning', () => {
     await git(f.repoRoot, 'tag', 'cli-v1.0.1-beta.1');
     await git(f.repoRoot, 'push', '--quiet', 'origin', 'refs/tags/cli-v1.0.1-beta.1');
     await git(f.repoRoot, 'checkout', '--quiet', 'main');
-    for (const [, name] of packages) f.registry.get(name)!.set('1.0.1-beta.1', 'not-downloaded');
+    for (const name of [...packages.map(([, name]) => name), ...nativeNames]) f.registry.get(name)!.set('1.0.1-beta.1', 'not-downloaded');
     const result = await planAutomaticBeta(f.options);
     expect(result.products.cli).toMatchObject({ changed: false, version: null,
       error: expect.stringContaining('non-version path') });

@@ -58,7 +58,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
           manifest.nativeTools = {
             reader: fixture.closure.reader,
             definitions: fixture.closure.definitions.map((definition) => ({ key: definition.key,
-              protocol: definition.protocol, descriptor: definition.descriptorPath })),
+              protocol: definition.protocol })),
             consumers: structuredClone(fixture.closure.consumers),
           };
           if (fallback) manifest.nativeTools.consumers[0]!.tools[0]!.fallback = fallback;
@@ -156,7 +156,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
         producer: { kind: 'static-skill', platform: 'claude', skillKey: 'provider' }, mode: 'static',
         entries: [{ key: 'run', runner: 'node', entry: 'run.mjs' }] }] };
       manifest.nativeTools = { reader: fixture.closure.reader, definitions: fixture.closure.definitions.map((definition) => ({
-        key: definition.key, protocol: definition.protocol, descriptor: definition.descriptorPath,
+        key: definition.key, protocol: definition.protocol,
       })), consumers: structuredClone(fixture.closure.consumers) };
     };
     await createCatalogSnapshotFixture(authoringRoot, 'native-removal', [], 'Native removal fixture\n', configure);
@@ -214,7 +214,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
       manifest.managedCommands = { packages: [], sets: [{ set: 'tools', producer: { kind: 'artifact', artifactId: 'owned' },
         mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'run.mjs' }] }] };
       manifest.nativeTools = { reader: fixture.closure.reader, definitions: fixture.closure.definitions.map((definition) => ({
-        key: definition.key, protocol: definition.protocol, descriptor: definition.descriptorPath,
+        key: definition.key, protocol: definition.protocol,
       })), consumers: structuredClone(fixture.closure.consumers) };
     });
     const native = await createClaudeNativeTestRuntime(isolation);

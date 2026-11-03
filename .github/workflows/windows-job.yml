@@ -2,12 +2,14 @@ name: Windows Job source candidate
 
 on:
   workflow_dispatch:
-    inputs:
-      publish:
-        description: Publish both immutable native platform packages after qualification.
-        type: boolean
-        default: false
   workflow_call:
+    inputs:
+      source-ref:
+        type: string
+        default: ''
+      release-tag:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -26,6 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.source-ref || github.ref }}
           persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
@@ -35,16 +38,19 @@ jobs:
           node-version: '24'
           cache: pnpm
       - id: tool
-        run: node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\nversion=${tool.version}\n`);'
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\nversion=${process.env.RELEASE_TAG ? process.env.RELEASE_TAG.split("/v").at(-1) : JSON.parse(fs.readFileSync("packages/cli/package.json","utf8")).version}\n`);'
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ steps.tool.outputs.go }}
           cache: false
       - run: pnpm install --frozen-lockfile
       - run: pnpm native:windows-job:test
-      - run: pnpm native:windows-job:build
-      - run: pnpm native:windows-job:pack
-      - run: pnpm native:windows-job:reproduce
+      - run: pnpm native:windows-job:build -- --version "${{ steps.tool.outputs.version }}"
+      - run: pnpm native:windows-job:pack -- --version "${{ steps.tool.outputs.version }}"
+      - run: pnpm native:windows-job:reproduce -- --candidate ".native/windows-job/${{ steps.tool.outputs.version }}"
       - uses: actions/upload-artifact@v7
         with:
           name: windows-job-candidate
@@ -69,6 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.source-ref || github.ref }}
           persist-credentials: false
       - name: Prepare a separate fixed volume for arm64 qualification
         id: workspace
@@ -106,7 +113,8 @@ jobs:
       - id: tool
         shell: bash
         working-directory: ${{ steps.workspace.outputs.root }}
-        run: node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\n`);'
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\n`);'
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ steps.tool.outputs.go }}
@@ -119,7 +127,7 @@ jobs:
         working-directory: ${{ steps.workspace.outputs.root }}
       - run: pnpm build
         working-directory: ${{ steps.workspace.outputs.root }}
-      - run: pnpm qualification:windows-job
+      - run: node native-tools/windows-job/qualify.mjs --candidate ".native/windows-job/${{ needs.candidate.outputs.version }}"
         working-directory: ${{ steps.workspace.outputs.root }}
       - uses: actions/upload-artifact@v7
         with:
@@ -143,19 +151,45 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot detach qualification volume.' }
           Remove-Item -LiteralPath $env:QUALIFICATION_VHD
 
-  publish:
-    name: Windows Job / publish
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
+  qualified:
     needs: [candidate, qualification]
     runs-on: ubuntu-24.04
-    environment: npm-native
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-job-candidate
+          path: candidate
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: windows-job-qualification-*
+          merge-multiple: true
+          path: candidate
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-job-qualified
+          path: candidate/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  # TEMPORARY: remove these dispatch-only jobs and their two scripts after acceptance.
+  acceptance-prepare:
+    name: Acceptance / prepare this five-package CLI candidate
+    if: github.event_name == 'workflow_dispatch'
+    needs: [candidate, qualified]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      bundle_digest: ${{ steps.prepare.outputs.bundle_digest }}
+      version: ${{ steps.prepare.outputs.version }}
+      candidate_head: ${{ steps.prepare.outputs.candidate_head }}
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
@@ -163,39 +197,123 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-          registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@11.6.2
+          cache: pnpm
       - uses: actions/download-artifact@v8
         with:
-          name: windows-job-candidate
-          path: .native/windows-job/${{ needs.candidate.outputs.version }}/
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: windows-job-qualification-*
-          merge-multiple: true
+          name: windows-job-qualified
           path: .native/windows-job/${{ needs.candidate.outputs.version }}/
       - run: pnpm install --frozen-lockfile
-      - name: Reject a prior publisher attempt for this tool version
-        run: node native-tools/windows-job/actions-publication.mjs
+      - name: Prepare, record a non-publishing attempt, and seal the real candidate
+        id: prepare
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-      - name: Save the version-scoped write intent
-        id: intent
-        run: pnpm native:windows-job:release -- --prepare
-      - name: Save the publication boundary before any remote write
-        uses: actions/upload-artifact@v7
+          NATIVE_VERSION: ${{ needs.candidate.outputs.version }}
+        run: node .github/scripts/native-cli-acceptance.mjs prepare --native-candidate ".native/windows-job/$NATIVE_VERSION"
+      - uses: actions/upload-artifact@v7
         with:
-          name: windows-job-publication-intent
-          path: .release/native/windows-job/${{ needs.candidate.outputs.version }}/attempted.json
-          include-hidden-files: true
+          name: native-cli-acceptance-candidate
+          path: .release/native-cli-acceptance/candidate.tar
           if-no-files-found: error
-          retention-days: 30
-      - run: pnpm native:windows-job:release -- --publish --attempt-digest "${{ steps.intent.outputs.attempt_digest }}"
+          retention-days: 7
+
+  acceptance-smoke:
+    name: Acceptance / ${{ matrix.os }} ${{ matrix.arch }} Node 24 installed candidate
+    if: github.event_name == 'workflow_dispatch'
+    needs: acceptance-prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            os: linux
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            os: linux
+            arch: arm64
+          - runner: macos-15-intel
+            os: darwin
+            arch: x64
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+          - runner: windows-2025
+            os: win32
+            arch: x64
+          - runner: windows-11-arm
+            os: win32
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      CANDIDATE_DIGEST: ${{ needs.acceptance-prepare.outputs.bundle_digest }}
+      EXPECTED_OS: ${{ matrix.os }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+      AW_TEST_WORKERS: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.arch }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-cli-acceptance-candidate
+          path: .release/native-cli-acceptance/download
+      - name: Verify the same archive and restore file modes
+        run: node .github/scripts/native-cli-acceptance.mjs unpack --archive .release/native-cli-acceptance/download/candidate.tar --digest "$CANDIDATE_DIGEST"
+      - name: Consume the installed candidate on the real OS and CPU
+        run: |
+          mkdir -p .release/native-cli-acceptance/reports
+          node scripts/release/candidate-smoke.mjs --bundle-root .release/native-cli-acceptance/bundle --product cli --os "$EXPECTED_OS" --arch "$EXPECTED_ARCH" --candidate-digest "$CANDIDATE_DIGEST" | tee ".release/native-cli-acceptance/reports/smoke-$EXPECTED_OS-$EXPECTED_ARCH.json"
+      - name: Run standalone Eval after removing CLI and Core
+        if: matrix.os == 'win32'
+        run: node .github/scripts/native-eval-standalone.mjs --bundle-root .release/native-cli-acceptance/bundle | tee ".release/native-cli-acceptance/reports/standalone-eval-$EXPECTED_ARCH.json"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-job-publication-attempt
-          path: .release/native/windows-job/${{ needs.candidate.outputs.version }}/attempted.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
+          name: native-cli-acceptance-smoke-${{ matrix.os }}-${{ matrix.arch }}
+          path: .release/native-cli-acceptance/reports/*.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  acceptance-minimum-node:
+    name: Acceptance / Linux x64 exactly Node 22.0.0 installed candidate
+    if: github.event_name == 'workflow_dispatch'
+    needs: acceptance-prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CANDIDATE_DIGEST: ${{ needs.acceptance-prepare.outputs.bundle_digest }}
+      AW_TEST_WORKERS: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22.0.0'
+          architecture: x64
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-cli-acceptance-candidate
+          path: .release/native-cli-acceptance/download
+      - run: node .github/scripts/native-cli-acceptance.mjs unpack --archive .release/native-cli-acceptance/download/candidate.tar --digest "$CANDIDATE_DIGEST"
+      - run: |
+          mkdir -p .release/native-cli-acceptance/reports
+          node scripts/release/candidate-smoke.mjs --bundle-root .release/native-cli-acceptance/bundle --product cli --os linux --arch x64 --minimum-node --candidate-digest "$CANDIDATE_DIGEST" | tee .release/native-cli-acceptance/reports/smoke-linux-x64-node-22.0.0.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-cli-acceptance-minimum-node
+          path: .release/native-cli-acceptance/reports/*.json
+          if-no-files-found: warn
+          retention-days: 7

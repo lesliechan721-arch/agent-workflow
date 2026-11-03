@@ -21,6 +21,8 @@ const INPUT_PATHS = [
   'packages/agent-skill-eval/schemas',
   'packages/native-runtime',
   'packages/agent-skill-eval/scripts',
+  'packages/aw-windows-job-win32-x64/package.json',
+  'packages/aw-windows-job-win32-arm64/package.json',
   'packages/plugin-core/package.json',
   'packages/plugin-core/tsconfig.json',
   'packages/plugin-core/vitest.config.ts',
@@ -1265,6 +1267,16 @@ async function createSnapshotUnderLock(repoRoot, settings) {
       path.join(corePackageRoot, 'package.json'),
       { verbatimSymlinks: true },
     );
+    for (const arch of ['x64', 'arm64']) {
+      const packageName = `aw-windows-job-win32-${arch}`;
+      const packageRoot = path.join(snapshotRoot, 'packages', packageName);
+      await fs.mkdir(packageRoot, { recursive: true });
+      await copyPath(
+        path.join(repoRoot, 'packages', packageName, 'package.json'),
+        path.join(packageRoot, 'package.json'),
+        { verbatimSymlinks: true },
+      );
+    }
     const snapshotDigest = await computeBuildOutputDigest(snapshotRoot);
     if (snapshotDigest !== ensured.outputDigest) {
       throw new Error(

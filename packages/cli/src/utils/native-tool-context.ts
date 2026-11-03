@@ -1,48 +1,37 @@
-import path from 'node:path';
-
-import { resolveNativeTool, type NativeToolMode, type NativeToolReady } from '@lesliechan721/aw-native-runtime';
+import { prepareWindowsJobHelper, type PrepareWindowsJobHelperOptions } from '@lesliechan721/agent-skill-eval';
+import type { NativeToolContext } from '@lesliechan721/aw-native-runtime/reader';
+export type { NativeToolContext } from '@lesliechan721/aw-native-runtime/reader';
 import { getNativeToolConsumerClosure, type NativeToolClosure } from '@lesliechan721/aw-plugin-core/manifest';
 
-export interface NativeToolContext {
-  schemaVersion: 1;
-  tools: Record<string, NativeToolReady | { state: 'unavailable'; protocol: string; code: string }>;
+export function assertSupportedNativeToolProtocol(protocol: string): void {
+  if (protocol !== 'aw.windows-job.v1') {
+    throw Object.assign(new Error(`The host does not support native tool protocol ${protocol}.`), { code: 'nativeProtocolUnsupported' });
+  }
 }
 
 export async function prepareNativeToolContext(options: {
   closure?: NativeToolClosure;
   kind: 'managed-command-set' | 'plugin-test';
   key: string;
-  awHome: string;
   platform?: NodeJS.Platform;
   arch?: string;
-  mode?: NativeToolMode;
-  cacheRoot?: string;
-  archivePath?: string;
-  resolve?: typeof resolveNativeTool;
-  registryEnvironment?: NodeJS.ProcessEnv;
+  prepare?: (options?: PrepareWindowsJobHelperOptions) => Promise<string>;
 }): Promise<NativeToolContext> {
   const context: NativeToolContext = { schemaVersion: 1, tools: {} };
-  if (!options.closure) return context;
   const closure = getNativeToolConsumerClosure(options.closure, options.kind, options.key);
   if (!closure) return context;
   const platform = options.platform ?? process.platform;
   for (const binding of closure.consumers.flatMap((consumer) => consumer.tools)) {
     if (!binding.platforms.includes(platform as 'win32')) continue;
     const definition = closure.definitions.find((entry) => entry.key === binding.key)!;
+    assertSupportedNativeToolProtocol(definition.protocol);
     try {
-      context.tools[binding.key] = await (options.resolve ?? resolveNativeTool)({
-        descriptor: definition.descriptor,
-        cacheRoot: options.cacheRoot ?? path.join(options.awHome, 'native-artifacts', 'v1'),
-        platform,
-        arch: options.arch ?? process.arch,
-        mode: options.mode ?? 'network',
-        ...((options.mode ?? 'network') === 'network' ? { registryEnvironment: options.registryEnvironment ?? process.env } : {}),
-        ...(options.archivePath ? { archivePath: options.archivePath } : {}),
-      });
+      const executable = await (options.prepare ?? prepareWindowsJobHelper)({ platform, arch: options.arch ?? process.arch });
+      context.tools[binding.key] = { state: 'ready', protocol: definition.protocol, executable };
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
         && /^[A-Za-z][A-Za-z0-9]{0,95}$/u.test(error.code) ? error.code : 'nativeToolUnavailable';
-      if (binding.policy === 'required') throw Object.assign(new Error(`Required native tool ${binding.key} is unavailable. Import its locked archive or retry preparation.`), { code });
+      if (binding.policy === 'required') throw Object.assign(new Error(`Required native tool ${binding.key} is unavailable. Reinstall the current CLI/Eval package and include optional dependencies.`, { cause: error }), { code });
       context.tools[binding.key] = { state: 'unavailable', protocol: definition.protocol, code };
     }
   }

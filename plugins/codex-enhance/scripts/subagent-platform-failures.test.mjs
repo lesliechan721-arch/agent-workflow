@@ -443,12 +443,12 @@ test('scratch cleanup batches native tree checks and retains files when verifica
 test('native operations reject absent or invalid AW context and keep the selected tool fixed', async () => {
   const entry = new URL('../skills/codex-subagent-guide/scripts/runtime/windows-native.mjs', import.meta.url).href;
   const execute = promisify(originalExecFile);
-  const tool = { state: 'ready', protocol: 'aw.windows-job.v1', executable: path.resolve('fixture-native/aw-windows-job.exe'), sha256: `sha256:${'1'.repeat(64)}` };
+  const tool = { state: 'ready', protocol: 'aw.windows-job.v1', executable: path.resolve('fixture-native/aw-windows-job.exe') };
   const context = (value) => JSON.stringify({ schemaVersion: 1, tools: { 'windows-job': value } });
   const script = `import { windowsNativeOperation } from ${JSON.stringify(entry)};
 try { await windowsNativeOperation('pathCheck', { target: process.cwd(), kind: 'directory' }); process.exitCode = 1; }
 catch (error) { process.stdout.write(error.code); }`;
-  for (const raw of [undefined, '{', '{}', JSON.stringify({ schemaVersion: 1, tools: {} }), context({ ...tool, protocol: 'other.v1' }), context({ state: 'unavailable', protocol: tool.protocol, code: 'nativeCacheMiss' })]) {
+  for (const raw of [undefined, '{', '{}', JSON.stringify({ schemaVersion: 1, tools: {} }), context({ ...tool, protocol: 'other.v1' }), context({ state: 'unavailable', protocol: tool.protocol, code: 'nativePackageUnavailable' })]) {
     const environment = { ...process.env };
     if (raw === undefined) delete environment.AW_NATIVE_TOOL_CONTEXT;
     else environment.AW_NATIVE_TOOL_CONTEXT = raw;

@@ -7,7 +7,6 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import { readWindowsNativeProcessStart } from '@lesliechan721/agent-skill-eval';
 import { resolveWindowsJobHelperPath } from './process-tree.js';
-import { resolveAwHome } from './state-paths.js';
 
 const execFileAsync = promisify(execFile);
 const PROCESS_INSTANCE_TOKEN = crypto.randomUUID();
@@ -109,9 +108,7 @@ export async function readProcessStartIdentity(pid: number): Promise<string | nu
   }
   if (process.platform === 'win32') {
     try {
-      const helperPath = await resolveWindowsJobHelperPath({
-        cacheRoot: path.join(resolveAwHome(), 'native-artifacts', 'v1'),
-      });
+      const helperPath = await resolveWindowsJobHelperPath();
       const value = await readWindowsNativeProcessStart(pid, { helperPath });
       return value === null ? null : `win32:${value}`;
     } catch { return null; }

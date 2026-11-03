@@ -1,7 +1,5 @@
 import os from 'node:os';
-import type { NativeToolMode } from '@lesliechan721/aw-native-runtime';
 import { prepareWindowsJobHelper } from './process-tree.js';
-import { resolveAwHome } from './state-paths.js';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -216,7 +214,6 @@ export function injectNativeToolClosureFiles(files: Record<string, Buffer>, clos
 }
 
 export async function prepareManagedCommandPackage(options: {
-  nativeMode?: NativeToolMode;
   plugin: PluginMeta; packageKey: string; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
   event?: 'install' | 'refresh' | 'materialize'; changedConfigKeys?: string[];
   requestedArtifactIds?: readonly string[];
@@ -255,7 +252,7 @@ export async function prepareManagedCommandPackage(options: {
   let artifacts: ValidatedArtifactPlanArtifact[] = [];
   let generatedFiles: Record<string, string> = {};
   if (targets.length > 0) {
-    if (process.platform === 'win32') await prepareWindowsJobHelper({ cacheRoot: path.join(resolveAwHome(options.env), 'native-artifacts', 'v1'), sourceEnv: options.env, mode: options.nativeMode ?? 'cache-only' });
+    if (process.platform === 'win32') await prepareWindowsJobHelper();
     const rendered = await runArtifactRenderer({ plugin: options.plugin, event: options.event ?? 'install', platform: 'managed-commands', scope: declaration.scope, cwd: options.cwd, commandEnv: options.env, requestedArtifactIds: targets.map((target) => target.id), ...(options.event === 'refresh' ? { changedConfigKeys: options.changedConfigKeys ?? [] } : {}) });
     artifacts = validateArtifactPlan({ manifest: options.plugin.manifest, plan: rendered.plan, platform: 'managed-commands', scope: declaration.scope, requestedArtifactIds: rendered.context.requestedArtifactIds, renderConfig: rendered.context.config, rendererDigest: rendered.target.rendererDigest, manifestDigest: rendered.target.manifestDigest }).artifacts;
     for (const artifact of artifacts) if (artifact.target === 'aw.command-package') generatedFiles = artifact.files;

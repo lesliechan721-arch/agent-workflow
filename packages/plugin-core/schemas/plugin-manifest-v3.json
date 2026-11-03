@@ -147,8 +147,7 @@
             "additionalProperties": false,
             "required": [
               "key",
-              "protocol",
-              "descriptor"
+              "protocol"
             ],
             "properties": {
               "key": {
@@ -158,9 +157,6 @@
                 "type": "string",
                 "maxLength": 128,
                 "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$"
-              },
-              "descriptor": {
-                "$ref": "#/$defs/pluginPath"
               }
             }
           }

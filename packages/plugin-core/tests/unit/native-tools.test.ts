@@ -18,22 +18,10 @@ import {
   validateNativeToolClosureFiles,
   validatePluginManifest,
   validateSourcePluginManifest,
-  type NativeToolClosure,
-  type NativeToolDescriptor,
 } from '../../src/manifest.js';
 
-const descriptor: NativeToolDescriptor = {
-  schemaVersion: 1,
-  tool: { id: '@example/job', version: '1.2.3', protocol: 'example.job.v1' },
-  variants: [{
-    platform: 'win32', arch: 'x64',
-    transport: { kind: 'npm', package: '@example/job-win32-x64', version: '1.2.3', archiveIntegrity: `sha512-${Buffer.alloc(64).toString('base64')}`, entry: 'package/dist/job.exe' },
-    file: { sha256: `sha256:${'a'.repeat(64)}`, size: 128, format: 'pe', machine: '0x8664' },
-    limits: { archiveBytes: 4096, expandedBytes: 4096, entries: 8 },
-  }],
-};
 const nativeTools = {
-  definitions: [{ key: 'job', protocol: 'example.job.v1', descriptor: './native-tools/job.lock.json' }],
+  definitions: [{ key: 'job', protocol: 'aw.windows-job.v1' }],
   consumers: [
     { kind: 'managed-command-set', key: 'guide', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] },
     { kind: 'plugin-test', key: 'node', tools: [{ key: 'job', platforms: ['win32'], policy: 'preferred', fallback: 'portable' }] },
@@ -55,11 +43,9 @@ async function fixture(run: (root: string) => Promise<void>): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-core-'));
   try {
     await fs.mkdir(path.join(root, '.agents-plugin'));
-    await fs.mkdir(path.join(root, 'native-tools'));
     await fs.mkdir(path.join(root, 'tools'));
     await fs.writeFile(path.join(root, 'tools', 'run.mjs'), '');
     await fs.writeFile(path.join(root, '.agents-plugin', 'plugin.json'), JSON.stringify(manifest()));
-    await fs.writeFile(path.join(root, 'native-tools', 'job.lock.json'), JSON.stringify(descriptor));
     await run(root);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 }
@@ -69,7 +55,7 @@ describe('native tool author and installed closure contracts', () => {
     const normalized = validatePluginManifest('/plugin', manifest());
     expect(normalized.schemaVersion).toBe(3);
     expect(normalized.nativeTools).toEqual({ ...nativeTools, reader: './.aw/native-tool-reader.mjs' });
-    expect(deriveAwCapabilitiesFromManifest(normalized)).toContain('aw.native-tools.v1');
+    expect(deriveAwCapabilitiesFromManifest(normalized)).toContain('aw.native-tools.v2');
   });
 
   it.each([
@@ -86,22 +72,15 @@ describe('native tool author and installed closure contracts', () => {
     expect(() => validatePluginManifest('/plugin', manifest({ nativeTools }))).toThrow();
   });
 
-  it('loads ordinary local locks offline and rejects protocol, transport and path violations', async () => {
+  it('loads host requirements without any descriptor or native dependency', async () => {
     await fixture(async (root) => {
       const normalized = validatePluginManifest(root, manifest());
-      const closure = await loadPluginNativeToolClosure(root, normalized);
-      expect(closure?.definitions[0]).toMatchObject({ key: 'job', protocol: 'example.job.v1', descriptor, descriptorDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u) });
-      await fs.writeFile(path.join(root, 'native-tools', 'job.lock.json'), JSON.stringify({ ...descriptor, tool: { ...descriptor.tool, protocol: 'different.protocol.v1' } }));
-      await expect(loadPluginNativeToolClosure(root, normalized)).rejects.toThrow('nativeProtocolMismatch');
-      await fs.writeFile(path.join(root, 'native-tools', 'job.lock.json'), JSON.stringify({ ...descriptor, variants: [{ ...descriptor.variants[0], transport: { ...descriptor.variants[0]!.transport, package: 'https://example.test/job.tgz' } }] }));
-      await expect(loadPluginNativeToolClosure(root, normalized)).rejects.toThrow('nativeDescriptorInvalid');
-      await fs.unlink(path.join(root, 'native-tools', 'job.lock.json'));
-      await fs.symlink(path.join(root, '.agents-plugin', 'plugin.json'), path.join(root, 'native-tools', 'job.lock.json'));
-      await expect(loadPluginNativeToolClosure(root, normalized)).rejects.toThrow(/symbolic/u);
+      expect(await loadPluginNativeToolClosure(root, normalized)).toEqual({ ...nativeTools, reader: './.aw/native-tool-reader.mjs' });
+      expect((await fs.readdir(root)).sort()).toEqual(['.agents-plugin', 'tools']);
     });
   });
 
-  it('materializes a complete producer closure and detects lock tampering without a current manifest', async () => {
+  it('materializes only a reader and protocol bindings without a current manifest', async () => {
     await fixture(async (root) => {
       const normalized = validatePluginManifest(root, manifest());
       await preparePluginNativeTools(root, normalized);
@@ -117,13 +96,10 @@ describe('native tool author and installed closure contracts', () => {
       expect(normalizeInstalledCommandProducer(record).nativeTools).toEqual(copied);
       await fs.unlink(path.join(root, '.agents-plugin', 'plugin.json'));
       await expect(validateNativeToolClosureFiles(resource, copied)).resolves.toBeUndefined();
-      const incomplete = structuredClone(record);
-      delete (incomplete.nativeTools.definitions[0] as Partial<NativeToolClosure['definitions'][number]>).descriptor;
-      expect(() => normalizeInstalledCommandProducer(incomplete)).toThrow();
-      const altered = { ...descriptor, tool: { ...descriptor.tool, version: '2.0.0' } };
-      await fs.writeFile(path.resolve(resource, copied.definitions[0]!.descriptorPath), JSON.stringify(altered));
-      await expect(validateNativeToolClosureFiles(resource, copied)).rejects.toThrow('nativeDescriptorDigestMismatch');
-      expect(() => normalizeNativeToolClosure({ ...copied, definitions: [{ ...copied.definitions[0], descriptor: altered }] })).toThrow('nativeDescriptorDigestMismatch');
+      expect(Object.keys(materializeNativeToolClosureFiles(selected).files)).toEqual(['.aw/native-tool-reader.mjs']);
+      expect(() => normalizeNativeToolClosure({ ...copied, definitions: [{ ...copied.definitions[0], protocol: '' }] })).toThrow();
+      await fs.writeFile(path.resolve(resource, copied.reader), 'export const foreign = true;');
+      await expect(validateNativeToolClosureFiles(resource, copied)).rejects.toThrow('nativeToolReaderMismatch');
     });
   });
 
@@ -140,12 +116,10 @@ describe('native tool author and installed closure contracts', () => {
     });
   });
 
-  it('validates descriptors from the public source validator and protects native environment names on Windows', async () => {
+  it('validates host requirements from the public source validator and protects native environment names on Windows', async () => {
     await fixture(async (root) => {
       await expect(validateSourcePluginManifest(root, manifest())).resolves.toHaveProperty('nativeTools');
       await expect(validateSourcePluginManifest(root, manifest({ scripts: undefined }))).rejects.toThrow(/unknown plugin test runner/u);
-      await fs.writeFile(path.join(root, 'native-tools', 'job.lock.json'), '{}');
-      await expect(validateSourcePluginManifest(root, manifest())).rejects.toThrow('nativeDescriptorInvalid');
     });
     expect(() => validateCommandEnvironment({ aw_native_tool_context: 'foreign' }, {}, 'win32')).toThrow(/protected/u);
     expect(() => validateCommandEnvironment({}, { TOKEN: 'Aw_Native_Whatever' }, 'win32')).toThrow(/protected/u);

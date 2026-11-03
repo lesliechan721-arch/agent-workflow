@@ -3,12 +3,12 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
 import { prepareRun, prepareResume, executionConfiguration, validateCommandHost } from '../skills/codex-subagent-guide/scripts/runtime/runner.mjs';
 import { selectExecution } from '../skills/codex-subagent-guide/scripts/runtime/plan.mjs';
 
-const resourceRoot = fileURLToPath(new URL('../skills/codex-subagent-guide/', import.meta.url));
+const resourceRoot = path.dirname(guideRuntimeScripts(import.meta.url));
 
 function select(command, request = {}) {
   return selectExecution({
@@ -179,7 +179,7 @@ test('managed host validation fixes nested AW argv and environment without expos
   const cliEntry = path.join(directory, 'aw cli 中文.mjs');
   await fs.writeFile(cliEntry, `process.stdout.write(JSON.stringify(${JSON.stringify({ schemaVersion: 1, command: 'command.show', ok: true, overallState: 'completed', commands: [descriptor] })}));`);
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: directory };
-  const environment = { AW_HOME: directory, AW_COMMAND_HOST: JSON.stringify(host), AW_COMMAND_OLD: 'old', AW_PLUGIN_CONTEXT: 'temporary', AW_NATIVE_TOOL_CONTEXT: 'resolved-native-context', AW_NATIVE_RESOLVER_MODE: 'cache-only', SOURCE: '', KEEP: 'original' };
+  const environment = { AW_HOME: directory, AW_COMMAND_HOST: JSON.stringify(host), AW_COMMAND_OLD: 'old', AW_PLUGIN_CONTEXT: 'temporary', AW_NATIVE_TOOL_CONTEXT: 'resolved-native-context', SOURCE: '', KEEP: 'original' };
   await assert.rejects(validateCommandHost({ AW_HOME: directory }), { code: 'managedCommandHostMissing' });
   for (const raw of ['{', '{}', JSON.stringify({ ...host, schemaVersion: 2 }), JSON.stringify({ ...host, awHome: '/different' }), JSON.stringify({ ...host, cliEntry: directory }), JSON.stringify({ ...host, nodeExecutable: directory }), JSON.stringify({ ...host, nodeExecutable: path.join(directory, 'missing-node') }), JSON.stringify({ ...host, unexpected: true })]) {
     await assert.rejects(validateCommandHost({ ...environment, AW_COMMAND_HOST: raw }), { code: 'managedCommandHostInvalid' });
@@ -193,7 +193,7 @@ test('managed host validation fixes nested AW argv and environment without expos
   assert.deepEqual(prepared.request.args, args); assert.equal(prepared.request.prompt, ' task\n');
   assert.equal(prepared.environment.KEEP, 'executor'); assert.equal(prepared.environment.EMPTY, '');
   assert.equal(prepared.environment.AW_HOME, directory); assert.deepEqual(JSON.parse(prepared.environment.AW_COMMAND_HOST), host);
-  assert.equal(prepared.environment.AW_NATIVE_TOOL_CONTEXT, 'resolved-native-context'); assert.equal(prepared.environment.AW_NATIVE_RESOLVER_MODE, 'cache-only');
+  assert.equal(prepared.environment.AW_NATIVE_TOOL_CONTEXT, 'resolved-native-context');
   assert.equal(prepared.environment.AW_COMMAND_OLD, undefined); assert.equal(prepared.environment.AW_PLUGIN_CONTEXT, undefined);
   assert.equal(JSON.stringify(prepared.request).includes('AW_COMMAND_HOST'), false); assert.equal(JSON.stringify(prepared.request).includes(cliEntry), false);
   await assert.rejects(prepareRun(select({ adapter: 'custom-managed', mode: 'workspace', commandId, envFrom: { EMPTY: 'MISSING' } }), { prompt: 'task', workspace: directory }, { environment }), { code: 'environmentSourceMissing' });

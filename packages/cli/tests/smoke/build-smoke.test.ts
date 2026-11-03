@@ -277,9 +277,6 @@ describe('build smoke', () => {
       }
     }
 
-    expect(await fs.pathExists(path.join(snapshot.root, 'packages', 'aw-windows-job-win32-x64'))).toBe(false);
-    expect(await fs.pathExists(path.join(snapshot.root, 'packages', 'aw-windows-job-win32-arm64'))).toBe(false);
-
     await expect(
       fs.pathExists(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
     ).resolves.toBe(true);

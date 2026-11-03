@@ -146,3 +146,54 @@ jobs:
       - name: Remove temporary authentication
         if: always()
         run: rm -f "$RUNNER_TEMP/aw-release-askpass"
+
+  catalog:
+    needs: [candidate, publish]
+    if: always() && vars.RELEASE_APP_ID != '' && (needs.candidate.outputs.completed == 'true' || needs.publish.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+      GIT_TERMINAL_PROMPT: '0'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: pnpm install --frozen-lockfile
+      - name: Create a token to start the dependent Catalog candidate
+        uses: actions/create-github-app-token@v3
+        id: app
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - name: Start the associated Catalog after CLI completion
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          cat > "$RUNNER_TEMP/aw-batch-askpass" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GH_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          SH
+          chmod 700 "$RUNNER_TEMP/aw-batch-askpass"
+          GIT_ASKPASS="$RUNNER_TEMP/aw-batch-askpass" node scripts/release/actions-release.mjs complete-batch --product cli --tag "$RELEASE_TAG"
+      - name: Remove temporary authentication
+        if: always()
+        run: rm -f "$RUNNER_TEMP/aw-batch-askpass"

@@ -21,6 +21,8 @@ const packageNames = {
   'agent-skill-eval': '@lesliechan721/agent-skill-eval',
   'plugin-core': '@lesliechan721/aw-plugin-core',
   cli: '@lesliechan721/aw',
+  'aw-windows-job-win32-x64': '@lesliechan721/aw-windows-job-win32-x64',
+  'aw-windows-job-win32-arm64': '@lesliechan721/aw-windows-job-win32-arm64',
 };
 
 async function git(root, ...args) {
@@ -55,16 +57,19 @@ async function fixture(t) {
           [packageNames['agent-skill-eval']]: 'workspace:1.2.3',
           [packageNames['plugin-core']]: 'workspace:1.2.3',
         },
-      } : {}),
+      } : directory === 'agent-skill-eval' ? { optionalDependencies: {
+        [packageNames['aw-windows-job-win32-x64']]: 'workspace:1.2.3',
+        [packageNames['aw-windows-job-win32-arm64']]: 'workspace:1.2.3',
+      } } : {}),
     });
   }
   await writeJson(repoRoot, 'release/version-targets.json', { schemaVersion: 2, cli: '1.2.3' });
   await fs.writeFile(path.join(repoRoot, 'pnpm-lock.yaml'), [
     "lockfileVersion: '9.0'", 'importers:',
-    ...Object.entries(packageNames).filter(([directory]) => directory === 'cli')
+    ...Object.entries(packageNames).filter(([directory]) => ['cli', 'agent-skill-eval'].includes(directory))
       .flatMap(([directory]) => [
         `  packages/${directory}:`, directory === 'cli' ? '    dependencies:' : '    optionalDependencies:',
-        ...[packageNames['agent-skill-eval'], packageNames['plugin-core']]
+        ...(directory === 'cli' ? [packageNames['agent-skill-eval'], packageNames['plugin-core']] : [packageNames['aw-windows-job-win32-x64'], packageNames['aw-windows-job-win32-arm64']])
           .flatMap((name) => [`      '${name}':`, '        specifier: workspace:1.2.3', '        version: link:../fixture']),
       ]),
     '',
@@ -156,7 +161,7 @@ test('automatic beta inspection reuses only the recorded successful main CI atte
   const { repoRoot, sourceHead } = await fixture(t);
   const candidate = await prepareSourceCandidate({
     repoRoot, product: 'cli', version: '1.2.4-beta.1', sourceHead,
-    requireMainTip: true, ciRun: '42/2', push: true,
+    requireMainTip: true, ciRun: '42/2', push: true, catalogCandidateTag: 'release/catalog/v3.4.5-beta.1',
   });
   const ci = {
     id: 42, run_attempt: 2, event: 'push', head_branch: 'main', head_sha: sourceHead,
@@ -257,6 +262,7 @@ test('Catalog preparation uses the public mutation and modifies only requested p
   // The real public mutation validates the Workspace; an empty inventory is valid.
   const candidate = await prepareSourceCandidate({
     repoRoot, product: 'catalog', version: '2.0.0-beta.2', sourceHead,
+    cliDistRoot: path.resolve('packages/cli/dist'),
   });
   assert.deepEqual(await validateSourceCandidate({ repoRoot, tag: candidate.tag }), {
     product: 'catalog', version: '2.0.0-beta.2', channel: 'beta', sourceHead, candidateHead: candidate.candidateHead, tag: candidate.tag,
@@ -322,7 +328,7 @@ test('lockfile version prefixes cannot satisfy the exact internal dependency con
   await git(repoRoot, 'commit', '-m', 'inconsistent lockfile');
   await git(repoRoot, 'push', 'origin', 'main');
   await git(repoRoot, 'tag', 'release/cli/v1.2.3');
-  await assert.rejects(validateSourceCandidate({ repoRoot, tag: 'release/cli/v1.2.3' }), /two exact specifier/);
+  await assert.rejects(validateSourceCandidate({ repoRoot, tag: 'release/cli/v1.2.3' }), /four exact specifier/);
 });
 
 test('Catalog candidates reject mismatched exact versions and non-version owner changes', async (t) => {

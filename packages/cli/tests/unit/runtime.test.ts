@@ -101,6 +101,8 @@ describe('command runtime', () => {
       import('../../src/index.js'),
       import('../../src/utils/native-cli.js'),
     ]);
+    const processTree = await import('../../src/utils/process-tree.js');
+    const admission = vi.spyOn(processTree, 'prepareWindowsJobHelper').mockRejectedValue(Object.assign(new Error('Reinstall the current CLI/Eval package and include optional dependencies.'), { code: 'nativePackageUnavailable' }));
     const isolation = getCurrentSourceTestIsolation();
     const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
     const stdout: string[] = [];
@@ -112,8 +114,6 @@ describe('command runtime', () => {
         cwd: isolation.layout.fixtureCwd,
         env: {
           ...isolation.env,
-          AW_TEST_RUNNER_PROCESS_TREE: '1',
-          AW_NATIVE_TEST_CONFIG: '{invalid-json',
         },
         nativeCliRunner: execFileNativeCliRunner,
         interactive: false,
@@ -121,10 +121,11 @@ describe('command runtime', () => {
       });
     } finally {
       Object.defineProperty(process, 'platform', originalPlatform);
+      admission.mockRestore();
     }
     expect(exitCode!).toBe(1);
     const receipt = JSON.parse(stdout.join(''));
-    expect(receipt.targetResults).toEqual([expect.objectContaining({ errorCode: 'nativeTestConfigInvalid' })]);
+    expect(receipt.targetResults).toEqual([expect.objectContaining({ errorCode: 'nativePackageUnavailable' })]);
     await expect(fs.pathExists(isolation.layout.awHomeDir)).resolves.toBe(false);
   });
 

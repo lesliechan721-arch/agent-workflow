@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
-import { readNativeTool } from '@lesliechan721/aw-native-runtime';
+import { readNativeTool } from '@lesliechan721/aw-native-runtime/reader';
 import { describe, expect, it, vi } from 'vitest';
 
 import { sanitizeTestDiagnostic, TestCommandDiagnostics } from '../helpers/test-command-diagnostics.js';

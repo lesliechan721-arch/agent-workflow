@@ -2,7 +2,6 @@ import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.
 import { describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
-import { readNativeToolTestConfig, resolveNativeTool } from '@lesliechan721/aw-native-runtime';
 import { createElement } from 'react';
 import { render } from 'ink-testing-library';
 
@@ -16187,18 +16186,8 @@ describe('five namespaced write commands', () => {
     const scenario = path.join(fixture.directory, 'public-managed-scenario');
     await fs.ensureDir(scenario);
     await fs.writeJson(path.join(scenario, 'scenario.json'), { echo: true, finalText: 'Public Guide final result.', adapterLifetimeMs: 60000, backendLifetimeMs: 60000 });
-    if (process.platform === 'win32') {
-      const native = readNativeToolTestConfig(isolation.env);
-      if (!native?.archivePath) throw new Error('The public Guide test requires an explicit local native archive for its isolated AW_HOME.');
-      await resolveNativeTool({
-        descriptor: await fs.readJson(path.join(repositoryRoot, 'plugins/codex-enhance/native-tools/windows-job.lock.json')),
-        cacheRoot: path.join(isolation.env.AW_HOME!, 'native-artifacts', 'v1'),
-        mode: 'source-candidate', archivePath: native.archivePath,
-      });
-    }
     const environment = {
       ...isolation.env,
-      AW_NATIVE_RESOLVER_MODE: 'cache-only',
       HOME: fixture.homeRoot,
       USERPROFILE: fixture.homeRoot,
       TMPDIR: fixture.temporaryRoot,

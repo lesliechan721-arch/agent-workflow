@@ -82,12 +82,12 @@ test('a manual recovery without its saved candidate cannot prepare the version a
   }), /no complete recovery artifact/u);
 });
 
-test('a CLI completion tag requires the exact source and all three remote packages', async () => {
+test('a CLI completion tag requires the exact source and all five remote packages', async () => {
   const runGit = async () => ({ stdout: `tag-object\trefs/tags/cli-v${candidate.version}\n${candidate.candidateHead}\trefs/tags/cli-v${candidate.version}^{}\n` });
   const names = [];
   assert.equal(await readRemoteCompletion(candidate, { runGit, readPackageVersions: async (name) => { names.push(name); return [candidate.version]; } }), true);
-  assert.equal(names.length, 3);
-  await assert.rejects(readRemoteCompletion(candidate, { runGit, readPackageVersions: async () => [] }), /all three/u);
+  assert.equal(names.length, 5);
+  await assert.rejects(readRemoteCompletion(candidate, { runGit, readPackageVersions: async () => [] }), /all five/u);
   await assert.rejects(readRemoteCompletion({ ...candidate, candidateHead: 'd'.repeat(40) }, { runGit }), /conflicts/u);
 });
 

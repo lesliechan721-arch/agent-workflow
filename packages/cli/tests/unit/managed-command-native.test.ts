@@ -5,6 +5,7 @@ import { normalizeCommandDefinition, normalizeCommandLaunch, type ProducerIdenti
 import { nativeToolFixture } from '../helpers/native-tools.js';
 import { createIsolatedTestEnv, type IsolatedTestEnvironment } from '../helpers/test-isolation.js';
 import { syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
+import { prepareNativeToolContext } from '../../src/utils/native-tool-context.js';
 import { buildManagedCommandEnvironment, prepareManagedCommandRun, runManagedCommand } from '../../src/utils/managed-command-runtime.js';
 
 // Test Value Gate: installed evidence and real preparation protect pre-spawn failure,
@@ -14,7 +15,7 @@ describe('installed native command preparation', () => {
   let source: string;
   let report: string;
   const producer: ProducerIdentity = { sourceId: 'fixture', sourceIdentity: `sha256:${'b'.repeat(64)}`, pluginName: 'native-tool', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null };
-  const ready = { state: 'ready' as const, protocol: 'fixture.job.v1', executable: process.execPath, sha256: `sha256:${'a'.repeat(64)}` };
+  const ready = { state: 'ready' as const, protocol: 'aw.windows-job.v1', executable: process.execPath };
   beforeEach(async () => {
     isolated = await createIsolatedTestEnv();
     source = path.join(isolated.layout.fixtureCwd, 'source');
@@ -22,7 +23,7 @@ describe('installed native command preparation', () => {
     await fs.outputFile(path.join(source, 'run.mjs'), 'import fs from "node:fs"; fs.writeFileSync(process.env.REPORT, process.env.AW_NATIVE_TOOL_CONTEXT); process.exitCode=31;\n');
   });
   afterEach(async () => { await isolated.cleanup(); });
-  async function install(options: { policy?: 'required' | 'preferred'; version?: string; key?: string; envFrom?: Record<string, string> } = {}) {
+  async function install(options: { policy?: 'required' | 'preferred'; key?: string; envFrom?: Record<string, string> } = {}) {
     const fixture = nativeToolFixture(options);
     for (const [relative, content] of Object.entries(fixture.files)) await fs.outputFile(path.join(source, relative), content);
     const installed = await syncManagedCommandPackage({ producer: { ...producer, key: options.key ?? producer.key }, sourceDirectory: source,
@@ -31,66 +32,73 @@ describe('installed native command preparation', () => {
   }
   function invocation(id: string) { return { id, args: [], cwd: isolated.layout.fixtureCwd, cliEntry: path.join(source, 'aw.js'), env: isolated.env, platform: 'win32' as const, arch: 'x64' }; }
 
-  it('uses the installed descriptor and a ready resolver result without parsing registry configuration', async () => {
+  it('uses the current host helper without changing the installed declaration', async () => {
     const installed = await install();
-    const latest = nativeToolFixture({ version: '2.0.0', policy: 'preferred' });
+    const latest = nativeToolFixture({ policy: 'preferred' });
     for (const [relative, content] of Object.entries(latest.files)) await fs.outputFile(path.join(source, relative), content);
-    const resolve = vi.fn(async (_options: unknown) => ready);
+    const prepare = vi.fn(async (_options?: unknown) => ready.executable);
     const prepared = await prepareManagedCommandRun({ ...invocation(installed.commandIds[0]!), env: {
       ...isolated.env,
       aw_native_tool_context: 'untrusted', AW_NATIVE_OTHER: 'untrusted',
-      // The shared resolver can return a verified cache hit without registry access.
-      AW_NATIVE_REGISTRY_CONFIG: '{invalid registry configuration must not block a ready result',
-    }, nativeResolver: resolve });
-    expect(resolve).toHaveBeenCalledOnce();
-    expect(resolve.mock.calls[0]![0]).toMatchObject({ descriptor: installed.fixture.closure.definitions[0]!.descriptor, mode: 'network', platform: 'win32', arch: 'x64' });
+    }, prepareNativeTool: prepare });
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(prepare.mock.calls[0]![0]).toMatchObject({ platform: 'win32', arch: 'x64' });
     expect(prepared.env.aw_native_tool_context).toBeUndefined();
     expect(prepared.env.AW_NATIVE_OTHER).toBeUndefined();
     expect(JSON.parse(prepared.env.AW_NATIVE_TOOL_CONTEXT!)).toEqual({ schemaVersion: 1, tools: { job: ready } });
-    expect(prepared.env.AW_NATIVE_RESOLVER_MODE).toBe('cache-only');
   });
 
   it('rejects environment errors before resolution and required failure before spawn', async () => {
     const installed = await install({ envFrom: { COPY: 'MISSING' } });
-    const resolve = vi.fn(async () => { throw Object.assign(new Error('credential must not escape'), { code: 'nativeCacheMiss' }); });
-    await expect(runManagedCommand({ ...invocation(installed.commandIds[0]!), nativeResolver: resolve })).rejects.toMatchObject({ code: 'commandEnvironmentSourceMissing' });
-    expect(resolve).not.toHaveBeenCalled();
-    await expect(runManagedCommand({ ...invocation(installed.commandIds[0]!), env: { ...isolated.env, MISSING: 'present' }, nativeResolver: resolve })).rejects.toMatchObject({ code: 'nativeCacheMiss' });
+    const prepare = vi.fn(async () => { throw Object.assign(new Error('credential must not escape'), { code: 'nativePackageUnavailable' }); });
+    await expect(runManagedCommand({ ...invocation(installed.commandIds[0]!), prepareNativeTool: prepare })).rejects.toMatchObject({ code: 'commandEnvironmentSourceMissing' });
+    expect(prepare).not.toHaveBeenCalled();
+    await expect(runManagedCommand({ ...invocation(installed.commandIds[0]!), env: { ...isolated.env, MISSING: 'present' }, prepareNativeTool: prepare })).rejects.toMatchObject({ code: 'nativePackageUnavailable' });
+    await expect(runManagedCommand({ ...invocation(installed.commandIds[0]!), env: { ...isolated.env, MISSING: 'present' }, prepareNativeTool: prepare })).rejects.toThrow(/Reinstall.*optional dependencies/u);
     expect(await fs.pathExists(report)).toBe(false);
   });
 
-  it('resolves a nested producer from its own evidence with cache-only mode', async () => {
+  it('prepares a nested producer independently from its own binding', async () => {
     const first = await install();
-    const parent = await prepareManagedCommandRun({ ...invocation(first.commandIds[0]!), nativeResolver: async () => ready });
-    const second = await install({ key: 'second', version: '2.0.0' });
-    const resolve = vi.fn(async (_options: unknown) => { throw Object.assign(new Error('offline'), { code: 'nativeCacheMiss' }); });
-    await expect(prepareManagedCommandRun({ ...invocation(second.commandIds[0]!), env: parent.env, nativeResolver: resolve })).rejects.toMatchObject({ code: 'nativeCacheMiss' });
-    expect(resolve.mock.calls[0]![0]).toMatchObject({ descriptor: second.fixture.closure.definitions[0]!.descriptor, mode: 'cache-only' });
+    const parent = await prepareManagedCommandRun({ ...invocation(first.commandIds[0]!), prepareNativeTool: async () => ready.executable });
+    const second = await install({ key: 'second' });
+    const prepare = vi.fn(async (_options?: unknown) => { throw Object.assign(new Error('offline'), { code: 'nativePackageUnavailable' }); });
+    await expect(prepareManagedCommandRun({ ...invocation(second.commandIds[0]!), env: parent.env, prepareNativeTool: prepare })).rejects.toMatchObject({ code: 'nativePackageUnavailable' });
+    expect(prepare.mock.calls[0]![0]).toMatchObject({ platform: 'win32', arch: 'x64' });
   });
 
   it('fixes preferred selection at launch and preserves native operation failure', async () => {
     const installed = await install({ policy: 'preferred' });
-    const unavailable = await prepareManagedCommandRun({ ...invocation(installed.commandIds[0]!), nativeResolver: async () => { throw new Error('private registry'); } });
-    expect(JSON.parse(unavailable.env.AW_NATIVE_TOOL_CONTEXT!)).toEqual({ schemaVersion: 1, tools: { job: { state: 'unavailable', protocol: 'fixture.job.v1', code: 'nativeToolUnavailable' } } });
-    const resolve = vi.fn(async () => ready);
-    expect(await runManagedCommand({ ...invocation(installed.commandIds[0]!), nativeResolver: resolve })).toBe(31);
-    expect(resolve).toHaveBeenCalledOnce();
+    const unavailable = await prepareManagedCommandRun({ ...invocation(installed.commandIds[0]!), prepareNativeTool: async () => { throw new Error('private registry'); } });
+    expect(JSON.parse(unavailable.env.AW_NATIVE_TOOL_CONTEXT!)).toEqual({ schemaVersion: 1, tools: { job: { state: 'unavailable', protocol: 'aw.windows-job.v1', code: 'nativeToolUnavailable' } } });
+    const prepare = vi.fn(async () => ready.executable);
+    expect(await runManagedCommand({ ...invocation(installed.commandIds[0]!), prepareNativeTool: prepare })).toBe(31);
+    expect(prepare).toHaveBeenCalledOnce();
     expect(JSON.parse(await fs.readFile(report, 'utf8')).tools.job).toEqual(ready);
   });
 
-  it('rejects changed installed locks and keeps non-Windows commands offline with no native cache', async () => {
+  it('rejects a changed installed reader and keeps non-Windows commands free of native dependencies', async () => {
     const installed = await install();
-    const resolve = vi.fn(async () => ready);
-    await prepareManagedCommandRun({ ...invocation(installed.commandIds[0]!), platform: 'darwin', nativeResolver: resolve });
-    expect(resolve).not.toHaveBeenCalled();
+    const prepare = vi.fn(async () => ready.executable);
+    await prepareManagedCommandRun({ ...invocation(installed.commandIds[0]!), platform: 'darwin', prepareNativeTool: prepare });
+    expect(prepare).not.toHaveBeenCalled();
     expect(await fs.pathExists(path.join(isolated.layout.awHomeDir, 'native-artifacts'))).toBe(false);
-    const changed = nativeToolFixture({ version: '2.0.0' });
-    await fs.writeFile(path.join(installed.resourceRoot, '.aw/native-tools/job.lock.json'), changed.files['.aw/native-tools/job.lock.json']!);
-    await expect(prepareManagedCommandRun({ ...invocation(installed.commandIds[0]!), nativeResolver: resolve })).rejects.toMatchObject({ code: 'commandBindingInvalid' });
-    expect(resolve).not.toHaveBeenCalled();
+    await fs.writeFile(path.join(installed.resourceRoot, '.aw/native-tool-reader.mjs'), 'export const foreign = true;');
+    await expect(prepareManagedCommandRun({ ...invocation(installed.commandIds[0]!), prepareNativeTool: prepare })).rejects.toMatchObject({ code: 'commandBindingInvalid' });
+    expect(prepare).not.toHaveBeenCalled();
   });
 
-  it.each([{ env: { aW_nAtIvE_TOOL_CONTEXT: 'override' }, envFrom: {} }, { env: {}, envFrom: { COPY: 'aw_native_registry_config' } }])('refuses native environment overrides on Windows', (maps) => {
+  it('rejects unsupported protocols before calling the host helper', async () => {
+    const fixture = nativeToolFixture();
+    const prepare = vi.fn(async () => ready.executable);
+    await expect(prepareNativeToolContext({
+      closure: { ...fixture.closure, definitions: [{ key: 'job', protocol: 'example.unsupported.v1' }] },
+      kind: 'managed-command-set', key: 'tools', platform: 'win32', prepare,
+    })).rejects.toMatchObject({ code: 'nativeProtocolUnsupported' });
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it.each([{ env: { aW_nAtIvE_TOOL_CONTEXT: 'override' }, envFrom: {} }, { env: {}, envFrom: { COPY: 'aw_native_tool_context' } }])('refuses native environment overrides on Windows', (maps) => {
     const launch = { ...normalizeCommandLaunch({ runner: 'node', entry: 'run.mjs' }), ...maps };
     expect(() => buildManagedCommandEnvironment({ launch, hostEnvironment: {}, platform: 'win32', host: { schemaVersion: 1, cliEntry: '/aw.js', nodeExecutable: process.execPath, awHome: '/aw-home' } })).toThrowError(expect.objectContaining({ code: 'commandEnvironmentInvalid' }));
   });

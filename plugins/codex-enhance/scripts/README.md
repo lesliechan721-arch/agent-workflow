@@ -6,15 +6,21 @@
 pnpm plugin:test codex-enhance --test-concurrency 1
 ```
 
-macOS/Linux 的普通测试使用默认 `fixture` 模式，不取得 Windows 制品，也不要求 Go。Windows 普通 fixture 测试须用 `--native-mode fixture --native-fixture-context <context.json>` 显式提供 ready fixture 上下文；用例只替换原生进程边界，真实 Windows 测试会跳过。fixture 上下文不提供原生支持证据。
+macOS/Linux 的普通测试使用默认 `fixture` 模式，不取得 Windows 制品，也不要求 Go。Windows 普通 fixture 测试须用 `--native-mode fixture --native-context <context.json>` 显式提供 ready fixture 上下文；用例只替换原生进程边界，真实 Windows 测试会跳过。fixture 上下文不提供原生支持证据。
 
-真实 Windows 测试由 AW runner 按本插件的 `node` consumer binding 解析工具。使用已预置隔离缓存时运行：
+真实 Windows 测试由 AW runner 按本插件的 `node` consumer binding 解析当前 Eval 已安装的平台依赖：
 
 ```sh
-pnpm plugin:test codex-enhance --native-mode cache-only --native-cache <cache-dir> --test-concurrency 1
+pnpm plugin:test codex-enhance --native-mode installed --test-concurrency 1
 ```
 
-显式联网集成使用 `--native-mode network`。工具源码已变化时，使用本次候选的 `--native-mode source-candidate --native-archive <archive.tgz>`，不下载旧版本。全部模式都只使用 runner 注入的原生上下文，不搜索 PATH、平台 package 或源码 PE。平台专属用例在其他系统上明确跳过；跳过不算该平台已验证。测试使用本地 fake backend，不调用真实模型。
+工具源码已变化时，先由候选准备入口生成指向本次候选 helper 的上下文，再运行：
+
+```sh
+pnpm plugin:test codex-enhance --native-mode source-candidate --native-context <context.json> --test-concurrency 1
+```
+
+公开作者命令接受同一组原生参数，例如 `aw plugin test plugins/codex-enhance --workspace-root . --native-mode source-candidate --native-context <context.json>`。`--native-context` 只用于 `fixture` 或 `source-candidate`。所有模式都检查宿主支持的协议，并只向测试注入已准备的原生上下文；插件脚本不搜索 PATH、平台 package 或源码 PE。平台专属用例在其他系统上明确跳过；跳过不算该平台已验证。测试使用本地 fake backend，不调用真实模型。
 
 | 范围 | 测试入口 | 平台 |
 | --- | --- | --- |
@@ -39,7 +45,7 @@ pnpm plugin:test codex-enhance --native-mode cache-only --native-cache <cache-di
 node <prepared-plugin>/scripts/subagent-windows-file-boundaries.mjs
 ```
 
-使用 AW 已构建的临时插件，继承资格 runner 按当前候选准备的 `AW_NATIVE_TOOL_CONTEXT` 和 `AW_NATIVE_RESOLVER_MODE=cache-only`。不从源码目录直接启动，也不在该脚本中下载工具。
+使用 AW 已构建的临时插件，继承资格 runner 按当前候选准备的 `AW_NATIVE_TOOL_CONTEXT`。不从源码目录直接启动，也不在该脚本中下载工具。
 
 覆盖真实 `FileShare.None` 占用时原子更新失败、原值保留与解锁恢复，以及跨卷的 start/send/wait/result/export、中文与 CRLF 保真、主动停止和所属进程清理。运行目录或 `%SystemRoot%/Temp` 中至少一处必须与系统临时目录位于不同卷。脚本检查原生卷身份；没有所需卷时失败，不用另一个目录冒充跨卷。
 
