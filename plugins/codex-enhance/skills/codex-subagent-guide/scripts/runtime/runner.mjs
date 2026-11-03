@@ -1,13 +1,15 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { constants } from 'node:fs';
-import { spawn } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 import { LIMITS, fail } from './contracts.mjs';
 import { safePath, readText, readInputFile, executablePaths } from './files.mjs';
 import { validateEnvironmentConfig } from './plan.mjs';
 import { validateSelectors } from '../file-selection/contracts.mjs';
 import { sameSourceIdentity } from './store.mjs';
+import { validateCommandHost, managedLaunch, resolveCommunicationLaunch, communicationEnvironment } from './managed-host.mjs';
+
+export { validateCommandHost } from './managed-host.mjs';
+const needsCommunicationCommand = (selected) => selected.executor.adapter === 'antigravity' && selected.communication;
 
 export function resolveAdapterEnvironment(source = process.env, executor = {}) {
   validateEnvironmentConfig(executor);
@@ -36,65 +38,13 @@ export function adapterEnvironment(source = process.env, executor = {}) {
   return resolveAdapterEnvironment(source, executor).environment;
 }
 
-export async function validateCommandHost(environment) {
-  const raw = environment.AW_COMMAND_HOST;
-  if (raw === undefined) fail('managedCommandHostMissing', 'Start this executor through the generated AW command to supply its managed command host.');
-  let host;
-  try {
-    host = JSON.parse(raw);
-    if (!host || Array.isArray(host) || Object.keys(host).length !== 4 || host.schemaVersion !== 1 ||
-      !['nodeExecutable', 'cliEntry', 'awHome'].every((key) => typeof host[key] === 'string' && host[key].isWellFormed() && !host[key].includes('\0') && path.isAbsolute(host[key])) ||
-      host.awHome !== environment.AW_HOME) throw new Error();
-    const [cli, home] = await Promise.all([fs.lstat(host.cliEntry), fs.stat(host.awHome)]);
-    if (!cli.isFile() || cli.isSymbolicLink() || !home.isDirectory()) throw new Error();
-    await fs.access(host.cliEntry, constants.R_OK);
-    const node = await fs.stat(host.nodeExecutable);
-    if (!node.isFile()) throw new Error();
-    await fs.access(host.nodeExecutable, constants.X_OK);
-  } catch { fail('managedCommandHostInvalid', 'The managed command host is invalid. Use the generated AW command with its fixed AW_HOME.'); }
-  return host;
-}
-
-async function managedLaunch(host, commandId, environment, workspace) {
-  const result = await new Promise((resolve, reject) => {
-    const child = spawn(host.nodeExecutable, [host.cliEntry, 'command', 'show', commandId, '--json'], {
-      cwd: workspace, env: { ...environment, AW_HOME: host.awHome, AW_COMMAND_HOST: JSON.stringify(host) },
-      stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
-    });
-    const chunks = []; let bytes = 0;
-    const timer = setTimeout(() => { child.kill(); reject(new Error('Command inspection timed out.')); }, 10000);
-    child.stdout.on('data', (chunk) => {
-      bytes += chunk.length;
-      if (bytes > 1024 * 1024) { child.kill(); reject(new Error('Command inspection exceeded its limit.')); }
-      else chunks.push(chunk);
-    });
-    child.once('error', (error) => { clearTimeout(timer); reject(error); });
-    child.once('close', (code) => {
-      clearTimeout(timer);
-      try {
-        const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        if (code !== 0 || value.schemaVersion !== 1 || value.command !== 'command.show' || value.ok !== true ||
-          value.overallState !== 'completed' || value.commands?.length !== 1) throw new Error();
-        resolve(value.commands[0]);
-      } catch { reject(new Error('Command inspection failed.')); }
-    });
-  }).catch(() => fail('managedCommandUnavailable', 'The original managed command is unavailable. Repair it before sending input.'));
-  const launch = result.launch;
-  if (result.id !== commandId || result.availability !== 'ready' || !path.isAbsolute(result.resourceRoot ?? '') ||
-    !result.owner || !['user', 'plugin'].includes(result.owner.kind) || !launch ||
-    !['node', 'executable'].includes(launch.runner) || typeof launch.entry !== 'string' || !launch.entry ||
-    !Array.isArray(launch.args) || launch.args.some((value) => typeof value !== 'string') ||
-    !launch.env || typeof launch.env !== 'object' || Array.isArray(launch.env) ||
-    !launch.envFrom || typeof launch.envFrom !== 'object' || Array.isArray(launch.envFrom) ||
-    !['caller', 'resource'].includes(launch.cwd)) fail('managedCommandUnavailable', 'The original managed command has no complete launch definition.');
-  return { id: result.id, owner: result.owner, resourceRoot: result.resourceRoot,
-    launch: { runner: launch.runner, entry: launch.entry, args: launch.args, env: launch.env, envFrom: launch.envFrom, cwd: launch.cwd } };
-}
 
 export function executionConfiguration(prepared, request) {
   const { prompt, sessionId, ...configuration } = prepared.request;
   return { schema: 1, selected: prepared.selected, request: configuration,
-    ...(prepared.commandHost ? { commandHost: prepared.commandHost, managedLaunch: prepared.managedLaunch } : {}),
+    ...(prepared.commandHost ? { commandHost: prepared.commandHost } : {}),
+    ...(prepared.managedLaunch ? { managedLaunch: prepared.managedLaunch } : {}),
+    ...(prepared.communicationLaunch ? { communicationLaunch: prepared.communicationLaunch } : {}),
     ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }) };
 }
 
@@ -111,22 +61,28 @@ export async function prepareResume(configuration, text, sessionId, options = {}
   await safePath(configuration.request.workspace, 'directory');
   const source = { ...(options.environment ?? process.env) };
   let host;
-  if (selected.executor.adapter === 'custom-managed') {
+  if (selected.executor.adapter === 'custom-managed' || needsCommunicationCommand(selected)) {
     host = await validateCommandHost({ ...source, AW_HOME: configuration.commandHost?.awHome,
       AW_COMMAND_HOST: JSON.stringify(configuration.commandHost) });
   }
   const resolved = resolveAdapterEnvironment(source, selected.executor);
   if (host) Object.assign(resolved.environment, { AW_COMMAND_HOST: JSON.stringify(host), AW_HOME: host.awHome });
   let frozenLaunch;
-  if (host) {
+  if (selected.executor.adapter === 'custom-managed') {
     frozenLaunch = await managedLaunch(host, selected.executor.commandId, resolved.environment, configuration.request.workspace);
     if (!isDeepStrictEqual(frozenLaunch, configuration.managedLaunch)) fail('resumeExecutionChanged', 'The original managed command launch changed. Start a new run with the intended configuration.');
   }
-  const executable = host ? { command: host.nodeExecutable, args: [host.cliEntry, 'command', 'run', selected.executor.commandId, '--'] }
+  const executable = selected.executor.adapter === 'custom-managed' ? { command: host.nodeExecutable, args: [host.cliEntry, 'command', 'run', selected.executor.commandId, '--'] }
     : await executablePaths(selected.command, selected.entrypoint);
+  const communicationLaunch = needsCommunicationCommand(selected) ? await resolveCommunicationLaunch(selected, host, resolved.environment, configuration.request.workspace) : undefined;
+  if (communicationLaunch) {
+    if (!isDeepStrictEqual(communicationLaunch, configuration.communicationLaunch)) fail('resumeExecutionChanged', 'The original communication command changed. Start a new run after sync or reinstall.');
+    Object.assign(resolved.environment, communicationEnvironment(host, communicationLaunch));
+  }
   const { fileSelectors, fileResolver, ...wire } = configuration.request;
   return { selected, executable, request: { ...wire, prompt: text, sessionId }, ...resolved,
-    ...(host ? { commandHost: host, managedLaunch: frozenLaunch } : {}), configuration };
+    ...(host ? { commandHost: host } : {}), ...(frozenLaunch ? { managedLaunch: frozenLaunch } : {}),
+    ...(communicationLaunch ? { communicationLaunch } : {}), configuration };
 }
 
 export async function prepareRun(selected, request, options = {}) {
@@ -153,10 +109,10 @@ export async function prepareRun(selected, request, options = {}) {
     prompt = `Instructions:\n${instructions}\n\nTask:\n${task}`;
   }
   const source = { ...(options.environment ?? process.env) };
-  const host = selected.executor.adapter === 'custom-managed' ? await validateCommandHost(source) : undefined;
+  const host = selected.executor.adapter === 'custom-managed' || needsCommunicationCommand(selected) ? await validateCommandHost(source) : undefined;
   let executable;
   try {
-    executable = host ? { command: host.nodeExecutable, args: [host.cliEntry, 'command', 'run', selected.executor.commandId, '--'] } : selected.executor.adapter === 'custom'
+    executable = selected.executor.adapter === 'custom-managed' ? { command: host.nodeExecutable, args: [host.cliEntry, 'command', 'run', selected.executor.commandId, '--'] } : selected.executor.adapter === 'custom'
       ? { command: selected.command, ...(selected.entrypoint ? { entrypoint: selected.entrypoint } : {}) }
       : await executablePaths(selected.command, selected.entrypoint);
   }
@@ -176,7 +132,10 @@ export async function prepareRun(selected, request, options = {}) {
   };
   const resolved = resolveAdapterEnvironment(source, selected.executor);
   if (host) Object.assign(resolved.environment, { AW_COMMAND_HOST: JSON.stringify(host), AW_HOME: host.awHome });
-  const frozenLaunch = host ? await managedLaunch(host, selected.executor.commandId, resolved.environment, workspace) : undefined;
+  const frozenLaunch = selected.executor.adapter === 'custom-managed' ? await managedLaunch(host, selected.executor.commandId, resolved.environment, workspace) : undefined;
+  const communicationLaunch = needsCommunicationCommand(selected) ? await resolveCommunicationLaunch(selected, host, resolved.environment, workspace) : undefined;
+  if (communicationLaunch) Object.assign(resolved.environment, communicationEnvironment(host, communicationLaunch));
   return { selected, executable, originalWorkspace: workspace, request: wire, ...resolved,
-    ...(host ? { commandHost: host, managedLaunch: frozenLaunch } : {}) };
+    ...(host ? { commandHost: host } : {}), ...(frozenLaunch ? { managedLaunch: frozenLaunch } : {}),
+    ...(communicationLaunch ? { communicationLaunch } : {}) };
 }

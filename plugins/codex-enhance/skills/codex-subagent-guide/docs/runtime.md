@@ -11,7 +11,7 @@
 
 `--help`/`-h` 只显示五个操作的总览、子命令帮助入口及通用输出开关；`start|send|wait|result|stop --help`（或 `-h`）显示当前操作的参数、默认值、必要约束和示例。帮助在读取安装配置、扫描运行目录或启动 worker 前返回，不要求任务必填参数。参数解析错误指向相应子命令帮助。
 
-五个操作都支持布尔参数 `--diagnostics`，不允许重复，仅作用于本次命令，不保存为任务配置。默认隐藏正常诊断：`codexExecutableSelected`、`communicationPermissionAdded`、`communicationPermissionExisting`、旧结果中的 `profileFieldIrrelevant`、`hookTrustBypassed`；启动窗口结束时，`starting` 已表达未就绪，默认不再附加 `startupNotReady`。该开关不改变执行权限、配置或退出码。
+五个操作都支持布尔参数 `--diagnostics`，不允许重复，仅作用于本次命令，不保存为任务配置。默认隐藏正常诊断：`codexExecutableSelected`、`communicationPermissionAdded`、`communicationPermissionExisting`、`communicationPermissionSession`、旧结果中的 `profileFieldIrrelevant`、`hookTrustBypassed`；启动窗口结束时，`starting` 已表达未就绪，默认不再附加 `startupNotReady`。该开关不改变执行权限、配置或退出码。
 
 相同 code、field、message 的诊断在同一报告中只显示一次。默认最终报告省略已通过 ready 回执报告的相同诊断，保留终态新增告警；未报告的初始化诊断随首次 ready 或终态交付。worker 保留 snapshot 的 ready 诊断作为比较依据，终态完整诊断保存在固定结果。初始化失败、终态新增告警和结果失败原因仍可随固定结果重读。`--diagnostics` 可再次显示正常信息及已报告诊断；文件导出采用同一显示规则，完整诊断导出使用 `result --diagnostics --output-file PATH`。
 
@@ -77,6 +77,8 @@ wait 的单个完整终态组即使独占本次预算仍放不下时输出 `defe
 删除 `communication_active_receive` 及内部对应 `activeReceive` 能力开关。Adapter v5 的 enabled 通信对象固定为 `{status:"enabled",transport:"mcp"|"command",passiveDelivery:"in-turn"|"turn-boundary"|"none"}`；disabled/unsupported 分支仍保持原合同。supported negotiation 的启用对象为 `{supported:true,transport:"mcp"|"command",passiveDelivery:"in-turn"|"turn-boundary"|"none"}`，不支持仍为 `{supported:false}`；桥接/工具生成不再接受该开关或 --send-only。新 validator 拒绝旧 activeReceive 字段；现有 custom adapter 的 enabled ready/协商需要随本次合同更新，不承诺旧能力对象继续可用。恢复协议另见 [session 与恢复能力](protocol.md#session恢复绑定)；消息投递与停止边界保持，不增加兼容状态机。
 
 transport 与 passiveDelivery 仅在 adapter/worker 内部使用，不转发为 communication_transport/status/passive_delivery 等主代理字段。passiveDelivery 控制自动输入调度和子代理提示词；不改变主动接收入口始终可用这一条件。内部仍可区分 disabled/unsupported，但主代理只得到 false 与必要失败原因。
+
+agy 使用同一已安装 Guide 的独立托管通信命令，固定 AW 主机与精确 ID；每次启动/恢复先校验稳定版本 >=1.4.10，需要额外授权时通过本执行私有 --settings 文件注入合并后的 allow，不写用户 settings；其它 custom 的脚本入口保持原协议。Codex/Claude 继续使用每次执行的私有 MCP server；启动和恢复时按实际模式准备两项工具的精确许可，完整权限及关闭通信时跳过额外授权。具体识别和失败边界见 [配置权限模式](configuration.md#执行器权限模式)。
 
 子代理通信提示词使用 common、transport 和 passiveDelivery 对应片段；通信启用时始终包含 active-receive 方法片段，移除 no-active-receive 分支。该模板标记是内容区段，不是能力状态。MCP 总是注册 send/receive 两个工具，脚本总是提供对应的两个调用入口；需要父侧答复时，子代理按已有响应式等待方法保持任务开放。实际 receive 收到输入或关闭时提前返回，仍受 deadline 和停止规则约束，不改变消息消费和 TTL。
 

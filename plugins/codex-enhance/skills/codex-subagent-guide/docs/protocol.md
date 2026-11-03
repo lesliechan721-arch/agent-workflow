@@ -317,11 +317,11 @@ cancelled 要求本次存在停止意图、本地执行已停止；已经提交�
 
 候选 capabilities 必须分别提供 communication 与 resume；resume 候选严格为 `{supported:boolean}`。公共 helper 校验环境及两项能力候选，仅环境可用才进入准备。恢复按请求 resume=false 映射 disabled，否则依候选映射 enabled/unsupported；传入 sessionId 而后端不支持时明确失败。communication=false 只跳过通讯检查、桥、工具及说明，不跳过环境或权限模式。明确无通讯实现的 Oracle 可继续普通任务；已知支持路径的权限、资源、查询或建桥失败必须保留实际错误并收尾，不能降为 unsupported。
 
-候选 supported 不等于 ready。准备阶段才建立桥、按需添加 agy 精确权限、完成后端无模型初始化、配置实际工具并生成说明；agy settings 在正式后端加载前完成。全部必要准备成功后才发送 enabled ready，再提交首次模型输入。custom 可采用公共 helper 或实现等价流程，声明、实际入口及说明必须一致。
+候选 supported 不等于 ready。准备阶段才建立桥、按需通过会话 --settings 注入 agy 精确权限、完成后端无模型初始化、配置实际工具并生成说明；agy 在建桥前完成版本检查（稳定版本 >=1.4.10），会话 settings 在正式后端加载前完成，不写用户 settings。全部必要准备成功后才发送 enabled ready，再提交首次模型输入。custom 可采用公共 helper 或实现等价流程，声明、实际入口及说明必须一致。
 
 外部通讯 prose 的唯一来源为 [communication-instructions.md](../assets/communication-instructions.md)。模板按公共、MCP/command、被动输入和主动收件片段组合，不在 common 中维护另一份文案。只在 enabled 时生成；模板或安装资源缺失按 runtime resource 错误失败，不退回旧固定文案。native 不注入这些外部桥指令。
 
-MCP 片段使用实际注册工具名；command 片段使用 bridge.script.command/args 生成完整 send/receive 调用：@@SEND@@ 使用 send --text MESSAGE_TEXT，@@SENDFILE@@ 使用 send --text-file MESSAGE_FILE；移除 @@SENDSTDIN@@，保留私有 binding，不要求模型填 run ID 或路径。按实际命令工具 shell 正确引用；未知 shell 不使用伪通用引用。in-turn 明确当前上下文自动输入，turn-boundary 明确等当前轮结束，none 不承诺自动输入。通信启用时始终包含 active-receive 方法片段，提供默认 600000、最高 1800000 ms 的响应式等待；移除 no-active-receive 分支。需要父回复才能继续时保持任务开放，没有待处理输入及必要答复时正常关闭，不增加 idle 保活或周期拉取。
+MCP 片段使用实际注册工具名；command 片段使用 bridge.script.command/args 生成完整 send/receive 调用；内建 agy 先以受保护启动上下文把入口绑定到同一 AW 的独立通信 ID，私有 bridge 参数保持当前实例，v5 帧及 custom toolkit 字段不变：@@SEND@@ 使用 send --text MESSAGE_TEXT，@@SENDFILE@@ 使用 send --text-file MESSAGE_FILE；移除 @@SENDSTDIN@@，保留私有 binding，不要求模型填 run ID 或路径。按实际命令工具 shell 正确引用；未知 shell 不使用伪通用引用。in-turn 明确当前上下文自动输入，turn-boundary 明确等当前轮结束，none 不承诺自动输入。通信启用时始终包含 active-receive 方法片段，提供默认 600000、最高 1800000 ms 的响应式等待；移除 no-active-receive 分支。需要父回复才能继续时保持任务开放，没有待处理输入及必要答复时正常关闭，不增加 idle 保活或周期拉取。
 
 公共片段保留 24 KiB（24,576 UTF-8 字节）单条上限、无累计额度、不自动拆分/截断/重发不明消息、自动输入不由 receive 重放、父消息不扩张授权，以及最终结果不能由过程消息替代。角色只含角色内容，初始任务组合一次；后续输入保留协作标识，不重复整份角色与说明。
 
