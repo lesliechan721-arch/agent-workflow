@@ -162,7 +162,7 @@ describe('plugin scripts staging smoke', () => {
     const snapshot = await requireBuildSnapshot();
     const temporary = await makeTempRepo();
     const bundle = path.join(temporary, 'detached-plugin');
-    await fs.copy(path.join(snapshot.catalogOutputRoot, 'plugins', 'codex-enhance'), bundle);
+    await fs.copy(path.join(snapshot.catalogOutputRoot, 'plugins', 'agent-subagent'), bundle);
     const env = {
       ...process.env,
       AW_HOME: path.join(temporary, 'aw-home'),
@@ -184,7 +184,7 @@ describe('plugin scripts staging smoke', () => {
     const plugin = { ...await manifests.readPluginManifest(bundle, { mode: 'bundle' }), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}` };
     const rendered = await renderer.runArtifactRenderer({
       event: 'materialize', plugin, platform: 'codex', scope: 'user', cwd: temporary,
-      commandEnv: env, requestedArtifactIds: ['codex-subagent-guide-skill'],
+      commandEnv: env, requestedArtifactIds: ['spawn-subagent-skill'],
     });
     const artifact = rendered.plan.artifacts.find((item) => item.target === 'codex.skill');
     if (!artifact || artifact.target !== 'codex.skill') throw new Error('Guide renderer did not return a Skill.');

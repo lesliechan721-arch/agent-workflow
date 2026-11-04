@@ -9,6 +9,7 @@ import {
   computeEvalProviderDigest,
   type SelectedCasesDocument,
 } from '@lesliechan721/agent-skill-eval'
+import { normalizePluginConfigDefinition } from '@lesliechan721/aw-plugin-core'
 
 import {
   readAwSourceBinding,
@@ -39,6 +40,41 @@ afterEach(async () => {
 })
 
 describe('AW source binding', () => {
+  it('accepts explicit config for same-source Eval dependencies and binds their defaults', () => {
+    const marketplace = { category: 'test', strict: true,
+      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] } }
+    const consumer = { rootDir: '/consumer', manifestPath: '/consumer/.agents-plugin/plugin.json', manifest: {
+      name: 'consumer', marketplace, dependencies: ['provider'], config: normalizePluginConfigDefinition({
+        schemaVersion: 4, fields: { selected: { type: 'string', default: 'native',
+          valueRef: { plugin: 'provider', field: 'registry', key: 'key', include: ['native'] } } },
+      }, 'config', { plugin: 'consumer', dependencies: ['provider'] }),
+    } } as PluginMeta
+    const provider = { rootDir: '/provider', manifestPath: '/provider/.agents-plugin/plugin.json', manifest: {
+      name: 'provider', marketplace, config: normalizePluginConfigDefinition({ schemaVersion: 4, fields: {
+        registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
+          type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
+        } },
+      } }), artifacts: { targets: [{ id: 'native', platform: 'codex', scopes: ['user'], target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' }, refreshKeys: ['registry'] }] },
+    } } as PluginMeta
+    const profile = { id: 'cross-reference', scope: 'project' as const, plugins: [{ name: 'consumer', config: {} }] }
+    const defaults = resolveEvalProfileBindingInput(profile, [consumer, provider])
+    expect(() => resolveEvalProfileBindingInput(profile, [consumer, provider], { consumer: { selected: 'remote' } }))
+      .toThrow(/dependency overrides/u)
+    const config = { consumer: { selected: 'remote' }, provider: { registry: [{ key: 'remote' }] } }
+    const resolved = resolveEvalProfileBindingInput(profile, [consumer, provider], config)
+    expect(resolved.profile).toMatchObject({ config })
+    expect(resolved.materializationProfile.plugins).toContainEqual({
+      name: 'provider', configByScope: { project: config.provider, user: config.provider },
+    })
+    expect(() => resolveEvalProfileBindingInput(profile, [consumer, provider], { foreign: { key: 'remote' } }))
+      .toThrow(/dependency closure/u)
+    const changed = structuredClone(provider)
+    changed.manifest.config!.fields.registry!.default = [{ key: 'new-default' }]
+    expect(resolveEvalProfileBindingInput(profile, [consumer, changed]).profile.inputDigest)
+      .not.toBe(defaults.profile.inputDigest)
+  })
+
   it('binds merged effective config for the profile scope and shared native user scope', () => {
     const plugin = {
       rootDir: '/fixture',

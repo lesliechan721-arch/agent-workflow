@@ -45,9 +45,14 @@ export function configReferenceSelection(context: ConfigReferenceContext | undef
   };
 }
 
+export function configReferenceSource(scalar: PluginConfigScalarField): string {
+  if (!('valueRef' in scalar) || !scalar.valueRef) return '';
+  return `${scalar.valueRef.plugin ? `${scalar.valueRef.plugin}.` : ''}${scalar.valueRef.field}`;
+}
+
 export function configReferenceMessage(scalar: PluginConfigScalarField, selection: ConfigReferenceSelection | undefined, value: unknown): string | undefined {
   if (!selection) return '正在读取引用选项。';
-  const source = 'valueRef' in scalar ? scalar.valueRef!.field : '';
+  const source = configReferenceSource(scalar);
   if (selection.issues.length) return `来源 ${source} 配置无效：${selection.issues[0]!.message} 请返回修复来源配置。`;
   if (!selection.choices.length) return `来源 ${source} 没有可选值。请返回修改来源配置。`;
   if (value !== undefined && !selection.choices.some((choice) => choice.value === value)) {
@@ -81,6 +86,7 @@ export function configCrossLayerDependencies(
     if (!field) return [];
     return configReferenceValues(field, value).flatMap(({ scalar, value }) => {
       const ref = scalar.valueRef!;
+      if (ref.plugin) return [];
       if (ref.include?.includes(value) || !(Object.hasOwn(drafts.user!.updates, ref.field) || drafts.user!.removes.includes(ref.field))) return [];
       const project = configReferenceSelection(contexts.project, scalar);
       const user = configReferenceSelection(contexts.user, scalar);

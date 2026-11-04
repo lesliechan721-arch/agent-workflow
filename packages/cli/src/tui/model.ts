@@ -2618,7 +2618,7 @@ export function buildConfigGroups(options: {
         : {}),
       ...(!privateValue && (effectivePage
         ? options.effectiveRawValues?.[key]
-        : selectedRawValue ?? (schema.type === 'object' && !configured
+        : selectedRawValue ?? ((schema.type === 'object' || schema.type === 'array') && !configured
           ? options.effectiveRawValues?.[key]
           : undefined)) !== undefined
         ? { draftValue: (effectivePage

@@ -1,0 +1,289 @@
+{
+  "version": 1,
+  "defaults": {
+    "profile": "project-default"
+  },
+  "profiles": {
+    "project-default": {
+      "scope": "project",
+      "plugins": {
+        "agent-subagent": {}
+      }
+    },
+    "project-dev-build": {
+      "scope": "project",
+      "plugins": {
+        "agent-subagent": {},
+        "dev-workflow": {}
+      }
+    },
+    "user-default": {
+      "scope": "user",
+      "plugins": {
+        "agent-subagent": {}
+      }
+    },
+    "project-nondefault": {
+      "scope": "project",
+      "plugins": {
+        "agent-subagent": {
+          "simpleTaskProfile": {
+            "model": "eval-simple-model",
+            "reasoningEffort": "high"
+          },
+          "generalTaskProfile": {
+            "model": "eval-general-model",
+            "reasoningEffort": "xhigh"
+          },
+          "complexTaskProfile": {
+            "model": "eval-complex-model",
+            "reasoningEffort": "max"
+          },
+          "advancedTaskProfile": {
+            "model": "eval-advanced-model",
+            "reasoningEffort": "high"
+          }
+        }
+      }
+    },
+    "user-nondefault": {
+      "scope": "user",
+      "plugins": {
+        "agent-subagent": {
+          "simpleTaskProfile": {
+            "model": "eval-simple-model",
+            "reasoningEffort": "high"
+          },
+          "generalTaskProfile": {
+            "model": "eval-general-model",
+            "reasoningEffort": "xhigh"
+          },
+          "complexTaskProfile": {
+            "model": "eval-complex-model",
+            "reasoningEffort": "max"
+          },
+          "advancedTaskProfile": {
+            "model": "eval-advanced-model",
+            "reasoningEffort": "high"
+          }
+        }
+      }
+    },
+    "user-custom": {
+      "scope": "user",
+      "plugins": {
+        "agent-subagent": {
+          "taskCustomProfiles": [
+            {
+              "applicability": "数据库锁与事务语义的实现任务",
+              "executor": "native",
+              "model": "gpt-6.1-sol",
+              "reasoningEffort": "high"
+            },
+            {
+              "applicability": "涉及数据库的实现任务",
+              "executor": "native",
+              "model": "gpt-6-astra",
+              "reasoningEffort": "max"
+            }
+          ]
+        }
+      }
+    },
+    "project-composition": {
+      "scope": "project",
+      "plugins": {
+        "agent-subagent": {},
+        "codex-enhance": {}
+      }
+    }
+  },
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "cases": "trigger-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000
+    },
+    {
+      "id": "trigger-composition",
+      "kind": "trigger",
+      "cases": "trigger-composition-cases.json",
+      "profiles": [
+        "project-composition"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000
+    },
+    {
+      "id": "trigger-dev-build",
+      "kind": "trigger",
+      "cases": "trigger-dev-build-cases.json",
+      "profiles": [
+        "project-dev-build"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000
+    },
+    {
+      "id": "routing",
+      "kind": "codex-workflow",
+      "cases": "provider-evals.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "run-routing-evals.mjs"
+        ],
+        "allowedModels": []
+      }
+    },
+    {
+      "id": "lifecycle",
+      "kind": "codex-workflow",
+      "cases": "lifecycle-evals.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "run-lifecycle-evals.mjs"
+        ],
+        "allowedModels": []
+      }
+    },
+    {
+      "id": "lifecycle-timeout",
+      "kind": "codex-workflow",
+      "cases": "lifecycle-timeout-evals.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "run-lifecycle-evals.mjs"
+        ],
+        "allowedModels": []
+      }
+    },
+    {
+      "id": "role-boundary-trigger",
+      "kind": "trigger",
+      "cases": "role-boundary-trigger-cases.json",
+      "profiles": [
+        "project-composition"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000
+    },
+    {
+      "id": "coordinator-behavior",
+      "kind": "conversation",
+      "cases": "coordinator-behavior-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000
+    },
+    {
+      "id": "joint-workflow",
+      "kind": "codex-workflow",
+      "cases": "joint-workflow.cases.json",
+      "profiles": [
+        "project-composition"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "run-role-boundary-evals.mjs"
+        ],
+        "allowedModels": [
+          "gpt-6-luna",
+          "gpt-6.1-sol",
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-5.6-sol"
+        ]
+      }
+    },
+    {
+      "id": "joint-guide-only",
+      "kind": "codex-workflow",
+      "cases": "joint-guide-only.cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "run-role-boundary-evals.mjs"
+        ],
+        "allowedModels": [
+          "gpt-6-luna",
+          "gpt-6.1-sol",
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-5.6-sol"
+        ]
+      }
+    },
+    {
+      "id": "executor-instructions",
+      "kind": "codex-workflow",
+      "cases": "executor-instructions.cases.json",
+      "profiles": [
+        "project-composition"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000,
+      "provider": {
+        "type": "codex-workflow",
+        "command": [
+          "node",
+          "run-role-boundary-evals.mjs"
+        ],
+        "allowedModels": [
+          "gpt-6-luna",
+          "gpt-6.1-sol",
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-5.6-sol"
+        ]
+      }
+    },
+    {
+      "id": "execution-configuration",
+      "kind": "conversation",
+      "cases": "execution-configuration-cases.json",
+      "profiles": [
+        "user-custom"
+      ],
+      "runs": 1,
+      "timeoutMs": 900000
+    }
+  ]
+}

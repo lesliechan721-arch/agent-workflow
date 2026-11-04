@@ -121,4 +121,4 @@ aw skill eval prepare codex-enhance codex-explore --suite model-selection --prof
 
 部分 backend 会要求保留服务端预注册的完整 `spawn_agent` schema，拒绝本地隐藏模型字段。只有执行失败、未发生 spawn 且错误事件明确包含 `must match the configured schema` 时，隐藏字段用例才记为 `environment_skipped`；其它失败仍正常阻断评估。
 
-调度简化后不以 role digest、精确宿主角色版本或 developer 授权布尔作为普通调用门禁。角色可用性、实际原生参数、干净上下文、只读叶子行为和引用合同继续验证。Guide/Advisor/Explore 的 native/workspace/bundle 代表性入口以及真实服务证据要求见 [联合 Eval 迁移说明](../../codex-subagent-guide/evals/ROLE-BOUNDARY.md)。
+调度简化后不以 role digest、精确宿主角色版本或 developer 授权布尔作为普通调用门禁。角色可用性、实际原生参数、干净上下文、只读叶子行为和引用合同继续验证。Guide/Advisor/Explore 的 native/workspace/bundle 代表性入口以及真实服务证据要求见 [联合 Eval 迁移说明](../../spawn-subagent/evals/ROLE-BOUNDARY.md)。

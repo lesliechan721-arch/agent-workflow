@@ -8,6 +8,8 @@ import type {
   PluginConfigArrayValidation,
   PluginConfigChoices,
   PluginConfigDefinition,
+  PluginConfigDependencyField,
+  PluginConfigReferenceContext,
   PluginConfigJoinSummary,
   PluginConfigNumberValidation,
   PluginConfigObject,
@@ -29,6 +31,7 @@ import type {
 } from './types.js'
 
 const CONFIG_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/u
+const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
 const IDENTIFIER_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/u
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
 const SEMVER_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u
@@ -558,21 +561,13 @@ export function validatePluginConfigValue(
 export function validatePluginConfigDocument(
   definition: PluginConfigDefinition,
   value: unknown,
+  context?: PluginConfigReferenceContext,
 ): PluginConfigValidationIssue[] {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return [createIssue('type', '$document', 'Expected a config object.')]
   }
   const input = value as Record<string, unknown>
   const issues: PluginConfigValidationIssue[] = []
-  for (const [field, fieldDefinition] of Object.entries(definition.fields)) {
-    if (!Object.hasOwn(input, field)) {
-      if (fieldDefinition.required === true) {
-        issues.push(createIssue('required', field, 'Required field is missing.'))
-      }
-      continue
-    }
-    issues.push(...validatePluginConfigValue(fieldDefinition, input[field], field))
-  }
   for (const field of Object.keys(input)) {
     if (isDangerousConfigKey(field)) {
       issues.push(createIssue('dangerousKey', field, 'Dangerous config key is not allowed.'))
@@ -582,7 +577,8 @@ export function validatePluginConfigDocument(
       issues.push(createIssue('unknownField', field, 'Unknown config field.'))
     }
   }
-  return [...issues, ...validatePluginConfigReferences(definition, input, Object.keys(definition.fields))]
+  return [...issues,
+    ...validateConfigCandidateFields(definition, input, Object.keys(definition.fields), context)]
 }
 
 type ConfigScalarSchema = PluginConfigScalarField | PluginConfigScalarPropertyField | PluginConfigAdditionalPropertiesField
@@ -601,7 +597,12 @@ function scalarSchemas(definition: PluginConfigSchemaField): ConfigScalarSchema[
 export function getPluginConfigDependencyKeys(
   definition: PluginConfigDefinition,
   keys: readonly string[],
+  context?: PluginConfigReferenceContext,
 ): string[] {
+  if (context !== undefined) {
+    return getPluginConfigDependencyFields(definition, keys, context)
+      .filter((entry) => entry.plugin === context.plugin).map((entry) => entry.field)
+  }
   const result = new Set<string>()
   const visit = (key: string): void => {
     if (result.has(key)) return
@@ -609,17 +610,192 @@ export function getPluginConfigDependencyKeys(
     if (field === undefined) throw new Error(`Unknown config key "${key}".`)
     result.add(key)
     for (const scalar of scalarSchemas(field)) {
-      if ('valueRef' in scalar && scalar.valueRef !== undefined) visit(scalar.valueRef.field)
+      if ('valueRef' in scalar && scalar.valueRef !== undefined && scalar.valueRef.plugin === undefined) visit(scalar.valueRef.field)
     }
   }
   keys.forEach(visit)
   return [...result]
 }
 
+function referencePlugin(
+  definition: PluginConfigDefinition,
+  context: PluginConfigReferenceContext | undefined,
+  plugin: string,
+): { definition: PluginConfigDefinition; dependencies: readonly string[]; values?: Readonly<Record<string, unknown>> } {
+  if (plugin === (context?.plugin ?? '')) return { definition, dependencies: context?.dependencies ?? [] }
+  const provider = ownProperty(context?.plugins, plugin)
+  if (provider === undefined) throw new Error(`valueRefContext: Missing config provider plugin "${plugin}" in the same source context.`)
+  return provider
+}
+
+function assertReferenceSource(
+  scalar: ConfigScalarSchema,
+  source: PluginConfigSchemaField | undefined,
+  identity: string,
+): void {
+  if (!('valueRef' in scalar) || scalar.valueRef === undefined) return
+  const ref = scalar.valueRef
+  if (source?.type !== 'array' || source.items.type !== 'object' || source.items.properties === undefined) {
+    throw new Error(`valueRefSchema: ${identity}: expected a declared fixed-object array.`)
+  }
+  const key = ownProperty(source.items.properties, ref.key)
+  if (key === undefined || key.type !== scalar.type || ('sensitive' in key && key.sensitive === true)
+    || source.validation?.uniqueBy !== ref.key) {
+    throw new Error(`valueRefSchema: ${identity}.${ref.key}: expected a scalar of the same type with matching uniqueBy.`)
+  }
+  const label = ref.label === undefined ? undefined : ownProperty(source.items.properties, ref.label)
+  if (ref.label !== undefined && (label === undefined || label.type === 'array' || label.type === 'object')) {
+    throw new Error(`valueRefSchema: ${identity}.${ref.label}: expected a declared scalar property.`)
+  }
+}
+
+class ConfigReferenceSchemaError extends Error {
+  constructor(message: string, readonly field: string) {
+    super(message)
+  }
+}
+
+/** Validation closure only. Returned identities never widen renderer or runtime allowed keys. */
+export function getPluginConfigDependencyFields(
+  definition: PluginConfigDefinition,
+  keys: readonly string[],
+  context?: PluginConfigReferenceContext,
+): PluginConfigDependencyField[] {
+  const result = new Map<string, PluginConfigDependencyField>()
+  const visiting = new Set<string>()
+  const visit = (plugin: string, field: string): void => {
+    const identity = JSON.stringify([plugin, field])
+    if (visiting.has(identity)) throw new Error(`valueRefCycle: Circular config reference at "${plugin}/${field}".`)
+    if (result.has(identity)) return
+    const owner = referencePlugin(definition, context, plugin)
+    const schema = ownProperty<PluginConfigSchemaField>(owner.definition.fields, field)
+    if (schema === undefined) throw new Error(`valueRefSchema: Unknown config field "${plugin}/${field}".`)
+    if ('sensitive' in schema && schema.sensitive === true) {
+      // Root fields can be sensitive; a reference dependency cannot.
+      if (visiting.size > 0) throw new Error(`valueRefSchema: Sensitive config dependency "${plugin}/${field}" is denied.`)
+    }
+    visiting.add(identity)
+    result.set(identity, { plugin, field })
+    for (const scalar of scalarSchemas(schema)) {
+      if (!('valueRef' in scalar) || scalar.valueRef === undefined) continue
+      const ref = scalar.valueRef
+      const provider = ref.plugin ?? plugin
+      if (ref.plugin !== undefined) {
+        if (context === undefined) throw new Error(`valueRefContext: Config reference "${ref.plugin}/${ref.field}" requires a same-source plugin context.`)
+        if (owner.definition.schemaVersion !== 4 || !PLUGIN_NAME_PATTERN.test(ref.plugin)
+          || ref.plugin === plugin || !owner.dependencies.includes(ref.plugin)) {
+          throw new Error(`valueRefSchema: Plugin "${plugin}" must use Config v4 and declare "${ref.plugin}" as a direct dependency; self references use local fields.`)
+        }
+      }
+      const sourceOwner = referencePlugin(definition, context, provider)
+      assertReferenceSource(scalar, ownProperty<PluginConfigSchemaField>(sourceOwner.definition.fields, ref.field), `${provider}/${ref.field}`)
+      visit(provider, ref.field)
+    }
+    visiting.delete(identity)
+  }
+  for (const field of keys) {
+    try {
+      visit(context?.plugin ?? '', field)
+    } catch (error) {
+      throw new ConfigReferenceSchemaError((error as Error).message, field)
+    }
+  }
+  return [...result.values()]
+}
+
+/** Associate definitions and their defaults. Pass the original config to include unused source definitions. */
+export function assertPluginConfigReferenceSchemas(
+  definition: PluginConfigDefinition,
+  context: PluginConfigReferenceContext,
+  sourceConfig?: unknown,
+): void {
+  getPluginConfigDependencyFields(definition, Object.keys(definition.fields), context)
+  const defaults = (config: PluginConfigDefinition): Record<string, unknown> => Object.fromEntries(
+    Object.entries(config.fields).flatMap(([field, schema]) => schema.default === undefined ? [] : [[field, schema.default]]),
+  )
+  const defaultValues = defaults(definition)
+  const defaultContext: PluginConfigReferenceContext = {
+    ...context,
+    plugins: Object.fromEntries(Object.entries(context.plugins).map(([plugin, entry]) =>
+      [plugin, { ...entry, values: defaults(entry.definition) }])),
+  }
+  const assertDefaults = (config: PluginConfigDefinition, values: Record<string, unknown>, keys: readonly string[]): void => {
+    const issues = validatePluginConfigCandidate(config, values, keys, defaultContext)
+    if (issues.length > 0) throw new Error(`valueRefDefault: Invalid config.default for plugin "${context.plugin}": ${formatPluginConfigIssue(issues[0]!)}`)
+  }
+  assertDefaults(definition, defaultValues, Object.keys(defaultValues))
+  if (sourceConfig !== undefined) {
+    const source = asObject(sourceConfig, 'config')
+    if (source.definitions !== undefined) {
+      const definitions: Record<string, PluginConfigSchemaField> = createPropertyMap()
+      expandConfigReferences(source, 'config', source.schemaVersion === 4, context, definitions)
+      for (const [name, schema] of Object.entries(definitions)) {
+        const field = `$definition.${name}`
+        const candidate = { ...definition, fields: { ...definition.fields, [field]: schema } } as PluginConfigDefinition
+        getPluginConfigDependencyFields(candidate, [field], context)
+        if (schema.default !== undefined) {
+          assertDefaults(candidate, { ...defaultValues, [field]: schema.default }, [field])
+        }
+      }
+    }
+  }
+}
+
+function validateConfigCandidateFields(
+  definition: PluginConfigDefinition,
+  values: Record<string, unknown>,
+  keys: readonly string[],
+  context?: PluginConfigReferenceContext,
+): PluginConfigValidationIssue[] {
+  let closure: PluginConfigDependencyField[]
+  try {
+    closure = getPluginConfigDependencyFields(definition, keys, context)
+  } catch (error) {
+    const message = (error as Error).message
+    const code = message.startsWith('valueRefContext:') ? 'valueRefContext'
+      : message.startsWith('valueRefCycle:') ? 'valueRefCycle' : 'valueRefSchema'
+    return [createIssue(code, error instanceof ConfigReferenceSchemaError ? error.field : keys[0] ?? '$document', message)]
+  }
+  const rootPlugin = context?.plugin ?? ''
+  const checked = new Map<string, PluginConfigValidationIssue[]>()
+  const inputFor = (plugin: string): Record<string, unknown> => plugin === rootPlugin
+    ? values : referencePlugin(definition, context, plugin).values ?? {}
+  const evaluate = (plugin: string, field: string): PluginConfigValidationIssue[] => {
+    const identity = JSON.stringify([plugin, field])
+    const previous = checked.get(identity)
+    if (previous !== undefined) return previous
+    const owner = referencePlugin(definition, context, plugin)
+    const schema = owner.definition.fields[field]!
+    const input = inputFor(plugin)
+    const fieldIssues = Object.hasOwn(input, field)
+      ? validatePluginConfigValue(schema, input[field], field)
+      : schema.required === true ? [createIssue('required', field, 'Required field is missing.')] : []
+    const ownerContext = context === undefined ? undefined : {
+      ...context, plugin, dependencies: owner.dependencies,
+      plugins: { ...context.plugins, [rootPlugin]: { definition, dependencies: context.dependencies, values } },
+    }
+    fieldIssues.push(...validatePluginConfigReferences(owner.definition, input, [field], ownerContext,
+      (provider, sourceField) => evaluate(provider, sourceField).length === 0))
+    const located = plugin === rootPlugin ? fieldIssues : fieldIssues.map((issue) => ({
+      ...issue, path: { ...issue.path, plugin: issue.path.plugin ?? plugin },
+      message: `Config "${plugin}/${issue.path.field}": ${issue.message}`,
+    }))
+    checked.set(identity, located)
+    return located
+  }
+  closure.forEach(({ plugin, field }) => evaluate(plugin, field))
+  // Keep direct value errors before relationship errors, as document validation historically does.
+  return closure.flatMap(({ plugin, field }) => checked.get(JSON.stringify([plugin, field]))!)
+    .sort((left, right) => Number(left.code.startsWith('valueRef')) - Number(right.code.startsWith('valueRef')))
+}
+
 function validatePluginConfigReferences(
   definition: PluginConfigDefinition,
   input: Record<string, unknown>,
   keys: readonly string[],
+  context?: PluginConfigReferenceContext,
+  sourceValid?: (plugin: string, field: string) => boolean,
+  localOnly = false,
 ): PluginConfigValidationIssue[] {
   const issues: PluginConfigValidationIssue[] = []
   const reservedPaths = new Set<string>()
@@ -628,15 +804,21 @@ function validatePluginConfigReferences(
   const check = (scalar: ConfigScalarSchema, value: unknown, field: string, segments: Array<string | number> = []): void => {
     if (!('valueRef' in scalar) || scalar.valueRef === undefined) return
     const ref = scalar.valueRef
-    let source = sources.get(ref.field)
+    if (localOnly && ref.plugin !== undefined) return
+    const plugin = ref.plugin ?? context?.plugin ?? ''
+    const identity = JSON.stringify([plugin, ref.field])
+    const sourceOwner = ref.plugin === undefined ? { definition, values: input }
+      : referencePlugin(definition, context, ref.plugin)
+    const sourceInput = sourceOwner.values ?? {}
+    let source = sources.get(identity)
     if (source === undefined) {
-      const sourceSchema = definition.fields[ref.field]!
-      const sourceValue = ownProperty(input, ref.field)
-      const valid = sourceValue === undefined
+      const sourceSchema = sourceOwner.definition.fields[ref.field]!
+      const sourceValue = ownProperty(sourceInput, ref.field)
+      const valid = sourceValid !== undefined ? sourceValid(plugin, ref.field) : sourceValue === undefined
         ? sourceSchema.required !== true
         : validatePluginConfigValue(sourceSchema, sourceValue, ref.field).length === 0
       source = { valid, entries: valid ? (sourceValue ?? []) as PluginConfigObject[] : [] }
-      sources.set(ref.field, source)
+      sources.set(identity, source)
     }
     const add = (code: string, message: string): void => {
       const property = segments.find((segment): segment is string => typeof segment === 'string')
@@ -645,7 +827,7 @@ function validatePluginConfigReferences(
         ? issue : { ...issue, path: { ...issue.path, segments: [field, ...segments] } })
     }
     if (!source.valid) {
-      add('valueRefSource', `Referenced config "${ref.field}" is invalid; fix its complete array value.`)
+      add('valueRefSource', `Referenced config "${ref.plugin === undefined ? '' : `${ref.plugin}/`}${ref.field}" is invalid; fix its complete array value.`)
       return
     }
     let allowed = allowedValues.get(ref)
@@ -653,11 +835,12 @@ function validatePluginConfigReferences(
       allowed = new Set(ref.include)
       for (const [sourceIndex, entry] of source.entries.entries()) {
         if (ref.include?.includes(entry[ref.key] as PluginConfigScalar) === true) {
-          const pathKey = `${ref.field}\0${sourceIndex}\0${ref.key}`
+          const pathKey = `${identity}\0${sourceIndex}\0${ref.key}`
           if (!reservedPaths.has(pathKey)) {
             reservedPaths.add(pathKey)
-            issues.push(withArrayPath(createIssue('valueRefReserved', ref.field,
-              'Referenced property collides with a reserved included value.', ref.key), sourceIndex))
+            const issue = withArrayPath(createIssue('valueRefReserved', ref.field,
+              'Referenced property collides with a reserved included value.', ref.key), sourceIndex)
+            issues.push(ref.plugin === undefined ? issue : { ...issue, path: { ...issue.path, plugin: ref.plugin } })
           }
         }
         allowed.add(entry[ref.key] as PluginConfigScalar)
@@ -666,7 +849,7 @@ function validatePluginConfigReferences(
     }
     if (value === undefined || validateScalarField(scalar, value, field).length > 0) return
     if (!allowed.has(value as PluginConfigScalar)) {
-      add('valueRef', `Expected an included value or a key from config "${ref.field}". Add that key first, update dependent fields, then remove the old key.`)
+      add('valueRef', `Expected an included value or a key from config "${ref.plugin === undefined ? '' : `${ref.plugin}/`}${ref.field}". Add that key first, update dependent fields, then remove the old key.`)
     }
   }
   const walk = (schema: PluginConfigSchemaField, value: unknown, field: string, segments: Array<string | number> = []): void => {
@@ -695,6 +878,7 @@ function validatePluginConfigReferences(
   }
   for (const field of keys) {
     const schema = definition.fields[field]!
+    if (!scalarSchemas(schema).some((scalar) => 'valueRef' in scalar && scalar.valueRef !== undefined)) continue
     walk(schema, ownProperty(input, field), field)
   }
   return issues
@@ -705,12 +889,11 @@ export function validatePluginConfigCandidate(
   definition: PluginConfigDefinition,
   values: unknown,
   keys?: readonly string[],
+  context?: PluginConfigReferenceContext,
 ): PluginConfigValidationIssue[] {
   if (!isSafeJsonRecord(values)) return [createIssue('type', '$document', 'Expected a config JSON object.')]
-  if (keys === undefined) return validatePluginConfigDocument(definition, values)
-  const closure = getPluginConfigDependencyKeys(definition, keys)
-  const projected = Object.fromEntries(closure.flatMap((key) => Object.hasOwn(values, key) ? [[key, values[key]]] : []))
-  return validatePluginConfigDocument({ ...definition, fields: Object.fromEntries(closure.map((key) => [key, definition.fields[key]!])) } as PluginConfigDefinition, projected)
+  if (keys === undefined) return validatePluginConfigDocument(definition, values, context)
+  return validateConfigCandidateFields(definition, values, keys, context)
 }
 
 /** Project reference choices from an already resolved scope candidate, using the same validation as writes. */
@@ -718,27 +901,28 @@ export function getPluginConfigReferenceChoices(
   definition: PluginConfigDefinition,
   scalar: PluginConfigScalarField,
   values: Record<string, unknown>,
+  context?: PluginConfigReferenceContext,
 ): { choices: Array<{ value: PluginConfigScalar; title: string }>; issues: PluginConfigValidationIssue[] } {
   if (!('valueRef' in scalar) || scalar.valueRef === undefined) return { choices: [], issues: [] }
   const ref = scalar.valueRef
-  const sourceIssues = validatePluginConfigCandidate(definition, values, [ref.field])
+  const referenceField = '$reference'
+  // Choice projection can run before a required scalar has a selection.
+  const referenceDefinition = { ...definition, fields: { ...definition.fields, [referenceField]: { ...scalar, required: false } } } as PluginConfigDefinition
+  const sourceIssues = validatePluginConfigCandidate(referenceDefinition, values, [referenceField], context)
   if (sourceIssues.length > 0) return { choices: [], issues: sourceIssues }
   // Other references can reserve values in the same source or its dependencies.
   // Keep those source errors, but do not block choices on unrelated field errors.
-  const sourceKeys = new Set(getPluginConfigDependencyKeys(definition, [ref.field]))
-  const sharedSourceIssues = validatePluginConfigReferences(definition, values, Object.keys(definition.fields))
-    .filter((issue) => sourceKeys.has(issue.path.field))
+  const sourceKeys = new Set(getPluginConfigDependencyFields(referenceDefinition, [referenceField], context)
+    .filter((entry) => entry.field !== referenceField).map((entry) => JSON.stringify([entry.plugin, entry.field])))
+  const relatedKeys = Object.keys(definition.fields).filter((field) => scalarSchemas(definition.fields[field]!).some((child) =>
+    'valueRef' in child && child.valueRef !== undefined
+    && sourceKeys.has(JSON.stringify([child.valueRef.plugin ?? context?.plugin ?? '', child.valueRef.field]))))
+  const sharedSourceIssues = validatePluginConfigReferences(definition, values, relatedKeys, context)
+    .filter((issue) => sourceKeys.has(JSON.stringify([issue.path.plugin ?? context?.plugin ?? '', issue.path.field])))
   if (sharedSourceIssues.length > 0) return { choices: [], issues: sharedSourceIssues }
 
-  // A scalar may be nested in an inactive branch or an empty array. Validate its reference
-  // independently of the current parent value, without requiring a selection to exist yet.
-  const referenceField = '$reference'
-  const referenceDefinition = { ...definition, fields: { ...definition.fields, [referenceField]: scalar } }
-  const issues = validatePluginConfigReferences(referenceDefinition as PluginConfigDefinition,
-    { ...values, [referenceField]: undefined }, [referenceField])
-  if (issues.length > 0) return { choices: [], issues }
-
-  const entries = (ownProperty(values, ref.field) ?? []) as PluginConfigObject[]
+  const sourceValues = ref.plugin === undefined ? values : ownProperty(context?.plugins, ref.plugin)?.values ?? {}
+  const entries = (ownProperty(sourceValues, ref.field) ?? []) as PluginConfigObject[]
   const candidates = [
     ...(ref.include ?? []).map((value) => ({ value, title: String(value) })),
     ...entries.map((entry) => {
@@ -757,12 +941,23 @@ function assertValueReferenceSchemas(
   definitions: readonly PluginConfigSchemaField[],
   path: string,
   allowReferences = true,
+  allowCrossPlugin = false,
+  owner?: { plugin?: string; dependencies?: readonly string[] },
 ): void {
   for (const definition of definitions) {
     for (const scalar of scalarSchemas(definition)) {
       if (!('valueRef' in scalar) || scalar.valueRef === undefined) continue
       if (!allowReferences) throw new Error(`Invalid ${path}: valueRef requires Config Definition v3.`)
       const ref = scalar.valueRef
+      if (ref.plugin !== undefined) {
+        if (!allowCrossPlugin) throw new Error(`Invalid ${path}.valueRef.plugin: cross-plugin references require Config Definition v4.`)
+        if (!PLUGIN_NAME_PATTERN.test(ref.plugin)) throw new Error(`Invalid ${path}.valueRef.plugin: expected a plugin name.`)
+        if (owner?.plugin === ref.plugin) throw new Error(`Invalid ${path}.valueRef.plugin: self references must use a local field.`)
+        if (owner !== undefined && !owner.dependencies?.includes(ref.plugin)) {
+          throw new Error(`Invalid ${path}.valueRef.plugin: "${ref.plugin}" must be an explicit direct dependency.`)
+        }
+        continue
+      }
       const source = ownProperty(fields, ref.field)
       if (source?.type !== 'array' || source.items.type !== 'object' || source.items.properties === undefined) {
         throw new Error(`Invalid ${path}.valueRef.field: expected a declared fixed-object array.`)
@@ -922,7 +1117,7 @@ function normalizeScalarField(
   let valueRef: PluginConfigValueReference | undefined
   if (input.valueRef !== undefined) {
     const rawRef = asObject(input.valueRef, `${path}.valueRef`)
-    assertAllowedKeys(rawRef, `${path}.valueRef`, ['field', 'key', 'label', 'include'])
+    assertAllowedKeys(rawRef, `${path}.valueRef`, ['plugin', 'field', 'key', 'label', 'include'])
     let include: PluginConfigScalar[] | undefined
     if (rawRef.include !== undefined) {
       if (!Array.isArray(rawRef.include) || !isDenseDataArray(rawRef.include)
@@ -943,6 +1138,7 @@ function normalizeScalarField(
       }
     }
     valueRef = {
+      ...(rawRef.plugin === undefined ? {} : { plugin: nonEmptyString(rawRef.plugin, `${path}.valueRef.plugin`) }),
       field: nonEmptyString(rawRef.field, `${path}.valueRef.field`),
       key: nonEmptyString(rawRef.key, `${path}.valueRef.key`),
       label: optionalText(rawRef.label, `${path}.valueRef.label`),
@@ -1279,7 +1475,9 @@ export function decodePluginConfigSummaryPath(value: string): string {
   return property
 }
 
-function expandConfigReferences(input: Record<string, unknown>, path: string, v4 = false): Record<string, unknown> {
+function expandConfigReferences(input: Record<string, unknown>, path: string, v4 = false,
+  owner?: { plugin?: string; dependencies?: readonly string[] },
+  collectedDefinitions?: Record<string, PluginConfigSchemaField>): Record<string, unknown> {
   const definitions = input.definitions === undefined ? {} : asObject(input.definitions, `${path}.definitions`)
   if (Object.keys(definitions).length > PLUGIN_CONFIG_V3_MAX_DEFINITIONS) {
     throw new Error(`Invalid ${path}.definitions: expected at most ${PLUGIN_CONFIG_V3_MAX_DEFINITIONS} definitions.`)
@@ -1348,7 +1546,9 @@ function expandConfigReferences(input: Record<string, unknown>, path: string, v4
   // Validate unused definitions too, through the same field/default/choice validator.
   const normalizedDefinitions: PluginConfigSchemaField[] = []
   for (const [name, value] of Object.entries(definitions)) {
-    normalizedDefinitions.push(normalizeConfigField(expand(value, `${path}.definitions.${name}`, []), `${path}.definitions.${name}`, true, v4))
+    const normalized = normalizeConfigField(expand(value, `${path}.definitions.${name}`, []), `${path}.definitions.${name}`, true, v4)
+    normalizedDefinitions.push(normalized)
+    if (collectedDefinitions !== undefined) collectedDefinitions[name] = normalized
   }
   const fields = asObject(input.fields, `${path}.fields`)
   if (Object.keys(fields).length > PLUGIN_CONFIG_V3_MAX_FIELDS) {
@@ -1359,7 +1559,7 @@ function expandConfigReferences(input: Record<string, unknown>, path: string, v4
   if (normalizedDefinitions.some((definition) => scalarSchemas(definition).some((scalar) => 'valueRef' in scalar && scalar.valueRef !== undefined))) {
     const normalizedFields = Object.fromEntries(Object.entries(expanded).map(([key, value]) =>
       [key, normalizeConfigField(value, `${path}.fields.${key}`, true, v4)]))
-    assertValueReferenceSchemas(normalizedFields, normalizedDefinitions, `${path}.definitions`)
+    assertValueReferenceSchemas(normalizedFields, normalizedDefinitions, `${path}.definitions`, true, v4, owner)
   }
   return expanded
 }
@@ -1458,12 +1658,13 @@ function normalizeConfigSummaries(
 export function normalizePluginConfigDefinition(
   value: unknown,
   path = 'config',
+  owner?: { plugin?: string; dependencies?: readonly string[] },
 ): PluginConfigDefinition {
   const input = asObject(value, path)
   const v4 = input.schemaVersion === 4
   const v3 = input.schemaVersion === 3 || v4
   assertAllowedKeys(input, path, v3 ? ['schemaVersion', 'definitions', 'fields', 'presentation'] : ['fields', 'presentation'])
-  const fieldsInput = v3 ? expandConfigReferences(input, path, v4) : asObject(input.fields, `${path}.fields`)
+  const fieldsInput = v3 ? expandConfigReferences(input, path, v4, owner) : asObject(input.fields, `${path}.fields`)
   const fields = createPropertyMap<PluginConfigSchemaField>()
   for (const [field, rawDefinition] of Object.entries(fieldsInput)) {
     if (!CONFIG_KEY_PATTERN.test(field) || isDangerousConfigKey(field)) {
@@ -1471,10 +1672,11 @@ export function normalizePluginConfigDefinition(
     }
     fields[field] = normalizeConfigField(rawDefinition, `${path}.fields.${field}`, v3, v4)
   }
-  assertValueReferenceSchemas(fields, Object.values(fields), path, v3)
+  assertValueReferenceSchemas(fields, Object.values(fields), path, v3, v4, owner)
   const defaultValues = Object.fromEntries(Object.entries(fields).flatMap(([field, definition]) =>
     definition.default === undefined ? [] : [[field, definition.default]]))
-  const defaultIssues = validatePluginConfigReferences({ schemaVersion: 4, fields }, defaultValues, Object.keys(fields))
+  // Cross-plugin defaults require the caller's complete dependency context.
+  const defaultIssues = validatePluginConfigReferences({ schemaVersion: 4, fields }, defaultValues, Object.keys(fields), undefined, undefined, true)
     .filter((issue) => Object.hasOwn(defaultValues, issue.path.field))
   if (defaultIssues.length > 0) {
     throw new Error(`Invalid ${path}.default: ${formatPluginConfigIssue(defaultIssues[0]!)}`)

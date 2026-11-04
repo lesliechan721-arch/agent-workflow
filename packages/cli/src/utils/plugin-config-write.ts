@@ -46,9 +46,10 @@ import {
   summarizeEffectivePluginConfig,
   type PluginConfigValue,
 } from './plugin-config.js';
-import { analyzePluginConfigMutationImpact, pluginSharedNativeConfigTargets } from './plugin-config-impact.js';
+import { analyzePluginConfigMutationImpact, discoverPluginConfigManagedCommandPackages, pluginConfigTargetRenderScopes, pluginSharedNativeConfigTargets } from './plugin-config-impact.js';
+import { resolvePluginConfigReferencePlugins, resolvePluginConfigReferenceConsumers } from './plugin-config-references.js';
+import { orderPluginMetasByDependencies, resolvePluginMetaDependencyClosure } from './plugin-dependencies.js';
 import {
-  discoverInstalledPluginManagedCommandPackages,
   assertManagedCommandPackageNativeToolsUnchanged,
   syncPluginManagedCommandPackage,
   type ManagedCommandPackageDiscovery,
@@ -137,6 +138,7 @@ interface ConfigApplyDiscovery {
   failures: ReceiptTargetResult[];
   commandPackages?: ManagedCommandPackageDiscovery['packages'];
   commandDiscoveryErrors?: ManagedCommandPackageDiscovery['errors'];
+  plugins?: readonly PluginMeta[];
 }
 
 type InternalConfigApplyResult =
@@ -235,7 +237,7 @@ function collectRemovedConfigKeys(values: Record<string, unknown>): string[] {
 }
 
 function targetKey(target: ReceiptTargetIdentity): string {
-  return `${target.platform}:${target.scope}:${target.projectKey ?? '-'}`;
+  return `${target.pluginName}:${target.platform}:${target.scope}:${target.projectKey ?? '-'}`;
 }
 
 function dedupeTargets(targets: ReceiptTargetIdentity[]): ReceiptTargetIdentity[] {
@@ -281,8 +283,11 @@ async function discoverVisibleTargets(options: {
   const targets: ReceiptTargetIdentity[] = [];
   const failures: ReceiptTargetResult[] = [];
   const selector = options.plugin.pluginId ?? options.pluginName;
+  const consumers = await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env,
+    plugins: options.rebuildRuntime?.referencePlugins });
+  const selectors = consumers.map((plugin) => plugin.pluginId ?? plugin.manifest.name);
   const status = await statusCommandV8({
-    plugins: [selector],
+    plugins: selectors.length ? selectors : [selector],
     cwd: options.cwd,
     env: options.env,
     nativeCliRunner: options.nativeCliRunner,
@@ -292,12 +297,14 @@ async function discoverVisibleTargets(options: {
       : {}),
   });
   for (const statusTarget of flattenStatusTargets(status.payload.targets)) {
-    if (statusTarget.pluginId !== selector && statusTarget.pluginName !== options.pluginName) continue;
+    if (!selectors.includes(statusTarget.pluginId ?? '')
+      && !consumers.some((plugin) => plugin.manifest.name === statusTarget.pluginName)
+      && statusTarget.pluginId !== selector && statusTarget.pluginName !== options.pluginName) continue;
     // A declaration alone is not a consumer. Config apply cannot install it.
     if (!statusTargetHasLiveConfigConsumer(statusTarget)) continue;
     if (options.scope === 'project' && statusTarget.scope !== 'project') continue;
     targets.push(await createCandidateTarget({
-      pluginName: options.pluginName,
+      pluginName: statusTarget.pluginName,
       platform: statusTarget.platform,
       scope: statusTarget.scope,
       cwd: options.cwd,
@@ -322,14 +329,90 @@ async function reinstallVisibleTargets(options: {
 }): Promise<InternalConfigApplyResult> {
   const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
   const discovered = options.discovered ?? await resolveConfigApplyTargets(options);
+  const managedCommandProducerCache = options.rebuildRuntime?.managedCommandProducerCache
+    ?? new Map<string, Promise<CommandProducerResult>>();
+  if (discovered.targets.some((target) => target.pluginName !== options.plugin.manifest.name)
+    || discovered.commandPackages?.some((target) => target.producer.pluginName !== options.plugin.manifest.name)) {
+    const plugins = discovered.plugins ?? await resolvePluginConfigReferencePlugins({ sourceId: options.plugin.sourceId,
+      sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity,
+      env: options.env, plugins: options.rebuildRuntime?.referencePlugins });
+    const results: InternalConfigApplyTargetResult[] = [...discovered.failures];
+    const commandResults: CommandProducerResult[] = [];
+    const failed = new Set(discovered.failures.map(({ target }) => `${target.pluginName}\0${target.platform}\0${target.scope}`));
+    const failedPackages = new Set<string>();
+    const errors: ConfigApplyError[] = (discovered.commandDiscoveryErrors ?? []).map((error) => ({
+      stage: 'targetDiscovery', code: error.code, message: error.message,
+    }));
+    let partial = discovered.failures.length > 0 || errors.length > 0;
+    for (const plugin of orderPluginMetasByDependencies(plugins)) {
+      const targets = discovered.targets.filter((target) => target.pluginName === plugin.manifest.name);
+      const packages = (discovered.commandPackages ?? []).filter((target) => target.producer.pluginName === plugin.manifest.name);
+      if (!targets.length && !packages.length) continue;
+      const dependencies = resolvePluginMetaDependencyClosure(plugins, [plugin.manifest.name])
+        .filter((entry) => entry.manifest.name !== plugin.manifest.name).map((entry) => entry.manifest.name);
+      const dependencyPackageFailed = (scope: Scope) => dependencies.some((dependency) =>
+        failedPackages.has(`${dependency}\0${scope}`) || (scope === 'project' && failedPackages.has(`${dependency}\0user`)));
+      const blocked = targets.filter((target) => dependencies.some((dependency) =>
+        failed.has(`${dependency}\0${target.platform}\0${target.scope}`)
+        || (target.scope === 'project' && failed.has(`${dependency}\0${target.platform}\0user`)))
+        || dependencyPackageFailed(target.scope));
+      if (blocked.length) {
+        partial = true;
+        for (const target of blocked) failed.add(`${plugin.manifest.name}\0${target.platform}\0${target.scope}`);
+        results.push(...blocked.map((target): InternalConfigApplyTargetResult => ({ target, action: 'skipped',
+          state: 'skipped', errorCode: 'dependencyApplyFailed',
+          message: `A required provider failed. Run aw sync ${plugin.pluginId ?? plugin.manifest.name} --scope ${target.scope} --target ${target.platform === 'claude' ? 'claude-code' : target.platform} --yes.` })));
+      }
+      const blockedPackages = packages.filter((target) => {
+        const platforms = plugin.manifest.managedCommands?.packages.find((entry) => entry.key === target.packageKey
+          && entry.scope === target.producer.scope)?.platforms ?? ['codex', 'claude'];
+        return dependencyPackageFailed(target.producer.scope) || dependencies.some((dependency) =>
+          platforms.some((platform) => failed.has(`${dependency}\0${platform}\0${target.producer.scope}`)
+            || (target.producer.scope === 'project' && failed.has(`${dependency}\0${platform}\0user`))));
+      });
+      for (const target of blockedPackages) {
+        partial = true;
+        failedPackages.add(`${plugin.manifest.name}\0${target.producer.scope}`);
+        commandResults.push({ producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
+          errors: [{ code: 'dependencyApplyFailed', message: 'A required provider failed; the command package was not refreshed.' }],
+          recoveryActions: [`aw command package sync ${plugin.pluginId ?? plugin.manifest.name} ${target.packageKey} --scope ${target.producer.scope} --yes`] });
+      }
+      const available = targets.filter((target) => !blocked.includes(target));
+      const availablePackages = packages.filter((target) => !blockedPackages.includes(target));
+      if (!available.length && !availablePackages.length) continue;
+      const own = plugin.manifest.name === options.plugin.manifest.name;
+      const result = await reinstallVisibleTargets({ ...options, plugin,
+        changedConfigKeys: own ? options.changedConfigKeys : [],
+        rebuildRuntime: { ...options.rebuildRuntime, referencePlugins: plugins, managedCommandProducerCache },
+        discovered: { targets: available, failures: [], commandPackages: availablePackages,
+          commandDiscoveryErrors: [] } });
+      if (result.state !== 'succeeded' && result.state !== 'skipped') {
+        partial = true;
+        for (const target of available) {
+          if (!('targetResults' in result) || !result.targetResults.some((entry) =>
+            targetKey(entry.target) === targetKey(target) && entry.state === 'completed')) {
+            failed.add(`${plugin.manifest.name}\0${target.platform}\0${target.scope}`);
+          }
+        }
+      }
+      if ('targetResults' in result) results.push(...result.targetResults);
+      if ('commandResults' in result) {
+        commandResults.push(...result.commandResults ?? []);
+        for (const entry of result.commandResults ?? []) {
+          if (entry.state !== 'completed') failedPackages.add(`${plugin.manifest.name}\0${entry.producer.scope}`);
+        }
+      }
+      if ('errors' in result) errors.push(...result.errors ?? []);
+    }
+    return { state: partial ? 'partial' : 'succeeded', targetResults: results,
+      ...(commandResults.length ? { commandResults } : {}), ...(errors.length ? { errors } : {}) };
+  }
   const contexts = new Map<Scope, Awaited<ReturnType<typeof createScopeContext>>>();
   const demands = new Map<Scope, Awaited<ReturnType<typeof readDemand>>>();
   const failedScopes = new Set<Scope>();
   try {
     const targetResults: InternalConfigApplyTargetResult[] = [...discovered.failures];
     const commandResults = new Map<string, CommandProducerResult>();
-    const managedCommandProducerCache = options.rebuildRuntime?.managedCommandProducerCache
-      ?? new Map<string, Promise<CommandProducerResult>>();
     let runtimeFailed = discovered.failures.length > 0
       || (discovered.commandDiscoveryErrors?.length ?? 0) > 0;
     let invalidTargets = 0;
@@ -398,6 +481,7 @@ async function reinstallVisibleTargets(options: {
           } : {}),
           pluginName: options.plugin.manifest.name,
           manifest: options.plugin.manifest,
+          referencePlugins: options.rebuildRuntime?.referencePlugins,
           targetScope: target.scope,
           cwd: options.cwd,
           env: options.env,
@@ -455,7 +539,7 @@ async function reinstallVisibleTargets(options: {
     for (const target of discovered.targets) {
       if (failedScopes.has(target.scope)) continue;
       try {
-        const effective = await resolveEffectivePluginConfig({
+        const configs = await Promise.all(pluginConfigTargetRenderScopes(options.plugin, target).map((scope) => resolveEffectivePluginConfig({
           ...(options.plugin.sourceId ? {
             sourceId: options.plugin.sourceId,
             sourceIdentity: options.plugin.sourceIdentity,
@@ -463,11 +547,12 @@ async function reinstallVisibleTargets(options: {
           } : {}),
           pluginName: options.plugin.manifest.name,
           manifest: options.plugin.manifest,
-          targetScope: target.scope,
+          referencePlugins: options.rebuildRuntime?.referencePlugins,
+          targetScope: scope,
           cwd: options.cwd,
           env: options.env,
-        });
-        if (effective.issues.length > 0) {
+        })));
+        if (configs.some((effective) => effective.issues.length > 0)) {
           invalidTargets += 1;
           targetResults.push({
             target,
@@ -585,6 +670,7 @@ async function reinstallVisibleTargets(options: {
           result = await syncPluginManagedCommandPackage({
             plugin: options.plugin, packageKey: target.packageKey, scope: target.producer.scope,
             cwd: options.cwd, env: options.env, managedCommandProducerCache,
+            referencePlugins: options.rebuildRuntime?.referencePlugins,
             event: options.changedConfigKeys?.length ? 'refresh' : 'install',
             changedConfigKeys: options.changedConfigKeys ?? [],
             signal: options.rebuildRuntime?.signal,
@@ -664,9 +750,10 @@ async function resolveConfigApplyTargets(options: {
         nativeCliRunner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
         rebuildRuntime: options.rebuildRuntime,
       });
-  const commands = await discoverInstalledPluginManagedCommandPackages({
+  const commands = await discoverPluginConfigManagedCommandPackages({
     plugin: options.plugin, scope: options.scope, cwd: options.cwd, env: options.env,
     platformTargets: platformTargets.targets,
+    referencePlugins: options.rebuildRuntime?.referencePlugins,
   });
   return { ...platformTargets, commandPackages: commands.packages, commandDiscoveryErrors: commands.errors };
 }
@@ -676,17 +763,22 @@ async function configApplyHasValidSharedNativeTarget(options: {
   targets: ReceiptTargetIdentity[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  plugins?: readonly PluginMeta[];
 }): Promise<boolean> {
-  const sharedTargets = pluginSharedNativeConfigTargets(options.plugin);
-  if (options.targets.some((target) => sharedTargets.some((shared) => (shared.platform ?? 'codex') === target.platform))) {
+  const plugins = await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env, plugins: options.plugins });
+  for (const plugin of plugins) {
+    const sharedTargets = pluginSharedNativeConfigTargets(plugin);
+    if (!options.targets.some((target) => target.pluginName === plugin.manifest.name
+      && sharedTargets.some((shared) => (shared.platform ?? 'codex') === target.platform))) continue;
     const effective = await resolveEffectivePluginConfig({
-      ...(options.plugin.sourceId ? {
-        sourceId: options.plugin.sourceId,
-        sourceIdentity: options.plugin.sourceIdentity,
-        logicalIdentity: options.plugin.catalogLogicalIdentity,
+      ...(plugin.sourceId ? {
+        sourceId: plugin.sourceId,
+        sourceIdentity: plugin.sourceIdentity,
+        logicalIdentity: plugin.catalogLogicalIdentity,
       } : {}),
-      pluginName: options.plugin.manifest.name,
-      manifest: options.plugin.manifest,
+      pluginName: plugin.manifest.name,
+      manifest: plugin.manifest,
+      referencePlugins: options.plugins,
       targetScope: 'user',
       cwd: options.cwd,
       env: options.env,
@@ -744,6 +836,16 @@ export async function resolveConfigPreApplyAuthorization(options: {
   unavailableTargetResults: ReceiptTargetResult[];
 }> {
   const applyTargets = dedupeTargets(options.applyTargets);
+  if (applyTargets.some((target) => target.pluginName !== options.plugin.manifest.name)) {
+    const plugins = await resolvePluginConfigReferencePlugins({ sourceId: options.plugin.sourceId,
+      sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity,
+      env: options.env, plugins: options.rebuildRuntime?.referencePlugins });
+    const results = await Promise.all(plugins.map((plugin) => resolveConfigPreApplyAuthorization({ ...options, plugin,
+      applyTargets: applyTargets.filter((target) => target.pluginName === plugin.manifest.name) })));
+    return { targets: results.flatMap((result) => result.targets),
+      availableApplyTargets: results.flatMap((result) => result.availableApplyTargets),
+      unavailableTargetResults: results.flatMap((result) => result.unavailableTargetResults) };
+  }
   if (applyTargets.length === 0 || !pluginMayRunPreApply(options.plugin)) {
     return { targets: [], availableApplyTargets: applyTargets, unavailableTargetResults: [] };
   }
@@ -788,6 +890,7 @@ export async function resolveConfigPreApplyAuthorization(options: {
         ...options.rebuildRuntime,
         env: context.env,
         nativeCliRunner: options.nativeCliRunner,
+        previewOperationPlan: true,
         resolvePreApplyAuthorization: true,
         executionInput: {
           context, requirements: demandNativeProjection(demand),
@@ -995,12 +1098,12 @@ export async function replayConfigRuntimeWrites(options: {
       if (
         options.scope === 'user'
         && options.sharedNativeApplyConfirmed !== true
-        && pluginHasSharedNativeRefreshKeys(options.plugin)
         && await configApplyHasValidSharedNativeTarget({
           plugin: options.plugin,
           targets: discovered.targets,
           cwd: options.cwd,
           env,
+          plugins: rebuildRuntime.referencePlugins,
         })
       ) {
         throwSharedNativeApplyConfirmationRequired();
@@ -1046,10 +1149,6 @@ type ApplyPluginConfigWriteOptions = {
   preApplyAuthorizedTargets?: readonly PreApplyAuthorizationTarget[];
   reviewPreflight?: () => Promise<void> | void;
 };
-
-function pluginHasSharedNativeRefreshKeys(plugin: PluginMeta): boolean {
-  return pluginSharedNativeConfigTargets(plugin).length > 0;
-}
 
 function throwSharedNativeApplyConfirmationRequired(): never {
   const error = new Error(
@@ -1146,6 +1245,7 @@ async function applyPluginConfigWriteUnlocked(
     cwd: options.cwd,
     env: options.env,
     visibleTargets: discovered?.targets ?? [],
+    referencePlugins: options.rebuildRuntime?.referencePlugins,
     ...(discovered ? { commandDiscovery: {
       packages: discovered.commandPackages ?? [], errors: discovered.commandDiscoveryErrors ?? [],
     } } : {}),
@@ -1165,8 +1265,12 @@ async function applyPluginConfigWriteUnlocked(
     env: options.env,
     updates,
     removeKeys: requestedRemoveKeys,
+    referencePlugins: options.rebuildRuntime?.referencePlugins,
   });
-  const warnings: string[] = [];
+  if (impact.referenceBlockers?.length) {
+    throw Object.assign(new Error(`configReferenceInUse: ${impact.referenceBlockers.join(' ')}`), { code: 'configReferenceInUse' });
+  }
+  const warnings: string[] = [...impact.referenceWarnings ?? []];
   const { updatedKeys, removedKeys, staleRemovedKeys } = impact;
   let preApplyUnavailableReason: 'sourceUnavailable' | 'targetDiscoveryFailed' | undefined;
   let preApplyUnavailableTargetResults: ReceiptTargetResult[] = [];
@@ -1175,7 +1279,8 @@ async function applyPluginConfigWriteUnlocked(
         commandPackages: impact.affectedCommandPackages }
     : undefined;
   const shouldApply = options.apply !== false && impact.storeChanged && !impact.noEffectiveChange;
-  if (shouldApply && pluginMayRunPreApply(schemaPlugin)) {
+  if (shouldApply && (pluginMayRunPreApply(schemaPlugin)
+    || applyDiscovery?.targets.some((target) => target.pluginName !== schemaPlugin.manifest.name))) {
     if (applyDiscovery) {
       const preApplyAuthorization = await resolveConfigPreApplyAuthorization({
         plugin: schemaPlugin,
@@ -1211,7 +1316,8 @@ async function applyPluginConfigWriteUnlocked(
     && options.scope === 'user'
     && options.sharedNativeApplyConfirmed !== true
     && impact.sharedNativeRenderTargets.some((shared) => impact.affectedTargets
-      .some((target) => target.platform === (shared.platform ?? 'codex')))
+      .some((target) => (!shared.pluginName || shared.pluginName === target.pluginName)
+        && target.platform === (shared.platform ?? 'codex')))
   ) {
     throwSharedNativeApplyConfirmationRequired();
   }
@@ -1239,6 +1345,7 @@ async function applyPluginConfigWriteUnlocked(
       ...configIdentity,
       pluginName,
       manifest: schemaPlugin.manifest,
+      referencePlugins: options.rebuildRuntime?.referencePlugins,
       targetScope: options.scope,
       cwd: options.cwd,
       env: options.env,
@@ -1368,6 +1475,7 @@ export async function applyPluginConfigWrite(
               } : {}),
               pluginName: options.plugin.manifest.name,
               manifest: options.plugin.manifest,
+              referencePlugins: options.rebuildRuntime?.referencePlugins,
               targetScope: options.scope,
               cwd: options.cwd,
               env: options.env,
@@ -1523,12 +1631,15 @@ async function resetPluginConfigWithHelperUnlocked(
         cwd: options.cwd,
         env: options.env,
         visibleTargets,
+        referencePlugins: options.rebuildRuntime?.referencePlugins,
         ...(discovered ? { commandDiscovery: {
           packages: discovered.commandPackages ?? [], errors: discovered.commandDiscoveryErrors ?? [],
         } } : {}),
         mutation: { kind: 'reset' },
       });
       removedKeys = impact.removedKeys;
+      warnings.push(...impact.referenceBlockers ?? []);
+      warnings.push(...impact.referenceWarnings ?? []);
     } catch {
       // Reset remains available when its before state cannot be read.
     }
@@ -1546,7 +1657,8 @@ async function resetPluginConfigWithHelperUnlocked(
     && impact?.storeChanged
     && !impact.noEffectiveChange
     && applyDiscovery
-    && pluginMayRunPreApply(options.plugin)
+    && (pluginMayRunPreApply(options.plugin)
+      || applyDiscovery.targets.some((target) => target.pluginName !== options.plugin!.manifest.name))
   ) {
     const preApplyAuthorization = await resolveConfigPreApplyAuthorization({
       plugin: options.plugin,
@@ -1583,9 +1695,11 @@ async function resetPluginConfigWithHelperUnlocked(
     && options.sharedNativeApplyConfirmed !== true
     && (impact
       ? impact.sharedNativeRenderTargets.some((shared) => impact.affectedTargets
-        .some((target) => target.platform === (shared.platform ?? 'codex')))
+        .some((target) => (!shared.pluginName || shared.pluginName === target.pluginName)
+          && target.platform === (shared.platform ?? 'codex')))
       : pluginSharedNativeConfigTargets(options.plugin).some((shared) => visibleTargets
-        .some((target) => target.platform === (shared.platform ?? 'codex'))))
+        .some((target) => (!shared.pluginName || shared.pluginName === target.pluginName)
+          && target.platform === (shared.platform ?? 'codex'))))
   ) {
     throwSharedNativeApplyConfirmationRequired();
   }
@@ -1627,6 +1741,7 @@ async function resetPluginConfigWithHelperUnlocked(
           ...configIdentity,
           pluginName,
           manifest: schemaPlugin.manifest,
+          referencePlugins: options.rebuildRuntime?.referencePlugins,
           targetScope: options.scope,
           cwd: options.cwd,
           env: options.env,

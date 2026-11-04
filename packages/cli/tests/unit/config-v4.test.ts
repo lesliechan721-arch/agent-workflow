@@ -45,10 +45,14 @@ function fixture() {
 describe('Config Definition v4 CLI boundaries', () => {
   // Test Value Gate: use the shipped plugin schema, writer and runtime snapshot so
   // convenience fields cannot be accepted in the wrong branch or lost on apply.
-  it('saves Codex Enhance backend options and keeps profile values out of installed runtime', async () => {
+  it('saves Agent Subagent backend options and keeps profile values out of installed runtime', async () => {
     const { store, plugin, save } = fixture();
-    const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/codex-enhance/.agents-plugin/plugin.json'));
+    const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/agent-subagent/.agents-plugin/plugin.json'));
     plugin.manifest.config = normalizePluginConfigDefinition(source.config);
+    const defaults = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
+    for (const key of ['simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile']) {
+      expect(defaults.values[key]).toEqual({ executor: 'native' });
+    }
     const commands = [
       { key: 'oracle-web', adapter: 'oracle', oracleEngine: 'browser' },
       { key: 'oracle-default', adapter: 'oracle' },
@@ -65,15 +69,15 @@ describe('Config Definition v4 CLI boundaries', () => {
           key: `${adapter}-${permissionMode}-permission`, adapter, permissionMode, communication: false,
         }))),
     ];
-    const advisorGeneralProfile = { executor: 'oracle-web', reasoningEffort: 'pro' };
-    await save({ subagentCommands: commands, advisorGeneralProfile });
+    const generalTaskProfile = { executor: 'oracle-web', reasoningEffort: 'pro' };
+    await save({ subagentCommands: commands, generalTaskProfile });
     const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
-    expect(config.values).toMatchObject({ subagentCommands: commands, advisorGeneralProfile });
+    expect(config.values).toMatchObject({ subagentCommands: commands, generalTaskProfile });
     plugin.manifest.artifacts = source.artifacts;
     const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
-      logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['codex-subagent-guide-skill'],
+      logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['spawn-subagent-skill'],
       config: { ...config, mode: 'artifact-render', targetScope: 'user' } });
-    expect(snapshots['codex-subagent-guide-skill']!.effectiveValues).toEqual({ subagentCommands: commands, subagentRetentionHours: 24 });
+    expect(snapshots['spawn-subagent-skill']!.effectiveValues).toEqual({ subagentCommands: commands, subagentRetentionHours: 24 });
     const file = resolvePluginConfigStorePath(store);
     const before = await fs.readFile(file);
     for (const invalid of [
@@ -109,7 +113,7 @@ describe('Config Definition v4 CLI boundaries', () => {
   // zero must survive saving, and invalid values must preserve the prior file.
   it('saves Guide retention hours including zero and rejects invalid ranges atomically', async () => {
     const { store, plugin, save } = fixture();
-    const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/codex-enhance/.agents-plugin/plugin.json'));
+    const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/agent-subagent/.agents-plugin/plugin.json'));
     plugin.manifest.config = normalizePluginConfigDefinition(source.config);
     plugin.manifest.artifacts = source.artifacts;
     const maximum = Math.floor(Number.MAX_SAFE_INTEGER / 3_600_000);
@@ -118,9 +122,9 @@ describe('Config Definition v4 CLI boundaries', () => {
       const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
       expect(config.values.subagentRetentionHours).toBe(subagentRetentionHours);
       const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
-        logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['codex-subagent-guide-skill'],
+        logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['spawn-subagent-skill'],
         config: { ...config, mode: 'artifact-render', targetScope: 'user' } });
-      expect(snapshots['codex-subagent-guide-skill']!.effectiveValues).toEqual({ subagentCommands: [], subagentRetentionHours });
+      expect(snapshots['spawn-subagent-skill']!.effectiveValues).toEqual({ subagentCommands: [], subagentRetentionHours });
     }
     const file = resolvePluginConfigStorePath(store);
     const before = await fs.readFile(file);

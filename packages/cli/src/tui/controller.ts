@@ -433,10 +433,10 @@ export interface ConfigOperationEvidence {
   storeDigest: string;
   impactState?: 'known' | 'unknown';
   noEffectiveChange?: true;
-  affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
+  affectedTargets: Array<{ pluginName?: string; platform: PlatformName; scope: Scope }>;
   commandPackages?: PluginConfigMutationImpact['affectedCommandPackages'];
   preApplyAuthorization?: PreApplyAuthorizationTarget[];
-  sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[]; platform?: PlatformName }>;
+  sharedNativeRenderTargets?: Array<{ id: string; pluginName?: string; skillKey: string; refreshKeys: string[]; platform?: PlatformName }>;
   shareability?: 'verified' | 'unverified';
 }
 
@@ -2985,6 +2985,25 @@ export class TuiController {
       pluginId,
       layer: { scope: 'effective' },
     });
+    this.#publish();
+  }
+
+  beginConfigReferenceSource(pluginId: string, fieldKey: string): void {
+    this.#assertAcceptingActions();
+    const current = this.#router.snapshot.current;
+    const route = current.route;
+    if (!['configFieldEditor', 'configObjectPropertyEditor'].includes(route.name)
+      || !('pluginId' in route)
+      || sourceIdFromPluginId(route.pluginId) !== sourceIdFromPluginId(pluginId)
+      || route.pluginId === pluginId) {
+      throw new TuiOperationBlockedError('configReferenceSourceUnavailable', '引用来源必须是同一来源中的其他插件。');
+    }
+    this.#cancelReviewPreparation();
+    if (this.#activeReview) this.#tickets.delete(this.#activeReview.reviewToken);
+    this.#activeReview = undefined;
+    this.#router.beginFlow('configEdit', route, this.#router.snapshot.currentFrameId, current.context);
+    this.#router.push({ name: 'configFields', pluginId, layer: { scope: 'effective' } });
+    this.#router.push({ name: 'configFieldEditor', pluginId, layer: { scope: 'effective' }, fieldKey, editor: 'array', mode: 'choices' });
     this.#publish();
   }
 

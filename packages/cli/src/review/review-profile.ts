@@ -4,7 +4,7 @@ import { canonicalJson } from '@lesliechan721/agent-skill-eval'
 import {
   canonicalizePluginConfigValues,
   formatPluginConfigIssue,
-  getPluginConfigDependencyKeys,
+  getPluginConfigDependencyFields,
   validatePluginConfigCandidate,
   validatePluginConfigValue,
   type PluginConfigObject,
@@ -12,11 +12,13 @@ import {
   type PluginConfigScalarArray,
   type PluginConfigScalarObject,
   type PluginConfigValue,
+  type PluginConfigReferenceContext,
   type PluginMeta,
   type Scope,
 } from '@lesliechan721/aw-plugin-core'
 
 import type { PluginConfigSource } from '../utils/plugin-config.js'
+import { codexNativeRefreshKeys } from '../utils/plugin-config.js'
 import {
   ReviewSelectionError,
   type ReviewPlatform,
@@ -157,17 +159,36 @@ export function parseReviewProfile(value: unknown): ReviewProfile {
 
 export function resolveReviewPluginProfileConfig(options: {
   plugin: PluginMeta
+  plugins?: readonly PluginMeta[]
   scope: Scope
   config: ReviewProfileConfig
   keys?: readonly string[]
 }): ReviewPluginProfileConfig {
+  const plugins = options.plugins ?? [options.plugin]
+  const context: PluginConfigReferenceContext = {
+    plugin: options.plugin.manifest.name,
+    dependencies: options.plugin.manifest.dependencies ?? [],
+    plugins: Object.fromEntries(plugins.map((plugin) => [plugin.manifest.name, {
+      definition: plugin.manifest.config ?? { fields: {} },
+      dependencies: plugin.manifest.dependencies ?? [],
+      values: {
+        ...Object.fromEntries(Object.entries(plugin.manifest.config?.fields ?? {})
+          .flatMap(([key, field]) => field.default === undefined ? [] : [[key, field.default]])),
+        ...(options.config[plugin.manifest.name] ?? {}),
+      },
+    }])),
+  }
   const fields = options.plugin.manifest.config?.fields ?? {}
   const supplied = options.config[options.plugin.manifest.name] ?? {}
+  const userOnly = codexNativeRefreshKeys(options.plugin.manifest)
   const selectedKeys = new Set(options.keys ?? Object.keys(fields))
   const definition = options.plugin.manifest.config ?? { fields: {} }
   let validationKeys: Set<string>
+  let dependencies: ReturnType<typeof getPluginConfigDependencyFields>
   try {
-    validationKeys = new Set(getPluginConfigDependencyKeys(definition, [...selectedKeys]))
+    dependencies = getPluginConfigDependencyFields(definition, [...selectedKeys], context)
+    validationKeys = new Set(dependencies.filter((entry) => entry.plugin === context.plugin)
+      .map((entry) => entry.field))
   } catch (error) {
     throw new ReviewSelectionError('invalidConfig', error instanceof Error ? error.message : 'Unknown config key.')
   }
@@ -211,26 +232,43 @@ export function resolveReviewPluginProfileConfig(options: {
   }
   for (const [key, value] of Object.entries(normalizedOverrides)) {
     values[key] = value
-    sources[key] = options.scope
+    sources[key] = userOnly.has(key) ? 'user' : options.scope
   }
 
-  const issues = validatePluginConfigCandidate(definition, values, [...selectedKeys])
+  const dependencyInputs = dependencies.map(({ plugin: pluginName, field: key }) => {
+    const plugin = plugins.find((entry) => entry.manifest.name === pluginName)!
+    const field = plugin.manifest.config!.fields[key]!
+    if (field.sensitive === true && context.plugins[pluginName]!.values?.[key] !== undefined) {
+      throw new ReviewSelectionError('invalidConfig', `Review config cannot read sensitive dependency "${pluginName}.${key}".`)
+    }
+    const value = context.plugins[pluginName]!.values?.[key]
+    const source = Object.hasOwn(options.config[pluginName] ?? {}, key)
+      && (field.default === undefined || !sameConfigValue(field.default, value as PluginConfigValue))
+      ? codexNativeRefreshKeys(plugin.manifest).has(key) ? 'user' : options.scope
+      : 'default'
+    return { plugin: pluginName, field: key, definition: field, value, source,
+      dependencies: plugin.manifest.dependencies ?? [] }
+  })
+  const issues = validatePluginConfigCandidate(definition, values, [...selectedKeys], context)
   const missing = issues.find((issue) => issue.code === 'required')
   if (missing) {
     throw new ReviewSelectionError(
       'requiredConfigMissing',
-      `Plugin "${options.plugin.manifest.name}" requires config field "${missing.path.field}".`,
+      `Plugin "${missing.path.plugin ?? options.plugin.manifest.name}" requires config field "${missing.path.field}". `
+      + 'Provide required dependency overrides in the same config file.',
       3,
     )
   }
   if (issues.length > 0) {
     throw new ReviewSelectionError(
       'invalidConfig',
-      `Plugin "${options.plugin.manifest.name}" config is invalid: ${formatPluginConfigIssue(issues[0]!)}`,
+      `Plugin "${options.plugin.manifest.name}" config is invalid: ${formatPluginConfigIssue(issues[0]!)}. `
+      + 'Provide any required dependency config in the same {plugin: {field: value}} config file.',
     )
   }
 
-  const canonicalOverrides = canonicalizePluginConfigValues(normalizedOverrides)
+  const canonicalOverrides = canonicalizePluginConfigValues(Object.fromEntries(Object.entries(normalizedOverrides)
+    .filter(([key]) => options.scope === 'user' || !userOnly.has(key))))
   const canonicalValues = canonicalizePluginConfigValues(Object.fromEntries(Object.entries(values)
     .filter(([key]) => selectedKeys.has(key))))
   const canonicalSources = Object.fromEntries(
@@ -243,7 +281,7 @@ export function resolveReviewPluginProfileConfig(options: {
     overrides: canonicalOverrides,
     values: canonicalValues,
     sources: canonicalSources,
-    digest: digestCanonical({ values: canonicalizePluginConfigValues(values), sources }),
+    digest: digestCanonical({ values: canonicalizePluginConfigValues(values), sources, dependencies: dependencyInputs }),
   }
 }
 

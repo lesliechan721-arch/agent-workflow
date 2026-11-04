@@ -111,6 +111,7 @@ import {
   resolveEffectivePluginConfig,
 } from '../utils/plugin-config.js';
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
+import { pluginConfigTargetRenderScopes } from '../utils/plugin-config-impact.js';
 import {
   inspectOwnedComponents,
   parseOwnedTextHeader,
@@ -3545,6 +3546,7 @@ async function runRebuildCommandInSession(
       }
       const executionContext: RebuildExecutionContext = {
         signal: options.runtime?.signal,
+        referencePlugins: options.runtime?.referencePlugins,
         scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
         env: runtimeEnv,
         nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
@@ -3905,28 +3907,20 @@ async function runRebuildCommandInSession(
           if (!planOptions?.skipConfigValidation
             && entry.plugin.manifest.config?.fields
             && (action === 'install' || action === 'reinstall')) {
-            const effective = resolvedScope === 'project'
-              ? await resolveArtifactRenderConfig({
-                  sourceId: entry.source.sourceId,
-                  sourceIdentity: entry.source.sourceIdentity,
-                  logicalIdentity: entry.source.logicalIdentity,
-                  pluginName: entry.plugin.manifest.name,
-                  manifest: entry.plugin.manifest,
-                  scope: 'project',
-                  cwd: options.commandOptions.cwd,
-                  env: runtimeEnv,
-                })
-              : await resolveEffectivePluginConfig({
-                  sourceId: entry.source.sourceId,
-                  sourceIdentity: entry.source.sourceIdentity,
-                  logicalIdentity: entry.source.logicalIdentity,
-                  pluginName: entry.plugin.manifest.name,
-                  manifest: entry.plugin.manifest,
-                  targetScope: 'user',
-                  cwd: options.commandOptions.cwd,
-                  env: runtimeEnv,
-                });
-            if (effective.issues.length > 0) {
+            const configs = await Promise.all(pluginConfigTargetRenderScopes(entry.plugin, {
+              pluginName: entry.plugin.manifest.name, platform, scope: resolvedScope,
+            }).map((scope) => resolveArtifactRenderConfig({
+              sourceId: entry.source.sourceId,
+              sourceIdentity: entry.source.sourceIdentity,
+              logicalIdentity: entry.source.logicalIdentity,
+              pluginName: entry.plugin.manifest.name,
+              manifest: entry.plugin.manifest,
+              referencePlugins: options.runtime?.referencePlugins,
+              scope,
+              cwd: options.commandOptions.cwd,
+              env: runtimeEnv,
+            })));
+            if (configs.some((effective) => effective.issues.length > 0)) {
               action = 'block';
               errorCode = 'invalidConfig';
             }
@@ -4515,10 +4509,14 @@ async function runRebuildCommandInSession(
             if (!entry.plugin.manifest.config?.fields
               || planned.action === 'block'
               || !preparedTargets.has(executionKey(selection, plan))) continue;
-            configTargets.set(`${entry.pluginId}\0${planned.resolvedScope}`, {
-              entry,
-              scope: planned.resolvedScope,
-            });
+            for (const scope of pluginConfigTargetRenderScopes(entry.plugin, {
+              pluginName: entry.plugin.manifest.name, platform: selection.platform, scope: planned.resolvedScope,
+            })) configTargets.set(`${entry.pluginId}\0${scope}`, { entry, scope });
+            for (const action of preparedTargets.get(executionKey(selection, plan))!.target.operationActions ?? []) {
+              if (action.kind === 'runPreApply' && action.pluginId === entry.pluginId) {
+                configTargets.set(`${entry.pluginId}\0${action.scope}`, { entry, scope: action.scope });
+              }
+            }
           }
         }
         const configDigests = await Promise.all([...configTargets.values()].map(async ({
@@ -4531,6 +4529,7 @@ async function runRebuildCommandInSession(
             logicalIdentity: entry.source.logicalIdentity,
             pluginName: entry.plugin.manifest.name,
             manifest: entry.plugin.manifest,
+            referencePlugins: options.runtime?.referencePlugins,
             targetScope: scope,
             cwd: options.commandOptions.cwd,
             env: runtimeEnv,

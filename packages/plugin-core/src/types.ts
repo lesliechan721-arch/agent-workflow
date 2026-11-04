@@ -145,6 +145,7 @@ export interface PluginConfigArrayValidation {
   uniqueBy?: string;
 }
 export interface PluginConfigValueReference {
+  plugin?: string;
   field: string;
   key: string;
   label?: string;
@@ -319,9 +320,23 @@ export type PluginConfigDefinition =
       presentation?: PluginConfigPresentation;
     };
 export type PluginConfigSchema = PluginConfigDefinition;
+/** The caller binds every entry to the same Catalog source and resolves its config scope. */
+export interface PluginConfigReferenceContext {
+  plugin: string;
+  dependencies: readonly string[];
+  plugins: Readonly<Record<string, {
+    definition: PluginConfigDefinition;
+    dependencies: readonly string[];
+    values?: Readonly<Record<string, unknown>>;
+  }>>;
+}
+export interface PluginConfigDependencyField {
+  plugin: string;
+  field: string;
+}
 export interface PluginConfigValidationIssue {
   code: string;
-  path: { field: string; property?: string; segments?: Array<string | number> };
+  path: { plugin?: string; field: string; property?: string; segments?: Array<string | number> };
   message: string;
   recoverable: true;
 }

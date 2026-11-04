@@ -388,6 +388,7 @@ async function prepareSelectedSkills(options: {
 
     await materializeReviewNativeSkills({
       plugin: bundlePlugin,
+      plugins: [...plugins.values()],
       platform: options.profile.platform,
       scope: options.profile.scope,
       cwd: options.cwd,

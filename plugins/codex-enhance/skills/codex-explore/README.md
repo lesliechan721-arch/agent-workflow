@@ -6,4 +6,4 @@
 
 例如：“调查这几个模块如何处理取消，给出真实调用位置、证据和未覆盖分支。”
 
-方法见 [SKILL.md](SKILL.md)，调查角色说明见 [调查指令](assets/explore-instructions.md)。委派采用 `codex-subagent-guide` 的约定。
+方法见 [SKILL.md](SKILL.md)，调查角色说明见 [调查指令](assets/explore-instructions.md)。委派采用 `spawn-subagent` 的约定。

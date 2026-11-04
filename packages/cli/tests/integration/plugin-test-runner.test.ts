@@ -436,17 +436,29 @@ describe('plugin script test runner', () => {
     expect(output.readStderr()).not.toContain('bad-neighbor');
   });
 
-  it('runs the standard author helper against validated effective test config', async () => {
+  it('runs the standard author helper against same-source dependency defaults', async () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readManifest(repoRoot);
+    manifest.dependencies = ['config-provider'];
+    manifest.requires = { aw: { capabilities: ['aw.plugin-config-cross-plugin-value-ref.v1'] } };
     manifest.config = {
+      schemaVersion: 4,
       fields: {
         mode: {
           type: 'string',
           default: 'default-mode',
+          valueRef: { plugin: 'config-provider', field: 'registry', key: 'key' },
         },
       },
     };
+    await fs.outputJson(path.join(repoRoot, 'plugins', 'config-provider', '.agents-plugin', 'plugin.json'), {
+      schemaVersion: 3, name: 'config-provider', version: '0.1.0', description: 'Plugin test config provider.',
+      marketplace: { category: 'test', strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      config: { schemaVersion: 4, fields: { registry: { type: 'array', default: [{ key: 'default-mode' }],
+        validation: { uniqueBy: 'key' }, items: { type: 'object',
+          properties: { key: { type: 'string', required: true } }, additionalProperties: false } } } },
+    });
     manifest.scripts = {
       helpers: {
         config: './scripts/aw-config.mjs',

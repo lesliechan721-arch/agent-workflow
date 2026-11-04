@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  assertPluginConfigReferenceSchemas,
   AW_RUNTIME_CONFIG_READER_PATH,
   createNativeToolReaderSource,
   createRuntimeConfigSnapshot,
@@ -19,7 +20,10 @@ import {
   parseManagedCommandPlaceholders,
   replaceManagedCommandPlaceholders,
   validateCommandEntryFiles,
+  validatePluginConfigCandidate,
+  formatPluginConfigIssue,
 } from '@lesliechan721/aw-plugin-core/manifest';
+import { readCatalogWorkspace } from '@lesliechan721/aw-plugin-core';
 
 import { checkPluginVersions } from './lib/plugin-version-check.mjs';
 import { scanJavaScriptImportSpecifiers } from './lib/javascript-import-scanner.mjs';
@@ -431,6 +435,7 @@ async function tryLoadCliManifestTools() {
     return {
       assertPluginInputTree: manifestModule.assertPluginInputTree ?? null,
       validateSourcePluginManifest: manifestModule.validateSourcePluginManifest ?? null,
+      reservedImports: manifestModule.CLI_RESERVED_IMPORTS,
       readPluginManifest: manifestModule.readPluginManifest ?? null,
       discoverPlugins: manifestModule.discoverPlugins ?? null,
       resolvePluginRequirements: manifestModule.resolvePluginRequirements ?? null,
@@ -1969,10 +1974,12 @@ function listFilesRecursive(rootDir) {
   return output;
 }
 
-function validateConfigSchemaLightweight(config) {
+function validateConfigSchemaLightweight(config, manifest) {
   if (config === undefined) return;
   try {
-    normalizePluginConfigDefinition(config);
+    normalizePluginConfigDefinition(config, 'config', {
+      plugin: manifest.name, dependencies: manifest.dependencies ?? [],
+    });
   } catch (validationError) {
     error(validationError instanceof Error ? validationError.message : String(validationError));
   }
@@ -1993,6 +2000,13 @@ function defaultConfigValues(manifest) {
     }
   }
   return values;
+}
+
+function hasCrossPluginValueRef(value) {
+  if (!isRecord(value)) return false;
+  if (isRecord(value.valueRef) && value.valueRef.plugin !== undefined) return true;
+  return Object.values(value).some((child) => Array.isArray(child)
+    ? child.some(hasCrossPluginValueRef) : hasCrossPluginValueRef(child));
 }
 
 function configFieldContainsSensitiveValue(field) {
@@ -3026,6 +3040,7 @@ async function runArtifactRendererFixture(
   skillValidationTools,
   managedContext,
   requiresNonSensitiveArtifactInput,
+  referenceContext,
 ) {
   if (!renderEntry || declarations.length === 0) return [];
 
@@ -3078,8 +3093,12 @@ async function runArtifactRendererFixture(
       const scopedValues = Object.fromEntries(refreshKeys.flatMap((key) =>
         Object.prototype.hasOwnProperty.call(values, key) ? [[key, values[key]]] : []));
       try {
+        if (manifest.config) {
+          const issues = validatePluginConfigCandidate(manifest.config, values, refreshKeys, referenceContext);
+          if (issues.length > 0) throw new Error(formatPluginConfigIssue(issues[0]));
+        }
         for (const target of scopedDeclarations.filter((declaration) => declaration.runtimeConfig)) {
-          const definition = normalizePluginConfigDefinition(manifest.config);
+          const definition = manifest.config;
           createRuntimeConfigSnapshot({
             installedIdentity: {
               sourceId: 'authoring',
@@ -3096,6 +3115,7 @@ async function runArtifactRendererFixture(
             declaration: target.runtimeConfig,
             definition,
             values,
+            referenceContext,
           });
         }
       } catch (runtimeConfigError) {
@@ -3260,6 +3280,7 @@ async function validateDynamicArtifactsLightweight(
   skillValidationTools,
   managedContext,
   requiresNonSensitiveArtifactInput,
+  referenceContext,
 ) {
   const declarations = validateArtifactsConfigLightweight(pluginDir, manifest);
   if (managedContext) declarations.push(...getManagedCommandArtifactTargets(managedContext.manifest));
@@ -3282,6 +3303,7 @@ async function validateDynamicArtifactsLightweight(
     skillValidationTools,
     managedContext,
     requiresNonSensitiveArtifactInput,
+    referenceContext,
   );
 }
 
@@ -3389,7 +3411,7 @@ async function validateAuthorManagedCommands(pluginDir, manifest, rendered, cont
 }
 
 function validateScriptsLightweight(pluginDir, manifest) {
-  validateConfigSchemaLightweight(manifest.config);
+  validateConfigSchemaLightweight(manifest.config, manifest);
   if (manifest.scripts === undefined) return null;
 
   const scripts = expectRecord(manifest.scripts, 'scripts');
@@ -4102,11 +4124,39 @@ async function validatePluginDir(pluginDir, options) {
   }
 
   const skillValidationTools = await tryLoadCliSkillValidationTools();
+  const sourceConfig = manifest.config;
   let normalizedManifest;
+  let referenceContext;
   try {
     normalizedManifest = await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
     // Renderer fixtures consume the same compiled config as installed runtime consumers.
     if (normalizedManifest.config) manifest.config = normalizedManifest.config;
+    // The Workspace is the sole source of dependency definitions and defaults.
+    // No installed plugin or user config can complete an author fixture.
+    if (manifest.config) {
+      let plugins = [{ manifest, rootDir: pluginDir }];
+      if (hasCrossPluginValueRef(sourceConfig)) {
+        if (!options.repoRoot) throw new Error('Cross-plugin config validation requires the canonical same-source Workspace.');
+        const workspace = await readCatalogWorkspace(options.repoRoot, {
+          reservedImports: cliManifestTools.reservedImports,
+        });
+        if (!workspace.plugins.some((plugin) => plugin.manifest.name === manifest.name
+          && plugin.rootDir === fs.realpathSync(pluginDir))) {
+          throw new Error('Cross-plugin config validation requires the canonical same-source Workspace plugin.');
+        }
+        plugins = workspace.plugins;
+      }
+      referenceContext = {
+        plugin: manifest.name,
+        dependencies: manifest.dependencies ?? [],
+        plugins: Object.fromEntries(plugins.map((plugin) => [plugin.manifest.name, {
+          definition: plugin.manifest.config ?? { fields: {} },
+          dependencies: plugin.manifest.dependencies ?? [],
+          values: defaultConfigValues(plugin.manifest),
+        }])),
+      };
+      assertPluginConfigReferenceSchemas(manifest.config, referenceContext, sourceConfig);
+    }
     const requirements = await cliManifestTools.resolvePluginRequirements({
       pluginRoot: pluginDir,
       manifest: normalizedManifest,
@@ -4159,6 +4209,7 @@ async function validatePluginDir(pluginDir, options) {
     skillValidationTools,
     managedContext,
     cliManifestTools.requiresNonSensitiveArtifactInput,
+    referenceContext,
   );
   if (managedContext) await validateAuthorManagedCommands(pluginDir, normalizedManifest, rendered ?? [], managedContext);
   validateMcpContent(pluginDir, manifest);

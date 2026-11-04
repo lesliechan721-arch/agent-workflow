@@ -8,4 +8,4 @@
 
 例如：“对这个取消方案取得第二意见，重点检查已提交输入会不会重复执行，并说明需要什么证据。”
 
-方法见 [SKILL.md](SKILL.md)，顾问角色说明见 [顾问指令](assets/advisor-instructions.md)。委派采用 `codex-subagent-guide` 的约定。
+方法见 [SKILL.md](SKILL.md)，顾问角色说明见 [顾问指令](assets/advisor-instructions.md)。委派采用 `spawn-subagent` 的约定。

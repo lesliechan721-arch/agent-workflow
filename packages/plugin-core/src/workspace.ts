@@ -29,6 +29,7 @@ import {
   validatePlatformManifestProjection,
 } from './manifest-contract.js';
 import { resolveSupportedPlatforms } from './platform-support.js';
+import { assertPluginConfigReferenceSchemas } from './plugin-config.js';
 import {
   createAwPluginRequirementsReceipt,
   normalizeAwCapabilities,
@@ -498,6 +499,20 @@ function orderPlugins(plugins: readonly PluginMeta[]): PluginMeta[] {
   return result;
 }
 
+async function assertSourceConfigReferences(plugins: readonly PluginMeta[]): Promise<void> {
+  const definitions = Object.fromEntries(plugins.filter((plugin) => plugin.manifest.config !== undefined)
+    .map((plugin) => [plugin.manifest.name, {
+      definition: plugin.manifest.config!, dependencies: plugin.manifest.dependencies ?? [],
+    }]));
+  for (const plugin of plugins) {
+    if (plugin.manifest.config === undefined) continue;
+    const raw = await readRegularJson(plugin.manifestPath, 'Plugin manifest') as { config?: unknown };
+    assertPluginConfigReferenceSchemas(plugin.manifest.config, {
+      plugin: plugin.manifest.name, dependencies: plugin.manifest.dependencies ?? [], plugins: definitions,
+    }, raw.config);
+  }
+}
+
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -728,6 +743,7 @@ export async function buildCatalogWorkspace(options: {
 }): Promise<{ outputRoot: string; catalogVersion: string; channel: CatalogChannel; pluginNames: string[] }> {
   const catalogWorkspace = await readCatalogWorkspace(options.workspaceRoot, { reservedImports: options.reservedImports });
   const plugins = orderPlugins(catalogWorkspace.plugins);
+  await assertSourceConfigReferences(plugins);
   const resolved = await resolveCatalogWorkspaceOutputPath({
     workspaceRoot: catalogWorkspace.workspaceRoot,
     outputPath: options.outputPath ?? DEFAULT_CATALOG_OUTPUT_PATH,
@@ -1101,6 +1117,7 @@ export async function buildCatalogWorkspacePlugin(options: {
 }): Promise<{ outputRoot: string; pluginName: string; dependencies: string[]; digest: string }> {
   const catalogWorkspace = await readCatalogWorkspace(options.workspaceRoot, { reservedImports: options.reservedImports });
   assertDependencyGraph(catalogWorkspace.plugins);
+  await assertSourceConfigReferences(catalogWorkspace.plugins);
   const requestedPluginRoot = path.resolve(catalogWorkspace.workspaceRoot, options.pluginDirectory);
   const pluginRoot = await fs.realpath(requestedPluginRoot);
   if (!isInside(catalogWorkspace.workspaceRoot, pluginRoot)) throw new Error('Plugin directory must stay inside the Catalog Workspace.');
@@ -1469,6 +1486,7 @@ async function validateCatalogPluginEntriesComplete(
     plugins.push(plugin);
   }
   assertDependencyGraph(plugins);
+  await assertSourceConfigReferences(plugins);
 }
 
 export async function validateCatalogSnapshotPluginEntriesComplete(

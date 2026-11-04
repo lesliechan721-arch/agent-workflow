@@ -41,8 +41,9 @@ function configCommandPackageChanges(evidence: OperationEvidence | undefined, ap
   return (evidence?.config?.commandPackages ?? []).map((target) => ({
     kind: target.declared && apply ? 'change' : 'warning',
     group: 'configImpact',
+    pluginId: `${target.producer.sourceId}/${target.producer.pluginName}`,
     title: `${target.declared ? apply ? '刷新' : '需同步' : '保留残留'}命令包 ${target.packageKey}`,
-    description: `${scopeLabel(target.producer.scope)} · ${target.producer.scope === 'user'
+    description: `${target.producer.sourceId}/${target.producer.pluginName} · ${scopeLabel(target.producer.scope)} · ${target.producer.scope === 'user'
       ? '平台共用一份个人默认配置，更新会影响全部引用者' : '当前项目配置'}${target.declared ? ''
       : ` · 声明已删除；aw command package remove ${target.packageId} --yes`}`,
   }));
@@ -868,14 +869,15 @@ function reviewChanges(
       ...preApplyScopeChanges(evidence?.config?.preApplyAuthorization ?? []),
       ...configCommandPackageChanges(evidence, true),
       ...(evidence?.config?.sharedNativeRenderTargets ?? []).filter((shared) => evidence?.config?.affectedTargets
-        .some((target) => target.platform === (shared.platform ?? 'codex'))).map((shared): OperationReviewChange => ({
+        .some((target) => (!shared.pluginName || shared.pluginName === target.pluginName)
+          && target.platform === (shared.platform ?? 'codex'))).map((shared): OperationReviewChange => ({
         kind: 'change', group: 'configImpact', title: `重新生成 ${shared.skillKey} 原生 Skill`,
         description: `配置来源为个人默认；更新 ${platformLabel(shared.platform ?? 'codex')} 由平台共用的内容会影响所有启用项目。`,
       })),
       ...(evidence?.config?.affectedTargets.map((target): OperationReviewChange => ({
         kind: 'change',
         group: 'configImpact',
-        title: `重新应用 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+        title: `重新应用 ${target.pluginName ? `${target.pluginName} · ` : ''}${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
       })) ?? []),
       { kind: 'keep', group: 'preserved', title: `${layerLabel}中的当前值保持不变` },
       { kind: 'keep', group: 'preserved', title: '不会恢复历史设置值' },
@@ -884,7 +886,8 @@ function reviewChanges(
   if (intent.changes) {
     const noEffectiveChange = evidence?.config?.noEffectiveChange === true;
     const sharedNativeTargets = (evidence?.config?.sharedNativeRenderTargets ?? []).filter((shared) =>
-      evidence?.config?.affectedTargets.some((target) => target.platform === (shared.platform ?? 'codex')));
+      evidence?.config?.affectedTargets.some((target) => (!shared.pluginName || shared.pluginName === target.pluginName)
+          && target.platform === (shared.platform ?? 'codex')));
     const sharedPlatforms = [...new Set(sharedNativeTargets.map((target) => target.platform ?? 'codex'))];
     const sharedPlatformLabel = sharedPlatforms.map(platformLabel).join('、');
     const sharedSkillLabel = sharedPlatforms.includes('claude') ? '原生 Skill' : '动态 Skill';
@@ -949,11 +952,11 @@ function reviewChanges(
         ? []
         : intent.apply && (evidence?.config?.affectedTargets.length ?? 0) > 0
         ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
-            kind: 'change', group: 'configImpact', title: `重新应用 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+            kind: 'change', group: 'configImpact', title: `重新应用 ${target.pluginName ? `${target.pluginName} · ` : ''}${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
           }))
         : !intent.apply && (evidence?.config?.affectedTargets.length ?? 0) > 0
         ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
-            kind: 'warning', group: 'configImpact', title: `保存后需同步 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+            kind: 'warning', group: 'configImpact', title: `保存后需同步 ${target.pluginName ? `${target.pluginName} · ` : ''}${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
           }))
         : (evidence?.config?.commandPackages?.length ?? 0) > 0 ? []
         : [{ kind: 'keep' as const, group: 'configImpact' as const, title: '当前没有可见安装；只保存设置' }]),
@@ -1325,12 +1328,14 @@ export function buildOperationReviewProjection(options: {
   const sharedNativeConfigApply = (intent.kind === 'configSave'
     && intent.apply
     && (evidence.config?.sharedNativeRenderTargets?.some((shared) => evidence.config?.affectedTargets
-      .some((target) => target.platform === (shared.platform ?? 'codex'))) ?? false))
+      .some((target) => (!shared.pluginName || shared.pluginName === target.pluginName)
+          && target.platform === (shared.platform ?? 'codex'))) ?? false))
     || (intent.kind === 'configSaveBatch'
       && intent.apply
       && (evidence.configBatch?.groups.some((group) =>
         group.config.sharedNativeRenderTargets?.some((shared) => group.config.affectedTargets
-          .some((target) => target.platform === (shared.platform ?? 'codex')))) ?? false));
+          .some((target) => (!shared.pluginName || shared.pluginName === target.pluginName)
+          && target.platform === (shared.platform ?? 'codex')))) ?? false));
   const requiresConfirmation = sharedNativeConfigApply
     || intent.kind === 'catalogStorePrune'
     || Boolean(batchEvidence?.groups.some((group) =>

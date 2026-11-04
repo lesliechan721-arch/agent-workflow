@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import type { PluginConfigReferenceContext } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   ArtifactPlan,
@@ -60,6 +61,7 @@ export interface ResolvedArtifactRenderConfig {
   sources: Record<string, PluginConfigSource>;
   issues: PluginConfigIssue[];
   stores: Partial<Record<Scope, PluginConfigStore>>;
+  referenceContext?: PluginConfigReferenceContext;
 }
 
 export interface ArtifactRendererContext {
@@ -174,6 +176,7 @@ function selectConfigKeys<Value>(
 }
 
 export async function resolveArtifactRenderConfig(options: {
+  referencePlugins?: readonly PluginMeta[];
   sourceId?: string;
   sourceIdentity?: string;
   logicalIdentity?: string;
@@ -228,6 +231,7 @@ export async function resolveArtifactRenderConfig(options: {
     logicalIdentity: options.logicalIdentity,
     pluginName,
     manifest: options.manifest,
+    referencePlugins: options.referencePlugins,
     targetScope: options.scope,
     cwd: options.cwd,
     env: options.env,
@@ -241,6 +245,7 @@ export async function resolveArtifactRenderConfig(options: {
     sources: effective.sources,
     issues: effective.issues,
     stores: effective.stores,
+    referenceContext: effective.referenceContext,
   };
 }
 
@@ -281,6 +286,7 @@ export async function resolveArtifactRendererTarget(
 }
 
 export async function writeArtifactRendererContext(options: {
+  referencePlugins?: readonly PluginMeta[];
   sourceId?: string;
   sourceIdentity?: string;
   logicalIdentity?: string;
@@ -327,6 +333,7 @@ export async function writeArtifactRendererContext(options: {
     logicalIdentity: options.logicalIdentity,
     pluginName: options.target.sourceManifest.name,
     manifest: options.target.sourceManifest,
+    referencePlugins: options.referencePlugins,
     scope: options.configScope ?? options.scope,
     cwd: options.cwd,
     env: options.commandEnv,
@@ -543,6 +550,7 @@ async function runArtifactRendererProcess(options: {
 }
 
 export async function runArtifactRenderer(options: {
+  referencePlugins?: readonly PluginMeta[];
   event: ArtifactRenderEvent;
   plugin: PluginMeta;
   platform: ArtifactRenderSurfaceName;
@@ -556,6 +564,8 @@ export async function runArtifactRenderer(options: {
   scriptTimeoutMs?: number;
   signal?: AbortSignal;
   runner?: PluginProcessRunner;
+  /** Validated process output owned by one rebuild execution context. */
+  preparedResults?: Map<string, PluginProcessResult>;
 }): Promise<RunArtifactRendererResult> {
   options.signal?.throwIfAborted();
   const event = assertArtifactRenderEvent(options.event);
@@ -574,6 +584,7 @@ export async function runArtifactRenderer(options: {
     sourceIdentity: options.plugin.sourceIdentity,
     logicalIdentity: options.plugin.catalogLogicalIdentity,
     target,
+    referencePlugins: options.referencePlugins,
     event,
     platform: options.platform,
     scope: options.scope,
@@ -624,13 +635,23 @@ export async function runArtifactRenderer(options: {
       env: spawnEnv,
     });
 
-    const result = await runArtifactRendererProcess({
-      invocation,
-      timeoutMs,
-      sensitiveValues: writtenContext.sensitiveValues,
-      signal: options.signal,
-      runner: options.runner,
-    });
+    // Temporary homes change on every preparation. The remaining context binds
+    // the renderer, exact request, config, sources and previous artifacts.
+    const preparationKey = options.preparedResults ? JSON.stringify({
+      ...writtenContext.context,
+      paths: { manifestPath: writtenContext.context.paths.manifestPath },
+      cwd: options.cwd,
+      commandEnv,
+      scriptTimeoutMs: options.scriptTimeoutMs,
+    }) : undefined;
+    const result = (preparationKey ? options.preparedResults?.get(preparationKey) : undefined)
+      ?? await runArtifactRendererProcess({
+        invocation,
+        timeoutMs,
+        sensitiveValues: writtenContext.sensitiveValues,
+        signal: options.signal,
+        runner: options.runner,
+      });
     const stdoutSummary = summarizeRenderOutput(
       result.stdout,
       writtenContext.sensitiveValues,
@@ -693,6 +714,9 @@ export async function runArtifactRenderer(options: {
       ));
     }
 
+    // Cache only validated success. Reused output still passes the current
+    // sensitive-value and artifact checks above.
+    if (preparationKey) options.preparedResults!.set(preparationKey, result);
     return {
       plan,
       target,

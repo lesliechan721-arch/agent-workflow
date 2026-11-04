@@ -169,6 +169,7 @@ async function copyUserMaterializedArtifacts(options: {
 
 async function materializeCodexSkills(options: {
   prepared: PreparedSkillPluginBundle;
+  plugins: readonly PluginMeta[];
   profile: AwSkillEvalMaterializationProfile;
   projectRoot: string;
   env: NodeJS.ProcessEnv;
@@ -199,6 +200,7 @@ async function materializeCodexSkills(options: {
   const outputRoot = path.join(options.env.TMPDIR!, `materialized-${options.prepared.bundlePlugin.manifest.name}`);
   await materializeReviewNativeSkills({
     plugin: options.prepared.bundlePlugin,
+    plugins: options.plugins,
     platform: 'codex',
     scope: options.profile.scope,
     cwd: options.projectRoot,
@@ -253,6 +255,7 @@ async function materializeProfile(options: {
   for (const { prepared } of installations) {
     await materializeCodexSkills({
       prepared,
+      plugins: installations.map(({ prepared }) => prepared.bundlePlugin),
       profile: options.profile,
       projectRoot,
       env,
@@ -262,6 +265,7 @@ async function materializeProfile(options: {
   const integration = createRebuildIntegration({
     context: {
       env,
+      referencePlugins: installations.map(({ prepared }) => prepared.bundlePlugin),
       nativeCliRunner: async () => {
         throw new Error('Plugin eval materialization cannot run a native CLI.');
       },

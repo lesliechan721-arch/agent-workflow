@@ -4,7 +4,7 @@
     "kind": "codex-workflow",
     "unitUnderTest": "codex-explore",
     "participants": [
-      "codex-subagent-guide"
+      "spawn-subagent"
     ],
     "policy": {
       "optimization": "critical",
@@ -523,7 +523,7 @@
         "regression"
       ],
       "input": {
-        "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。该计划子代理使用 advanced profile，显式 model=gpt-6-astra、reasoning_effort=high。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
+        "prompt": "$spawn-subagent 我授权你启动一个高难计划子代理。该计划子代理使用 advanced profile，显式 model=gpt-6-astra、reasoning_effort=high。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
         "files": [],
         "config_values": {},
         "codex_config": {
@@ -539,7 +539,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-subagent",
+            "agent_type": "subagent",
             "model": "gpt-6-astra",
             "reasoning_effort": "high",
             "fork_context": false,
@@ -549,7 +549,7 @@
             "message"
           ],
           "nested_delegation": {
-            "root_skill": "codex-subagent-guide",
+            "root_skill": "spawn-subagent",
             "root_skill_explicitly_invoked": true,
             "child_skill": "codex-explore",
             "child_agent_type": "codex-explore",
@@ -568,7 +568,7 @@
       },
       "assertions": [
         {
-          "text": "根代理读取codex-subagent-guide，使用canonical task角色和干净上下文启动已授权的高难计划子任务；档位须由实际model/effort而非角色名证明。",
+          "text": "根代理读取spawn-subagent，使用canonical task角色和干净上下文启动已授权的高难计划子任务；档位须由实际model/effort而非角色名证明。",
           "grader": "script",
           "criticality": "critical",
           "allowed_variance": "message可按各case合同变化；canonical role、干净上下文及实际advanced profile astra/high参数须精确匹配。实际服务可用性与宿主角色采用仍需真实运行证据。"
@@ -592,7 +592,7 @@
         "regression"
       ],
       "input": {
-        "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。该计划子代理使用 advanced profile，显式 model=gpt-6-astra、reasoning_effort=high。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
+        "prompt": "$spawn-subagent 我授权你启动一个高难计划子代理。该计划子代理使用 advanced profile，显式 model=gpt-6-astra、reasoning_effort=high。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
         "files": [],
         "config_values": {},
         "codex_config": {
@@ -609,7 +609,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-subagent",
+            "agent_type": "subagent",
             "model": "gpt-6-astra",
             "reasoning_effort": "high",
             "fork_turns": "none"
@@ -619,7 +619,7 @@
             "task_name"
           ],
           "nested_delegation": {
-            "root_skill": "codex-subagent-guide",
+            "root_skill": "spawn-subagent",
             "root_skill_explicitly_invoked": true,
             "child_skill": "codex-explore",
             "child_agent_type": "codex-explore",
@@ -638,7 +638,7 @@
       },
       "assertions": [
         {
-          "text": "根代理读取codex-subagent-guide，使用canonical task角色和干净上下文启动已授权的高难计划子任务；档位须由实际model/effort而非角色名证明。",
+          "text": "根代理读取spawn-subagent，使用canonical task角色和干净上下文启动已授权的高难计划子任务；档位须由实际model/effort而非角色名证明。",
           "grader": "script",
           "criticality": "critical",
           "allowed_variance": "message可按各case合同变化；canonical role、干净上下文及实际advanced profile astra/high参数须精确匹配。实际服务可用性与宿主角色采用仍需真实运行证据。"
@@ -662,7 +662,7 @@
         "regression"
       ],
       "input": {
-        "prompt": "$codex-subagent-guide 我明确授权两层委派：你可以启动一个高难计划子代理，使用 advanced profile，显式 model=gpt-6-astra、reasoning_effort=high；该计划子代理也可以为可分离的大范围只读事实探索继续启动 Codex Explore 子代理，使用 deep profile，显式 model=gpt-6-luna、reasoning_effort=xhigh。你必须把第二层授权明确写入计划子代理的初始 message。请使用干净上下文，并要求它先从 repo/ 的网关、结算、任务和共享模块追踪 regional_checkout 的完整传递事实，再由它自己形成系统级、高歧义跨模块改造计划。你只负责派发、等待和整合，不要自己调查或修改文件。",
+        "prompt": "$spawn-subagent 我明确授权两层委派：你可以启动一个高难计划子代理，使用 advanced profile，显式 model=gpt-6-astra、reasoning_effort=high；该计划子代理也可以为可分离的大范围只读事实探索继续启动 Codex Explore 子代理，使用 deep profile，显式 model=gpt-6-luna、reasoning_effort=xhigh。你必须把第二层授权明确写入计划子代理的初始 message。请使用干净上下文，并要求它先从 repo/ 的网关、结算、任务和共享模块追踪 regional_checkout 的完整传递事实，再由它自己形成系统级、高歧义跨模块改造计划。你只负责派发、等待和整合，不要自己调查或修改文件。",
         "files": [],
         "config_values": {},
         "codex_config": {
@@ -679,7 +679,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-subagent",
+            "agent_type": "subagent",
             "model": "gpt-6-astra",
             "reasoning_effort": "high",
             "fork_turns": "none"
@@ -689,7 +689,7 @@
             "task_name"
           ],
           "nested_delegation": {
-            "root_skill": "codex-subagent-guide",
+            "root_skill": "spawn-subagent",
             "root_skill_explicitly_invoked": true,
             "child_skill": "codex-explore",
             "child_agent_type": "codex-explore",
@@ -708,7 +708,7 @@
       },
       "assertions": [
         {
-          "text": "根代理读取codex-subagent-guide，使用canonical task角色和干净上下文启动已获独立事实协调授权的高难计划子任务；档位须由实际model/effort证明。",
+          "text": "根代理读取spawn-subagent，使用canonical task角色和干净上下文启动已获独立事实协调授权的高难计划子任务；档位须由实际model/effort证明。",
           "grader": "script",
           "criticality": "critical",
           "allowed_variance": "message可按各case合同变化；canonical role、干净上下文及实际advanced profile astra/high参数须精确匹配。实际服务可用性与宿主角色采用仍需真实运行证据。"

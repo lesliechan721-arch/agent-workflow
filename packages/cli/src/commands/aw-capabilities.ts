@@ -36,6 +36,7 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.plugin-config-array.v1',
   'aw.plugin-config-unique-by.v1',
   'aw.plugin-config-value-ref.v1',
+  'aw.plugin-config-cross-plugin-value-ref.v1',
   'aw.plugin-config-summary.v1',
   'aw.plugin-pre-apply.v1',
   'aw.dynamic-artifacts.v2',

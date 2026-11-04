@@ -23,6 +23,45 @@ const plugin: PluginMeta = {
 }
 
 describe('Review profile reference validation', () => {
+  it('uses only supplied dependency definitions, defaults, and overrides and binds their interpretation', () => {
+    const provider: PluginMeta = {
+      ...plugin,
+      manifest: { ...plugin.manifest, name: 'provider', config: normalizePluginConfigDefinition({
+        schemaVersion: 4, fields: {
+          sources: { type: 'array', default: [], validation: { uniqueBy: 'id' }, items: {
+            type: 'object', properties: { id: { type: 'string', required: true }, location: { type: 'string', required: true } },
+            additionalProperties: false,
+          } },
+        },
+      }) },
+    }
+    const consumer: PluginMeta = { ...plugin, manifest: { ...plugin.manifest, dependencies: ['provider'],
+      config: normalizePluginConfigDefinition({ schemaVersion: 4, fields: {
+        selected: { type: 'string', default: 'native', valueRef: {
+          plugin: 'provider', field: 'sources', key: 'id', include: ['native'],
+        } },
+      } }, 'config', { plugin: plugin.manifest.name, dependencies: ['provider'] }),
+    } }
+    const resolve = (config: Parameters<typeof resolveReviewPluginProfileConfig>[0]['config'],
+      source: PluginMeta = provider) => resolveReviewPluginProfileConfig({ plugin: consumer,
+      plugins: [consumer, source], scope: 'project', keys: ['selected'], config })
+    expect(resolve({}).values).toEqual({ selected: 'native' })
+    expect(() => resolve({ 'review-profile': { selected: 'remote' } })).toThrow(/dependency config/u)
+    expect(() => resolveReviewPluginProfileConfig({ plugin: consumer, scope: 'user', keys: ['selected'], config: {} }))
+      .toThrow(/provider/u)
+    const config = { 'review-profile': { selected: 'remote' }, provider: { sources: [{ id: 'remote', location: '/one' }] } }
+    const resolved = resolve(config)
+    expect(resolved.values).toEqual({ selected: 'remote' })
+    const changed = resolve({ ...config, provider: { sources: [{ id: 'remote', location: '/two' }] } })
+    expect(changed.digest).not.toBe(resolved.digest)
+    const changedDefault = structuredClone(provider)
+    changedDefault.manifest.config!.fields.sources!.default = [{ id: 'default', location: '/default' }]
+    expect(resolve({}, changedDefault).digest).not.toBe(resolve({}).digest)
+    const changedDefinition = structuredClone(provider)
+    changedDefinition.manifest.config!.fields.sources!.description = 'Changed provider contract.'
+    expect(resolve({}, changedDefinition).digest).not.toBe(resolve({}).digest)
+  })
+
   it('accepts v4 leaf containers through profile parsing and validates the selected variant', () => {
     const v4Plugin: PluginMeta = {
       ...plugin,

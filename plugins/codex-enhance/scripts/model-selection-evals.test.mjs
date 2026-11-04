@@ -324,7 +324,7 @@ async function testV1RolloutLineageEvidence() {
         payload: { id: 'v1-root', source: 'cli' },
       })}\n${JSON.stringify(commandEvent(
         'root-skill',
-        'sed -n 1,240p .agents/skills/codex-subagent-guide/SKILL.md',
+        'sed -n 1,240p .agents/skills/spawn-subagent/SKILL.md',
       ))}\n`,
       'utf8',
     );
@@ -339,7 +339,7 @@ async function testV1RolloutLineageEvidence() {
               thread_spawn: {
                 parent_thread_id: 'v1-root',
                 agent_path: '/root/plan',
-                agent_role: 'codex-subagent',
+                agent_role: 'subagent',
               },
             },
           },
@@ -422,7 +422,7 @@ async function testV1RolloutLineageEvidence() {
       descendant_cleanup_confirmed: true,
       spawn_calls: [{
         arguments: {
-          agent_type: 'codex-subagent',
+          agent_type: 'subagent',
           message: 'plan',
           fork_context: false,
         },
@@ -433,7 +433,7 @@ async function testV1RolloutLineageEvidence() {
     }, {
       spawn_calls: { min: 1, max: 1 },
       arguments: {
-        agent_type: 'codex-subagent',
+        agent_type: 'subagent',
         model: null,
         reasoning_effort: null,
         fork_context: false,
@@ -441,7 +441,7 @@ async function testV1RolloutLineageEvidence() {
       },
       present_arguments: ['message'],
       nested_delegation: {
-        root_skill: 'codex-subagent-guide',
+        root_skill: 'spawn-subagent',
         root_skill_explicitly_invoked: true,
         child_skill: 'codex-explore',
         child_agent_type: 'codex-explore',
@@ -496,7 +496,7 @@ function testMechanicalAssertions() {
         call_id: 'spawn-plan',
         status: 'completed',
         arguments: {
-          agent_type: 'codex-subagent',
+          agent_type: 'subagent',
           message: 'plan with nested delegation authorized',
           task_name: 'plan',
           fork_turns: 'none',
@@ -505,7 +505,7 @@ function testMechanicalAssertions() {
       }],
       collaboration_timeline: [{
         tool: 'exec',
-        arguments: { input: 'await tools.exec_command({cmd:"sed -n 1,200p .agents/skills/codex-subagent-guide/SKILL.md"})' },
+        arguments: { input: 'await tools.exec_command({cmd:"sed -n 1,200p .agents/skills/spawn-subagent/SKILL.md"})' },
       }],
       leaf_tool_calls: [
         {
@@ -532,7 +532,7 @@ function testMechanicalAssertions() {
         child_threads: [{
           thread_id: 'plan-thread',
           parent_thread_id: 'root-thread',
-          agent_role: 'codex-subagent',
+          agent_role: 'subagent',
           initial_user_message: 'plan',
           developer_context: {
             has_multi_agent_mode_gate: true,
@@ -547,14 +547,14 @@ function testMechanicalAssertions() {
   const nestedExpected = {
       spawn_calls: { min: 1, max: 1 },
       arguments: {
-        agent_type: 'codex-subagent',
+        agent_type: 'subagent',
         model: null,
         reasoning_effort: null,
         fork_turns: 'none',
       },
       present_arguments: ['message', 'task_name'],
       nested_delegation: {
-        root_skill: 'codex-subagent-guide',
+        root_skill: 'spawn-subagent',
         root_skill_explicitly_invoked: true,
         child_skill: 'codex-explore',
         child_agent_type: 'codex-explore',
@@ -582,7 +582,7 @@ function testMechanicalAssertions() {
     output: 'collab spawn failed: agent thread limit reached',
   });
   assert.equal(evaluateModelSelectionRun(rejectedLeafSpawn, leafExpected).passed, false);
-  for (const skill of ['codex-subagent-guide', 'codex-advisor', 'codex-explore']) {
+  for (const skill of ['spawn-subagent', 'codex-advisor', 'codex-explore']) {
     const loadedLeaf = structuredClone(leafRun);
     loadedLeaf.leaf_tool_calls.push({
       thread_id: 'plan-thread', tool: 'exec_command',

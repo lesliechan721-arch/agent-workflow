@@ -33,7 +33,9 @@
               "model": "gpt-6-astra",
               "reasoningEffort": "max"
             }
-          ],
+          ]
+        },
+        "agent-subagent": {
           "taskCustomProfiles": [
             {
               "applicability": "任何任务",

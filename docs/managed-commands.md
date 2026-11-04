@@ -2,13 +2,13 @@
 
 本文件定义 Plugin Manifest v3 的托管命令声明、ArtifactPlan v2 扩展、稳定身份、权限引用、管理接口和运行边界。字段与校验的机器真值由 Core schema/types、canonical capability registry 和当前 CLI 提供；使用 `aw plugin capabilities --surface managed-commands --json` 查询作者合同。
 
-Guide 的参数、输出、文件与消费合同由 [Guide 运行生命周期](../plugins/codex-enhance/skills/codex-subagent-guide/docs/runtime.md) 维护，Adapter v5 由 [适配器协议](../plugins/codex-enhance/skills/codex-subagent-guide/docs/protocol.md) 维护。Manifest、Config、ArtifactPlan、命令主机与 Adapter 的版本互相独立。
+Guide 的参数、输出、文件与消费合同由 [Guide 运行生命周期](../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md) 维护，Adapter v5 由 [适配器协议](../plugins/agent-subagent/skills/spawn-subagent/docs/protocol.md) 维护。Manifest、Config、ArtifactPlan、命令主机与 Adapter 的版本互相独立。
 
 ## A1. 版本与通用校验
 
 新增 capability 固定为 `aw.managed-commands.v1`。声明 `managedCommands`、结构化命令权限或命令占位符均要求此能力。Claude 沙箱排除另外要求 `aw.claude.sandbox-exclusions.v1`，不从普通 allow 推导。Core registry、结构派生和 CLI implemented set 同步支持；公开作者 registry 增加 `managed-commands` surface，`extensions` 和 `artifacts` surface 同步列出相关字段与输出类型。
 
-Manifest 保持 `schemaVersion: 3`；Config Definition 保持 v4；ArtifactPlan 保持 `version: 2`，增加本合同定义的两个 artifact 分支。旧 AW 在 capability 检查时拒绝不支持的插件，不静默忽略新字段。Guide 的 Adapter v5 保留帧版本；enabled 通信对象不接受主动接收可选能力字段，精确定义及旧 custom adapter 更新要求见 [Guide 运行合同](../plugins/codex-enhance/skills/codex-subagent-guide/docs/runtime.md)。命令主机描述和用户命令定义各自使用 schema 1，定义见 [本文件运行合同](#b1-命令管理-cli-与机器输出)。
+Manifest 保持 `schemaVersion: 3`；Config Definition 保持 v4；ArtifactPlan 保持 `version: 2`，增加本合同定义的两个 artifact 分支。旧 AW 在 capability 检查时拒绝不支持的插件，不静默忽略新字段。Guide 的 Adapter v5 保留帧版本；enabled 通信对象不接受主动接收可选能力字段，精确定义及旧 custom adapter 更新要求见 [Guide 运行合同](../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md)。命令主机描述和用户命令定义各自使用 schema 1，定义见 [本文件运行合同](#b1-命令管理-cli-与机器输出)。
 
 本合同中的对象均拒绝未知字段；`?` 表示可省略，`null` 不等于省略，除显式列出外均拒绝。所有字符串须为合法 Unicode，不能含 NUL。缺省值只在规范化时补齐；不 trim 标识符、argv 或环境值。JSON 文本解析沿用现有项目合同，不新增重复 member name 检测器。表中 `Name` 为 `[A-Za-z][A-Za-z0-9_.-]{0,63}`，区分大小写；`Platform` 为 `codex | claude`，`Scope` 为 `user | project`。
 
@@ -405,7 +405,7 @@ type CommandHost = {
 
 CLI 启动时固定自身入口，不读取 npm shim 字符串、不解析 shell command、不继承 process.execArgv，也不以 PATH 找另一个 AW。描述仅是同一进程链的启动上下文，不是授权凭据或对任意父进程的身份认证。Guide 校验 schema、绝对路径、普通可读 CLI 文件、Node 可执行入口及 awHome；缺失为 `managedCommandHostMissing`，不合法为 `managedCommandHostInvalid`。awHome 与本次受保护的 AW_HOME 必须一致。
 
-Guide 的 custom-managed 配置、worker argv 与环境覆盖顺序由 [配置与接入](../plugins/codex-enhance/skills/codex-subagent-guide/docs/configuration.md#托管-custom-adapter) 定义。它用校验后的同一 CommandHost 启动嵌套 AW，不按 PATH 或另一 AW_HOME 回退；业务 executor args 与命令 binding args 的职责分别保留。
+Guide 的 custom-managed 配置、worker argv 与环境覆盖顺序由 [配置与接入](../plugins/agent-subagent/skills/spawn-subagent/docs/configuration.md#托管-custom-adapter) 定义。它用校验后的同一 CommandHost 启动嵌套 AW，不按 PATH 或另一 AW_HOME 回退；业务 executor args 与命令 binding args 的职责分别保留。
 
 stdin/stdout/stderr 全部透传，AW 自身错误只写 stderr。正常目标数值退出码原样返回。POSIX 收到 SIGINT/SIGTERM/SIGHUP 时转发给直接 child；child 被信号结束时，转发器以同一信号结束；无法自发同信号时采用 `128 + signalNumber`。Windows 沿用实际数值退出；显式收到的可支持 INT/TERM 转发尽力执行，转发器对应退出 130/143，不声称完成后代或远端取消。不会因前台正常退出清理整个进程树，也不新增超时或自动重启。
 

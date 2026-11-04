@@ -1,8 +1,8 @@
-import { configReferenceKey, configReferenceValues, configReferenceScalars, configReferenceSelection, configReferenceMessage, configCrossLayerDependencies, type ConfigReferenceContext } from './config-references.js';
+import { configReferenceKey, configReferenceValues, configReferenceScalars, configReferenceSelection, configReferenceMessage, configReferenceSource, configCrossLayerDependencies, type ConfigReferenceContext } from './config-references.js';
 import { arrayDraftChanged, arrayDraftValue, createConfigArrayDraft, editConfigArrayDraft, type ConfigArrayDraft, type ConfigArrayEdit } from './config-array-draft.js';
 import { PLUGIN_CONFIG_ARRAY_MAX_ITEMS, type PluginConfigScalarField } from '@lesliechan721/aw-plugin-core';
 import { presentConfigValue, safeConfigText } from './config-value-presentation.js';
-import { ConfigLeafEditor } from './config-leaf-editor.js';
+import { ConfigLeafEditor, type ConfigLeafEditorDraft } from './config-leaf-editor.js';
 import { Box, Text, useInput, useWindowSize } from 'ink';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import path from 'node:path';
@@ -381,6 +381,7 @@ interface ConfigDraftIssue {
   scope: Scope;
   key: string;
   source: 'update' | 'remove' | 'object';
+  referenceSources?: string[];
 }
 
 interface ConfigLayerDraft {
@@ -399,6 +400,17 @@ interface ConfigCandidate {
   fieldKey?: string;
   presetId?: string;
   mutations: Record<string, { kind: 'set'; value: PluginConfigValue } | { kind: 'unset' }>;
+}
+
+interface SuspendedConfigDraft {
+  drafts: Partial<Record<Scope, ConfigLayerDraft>>;
+  candidate?: ConfigCandidate;
+  arrays: Record<string, ConfigArrayDraft & { evidence?: ConfigEditEvidence }>;
+  objects: Record<string, PluginConfigObject>;
+  changedObjects: string[];
+  dirty: boolean;
+  input: string;
+  externalDraft?: ExternalDraftState;
 }
 
 type SourceOperationBlockReason = NonNullable<ReturnType<TuiController['catalogSourceRecoveryBlockReason']>>;
@@ -1709,6 +1721,8 @@ export function ConsoleAppV4(props: {
   });
   const externalDraftFlowIds = useRef(new Map<string, string>());
   const configOverviewAnchors = useRef(new Map<string, { overviewFrameId: string; flowId?: string }>());
+  const suspendedConfigDrafts = useRef(new Map<string, SuspendedConfigDraft>());
+  const referenceLeafDrafts = useRef(new Map<string, ConfigLeafEditorDraft>());
   const exitSent = useRef(false);
   const operationBusy = useRef(false);
   const route = snapshot.router.current.route;
@@ -1968,6 +1982,9 @@ export function ConsoleAppV4(props: {
     }
     if (currentFlowId && sourceDraft) externalDraftFlowIds.current.set(sourceDraft.owner, currentFlowId);
     const drafts: ExternalDraftState[] = [];
+    for (const suspended of suspendedConfigDrafts.current.values()) {
+      if (suspended.externalDraft) drafts.push(suspended.externalDraft);
+    }
     if ((dirty || configCandidate && !configCandidate.selectingScope || nestedPropertyRevision || objectVariantPreview || Object.values(arrayDrafts).some((draft) =>
       draft.initial === undefined ? draft.rows.length > 0 : arrayDraftChanged(draft)) || changedObjectDraftKeys.length > 0) && draftOwner) {
       const flowId = externalDraftFlowIds.current.get(draftOwner);
@@ -1995,8 +2012,9 @@ export function ConsoleAppV4(props: {
     configDrafts, configCandidate, arrayDrafts, objectDrafts, nestedPropertyRevision, objectVariantPreview, route.name, snapshot.router.currentFlowId, sourceDraft,
   ]);
   useEffect(() => () => props.controller.setExternalDraftState(), [props.controller]);
+  const currentLayerPage = configRoute && configRoute.layer.scope !== 'effective' ? configLayerPages[configRoute.layer.scope] : undefined;
   const currentConfigPage = configPageMatches(configPage, configRoute) ? configPage
-    : configRoute && configRoute.layer.scope !== 'effective' ? configLayerPages[configRoute.layer.scope] : undefined;
+    : configPageMatches(currentLayerPage, configRoute) ? currentLayerPage : undefined;
   const hasReferenceFields = (configPage ?? configLayerPages.user ?? configLayerPages.project)?.groups
     .some((group) => group.fields.some((field) => configReferenceScalars(field.definition).length > 0)) ?? false;
   useEffect(() => {
@@ -2032,9 +2050,16 @@ export function ConsoleAppV4(props: {
         .map((field) => [field.key, field]));
       for (const [key, value] of Object.entries(draft.updates)) {
         const field = fields.get(key);
+        const invalidReferences = field ? configReferenceValues(field.definition, value)
+          .filter(({ scalar, value: selected }) => {
+            const reference = referenceContexts[draftScope]?.selections[configReferenceKey(scalar)];
+            return reference !== undefined && (reference.issues.length > 0
+              || !reference.choices.some((choice) => choice.value === selected));
+          }).map(({ scalar }) => configReferenceSource(scalar)) : [];
         if (!field || !configFieldCanSet(field)
-          || validatePluginConfigValue(field.definition, value, key).length > 0) {
-          issues.push({ scope: draftScope, key, source: 'update' });
+          || validatePluginConfigValue(field.definition, value, key).length > 0
+          || invalidReferences.length > 0) {
+          issues.push({ scope: draftScope, key, source: 'update', referenceSources: invalidReferences });
         }
       }
       for (const key of draft.removes) {
@@ -2076,13 +2101,16 @@ export function ConsoleAppV4(props: {
     if (draftOwner !== owner) {
       setDraftOwner(owner);
       if (draftOwner !== undefined) {
-        setConfigDrafts({});
-        setConfigCandidate(undefined);
-        setObjectDrafts({});
-        setArrayDrafts({});
-        setChangedObjectDraftKeys([]);
+        const suspended = suspendedConfigDrafts.current.get(owner);
+        suspendedConfigDrafts.current.delete(owner);
+        setConfigDrafts(suspended?.drafts ?? {});
+        setConfigCandidate(suspended?.candidate);
+        setObjectDrafts(suspended?.objects ?? {});
+        setArrayDrafts(suspended?.arrays ?? {});
+        setChangedObjectDraftKeys(suspended?.changedObjects ?? []);
+        if (suspended) setInputValue(suspended.input);
         setObjectError(undefined);
-        setDirty(false);
+        setDirty(suspended?.dirty ?? false);
         setConfigActionError(undefined);
       }
     }
@@ -2415,12 +2443,28 @@ export function ConsoleAppV4(props: {
   const activePropertyIsConst = activePropertyDefinition && 'const' in activePropertyDefinition && activePropertyDefinition.const !== undefined;
   const referenceNotice = (scalar: PluginConfigScalarField, value: unknown): string | undefined => {
     const selection = referenceContext?.selections[configReferenceKey(scalar)];
-    const message = referenceContextError && !selection ? referenceContextError : configReferenceMessage(scalar, selection, value);
+    const message = referenceContextError && !selection ? `来源 ${configReferenceSource(scalar)}：${referenceContextError}`
+      : configReferenceMessage(scalar, selection, value);
     const source = 'valueRef' in scalar ? scalar.valueRef!.field : '';
-    const pendingSource = editingScope === 'project' && selection?.source !== 'project'
+    const pendingSource = !('valueRef' in scalar && scalar.valueRef?.plugin) && editingScope === 'project' && selection?.source !== 'project'
       && (Object.hasOwn(configDrafts.user?.updates ?? {}, source) || configDrafts.user?.removes.includes(source));
     return [message, pendingSource ? `来源 ${source} 在个人默认有未保存修改。请先保存来源配置，再编辑或保存引用配置。` : undefined]
       .filter(Boolean).join(' ') || undefined;
+  };
+  const openReferenceSource = (scalar: PluginConfigScalarField, leaf?: ConfigLeafEditorDraft): void => {
+    const ref = 'valueRef' in scalar ? scalar.valueRef : undefined;
+    if (!ref?.plugin || !configRoute || !draftOwner) return;
+    props.controller.updatePageContext({ focusIndex: focus, scrollOffset });
+    if (leaf) referenceLeafDrafts.current.set(snapshot.router.currentFrameId, leaf);
+    suspendedConfigDrafts.current.set(draftOwner, {
+      drafts: configDrafts, candidate: configCandidate, arrays: arrayDrafts, objects: objectDrafts,
+      changedObjects: changedObjectDraftKeys, dirty, input: inputValue,
+      externalDraft: props.controller.externalDrafts.find((draft) => draft.kind === 'configDraft' && draft.owner === draftOwner),
+    });
+    const sourceId = configRoute.pluginId.split('/')[0]!;
+    props.controller.beginConfigReferenceSource(`${sourceId}/${ref.plugin}`, ref.field);
+    setFocus(0);
+    setScrollOffset(0);
   };
 
   useEffect(() => {
@@ -3958,6 +4002,16 @@ export function ConsoleAppV4(props: {
   };
   const updateObjectProperty = (propertyKey: string, value: PluginConfigObject[string] | undefined): boolean => {
     if (!activeField || activeField.definition.type !== 'object' || !activeObjectDraft) return false;
+    const definition = activeObjectProperties?.[propertyKey] ?? activeField.definition.additionalProperties;
+    if (definition && value !== undefined) {
+      for (const { scalar, value: selected } of configReferenceValues(definition, value)) {
+        const reference = referenceContext?.selections[configReferenceKey(scalar)];
+        if (!reference || reference.issues.length || !reference.choices.some((choice) => choice.value === selected)) {
+          setInputError(referenceNotice(scalar, selected) ?? '引用选项已变化，请重新选择。');
+          return false;
+        }
+      }
+    }
     const candidate = { ...activeObjectDraft, [propertyKey]: value };
     if (value === undefined) delete candidate[propertyKey];
     const issues = validatePluginConfigValue(activeField.definition, candidate, activeField.key)
@@ -7069,7 +7123,8 @@ export function ConsoleAppV4(props: {
         ? currentConfigPage.groups.find((group) => group.id === activeTab.id)
         : undefined;
       if (configDraftIssues.length > 0) {
-        description = `${description ?? ''} 有 ${configDraftIssues.length} 项未保存修改已不适用于当前设置。`;
+        const sources = [...new Set(configDraftIssues.flatMap((issue) => issue.referenceSources ?? []))];
+        description = `${description ?? ''} 有 ${configDraftIssues.length} 项未保存修改已不适用于当前设置。${sources.length ? ` 请检查来源 ${sources.join('、')}。` : ''}`;
       }
       const mutableLayer = { scope: 'effective' as const };
       const tabActions: ActionItem[] = activeTab?.kind === 'presets'
@@ -7319,10 +7374,12 @@ export function ConsoleAppV4(props: {
       const selection = configReferenceSelection(referenceContext, scalarReference);
       const current = arrayItem ? itemValue : draftUpdates[activeField.key] ?? activeField.draftValue ?? activeField.value;
       title = `选择${activeField.title}`;
-      description = referenceNotice(scalarReference, current) ?? `选项来自 ${scalarReference.valueRef!.field}；保存到${editingScope === 'user' ? '个人默认' : '当前项目'}。`;
+      description = referenceNotice(scalarReference, current) ?? `选项来自 ${configReferenceSource(scalarReference)}；保存到${editingScope === 'user' ? '个人默认' : '当前项目'}。`;
       help = '↑↓ 移动 · Enter 使用 · Esc 返回修复来源';
       actions = selection.choices.map((choice) => ({ label: safeConfigText(choice.title), selected: choice.value === current,
         run: () => updateDraft(activeField.key, choice.value) }));
+      if (scalarReference.valueRef!.plugin) actions.push({ label: `编辑来源 ${configReferenceSource(scalarReference)}`,
+        run: () => openReferenceSource(scalarReference) });
       content = <SemanticRows actions={[...actions]} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
     } else if ('const' in activeField.definition && activeField.definition.const !== undefined) {
       title = activeField.title;
@@ -7573,10 +7630,12 @@ export function ConsoleAppV4(props: {
       const selection = configReferenceSelection(referenceContext, definition);
       const current = activeObjectDraft[property];
       title = `选择${propertyTitle}`;
-      description = referenceNotice(definition, current) ?? `选项来自 ${definition.valueRef.field}。`;
+      description = referenceNotice(definition, current) ?? `选项来自 ${configReferenceSource(definition)}。`;
       help = '↑↓ 移动 · Enter 使用 · Esc 返回修复来源';
       actions = selection.choices.map((choice) => ({ label: safeConfigText(choice.title), selected: choice.value === current,
         run: () => { if (updateObjectProperty(property, choice.value)) back(); } }));
+      if (definition.valueRef.plugin) actions.push({ label: `编辑来源 ${configReferenceSource(definition)}`,
+        run: () => openReferenceSource(definition) });
       content = <SemanticRows actions={[...actions]} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
     } else if (property !== undefined && definition && 'const' in definition && definition.const !== undefined) {
       title = propertyTitle;
@@ -7672,9 +7731,13 @@ export function ConsoleAppV4(props: {
       content = <ConfigLeafEditor key={`${snapshot.router.currentFrameId}:${property}`}
         definition={definition} value={activeObjectDraft[property]} propertyKey={property}
         referenceContext={referenceContext} referenceNotice={referenceNotice}
+        initialDraft={referenceLeafDrafts.current.get(snapshot.router.currentFrameId)}
+        onOpenReferenceSource={openReferenceSource}
         columns={size.columns} rowBudget={pageActionBudget(1)} active={!overlay && !tooSmall && !busy}
         error={inputError} onDraftChange={setNestedPropertyRevision}
-        onCancel={back} onConfirm={(value) => { if (!updateObjectProperty(property, value)) return false; back(); return true; }} />;
+        onCancel={() => { referenceLeafDrafts.current.delete(snapshot.router.currentFrameId); back(); }}
+        onConfirm={(value) => { if (!updateObjectProperty(property, value)) return false;
+          referenceLeafDrafts.current.delete(snapshot.router.currentFrameId); back(); return true; }} />;
     } else if (property !== undefined && definition) {
       title = activePropertySensitive ? '输入敏感值' : `输入${propertyTitle}`;
       description = inputError ?? (activePropertySensitive ? '输入已隐藏。' : definition.description ?? '按 Enter 使用输入值。');
@@ -10931,6 +10994,8 @@ export function ConsoleAppV4(props: {
   }
 
   function clearExternalDraftValues(): void {
+    suspendedConfigDrafts.current.clear();
+    referenceLeafDrafts.current.clear();
     setDirty(false);
     setConfigDrafts({});
     setConfigCandidate(undefined);

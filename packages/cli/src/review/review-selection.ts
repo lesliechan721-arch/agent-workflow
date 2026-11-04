@@ -2,6 +2,7 @@ import path from 'node:path'
 
 import {
   calculateCatalogWorkspaceSourceIdentity,
+  getPluginConfigDependencyFields,
   readCatalogWorkspace,
   resolveSupportedPlatforms,
   type CatalogWorkspace,
@@ -396,7 +397,7 @@ function validateConfigPlugins(
     if (!plugin) {
       throw new ReviewSelectionError('invalidConfig', `Review config names unknown plugin "${pluginName}".`)
     }
-    resolveReviewPluginProfileConfig({ plugin, scope: 'user', config, keys: [] })
+    resolveReviewPluginProfileConfig({ plugin, plugins: workspace.plugins, scope: 'user', config, keys: [] })
   }
 }
 
@@ -491,10 +492,22 @@ function buildProfile(options: {
   for (const skill of selectedSkills.filter((entry) => entry.dynamic)) {
     for (const refreshKey of skill.refreshKeys) {
       const scope = skill.configScopes[refreshKey] ?? skill.configScope
-      const key = `${skill.pluginName}\0${scope}`
-      const keys = configKeys.get(key) ?? new Set<string>()
-      keys.add(refreshKey)
-      configKeys.set(key, keys)
+      const dependencies = getPluginConfigDependencyFields(skill.plugin.manifest.config ?? { fields: {} }, [refreshKey], {
+        plugin: skill.pluginName,
+        dependencies: skill.plugin.manifest.dependencies ?? [],
+        plugins: Object.fromEntries(options.workspace.plugins.map((plugin) => [plugin.manifest.name, {
+          definition: plugin.manifest.config ?? { fields: {} },
+          dependencies: plugin.manifest.dependencies ?? [],
+        }])),
+      })
+      for (const dependency of dependencies) {
+        const plugin = options.workspace.plugins.find((entry) => entry.manifest.name === dependency.plugin)!
+        const dependencyScope = codexNativeRefreshKeys(plugin.manifest).has(dependency.field) ? 'user' : scope
+        const key = `${dependency.plugin}\0${dependencyScope}`
+        const keys = configKeys.get(key) ?? new Set<string>()
+        keys.add(dependency.field)
+        configKeys.set(key, keys)
+      }
     }
   }
   const pluginConfigs: ReviewPluginProfileConfig[] = []
@@ -503,6 +516,7 @@ function buildProfile(options: {
     const plugin = options.workspace.plugins.find((entry) => entry.manifest.name === pluginName)!
     pluginConfigs.push(resolveReviewPluginProfileConfig({
       plugin,
+      plugins: options.workspace.plugins,
       scope: configScope,
       config: options.config,
       keys: [...keys].sort(compareText),
