@@ -1,7 +1,7 @@
 ---
 name: codex-explore
-description: 需要在范围大、陌生或边界不明的代码库、文档、日志、网页或用户材料中搜索并核验可引用事实时使用。少量已知文件、diff 或段落的定向读取不要使用；评价、建议和修改任务只委派可分离的事实调查。使用 codex-subagent-guide 委派调查，上下文隔离构成委派价值，关键路径也可委派。
-compatibility: Codex 宿主，依赖可用的 codex-subagent-guide 和当前安装的探索配置及执行角色。
+description: 需要在范围大、陌生或边界不明的代码库、文档、日志、网页或用户材料中搜索并核验可引用事实时使用。少量已知文件、diff 或段落的定向读取不要使用；评价、建议和修改任务只委派可分离的事实调查。使用 spawn-subagent 委派调查，上下文隔离构成委派价值，关键路径也可委派。
+compatibility: Codex 宿主，依赖可用的 spawn-subagent 和当前安装的探索配置及执行角色。
 metadata:
   short-description: 为大范围或陌生资料组织只读事实调查并核对来源覆盖与证据
 ---
@@ -22,7 +22,7 @@ metadata:
 
 ## 委派与接纳
 
-使用已选配置并按 `codex-subagent-guide` 的约定委派子代理。native 使用 `codex-explore` 角色，已有角色指令不重复附加；外部执行使用 调查指令（`assets/explore-instructions.md`）。
+使用已选配置并按 `spawn-subagent` 的约定委派子代理。native 使用 `codex-explore` 角色，已有角色指令不重复附加；外部执行使用 调查指令（`assets/explore-instructions.md`）。
 
 调查活跃时，父任务不重复调查或写入同一范围。
 

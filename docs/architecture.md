@@ -35,6 +35,7 @@
 ### Module Invariants
 
 - renderer context 使用规范化的非空 `requestedArtifactIds` 精确限定本次请求；`config.schema/values/sources/issues` 和 `changedConfigKeys` 只包含这些 target 的 `refreshKeys` 并集。`artifactSources` 提供当前 surface/scope 全部 Skill target 的真实 `sourceDirs`，供其它 target 复用声明的静态资源；这些来源不扩大配置或输出范围。同一 surface/scope 同时包含 Skill target 和读取 sensitive config 的非 Skill target 时，AW 把它们放入两个请求；两个请求使用同一份不可变 `previousArtifacts`，且各自只接受与本批 ID 精确相等的 `ArtifactPlan`。context 不公开 config store 路径，且 context 中的 home 与 renderer 进程的 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 都指向本次请求的临时目录。该输入隔离不是 OS sandbox。renderer 不直接写平台文件。AW direct writer 不请求 `codex-native` target。标准 config helper 只读取 CLI 已校验的 `AW_PLUGIN_CONTEXT` effective config，不读取 config store，也不重复 schema 或 value validation；缺少 context 或请求 user/project scope 时 fail closed。
+- 同一写操作因原生 CLI 管理器解析而重新准备目标时，可复用输入相同且已验证成功的普通 renderer 输出。复用仅存在于该操作的内存 context；每轮仍重新读取配置、解析来源和 renderer，并验证敏感值及 ArtifactPlan。请求、配置、scope、cwd、previousArtifacts、manifest 或 renderer 摘要变化时重新渲染；后续命令不复用前次结果。复用不跳过锁内重新规划、路径、ownership、授权或平台后置检查。
 - renderer 输出在 JSON 解析后、envelope 和 `ArtifactPlan` 详细结构验证前，统一拒绝包含 effective sensitive config 明文或其 JSON 转义形态的普通及 Portable dynamic artifact；扫描通过后仍执行完整 envelope 和结构验证。阻断只匹配至少 8 个 Unicode code point 的 string；此阈值是减少短值误报的产物门禁，不表示 secret 强度。preApply 和 renderer 在插件执行边界清理错误与输出摘要中的原值和 JSON 转义形态，再交给 debug、文本输出或 Receipt；日志和诊断脱敏所有长度的 sensitive 值。只有 AW 已生成或按内容验证的精确 receipt path 才从扫描中排除；不得按 basename 或通配符排除。错误只公开稳定 code，不回显 sensitive 值。
 - build-generated Skill reference 必须由 `buildConfig.generatedSkillRuntimeFiles` 精确声明。源码 validation 不把声明目标误报为缺失；最终 bundle 必须生成目标并通过完整 runtime closure。
 - Skill 文件引用遵循[资源引用规范](../plugins/agent-skill-toolkit/references/skill-format.md#资源引用)；闭包检查校验目标存在、包内边界及普通文件节点。
@@ -278,6 +279,12 @@ variants 的 discriminator 只读取本对象已声明的 own string 属性；ch
 
 Manifest v3、Store v5、Catalog v7 和 installed-runtime-config v2 是独立合同。schema identity 包含分支、const 和呈现定义，旧 Review 证据在定义变化后失效。强配置仍按整个顶层字段原子覆盖；不保存 UI 状态、派生 wrapper 路径或运行时秘密。
 
+Config Definition v4 的非敏感标量 `valueRef` 可声明 `plugin`，使用 `aw.plugin-config-cross-plugin-value-ref.v1`。provider 必须是当前消费方显式声明的直接依赖，并来自同一 Catalog source；省略 plugin 仍引用本插件。Core 接收调用者提供的定义和值上下文，以插件与字段共同标识引用，统一关联校验、依赖闭包、候选和实际值校验，不读取 store 或安装状态。单 manifest 检查语法和 dependencies，完整 Catalog、作者验证和物化必须取得同次依赖定义并完成关联校验。provider 必须提供顶层 fixed-object 数组，key 的类型、uniqueBy、label、include 保留值和原有限制均须有效；来源无效不返回部分候选。
+
+在线候选使用 provider 在所选 user/project 层的有效配置，并遵守 provider 自己的 user-only 规则。跨插件未保存草稿不参与候选。普通来源保存比较变更前后对当前 Active source 的实际引用影响，覆盖 user 及当前 cwd 可见 project，包括未安装的消费方；拒绝将此前有效引用变为无效的删除或重命名，报告插件、字段路径和层。未知消费方读取结果不能解释为无引用；只添加候选或修复来源不因无关旧问题永久受阻。整层 reset 保持 schema-independent，提交后报告消费方失效，不补写消费方或回滚 reset。Review 和单一 AW_HOME 锁内 evidence 包含实际依赖定义、来源身份和 provider/consumer stores，不扫描历史项目或持久化反向图。
+
+配置按插件原子提交。没有 apply 时只重校验候选；显式 apply 按现有依赖计划处理当前可见且已有使用意图的 provider/consumer，Review、脚本授权和执行使用同一目标集。候选增加但本插件 renderer 输入不变时，不为消费方重新写产物。同 key 后端参数改变时更新 provider 安装配置；消费方保持只接收自己获准的字段。provider 必要更新失败时依赖目标不得报告成功，独立目标继续，并保留已提交配置及精确 sync/reinstall 恢复入口。
+
 `presentation.summaries` 声明 join 摘要，`fieldViews` 将摘要绑定到固定属性对象。每段只读本对象已声明且实际存在的 own scalar property；路径为单个 JSON Pointer token，支持 `~0`/`~1`，不沿原型链或读取外部数据。raw 显示实际标量，choiceTitle 可使用匹配的 choices 标题，缺失属性使用明确占位。最多 4 段，separator 最多 8 个 Unicode code point，path 最多 128 个字符；默认摘要最多 256 个 Unicode code point。摘要省略实际属性或超长时标记不完整，完整安全原值仍可读。摘要不参与值校验、dirty、预设匹配或 whole-object overwrite；敏感与无效状态先于摘要处理，终端控制字符在显示前移除。
 
 配置摘要需要 `aw.plugin-config-summary.v1`。规范化 bundle 保留新合同，Catalog index 只传播 requirements 和既有摘要，不复制配置定义。读取器明确拒绝不支持的 capability。配置 schema identity 覆盖完整定义及呈现元数据，因此元数据改变也使旧 Review 证据失效。数组另外派生 `aw.plugin-config-array.v1`；对象数组的 `fieldViews.<field>.itemSummary` 将同一 join summary 应用于每个 fixed-object 元素，KV 对象数组使用安全预览。Store v5 只保存原值，不存引用、摘要、预设 ID 或 UI rowId。
@@ -452,17 +459,17 @@ reader 从真实安装调用文件定位本产物，检查格式、版本、调�
 
 安装配置是随已有产物生成的弱资源，不形成 installed-state DB、安装 ledger 或新的 ownership 真值。保存未 apply 时继续使用旧生效值。staging 校验失败保留旧完整投影；平台 apply 允许部分成功，可用产物按自己的实际内容工作，不要求跨 Skill 一致。真实缺文件、格式错误、身份冲突或越权仍拒绝本次外部启动，并保留修正配置、sync/reinstall 与既有 cleanup 恢复入口。弱资源损坏不能授权删除 foreign/shared 内容。旧声明的 `resourceVersion`、`artifactIds`、v1 binding 和 `expectedRevision` 不兼容，须更新作者合同并正常重建；不迁移强配置格式。
 
-Codex Enhance 的 profile 选择 executor、model 与 reasoningEffort；native 使用当前宿主原生工具和角色，外部调用消费本产物的已安装配置。外部参数可省略模型与推理强度，表示后端默认；非法配置、不可用入口或明确不支持的值不回退其它后端。角色、执行配置和具体后端方法由 [Guide 适配器文档](../plugins/codex-enhance/skills/codex-subagent-guide/docs/README.md) 维护。
+`agent-subagent` 拥有 `spawn-subagent`、通用角色 `subagent`、通用 profiles、外部执行器注册表及运行资源。通用四档默认仅指定 native，model 和 reasoningEffort 可省略，表示不覆盖宿主选择。`codex-enhance` 依赖该插件，保留 Advisor/Explore 的专用 profiles 与角色，其原 native 默认保持。外部调用按精确 key 消费新 Guide 自身的安装配置，不读取最新 store；省略模型和推理强度使用后端默认。非法配置、不可用入口或明确不支持的值不切换执行器。角色、执行配置和后端方法由 [Guide 适配器文档](../plugins/agent-subagent/skills/spawn-subagent/docs/README.md) 维护。
 
-Guide 的静态集合 guide/subagent/default 使用 codex-subagent-guide-skill artifact producer，入口为 scripts/subagent.mjs。Codex shared native producer 固定 shared-user，项目取消激活不撤销共享命令。五个父侧 start/send/wait/result/stop 各自声明结构化精确 allow；不批准其它 ID 或命令管理入口。Codex Enhance 继续只安装到 Codex，不将整套 Guide Skill 移植到 Claude。
+Guide 的集合 guide/subagent/default 使用 `agent-subagent` 的 `spawn-subagent-skill` artifact producer，入口为 scripts/subagent.mjs。Codex shared native producer 固定 shared-user，项目取消激活不撤销共享命令。五个父侧 start/send/wait/result/stop 各自声明结构化精确 allow。Claude target 支持 user/project 安装，复用同一 `skills/spawn-subagent` 源码、完整正文和运行资源；只按宿主合同区分安装格式、身份与托管命令 producer，不维护第二份方法或专属调度模型字段。共用配置仍按 Codex native refreshKeys 的 user-only 规则编辑。本轮不以 Claude 实际执行成功为验收条件，也不削弱运行时归属校验；此验证范围不进入安装 Skill 的正文。旧 Skill 和插件配置不提供 alias、自动迁移或旧 run 接续，旧 AW-owned 输出沿现有 sync/reinstall/cleanup 恢复。
 
-Config v4 的 custom-managed 分支把 commandId 绑定到用户或插件托管 adapter，仍使用 Adapter v5。worker 用当前受保护 CommandHost 调用同一个 AW 的 command run；executor args 留在 v5 请求，binding fixed args 才进入目标 argv。缺少/无效主机明确失败，不以 PATH 或其它 AW_HOME 回退；原绝对 custom 入口保持可用。配置、环境优先级与禁止字段见 [配置与接入](../plugins/codex-enhance/skills/codex-subagent-guide/docs/configuration.md#托管-custom-adapter)。
+Config v4 的 custom-managed 分支把 commandId 绑定到用户或插件托管 adapter，仍使用 Adapter v5。worker 用当前受保护 CommandHost 调用同一个 AW 的 command run；executor args 留在 v5 请求，binding fixed args 才进入目标 argv。缺少/无效主机明确失败，不以 PATH 或其它 AW_HOME 回退；原绝对 custom 入口保持可用。配置、环境优先级与禁止字段见 [配置与接入](../plugins/agent-subagent/skills/spawn-subagent/docs/configuration.md#托管-custom-adapter)。
 
-Antigravity 通信单独声明 guide-communication/message/default，归属于既有 Guide artifact。只在该分支且通信开启时取得受保护 CommandHost，通过公开 list/show 以完整 producer、resourceRoot 和 launch 核验当前 ID，复用 execution 配置固定和恢复检查；不在 start 注册、不复制 ID 算法、不扩展 Adapter v5。agy 每次启动/恢复先校验稳定版本 >=1.4.10，精确许可通过会话 --settings 覆盖固定 AW 前缀及独立通信 ID，保留原 allow 且不写用户 settings；Codex/Claude 继续为当前私有 MCP 的两个通信工具注入精确许可。完整权限或关闭通信时跳过额外授权。长期识别、冲突与原生资格边界见 [权限模式](../plugins/codex-enhance/skills/codex-subagent-guide/docs/configuration.md#执行器权限模式)。
+Antigravity 通信单独声明 guide-communication/message/default，归属于既有 Guide artifact。只在该分支且通信开启时取得受保护 CommandHost，通过公开 list/show 以完整 producer、resourceRoot 和 launch 核验当前 ID，复用 execution 配置固定和恢复检查；不在 start 注册、不复制 ID 算法、不扩展 Adapter v5。agy 每次启动/恢复先校验稳定版本 >=1.4.10，精确许可通过会话 --settings 覆盖固定 AW 前缀及独立通信 ID，保留原 allow 且不写用户 settings；Codex/Claude 继续为当前私有 MCP 的两个通信工具注入精确许可。完整权限或关闭通信时跳过额外授权。长期识别、冲突与原生资格边界见 [权限模式](../plugins/agent-subagent/skills/spawn-subagent/docs/configuration.md#执行器权限模式)。
 
 外部 start/send 及子侧 send 只接受文本或文件，缺参、互斥、重复、未知及 -/stdin 形式在副作用前拒绝。正常输出用简短控制行和 message/input/result/diagnostic 块；主代理仅得到 communication=true/false/pending、独立的 resume=true/false/pending 和必要证据，不公开 transport/passiveDelivery 或环境快照。正常诊断默认隐藏，最终结果省略已报告的 ready 诊断；`--diagnostics` 可查看完整诊断。`--help` 显示总览，各操作的 `--help` 显示对应参数与约束。启用通信始终提供 send/receive，Adapter v5 的 communication enabled 对象只含 status、transport 和 passiveDelivery，拒绝旧 activeReceive 字段。
 
-wait 只为未读事件、首次 ready、首次终态和必要错误返回，纯 closing 或 sequence 增长继续等待。普通 wait/result 的 stdout+stderr 合计最多 32 KiB（32,768 UTF-8 字节）；大终态以一次 deferred 通知交付，固定结果仍可读取。result --output-file 独占创建新文件，完整写入、关闭后才消费；消费失败明确报告完整文件仍存在。--export 已删除。start/wait 与 result 的消费边界不同，过程消息没有重放保证，固定最终结果按命令开始时的最新生效 subagentRetentionHours 从本次 terminalAt 起算，默认 24 小时，0 关闭过期及扫描，负数配置拒绝；读取不续期。精确 wire、文件、预算和消费规则见 [运行生命周期](../plugins/codex-enhance/skills/codex-subagent-guide/docs/runtime.md)。
+wait 只为未读事件、首次 ready、首次终态和必要错误返回，纯 closing 或 sequence 增长继续等待。普通 wait/result 的 stdout+stderr 合计最多 32 KiB（32,768 UTF-8 字节）；大终态以一次 deferred 通知交付，固定结果仍可读取。result --output-file 独占创建新文件，完整写入、关闭后才消费；消费失败明确报告完整文件仍存在。--export 已删除。start/wait 与 result 的消费边界不同，过程消息没有重放保证，固定最终结果按命令开始时的最新生效 subagentRetentionHours 从本次 terminalAt 起算，默认 24 小时，0 关闭过期及扫描，负数配置拒绝；读取不续期。精确 wire、文件、预算和消费规则见 [运行生命周期](../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md)。
 
 本地停止与远端取消分别取证，worker 失联和证据冲突保留 unknown。专属执行记录只按本次 TTL、归属和停止证据回收，损坏正文不阻止安全清理；运行资料固定在用户 home 下 ~/.aw-subagent，按 run 的 current.json 入口定位独立 executions/<id>。终态 send 在未过期、resume 启用、session 绑定及本地树停止证据充分时恢复原 run；同一用户可凭句柄跨父会话串行恢复，不能覆盖原执行配置。新执行自足保存原配置、session 和能力，写齐后原子切换入口再启动 worker，随后尽力删除旧执行；只提供最新结果。适配器持久绑定真实 session 并重建当前工具，不自动重放、不新建会话回退。
 
@@ -539,6 +546,8 @@ Agent 作者工具保持内容方法、Skill 方法、AW 适配和 Eval 执行�
 Inspection 不运行 renderer、build、test、模型或网络命令。它复用 Core 的 Workspace/snapshot 校验，不调用会执行 renderer fixture 的 `aw plugin validate`，也不通过可能 bundle 的入口取得摘要。binding 自身有效与匹配本次选择分别检查：默认配置不被已有自定义 binding 覆盖；canonical 路径去重，同选择、同 digest 时稳定选择证据路径，不同有效 digest 时报告歧义。相同内容的不同 profile 仍是独立覆盖项。
 
 `aw review prepare <plugin-or-source-skill> --platform <platform> --scope <scope> --out <new-dir> [--skill <name>]... [--config <file>] [--workspace-root <root>] [--json]` 由 `aw.review-preparation.v1` 表示能力，一次准备单插件、单 profile 的所选 Skill。它不依赖 Eval，复用 bundle/runtime imports 和所选平台的真实投影；Codex native 使用声明的 shared-user 渲染语义，Portable 必须有自己的 distribution。只请求必要 Skill target，不运行无关非 Skill renderer。配置对象采用 `{plugin: {field: value}}`，只使用 manifest 默认值和已验证的非敏感覆盖，不隐式读取真实用户配置。配置逐键遵守实际 scope：任何 Codex native target 引用的 refresh key 固定为 user，即使该键也用于普通 project Skill；其它键使用所选 Skill 的配置 scope。输入摘要绑定有效值、来源和实际渲染输入。
+
+跨插件 valueRef 从所选 Skill 的 refreshKeys 扩展实际校验依赖闭包。依赖定义来自同次 Workspace 或 Catalog snapshot；依赖配置只取 defaults 和同一 config 文件的非敏感覆盖。实际消费的依赖覆盖进入规范化 profile，source-binding v2 的 inputDigest 与 source evidence 覆盖其有效值、来源及相关 provider 定义；inspect 用同一选择算法重算。provider 变化使旧绑定失效，准备期间变化仍返回 sourceChanged。闭包扩展不扩大所选产物范围，也不向消费方 renderer 公开 provider 数组或无关配置。
 
 prepare 可执行本次必要的 build/renderer，在隔离环境和 staging 中生成副本；输出必须是新的安全目录，不得覆盖源码、共享输入、已有产物或真实安装位置。全部所选 final 通过布局、metadata、资源闭包和普通节点检查，且来源及配置在准备期间未变化后，才提交 out。失败只清理自有 staging，并报告实际错误和未清理的 residue；发现 sourceChanged 时不自动回滚源码。成功回执返回实际 Skill 路径、profile、digest 和 sourceBindingPath，可直接开始本次只读审核；跨请求复用或输入改变时重新 inspect。构建/最终包失败退出 1，参数/路径/不支持能力退出 2，缺必要配置或准备期间来源变化退出 3。
 

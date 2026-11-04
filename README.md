@@ -69,7 +69,8 @@ aw status
 | [`human-content`](plugins/human-content/) | 解释已有复杂材料，提供保留原意、状态和完整来源的文字、图表或交互阅读页 | Codex / Claude Code |
 | [`frontend-design`](plugins/frontend-design/) | 按网页用途选择视觉方向，设计与改进布局、排版、响应式和交互细节，保留已有系统约束 | Codex / Claude Code |
 | [`git-toolkit`](plugins/git-toolkit/) | 创建精确本地提交、隔离 worktree，或协调 merge 双方意图 | Codex / Claude Code |
-| [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中执行大范围只读探索，并更稳妥地编排通用子代理 | Codex |
+| [`agent-subagent`](plugins/agent-subagent/) | 使用 `spawn-subagent` 选择通用委派配置并管理外部执行 | Codex / Claude Code |
+| [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中组织技术咨询和大范围只读探索；依赖 `agent-subagent` | Codex |
 
 ### Agent 内容、Skill 与插件作者工具
 
@@ -261,19 +262,20 @@ Portable 命令必须显式传 `--scope project|user`。`aw skill install` 使�
 
 `aw skill materialize` 先在临时目录验证完整候选，再写 schema 1 `.aw-materialization.json` ownership marker。它只替换 marker 中 plugin ID、source identity 和 scope 都与本次输出相同的 AW 目标；foreign、符号链接或身份不匹配目标会停止操作。TUI 从插件详情进入 Portable 流程，依次选择 Skill、Agent 和 scope，再显示 Review。详情页的 P13 只表示插件声明了该能力，安装状态仍是未知；AW 不维护 Portable installed state 或 Agent registry。
 
-## 配置 `codex-enhance`
+## 配置子代理
 
 ```bash
-aw config list codex-enhance -s user
+aw config list agent-subagent -s user
+aw config set agent-subagent generalTaskProfile -s user --value-json '{"executor":"native"}'
 aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-6-luna","reasoningEffort":"high"}'
 aw config set codex-enhance advisorGeneralProfile -s user --value-json '{"model":"gpt-6-astra","reasoningEffort":"high"}'
 ```
 
-profile 的 executor 缺省为 native。Guide、Advisor 和 Explore 各有内建档位与按顺序匹配的自定义配置；外部 profile 可省略 model/reasoningEffort，表示后端默认。全部 shared native profile 只支持 user 配置。保存不改变安装产物，`--apply --yes` 才重新生成共享 Skill，并影响启用该插件的项目；原生宿主可能需要刷新或新会话。
+`agent-subagent` 提供通用四档和自定义档位，四档默认只设置 `executor: native`，不覆盖当前宿主模型或推理强度。Advisor 和 Explore 的专用档位仍在 `codex-enhance`，默认模型和强度保持。两插件的外部 executor key 都从同 source 的 `agent-subagent.subagentCommands` 选择，先保存注册项，再设置消费方。外部 profile 可省略 model/reasoningEffort，表示后端默认。共用配置只在 user 层编辑，包括 Claude project 安装。保存不改变安装产物，`--apply --yes` 才更新当前目录可见的受影响目标；原生宿主可能需要刷新或新会话。
 
 外部执行器可选 Codex、Claude Code、Oracle、Antigravity、绝对入口 custom，或引用稳定 commandId 的 custom-managed；自定义接入使用 Adapter v5。任务和消息只接受文本或直接文件参数，不从 -/stdin 读取。result 支持普通报告和 `--output-file PATH`，完整写入并关闭新文件后消费；--export 返回参数错误。bundle 通过 --file 选择材料，workspace 在任务正文中说明关注路径。
 
-配置需要支持 aw.plugin-config.v4 和托管命令能力的 CLI。升级、重装或删除 Guide 及托管 adapter 前，先完成或 stop 活跃任务；相同 ID 不承诺旧 run 跨版本可继续。具体配置、权限和使用边界见 [Codex Enhance README](plugins/codex-enhance/README.md)。
+跨插件候选需要支持 `aw.plugin-config-cross-plugin-value-ref.v1` 的 CLI/Core，先升级工具，再分发插件。切换前结束旧 Guide 任务并保存所需结果，再显式配置新插件；不提供旧入口、配置迁移或旧 run 接续。旧字段可用 unset/reset 删除，旧 AW-owned 输出用 sync/reinstall/cleanup 恢复。具体配置、权限和边界见 [Agent Subagent README](plugins/agent-subagent/README.md) 和 [Codex Enhance README](plugins/codex-enhance/README.md)。
 
 ## 安装范围
 

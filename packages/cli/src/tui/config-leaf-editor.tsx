@@ -13,7 +13,7 @@ import {
 } from '@lesliechan721/aw-plugin-core';
 
 import { ActionRow, ChoiceRow, InputCard } from './components.js';
-import { arrayDraftValue, createConfigArrayDraft, editConfigArrayDraft } from './config-array-draft.js';
+import { arrayDraftValue, createConfigArrayDraft, editConfigArrayDraft, type ConfigArrayDraft } from './config-array-draft.js';
 import { presentConfigValue, safeConfigText } from './config-value-presentation.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
 
@@ -23,6 +23,13 @@ type EditScreen =
   | { kind: 'tools'; rowId: string }
   | { kind: 'key'; input: string }
   | { kind: 'value'; rowId?: string; key?: string; input: string; mode: 'choices' | 'custom' };
+
+export interface ConfigLeafEditorDraft {
+  array: ConfigArrayDraft;
+  object: PluginConfigScalarObject;
+  screen: EditScreen;
+  focus: number;
+}
 
 /** Keep a property working copy separate from its parent object until confirmation. */
 export function ConfigLeafEditor(props: {
@@ -34,17 +41,19 @@ export function ConfigLeafEditor(props: {
   active: boolean;
   error?: string;
   referenceContext?: ConfigReferenceContext;
+  initialDraft?: ConfigLeafEditorDraft;
+  onOpenReferenceSource?: (scalar: PluginConfigScalarField, draft: ConfigLeafEditorDraft) => void;
   referenceNotice?: (scalar: PluginConfigScalarField, value: unknown) => string | undefined;
   onConfirm: (value: LeafValue) => boolean;
   onCancel: () => void;
   onDraftChange: (revision: string | undefined) => void;
 }): React.JSX.Element {
-  const [array, setArray] = useState(() => createConfigArrayDraft(Array.isArray(props.value) ? props.value : undefined));
+  const [array, setArray] = useState(() => props.initialDraft?.array ?? createConfigArrayDraft(Array.isArray(props.value) ? props.value : undefined));
   const [object, setObject] = useState<PluginConfigScalarObject>(() =>
-    props.value && typeof props.value === 'object' && !Array.isArray(props.value)
-      ? structuredClone(props.value) as PluginConfigScalarObject : {});
-  const [screen, setScreen] = useState<EditScreen>({ kind: 'list' });
-  const [focus, setFocus] = useState(0);
+    props.initialDraft?.object ?? (props.value && typeof props.value === 'object' && !Array.isArray(props.value)
+      ? structuredClone(props.value) as PluginConfigScalarObject : {}));
+  const [screen, setScreen] = useState<EditScreen>(props.initialDraft?.screen ?? { kind: 'list' });
+  const [focus, setFocus] = useState(props.initialDraft?.focus ?? 0);
   const [error, setError] = useState<string>();
   const selectedRowId = useRef<string | undefined>(undefined);
   const isArray = props.definition.type === 'array';
@@ -73,6 +82,13 @@ export function ConfigLeafEditor(props: {
       mode: scalar.valueRef || scalar.type === 'boolean' || scalar.choices || scalar.const !== undefined ? 'choices' : 'custom' });
   };
   const saveScalar = (candidate: PluginConfigScalar): void => {
+    if (scalar.valueRef) {
+      const selection = configReferenceSelection(props.referenceContext, scalar);
+      if (selection.issues.length || !selection.choices.some((choice) => choice.value === candidate)) {
+        setError(configReferenceMessage(scalar, selection, candidate) ?? '引用选项已变化，请重新选择。');
+        return;
+      }
+    }
     const invalid = validatePluginConfigValue(scalar, candidate);
     if (invalid.length) { setError(issueText(invalid)); return; }
     if (screen.kind !== 'value') return;
@@ -101,6 +117,7 @@ export function ConfigLeafEditor(props: {
     } else { setScreen({ kind: 'key', input: '' }); setError(undefined); }
   };
   const reference = scalar.valueRef ? configReferenceSelection(props.referenceContext, scalar) : undefined;
+  const canOpenSource = Boolean(scalar.valueRef?.plugin && props.onOpenReferenceSource);
   const choices: Array<{ title: string; value?: PluginConfigScalar; custom?: boolean }> = reference ? reference.choices : scalar.const !== undefined
     ? [{ title: `固定值 · ${presentConfigValue({ definition: scalar, value: scalar.const }).text}`, value: scalar.const }]
     : [
@@ -140,7 +157,7 @@ export function ConfigLeafEditor(props: {
       return;
     }
     const count = screen.kind === 'tools' ? isArray ? 3 : 1
-      : screen.kind === 'value' ? choices.length : rows.length + 3;
+      : screen.kind === 'value' ? choices.length + (canOpenSource ? 1 : 0) : rows.length + 3;
     if (key.upArrow || key.downArrow) {
       if (count) setFocus((index) => (index + (key.upArrow ? -1 : 1) + count) % count); return;
     }
@@ -148,6 +165,10 @@ export function ConfigLeafEditor(props: {
     if (screen.kind === 'list' && input === 'c') { confirm(); return; }
     if (!key.return) return;
     if (screen.kind === 'value') {
+      if (canOpenSource && focus === choices.length) {
+        props.onOpenReferenceSource!(scalar, { array, object, screen, focus });
+        return;
+      }
       const choice = choices[focus];
       if (choice?.custom) setScreen({ ...screen, mode: 'custom' });
       else if (choice?.value !== undefined) saveScalar(choice.value);
@@ -185,6 +206,8 @@ export function ConfigLeafEditor(props: {
     {referenceError ? <Text>{referenceError}</Text> : null}
     {choices.map((choice, index) => <ChoiceRow key={index} title={safeConfigText(choice.title)} focused={focus === index}
       selected={choice.value !== undefined && String(choice.value) === screen.input} compact />)}
+    {canOpenSource ? <ActionRow title={`编辑来源 ${scalar.valueRef!.plugin}.${scalar.valueRef!.field}`}
+      focused={focus === choices.length} compact /> : null}
     {error ? <Text>{error}</Text> : null}
   </Box>;
   if (screen.kind === 'tools') return <Box flexDirection="column">

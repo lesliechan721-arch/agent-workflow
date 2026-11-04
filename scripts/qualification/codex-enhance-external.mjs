@@ -4,15 +4,15 @@ import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify, parseArgs } from 'node:util';
-import { RUNTIME_KEYS, fail, safeError } from '../../plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/contracts.mjs';
-import { safePath, executablePaths, atomicJson } from '../../plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/files.mjs';
-import { CODEX_VERSION } from '../../plugins/codex-enhance/skills/codex-subagent-guide/scripts/adapters/codex-v3.mjs';
-import { selectExecution } from '../../plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/plan.mjs';
-import { prepareRun, runForeground } from '../../plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/runner.mjs';
+import { RUNTIME_KEYS, fail, safeError } from '../../plugins/agent-subagent/skills/spawn-subagent/scripts/runtime/contracts.mjs';
+import { safePath, executablePaths, atomicJson } from '../../plugins/agent-subagent/skills/spawn-subagent/scripts/runtime/files.mjs';
+import { CODEX_VERSION } from '../../plugins/agent-subagent/skills/spawn-subagent/scripts/adapters/codex-v3.mjs';
+import { selectExecution } from '../../plugins/agent-subagent/skills/spawn-subagent/scripts/runtime/plan.mjs';
+import { prepareRun, runForeground } from '../../plugins/agent-subagent/skills/spawn-subagent/scripts/runtime/runner.mjs';
 
 const execFileAsync = promisify(execFile);
 const INSTRUCTION_INPUTS = [
-  { role: 'codex-subagent', profile: 'generalTaskProfile', rootOption: 'guide-root', file: 'task-instructions.md' },
+  { role: 'subagent', profile: 'generalTaskProfile', rootOption: 'guide-root', file: 'task-instructions.md' },
   { role: 'codex-advisor', profile: 'advisorProfile', rootOption: 'advisor-root', file: 'advisor-instructions.md' },
   { role: 'codex-explore', profile: 'standardProfile', rootOption: 'explore-root', file: 'explore-instructions.md' },
 ];

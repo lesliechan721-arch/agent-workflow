@@ -216,6 +216,7 @@ describe('AW Review static inspection', () => {
       config: { fields: {
         one: { type: 'string', default: 'default-one' },
         two: { type: 'string', default: 'default-two' },
+        optional: { type: 'string' },
       } },
       scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
       artifacts: { targets },
@@ -251,6 +252,8 @@ describe('AW Review static inspection', () => {
     })
     const configFile = path.join(root, 'review-config.json')
     await fs.outputJson(configFile, { 'portable-leaves': { two: 'custom-two' } })
+    await writePluginConfigStore({ pluginName: 'portable-leaves', scope: 'project', cwd: root,
+      values: { two: 'changed-after-binding' } })
 
     const receipt = await inspectReviewTarget({
       cwd: root,
@@ -292,18 +295,62 @@ describe('AW Review static inspection', () => {
     }))
   })
 
-  it('does not reinterpret an Eval project override for a native-shared key as user config', async () => {
+  it('keeps a legacy Portable binding stale when it cannot prove dependency config offline', async () => {
+    const root = await tempRoot()
+    const materializedRoot = await tempRoot('aw-review-portable-cross-config-')
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    await writePlugin(root, manifest('portable-config-provider', {
+      config: { schemaVersion: 4, fields: { registry: { type: 'array', default: [{ key: 'external' }],
+        validation: { uniqueBy: 'key' }, items: { type: 'object',
+          properties: { key: { type: 'string', required: true } }, additionalProperties: false } } } },
+    }))
+    const pluginRoot = await writePlugin(root, manifest('portable-config-consumer', {
+      dependencies: ['portable-config-provider'],
+      requires: { aw: { capabilities: ['aw.plugin-config-cross-plugin-value-ref.v1'] } },
+      extensions: { instructions: [{ name: 'anchor', title: 'Anchor', content: 'Anchor.' }] },
+      distributions: { agentSkills: { skills: './portable-skills' } },
+      config: { schemaVersion: 4, fields: { selected: { type: 'string', default: 'external',
+        valueRef: { plugin: 'portable-config-provider', field: 'registry', key: 'key' } } } },
+    }))
+    const skillRoot = await writeSkill(pluginRoot, 'portable-selected', 'portable-skills')
+    const workspace = await readCatalogWorkspace(root, { reservedImports: CLI_RESERVED_IMPORTS })
+    await fs.copy(skillRoot, path.join(materializedRoot, 'portable-selected'))
+    const binding = await writeAwSourceBinding({ rootDir: materializedRoot,
+      source: await resolveWorkspaceBindingSource(workspace), subject: { plugin: 'portable-config-consumer' },
+      profile: await resolvePortableProfileBindingInput({ plugins: workspace.plugins,
+        pluginName: 'portable-config-consumer', scope: 'project', cwd: root }),
+      artifacts: [{ kind: 'portable-skill', plugin: 'portable-config-consumer', skill: 'portable-selected', path: 'portable-selected' }],
+    })
+    await writePluginConfigStore({ pluginName: 'portable-config-provider', scope: 'project', cwd: root,
+      values: { registry: [] } })
+    const receipt = await inspectReviewTarget({ cwd: root, target: pluginRoot, platform: 'agent-skills',
+      scope: 'project', materializations: [binding.bindingPath] })
+    expect(receipt.skills).toEqual([expect.objectContaining({ skill: 'portable-selected', state: 'stale' })])
+    expect(receipt.issues).toContainEqual(expect.objectContaining({ code: 'sourceBindingDrifted',
+      message: expect.stringContaining('aw review prepare') }))
+  })
+
+  it('uses Eval dependency defaults without reinterpreting a project override as user config', async () => {
     const root = await tempRoot()
     const materializedRoot = await tempRoot('aw-review-eval-shared-config-')
     await initializeCatalogWorkspace({ workspaceRoot: root })
+    await writePlugin(root, manifest('eval-config-provider', {
+      config: { schemaVersion: 4, fields: { registry: { type: 'array', default: [{ key: 'eval-project-only' }],
+        validation: { uniqueBy: 'key' }, items: { type: 'object',
+          properties: { key: { type: 'string', required: true } }, additionalProperties: false } } } },
+    }))
     const pluginRoot = await writePlugin(root, manifest('eval-shared-config', {
+      dependencies: ['eval-config-provider'],
+      requires: { aw: { capabilities: ['aw.plugin-config-cross-plugin-value-ref.v1'] } },
       marketplace: {
         category: 'test', strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
       },
-      config: { fields: {
+      config: { schemaVersion: 4, fields: {
         shared: { type: 'string', default: 'shared-default' },
-        projectOnly: { type: 'string', default: 'project-default' },
+        projectOnly: { type: 'string', default: 'project-default', valueRef: {
+          plugin: 'eval-config-provider', field: 'registry', key: 'key', include: ['project-default'],
+        } },
       } },
       scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
       artifacts: { targets: [

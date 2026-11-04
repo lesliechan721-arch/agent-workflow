@@ -8,7 +8,7 @@
 
 ## 复用当前 Engine
 
-参考当前仓库 `plugins/codex-enhance/skills/codex-subagent-guide/evals/codex-workflow-adapter.mjs` 的 prepare/grade 模式。Engine 启动真实模型并采集协作证据；插件 adapter 不另起 Codex 进程、不造 rollout，不使用 GitHub Actions。
+参考当前仓库 `plugins/agent-subagent/skills/spawn-subagent/evals/codex-workflow-adapter.mjs` 的 prepare/grade 模式。Engine 启动真实模型并采集协作证据；插件 adapter 不另起 Codex 进程、不造 rollout，不使用 GitHub Actions。
 
 `prepare` 应做：在隔离工作区写入 case input.workspaceFiles，按 setup 建立真实临时 Git 历史，解析本次实际 OID，配置允许写入的角色和实际模型；确保 worker 可读 Spec/work 与 candidate Skill。用户授权只限测试工作区，不允许真实远端操作。
 

@@ -86,6 +86,7 @@ export async function prepareSkillPluginBundle(options: {
 /** Prepare only producers referenced by these isolated Skill trees, without publishing bindings. */
 export async function prepareIsolatedSkillCommandReferences(options: {
   plugin: PluginMeta;
+  plugins?: readonly PluginMeta[];
   platform: PlatformName;
   scope: Scope;
   cwd: string;
@@ -139,6 +140,7 @@ export async function prepareIsolatedSkillCommandReferences(options: {
         if (producerRef.kind === 'package') {
           const commandPackage = await prepareManagedCommandPackage({
             ...options, packageKey: producerRef.packageKey, scope: producer.scope, event: 'materialize',
+            referencePlugins: options.plugins,
           });
           candidates.push({ producer: commandPackage.producer, sets: commandPackage.sets });
           await commandPackage.cleanup();
@@ -161,6 +163,7 @@ export async function prepareIsolatedSkillCommandReferences(options: {
           }
           render = await runArtifactRenderer({
             plugin: options.plugin,
+            referencePlugins: options.plugins,
             platform: options.platform,
             scope: producer.scope,
             ...(declaration?.delivery?.mode === 'codex-native' ? { configScope: 'user' as const } : {}),

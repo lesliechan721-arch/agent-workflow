@@ -27,6 +27,12 @@ import {
   type PluginConfigValue,
   type ResolvedEffectivePluginConfig,
 } from './plugin-config.js';
+import {
+  analyzePluginConfigReferenceMutation,
+  pluginConfigHasExternalReferences,
+  resolvePluginConfigReferenceContext,
+  resolvePluginConfigReferenceConsumers,
+} from './plugin-config-references.js';
 
 export type PluginConfigImpactMutation =
   | {
@@ -37,6 +43,7 @@ export type PluginConfigImpactMutation =
   | { kind: 'reset' };
 
 export interface PluginConfigImpactSharedNativeTarget {
+  pluginName?: string;
   id: string;
   skillKey: string;
   refreshKeys: string[];
@@ -57,6 +64,38 @@ export interface PluginConfigMutationImpact {
   commandPackages: ManagedCommandPackageDiscovery['packages'];
   affectedCommandPackages: ManagedCommandPackageDiscovery['packages'];
   commandDiscoveryErrors: ManagedCommandPackageDiscovery['errors'];
+  referenceBlockers?: string[];
+  referenceWarnings?: string[];
+}
+
+/** Installed producer markers and the actual platform plan define the visible package set. */
+export async function discoverPluginConfigManagedCommandPackages(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  platformTargets?: readonly ReceiptTargetIdentity[];
+  referencePlugins?: readonly PluginMeta[];
+}): Promise<ManagedCommandPackageDiscovery> {
+  let plugins: PluginMeta[];
+  const errors: ManagedCommandPackageDiscovery['errors'] = [];
+  try {
+    plugins = await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env,
+      plugins: options.referencePlugins });
+  } catch {
+    plugins = [options.plugin];
+    errors.push({ code: 'commandDependencyDiscoveryFailed', message: 'The command packages of configuration consumers cannot be discovered.' });
+  }
+  const discoveries = await Promise.all(plugins.map((plugin) => discoverInstalledPluginManagedCommandPackages({
+    plugin, scope: options.scope, cwd: options.cwd, env: options.env,
+    platformTargets: options.platformTargets?.filter((target) => target.pluginName === plugin.manifest.name),
+  })));
+  const packages = new Map<string, ManagedCommandPackageDiscovery['packages'][number]>();
+  for (const discovery of discoveries) {
+    for (const target of discovery.packages) packages.set(target.packageId, target);
+    errors.push(...discovery.errors);
+  }
+  return { packages: [...packages.values()], errors: [...new Map(errors.map((error) => [JSON.stringify(error), error])).values()] };
 }
 
 function configIdentity(plugin: PluginMeta): {
@@ -72,7 +111,7 @@ function configIdentity(plugin: PluginMeta): {
 }
 
 function targetKey(target: ReceiptTargetIdentity): string {
-  return `${target.platform}\0${target.scope}\0${target.projectKey ?? ''}`;
+  return `${target.pluginName}\0${target.platform}\0${target.scope}\0${target.projectKey ?? ''}`;
 }
 
 function dedupeTargets(targets: readonly ReceiptTargetIdentity[]): ReceiptTargetIdentity[] {
@@ -151,6 +190,7 @@ declaration is typeof declaration & {
 
 function targetConfigConsumers(plugin: PluginMeta, target: ReceiptTargetIdentity) {
   const consumers = targetArtifactDeclarations(plugin, target).map((declaration) => ({
+    pluginName: plugin.manifest.name,
     id: declaration.id,
     refreshKeys: declaration.refreshKeys,
     scope: nativeDeclaration(declaration) ? 'user' as const : target.scope,
@@ -168,6 +208,7 @@ function targetConfigConsumers(plugin: PluginMeta, target: ReceiptTargetIdentity
       ? producer.skillKey : artifact && nativeDeclaration(artifact) ? artifact.skillKey : undefined;
     if (!sharedNativeSkillKey && !declaration.scopes.includes(target.scope)) continue;
     consumers.push({
+      pluginName: plugin.manifest.name,
       id: artifact?.id ?? declaration.id,
       refreshKeys: declaration.refreshKeys,
       scope: sharedNativeSkillKey ? 'user' : target.scope,
@@ -178,13 +219,20 @@ function targetConfigConsumers(plugin: PluginMeta, target: ReceiptTargetIdentity
   return consumers;
 }
 
+/** Activation scope can differ from the profile used to render shared native content. */
+export function pluginConfigTargetRenderScopes(plugin: PluginMeta, target: ReceiptTargetIdentity): Scope[] {
+  const consumers = targetConfigConsumers(plugin, target).filter((consumer) => consumer.refreshKeys.length > 0);
+  return consumers.length ? [...new Set(consumers.map((consumer) => consumer.scope))] : [target.scope];
+}
+
 function addSharedNativeConsumer(
   output: Map<string, PluginConfigImpactSharedNativeTarget>,
   consumer: ReturnType<typeof targetConfigConsumers>[number],
 ): void {
   if (!consumer.sharedNativeSkillKey) return;
-  const previous = output.get(consumer.id);
-  output.set(consumer.id, { id: consumer.id, skillKey: consumer.sharedNativeSkillKey,
+  const key = `${consumer.pluginName}\0${consumer.platform}\0${consumer.id}`;
+  const previous = output.get(key);
+  output.set(key, { id: consumer.id, pluginName: consumer.pluginName, skillKey: consumer.sharedNativeSkillKey,
     ...(consumer.platform === 'claude' ? { platform: 'claude' } : {}),
     refreshKeys: [...new Set([...(previous?.refreshKeys ?? []), ...consumer.refreshKeys])] });
 }
@@ -225,12 +273,16 @@ function unknownImpact(options: {
   removedKeys: string[];
   staleRemovedKeys: string[];
   commands: ManagedCommandPackageDiscovery;
+  plugins?: readonly PluginMeta[];
 }): PluginConfigMutationImpact {
   const affectedTargets = dedupeTargets(options.visibleTargets);
   const sharedNativeRenderTargets = new Map<string, PluginConfigImpactSharedNativeTarget>();
   for (const target of affectedTargets) {
     if (options.scope !== 'user') continue;
-    for (const consumer of targetConfigConsumers(options.plugin, target)) {
+    const plugin = target.pluginName === options.plugin.manifest.name ? options.plugin
+      : options.plugins?.find((entry) => entry.manifest.name === target.pluginName);
+    if (!plugin) continue;
+    for (const consumer of targetConfigConsumers(plugin, target)) {
       if (consumer.refreshKeys.length > 0) addSharedNativeConsumer(sharedNativeRenderTargets, consumer);
     }
   }
@@ -259,16 +311,19 @@ export async function analyzePluginConfigMutationImpact(options: {
   visibleTargets: readonly ReceiptTargetIdentity[];
   mutation: PluginConfigImpactMutation;
   commandDiscovery?: ManagedCommandPackageDiscovery;
+  referencePlugins?: readonly PluginMeta[];
 }): Promise<PluginConfigMutationImpact> {
-  const commands = options.commandDiscovery ?? await discoverInstalledPluginManagedCommandPackages({
+  const commands = options.commandDiscovery ?? await discoverPluginConfigManagedCommandPackages({
     plugin: options.plugin,
     scope: options.scope,
     cwd: options.cwd,
     env: options.env ?? process.env,
     platformTargets: options.visibleTargets,
+    referencePlugins: options.referencePlugins,
   });
   const schema = options.plugin.manifest.config?.fields;
   const needsProjectStore = options.scope === 'project'
+    || options.scope === 'user'
     || options.visibleTargets.some((target) => target.scope === 'project')
     || commands.packages.some((target) => target.producer.scope === 'project');
   const identity = configIdentity(options.plugin);
@@ -339,6 +394,7 @@ export async function analyzePluginConfigMutationImpact(options: {
   const changedKeys = [...updatedKeys, ...removedKeys];
   if (!schema || editedStore.state === 'invalid') {
     return unknownImpact({
+      plugins: await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env, plugins: options.referencePlugins }),
       commands,
       stores,
       plugin: options.plugin,
@@ -385,6 +441,26 @@ export async function analyzePluginConfigMutationImpact(options: {
     } : {}),
   };
   const projectRoot = resolveAwProjectRoot(options.cwd);
+  const referenceImpact = await analyzePluginConfigReferenceMutation({ plugin: options.plugin,
+    scope: options.scope, cwd: options.cwd, env: options.env, plugins: options.referencePlugins,
+    beforeStores: stores, afterStores });
+  const referenceWarnings: string[] = [];
+  if (pluginConfigHasExternalReferences(options.plugin.manifest)) {
+    for (const scope of needsProjectStore ? ['user', 'project'] as const : ['user'] as const) {
+      try {
+        const references = await resolvePluginConfigReferenceContext({ ...identity, manifest: options.plugin.manifest,
+          scope, cwd: options.cwd, env: options.env, plugins: options.referencePlugins });
+        referenceImpact.evidence.push({ scope, references: references.evidence });
+      } catch (error) {
+        referenceImpact.evidence.push({ scope, unavailable: true,
+          references: (error as { referenceEvidence?: unknown }).referenceEvidence });
+        referenceWarnings.push(`${scope} config reference impact is unknown because its dependencies cannot be read.`);
+      }
+    }
+  }
+  const referenceDigest = `sha256:${crypto.createHash('sha256').update(JSON.stringify({
+    stores: digestStores(stores), references: referenceImpact.evidence,
+  })).digest('hex')}`;
   const resolved = new Map<Scope, {
     before: ResolvedEffectivePluginConfig;
     after: ResolvedEffectivePluginConfig;
@@ -392,6 +468,9 @@ export async function analyzePluginConfigMutationImpact(options: {
   const resolveScope = async (scope: Scope) => {
     const existing = resolved.get(scope);
     if (existing) return existing;
+    const references = pluginConfigHasExternalReferences(options.plugin.manifest)
+      ? await resolvePluginConfigReferenceContext({ ...identity, manifest: options.plugin.manifest,
+          scope, cwd: options.cwd, env: options.env, plugins: options.referencePlugins }) : undefined;
     const pair = {
       before: await resolveEffectivePluginConfigFromStores({
         pluginName: options.plugin.manifest.name,
@@ -399,6 +478,7 @@ export async function analyzePluginConfigMutationImpact(options: {
         targetScope: scope,
         projectRoot,
         stores,
+        referenceContext: references?.context,
       }),
       after: await resolveEffectivePluginConfigFromStores({
         pluginName: options.plugin.manifest.name,
@@ -406,6 +486,7 @@ export async function analyzePluginConfigMutationImpact(options: {
         targetScope: scope,
         projectRoot,
         stores: afterStores,
+        referenceContext: references?.context,
       }),
     };
     resolved.set(scope, pair);
@@ -417,6 +498,29 @@ export async function analyzePluginConfigMutationImpact(options: {
     const affectedCommandPackages: ManagedCommandPackageDiscovery['packages'] = [];
     const sharedNativeRenderTargets = new Map<string, PluginConfigImpactSharedNativeTarget>();
     for (const target of dedupeTargets(options.visibleTargets)) {
+      if (target.pluginName !== options.plugin.manifest.name) {
+        const plugin = referenceImpact.consumers.find((entry) => entry.plugin.manifest.name === target.pluginName)?.plugin;
+        if (!plugin) continue;
+        let affected = false;
+        if (plugin.manifest.scripts?.preApply || (plugin.manifest.dependencies?.length ?? 0) > 0) {
+          const config = referenceImpact.consumers.find((entry) => entry.plugin.manifest.name === target.pluginName
+            && entry.scope === target.scope);
+          affected = !config?.before || !config.after
+            || !configValuesEqual(config.before.values, config.after.values);
+        }
+        for (const declaration of targetConfigConsumers(plugin, target)) {
+          if (declaration.refreshKeys.length === 0 || (options.scope === 'project' && declaration.scope === 'user')) continue;
+          const consumer = referenceImpact.consumers.find((entry) => entry.plugin.manifest.name === target.pluginName
+            && entry.scope === declaration.scope);
+          const refreshKeys = getPluginConfigDependencyKeys(plugin.manifest.config!, declaration.refreshKeys);
+          if (consumer?.before && consumer.after
+            && rendererProjectionEqual(consumer.before, consumer.after, refreshKeys)) continue;
+          affected = true;
+          addSharedNativeConsumer(sharedNativeRenderTargets, declaration);
+        }
+        if (affected) affectedTargets.push(target);
+        continue;
+      }
       let affected = false;
       const consumers = targetConfigConsumers(options.plugin, target);
       if (options.plugin.manifest.scripts?.preApply
@@ -439,27 +543,37 @@ export async function analyzePluginConfigMutationImpact(options: {
       }
       if (affected) affectedTargets.push(target);
     }
+    const packagePlugin = (target: ManagedCommandPackageDiscovery['packages'][number]) =>
+      target.producer.pluginName === options.plugin.manifest.name ? options.plugin
+        : referenceImpact.consumers.find((consumer) => consumer.plugin.manifest.name === target.producer.pluginName)?.plugin;
     const commandPackages = commands.packages.filter((target) => target.installed
-      || affectedTargets.some((platformTarget) => options.plugin.manifest.managedCommands?.packages
-        .some((declaration) => declaration.key === target.packageKey
+      || affectedTargets.some((platformTarget) => platformTarget.pluginName === target.producer.pluginName
+        && packagePlugin(target)?.manifest.managedCommands?.packages.some((declaration) => declaration.key === target.packageKey
           && declaration.platforms.includes(platformTarget.platform))));
     for (const target of commandPackages) {
       if (!target.declared) {
         affectedCommandPackages.push(target);
         continue;
       }
-      const config = await resolveScope(target.producer.scope);
-      const refreshKeys = getPluginConfigDependencyKeys(options.plugin.manifest.config!, target.refreshKeys);
+      const plugin = packagePlugin(target);
+      const config = target.producer.pluginName === options.plugin.manifest.name ? await resolveScope(target.producer.scope)
+        : referenceImpact.consumers.find((consumer) => consumer.plugin.manifest.name === target.producer.pluginName
+          && consumer.scope === target.producer.scope);
+      if (!plugin || !config?.before || !config.after) {
+        affectedCommandPackages.push(target);
+        continue;
+      }
+      const refreshKeys = getPluginConfigDependencyKeys(plugin.manifest.config!, target.refreshKeys);
       if (!rendererProjectionEqual(config.before, config.after, refreshKeys)) {
         affectedCommandPackages.push(target);
       }
     }
     return {
-      impactState: commands.errors.length > 0 ? 'unknown' : 'known',
+      impactState: commands.errors.length > 0 || referenceWarnings.length > 0 ? 'unknown' : 'known',
       noEffectiveChange: affectedTargets.length === 0 && affectedCommandPackages.length === 0
         && commands.errors.length === 0,
       storeChanged: true,
-      storeDigest: digestStores(stores),
+      storeDigest: referenceDigest,
       changedKeys,
       updatedKeys,
       removedKeys,
@@ -469,9 +583,13 @@ export async function analyzePluginConfigMutationImpact(options: {
       commandPackages,
       affectedCommandPackages,
       commandDiscoveryErrors: commands.errors,
+      referenceWarnings,
+      referenceBlockers: [...referenceImpact.blockedReferences,
+        ...referenceImpact.unreadableConsumers.map((location) => `Cannot check config references in ${location}.`)],
     };
   } catch {
-    return unknownImpact({
+    return { ...unknownImpact({
+      plugins: referenceImpact.consumers.map((consumer) => consumer.plugin),
       commands,
       stores,
       plugin: options.plugin,
@@ -482,6 +600,8 @@ export async function analyzePluginConfigMutationImpact(options: {
       updatedKeys,
       removedKeys,
       staleRemovedKeys,
-    });
+    }), storeDigest: referenceDigest, referenceWarnings,
+      referenceBlockers: [...referenceImpact.blockedReferences,
+        ...referenceImpact.unreadableConsumers.map((location) => `Cannot check config references in ${location}.`)] };
   }
 }

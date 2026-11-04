@@ -13,7 +13,9 @@ import {
   GENERATED_OUTPUT_MARKER_FILENAME,
   readCatalogWorkspace,
   formatPluginConfigIssue,
+  getPluginConfigDependencyFields,
   validatePluginConfigCandidate,
+  type PluginConfigReferenceContext,
   type CatalogWorkspace,
 } from '@lesliechan721/aw-plugin-core'
 import fs from 'fs-extra'
@@ -28,13 +30,15 @@ import type { CatalogSourceResolution, PluginMeta, Scope } from '../types.js'
 import { resolveArtifactRenderConfig, type ResolvedArtifactRenderConfig } from '../utils/artifact-renderer.js'
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js'
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js'
+import { codexNativeRefreshKeys } from '../utils/plugin-config.js'
+import { pluginConfigHasExternalReferences } from '../utils/plugin-config-references.js'
 import {
   parseAwSourceBindingEvalInput,
   resolveAwSourceBindingEvalProvider,
   resolveEvalSourceBindingInput,
   type AwSourceBindingEvalInput,
 } from './eval-source-input.js'
-import { normalizeReviewProfileConfig, parseReviewProfile } from './review-profile.js'
+import { normalizeReviewProfileConfig, parseReviewProfile, resolveReviewPluginProfileConfig } from './review-profile.js'
 import { resolveReviewSelection } from './review-selection.js'
 import type { ReviewProfile, ReviewProfileConfig } from './review-types.js'
 
@@ -55,6 +59,8 @@ const digestPattern = /^sha256:[0-9a-f]{64}$/u
 const safeIdPattern = /^[a-z0-9][a-z0-9-]*$/u
 const unsupportedV1Message =
   'AW source binding schema version 1 is unsupported. Run "aw skill eval prepare" or "aw skill materialize" again.'
+const legacyPortableDependencyEvidenceMessage =
+  'Legacy Portable binding does not bind dependency config. Run "aw review prepare" for current Review evidence.'
 
 export interface AwWorkspaceBindingSource {
   kind: 'workspace'
@@ -497,15 +503,17 @@ export function resolveEvalProfileBindingInput(
 ): EvalProfileBindingInput {
   assertNoSensitiveProfileConfig(profile, plugins)
   const normalizedConfig = normalizeReviewProfileConfig(configOverrides)
-  const selectedPlugins = new Set(profile.plugins.map((entry) => entry.name))
+  const closure = resolvePluginMetaDependencyClosure(plugins, profile.plugins.map((entry) => entry.name))
+  const selectedPlugins = new Set(closure.map((plugin) => plugin.manifest.name))
   if (Object.keys(normalizedConfig).some((name) => !selectedPlugins.has(name))) {
-    throw new Error('Eval config overrides must name plugins in the selected profile.')
+    throw new Error('Eval config overrides must name plugins in the selected profile dependency closure.')
   }
   assertNoSensitiveProfileConfig({
     ...profile,
-    plugins: profile.plugins.map((entry) => ({
-      ...entry,
-      config: { ...entry.config, ...(normalizedConfig[entry.name] ?? {}) },
+    plugins: closure.map((plugin) => ({
+      name: plugin.manifest.name,
+      config: { ...(profile.plugins.find((entry) => entry.name === plugin.manifest.name)?.config ?? {}),
+        ...(normalizedConfig[plugin.manifest.name] ?? {}) },
     })),
   }, plugins)
   const explicitConfig = new Map(profile.plugins.map((entry) => [entry.name, entry.config]))
@@ -513,10 +521,21 @@ export function resolveEvalProfileBindingInput(
     scope as Scope,
     new Map(entries?.map((entry) => [entry.name, entry.config]) ?? []),
   ]))
-  const closure = resolvePluginMetaDependencyClosure(
-    plugins,
-    profile.plugins.map((entry) => entry.name),
-  )
+  const referenceDefinitions = Object.fromEntries(closure.map((plugin) => [plugin.manifest.name, {
+    definition: plugin.manifest.config ?? { fields: {} }, dependencies: plugin.manifest.dependencies ?? [],
+  }]))
+  const userDependencies = new Set<string>()
+  for (const plugin of closure) {
+    const definition = plugin.manifest.config ?? { fields: {} }
+    for (const dependency of getPluginConfigDependencyFields(definition, Object.keys(definition.fields), {
+      plugin: plugin.manifest.name, dependencies: plugin.manifest.dependencies ?? [], plugins: referenceDefinitions,
+    })) {
+      if (dependency.plugin !== plugin.manifest.name
+        && codexNativeRefreshKeys(closure.find((entry) => entry.manifest.name === dependency.plugin)!.manifest).has(dependency.field)) {
+        userDependencies.add(dependency.plugin)
+      }
+    }
+  }
   const materializationProfile: AwSkillEvalMaterializationProfile = {
     id: profile.id,
     scope: profile.scope,
@@ -528,7 +547,7 @@ export function resolveEvalProfileBindingInput(
           target.platform === 'codex'
           && target.target === 'codex.skill'
           && target.scopes.includes(profile.scope)
-          && target.delivery?.mode === 'codex-native')
+          && target.delivery?.mode === 'codex-native') || userDependencies.has(plugin.manifest.name)
           ? ['user' as const]
           : []),
       ].sort().map((scope) => [
@@ -541,24 +560,41 @@ export function resolveEvalProfileBindingInput(
       ])),
     })),
   }
+  const configInputs: unknown[] = []
   for (const plugin of closure) {
     const installation = materializationProfile.plugins.find((entry) => entry.name === plugin.manifest.name)!
     for (const [scope, config] of Object.entries(installation.configByScope)) {
-      for (const [key, field] of Object.entries(plugin.manifest.config?.fields ?? {})) {
-        if (field.required === true && field.default === undefined && !Object.hasOwn(config!, key)) {
-          throw new Error(
-            `Eval profile "${profile.id}" is missing required config "${key}" `
-            + `for plugin "${plugin.manifest.name}" in ${scope} scope.`,
-          )
-        }
-      }
       if (plugin.manifest.config) {
-        const defaults = Object.fromEntries(Object.entries(plugin.manifest.config.fields)
-          .flatMap(([key, field]) => field.default === undefined ? [] : [[key, field.default]]))
-        const issues = validatePluginConfigCandidate(plugin.manifest.config, { ...defaults, ...config })
-        if (issues.length > 0) {
-          throw new Error(`Eval profile "${profile.id}" has invalid config for plugin "${plugin.manifest.name}" in ${scope} scope: ${formatPluginConfigIssue(issues[0]!)}`)
+        const dependencyValues = Object.fromEntries(closure.map((provider) => {
+          const installation = materializationProfile.plugins.find((entry) => entry.name === provider.manifest.name)!
+          const userOnly = codexNativeRefreshKeys(provider.manifest)
+          const values = Object.fromEntries(Object.entries(provider.manifest.config?.fields ?? {})
+            .flatMap(([key, field]) => {
+              const effectiveScope = userOnly.has(key) ? 'user' : scope as Scope
+              const overrides = installation.configByScope[effectiveScope] ?? {}
+              return Object.hasOwn(overrides, key) ? [[key, overrides[key]]]
+                : field.default === undefined ? [] : [[key, field.default]]
+            }))
+          return [provider.manifest.name, {
+            definition: provider.manifest.config ?? { fields: {} },
+            dependencies: provider.manifest.dependencies ?? [],
+            values,
+          }]
+        }))
+        const referenceContext: PluginConfigReferenceContext = {
+          plugin: plugin.manifest.name, dependencies: plugin.manifest.dependencies ?? [],
+          plugins: dependencyValues,
         }
+        const effective = {
+          ...Object.fromEntries(Object.entries(config!).filter(([key]) => !Object.hasOwn(plugin.manifest.config!.fields, key))),
+          ...dependencyValues[plugin.manifest.name]!.values,
+        }
+        const issues = validatePluginConfigCandidate(plugin.manifest.config, effective, undefined, referenceContext)
+        if (issues.length > 0) {
+          throw new Error(`Eval profile "${profile.id}" has invalid config for plugin "${plugin.manifest.name}" in ${scope} scope: ${formatPluginConfigIssue(issues[0]!)}. Provide dependency overrides in the same config file.`)
+        }
+        configInputs.push({ plugin: plugin.manifest.name, scope, definition: plugin.manifest.config,
+          effective, dependencies: dependencyValues })
       }
     }
   }
@@ -568,7 +604,7 @@ export function resolveEvalProfileBindingInput(
       kind: 'eval',
       id: profile.id,
       scope: profile.scope,
-      inputDigest: digestCanonical(materializationProfile),
+      inputDigest: digestCanonical({ materializationProfile, config: configInputs }),
       ...(Object.keys(normalizedConfig).length === 0 ? {} : { config: normalizedConfig }),
     },
   }
@@ -576,6 +612,8 @@ export function resolveEvalProfileBindingInput(
 
 export async function resolvePortablePluginProfileConfig(options: {
   plugin: PluginMeta
+  plugins?: readonly PluginMeta[]
+  offlineConfig?: ReviewProfileConfig
   scope: Scope
   cwd: string
   env?: NodeJS.ProcessEnv
@@ -583,7 +621,20 @@ export async function resolvePortablePluginProfileConfig(options: {
   catalogSourceIdentity?: string
   logicalIdentity?: string
 }): Promise<PortablePluginProfileConfig> {
+  if (options.offlineConfig !== undefined) {
+    const resolved = resolveReviewPluginProfileConfig({ plugin: options.plugin, plugins: options.plugins,
+      scope: options.scope, config: options.offlineConfig })
+    const config: ResolvedArtifactRenderConfig = {
+      mode: 'artifact-render', targetScope: options.scope, schema: options.plugin.manifest.config?.fields,
+      values: resolved.values, sources: {
+        ...Object.fromEntries(Object.keys(options.plugin.manifest.config?.fields ?? {}).map((key) => [key, 'missing' as const])),
+        ...resolved.sources,
+      }, issues: [], stores: {},
+    }
+    return { config, digest: digestCanonical({ values: config.values, sources: config.sources }) }
+  }
   const config = await resolveArtifactRenderConfig({
+    referencePlugins: options.plugins,
     sourceId: options.sourceId ?? options.plugin.sourceId,
     sourceIdentity: options.catalogSourceIdentity ?? options.plugin.sourceIdentity,
     logicalIdentity: options.logicalIdentity ?? options.plugin.catalogLogicalIdentity,
@@ -604,6 +655,7 @@ export async function resolvePortablePluginProfileConfig(options: {
 
 export async function resolvePortableProfileBindingInput(options: {
   plugins: readonly PluginMeta[]
+  offlineConfig?: ReviewProfileConfig
   pluginName: string
   scope: Scope
   cwd: string
@@ -639,6 +691,7 @@ async function currentWorkspaceProfile(options: {
   binding: AwSourceBindingV2
   cwd: string
   env?: NodeJS.ProcessEnv
+  offlineConfig?: ReviewProfileConfig
 }): Promise<AwSourceBindingProfile> {
   const plugin = options.workspace.plugins.find((entry) =>
     entry.manifest.name === options.binding.subject.plugin)
@@ -672,12 +725,18 @@ async function currentWorkspaceProfile(options: {
     return profile
   }
   const source = options.binding.source
+  if (options.offlineConfig !== undefined
+    && resolvePluginMetaDependencyClosure(options.workspace.plugins, [options.binding.subject.plugin])
+      .some((entry) => pluginConfigHasExternalReferences(entry.manifest))) {
+    throw new Error(legacyPortableDependencyEvidenceMessage)
+  }
   return resolvePortableProfileBindingInput({
     plugins: options.workspace.plugins,
     pluginName: options.binding.subject.plugin,
     scope: options.binding.profile.scope,
     cwd: options.cwd,
     env: options.env,
+    offlineConfig: options.offlineConfig,
     ...(source.kind === 'catalog-snapshot'
       ? {
           sourceId: source.sourceId,
@@ -693,6 +752,7 @@ export async function resolveCurrentWorkspaceAwSourceBinding(options: {
   binding: AwSourceBindingV2
   cwd?: string
   env?: NodeJS.ProcessEnv
+  offlineConfig?: ReviewProfileConfig
 }): Promise<{ source: AwWorkspaceBindingSource; profile: AwSourceBindingProfile }> {
   return {
     source: options.context.source,
@@ -701,6 +761,7 @@ export async function resolveCurrentWorkspaceAwSourceBinding(options: {
       binding: options.binding,
       cwd: options.cwd ?? options.context.workspace.workspaceRoot,
       env: options.env,
+      offlineConfig: options.offlineConfig,
     }),
   }
 }
@@ -835,6 +896,7 @@ export async function validateAwSourceBindingForWorkspace(options: {
   expectedSubject: AwSourceBindingSubject
   cwd?: string
   env?: NodeJS.ProcessEnv
+  offlineConfig?: ReviewProfileConfig
 }): Promise<AwSourceBindingValidation> {
   const bindingPath = path.resolve(options.bindingPath)
   const info = await fs.lstat(bindingPath).catch(() => null)
@@ -881,6 +943,7 @@ export async function validateAwSourceBindingForWorkspace(options: {
       binding,
       cwd: options.cwd,
       env: options.env,
+      offlineConfig: options.offlineConfig,
     })
     if (
       binding.profile.kind !== current.profile.kind
@@ -890,8 +953,10 @@ export async function validateAwSourceBindingForWorkspace(options: {
     ) {
       issues.push({ code: 'sourceBindingProfileDrift', message: 'The current profile input differs from the bound profile.' })
     }
-  } catch {
-    issues.push({ code: 'sourceBindingProfileDrift', message: 'The current profile input cannot be validated.' })
+  } catch (error) {
+    issues.push({ code: 'sourceBindingProfileDrift', message: error instanceof Error
+      && error.message === legacyPortableDependencyEvidenceMessage ? legacyPortableDependencyEvidenceMessage
+      : 'The current profile input cannot be validated.' })
   }
   const rootDir = path.dirname(bindingPath)
   if (binding.profile.kind === 'eval') {

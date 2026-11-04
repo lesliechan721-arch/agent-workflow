@@ -55,6 +55,7 @@ export function createArtifactRuntimeConfigSnapshots(options: {
       declaration: target.runtimeConfig,
       definition: options.manifest.config,
       values: options.config.values,
+      referenceContext: options.config.referenceContext,
     });
   }
   return snapshots;

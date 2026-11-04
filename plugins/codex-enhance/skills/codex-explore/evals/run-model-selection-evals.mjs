@@ -184,7 +184,7 @@ function evaluateNestedDelegation(run, expected) {
   const grandchildAttempts = directChildCalls.filter((call) => call?.tool === 'spawn_agent');
   const grandchildSpawns = grandchildAttempts.filter((call) => !spawnRejected(call));
   const observedChildSkills = (nested.expect_child_skill_loaded === false
-    ? ['codex-subagent-guide', 'codex-advisor', 'codex-explore']
+    ? ['spawn-subagent', 'codex-advisor', 'codex-explore']
     : [nested.child_skill]).filter((skill) => directChild && commandLoadedSkill(
       directChildCalls,
       skill,

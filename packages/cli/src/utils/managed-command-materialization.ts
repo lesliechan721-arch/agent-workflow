@@ -214,6 +214,7 @@ export function injectNativeToolClosureFiles(files: Record<string, Buffer>, clos
 }
 
 export async function prepareManagedCommandPackage(options: {
+  referencePlugins?: readonly PluginMeta[];
   plugin: PluginMeta; packageKey: string; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
   event?: 'install' | 'refresh' | 'materialize'; changedConfigKeys?: string[];
   requestedArtifactIds?: readonly string[];
@@ -224,6 +225,7 @@ export async function prepareManagedCommandPackage(options: {
     sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity,
     logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name,
     manifest: options.plugin.manifest, scope: declaration.scope, cwd: options.cwd, env: options.env,
+    referencePlugins: options.referencePlugins,
   });
   if (renderConfig.issues.length > 0) throw new ManagedCommandError('commandDefinitionInvalid', 'Resolve the plugin configuration issues before refreshing its command package.');
   const producerRef = { kind: 'package' as const, packageKey: declaration.key };
@@ -253,7 +255,7 @@ export async function prepareManagedCommandPackage(options: {
   let generatedFiles: Record<string, string> = {};
   if (targets.length > 0) {
     if (process.platform === 'win32') await prepareWindowsJobHelper();
-    const rendered = await runArtifactRenderer({ plugin: options.plugin, event: options.event ?? 'install', platform: 'managed-commands', scope: declaration.scope, cwd: options.cwd, commandEnv: options.env, requestedArtifactIds: targets.map((target) => target.id), ...(options.event === 'refresh' ? { changedConfigKeys: options.changedConfigKeys ?? [] } : {}) });
+    const rendered = await runArtifactRenderer({ plugin: options.plugin, referencePlugins: options.referencePlugins, event: options.event ?? 'install', platform: 'managed-commands', scope: declaration.scope, cwd: options.cwd, commandEnv: options.env, requestedArtifactIds: targets.map((target) => target.id), ...(options.event === 'refresh' ? { changedConfigKeys: options.changedConfigKeys ?? [] } : {}) });
     artifacts = validateArtifactPlan({ manifest: options.plugin.manifest, plan: rendered.plan, platform: 'managed-commands', scope: declaration.scope, requestedArtifactIds: rendered.context.requestedArtifactIds, renderConfig: rendered.context.config, rendererDigest: rendered.target.rendererDigest, manifestDigest: rendered.target.manifestDigest }).artifacts;
     for (const artifact of artifacts) if (artifact.target === 'aw.command-package') generatedFiles = artifact.files;
   }
@@ -284,6 +286,7 @@ export async function prepareManagedCommandPackage(options: {
 }
 
 export async function syncPluginManagedCommandPackage(options: {
+  referencePlugins?: readonly PluginMeta[];
   plugin: PluginMeta; packageKey: string; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
   event?: 'install' | 'refresh' | 'materialize'; changedConfigKeys?: string[];
   requestedArtifactIds?: readonly string[];

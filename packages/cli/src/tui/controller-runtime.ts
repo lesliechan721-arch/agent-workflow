@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
-import type { CatalogSourceResolution, CommandProducerResult, PluginConfigSchema, PluginMeta, Scope } from '../types.js';
+import type { CatalogSourceResolution, CommandProducerResult, PlatformName, PluginConfigSchema, PluginMeta, Scope } from '../types.js';
 import {
   flattenStatusTargets,
   statusCommandV8,
@@ -63,6 +63,7 @@ import {
   resolveConfigRead,
   resolveEffectivePluginConfig,
   resolveEffectivePluginConfigFromStores,
+  resolvePluginConfigReferenceContext,
   resolveAwProjectRoot,
   resolvePluginConfigStorePath,
 } from '../utils/plugin-config.js';
@@ -77,8 +78,8 @@ import {
   resolveConfigPreApplyAuthorization,
   resetPluginConfigWithHelper,
 } from '../utils/plugin-config-write.js';
-import { analyzePluginConfigMutationImpact, pluginSharedNativeConfigTargets } from '../utils/plugin-config-impact.js';
-import { discoverInstalledPluginManagedCommandPackages } from '../utils/managed-command-materialization.js';
+import { analyzePluginConfigMutationImpact, discoverPluginConfigManagedCommandPackages, pluginConfigTargetRenderScopes, pluginSharedNativeConfigTargets } from '../utils/plugin-config-impact.js';
+import { collectPluginConfigReferenceEvidence, resolvePluginConfigReferenceConsumers, resolvePluginConfigReferencePlugins } from '../utils/plugin-config-references.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import { createBatchIntentCompatiblePlanFingerprint } from '../commands/operation-plan.js';
@@ -305,25 +306,55 @@ export function configAffectedStatusTargets(
   targets: StatusV8Target[],
   pluginId: string,
   configScope: 'user' | 'project',
+  consumerPluginIds: readonly string[] = [],
 ): StatusScopedTarget[] {
   const affected = new Map<string, StatusScopedTarget>();
+  const selected = new Set([pluginId, ...consumerPluginIds]);
   for (const target of flattenStatusTargets(targets)) {
     const intent = statusTargetIntent(target);
-    if (target.pluginId !== pluginId || !intent.enabled) continue;
+    if (!selected.has(target.pluginId) || !intent.enabled) continue;
     for (const scope of intent.scopes) {
       if (configScope === 'project' && scope !== 'project') continue;
-      affected.set(`${target.platform}\0${scope}`, { ...target, scope });
+      affected.set(`${target.pluginId}\0${target.platform}\0${scope}`, { ...target, scope });
     }
   }
   return [...affected.values()]
-    .sort((left, right) => `${left.platform}\0${left.scope}`
-      .localeCompare(`${right.platform}\0${right.scope}`, 'en'));
+    .sort((left, right) => `${left.pluginId}\0${left.platform}\0${left.scope}`
+      .localeCompare(`${right.pluginId}\0${right.platform}\0${right.scope}`, 'en'));
 }
 
-function configRetrySharedNativeRenderTargets(
+async function configRetrySharedNativeRenderTargets(
   plugin: PluginMeta,
-): ReturnType<typeof pluginSharedNativeConfigTargets> {
-  return pluginSharedNativeConfigTargets(plugin);
+  targets: readonly { pluginName?: string; platform: PlatformName }[],
+  env?: NodeJS.ProcessEnv,
+): Promise<ReturnType<typeof pluginSharedNativeConfigTargets>> {
+  const plugins = await resolvePluginConfigReferenceConsumers({ plugin, env });
+  return plugins.flatMap((consumer) => pluginSharedNativeConfigTargets(consumer).filter((shared) =>
+    targets.some((target) => (target.pluginName ?? plugin.manifest.name) === consumer.manifest.name
+      && target.platform === (shared.platform ?? 'codex'))));
+}
+
+async function configRetryStoreDigest(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+  targets: readonly { pluginName: string; platform: PlatformName; scope: Scope }[];
+  commandPackages: readonly { producer: { pluginName: string; scope: Scope } }[];
+  preApplyAuthorization: readonly { pluginName: string; scope: Scope }[];
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<string> {
+  const plugins = await resolvePluginConfigReferencePlugins({ sourceId: options.plugin.sourceId,
+    sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, env: options.env });
+  const byName = new Map([...plugins, options.plugin].map((plugin) => [plugin.manifest.name, plugin]));
+  const profiles = [{ pluginName: options.plugin.manifest.name, scope: options.scope },
+    ...options.targets.flatMap((target) => {
+      const plugin = byName.get(target.pluginName);
+      if (!plugin) throw operationReviewStale('重试目标的插件定义已变化。');
+      return pluginConfigTargetRenderScopes(plugin, target).map((scope) => ({ pluginName: target.pluginName, scope }));
+    }),
+    ...options.commandPackages.map(({ producer }) => ({ pluginName: producer.pluginName, scope: producer.scope })),
+    ...options.preApplyAuthorization.map(({ pluginName, scope }) => ({ pluginName, scope }))];
+  return digest(await collectPluginConfigReferenceEvidence({ ...options, profiles, plugins }));
 }
 
 function configImpactVisibleTargets(
@@ -331,7 +362,7 @@ function configImpactVisibleTargets(
   targets: readonly StatusScopedTarget[],
 ) {
   return targets.map((target) => ({
-    pluginName,
+    pluginName: target.pluginName ?? pluginName,
     platform: target.platform,
     scope: target.scope,
   }));
@@ -2571,6 +2602,15 @@ export function createTuiControllerDependencies(
       if (catalogOperation) catalogOperationByEvidence.set(evidence, catalogOperation);
       return evidence;
     }
+    const configReferencePluginIds = intent.kind === 'configSave'
+      ? await withResolvedCatalogPlugin({
+          selector: intent.pluginId, cliVersion: packageInfo.version, env: context.env,
+          ...(catalogOperation ? { operationContext: catalogOperation } : {}),
+          ...(signal ? { signal } : {}),
+          consume: async ({ plugin }) => (await resolvePluginConfigReferenceConsumers({ plugin, env: context.env }))
+            .map((entry) => entry.pluginId ?? `${entry.sourceId}/${entry.manifest.name}`),
+        })
+      : [];
     if (preparation && intent.kind === 'configSave') {
       if (!sessionStatusResult || !catalogOperation) {
         throw operationReviewStale('当前 TUI session 没有可复用的设置证据。');
@@ -2585,6 +2625,7 @@ export function createTuiControllerDependencies(
         sessionStatusResult.payload.targets,
         intent.pluginId,
         intent.scope,
+        configReferencePluginIds,
       );
       const preparedCatalogOperation = catalogOperation;
       const selected = await withResolvedCatalogPlugin({
@@ -2626,43 +2667,37 @@ export function createTuiControllerDependencies(
             ? configImpactVisibleTargets(plugin.manifest.name, relevantTargets)
             : impact!.affectedTargets;
           const commandPackages = impact?.affectedCommandPackages
-            ?? (await discoverInstalledPluginManagedCommandPackages({ plugin, scope: intent.scope,
+            ?? (await discoverPluginConfigManagedCommandPackages({ plugin, scope: intent.scope,
               cwd: context.cwd, env: context.env ?? process.env, platformTargets: affectedTargets })).packages;
+          const preApplyAuthorization = configIntentRequestsApply(intent)
+            ? (await resolveConfigPreApplyAuthorization({
+                plugin,
+                scope: intent.scope,
+                cwd: context.cwd,
+                env: context.env,
+                applyTargets: affectedTargets,
+                nativeCliRunner: context.nativeCliRunner,
+                rebuildRuntime: {
+                  catalogOperationContext: preparedCatalogOperation,
+                  expectedGenerationSetDigest: preparedCatalogOperation.generationSetDigest,
+                  inventoryCatalogSourceReferences: operationInventory,
+                },
+              })).targets
+            : [];
           return {
             pluginName: plugin.manifest.name,
             source: sourceEvidenceForPlugin(source, plugin.manifest.name),
             impact,
             commandPackages,
-            preApplyAuthorization: configIntentRequestsApply(intent)
-              ? (await resolveConfigPreApplyAuthorization({
-                  plugin,
-                  scope: intent.scope,
-                  cwd: context.cwd,
-                  env: context.env,
-                  applyTargets: affectedTargets,
-                  nativeCliRunner: context.nativeCliRunner,
-                  rebuildRuntime: {
-                    catalogOperationContext: preparedCatalogOperation,
-                    expectedGenerationSetDigest: preparedCatalogOperation.generationSetDigest,
-                    inventoryCatalogSourceReferences: operationInventory,
-                  },
-                })).targets
-              : [],
+            preApplyAuthorization,
+            retryStoreDigest: intent.retryApply ? await configRetryStoreDigest({ plugin, scope: intent.scope,
+              targets: affectedTargets, commandPackages, preApplyAuthorization, cwd: context.cwd, env: context.env }) : undefined,
             sharedNativeRenderTargets: intent.retryApply
-              ? configRetrySharedNativeRenderTargets(plugin)
+              ? await configRetrySharedNativeRenderTargets(plugin, affectedTargets, context.env)
               : impact!.sharedNativeRenderTargets,
           };
         },
       });
-      const retryStore = intent.retryApply ? await readPluginConfigStore({
-        sourceId: selected.source.sourceId,
-        sourceIdentity: selected.source.sourceIdentity,
-        logicalIdentity: selected.source.logicalIdentity,
-        pluginName: selected.pluginName,
-        scope: intent.scope,
-        cwd: context.cwd,
-        env: context.env,
-      }) : undefined;
       signal?.throwIfAborted();
       const relevantRevisions = (sessionStatusResult.targetRevisions ?? []).filter((revision) =>
         relevantTargets.some((target) => target.platform === revision.platform
@@ -2672,7 +2707,7 @@ export function createTuiControllerDependencies(
       const evidence: OperationEvidence = {
         catalog: {
           configDigest: sessionStatusResult.payload.catalog.configDigest,
-          compositeDigest: sessionStatusResult.payload.catalog.compositeDigest,
+          compositeDigest: preparedCatalogOperation.catalog.compositeDigest,
           ...(catalogOperation ? { generationSetDigest: catalogOperation.generationSetDigest } : {}),
         },
         ...(selected.source ? { source: selected.source } : {}),
@@ -2681,12 +2716,12 @@ export function createTuiControllerDependencies(
           scope: intent.scope,
           ...(selected.source?.manifestDigest ? { schemaIdentity: selected.source.manifestDigest } : {}),
           storeDigest: selected.impact?.storeDigest
-            ?? digest({ exists: retryStore?.exists, rawDigest: retryStore?.rawDigest }),
+            ?? selected.retryStoreDigest!,
           impactState: selected.impact?.impactState ?? 'known',
           ...(selected.impact?.noEffectiveChange ? { noEffectiveChange: true as const } : {}),
           ...(selected.commandPackages.length ? { commandPackages: selected.commandPackages } : {}),
           affectedTargets: (selected.impact?.affectedTargets
-            ?? relevantTargets).map(({ platform, scope }) => ({ platform, scope })),
+            ?? relevantTargets).map(({ pluginName, platform, scope }) => ({ pluginName, platform, scope })),
           ...(selected.preApplyAuthorization.length > 0
             ? { preApplyAuthorization: selected.preApplyAuthorization }
             : {}),
@@ -2702,7 +2737,7 @@ export function createTuiControllerDependencies(
     const statusCatalogOperation = catalogOperation
       ?? (!freshCatalog ? sessionCatalogOperationContext : undefined);
     const status = await statusCommandV8({
-      plugins: [...new Set([intent.pluginId,
+      plugins: [...new Set([intent.pluginId, ...configReferencePluginIds,
         ...(intent.kind === 'pluginWrite' && intent.originIssue?.consumerPluginId
           ? [intent.originIssue.consumerPluginId] : [])])],
       ...('platform' in intent ? { platform: intent.platform } : {}),
@@ -2738,7 +2773,7 @@ export function createTuiControllerDependencies(
     let operationPlan: OperationEvidence['operationPlan'];
     await preparation?.reporter.emit('catalog');
     const configVisibleTargets = intent.kind === 'configSave'
-      ? configAffectedStatusTargets(status.payload.targets, intent.pluginId, intent.scope)
+      ? configAffectedStatusTargets(status.payload.targets, intent.pluginId, intent.scope, configReferencePluginIds)
       : [];
     const selected = await withResolvedCatalogPlugin({
           selector: intent.pluginId,
@@ -2781,38 +2816,47 @@ export function createTuiControllerDependencies(
                   },
                 })
               : undefined;
+            const affectedTargets = intent.kind === 'configSave'
+              ? intent.retryApply ? configImpactVisibleTargets(plugin.manifest.name, configVisibleTargets) : impact!.affectedTargets
+              : [];
+            const commandPackages = impact?.affectedCommandPackages
+              ?? (intent.kind === 'configSave' ? (await discoverPluginConfigManagedCommandPackages({
+                plugin, scope: intent.scope, cwd: context.cwd, env: context.env ?? process.env,
+                platformTargets: configImpactVisibleTargets(plugin.manifest.name, configVisibleTargets),
+              })).packages : []);
+            const preApplyAuthorization = intent.kind === 'configSave'
+              && configIntentRequestsApply(intent)
+              ? (await resolveConfigPreApplyAuthorization({
+                  plugin,
+                  scope: intent.scope,
+                  cwd: context.cwd,
+                  env: context.env,
+                  applyTargets: intent.retryApply
+                    ? configImpactVisibleTargets(plugin.manifest.name, configVisibleTargets)
+                    : impact!.affectedTargets,
+                  nativeCliRunner: context.nativeCliRunner,
+                  rebuildRuntime: {
+                    ...(catalogOperation ? { catalogOperationContext: catalogOperation } : {}),
+                    ...(catalogOperation?.generationSetDigest
+                      ? { expectedGenerationSetDigest: catalogOperation.generationSetDigest }
+                      : {}),
+                    inventoryCatalogSourceReferences: operationInventory,
+                  },
+                })).targets
+              : [];
             return {
               pluginName: plugin.manifest.name,
               source: sourceEvidenceForPlugin(source, plugin.manifest.name),
               impact,
-              commandPackages: impact?.affectedCommandPackages
-                ?? (intent.kind === 'configSave' ? (await discoverInstalledPluginManagedCommandPackages({
-                  plugin, scope: intent.scope, cwd: context.cwd, env: context.env ?? process.env,
-                  platformTargets: configImpactVisibleTargets(plugin.manifest.name, configVisibleTargets),
-                })).packages : []),
-              preApplyAuthorization: intent.kind === 'configSave'
-                && configIntentRequestsApply(intent)
-                ? (await resolveConfigPreApplyAuthorization({
-                    plugin,
-                    scope: intent.scope,
-                    cwd: context.cwd,
-                    env: context.env,
-                    applyTargets: intent.retryApply
-                      ? configImpactVisibleTargets(plugin.manifest.name, configVisibleTargets)
-                      : impact!.affectedTargets,
-                    nativeCliRunner: context.nativeCliRunner,
-                    rebuildRuntime: {
-                      ...(catalogOperation ? { catalogOperationContext: catalogOperation } : {}),
-                      ...(catalogOperation?.generationSetDigest
-                        ? { expectedGenerationSetDigest: catalogOperation.generationSetDigest }
-                        : {}),
-                      inventoryCatalogSourceReferences: operationInventory,
-                    },
-                  })).targets
-                : [],
+              commandPackages,
+              preApplyAuthorization,
+              retryStoreDigest: intent.kind === 'configSave' && intent.retryApply
+                ? await configRetryStoreDigest({ plugin, scope: intent.scope, targets: affectedTargets,
+                  commandPackages, preApplyAuthorization, cwd: context.cwd, env: context.env }) : undefined,
               sharedNativeRenderTargets: intent.kind === 'configSave'
                 ? intent.retryApply
-                  ? configRetrySharedNativeRenderTargets(plugin)
+                  ? await configRetrySharedNativeRenderTargets(plugin,
+                    configImpactVisibleTargets(plugin.manifest.name, configVisibleTargets), context.env)
                   : impact!.sharedNativeRenderTargets
                 : [],
             };
@@ -2943,7 +2987,7 @@ export function createTuiControllerDependencies(
     const evidence: OperationEvidence = {
       catalog: {
         configDigest: status.payload.catalog.configDigest,
-        compositeDigest: status.payload.catalog.compositeDigest,
+        compositeDigest: intent.kind === 'configSave' ? catalogOperation.catalog.compositeDigest : status.payload.catalog.compositeDigest,
         ...(catalogOperation
           ? { generationSetDigest: catalogOperation.generationSetDigest }
           : {}),
@@ -2960,31 +3004,21 @@ export function createTuiControllerDependencies(
     };
     if (intent.kind === 'configSave') {
       const impact = 'impact' in selected ? selected.impact : undefined;
-      const retryStore = intent.retryApply ? await readPluginConfigStore({
-        sourceId: selected.source.sourceId,
-        sourceIdentity: selected.source.sourceIdentity,
-        ...('logicalIdentity' in selected.source
-          ? { logicalIdentity: selected.source.logicalIdentity }
-          : {}),
-        pluginName: selected.pluginName,
-        scope: intent.scope,
-        cwd: context.cwd,
-        env: context.env,
-      }) : undefined;
+      const storeDigest = impact?.storeDigest ?? ('retryStoreDigest' in selected ? selected.retryStoreDigest : undefined);
+      if (!storeDigest) throw operationReviewStale('设置操作缺少实际配置输入证据。');
       signal?.throwIfAborted();
       evidence.config = {
         scope: intent.scope,
         ...('manifestDigest' in selected.source
           ? { schemaIdentity: selected.source.manifestDigest }
           : {}),
-        storeDigest: impact?.storeDigest
-          ?? digest({ exists: retryStore?.exists, rawDigest: retryStore?.rawDigest }),
+        storeDigest,
         impactState: impact?.impactState ?? 'known',
         ...(impact?.noEffectiveChange ? { noEffectiveChange: true } : {}),
         ...('commandPackages' in selected && selected.commandPackages.length
           ? { commandPackages: selected.commandPackages } : {}),
         affectedTargets: (impact?.affectedTargets
-          ?? evidenceTargets).map(({ platform, scope }) => ({ platform, scope })),
+          ?? evidenceTargets).map(({ pluginName, platform, scope }) => ({ pluginName, platform, scope })),
         ...(intent.scope === 'project' ? {
           shareability: await inspectConfigShareability({
             sourceId: selected.source.sourceId,
@@ -3341,9 +3375,15 @@ export function createTuiControllerDependencies(
           for (const key of draft.removes) delete values[key];
           Object.assign(values, draft.updates);
           const candidateStores = { ...stores, [scope]: { ...edited, values } };
+          const references = await resolvePluginConfigReferenceContext({
+            sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
+            logicalIdentity: plugin.catalogLogicalIdentity, manifest: plugin.manifest,
+            scope, cwd: context.cwd, env: context.env,
+          });
           const effective = await resolveEffectivePluginConfigFromStores({
             manifest: plugin.manifest, targetScope: scope,
             projectRoot: resolveAwProjectRoot(context.cwd), stores: candidateStores,
+            referenceContext: references.context,
           });
           // Keep invalid raw sources for Core validation; effective.values omits them.
           // Preserve active branches in other references that reserve source values.
@@ -3358,10 +3398,12 @@ export function createTuiControllerDependencies(
           const result: ConfigReferenceContext = { selections: {} };
           for (const scalar of scalars) {
             const ref = scalar.valueRef!;
-            const selection = getPluginConfigReferenceChoices(definition, scalar, candidate);
-            const entries = candidate[ref.field];
+            const selection = getPluginConfigReferenceChoices(definition, scalar, candidate, references.context);
+            const entries = ref.plugin ? references.context.plugins[ref.plugin]?.values?.[ref.field] : candidate[ref.field];
             result.selections[configReferenceKey(scalar)] = {
-              ...selection, source: effective.sources[ref.field] ?? 'missing',
+              ...selection, source: (ref.plugin
+                ? references.evidence.find((entry) => entry.plugin === ref.plugin)?.sources[ref.field]
+                : effective.sources[ref.field]) ?? 'missing',
               entries: Array.isArray(entries) ? Object.fromEntries(entries.flatMap((entry) =>
                 entry && typeof entry === 'object' && Object.hasOwn(entry, ref.key)
                   ? [[JSON.stringify(entry[ref.key]), digest(entry)]] : [])) : {},
@@ -4198,7 +4240,7 @@ export function createTuiControllerDependencies(
               throw operationReviewStale('确认信息缺少设置批次证据。');
             }
             const approvedApplyTargets = new Set(reviewedBatch.groups.flatMap((group) =>
-              group.config.affectedTargets.map((target) => `${target.platform}\0${target.scope}`)));
+              group.config.affectedTargets.map((target) => `${target.pluginName ?? parsePluginId(intent.pluginId).pluginName}\0${target.platform}\0${target.scope}`)));
             const approvedCommandPackages = new Set(reviewedBatch.groups.flatMap((group) =>
               (group.config.commandPackages ?? []).map((target) => target.packageId)));
             const approvedPreApplyTargets = reviewedBatch.groups.flatMap((group) =>
@@ -4238,7 +4280,7 @@ export function createTuiControllerDependencies(
                   throw operationReviewStale('保存设置期间此设置层的原始内容发生变化。');
                 }
                 if (freshConfig.affectedTargets.some((target) =>
-                  !approvedApplyTargets.has(`${target.platform}\0${target.scope}`))
+                  !approvedApplyTargets.has(`${target.pluginName ?? parsePluginId(intent.pluginId).pluginName}\0${target.platform}\0${target.scope}`))
                   || freshConfig.commandPackages?.some((target) => !approvedCommandPackages.has(target.packageId))) {
                   throw operationReviewStale('同批前一层变更扩大了未经确认的应用目标。');
                 }
@@ -4260,7 +4302,7 @@ export function createTuiControllerDependencies(
                     );
                     const applyTargets = intent.apply
                       ? freshConfig.affectedTargets.map((target) => ({
-                          pluginName: plugin.manifest.name,
+                          pluginName: target.pluginName ?? plugin.manifest.name,
                           platform: target.platform,
                           scope: target.scope,
                         }))
@@ -4388,7 +4430,7 @@ export function createTuiControllerDependencies(
                 );
                 const applyTargets = intent.retryApply || intent.apply
                   ? currentEvidence.config?.affectedTargets.map((target) => ({
-                      pluginName: plugin.manifest.name,
+                      pluginName: target.pluginName ?? plugin.manifest.name,
                       platform: target.platform,
                       scope: target.scope,
                     })) ?? []

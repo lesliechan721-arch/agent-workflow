@@ -12,8 +12,7 @@ import { SKILL_CONFIG_KEYS, renderArtifactPlan } from './render-artifacts.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
-const ids = ['codex-explore-skill', 'codex-explore-role', 'codex-subagent-guide-skill',
-  'codex-subagent-role', 'codex-advisor-skill', 'codex-advisor-role'];
+const ids = ['codex-explore-skill', 'codex-explore-role', 'codex-advisor-skill', 'codex-advisor-role'];
 const skillIds = ids.filter((id) => id.endsWith('-skill'));
 function sourceRoot(id) {
   const staged = path.join(root, '.agents-plugin/artifact-sources/codex', id, '0');
@@ -50,7 +49,6 @@ test('real renderer keeps shared instructions and adds local rules only to nativ
     assert.equal(plan.version, 2);
     assert.deepEqual(plan.artifacts.map((item) => item.id), ids);
     for (const [skillId, roleId, roleKey, file] of [
-      ['codex-subagent-guide-skill', 'codex-subagent-role', 'codex-subagent', 'assets/task-instructions.md'],
       ['codex-advisor-skill', 'codex-advisor-role', 'codex-advisor', 'assets/advisor-instructions.md'],
       ['codex-explore-skill', 'codex-explore-role', 'codex-explore', 'assets/explore-instructions.md'],
     ]) {
@@ -59,7 +57,7 @@ test('real renderer keeps shared instructions and adds local rules only to nativ
       assert.equal(role.roleKey, roleKey);
       assert.equal(role.content.roleFile.name, roleKey);
       const delivered = role.content.roleFile.developer_instructions;
-      if (roleKey === 'codex-subagent') {
+      if (roleKey === 'subagent') {
         assert.equal(delivered, canonical);
       } else {
         const prefix = `${canonical.trimEnd()}\n\n`;
@@ -115,7 +113,7 @@ test('requested subsets are exact and each consumer reads only its declared conf
     if (id.endsWith('-role')) {
       const sourceInput = { ...context(), requestedArtifactIds: [id], artifactSources: undefined };
       Object.defineProperty(sourceInput, 'config', { get() { throw new Error('source role-only read config'); } });
-      const skillKey = id === 'codex-subagent-role' ? 'codex-subagent-guide' : id.replace(/-role$/, '');
+      const skillKey = id.replace(/-role$/, '');
       const declaredSources = manifest.artifacts.targets.find((target) => target.skillKey === skillKey).sourceDirs;
       if (declaredSources.some((source) => existsSync(path.resolve(root, source, 'SKILL.md')))) {
         assert.deepEqual(await renderArtifactPlan(sourceInput), plan);

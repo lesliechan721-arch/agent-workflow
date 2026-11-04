@@ -74,6 +74,7 @@ import {
 } from '../../src/utils/codex-native-render-receipt.js';
 import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
 import { parseCodexRoleFile } from '../../src/utils/codex-roles.js';
+import { parseSkillFrontmatter } from '../../src/utils/skill-validation.js';
 import { createCodexSkillStagingTreeContentDigest } from '../../src/utils/codex-skill-staging.js';
 import {
   AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH,
@@ -82,6 +83,8 @@ import {
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const decisionKitPluginRoots = ['decision-kit', 'human-content']
+  .map((name) => path.join(repositoryRoot, 'plugins', name));
+const subagentPluginRoots = ['agent-subagent', 'codex-enhance']
   .map((name) => path.join(repositoryRoot, 'plugins', name));
 const TEST_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
 
@@ -96,10 +99,11 @@ async function readPluginManifest(
 }
 
 function createCommandExecutionContext(
-  options: Parameters<typeof createBaseCommandExecutionContext>[0],
+  options: Parameters<typeof createBaseCommandExecutionContext>[0] & { referencePlugins?: readonly PluginMeta[] },
 ) {
   return {
     ...createBaseCommandExecutionContext(options),
+    referencePlugins: options.referencePlugins,
     codexManager: SYSTEM_CODEX_MANAGER,
   };
 }
@@ -142,7 +146,7 @@ async function createSyntheticCatalog(options: {
   for (const pluginRoot of options.pluginRoots) {
     const copiedRoot = path.join(sourceRoot, 'plugins', path.basename(pluginRoot));
     await fs.copy(pluginRoot, copiedRoot);
-    if (options.stubCodexFileSelection && path.basename(pluginRoot) === 'codex-enhance') {
+    if (options.stubCodexFileSelection && path.basename(pluginRoot) === 'agent-subagent') {
       await stubCodexFileSelectionForNativeFixture(copiedRoot);
     }
   }
@@ -2325,6 +2329,77 @@ describe('rebuild adapter integration', () => {
     },
   );
 
+  it('reuses role rendering within an operation and refreshes changed inputs', async () => {
+    // Test Value Gate: manager resolution must not restart an unchanged renderer;
+    // config changes and later operations must still produce current role content.
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const plugin = await createCodexSharedConfigPlugin({
+      root: cwd, name: 'prepared-role', roleKey: 'prepared-role',
+    });
+    plugin.catalogLogicalIdentity = 'fixture:prepared-role';
+    plugin.manifest.config = { fields: {
+      instruction: { type: 'string', default: 'first' },
+      token: { type: 'string', sensitive: true },
+    } };
+    plugin.manifest.artifacts!.targets[0]!.refreshKeys = ['instruction'];
+    await fs.outputJson(plugin.manifestPath, plugin.manifest);
+    const callsPath = path.join(cwd, 'role-render-calls.txt');
+    const rendererPath = path.join(plugin.rootDir, 'scripts', 'render.mjs');
+    await fs.outputFile(rendererPath, [
+      "import fs from 'node:fs';",
+      "const c = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
+      `fs.appendFileSync(${JSON.stringify(callsPath)}, 'render\\n');`,
+      "console.log(JSON.stringify({version: 2, artifacts: [{id: 'shared-role',",
+      "kind: 'codexRole', platform: 'codex', target: 'codex.agentRole', state: 'present',",
+      "roleKey: 'prepared-role', refreshKeys: ['instruction'], content: {",
+      "registration: {description: 'Prepared role'}, roleFile: {name: 'prepared-role',",
+      'developer_instructions: c.config.values.instruction}}}]}));',
+    ].join('\n'));
+    const context = createCommandExecutionContext({
+      env: isolation.env,
+      nativeCliRunner: async () => { throw new Error('Role preparation must not call native CLI'); },
+    });
+    const build = async (operationContext = context) => {
+      const integration = createRebuildIntegration({ context: operationContext });
+      const target = await integration.buildTarget({
+        plugin, platform: 'codex', scope: 'project', cwd, command: 'install',
+        catalog: { rootDir: cwd, source: 'local' } as CatalogResolution,
+      });
+      const result = await executeRebuildOperation({ command: 'install', target, driver: integration.driver });
+      expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
+      return parseCodexRoleFile(await fs.readFile(
+        path.join(cwd, '.codex', 'agents', 'aw-prepared-role-prepared-role.toml'), 'utf8',
+      )).developerInstructions;
+    };
+    expect(await build()).toBe('first');
+    context.codexManager = { ...SYSTEM_CODEX_MANAGER, version: '0.200.0' };
+    expect(await build()).toBe('first');
+    expect((await fs.readFile(callsPath, 'utf8')).trim().split('\n')).toHaveLength(1);
+
+    await writePluginConfigStore({
+      sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
+      logicalIdentity: plugin.catalogLogicalIdentity,
+      pluginName: plugin.manifest.name, scope: 'project', cwd, env: isolation.env,
+      values: { instruction: 'second instruction' },
+    });
+    expect(await build()).toBe('second instruction');
+    expect((await fs.readFile(callsPath, 'utf8')).trim().split('\n')).toHaveLength(2);
+    await fs.appendFile(rendererPath, '\n// Updated renderer.\n');
+    expect(await build()).toBe('second instruction');
+    expect((await fs.readFile(callsPath, 'utf8')).trim().split('\n')).toHaveLength(3);
+    expect(await build({ ...context })).toBe('second instruction');
+    expect((await fs.readFile(callsPath, 'utf8')).trim().split('\n')).toHaveLength(4);
+    // A newly sensitive value must also block output reused from this operation.
+    await writePluginConfigStore({
+      sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
+      pluginName: plugin.manifest.name, scope: 'user', cwd, env: isolation.env,
+      values: { token: 'second instruction' },
+    });
+    await expect(build()).rejects.toThrow('artifactRendererSensitiveConfigExposed');
+    expect((await fs.readFile(callsPath, 'utf8')).trim().split('\n')).toHaveLength(4);
+  });
+
   it('renders mixed Skill and sensitive non-Skill targets in exact isolated batches', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const pluginRoot = path.join(isolation.layout.rootDir, 'mixed-sensitive-batches');
@@ -3010,13 +3085,16 @@ describe('rebuild adapter integration', () => {
     }
   });
 
-  it.each(['codex-enhance'])(
-    'installs %s Skills in one shared native plugin while roles remain AW-owned',
-    async (pluginName) => {
+  it.each([
+    { pluginName: 'codex-enhance', skills: ['codex-advisor', 'codex-explore'], roles: ['codex-advisor', 'codex-explore'] },
+    { pluginName: 'agent-subagent', skills: ['spawn-subagent'], roles: ['subagent'] },
+  ])(
+    'installs $pluginName Skills in one shared native plugin while roles remain AW-owned',
+    async ({ pluginName, skills, roles }) => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
-        pluginRoots: [path.join(repositoryRoot, 'plugins', pluginName)],
+        pluginRoots: subagentPluginRoots,
         stubCodexFileSelection: true,
       });
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', pluginName), {
@@ -3106,18 +3184,23 @@ describe('rebuild adapter integration', () => {
         };
       };
       const integration = createRebuildIntegration({
-        context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner: runner }),
+        context: createCommandExecutionContext({
+          env: isolation.env, nativeCliRunner: runner,
+          referencePlugins: [plugin, await readPluginManifest(path.join(
+            catalogRoot, 'plugins', pluginName === 'codex-enhance' ? 'agent-subagent' : 'codex-enhance',
+          ), { mode: 'bundle' })],
+        }),
         scriptTimeoutMs: 30_000,
       });
       const legacySkills = [
         {
           root: path.join(isolation.layout.codexHomeDir, 'skills'),
-          skillKey: 'codex-explore',
+          skillKey: skills[0]!,
           scope: 'user' as const,
         },
         {
           root: path.join(isolation.layout.fixtureCwd, '.agents', 'skills'),
-          skillKey: 'codex-subagent-guide',
+          skillKey: skills.at(-1)!,
           scope: 'project' as const,
         },
       ];
@@ -3164,7 +3247,7 @@ describe('rebuild adapter integration', () => {
         .filter((artifact) => artifact.target === 'codex.agentRole')
         .map((artifact) => artifact.roleKey)
         .sort())
-        .toEqual(['codex-advisor', 'codex-explore', 'codex-subagent']);
+        .toEqual(roles);
       const cacheRoot = path.join(
         isolation.layout.codexHomeDir,
         'plugins',
@@ -3173,7 +3256,7 @@ describe('rebuild adapter integration', () => {
         pluginName,
         plugin.manifest.version,
       );
-      for (const skillKey of ['codex-explore', 'codex-subagent-guide', 'codex-advisor']) {
+      for (const skillKey of skills) {
         expect(await fs.pathExists(path.join(
           cacheRoot,
           'codex',
@@ -3189,11 +3272,7 @@ describe('rebuild adapter integration', () => {
       }
       await expect(fs.readJson(path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH)))
         .resolves.toMatchObject({
-          targets: [
-            { id: 'codex-advisor-skill', skillKey: 'codex-advisor' },
-            { id: 'codex-explore-skill', skillKey: 'codex-explore' },
-            { id: 'codex-subagent-guide-skill', skillKey: 'codex-subagent-guide' },
-          ],
+          targets: skills.map((skillKey) => ({ id: `${skillKey}-skill`, skillKey })),
         });
       const activationTarget = {
         ...target,
@@ -3282,6 +3361,61 @@ describe('rebuild adapter integration', () => {
       }
     },
   );
+
+  // Test Value Gate: the shipped shared source must materialize a valid, owned
+  // Claude Skill in each scope through the same install and cleanup lifecycle.
+  it.each(['user', 'project'] as const)('installs Agent Subagent for Claude in %s scope', async (scope) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const catalogRoot = await createSyntheticCatalog({
+      root: isolation.layout.rootDir,
+      pluginRoots: [subagentPluginRoots[0]!],
+      stubCodexFileSelection: true,
+    });
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'agent-subagent'), { mode: 'bundle' });
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async (invocation) => {
+          if (invocation.args[1] === 'install' || invocation.args[1] === 'uninstall') {
+            await writeClaudeNativeState({
+              cwd: isolation.layout.fixtureCwd, env: isolation.env,
+              pluginName: plugin.manifest.name, pluginVersion: plugin.manifest.version,
+              scope, installed: invocation.args[1] === 'install',
+            });
+          }
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+      }),
+    });
+    const target = await integration.buildTarget({
+      plugin, platform: 'claude', scope, cwd: isolation.layout.fixtureCwd,
+      command: 'install', catalog: { rootDir: catalogRoot, source: 'local' },
+    });
+    expect(target.artifacts.filter((artifact) => artifact.target === 'claude.skill').map((artifact) => artifact.id))
+      .toEqual(['spawn-subagent-claude-skill']);
+    const installed = await executeRebuildOperation({ command: 'install', target, driver: integration.driver });
+    expect(installed.status, JSON.stringify(installed.failures)).toBe('succeeded');
+    const skillRoot = path.join(resolveClaudePaths(isolation.layout.fixtureCwd, scope, isolation.env).configDir, 'skills', 'spawn-subagent');
+    const content = await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8');
+    expect(parseSkillFrontmatter(content)).toMatchObject({ frontmatter: { name: 'spawn-subagent' }, errors: [] });
+    expect(await readSkillOwnerMarker({ skillRoot, allowedRoot: path.dirname(skillRoot) })).toMatchObject({
+      plugin: 'agent-subagent', platform: 'claude', scope,
+    });
+    for (const resource of [
+      'references/execution-profiles.md', 'references/external-delegation.md',
+      'assets/task-instructions.md', 'scripts/subagent.mjs', 'scripts/runtime/store.mjs',
+    ]) {
+      await expect(fs.pathExists(path.join(skillRoot, resource))).resolves.toBe(true);
+    }
+    expect(content).not.toContain('{{aw.command');
+    const cleanupTarget = await integration.buildTarget({
+      plugin, platform: 'claude', scope, cwd: isolation.layout.fixtureCwd,
+      command: 'cleanup', catalog: { rootDir: catalogRoot, source: 'local' },
+    });
+    const cleanup = await executeRebuildOperation({ command: 'cleanup', target: cleanupTarget, driver: integration.driver });
+    expect(cleanup.status, JSON.stringify(cleanup.failures)).toBe('succeeded');
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
+  });
 
   it('does not inspect old project static Skills and preserves foreign role registrations', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -4235,7 +4369,7 @@ describe('rebuild adapter integration', () => {
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
       pluginRoots: [
-        path.join(repositoryRoot, 'plugins', 'codex-enhance'),
+        ...subagentPluginRoots,
         path.join(repositoryRoot, 'plugins', 'git-toolkit'),
         ...decisionKitPluginRoots,
       ],
@@ -4935,9 +5069,9 @@ describe('rebuild adapter integration', () => {
     },
   );
 
-  it('closes representative Codex project writes for three first-party plugins', async () => {
+  it('closes representative Codex project writes for first-party plugins and the subagent dependency', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const firstPartyNames = ['git-toolkit', 'decision-kit', 'codex-enhance'];
+    const firstPartyNames = ['git-toolkit', 'decision-kit', 'agent-subagent', 'codex-enhance'];
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
       pluginRoots: [...firstPartyNames, 'human-content'].map((name) => path.join(repositoryRoot, 'plugins', name)),
@@ -4947,6 +5081,10 @@ describe('rebuild adapter integration', () => {
       context: createCommandExecutionContext({
         env: isolation.env,
         nativeCliRunner: async () => { throw new Error('project must not call native CLI'); },
+        referencePlugins: await Promise.all([...firstPartyNames, 'human-content'].map(async (name) => ({
+          ...await readPluginManifest(path.join(catalogRoot, 'plugins', name), { mode: 'bundle' }),
+          sourceId: 'official', sourceIdentity: `sha256:${'2'.repeat(64)}`, pluginId: `official/${name}`,
+        }))),
       }),
       scriptTimeoutMs: 30_000,
     });
@@ -4994,7 +5132,7 @@ describe('rebuild adapter integration', () => {
     await expect(fs.pathExists(path.join(skillsRoot, 'git-commit', 'SKILL.md')))
       .resolves.toBe(false);
     const codexPaths = resolveCodexPaths(cwd, 'project', isolation.env);
-    await expect(fs.pathExists(path.join(skillsRoot, 'codex-subagent-guide', 'SKILL.md')))
+    await expect(fs.pathExists(path.join(skillsRoot, 'spawn-subagent', 'SKILL.md')))
       .resolves.toBe(false);
     await expect(fs.pathExists(path.join(skillsRoot, 'codex-clarifier')))
       .resolves.toBe(false);
@@ -5004,11 +5142,11 @@ describe('rebuild adapter integration', () => {
       .resolves.toBe(false);
     await expect(fs.pathExists(path.join(
       codexPaths.agentsDir,
-      'aw-codex-enhance-codex-subagent.toml',
+      'aw-agent-subagent-subagent.toml',
     ))).resolves.toBe(true);
     const codexConfig = await fs.readFile(codexPaths.configTomlPath, 'utf8');
     expect(codexConfig).not.toContain('实施前需求检查');
-    expect(codexConfig).toContain('[agents.codex-subagent]');
+    expect(codexConfig).toContain('[agents.subagent]');
   });
 
   it('does not discover a Codex plugin from a private installed manifest', async () => {
