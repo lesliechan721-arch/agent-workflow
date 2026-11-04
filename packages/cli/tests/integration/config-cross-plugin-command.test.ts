@@ -125,90 +125,109 @@ async function createNativeReferenceFixture(preApply = false) {
   return { cwd, env, trace, runner, run, store, binding };
 }
 
-describe('cross-plugin public config apply', () => {
-  // Test Value Gate: actual installed producers must be discovered without platform intent, while
-  // a typed three-plugin chain, source ownership, unchanged inputs and provider failures remain intact.
-  it('refreshes installed consumer packages with and without platform intent and preserves dependency failures', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const cwd = isolation.layout.fixtureCwd;
-    const env = isolation.env;
-    const sourceRoot = path.join(cwd, 'package-reference-source');
-    const renders = path.join(cwd, 'package-renders.jsonl');
-    const scripts = path.join(cwd, 'package-pre-apply.jsonl');
-    const fail = path.join(cwd, 'provider-render-fails');
-    for (const name of ['provider', 'consumer']) {
-      const root = path.join(sourceRoot, 'plugins', name);
-      await fs.outputFile(path.join(root, 'commands/tool.mjs'), 'console.log("fixture");\n');
-      await fs.outputFile(path.join(root, 'render.mjs'), [
-        "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
-        `const name=${JSON.stringify(name)};`,
-        `if(name==='provider'&&fs.existsSync(${JSON.stringify(fail)}))throw new Error('injected provider failure');`,
-        `fs.appendFileSync(${JSON.stringify(renders)},JSON.stringify({plugin:name,ids:c.requestedArtifactIds,config:c.config.values})+'\\n');`,
-        "const artifacts=c.requestedArtifactIds.map(id=>id.startsWith('command-package.')?{id,target:'aw.command-package',kind:'commandPackage',state:'present',refreshKeys:['selected'],files:{'config.json':JSON.stringify({selected:c.config.values.selected})}}:",
-        "id.startsWith('command-set.')?{id,target:'aw.command-set',kind:'commandSet',state:'present',refreshKeys:['selected'],entries:[{key:'run',runner:'node',entry:'tool.mjs',args:[],cwd:'resource'}]}:",
-        `{id,target:'codex.skill',kind:'skill',state:'present',platform:'codex',skillKey:name,refreshKeys:name==='provider'?['registry']:['selected'],content:{files:{'SKILL.md':'---\\nname: '+name+'\\ndescription: Package reference fixture.\\n---\\n# Fixture\\n','README.md':'# Fixture\\n','agents/openai.yaml':'policy:\\n  allow_implicit_invocation: true\\n'}}});`,
-        'console.log(JSON.stringify({version:2,artifacts}));',
-      ].join('\n'));
-      await fs.outputFile(path.join(root, 'pre-apply.mjs'), [
-        "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(0,'utf8'));",
-        `fs.appendFileSync(${JSON.stringify(scripts)},JSON.stringify({plugin:c.plugin.name,platform:c.target.platform})+'\\n');`,
-      ].join('\n'));
-    }
-    await createDependencyCatalogSnapshotFixture(sourceRoot, ['provider', 'middle', 'consumer'].map((name) => ({
-      name, ...(name === 'consumer' ? { dependencies: ['middle'] } : name === 'middle' ? { dependencies: ['provider'] } : {}),
-      configureManifest(manifest) {
-        manifest.config = { schemaVersion: 4, fields: name === 'provider' ? {
-          registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
-            type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
-          } },
-        } : name === 'middle' ? {
-          registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
-            type: 'object', properties: { key: { type: 'string', required: true,
-              valueRef: { plugin: 'provider', field: 'registry', key: 'key' } } }, additionalProperties: false,
-          } },
-        } : { selected: { type: 'string', default: 'native', valueRef: { plugin: 'middle', field: 'registry', key: 'key', include: ['native'] } } } };
-        if (name === 'middle') return;
-        manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } }, preApply: { path: './pre-apply.mjs' } };
-        manifest.artifacts = { targets: [{ id: name, target: 'codex.skill', platform: 'codex', skillKey: name,
-          scopes: ['user'], states: ['present'], refreshKeys: name === 'provider' ? ['registry'] : ['selected'], delivery: { mode: 'aw-extension' } }] };
-        if (name === 'consumer') manifest.managedCommands = {
-          packages: ['personal', 'uninstalled'].map((key) => ({ key, sourceDir: './commands', scope: 'user', platforms: ['codex'], render: true, refreshKeys: ['selected'] })),
-          sets: ['personal', 'uninstalled'].map((key) => ({ set: key, mode: 'dynamic', producer: { kind: 'package', packageKey: key }, refreshKeys: ['selected'] })),
-        };
-      },
-    })));
-    const snapshot = await readCatalogSourcesConfigSnapshot(env);
-    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [
-      { id: 'team', type: 'path', primary: true, path: sourceRoot },
-      { id: 'other', type: 'path', primary: false, path: sourceRoot },
-    ] }, expectedDigest: snapshot.digest, env });
-    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
+async function createCommandPackageReferenceFixture(options: {
+  foreignSource?: boolean;
+  initialSelection?: 'final' | 'next';
+} = {}) {
+  const isolation = getCurrentSourceTestIsolation();
+  const cwd = isolation.layout.fixtureCwd;
+  const env = isolation.env;
+  const sourceRoot = path.join(cwd, 'package-reference-source');
+  const renders = path.join(cwd, 'package-renders.jsonl');
+  const scripts = path.join(cwd, 'package-pre-apply.jsonl');
+  const fail = path.join(cwd, 'provider-render-fails');
+  for (const name of ['provider', 'consumer']) {
+    const root = path.join(sourceRoot, 'plugins', name);
+    await fs.outputFile(path.join(root, 'commands/tool.mjs'), 'console.log("fixture");\n');
+    await fs.outputFile(path.join(root, 'render.mjs'), [
+      "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
+      `const name=${JSON.stringify(name)};`,
+      `if(name==='provider'&&fs.existsSync(${JSON.stringify(fail)}))throw new Error('injected provider failure');`,
+      `fs.appendFileSync(${JSON.stringify(renders)},JSON.stringify({plugin:name,ids:c.requestedArtifactIds,config:c.config.values})+'\\n');`,
+      "const artifacts=c.requestedArtifactIds.map(id=>id.startsWith('command-package.')?{id,target:'aw.command-package',kind:'commandPackage',state:'present',refreshKeys:['selected'],files:{'config.json':JSON.stringify({selected:c.config.values.selected})}}:",
+      "id.startsWith('command-set.')?{id,target:'aw.command-set',kind:'commandSet',state:'present',refreshKeys:['selected'],entries:[{key:'run',runner:'node',entry:'tool.mjs',args:[],cwd:'resource'}]}:",
+      `{id,target:'codex.skill',kind:'skill',state:'present',platform:'codex',skillKey:name,refreshKeys:name==='provider'?['registry']:['selected'],content:{files:{'SKILL.md':'---\\nname: '+name+'\\ndescription: Package reference fixture.\\n---\\n# Fixture\\n','README.md':'# Fixture\\n','agents/openai.yaml':'policy:\\n  allow_implicit_invocation: true\\n'}}});`,
+      'console.log(JSON.stringify({version:2,artifacts}));',
+    ].join('\n'));
+    await fs.outputFile(path.join(root, 'pre-apply.mjs'), [
+      "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(0,'utf8'));",
+      `fs.appendFileSync(${JSON.stringify(scripts)},JSON.stringify({plugin:c.plugin.name,platform:c.target.platform})+'\\n');`,
+    ].join('\n'));
+  }
+  await createDependencyCatalogSnapshotFixture(sourceRoot, ['provider', 'middle', 'consumer'].map((name) => ({
+    name, ...(name === 'consumer' ? { dependencies: ['middle'] } : name === 'middle' ? { dependencies: ['provider'] } : {}),
+    configureManifest(manifest) {
+      manifest.config = { schemaVersion: 4, fields: name === 'provider' ? {
+        registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
+          type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
+        } },
+      } : name === 'middle' ? {
+        registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
+          type: 'object', properties: { key: { type: 'string', required: true,
+            valueRef: { plugin: 'provider', field: 'registry', key: 'key' } } }, additionalProperties: false,
+        } },
+      } : { selected: { type: 'string', default: 'native', valueRef: { plugin: 'middle', field: 'registry', key: 'key', include: ['native'] } } } };
+      if (name === 'middle') return;
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } }, preApply: { path: './pre-apply.mjs' } };
+      manifest.artifacts = { targets: [{ id: name, target: 'codex.skill', platform: 'codex', skillKey: name,
+        scopes: ['user'], states: ['present'], refreshKeys: name === 'provider' ? ['registry'] : ['selected'], delivery: { mode: 'aw-extension' } }] };
+      if (name === 'consumer') manifest.managedCommands = {
+        packages: ['personal', 'uninstalled'].map((key) => ({ key, sourceDir: './commands', scope: 'user', platforms: ['codex'], render: true, refreshKeys: ['selected'] })),
+        sets: ['personal', 'uninstalled'].map((key) => ({ set: key, mode: 'dynamic', producer: { kind: 'package', packageKey: key }, refreshKeys: ['selected'] })),
+      };
+    },
+  })));
+  const snapshot = await readCatalogSourcesConfigSnapshot(env);
+  await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [
+    { id: 'team', type: 'path', primary: true, path: sourceRoot },
+    ...(options.foreignSource ? [{ id: 'other', type: 'path' as const, primary: false, path: sourceRoot }] : []),
+  ] }, expectedDigest: snapshot.digest, env });
+  await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
+  if (options.foreignSource) {
     await syncCatalogSourceGeneration({ sourceId: 'other', cliVersion: '1.0.0', env });
-    const runner = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
-    const run = async (args: string[]) => {
-      const output = createCapturedCliIo();
-      const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: runner });
-      return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
-    };
-    const installed = await run(['command', 'package', 'sync', 'team/consumer', 'personal', '--scope', 'user', '--yes']);
-    expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0 });
+  }
+  const runner = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+  const run = async (args: string[]) => {
+    const output = createCapturedCliIo();
+    const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: runner });
+    return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
+  };
+  const source = (await resolveCatalogOperationContext({ sourceIds: ['team'], env })).catalog.sources[0]!.resolution!;
+  const setSelected = async (selected: string) => {
+    await writePluginConfigStore({ sourceId: 'team', sourceIdentity: source.sourceIdentity,
+      logicalIdentity: source.logicalIdentity, pluginName: 'middle', scope: 'user', cwd, env, values: { registry: [{ key: selected }] } });
+    await writePluginConfigStore({ sourceId: 'team', sourceIdentity: source.sourceIdentity,
+      logicalIdentity: source.logicalIdentity, pluginName: 'consumer', scope: 'user', cwd, env, values: { selected } });
+  };
+  const packages = () => listManagedCommandPackages(env);
+  const dependencies = createTuiControllerDependencies(createCliExecutionContext({ cwd, env, nativeCliRunner: runner, interactive: false }));
+  if (options.initialSelection) {
+    await setSelected(options.initialSelection);
+    for (const pluginName of ['provider', 'middle']) {
+      await writePluginConfigStore({ sourceId: 'team', sourceIdentity: source.sourceIdentity,
+        logicalIdentity: source.logicalIdentity, pluginName, scope: 'user', cwd, env,
+        values: { registry: [{ key: 'final' }, { key: 'next' }] } });
+    }
+  }
+  const installed = await run(['command', 'package', 'sync', 'team/consumer', 'personal', '--scope', 'user', '--yes']);
+  expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0 });
+  const resource = (await packages()).packages.find((entry) => entry.producer.sourceId === 'team')!.resourceRoot;
+  const config = path.join(resource, 'config.json');
+  return { cwd, env, renders, scripts, fail, source, run, setSelected, packages, resource, config, dependencies };
+}
+
+describe('cross-plugin public config apply', () => {
+  // Test Value Gate: config apply discovers installed packages without platform intent,
+  // preserves foreign source packages, and skips unchanged effective inputs.
+  it('refreshes only installed consumer packages from the matching source without platform intent', async () => {
+    const { renders, scripts, run, setSelected, packages, resource, config, dependencies } =
+      await createCommandPackageReferenceFixture({ foreignSource: true });
     const foreign = await run(['command', 'package', 'sync', 'other/consumer', 'personal', '--scope', 'user', '--yes']);
     expect(foreign, JSON.stringify(foreign)).toMatchObject({ exitCode: 0 });
-    const source = (await resolveCatalogOperationContext({ sourceIds: ['team'], env })).catalog.sources[0]!.resolution!;
-    const setSelected = async (selected: string) => {
-      await writePluginConfigStore({ sourceId: 'team', sourceIdentity: source.sourceIdentity,
-        logicalIdentity: source.logicalIdentity, pluginName: 'middle', scope: 'user', cwd, env, values: { registry: [{ key: selected }] } });
-      await writePluginConfigStore({ sourceId: 'team', sourceIdentity: source.sourceIdentity,
-        logicalIdentity: source.logicalIdentity, pluginName: 'consumer', scope: 'user', cwd, env, values: { selected } });
-    };
-    const packages = () => listManagedCommandPackages(env);
-    const resource = (await packages()).packages.find((entry) => entry.producer.sourceId === 'team')!.resourceRoot;
     const foreignRoot = (await packages()).packages.find((entry) => entry.producer.sourceId === 'other')!.resourceRoot;
     const foreignBefore = await fs.readFile(path.join(foreignRoot, '.aw-command-producer.json'));
-    const config = path.join(resource, 'config.json');
     await setSelected('remote');
     await fs.outputFile(renders, '');
-    const dependencies = createTuiControllerDependencies(createCliExecutionContext({ cwd, env, nativeCliRunner: runner, interactive: false }));
     await dependencies.loadStatus(new AbortController().signal);
     const review = await dependencies.prepareReviewEvidence!({ kind: 'configSave', pluginId: 'team/provider', scope: 'user',
       apply: true, updates: { registry: [{ key: 'remote' }] } }, new AbortController().signal, () => undefined);
@@ -231,13 +250,19 @@ describe('cross-plugin public config apply', () => {
     expect(unchanged, JSON.stringify(unchanged)).toMatchObject({ exitCode: 0, payload: { apply: { reason: 'noEffectiveConfigChange' } } });
     expect(await fs.readFile(path.join(resource, '.aw-command-producer.json'))).toEqual(before);
     expect(await fs.readFile(renders)).toEqual(rendered);
+  }, 30_000);
 
+  // Test Value Gate: a failed provider preserves committed config and consumer
+  // output, reports the dependency failure, and recovers through public sync.
+  it('preserves consumer packages after provider failure and recovers through sync', async () => {
+    const { cwd, env, source, fail, renders, run, setSelected, config } =
+      await createCommandPackageReferenceFixture();
     const providerPlatform = await run(['install', 'team/provider', '--platform', 'codex', '--scope', 'user', '--yes']);
     expect(providerPlatform, JSON.stringify(providerPlatform)).toMatchObject({ exitCode: 0 });
     await setSelected('next');
     await fs.outputFile(fail, 'fail');
     await fs.outputFile(renders, '');
-    const failed = await run(['config', 'set', 'team/provider', 'registry', '--scope', 'user', '--value-json', '[{"key":"remote"},{"key":"other"},{"key":"next"}]', '--apply', '--yes']);
+    const failed = await run(['config', 'set', 'team/provider', 'registry', '--scope', 'user', '--value-json', '[{"key":"next"}]', '--apply', '--yes']);
     expect(failed, JSON.stringify(failed)).toMatchObject({ exitCode: 1, payload: { configWrite: 'succeeded', overallState: 'partial', apply: { state: 'partial' } } });
     expect(failed.payload.apply.commandResults).toEqual(expect.arrayContaining([expect.objectContaining({
       producer: expect.objectContaining({ pluginName: 'consumer', key: 'personal' }), state: 'failed',
@@ -246,7 +271,7 @@ describe('cross-plugin public config apply', () => {
     })]));
     expect((await fs.readJson(resolvePluginConfigStorePath({ sourceId: 'team', pluginName: 'provider', scope: 'user', cwd, env }))).values.registry)
       .toContainEqual({ key: 'next' });
-    expect(await fs.readJson(config)).toEqual({ selected: 'remote' });
+    expect(await fs.readJson(config)).toEqual({ selected: 'native' });
     expect((await fs.readFile(renders, 'utf8'))).not.toContain('consumer');
     await fs.remove(fail);
     const providerRecovered = await run(['sync', 'team/provider', '--platform', 'codex', '--scope', 'user', '--yes']);
@@ -254,12 +279,18 @@ describe('cross-plugin public config apply', () => {
     const packageRecovered = await run(['command', 'package', 'sync', 'team/consumer', 'personal', '--scope', 'user', '--yes']);
     expect(packageRecovered, JSON.stringify(packageRecovered)).toMatchObject({ exitCode: 0 });
     expect(await fs.readJson(config)).toEqual({ selected: 'next' });
+  }, 30_000);
+
+  // Test Value Gate: Review and execution include platform targets and command
+  // packages once, with the same authorization and dependency results.
+  it('applies platform targets and consumer packages from the accepted Review', async () => {
+    const { renders, run, setSelected, config, dependencies } = await createCommandPackageReferenceFixture();
     const platform = await run(['install', 'team/consumer', '--platform', 'codex', '--scope', 'user', '--yes']);
     expect(platform, JSON.stringify(platform)).toMatchObject({ exitCode: 0 });
     await setSelected('final');
     await fs.outputFile(renders, '');
     await dependencies.loadStatus(new AbortController().signal);
-    const finalRegistry = [{ key: 'remote' }, { key: 'other' }, { key: 'next' }, { key: 'final' }];
+    const finalRegistry = [{ key: 'final' }];
     const finalIntent: OperationIntent = { kind: 'configSave', pluginId: 'team/provider', scope: 'user', apply: true,
       updates: { registry: finalRegistry } };
     const combinedReview = await dependencies.prepareReviewEvidence!(finalIntent, new AbortController().signal, () => undefined);
@@ -285,19 +316,24 @@ describe('cross-plugin public config apply', () => {
     const entries = (await fs.readFile(renders, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     expect(entries.filter((entry) => entry.ids.includes('command-package.personal'))).toHaveLength(1);
     expect(await fs.readJson(config)).toEqual({ selected: 'final' });
+  }, 30_000);
 
-    // Test Value Gate: retry must bind the actual consumer and intermediate stores, including valid-to-valid changes.
-    const store = (pluginName: string) => ({ sourceId: 'team', sourceIdentity: source.sourceIdentity,
-      logicalIdentity: source.logicalIdentity, pluginName, scope: 'user' as const, cwd, env });
-    await writePluginConfigStore({ ...store('middle'), values: { registry: [{ key: 'final' }, { key: 'next' }] } });
-    const retryIntent: OperationIntent = { kind: 'configSave', pluginId: 'team/provider', scope: 'user', retryApply: true, apply: true };
-    const reviewRetry = () => dependencies.prepareReviewEvidence!(retryIntent, new AbortController().signal, () => undefined);
-    for (const pluginName of ['consumer', 'middle']) {
+  // Test Value Gate: changes to either referenced store invalidate accepted
+  // retry evidence before writes, while fresh evidence allows recovery.
+  it.each(['consumer', 'middle'] as const)(
+    'rejects stale retry evidence after the %s store changes and accepts a fresh Review',
+    async (pluginName) => {
+      const { cwd, env, source, renders, scripts, config, dependencies } =
+        await createCommandPackageReferenceFixture({ initialSelection: pluginName === 'consumer' ? 'final' : 'next' });
+      const store = (pluginName: string) => ({ sourceId: 'team', sourceIdentity: source.sourceIdentity,
+        logicalIdentity: source.logicalIdentity, pluginName, scope: 'user' as const, cwd, env });
+      const retryIntent: OperationIntent = { kind: 'configSave', pluginId: 'team/provider', scope: 'user', retryApply: true, apply: true };
+      const reviewRetry = () => dependencies.prepareReviewEvidence!(retryIntent, new AbortController().signal, () => undefined);
       await dependencies.loadStatus(new AbortController().signal);
       const reviewed = await reviewRetry();
       expect(await dependencies.captureEvidence(retryIntent)).toEqual(reviewed);
       const artifactBefore = await fs.readFile(config);
-      const scriptsBefore = await fs.readFile(scripts);
+      expect(await fs.pathExists(scripts)).toBe(false);
       const rendersBefore = await fs.readFile(renders);
       await writePluginConfigStore({ ...store(pluginName), values: pluginName === 'consumer'
         ? { selected: 'next' } : { registry: [{ key: 'next' }] } });
@@ -305,14 +341,14 @@ describe('cross-plugin public config apply', () => {
       await expect(dependencies.executeIntent(retryIntent, reviewed, new AbortController().signal))
         .rejects.toMatchObject({ code: 'operationReviewStale' });
       expect(await fs.readFile(config)).toEqual(artifactBefore);
-      expect(await fs.readFile(scripts)).toEqual(scriptsBefore);
+      expect(await fs.pathExists(scripts)).toBe(false);
       expect(await fs.readFile(renders)).toEqual(rendersBefore);
       const fresh = await reviewRetry();
       await expect(dependencies.executeIntent(retryIntent, fresh, new AbortController().signal))
         .resolves.toMatchObject({ apply: { state: 'succeeded' } });
       expect(await fs.readJson(config)).toEqual({ selected: 'next' });
-    }
-  }, 30_000);
+    }, 30_000,
+  );
 
   // Test Value Gate: real intent discovery, source binding, script authorization and dependency plans
   // must preserve committed config after one platform fails and allow a later consumer sync to recover.

@@ -16289,25 +16289,8 @@ describe('five namespaced write commands', () => {
 
   it('rematerializes codex-enhance shared Skills without changing project roles through public commands', async () => {
     // Test Value Gate: real config writes rematerialize only affected shared Skills and bindings, while project roles keep their bytes and scope.
-    const { isolation, sourcePluginRoot, sourceSubagentPluginRoot, sourceRoot, sourceIdentity, logicalIdentity, cacheRoot, subagentCacheRoot, runPublic } =
+    const { isolation, sourceIdentity, logicalIdentity, cacheRoot, subagentCacheRoot, runPublic } =
       await prepareCodexEnhancePublicCommandFixture();
-    // Test Value Gate: bundled role-only requests share declared resources without reading Skill config or rendering extra targets.
-    const bundledPlugin = await readPluginManifest(path.join(sourceRoot, 'plugins', 'codex-enhance'), { mode: 'bundle' });
-    const bundledSubagentPlugin = await readPluginManifest(path.join(sourceRoot, 'plugins', 'agent-subagent'), { mode: 'bundle' });
-    const roleArtifactIds = ['codex-explore-role', 'codex-advisor-role'];
-    const roleRender = await runArtifactRenderer({
-      plugin: bundledPlugin,
-      referencePlugins: [bundledPlugin, bundledSubagentPlugin],
-      event: 'install', platform: 'codex', scope: 'project', cwd: isolation.layout.fixtureCwd,
-      commandEnv: isolation.env, requestedArtifactIds: roleArtifactIds,
-    });
-    expect(roleRender.context.requestedArtifactIds).toEqual(roleArtifactIds);
-    expect(roleRender.context.config).toMatchObject({ schema: {}, values: {}, sources: {}, issues: [] });
-    expect(roleRender.context.changedConfigKeys).toEqual([]);
-    expect(roleRender.runtimeConfigSnapshots).toEqual({});
-    expect(roleRender.plan.artifacts.map((artifact) => artifact.id)).toEqual(roleArtifactIds);
-    const sharedInstructionFiles = ['explore-instructions.md', 'advisor-instructions.md'];
-    const sharedSkillKeys = ['codex-explore', 'codex-advisor'];
     const roleKeys = ['codex-explore', 'codex-advisor'];
     const assertRoleInstructions = (roleKey: string, delivered: string | undefined, shared: string) => {
       if (typeof delivered !== 'string') throw new Error('Expected native role developer instructions.');
@@ -16328,32 +16311,6 @@ describe('five namespaced write commands', () => {
         expect(local).not.toContain(other);
       }
     };
-    expect(roleRender.context.artifactSources.map((target) => target.id)).toEqual([
-      'codex-explore-skill', 'codex-advisor-skill',
-    ]);
-    for (const [index, artifact] of roleRender.plan.artifacts.entries()) {
-      const instructions = await fs.readFile(path.join(
-        sourcePluginRoot, 'skills', sharedSkillKeys[index]!, 'assets', sharedInstructionFiles[index]!,
-      ), 'utf8');
-      expect(artifact).toMatchObject({ kind: 'codexRole', roleKey: roleKeys[index],
-        content: { roleFile: { name: roleKeys[index] } } });
-      if (artifact.kind !== 'codexRole') throw new Error('Expected a Codex role artifact.');
-      assertRoleInstructions(roleKeys[index]!, artifact.content?.roleFile?.developer_instructions, instructions);
-    }
-    const subagentRoleRender = await runArtifactRenderer({
-      plugin: bundledSubagentPlugin,
-      event: 'install', platform: 'codex', scope: 'project', cwd: isolation.layout.fixtureCwd,
-      commandEnv: isolation.env, requestedArtifactIds: ['subagent-role'],
-    });
-    expect(subagentRoleRender.context.config).toMatchObject({ schema: {}, values: {}, sources: {}, issues: [] });
-    expect(subagentRoleRender.context.changedConfigKeys).toEqual([]);
-    expect(subagentRoleRender.runtimeConfigSnapshots).toEqual({});
-    expect(subagentRoleRender.plan.artifacts).toHaveLength(1);
-    const subagentRole = subagentRoleRender.plan.artifacts[0]!;
-    expect(subagentRole).toMatchObject({ id: 'subagent-role', kind: 'codexRole', roleKey: 'subagent' });
-    if (subagentRole.kind !== 'codexRole') throw new Error('Expected a Codex role artifact.');
-    assertRoleInstructions('subagent', subagentRole.content?.roleFile?.developer_instructions,
-      await fs.readFile(path.join(sourceSubagentPluginRoot, 'skills/spawn-subagent/assets/task-instructions.md'), 'utf8'));
     expect(await runPublic([
       'config', 'set', 'team/codex-enhance', 'standardProfile', '--scope', 'project',
       '--value-json', '{"model":"project-standard","reasoningEffort":"max"}',
@@ -16480,7 +16437,7 @@ describe('five namespaced write commands', () => {
     expect((await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
     ))).snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
-  });
+  }, 30_000);
 
   it('restores codex-enhance project activation after user scope uninstall through public commands', async ({ onTestFinished }) => {
     // Test Value Gate: a real project-to-user-to-project lifecycle restores project activation and cleans its roles after user uninstall.

@@ -103,6 +103,7 @@ import {
   resolveArtifactRendererTarget,
   runArtifactRenderer,
 } from '../utils/artifact-renderer.js';
+import type { PluginProcessResult } from '../utils/plugin-scripts.js';
 import {
   createArtifactConfigDigest,
   validateArtifactPlan,
@@ -231,6 +232,7 @@ interface PlannedWrite {
 
 const commandPackagePreparationCaches = new WeakMap<RebuildExecutionContext, Map<string, Promise<{ action: OperationAction; candidate: ManagedCommandCandidate }>>>();
 const staticCommandPreparationCaches = new WeakMap<RebuildExecutionContext, Map<string, Promise<ValidatedArtifactPlanArtifact[]>>>();
+const dynamicArtifactPreparationCaches = new WeakMap<RebuildExecutionContext, Map<string, PluginProcessResult>>();
 
 async function prepareStaticCommandArtifacts(options: {
   plugin: PluginMeta; platform: PlatformName; cwd: string; env: NodeJS.ProcessEnv; context: RebuildExecutionContext;
@@ -1636,6 +1638,11 @@ async function resolveDynamicArtifacts(options: {
     return { artifacts: [], sourceDirs: () => [], sensitiveValues: [] };
   }
   const previousArtifacts = [...options.previousArtifacts];
+  let preparedResults = options.context && dynamicArtifactPreparationCaches.get(options.context);
+  if (options.context && !preparedResults) {
+    preparedResults = new Map();
+    dynamicArtifactPreparationCaches.set(options.context, preparedResults);
+  }
   const renders: Awaited<ReturnType<typeof runArtifactRenderer>>[] = [];
   for (const requestedArtifactIds of requestBatches) {
     renders.push(await runArtifactRenderer({
@@ -1649,6 +1656,7 @@ async function resolveDynamicArtifacts(options: {
       previousArtifacts,
       requestedArtifactIds,
       scriptTimeoutMs: options.scriptTimeoutMs,
+      preparedResults,
     }));
   }
   const config = await resolveArtifactRenderConfig({
