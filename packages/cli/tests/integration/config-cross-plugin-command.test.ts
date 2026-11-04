@@ -18,8 +18,31 @@ import { createTuiControllerDependencies } from '../../src/tui/controller-runtim
 import type { OperationIntent } from '../../src/tui/controller.js';
 import type { PluginConfigWriteReceipt } from '../../src/utils/plugin-config-write.js';
 
+async function prepareCodexExecutableFixture(isolation: ReturnType<typeof getCurrentSourceTestIsolation>): Promise<void> {
+  // Manager discovery checks PATH before the injected runner handles native commands.
+  const binRoot = path.join(isolation.layout.fixtureCwd, 'codex-bin');
+  if (process.platform === 'win32') {
+    const packageRoot = path.join(binRoot, 'node_modules', '@openai', 'codex');
+    await fs.outputJson(path.join(packageRoot, 'package.json'), {
+      name: '@openai/codex', version: '0.200.0', bin: { codex: 'bin/codex.js' },
+    });
+    await fs.outputFile(path.join(packageRoot, 'bin', 'codex.js'), '// Native calls use the injected runner.\n');
+    await fs.outputFile(path.join(binRoot, 'codex.cmd'), '@echo off\r\n');
+  } else {
+    const executable = path.join(binRoot, 'codex');
+    await fs.outputFile(executable, '#!/usr/bin/env node\n');
+    await fs.chmod(executable, 0o755);
+  }
+  const inheritedPath = Object.entries(isolation.env).find(([key]) => key.toLowerCase() === 'path')?.[1];
+  for (const key of Object.keys(isolation.env)) {
+    if (key.toLowerCase() === 'path') delete isolation.env[key];
+  }
+  isolation.env.PATH = [binRoot, inheritedPath].filter(Boolean).join(path.delimiter);
+}
+
 async function createNativeReferenceFixture(preApply = false) {
   const isolation = getCurrentSourceTestIsolation();
+  await prepareCodexExecutableFixture(isolation);
   const cwd = isolation.layout.fixtureCwd;
   const env = isolation.env;
   const sourceRoot = path.join(cwd, 'cross-config-source');
@@ -77,8 +100,8 @@ async function createNativeReferenceFixture(preApply = false) {
   ].join('\n'));
   const runner = vi.fn(async (invocation: NativeCliInvocation) => {
     if (invocation.command === 'claude') return native.nativeCliRunner(invocation);
-    const args = invocation.args;
-    if (args.includes('--version')) return { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' };
+    if (invocation.args.includes('--version')) return { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' };
+    const args = invocation.args.slice(invocation.args.indexOf('plugin'));
     if (args[1] === 'marketplace' && args[2] === 'add') { marketplaceRoot = args[3]!; await writeConfig(); }
     if (args[1] === 'remove') { installed = false; await writeConfig(); }
     if (args[1] === 'add') {
@@ -295,6 +318,7 @@ describe('cross-plugin public config apply', () => {
   // must preserve committed config after one platform fails and allow a later consumer sync to recover.
   it('discovers visible consumers, keeps independent targets running, and recovers through consumer sync', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    await prepareCodexExecutableFixture(isolation);
     const cwd = isolation.layout.fixtureCwd;
     const env = isolation.env;
     const sourceRoot = path.join(cwd, 'cross-config-source');
@@ -347,8 +371,8 @@ describe('cross-plugin public config apply', () => {
     ].join('\n'));
     const runner = vi.fn(async (invocation: NativeCliInvocation) => {
       if (invocation.command === 'claude') return native.nativeCliRunner(invocation);
-      const args = invocation.args;
-      if (args.includes('--version')) return { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' };
+      if (invocation.args.includes('--version')) return { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' };
+      const args = invocation.args.slice(invocation.args.indexOf('plugin'));
       if (args[1] === 'marketplace' && args[2] === 'add') { marketplaceRoot = args[3]!; await writeConfig(); }
       if (args[1] === 'remove') { installed = false; await writeConfig(); }
       if (args[1] === 'add') {
