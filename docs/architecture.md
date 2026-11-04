@@ -52,6 +52,8 @@
 - `aw-development-toolkit` 不在构建时绑定 CLI registry，也不分发 capability Markdown。已安装 Author 从当前 PATH 查询 `aw plugin capabilities`，因此旧 development plugin 可以使用较新的 CLI 能力合同。
 - `aw plugin remove <name> --workspace-root <root> --yes` 只删除 canonical `plugins/<name>` source root。Workspace 必须位于有有效 HEAD 的 Git worktree 中；目标必须存在于 HEAD，且当前目标 tree 的 inventory、文件 bytes 和 executable mode 必须与 HEAD 精确相同。命令拒绝目标内 tracked、staged、untracked、ignored、符号链接或额外节点，也拒绝仍由其它当前 manifest 依赖的目标。所有检查在删除前完成；缺少 `--yes` 不写入。成功不修改 Catalog version、不 commit、不 build、不 publish。删除 I/O 失败必须给出从已核验 HEAD 恢复目标的 Git 命令；命令不提供 force、backup、ledger 或补偿状态。
 
+配置正则校验由 Core 的 `config-pattern.ts` 直接管理 RE2-WASM native binding。每次校验都在 `finally` 中释放正则及捕获组名称容器，包含无效 pattern 的失败路径；不依赖 GC 或跨调用正则缓存。该 binding 固定使用 `re2-wasm@1.0.2`，保留原 wrapper 的 Unicode 和 escape 转换。校验引擎内存不足时保留 `configValidationMemoryExhausted`，TUI 提示重启 AW，并保留已保存的设置。
+
 ## Distribution and Runtime State
 
 ```text
