@@ -127,7 +127,7 @@ function nestedV1Evidence(initialMessage) {
     ordinal: 1, threadId: 'root', parentThreadId: null, callId: 'spawn-plan',
     namespace: 'collaboration', tool: 'spawn_agent', status: 'completed',
     arguments: {
-      agent_type: 'codex-subagent', message: initialMessage, fork_context: false,
+      agent_type: 'subagent', message: initialMessage, fork_context: false,
       model: 'gpt-6-astra', reasoning_effort: 'high',
     },
     output: { agent_id: 'plan', status: 'running' },
@@ -153,12 +153,12 @@ function nestedV1Evidence(initialMessage) {
     finalMessage: 'nested delegation observed',
     workspaceDiff: { added: [], removed: [], modified: [] },
     skillLoads: [
-      { threadId: 'root', skill: 'codex-subagent-guide', callId: 'load-guide' },
+      { threadId: 'root', skill: 'spawn-subagent', callId: 'load-guide' },
       { threadId: 'plan', skill: 'codex-explore', callId: 'load-explore' },
     ],
     threadGraph: [
       thread('root', null, null, { kind: 'plaintext', text: 'root' }),
-      thread('plan', 'root', 'codex-subagent', { kind: 'plaintext', text: initialMessage }),
+      thread('plan', 'root', 'subagent', { kind: 'plaintext', text: initialMessage }),
       thread('deep', 'plan', 'codex-explore', { kind: 'plaintext', text: 'inspect repo' }),
     ],
     collaborationCalls: [rootSpawn, skillLoad, nestedSpawn],

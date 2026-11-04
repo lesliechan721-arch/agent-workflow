@@ -8,10 +8,6 @@ const pluginRoot = path.resolve(scriptDir, '..');
 const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
 
 export const SKILL_CONFIG_KEYS = {
-  'codex-subagent-guide': [
-    'simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile',
-    'taskCustomProfiles', 'subagentCommands', 'subagentRetentionHours',
-  ],
   'codex-advisor': [
     'advisorGeneralProfile', 'advisorAdvancedProfile', 'advisorExpertProfile', 'advisorCustomProfiles',
   ],
@@ -20,11 +16,9 @@ export const SKILL_CONFIG_KEYS = {
 export const CONFIG_KEYS = [...new Set(Object.values(SKILL_CONFIG_KEYS).flat())];
 const SKILLS = {
   'codex-explore-skill': 'codex-explore',
-  'codex-subagent-guide-skill': 'codex-subagent-guide',
   'codex-advisor-skill': 'codex-advisor',
 };
 const INSTRUCTIONS = {
-  'codex-subagent-guide': 'assets/task-instructions.md',
   'codex-advisor': 'assets/advisor-instructions.md',
   'codex-explore': 'assets/explore-instructions.md',
 };
@@ -34,22 +28,12 @@ const ROLES = {
     description: '只读事实调查与证据核验，直接完成分配的调查；不作最终判断或修改被查项目。',
     localInstructions: '你已经是本次调查的执行者。直接完成当前分配的调查，不要通过 codex-explore 将同一调查重新委派。这只限制重复父级调查编排，不禁止为不同有界子目标采用本次任务允许的协作方法。',
   },
-  'codex-subagent-role': {
-    key: 'codex-subagent', skill: 'codex-subagent-guide',
-    description: '完成有界任务，遵守实际任务授权和权限。',
-  },
   'codex-advisor-role': {
     key: 'codex-advisor', skill: 'codex-advisor',
     description: '只读技术第二意见，直接完成分配的咨询；不批准或修改被审项目。',
     localInstructions: '你已经是本次咨询的执行者。直接完成当前分配的咨询，不要通过 codex-advisor 将同一咨询重新委派。这只限制重复父级咨询编排，不禁止为不同有界子目标采用本次任务允许的协作方法。',
   },
 };
-const GENERIC_PROFILES = [
-  ['simpleTaskProfile', 'simple', '目标明确、依赖局部，可直接验证'],
-  ['generalTaskProfile', 'general', '局部判断和有限取舍，边界及验收清楚'],
-  ['complexTaskProfile', 'complex', '多处耦合、假设排查或跨边界验证'],
-  ['advancedTaskProfile', 'advanced', '全局取舍、高歧义，关键遗漏代价高'],
-];
 const EXPLORE_PROFILES = [
   ['quickProfile', 'quick', '明确、低歧义的检索定位'],
   ['standardProfile', 'standard', '常规跨文件或多来源核对；不确定时选此档'],
@@ -144,23 +128,8 @@ function customProfiles(profiles) {
   ].join('\n');
 }
 
-function commandTable(commands) {
-  if (commands.length === 0) return '当前未配置外部执行器。需要外部执行时，先配置并 apply。';
-  return [
-    '| key | mode |',
-    '| --- | --- |',
-    ...commands.map((command) => `| ${[
-      command.key,
-      command.adapter === 'oracle' ? 'bundle'
-        : ['codex', 'claude-code', 'antigravity'].includes(command.adapter) ? 'workspace' : command.mode,
-    ].map(display).join(' | ')} |`),
-  ].join('\n');
-}
-
 function renderProfiles(template, key, config) {
-  const [marker, profiles, customKey] = key === 'codex-subagent-guide'
-    ? ['generic-profiles', GENERIC_PROFILES, 'taskCustomProfiles']
-    : key === 'codex-explore'
+  const [marker, profiles, customKey] = key === 'codex-explore'
       ? ['explore-profiles', EXPLORE_PROFILES, 'exploreCustomProfiles']
       : ['advisor-profiles', ADVISOR_PROFILES, 'advisorCustomProfiles'];
   return slot(template, marker, `${customProfiles(config[customKey])}${profileTable(profiles, config)}`);
@@ -233,24 +202,11 @@ export async function renderArtifactPlan(context) {
     const sourceRoot = await readSkillSourceRoot(context, manifest, id);
     const template = await readFile(path.join(sourceRoot, 'SKILL.md'), 'utf8');
     const files = {
-      'SKILL.md': key === 'codex-subagent-guide' ? template : renderProfiles(template, key, config),
+      'SKILL.md': renderProfiles(template, key, config),
       [INSTRUCTIONS[key]]: await readFile(path.join(sourceRoot, INSTRUCTIONS[key]), 'utf8'),
       ...(await runtimeResourceFiles(sourceRoot, 'assets')),
       ...(await runtimeResourceFiles(sourceRoot, 'agents')),
-      ...(key === 'codex-subagent-guide' ? {
-        ...(await runtimeResourceFiles(sourceRoot, 'scripts')),
-        ...(await runtimeResourceFiles(sourceRoot, 'references')),
-        ...(await runtimeResourceFiles(sourceRoot, 'docs')),
-      } : {}),
     };
-    if (key === 'codex-subagent-guide') {
-      const profilesReference = 'references/execution-profiles.md';
-      files[profilesReference] = renderProfiles(
-        await readFile(path.join(sourceRoot, profilesReference), 'utf8'), key, config);
-      const reference = 'references/external-delegation.md';
-      files[reference] = slot(await readFile(path.join(sourceRoot, reference), 'utf8'),
-        'subagent-commands', commandTable(config.subagentCommands));
-    }
     artifacts.push({
       id, kind: 'skill', platform: 'codex', target: 'codex.skill', state: 'present',
       skillKey: key, refreshKeys: [...SKILL_CONFIG_KEYS[key]], content: { files },

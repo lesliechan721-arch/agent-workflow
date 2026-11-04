@@ -269,6 +269,7 @@ async function assertRuntimeImport(
 }
 
 async function materializePluginCandidates(options: {
+  plugins: readonly PluginMeta[];
   plugin: PluginMeta;
   relation: PortablePluginRelation;
   scope: Scope;
@@ -295,6 +296,7 @@ async function materializePluginCandidates(options: {
   let sensitiveValues: string[] = [];
   if (!options.selectedSkills) {
     const profileConfig = await resolvePortablePluginProfileConfig({
+      plugins: options.plugins,
       plugin: options.plugin,
       scope: options.scope,
       cwd: options.cwd,
@@ -389,6 +391,7 @@ async function materializePluginCandidates(options: {
   }
   const rendered = await runArtifactRenderer({
     event: 'materialize',
+    referencePlugins: options.plugins,
     plugin: options.plugin,
     platform: 'agent-skills',
     scope: options.scope,
@@ -641,6 +644,7 @@ export async function materializePortableSkills(
       options.signal?.throwIfAborted();
       if (selectedSkills && plugin.manifest.name !== requested.manifest.name) continue;
       trees.push(...await materializePluginCandidates({
+        plugins: options.plugins,
         plugin,
         relation: relationFor(requested, plugin),
         scope: options.scope,

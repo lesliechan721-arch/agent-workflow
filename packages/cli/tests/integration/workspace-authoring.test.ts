@@ -34,6 +34,60 @@ function capture() {
 }
 
 describe('public Catalog Workspace authoring commands', () => {
+  it('validates renderer config references against the same Workspace dependency defaults', async () => {
+    const root = await createRoot();
+    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    for (const name of ['config-consumer', 'config-provider']) {
+      await runCli(['plugin', 'init', name, '--description', 'Cross-plugin author config fixture.',
+        '--no-skills', '--workspace-root', root], { cwd: root, io: capture().io });
+    }
+    const consumerRoot = path.join(root, 'plugins', 'config-consumer');
+    const consumerPath = path.join(consumerRoot, '.agents-plugin', 'plugin.json');
+    const consumer = await fs.readJson(consumerPath);
+    consumer.dependencies = ['config-provider'];
+    consumer.requires = { aw: { capabilities: ['aw.plugin-config-cross-plugin-value-ref.v1'] } };
+    consumer.config = { schemaVersion: 4, fields: { selected: { type: 'string', default: 'external',
+      valueRef: { plugin: 'config-provider', field: 'registry', key: 'key', include: ['native'] } } } };
+    consumer.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+    consumer.artifacts = { targets: [{ id: 'instruction', platform: 'codex', scopes: ['user', 'project'],
+      target: 'codex.developerInstructionsBlock', projectManagedKind: 'instruction', states: ['present'],
+      refreshKeys: ['selected'], requiresCodexProjectConfig: true }] };
+    await fs.writeJson(consumerPath, consumer);
+    await fs.writeFile(path.join(consumerRoot, 'render.mjs'), [
+      "import fs from 'node:fs';",
+      "const c = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
+      "if (Object.keys(c.config.values).join() !== 'selected') throw new Error('Provider config leaked');",
+      "console.log(JSON.stringify({version:2,artifacts:[{id:'instruction',platform:'codex',target:'codex.developerInstructionsBlock',kind:'instruction',state:'present',refreshKeys:['selected'],content:c.config.values.selected}]}));",
+    ].join('\n'));
+    const providerPath = path.join(root, 'plugins', 'config-provider', '.agents-plugin', 'plugin.json');
+    const provider = await fs.readJson(providerPath);
+    provider.config = { schemaVersion: 4, fields: { registry: { type: 'array', default: [{ key: 'external' }],
+      validation: { uniqueBy: 'key' }, items: { type: 'object', properties: { key: { type: 'string', required: true } },
+        additionalProperties: false } } } };
+    await fs.writeJson(providerPath, provider);
+    const validate = async () => {
+      const output = capture();
+      const exitCode = await runCli(['plugin', 'validate', consumerRoot, '--workspace-root', root, '--json'],
+        { cwd: root, io: output.io });
+      return { exitCode, receipt: JSON.parse(output.stdout()) };
+    };
+    expect(await validate()).toMatchObject({ exitCode: 0, receipt: { ok: true } });
+    provider.config.fields.registry.default = [];
+    await fs.writeJson(providerPath, provider);
+    expect(await validate()).toMatchObject({ exitCode: 1, receipt: { ok: false,
+      errors: expect.arrayContaining([expect.stringContaining('config-provider/registry')]) } });
+    provider.config.fields.registry = { type: 'string', default: 'external' };
+    await fs.writeJson(providerPath, provider);
+    expect(await validate()).toMatchObject({ exitCode: 1, receipt: { ok: false,
+      errors: expect.arrayContaining([expect.stringContaining('config-provider/registry')]) } });
+    consumer.config = { schemaVersion: 4, definitions: { unused: { type: 'string',
+      valueRef: { plugin: 'config-provider', field: 'registry', key: 'key' } } },
+    fields: { selected: { type: 'string', default: 'native' } } };
+    await fs.writeJson(consumerPath, consumer);
+    expect(await validate()).toMatchObject({ exitCode: 1, receipt: { ok: false,
+      errors: expect.arrayContaining([expect.stringContaining('config-provider/registry')]) } });
+  });
+
   it('creates an absent canonical root through public plugin init', async () => {
     const root = await createRoot();
     await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });

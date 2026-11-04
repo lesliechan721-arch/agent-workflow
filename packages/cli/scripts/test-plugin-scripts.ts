@@ -43,6 +43,7 @@ import type {
   Scope,
 } from './plugin-staging.js';
 import type { NormalizedPluginManifest } from '../src/types.js';
+import { resolvePluginMetaDependencyClosure } from '../src/utils/plugin-dependencies.js';
 
 type PluginTestPlatformSelection = PlatformName | 'both';
 type NativeTestMode = 'fixture' | 'installed' | 'source-candidate';
@@ -243,6 +244,7 @@ async function resolvePluginRuntimeSourceSet(
     const plugin = queue.shift();
     if (!plugin) continue;
     const references = [
+      ...(plugin.manifest.dependencies ?? []).map((dependency) => ({ plugin: dependency })),
       ...(plugin.manifest.buildConfig?.buildImports ?? []),
       ...(plugin.manifest.buildConfig?.skillRuntimeFiles ?? [])
         .map((entry) => entry.import)
@@ -255,7 +257,9 @@ async function resolvePluginRuntimeSourceSet(
       queue.push(provider);
     }
   }
-  return [...plugins.values()];
+  const sourceSet = [...plugins.values()];
+  resolvePluginMetaDependencyClosure(sourceSet, initialPlugins.map((plugin) => plugin.manifest.name));
+  return sourceSet;
 }
 
 async function stagePluginTestBundleSource(
@@ -444,6 +448,7 @@ async function copyTestPackageNodeModules(options: {
 }
 
 async function writeTestContext(options: {
+  referencePlugins: readonly PluginMeta[];
   bundleRoot: string;
   sourceRoot: string;
   manifest: NormalizedPluginManifest;
@@ -492,6 +497,16 @@ async function writeTestContext(options: {
   }
   const effective = options.manifest.config?.fields
     ? await resolveEffectivePluginConfig({
+        referenceContext: {
+          plugin: options.manifest.name,
+          dependencies: options.manifest.dependencies ?? [],
+          plugins: Object.fromEntries(options.referencePlugins.map((plugin) => [plugin.manifest.name, {
+            definition: plugin.manifest.config ?? { fields: {} },
+            dependencies: plugin.manifest.dependencies ?? [],
+            values: Object.fromEntries(Object.entries(plugin.manifest.config?.fields ?? {})
+              .flatMap(([key, field]) => field.default === undefined ? [] : [[key, field.default]])),
+          }])),
+        },
         sourceId,
         sourceIdentity,
         logicalIdentity,
@@ -597,6 +612,7 @@ function runNodeTest(options: {
 }
 
 async function runPreparedPluginTests(options: {
+  referencePlugins: readonly PluginMeta[];
   prepared: PreparedPluginTestBundle;
   native: Pick<ParsedArgs, 'nativeMode' | 'nativeContext'>;
   nativePlatform?: NodeJS.Platform;
@@ -660,6 +676,7 @@ async function runPreparedPluginTests(options: {
       NODE_PATH: '',
     } as NodeJS.ProcessEnv;
     const writtenContext = await writeTestContext({
+      referencePlugins: options.referencePlugins,
       bundleRoot,
       sourceRoot: options.prepared.sourceRoot,
       manifest: options.prepared.manifest,
@@ -802,6 +819,7 @@ async function preparePluginSelection(options: {
 }
 
 async function runPreparedPluginSelection(options: {
+  referencePlugins: readonly PluginMeta[];
   selection: PreparedPluginTestSelection;
   nativePlatform?: NodeJS.Platform;
   nativePrepare?: typeof prepareWindowsJobHelper;
@@ -826,6 +844,7 @@ async function runPreparedPluginSelection(options: {
       let exitCode = 0;
       for (const platform of options.selection.platforms) {
         const platformExitCode = await runPreparedPluginTests({
+          referencePlugins: options.referencePlugins,
           prepared,
           native: options.parsed,
           nativePlatform: options.nativePlatform,
@@ -900,6 +919,7 @@ export async function runPluginScriptTests(
       for (const selection of preparedSelections) {
         try {
           const pluginExitCode = await runPreparedPluginSelection({
+            referencePlugins: plugins,
             selection,
             nativePlatform: options.nativePlatform,
             nativePrepare: options.nativePrepare,
@@ -928,6 +948,7 @@ export async function runPluginScriptTests(
       try {
         const selection = await preparePluginSelection({ plugin, parsed, runtimeResolver });
         const pluginExitCode = await runPreparedPluginSelection({
+          referencePlugins: plugins,
           selection,
           nativePlatform: options.nativePlatform,
           nativePrepare: options.nativePrepare,
@@ -954,6 +975,7 @@ export async function runPluginScriptTests(
     const runtimeResolver = createCatalogRuntimeImportResolver(sourceSet);
     const selection = await preparePluginSelection({ plugin, parsed, runtimeResolver });
     return await runPreparedPluginSelection({
+      referencePlugins: sourceSet,
       selection,
       nativePlatform: options.nativePlatform,
       nativePrepare: options.nativePrepare,

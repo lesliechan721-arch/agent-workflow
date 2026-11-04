@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { prepareReviewTarget } from '../../src/commands/review-preparation.js'
 import { inspectReviewTarget } from '../../src/commands/review-inspection.js'
 import { resolveReviewSelection } from '../../src/review/review-selection.js'
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js'
 import {
   createAwSourceBindingWorkspaceValidationContext,
   readAwSourceBinding,
@@ -385,6 +386,74 @@ afterEach(async () => {
 })
 
 describe('Review preparation', () => {
+  it('prepares only the selected consumer using isolated dependency overrides and rechecks its source binding', async () => {
+    const fixture = await createWorkspace('aw-review-cross-config-')
+    const pluginRoot = await createDynamicPlugin(fixture.root)
+    const consumerPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json')
+    const consumer = await fs.readJson(consumerPath) as PluginManifestSource
+    consumer.dependencies = ['review-config-provider']
+    consumer.requires = { aw: { capabilities: ['aw.plugin-config-cross-plugin-value-ref.v1'] } }
+    consumer.config = { schemaVersion: 4, fields: { mode: {
+      type: 'string', default: 'native', valueRef: {
+        plugin: 'review-config-provider', field: 'sources', key: 'key', include: ['native'],
+      },
+    }, nativeMode: { type: 'string', default: 'native' }, needed: { type: 'string', required: true },
+    token: { type: 'string', sensitive: true } } }
+    await fs.writeJson(consumerPath, consumer)
+    const providerRoot = await writePlugin(fixture.root, manifest('review-config-provider', {
+      config: { schemaVersion: 4, fields: {
+        sources: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
+          type: 'object', properties: { key: { type: 'string', required: true }, location: { type: 'string', required: true } },
+          additionalProperties: false,
+        } },
+        unrelated: { type: 'string', default: 'default' },
+      } },
+      scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
+      artifacts: { targets: [{ id: 'provider', platform: 'codex', target: 'codex.skill',
+        kind: 'skill', skillKey: 'provider', scopes: ['user', 'project'], states: ['present'],
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' }, refreshKeys: ['sources'] }] },
+    }))
+    await fs.writeFile(path.join(providerRoot, 'render.mjs'), 'throw new Error("Unselected provider renderer ran");\n')
+    const providerConfig = { sources: [{ key: 'remote', location: '/explicit' }], unrelated: 'ignored' }
+    await writePluginConfigStore({ pluginName: 'review-config-provider', scope: 'user', cwd: fixture.root,
+      env: fixture.env, values: providerConfig })
+    const configFile = path.join(fixture.root, 'cross-config.json')
+    await fs.writeJson(configFile, { 'dynamic-review': { mode: 'remote' } })
+    const select = () => resolveReviewSelection({ cwd: fixture.root, target: pluginRoot,
+      skills: ['codex-extension'], platform: 'codex', scope: 'project', configFile, env: fixture.env })
+    await expect(select()).rejects.toThrow(/dependency config/u)
+    await fs.writeJson(configFile, { 'dynamic-review': { mode: 'remote' }, 'review-config-provider': providerConfig })
+    const selection = await select()
+    expect(selection.profiles[0]!.profile.config).toEqual({
+      'dynamic-review': { mode: 'remote' }, 'review-config-provider': { sources: providerConfig.sources },
+    })
+    expect(selection.profiles[0]!.pluginConfigs).toContainEqual(expect.objectContaining({
+      pluginName: 'review-config-provider', scope: 'user', values: { sources: providerConfig.sources },
+    }))
+    expect(selection.profiles[0]!.sources).toContain(path.join(providerRoot, '.agents-plugin', 'plugin.json'))
+    const output = path.join(fixture.root, '_review-output', 'cross-config')
+    const result = await prepareReviewTarget({ cwd: fixture.root, target: pluginRoot,
+      skills: ['codex-extension'], platform: 'codex', scope: 'project', configFile, out: output, env: fixture.env })
+    expect(result.exitCode, JSON.stringify(result.receipt)).toBe(0)
+    await expect(fs.readdir(path.join(output, 'skills'))).resolves.toEqual(['codex-extension'])
+    await expect(fs.readJson(path.join(output, 'skills', 'codex-extension', 'render.json'))).resolves.toEqual({
+      requested: ['codex-extension'], scope: 'project', configScope: 'project', config: { mode: 'remote' },
+    })
+    const inspect = () => inspectReviewTarget({ cwd: fixture.root, target: pluginRoot,
+      skills: ['codex-extension'], platform: 'codex', scope: 'project', configFile,
+      materializations: [result.receipt.sourceBindingPath!], env: fixture.env })
+    expect((await inspect()).skills).toEqual([expect.objectContaining({ state: 'ready' })])
+    await fs.writeJson(configFile, { 'dynamic-review': { mode: 'remote' },
+      'review-config-provider': { sources: [{ key: 'remote', location: '/changed' }] } })
+    expect((await inspect()).skills).toEqual([expect.objectContaining({ state: 'missing' })])
+    await fs.writeJson(configFile, { 'dynamic-review': { mode: 'remote' }, 'review-config-provider': providerConfig })
+    const providerPath = path.join(providerRoot, '.agents-plugin', 'plugin.json')
+    const provider = await fs.readJson(providerPath)
+    provider.config.fields.sources.default = [{ key: 'default', location: '/default' }]
+    await fs.writeJson(providerPath, provider)
+    expect((await inspect()).skills).toEqual([expect.objectContaining({ state: 'stale' })])
+  })
+
   it('rebuilds independent baseline and candidate source contexts with provider-bound final output', async () => {
     const source = await createWorkspace('aw-review-rebuild-source-')
     await createRebuildableDynamicPlugin(source.root)

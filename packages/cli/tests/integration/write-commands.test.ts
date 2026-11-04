@@ -347,7 +347,10 @@ async function prepareCodexEnhancePublicCommandFixture() {
   );
   const copiedPluginRoot = path.join(authoringRoot, 'plugins', 'codex-enhance');
   await fs.copy(sourcePluginRoot, copiedPluginRoot);
-  await stubCodexFileSelectionForNativeFixture(copiedPluginRoot);
+  const sourceSubagentPluginRoot = path.join(repositoryRoot, 'plugins', 'agent-subagent');
+  const copiedSubagentPluginRoot = path.join(authoringRoot, 'plugins', 'agent-subagent');
+  await fs.copy(sourceSubagentPluginRoot, copiedSubagentPluginRoot);
+  await stubCodexFileSelectionForNativeFixture(copiedSubagentPluginRoot);
   const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
   await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), {
     schemaVersion: 1,
@@ -357,6 +360,9 @@ async function prepareCodexEnhancePublicCommandFixture() {
   });
   const manifest = await fs.readJson(path.join(
     sourceRoot, 'plugins', 'codex-enhance', '.agents-plugin', 'plugin.json',
+  ));
+  const subagentManifest = await fs.readJson(path.join(
+    sourceRoot, 'plugins', 'agent-subagent', '.agents-plugin', 'plugin.json',
   ));
   const before = await readCatalogSourcesConfigSnapshot(isolation.env);
   const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
@@ -385,11 +391,15 @@ async function prepareCodexEnhancePublicCommandFixture() {
   return {
     isolation,
     sourcePluginRoot,
+    sourceSubagentPluginRoot,
     sourceRoot,
     sourceIdentity,
     logicalIdentity,
     cacheRoot: path.join(
       isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'codex-enhance', manifest.version,
+    ),
+    subagentCacheRoot: path.join(
+      isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'agent-subagent', subagentManifest.version,
     ),
     runtime,
     runPublic,
@@ -16175,11 +16185,11 @@ describe('five namespaced write commands', () => {
     const { isolation, runtime, runPublic } = await prepareCodexEnhancePublicCommandFixture();
     const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
     const runtimeSourceRoot = path.join(isolation.layout.fixtureCwd, 'guide-runtime-source');
-    await fs.copy(path.join(repositoryRoot, 'plugins/codex-enhance'), runtimeSourceRoot);
+    await fs.copy(path.join(repositoryRoot, 'plugins/agent-subagent'), runtimeSourceRoot);
     await preparePluginNativeTools(runtimeSourceRoot, (await readPluginManifest(runtimeSourceRoot)).manifest);
     const helpers = await import(pathToFileURL(path.join(runtimeSourceRoot, 'scripts/fixtures/subagent-integration.mjs')).href);
     const { openRun, storeContext } = await import(pathToFileURL(path.join(
-      runtimeSourceRoot, 'skills/codex-subagent-guide/scripts/runtime/store.mjs',
+      runtimeSourceRoot, 'skills/spawn-subagent/scripts/runtime/store.mjs',
     )).href);
     const cleanups: Array<() => Promise<void>> = [() => fs.remove(runtimeSourceRoot)];
     const fixture = await helpers.fixture({ signal: new AbortController().signal, diagnostic: () => {}, after: (cleanup: () => Promise<void>) => { cleanups.push(cleanup); } });
@@ -16215,16 +16225,20 @@ describe('five namespaced write commands', () => {
       const adapter = await runPublic(['command', 'install', adapterSource, '--name', 'public-v5-adapter', '--runner', 'node', '--entry', 'adapter.mjs', '--args-json', '["fixed-argv"]', '--yes']);
       expect(adapter.exitCode).toBe(0);
       const adapterId = (adapter.payload.commands as Array<{ id: string }>)[0]!.id;
-      expect(await runPublic(['config', 'set', 'team/codex-enhance', 'subagentCommands', '--scope', 'user', '--value-json', JSON.stringify([{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId: adapterId, args: ['v5-request-only'] }])])).toMatchObject({ exitCode: 0 });
-      const preview = await installWriteCommand(['team/codex-enhance'], { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project' }, { ...runtime, previewOperationPlan: true });
-      const review = buildOperationReviewProjection({ intent: { kind: 'pluginWrite', action: 'install', pluginId: 'team/codex-enhance', platform: 'codex', scope: 'project' }, evidence: { catalog: { configDigest: 'fixture', compositeDigest: 'fixture' }, operationPlan: preview.operationPlan } });
+      expect(await runPublic(['config', 'set', 'team/agent-subagent', 'subagentCommands', '--scope', 'user', '--value-json', JSON.stringify([{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId: adapterId, args: ['v5-request-only'] }])])).toMatchObject({ exitCode: 0 });
+      const preview = await installWriteCommand(['team/agent-subagent'], { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project' }, { ...runtime, previewOperationPlan: true });
+      const review = buildOperationReviewProjection({ intent: { kind: 'pluginWrite', action: 'install', pluginId: 'team/agent-subagent', platform: 'codex', scope: 'project' }, evidence: { catalog: { configDigest: 'fixture', compositeDigest: 'fixture' }, operationPlan: preview.operationPlan } });
       expect(review.changes).toContainEqual(expect.objectContaining({ title: 'guide/subagent/default', description: expect.stringContaining('node · scripts/subagent.mjs') }));
-      const installed = await runPublic(['install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project', '--yes']);
+      const installed = await runPublic(['install', 'team/agent-subagent', '--platform', 'codex', '--scope', 'project', '--yes']);
       expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
-      guideId = (await listManagedCommands(isolation.env)).commands.find((command) => command.name === 'guide/subagent/default')!.id;
+      const guideCommand = (await listManagedCommands(isolation.env)).commands.find((command) => command.name === 'guide/subagent/default')!;
+      expect(guideCommand.owner).toMatchObject({ kind: 'plugin', producer: {
+        pluginName: 'agent-subagent', kind: 'artifact', key: 'spawn-subagent-skill',
+      } });
+      guideId = guideCommand.id;
       expect(guideId).toMatch(/^cmdp_[0-9a-f]{16}$/u);
       expect(review.changes).toContainEqual(expect.objectContaining({ title: expect.stringMatching(/^Codex 权限规则/u), description: expect.stringContaining(guideId) }));
-      const permission = await fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex/rules/aw-codex-enhance-subagent-commands.rules'), 'utf8');
+      const permission = await fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex/rules/aw-agent-subagent-subagent-commands.rules'), 'utf8');
       expect(permission).toContain(JSON.stringify(['aw', 'command', 'run', guideId, '--', 'start']));
       await fs.writeFile(path.join(fixture.workspace, 'prompt.txt'), 'Public installation task.\n');
       const started = await invokeGuide(guideId, ['start', '--executor', 'fixture', '--workspace', fixture.workspace, '--prompt-file', 'prompt.txt']);
@@ -16275,13 +16289,15 @@ describe('five namespaced write commands', () => {
 
   it('rematerializes codex-enhance shared Skills without changing project roles through public commands', async () => {
     // Test Value Gate: real config writes rematerialize only affected shared Skills and bindings, while project roles keep their bytes and scope.
-    const { isolation, sourcePluginRoot, sourceRoot, sourceIdentity, logicalIdentity, cacheRoot, runPublic } =
+    const { isolation, sourcePluginRoot, sourceSubagentPluginRoot, sourceRoot, sourceIdentity, logicalIdentity, cacheRoot, subagentCacheRoot, runPublic } =
       await prepareCodexEnhancePublicCommandFixture();
     // Test Value Gate: bundled role-only requests share declared resources without reading Skill config or rendering extra targets.
     const bundledPlugin = await readPluginManifest(path.join(sourceRoot, 'plugins', 'codex-enhance'), { mode: 'bundle' });
-    const roleArtifactIds = ['codex-explore-role', 'codex-subagent-role', 'codex-advisor-role'];
+    const bundledSubagentPlugin = await readPluginManifest(path.join(sourceRoot, 'plugins', 'agent-subagent'), { mode: 'bundle' });
+    const roleArtifactIds = ['codex-explore-role', 'codex-advisor-role'];
     const roleRender = await runArtifactRenderer({
       plugin: bundledPlugin,
+      referencePlugins: [bundledPlugin, bundledSubagentPlugin],
       event: 'install', platform: 'codex', scope: 'project', cwd: isolation.layout.fixtureCwd,
       commandEnv: isolation.env, requestedArtifactIds: roleArtifactIds,
     });
@@ -16290,12 +16306,12 @@ describe('five namespaced write commands', () => {
     expect(roleRender.context.changedConfigKeys).toEqual([]);
     expect(roleRender.runtimeConfigSnapshots).toEqual({});
     expect(roleRender.plan.artifacts.map((artifact) => artifact.id)).toEqual(roleArtifactIds);
-    const sharedInstructionFiles = ['explore-instructions.md', 'task-instructions.md', 'advisor-instructions.md'];
-    const sharedSkillKeys = ['codex-explore', 'codex-subagent-guide', 'codex-advisor'];
-    const roleKeys = ['codex-explore', 'codex-subagent', 'codex-advisor'];
+    const sharedInstructionFiles = ['explore-instructions.md', 'advisor-instructions.md'];
+    const sharedSkillKeys = ['codex-explore', 'codex-advisor'];
+    const roleKeys = ['codex-explore', 'codex-advisor'];
     const assertRoleInstructions = (roleKey: string, delivered: string | undefined, shared: string) => {
       if (typeof delivered !== 'string') throw new Error('Expected native role developer instructions.');
-      if (roleKey === 'codex-subagent') {
+      if (roleKey === 'subagent') {
         expect(delivered).toBe(shared);
         return;
       }
@@ -16313,7 +16329,7 @@ describe('five namespaced write commands', () => {
       }
     };
     expect(roleRender.context.artifactSources.map((target) => target.id)).toEqual([
-      'codex-explore-skill', 'codex-subagent-guide-skill', 'codex-advisor-skill',
+      'codex-explore-skill', 'codex-advisor-skill',
     ]);
     for (const [index, artifact] of roleRender.plan.artifacts.entries()) {
       const instructions = await fs.readFile(path.join(
@@ -16324,6 +16340,20 @@ describe('five namespaced write commands', () => {
       if (artifact.kind !== 'codexRole') throw new Error('Expected a Codex role artifact.');
       assertRoleInstructions(roleKeys[index]!, artifact.content?.roleFile?.developer_instructions, instructions);
     }
+    const subagentRoleRender = await runArtifactRenderer({
+      plugin: bundledSubagentPlugin,
+      event: 'install', platform: 'codex', scope: 'project', cwd: isolation.layout.fixtureCwd,
+      commandEnv: isolation.env, requestedArtifactIds: ['subagent-role'],
+    });
+    expect(subagentRoleRender.context.config).toMatchObject({ schema: {}, values: {}, sources: {}, issues: [] });
+    expect(subagentRoleRender.context.changedConfigKeys).toEqual([]);
+    expect(subagentRoleRender.runtimeConfigSnapshots).toEqual({});
+    expect(subagentRoleRender.plan.artifacts).toHaveLength(1);
+    const subagentRole = subagentRoleRender.plan.artifacts[0]!;
+    expect(subagentRole).toMatchObject({ id: 'subagent-role', kind: 'codexRole', roleKey: 'subagent' });
+    if (subagentRole.kind !== 'codexRole') throw new Error('Expected a Codex role artifact.');
+    assertRoleInstructions('subagent', subagentRole.content?.roleFile?.developer_instructions,
+      await fs.readFile(path.join(sourceSubagentPluginRoot, 'skills/spawn-subagent/assets/task-instructions.md'), 'utf8'));
     expect(await runPublic([
       'config', 'set', 'team/codex-enhance', 'standardProfile', '--scope', 'project',
       '--value-json', '{"model":"project-standard","reasoningEffort":"max"}',
@@ -16341,7 +16371,7 @@ describe('five namespaced write commands', () => {
     ]);
     expect(projectInstall, JSON.stringify(projectInstall, null, 2))
       .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
-    const skillKeys = ['codex-explore', 'codex-subagent-guide', 'codex-advisor'];
+    const skillKeys = ['codex-explore', 'codex-advisor'];
     const skillPaths = skillKeys.map((skill) =>
       path.join(cacheRoot, 'codex', 'skills', skill, 'SKILL.md'));
     for (const skillPath of skillPaths) await expect(fs.pathExists(skillPath)).resolves.toBe(true);
@@ -16351,12 +16381,12 @@ describe('five namespaced write commands', () => {
     }
     const initialSkillBytes = await Promise.all(skillPaths.map((skillPath) => fs.readFile(skillPath)));
     const guideBindingPath = path.join(
-      cacheRoot, 'codex', 'skills', 'codex-subagent-guide', AW_RUNTIME_CONFIG_BINDING_PATH,
+      subagentCacheRoot, 'codex', 'skills', 'spawn-subagent', AW_RUNTIME_CONFIG_BINDING_PATH,
     );
     const initialBinding = await fs.readJson(guideBindingPath) as RuntimeConfigBinding;
     expect(initialBinding).toMatchObject({
       schemaVersion: 2,
-      installedIdentity: { skillKey: 'codex-subagent-guide', scope: 'user', configScope: 'user' },
+      installedIdentity: { pluginName: 'agent-subagent', skillKey: 'spawn-subagent', scope: 'user', configScope: 'user' },
       allowedKeys: ['subagentCommands', 'subagentRetentionHours'],
     });
     expect(initialBinding.effectiveValues).toEqual({ subagentCommands: [], subagentRetentionHours: 24 });
@@ -16368,7 +16398,7 @@ describe('five namespaced write commands', () => {
       path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
     ) as CodexNativeRenderReceipt;
     expect(initialReceipt.targets.map((target) => target.skillKey)).toEqual([
-      'codex-advisor', 'codex-explore', 'codex-subagent-guide',
+      'codex-advisor', 'codex-explore',
     ]);
     const userStore = await readPluginConfigStore({
       sourceId: 'team', sourceIdentity, logicalIdentity,
@@ -16382,7 +16412,7 @@ describe('five namespaced write commands', () => {
       isolation.layout.fixtureCwd, '.codex', 'agents', `aw-codex-enhance-${role}.toml`,
     ));
     const initialRoleBytes = await Promise.all(rolePaths.map((file) => fs.readFile(file, 'utf8')));
-    const instructionFiles = ['explore-instructions.md', 'task-instructions.md', 'advisor-instructions.md'];
+    const instructionFiles = ['explore-instructions.md', 'advisor-instructions.md'];
     for (const [index, content] of initialRoleBytes.entries()) {
       const role = parseCodexRoleFile(content);
       expect(role.model).toBeUndefined();
@@ -16392,6 +16422,13 @@ describe('five namespaced write commands', () => {
       ), 'utf8');
       assertRoleInstructions(roleKeys[index]!, role.developerInstructions, sharedInstructions);
     }
+    const subagentRolePath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-agent-subagent-subagent.toml');
+    const initialSubagentRoleBytes = await fs.readFile(subagentRolePath, 'utf8');
+    const installedSubagentRole = parseCodexRoleFile(initialSubagentRoleBytes);
+    expect(installedSubagentRole.model).toBeUndefined();
+    expect(installedSubagentRole.modelReasoningEffort).toBeUndefined();
+    assertRoleInstructions('subagent', installedSubagentRole.developerInstructions,
+      await fs.readFile(path.join(subagentCacheRoot, 'codex/skills/spawn-subagent/assets/task-instructions.md'), 'utf8'));
     expect(initialSkillBytes[0].toString('utf8')).toContain('"user-standard"');
     expect(initialSkillBytes[1].toString('utf8')).not.toContain('"user-standard"');
     expect(await runPublic([
@@ -16412,7 +16449,7 @@ describe('five namespaced write commands', () => {
     ])).toMatchObject({ exitCode: 0 });
     await expect(fs.readFile(skillPaths[0], 'utf8')).resolves.toContain('"updated-standard"');
     await expect(fs.readFile(skillPaths[0]!)).resolves.not.toEqual(initialSkillBytes[0]);
-    for (const index of [1, 2]) {
+    for (const index of [1]) {
       await expect(fs.readFile(skillPaths[index]!)).resolves.toEqual(initialSkillBytes[index]);
     }
     const updatedBinding = await fs.readJson(guideBindingPath) as RuntimeConfigBinding;
@@ -16420,6 +16457,7 @@ describe('five namespaced write commands', () => {
     for (const [index, file] of rolePaths.entries()) {
       await expect(fs.readFile(file, 'utf8')).resolves.toBe(initialRoleBytes[index]);
     }
+    await expect(fs.readFile(subagentRolePath, 'utf8')).resolves.toBe(initialSubagentRoleBytes);
     const projectOnlyConfig = await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
     ));
@@ -16434,6 +16472,11 @@ describe('five namespaced write commands', () => {
       'cleanup', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project', '--yes',
     ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
     for (const file of rolePaths) await expect(fs.pathExists(file)).resolves.toBe(false);
+    await expect(fs.pathExists(subagentRolePath)).resolves.toBe(true);
+    expect(await runPublic([
+      'cleanup', 'team/agent-subagent', '--platform', 'codex', '--scope', 'project', '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    await expect(fs.pathExists(subagentRolePath)).resolves.toBe(false);
     expect((await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
     ))).snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
@@ -16476,7 +16519,7 @@ describe('five namespaced write commands', () => {
     const runPublic = (args: string[]) => measure(
       'command', args.join(' '), () => runFixtureCommand(args),
     );
-    const rolePaths = ['codex-explore', 'codex-subagent', 'codex-advisor'].map((role) => path.join(
+    const rolePaths = ['codex-explore', 'codex-advisor'].map((role) => path.join(
       isolation.layout.fixtureCwd, '.codex', 'agents', `aw-codex-enhance-${role}.toml`,
     ));
     const projectInstall = await runPublic([
@@ -16525,6 +16568,12 @@ describe('five namespaced write commands', () => {
       'cleanup', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project', '--yes',
     ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
     for (const file of rolePaths) await expect(fs.pathExists(file)).resolves.toBe(false);
+    expect(await runPublic([
+      'cleanup', 'team/agent-subagent', '--platform', 'codex', '--scope', 'project', '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    await expect(fs.pathExists(path.join(
+      isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-agent-subagent-subagent.toml',
+    ))).resolves.toBe(false);
     expect((await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
     ))).snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);

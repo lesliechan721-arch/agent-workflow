@@ -237,14 +237,14 @@ async function prepareStaticCommandArtifacts(options: {
 }): Promise<ValidatedArtifactPlanArtifact[]> {
   const targets = getManagedCommandArtifactTargets(options.plugin.manifest).filter((target) => target.producer.kind === 'static-skill' && target.platform === options.platform);
   if (!targets.length) return [];
-  const config = await resolveArtifactRenderConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, scope: 'user', cwd: options.cwd, env: options.env });
+  const config = await resolveArtifactRenderConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, scope: 'user', cwd: options.cwd, env: options.env, referencePlugins: options.context.referencePlugins });
   const key = JSON.stringify([options.plugin.rootDir, options.platform, config]);
   let cache = staticCommandPreparationCaches.get(options.context);
   if (!cache) { cache = new Map(); staticCommandPreparationCaches.set(options.context, cache); }
   let prepared = cache.get(key);
   if (!prepared) {
     prepared = (async () => {
-      const rendered = await runArtifactRenderer({ plugin: options.plugin, event: 'install', platform: options.platform, scope: 'user', configScope: 'user', cwd: options.cwd, commandEnv: options.env, requestedArtifactIds: targets.map((target) => target.id) });
+      const rendered = await runArtifactRenderer({ plugin: options.plugin, referencePlugins: options.context.referencePlugins, event: 'install', platform: options.platform, scope: 'user', configScope: 'user', cwd: options.cwd, commandEnv: options.env, requestedArtifactIds: targets.map((target) => target.id) });
       return validateArtifactPlan({ manifest: options.plugin.manifest, plan: rendered.plan, platform: options.platform, scope: 'user', requestedArtifactIds: rendered.context.requestedArtifactIds, renderConfig: rendered.context.config, rendererDigest: rendered.target.rendererDigest, manifestDigest: rendered.target.manifestDigest }).artifacts;
     })();
     cache.set(key, prepared);
@@ -284,7 +284,7 @@ async function commandPackageActions(options: {
     let preparation = cache.get(getCommandPackageId(producer));
     if (!preparation) {
       preparation = (async () => {
-        const prepared = await prepareManagedCommandPackage({ ...options, packageKey: declaration.key, scope: declaration.scope });
+        const prepared = await prepareManagedCommandPackage({ ...options, referencePlugins: options.context.referencePlugins, packageKey: declaration.key, scope: declaration.scope });
         try {
       const files: Array<import('./operation-plan.js').OperationArtifactFile & { mode: number }> = [];
       async function visit(directory: string, prefix: string): Promise<void> {
@@ -419,6 +419,7 @@ export class CodexActivationPostcheckError extends Error {
 }
 
 export interface RebuildExecutionContext {
+  referencePlugins?: readonly PluginMeta[];
   env: NodeJS.ProcessEnv;
   nativeCliRunner: NativeCliRunner;
   codexManager?: CodexManager;
@@ -1604,6 +1605,7 @@ function renderCodexRole(options: {
 }
 
 async function resolveDynamicArtifacts(options: {
+  referencePlugins?: readonly PluginMeta[];
   plugin: PluginMeta;
   platform: PlatformName;
   scope: Scope;
@@ -1639,6 +1641,7 @@ async function resolveDynamicArtifacts(options: {
     renders.push(await runArtifactRenderer({
       event: options.event,
       plugin: options.plugin,
+      referencePlugins: options.referencePlugins ?? options.context?.referencePlugins,
       platform: options.platform,
       scope: options.scope,
       cwd: options.cwd,
@@ -1654,6 +1657,7 @@ async function resolveDynamicArtifacts(options: {
     logicalIdentity: options.plugin.catalogLogicalIdentity,
     pluginName: options.plugin.manifest.name,
     manifest: options.plugin.manifest,
+    referencePlugins: options.referencePlugins ?? options.context?.referencePlugins,
     scope: options.scope,
     cwd: options.cwd,
     env: options.env,
@@ -1756,6 +1760,7 @@ async function buildClaudeWrites(options: {
   scriptTimeoutMs?: number;
   commandCandidates?: readonly ManagedCommandCandidate[];
   nativeSkillActions?: OperationAction[];
+  context?: RebuildExecutionContext;
 }): Promise<PlannedWrite[]> {
   const paths = resolveClaudePaths(options.cwd, options.scope, options.env);
   const writes: PlannedWrite[] = [];
@@ -3749,6 +3754,7 @@ function pluginHasCodexNativeSkillSurface(plugin: PluginMeta): boolean {
 async function resolveSensitiveUserConfigValues(
   plugin: PluginMeta,
   env: NodeJS.ProcessEnv,
+  referencePlugins?: readonly PluginMeta[],
 ): Promise<string[]> {
   const hasSensitiveFields = Object.values(plugin.manifest.config?.fields ?? {}).some((field) =>
     field.sensitive === true);
@@ -3758,6 +3764,7 @@ async function resolveSensitiveUserConfigValues(
     sourceIdentity: plugin.sourceIdentity,
     pluginName: plugin.manifest.name,
     manifest: plugin.manifest,
+    referencePlugins,
     scope: 'user',
     cwd: plugin.rootDir,
     env,
@@ -3853,6 +3860,7 @@ async function assertNoSensitiveValuesInCodexNativePayload(options: {
 }
 
 async function prepareCodexNativeRender(options: {
+  referencePlugins?: readonly PluginMeta[];
   plugin: PluginMeta;
   env: NodeJS.ProcessEnv;
   requestedArtifactIds?: readonly string[];
@@ -3894,6 +3902,7 @@ async function prepareCodexNativeRender(options: {
     const group = byScope.get(scope);
     if (!group || group.length === 0) continue;
     const rendered = await runArtifactRenderer({
+      referencePlugins: options.referencePlugins,
       event: 'install',
       plugin: options.plugin,
       platform: 'codex',
@@ -4009,6 +4018,7 @@ function prepareCodexNativeRenderCached(options: {
   let preparation = cache.get(options.plugin);
   if (!preparation) {
     preparation = prepareCodexNativeRender({
+      referencePlugins: options.context.referencePlugins,
       plugin: options.plugin,
       env: options.context.env,
       scriptTimeoutMs: options.scriptTimeoutMs,
@@ -4095,6 +4105,7 @@ export interface MaterializedReviewNativeSkills {
  * The caller owns outputRoot and is responsible for its cleanup.
  */
 export async function materializeReviewNativeSkills(options: {
+  plugins?: readonly PluginMeta[];
   plugin: PluginMeta;
   platform: 'codex' | 'claude';
   scope: Scope;
@@ -4156,6 +4167,7 @@ export async function materializeReviewNativeSkills(options: {
     .map((target) => target.id);
   if (directTargetIds.length > 0) {
     const dynamic = await resolveDynamicArtifacts({
+      referencePlugins: options.plugins,
       plugin: options.plugin,
       platform: options.platform,
       scope: options.scope,
@@ -4245,6 +4257,7 @@ export async function materializeReviewNativeSkills(options: {
       dereference: false,
     });
     const prepared = await prepareCodexNativeRender({
+      referencePlugins: options.plugins,
       plugin: options.plugin,
       env: options.env,
       requestedArtifactIds: nativeTargetIds,
@@ -4266,7 +4279,7 @@ export async function materializeReviewNativeSkills(options: {
       plugin: options.plugin,
       payloadRoot,
       allowedRoot: marketplaceRoot,
-      sensitiveValues: await resolveSensitiveUserConfigValues(options.plugin, options.env),
+      sensitiveValues: await resolveSensitiveUserConfigValues(options.plugin, options.env, options.plugins),
       verifiedRenderReceipt: staged.receipt,
     });
     const presentSkillKeys = new Set(staged.presentSkillKeys);
@@ -4826,6 +4839,7 @@ function createNativeDriver(options: {
                   sensitiveValues: await resolveSensitiveUserConfigValues(
                     candidate.plugin,
                     options.context.env,
+                    options.context.referencePlugins,
                   ),
                   ...(nativeRender ? { verifiedRenderReceipt: nativeRender.receipt } : {}),
                 });
@@ -5244,7 +5258,7 @@ function createNativeDriver(options: {
       if (!target.codexNativeObservationExpectation
         && !target.codexNativeSensitivePreflightRequired) return;
       const sensitiveValues = pluginHasCodexNativeSkillSurface(target.plugin)
-        ? await resolveSensitiveUserConfigValues(target.plugin, options.context.env)
+        ? await resolveSensitiveUserConfigValues(target.plugin, options.context.env, options.context.referencePlugins)
         : [];
       if (sensitiveValues.length > 0) {
         await assertNoSensitiveValuesInCanonicalCodexNativePayload({
@@ -5682,6 +5696,7 @@ function createNativeDriver(options: {
         scope: invocation.target.identity.scope,
         cwd: invocation.target.identity.cwd,
         context: options.context as never,
+        referencePlugins: options.context.referencePlugins,
         scriptTimeoutMs: options.scriptTimeoutMs,
       });
       const cache = options.context.preApplyExecutionCache;
@@ -5817,6 +5832,7 @@ export function createRebuildIntegration(options: {
             scriptTimeoutMs: options.scriptTimeoutMs,
             commandCandidates: commands.candidates,
             nativeSkillActions,
+            context: options.context,
           });
         }
       } else if (input.platform === 'codex' && input.scope === 'project') {

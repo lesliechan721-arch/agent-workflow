@@ -1,0 +1,184 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "spawn-subagent",
+    "participants": [
+      "codex-explore"
+    ],
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "critical",
+      "rationale": "事实范围与执行方法由不同能力负责；同一父协调可以同时加载Explore和Guide。需检出的是遗漏必要能力或接管已有完整调度流程，不能把共载本身判为重复委派。"
+    },
+    "runtime": {
+      "observeSpawnAgent": true,
+      "isolation": "standard",
+      "strictNegativeSplits": [
+        "validation",
+        "sanity"
+      ],
+      "forbidMultipleSkillLoads": false,
+      "fixture": "trigger-fixture.mjs"
+    }
+  },
+  "cases": [
+    {
+      "id": "authorization_only_requires_guide",
+      "split": "train",
+      "tags": [],
+      "input": {
+        "query": "$delegation-authorizer 核对 src/simple.ts 的事实并整理证据。",
+        "expected": {
+          "loadedSkills": [
+            "spawn-subagent"
+          ]
+        },
+        "shouldSpawnAgent": true,
+        "workspaceFixture": "authorization_skill"
+      }
+    },
+    {
+      "id": "specialized_workflow_owns_lifecycle",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "$delegation-lifecycle-owner 继续现有的专用委派流程。只说明下一步，不要实际调用任何 agent 工具。",
+        "expected": {
+          "loadedSkills": []
+        },
+        "shouldSpawnAgent": false,
+        "workspaceFixture": "lifecycle_skill"
+      },
+      "audit": {
+        "rationale": "专用 Skill 已完整拥有委派生命周期，两个插件 Skill 都不得叠加接管；用户也明确禁止 agent 工具。",
+        "minimalCounterexample": "把专用 lifecycle owner 替换为只授权的 delegation-authorizer 后，应加载 spawn-subagent 并启动子代理。"
+      }
+    },
+    {
+      "id": "partial_model_requirement_uses_guide",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "query": "$delegation-model-requirement 审核 changes/review.diff 并报告缺陷和风险。",
+        "expected": {
+          "loadedSkills": [
+            "spawn-subagent"
+          ]
+        },
+        "shouldSpawnAgent": true,
+        "workspaceFixture": "partial_requirement_skills"
+      },
+      "audit": {
+        "rationale": "上游 Skill 只指定模型，没有负责其它调度与生命周期；guide 必须保留模型要求并补齐未指定项。",
+        "minimalCounterexample": "如果上游 Skill 同时完整负责 role、spawn、context、waiting、recovery 和 cleanup，则 guide 不应叠加。"
+      }
+    },
+    {
+      "id": "partial_context_requirement_uses_guide",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "query": "$delegation-context-requirement 读取 src/simple.ts 并报告 retryLimit。",
+        "expected": {
+          "loadedSkills": [
+            "spawn-subagent"
+          ]
+        },
+        "shouldSpawnAgent": true,
+        "workspaceFixture": "partial_requirement_skills"
+      },
+      "audit": {
+        "rationale": "上游 Skill 只指定上下文继承，没有负责其它调度与生命周期；guide 必须保留继承要求并补齐未指定项。",
+        "minimalCounterexample": "如果上游 Skill 已完整负责当前委派的全部调度和生命周期，则 guide 不应叠加。"
+      }
+    },
+    {
+      "id": "specialized_owner_executes_without_guide",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "input": {
+        "query": "$delegation-active-lifecycle-owner 实际执行本次委派：读取 src/simple.ts 并报告 retryLimit。",
+        "expected": {
+          "loadedSkills": []
+        },
+        "shouldSpawnAgent": true,
+        "workspaceFixture": "active_lifecycle_skill"
+      },
+      "audit": {
+        "rationale": "专用 Skill 已完整负责当前委派并要求实际执行；guide 和 explore 都不得叠加，但专用流程仍必须启动代理。",
+        "minimalCounterexample": "如果上游 Skill 只给出模型或上下文要求而没有管理完整生命周期，则应加载 guide。"
+      }
+    },
+    {
+      "id": "validation_specialized_workflow_owner",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "$delegation-lifecycle-owner 继续安全审计的现有委派流程。只说明下一步，不要实际调用任何 agent 工具。",
+        "expected": {
+          "loadedSkills": []
+        },
+        "shouldSpawnAgent": false,
+        "workspaceFixture": "lifecycle_skill"
+      },
+      "audit": {
+        "rationale": "任务主题变为安全审计不改变 owner；专用生命周期 Skill 仍排除两个插件 Skill。",
+        "minimalCounterexample": "移除专用 lifecycle owner，并由用户直接授权安全审核委派后，应加载 spawn-subagent。"
+      }
+    },
+    {
+      "id": "real_explore_owner_route",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "我授权在这个任务中使用子代理。这个陌生 monorepo 文件很多。请跨网关、结算、任务和共享配置搜索 regional_checkout 的完整传递路径，只返回可核验文件证据，不做最终缺陷判断，也不要修改代码。",
+        "expected": {
+          "loadedSkills": [
+            "codex-explore",
+            "spawn-subagent"
+          ]
+        },
+        "shouldSpawnAgent": true,
+        "workspaceFixture": "explore_route"
+      },
+      "audit": {
+        "rationale": "Explore拥有事实范围与接纳，Guide补足执行和生命周期；同一次父协调可加载二者，不创建Guide领域代理。",
+        "minimalCounterexample": "保持相同用户授权，只把大范围事实探索改为边界清楚的常规文档实现后，应加载 spawn-subagent，而不是 codex-explore。"
+      }
+    },
+    {
+      "id": "sanity_specialized_owner_native",
+      "split": "sanity",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "$delegation-lifecycle-owner 继续现有工作流。只说明下一步，不要实际调用任何 agent 工具。",
+        "expected": {
+          "loadedSkills": []
+        },
+        "shouldSpawnAgent": false,
+        "workspaceFixture": "lifecycle_skill"
+      },
+      "audit": {
+        "rationale": "简短口语请求仍明确指向专用 owner；两个插件 Skill 都不得重叠加载或启动新 agent。",
+        "minimalCounterexample": "改为已授权且没有专用 owner 的通用任务后，应加载 spawn-subagent。"
+      }
+    }
+  ]
+}

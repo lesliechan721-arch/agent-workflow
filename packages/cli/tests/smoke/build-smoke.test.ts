@@ -34,6 +34,7 @@ const EXPECTED_PLUGIN_PLATFORMS = {
   'agent-content-toolkit': ['claude', 'codex'],
   'aw-skill-eval-runner': ['claude', 'codex'],
   'agent-skill-toolkit': ['claude', 'codex'],
+  'agent-subagent': ['claude', 'codex'],
   'decision-kit': ['claude', 'codex'],
   'aw-development-toolkit': ['claude', 'codex'],
   'browser-use': ['claude', 'codex'],
@@ -351,7 +352,7 @@ describe('build smoke', () => {
     }
     for (const [pluginName, artifactId] of [
       ['codex-enhance', 'codex-explore-skill'],
-      ['codex-enhance', 'codex-subagent-guide-skill'],
+      ['agent-subagent', 'spawn-subagent-skill'],
     ]) {
       await expect(fs.pathExists(path.join(
         outputRoot,
@@ -397,6 +398,7 @@ describe('build smoke', () => {
     expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'agent-content-toolkit',
       'agent-skill-toolkit',
+      'agent-subagent',
       'aw-development-toolkit',
       'aw-skill-eval-runner',
       'browser-use',
@@ -409,6 +411,7 @@ describe('build smoke', () => {
     expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'agent-content-toolkit',
       'agent-skill-toolkit',
+      'agent-subagent',
       'aw-development-toolkit',
       'aw-skill-eval-runner',
       'browser-use',
@@ -505,22 +508,22 @@ describe('build smoke', () => {
       path.join(
         outputRoot,
         'plugins',
-        'codex-enhance',
+        'agent-subagent',
         '.agents-plugin',
         'artifact-sources',
         'codex',
-        'codex-subagent-guide-skill',
+        'spawn-subagent-skill',
         '0',
         'SKILL.md',
       ),
       path.join(
         outputRoot,
         'plugins',
-        'codex-enhance',
+        'agent-subagent',
         '.agents-plugin',
         'artifact-sources',
         'codex',
-        'codex-subagent-guide-skill',
+        'spawn-subagent-skill',
         '0',
         'agents',
         'openai.yaml',
@@ -605,6 +608,16 @@ describe('build smoke', () => {
     expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v7']);
     expect(catalogManifest.entries.every((entry) =>
       entry.requires.aw.capabilities.includes('aw.plugin-manifest.v3'))).toBe(true);
+    expect(catalogManifest.entries.find((entry) => entry.name === 'codex-enhance')).toMatchObject({
+      dependencies: ['agent-subagent'],
+      requires: { aw: { capabilities: expect.arrayContaining(['aw.plugin-config-cross-plugin-value-ref.v1']) } },
+    });
+    const subagentBundle = await fs.readJson(path.join(outputRoot, 'plugins', 'agent-subagent', '.agents-plugin', 'plugin.json'));
+    expect(subagentBundle.artifacts.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'spawn-subagent-skill', skillKey: 'spawn-subagent', target: 'codex.skill' }),
+      expect.objectContaining({ id: 'spawn-subagent-claude-skill', skillKey: 'spawn-subagent', target: 'claude.skill', scopes: ['user', 'project'] }),
+      expect.objectContaining({ id: 'subagent-role', roleKey: 'subagent', target: 'codex.agentRole' }),
+    ]));
     expect(catalogManifest).not.toHaveProperty('history');
     expect(catalogManifest).not.toHaveProperty('packages');
     expect((await fs.readdir(outputRoot)).sort()).toEqual([

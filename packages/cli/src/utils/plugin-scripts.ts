@@ -486,6 +486,7 @@ export interface PreApplyContextV1 {
 }
 
 export async function runPreApplyScript(options: {
+  referencePlugins?: readonly PluginMeta[];
   plugin: PluginMeta; platform: PlatformName; scope: Scope; cwd: string; context: CommandExecutionContext;
   scriptTimeoutMs?: number; runner?: PluginProcessRunner;
 }): Promise<void> {
@@ -514,7 +515,7 @@ export async function runPreApplyScript(options: {
   try {
     const entryPath = await resolveBundledPluginFilePath({ bundleRoot: options.plugin.rootDir, pluginRelativePath: declaration.path, fieldName: 'preApply script' });
     const effective = options.plugin.manifest.config?.fields
-      ? await resolveEffectivePluginConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, targetScope: options.scope, cwd: options.cwd, env: options.context.env })
+      ? await resolveEffectivePluginConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, targetScope: options.scope, cwd: options.cwd, env: options.context.env, referencePlugins: options.referencePlugins })
       : { values: {}, issues: [] };
     if (effective.issues.length > 0) throw new Error(`preApply config is invalid for ${options.plugin.manifest.name}.`);
     const payload: PreApplyContextV1 = {

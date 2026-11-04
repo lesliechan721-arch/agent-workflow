@@ -346,20 +346,18 @@ describe('review inspect CLI entry', () => {
 
     const ambientOutput = capture()
     expect(await runCli(args, { cwd: root, io: ambientOutput.io })).toBe(0)
-    expect(JSON.parse(ambientOutput.stdout())).toMatchObject({
+    const ambientReceipt = JSON.parse(ambientOutput.stdout())
+    expect(ambientReceipt).toMatchObject({
       view: 'review',
-      skills: [{ state: 'stale', evidencePath: written.bindingPath }],
-    })
-
-    const injectedOutput = capture()
-    expect(await runCli(args, { cwd: root, env: injectedEnv, io: injectedOutput.io })).toBe(0)
-    expect(JSON.parse(injectedOutput.stdout())).toMatchObject({
-      view: 'review',
-      skills: [{ state: 'missing' }],
+      skills: [{ state: 'missing', evidencePath: null }],
       issues: expect.arrayContaining([
         expect.objectContaining({ code: 'materializationNotSelected' }),
       ]),
     })
+
+    const injectedOutput = capture()
+    expect(await runCli(args, { cwd: root, env: injectedEnv, io: injectedOutput.io })).toBe(0)
+    expect(JSON.parse(injectedOutput.stdout())).toEqual(ambientReceipt)
 
     const repeatedMaterializationOutput = capture()
     expect(await runCli([
@@ -367,6 +365,17 @@ describe('review inspect CLI entry', () => {
     ], { cwd: root, env: injectedEnv, io: repeatedMaterializationOutput.io })).toBe(0)
     expect(JSON.parse(repeatedMaterializationOutput.stdout()))
       .toEqual(JSON.parse(injectedOutput.stdout()))
+
+    const configFile = path.join(root, 'review-config.json')
+    await fs.outputJson(configFile, { 'portable-env': { flavor: 'injected' } })
+    const explicitConfigOutput = capture()
+    expect(await runCli([
+      ...args.slice(0, -1), '--config', configFile, '--json',
+    ], { cwd: root, io: explicitConfigOutput.io })).toBe(0)
+    expect(JSON.parse(explicitConfigOutput.stdout())).toMatchObject({
+      view: 'review',
+      skills: [{ state: 'ready', evidencePath: written.bindingPath }],
+    })
 
   })
 })

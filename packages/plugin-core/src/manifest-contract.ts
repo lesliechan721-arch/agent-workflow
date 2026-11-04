@@ -2822,7 +2822,9 @@ export function validatePluginManifest(
   }
 
   if (input.config !== undefined) {
-    manifest.config = normalizePluginConfigDefinition(input.config, 'config');
+    manifest.config = normalizePluginConfigDefinition(input.config, 'config', {
+      plugin: manifest.name, dependencies: manifest.dependencies ?? [],
+    });
   }
 
   if (input.artifacts !== undefined) {

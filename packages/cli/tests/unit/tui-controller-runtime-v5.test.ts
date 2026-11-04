@@ -2164,7 +2164,12 @@ describe('TUI controller runtime scope conflict validation', () => {
       path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'preApply.mjs'),
       'export default async () => undefined;\n',
     );
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+    await fs.outputFile(path.join(sourceRoot, 'plugins', 'dependency', 'scripts', 'preApply.mjs'),
+      'export default async () => undefined;\n');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'dependency', configureManifest(manifest) {
+      manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+      manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
+    } }, { name: 'demo', dependencies: ['dependency'], configureManifest(manifest) {
       manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
       manifest.config = { fields: {
         mode: { type: 'string', title: 'Mode' },
@@ -2181,7 +2186,7 @@ describe('TUI controller runtime scope conflict validation', () => {
         refreshKeys: ['nativeMode'],
         skillKey: 'native-skill',
       }] };
-    });
+    } }]);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
@@ -2264,7 +2269,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       relation: 'direct',
     }));
     expect(impactTitles(userReview)).toEqual([
-      '重新应用 Claude Code · 当前项目', '重新应用 Codex · 所有项目',
+      '重新应用 demo · Claude Code · 当前项目', '重新应用 demo · Codex · 所有项目',
     ]);
     await expect(both.executeOperation(userReview.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
     expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -2341,7 +2346,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       kind: 'configSave', pluginId: 'team/demo', scope: 'project', projectLayer: 'shared', apply: true, updates: { mode: 'project' },
       changes: [{ key: 'mode', title: 'Mode', before: 'old', after: 'project' }],
     });
-    expect(impactTitles(projectReview)).toEqual(['重新应用 Claude Code · 当前项目']);
+    expect(impactTitles(projectReview)).toEqual(['重新应用 demo · Claude Code · 当前项目']);
     await expect(projectOnly.executeOperation(projectReview.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
     expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenLastCalledWith(expect.objectContaining({
       sharedNativeApplyConfirmed: true,
@@ -2365,7 +2370,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     });
     expect(impactTitles(retryReview)).toEqual([
       '重新生成 native-skill 原生 Skill',
-      '重新应用 Claude Code · 当前项目', '重新应用 Codex · 所有项目',
+      '重新应用 demo · Claude Code · 当前项目', '重新应用 demo · Codex · 所有项目',
     ]);
     expect(retryReview).toMatchObject({
       requiresConfirmation: true,
@@ -2396,7 +2401,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     });
     expect(impactTitles(retryWithoutApplyReview)).toEqual([
       '重新生成 native-skill 原生 Skill',
-      '重新应用 Claude Code · 当前项目', '重新应用 Codex · 所有项目',
+      '重新应用 demo · Claude Code · 当前项目', '重新应用 demo · Codex · 所有项目',
     ]);
     expect(retryWithoutApplyReview).toMatchObject({
       requiresConfirmation: true,
@@ -2422,7 +2427,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     const stale = await drifting.executeOperation(driftReview.reviewToken);
     expect(stale).toMatchObject({ state: 'stale' });
     if (stale.state === 'stale') {
-      expect(impactTitles(stale.review)).toEqual(['重新应用 Codex · 所有项目']);
+      expect(impactTitles(stale.review)).toEqual(['重新应用 demo · Codex · 所有项目']);
     }
     expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenCalledTimes(writesBeforeDrift);
     drifting.dispose();

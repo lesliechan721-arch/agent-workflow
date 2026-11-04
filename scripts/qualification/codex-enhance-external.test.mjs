@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { qualificationArguments, checkQualification, runQualification } from './codex-enhance-external.mjs';
-import { RUNTIME_KEYS } from '../../plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/contracts.mjs';
+import { RUNTIME_KEYS } from '../../plugins/agent-subagent/skills/spawn-subagent/scripts/runtime/contracts.mjs';
 
 // Test Value Gate: real qualification must not submit a model call by default or
 // mistake a matching fake CLI version for model/platform qualification evidence.
@@ -41,7 +41,7 @@ test('the six explicit instruction probes use v3 and preserve an unknown attempt
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-qualification-v3-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
-  const guide = path.join(directory, 'codex-subagent-guide');
+  const guide = path.join(directory, 'spawn-subagent');
   const advisor = path.join(directory, 'advisor-input');
   const explore = path.join(directory, 'explore-input');
   const roots = { 'guide-root': guide, 'advisor-root': advisor, 'explore-root': explore };
@@ -50,12 +50,12 @@ test('the six explicit instruction probes use v3 and preserve an unknown attempt
     await fs.mkdir(path.join(root, 'assets'), { recursive: true });
     await fs.writeFile(path.join(root, 'assets', file), text);
   }
-  await fs.cp(path.join(repoRoot, 'plugins/codex-enhance/skills/codex-subagent-guide/scripts'), path.join(guide, 'scripts'), { recursive: true });
+  await fs.cp(path.join(repoRoot, 'plugins/agent-subagent/skills/spawn-subagent/scripts'), path.join(guide, 'scripts'), { recursive: true });
   await fs.copyFile(path.join(repoRoot, 'packages/cli/authoring/assets/aw-runtime-config.mjs'), path.join(guide, 'scripts/aw-runtime-config.mjs'));
   await fs.writeFile(path.join(guide, 'SKILL.md'), 'qualification fixture');
   const identity = { sourceId: 'fixture', sourceIdentity: 'fixture-source', pluginId: 'fixture/fixture-plugin',
     pluginName: 'fixture-plugin', pluginVersion: '1.0.0', platform: 'codex', scope: 'user', configScope: 'user',
-    artifactId: 'fixture-guide', skillKey: 'codex-subagent-guide' };
+    artifactId: 'fixture-guide', skillKey: 'spawn-subagent' };
   await fs.writeFile(path.join(guide, '.aw-runtime-config.json'), JSON.stringify({ schemaVersion: 2, kind: 'aw-runtime-config',
     installedIdentity: identity, allowedKeys: RUNTIME_KEYS,
     effectiveValues: { generalTaskProfile: { model: 'configured-model', reasoningEffort: 'medium' },

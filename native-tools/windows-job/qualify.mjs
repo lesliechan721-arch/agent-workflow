@@ -23,9 +23,9 @@ export async function qualifyWindowsJobCandidate(options = {}) {
         if (!toolchain.stdout.startsWith(`go version ${selected.candidate.goVersion} `)) throw new Error('Pinned Go toolchain required for native tests.');
         await runCommand('go', ['test', './...'], { cwd: path.join(windowsJobArtifactContract.toolRoot, 'job-helper'), env: { GOTOOLCHAIN: 'local', CGO_ENABLED: '0', GOWORK: 'off' } });
         report.checks.push({ id: 'go-native-tests', passed: true });
-        const plugin = path.join(temporary, 'codex-enhance');
-        await cp(path.resolve(windowsJobArtifactContract.toolRoot, '../../plugins/codex-enhance'), plugin, { recursive: true, filter: (source) => !source.split(path.sep).includes('node_modules') });
-        await writeFile(path.join(plugin, 'skills/codex-subagent-guide/scripts/runtime/native-tool-reader.mjs'), createNativeToolReaderSource());
+        const plugin = path.join(temporary, 'agent-subagent');
+        await cp(path.resolve(windowsJobArtifactContract.toolRoot, '../../plugins/agent-subagent'), plugin, { recursive: true, filter: (source) => !source.split(path.sep).includes('node_modules') });
+        await writeFile(path.join(plugin, 'skills/spawn-subagent/scripts/runtime/native-tool-reader.mjs'), createNativeToolReaderSource());
         await runCommand(process.execPath, [path.join(plugin, 'scripts/subagent-windows-file-boundaries.mjs')], {
           env: { AW_NATIVE_TOOL_CONTEXT: context },
         });

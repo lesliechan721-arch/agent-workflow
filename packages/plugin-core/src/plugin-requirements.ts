@@ -68,16 +68,17 @@ export function deriveAwCapabilitiesFromManifest(
     if (configFields.some((field) => field.type === 'array' && field.validation?.uniqueBy !== undefined)) {
       capabilities.push('aw.plugin-config-unique-by.v1')
     }
-    const hasValueRef = (field: typeof configFields[number]): boolean => {
-      if (field.type === 'array') return hasValueRef(field.items as typeof configFields[number])
-      if (field.type !== 'object') return 'valueRef' in field && field.valueRef !== undefined
+    const hasValueRef = (field: typeof configFields[number], crossPlugin = false): boolean => {
+      if (field.type === 'array') return hasValueRef(field.items as typeof configFields[number], crossPlugin)
+      if (field.type !== 'object') return 'valueRef' in field && field.valueRef !== undefined && (!crossPlugin || field.valueRef.plugin !== undefined)
       return field.properties === undefined
-        ? hasValueRef(field.additionalProperties as typeof configFields[number])
+        ? hasValueRef(field.additionalProperties as typeof configFields[number], crossPlugin)
         : [field.properties, ...Object.values(field.variants?.cases ?? {}).map((variant) => variant.properties),
           ...(field.variants?.otherwise === undefined ? [] : [field.variants.otherwise.properties])]
-          .some((properties) => Object.values(properties).some((property) => hasValueRef(property as typeof configFields[number])))
+          .some((properties) => Object.values(properties).some((property) => hasValueRef(property as typeof configFields[number], crossPlugin)))
     }
-    if (configFields.some(hasValueRef)) capabilities.push('aw.plugin-config-value-ref.v1')
+    if (configFields.some((field) => hasValueRef(field))) capabilities.push('aw.plugin-config-value-ref.v1')
+    if (configFields.some((field) => hasValueRef(field, true))) capabilities.push('aw.plugin-config-cross-plugin-value-ref.v1')
     const presentation = manifest.config.presentation
     if (presentation && (('summaries' in presentation && presentation.summaries)
       || ('fieldViews' in presentation && presentation.fieldViews))) {

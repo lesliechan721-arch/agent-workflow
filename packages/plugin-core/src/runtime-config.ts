@@ -1,5 +1,5 @@
 import { getPluginConfigDependencyKeys, validatePluginConfigCandidate } from './plugin-config.js';
-import type { PluginConfigSchema, PluginConfigValue, Scope, PlatformName } from './types.js';
+import type { PluginConfigSchema, PluginConfigValue, Scope, PlatformName, PluginConfigReferenceContext } from './types.js';
 
 export const AW_RUNTIME_CONFIG_BINDING_PATH = '.aw-runtime-config.json';
 export const AW_RUNTIME_CONFIG_READER_PATH = 'scripts/aw-runtime-config.mjs';
@@ -39,16 +39,17 @@ export function createRuntimeConfigSnapshot(options: {
   declaration: PluginRuntimeConfigDeclaration;
   definition: PluginConfigSchema;
   values: Record<string, PluginConfigValue>;
+  referenceContext?: PluginConfigReferenceContext;
 }): RuntimeConfigSnapshot {
   const allowedKeys = [...new Set(options.declaration.keys)].sort();
-  const closure = getPluginConfigDependencyKeys(options.definition, allowedKeys);
+  const closure = getPluginConfigDependencyKeys(options.definition, allowedKeys, options.referenceContext);
   for (const key of closure) {
     const field = options.definition.fields[key];
     if (!field || ('sensitive' in field && field.sensitive === true)) {
       throw new Error('runtimeConfigKeyDenied: Runtime config requires declared non-sensitive fields.');
     }
   }
-  if (validatePluginConfigCandidate(options.definition, options.values, allowedKeys).length > 0) {
+  if (validatePluginConfigCandidate(options.definition, options.values, allowedKeys, options.referenceContext).length > 0) {
     throw new Error('runtimeConfigInvalid: Effective runtime config is invalid; sync or reinstall after fixing config.');
   }
   return {

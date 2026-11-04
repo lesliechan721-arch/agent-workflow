@@ -13,6 +13,7 @@ import fs from 'fs-extra'
 import { readAwSkillEvalManifest } from '../eval/manifest-v1.js'
 import {
   readAwSourceBinding,
+  resolveEvalProfileBindingInput,
   resolvePortablePluginProfileConfig,
   validateAwSourceBindingForWorkspace,
   type AwSourceBindingWorkspaceValidationContext,
@@ -29,8 +30,11 @@ import type {
 } from '../review/review-types.js'
 import {
   resolveEffectivePluginConfigFromStores,
+  codexNativeRefreshKeys,
   type PluginConfigStore,
 } from '../utils/plugin-config.js'
+import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js'
+import { pluginConfigHasExternalReferences } from '../utils/plugin-config-references.js'
 
 export type ReviewInspectionView = 'review'
 export type ReviewInspectionPlatform = 'codex' | 'claude' | 'agent-skills'
@@ -236,19 +240,40 @@ async function legacyBindingMatchesSelection(options: {
     const loaded = await readAwSkillEvalManifest({ plugin, skill: binding.subject.skill })
     const evalProfile = loaded.manifest.profiles.find((entry) => entry.id === binding.profile.id)
     if (!evalProfile) return false
-    const config = Object.fromEntries(
-      evalProfile.plugins.map((entry) => [entry.name, entry.config]),
-    ) as ReviewProfileConfig
     try {
+      const { materializationProfile } = resolveEvalProfileBindingInput(
+        evalProfile, options.selection.workspace.plugins, binding.profile.config,
+      )
+      const installations = new Map(materializationProfile.plugins.map((entry) => [entry.name, entry]))
       const requested = selectedSkillConfig(requestedProfile, skill)
       if (!requested) return false
-      const overrides = config[skill.pluginName] ?? {}
+      const overrides = {
+        ...(evalProfile.plugins.find((entry) => entry.name === skill.pluginName)?.config ?? {}),
+        ...(binding.profile.config?.[skill.pluginName] ?? {}),
+      } as ReviewProfileConfig[string]
       const userValues = binding.profile.scope === 'user' ? overrides : {}
       const effective = await resolveEffectivePluginConfigFromStores({
         pluginName: skill.pluginName,
         manifest: skill.plugin.manifest,
         targetScope: binding.profile.scope,
         projectRoot: options.selection.workspace.workspaceRoot,
+        referenceContext: {
+          plugin: skill.pluginName,
+          dependencies: skill.plugin.manifest.dependencies ?? [],
+          plugins: Object.fromEntries(options.selection.workspace.plugins.map((provider) => {
+            const scopes = installations.get(provider.manifest.name)?.configByScope ?? {}
+            const userOnly = codexNativeRefreshKeys(provider.manifest)
+            return [provider.manifest.name, { definition: provider.manifest.config ?? { fields: {} },
+              dependencies: provider.manifest.dependencies ?? [],
+              values: Object.fromEntries(Object.entries(provider.manifest.config?.fields ?? {}).flatMap(([key, field]) => {
+                const values = userOnly.has(key) ? scopes.user ?? {}
+                  : { ...(scopes.user ?? {}), ...(scopes[binding.profile.scope] ?? {}) }
+                return Object.hasOwn(values, key) ? [[key, values[key]]]
+                  : field.default === undefined ? [] : [[key, field.default]]
+              })),
+            }]
+          })),
+        },
         stores: {
           user: legacyProfileStore('user', userValues),
           ...(binding.profile.scope === 'project'
@@ -272,6 +297,8 @@ async function legacyBindingMatchesSelection(options: {
     if (!requested) return false
     const current = await resolvePortablePluginProfileConfig({
       plugin: skill.plugin,
+      plugins: options.selection.workspace.plugins,
+      offlineConfig: requestedProfile.profile.config,
       scope: skill.configScope,
       cwd: options.selection.workspace.workspaceRoot,
       env: options.env,
@@ -334,6 +361,9 @@ async function inspectNavigationBindings(options: {
       expectedSubject: binding.subject,
       cwd: options.selection.workspace.workspaceRoot,
       env: options.env,
+      offlineConfig: Object.fromEntries(options.selection.profiles
+        .filter((profile) => profile.platform === 'agent-skills' && profile.scope === binding.profile.scope)
+        .flatMap((profile) => Object.entries(profile.profile.config))),
     })
     if (validation.state === 'invalid' || validation.state === 'incomplete') {
       throw new ReviewInspectionInputError(
@@ -341,6 +371,11 @@ async function inspectNavigationBindings(options: {
         validation.issues.map((entry) => entry.message).join('; '),
       )
     }
+    const portableConfigMismatch = binding.profile.kind === 'portable' && validation.state === 'drifted'
+      && validation.issues.some((entry) => entry.code === 'sourceBindingProfileDrift')
+      && !validation.issues.some((entry) => entry.code === 'sourceBindingSourceDrift')
+      && !resolvePluginMetaDependencyClosure(options.selection.workspace.plugins, [binding.subject.plugin])
+        .some((entry) => pluginConfigHasExternalReferences(entry.manifest))
     let selected = false
     for (const requestedProfile of options.selection.profiles) {
       const profileMatches = binding.profile.kind === 'review'
@@ -349,7 +384,7 @@ async function inspectNavigationBindings(options: {
         : binding.profile.kind === 'eval'
           ? requestedProfile.platform === 'codex'
           : requestedProfile.platform === 'agent-skills'
-      if (!profileMatches) continue
+      if (!profileMatches || portableConfigMismatch) continue
       for (const artifact of binding.artifacts) {
         const identity = bindingOutputIdentity(binding, artifact)
         if (!identity) continue

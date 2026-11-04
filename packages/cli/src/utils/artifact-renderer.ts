@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import type { PluginConfigReferenceContext } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   ArtifactPlan,
@@ -59,6 +60,7 @@ export interface ResolvedArtifactRenderConfig {
   sources: Record<string, PluginConfigSource>;
   issues: PluginConfigIssue[];
   stores: Partial<Record<Scope, PluginConfigStore>>;
+  referenceContext?: PluginConfigReferenceContext;
 }
 
 export interface ArtifactRendererContext {
@@ -173,6 +175,7 @@ function selectConfigKeys<Value>(
 }
 
 export async function resolveArtifactRenderConfig(options: {
+  referencePlugins?: readonly PluginMeta[];
   sourceId?: string;
   sourceIdentity?: string;
   logicalIdentity?: string;
@@ -227,6 +230,7 @@ export async function resolveArtifactRenderConfig(options: {
     logicalIdentity: options.logicalIdentity,
     pluginName,
     manifest: options.manifest,
+    referencePlugins: options.referencePlugins,
     targetScope: options.scope,
     cwd: options.cwd,
     env: options.env,
@@ -240,6 +244,7 @@ export async function resolveArtifactRenderConfig(options: {
     sources: effective.sources,
     issues: effective.issues,
     stores: effective.stores,
+    referenceContext: effective.referenceContext,
   };
 }
 
@@ -280,6 +285,7 @@ export async function resolveArtifactRendererTarget(
 }
 
 export async function writeArtifactRendererContext(options: {
+  referencePlugins?: readonly PluginMeta[];
   sourceId?: string;
   sourceIdentity?: string;
   logicalIdentity?: string;
@@ -326,6 +332,7 @@ export async function writeArtifactRendererContext(options: {
     logicalIdentity: options.logicalIdentity,
     pluginName: options.target.sourceManifest.name,
     manifest: options.target.sourceManifest,
+    referencePlugins: options.referencePlugins,
     scope: options.configScope ?? options.scope,
     cwd: options.cwd,
     env: options.commandEnv,
@@ -542,6 +549,7 @@ async function runArtifactRendererProcess(options: {
 }
 
 export async function runArtifactRenderer(options: {
+  referencePlugins?: readonly PluginMeta[];
   event: ArtifactRenderEvent;
   plugin: PluginMeta;
   platform: ArtifactRenderSurfaceName;
@@ -573,6 +581,7 @@ export async function runArtifactRenderer(options: {
     sourceIdentity: options.plugin.sourceIdentity,
     logicalIdentity: options.plugin.catalogLogicalIdentity,
     target,
+    referencePlugins: options.referencePlugins,
     event,
     platform: options.platform,
     scope: options.scope,
