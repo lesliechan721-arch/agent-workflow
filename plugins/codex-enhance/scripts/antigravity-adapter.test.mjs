@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { nativeTest as test } from './fixtures/native-test.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -12,6 +12,7 @@ import { executeAntigravity } from '../skills/codex-subagent-guide/scripts/adapt
 import { deferred } from '../skills/codex-subagent-guide/scripts/adapters/common.mjs';
 import { antigravityArguments, checkAntigravityArguments } from '../skills/codex-subagent-guide/scripts/adapters/antigravity-arguments.mjs';
 import { antigravityPermissionRules } from '../skills/codex-subagent-guide/scripts/adapters/antigravity-permissions.mjs';
+import { communicationEnvironment } from '../skills/codex-subagent-guide/scripts/runtime/managed-host.mjs';
 import { protectPrivatePath } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
@@ -33,7 +34,7 @@ test('Antigravity options preserve ordinary settings and reject control override
   for (const args of [
     ['--input-format=text'], ['--output-format', 'json'], ['--print-timeout=0'], ['--print', 'task'], ['-phello'],
     ['--continue'], ['--conversation=id'], ['--project', 'other'], ['--new-project'], ['--remote-control'],
-    ['--cwd=/other'], ['--gemini_dir=/other'], ['--help'], ['--version'], ['mcp', 'list'], ['--', 'prompt'],
+    ['--settings', '{}'], ['--settings={}'], ['--cwd=/other'], ['--gemini_dir=/other'], ['--help'], ['--version'], ['mcp', 'list'], ['--', 'prompt'],
     ['--sandbox', 'false'], ['--agent'], ['--model', '--continue'], ['--mode=invalid'], ['--effort=ultra'],
     ['--unknown=value'], ['--model=one', '--model=two'],
   ]) assert.throws(() => checkAntigravityArguments({ args, execution: {} }), { code: /^(adapterArgumentConflict|parameterUnavailable)$/ });
@@ -61,9 +62,15 @@ import fs from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { spawn } from 'node:child_process';
 const scenario = process.env.FIXTURE_SCENARIO;
+if(process.argv.length===3 && process.argv[2]==='--version'){
+ if(scenario==='version failure')process.exit(2);
+ process.stdout.write((scenario.startsWith('version ')?scenario.slice(8):'1.4.12')+'\\n');process.exit(0);
+}
 const capture = value => fs.appendFile(process.env.FIXTURE_CAPTURE, JSON.stringify(value)+'\\n');
 const emit = value => process.stdout.write(JSON.stringify(value)+'\\n');
-await capture({pid:process.pid,args:process.argv.slice(2),cwd:process.cwd(),home:process.env.HOME});
+const args=process.argv.slice(2);
+const sessionSettings=args.includes('--settings')?JSON.parse(await fs.readFile(args[args.indexOf('--settings')+1],'utf8')):null;
+await capture({pid:process.pid,args,cwd:process.cwd(),home:process.env.HOME,sessionSettings});
 setTimeout(()=>process.exit(9),12000).unref();
 const init = () => emit({event:'init',conversation_id:'conversation-fixture',init:{tools:scenario==='missing command tool'?[]:['run_command'],...(scenario==='strict permissions'?{permission_mode:'strict'}:{})}});
 if (scenario === 'init early') init(); else setTimeout(init, 25);
@@ -100,7 +107,8 @@ input.on('line',async line=>{
   emit({event:'step_update',step_update:{...step,step_index:2,step_type:'tool',state:scenario==='unknown tool state'?'FAILED':'ERROR'}});
  }
  if (scenario === 'no terminal') return process.exit(0);
- const result={event:'result',result:{conversation_id:scenario==='session mismatch'?'other-conversation':'conversation-fixture',status:scenario==='failure'||scenario==='tool error failure'?'ERROR':'SUCCESS',response:['tool denied empty','tool denied invalid','tool error empty'].includes(scenario)?'':scenario==='auto discussion'?'Auto is not supported; continuing in the default mode.':${JSON.stringify(answer)},num_turns:1}};
+ const result={event:'result',result:{conversation_id:scenario==='session mismatch'?'other-conversation':'conversation-fixture',status:scenario==='failure'||scenario==='tool error failure'?'ERROR':'SUCCESS',response:['tool denied empty','tool denied invalid','tool error empty'].includes(scenario)?'':scenario==='auto discussion'?'Auto is not supported; continuing in the default mode.':${JSON.stringify(answer)},num_turns:scenario==='resumed'?7:scenario==='negative turns'?-1:scenario==='unsafe turns'?Number.MAX_SAFE_INTEGER+1:1}};
+ if (scenario==='missing turns') delete result.result.num_turns;
  if (scenario==='tool denied empty') result.result.denied_actions=[{action:'command',display_name:'RunCommand'}];
  if (scenario==='tool denied invalid') result.result.denied_actions={action:'command'};
  emit(result);
@@ -118,6 +126,16 @@ input.on('close',()=>setImmediate(()=>process.exit(scenario==='nonzero'?7:0)));
     PATH: [bin, path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), HOME: home, TMPDIR: root,
     LANG: 'C.UTF-8', AW_SUBAGENT_PROCESS_TOKEN: randomBytes(24).toString('hex'), FIXTURE_CAPTURE: capture, FIXTURE_SCENARIO: scenario,
   };
+  const commandId = 'cmdp_0123456789abcdef';
+  const cliEntry = path.join(root, 'aw.mjs');
+  await fs.writeFile(cliEntry, `import {spawn} from 'node:child_process';
+const args=process.argv.slice(2);
+if(JSON.stringify(args.slice(0,4))!==JSON.stringify(['command','run',${JSON.stringify(commandId)},'--']))process.exit(2);
+const child=spawn(process.execPath,[${JSON.stringify(path.join(installed,'message.mjs'))},...args.slice(4)],{stdio:'inherit'});
+child.on('error',()=>process.exit(1));child.on('exit',code=>process.exit(code??1));`);
+  const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: root };
+  Object.assign(environment, communicationEnvironment(host, { id: commandId }));
+  const commandBinding = JSON.parse(environment.AW_SUBAGENT_COMMUNICATION_COMMAND);
   const child = spawn(process.execPath, [path.join(installed, 'adapters/antigravity-v5.mjs')], { cwd: workspace, env: environment, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
   const frames = [], waiters = new Set();
   let diagnostic = '', closed = false;
@@ -155,7 +173,7 @@ input.on('close',()=>setImmediate(()=>process.exit(scenario==='nonzero'?7:0)));
     }
     throw new Error('The backend did not reach the expected state.');
   };
-  return { request, directory, workspace, home, frames, send, waitFor, captured, waitForCaptured, exit };
+  return { request, directory, workspace, home, commandBinding, frames, send, waitFor, captured, waitForCaptured, exit };
 }
 
 for (const scenario of ['init early', 'success']) test(`Antigravity: communication=false completes with ${scenario === 'init early' ? 'early' : 'late'} init and preserves the task`, testOptions, async (t) => {
@@ -174,11 +192,25 @@ for (const scenario of ['init early', 'success']) test(`Antigravity: communicati
   assert.ok(f.frames.findIndex((frame) => frame.type === 'closing') < f.frames.findIndex((frame) => frame.type === 'result'));
 });
 
+// Test Value Gate: session totals must not discard a valid resumed response.
+test('Antigravity resumed session accepts a cumulative turn count and keeps execution options', testOptions, async (t) => {
+  const f = await fixture(t, 'resumed');
+  f.request.sessionId = 'conversation-fixture';
+  f.send(f.request);
+  const result = await f.waitFor('result');
+  assert.equal(result.state, 'completed', JSON.stringify(result));
+  assert.equal(result.text, answer);
+  assert.equal(result.sessionId, f.request.sessionId);
+  assert.equal((await f.exit).code, 0);
+  assert.deepEqual((await f.captured())[0].args, antigravityArguments(f.request));
+});
+
 // Test Value Gate: the public adapter entry must prepare its installed template,
-// allow only the exact script, and carry actual command bytes through the bridge.
-for (const permissionMode of ['default', 'full-access']) test('Antigravity: '+permissionMode+' communication publishes enabled ready and sends through the actual command bridge', testOptions, async (t) => {
+// allow only the exact communication command, and carry actual command bytes through the bridge.
+for (const permissionMode of ['default', 'full-access']) for (const resumed of [false, true]) test('Antigravity: '+permissionMode+(resumed?' resumed':' initial')+' communication publishes enabled ready and sends through the actual command bridge', testOptions, async (t) => {
   const f = await fixture(t, 'communication');
   f.request.communication = true; f.request.permissionMode = permissionMode; f.request.args = [];
+  if (resumed) f.request.sessionId = 'conversation-fixture';
   f.send(f.request);
   assert.deepEqual((await f.waitFor('ready')).initialization.capabilities.communication, { status: 'enabled', transport: 'command', passiveDelivery: 'turn-boundary' });
   assert.equal((await f.waitFor('message')).text, bridgeMessage);
@@ -189,11 +221,17 @@ for (const permissionMode of ['default', 'full-access']) test('Antigravity: '+pe
   const invocation = values.find((value) => Object.hasOwn(value, 'messageCommandExit'));
   assert.equal(invocation.messageCommandExit, 0, invocation.error);
   assert.equal(invocation.receipt, 'send_parent: submitted\n');
-  const settingsFile = path.join(f.home, '.gemini/antigravity-cli/settings.json');
-  if (permissionMode === 'full-access') await assert.rejects(fs.access(settingsFile), { code: 'ENOENT' });
-  else {
-    const settings = JSON.parse(await fs.readFile(settingsFile, 'utf8'));
-    assert.deepEqual(settings.permissions.allow, antigravityPermissionRules(process.execPath, f.request.runtime.toolkit.messageScript));
+  await assert.rejects(fs.access(path.join(f.home, '.gemini')), { code: 'ENOENT' });
+  if (permissionMode === 'full-access') {
+    assert.equal(values[0].args.includes('--settings'), false);
+    assert.equal(values[0].sessionSettings, null);
+  } else {
+    assert.deepEqual(values[0].sessionSettings, { permissions: { allow: antigravityPermissionRules(f.commandBinding.command, f.commandBinding.args) } });
+    const settingsFile = values[0].args[values[0].args.indexOf('--settings') + 1];
+    assert.equal(path.dirname(settingsFile), f.directory);
+    assert.equal((await fs.stat(settingsFile)).mode & 0o777, 0o600);
+    assert.equal(values[0].args.filter((value) => value === '--settings').length, 1);
+    assert.ok(f.frames.find((frame) => frame.type === 'ready').diagnostics.some((item) => item.code === 'communicationPermissionSession'));
   }
 });
 
@@ -211,7 +249,7 @@ test('Antigravity: conflicting permission options fail before backend, bridge, o
 test('Antigravity: a conflicting exact command deny fails before native input', testOptions, async (t) => {
   const f = await fixture(t); f.request.communication = true;
   const settingsFile = path.join(f.home, '.gemini/antigravity-cli/settings.json');
-  const contents = JSON.stringify({ permissions: { deny: ['command('+process.execPath+' '+f.request.runtime.toolkit.messageScript+')'] } })+'\n';
+  const contents = JSON.stringify({ permissions: { deny: ['command('+[f.commandBinding.command,...f.commandBinding.args].join(' ')+')'] } })+'\n';
   await fs.mkdir(path.dirname(settingsFile), { recursive: true, mode: 0o700 });
   await fs.writeFile(settingsFile, contents, { mode: 0o600 });
   f.send(f.request);
@@ -232,7 +270,7 @@ for (const [scenario, code] of [['missing command tool', 'communicationToolUnava
   assert.equal((await f.exit).code, 0);
 });
 
-for (const scenario of ['missing acceptance', 'disconnect', 'no terminal', 'nonzero', 'session mismatch', 'duplicate result', 'failure']) test(`Antigravity: ${scenario} cannot become successful`, testOptions, async (t) => {
+for (const scenario of ['missing acceptance', 'disconnect', 'no terminal', 'nonzero', 'session mismatch', 'duplicate result', 'failure', 'negative turns', 'unsafe turns', 'missing turns']) test(`Antigravity: ${scenario} cannot become successful`, testOptions, async (t) => {
   const f = await fixture(t, scenario); f.send(f.request);
   const result = await f.waitFor('result');
   assert.equal(result.state, scenario === 'failure' ? 'failed' : 'unknown', JSON.stringify(result));
@@ -499,4 +537,46 @@ for (const match of [true, false]) test(`Antigravity resume ${match ? 'targets t
     assert.equal(captured.some((value) => value.input), false);
     assert.equal(f.frames.some((frame) => frame.type === 'ready'), false);
   }
+});
+
+// Test Value Gate: unsupported or unreadable backend versions must fail before
+// bridge/permission IO and input, even on otherwise skipped authorization paths.
+for (const [version, code] of [
+  ['1.4.9', 'antigravityVersionUnsupported'], ['garbled', 'antigravityVersionUnsupported'],
+  ['1.4.10-beta.1', 'antigravityVersionUnsupported'], ['failure', 'antigravityVersionCheckFailed'],
+]) test(`Antigravity rejects version ${version} as unavailable before preparation`, testOptions, async (t) => {
+  const f = await fixture(t, `version ${version}`);
+  f.request.communication = true;
+  f.send(f.request);
+  const result = await f.waitFor('result');
+  assert.equal(result.state, 'failed');
+  assert.equal(result.code, code);
+  assert.deepEqual(result.initialization.environment, { status: 'unavailable', code });
+  assert.equal(result.generationStarted, false);
+  assert.equal(f.frames.some((frame) => frame.type === 'ready'), false);
+  assert.deepEqual(await f.captured(), []);
+  assert.deepEqual(await fs.readdir(f.directory), []);
+  assert.deepEqual(await fs.readdir(f.home), []);
+  assert.equal((await f.exit).code, 0);
+});
+
+for (const [version, overrides] of [
+  ['1.4.10', {}], ['1.5.0', { sessionId: 'conversation-fixture' }], ['2.0.0', { permissionMode: 'full-access' }],
+]) test(`Antigravity version ${version} continues through the selected executable`, testOptions, async (t) => {
+  const f = await fixture(t, `version ${version}`);
+  Object.assign(f.request, overrides, { args: [] });
+  f.send(f.request);
+  assert.equal((await f.waitFor('result')).state, 'completed');
+  assert.equal((await f.exit).code, 0);
+});
+
+for (const overrides of [{ communication: false }, { permissionMode: 'full-access' }, { sessionId: 'conversation-fixture' }]) test('Antigravity version gate also covers disabled communication, full access and resume', testOptions, async (t) => {
+  const f = await fixture(t, 'version 1.4.9');
+  Object.assign(f.request, overrides, { args: [] });
+  f.send(f.request);
+  const result = await f.waitFor('result');
+  assert.equal(result.code, 'antigravityVersionUnsupported');
+  assert.equal(result.initialization.environment.status, 'unavailable');
+  assert.deepEqual(await f.captured(), []);
+  assert.equal((await f.exit).code, 0);
 });

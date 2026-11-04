@@ -53,6 +53,7 @@ import type {
   TemplateVarByPlatform,
 } from './types.js';
 import { readJsonFile } from './read-json.js';
+import { loadPluginNativeToolClosure, normalizeNativeTools, validateNativeToolClosureFiles, validateNativeToolsManifest } from './native-tools.js';
 import { parsePermissionCommand } from './permission-command.js';
 import { normalizeManagedCommands, normalizeManagedCommandPermission, validateManagedCommandManifest, validateManagedCommandSources, type PermissionCommand } from './managed-commands.js';
 import { applyFileRules } from './file-rules.js';
@@ -2702,6 +2703,7 @@ export function validatePluginManifest(
     'scripts',
     'config',
     'managedCommands',
+    'nativeTools',
   ]);
 
   const manifest: NormalizedPluginManifest = {
@@ -2842,6 +2844,10 @@ export function validatePluginManifest(
   if (input.managedCommands !== undefined) {
     manifest.managedCommands = normalizeManagedCommands(input.managedCommands);
     validateManagedCommandManifest(manifest);
+  }
+  if (input.nativeTools !== undefined) {
+    manifest.nativeTools = normalizeNativeTools(input.nativeTools);
+    validateNativeToolsManifest(manifest);
   }
   assertManifestPlatformSupport(manifest.name, manifest);
   assertCodexSharedNativeScopeConsistency(manifest);
@@ -3110,6 +3116,8 @@ export async function validateSourcePluginManifest(
   await validateDeclaredNativeAssets(pluginRoot, manifest);
   await validateDeclaredAssetPathsExist(pluginRoot, manifest);
   await validateManagedCommandSources(pluginRoot, manifest);
+  validateNativeToolsManifest(manifest, { source: true });
+  await loadPluginNativeToolClosure(pluginRoot, manifest);
   await Promise.all([
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'mcpServers'),
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'apps'),
@@ -3151,6 +3159,8 @@ export async function readPluginManifest(
     : validatePluginManifest(pluginRoot, rawManifest, { reservedImports: options.reservedImports });
   if (mode === 'bundle') {
     await validateManagedCommandSources(pluginRoot, manifest);
+    const nativeTools = await loadPluginNativeToolClosure(pluginRoot, manifest);
+    if (nativeTools) await validateNativeToolClosureFiles(pluginRoot, nativeTools);
     await assertActualNativePluginCapability(pluginRoot, manifest, 'bundle');
   }
   return {

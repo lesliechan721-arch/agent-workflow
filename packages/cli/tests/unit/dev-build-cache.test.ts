@@ -22,18 +22,11 @@ async function createRepo(): Promise<string> {
     'release/version-targets.json': '{}\n',
     'tsconfig.base.json': '{}\n',
     'packages/agent-skill-eval/package.json': '{}\n',
-    'packages/aw-windows-job-win32-x64/package.json': '{}\n',
-    'packages/aw-windows-job-win32-arm64/package.json': '{}\n',
     'packages/agent-skill-eval/tsconfig.json': '{}\n',
     'packages/agent-skill-eval/tsconfig.dev.json': '{}\n',
     'packages/agent-skill-eval/src/index.ts': 'export const evalValue = 1\n',
     'packages/agent-skill-eval/schemas/eval-result.schema.json': '{}\n',
     'packages/agent-skill-eval/scripts/embed-schemas.mjs': 'export {}\n',
-    'packages/agent-skill-eval/scripts/copy-windows-job-platform-package.mjs': 'export {}\n',
-    'packages/agent-skill-eval/scripts/windows-job-helper-artifacts.mjs': 'export {}\n',
-    'packages/agent-skill-eval/native/windows/manifest.json': '{}\n',
-    'packages/agent-skill-eval/native/windows/x64/aw-windows-job.exe': 'x64 source fixture\n',
-    'packages/agent-skill-eval/native/windows/arm64/aw-windows-job.exe': 'arm64 source fixture\n',
     'packages/plugin-core/package.json': '{}\n',
     'packages/plugin-core/tsconfig.json': '{}\n',
     'packages/plugin-core/tsconfig.dev.json': '{}\n',
@@ -70,11 +63,7 @@ function createBuilders(repoRoot: string, builds: string[], generations: Map<str
       builds.push(`${target.id}:${cleaned ? 'clean' : 'incremental'}`);
       const generation = (generations.get(target.id) ?? 0) + 1;
       generations.set(target.id, generation);
-      if (target.id === 'windows-job-x64') {
-        await write('packages/aw-windows-job-win32-x64/dist/aw-windows-job.exe', 'x64 fixture\n');
-      } else if (target.id === 'windows-job-arm64') {
-        await write('packages/aw-windows-job-win32-arm64/dist/aw-windows-job.exe', 'arm64 fixture\n');
-      } else if (target.id === 'agent-skill-eval') {
+      if (target.id === 'agent-skill-eval') {
         await write('packages/agent-skill-eval/dist/index.js', `export const generation = ${generation}\n`);
         await write('packages/agent-skill-eval/dist/bin.js', 'export {}\n');
         await write('packages/agent-skill-eval/dist/schemas/digests.json', '{}\n');
@@ -103,7 +92,7 @@ afterEach(async () => {
 });
 
 describe('development build cache', () => {
-  it('builds six independent targets once and reuses every warm target', async () => {
+  it('builds four independent targets once and reuses every warm target', async () => {
     const repoRoot = await createRepo();
     const builds: string[] = [];
     const builders = createBuilders(repoRoot, builds, new Map());
@@ -186,8 +175,6 @@ describe('development build cache', () => {
     const result = await buildDevWithCache(repoRoot, { builders });
 
     expect(result.targets.map(({ target, reused }) => ({ target, reused }))).toEqual([
-      { target: 'windows-job-x64', reused: true },
-      { target: 'windows-job-arm64', reused: true },
       { target: 'agent-skill-eval', reused: false },
       { target: 'plugin-core', reused: true },
       { target: 'cli-typescript', reused: false },
@@ -296,33 +283,18 @@ describe('development build cache', () => {
     expect(builds.filter((build) => build.endsWith(':clean'))).toEqual(['plugin-core:clean']);
   });
 
-  it('cleans and rebuilds the x64 package when its Windows helper is missing', async () => {
+  it('does not add native producer artifacts to the ordinary build targets', async () => {
     const repoRoot = await createRepo();
     const builds: string[] = [];
     const builders = createBuilders(repoRoot, builds, new Map());
     await buildDevWithCache(repoRoot, { builders });
     builds.length = 0;
-
-    await fs.rm(path.join(
-      repoRoot,
-      'packages',
-      'aw-windows-job-win32-x64',
-      'dist',
-      'aw-windows-job.exe',
-    ));
+    const native = path.join(repoRoot, 'native-tools', 'windows-job', 'job-helper');
+    await fs.mkdir(native, { recursive: true });
+    await fs.writeFile(path.join(native, 'main_windows.go'), 'changed producer source');
     const result = await buildDevWithCache(repoRoot, { builders });
-
-    expect(result.targets.find((target) => target.target === 'windows-job-x64')).toMatchObject({
-      reused: false,
-      cleaned: true,
-    });
-    await expect(fs.readFile(path.join(
-      repoRoot,
-      'packages',
-      'aw-windows-job-win32-x64',
-      'dist',
-      'aw-windows-job.exe',
-    ), 'utf8')).resolves.toBe('x64 fixture\n');
+    expect(result.targets.every((target) => target.reused)).toBe(true);
+    expect(builds).toEqual([]);
   });
 
   it('fails closed when output digest validation still cannot read the rebuilt tree', async () => {

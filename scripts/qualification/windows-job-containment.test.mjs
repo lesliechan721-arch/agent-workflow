@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 
 import { ProcessTreeTimeoutError } from '../perf/process-tree.mjs'
@@ -9,6 +12,11 @@ import {
   checkProductionTimeoutCleanup,
   nestedCleanupFixture,
 } from './windows-job-containment.mjs'
+import {
+  captureQualificationHelper,
+  checkPluginReadyFailure,
+  WINDOWS_PLUGIN_JOB_REQUIRED_CHECKS,
+} from './windows-plugin-job.mjs'
 
 test('timeout qualification uses the production timeout option', async () => {
   const exits = []
@@ -88,7 +96,25 @@ test('unsupported hosts report every mandatory scenario as failed without skips'
   const report = await runWindowsJobQualification()
   assert.equal(report.status, 'failed')
   assert.deepEqual(report.checks.map((check) => check.id), WINDOWS_JOB_REQUIRED_CHECKS)
+  assert.ok(WINDOWS_PLUGIN_JOB_REQUIRED_CHECKS.every((id) => report.checks.some((check) => check.id === id)))
   assert.ok(report.checks.every((check) => check.passed === false && !check.skipped))
+})
+
+test('plugin ready failure qualification rejects backend execution despite a failure exit code', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'aw-job-ready-harness-'))
+  try {
+    await assert.rejects(checkPluginReadyFailure(root, {
+      async startHelper(executable, args) {
+        const started = captureQualificationHelper(spawn(executable, ['-e', `${args[1]};process.exitCode=250;`], { stdio: ['ignore', 'pipe', 'pipe'] }))
+        return { ...started, scope: {} }
+      },
+      members: async () => [],
+    }), /pluginReadyFailureResumedOrChangedExistingFile/u)
+    assert.equal(await readFile(path.join(root, 'ready-failure-resumed.txt'), 'utf8'), 'resumed')
+    assert.equal(await readFile(path.join(root, 'ready-existing.json'), 'utf8'), 'preserve-existing-ready')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 
@@ -128,7 +154,7 @@ test('nested qualification rejects a helper that leaves real descendants running
   let child
   try {
     await assert.rejects(checkNestedChildCleanup({
-      startHelper(executable, args) {
+      async startHelper(executable, args) {
         child = spawn(executable, args, { stdio: ['ignore', 'pipe', 'ignore'] })
         let stdout = ''
         child.stdout.on('data', (chunk) => {

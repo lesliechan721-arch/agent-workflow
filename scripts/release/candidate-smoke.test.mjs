@@ -4,14 +4,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createServer } from 'node:http';
 import test from 'node:test';
 
 import { sealCandidateDirectory, verifyCandidateDirectory } from './candidate-archive.mjs';
 import {
   assertCandidateHost,
   assertRequiredChecks,
+  candidateSmokeEnvironment,
   installCandidatePackages,
   parseCandidateSmokeArgs,
+  probeInstalledCatalogCandidate,
   runCandidateSmoke,
 } from './candidate-smoke.mjs';
 
@@ -49,7 +52,8 @@ async function fixture(t, bins = false) {
     await fs.mkdir(packageRoot, { recursive: true });
     const metadata = { name, version: '9.2.0-beta.3', type: 'module' };
     if (index === 0) metadata.dependencies = { [names[1]]: metadata.version, [names[2]]: metadata.version, ...(bins ? {} : { 'third-party-demo': '^1.0.0' }) };
-    if (index === 1) metadata.optionalDependencies = { [names[3]]: metadata.version, [names[4]]: metadata.version };
+    if (index === 1) metadata.optionalDependencies = Object.fromEntries(names.slice(3).map((name) => [name, metadata.version]));
+    if (index >= 3) { metadata.os = ['win32']; metadata.cpu = [index === 3 ? 'x64' : 'arm64']; }
     if (bins && index < 2) {
       const bin = index === 0 ? 'aw' : 'aw-skill-eval';
       metadata.bin = { [bin]: './bin.js' };
@@ -77,7 +81,7 @@ test('candidate installation consumes all five tarballs and sends only third-par
     },
   });
   assert.deepEqual(requested, [{ 'third-party-demo': '^1.0.0' }]);
-  for (const name of names) {
+  for (const name of names.slice(0, 3)) {
     const installed = path.join(installRoot, 'node_modules', ...name.split('/'));
     assert.equal((await fs.lstat(installed)).isSymbolicLink(), false);
     assert.equal(await fs.readFile(path.join(installed, 'candidate-marker'), 'utf8'), name);
@@ -126,4 +130,55 @@ test('Catalog tools retain their own five-package version independently of the C
     installDependencies: async (directory) => fs.mkdir(path.join(directory, 'node_modules')),
   });
   assert.equal(result.version, '9.2.0-beta.3');
+});
+
+// Test Value Gate: the real installer must complete while the registry rejects
+// every self-owned package. Third-party dependency requests stay available.
+test('candidate installation succeeds when the registry rejects all five own packages', async (t) => {
+  const { root, bundle, manifest } = await fixture(t);
+  const thirdRoot = path.join(root, 'third', 'package');
+  await fs.mkdir(thirdRoot, { recursive: true });
+  await fs.writeFile(path.join(thirdRoot, 'package.json'), JSON.stringify({ name: 'third-party-demo', version: '1.0.0' }));
+  await execFileAsync('tar', ['-czf', path.join(root, 'third.tgz'), '-C', path.dirname(thirdRoot), 'package']);
+  const tarball = await fs.readFile(path.join(root, 'third.tgz'));
+  const requests = [];
+  let registry;
+  const server = createServer((request, response) => {
+    const url = decodeURIComponent(request.url);
+    requests.push(url);
+    if (url.includes('@lesliechan721') || url.includes('aw-windows-job')) {
+      response.writeHead(403); response.end('Self-owned package requests are forbidden.');
+    } else if (url === '/third.tgz') response.end(tarball);
+    else if (url === '/third-party-demo') {
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ name: 'third-party-demo', 'dist-tags': { latest: '1.0.0' }, versions: { '1.0.0': { name: 'third-party-demo', version: '1.0.0', dist: { tarball: `${registry}third.tgz` } } } }));
+    } else { response.writeHead(404); response.end(); }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  registry = `http://127.0.0.1:${server.address().port}/`;
+  const installed = path.join(root, 'installed');
+  await fs.mkdir(installed);
+  await installCandidatePackages(bundle, manifest, installed, { ...process.env, npm_config_registry: registry, npm_config_cache: path.join(root, 'npm-cache'), npm_config_userconfig: path.join(root, 'npmrc') });
+  assert.ok(requests.includes('/third-party-demo'));
+  assert.ok(requests.includes('/third.tgz'));
+  assert.ok(!requests.some((url) => url.includes('@lesliechan721')));
+  const dependency = path.join(installed, 'node_modules/@lesliechan721/aw/node_modules/third-party-demo/package.json');
+  assert.equal(JSON.parse(await fs.readFile(dependency, 'utf8')).version, '1.0.0');
+  for (const name of names.slice(3)) {
+    const target = path.join(installed, 'node_modules', ...name.split('/'));
+    if (process.platform === 'win32' && name.endsWith(`-${process.arch}`)) await fs.access(target);
+    else await assert.rejects(fs.access(target));
+  }
+});
+
+test('Catalog materialization uses the installed toolchain without a native prefetch stage', async () => {
+  const calls = [];
+  const input = { root: '/installed', bundleRoot: '/bundle', candidate: { product: 'catalog' }, env: {} };
+  await probeInstalledCatalogCandidate(input, async (...args) => calls.push(args));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], input.root);
+  await probeInstalledCatalogCandidate({ ...input, minimumNode: true }, async () => calls.push(null));
+  await probeInstalledCatalogCandidate({ ...input, candidate: { product: 'cli' } }, async () => calls.push(null));
+  assert.equal(calls.length, 1);
 });

@@ -29,8 +29,7 @@ const packageNames = [
   '@lesliechan721/aw',
 ];
 const packageDirectories = [
-  'aw-windows-job-win32-x64', 'aw-windows-job-win32-arm64',
-  'agent-skill-eval', 'plugin-core', 'cli',
+  'aw-windows-job-win32-x64', 'aw-windows-job-win32-arm64', 'agent-skill-eval', 'plugin-core', 'cli',
 ];
 const hash = (value: string) => `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
 
@@ -49,14 +48,10 @@ async function fixture() {
     await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({
       name: packageNames[index],
       version: targets.cli,
-      ...(index === 2 ? { optionalDependencies: {
-        [packageNames[0]]: `workspace:${targets.cli}`,
-        [packageNames[1]]: `workspace:${targets.cli}`,
-      } } : {}),
       ...(index === 4 ? { dependencies: {
         [packageNames[2]]: `workspace:${targets.cli}`,
         [packageNames[3]]: `workspace:${targets.cli}`,
-      } } : {}),
+      } } : index === 2 ? { optionalDependencies: { [packageNames[0]]: `workspace:${targets.cli}`, [packageNames[1]]: `workspace:${targets.cli}` } } : index < 2 ? { os: ['win32'], cpu: [['x64', 'arm64'][index]] } : {}),
     }));
     await fs.writeFile(path.join(root, 'package', 'index.js'), `export const packageIndex = ${index};\n`);
   }));
@@ -66,7 +61,6 @@ async function fixture() {
     inputDigest: await computeBuildInputDigest(snapshotRoot),
     outputDigest: await computeBuildOutputDigest(snapshotRoot),
     cliPackageDigest: await computeCliPackageDigest(snapshotRoot),
-    windowsX64PackageRoot: packageRoots[0], windowsArm64PackageRoot: packageRoots[1],
     evalPackageRoot: packageRoots[2], corePackageRoot: packageRoots[3], cliPackageRoot: packageRoots[4],
   };
   const pack = (index: number) => async ({ destination }: { destination: string }) => {
@@ -78,6 +72,16 @@ async function fixture() {
   };
   const sourceOptions = {
     repoRoot, releaseRoot,
+    prepareWindowsJobTarballs: async ({ destination }: { destination: string }) => {
+      for (const root of packageRoots.slice(0, 2)) {
+        const target = path.join(root!, 'package.json');
+        const manifest = JSON.parse(await fs.readFile(target, 'utf8'));
+        await fs.writeFile(target, JSON.stringify({ ...manifest, version }));
+      }
+      for (const name of ['candidate.json', 'reproducibility.json', 'qualification-x64.json', 'qualification-arm64.json']) await fs.writeFile(path.join(repoRoot, name), '{}');
+      return { root: repoRoot, tarballPaths: await Promise.all([pack(0)({ destination }), pack(1)({ destination })]) };
+    },
+    assertWindowsJobCandidateEvidence: async () => undefined,
     axes: { cli: true, catalog: false },
     assertClean: async () => undefined,
     assertTargetsMatchHead: async () => undefined,
@@ -91,7 +95,6 @@ async function fixture() {
     ...sourceOptions,
     exactCandidates: { cli: version, catalog: null },
     resolveCandidates,
-    packWindowsJobX64: pack(0), packWindowsJobArm64: pack(1),
     packEval: pack(2), packCore: pack(3), packCli: pack(4),
   });
   expect(resolveCandidates).not.toHaveBeenCalled();
@@ -120,6 +123,7 @@ function publicationOptions(value: Awaited<ReturnType<typeof fixture>>, imported
     withSnapshot: async () => { throw new Error('A transferred candidate must not build.'); },
     readPackageVersions: async () => [],
     readPackageChannelVersion: async () => null,
+    assertPublishedPackageMatches: async () => undefined,
     assertCliTagAvailable: async () => undefined,
     publishCliTag: async () => undefined,
     npmCommand: 'npm',
@@ -213,6 +217,11 @@ describe('portable prepared CLI release', () => {
     await fs.writeFile(archivePath, 'corrupt archive');
     await expect(importPreparedRelease(value.importOptions)).rejects.toThrow('artifact digest changed');
     await fs.writeFile(archivePath, archiveBytes);
+    const qualificationPath = path.join(value.from, 'prepared', value.descriptor.npm.nativeEvidence[2].path);
+    const qualificationBytes = await fs.readFile(qualificationPath);
+    await fs.writeFile(qualificationPath, 'changed qualification');
+    await expect(importPreparedRelease(value.importOptions)).rejects.toThrow('artifact digest changed');
+    await fs.writeFile(qualificationPath, qualificationBytes);
     const descriptorPath = path.join(value.from, 'prepared', 'descriptor.json');
     const descriptorBytes = await fs.readFile(descriptorPath);
     for (const field of ['inputDigest', 'outputDigest', 'cliPackageDigest']) {

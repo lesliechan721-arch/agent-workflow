@@ -691,6 +691,7 @@ export class EvalAppServerSession {
     sensitiveEnvironmentNames: string[];
     isolation: AwSkillEvalIsolation;
     processManagement?: CodexEvalProcessManagementEvidence;
+    windowsJobHelperPath?: string;
     configOverrides?: readonly string[];
     hostReadContainmentProfile?: string;
   }) {
@@ -731,7 +732,7 @@ export class EvalAppServerSession {
       ? ['-p', options.hostReadContainmentProfile, options.codexBin, ...args]
       : args;
     const windowsJobInvocation = managed && process.platform === 'win32'
-      ? createWindowsJobInvocation(executable, executableArgs)
+      ? createWindowsJobInvocation(executable, executableArgs, { helperPath: options.windowsJobHelperPath ?? '' })
       : undefined;
     this.process = spawn(
       windowsJobInvocation?.command ?? executable,
@@ -1236,6 +1237,7 @@ async function runConversationOnce(options: {
   sourceEnv: NodeJS.ProcessEnv;
   isolation: AwSkillEvalIsolation;
   processManagement: CodexEvalProcessManagementEvidence;
+  windowsJobHelperPath?: string;
   forbiddenHostRoots: string[];
   workRoot?: string;
   environmentFixtures: Array<{ fixtureRoot: string; relativePath: string }>;
@@ -1331,6 +1333,7 @@ async function runConversationOnce(options: {
       sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
       isolation: options.isolation,
       processManagement: options.processManagement,
+      windowsJobHelperPath: options.windowsJobHelperPath,
       hostReadContainmentProfile: containmentProfile,
     });
     options.onStage?.('session-started');
@@ -1644,6 +1647,7 @@ export async function runCodexConversationProviderCase(options: {
   forbiddenHostRoots?: string[];
   environmentFixtures: Array<{ fixtureRoot: string; relativePath: string }>;
   processManagement?: CodexEvalProcessManagementEvidence;
+  windowsJobHelperPath?: string;
   workRoot?: string;
   manageTimeout?: boolean;
   signal?: AbortSignal;
@@ -1662,6 +1666,7 @@ export async function runCodexConversationProviderCase(options: {
     timeoutMs: options.timeoutMs,
     sourceEnv: options.sourceEnv ?? process.env,
     isolation: options.isolation,
+    windowsJobHelperPath: options.windowsJobHelperPath,
     processManagement: options.processManagement ?? {
       mode: 'unmanaged-confirmed',
       inspectionAvailable: false,
@@ -1688,6 +1693,7 @@ export async function runCodexEvalIsolationProbe(options: {
   codexRuntime: CodexEvalRuntimeConfig;
   sourceEnv?: NodeJS.ProcessEnv;
   processManagement?: CodexEvalProcessManagementEvidence;
+  windowsJobHelperPath?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<CodexEvalRpcIsolationEvidence> {
@@ -1738,6 +1744,7 @@ export async function runCodexEvalIsolationProbe(options: {
       sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
       isolation: 'strict',
       processManagement,
+      windowsJobHelperPath: options.windowsJobHelperPath,
     });
     const abort = (): void => {
       void session?.cleanup().catch(() => undefined);

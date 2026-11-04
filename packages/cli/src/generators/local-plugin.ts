@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
-import { validateManagedCommandSources } from '@lesliechan721/aw-plugin-core/manifest';
+import { preparePluginNativeTools, validateManagedCommandSources } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { renderResolvedHooksArtifact } from './hooks.js';
 import { buildGeneratedName } from './shared.js';
@@ -912,6 +912,9 @@ async function collectAwRuntimeFiles(plugin: PluginMeta): Promise<string[]> {
   addPreApplyRuntimeEntry(plugin, rootFiles, nodeEntries);
   addHelperRuntimeEntries(plugin, rootFiles, nodeEntries);
   addArtifactRendererRuntimeEntry(plugin, rootFiles, nodeEntries);
+  if (plugin.manifest.nativeTools) {
+    rootFiles.add(stripDotSlash(plugin.manifest.nativeTools.reader));
+  }
 
   const closureFiles = await collectRuntimeClosureFiles(plugin, [...nodeEntries]);
   for (const filePath of closureFiles) {
@@ -1543,6 +1546,7 @@ async function createStagedPlugin(
       },
     });
 
+    const nativeReader = await preparePluginNativeTools(stagingPluginRoot, plugin.manifest);
     const sourceBuild = plugin.manifest.scripts?.node?.build;
     const declaredBuildImports = plugin.manifest.buildConfig?.buildImports ?? [];
     if (declaredBuildImports.length > 0 && !sourceBuild) {
@@ -1551,6 +1555,8 @@ async function createStagedPlugin(
       );
     }
     const buildEnv: NodeJS.ProcessEnv = { ...commandEnv };
+    for (const key of Object.keys(buildEnv)) if (key.toUpperCase() === 'AW_PLUGIN_NATIVE_READER') delete buildEnv[key];
+    if (nativeReader) buildEnv.AW_PLUGIN_NATIVE_READER = nativeReader;
     const buildImportProvenance: RuntimeImportProvenance[] = [];
     const buildImportProjections: BuildImportProjection[] = [];
     for (const buildImport of declaredBuildImports) {
@@ -1795,11 +1801,13 @@ export async function bundleLocalPlugin(
 
   try {
     plugin = buildPlugin.plugin;
-    const requirements = await resolvePluginRequirements({
-      pluginRoot: plugin.rootDir,
-      manifest: plugin.manifest,
-      implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES,
-    });
+    const requirements = buildOptions.buildMode === 'build-free'
+      ? sourceRequirements
+      : await resolvePluginRequirements({
+          pluginRoot: plugin.rootDir,
+          manifest: plugin.manifest,
+          implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES,
+        });
     if (!historicalComparison) {
       assertPluginRequirementsSupported(
         plugin.manifest.name,

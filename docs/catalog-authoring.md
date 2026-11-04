@@ -52,6 +52,14 @@ Catalog beta 候选只读取 source metadata、`catalog-v<version>` tag 和 publ
 
 ## 发布计划、授权和恢复
 
+使用 `nativeTools` 的插件按[原生工具合同](native-tools.md)声明受支持的宿主协议。普通 Catalog build 只处理协议声明和 reader，不取得 EXE，也不要求 Go；Windows 动态 renderer 和真实插件测试使用当前 CLI 已安装的配套 helper。第三方 `aw catalog` 使用当前安装的兼容 CLI，不自动安装全局 CLI，也不发布 npm 包。
+
+官方 Actions 和本仓库 `pnpm release` 的 Catalog-only 准备按渠道固定工具链：beta 解析 CLI 的 `beta` 标签，正式版解析 `latest`，并验证同渠道 CLI 已完成发布。正式版必须是无 prerelease 的 stable。工具链包含同版本五包，并随候选保存全部 tarball；恢复不重新查询浮动标签。缺少可用 CLI、渠道不符、五包不完整或能力不支持时，在 Catalog 远端写入前停止，并先发布对应渠道 CLI。Catalog-only 不编译 Go。
+
+本地待恢复 plan 使用原渠道的 `pnpm release <beta|release> --catalog`，核验原 prepared descriptor、五包和 journal 后继续同一 plan。同批 CLI 未完成时，先修复 CLI；完成检查失败保留原 CLI repair 材料。恢复材料缺失或损坏时提高 Catalog version；使用 `--all` 或 `--plugin` 引入新 CLI 或源码变化前，也须先提高 Catalog version。
+
+同批 CLI/Catalog 使用本次完整五包 artifact；各 runner 安装三个通用包和适用架构平台包，自有包依赖全部从本地产物解析，第三方依赖使用正常包管理器流程。Catalog 内容来自本次源码；构建、验证、物化 smoke 和 publisher 使用所选工具链。Catalog 远端写入等待本次 CLI 整组发布和完成 tag，不需要从 npm 重新安装本次工具。Catalog-only 从 npm 取得固定工具时，重新验证 metadata，并对短暂读取失败作有总时限的只读重试。CLI 成功而 Catalog 失败时保留 CLI 成功，Catalog 继续原 journal plan。Catalog 元数据不永久绑定工具版本，用户运行时使用自己实际安装的 CLI。
+
 远端发布使用两个公开命令。Publisher 先让 CLI 从当前位置向上定位最近的 Workspace。Remote 按显式参数、`origin`、唯一 remote 的顺序选择；多个且无 `origin` 时必须明确选择。Branch 使用显式值或固定默认 `catalog`，不从当前 Git branch 推断。无论使用哪种默认，apply 都必须取得完整 `planDigest` 的一次授权。
 
 ```bash

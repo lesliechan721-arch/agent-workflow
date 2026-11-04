@@ -96,6 +96,22 @@ describe('command runtime', () => {
     expect(JSON.stringify([reportEvent.mock.calls, debugLog.mock.calls])).not.toContain(sentinel);
   });
 
+  it('keeps Windows native admission after diagnostic runner wrapping', async () => {
+    const { createCommandExecutionContext } = await import('../../src/commands/runtime.js');
+    const { execFileNativeCliRunner, prepareNativeCliExecution } = await import('../../src/utils/native-cli.js');
+    const processTree = await import('../../src/utils/process-tree.js');
+    const failure = Object.assign(new Error('Reinstall the current CLI/Eval package and include optional dependencies.'), { code: 'nativePackageUnavailable' });
+    const admission = vi.spyOn(processTree, 'prepareWindowsJobHelper').mockRejectedValue(failure);
+    const context = createCommandExecutionContext({ nativeCliRunner: execFileNativeCliRunner });
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    try {
+      await expect(prepareNativeCliExecution({ runner: context.nativeCliRunner })).rejects.toBe(failure);
+      expect(admission).toHaveBeenCalledOnce();
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
   it('uses the injected prompt output sink instead of stdout', async () => {
     const { createReadlinePrompt } = await import('../../src/commands/runtime.js');
     const input = Readable.from(['\n']);

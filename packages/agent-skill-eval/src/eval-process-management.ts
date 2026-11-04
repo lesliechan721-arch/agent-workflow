@@ -5,7 +5,7 @@ import {
   assertProcessTreeInspectionAvailable,
   type ProcessTreeDependencies,
 } from './process-tree.js'
-import { resolveWindowsJobHelperPath } from './windows-job.js'
+import { prepareWindowsJobHelper } from './windows-job.js'
 
 const FULL_ACCESS_PERMISSION_PROFILE = 'danger-full-access'
 const UNMANAGED_LIMITATION =
@@ -26,7 +26,7 @@ export interface EvalProcessManagementDependencies {
   }) => Promise<string | null>
   readUserKeychainSearchList?: () => Promise<string>
   inspectProcessTree?: () => Promise<void>
-  resolveWindowsJobHelper?: () => string
+  prepareWindowsJobHelper?: () => Promise<string> | string
   processTree?: ProcessTreeDependencies
 }
 
@@ -61,6 +61,7 @@ export async function resolveEvalProcessManagement(options: {
   allowUnmanaged: boolean
   codexBin?: string
   sourceEnv?: NodeJS.ProcessEnv
+  onWindowsJobHelperPrepared?: (helperPath: string) => void
   dependencies?: EvalProcessManagementDependencies
 }): Promise<EvalResultProcessManagement> {
   const sourceEnv = options.sourceEnv ?? process.env
@@ -100,7 +101,10 @@ export async function resolveEvalProcessManagement(options: {
 
   try {
     if (platform === 'win32') {
-      (dependencies.resolveWindowsJobHelper ?? resolveWindowsJobHelperPath)()
+      const helperPath = dependencies.prepareWindowsJobHelper
+        ? await dependencies.prepareWindowsJobHelper()
+        : await prepareWindowsJobHelper({ platform })
+      options.onWindowsJobHelperPrepared?.(helperPath)
     } else if (dependencies.inspectProcessTree) await dependencies.inspectProcessTree()
     else {
       await assertProcessTreeInspectionAvailable({

@@ -82,12 +82,13 @@ test('a manual recovery without its saved candidate cannot prepare the version a
   }), /no complete recovery artifact/u);
 });
 
-test('a CLI completion tag requires the exact source and all five remote packages', async () => {
-  const runGit = async () => ({ stdout: `tag-object\trefs/tags/cli-v${candidate.version}\n${candidate.candidateHead}\trefs/tags/cli-v${candidate.version}^{}\n` });
-  const names = [];
-  assert.equal(await readRemoteCompletion(candidate, { runGit, readPackageVersions: async (name) => { names.push(name); return [candidate.version]; } }), true);
-  assert.equal(names.length, 5);
-  await assert.rejects(readRemoteCompletion(candidate, { runGit, readPackageVersions: async () => [] }), /all five/u);
+test('an exact annotated CLI completion tag is sufficient while npm metadata is unavailable', async () => {
+  const ref = `refs/tags/cli-v${candidate.version}`;
+  const runGit = async () => ({ stdout: `tag-object\t${ref}\n${candidate.candidateHead}\t${ref}^{}\n` });
+  const noRegistry = async () => { throw new Error('npm metadata unavailable'); };
+  assert.equal(await readRemoteCompletion(candidate, { runGit, readPackageVersions: noRegistry, captureCommand: noRegistry }), true);
+  assert.equal(await readRemoteCompletion(candidate, { runGit: async () => ({ stdout: '' }) }), false);
+  await assert.rejects(readRemoteCompletion(candidate, { runGit: async () => ({ stdout: `tag-object\t${ref}\n` }) }), /annotated/u);
   await assert.rejects(readRemoteCompletion({ ...candidate, candidateHead: 'd'.repeat(40) }, { runGit }), /conflicts/u);
 });
 

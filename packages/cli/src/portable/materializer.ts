@@ -35,6 +35,7 @@ import {
 import { withResolvedCatalogPlugin } from '../utils/multi-source-catalog.js';
 import type { CatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
+import { prepareWindowsJobHelper } from '../utils/process-tree.js';
 import {
   assertNoSensitiveConfigInFiles,
   collectSensitivePluginConfigValues,
@@ -383,6 +384,9 @@ async function materializePluginCandidates(options: {
     return finalizeCandidates();
   }
   await assertRuntimeImports(options.plugin);
+  if (process.platform === 'win32') {
+    await prepareWindowsJobHelper();
+  }
   const rendered = await runArtifactRenderer({
     event: 'materialize',
     plugin: options.plugin,

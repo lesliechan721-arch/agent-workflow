@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   AW_RUNTIME_CONFIG_READER_PATH,
+  createNativeToolReaderSource,
   createRuntimeConfigSnapshot,
   getPluginAuthoringAcceptedValues as getCorePluginAuthoringAcceptedValues,
   getSkillFrontmatterCapabilityRegistry,
@@ -36,7 +37,7 @@ const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 17;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 18;
 let capabilityDiagnostic = null;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
@@ -1913,6 +1914,7 @@ function scanNodeImportContract(pluginDir, entryPaths, options) {
         }
         if (!resolved.path) {
           const requested = path.posix.normalize(path.posix.join(path.posix.dirname(relativePath), specifier));
+          if (options.nativeToolReader && requested === options.nativeToolReader) continue;
           if ((options.runtimeConfigSkillRoots ?? []).some((root) => (
             relativePath.startsWith(`${root}/`)
             && requested === path.posix.join(root, AW_RUNTIME_CONFIG_READER_PATH)
@@ -3322,8 +3324,19 @@ async function validateAuthorManagedCommands(pluginDir, manifest, rendered, cont
       const sets = (manifest.managedCommands?.sets ?? [])
         .filter((set) => set.producer.kind === 'package' && set.producer.packageKey === commandPackage.key)
         .map((set) => setOutputs(set, 'managed-commands', commandPackage.scope));
-      const files = rendered.find((entry) => entry.artifact.id === `command-package.${commandPackage.key}`)?.artifact.files ?? {};
-      const prepared = await tools.prepareManagedCommandPackageFiles({ sourceRoot: path.join(pluginDir, normalizeRelativePath(commandPackage.sourceDir)), files, entries: sets.flatMap((set) => set.entries) });
+      const sourceRoot = path.join(pluginDir, normalizeRelativePath(commandPackage.sourceDir));
+      const files = { ...(rendered.find((entry) => entry.artifact.id === `command-package.${commandPackage.key}`)?.artifact.files ?? {}) };
+      if (manifest.nativeTools) {
+        const readerPath = path.join(pluginDir, normalizeRelativePath(manifest.nativeTools.reader));
+        const relativeReader = path.relative(sourceRoot, readerPath);
+        if (relativeReader && relativeReader !== '..' && !relativeReader.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeReader) && !fs.existsSync(readerPath)) {
+          const readerFile = relativeReader.split(path.sep).join('/');
+          const readerSource = createNativeToolReaderSource();
+          if (Object.hasOwn(files, readerFile) && files[readerFile] !== readerSource) throw new Error('nativeToolReaderMismatch');
+          files[readerFile] = readerSource;
+        }
+      }
+      const prepared = await tools.prepareManagedCommandPackageFiles({ sourceRoot, files, entries: sets.flatMap((set) => set.entries) });
       cleanups.push(prepared.cleanup);
       candidates.push({ producer: await tools.managedCommandProducerIdentity({ plugin, producer: { kind: 'package', packageKey: commandPackage.key }, scope: commandPackage.scope, cwd: pluginDir }), sets });
     }
@@ -3386,6 +3399,7 @@ function validateScriptsLightweight(pluginDir, manifest) {
   const runtimeNodeEntries = [];
   let artifactRenderEntry = null;
   let packageMeta = null;
+  const nativeToolReader = manifest.nativeTools ? normalizeRelativePath(manifest.nativeTools.reader ?? './.aw/native-tool-reader.mjs') : undefined;
   const runtimeConfigSkillRoots = (manifest.artifacts?.targets ?? [])
     .filter((target) => target.runtimeConfig !== undefined)
     .flatMap((target) => target.sourceDirs ?? [])
@@ -3439,6 +3453,7 @@ function validateScriptsLightweight(pluginDir, manifest) {
             packageMeta,
             allowDevDependencies: true,
             runtimeConfigSkillRoots,
+            nativeToolReader,
           });
         }
       }
@@ -3490,6 +3505,7 @@ function validateScriptsLightweight(pluginDir, manifest) {
             packageMeta,
             allowDevDependencies: true,
             runtimeConfigSkillRoots,
+            nativeToolReader,
           });
         }
       }
@@ -3504,6 +3520,7 @@ function validateScriptsLightweight(pluginDir, manifest) {
       packageMeta,
       allowDevDependencies: false,
       runtimeConfigSkillRoots,
+      nativeToolReader,
     },
   );
 

@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { nativeTest } from './fixtures/native-test.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -62,7 +63,7 @@ async function ageEntry(run, hours) {
 // Test Value Gate: a published handle must select only its current independent
 // execution; real owner/ACL and process observations must protect deletion, and
 // missing current content must not fall back to a prior result.
-test('native fixed entry publishes executions and protects owned active processes', async (t) => {
+nativeTest('native fixed entry publishes executions and protects owned active processes', async (t) => {
   const f = await fixture(t, 1, true);
   assert.equal(f.context.root, path.join(f.homeRoot, '.aw-subagent'));
   const second = await store.createExecution(f.context, f.run);

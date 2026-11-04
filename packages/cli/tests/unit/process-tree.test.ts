@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   observeProcessTree,
   terminateProcessTree,
+  type ProcessTreeDependencies,
 } from '../../src/utils/process-tree.js';
 
 interface FakeProcess {
@@ -31,6 +32,22 @@ function renderPosixMarkerTable(
     'node',
     ...(marked.has(pid) ? [`AW_NATIVE_CLI_PROCESS_MARKER=${marker}`] : []),
   ].join(' ')).join('\n');
+}
+
+function windowsProcessTableFromFixture(
+  command: NonNullable<ProcessTreeDependencies['execFile']>,
+): NonNullable<ProcessTreeDependencies['windowsProcessTable']> {
+  return async () => new Promise((resolve, reject) => {
+    command('native-process-table', [], { timeout: 30_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, output) => {
+      if (error) { reject(error); return; }
+      try {
+        resolve(output.split('\n').filter(Boolean).map((line) => {
+          const [pid, ppid, started] = line.split('|');
+          return { pid: Number(pid), ppid: Number(ppid), pgid: null, started: String(BigInt(started) * 10n) };
+        }));
+      } catch (error) { reject(error); }
+    });
+  });
 }
 
 describe('process-tree', () => {
@@ -409,6 +426,7 @@ describe('process-tree', () => {
     const observation = observeProcessTree(100, 'marker-value', {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
     await Promise.resolve();
     processes.delete(100);
@@ -416,7 +434,7 @@ describe('process-tree', () => {
     await terminateProcessTree(
       100,
       vi.fn(),
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       { observation, requireConfirmedCleanup: true },
     );
 
@@ -452,6 +470,7 @@ describe('process-tree', () => {
       const observation = observeProcessTree(100, 'marker-value', {
         platform: 'win32',
         execFile,
+        windowsProcessTable: windowsProcessTableFromFixture(execFile),
       });
       await Promise.resolve();
       processes.delete(100);
@@ -460,7 +479,7 @@ describe('process-tree', () => {
       await expect(terminateProcessTree(
         100,
         vi.fn(),
-        { platform: 'win32', execFile },
+        { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
         {
           observation,
           requireConfirmedCleanup: true,
@@ -492,12 +511,13 @@ describe('process-tree', () => {
     const observation = observeProcessTree(100, 'marker-value', {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
 
     await expect(terminateProcessTree(
       100,
       vi.fn(),
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       { observation, requireConfirmedCleanup: true },
     )).rejects.toThrow('Windows descendant candidate is still running');
     expect(taskkillPids).toEqual([]);
@@ -506,58 +526,105 @@ describe('process-tree', () => {
   it('confirms Windows cleanup when the observed root has already exited', async () => {
     let lookup = 0;
     const execFile = vi.fn((command, _args, _options, callback) => {
-      expect(command).toBe('powershell.exe');
+      expect(command).toBe('native-process-table');
       lookup += 1;
       callback(null, lookup === 1 ? '100|1|1000' : '');
     });
     const observation = observeProcessTree(100, undefined, {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
     await Promise.resolve();
 
     await expect(terminateProcessTree(
       100,
       vi.fn(),
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       { observation, requireConfirmedCleanup: true },
     )).resolves.toBeUndefined();
 
     expect(lookup).toBe(3);
   });
 
+  it('does not confirm Windows cleanup when a known descendant becomes unreadable', async () => {
+    let lookup = 0;
+    const windowsProcessTable = vi.fn(async (requiredPids: readonly number[]) => {
+      expect(requiredPids).toEqual(expect.arrayContaining([process.pid, 100]));
+      lookup += 1;
+      if (lookup > 1) {
+        expect(requiredPids).toContain(101);
+        throw new Error('access denied');
+      }
+      return [
+        { pid: 100, ppid: 1, pgid: null, started: '10000' },
+        { pid: 101, ppid: 100, pgid: null, started: '10010' },
+      ];
+    });
+    const execFile = vi.fn();
+    const dependencies = { platform: 'win32' as const, windowsProcessTable, execFile };
+    const observation = observeProcessTree(100, undefined, dependencies);
+
+    await expect(terminateProcessTree(100, vi.fn(), dependencies, {
+      observation,
+      requireConfirmedCleanup: true,
+    })).rejects.toThrow('Windows process identity lookup failed');
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps pending Windows descendant candidates required during final verification', async () => {
+    let lookup = 0;
+    const windowsProcessTable = vi.fn(async (requiredPids: readonly number[]) => {
+      lookup += 1;
+      if (lookup === 1) return [{ pid: 100, ppid: 1, pgid: null, started: '10000' }];
+      if (lookup === 2) return [{ pid: 201, ppid: 100, pgid: null, started: '10010' }];
+      expect(requiredPids).toEqual(expect.arrayContaining([process.pid, 100, 201]));
+      throw new Error('pending process access denied');
+    });
+    const dependencies = { platform: 'win32' as const, windowsProcessTable, execFile: vi.fn() };
+    const observation = observeProcessTree(100, undefined, dependencies);
+
+    await expect(terminateProcessTree(100, vi.fn(), dependencies, {
+      observation,
+      requireConfirmedCleanup: true,
+    })).rejects.toThrow('Windows termination verification failed');
+    expect(dependencies.execFile).not.toHaveBeenCalled();
+  });
+
   it('does not confirm Windows cleanup when no identity was ever observed', async () => {
     const execFile = vi.fn((command, _args, _options, callback) => {
-      expect(command).toBe('powershell.exe');
+      expect(command).toBe('native-process-table');
       callback(null, '');
     });
     const observation = observeProcessTree(100, undefined, {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
 
     await expect(terminateProcessTree(
       100,
       vi.fn(),
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       { observation, requireConfirmedCleanup: true },
     )).rejects.toThrow('no inherited-pipe process identity was observed');
   });
 
   it('allows a normally completed Windows process to exit before its first identity scan', async () => {
     const execFile = vi.fn((command, _args, _options, callback) => {
-      expect(command).toBe('powershell.exe');
+      expect(command).toBe('native-process-table');
       callback(null, '');
     });
     const observation = observeProcessTree(100, 'marker-value', {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
 
     await expect(terminateProcessTree(
       100,
       vi.fn(),
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       {
         observation,
         requireConfirmedCleanup: true,
@@ -579,12 +646,13 @@ describe('process-tree', () => {
     const observation = observeProcessTree(100, 'marker-value', {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
 
     await expect(terminateProcessTree(
       100,
       vi.fn(),
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       {
         observation,
         requireConfirmedCleanup: true,
@@ -597,19 +665,20 @@ describe('process-tree', () => {
   it('does not apply the Windows normal-completion exception after inspection failure', async () => {
     let lookup = 0;
     const execFile = vi.fn((command, _args, _options, callback) => {
-      expect(command).toBe('powershell.exe');
+      expect(command).toBe('native-process-table');
       lookup += 1;
       callback(lookup === 1 ? new Error('inspection failed') : null, '');
     });
     const observation = observeProcessTree(100, 'marker-value', {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
 
     await expect(terminateProcessTree(
       100,
       vi.fn(),
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       {
         observation,
         requireConfirmedCleanup: true,
@@ -621,19 +690,20 @@ describe('process-tree', () => {
   it('does not apply the Windows normal-completion exception while the root PID is live', async () => {
     let lookup = 0;
     const execFile = vi.fn((command, _args, _options, callback) => {
-      expect(command).toBe('powershell.exe');
+      expect(command).toBe('native-process-table');
       lookup += 1;
       callback(null, lookup === 1 ? '' : '100|1|1000');
     });
     const observation = observeProcessTree(100, 'marker-value', {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
 
     await expect(terminateProcessTree(
       100,
       vi.fn(),
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       {
         observation,
         requireConfirmedCleanup: true,
@@ -663,12 +733,13 @@ describe('process-tree', () => {
     const observation = observeProcessTree(100, undefined, {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
 
     await terminateProcessTree(
       100,
       vi.fn(),
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       { observation, requireConfirmedCleanup: true },
     );
 
@@ -692,13 +763,14 @@ describe('process-tree', () => {
     const observation = observeProcessTree(100, 'marker-value', {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
     await Promise.resolve();
 
     await expect(terminateProcessTree(
       100,
       vi.fn(),
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       { observation, requireConfirmedCleanup: true },
     )).rejects.toThrow('cleanup unconfirmed');
     expect(taskkillPids).toEqual([]);
@@ -717,13 +789,14 @@ describe('process-tree', () => {
     const observation = observeProcessTree(100, undefined, {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
     const killDirectChild = vi.fn();
 
     await terminateProcessTree(
       100,
       killDirectChild,
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       { observation },
     );
 
@@ -745,13 +818,14 @@ describe('process-tree', () => {
     const observation = observeProcessTree(100, undefined, {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
     const killDirectChild = vi.fn();
 
     await terminateProcessTree(
       100,
       killDirectChild,
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       { observation },
     );
 
@@ -777,13 +851,14 @@ describe('process-tree', () => {
     const observation = observeProcessTree(100, undefined, {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
     const killDirectChild = vi.fn();
 
     await expect(terminateProcessTree(
       100,
       killDirectChild,
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       { observation },
     )).rejects.toThrow('cleanup unconfirmed');
 
@@ -804,7 +879,7 @@ describe('process-tree', () => {
       [101, { ppid: 100, startTime: '1001' }],
     ]);
     const execFile = vi.fn((command, _args, _options, callback) => {
-      expect(command).toBe('powershell.exe');
+      expect(command).toBe('native-process-table');
       callback(null, [...processes].map(([pid, entry]) =>
         `${pid}|${entry.ppid}|${entry.startTime}`
       ).join('\n'));
@@ -812,6 +887,7 @@ describe('process-tree', () => {
     const observation = observeProcessTree(100, undefined, {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
     await Promise.resolve();
     processes.delete(100);
@@ -820,7 +896,7 @@ describe('process-tree', () => {
     await expect(terminateProcessTree(
       100,
       vi.fn(),
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       {
         observation,
         requireConfirmedCleanup: true,
@@ -857,6 +933,7 @@ describe('process-tree', () => {
     const observation = observeProcessTree(100, undefined, {
       platform: 'win32',
       execFile,
+      windowsProcessTable: windowsProcessTableFromFixture(execFile),
     });
     await Promise.resolve();
     processes.delete(100);
@@ -865,7 +942,7 @@ describe('process-tree', () => {
     await expect(terminateProcessTree(
       100,
       vi.fn(),
-      { platform: 'win32', execFile },
+      { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
       { observation, requireConfirmedCleanup: true },
     )).rejects.toThrow('cleanup unconfirmed');
     expect(taskkillPids).toEqual([101]);
@@ -906,11 +983,12 @@ describe('process-tree', () => {
       const observation = observeProcessTree(100, undefined, {
         platform: 'win32',
         execFile,
+        windowsProcessTable: windowsProcessTableFromFixture(execFile),
       });
       const promise = terminateProcessTree(
         100,
         vi.fn(),
-        { platform: 'win32', execFile },
+        { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
         { observation, requireConfirmedCleanup: true },
       );
 
@@ -983,12 +1061,13 @@ describe('process-tree', () => {
       const observation = observeProcessTree(100, undefined, {
         platform: 'win32',
         execFile,
+        windowsProcessTable: windowsProcessTableFromFixture(execFile),
       });
       await Promise.resolve();
       const promise = terminateProcessTree(
         100,
         vi.fn(),
-        { platform: 'win32', execFile },
+        { platform: 'win32', execFile, windowsProcessTable: windowsProcessTableFromFixture(execFile) },
         { observation },
       );
       const assertion = expect(promise).rejects.toThrow('cleanup unconfirmed');

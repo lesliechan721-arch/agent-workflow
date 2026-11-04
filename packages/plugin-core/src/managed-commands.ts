@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import { getPluginConfigDependencyKeys } from './plugin-config.js';
 import { formatMarketplaceProductsForError, supportsPlatform } from './platform-support.js';
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
+import { normalizeNativeToolClosure, type NativeToolClosure } from './native-tools.js';
 import type {
   ArtifactState, CodexSkillDelivery, NormalizedPluginManifest, PlatformName, Scope,
 } from './types.js';
@@ -46,6 +47,7 @@ export interface InstalledCommandProducer {
   schemaVersion: 1;
   producer: ProducerIdentity;
   sets: Array<{ set: string; state: ArtifactState; entries: CommandDefinition[] }>;
+  nativeTools?: NativeToolClosure;
 }
 export interface UserCommandDefinition {
   schemaVersion: 1; id: string; name: string; packageRevision: string; launch: CommandLaunch;
@@ -131,7 +133,7 @@ function environmentMap(value: unknown, field: string, source: boolean): Record<
   return result;
 }
 function protectedEnvironmentName(value: string): boolean {
-  return /^(?:AW_PLUGIN_|AW_SUBAGENT_|AW_COMMAND_)/u.test(value.toUpperCase())
+  return /^(?:AW_PLUGIN_|AW_SUBAGENT_|AW_COMMAND_|AW_NATIVE_)/u.test(value.toUpperCase())
     || ['AW_AGENT_SKILL_EVAL_PROCESS_MARKER', 'AW_HOME', 'AW_CODEX_HOME', 'AW_CLAUDE_HOME'].includes(value.toUpperCase());
 }
 export function validateCommandEnvironment(
@@ -294,7 +296,7 @@ export function isUserCommandId(value: unknown): value is string { return typeof
 export function isCommandPackageId(value: unknown): value is string { return typeof value === 'string' && PACKAGE_ID.test(value); }
 
 export function normalizeInstalledCommandProducer(value: unknown): InstalledCommandProducer {
-  const input = object(value, 'command producer record', ['schemaVersion', 'producer', 'sets']);
+  const input = object(value, 'command producer record', ['schemaVersion', 'producer', 'sets', 'nativeTools']);
   if (input.schemaVersion !== 1 || !Array.isArray(input.sets)) throw new Error('Invalid command producer record.');
   const sets = input.sets.map((value, index) => {
     const field = `command producer record.sets[${index}]`;
@@ -311,7 +313,11 @@ export function normalizeInstalledCommandProducer(value: unknown): InstalledComm
     return { set: name(item.set, `${field}.set`), state, entries };
   });
   if (new Set(sets.map((item) => item.set)).size !== sets.length) throw new Error('Invalid command producer record: duplicate set.');
-  return { schemaVersion: 1, producer: normalizeProducerIdentity(input.producer), sets };
+  const nativeTools = input.nativeTools === undefined ? undefined : normalizeNativeToolClosure(input.nativeTools);
+  if (nativeTools?.consumers.some((consumer) => consumer.kind !== 'managed-command-set' || !sets.some((set) => set.set === consumer.key))) {
+    throw new Error('Invalid command producer record: native consumer must belong to this producer.');
+  }
+  return { schemaVersion: 1, producer: normalizeProducerIdentity(input.producer), sets, ...(nativeTools ? { nativeTools } : {}) };
 }
 export function normalizeUserCommandDefinition(value: unknown): UserCommandDefinition {
   const input = object(value, 'user command definition', ['schemaVersion', 'id', 'name', 'packageRevision', 'launch']);

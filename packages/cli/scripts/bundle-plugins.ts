@@ -46,8 +46,6 @@ async function assertPackageVersions(repoRoot: string): Promise<void> {
   const truthFiles = [
     ['package.json', path.join(repoRoot, 'package.json')],
     ['release/version-targets.json', path.join(repoRoot, 'release', 'version-targets.json')],
-    ['packages/aw-windows-job-win32-x64/package.json', path.join(repoRoot, 'packages', 'aw-windows-job-win32-x64', 'package.json')],
-    ['packages/aw-windows-job-win32-arm64/package.json', path.join(repoRoot, 'packages', 'aw-windows-job-win32-arm64', 'package.json')],
     ['packages/agent-skill-eval/package.json', path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json')],
     ['packages/plugin-core/package.json', path.join(repoRoot, 'packages', 'plugin-core', 'package.json')],
     ['packages/cli/package.json', path.join(repoRoot, 'packages', 'cli', 'package.json')],
@@ -61,8 +59,6 @@ async function assertPackageVersions(repoRoot: string): Promise<void> {
   const [
     [, rootPackageJsonPath],
     [, targetsPath],
-    [, windowsX64PackageJsonPath],
-    [, windowsArm64PackageJsonPath],
     [, evalPackageJsonPath],
     [, corePackageJsonPath],
     [, cliPackageJsonPath],
@@ -70,16 +66,12 @@ async function assertPackageVersions(repoRoot: string): Promise<void> {
   const [
     rootPackageJson,
     targets,
-    windowsX64PackageJson,
-    windowsArm64PackageJson,
     evalPackageJson,
     corePackageJson,
     cliPackageJson,
   ] = await Promise.all([
     fs.readJson(rootPackageJsonPath) as Promise<{ version?: unknown }>,
     fs.readJson(targetsPath) as Promise<{ schemaVersion?: unknown; cli?: unknown }>,
-    fs.readJson(windowsX64PackageJsonPath) as Promise<{ version?: unknown }>,
-    fs.readJson(windowsArm64PackageJsonPath) as Promise<{ version?: unknown }>,
     fs.readJson(evalPackageJsonPath) as Promise<{ version?: unknown }>,
     fs.readJson(corePackageJsonPath) as Promise<{ version?: unknown }>,
     fs.readJson(cliPackageJsonPath) as Promise<{ version?: unknown }>,
@@ -101,14 +93,6 @@ async function assertPackageVersions(repoRoot: string): Promise<void> {
     evalPackageJson.version,
     'packages/agent-skill-eval/package.json version',
   );
-  const windowsX64Version = assertStrictSemVer(
-    windowsX64PackageJson.version,
-    'packages/aw-windows-job-win32-x64/package.json version',
-  );
-  const windowsArm64Version = assertStrictSemVer(
-    windowsArm64PackageJson.version,
-    'packages/aw-windows-job-win32-arm64/package.json version',
-  );
   const coreVersion = assertStrictSemVer(
     corePackageJson.version,
     'packages/plugin-core/package.json version',
@@ -118,13 +102,10 @@ async function assertPackageVersions(repoRoot: string): Promise<void> {
     targetVersion !== cliVersion
     || targetVersion !== evalVersion
     || targetVersion !== coreVersion
-    || targetVersion !== windowsX64Version
-    || targetVersion !== windowsArm64Version
   ) {
     throw new Error(
       `Invalid release versions: release/version-targets.json cli ${targetVersion} must match ` +
-      `all five public package versions, including Eval ${evalVersion}, Core ${coreVersion}, ` +
-      `Windows x64 ${windowsX64Version}, Windows arm64 ${windowsArm64Version}, and ` +
+      `all three public package versions, including Eval ${evalVersion}, Core ${coreVersion}, ` +
       `packages/cli/package.json version ${cliVersion}.`,
     );
   }

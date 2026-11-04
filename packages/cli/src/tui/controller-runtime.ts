@@ -1,3 +1,4 @@
+import { prepareNativeCliExecution } from '../utils/native-cli.js';
 import { getPluginConfigReferenceChoices } from '@lesliechan721/aw-plugin-core';
 import { configReferenceKey, configReferenceScalars, type ConfigReferenceContext } from './config-references.js';
 import crypto from 'node:crypto';
@@ -2690,6 +2691,10 @@ export function createTuiControllerDependencies(
           });
         }
         throw new TuiOperationBlockedError('invalidSourceMutation', '来源操作缺少候选输入。');
+      }
+      if (intent.kind === 'configSave' && (intent.apply || intent.retryApply)
+        || intent.kind === 'configSaveBatch' && intent.apply) {
+        await prepareNativeCliExecution({ env: context.env, runner: context.nativeCliRunner });
       }
       return withAwHomeMutationLock({
         env: context.env,

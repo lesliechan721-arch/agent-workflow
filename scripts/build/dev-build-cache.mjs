@@ -9,45 +9,13 @@ import {
   validateRequiredOutputs,
 } from './build-cache.mjs';
 
-const DEV_CACHE_SCHEMA_VERSION = 1;
+const DEV_CACHE_SCHEMA_VERSION = 2;
 const DEPENDENCY_INPUT_PATHS = [
   'pnpm-lock.yaml',
   'pnpm-workspace.yaml',
 ];
 
 const TARGETS = [
-  {
-    id: 'windows-job-x64',
-    inputPaths: [
-      ...DEPENDENCY_INPUT_PATHS,
-      'packages/aw-windows-job-win32-x64/package.json',
-      'packages/agent-skill-eval/native/windows',
-      'packages/agent-skill-eval/scripts/copy-windows-job-platform-package.mjs',
-      'packages/agent-skill-eval/scripts/windows-job-helper-artifacts.mjs',
-    ],
-    outputRoots: ['packages/aw-windows-job-win32-x64/dist'],
-    requiredOutputs: [
-      { path: 'packages/aw-windows-job-win32-x64/dist/aw-windows-job.exe', type: 'file' },
-    ],
-    packageName: '@lesliechan721/aw-windows-job-win32-x64',
-    scriptName: 'build',
-  },
-  {
-    id: 'windows-job-arm64',
-    inputPaths: [
-      ...DEPENDENCY_INPUT_PATHS,
-      'packages/aw-windows-job-win32-arm64/package.json',
-      'packages/agent-skill-eval/native/windows',
-      'packages/agent-skill-eval/scripts/copy-windows-job-platform-package.mjs',
-      'packages/agent-skill-eval/scripts/windows-job-helper-artifacts.mjs',
-    ],
-    outputRoots: ['packages/aw-windows-job-win32-arm64/dist'],
-    requiredOutputs: [
-      { path: 'packages/aw-windows-job-win32-arm64/dist/aw-windows-job.exe', type: 'file' },
-    ],
-    packageName: '@lesliechan721/aw-windows-job-win32-arm64',
-    scriptName: 'build',
-  },
   {
     id: 'agent-skill-eval',
     inputPaths: [
@@ -58,9 +26,7 @@ const TARGETS = [
       'packages/agent-skill-eval/tsconfig.dev.json',
       'packages/agent-skill-eval/src',
       'packages/agent-skill-eval/schemas',
-      'packages/agent-skill-eval/native/windows',
       'packages/agent-skill-eval/scripts/embed-schemas.mjs',
-      'packages/agent-skill-eval/scripts/windows-job-helper-artifacts.mjs',
     ],
     outputRoots: ['packages/agent-skill-eval/dist'],
     requiredOutputs: [
@@ -81,6 +47,7 @@ const TARGETS = [
       'packages/plugin-core/tsconfig.json',
       'packages/plugin-core/tsconfig.dev.json',
       'packages/plugin-core/src',
+      'packages/native-runtime',
       'packages/plugin-core/schemas',
       'packages/plugin-core/scripts/generate-manifest-types.mjs',
     ],
@@ -102,6 +69,7 @@ const TARGETS = [
       'packages/cli/tsconfig.dev.json',
       'packages/cli/index.ts',
       'packages/cli/src',
+      'packages/native-runtime',
       'packages/cli/scripts',
       'packages/cli/authoring',
     ],
@@ -411,8 +379,6 @@ export async function buildDevWithCache(repoRoot, options = {}) {
   const upstream = {};
   for (const target of TARGETS) {
     const targetUpstream = [
-      'windows-job-x64',
-      'windows-job-arm64',
       'agent-skill-eval',
       'plugin-core',
     ].includes(target.id)

@@ -1,3 +1,4 @@
+import type { NativeToolChange } from '../utils/native-tool-review.js';
 import type { CommandProducerResult, Scope } from '../types.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
 import type { IntentObservation } from '../intent/intent-store.js';
@@ -34,6 +35,7 @@ export interface RecoveryReceipt {
   errors: RecoveryDiagnostic[];
   targetResults: RecoveryTarget[];
   commandResults?: CommandProducerResult[];
+  nativeToolChanges?: NativeToolChange[];
   remainingTargets: Array<{ pluginId: string; agent: AgentId; scope: Scope; delivery: RecoveryDelivery | null }>;
   recoveryActions: string[];
   declarationChanged: boolean;

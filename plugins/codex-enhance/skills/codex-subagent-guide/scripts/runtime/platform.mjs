@@ -4,9 +4,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { fail } from './contracts.mjs';
+import { windowsJobExecutable, windowsNativeOperation } from './windows-native.mjs';
 
 const execFileAsync = promisify(execFile);
 const launches = new Map();
@@ -19,8 +19,6 @@ function windowsSystemExecutable(...parts) {
 }
 
 const windowsPowerShell = () => windowsSystemExecutable('WindowsPowerShell', 'v1.0', 'powershell.exe');
-
-const windowsJobHelper = fileURLToPath(new URL('./windows-job.ps1', import.meta.url));
 
 function isPowerShellModulePath(name) {
   return ['psmodulepath', 'winpsmodulepath'].includes(name.toLowerCase());
@@ -108,43 +106,6 @@ export async function currentUserIdentity() {
   return { ...await userIdentity };
 }
 
-const windowsReparseCheck = [
-  'foreach ($item in $data.chain) {',
-  '  $entry = Get-Item -Force -LiteralPath $item',
-  "  if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'A reparse point is not allowed.' }",
-  '}',
-];
-
-const windowsPrivateAclCheck = [
-  '$acl = Get-Acl -LiteralPath $data.target',
-  '$sid = [Security.Principal.SecurityIdentifier]::new($data.sid)',
-  "if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $data.sid -or !$acl.AreAccessRulesProtected) { throw 'The resource owner or ACL is unsafe.' }",
-  '$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))',
-  '$full = [Security.AccessControl.FileSystemRights]::FullControl',
-  '$allow = $false',
-  'foreach ($rule in $rules) {',
-  "  if ($rule.IdentityReference.Value -ne $data.sid -or $rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw 'A foreign or inherited ACL rule is present.' }",
-  '  if (($rule.FileSystemRights -band $full) -eq $full) { $allow = $true }',
-  '}',
-  "if (!$allow) { throw 'The owner has no full resource access.' }",
-];
-
-const windowsPrivateAclSet = [
-  '$sid = [Security.Principal.SecurityIdentifier]::new($data.sid)',
-  'if ($data.kind -eq "directory") {',
-  '  $acl = [Security.AccessControl.DirectorySecurity]::new()',
-  '  $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit',
-  '  $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)',
-  '} else {',
-  '  $acl = [Security.AccessControl.FileSecurity]::new()',
-  '  $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow)',
-  '}',
-  '$acl.SetOwner($sid)',
-  '$acl.SetAccessRuleProtection($true, $false)',
-  '$acl.AddAccessRule($rule)',
-  'Set-Acl -LiteralPath $data.target -AclObject $acl',
-];
-
 async function checkedPathChain(target, kind) {
   if (typeof target !== 'string' || !path.isAbsolute(target) || target.includes('\0') || path.normalize(target) !== target || !['file', 'directory'].includes(kind)) fail('pathInvalid', 'A runtime path must be absolute, normalized, and have a supported node type.');
   let current = path.parse(target).root;
@@ -160,33 +121,14 @@ async function checkedPathChain(target, kind) {
 
 export async function assertNoReparsePath(target, kind = 'file') {
   const chain = await checkedPathChain(target, kind);
-  if (process.platform === 'win32') await windowsOperation([...windowsReparseCheck, '$true | ConvertTo-Json -Compress'].join('\n'), { chain }, 'pathCheck');
+  if (process.platform === 'win32') await windowsNativeOperation('pathCheck', { target, kind, chain });
   return target;
 }
 
 export async function assertNoReparseTree(directory) {
   const chain = await checkedPathChain(directory, 'directory');
   if (process.platform === 'win32') {
-    // Inspect each node before enumerating its children. A recursive listing
-    // could follow a reparse point before the check has a chance to reject it.
-    await windowsOperation([
-      'function Assert-Tree($data) {',
-      ...windowsReparseCheck,
-      'if ($data.kind -eq "directory") {',
-      "  if ($entry -isnot [IO.DirectoryInfo]) { throw 'A normal directory is required.' }",
-      '  foreach ($child in @(Get-ChildItem -Force -LiteralPath $entry.FullName)) {',
-      '    if ($child -is [IO.DirectoryInfo]) { $kind = "directory" }',
-      '    elseif ($child -is [IO.FileInfo]) { $kind = "file" }',
-      "    else { throw 'A foreign resource is not allowed.' }",
-      '    Assert-Tree @{ chain = @($data.chain) + @($child.FullName); kind = $kind }',
-      '  }',
-      '} elseif ($entry -isnot [IO.FileInfo]) {',
-      "  throw 'A normal file is required.'",
-      '}',
-      '}',
-      'Assert-Tree $data',
-      '$true | ConvertTo-Json -Compress',
-    ].join('\n'), { chain, kind: 'directory' }, 'pathTree');
+    await windowsNativeOperation('pathTree', { target: directory, kind: 'directory', chain });
     await checkedPathChain(directory, 'directory');
   } else {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
@@ -218,14 +160,6 @@ export async function verifyPrivatePaths(resources, expectedOwner) {
   } else {
     // Shared ancestors need one reparse check in this native call. Every
     // resource still gets its own owner/ACL check; no evidence survives the call.
-    const source = [
-      ...windowsReparseCheck,
-      'function Assert-PrivateResource($data) {',
-      ...windowsPrivateAclCheck,
-      '}',
-      'foreach ($resource in $data.resources) { Assert-PrivateResource $resource }',
-      '$true | ConvertTo-Json -Compress',
-    ].join('\n');
     const inputFor = (resources) => ({
       chain: [...new Set(resources.flatMap((resource) => resource.chain))],
       resources: resources.map(({ target, kind }) => ({ target, kind, sid: owner.sid })),
@@ -233,12 +167,11 @@ export async function verifyPrivatePaths(resources, expectedOwner) {
     const verifyBatch = async (resources) => {
       const input = inputFor(resources);
       if (Buffer.byteLength(JSON.stringify(input)) > 18 * 1024) fail('platformOperationFailed', 'A native Windows path verification input is too large.');
-      await windowsOperation(source, input, 'aclVerify');
+      await windowsNativeOperation('aclVerify', input);
     };
     let batch = [];
     for (const resource of checked) {
-      // 18 KiB of UTF-8 JSON encodes to at most 24 KiB of base64, below
-      // Windows' 32,767-character limit for a single environment variable.
+      // Keep the existing 18 KiB batch bound for predictable native work.
       const candidate = [...batch, resource];
       if (batch.length && Buffer.byteLength(JSON.stringify(inputFor(candidate))) > 18 * 1024) {
         await verifyBatch(batch);
@@ -269,18 +202,20 @@ export async function protectPrivatePaths(resources) {
       await verifyPrivatePath(target, kind, owner);
     }
   } else {
-    // Each resource keeps its full pre/post path checks and ACL readback.
-    // Only the native host is shared within this bounded write operation.
-    await windowsOperation([
-      'function Protect-PrivateResource($data) {',
-      ...windowsReparseCheck,
-      ...windowsPrivateAclSet,
-      ...windowsReparseCheck,
-      ...windowsPrivateAclCheck,
-      '}',
-      'foreach ($resource in $data.resources) { Protect-PrivateResource $resource }',
-      '$true | ConvertTo-Json -Compress',
-    ].join('\n'), { resources: checked.map((resource) => ({ ...resource, sid: owner.sid })) }, 'aclProtect');
+    let batch = [];
+    const protectBatch = async (resources) => {
+      const input = { resources: resources.map((resource) => ({ ...resource, sid: owner.sid })) };
+      if (Buffer.byteLength(JSON.stringify(input)) > 18 * 1024) fail('platformOperationFailed', 'A native Windows path protection input is too large.');
+      await windowsNativeOperation('aclProtect', input);
+    };
+    for (const resource of checked) {
+      const candidate = [...batch, resource];
+      if (batch.length && Buffer.byteLength(JSON.stringify({ resources: candidate.map((item) => ({ ...item, sid: owner.sid })) })) > 18 * 1024) {
+        await protectBatch(batch);
+        batch = [resource];
+      } else batch = candidate;
+    }
+    await protectBatch(batch);
     for (const { target, kind } of checked) await checkedPathChain(target, kind);
   }
   return true;
@@ -388,15 +323,8 @@ export function launchedProcess(pid) { return launches.get(pid); }
 export async function windowsJobMembers(scope, stop = false) {
   const owner = await currentUserIdentity();
   if (scope?.kind !== 'windows-job' || !/^Local\\aw-subagent-[a-f0-9]{32}$/.test(scope.name ?? '') || owner.kind !== 'windows' || scope.sid !== owner.sid) fail('processScopeInvalid', 'The native job ownership information is invalid.');
-  try {
-    const { stdout } = await execFileAsync(windowsPowerShell(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', windowsJobHelper, '-Action', stop ? 'stop' : 'observe'], {
-      windowsHide: true, timeout: 20000, maxBuffer: 4 * 1024 * 1024,
-      env: windowsHostEnvironment(process.env, { AW_SUBAGENT_JOB_CONTROL: Buffer.from(JSON.stringify(scope)).toString('base64'), AW_SUBAGENT_NATIVE_OPERATION: stop ? 'jobStop' : 'jobObserve' }),
-    });
-    const pids = JSON.parse(stdout.trim());
-    if (!Array.isArray(pids) || pids.some((pid) => !Number.isSafeInteger(pid) || pid <= 0)) throw new Error();
-    return pids;
-  } catch { fail('processScopeObservationFailed', 'The native job could not be observed or stopped.'); }
+  try { return await windowsNativeOperation(stop ? 'jobStop' : 'jobObserve', scope); }
+  catch { fail('processScopeObservationFailed', 'The native job could not be observed or stopped.'); }
 }
 
 async function windowsJobLaunch(invocation, options) {
@@ -410,13 +338,12 @@ async function windowsJobLaunch(invocation, options) {
     const owner = await currentUserIdentity();
     const scope = { kind: 'windows-job', name: `Local\\aw-subagent-${randomBytes(16).toString('hex')}`, sid: owner.sid };
     const environment = invocation.env ?? options.env ?? process.env;
-    const modulePaths = Object.entries(environment).filter(([name]) => isPowerShellModulePath(name)).map(([name, value]) => ({ name, value }));
-    await fs.writeFile(configuration, JSON.stringify({ executable: invocation.command, args: invocation.args, parentPid: process.pid, name: scope.name, status, modulePaths }), { mode: 0o600, flag: 'wx' });
+    await fs.writeFile(configuration, JSON.stringify({ schemaVersion: 1, executable: invocation.command, args: invocation.args, parentPid: process.pid, name: scope.name, status, sid: owner.sid }), { mode: 0o600, flag: 'wx' });
     await protectPrivatePath(configuration, 'file');
-    await assertNoReparsePath(windowsJobHelper, 'file');
+    const helper = await windowsJobExecutable();
     return {
-      command: windowsPowerShell(), args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', windowsJobHelper, '-Action', 'run'],
-      env: windowsHostEnvironment(environment, { AW_SUBAGENT_JOB_CONFIG: configuration }), directory, status, scope,
+      command: helper, args: ['--plugin-config', configuration],
+      env: { ...environment }, directory, status, scope,
     };
   } catch (error) { await fs.rm(directory, { recursive: true, force: true }); throw error; }
 }
@@ -425,8 +352,12 @@ async function waitForJob(child, launch) {
   const deadline = Date.now() + 20000;
   while (true) {
     try {
+      const stat = await fs.lstat(launch.status);
+      if (stat.size > 4096) fail('processScopeUnavailable', 'The native job readiness information is invalid.');
+      await verifyPrivatePath(launch.status, 'file', { kind: 'windows', sid: launch.scope.sid });
       const value = JSON.parse(await fs.readFile(launch.status, 'utf8'));
-      if (value.ready === true && Number.isSafeInteger(value.pid) && value.pid > 0) return;
+      if (value?.ready === true && Number.isSafeInteger(value.pid) && value.pid > 0 && Object.keys(value).length === 2) return;
+      fail('processScopeUnavailable', 'The native job readiness information is invalid.');
     } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
     if (child.exitCode !== null || child.signalCode !== null || Date.now() >= deadline) fail('processScopeUnavailable', 'The native job boundary was not established before backend submission.');
     await new Promise((resolve) => setTimeout(resolve, 25));

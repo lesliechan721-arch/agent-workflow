@@ -6,6 +6,7 @@ import {
   computePackageTarballTreeDigest,
   relativeToRepo,
   runCommand,
+  WINDOWS_JOB_PACKAGE_NAMES,
 } from './common.mjs';
 import { packCliBundle } from './pack-cli.mjs';
 
@@ -13,8 +14,6 @@ const usage = 'node scripts/release/install-local-tarball.mjs [<cli-tarball> <ev
 const cliPackageName = '@lesliechan721/aw';
 const evalPackageName = '@lesliechan721/agent-skill-eval';
 const corePackageName = '@lesliechan721/aw-plugin-core';
-const windowsX64PackageName = '@lesliechan721/aw-windows-job-win32-x64';
-const windowsArm64PackageName = '@lesliechan721/aw-windows-job-win32-arm64';
 
 export function parseArgs(argv) {
   const args = [...argv];
@@ -24,8 +23,7 @@ export function parseArgs(argv) {
     cliTarballArg: args[0],
     evalTarballArg: args[1],
     coreTarballArg: args[2],
-    windowsX64TarballArg: args[3],
-    windowsArm64TarballArg: args[4],
+    windowsJobTarballArgs: args.slice(3),
   };
 }
 
@@ -63,14 +61,12 @@ export async function validateLocalTarballBundle(bundle, options = {}) {
     cliPackageJson,
     evalPackageJson,
     corePackageJson,
-    windowsX64PackageJson,
-    windowsArm64PackageJson,
+    ...nativePackages
   ] = await Promise.all([
     readPackageJson(bundle.cliTarballPath, options),
     readPackageJson(bundle.evalTarballPath, options),
     readPackageJson(bundle.coreTarballPath, options),
-    readPackageJson(bundle.windowsX64TarballPath, options),
-    readPackageJson(bundle.windowsArm64TarballPath, options),
+    ...(bundle.windowsJobTarballPaths ?? []).map((tarball) => readPackageJson(tarball, options)),
   ]);
 
   if (cliPackageJson.name !== cliPackageName) {
@@ -82,19 +78,13 @@ export async function validateLocalTarballBundle(bundle, options = {}) {
   if (corePackageJson.name !== corePackageName) {
     throw new Error(`Plugin core tarball must contain package ${corePackageName}.`);
   }
-  if (windowsX64PackageJson.name !== windowsX64PackageName) {
-    throw new Error(`Windows Job x64 tarball must contain package ${windowsX64PackageName}.`);
-  }
-  if (windowsArm64PackageJson.name !== windowsArm64PackageName) {
-    throw new Error(`Windows Job arm64 tarball must contain package ${windowsArm64PackageName}.`);
-  }
+
+
   if (
     typeof cliPackageJson.version !== 'string'
     || cliPackageJson.version === ''
     || cliPackageJson.version !== evalPackageJson.version
     || cliPackageJson.version !== corePackageJson.version
-    || cliPackageJson.version !== windowsX64PackageJson.version
-    || cliPackageJson.version !== windowsArm64PackageJson.version
   ) {
     throw new Error('All five CLI release tarballs must have the same package version.');
   }
@@ -110,15 +100,19 @@ export async function validateLocalTarballBundle(bundle, options = {}) {
       `${JSON.stringify(cliPackageJson.version)}.`,
     );
   }
-  if (evalPackageJson.optionalDependencies?.[windowsX64PackageName] !== cliPackageJson.version) {
-    throw new Error(
-      `Shared Eval tarball must optionally depend on ${windowsX64PackageName} at its exact package version.`,
-    );
-  }
-  if (evalPackageJson.optionalDependencies?.[windowsArm64PackageName] !== cliPackageJson.version) {
-    throw new Error(
-      `Shared Eval tarball must optionally depend on ${windowsArm64PackageName} at its exact package version.`,
-    );
+
+
+  if (nativePackages.length !== 2) throw new Error('Local CLI installation requires both Windows platform tarballs.');
+  for (const [index, name] of WINDOWS_JOB_PACKAGE_NAMES.entries()) {
+    const metadata = nativePackages[index];
+    if (metadata.name !== name || metadata.version !== cliPackageJson.version
+      || JSON.stringify(metadata.os) !== '["win32"]'
+      || JSON.stringify(metadata.cpu) !== JSON.stringify([['x64', 'arm64'][index]])) {
+      throw new Error(`Windows platform tarball must contain ${name} at the same package version with the correct OS and CPU.`);
+    }
+    if (evalPackageJson.optionalDependencies?.[name] !== cliPackageJson.version) {
+      throw new Error(`Eval tarball must optionally depend on ${name} at its exact package version.`);
+    }
   }
   return bundle;
 }
@@ -127,12 +121,11 @@ export async function installLocalTarball(cliTarballArg, options = {}) {
   const cwd = options.cwd ?? process.cwd();
   const evalTarballArg = options.evalTarballArg;
   const coreTarballArg = options.coreTarballArg;
-  const windowsX64TarballArg = options.windowsX64TarballArg;
-  const windowsArm64TarballArg = options.windowsArm64TarballArg;
+  const windowsJobTarballArgs = options.windowsJobTarballArgs ?? [];
   let bundle;
 
-  if (cliTarballArg || evalTarballArg || coreTarballArg || windowsX64TarballArg || windowsArm64TarballArg) {
-    if (!cliTarballArg || !evalTarballArg || !coreTarballArg || !windowsX64TarballArg || !windowsArm64TarballArg) {
+  if (cliTarballArg || evalTarballArg || coreTarballArg || windowsJobTarballArgs.length) {
+    if (!cliTarballArg || !evalTarballArg || !coreTarballArg || windowsJobTarballArgs.length !== 2) {
       throw new Error(
         `Local CLI installation requires all five release tarballs. Usage: ${usage}`,
       );
@@ -141,8 +134,7 @@ export async function installLocalTarball(cliTarballArg, options = {}) {
       cliTarballPath: path.resolve(cwd, cliTarballArg),
       evalTarballPath: path.resolve(cwd, evalTarballArg),
       coreTarballPath: path.resolve(cwd, coreTarballArg),
-      windowsX64TarballPath: path.resolve(cwd, windowsX64TarballArg),
-      windowsArm64TarballPath: path.resolve(cwd, windowsArm64TarballArg),
+      windowsJobTarballPaths: windowsJobTarballArgs.map((entry) => path.resolve(cwd, entry)),
     };
   } else {
     bundle = await (options.packCliBundle ?? packCliBundle)();
@@ -151,23 +143,15 @@ export async function installLocalTarball(cliTarballArg, options = {}) {
   await (options.validateBundle ?? validateLocalTarballBundle)(bundle, options);
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
-  let platformTarballs = [];
-  if (platform === 'win32') {
-    if (arch !== 'x64' && arch !== 'arm64') {
-      throw new Error(`Windows Job containment is unsupported on architecture ${arch}.`);
-    }
-    platformTarballs = [
-      arch === 'arm64' ? bundle.windowsArm64TarballPath : bundle.windowsX64TarballPath,
-    ];
-  }
+  if (platform === 'win32' && !['x64', 'arm64'].includes(arch)) throw new Error(`Unsupported Windows architecture ${arch}.`);
   await (options.runCommand ?? runCommand)('npm', [
     'install',
     '-g',
-    ...(platform === 'win32' ? [] : ['--omit=optional']),
+    '--ignore-scripts',
+    ...(platform === 'win32' ? [bundle.windowsJobTarballPaths[['x64', 'arm64'].indexOf(arch)]] : []),
     bundle.evalTarballPath,
     bundle.coreTarballPath,
     bundle.cliTarballPath,
-    ...platformTarballs,
   ]);
   return bundle;
 }
@@ -178,17 +162,13 @@ export async function main(argv = process.argv.slice(2)) {
       cliTarballArg,
       evalTarballArg,
       coreTarballArg,
-      windowsX64TarballArg,
-      windowsArm64TarballArg,
+      windowsJobTarballArgs,
     } = parseArgs(argv);
     const bundle = await installLocalTarball(cliTarballArg, {
       evalTarballArg,
       coreTarballArg,
-      windowsX64TarballArg,
-      windowsArm64TarballArg,
+      windowsJobTarballArgs,
     });
-    console.log(`Validated Windows Job x64 tarball: ${relativeToRepo(bundle.windowsX64TarballPath)}`);
-    console.log(`Validated Windows Job arm64 tarball: ${relativeToRepo(bundle.windowsArm64TarballPath)}`);
     console.log(`Installed shared Eval tarball globally: ${relativeToRepo(bundle.evalTarballPath)}`);
     console.log(`Installed plugin core tarball globally: ${relativeToRepo(bundle.coreTarballPath)}`);
     console.log(`Installed CLI tarball globally: ${relativeToRepo(bundle.cliTarballPath)}`);

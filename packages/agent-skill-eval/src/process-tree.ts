@@ -2,6 +2,8 @@ import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 
+import { readWindowsNativeProcessTable, type WindowsNativeProcessRow } from './windows-native.js';
+
 type KillSignal = 'SIGTERM' | 'SIGKILL';
 type PosixSignal = KillSignal | 'SIGSTOP';
 const DEFAULT_PROCESS_MARKER_ENV = 'AW_NATIVE_CLI_PROCESS_MARKER';
@@ -69,6 +71,8 @@ export interface ProcessTreeDependencies {
     options: { timeout: number; windowsHide: boolean; maxBuffer: number },
     callback: (error: Error | null, stdout: string) => void,
   ) => unknown;
+  windowsJobHelperPath?: string;
+  windowsProcessTable?: (requiredPids: readonly number[]) => Promise<WindowsNativeProcessRow[]>;
   createSentinel?: (
     markerEnvironmentVariable: string,
     marker: string,
@@ -511,36 +515,28 @@ export async function acquireProcessTreeInspectionLease(
   }
 }
 
-function parseWindowsProcessTable(stdout: string): Map<number, ProcessEntry> {
-  const table = new Map<number, ProcessEntry>();
-  for (const line of stdout.split('\n')) {
-    const match = /^\s*(\d+)\|(\d+)\|(.+?)\s*$/u.exec(line);
-    if (!match) continue;
-    const startTime = match[3];
-    const creationTime = /^\d+$/u.test(startTime) ? BigInt(startTime) : undefined;
-    table.set(Number(match[1]), {
-      ppid: Number(match[2]),
-      startTime,
-      ...(creationTime !== undefined ? { creationTime } : {}),
-    });
-  }
-  return table;
-}
-
-function readWindowsProcessTable(
-  execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
+async function readWindowsProcessTable(
+  state: ObservationState,
+  pendingPids: Iterable<number> = [],
 ): Promise<Map<number, ProcessEntry> | null> {
-  const script = [
-    'Get-CimInstance Win32_Process | ForEach-Object {',
-    "  '{0}|{1}|{2}' -f $_.ProcessId,$_.ParentProcessId,$_.CreationDate.ToUniversalTime().Ticks",
-    '}',
-  ].join(' ');
-  return runCommand(
-    'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-Command', script],
-    execFileImpl,
-    PROCESS_TREE_COMMAND_TIMEOUT_MS,
-  ).then((stdout) => stdout === null ? null : parseWindowsProcessTable(stdout));
+  const requiredPids = [...new Set([
+    process.pid,
+    state.pid,
+    ...state.descendants.keys(),
+    ...pendingPids,
+  ])];
+  try {
+    const rows = state.dependencies.windowsProcessTable
+      ? await state.dependencies.windowsProcessTable(requiredPids)
+      : await readWindowsNativeProcessTable(requiredPids, { helperPath: state.dependencies.windowsJobHelperPath });
+    return new Map(rows.map((row) => [row.pid, {
+      ppid: row.ppid,
+      startTime: row.started,
+      creationTime: BigInt(row.started),
+    }]));
+  } catch {
+    return null;
+  }
 }
 
 function collectDescendantProcessIds(
@@ -1251,7 +1247,7 @@ function createProcessTreeObservation(
   if (!startLookup) return observation;
   const execFileImpl = dependencies.execFile ?? defaultExecFile;
   if (state.platform === 'win32') {
-    state.initialLookup = readWindowsProcessTable(execFileImpl).then((table) => {
+    state.initialLookup = readWindowsProcessTable(state).then((table) => {
       if (!state.disposed && table) {
         state.initialWindowsLookupSucceeded = true;
         refreshObservedProcesses(state, table);
@@ -1423,7 +1419,7 @@ async function terminateWindowsProcessTree(
       }
     : undefined;
   await state.initialLookup;
-  const table = await readWindowsProcessTable(execFileImpl);
+  const table = await readWindowsProcessTable(state);
   if (!table) {
     throw cleanupUnconfirmed('Windows process identity lookup failed.');
   }
@@ -1466,7 +1462,7 @@ async function terminateWindowsProcessTree(
   if (taskkillResults.some((result) => !result)) {
     throw cleanupUnconfirmed('taskkill did not confirm termination.');
   }
-  const verifiedTable = await readWindowsProcessTable(execFileImpl);
+  const verifiedTable = await readWindowsProcessTable(state, candidatePids);
   if (!verifiedTable) throw cleanupUnconfirmed('Windows termination verification failed.');
   const verifiedCandidatePids = collectDescendantProcessIds(state.pid, verifiedTable);
   const verifiedIdentities = [rootTarget, ...liveDescendants].filter(

@@ -12,8 +12,6 @@ import {
   packCli,
   packCore,
   packEval,
-  packWindowsJobArm64,
-  packWindowsJobX64,
   RELEASE_NETWORK_TIMEOUT_MS,
   repoRoot as defaultRepoRoot,
   resolveRegistryUrl,
@@ -26,12 +24,11 @@ import { resolveMainSource } from './source-candidate.mjs';
 
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/u;
 const CLI_PACKAGES = [
-  ['aw-windows-job-win32-x64', '@lesliechan721/aw-windows-job-win32-x64', packWindowsJobX64],
-  ['aw-windows-job-win32-arm64', '@lesliechan721/aw-windows-job-win32-arm64', packWindowsJobArm64],
   ['agent-skill-eval', '@lesliechan721/agent-skill-eval', packEval],
   ['plugin-core', '@lesliechan721/aw-plugin-core', packCore],
   ['cli', '@lesliechan721/aw', packCli],
 ];
+const NATIVE_PACKAGES = ['x64', 'arm64'].map((arch) => `@lesliechan721/aw-windows-job-win32-${arch}`);
 const CATALOG_MANIFEST = 'catalog-manifest.json';
 
 function base(version) {
@@ -123,7 +120,7 @@ async function readPackageVersions(name, options) {
   let stdout;
   try {
     ({ stdout } = await (options.captureCommand ?? captureCommand)('npm', [
-      'view', name, 'versions', '--json', '--registry', registryUrl,
+      'view', name, 'versions', '--json', '--prefer-online', '--registry', registryUrl,
     ], { cwd: options.repoRoot, env: options.env, timeoutMs: RELEASE_NETWORK_TIMEOUT_MS }));
   } catch (error) {
     if (/\bE404\b|404 Not Found|is not in this registry/iu.test(String(error?.message))) return [];
@@ -238,7 +235,7 @@ async function catalogProductionContent(root, manifest) {
 async function compareCli(artifacts, baseline, root, options) {
   if (!Array.isArray(artifacts) || artifacts.length !== CLI_PACKAGES.length
     || new Set(artifacts.map((artifact) => artifact.name)).size !== CLI_PACKAGES.length) {
-    throw new Error('Production comparison requires all five candidate npm packages.');
+    throw new Error('Production comparison requires all three candidate npm packages.');
   }
   let changed = baseline === null;
   for (const [directory, name] of CLI_PACKAGES) {
@@ -259,6 +256,23 @@ async function compareCli(artifacts, baseline, root, options) {
     if (candidateDigest !== publishedDigest) changed = true;
   }
   return changed;
+}
+
+export function nativeProductionChanged(paths) {
+  return paths?.some((entry) => /^native-tools\/windows-job\/(?:job-helper\/(?:(?!.*_test\.go$).*\.go|go\.(?:mod|sum))$|tool\.json$|(?:build|pack|candidate|reproduce|windows-job-helper-artifacts)\.mjs$)/u.test(entry)) ?? false;
+}
+
+async function nativePackageMetadataChanged(cache, state, sourceHead, env) {
+  if (state.baseline === null) return false;
+  for (const relative of state.inputPaths ?? []) {
+    if (!/^packages\/aw-windows-job-win32-(?:x64|arm64)\/package\.json$/u.test(relative)) continue;
+    const values = await Promise.all([state.baseline.sourceHead, sourceHead].map(async (head) => {
+      try { const value = await jsonAt(cache, head, relative, env); delete value.version; delete value.awRelease; return value; }
+      catch { return null; }
+    }));
+    if (calculateCanonicalDigest(values[0]) !== calculateCanonicalDigest(values[1])) return true;
+  }
+  return false;
 }
 
 async function sourcePluginVersions(root, sourceHead, env) {
@@ -389,7 +403,7 @@ export async function planAutomaticBeta({ repoRoot = defaultRepoRoot, sourceHead
     }
     for (const product of ['cli', 'catalog']) {
       try {
-        const versionSets = product === 'cli' ? await Promise.all(CLI_PACKAGES.map(([, name]) =>
+        const versionSets = product === 'cli' ? await Promise.all([...CLI_PACKAGES.map(([, name]) => name), ...NATIVE_PACKAGES].map((name) =>
           (injected.readPackageVersions ?? readPackageVersions)(name, options))) : [];
         if (versionSets.some((versions) => !Array.isArray(versions)
           || versions.some((version) => typeof version !== 'string'))) throw new Error('Invalid registry version history.');
@@ -427,7 +441,7 @@ export async function planAutomaticBeta({ repoRoot = defaultRepoRoot, sourceHead
               try {
                 if (product === 'cli' && artifacts.cliError) throw artifacts.cliError;
                 const comparison = product === 'cli'
-                  ? { productionChanged: await compareCli(artifacts.cli, state.baseline, temporaryRoot, options) }
+                  ? { productionChanged: await compareCli(artifacts.cli, state.baseline, temporaryRoot, options) || nativeProductionChanged(state.inputPaths) || await nativePackageMetadataChanged(cache, state, sourceHead, env) }
                   : await compareCatalog(artifacts, state.baseline, cache, temporaryRoot, options);
                 const { productionChanged, ...details } = comparison;
                 products[product] = {

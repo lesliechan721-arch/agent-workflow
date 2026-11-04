@@ -57,7 +57,7 @@ export interface EvalProviderDoctorOptions {
   processTree?: ProcessTreeDependencies
   canAccess?: (candidate: string) => Promise<boolean>
   checkCleanup?: (platform: NodeJS.Platform) => Promise<boolean>
-  resolveWindowsJobHelper?: () => string
+  resolveWindowsJobHelper?: () => Promise<string> | string
   readUserKeychainSearchList?: () => Promise<string>
 }
 
@@ -112,7 +112,8 @@ export async function doctorEvalProviders(
     options.checkCleanup ?? (async (currentPlatform: NodeJS.Platform) => {
       try {
         if (currentPlatform === 'win32') {
-          (options.resolveWindowsJobHelper ?? resolveWindowsJobHelperPath)()
+          if (options.resolveWindowsJobHelper) await options.resolveWindowsJobHelper()
+          else await resolveWindowsJobHelperPath({ platform: currentPlatform })
         } else {
           await assertProcessTreeInspectionAvailable({
             ...options.processTree,

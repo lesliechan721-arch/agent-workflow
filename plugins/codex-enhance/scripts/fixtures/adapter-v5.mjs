@@ -125,9 +125,17 @@ input.on('line',async line=>{
  const value=JSON.parse(line);await capture({input:value});
  if(backend==='codex'){
   const respond=result=>emit({id:value.id,result});
-  if(value.method==='initialize')respond({});
+  if(value.method==='initialize') {
+   if(scenario==='initialize rejection')emit({id:value.id,error:{code:-32602,message:'SYNTHETIC_CONFIG_SECRET'}});
+   else {
+    if(scenario==='configuration warning')emit({method:'configWarning',params:{summary:'SYNTHETIC_CONFIG_SECRET',details:'Authorization: Bearer SYNTHETIC_CONFIG_SECRET',path:'SYNTHETIC_CONFIG_SECRET'}});
+    respond({});
+   }
+  }
+  else if(value.method==='config/read')respond({config:{}});
   else if(value.method==='thread/start'||value.method==='thread/resume') {
-   communicationServer = Object.entries(value.params.config?.mcp_servers ?? {}).find(([key]) => key.startsWith('aw_parent_'))?.[1];
+   communicationServer = Object.entries(value.params.config?.mcp_servers ?? {}).find(([key]) => key.startsWith('aw_parent_'))?.[1]
+    ?? Object.entries(value.params.config ?? {}).find(([key]) => key.startsWith('mcp_servers.aw_parent_'))?.[1];
    if(value.method==='thread/resume'&&scenario==='resume rejection')emit({id:value.id,error:{code:-32602,message:'session unavailable'}});
    else if(value.method==='thread/resume'&&scenario==='resume mismatch')respond({thread:{id:'other-thread'},model:'model-fixture'});
    else if(value.method==='thread/resume'&&scenario==='resume active')respond({thread:{id:'thread-fixture',status:{type:'active'}},model:'model-fixture'});

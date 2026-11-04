@@ -9,20 +9,15 @@ import {
   ProcessTreeTimeoutError,
   runProcessTree,
 } from '../perf/process-tree.mjs'
+import {
+  captureQualificationHelper,
+  createWindowsPluginJobChecks,
+  WINDOWS_PLUGIN_JOB_REQUIRED_CHECKS,
+} from './windows-plugin-job.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const helperArch = process.arch === 'x64' ? 'x64' : process.arch === 'arm64' ? 'arm64' : null
-const defaultHelperPath = helperArch
-  ? path.join(
-      repoRoot,
-      'packages',
-      'agent-skill-eval',
-      'native',
-      'windows',
-      helperArch,
-      'aw-windows-job.exe',
-    )
-  : null
+const defaultHelperPath = null
 const checkTimeoutMs = 10_000
 
 function encodeConfig(executable, args, parentPid = process.pid) {
@@ -41,24 +36,7 @@ function startHelper(executable, args, options = {}) {
     stdio: ['pipe', 'pipe', 'pipe'],
     ...spawnOptions,
   })
-  let stdout = ''
-  let stderr = ''
-  child.stdout?.setEncoding('utf8')
-  child.stderr?.setEncoding('utf8')
-  child.stdout?.on('data', (chunk) => { stdout += chunk })
-  child.stderr?.on('data', (chunk) => { stderr += chunk })
-  const closed = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('helperCloseTimeout')), checkTimeoutMs)
-    child.once('error', (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
-    child.once('close', (code, signal) => {
-      clearTimeout(timer)
-      resolve({ code, signal })
-    })
-  })
-  return { child, closed, output: () => ({ stdout, stderr }) }
+  return captureQualificationHelper(child)
 }
 
 async function waitForOutput(started, pattern) {
@@ -118,7 +96,7 @@ function observeOutcome(run) {
 }
 
 async function checkStdioAndExitCode(options) {
-  const started = startHelper(process.execPath, ['-e', [
+  const started = await (options.startHelper ?? startHelper)(process.execPath, ['-e', [
     "let input = '';",
     "process.stdin.setEncoding('utf8');",
     "process.stdin.on('data', (chunk) => { input += chunk; });",
@@ -133,7 +111,7 @@ async function checkStdioAndExitCode(options) {
 }
 
 async function checkFastSuccess(options) {
-  const started = startHelper(process.execPath, ['-e', 'process.exit(0)'], options)
+  const started = await (options.startHelper ?? startHelper)(process.execPath, ['-e', 'process.exit(0)'], options)
   const close = await started.closed
   if (close.code !== 0 || close.signal !== null) throw new Error('fastSuccessMismatch')
 }
@@ -145,7 +123,7 @@ async function checkSuccessfulRootCleansChild(options) {
     'process.stdout.write(`pid:${child.pid}\\n`);',
     'child.unref();',
   ].join('')
-  const started = startHelper(process.execPath, ['-e', script], options)
+  const started = await (options.startHelper ?? startHelper)(process.execPath, ['-e', script], options)
   const match = await waitForOutput(started, /pid:(\d+)/u)
   const close = await started.closed
   if (close.code !== 0) throw new Error('successfulRootExitMismatch')
@@ -172,7 +150,7 @@ export function nestedCleanupFixture() {
 }
 
 export async function checkNestedChildCleanup({ startHelper: start = startHelper, ...options } = {}) {
-  const started = start(process.execPath, ['-e', nestedCleanupFixture()], options)
+  const started = await start(process.execPath, ['-e', nestedCleanupFixture()], options)
   const match = await waitForOutput(started, /pids:(\d+),(\d+)/u)
   const close = await started.closed
   if (close.code !== 0) throw new Error('nestedRootExitMismatch')
@@ -187,7 +165,7 @@ async function checkForcedHelperExit(options) {
     'child.unref();',
     'setInterval(() => {}, 1000);',
   ].join('')
-  const started = startHelper(process.execPath, ['-e', script], options)
+  const started = await (options.startHelper ?? startHelper)(process.execPath, ['-e', script], options)
   const match = await waitForOutput(started, /pids:(\d+),(\d+)/u)
   if (!started.child.kill('SIGKILL')) throw new Error('forcedHelperExitKillRejected')
   await started.closed
@@ -283,6 +261,7 @@ export const WINDOWS_JOB_REQUIRED_CHECKS = [
   'production-timeout-cleanup',
   'production-abort-cleanup',
   'parent-crash-cleanup',
+  ...WINDOWS_PLUGIN_JOB_REQUIRED_CHECKS,
 ]
 
 // Keep the existing local perf-runner contract while using the installed Eval
@@ -329,12 +308,22 @@ export async function runWindowsJobQualification(options = {}) {
     checks: [],
   }
   let tempRoot
+  let pluginChecks
   try {
     const helperPath = options.helperPath ?? defaultHelperPath
     if (process.platform !== 'win32' || !helperArch) throw new Error('requiresSupportedWindowsHost')
     if (!path.isAbsolute(helperPath ?? '')) throw new Error('absoluteHelperPathRequired')
     const helper = { ...options, helperPath }
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aw-windows-job-qualification-'))
+    pluginChecks = createWindowsPluginJobChecks(tempRoot, helper, {
+      checkFastSuccess,
+      checkSuccessfulRootCleansChild,
+      checkNestedChildCleanup,
+      checkForcedHelperExit,
+      managedCleanupFixture,
+      waitForRecordedPids,
+      waitForProcessExit,
+    })
     const checks = [
       ['stdio-exit-code', () => checkStdioAndExitCode(helper)],
       ['fast-success', () => checkFastSuccess(helper)],
@@ -344,6 +333,7 @@ export async function runWindowsJobQualification(options = {}) {
       ['production-timeout-cleanup', () => checkProductionTimeoutCleanup(tempRoot, helper)],
       ['production-abort-cleanup', () => checkProductionAbortCleanup(tempRoot, helper)],
       ['parent-crash-cleanup', () => checkParentCrash(tempRoot, helper)],
+      ...pluginChecks.checks,
     ]
     for (const [id, check] of checks) {
       try {
@@ -359,6 +349,7 @@ export async function runWindowsJobQualification(options = {}) {
       report.checks.push({ id, passed: false, code: error instanceof Error ? error.message : 'unknownFailure' })
     }
   } finally {
+    if (pluginChecks) await pluginChecks.dispose()
     if (tempRoot) await rm(tempRoot, { recursive: true, force: true })
   }
   return report

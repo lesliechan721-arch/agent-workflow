@@ -1,3 +1,4 @@
+import { describeNativeToolClosure } from '../utils/native-tool-review.js';
 import type { Scope } from '../types.js';
 import type { CliPrompt } from '../commands/runtime.js';
 import type { OperationPlan } from '../commands/operation-plan.js';
@@ -188,7 +189,13 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
         nativeCliRunner: bindNativeCliRunnerSignal(runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), options.signal) },
     }) : undefined;
     options.signal?.throwIfAborted();
+    const nativeToolChanges = preview?.operationPlan?.actions.flatMap((action) => action.nativeToolChanges ?? []) ?? [];
+    if (nativeToolChanges.length) receipt.nativeToolChanges = nativeToolChanges;
     for (const action of preview?.operationPlan?.actions ?? []) {
+      for (const change of action.nativeToolChanges ?? []) {
+        if (change.before) changes.push(...describeNativeToolClosure(change.before).map((description) =>
+          `撤销原生工具 · ${change.producer.sourceId}/${change.producer.pluginName} · ${change.producer.key} · ${description}`));
+      }
       if (action.kind !== 'retainManagedCommandPackage') continue;
       changes.push(`保留命令包 ${action.producer.key}：${action.producer.sourceId}/${action.producer.pluginName}`
         + ` · ${action.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'}`
@@ -273,6 +280,13 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
           receipt.blockers.push(diagnostic('operationReviewStale'));
           return finish(receipt, plan.options, plan.portable);
         }
+        if (plan.operationPlan) {
+          await executeRemovedPluginOutputCleanup({ target: current,
+            selectedTargets: receipt.targetResults.flatMap((target) => target.delivery?.kind === 'native'
+              ? [{ pluginId: target.pluginId, platform: target.delivery.platform, scope: target.scope }] : []),
+            context: plan.context, runtime: { ...runtime, awHomeMutationToken: token,
+              previewOperationPlan: true, expectedPlanFingerprint: plan.operationPlan.planFingerprint } });
+        }
         const refreshIntent = async () => {
           const refreshed = await observeIntent(location);
           receipt.intent = { state: refreshed.state, ...('digest' in refreshed ? { digest: refreshed.digest } : {}),
@@ -311,7 +325,8 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
             action.kind === 'retainManagedCommandPackage')) {
             try {
               const result = await executeRemovedPluginOutputCleanup({ target: plan.evidence, selectedTargets,
-                context: plan.context, runtime: { ...runtime, awHomeMutationToken: token } });
+                context: plan.context, runtime: { ...runtime, awHomeMutationToken: token,
+                  expectedPlanFingerprint: plan.operationPlan?.planFingerprint } });
               if (result.commandResults?.length) receipt.commandResults = result.commandResults;
               receipt.outputsMayHaveChanged = result.rebuildResults.some((entry) => entry.actions.length > 0);
               let partialAttributed = result.commandResults?.some((entry) => entry.state !== 'completed') === true;

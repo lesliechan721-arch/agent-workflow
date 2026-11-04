@@ -1,3 +1,4 @@
+import { describeNativeToolClosure } from '../utils/native-tool-review.js';
 import path from 'node:path';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 
@@ -16,7 +17,7 @@ import { runRebuildCommand, type RebuildCommandResult, type RebuildCommandRuntim
 import { buildRebuildReceiptJson } from '../output/command-receipt.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
-import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner } from '../utils/native-cli.js';
+import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, prepareNativeCliExecution } from '../utils/native-cli.js';
 import { portableRecoveryLayout } from '../portable/recovery-layout.js';
 import { SkillsCliError } from '../portable/skills-cli.js';
 import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
@@ -128,6 +129,7 @@ export interface RecoveryPlan {
 
 function diagnostic(code: string): RecoveryDiagnostic {
   const messages: Record<string, string> = {
+    nativeToolAuthorizationRequired: '原生工具声明有变化，请使用 --yes 或确认当前 Review 后执行。',
     localTargetsRequired: '已有需求，请先设置本机 Agent 或使用 --target。',
     deliveryUnsupported: '此插件没有适用于所选 Agent 的交付。',
     operationReviewStale: '确认依据已改变，请重新检查并确认。',
@@ -241,6 +243,9 @@ function nativeTargetSelection(targets: readonly NativeTarget[]): {
 async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform: PlatformSelection,
   preview: boolean, runtime: RebuildCommandRuntime = plan.runtime,
   command: RecoveryCommand = plan.command, selectedTargets?: readonly NativeTarget[]): Promise<RebuildCommandResult> {
+  if (!runtime.awHomeMutationToken) {
+    await prepareNativeCliExecution({ env: plan.context.env, runner: runtime.nativeCliRunner });
+  }
   const rebuildCommand = command === 'install' ? 'sync' : command;
   const result = await runRebuildCommand({
     command: rebuildCommand,
@@ -700,6 +705,16 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
       plan.nativeGroups.push(nativeGroup);
       nativeResults(plan, nativeGroup, preview, false);
       plan.changes.push(...(preview.operationPlan?.changes ?? []));
+      const nativeToolChanges = preview.operationPlan?.actions.flatMap((action) => action.nativeToolChanges ?? []) ?? [];
+      if (nativeToolChanges.length) receipt.nativeToolChanges = [...(receipt.nativeToolChanges ?? []), ...nativeToolChanges];
+      for (const action of preview.operationPlan?.actions ?? []) {
+        for (const change of action.nativeToolChanges ?? []) {
+          for (const [verb, closure] of [['撤销', change.before], ['使用', change.after]] as const) {
+            if (closure) plan.changes.push(...describeNativeToolClosure(closure).map((description) =>
+              `${verb}原生工具 · ${change.producer.sourceId}/${change.producer.pluginName} · ${change.producer.key} · ${description}`));
+          }
+        }
+      }
       for (const override of preview.dependencyPlan?.scopeOverrides ?? []) {
         if (options.dependencyScopeOverrides?.some((requested) => requested.pluginId === override.pluginId
           && (!requested.platform || requested.platform === override.platform))) {
@@ -926,6 +941,10 @@ export async function executeRecovery(plan: RecoveryPlan,
   plan = { ...plan, receipt, options: { ...plan.options, yes: execution.yes ?? plan.options.yes },
     runtime: { ...plan.runtime, ...execution.runtime } };
   try {
+  if (receipt.nativeToolChanges?.length && plan.options.yes !== true) {
+    receipt.blockers.push(diagnostic('nativeToolAuthorizationRequired'));
+    return completeReceipt(receipt);
+  }
   const freshContext = await createScopeContext({ scope: plan.options.scope,
     cwd: plan.context.callerCwd, env: plan.options.env });
   const environmentStable = freshContext.awHome === plan.context.awHome

@@ -3,12 +3,12 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
 import { prepareRun, prepareResume, executionConfiguration, validateCommandHost } from '../skills/codex-subagent-guide/scripts/runtime/runner.mjs';
 import { selectExecution } from '../skills/codex-subagent-guide/scripts/runtime/plan.mjs';
 
-const resourceRoot = fileURLToPath(new URL('../skills/codex-subagent-guide/', import.meta.url));
+const resourceRoot = path.dirname(guideRuntimeScripts(import.meta.url));
 
 function select(command, request = {}) {
   return selectExecution({
@@ -155,11 +155,16 @@ test('managed custom plans enforce command identity and protected environment fi
   for (const extra of [{ command: process.execPath }, { entrypoint: '/tmp/entry.mjs' }, { permissionMode: 'default' }, { codexProfile: 'x' }, { oracleEngine: 'api' }]) {
     assert.throws(() => select({ ...managed, ...extra }), { code: 'executorInvalid' });
   }
-  for (const name of ['AW_PLUGIN_FOO', 'aw_subagent_x', 'Aw_Command_Host', 'aw_agent_skill_eval_process_marker', 'aw_home', 'AW_CODEX_HOME', 'AW_CLAUDE_HOME']) {
+  for (const name of ['AW_PLUGIN_FOO', 'AW_NATIVE_TOOL_CONTEXT', 'aw_native_resolver_mode', 'aw_subagent_x', 'Aw_Command_Host', 'aw_agent_skill_eval_process_marker', 'aw_home', 'AW_CODEX_HOME', 'AW_CLAUDE_HOME']) {
     assert.throws(() => select({ ...managed, env: { [name]: 'x' } }), { code: 'environmentInvalid' });
     assert.throws(() => select({ ...managed, envFrom: { VALUE: name } }), { code: 'environmentInvalid' });
   }
   assert.throws(() => select({ ...managed, env: { VALUE: 'x' }, envFrom: { VALUE: 'SOURCE' } }), { code: 'environmentConflict' });
+  for (const adapter of ['custom', 'codex']) for (const name of ['AW_NATIVE_TOOL_CONTEXT', 'aw_native_resolver_mode']) {
+    const execution = adapter === 'custom' ? { adapter, mode: 'workspace', command: process.execPath } : { adapter };
+    assert.throws(() => select({ ...execution, env: { [name]: 'x' } }), { code: 'environmentInvalid' });
+    assert.throws(() => select({ ...execution, envFrom: { VALUE: name } }), { code: 'environmentInvalid' });
+  }
   assert.equal(select({ adapter: 'custom', mode: 'workspace', command: process.execPath, env: { AW_HOME: '/legacy', AW_COMMAND_VALUE: 'legacy' } }).executor.env.AW_HOME, '/legacy');
 });
 
@@ -174,7 +179,7 @@ test('managed host validation fixes nested AW argv and environment without expos
   const cliEntry = path.join(directory, 'aw cli 中文.mjs');
   await fs.writeFile(cliEntry, `process.stdout.write(JSON.stringify(${JSON.stringify({ schemaVersion: 1, command: 'command.show', ok: true, overallState: 'completed', commands: [descriptor] })}));`);
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: directory };
-  const environment = { AW_HOME: directory, AW_COMMAND_HOST: JSON.stringify(host), AW_COMMAND_OLD: 'old', AW_PLUGIN_CONTEXT: 'temporary', SOURCE: '', KEEP: 'original' };
+  const environment = { AW_HOME: directory, AW_COMMAND_HOST: JSON.stringify(host), AW_COMMAND_OLD: 'old', AW_PLUGIN_CONTEXT: 'temporary', AW_NATIVE_TOOL_CONTEXT: 'resolved-native-context', SOURCE: '', KEEP: 'original' };
   await assert.rejects(validateCommandHost({ AW_HOME: directory }), { code: 'managedCommandHostMissing' });
   for (const raw of ['{', '{}', JSON.stringify({ ...host, schemaVersion: 2 }), JSON.stringify({ ...host, awHome: '/different' }), JSON.stringify({ ...host, cliEntry: directory }), JSON.stringify({ ...host, nodeExecutable: directory }), JSON.stringify({ ...host, nodeExecutable: path.join(directory, 'missing-node') }), JSON.stringify({ ...host, unexpected: true })]) {
     await assert.rejects(validateCommandHost({ ...environment, AW_COMMAND_HOST: raw }), { code: 'managedCommandHostInvalid' });
@@ -188,6 +193,7 @@ test('managed host validation fixes nested AW argv and environment without expos
   assert.deepEqual(prepared.request.args, args); assert.equal(prepared.request.prompt, ' task\n');
   assert.equal(prepared.environment.KEEP, 'executor'); assert.equal(prepared.environment.EMPTY, '');
   assert.equal(prepared.environment.AW_HOME, directory); assert.deepEqual(JSON.parse(prepared.environment.AW_COMMAND_HOST), host);
+  assert.equal(prepared.environment.AW_NATIVE_TOOL_CONTEXT, 'resolved-native-context');
   assert.equal(prepared.environment.AW_COMMAND_OLD, undefined); assert.equal(prepared.environment.AW_PLUGIN_CONTEXT, undefined);
   assert.equal(JSON.stringify(prepared.request).includes('AW_COMMAND_HOST'), false); assert.equal(JSON.stringify(prepared.request).includes(cliEntry), false);
   await assert.rejects(prepareRun(select({ adapter: 'custom-managed', mode: 'workspace', commandId, envFrom: { EMPTY: 'MISSING' } }), { prompt: 'task', workspace: directory }, { environment }), { code: 'environmentSourceMissing' });

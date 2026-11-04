@@ -330,6 +330,8 @@ Config Mutation Receipt v7 的 `apply` 对象增加可选 `commandResults`，元
 
 是否刷新使用该 producer 的有效配置与其 package/动态 set refreshKeys 的并集，沿用现有值、来源和校验依赖的变更判定。已保留包即使没有平台 activation/placement，也可因匹配配置变化而刷新；仅有 manifest 声明且尚未安装/不在平台计划中的包不会被配置 apply 隐式安装。producer 已从当前 manifest 删除时只报告残留与 pkg-id remove 指引。
 
+独立包的配置 apply/replay 不得引入未确认的 native 闭包。当前 native 声明与已安装 producer 不同时，在 renderer 和 producer 写入前拒绝刷新，保留旧产物，并提示先通过 `sync` 或 `command package sync` 确认变化；配置保存及部分失败结果仍按下述合同处理。
+
 `noVisibleTarget` 仅在平台目标和包目标都为空时成立。`apply.state=succeeded` 要求两组中所有实际目标成功；任一包失败、部分完成或发现错误时，保存成功的配置仍保留，`apply.state=partial` 并带 commandResults/现有 stage 错误，Config Mutation Receipt 整体为 partial、ok=false、exit=1。前置 source/schema/effectiveConfig 不可用继续使用既有 unavailable 分支，并保留其已知目标证据。`notRequested`、`noConfigChange`、`noEffectiveConfigChange` 仍按现有合同判断，但不得只看平台目标而漏掉包。一次平台/配置操作内，同一 producer 最多刷新一次，不增加持久 claim。
 
 
@@ -383,12 +385,12 @@ Node runner 精确启动 `[process.execPath, absoluteEntry, ...fixedArgs, ...cal
 
 环境按以下顺序处理：
 
-1. 在本次 run 开始时快照宿主环境。去除 `AW_PLUGIN_*` 作者临时上下文以及继承的旧 `AW_COMMAND_*`；不把 AW_SUBAGENT 的本次 worker 控制变量清掉，否则托管 adapter 无法使用既有通讯协议。
+1. 在本次 run 开始时快照宿主环境。去除 `AW_PLUGIN_*` 作者临时上下文、继承的旧 `AW_COMMAND_*` 和 `AW_NATIVE_*` 工具上下文。宿主按当前 producer 重新解析协议声明，从当前 CLI 的已安装依赖取得工具，不能继承其他 producer 的授权。不把 AW_SUBAGENT 的本次 worker 控制变量清掉，否则托管 adapter 无法使用既有通讯协议。
 2. envFrom 从这份原宿主快照取值，来源缺失报 `commandEnvironmentSourceMissing`，空值保留。没有递归引用、模板替换或从 env 字面值取源。
 3. 合并普通宿主环境与绑定 env/envFrom。一个绑定的两个 map 不能有相同目标键，Windows 按大小写不敏感比较；其它系统按精确名称比较。绑定显式值覆盖普通宿主值。
-4. AW 注入当前受保护主机描述和已固定 AW_HOME。不能用配置覆盖控制变量。
+4. AW 注入当前受保护主机描述、已固定 AW_HOME，以及按已安装 native 协议闭包生成的 `AW_NATIVE_TOOL_CONTEXT`。ready 结果为 `{ state: "ready", protocol, executable }`；required 解析成功后才启动消费者，缺依赖时提示重装当前 CLI/Eval 并包含 optional dependencies。preferred 在启动时固定 backend。不能用配置覆盖控制变量。完整原生准备和恢复见[原生工具合同](native-tools.md)。
 
-env 与 envFrom 的目标名、envFrom 的来源名均禁止 `AW_PLUGIN_*`、`AW_SUBAGENT_*`、`AW_COMMAND_*`、`AW_AGENT_SKILL_EVAL_PROCESS_MARKER`，以及 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME`。这些新增保护规则适用于命令绑定和新 custom-managed 分支；原绝对路径 custom 继续执行既有环境校验，不能因此拒绝原本合法的旧配置。校验禁止名时跨 OS 按 ASCII 大小写不敏感处理，避免 Windows 绕过。普通 PATH、HOME 等宿主配置保持既有工具语义。
+env 与 envFrom 的目标名、envFrom 的来源名均禁止 `AW_PLUGIN_*`、`AW_SUBAGENT_*`、`AW_COMMAND_*`、`AW_NATIVE_*`、`AW_AGENT_SKILL_EVAL_PROCESS_MARKER`，以及 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME`。这些新增保护规则适用于命令绑定和新 custom-managed 分支；原绝对路径 custom 继续执行既有环境校验，不能因此拒绝原本合法的旧配置。校验禁止名时跨 OS 按 ASCII 大小写不敏感处理，避免 Windows 绕过。普通 PATH、HOME 等宿主配置保持既有工具语义。
 
 `AW_COMMAND_HOST` 是单个 JSON 环境值：
 

@@ -9,24 +9,24 @@ import { Readable } from 'node:stream';
 import { syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
 import { validateDiagnostics } from '../skills/codex-subagent-guide/scripts/runtime/contracts.mjs';
+import { useWindowsNativeFixture, windowsNativeSpawn } from './fixtures/windows-native-host.mjs';
 import { field } from './fixtures/windows-qualification.mjs';
 
 // Queue and output selection tests use real runtime modules and real files.
 // Windows identity, ACL, directory-move and process-table calls are replaced;
 // the native runtime suite owns their real OS behavior and worker lifecycle.
+useWindowsNativeFixture();
 const originalExecFile = childProcess.execFile;
+const originalSpawn = childProcess.spawn;
 let commands, store, files, output, cli;
 try {
-  childProcess.execFile = Object.assign(() => {}, { [promisify.custom]: async (_command, _args, options) => {
-    if (path.basename(_command).toLowerCase() === 'whoami.exe') return { stdout: '"fixture","S-1-5-21-123-456-789-1001"\r\n' };
-    if (options.env.AW_SUBAGENT_NATIVE_OPERATION === 'processTable') return { stdout: JSON.stringify([
-      { pid: process.pid, ppid: process.ppid, pgid: null, started: '123456789' },
-    ]) };
-    const input = JSON.parse(Buffer.from(options.env.AW_SUBAGENT_PLATFORM_INPUT, 'base64').toString('utf8'));
-    if (input.source && input.destination) await fs.rename(input.source, input.destination);
-    else if (!input.target && !input.resources && Object.keys(input).length) throw new Error('Unexpected native runtime operation.');
-    return { stdout: JSON.stringify(Object.keys(input).length ? true : 'S-1-5-21-123-456-789-1001') };
-  } });
+  childProcess.execFile = Object.assign(() => {}, { [promisify.custom]: async () => ({ stdout: '"fixture","S-1-5-21-123-456-789-1001"\r\n' }) });
+  childProcess.spawn = windowsNativeSpawn(async (_command, _args, _options, { operation, input }) => {
+    if (operation === 'processTable') return { result: [{ pid: process.pid, ppid: process.ppid, pgid: null, started: '123456789' }] };
+    if (operation === 'rootPublish') await fs.rename(input.source, input.destination);
+    else if (!['aclVerify', 'aclProtect', 'pathCheck', 'pathTree'].includes(operation)) throw new Error('Unexpected native runtime operation.');
+    return { result: true };
+  }, originalSpawn);
   syncBuiltinESMExports();
   [commands, store, files, output, cli] = await Promise.all([
     import('../skills/codex-subagent-guide/scripts/runtime/commands.mjs'),
@@ -37,6 +37,7 @@ try {
   ]);
 } finally {
   childProcess.execFile = originalExecFile;
+  childProcess.spawn = originalSpawn;
   syncBuiltinESMExports();
 }
 
@@ -344,7 +345,7 @@ test('command help bypasses required task inputs and diagnostics parses for ever
 // late warnings remain visible, and explicit diagnostics can recover full evidence.
 test('result display filters routine diagnostics and retains new warnings', async (t) => {
   const f = await fixture(t);
-  const normal = ['codexExecutableSelected', 'communicationPermissionExisting', 'communicationPermissionAdded', 'profileFieldIrrelevant', 'hookTrustBypassed']
+  const normal = ['codexExecutableSelected', 'communicationPermissionExisting', 'communicationPermissionAdded', 'communicationPermissionSession', 'profileFieldIrrelevant', 'hookTrustBypassed']
     .map((code) => ({ code, message: `Routine ${code}.` }));
   const warning = { code: 'profileFieldIgnored', field: 'features.unknown', message: 'Unsupported override.' };
   const late = { code: 'backendActionDenied', message: 'A tool action was denied.' };

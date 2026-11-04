@@ -126,6 +126,19 @@ const adapterFacts: Readonly<Partial<Record<
       provenance: ['CLI runtime import resolver'],
     },
   },
+  'native-tools': {
+    nativeTools: {
+      requires: 'aw.native-tools.v2. Installed protocol requirements and consumer bindings are reviewed before producer publication.',
+      provenance: ['CLI installed producer evidence and managed command host'],
+    },
+    'nativeTools.consumers[].kind': {
+      requires: 'Managed command sets prepare the installed host tool before spawn; plugin tests use the installed host tool or an explicit test fixture.',
+      conflicts: 'Uncontrolled hooks, MCP entry paths, implicit package discovery, or source sync changing installed command evidence.',
+    },
+    'nativeTools.consumers[].tools[].fallback': {
+      requires: 'Preferred consumers use the same protocol contract for native and portable backends; backend selection remains fixed after launch.',
+    },
+  },
   'managed-commands': {
     managedCommands: {
       requires: 'aw.managed-commands.v1. Bindings publish only after the producer succeeds.',

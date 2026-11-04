@@ -96,8 +96,13 @@ export async function runProviderProcess(
   const platform = dependencies.processTree?.platform ?? process.platform
   const containment = dependencies.containment ?? 'managed'
   const createWindowsJobInvocationImpl = dependencies.createWindowsJobInvocation ??
-    (process.platform === 'win32' ? createWindowsJobInvocation : undefined)
-  const usesWindowsJob = platform === 'win32' && createWindowsJobInvocationImpl !== undefined
+    (process.platform === 'win32' && dependencies.processTree?.windowsJobHelperPath
+      ? (executable, args) => createWindowsJobInvocation(executable, args, {
+          helperPath: dependencies.processTree?.windowsJobHelperPath ?? '',
+        })
+      : undefined)
+  const usesWindowsJob = containment !== 'unmanaged-confirmed' &&
+    platform === 'win32' && createWindowsJobInvocationImpl !== undefined
   const descendantCleanupGuaranteed = containment === 'managed' || usesWindowsJob
   const gradingEvidenceAccepted = descendantCleanupGuaranteed || containment === 'verified-observed'
   if (containment === 'managed') assertProviderProcessSupported(platform, hooks)

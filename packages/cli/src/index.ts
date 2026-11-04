@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { describeNativeToolClosure } from './utils/native-tool-review.js';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -70,6 +71,7 @@ import {
   renderInitReceipt,
 } from './output/command-receipt.js';
 import { resolveCliPackageRoot } from './utils/paths.js';
+import { prepareNativeCliExecution } from './utils/native-cli.js';
 import {
   findConfigFieldEntry,
   formatPluginConfigSetRecoveryCommand,
@@ -924,6 +926,14 @@ function renderRecoveryReceipt(write: (text: string) => void, value: RecoveryRec
     const producer = result.producer;
     writeLine(write, `托管命令 ${producer.sourceId}/${producer.pluginName}/${producer.key} [${producer.scope}]: ${result.state}`);
   }
+  for (const change of value.nativeToolChanges ?? []) {
+    for (const phase of ['before', 'after'] as const) {
+      const closure = change[phase];
+      if (closure) for (const description of describeNativeToolClosure(closure)) {
+        writeLine(write, `原生工具 ${change.producer.sourceId}/${change.producer.pluginName} ${phase}: ${description}`);
+      }
+    }
+  }
   const diagnostics = new Map([...value.blockers, ...value.errors,
     ...value.targetResults.flatMap((target) => target.blockers),
     ...(value.commandResults ?? []).flatMap((result) => result.errors),
@@ -1361,7 +1371,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .requiredOption('--json', 'emit one provider doctor JSON object')
     .action(async () => {
       try {
-        writeJsonReceipt(io.stdout, await doctorEvalProviders({ sourceEnv: env }));
+        writeJsonReceipt(io.stdout, await doctorEvalProviders({
+          sourceEnv: env,
+        }));
       } catch (error) {
         writeJsonReceipt(io.stdout, {
           ok: false,
@@ -1817,9 +1829,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .description('Run deterministic Node tests declared by one source plugin')
     .argument('<plugin-directory>', 'source plugin directory')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from plugin directory)')
+    .option('--native-mode <mode>', 'fixture | installed | source-candidate (default: fixture)')
+    .option('--native-context <path>', 'explicit tool context JSON for fixture or source-candidate mode')
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (pluginDirectory: string, rawOptions: {
       workspaceRoot?: string;
+      nativeMode?: string;
+      nativeContext?: string;
       json?: boolean;
     }) => {
       try {
@@ -1831,6 +1847,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         commandExitState.exitCode = await runPluginTestCommand({
           ...workspace,
           pluginDirectory: path.resolve(cwd, pluginDirectory),
+          nativeMode: rawOptions.nativeMode,
+          nativeContext: rawOptions.nativeContext ? path.resolve(cwd, rawOptions.nativeContext) : undefined,
           json: rawOptions.json,
           io,
         });
@@ -2342,8 +2360,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       awHomeMutationToken: AwHomeMutationToken,
       catalogOperationContext: CatalogOperationContext,
     ) => Promise<T> | T,
+    apply = false,
   ) => (async () => {
     const parsed = parsePluginId(selector);
+    if (apply) await prepareNativeCliExecution({ env: context.env, runner: context.nativeCliRunner });
     return withAwHomeMutationLock({
       env: context.env,
       action: async (awHomeMutationToken) => {
@@ -3174,6 +3194,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           }],
         });
             },
+            rawOptions.apply === true,
           );
         });
       } catch (error) {
@@ -3273,6 +3294,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           }],
         });
             },
+            rawOptions.apply === true,
           );
         if (pluginName && key) {
           return {

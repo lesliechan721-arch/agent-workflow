@@ -1,16 +1,8 @@
-import { lstatSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import path from 'node:path'
+import { stat } from 'node:fs/promises'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 export const WINDOWS_JOB_HELPER_CONFIG_SCHEMA_VERSION = 1
-
-const require = createRequire(import.meta.url)
-const WINDOWS_JOB_PACKAGES = {
-  x64: '@lesliechan721/aw-windows-job-win32-x64/aw-windows-job.exe',
-  arm64: '@lesliechan721/aw-windows-job-win32-arm64/aw-windows-job.exe',
-} as const
 
 export interface WindowsJobHelperConfig {
   schemaVersion: typeof WINDOWS_JOB_HELPER_CONFIG_SCHEMA_VERSION
@@ -25,45 +17,39 @@ export interface WindowsJobInvocation {
   config: WindowsJobHelperConfig
 }
 
-function assertWindowsJobArch(arch: string): 'x64' | 'arm64' {
-  if (arch === 'x64' || arch === 'arm64') return arch
-  throw new Error(`Windows Job containment is unsupported on architecture ${arch}.`)
-}
-
-function isRegularFile(filePath: string): boolean {
-  try {
-    const stats = lstatSync(filePath)
-    return stats.isFile() && !stats.isSymbolicLink()
-  } catch {
-    return false
-  }
-}
-
-export function resolveWindowsJobHelperPath(options: {
+export interface PrepareWindowsJobHelperOptions {
+  platform?: NodeJS.Platform
   arch?: string
-  moduleUrl?: string
-  resolvePackage?: (specifier: string) => string
-} = {}): string {
-  const arch = assertWindowsJobArch(options.arch ?? process.arch)
-  const moduleDirectory = path.dirname(fileURLToPath(options.moduleUrl ?? import.meta.url))
-  let packagePath: string | undefined
-  const resolvePackage = options.resolvePackage ?? (options.moduleUrl ? undefined : require.resolve)
-  if (resolvePackage) {
-    try {
-      packagePath = resolvePackage(WINDOWS_JOB_PACKAGES[arch])
-    } catch {
-      // Source checkouts can use the committed artifact before workspace packages are built.
-    }
+}
+
+/** Prepare the helper installed with this Eval package before starting consumers. */
+export async function prepareWindowsJobHelper(
+  options: PrepareWindowsJobHelperOptions = {},
+): Promise<string> {
+  return resolveWindowsJobHelperPath(options)
+}
+
+export async function resolveWindowsJobHelperPath(
+  options: PrepareWindowsJobHelperOptions = {},
+): Promise<string> {
+  const platform = options.platform ?? process.platform
+  const arch = options.arch ?? process.arch
+  if (platform !== 'win32' || (arch !== 'x64' && arch !== 'arm64')) {
+    throw Object.assign(new Error(`Windows Job helper does not support ${platform}/${arch}.`), {
+      code: 'nativePlatformUnsupported',
+    })
   }
-  const candidates = [
-    ...(packagePath ? [packagePath] : []),
-    path.join(moduleDirectory, '..', 'native', 'windows', arch, 'aw-windows-job.exe'),
-  ]
-  const helperPath = candidates.find(isRegularFile)
-  if (!helperPath) {
-    throw new Error(`Windows Job containment helper is missing for architecture ${arch}.`)
+  const packageName = `@lesliechan721/aw-windows-job-win32-${arch}`
+  try {
+    const executable = fileURLToPath(import.meta.resolve(`${packageName}/aw-windows-job.exe`))
+    if (!(await stat(executable)).isFile()) throw new Error('Windows Job helper is not a file.')
+    return executable
+  } catch {
+    throw Object.assign(new Error(
+      `Windows Job helper dependency ${packageName} is unavailable. ` +
+      'Reinstall the current AW CLI or Eval package with optional dependencies included.',
+    ), { code: 'nativePackageUnavailable' })
   }
-  return helperPath
 }
 
 export function encodeWindowsJobHelperConfig(config: WindowsJobHelperConfig): string {
@@ -107,16 +93,17 @@ export function createWindowsJobInvocation(
   executable: string,
   args: readonly string[],
   options: {
-    arch?: string
-    helperPath?: string
-    moduleUrl?: string
+    helperPath: string
     parentPid?: number
-  } = {},
+  },
 ): WindowsJobInvocation {
   if (/\.(?:cmd|bat)$/iu.test(executable)) {
     throw new Error(
       'Windows Job containment requires an executable file; .cmd and .bat targets are unsupported.',
     )
+  }
+  if (!options.helperPath || options.helperPath.includes('\0')) {
+    throw new Error('Windows Job containment requires a prepared native helper.')
   }
   const config: WindowsJobHelperConfig = {
     schemaVersion: WINDOWS_JOB_HELPER_CONFIG_SCHEMA_VERSION,
@@ -125,7 +112,7 @@ export function createWindowsJobInvocation(
     parentPid: options.parentPid ?? process.pid,
   }
   return {
-    command: options.helperPath ?? resolveWindowsJobHelperPath(options),
+    command: options.helperPath,
     args: ['--config', encodeWindowsJobHelperConfig(config)],
     config,
   }

@@ -8,9 +8,9 @@
 
 本地和 CI 可以设置 `AW_TEST_WORKERS` 调整普通 Vitest 与插件 Node test 的文件并发。未设置或空值保留入口默认值；合法值是十进制正安全整数，例如 `1`、`2`、`4`。`0`、负数、小数、百分比、空白和非数字会在准备或启动测试前失败。普通 Vitest 的默认上限为 2，最小 worker 为 1；插件 Node test 未设置时保留 Node runner 的默认并发。`pnpm test:workers` 使用真实 Vitest 子进程验证这些边界。
 
-插件 CI 由 PR/main 和发布候选分别展开普通平台矩阵 job，使用共享的 `.github/actions/plugin-tests` 复合 action 执行测试；job 与其他测试平铺显示。任务名称以平台、架构和 Node 版本开头，以 `plugins` 标识插件测试，Windows 名称还包含分片编号。覆盖 Linux x64、macOS arm64、Windows x64 的 Node 24。Windows 通过 `pnpm plugin:test --all --test-concurrency 1 --test-shard <index/total>` 分为三片；参数直接传给 Node 的文件分片，每个插件及其所选目标平台使用同一分片编号，不按用例标题筛选。Codex Enhance 的 Adapter 原生集成用例分为四个文件，Runtime 原生集成用例按通信、初始化、故障恢复、会话恢复、恢复输出、报告和结果分为七个文件，随普通文件分片执行。Node 按文件路径排序后轮流分配，新增或重命名测试文件时需检查三片的耗时分布；每个 Windows 分片都启用命令阶段和 PowerShell 调用次数、累计耗时、最大耗时诊断。所有分片合并才是完整覆盖，单片可能没有分配到小插件的文件。非法分片参数在准备插件前拒绝。Windows 第一片额外运行 Codex Enhance 的真实文件占用与跨卷资格，真实 30 分钟用例仍保持显式启用。分片不拆分单个测试文件，Windows 作业上限为 90 分钟；它是失败观察上限，不是固定等待。Runtime 原生用例在 Windows 上有 180 秒整体期限，已有其它更具体的期限保持；每个 fixture 的清理共用 45 秒期限。测试取消会终止当前命令子进程；真实长时资格保留自己的显式期限。所有权读取把根目录、运行目录和 owner 文件的 Windows 校验合并到一个 PowerShell 进程，同次校验的共用路径链只读取一次，每个资源仍执行 owner 和 ACL 检查；下一次读取重新验证，不跨调用缓存。新建运行时，同批子目录和初始 JSON 临时文件分别共用一次原生权限操作，每个资源仍完成保护前后的路径检查和 ACL 回读；JSON 逐文件原子发布。清理前的 Windows 后代扫描共用一个原生进程，逐节点检查后再枚举子目录，完整扫描成功后才删除。
+插件 CI 由 PR/main 和发布候选分别展开普通平台矩阵 job，使用共享的 `.github/actions/plugin-tests` 复合 action 执行测试；job 与其他测试平铺显示。任务名称以平台、架构和 Node 版本开头，以 `plugins` 标识插件测试，Windows 名称还包含分片编号。覆盖 Linux x64、macOS arm64、Windows x64 的 Node 24。Windows 通过 `pnpm plugin:test --all --test-concurrency 1 --test-shard <index/total>` 分为三片；参数直接传给 Node 的文件分片，每个插件及其所选目标平台使用同一分片编号，不按用例标题筛选。Codex Enhance 的 Adapter 原生集成用例分为四个文件，Runtime 原生集成用例按通信、初始化、故障恢复、会话恢复、恢复输出、报告和结果分为七个文件，随普通文件分片执行。Node 按文件路径排序后轮流分配，新增或重命名测试文件时需检查三片的耗时分布；每个 Windows 分片都启用命令阶段和 PowerShell 调用次数、累计耗时、最大耗时诊断。所有分片合并才是完整覆盖，单片可能没有分配到小插件的文件。非法分片参数在准备插件前拒绝。Windows 第一片额外运行 Codex Enhance 的真实文件占用与跨卷资格，真实 30 分钟用例仍保持显式启用。分片不拆分单个测试文件，Windows 作业上限为 90 分钟；它是失败观察上限，不是固定等待。Runtime 原生用例在 Windows 上有 180 秒整体期限，已有其它更具体的期限保持；每个 fixture 的清理共用 45 秒期限。测试取消会终止当前命令子进程；真实长时资格保留自己的显式期限。所有权读取把根目录、运行目录和 owner 文件的 Windows 校验合并到一个短命原生 helper，同次校验的共用路径链只读取一次，每个资源仍执行 owner 和 ACL 检查；下一次读取重新验证，不跨调用缓存。新建运行时，同批子目录和初始 JSON 临时文件分别共用一次原生权限操作，每个资源仍完成保护前后的路径检查和 ACL 回读；JSON 逐文件原子发布。清理前的 Windows 后代扫描共用一个原生进程，逐节点检查后再枚举子目录，完整扫描成功后才删除。
 
-Windows 身份查询使用系统目录中的 `whoami.exe /user /fo csv /nh`，只读取 SID 列；原生平台测试将它与当前 Windows token 的 SID 对照。过期扫描和多目标 wait 分别批量验证本轮的运行目录及 owner 文件；ACL 批次按实际 UTF-8 JSON 大小拆分，避免 base64 环境变量超过 Windows 长度上限。批量失败时逐项重验，健康目标仍可继续。下一轮等待、下一条命令和过期删除前重新验证，不共享跨调用的 ACL 证据。确定性测试校验原生调用数、128 个运行与长路径的传输大小、失败目标隔离和等待后的权限变化；真实 ACL、进程归属和跨卷边界仍由原生测试负责。
+Windows 身份查询使用系统目录中的 `whoami.exe /user /fo csv /nh`，只读取 SID 列；原生平台测试将它与当前 Windows token 的 SID 对照。过期扫描和多目标 wait 分别批量验证本轮的运行目录及 owner 文件；ACL 批次仍按实际 UTF-8 JSON 大小限制为 18 KiB，通过有界 stdin 传输，不使用 base64 环境变量。批量失败时逐项重验，健康目标仍可继续。下一轮等待、下一条命令和过期删除前重新验证，不共享跨调用的 ACL 证据。确定性测试校验原生调用数、128 个运行与长路径的传输大小、失败目标隔离和等待后的权限变化；真实 ACL、进程归属和跨卷边界仍由原生测试负责。
 
 `AW_SUBAGENT_NATIVE_TIMING` 的总计覆盖该父 CLI 的 PowerShell 与 whoami `execFile` 调用。`hosts` 按可执行程序汇总，`operations` 按身份、ACL 读取/保护、路径、进程和 Job 观察/停止分类；各组记录次数、累计耗时、最大耗时、失败数和超时数。比较旧版 PowerShell 总计时使用 `hosts["powershell.exe"]`。该诊断不统计 worker、Adapter 或 `spawn` 的全部原生工作，也不把累计调用耗时解释为作业实际耗时。跨卷资格的实际 ready 帧在普通协议测试中执行并校验；就绪等待遇到失败终态时立即报告状态和错误码，完整跨卷资格仍只在原生 Windows 执行。
 
@@ -30,7 +30,7 @@ Windows x64 CI 的普通 integration 分为三个独立 runner 的 Vitest shard�
 
 Linux Node 22/24 的普通测试按 Node 版本和 unit/integration 分为四个独立 runner。每个 runner 正式 build 后运行对应入口；unit 入口包含三个 package 的单元测试及 `test:workers`，随后运行 `test:types`；integration 入口包含普通 integration 和串行 process-lifecycle。各入口保留原有 worker 约束。
 
-Linux Node 24 的 release verification 独立运行 `release:verify:delivery`、`test:perf:gate`、`release:verify:cli:after-delivery`、Catalog bootstrap 和 `release:verify:publish`。delivery 负责 Go 可复现构建、一次正式 strict Catalog build、dist contract 和 build smoke，job 不再单独前置 build。CLI 的 fetch smoke 已包含 Catalog publish smoke。普通测试与该 job 合起来保留完整 `release:verify` 的覆盖；本地及候选发布的独立验证入口保持完整验证。
+Linux Node 24 的 release verification 等待本次 Windows Job 候选及两架构资格成功，再运行 `release:verify:delivery`、`test:perf:gate`、`test:smoke:cli:after-delivery`、Catalog bootstrap 和 `release:verify:publish`。delivery 负责一次正式 strict Catalog build、dist contract 和 build smoke，job 不再单独前置 build。CLI 的 fetch smoke 已包含 Catalog publish smoke。原生构建与资格 job 提供本次两架构平台包；CLI 发布候选将它们与 Eval、Core、CLI 一起打包和验证，不查询尚未发布的同版本工具。固定 Go 构建、可复现验证与真实 Windows 资格由可复用原生工作流负责，普通 build/test 不运行这些步骤。
 
 Linux Node 24 的插件测试使用独立 job，自行构建并将本次 CLI 加入 PATH。四个普通测试 runner、release verification、插件测试及全部平台任务都是自动 beta 的必需依赖。CI job 名称变化时同步更新 `scripts/release/actions-inspection.mjs` 的必要检查列表；任一必要任务失败、取消、跳过、未完成或缺失时，候选发布都不能复用 main CI 验证。
 
@@ -60,7 +60,7 @@ CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。�
 | Native qualification | `pnpm qualification:codex-project-native` | 显式验证精确 Codex CLI 的 shared native 与 project activation 行为；不进入普通测试或构建 |
 | Native performance qualification | `pnpm qualification:codex-native-performance` | 显式验证精确 Codex CLI 的 scoped list、隔离本地安装和中位数预算；不进入普通测试或构建 |
 | Portable provider qualification | `pnpm qualification:project-skills-provider` | 在隔离 HOME、XDG、Agent homes 和项目中验证固定 `skills@1.5.23` 的 Project/User copy、list、lock 和失败行为；不进入普通测试或构建 |
-| Windows Job qualification | `pnpm qualification:windows-job` | 在真实 Windows x64/arm64 主机验证 Job containment；tag 发布 smoke 必须运行，普通本地 test/build 不运行 |
+| Windows Job qualification | `pnpm qualification:windows-job` | 在真实 Windows x64/arm64 主机验证 Eval 与插件两种 Job；tag 发布 smoke 必须运行，普通本地 test/build 不运行 |
 | Plugin test | `pnpm plugin:test <plugin>` | 插件自己的确定性 Node 测试 |
 | Model eval | 见[插件维护指南](plugin-maintenance.md) | 需要模型理解、判断、路由或完成任务的语义合同；不进入普通 CI |
 
@@ -74,9 +74,9 @@ CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。�
 | `pnpm test:smoke` | 运行完整 smoke suite |
 | `pnpm test:smoke:build` | 等价于 `pnpm test:dist`；校验正式 build 产物，并证明官方入口使用 `--strict-requirements` 语义 |
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
-| `pnpm test:smoke:authoring:external` | 从三个已安装 tarball 在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → install source/plugin --scope project --target codex --target claude-code`，并验证隔离 homes 内的 receipt、项目安装结果及独立 User 声明读取 |
+| `pnpm test:smoke:authoring:external` | 从同一版本候选工具包在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → install source/plugin --scope project --target codex --target claude-code`，并验证隔离 homes 内的 receipt、项目安装结果及独立 User 声明读取 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
-| `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `Windows x64 → Windows arm64 → Eval → Core → CLI → CLI tag → Catalog`、显式轴和不确定远端失败 |
+| `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `两个 Windows 平台包 → Eval → Core → CLI → CLI 完成 tag → Catalog`、显式轴和不确定远端失败 |
 | `pnpm test:release:automation` | 在已有正式 build 后验证精确 source tag、临时 bare remote、artifact 恢复与真实 smoke harness 边界；不访问官方发布目标 |
 | `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
@@ -87,8 +87,8 @@ CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。�
 | `pnpm qualification:codex-native-performance` | 使用显式提供的精确 `0.151.0` 或 `0.153.0` binary，运行五次本地 native plugin 安装并输出 schema 1 JSON report |
 | `pnpm test:qualification:project-skills-provider:harness` | 使用 fake provider 验证资格 runner 本身；不提供真实安装或加载证据 |
 | `pnpm qualification:project-skills-provider` | 使用固定 `skills@1.5.23` 对本地合成 Skill 运行隔离 Project/User 真实 provider 资格；测试结果需记录固定版本、OS、scope、Agent、lock、输出树与未覆盖组合 |
-| `pnpm test:qualification:windows-job:harness` | 在非 Windows 主机验证 qualification 的 timeout 配置和 AbortSignal 确实进入生产 runner；不提供 Windows 支持证据 |
-| `pnpm qualification:windows-job` | 在真实 Windows 主机验证 stdio、退出码、快速成功、正常 root 退出后的后代、嵌套后代、forced helper exit、生产 timeout、生产 abort 和 parent crash 清理；mock 和非 Windows 运行不提供此证据 |
+| `pnpm test:qualification:windows-job:harness` | 在非 Windows 主机验证 Eval/plugin qualification 的生产接线、失败和收尾合同；不提供 Windows 支持证据 |
+| `pnpm qualification:windows-job` | 在真实 Windows 主机执行两种 Job 的全部 17 项必需检查，包含 stdio、退出码、快速成功、root/parent/helper 退出、后代、生产 timeout/abort、名称碰撞和 ready 失败；mock 和非 Windows 运行不提供此证据 |
 
 首次运行 browser smoke 前，使用 `pnpm --filter @lesliechan721/aw exec playwright install chromium` 安装与当前 Playwright 版本匹配的 Chromium。browser smoke 属于完整 `pnpm test:smoke`，但不属于 `plugin:test` 或 `release:verify:cli:core`。
 
@@ -106,7 +106,13 @@ Harness 的确定性测试可以使用 fake executable，但 fake 只验证 runn
 
 Native performance qualification 必须通过 `CODEX_QUALIFICATION_VERSION` 选择 `0.151.0` 或 `0.153.0`，并通过 `CODEX_QUALIFICATION_CLI` 提供本机已有的精确 binary。runner 不自动下载。每个 sample 使用新的临时 home、项目和 local marketplace。两个版本都验证 marketplace-scoped JSON list；`0.153.0` 还要求该 local list 在阻断 proxy 时成功。代表性 local native install 的五次同机中位数必须低于 15 秒；有可比较旧实现证据时，也可接受改善至少 70%。binary 缺失或版本不精确时必须报告未运行或失败，不能用 fake harness 代替。
 
-Windows Job containment 的确定性测试只验证配置编码、Windows argv quoting、manifest、PE header、调用路由和关闭等待合同。普通 `pnpm build` 只运行 manifest/hash/PE 校验，不要求 Go。强 release verification 运行 `pnpm windows-job:reproducibility`；它要求 manifest 记录的精确 Go 版本，并使用固定 `GOAMD64=v1`、`GOARM64=v8.0`、关闭用户 Go env/flags/experiments/toolchain 自动选择、隔离 module/workspace/cache 后重建两个 PE，再逐字节比较。Go 缺失、版本不同或 binary 不可复现时停止 release。真实支持证据只能来自对应架构的 Windows 主机运行 `pnpm qualification:windows-job`。该入口的 timeout 必须来自生产 runner 的真实 `timeoutMs`，abort 必须来自传入生产 runner 的 `AbortSignal`；forced helper exit 是独立场景。每个清理场景确认记录的 root 和后代 PID 已退出。macOS 交叉编译或 mock 成功不能关闭此 qualification gap。
+Windows 工具的确定性测试使用显式 reader context、隔离的包依赖目录和真实临时目录，验证协议与平台选择、从 Eval 自身依赖解析、文件缺失、optional dependency 缺失恢复提示，以及 required 失败不启动消费者。通用包 tarball 检查无 EXE、精确版本依赖及平台包 os/cpu metadata。候选安装 smoke 验证实际 helper 可解析和调用；npm 安装退出 0 不能代替 optional dependency 完整性检查。
+
+`plugin:test` 的 `--native-mode` 为 `fixture|installed|source-candidate`，默认 fixture。Windows fixture 和 source-candidate 必须显式传 `--native-context <JSON>`；installed 使用 Eval 的正常已安装依赖解析。测试入口不从 PATH、旧 AW cache 或仓库 EXE 自动发现工具，也不构建或下载。维护者使用 `node native-tools/windows-job/test-environment.mjs --candidate <directory> --context-file <file>` 从本次候选生成 context；此输入只服务测试，不构成生产路径覆盖能力。普通 build/test 不要求 Go 或真实 EXE。
+
+Windows Job 显式生产资格使用 `pnpm native:windows-job:prepare` 构建当前 CLI 版本的两架构候选，`pnpm native:windows-job:reproduce` 按固定 Go 版本、固定环境和隔离 Go cache 重建，逐字节比较。真实 x64/arm64 runner 从本次 candidate 解包适用平台包，运行 `pnpm qualification:windows-job` 及 source-candidate 原生插件测试。timeout、AbortSignal、forced helper exit、ACL、Job 分配、进程身份和后代回收均须通过对应真实入口；交叉编译、合成 fixture 或 fake 不能关闭 Windows 资格缺口。平台包随本次 CLI 产品统一发布，没有消费者文本锁或独立发布验证。
+
+发布自动化通过隔离 registry 或受控远端边界验证首次发布五包、部分发布与显式 repair，以及 repair 校验的短暂 metadata/归档不可见和时限失败。普通发布在五包上传成功后创建完成 tag 并允许同批 Catalog 继续，不等待远端下载校验。显式 repair 仍须核验已有远端包。可见性重试只能读取。Catalog 工具链测试区分同批本地五包、beta-only 和 stable-only，验证恢复使用固定版本与 tarball、渠道错误提前失败、CLI 成功后 Catalog 失败保留 CLI 成功；普通测试不访问真实 registry。
 
 含 `buildImports` 或 `skillRuntimeFiles.import` 的 synthetic fixture 必须显式构造同一 source set 的 catalog runtime resolver。`plugin:test` 和 eval materialization 通过真实入口验证 resolver 注入；单插件 helper 缺 resolver 的 fail-closed 行为在最低 unit 层验证，不建立 sibling layout fallback。
 
@@ -179,7 +185,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 
 `pnpm build:dev` 只用于本地开发。它按 Eval、Core、CLI TypeScript 和 plugin bundle 分别计算生产输入与输出 identity；test、Vitest config、docs、change metadata、Eval 和 report 不进入 key。每个 TypeScript 目标使用独立 `tsBuildInfoFile`。输入文件删除、输出损坏、cache metadata 或 `tsbuildinfo` 损坏时，只 clean 并重建该目标。CLI key 还绑定 Eval 和 Core 输出 identity，plugin bundle 使用独立 key 和输出验证。
 
-Release unit/integration 覆盖 schema 2 CLI target 更新的 package 同步、Catalog exact version mutation、local prepared artifacts、CLI attempted marker、Catalog publication journal、启用轴的 `Windows x64 → Windows arm64 → Eval → Core → CLI → CLI tag → Catalog` 顺序，以及 Catalog-only 不访问 npm/CLI tag 的边界。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
+Release unit/integration 覆盖 schema 2 CLI target 更新的五包同步、Catalog exact version mutation、local prepared artifacts、CLI attempted marker、Catalog publication journal、启用轴的 `两个 Windows 平台包 → Eval → Core → CLI → CLI 完成 tag → Catalog` 顺序，以及 Catalog-only 只读 npm 取得工具、不发布 npm 包或创建 CLI tag 的边界。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
 
 一键发布还必须覆盖参数互斥、白名单元数据 commit、所选轴远端隔离、空远端首个 beta 候选、所选轴无候选短路，以及注解 CLI tag 的创建、幂等补发和冲突拒绝。tag integration 使用本地 bare Git remote；不得写真实 `origin`。
 
@@ -187,7 +193,7 @@ Catalog publisher 测试必须覆盖 plan 的授权身份、`apply --expected-pl
 
 | 发布风险 | 最低证据 |
 |---|---|
-| CLI target 同步两个 public package 与 workspace dependency | prepared release unit |
+| CLI target 同步五个 public package 与 workspace dependency | prepared release unit |
 | beta/release 独立选择 CLI target 和 Catalog metadata beta | prepared release unit |
 | CLI tag 指向 prepared source commit | CLI tag integration |
 | npm 成功后 tag 可补发 | release entry unit + CLI tag integration |
@@ -214,6 +220,8 @@ Codex 优化的主要门禁是确定性计数，不是 500ms fake runner 断言�
 
 - 使用测试构造器提供的隔离 `AW_HOME`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 和 workspace。
 - 三个 package 的 Vitest 入口由统一进程树 wrapper 运行。正常结束、`SIGINT` 和 `SIGTERM` 会清理本次 wrapper 通过 PID 与 start identity 证实的进程树；清理期间再次收到中断信号时立即升级强制清理。只有确认清理成功时才返回标准信号退出码，清理无法验证时必须报告错误并以 `1` 退出。wrapper 自身被 `SIGKILL`、宿主崩溃或断电时不承诺清理。
+- 普通 Windows 测试未提供原生 context 时，wrapper 使用已有系统进程身份检查和 `taskkill` 清理，不要求 Go 或候选 EXE。显式原生测试提供本次候选 context 时使用 Job；损坏或 unavailable 的显式 context 仍阻断。source 测试准备还将当前架构候选接入 Eval 的正常依赖上下文，供生产入口解析，不让生产解析器读取测试 context。
+- CLI 源码测试显式提供原生 context 时，先完成同次 build；测试通过 Node ESM 加载该次 Eval dist，使平台包解析与已安装产品一致。无 context 的普通 unit 继续加载 Eval source。
 - 合成长驻 detached 测试子进程必须设置有界的自退出时限，防止测试宿主被强制终止后永久遗留；行为断言仍必须证明正常路径会在更短的既定期限内主动清理。
 - 平台命令使用 fake native runner。
 - 需要进程树检查的测试在允许 POSIX/Windows 进程检查的环境运行。

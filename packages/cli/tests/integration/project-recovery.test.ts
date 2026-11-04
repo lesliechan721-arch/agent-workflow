@@ -414,7 +414,7 @@ describe('scoped recovery integration', () => {
     expect(await fs.pathExists(generation!)).toBe(true);
     expect(await fs.readFile(portablePath)).toEqual(bytes);
     expect(await addCalls(setup.log)).toEqual(writes);
-  });
+  }, 60_000);
 
   // Test Value Gate: shared provider association must not require deleting another selected Agent's valid output.
   it.each(['project', ...(process.platform === 'darwin' && process.arch === 'arm64' ? ['user' as const] : [])] as const)(

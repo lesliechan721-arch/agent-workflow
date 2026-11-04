@@ -574,50 +574,62 @@ function generatedOutputMarker(options: {
   };
 }
 
-async function catalogPathRecord(
-  root: string,
-  relative: string,
-  versionNeutral: boolean,
-  executableFiles?: ReadonlySet<string>,
-): Promise<{
+interface CatalogPathRecord {
   path: string;
   kind: 'file' | 'symlink';
   mode: '100644' | '100755' | '120000';
   digest: string;
-}> {
+}
+
+async function catalogPathRecords(
+  root: string,
+  relative: string,
+  executableFiles?: ReadonlySet<string>,
+): Promise<{ artifact: CatalogPathRecord; content: CatalogPathRecord }> {
   const filePath = path.join(root, ...relative.split('/'));
   const stat = await fs.lstat(filePath);
   if (stat.isSymbolicLink()) {
-    return { path: relative, kind: 'symlink', mode: '120000', digest: sha256(await fs.readlink(filePath)) };
+    const record: CatalogPathRecord = { path: relative, kind: 'symlink', mode: '120000', digest: sha256(await fs.readlink(filePath)) };
+    return { artifact: record, content: record };
   }
   if (!stat.isFile()) throw new Error(`Catalog digest path must be a regular file or symlink: ${filePath}.`);
+  const bytes = await fs.readFile(filePath);
+  const artifact: CatalogPathRecord = {
+    path: relative,
+    kind: 'file',
+    mode: catalogFileMode(relative, stat.mode, executableFiles),
+    digest: sha256(bytes),
+  };
   const manifests = new Set(['.agents-plugin/plugin.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json']);
-  let digest: string;
-  if (versionNeutral && manifests.has(relative)) {
-    digest = sha256(stableStringify({
-      ...(await fs.readJson(filePath) as Record<string, unknown>),
+  let contentDigest = artifact.digest;
+  if (manifests.has(relative)) {
+    // Match readJson's UTF-8 BOM handling while reusing the original bytes.
+    const manifest = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/u, '')) as Record<string, unknown>;
+    contentDigest = sha256(stableStringify({
+      ...manifest,
       version: '<plugin-version>',
     }));
-  } else if (versionNeutral && path.posix.basename(relative) === AW_PLUGIN_REQUIREMENTS_RECEIPT_FILENAME) {
-    const receipt = await fs.readJson(filePath) as Record<string, unknown>;
+  } else if (path.posix.basename(relative) === AW_PLUGIN_REQUIREMENTS_RECEIPT_FILENAME) {
+    const receipt = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/u, '')) as Record<string, unknown>;
     const plugin = receipt.plugin && typeof receipt.plugin === 'object' && !Array.isArray(receipt.plugin)
       ? receipt.plugin as Record<string, unknown>
       : {};
-    digest = sha256(stableStringify({
+    contentDigest = sha256(stableStringify({
       ...receipt,
       plugin: { ...plugin, version: '<plugin-version>' },
     }));
-  } else {
-    digest = sha256(await fs.readFile(filePath));
   }
-  return { path: relative, kind: 'file', mode: catalogFileMode(relative, stat.mode, executableFiles), digest };
+  return { artifact, content: contentDigest === artifact.digest ? artifact : { ...artifact, digest: contentDigest } };
 }
 
-async function calculateEntryDigest(root: string, versionNeutral: boolean): Promise<string> {
+async function calculateEntryDigests(root: string): Promise<{ artifactDigest: string; contentDigest: string }> {
   const files = await listBundleFiles(root);
   const executableFiles = await readCatalogExecutableFiles(root, files);
-  return sha256(stableStringify(await Promise.all(files.map((file) =>
-    catalogPathRecord(root, file, versionNeutral, executableFiles)))));
+  const records = await Promise.all(files.map((file) => catalogPathRecords(root, file, executableFiles)));
+  return {
+    artifactDigest: sha256(stableStringify(records.map((record) => record.artifact))),
+    contentDigest: sha256(stableStringify(records.map((record) => record.content))),
+  };
 }
 
 async function expectedCatalogEntry(plugin: PluginMeta, pluginRoot: string) {
@@ -625,6 +637,7 @@ async function expectedCatalogEntry(plugin: PluginMeta, pluginRoot: string) {
     path.join(pluginRoot, SOURCE_MANIFEST_PATH),
     `Catalog plugin ${JSON.stringify(plugin.manifest.name)} bundle manifest`,
   );
+  const digests = await calculateEntryDigests(pluginRoot);
   return {
     ...createMarketplaceManifestEntry(plugin),
     version: plugin.manifest.version,
@@ -634,9 +647,9 @@ async function expectedCatalogEntry(plugin: PluginMeta, pluginRoot: string) {
         capabilities: normalizeAwCapabilities(plugin.manifest.requires?.aw.capabilities ?? []),
       },
     },
-    artifactDigest: await calculateEntryDigest(pluginRoot, false),
+    artifactDigest: digests.artifactDigest,
     manifestDigest: sha256(normalizeManifestDigestInput(bundleManifest as PluginMeta['manifest'])),
-    contentDigest: await calculateEntryDigest(pluginRoot, true),
+    contentDigest: digests.contentDigest,
   };
 }
 
@@ -1247,10 +1260,11 @@ async function validateCatalogSnapshotTransportInternal(
       path.join(pluginRoot, SOURCE_MANIFEST_PATH),
       `Catalog plugin ${JSON.stringify(name)} bundle manifest`,
     );
+    const digests = await calculateEntryDigests(pluginRoot);
     const expectedDigests = {
-      artifactDigest: await calculateEntryDigest(pluginRoot, false),
+      artifactDigest: digests.artifactDigest,
       manifestDigest: sha256(normalizeManifestDigestInput(rawBundleManifest as PluginMeta['manifest'])),
-      contentDigest: await calculateEntryDigest(pluginRoot, true),
+      contentDigest: digests.contentDigest,
     };
     for (const field of Object.keys(expectedDigests) as Array<keyof typeof expectedDigests>) {
       if (entry[field] !== expectedDigests[field]) {

@@ -1,0 +1,50 @@
+import { EventEmitter } from 'node:events';
+import path from 'node:path';
+import { PassThrough, Writable } from 'node:stream';
+
+// Replace the subprocess boundary, preserving the actual UTF-8 stdin and
+// stdout protocol used by the runtime. Other child processes stay native.
+export function windowsNativeSpawn(execute, fallback) {
+  // Imported source candidates use native.exe in the resolver cache.
+  const executable = JSON.parse(process.env.AW_NATIVE_TOOL_CONTEXT).tools['windows-job'].executable;
+  return (command, args, options) => {
+    if (command !== executable || args[0] !== '--operation') return fallback(command, args, options);
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    let closed = false;
+    const close = (code, signal = null) => {
+      if (closed) return;
+      closed = true;
+      child.stdout.end();
+      child.emit('close', code, signal);
+    };
+    child.kill = (signal) => { close(null, signal); return true; };
+    const chunks = [];
+    child.stdin = new Writable({
+      write(chunk, _encoding, callback) { chunks.push(Buffer.from(chunk)); callback(); },
+      final(callback) {
+        callback();
+        Promise.resolve().then(async () => {
+          const request = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          const response = await execute(command, args, options, request);
+          if (response.error) { child.emit('error', response.error); close(null); return; }
+          const stdout = response.stdout ?? JSON.stringify({ schemaVersion: 1, result: response.result });
+          child.stdout.write(stdout);
+          close(response.code ?? 0, response.signal ?? null);
+        }).catch((error) => { child.emit('error', error); close(null); });
+      },
+    });
+    return child;
+  };
+}
+
+// The executable is never opened: windowsNativeSpawn replaces its process
+// boundary. This context is explicit and does not populate a native cache.
+export function useWindowsNativeFixture({ preserveContext = false } = {}) {
+  if (!preserveContext || !process.env.AW_NATIVE_TOOL_CONTEXT) {
+    process.env.AW_NATIVE_TOOL_CONTEXT = JSON.stringify({ schemaVersion: 1, tools: {
+      'windows-job': { state: 'ready', protocol: 'aw.windows-job.v1',
+        executable: path.resolve('fixture-native/aw-windows-job.exe') },
+    } });
+  }
+}

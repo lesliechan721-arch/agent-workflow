@@ -14,6 +14,7 @@ import {
   activateSmokeBuildSnapshot,
   cleanupSmokeBuildSnapshot,
   createSmokeBuildSnapshot,
+  importSmokeSnapshotModule,
   type SmokeBuildSnapshot,
 } from '../support/smoke-build-snapshot.js';
 
@@ -155,6 +156,101 @@ afterEach(async () => {
 });
 
 describe('plugin scripts staging smoke', () => {
+  // Test Value Gate: a detached renderer and installed producer must preserve
+  // the native text closure without restoring PE files to the Skill.
+  it('preserves native locks and readers without PE through the real Guide renderer and installed command', async () => {
+    const snapshot = await requireBuildSnapshot();
+    const temporary = await makeTempRepo();
+    const bundle = path.join(temporary, 'detached-plugin');
+    await fs.copy(path.join(snapshot.catalogOutputRoot, 'plugins', 'codex-enhance'), bundle);
+    const env = {
+      ...process.env,
+      AW_HOME: path.join(temporary, 'aw-home'),
+      AW_CODEX_HOME: path.join(temporary, 'codex-home'),
+      AW_CLAUDE_HOME: path.join(temporary, 'claude-home'),
+    };
+    const manifests = await importSmokeSnapshotModule<typeof import('../../src/utils/manifest.js')>(
+      path.join(snapshot.cliDistRoot, 'src', 'utils', 'manifest.js'));
+    const renderer = await importSmokeSnapshotModule<typeof import('../../src/utils/artifact-renderer.js')>(
+      path.join(snapshot.cliDistRoot, 'src', 'utils', 'artifact-renderer.js'));
+    const skills = await importSmokeSnapshotModule<typeof import('../../src/utils/dynamic-skill-tree.js')>(
+      path.join(snapshot.cliDistRoot, 'src', 'utils', 'dynamic-skill-tree.js'));
+    const commands = await importSmokeSnapshotModule<typeof import('../../src/utils/managed-command-store.js')>(
+      path.join(snapshot.cliDistRoot, 'src', 'utils', 'managed-command-store.js'));
+    const materialization = await importSmokeSnapshotModule<typeof import('../../src/utils/managed-command-materialization.js')>(
+      path.join(snapshot.cliDistRoot, 'src', 'utils', 'managed-command-materialization.js'));
+    const ownership = await importSmokeSnapshotModule<typeof import('../../src/utils/ownership.js')>(
+      path.join(snapshot.cliDistRoot, 'src', 'utils', 'ownership.js'));
+    const plugin = { ...await manifests.readPluginManifest(bundle, { mode: 'bundle' }), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}` };
+    const rendered = await renderer.runArtifactRenderer({
+      event: 'materialize', plugin, platform: 'codex', scope: 'user', cwd: temporary,
+      commandEnv: env, requestedArtifactIds: ['codex-subagent-guide-skill'],
+    });
+    const artifact = rendered.plan.artifacts.find((item) => item.target === 'codex.skill');
+    if (!artifact || artifact.target !== 'codex.skill') throw new Error('Guide renderer did not return a Skill.');
+    const sourceDirs = rendered.context.artifactSources.find((item) => item.id === artifact.id)?.sourceDirs;
+    expect(sourceDirs?.length).toBeGreaterThan(0);
+    const tree = await skills.createDynamicSkillExpectedTree({ artifact, sourceDirs, sourceRequirementsReceiptPolicy: 'allow' });
+    const producerRef = { kind: 'artifact', artifactId: artifact.id } as const;
+    const sets = materialization.commandSetsForProducer({ plugin, producer: producerRef });
+    const nativeTools = materialization.injectNativeToolClosureFiles(
+      tree.files, await materialization.nativeToolsForCommandSets(plugin, sets),
+    );
+    expect(nativeTools?.consumers).toEqual(
+      ['guide', 'guide-communication'].map((key) => ({
+        kind: 'managed-command-set',
+        key,
+        tools: [{
+          key: 'windows-job',
+          platforms: ['win32'],
+          policy: 'required',
+        }],
+      })),
+    );
+    const installed = path.join(temporary, 'installed-skills', tree.skillKey);
+    await skills.writeDynamicSkillTree(installed, tree);
+    await ownership.writeSkillOwnerMarker({
+      skillRoot: installed, allowedRoot: path.dirname(installed),
+      identity: { owner: 'agent-workflows', sourceId: plugin.sourceId,
+        pluginId: `${plugin.sourceId}/${plugin.manifest.name}`, plugin: plugin.manifest.name,
+        artifactKey: tree.skillKey, platform: 'codex', scope: 'user' },
+    });
+    const producer = await materialization.managedCommandProducerIdentity({
+      plugin, producer: producerRef, platform: 'codex', scope: 'user', cwd: temporary,
+    });
+    const [commandId] = await commands.publishManagedCommandBindings({
+      producer, resourceRoot: installed, sets, nativeTools, env,
+    });
+    expect(commandId).toBeDefined();
+    const command = await commands.resolveManagedCommand(commandId!, env);
+    expect((await commands.readInstalledCommandProducer(command.resourceRoot)).nativeTools).toEqual(nativeTools);
+    expect(nativeTools?.definitions).toEqual([{ key: 'windows-job', protocol: 'aw.windows-job.v1' }]);
+    expect(await fs.pathExists(path.join(command.resourceRoot, '.aw', 'native-tools'))).toBe(false);
+    const reader = await importSmokeSnapshotModule<{
+      readNativeTool(key: string, protocol: string, environment: Record<string, string>): unknown;
+    }>(path.join(command.resourceRoot, '.aw', 'native-tool-reader.mjs'));
+    const unavailable = { state: 'unavailable', protocol: 'aw.windows-job.v1', code: 'nativeToolDependencyMissing' };
+    expect(reader.readNativeTool('windows-job', unavailable.protocol, {
+      AW_NATIVE_TOOL_CONTEXT: JSON.stringify({ schemaVersion: 1, tools: { 'windows-job': unavailable } }),
+    })).toEqual(unavailable);
+    const runtimeReader = await importSmokeSnapshotModule<typeof reader>(
+      path.join(command.resourceRoot, 'scripts', 'runtime', 'native-tool-reader.mjs'));
+    expect(() => runtimeReader.readNativeTool('windows-job', unavailable.protocol, {})).toThrow('nativeContextInvalid');
+    async function assertNoPe(directory: string): Promise<void> {
+      for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+        const target = path.join(directory, entry.name);
+        if (entry.isDirectory()) await assertNoPe(target);
+        else if (entry.isFile()) {
+          const bytes = await fs.readFile(target);
+          const offset = bytes.length >= 64 && bytes.toString('ascii', 0, 2) === 'MZ' ? bytes.readUInt32LE(0x3c) : -1;
+          expect(offset >= 0 && offset <= bytes.length - 4 && bytes.toString('ascii', offset, offset + 4) === 'PE\0\0', target).toBe(false);
+        }
+      }
+    }
+    await assertNoPe(bundle);
+    await assertNoPe(command.resourceRoot);
+  }, 120_000);
+
   it('runs real scripts.node staging through the snapshot compiled entry', async () => {
     const root = repoRoot();
     const snapshot = await requireBuildSnapshot();

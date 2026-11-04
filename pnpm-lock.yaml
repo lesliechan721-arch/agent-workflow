@@ -84,6 +84,9 @@ importers:
         specifier: ^2.8.3
         version: 2.8.3
     devDependencies:
+      '@lesliechan721/aw-native-runtime':
+        specifier: workspace:*
+        version: link:../native-runtime
       '@types/fs-extra':
         specifier: ^11.0.4
         version: 11.0.4
@@ -109,6 +112,8 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@24.12.2)(yaml@2.8.3)
 
+  packages/native-runtime: {}
+
   packages/plugin-core:
     dependencies:
       ajv:
@@ -124,6 +129,9 @@ importers:
         specifier: ^2.8.1
         version: 2.8.3
     devDependencies:
+      '@lesliechan721/aw-native-runtime':
+        specifier: workspace:*
+        version: link:../native-runtime
       '@types/fs-extra':
         specifier: ^11.0.4
         version: 11.0.4

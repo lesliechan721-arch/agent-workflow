@@ -2,8 +2,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { pathToFileURL } from 'node:url';
 
-import { repoRoot as defaultRepoRoot, runReleaseGit } from './common.mjs';
+import { CLI_RELEASE_PACKAGES, WINDOWS_JOB_PACKAGE_NAMES, repoRoot as defaultRepoRoot, runReleaseGit } from './common.mjs';
 import { normalizeStableTargetVersion } from './release-model.mjs';
 import { normalizeVersionTargets, setReleaseTargets, synchronizeCliLockfile } from './release-target.mjs';
 
@@ -11,20 +12,12 @@ const VERSION = '(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-beta\\.([1-9]\
 const SOURCE_TAG = new RegExp(`^release/(cli|catalog)/v(${VERSION})$`);
 const CATALOG_METADATA = 'plugins/marketplace-source.json';
 const CLI_TARGETS = 'release/version-targets.json';
-const CLI_PACKAGES = [
-  ['aw-windows-job-win32-x64', '@lesliechan721/aw-windows-job-win32-x64'],
-  ['aw-windows-job-win32-arm64', '@lesliechan721/aw-windows-job-win32-arm64'],
-  ['agent-skill-eval', '@lesliechan721/agent-skill-eval'],
-  ['plugin-core', '@lesliechan721/aw-plugin-core'],
-  ['cli', '@lesliechan721/aw'],
-].map(([directory, name]) => ({ path: `packages/${directory}/package.json`, name }));
+const CLI_PACKAGES = CLI_RELEASE_PACKAGES.map(({ name, relativePath }) => ({ name, path: relativePath }));
 const INTERNAL_DEPENDENCIES = {
-  'packages/agent-skill-eval/package.json': {
-    optionalDependencies: [CLI_PACKAGES[0].name, CLI_PACKAGES[1].name],
-  },
   'packages/cli/package.json': {
-    dependencies: [CLI_PACKAGES[2].name, CLI_PACKAGES[3].name],
+    dependencies: ['@lesliechan721/agent-skill-eval', '@lesliechan721/aw-plugin-core'],
   },
+  'packages/agent-skill-eval/package.json': { optionalDependencies: WINDOWS_JOB_PACKAGE_NAMES },
 };
 
 function git(repoRoot, args) {
@@ -247,8 +240,9 @@ async function assertRefsAvailable(repoRoot, branch, tag, remote) {
   }
 }
 
-async function mutateCatalogVersion(repoRoot, version) {
-  const serviceUrl = new URL('../../packages/cli/dist/src/authoring/workspace-commands.js', import.meta.url);
+async function mutateCatalogVersion(repoRoot, version, options = {}) {
+  if (!options.cliDistRoot) throw new Error('Catalog source preparation requires the selected released CLI toolchain.');
+  const serviceUrl = pathToFileURL(path.join(options.cliDistRoot, 'src/authoring/workspace-commands.js'));
   const service = await import(serviceUrl.href).catch((error) => {
     throw new Error('Source candidate preparation requires the compiled Catalog version service.', { cause: error });
   });
@@ -259,7 +253,7 @@ async function mutateCatalogVersion(repoRoot, version) {
 
 export async function prepareSourceCandidate({
   repoRoot = defaultRepoRoot, product, version, sourceHead, remote, push = false,
-  mainRef = 'origin/main', requireMainTip = false, pluginBaseVersions = {}, ciRun,
+  mainRef = 'origin/main', requireMainTip = false, pluginBaseVersions = {}, ciRun, cliDistRoot, catalogCandidateTag,
   mutateCatalogVersion: mutate = mutateCatalogVersion,
 }) {
   const tag = `release/${product}/v${version}`;
@@ -267,6 +261,7 @@ export async function prepareSourceCandidate({
   if (ciRun !== undefined && (parsed.channel !== 'beta' || !requireMainTip || !/^[1-9]\d*\/[1-9]\d*$/u.test(ciRun))) {
     throw new Error('Automatic beta CI evidence requires a run/attempt identity and the current main tip.');
   }
+  if (catalogCandidateTag !== undefined && (product !== 'cli' || parseSourceTag(catalogCandidateTag).product !== 'catalog' || parseSourceTag(catalogCandidateTag).channel !== parsed.channel)) throw new Error('A release batch requires CLI and Catalog candidates in the same channel.');
   if (typeof push !== 'boolean') throw new Error('Source candidate push must be an explicit boolean.');
   if (push || requireMainTip) {
     const requestedRemote = remote ?? 'origin';
@@ -297,7 +292,7 @@ export async function prepareSourceCandidate({
       if (Object.keys(pluginBaseVersions).length > 0) {
         await setReleaseTargets({ plugins: pluginBaseVersions }, { repoRoot: checkout });
       }
-      await mutate(checkout, version);
+      await mutate(checkout, version, { cliDistRoot });
     }
     await git(checkout, ['add', '-A']);
     const changes = (await git(checkout, ['diff', '--cached', '--name-only', '-z'])).stdout;
@@ -315,7 +310,7 @@ export async function prepareSourceCandidate({
     await git(checkout, [
       '-c', 'user.name=AW Release', '-c', 'user.email=aw-release@users.noreply.github.com',
       '-c', 'tag.gpgSign=false', 'tag',
-      ...ciRun === undefined ? [] : ['--annotate', '--message', `Automatic beta\n\nAW-CI: ${ciRun}`],
+      ...(ciRun === undefined && catalogCandidateTag === undefined ? [] : ['--annotate', '--message', `${ciRun === undefined ? 'Release batch' : `Automatic beta\n\nAW-CI: ${ciRun}`}\n${catalogCandidateTag === undefined ? '' : `AW-Catalog: ${catalogCandidateTag}`}`.trim()]),
       tag, candidateHead,
     ]);
     await assertRefsAvailable(repoRoot, branch, tag, pushRemote);

@@ -16,6 +16,8 @@
 
 ## 同步规则
 
+原生工具的协议声明、producer 审阅、受控启动、依赖恢复和五包发布以[原生工具合同](native-tools.md)为准。`packages/native-runtime` 提供嵌入产品包的私有 reader；Eval 从自身依赖解析平台包，CLI 复用此能力。原生 Go 源和显式候选位于 `native-tools/windows-job/`；EXE 只进入适用平台包，不写回源码、Skill、Catalog 或三个通用 npm 包。
+
 改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发或安装流程，或任何影响插件作者使用方式的能力时，必须同时检查公开 CLI、canonical registry 和 `aw-development-toolkit`。
 
 已安装配置读取使用 `aw.installed-runtime-config.v2`、keys-only target 声明和 schema 2 单产物资源。旧 resourceVersion/artifactIds、v1 helper 和 expectedRevision 须按 [插件作者指南](plugin-authoring.md#已安装配置读取) 更新。托管命令的声明、身份、管理、主机与恢复见 [托管命令合同](managed-commands.md)，作者 registry 增加 managed-commands surface。Codex Enhance 外部执行使用 Adapter v5；它与 Eval Engine 的 instruction-v2 是不同合同，不联动改号。Config Definition v4 的结构能力由 Core、公开 schema、registry、CLI 与 TUI 共用实现，先交付支持新 capability 的 CLI，再分发依赖该能力的插件。升级后通过正常 build/sync/reinstall 更新资源，保留 ownership、native receipt、Status 和 cleanup 边界。
@@ -68,12 +70,13 @@ manifest `dependencies` 声明安装或升级某插件时必须同时满足的�
 - 使用 `pnpm plugin:test <plugin>` 运行单插件确定性测试；使用 `pnpm plugin:test --all` 检查全部插件。
 - PR/main 与发布候选共用三系统插件测试；Windows 按 `--test-shard <index/total>` 分片，全部分片成功才允许复用验证证据。平台专属用例在原生 runner 上执行，真实模型与长时资格仍单独启用；命令及验证边界见[测试指南](testing.md)。
 - 日常开发运行 `aw plugin status`。production bundle 变化且稳定目标未变时，`unreleasedChanges` 是有效状态。
-- `pnpm release` 是本 monorepo 对 Eval、Core、CLI npm packages、CLI tag 和可选 Catalog publication 的 Product Release 编排。它不是第二套 Catalog schema、publisher 或恢复合同。
+- `pnpm release` 编排同版本两个 Windows 平台包、Eval、Core、CLI、CLI 完成 tag 和可选 Catalog publication。原生源码和生产逻辑属于 CLI 产品变化；版本、prepared descriptor、attempt 和 repair 都覆盖同一组五包。它不是第二套 Catalog schema、publisher 或恢复合同。
 - 本仓库官方 `pnpm build` 使用 `--strict-requirements` 语义；`release:verify:catalog:core` 通过该 build 覆盖 strict 门禁。第三方公开 `aw catalog build` 默认只 advisory。
 - 选择 Catalog 轴时，`pnpm release` 通过公共 `aw catalog version` mutation 选择 metadata beta，并最终调用与第三方 Workspace 相同的 Catalog publish plan/apply、publication journal、tag 和失败恢复合同。具体 Catalog 行为以[Catalog 作者指南](catalog-authoring.md)和 Core validator 为准。
 - 官方 Actions 使用独立 CLI/Catalog 源码 tag，main CI 成功后按生产内容自动准备 beta；手动 `source` 准备精确正式版。候选分支只包含允许的版本修改，main 不接收自动版本 commit。操作和外部配置见 [README](../README.md#本仓库维护与官方发版)。`pnpm release` 保留本地维护用途。
 - 官方编排向 Core 唯一版本 owner 提供 latest/beta 的完整 first-parent 成功历史。未变化插件保留完整 stable/beta 版本，变化插件独立 patch 或递增 beta；不把 Catalog 版本赋给全部插件。删除重加保留历史，同版本不同内容阻断。第三方未提供官方历史时继续使用原 channel 合同。
-- Actions 六平台只消费同一候选 tar，发布前保存 CLI attempt 或 Catalog pending journal/repository，发布和恢复继续使用公共 publisher。缺失或损坏的已尝试恢复包必须提升版本；npm repair 仍只属于 CLI package 轴。
+- Actions 六平台只消费同一候选 tar，Windows 两架构使用本次平台包完成真实资格；普通 build/test 不取得 EXE，也不要求 Go。发布前保存 CLI attempt 或 Catalog pending journal/repository，发布和恢复继续使用公共 publisher。五包上传成功后创建 CLI 完成 tag；普通发布不额外下载远端包作校验。显式 CLI repair 仍核验已有远端包。缺失或损坏的已尝试恢复包必须提升版本；npm repair 仍只属于 CLI 产品轴。
+- Catalog-only 按 beta/latest 固定已完成的同渠道完整五包工具链；同批 CLI/Catalog 使用本次五包 artifact，全部自有依赖从本地解析，Catalog 远端写入等待 CLI 完成。恢复包保存精确工具版本和 tarball，不重新解析浮动标签。第三方 `aw catalog` 使用当前安装的兼容 CLI。详见 [Catalog 作者指南](catalog-authoring.md#发布计划授权和恢复)。
 - 新工作流的 generated standards、schemas 和 handoff contracts 必须通过 check-only contract test；CI 不自动改写生成文件。
 - CLI 作者 validator 的 JavaScript import scanner 是唯一实现；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。
 - 三层插件应分别验证，并增加同时安装三个插件的组合测试。

@@ -74,18 +74,23 @@ async function runCase(
     catalog = {
       version: '2.0.0',
       publication: { planDigest: plan.planDigest },
+      toolchain: { version: '1.0.0', channel: 'stable', source: 'registry' },
+      tools: Array.from({ length: 5 }, (_, index) => ({ name: `tool-${index}`, path: 'artifacts/cli.tgz', contentDigest: digest(Buffer.from('cli')) })),
     };
   }
 
   const evalBytes = Buffer.from('eval');
-  const windowsX64Bytes = Buffer.from('windows-x64');
-  const windowsArm64Bytes = Buffer.from('windows-arm64');
+  const nativeBytes = [Buffer.from('windows-x64'), Buffer.from('windows-arm64')];
+  const nativeEvidence = await Promise.all(['candidate.json', 'reproducibility.json', 'qualification-x64.json', 'qualification-arm64.json'].map(async (name) => {
+    await fs.writeFile(path.join(artifacts, name), '{}');
+    return { name, path: `artifacts/${name}`, contentDigest: digest(Buffer.from('{}')) };
+  }));
   const coreBytes = Buffer.from('core');
   const cliBytes = Buffer.from('cli');
   await Promise.all([
-    fs.writeFile(path.join(artifacts, 'windows-x64.tgz'), windowsX64Bytes),
-    fs.writeFile(path.join(artifacts, 'windows-arm64.tgz'), windowsArm64Bytes),
     fs.writeFile(path.join(artifacts, 'eval.tgz'), evalBytes),
+    fs.writeFile(path.join(artifacts, 'windows-x64.tgz'), nativeBytes[0]!),
+    fs.writeFile(path.join(artifacts, 'windows-arm64.tgz'), nativeBytes[1]!),
     fs.writeFile(path.join(artifacts, 'core.tgz'), coreBytes),
     fs.writeFile(path.join(artifacts, 'cli.tgz'), cliBytes),
   ]);
@@ -102,9 +107,10 @@ async function runCase(
     build: { generationId: 'one', inputDigest: 'input', outputDigest: 'output', cliPackageDigest: 'cli' },
     npm: axes.cli ? {
       version: '1.0.0',
+      nativeEvidence,
       packages: [
-        { name: '@lesliechan721/aw-windows-job-win32-x64', path: 'artifacts/windows-x64.tgz', contentDigest: digest(windowsX64Bytes) },
-        { name: '@lesliechan721/aw-windows-job-win32-arm64', path: 'artifacts/windows-arm64.tgz', contentDigest: digest(windowsArm64Bytes) },
+        { name: '@lesliechan721/aw-windows-job-win32-x64', path: 'artifacts/windows-x64.tgz', contentDigest: digest(nativeBytes[0]!) },
+        { name: '@lesliechan721/aw-windows-job-win32-arm64', path: 'artifacts/windows-arm64.tgz', contentDigest: digest(nativeBytes[1]!) },
         { name: '@lesliechan721/agent-skill-eval', path: 'artifacts/eval.tgz', contentDigest: digest(evalBytes) },
         { name: '@lesliechan721/aw-plugin-core', path: 'artifacts/core.tgz', contentDigest: digest(coreBytes) },
         { name: '@lesliechan721/aw', path: 'artifacts/cli.tgz', contentDigest: digest(cliBytes) },
@@ -182,7 +188,8 @@ it('runs official release order and resumes an uncertain Catalog plan through ru
     ok: false, events: ['catalog'], error: expect.any(String),
     catalogJournal: 'uncertain',
   });
-  await expect(runCase({ cli: false, catalog: true }, 'catalog-retry')).resolves.toMatchObject({
+  const retried = await runCase({ cli: false, catalog: true }, 'catalog-retry');
+  expect(retried, retried.retry.error).toMatchObject({
     first: { ok: false, events: ['catalog'], catalogJournal: 'uncertain' },
     retry: { ok: true, events: ['catalog'], catalogJournal: 'published' },
   });

@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PluginManifestSource, PluginMeta } from '../../src/types.js';
 import {
@@ -20,6 +20,8 @@ import {
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import * as processTree from '../../src/utils/process-tree.js';
+import * as sourceBinding from '../../src/review/source-binding.js';
 
 const roots: string[] = [];
 
@@ -73,10 +75,73 @@ async function pluginFixture(
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
 });
 
 describe('portable materializer', () => {
+  it.skipIf(process.platform === 'win32').each(['static', 'missing-dependency', 'ready-dependency'] as const)(
+    'prepares the installed Windows helper before renderer startup (%s)',
+    async (kind) => {
+      const root = await tempRoot('aw-portable-native-admission-');
+      const manifest = baseManifest('native-admission');
+      const marker = path.join(root, 'renderer-started');
+      if (kind !== 'static') {
+        manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+        manifest.artifacts = { targets: [{
+          id: 'portable', distribution: 'agent-skills', target: 'agent-skills.skill',
+          kind: 'skill', scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'portable',
+        }] };
+      }
+      const plugin = await pluginFixture(root, manifest);
+      await writeSkill(plugin.rootDir, 'portable');
+      if (kind !== 'static') {
+        await fs.outputFile(path.join(plugin.rootDir, 'render.mjs'), `
+          import fs from 'node:fs';
+          fs.writeFileSync(${JSON.stringify(marker)}, 'started');
+          console.log(JSON.stringify({ version: 2, artifacts: [{
+            id: 'portable', distribution: 'agent-skills', target: 'agent-skills.skill',
+            kind: 'skill', state: 'present', refreshKeys: [], skillKey: 'portable',
+            content: { files: {
+              'SKILL.md': '---\\nname: portable\\ndescription: Portable fixture.\\n---\\nBody.\\n',
+              'README.md': '# Portable\\n',
+            } },
+          }] }));
+        `);
+      }
+      const env = { ...process.env, AW_HOME: path.join(root, 'aw-home') };
+      // Keep real host paths during config resolution. Only simulate the native admission boundary.
+      const resolveConfig = sourceBinding.resolvePortablePluginProfileConfig;
+      let platform: ReturnType<typeof vi.spyOn> | undefined;
+      vi.spyOn(sourceBinding, 'resolvePortablePluginProfileConfig').mockImplementation(async (options) => {
+        const result = await resolveConfig(options);
+        platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+        return result;
+      });
+      const prepare = vi.spyOn(processTree, 'prepareWindowsJobHelper').mockImplementation(async () => {
+        platform?.mockRestore();
+        if (kind === 'missing-dependency') throw Object.assign(new Error('Reinstall the current CLI/Eval package and include optional dependencies.'), { code: 'nativePackageUnavailable' });
+        return process.execPath;
+      });
+      const result = materializePortableSkills({
+        plugins: [plugin], pluginId: plugin.pluginId!, scope: 'user', cwd: root, env,
+      });
+      if (kind === 'missing-dependency') {
+        const failure = await result.catch((error: unknown) => error) as Error & { code: string };
+        expect(failure.code).toBe('nativePackageUnavailable');
+        expect(failure.message).toContain('optional dependencies');
+      } else {
+        const materialized = await result;
+        expect(materialized.candidates.map((candidate) => candidate.name)).toEqual(['portable']);
+        await materialized.cleanup();
+      }
+      platform?.mockRestore();
+      expect(prepare).toHaveBeenCalledTimes(kind === 'static' ? 0 : 1);
+      await expect(fs.pathExists(marker)).resolves.toBe(kind === 'ready-dependency');
+      await expect(fs.pathExists(path.join(env.AW_HOME, 'native-artifacts'))).resolves.toBe(false);
+    },
+  );
+
   it.each(['static', 'dynamic'] as const)(
     'rejects local managed command references in %s Portable content before publishing output',
     async (kind) => {

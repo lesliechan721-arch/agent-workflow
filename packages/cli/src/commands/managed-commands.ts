@@ -2,14 +2,16 @@ import path from 'node:path';
 import * as fs from 'node:fs/promises';
 
 import type { Command } from 'commander';
-import { getCommandPackageId, isManagedCommandId, type CommandLaunch } from '@lesliechan721/aw-plugin-core/manifest';
+import { getCommandPackageId, isManagedCommandId, materializeNativeToolClosureFiles, type CommandLaunch } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { CliExecutionContext } from './runtime.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { withResolvedCatalogPlugin } from '../utils/multi-source-catalog.js';
 import { resolveRepoRoot } from '../utils/state-paths.js';
 import { sanitizeCatalogSourceError } from '../utils/catalog-public-error.js';
-import { syncPluginManagedCommandPackage } from '../utils/managed-command-materialization.js';
+import { describeNativeToolClosure, type NativeToolChange } from '../utils/native-tool-review.js';
+import { managedCommandProducerIdentity, nativeToolsForCommandSets, syncPluginManagedCommandPackage } from '../utils/managed-command-materialization.js';
+import { prepareWindowsJobHelper } from '../utils/process-tree.js';
 import { runManagedCommand } from '../utils/managed-command-runtime.js';
 import {
   ManagedCommandError,
@@ -21,6 +23,7 @@ import {
   managedCommandDiagnostic,
   parseManagedCommandLaunch,
   readManagedCommandPackageOwner,
+  readInstalledCommandProducer,
   removeManagedCommandPackage,
   removeUserCommand,
   updateUserCommand,
@@ -40,6 +43,7 @@ export interface CommandManagementResult {
   changes: Array<{ kind: 'command' | 'package'; id: string; action: 'created' | 'updated' | 'removed' | 'retained' }>;
   errors: ManagedCommandDiagnostic[];
   recoveryActions: string[];
+  nativeToolChanges?: NativeToolChange[];
 }
 
 const HELP = `Usage:
@@ -113,6 +117,7 @@ function finish(receipt: CommandManagementResult): CommandManagementResult {
 function render(receipt: CommandManagementResult): string {
   const lines = [`${receipt.command}: ${receipt.overallState}`];
   for (const command of receipt.commands) lines.push(`${command.id}\t${command.name}\t${command.availability}`, ...(receipt.command === 'command.show' ? [JSON.stringify({ owner: command.owner, resourceRoot: command.resourceRoot, launch: command.launch }, null, 2)] : []));
+  for (const change of receipt.nativeToolChanges ?? []) for (const phase of ['before', 'after'] as const) if (change[phase]) lines.push(...describeNativeToolClosure(change[phase]!).map((description) => `原生工具 ${change.producer.sourceId}/${change.producer.pluginName} ${phase}: ${description}`));
   for (const pkg of receipt.packages) lines.push(`${pkg.id}\t${pkg.producer.sourceId}/${pkg.producer.pluginName}/${pkg.producer.key}\t${pkg.availability}`);
   for (const change of receipt.changes) lines.push(`${change.action}\t${change.id}`);
   for (const error of receipt.errors) lines.push(`${error.code}: ${error.message}`);
@@ -184,7 +189,30 @@ export async function runManagedCommandCli(args: string[], context: CliExecution
         if (exactPackage && options['--scope'] !== undefined) invalid('Exact package removal does not accept --scope.');
         if (!exactPackage && (positionals.length !== 2 || positionals[0]!.split('/').length !== 2 || !['user', 'project'].includes(textOption(options, '--scope', true)!))) invalid('Package selection requires source/plugin, package-key, and --scope user|project.');
       }
+      let nativeReview: NativeToolChange | undefined;
+      const inspectPackageNative = async (): Promise<NativeToolChange | undefined> => {
+        if (!action.startsWith('package.')) return undefined;
+        if (exactPackage) {
+          const owner = await readManagedCommandPackageOwner(positionals[0]!, context.env);
+          const record = await readInstalledCommandProducer(owner.resourceRoot).catch(() => undefined);
+          return record?.nativeTools ? { producer: owner.producer, before: record.nativeTools, after: null } : undefined;
+        }
+        return withResolvedCatalogPlugin({ selector: positionals[0]!, cliVersion: host.cliVersion, env: context.env, consume: async ({ plugin }) => {
+          const scope = textOption(options, '--scope', true)! as 'user' | 'project';
+          const producer = await managedCommandProducerIdentity({ plugin, producer: { kind: 'package', packageKey: positionals[1]! }, scope, cwd: context.cwd });
+          const owner = await readManagedCommandPackageOwner(getCommandPackageId(producer), context.env).catch(() => undefined);
+          const previous = owner ? await readInstalledCommandProducer(owner.resourceRoot).catch(() => undefined) : undefined;
+          const sets = (plugin.manifest.managedCommands?.sets ?? []).filter((set) => set.producer.kind === 'package' && set.producer.packageKey === producer.key).map((set) => ({ set: set.set, state: 'present' as const, entries: [] }));
+          const closure = action === 'package.sync' ? await nativeToolsForCommandSets(plugin, sets) : undefined;
+          const after = closure ? materializeNativeToolClosureFiles(closure).closure : null;
+          const before = previous?.nativeTools ?? null;
+          return JSON.stringify(before) === JSON.stringify(after) ? undefined : { producer, before, after };
+        } });
+      };
+      nativeReview = await inspectPackageNative();
       const execute = async (): Promise<void> => {
+        if (JSON.stringify(await inspectPackageNative()) !== JSON.stringify(nativeReview)) throw new ManagedCommandError('operationReviewStale', 'The native tool impact changed. Review the package operation again.');
+        if (nativeReview) receipt.nativeToolChanges = [nativeReview];
         if (action === 'install') {
           const id = await installUserCommand({ sourceDirectory: path.resolve(context.cwd, positionals[0]!), name: textOption(options, '--name', true)!, launch: launch as CommandLaunch, env: context.env });
           receipt.commands = [await inspectManagedCommand(id, context.env)];
@@ -233,7 +261,9 @@ export async function runManagedCommandCli(args: string[], context: CliExecution
         const owner = await readManagedCommandPackageOwner(positionals[0]!, context.env);
         message += ` Producer: ${JSON.stringify(owner.producer)}. All commands in this package will become unavailable.`;
       }
+      if (nativeReview) for (const phase of ['before', 'after'] as const) if (nativeReview[phase]) message += ` Native ${nativeReview.producer.sourceId}/${nativeReview.producer.pluginName} ${phase}: ${describeNativeToolClosure(nativeReview[phase]!).join('; ')}.`;
       await confirm(context, options, message);
+      if (process.platform === 'win32' && action === 'package.sync') await prepareWindowsJobHelper();
       await withAwHomeMutationLock({ env: context.env, action: execute });
     }
   } catch (error) {

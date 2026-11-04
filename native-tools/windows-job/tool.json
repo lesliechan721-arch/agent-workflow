@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "protocol": "aw.windows-job.v1",
+  "goVersion": "go1.25.7"
+}

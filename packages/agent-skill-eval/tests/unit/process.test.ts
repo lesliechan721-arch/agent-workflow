@@ -168,7 +168,7 @@ describe('managed provider containment gate', () => {
         executable: 'provider.exe',
         args: ['--flag'],
       }, {}, {
-        containment: 'unmanaged-confirmed',
+        containment: 'verified-observed',
         processTree: { platform: 'win32' },
         createWindowsJobInvocation,
       })

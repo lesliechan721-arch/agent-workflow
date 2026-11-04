@@ -44,6 +44,7 @@ import {
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
+import { registerWritableStateRoot } from '../helpers/test-isolation.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { stubCodexFileSelectionForNativeFixture } from '../helpers/codex-enhance-native-fixture.js';
 import {
@@ -134,6 +135,7 @@ async function createSyntheticCatalog(options: {
 }): Promise<string> {
   const sourceRoot = path.join(options.root, `catalog-source-${crypto.randomUUID()}`);
   await fs.ensureDir(path.join(sourceRoot, 'plugins'));
+  registerWritableStateRoot(getCurrentSourceTestIsolation().rootRegistry, sourceRoot, 'synthetic catalog authoring source');
   await fs.copy(
     path.join(repositoryRoot, 'plugins', 'marketplace-source.json'),
     path.join(sourceRoot, 'plugins', 'marketplace-source.json'),

@@ -501,10 +501,12 @@ export async function runEvalSpec(
     options.processManagementDependencies?.resolveCodexExecutable,
   )
   const codexBin = resolvedCodexBin ?? requestedCodexBin
+  let windowsJobHelperPath: string | undefined
   const processManagement = await resolveEvalProcessManagement({
     allowUnmanaged: options.allowUnmanagedProcesses ?? false,
     codexBin,
     sourceEnv,
+    onWindowsJobHelperPrepared: (helperPath) => { windowsJobHelperPath = helperPath },
     dependencies: {
       ...options.processManagementDependencies,
       resolveCodexExecutable: async () => resolvedCodexBin,
@@ -528,7 +530,9 @@ export async function runEvalSpec(
     model: runtime.model ?? undefined,
     codexRuntime: runtime,
     processManagement,
+    windowsJobHelperPath,
   }
+  const processTree = windowsJobHelperPath ? { windowsJobHelperPath } : undefined
   const startedAt = new Date().toISOString()
   const runs: EvalResultRun[] = []
   let stop = false
@@ -598,6 +602,7 @@ export async function runEvalSpec(
                   sourceEnv,
                   codexRuntime: runtime,
                   processManagement,
+                  processTree,
                 })
               : await (options.executeCodexWorkflowProvider ?? executeCodexWorkflowProvider)({
                   provider: {
@@ -610,6 +615,7 @@ export async function runEvalSpec(
                   codexRuntime: runtime,
                   codexBin: builtinProviderDependencies.codexBin,
                   processManagement,
+                  processTree,
                   protectedEvalRoots: [specRoot, calculated.paths.outputDir],
                 })
           if (options.signal?.aborted) throw abortError()

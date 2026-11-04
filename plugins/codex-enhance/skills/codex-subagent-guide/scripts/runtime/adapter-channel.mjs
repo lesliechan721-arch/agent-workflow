@@ -257,12 +257,19 @@ export async function invokeChildTool({ bindingFile, operation, text, timeoutMs,
   else if (timeoutMs !== undefined && !validTimeout(timeoutMs)) fail('invalidArguments', 'Receive timeout must be an integer from 0 to 1800000 milliseconds.');
   note('toolStarted', { operation });
   const directory = path.dirname(bindingFile);
+  const bindingRemoved = async (error) => {
+    if (error.code === 'ENOENT' || error.code === 'pathMissing') return true;
+    if (error.code !== 'platformOperationFailed') return false;
+    // Close can remove a path between the local check and the Windows ACL
+    // helper. Its generic failure means closed only if the binding is gone.
+    return fs.lstat(bindingFile).then(() => false, (failure) => failure.code === 'ENOENT');
+  };
   let descriptor;
   try {
     await verifyPrivatePath(directory, 'directory'); note('toolDirectoryVerified', { operation });
     await verifyPrivatePath(bindingFile, 'file'); descriptor = await readJson(bindingFile, 4096);
   }
-  catch (error) { if (error.code === 'ENOENT' || error.code === 'pathMissing') return closedResponse(operation); throw error; }
+  catch (error) { if (await bindingRemoved(error)) return closedResponse(operation); throw error; }
   if (!fields(descriptor, ['binding', 'pid']) || !messageId(descriptor.binding) || !Number.isSafeInteger(descriptor.pid) || descriptor.pid <= 0) fail('bridgeInvalid', 'The child tool binding is invalid.');
   note('toolBindingVerified', { operation });
   const id = token(); const requestPath = path.join(directory, `${id}.request.json`); const responsePath = path.join(directory, `${id}.response.json`);
@@ -278,7 +285,7 @@ export async function invokeChildTool({ bindingFile, operation, text, timeoutMs,
     }
     return closedResponse(operation);
   } catch (error) {
-    if (error.code === 'ENOENT' || error.code === 'pathMissing') return closedResponse(operation);
+    if (await bindingRemoved(error)) return closedResponse(operation);
     throw error;
   } finally {
     // The request marks caller ownership of the response. Release it last so

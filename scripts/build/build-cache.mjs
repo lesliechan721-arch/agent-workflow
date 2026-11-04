@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-const STAMP_SCHEMA_VERSION = 9;
+const STAMP_SCHEMA_VERSION = 10;
 const DEFAULT_LOCK_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
 
@@ -19,7 +19,7 @@ const INPUT_PATHS = [
   'packages/agent-skill-eval/vitest.config.ts',
   'packages/agent-skill-eval/src',
   'packages/agent-skill-eval/schemas',
-  'packages/agent-skill-eval/native/windows',
+  'packages/native-runtime',
   'packages/agent-skill-eval/scripts',
   'packages/aw-windows-job-win32-x64/package.json',
   'packages/aw-windows-job-win32-arm64/package.json',
@@ -42,8 +42,6 @@ const INPUT_PATHS = [
 
 const OUTPUT_ROOTS = [
   'packages/agent-skill-eval/dist',
-  'packages/aw-windows-job-win32-x64/dist',
-  'packages/aw-windows-job-win32-arm64/dist',
   'packages/plugin-core/dist',
   'packages/cli/dist',
   'packages/cli/plugins-dist',
@@ -58,8 +56,6 @@ const REQUIRED_OUTPUTS = [
   { path: 'packages/agent-skill-eval/dist/index.js', type: 'text' },
   { path: 'packages/agent-skill-eval/dist/bin.js', type: 'text' },
   { path: 'packages/agent-skill-eval/dist/schemas/digests.json', type: 'text' },
-  { path: 'packages/aw-windows-job-win32-x64/dist/aw-windows-job.exe', type: 'file' },
-  { path: 'packages/aw-windows-job-win32-arm64/dist/aw-windows-job.exe', type: 'file' },
   { path: 'packages/plugin-core/dist/index.js', type: 'text' },
   { path: 'packages/cli/dist/index.js', type: 'text' },
   { path: 'packages/cli/dist/scripts/bundle-plugins.js', type: 'text' },
@@ -354,10 +350,6 @@ export function resolvePnpmInvocation(env = process.env) {
     command: process.execPath,
     args: [
       path.resolve(npmExecPath),
-      '--filter',
-      '@lesliechan721/aw-windows-job-win32-x64',
-      '--filter',
-      '@lesliechan721/aw-windows-job-win32-arm64',
       '--filter',
       '@lesliechan721/agent-skill-eval',
       '--filter',
@@ -924,14 +916,6 @@ export async function runCliBuild(repoRoot, invocation, options = {}) {
     recursive: true,
     force: true,
   });
-  await fs.rm(path.join(repoRoot, 'packages', 'aw-windows-job-win32-x64', 'dist'), {
-    recursive: true,
-    force: true,
-  });
-  await fs.rm(path.join(repoRoot, 'packages', 'aw-windows-job-win32-arm64', 'dist'), {
-    recursive: true,
-    force: true,
-  });
   await fs.rm(path.join(repoRoot, 'packages', 'plugin-core', 'dist'), {
     recursive: true,
     force: true,
@@ -1179,8 +1163,6 @@ async function createSnapshotUnderLock(repoRoot, settings) {
   );
   const cliPackageRoot = path.join(snapshotRoot, 'packages', 'cli');
   const evalPackageRoot = path.join(snapshotRoot, 'packages', 'agent-skill-eval');
-  const windowsX64PackageRoot = path.join(snapshotRoot, 'packages', 'aw-windows-job-win32-x64');
-  const windowsArm64PackageRoot = path.join(snapshotRoot, 'packages', 'aw-windows-job-win32-arm64');
   const corePackageRoot = path.join(snapshotRoot, 'packages', 'plugin-core');
   const canonicalNodeModules = path.join(repoRoot, 'packages', 'cli', 'node_modules');
   const canonicalEvalNodeModules = path.join(repoRoot, 'packages', 'agent-skill-eval', 'node_modules');
@@ -1203,8 +1185,6 @@ async function createSnapshotUnderLock(repoRoot, settings) {
     await Promise.all([
       fs.mkdir(cliPackageRoot, { recursive: true }),
       fs.mkdir(evalPackageRoot, { recursive: true }),
-      fs.mkdir(windowsX64PackageRoot, { recursive: true }),
-      fs.mkdir(windowsArm64PackageRoot, { recursive: true }),
       fs.mkdir(corePackageRoot, { recursive: true }),
     ]);
     let dependencyStats;
@@ -1240,16 +1220,6 @@ async function createSnapshotUnderLock(repoRoot, settings) {
     await copyPath(
       path.join(repoRoot, 'packages', 'agent-skill-eval', 'dist'),
       path.join(evalPackageRoot, 'dist'),
-      { recursive: true, verbatimSymlinks: true },
-    );
-    await copyPath(
-      path.join(repoRoot, 'packages', 'aw-windows-job-win32-x64', 'dist'),
-      path.join(windowsX64PackageRoot, 'dist'),
-      { recursive: true, verbatimSymlinks: true },
-    );
-    await copyPath(
-      path.join(repoRoot, 'packages', 'aw-windows-job-win32-arm64', 'dist'),
-      path.join(windowsArm64PackageRoot, 'dist'),
       { recursive: true, verbatimSymlinks: true },
     );
     await copyPath(
@@ -1293,20 +1263,20 @@ async function createSnapshotUnderLock(repoRoot, settings) {
       { verbatimSymlinks: true },
     );
     await copyPath(
-      path.join(repoRoot, 'packages', 'aw-windows-job-win32-x64', 'package.json'),
-      path.join(windowsX64PackageRoot, 'package.json'),
-      { verbatimSymlinks: true },
-    );
-    await copyPath(
-      path.join(repoRoot, 'packages', 'aw-windows-job-win32-arm64', 'package.json'),
-      path.join(windowsArm64PackageRoot, 'package.json'),
-      { verbatimSymlinks: true },
-    );
-    await copyPath(
       path.join(repoRoot, 'packages', 'plugin-core', 'package.json'),
       path.join(corePackageRoot, 'package.json'),
       { verbatimSymlinks: true },
     );
+    for (const arch of ['x64', 'arm64']) {
+      const packageName = `aw-windows-job-win32-${arch}`;
+      const packageRoot = path.join(snapshotRoot, 'packages', packageName);
+      await fs.mkdir(packageRoot, { recursive: true });
+      await copyPath(
+        path.join(repoRoot, 'packages', packageName, 'package.json'),
+        path.join(packageRoot, 'package.json'),
+        { verbatimSymlinks: true },
+      );
+    }
     const snapshotDigest = await computeBuildOutputDigest(snapshotRoot);
     if (snapshotDigest !== ensured.outputDigest) {
       throw new Error(
@@ -1318,8 +1288,6 @@ async function createSnapshotUnderLock(repoRoot, settings) {
       snapshotRoot,
       [
         'packages/agent-skill-eval',
-        'packages/aw-windows-job-win32-x64',
-        'packages/aw-windows-job-win32-arm64',
         'packages/plugin-core',
         'packages/cli',
       ],
@@ -1382,8 +1350,6 @@ async function createSnapshotUnderLock(repoRoot, settings) {
     inputDigest: ensured.inputDigest,
     cliPackageDigest: ensured.cliPackageDigest,
     evalPackageRoot,
-    windowsX64PackageRoot,
-    windowsArm64PackageRoot,
     corePackageRoot,
     cliPackageRoot,
     cliDistRoot: path.join(cliPackageRoot, 'dist'),

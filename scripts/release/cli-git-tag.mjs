@@ -2,23 +2,14 @@ import path from 'node:path';
 
 import {
   assertPublishedPackageTarballMatchesCandidate,
+  CLI_RELEASE_PACKAGES,
+  RELEASE_NETWORK_TIMEOUT_MS,
   assertValidVersion,
-  cliPackageJsonPath,
-  corePackageJsonPath,
-  evalPackageJsonPath,
   repoRoot as defaultRepoRoot,
   runReleaseGit,
-  windowsArm64PackageJsonPath,
-  windowsX64PackageJsonPath,
 } from './common.mjs';
 
-const CLI_PACKAGES = new Map([
-  ['@lesliechan721/aw-windows-job-win32-x64', windowsX64PackageJsonPath],
-  ['@lesliechan721/aw-windows-job-win32-arm64', windowsArm64PackageJsonPath],
-  ['@lesliechan721/agent-skill-eval', evalPackageJsonPath],
-  ['@lesliechan721/aw-plugin-core', corePackageJsonPath],
-  ['@lesliechan721/aw', cliPackageJsonPath],
-]);
+const CLI_PACKAGES = new Map(CLI_RELEASE_PACKAGES.map((entry) => [entry.name, path.join(defaultRepoRoot, entry.relativePath)]));
 
 export function cliTagName(version) {
   assertValidVersion(version);
@@ -155,16 +146,32 @@ export async function assertPublishedCliArtifactsMatch(root, descriptor, options
   if (!descriptor.axes?.cli || !descriptor.npm || typeof descriptor.candidates?.cli !== 'string') {
     throw new Error('The prepared release does not contain a CLI candidate.');
   }
-  for (const artifact of descriptor.npm.packages) {
-    const packageJsonPath = CLI_PACKAGES.get(artifact.name);
-    if (!packageJsonPath) throw new Error(`Unknown prepared CLI package ${artifact.name}.`);
-    await (options.assertPublishedPackageMatches
-      ?? assertPublishedPackageTarballMatchesCandidate)(
-      artifact.name,
-      descriptor.candidates.cli,
-      packageJsonPath,
-      resolvePreparedPath(root, artifact.path),
-      options,
-    );
+  if (descriptor.npm.packages.map((entry) => entry.name).join('\n') !== [...CLI_PACKAGES.keys()].join('\n')) {
+    throw new Error('Published CLI verification requires all five prepared packages.');
+  }
+  const now = options.now ?? Date.now;
+  const deadline = now() + (options.visibilityTimeoutMs ?? RELEASE_NETWORK_TIMEOUT_MS);
+  const wait = options.waitForVisibility ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  let checkingPackage;
+  for (;;) {
+    try {
+      for (const artifact of descriptor.npm.packages) {
+        checkingPackage = artifact.name;
+        if (now() >= deadline) throw new Error('Registry visibility deadline expired.');
+        await (options.assertPublishedPackageMatches ?? assertPublishedPackageTarballMatchesCandidate)(
+          artifact.name, descriptor.candidates.cli, CLI_PACKAGES.get(artifact.name),
+          resolvePreparedPath(root, artifact.path),
+          { ...options, visibilityDeadline: deadline, timeoutMs: Math.max(1, deadline - now()) },
+        );
+      }
+      return;
+    } catch (error) {
+      if (error?.code === 'releasePackageMismatch') throw error;
+      if (now() < deadline) {
+        await wait(Math.min(options.visibilityRetryMs ?? 2000, Math.max(1, deadline - now())));
+        if (now() < deadline) continue;
+      }
+      throw new Error(`Registry verification failed for ${checkingPackage}@${descriptor.candidates.cli}: ${error.message}`, { cause: error });
+    }
   }
 }

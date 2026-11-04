@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { describeNativeToolClosure } from '../utils/native-tool-review.js';
 
 import { requestedIntentAction } from '../output/command-receipt.js';
 import type { PortableRetryReview } from '../portable/commands.js';
@@ -52,6 +53,14 @@ export function managedCommandPlanChanges(actions: readonly OperationAction[]): 
   const producers = new Map<string, InstalledCommandProducer>();
   const retained = new Set<string>();
   for (const action of actions) {
+    for (const change of action.nativeToolChanges ?? []) {
+      const pluginId = `${change.producer.sourceId}/${change.producer.pluginName}`;
+      for (const [kind, closure] of [['remove', change.before], ['add', change.after]] as const) {
+        if (!closure) continue;
+        for (const description of describeNativeToolClosure(closure)) changes.push({ kind, group: 'runtime', pluginId,
+          title: `${kind === 'remove' ? '撤销' : '使用'}原生工具 · ${pluginId} · ${change.producer.key}`, description });
+      }
+    }
     if (action.kind === 'retainManagedCommandPackage') {
       if (retained.has(action.packageId)) continue;
       retained.add(action.packageId);
@@ -59,7 +68,7 @@ export function managedCommandPlanChanges(actions: readonly OperationAction[]): 
         title: `保留命令包 ${action.producer.key}`,
         description: `${action.producer.sourceId}/${action.producer.pluginName} · ${action.packageId} · ${scopeLabel(action.producer.scope)} · ${action.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'} · ${action.commandIds.length} 个命令 · ${action.availability} · ${action.recoveryAction}` });
     } else if (action.kind === 'syncManagedCommandPackage') {
-      producers.set(getCommandPackageId(action.producer), { schemaVersion: 1, producer: action.producer, sets: action.sets });
+      producers.set(getCommandPackageId(action.producer), { schemaVersion: 1, producer: action.producer, sets: action.sets, ...(action.nativeTools ? { nativeTools: action.nativeTools } : {}) });
     } else if (action.kind === 'writeOwnedArtifact' || action.kind === 'materializeNativeSkill') {
       for (const file of action.files ?? []) {
         if (file.relativePath !== '.aw-command-producer.json') continue;

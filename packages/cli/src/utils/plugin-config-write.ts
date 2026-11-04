@@ -28,7 +28,7 @@ import {
   type ReceiptTargetResult,
   type Scope,
 } from '../types.js';
-import { getDefaultNativeCliRunner, type NativeCliRunner } from './native-cli.js';
+import { getDefaultNativeCliRunner, prepareNativeCliExecution, type NativeCliRunner } from './native-cli.js';
 import {
   assertReadyPluginConfigStore,
   assertPluginConfigMutationCandidate,
@@ -49,9 +49,11 @@ import {
 import { analyzePluginConfigMutationImpact, pluginSharedNativeConfigTargets } from './plugin-config-impact.js';
 import {
   discoverInstalledPluginManagedCommandPackages,
+  assertManagedCommandPackageNativeToolsUnchanged,
   syncPluginManagedCommandPackage,
   type ManagedCommandPackageDiscovery,
 } from './managed-command-materialization.js';
+import { managedCommandDiagnostic } from './managed-command-store.js';
 import {
   collectSensitivePluginConfigValues,
   redactPluginScriptOutput,
@@ -363,6 +365,24 @@ async function reinstallVisibleTargets(options: {
     const selector = options.plugin.sourceId
       ? options.plugin.pluginId!
       : options.plugin.manifest.name;
+
+    const nativeFailures: CommandProducerResult[] = [];
+    for (const target of discovered.commandPackages ?? []) {
+      try {
+        await assertManagedCommandPackageNativeToolsUnchanged({ plugin: options.plugin, producer: target.producer, env: options.env });
+      } catch (error) {
+        nativeFailures.push({ producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
+          errors: [managedCommandDiagnostic(error)],
+          recoveryActions: [`aw command package sync ${selector} ${target.packageKey} --scope ${target.producer.scope} --yes`] });
+      }
+    }
+    if (nativeFailures.length > 0) {
+      return { state: 'partial', commandResults: nativeFailures,
+        targetResults: [...targetResults, ...discovered.targets.map((target): InternalConfigApplyTargetResult => ({
+          target, action: 'reinstall', state: 'failed', errorCode: 'nativeToolSyncRequired',
+          message: 'Run a reviewed producer sync or package sync before configuration apply.',
+        }))] };
+    }
 
     const sanitizeFailure = async (
       message: string,
@@ -886,6 +906,9 @@ export async function replayConfigRuntimeWrites(options: {
   preApplyConfirmed?: boolean;
   preApplyAuthorizedTargets?: readonly PreApplyAuthorizationTarget[];
 }): Promise<ConfigRuntimeReplayReceipt> {
+  if (!options.awHomeMutationToken) {
+    await prepareNativeCliExecution({ env: options.env, runner: options.nativeCliRunner });
+  }
   return withAwHomeMutationLock({
     env: options.env,
     token: options.awHomeMutationToken,
@@ -1314,6 +1337,9 @@ export async function applyPluginConfigWrite(
       env: options.env,
     });
   }
+  if (options.apply !== false && !options.awHomeMutationToken) {
+    await prepareNativeCliExecution({ env: options.env, runner: options.nativeCliRunner });
+  }
   return withAwHomeMutationLock({
     env: options.env,
     token: options.awHomeMutationToken,
@@ -1676,6 +1702,9 @@ export async function resetPluginConfigWithHelper(
   options: ResetPluginConfigWriteOptions,
 ): Promise<ResetPluginConfigWriteReceipt> {
   assertSafePluginConfigSegment(options.pluginName);
+  if (options.apply !== false && !options.awHomeMutationToken) {
+    await prepareNativeCliExecution({ env: options.env, runner: options.nativeCliRunner });
+  }
   return withAwHomeMutationLock({
     env: options.env,
     token: options.awHomeMutationToken,

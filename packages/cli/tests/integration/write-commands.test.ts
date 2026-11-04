@@ -73,6 +73,7 @@ import { listManagedCommands, resolveManagedCommand } from '../../src/utils/mana
 import { PassThrough } from 'node:stream';
 import {
   AW_RUNTIME_CONFIG_BINDING_PATH,
+  preparePluginNativeTools,
   type RuntimeConfigBinding,
 } from '@lesliechan721/aw-plugin-core';
 import {
@@ -82,6 +83,7 @@ import {
 } from '../helpers/catalog-source-fixture.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { stubCodexFileSelectionForNativeFixture } from '../helpers/codex-enhance-native-fixture.js';
+import { defaultPluginProcessRunner } from '../../src/utils/plugin-scripts.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
@@ -16407,11 +16409,14 @@ describe('five namespaced write commands', () => {
     // Test Value Gate: one real public installation closes generated Skill/permission IDs, AW wrapping, and a live fake v5 backend.
     const { isolation, runtime, runPublic } = await prepareCodexEnhancePublicCommandFixture();
     const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
-    const helpers = await import(pathToFileURL(path.join(repositoryRoot, 'plugins/codex-enhance/scripts/fixtures/subagent-integration.mjs')).href);
+    const runtimeSourceRoot = path.join(isolation.layout.fixtureCwd, 'guide-runtime-source');
+    await fs.copy(path.join(repositoryRoot, 'plugins/codex-enhance'), runtimeSourceRoot);
+    await preparePluginNativeTools(runtimeSourceRoot, (await readPluginManifest(runtimeSourceRoot)).manifest);
+    const helpers = await import(pathToFileURL(path.join(runtimeSourceRoot, 'scripts/fixtures/subagent-integration.mjs')).href);
     const { openRun, storeContext } = await import(pathToFileURL(path.join(
-      repositoryRoot, 'plugins/codex-enhance/skills/codex-subagent-guide/scripts/runtime/store.mjs',
+      runtimeSourceRoot, 'skills/codex-subagent-guide/scripts/runtime/store.mjs',
     )).href);
-    const cleanups: Array<() => Promise<void>> = [];
+    const cleanups: Array<() => Promise<void>> = [() => fs.remove(runtimeSourceRoot)];
     const fixture = await helpers.fixture({ signal: new AbortController().signal, diagnostic: () => {}, after: (cleanup: () => Promise<void>) => { cleanups.push(cleanup); } });
     const cliEntry = path.join(repositoryRoot, 'packages/cli/dist/index.js');
     const scenario = path.join(fixture.directory, 'public-managed-scenario');
@@ -16449,7 +16454,7 @@ describe('five namespaced write commands', () => {
       const preview = await installWriteCommand(['team/codex-enhance'], { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project' }, { ...runtime, previewOperationPlan: true });
       const review = buildOperationReviewProjection({ intent: { kind: 'pluginWrite', action: 'install', pluginId: 'team/codex-enhance', platform: 'codex', scope: 'project' }, evidence: { catalog: { configDigest: 'fixture', compositeDigest: 'fixture' }, operationPlan: preview.operationPlan } });
       expect(review.changes).toContainEqual(expect.objectContaining({ title: 'guide/subagent/default', description: expect.stringContaining('node · scripts/subagent.mjs') }));
-      const installed = await runPublic(['install', 'team/codex-enhance', '--target', 'codex', '--scope', 'project']);
+      const installed = await runPublic(['install', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes']);
       expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { ok: true } });
       guideId = (await listManagedCommands(isolation.env)).commands.find((command) => command.name === 'guide/subagent/default')!.id;
       expect(guideId).toMatch(/^cmdp_[0-9a-f]{16}$/u);
@@ -16507,8 +16512,7 @@ describe('five namespaced write commands', () => {
     // Missing weak command state must not block cleanup of exact scoped output.
     const { isolation, cacheRoot, runPublic } = await prepareCodexEnhancePublicCommandFixture();
     expect(await runPublic([
-      'install', 'team/codex-enhance', '--target', 'codex', '--scope', 'project',
-    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      'install', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes'])).toMatchObject({ exitCode: 0, payload: { ok: true } });
     const guideCommand = (await listManagedCommands(isolation.env)).commands
       .find((command) => command.name === 'guide/subagent/default')!;
     await fs.remove(path.join(isolation.env.AW_HOME!, 'commands', 'bindings', `${guideCommand.id}.json`));
@@ -16592,8 +16596,7 @@ describe('five namespaced write commands', () => {
       payload: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
     });
     const projectInstall = await runPublic([
-      'install', 'team/codex-enhance', '--target', 'codex', '--scope', 'project',
-    ]);
+      'install', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes']);
     expect(projectInstall, JSON.stringify(projectInstall, null, 2))
       .toMatchObject({ exitCode: 0, payload: { ok: true } });
     const skillKeys = ['codex-explore', 'codex-subagent-guide', 'codex-advisor'];
@@ -16691,8 +16694,7 @@ describe('five namespaced write commands', () => {
     const projectConfigBefore = await fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'));
 
     const userInstall = await runPublic([
-      'install', 'team/codex-enhance', '--target', 'codex', '--scope', 'user',
-    ]);
+      'install', 'team/codex-enhance', '--target', 'codex', '--scope', 'user', '--yes']);
     expect(userInstall, JSON.stringify(userInstall)).toMatchObject({
       exitCode: 0,
       payload: {
@@ -16708,8 +16710,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')))
       .resolves.toEqual(projectConfigBefore);
     const projectReinstall = await runPublic([
-      'install', 'team/codex-enhance', '--target', 'codex', '--scope', 'project',
-    ]);
+      'install', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes']);
     expect(projectReinstall, JSON.stringify(projectReinstall)).toMatchObject({
       exitCode: 1,
       payload: { ok: false, targetResults: [expect.objectContaining({
@@ -16737,5 +16738,5 @@ describe('five namespaced write commands', () => {
     expect((await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
     ))).snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
-  });
+  }, 30_000);
 });

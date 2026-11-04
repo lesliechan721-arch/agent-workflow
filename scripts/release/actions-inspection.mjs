@@ -5,11 +5,6 @@ import path from 'node:path';
 import { bytesDigest } from './candidate-archive.mjs';
 import { captureCommand, repoRoot as defaultRepoRoot, runReleaseGit } from './common.mjs';
 
-const PACKAGE_NAMES = [
-  '@lesliechan721/aw-windows-job-win32-x64', '@lesliechan721/aw-windows-job-win32-arm64',
-  '@lesliechan721/agent-skill-eval', '@lesliechan721/aw-plugin-core', '@lesliechan721/aw',
-];
-
 export async function githubRequest(endpoint, options = {}) {
   const env = options.env ?? process.env;
   const response = await (options.fetch ?? fetch)(`${env.GITHUB_API_URL ?? 'https://api.github.com'}${endpoint}`, {
@@ -54,6 +49,9 @@ const REQUIRED_MAIN_CI_JOBS = [
   'Windows x64 / Node 24 / plugins 1 of 3',
   'Windows x64 / Node 24 / plugins 2 of 3',
   'Windows x64 / Node 24 / plugins 3 of 3',
+  'native-windows-job / Windows Job / fixed-toolchain candidate',
+  'native-windows-job / Windows Job / Windows x64 source qualification',
+  'native-windows-job / Windows Job / Windows arm64 source qualification',
   'darwin arm64 / Node 24',
   'win32 x64 / Node 24 / integration 1 of 3',
   'win32 x64 / Node 24 / integration 2 of 3',
@@ -67,7 +65,7 @@ export async function canReuseMainCi(candidate, options = {}) {
     const { stdout } = await (options.runGit ?? runReleaseGit)([
       'for-each-ref', '--format=%(objecttype)%0a%(contents)', `refs/tags/${candidate.tag}`,
     ], { ...options, cwd: options.repoRoot ?? defaultRepoRoot });
-    const identity = /^tag\nAutomatic beta\n\nAW-CI: ([1-9]\d*)\/([1-9]\d*)$/u.exec(stdout.trim());
+    const identity = /^tag\nAutomatic beta\n\nAW-CI: ([1-9]\d*)\/([1-9]\d*)(?:\nAW-Catalog: release\/catalog\/v[^\n]+)?$/u.exec(stdout.trim());
     if (!identity) return false;
     const [, runId, attempt] = identity;
     const repo = repository(options);
@@ -179,13 +177,6 @@ export async function readRemoteCompletion(candidate, options = {}) {
   if (!commit) throw new Error('Release completion tag must be annotated.');
   if (candidate.product === 'cli') {
     if (commit !== candidate.candidateHead) throw new Error('CLI completion tag conflicts with the selected source candidate.');
-    for (const name of PACKAGE_NAMES) {
-      const versions = await (options.readPackageVersions ?? (async (packageName) => {
-        const result = await (options.captureCommand ?? captureCommand)('npm', ['view', packageName, 'versions', '--json'], { cwd: repoRoot, env: options.env });
-        return JSON.parse(result.stdout);
-      }))(name);
-      if (!Array.isArray(versions) || !versions.includes(candidate.version)) throw new Error('CLI completion tag exists without all five published packages.');
-    }
     return true;
   }
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-complete-'));

@@ -8,6 +8,7 @@ import { redactString } from '../output/redact.js';
 import {
   createWindowsJobInvocation,
   observeProcessTree,
+  resolveWindowsJobHelperPath,
   terminateProcessTree,
   type ProcessTreeObservation,
   type WindowsJobInvocation,
@@ -325,16 +326,23 @@ export function createDefaultPluginProcessRunner(
   const spawnImpl = dependencies.spawn ?? spawn;
   const observeProcessTreeImpl = dependencies.observeProcessTree ?? observeProcessTree;
   const terminateProcessTreeImpl = dependencies.terminateProcessTree ?? terminateProcessTree;
-  const createWindowsJobInvocationImpl = dependencies.createWindowsJobInvocation ??
-    (dependencies.spawn ? undefined : createWindowsJobInvocation);
+  const createWindowsJobInvocationImpl = dependencies.createWindowsJobInvocation;
+  const usesDefaultWindowsJob = !dependencies.spawn && !createWindowsJobInvocationImpl;
   return {
-  run(invocation: PluginScriptInvocation, options: DefaultPluginProcessRunOptions): Promise<PluginProcessResult> {
+  async run(invocation: PluginScriptInvocation, options: DefaultPluginProcessRunOptions): Promise<PluginProcessResult> {
+    options.signal?.throwIfAborted();
+    const windowsJobInvocation = platform === 'win32'
+      ? createWindowsJobInvocationImpl
+        ? createWindowsJobInvocationImpl(invocation.command, invocation.args)
+        : usesDefaultWindowsJob
+          ? createWindowsJobInvocation(invocation.command, invocation.args, {
+              helperPath: await resolveWindowsJobHelperPath(),
+            })
+          : undefined
+      : undefined;
     return new Promise<PluginProcessResult>((resolve, reject) => {
       options.signal?.throwIfAborted();
       const marker = randomUUID();
-      const windowsJobInvocation = platform === 'win32' && createWindowsJobInvocationImpl
-        ? createWindowsJobInvocationImpl(invocation.command, invocation.args)
-        : undefined;
       // Keep long Catalog snapshot directories accessible to libuv's Windows cwd resolution.
       const cwd = platform === 'win32' ? path.win32.toNamespacedPath(invocation.cwd) : invocation.cwd;
       const child = spawnImpl(windowsJobInvocation?.command ?? invocation.command, windowsJobInvocation?.args ?? invocation.args, { cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });

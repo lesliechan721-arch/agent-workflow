@@ -24,7 +24,7 @@ async function fixture(t, product = 'cli') {
     await write('catalog/publication/repository/runner.mjs', '#!/usr/bin/env node\n', 0o755);
     for (let index = 0; index < 5; index += 1) await write(`tools/package-${index}.tgz`, `package-${index}`);
   }
-  const metadata = { product, version: '1.0.1-beta.1', sourceHead: '1'.repeat(40), candidateHead: '2'.repeat(40) };
+  const metadata = { channel: 'beta', ...(product === 'catalog' ? { toolchain: { version: '2.0.0-beta.1', channel: 'beta', source: 'registry' } } : {}), product, version: '1.0.1-beta.1', sourceHead: '1'.repeat(40), candidateHead: '2'.repeat(40) };
   await sealCandidateDirectory(root, metadata);
   return { temporary, root, metadata, write, archive: path.join(temporary, 'candidate.tar'), unpacked: path.join(temporary, 'unpacked') };
 }

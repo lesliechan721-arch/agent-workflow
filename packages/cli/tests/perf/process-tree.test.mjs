@@ -58,6 +58,17 @@ function processTreeSnapshot(rootPid, pids, options = {}) {
   return parsePosixProcessTree(rootPid, rows.join('\n'));
 }
 
+function nativeToolEnvironment(executable) {
+  return {
+    AW_NATIVE_TOOL_CONTEXT: JSON.stringify({
+      schemaVersion: 1,
+      tools: { 'windows-job': {
+        state: 'ready', protocol: 'aw.windows-job.v1', executable,
+      } },
+    }),
+  };
+}
+
 afterEach(async () => {
   for (const pid of observedPids.splice(0)) {
     if (isProcessAlive(pid)) {
@@ -564,17 +575,10 @@ describe('performance gate process tree cleanup', () => {
     expect(snapshot.descendants.map((identity) => identity.pid)).toEqual([20]);
   });
 
-  itOnPosix('resolves source and platform-package Windows Job helpers and launches the fixed protocol', async () => {
+  itOnPosix('uses the prepared Windows Job context and launches the fixed protocol', async () => {
     const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-windows-job-path-'));
     roots.push(packageRoot);
-    const sourceHelper = path.join(
-      packageRoot,
-      'native/windows/x64/aw-windows-job.exe',
-    );
-    const platformHelper = path.join(
-      packageRoot,
-      'platform-package/aw-windows-job.exe',
-    );
+    const sourceHelper = path.join(packageRoot, 'fixture-helper.exe');
     const configFile = path.join(packageRoot, 'config.json');
     await fs.mkdir(path.dirname(sourceHelper), { recursive: true });
     await fs.writeFile(sourceHelper, [
@@ -586,7 +590,8 @@ describe('performance gate process tree cleanup', () => {
     ].join('\n'));
     await fs.chmod(sourceHelper, 0o755);
 
-    expect(resolveWindowsJobHelperPath({ packageRoot, arch: 'x64' })).toBe(sourceHelper);
+    const environment = nativeToolEnvironment(sourceHelper);
+    expect(resolveWindowsJobHelperPath({ environment })).toBe(sourceHelper);
     const invocation = createWindowsJobInvocation('target.exe', ['two words'], {
       helperPath: sourceHelper,
       parentPid: 42,
@@ -606,13 +611,11 @@ describe('performance gate process tree cleanup', () => {
       label: 'Windows Job protocol fixture',
       command: 'target.exe',
       args: ['two words', 'quote"value'],
-      env: { ...process.env, WINDOWS_JOB_CONFIG_FILE: configFile },
+      env: { ...process.env, ...environment, WINDOWS_JOB_CONFIG_FILE: configFile },
       timeoutMs: 1_000,
       metrics,
     }, {
       platform: 'win32',
-      arch: 'x64',
-      windowsJobPackageRoot: packageRoot,
     });
     const config = JSON.parse(await fs.readFile(configFile, 'utf8'));
 
@@ -630,29 +633,19 @@ describe('performance gate process tree cleanup', () => {
       cleanupFailureCount: 0,
       leakedProcessCount: 0,
     });
-
-    await fs.mkdir(path.dirname(platformHelper), { recursive: true });
-    await fs.writeFile(platformHelper, 'platform helper');
-    expect(resolveWindowsJobHelperPath({
-      packageRoot,
-      arch: 'x64',
-      resolvePackage: (specifier) => {
-        expect(specifier).toBe(
-          '@lesliechan721/aw-windows-job-win32-x64/aw-windows-job.exe',
-        );
-        return platformHelper;
-      },
-    })).toBe(platformHelper);
   });
 
-  it('fails closed for unsupported, missing, and shell-script Windows Job targets', async () => {
+  it('fails closed for missing or unavailable context and shell-script Windows Job targets', async () => {
     const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-windows-job-missing-'));
     roots.push(packageRoot);
 
-    expect(() => resolveWindowsJobHelperPath({ packageRoot, arch: 'ia32' }))
-      .toThrow('unsupported on architecture ia32');
-    expect(() => resolveWindowsJobHelperPath({ packageRoot, arch: 'x64' }))
-      .toThrow('helper is missing for architecture x64');
+    expect(() => resolveWindowsJobHelperPath({ environment: {} }))
+      .toThrow('nativeContextInvalid');
+    expect(() => resolveWindowsJobHelperPath({ environment: {
+      AW_NATIVE_TOOL_CONTEXT: JSON.stringify({ schemaVersion: 1, tools: {
+        'windows-job': { state: 'unavailable', protocol: 'aw.windows-job.v1', code: 'nativePackageUnavailable' },
+      } }),
+    } })).toThrow('helper is unavailable (nativePackageUnavailable)');
     expect(() => createWindowsJobInvocation('target.cmd', [], {
       helperPath: 'aw-windows-job.exe',
     })).toThrow('.cmd and .bat targets are unsupported');
@@ -660,13 +653,11 @@ describe('performance gate process tree cleanup', () => {
       label: 'missing Windows Job helper fixture',
       command: 'target.exe',
       args: [],
-      env: process.env,
+      env: { AW_NATIVE_TOOL_CONTEXT: '{}' },
       timeoutMs: 1_000,
     }, {
       platform: 'win32',
-      arch: 'x64',
-      windowsJobPackageRoot: packageRoot,
-    })).rejects.toThrow('helper is missing for architecture x64');
+    })).rejects.toThrow('nativeContextInvalid');
     await expect(runProcessTree({
       label: 'Windows Job startup failure fixture',
       command: 'target.exe',
@@ -701,13 +692,11 @@ describe('performance gate process tree cleanup', () => {
       label: `Windows Job ${reason} fixture`,
       command: 'target.exe',
       args: [],
-      env: { ...process.env, WINDOWS_JOB_PID_FILE: pidFile },
+      env: { ...process.env, ...nativeToolEnvironment(helperPath), WINDOWS_JOB_PID_FILE: pidFile },
       signal: controller.signal,
       timeoutMs: reason === 'timeout' ? 100 : null,
     }, {
       platform: 'win32',
-      arch: 'x64',
-      windowsJobPackageRoot: packageRoot,
     });
     const helperPid = await readJsonEventually(pidFile);
     observedPids.push(helperPid);

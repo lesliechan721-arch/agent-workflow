@@ -1581,6 +1581,8 @@ describe('TUI v4 real catalog source boundary', () => {
     controller.dispose();
   });
 
+  // Initial sync, source change, background probes and separate replacement
+  // run real Git processes; one Windows run can exceed the single-flow budget.
   it('keeps the damaged Active after a source edit, then replaces it through a separate Review', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const { controller, work } = await configuredGitController();
@@ -1627,7 +1629,7 @@ describe('TUI v4 real catalog source boundary', () => {
       state: 'ready', active: { catalogVersion: '2.0.0' },
     });
     controller.dispose();
-  }, gitTestTimeoutMs);
+  }, process.platform === 'win32' ? 60_000 : gitTestTimeoutMs);
 
   it('saves and activates a real path source through Ink keys', async () => {
     const { controller, secondRoot } = await configuredController();

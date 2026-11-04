@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { CLI_RELEASE_PACKAGES } from '../../../../scripts/release/common.mjs';
 
 import {
   assertPublishedCliArtifactsMatch,
@@ -9,6 +10,24 @@ const version = '0.1.0-beta.1';
 const sourceHead = 'a'.repeat(40);
 
 describe('CLI Git tag publisher', () => {
+  it.each([false, true])('bounds registry read retries when unavailability is persistent=%s', async (persistent) => {
+    const descriptor = {
+      axes: { cli: true }, candidates: { cli: version },
+      npm: { packages: CLI_RELEASE_PACKAGES.map(({ name }, index) => ({ name, path: `artifacts/${index}.tgz` })) },
+    };
+    let time = 0;
+    let failures = 0;
+    const result = assertPublishedCliArtifactsMatch('/prepared', descriptor, {
+      now: () => time, visibilityTimeoutMs: 20, visibilityRetryMs: 5,
+      waitForVisibility: async (duration: number) => { time += duration; },
+      assertPublishedPackageMatches: async (name: string) => {
+        if (name.endsWith('win32-arm64') && (persistent || failures++ < 2)) throw new Error('E404');
+      },
+    });
+    if (persistent) await expect(result).rejects.toThrow(`Registry verification failed for @lesliechan721/aw-windows-job-win32-arm64@${version}: E404`);
+    else await expect(result).resolves.toBeUndefined();
+  });
+
   it('accepts an expected remote tag after an uncertain push result', async () => {
     const readRemoteTag = vi.fn()
       .mockResolvedValueOnce(null)
@@ -38,7 +57,7 @@ describe('CLI Git tag publisher', () => {
     })).rejects.toThrow('pnpm release -- --repair-cli-tag');
   });
 
-  it('matches all published packages against the prepared artifacts before repair', async () => {
+  it('matches all five published CLI packages against the prepared artifacts before repair', async () => {
     const assertPublishedPackageMatches = vi.fn(async () => undefined);
     const descriptor = {
       axes: { cli: true, catalog: false },
@@ -59,22 +78,6 @@ describe('CLI Git tag publisher', () => {
     });
 
     expect(assertPublishedPackageMatches).toHaveBeenCalledTimes(5);
-    expect(assertPublishedPackageMatches).toHaveBeenNthCalledWith(
-      1,
-      '@lesliechan721/aw-windows-job-win32-x64',
-      version,
-      expect.stringContaining('packages/aw-windows-job-win32-x64/package.json'),
-      '/prepared/artifacts/windows-x64.tgz',
-      expect.any(Object),
-    );
-    expect(assertPublishedPackageMatches).toHaveBeenNthCalledWith(
-      2,
-      '@lesliechan721/aw-windows-job-win32-arm64',
-      version,
-      expect.stringContaining('packages/aw-windows-job-win32-arm64/package.json'),
-      '/prepared/artifacts/windows-arm64.tgz',
-      expect.any(Object),
-    );
     expect(assertPublishedPackageMatches).toHaveBeenNthCalledWith(
       3,
       '@lesliechan721/agent-skill-eval',

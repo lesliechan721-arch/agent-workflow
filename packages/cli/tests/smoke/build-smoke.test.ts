@@ -258,8 +258,6 @@ describe('build smoke', () => {
         });
     } else {
       for (const target of [
-        'windows-job-x64',
-        'windows-job-arm64',
         'agent-skill-eval',
         'plugin-core',
         'cli-typescript',
@@ -272,23 +270,11 @@ describe('build smoke', () => {
           'dev-build',
           `${target}.json`,
         ))).resolves.toMatchObject({
-          schemaVersion: 1,
+          schemaVersion: 2,
           target,
           outputDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
         });
       }
-    }
-
-    for (const arch of ['x64', 'arm64']) {
-      const helperPath = path.join(
-        snapshot.root,
-        'packages',
-        `aw-windows-job-win32-${arch}`,
-        'dist',
-        'aw-windows-job.exe',
-      );
-      const bytes = await fs.readFile(helperPath);
-      expect(bytes.subarray(0, 2).toString('ascii')).toBe('MZ');
     }
 
     await expect(

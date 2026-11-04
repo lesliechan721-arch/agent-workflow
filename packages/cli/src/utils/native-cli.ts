@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   createWindowsJobInvocation,
   observeProcessTree,
+  prepareWindowsJobHelper,
   terminateProcessTree,
   type ProcessTreeObservation,
   type WindowsJobInvocation,
@@ -150,6 +151,21 @@ export type NativeCliRunner = (
 ) => Promise<NativeCliResult>;
 
 let nativeCliRunnerOverrideForTests: NativeCliRunner | null = null;
+const nativeCliRunnerBases = new WeakMap<NativeCliRunner, NativeCliRunner>();
+
+export function retainNativeCliRunnerBackend(wrapper: NativeCliRunner, base: NativeCliRunner): NativeCliRunner {
+  nativeCliRunnerBases.set(wrapper, base);
+  return wrapper;
+}
+
+function usesDefaultNativeCliBackend(runner: NativeCliRunner): boolean {
+  const seen = new Set<NativeCliRunner>();
+  while (nativeCliRunnerBases.has(runner) && !seen.has(runner)) {
+    seen.add(runner);
+    runner = nativeCliRunnerBases.get(runner)!;
+  }
+  return runner === execFileNativeCliRunner;
+}
 
 export function setNativeCliRunnerOverrideForTests(
   runner: NativeCliRunner | null,
@@ -160,7 +176,7 @@ export function setNativeCliRunnerOverrideForTests(
 /** Bind cancellation to preparation reads without retaining it for later writes. */
 export function bindNativeCliRunnerSignal(runner: NativeCliRunner, signal?: AbortSignal): NativeCliRunner {
   if (!signal) return runner;
-  return async (invocation) => {
+  return retainNativeCliRunnerBackend(async (invocation) => {
     signal.throwIfAborted();
     try {
       const result = await runner({ ...invocation,
@@ -173,11 +189,21 @@ export function bindNativeCliRunnerSignal(runner: NativeCliRunner, signal?: Abor
       signal.throwIfAborted();
       throw error;
     }
-  };
+  }, runner);
 }
 
 export function getDefaultNativeCliRunner(): NativeCliRunner {
   return nativeCliRunnerOverrideForTests ?? execFileNativeCliRunner;
+}
+
+/** Prepare outside the AW_HOME write lock. Injected runners own their admission. */
+export async function prepareNativeCliExecution(options: {
+  env?: NodeJS.ProcessEnv;
+  runner?: NativeCliRunner;
+} = {}): Promise<void> {
+  if (process.platform !== 'win32'
+    || !usesDefaultNativeCliBackend(options.runner ?? getDefaultNativeCliRunner())) return;
+  await prepareWindowsJobHelper();
 }
 
 function readNativeCliErrorCode(error: unknown): number | string | undefined {
@@ -508,8 +534,8 @@ export function createExecFileNativeCliRunner(
   const terminateProcessTreeImpl = dependencies.terminateProcessTree ?? terminateProcessTree;
   const platform = dependencies.platform ?? process.platform;
   const killProcess = dependencies.killProcess ?? process.kill;
-  const createWindowsJobInvocationImpl = dependencies.createWindowsJobInvocation ??
-    (dependencies.execFile ? undefined : createWindowsJobInvocation);
+  const createWindowsJobInvocationImpl = dependencies.createWindowsJobInvocation;
+  const usesDefaultWindowsJob = !dependencies.execFile && !createWindowsJobInvocationImpl;
 
   return async (invocation) => {
     if (invocation.signal?.aborted) {
@@ -521,7 +547,7 @@ export function createExecFileNativeCliRunner(
     const commandName = normalizeNativeCliCommandName(invocation.command);
     if (
       platform === 'win32'
-      && createWindowsJobInvocationImpl
+      && (createWindowsJobInvocationImpl || usesDefaultWindowsJob)
       && (commandName === 'claude' || commandName === 'codex')
     ) {
       const commandOptions = {
@@ -540,8 +566,14 @@ export function createExecFileNativeCliRunner(
       executableCommand = resolved.command;
       executableArgs = [...resolved.argsPrefix, ...invocation.args];
     }
-    const windowsJobInvocation = platform === 'win32' && createWindowsJobInvocationImpl
-      ? createWindowsJobInvocationImpl(executableCommand, executableArgs)
+    const windowsJobInvocation = platform === 'win32'
+      ? createWindowsJobInvocationImpl
+        ? createWindowsJobInvocationImpl(executableCommand, executableArgs)
+        : usesDefaultWindowsJob
+          ? createWindowsJobInvocation(executableCommand, executableArgs, {
+              helperPath: await prepareWindowsJobHelper(),
+            })
+          : undefined
       : undefined;
     const cleanupStrategy = windowsJobInvocation
       ? 'windows-job'

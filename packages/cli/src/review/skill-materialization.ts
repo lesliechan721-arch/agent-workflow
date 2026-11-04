@@ -30,6 +30,7 @@ import {
 } from '../utils/managed-command-materialization.js';
 import { validateManagedCommandResource } from '../utils/managed-command-store.js';
 import { createAwPluginRequirementsReceipt } from '../utils/manifest.js';
+import { prepareWindowsJobHelper } from '../utils/process-tree.js';
 import { injectInstalledRuntimeConfig } from '../utils/runtime-config.js';
 import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
 
@@ -155,6 +156,9 @@ export async function prepareIsolatedSkillCommandReferences(options: {
         let resourceRoot: string;
         let render: Awaited<ReturnType<typeof runArtifactRenderer>> | undefined;
         if (requestedArtifactIds.length > 0) {
+          if (process.platform === 'win32') {
+            await prepareWindowsJobHelper();
+          }
           render = await runArtifactRenderer({
             plugin: options.plugin,
             platform: options.platform,

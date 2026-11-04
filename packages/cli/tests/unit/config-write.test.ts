@@ -55,8 +55,9 @@ import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js
 import { syncPluginManagedCommandPackage } from '../../src/utils/managed-command-materialization.js';
 import { createDefaultPluginProcessRunner, defaultPluginProcessRunner,
   type PluginScriptInvocation } from '../../src/utils/plugin-scripts.js';
-import { listManagedCommandPackages } from '../../src/utils/managed-command-store.js';
+import { listManagedCommandPackages, readInstalledCommandProducer, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { analyzePluginConfigMutationImpact } from '../../src/utils/plugin-config-impact.js';
+import { nativeToolFixture } from '../helpers/native-tools.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -479,6 +480,43 @@ describe('config write full reinstall apply', () => {
     expect(receipt.configWrite).toBe('succeeded');
     expect(receipt.apply).toMatchObject({ state: 'skipped', reason: 'noVisibleTarget' });
     expect(reinstall).not.toHaveBeenCalled();
+  });
+
+  // Test Value Gate: config mutations and retry/replay must retain the installed
+  // native producer when only its binding changes, even with config confirmation.
+  it.each(['set', 'unset', 'reset', 'replay'] as const)('preserves the committed config and old native producer for %s after a binding-only source change', async (mutation) => {
+    const fixture = await createManagedPackageFixture();
+    fixture.plugin.manifest.managedCommands!.packages = fixture.plugin.manifest.managedCommands!.packages.filter((entry) => entry.key === 'personal');
+    fixture.plugin.manifest.managedCommands!.sets = [{ set: 'tools', mode: 'static',
+      producer: { kind: 'package', packageKey: 'personal' },
+      entries: [{ key: 'run', variant: 'default', runner: 'node', entry: 'tool.mjs', args: [], env: {}, envFrom: {}, cwd: 'caller' }] }];
+    const native = nativeToolFixture();
+    for (const [relative, content] of Object.entries(native.files)) await fs.outputFile(path.join(fixture.plugin.rootDir, relative), content);
+    fixture.plugin.manifest.nativeTools = { reader: native.closure.reader,
+      definitions: native.closure.definitions.map((definition) => ({ key: definition.key, protocol: definition.protocol })),
+      consumers: structuredClone(native.closure.consumers) };
+    await applyPluginConfigWrite({ ...fixture, scope: 'user', apply: false, request: { updates: { mode: 'saved' } } });
+    const installed = await syncPluginManagedCommandPackage({ ...fixture, packageKey: 'personal', scope: 'user' });
+    expect(installed.state, JSON.stringify(installed)).toBe('completed');
+    const resource = (await listManagedCommandPackages(fixture.env)).packages[0]!.resourceRoot;
+    const before = await readInstalledCommandProducer(resource);
+    const command = await resolveManagedCommand(installed.commandIds[0]!, fixture.env);
+    await fs.remove(path.join(fixture.root, 'renders'));
+    fixture.plugin.manifest.nativeTools.consumers[0]!.tools = [{ key: 'job', platforms: ['win32'], policy: 'preferred', fallback: 'portable' }];
+    const options = { ...fixture, scope: 'user' as const, applyTargets: [], preApplyConfirmed: true,
+      sharedNativeApplyConfirmed: true, rebuildRuntime: { preApplyConfirmed: true, expectedPlanFingerprint: `sha256:${'b'.repeat(64)}` } };
+    const result = mutation === 'replay' ? await replayConfigRuntimeWrites(options)
+      : mutation === 'reset' ? await resetPluginConfigWithHelper({ ...options, pluginName: fixture.plugin.manifest.name })
+        : await applyPluginConfigWrite({ ...options, request: mutation === 'set' ? { updates: { mode: 'fast' } } : { removeKeys: ['mode'] } });
+    expect(result).toMatchObject({ configWrite: 'succeeded', overallState: 'partial', apply: { state: 'partial', commandResults: [
+      { state: 'failed', errors: [{ code: 'nativeToolSyncRequired' }], recoveryActions: [expect.stringContaining('command package sync')] },
+    ] } });
+    expect(await fs.pathExists(path.join(fixture.root, 'renders'))).toBe(false);
+    expect(await readInstalledCommandProducer(resource)).toEqual(before);
+    expect(await resolveManagedCommand(installed.commandIds[0]!, fixture.env)).toEqual(command);
+    expect((await resolveEffectivePluginConfig({ ...fixture, sourceId: fixture.plugin.sourceId, sourceIdentity: fixture.plugin.sourceIdentity,
+      pluginName: fixture.plugin.manifest.name, manifest: fixture.plugin.manifest, targetScope: 'user' })).values.mode)
+      .toBe(mutation === 'set' ? 'fast' : mutation === 'replay' ? 'saved' : 'safe');
   });
 
   it('does not install a newly declared package from an unaffected platform activation', async () => {

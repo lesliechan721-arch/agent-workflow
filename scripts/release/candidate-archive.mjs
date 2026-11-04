@@ -21,7 +21,8 @@ function allowedPath(product, relative) {
   if (relative === 'candidate.json') return true;
   if (product === 'cli') {
     return relative === 'cli/prepared/descriptor.json' || relative === 'cli/attempted.json'
-      || /^cli\/prepared\/artifacts\/[^/]+\.tgz$/u.test(relative);
+      || /^cli\/prepared\/artifacts\/[^/]+\.tgz$/u.test(relative)
+      || /^cli\/prepared\/artifacts\/(?:candidate|reproducibility|qualification-x64|qualification-arm64)\.json$/u.test(relative);
   }
   return relative === 'catalog/publication/journal.json'
     || relative.startsWith('catalog/publication/repository/')
@@ -68,9 +69,13 @@ function assertManifest(manifest) {
       || manifest.files.filter((entry) => entry.path.endsWith('.tgz')).length !== 5) {
       throw new Error('CLI recovery requires the descriptor, attempt, and all five packages.');
     }
-  } else if (!paths.has('catalog/publication/journal.json')
+  } else if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/u.test(manifest.toolchain?.version ?? '')
+    || !['beta', 'stable'].includes(manifest.toolchain?.channel)
+    || manifest.toolchain.channel !== manifest.channel
+    || (manifest.toolchain.version.includes('-beta.') !== (manifest.channel === 'beta'))
+    || !paths.has('catalog/publication/journal.json')
     || manifest.files.filter((entry) => entry.path.startsWith('tools/')).length !== 5) {
-    throw new Error('Catalog recovery requires its journal and five smoke tool packages.');
+    throw new Error('Catalog recovery requires its journal and five tool packages.');
   }
 }
 
@@ -86,7 +91,7 @@ export async function verifyCandidateDirectory(root, expected = {}) {
   const manifest = JSON.parse(await fs.readFile(path.join(root, 'candidate.json'), 'utf8'));
   assertManifest(manifest);
   for (const [field, value] of Object.entries(expected)) {
-    if (value !== undefined && manifest[field] !== value) throw new Error(`Candidate ${field} does not match the selected release.`);
+    if (value !== undefined && calculateCanonicalDigest(manifest[field]) !== calculateCanonicalDigest(value)) throw new Error(`Candidate ${field} does not match the selected release.`);
   }
   const actual = (await records(root)).filter((entry) => entry.path !== 'candidate.json');
   const expectedFiles = [...manifest.files].sort((left, right) => left.path.localeCompare(right.path, 'en'));

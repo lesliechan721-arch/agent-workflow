@@ -80,7 +80,7 @@ async function main(argv: string[]): Promise<void> {
   }
   const [command, action, value, ...extra] = argv
   if (command === 'doctor') {
-    if (action !== '--json' || value !== undefined || extra.length > 0) {
+    if (action !== '--json' || value !== undefined || extra.length !== 0) {
       throw new Error('Usage: aw-skill-eval doctor --json')
     }
     process.stdout.write(`${JSON.stringify(await doctorEvalProviders(), null, 2)}\n`)
@@ -122,7 +122,7 @@ async function main(argv: string[]): Promise<void> {
       entry === '--allow-unmanaged-processes').length
     const allowUnmanagedProcesses = allowUnmanagedCount === 1
     const auditPath = optionPath(runOptions, '--audit', usage)
-    const expectedLength = allowUnmanagedProcesses ? 3 : 2
+    const expectedLength = 2 + (allowUnmanagedProcesses ? 1 : 0)
     if (
       allowUnmanagedCount > 1
       || runOptions.length !== expectedLength

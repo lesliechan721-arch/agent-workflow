@@ -1,11 +1,10 @@
-import test from 'node:test';
+import { nativeTest as test } from './fixtures/native-test.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { channel } from 'node:diagnostics_channel';
 import { createChildBridge, createChildChannel, invokeChildTool } from '../skills/codex-subagent-guide/scripts/runtime/adapter-channel.mjs';
@@ -13,11 +12,11 @@ import { protectPrivatePath } from '../skills/codex-subagent-guide/scripts/runti
 import { runMessage } from '../skills/codex-subagent-guide/scripts/message.mjs';
 import { runMessageMcp } from '../skills/codex-subagent-guide/scripts/message-mcp.mjs';
 import { messageBodies } from './fixtures/message-bodies.mjs';
+import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
-const require = createRequire(import.meta.url);
-const messageScript = require.resolve('../skills/codex-subagent-guide/scripts/message.mjs');
-const mcpScript = require.resolve('../skills/codex-subagent-guide/scripts/message-mcp.mjs');
-const scripts = path.dirname(messageScript);
+const scripts = guideRuntimeScripts(import.meta.url);
+const messageScript = path.join(scripts, 'message.mjs');
+const mcpScript = path.join(scripts, 'message-mcp.mjs');
 const windows = process.platform === 'win32';
 const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const id = (value) => value.toString(16).padStart(32, '0');
@@ -92,7 +91,7 @@ async function fixture(t, options = {}) {
   const installed = path.join(root, "moved ' install", 'scripts');
   await fs.mkdir(path.join(installed, 'runtime'), { recursive: true });
   await fs.mkdir(path.join(installed, 'file-selection'));
-  for (const name of ['runtime/adapter-channel.mjs', 'runtime/contracts.mjs', 'runtime/files.mjs', 'runtime/platform.mjs', 'file-selection/contracts.mjs']) await fs.copyFile(path.join(scripts, name), path.join(installed, name));
+  for (const name of ['runtime/adapter-channel.mjs', 'runtime/contracts.mjs', 'runtime/files.mjs', 'runtime/platform.mjs', 'runtime/windows-native.mjs', 'file-selection/contracts.mjs']) await fs.copyFile(path.join(scripts, name), path.join(installed, name));
   for (const entry of [messageScript, mcpScript]) await fs.copyFile(entry, path.join(installed, path.basename(entry)));
   const toolkit = { module: path.join(installed, 'runtime/adapter-channel.mjs'), command: process.execPath, messageScript: path.join(installed, 'message.mjs'), mcpScript: path.join(installed, 'message-mcp.mjs') };
   const messages = [];
@@ -389,6 +388,23 @@ test('fixed explicit deadline wakes receive, while null leaves the bridge open',
   const open = await fixture(t);
   await pause(40);
   assert.equal((await open.invoke('send', { text: 'still open' })).outcome, 'submitted');
+});
+
+// Test Value Gate: close may remove binding.json between the local path check
+// and the actual permission check. Windows must exercise its real ACL helper.
+test('bridge close during binding verification returns closed', async (t) => {
+  const f = await fixture(t); const lstat = fs.lstat.bind(fs); let raced = false;
+  t.mock.method(fs, 'lstat', async (target, ...args) => {
+    const stat = await lstat(target, ...args);
+    if (target === f.bindingFile && !raced) {
+      raced = true;
+      await f.bridge.close('cancelled');
+    }
+    return stat;
+  });
+  assert.equal((await f.invoke('receive')).outcome, 'closed');
+  assert.equal(raced, true);
+  await assert.rejects(lstat(path.dirname(f.bindingFile)), { code: 'ENOENT' });
 });
 
 test('an abandoned receive releases the shared receiver instead of blocking later tools', async (t) => {

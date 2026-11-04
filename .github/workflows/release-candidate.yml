@@ -28,7 +28,44 @@ permissions:
   actions: read
 
 jobs:
+  inspection:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      completed: ${{ steps.inspect.outputs.completed }}
+      recovery_artifact: ${{ steps.inspect.outputs.recovery_artifact }}
+    env:
+      RELEASE_PRODUCT: ${{ inputs.product }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GIT_TERMINAL_PROMPT: '0'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: pnpm install --frozen-lockfile
+      - id: inspect
+        run: node scripts/release/actions-release.mjs inspect --product "$RELEASE_PRODUCT" --tag "$RELEASE_TAG"
+
+  native:
+    needs: inspection
+    if: inputs.product == 'cli' && needs.inspection.outputs.completed != 'true' && needs.inspection.outputs.recovery_artifact == ''
+    uses: ./.github/workflows/windows-job.yml
+    with:
+      source-ref: ${{ inputs.tag }}
+      release-tag: ${{ inputs.tag }}
+
   prepare:
+    needs: [inspection, native]
+    if: always() && needs.inspection.result == 'success' && (needs.native.result == 'success' || needs.native.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     outputs:
@@ -91,32 +128,44 @@ jobs:
         env:
           CANDIDATE_DIGEST: ${{ steps.inspect.outputs.recovery_digest }}
           ARCHIVE_NAME: ${{ steps.inspect.outputs.recovery_archive }}
-      - name: Read the exact Go toolchain
-        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == '' && steps.inspect.outputs.reuse_main_ci != 'true'
-        id: go
-        run: node --input-type=module -e 'import fs from "node:fs"; const manifest = JSON.parse(fs.readFileSync("packages/agent-skill-eval/native/windows/manifest.json", "utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${manifest.build.goVersion.replace(/^go/, "")}\n`);'
-      - uses: actions/setup-go@v6
-        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == '' && steps.inspect.outputs.reuse_main_ci != 'true'
-        with:
-          go-version: ${{ steps.go.outputs.version }}
-          cache: false
       - name: Build the exact source candidate
-        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == ''
+        if: inputs.product == 'cli' && steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == ''
         run: pnpm build
       # Automatic beta tags bind successful main CI jobs to their source SHA.
       # Manual candidates and unavailable CI evidence require full verification.
       - name: Verify the selected product without reusable main CI
-        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == '' && steps.inspect.outputs.reuse_main_ci != 'true'
+        if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == '' && steps.inspect.outputs.reuse_main_ci != 'true' && inputs.product == 'cli'
         run: |
           case "$RELEASE_PRODUCT" in
             cli) pnpm release:verify:cli ;;
             catalog) pnpm release:verify:catalog ;;
             *) exit 1 ;;
           esac
+      - name: Download the qualified native candidate from this run
+        if: inputs.product == 'cli' && steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == ''
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-job-qualified
+          path: .native/windows-job-candidate
+      - name: Download the explicitly associated completed CLI candidate
+        if: inputs.product == 'catalog' && steps.inspect.outputs.cli_recovery_artifact != '' && steps.inspect.outputs.recovery_artifact == ''
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.inspect.outputs.cli_recovery_artifact }}
+          run-id: ${{ steps.inspect.outputs.cli_recovery_run }}
+          github-token: ${{ github.token }}
+          path: .release/actions/cli-download
       - name: Prepare once and save the write intent
         if: steps.inspect.outputs.completed != 'true' && steps.inspect.outputs.recovery_artifact == ''
         id: prepare
-        run: pnpm release:actions prepare --product "$RELEASE_PRODUCT" --tag "$RELEASE_TAG"
+        env:
+          CLI_ARCHIVE: ${{ steps.inspect.outputs.cli_recovery_archive }}
+          CLI_DIGEST: ${{ steps.inspect.outputs.cli_recovery_digest }}
+        run: |
+          args=()
+          if [ "$RELEASE_PRODUCT" = cli ]; then args+=(--native-candidate-root .native/windows-job-candidate); fi
+          if [ -n "$CLI_DIGEST" ]; then args+=(--cli-archive ".release/actions/cli-download/$CLI_ARCHIVE" --cli-digest "$CLI_DIGEST"); fi
+          pnpm release:actions prepare --product "$RELEASE_PRODUCT" --tag "$RELEASE_TAG" "${args[@]}"
       # The tar contains only the candidate allowlist, including pending .git and modes.
       # No publisher can run unless this upload and every smoke job succeed.
       - name: Save the immutable recovery candidate before any remote write
@@ -155,7 +204,7 @@ jobs:
 
   plugin-tests:
     needs: prepare
-    if: needs.prepare.outputs.completed != 'true' && needs.prepare.outputs.reuse_main_ci != 'true'
+    if: inputs.product == 'cli' && needs.prepare.outputs.completed != 'true' && needs.prepare.outputs.reuse_main_ci != 'true'
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
@@ -206,6 +255,10 @@ jobs:
       - uses: ./.github/actions/plugin-tests
         with:
           arch: ${{ matrix.arch }}
+          candidate-artifact-id: ${{ needs.prepare.outputs.artifact_id }}
+          candidate-run-id: ${{ needs.prepare.outputs.artifact_run }}
+          candidate-archive: ${{ needs.prepare.outputs.archive_name }}
+          candidate-digest: ${{ needs.prepare.outputs.bundle_digest }}
           shard: ${{ matrix.shard }}
   smoke:
     needs: prepare

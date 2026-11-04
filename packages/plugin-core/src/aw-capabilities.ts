@@ -14,6 +14,7 @@ export const AW_CAPABILITY_IDS = [
   'aw.plugin-pre-apply.v1',
   'aw.dynamic-artifacts.v2',
   'aw.managed-commands.v1',
+  'aw.native-tools.v2',
   'aw.claude.sandbox-exclusions.v1',
   'aw.portable-skills.v1',
   'aw.runtime-imports.v1',

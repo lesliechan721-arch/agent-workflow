@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { lstat, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -8,10 +8,16 @@ const pluginRoot = path.resolve(scriptRoot, '..');
 const entries = [
   'skills/codex-subagent-guide/scripts/file-selection/selection.mjs',
   'skills/codex-subagent-guide/scripts/adapters/codex-profile.mjs',
+  'skills/codex-subagent-guide/scripts/runtime/windows-native.mjs',
 ];
 
+const nativeReader = process.env.AW_PLUGIN_NATIVE_READER;
+if (!nativeReader || !path.isAbsolute(nativeReader)) throw new Error('AW must supply the generated native tool reader.');
+const readerStat = await lstat(nativeReader);
+if (!readerStat.isFile() || readerStat.isSymbolicLink()) throw new Error('The generated native tool reader must be a regular file.');
+
 // AW runs this script in a staging copy. Keep the source tree editable and make
-// the Guide's delivered parsers independent of the plugin's package directory.
+// the Guide's delivered runtime independent of the plugin's package directory.
 for (const relative of entries) {
   const entry = path.join(pluginRoot, relative);
   await bundleRuntime(entry);
@@ -31,6 +37,9 @@ async function bundleRuntime(entry) {
     legalComments: 'inline',
     metafile: true,
     logLevel: 'silent',
+    plugins: [{ name: 'aw-native-reader', setup(builder) {
+      builder.onResolve({ filter: /^\.\/native-tool-reader\.mjs$/ }, () => ({ path: nativeReader }));
+    } }],
   });
 
   // Dependency licenses are often separate files, so esbuild's legal comments

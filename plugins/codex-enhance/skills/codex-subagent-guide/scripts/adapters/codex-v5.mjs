@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import path from 'node:path';
 import { fail, LIMITS } from '../runtime/contracts.mjs';
 import { mapHookState } from './codex-hooks.mjs';
 import { resolveCodexExecutable } from './codex-executable.mjs';
@@ -33,6 +34,11 @@ export async function codexConfiguration(request, environment = process.env, dia
   const thread = { cwd: request.workspace };
   const turn = {};
   const extras = [];
+  const server = `aw_parent_${request.run.id}`;
+  const conversion = { diagnostics, environment, baseDir: request.workspace, privateMcpServer: request.communication === false ? undefined : server };
+  const addRaw = (value) => {
+    raw = mergeConfiguration(raw, convertProfile(value, { ...conversion, explicit: true }));
+  };
   const values = new Set(['--config', '-c', '--enable', '--disable', '--model', '-m', '--sandbox', '-s', '--ask-for-approval', '-a', '--profile', '-p']);
   for (let index = 0; index < request.args.length; index++) {
     const argument = request.args[index];
@@ -47,25 +53,23 @@ export async function codexConfiguration(request, environment = process.env, dia
         if (profile !== undefined) rejectOption(option);
         profile = value;
       } else if (option === '--config' || option === '-c') {
-        const parsed = parseConfigArgument(value);
+        const parsed = parseConfigArgument(value, { diagnostics });
         if (permissionMode(request) !== 'default' && (Object.hasOwn(parsed, 'approval_policy') || Object.hasOwn(parsed, 'approvals_reviewer') || permissionMode(request) === 'full-access' && Object.hasOwn(parsed, 'sandbox_mode'))) rejectOption(option);
-        if (Object.hasOwn(parsed, 'bypass_hook_trust')) fail('parameterUnavailable', 'Use the executor codexBypassHookTrust field.');
         if (Object.hasOwn(parsed, 'model') && request.execution.model !== undefined || Object.hasOwn(parsed, 'model_reasoning_effort') && request.execution.reasoningEffort !== undefined) rejectOption(option);
-        raw = mergeConfiguration(raw, parsed);
-      } else if (option === '--enable' || option === '--disable') raw = mergeConfiguration(raw, { features: { [value]: option === '--enable' } });
-      else if (option === '--model' || option === '-m') raw.model = value;
-      else if (option === '--sandbox' || option === '-s') raw.sandbox_mode = value;
-      else raw.approval_policy = value;
+        addRaw(parsed);
+      } else if (option === '--enable' || option === '--disable') addRaw({ features: { [value]: option === '--enable' } });
+      else if (option === '--model' || option === '-m') addRaw({ model: value });
+      else if (option === '--sandbox' || option === '-s') addRaw({ sandbox_mode: value });
+      else addRaw({ approval_policy: value });
     } else if (option === '--strict-config') extras.push(option);
     else if (option === '--ephemeral') thread.ephemeral = true;
-    else if (option === '--dangerously-bypass-approvals-and-sandbox') { raw.approval_policy = 'never'; raw.sandbox_mode = 'danger-full-access'; }
-    else if (option === '--full-auto') { raw.approval_policy = 'on-request'; raw.sandbox_mode = 'workspace-write'; }
+    else if (option === '--dangerously-bypass-approvals-and-sandbox') addRaw({ approval_policy: 'never', sandbox_mode: 'danger-full-access' });
+    else if (option === '--full-auto') addRaw({ approval_policy: 'on-request', sandbox_mode: 'workspace-write' });
     else fail('parameterUnavailable', `The Codex app-server adapter cannot preserve ${option}. Remove this explicit option.`);
   }
   const loaded = await readCodexProfile(profile, environment, diagnostics, request.workspace);
-  const defaults = convertProfile(loaded.document ?? {}, { diagnostics });
-  const explicit = convertProfile(raw, { diagnostics, explicit: true });
-  const merged = mergeConfiguration(defaults, explicit);
+  const defaults = convertProfile(loaded.document ?? {}, { ...conversion, baseDir: loaded.profilePath ? path.dirname(loaded.profilePath) : request.workspace });
+  const merged = mergeConfiguration(defaults, raw);
   if (permissionMode(request) === 'auto') { merged.approval_policy = 'on-request'; merged.approvals_reviewer = 'auto_review'; }
   else if (permissionMode(request) === 'full-access') { merged.approval_policy = 'never'; merged.sandbox_mode = 'danger-full-access'; }
   if (request.execution.model !== undefined) merged.model = request.execution.model;
@@ -73,12 +77,14 @@ export async function codexConfiguration(request, environment = process.env, dia
     merged.model_reasoning_effort = request.execution.reasoningEffort;
     turn.effort = request.execution.reasoningEffort;
   }
-  const split = splitConfiguration(merged);
+  if (Object.hasOwn(merged, 'model')) { thread.model = merged.model; delete merged.model; }
+  const split = splitConfiguration(merged, { diagnostics });
   thread.config = { ...split.thread, bypass_hook_trust: request.codex.bypassHookTrust };
   if (request.codex.bypassHookTrust) diagnostics.push({ code: 'hookTrustBypassed', field: 'codexBypassHookTrust', message: 'Hook trust is bypassed for this thread, including other native hook sources. Disabled hooks and managed restrictions remain in force.' });
-  const server = `aw_parent_${request.run.id}`;
-  if (Object.hasOwn(thread.config.mcp_servers ?? {}, server)) fail('adapterArgumentsInvalid', 'The private AW MCP server is owned by the adapter.');
-  return { argv: launchArguments(split.launch, extras), thread, turn, profilePath: loaded.profilePath, profileHooks: defaults.hooks, rawHooks: explicit.hooks };
+  // Source-state mapping runs after JSON routing; retain its metadata in the
+  // same representation so unknown state members cannot reintroduce BigInts.
+  const jsonHooks = (hooks) => hooks === undefined ? undefined : splitConfiguration({ hooks }, { diagnostics }).thread.hooks;
+  return { argv: launchArguments(split.launch, extras), thread, turn, startupMcp: Object.hasOwn(split.launch, 'mcp_servers'), profilePath: loaded.profilePath, profileHooks: jsonHooks(defaults.hooks), rawHooks: jsonHooks(raw.hooks) };
 }
 
 function createRpc(backend, context, onNotification) {
@@ -177,14 +183,16 @@ export async function executeCodex(context) {
     setImmediate(maybeComplete);
     return delivery;
   } });
-  if (bridge) configuration.thread.config.mcp_servers = {
-    ...configuration.thread.config.mcp_servers,
-    [server]: { command: bridge.mcpServer.command, args: bridge.mcpServer.args, required: true, tools: { receive_parent: { output_token_limit: 32768 } } },
-  };
   const executable = context.executable;
   watchPermissionFallback(context);
   const backend = await context.spawn(executable.command, [...(executable.args ?? []), ...configuration.argv]);
   rpc = createRpc(backend, context, (method, params) => {
+    if (method === 'configWarning') {
+      // Native messages can contain configuration values, paths or credentials.
+      // Record their presence without treating ordinary warnings as failures.
+      if (!context.diagnostics.some((entry) => entry.code === 'backendConfigWarning')) context.diagnostics.push({ code: 'backendConfigWarning', message: 'Codex reported a configuration warning. Native defaults or fallback behavior may apply; check the selected Codex configuration.' });
+      return;
+    }
     if (params.threadId && threadId && params.threadId !== threadId) { context.abort('backendSessionMismatch'); return; }
     if (['turn/started', 'item/completed', 'turn/completed'].includes(method) && params.threadId !== threadId) { context.abort('backendSessionMismatch'); return; }
     if (method === 'turn/started' && typeof params.turn?.id === 'string') { activeTurn = params.turn.id; knownTurns.add(activeTurn); turnStarts++; context.generationStarted = true; }
@@ -215,11 +223,34 @@ export async function executeCodex(context) {
   try {
     await rpc.call('initialize', { clientInfo: { name: 'aw-subagent', version: '5' }, capabilities: {} });
     await rpc.notify('initialized');
+    let inherited;
     if (configuration.thread.config.hooks) {
       let layers;
       try { layers = await rpc.call('config/read', { cwd: context.request.workspace, includeLayers: true }); }
       catch { fail('profileHookStateUnavailable', 'The backend could not return raw hook state layers.'); }
       mapHookState(configuration, layers);
+      inherited = layers.config;
+    }
+    if (bridge) {
+      const fullAccess = (config) => config?.approval_policy === 'never' && config?.sandbox_mode === 'danger-full-access';
+      // Resume can restore persisted permissions instead of current defaults.
+      // Only explicit overrides establish full access before that response.
+      if (!context.request.sessionId && !fullAccess(configuration.thread.config) && inherited === undefined) {
+        try { inherited = (await rpc.call('config/read', { cwd: context.request.workspace, includeLayers: false }))?.config; }
+        catch (error) {
+          // An unavailable read cannot establish full access. Keep the precise
+          // tool grants; a lost connection still retains its failure evidence.
+          if (!error.rpcError) throw error;
+        }
+      }
+      const approval = fullAccess({ ...(!context.request.sessionId ? inherited : {}), ...configuration.thread.config }) ? {} : { approval_mode: 'approve' };
+      const tools = { receive_parent: { ...approval, output_token_limit: 32768 } };
+      if (approval.approval_mode) tools.send_parent = { ...approval };
+      const binding = { command: bridge.mcpServer.command, args: bridge.mcpServer.args, required: true, tools };
+      // A whole request table would replace an existing startup override table.
+      // The AW-generated server name contains no dots or TOML quoting characters.
+      if (configuration.startupMcp) configuration.thread.config[`mcp_servers.${server}`] = binding;
+      else configuration.thread.config.mcp_servers = { ...configuration.thread.config.mcp_servers, [server]: binding };
     }
     const response = context.request.sessionId
       ? await rpc.call('thread/resume', { ...configuration.thread, threadId: context.request.sessionId })

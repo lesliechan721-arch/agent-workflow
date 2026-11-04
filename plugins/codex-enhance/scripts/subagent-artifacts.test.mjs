@@ -144,7 +144,14 @@ test('shares one profile definition, preserves defaults and declares exact consu
   assert.ok(manifest.requires.aw.capabilities.includes('aw.installed-runtime-config.v2'));
   assert.ok(manifest.requires.aw.capabilities.includes('aw.managed-commands.v1'));
   assert.deepEqual(manifest.managedCommands.packages ?? [], []);
-  assert.equal(manifest.managedCommands.sets.length, 1);
+  assert.equal(manifest.managedCommands.sets.length, 2);
+  const communicationSet = manifest.managedCommands.sets.find((entry) => entry.set === 'guide-communication');
+  assert.deepEqual(communicationSet.producer, { kind: 'artifact', artifactId: 'codex-subagent-guide-skill' });
+  assert.equal(communicationSet.mode, 'static');
+  assert.equal(communicationSet.entries.length, 1);
+  const { args: messageArgs = [], env: messageEnv = {}, envFrom: messageEnvFrom = {}, variant: messageVariant = 'default', cwd: messageCwd = 'caller', ...messageEntry } = communicationSet.entries[0];
+  assert.deepEqual(messageEntry, { key: 'message', runner: 'node', entry: 'scripts/message.mjs' });
+  assert.deepEqual([messageArgs, messageEnv, messageEnvFrom, messageVariant, messageCwd], [[], {}, {}, 'default', 'caller']);
   const [guideSet] = manifest.managedCommands.sets;
   assert.equal(guideSet.set, 'guide');
   assert.deepEqual(guideSet.producer, { kind: 'artifact', artifactId: 'codex-subagent-guide-skill' });
@@ -403,10 +410,7 @@ test('delivered Guide contains its executable entries and relative module closur
     'adapters/antigravity-v5.mjs', 'adapters/oracle-v5.mjs']) {
     assert.equal(typeof files[`scripts/${entry}`], 'string', `Missing executable entry: ${entry}`);
   }
-  // The native helper is reached by URL at runtime and has no JavaScript import
-  // edge. It must remain a byte-preserving resource of the installed Guide.
-  assert.equal(files['scripts/runtime/windows-job.ps1'], await readFile(path.join(
-    sourceRoot('codex-subagent-guide-skill'), 'scripts/runtime/windows-job.ps1'), 'utf8'));
+  assert.equal(Object.keys(files).some((name) => name.endsWith('.exe')), false);
   for (const [name, body] of Object.entries(files)) {
     if (!name.endsWith('.mjs')) continue;
     for (const [, reference] of body.matchAll(/(?:from\s*|import\s*\(\s*|import\s*)['"]([^'"\n]+)['"]/g)) {

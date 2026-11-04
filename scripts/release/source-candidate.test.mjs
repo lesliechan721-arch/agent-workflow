@@ -18,11 +18,11 @@ import { canReuseMainCi } from './actions-inspection.mjs';
 
 const exec = promisify(execFile);
 const packageNames = {
-  'aw-windows-job-win32-x64': '@lesliechan721/aw-windows-job-win32-x64',
-  'aw-windows-job-win32-arm64': '@lesliechan721/aw-windows-job-win32-arm64',
   'agent-skill-eval': '@lesliechan721/agent-skill-eval',
   'plugin-core': '@lesliechan721/aw-plugin-core',
   cli: '@lesliechan721/aw',
+  'aw-windows-job-win32-x64': '@lesliechan721/aw-windows-job-win32-x64',
+  'aw-windows-job-win32-arm64': '@lesliechan721/aw-windows-job-win32-arm64',
 };
 
 async function git(root, ...args) {
@@ -52,18 +52,15 @@ async function fixture(t) {
   for (const [directory, name] of Object.entries(packageNames)) {
     await writeJson(repoRoot, `packages/${directory}/package.json`, {
       name, version: '1.2.3',
-      ...(directory === 'agent-skill-eval' ? {
-        optionalDependencies: {
-          [packageNames['aw-windows-job-win32-x64']]: 'workspace:1.2.3',
-          [packageNames['aw-windows-job-win32-arm64']]: 'workspace:1.2.3',
-        },
-      } : {}),
       ...(directory === 'cli' ? {
         dependencies: {
           [packageNames['agent-skill-eval']]: 'workspace:1.2.3',
           [packageNames['plugin-core']]: 'workspace:1.2.3',
         },
-      } : {}),
+      } : directory === 'agent-skill-eval' ? { optionalDependencies: {
+        [packageNames['aw-windows-job-win32-x64']]: 'workspace:1.2.3',
+        [packageNames['aw-windows-job-win32-arm64']]: 'workspace:1.2.3',
+      } } : {}),
     });
   }
   await writeJson(repoRoot, 'release/version-targets.json', { schemaVersion: 2, cli: '1.2.3' });
@@ -72,9 +69,7 @@ async function fixture(t) {
     ...Object.entries(packageNames).filter(([directory]) => ['cli', 'agent-skill-eval'].includes(directory))
       .flatMap(([directory]) => [
         `  packages/${directory}:`, directory === 'cli' ? '    dependencies:' : '    optionalDependencies:',
-        ...(directory === 'cli'
-          ? [packageNames['agent-skill-eval'], packageNames['plugin-core']]
-          : [packageNames['aw-windows-job-win32-x64'], packageNames['aw-windows-job-win32-arm64']])
+        ...(directory === 'cli' ? [packageNames['agent-skill-eval'], packageNames['plugin-core']] : [packageNames['aw-windows-job-win32-x64'], packageNames['aw-windows-job-win32-arm64']])
           .flatMap((name) => [`      '${name}':`, '        specifier: workspace:1.2.3', '        version: link:../fixture']),
       ]),
     '',
@@ -166,7 +161,7 @@ test('automatic beta inspection reuses only the recorded successful main CI atte
   const { repoRoot, sourceHead } = await fixture(t);
   const candidate = await prepareSourceCandidate({
     repoRoot, product: 'cli', version: '1.2.4-beta.1', sourceHead,
-    requireMainTip: true, ciRun: '42/2', push: true,
+    requireMainTip: true, ciRun: '42/2', push: true, catalogCandidateTag: 'release/catalog/v3.4.5-beta.1',
   });
   const ci = {
     id: 42, run_attempt: 2, event: 'push', head_branch: 'main', head_sha: sourceHead,
@@ -185,6 +180,9 @@ test('automatic beta inspection reuses only the recorded successful main CI atte
     'win32 x64 / Node 24 / integration 1 of 3',
     'win32 x64 / Node 24 / integration 2 of 3',
     'win32 x64 / Node 24 / integration 3 of 3',
+    'native-windows-job / Windows Job / fixed-toolchain candidate',
+    'native-windows-job / Windows Job / Windows x64 source qualification',
+    'native-windows-job / Windows Job / Windows arm64 source qualification',
   ].map((name) => ({ name, status: 'completed', conclusion: 'success' }));
   // The candidate is pushed before its caller's beta job finishes.
   const jobs = [...requiredJobs, { name: 'beta / candidates', status: 'in_progress', conclusion: null }];
@@ -264,6 +262,7 @@ test('Catalog preparation uses the public mutation and modifies only requested p
   // The real public mutation validates the Workspace; an empty inventory is valid.
   const candidate = await prepareSourceCandidate({
     repoRoot, product: 'catalog', version: '2.0.0-beta.2', sourceHead,
+    cliDistRoot: path.resolve('packages/cli/dist'),
   });
   assert.deepEqual(await validateSourceCandidate({ repoRoot, tag: candidate.tag }), {
     product: 'catalog', version: '2.0.0-beta.2', channel: 'beta', sourceHead, candidateHead: candidate.candidateHead, tag: candidate.tag,
@@ -310,9 +309,9 @@ test('validation rejects mismatched version and internal dependency metadata eve
   const { repoRoot } = await fixture(t);
   await git(repoRoot, 'tag', 'release/cli/v1.2.4-beta.1');
   await assert.rejects(validateSourceCandidate({ repoRoot, tag: 'release/cli/v1.2.4-beta.1' }), /stable release target/);
-  const file = 'packages/agent-skill-eval/package.json';
+  const file = 'packages/cli/package.json';
   const manifest = JSON.parse(await fs.readFile(path.join(repoRoot, file), 'utf8'));
-  manifest.optionalDependencies[packageNames['aw-windows-job-win32-arm64']] = 'workspace:1.2.2';
+  manifest.dependencies[packageNames['plugin-core']] = 'workspace:1.2.2';
   await writeJson(repoRoot, file, manifest);
   await git(repoRoot, 'add', '.');
   await git(repoRoot, 'commit', '-m', 'invalid dependency');

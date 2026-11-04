@@ -1,3 +1,4 @@
+import { describeNativeToolClosure, type NativeToolChange } from '../utils/native-tool-review.js';
 import type { InitCommandResult } from '../commands/init.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import type { OperationPlan } from '../commands/operation-plan.js';
@@ -56,6 +57,7 @@ export interface RebuildReceiptTargetResult extends ReceiptTargetResult {
 }
 
 export interface RebuildReceiptJson {
+  nativeToolChanges?: NativeToolChange[];
   ok: boolean;
   command: 'install' | 'reinstall' | 'uninstall' | 'cleanup' | 'sync';
   receiptSchemaVersion: 6;
@@ -368,6 +370,7 @@ export function buildRebuildReceiptJson(
   return {
     ok: state === 'succeeded',
     command,
+    ...(result.operationPlan?.actions.some((action) => action.nativeToolChanges?.length) ? { nativeToolChanges: result.operationPlan.actions.flatMap((action) => action.nativeToolChanges ?? []) } : {}),
     receiptSchemaVersion: 6,
     ...(result.dependencyPlan ? {
       dependencyPlanSchemaVersion: 2,
@@ -417,6 +420,9 @@ export function renderRebuildReceipt(
           .map((failure) => `  ${failure.phase}: ${failure.message}`),
       ];
     }),
+    ...(receipt.nativeToolChanges ?? []).flatMap((change) => [
+      ...(['before', 'after'] as const).flatMap((phase) => change[phase] ? describeNativeToolClosure(change[phase]!).map((description) => `  原生工具 ${change.producer.sourceId}/${change.producer.pluginName} ${phase}: ${description}`) : []),
+    ]),
     ...(receipt.commandResults ?? []).flatMap((result) => [
       `- ${result.producer.sourceId}/${result.producer.pluginName} / ${result.producer.kind}:${result.producer.key} / ${result.producer.scope}: ${result.state}`,
       ...((command === 'cleanup' || command === 'uninstall') && result.producer.kind === 'package' ? [

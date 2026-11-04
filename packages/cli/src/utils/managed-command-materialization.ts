@@ -1,9 +1,14 @@
 import os from 'node:os';
+import { prepareWindowsJobHelper } from './process-tree.js';
 import path from 'node:path';
 
 import fs from 'fs-extra';
 import {
   getCommandPackageId,
+  getNativeToolConsumerClosure,
+  loadPluginNativeToolClosure,
+  materializeNativeToolClosureFiles,
+  type NativeToolClosure,
   getManagedCommandArtifactTargets,
   getPluginCommandId,
   normalizeProducerIdentity,
@@ -41,6 +46,7 @@ import { AW_RUNTIME_CONFIG_BINDING_PATH, AW_RUNTIME_CONFIG_READER_PATH, AW_RUNTI
 export interface ManagedCommandCandidate {
   producer: ProducerIdentity;
   sets: InstalledCommandSet[];
+  nativeTools?: NativeToolClosure;
 }
 
 export interface PreparedManagedCommandPackage extends ManagedCommandCandidate {
@@ -174,6 +180,40 @@ export function commandSetsForProducer(options: {
   ];
 }
 
+export async function nativeToolsForCommandSets(plugin: PluginMeta, sets: readonly Pick<InstalledCommandSet, 'set'>[]): Promise<NativeToolClosure | undefined> {
+  return getNativeToolConsumerClosure(await loadPluginNativeToolClosure(plugin.rootDir, plugin.manifest), 'managed-command-set', sets.map((set) => set.set));
+}
+
+function assertUnchangedNativeToolClosure(before: NativeToolClosure | undefined, after: NativeToolClosure | undefined): void {
+  if (JSON.stringify(before) !== JSON.stringify(after)) {
+    throw new ManagedCommandError('nativeToolSyncRequired', 'Native tool changes require a reviewed producer sync or package sync before configuration apply.');
+  }
+}
+
+/** Config refresh cannot adopt native declarations that its config Review did not show. */
+export async function assertManagedCommandPackageNativeToolsUnchanged(options: {
+  plugin: PluginMeta; producer: ProducerIdentity; env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const installed = (await listManagedCommandPackages(options.env)).packages.find((entry) => entry.id === getCommandPackageId(options.producer));
+  const before = installed ? await readInstalledCommandProducer(installed.resourceRoot) : undefined;
+  if (before && !sameProducer(before.producer, options.producer)) throw new ManagedCommandError('commandIdentityConflict', 'The installed command package belongs to another producer.');
+  const declaration = options.plugin.manifest.managedCommands?.packages.find((entry) => entry.key === options.producer.key && entry.scope === options.producer.scope);
+  const sets = declaration ? (options.plugin.manifest.managedCommands?.sets ?? []).filter((set) => set.producer.kind === 'package' && set.producer.packageKey === declaration.key) : [];
+  const closure = sets.length > 0 ? await nativeToolsForCommandSets(options.plugin, sets) : undefined;
+  const after = closure ? materializeNativeToolClosureFiles(closure).closure : undefined;
+  assertUnchangedNativeToolClosure(before?.nativeTools, after);
+}
+
+export function injectNativeToolClosureFiles(files: Record<string, Buffer>, closure: NativeToolClosure | undefined): NativeToolClosure | undefined {
+  if (!closure) return undefined;
+  const generated = materializeNativeToolClosureFiles(closure);
+  for (const [relative, content] of Object.entries(generated.files)) {
+    if (files[relative] && !files[relative].equals(Buffer.from(content))) throw new ManagedCommandError('commandResourceInvalid', 'The producer contains conflicting native tool files.');
+    files[relative] = Buffer.from(content);
+  }
+  return generated.closure;
+}
+
 export async function prepareManagedCommandPackage(options: {
   plugin: PluginMeta; packageKey: string; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
   event?: 'install' | 'refresh' | 'materialize'; changedConfigKeys?: string[];
@@ -201,14 +241,14 @@ export async function prepareManagedCommandPackage(options: {
   }
   const targets = explicitSubset ? allTargets.filter((target) => requestedIds.has(target.id)) : allTargets;
   const requestedSetNames = explicitSubset ? new Set(targets.flatMap((target) => target.set ? [target.set] : [])) : undefined;
-  let previous: { resourceRoot: string; sets: InstalledCommandSet[] } | undefined;
+  let previous: { resourceRoot: string; sets: InstalledCommandSet[]; nativeTools?: NativeToolClosure } | undefined;
   if (explicitSubset) {
     const installed = (await listManagedCommandPackages(options.env)).packages.find((entry) => entry.id === getCommandPackageId(producer));
     if (installed) {
       if (installed.availability === 'unavailable') throw new ManagedCommandError('commandBindingInvalid', 'Partial refresh requires a verified installed command package. Run a complete package sync.');
       const record = await readInstalledCommandProducer(installed.resourceRoot);
       if (!sameProducer(record.producer, producer)) throw new ManagedCommandError('commandIdentityConflict', 'The installed command package belongs to another producer.');
-      previous = { resourceRoot: installed.resourceRoot, sets: record.sets };
+      previous = { resourceRoot: installed.resourceRoot, sets: record.sets, nativeTools: record.nativeTools };
     }
     const hasUnrequestedSets = (options.plugin.manifest.managedCommands?.sets ?? []).some((set) => set.producer.kind === 'package' && set.producer.packageKey === declaration.key && !requestedSetNames!.has(set.set));
     if (!previous && (hasUnrequestedSets || (declaration.render && !targets.some((target) => target.target === 'aw.command-package')))) throw new ManagedCommandError('commandBindingInvalid', 'Partial refresh cannot reconstruct unrequested producer content. Run a complete package sync.');
@@ -216,6 +256,7 @@ export async function prepareManagedCommandPackage(options: {
   let artifacts: ValidatedArtifactPlanArtifact[] = [];
   let generatedFiles: Record<string, string> = {};
   if (targets.length > 0) {
+    if (process.platform === 'win32') await prepareWindowsJobHelper();
     const rendered = await runArtifactRenderer({ plugin: options.plugin, event: options.event ?? 'install', platform: 'managed-commands', scope: declaration.scope, cwd: options.cwd, commandEnv: options.env, requestedArtifactIds: targets.map((target) => target.id), signal: options.signal, scriptTimeoutMs: options.scriptTimeoutMs, ...(options.event === 'refresh' ? { changedConfigKeys: options.changedConfigKeys ?? [] } : {}) });
     artifacts = validateArtifactPlan({ manifest: options.plugin.manifest, plan: rendered.plan, platform: 'managed-commands', scope: declaration.scope, requestedArtifactIds: rendered.context.requestedArtifactIds, renderConfig: rendered.context.config, rendererDigest: rendered.target.rendererDigest, manifestDigest: rendered.target.manifestDigest }).artifacts;
     for (const artifact of artifacts) if (artifact.target === 'aw.command-package') generatedFiles = artifact.files;
@@ -231,7 +272,18 @@ export async function prepareManagedCommandPackage(options: {
       await fs.remove(path.join(source, '.aw-command-producer.json'));
     }
     const prepared = await prepareManagedCommandPackageFiles({ sourceRoot: source, files: generatedFiles, entries: sets.flatMap((set) => set.entries) });
-    return { producer, sets, ...prepared };
+    const closure = await nativeToolsForCommandSets(options.plugin, sets);
+    const generated = closure ? materializeNativeToolClosureFiles(closure) : undefined;
+    try {
+      if (explicitSubset && previous) assertUnchangedNativeToolClosure(previous.nativeTools, generated?.closure);
+      for (const [relative, content] of Object.entries(generated?.files ?? {})) {
+        const destination = path.join(prepared.resourceRoot, relative);
+        const existing = await fs.readFile(destination).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+        if (existing && !existing.equals(Buffer.from(content))) throw new ManagedCommandError('commandResourceInvalid', 'The producer contains conflicting native tool files.');
+        await fs.outputFile(destination, content);
+      }
+      return { producer, sets, ...(generated ? { nativeTools: generated.closure } : {}), ...prepared };
+    } catch (error) { await prepared.cleanup(); throw error; }
   } finally { if (temporarySource) await fs.remove(temporarySource); }
 }
 
@@ -253,7 +305,7 @@ export async function syncPluginManagedCommandPackage(options: {
         candidate = await prepareManagedCommandPackage(options);
         const old = await listManagedCommandPackages(options.env);
         const previousIds = old.packages.find((entry) => entry.id === key)?.sets.flatMap((set) => set.commandIds) ?? [];
-        const synced = await syncManagedCommandPackage({ producer, sourceDirectory: candidate.resourceRoot, sets: candidate.sets, env: options.env });
+        const synced = await syncManagedCommandPackage({ producer, sourceDirectory: candidate.resourceRoot, sets: candidate.sets, nativeTools: candidate.nativeTools, env: options.env });
         return { producer, state: 'completed' as const, commandIds: synced.commandIds, removedCommandIds: previousIds.filter((id) => !synced.commandIds.includes(id)), errors: [], recoveryActions: [] };
       } catch (error) {
         if (options.signal?.aborted || error instanceof Error && error.name === 'AbortError'

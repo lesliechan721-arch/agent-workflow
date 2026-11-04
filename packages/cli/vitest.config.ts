@@ -4,6 +4,12 @@ import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
 
+// Explicit candidate tests build Eval first. Let Node load that package so its
+// dependency resolver has native ESM import.meta.resolve, which vite-node lacks.
+const useCompiledEval = Object.entries(process.env).some(([key, value]) =>
+  key.toUpperCase() === 'AW_NATIVE_TOOL_CONTEXT' && Boolean(value)
+);
+
 const pureTests = [
   'tests/unit/command-options.test.ts',
   'tests/unit/command-receipt.test.ts',
@@ -14,6 +20,7 @@ const pureTests = [
 const processTests = [
   'tests/unit/process-tree.test.ts',
   'tests/unit/test-command-diagnostics.test.ts',
+  'tests/unit/vitest-eval-dependency.test.ts',
   'tests/unit/native-cli.test.ts',
   'tests/unit/skills-cli-lifecycle.test.ts',
   'tests/unit/plugin-scripts.test.ts',
@@ -47,12 +54,20 @@ export default defineConfig({
       },
       {
         find: /^@lesliechan721\/agent-skill-eval$/u,
-        replacement: fileURLToPath(new URL('../agent-skill-eval/src/index.ts', import.meta.url)),
+        replacement: fileURLToPath(new URL(
+          useCompiledEval ? '../agent-skill-eval/dist/index.js' : '../agent-skill-eval/src/index.ts',
+          import.meta.url,
+        )),
       },
     ],
   },
   test: {
     ...vitestWorkerOptions(),
+    server: {
+      deps: {
+        external: useCompiledEval ? [/[/\\]agent-skill-eval[/\\]dist[/\\]/u] : [],
+      },
+    },
     projects: [
       {
         extends: true,

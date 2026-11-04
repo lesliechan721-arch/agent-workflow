@@ -11,7 +11,7 @@
 
 `--help`/`-h` 只显示五个操作的总览、子命令帮助入口及通用输出开关；`start|send|wait|result|stop --help`（或 `-h`）显示当前操作的参数、默认值、必要约束和示例。帮助在读取安装配置、扫描运行目录或启动 worker 前返回，不要求任务必填参数。参数解析错误指向相应子命令帮助。
 
-五个操作都支持布尔参数 `--diagnostics`，不允许重复，仅作用于本次命令，不保存为任务配置。默认隐藏正常诊断：`codexExecutableSelected`、`communicationPermissionAdded`、`communicationPermissionExisting`、`profileFieldIrrelevant`、`hookTrustBypassed`；启动窗口结束时，`starting` 已表达未就绪，默认不再附加 `startupNotReady`。该开关不改变执行权限、配置或退出码。
+五个操作都支持布尔参数 `--diagnostics`，不允许重复，仅作用于本次命令，不保存为任务配置。默认隐藏正常诊断：`codexExecutableSelected`、`communicationPermissionAdded`、`communicationPermissionExisting`、`communicationPermissionSession`、旧结果中的 `profileFieldIrrelevant`、`hookTrustBypassed`；启动窗口结束时，`starting` 已表达未就绪，默认不再附加 `startupNotReady`。该开关不改变执行权限、配置或退出码。
 
 相同 code、field、message 的诊断在同一报告中只显示一次。默认最终报告省略已通过 ready 回执报告的相同诊断，保留终态新增告警；未报告的初始化诊断随首次 ready 或终态交付。worker 保留 snapshot 的 ready 诊断作为比较依据，终态完整诊断保存在固定结果。初始化失败、终态新增告警和结果失败原因仍可随固定结果重读。`--diagnostics` 可再次显示正常信息及已报告诊断；文件导出采用同一显示规则，完整诊断导出使用 `result --diagnostics --output-file PATH`。
 
@@ -77,6 +77,8 @@ wait 的单个完整终态组即使独占本次预算仍放不下时输出 `defe
 删除 `communication_active_receive` 及内部对应 `activeReceive` 能力开关。Adapter v5 的 enabled 通信对象固定为 `{status:"enabled",transport:"mcp"|"command",passiveDelivery:"in-turn"|"turn-boundary"|"none"}`；disabled/unsupported 分支仍保持原合同。supported negotiation 的启用对象为 `{supported:true,transport:"mcp"|"command",passiveDelivery:"in-turn"|"turn-boundary"|"none"}`，不支持仍为 `{supported:false}`；桥接/工具生成不再接受该开关或 --send-only。新 validator 拒绝旧 activeReceive 字段；现有 custom adapter 的 enabled ready/协商需要随本次合同更新，不承诺旧能力对象继续可用。恢复协议另见 [session 与恢复能力](protocol.md#session恢复绑定)；消息投递与停止边界保持，不增加兼容状态机。
 
 transport 与 passiveDelivery 仅在 adapter/worker 内部使用，不转发为 communication_transport/status/passive_delivery 等主代理字段。passiveDelivery 控制自动输入调度和子代理提示词；不改变主动接收入口始终可用这一条件。内部仍可区分 disabled/unsupported，但主代理只得到 false 与必要失败原因。
+
+agy 使用同一已安装 Guide 的独立托管通信命令，固定 AW 主机与精确 ID；每次启动/恢复先校验稳定版本 >=1.4.10，需要额外授权时通过本执行私有 --settings 文件注入合并后的 allow，不写用户 settings；其它 custom 的脚本入口保持原协议。Codex/Claude 继续使用每次执行的私有 MCP server；启动和恢复时按实际模式准备两项工具的精确许可，完整权限及关闭通信时跳过额外授权。具体识别和失败边界见 [配置权限模式](configuration.md#执行器权限模式)。
 
 子代理通信提示词使用 common、transport 和 passiveDelivery 对应片段；通信启用时始终包含 active-receive 方法片段，移除 no-active-receive 分支。该模板标记是内容区段，不是能力状态。MCP 总是注册 send/receive 两个工具，脚本总是提供对应的两个调用入口；需要父侧答复时，子代理按已有响应式等待方法保持任务开放。实际 receive 收到输入或关闭时提前返回，仍受 deadline 和停止规则约束，不改变消息消费和 TTL。
 
@@ -219,7 +221,7 @@ worker 消失、后端终态不明、输出超限、协议冲突或本地收尾�
 
 ## 操作系统与安装闭包
 
-Windows 支持指原生 Windows 进程和文件系统上的完整 start/send/wait/result/stop 闭环。不能用 WSL、交叉编译、mock 或仅通过文件选择测试替代运行证据。实现复用仓库已有平台能力时须核对其生命周期；当前 Eval 的 Windows Job helper 只提供可参考的既有机制，不自动证明适合本次后台 worker。
+Windows 支持指原生 Windows 进程和文件系统上的完整 start/send/wait/result/stop 闭环。不能用 WSL、交叉编译、mock 或仅通过文件选择测试替代运行证据。插件与 Eval 共用原生程序源码，但保留各自的启动入口和生命周期。AW 在托管命令启动前按已安装 producer 的文本锁准备当前架构的 helper，插件只读取生成的原生工具上下文，不读取 Eval package、开发 checkout 或原生 cache。后台进程继承已准备路径；嵌套 AW 调用按自身声明只使用有效缓存。
 
 | 边界 | 必须保持的行为 |
 | --- | --- |
@@ -231,6 +233,14 @@ Windows 支持指原生 Windows 进程和文件系统上的完整 start/send/wai
 | 私有资源 | POSIX 目录/文件分别使用 0700/0600；Windows 用当前用户的受保护目录与实际访问控制取得等效保密边界，mode 数字或 chmod 成功本身不构成证据。身份校验使用当前 OS 的用户与归属事实，不能把 Unix uid 设为通用前提 |
 | 文件提交与回收 | 私有状态仍完整写入后原子发布；Windows 的占用或访问拒绝须明确报告，不能先删除旧状态再写入。--output-file 的完整导出由调用者保留，run TTL 不删除该文件。扫描不跟随 symlink、junction 或其他重解析链接；无法证明归属或停止时保留资源，不能因为删除失败扩大清理范围 |
 | 安装闭包 | worker、adapter、工具桥接及必要的平台 helper 来自当前安装 resourceRoot 和正式依赖。按目标架构分发并校验；不要求运行时访问开发 checkout、临时下载 helper 或增加系统服务 |
+
+Windows 文件、ACL 和进程操作使用固定的版本化 JSON stdin/stdout 协议；输入最多 256 KiB，输出最多 8 MiB，每次调用最多 30 秒。响应必须通过 schema、结果形状及退出码检查。ACL 保护和验证继续按 18 KiB 输入分批；每个目标分别检查，下一条命令、下一轮等待和删除前重新验证。批次失败后仍逐项隔离坏目标。根目录通过无覆盖移动发布；已有文件或目录不能被替换。
+
+进程表查询包含当前 PID 与已有归属链、待确认身份的 PID。相关进程仍存在但不能读取时，观察或清理失败，保留运行资料；不能将拒绝访问当作退出。时间身份保留 CIM 的微秒精度，停止时在同一个打开句柄上校验创建时间和用户 SID。当前用户 SID 仍通过系统 `whoami.exe` 查询并在进程内缓存。
+
+每个附加的 adapter/backend 使用独占、命名且私有的 Windows Job。helper 先以 suspended 状态创建 root，加入 Job，写入并验证私有 ready 文件，再恢复 root。配置文件带 schemaVersion 和 SID，加载后删除；原环境、cwd、argv 和 stdio 直接继承，保留 PSModulePath/WinPSModulePath 的值与缺失状态。ready 失败或名称碰撞不执行 backend。root 正常退出、父进程退出或 helper 终止后清理全部后代；保留 root 退出码，containment 失败使用 250，父进程提前退出使用 251。短命观察和停止以 Job accounting 为清理依据；helper 缺失或失败时不回退为仅按 PID/PPID 执行。
+
+仅 Codex App 发现保留固定 PowerShell 查询；独立 Windows 安全测试也可用系统工具核验 ACL。原生诊断按文件、ACL、进程和 Job 操作计时；Job 持有期间的总寿命不计入原生 API 耗时，启动到 ready 单独记录。
 
 Windows 原子 JSON 发布对 rename 的 EPERM、EACCES 和 EBUSY 最多重试五次，总退避等待为 620ms；每次复用同一份已保护的临时文件，不先删除旧文件，也不重发后端输入。持续失败保留错误。worker 能保存最终结果时，文件错误的 diagnostic 块包含操作名及运行资源类别，不包含绝对路径、动态文件名、原始错误正文或堆栈。
 

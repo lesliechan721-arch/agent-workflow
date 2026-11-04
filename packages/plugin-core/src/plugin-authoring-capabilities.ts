@@ -17,6 +17,7 @@ export const PLUGIN_AUTHORING_CAPABILITY_SURFACES = [
   'config',
   'pre-apply',
   'managed-commands',
+  'native-tools',
   'artifacts',
 ] as const
 
@@ -67,6 +68,7 @@ const registry = {
         { field: 'marketplace.policy.authentication', type: 'enum', required: true, acceptedValues: ['ON_INSTALL', 'ON_USE'] },
         { field: 'marketplace.policy.products', type: 'unique enum[]', required: false, acceptedValues: ['CODEX', 'CLAUDE'] },
         { field: 'managedCommands', type: '{packages?,sets?}', required: false },
+        { field: 'nativeTools', type: '{reader?,definitions,consumers}; requires aw.native-tools.v2', required: false },
         { field: 'interface.displayName', type: 'non-empty string', required: false },
         { field: 'interface.shortDescription', type: 'non-empty string', required: false },
         { field: 'interface.capabilities', type: 'string[]', required: false },
@@ -228,6 +230,24 @@ const registry = {
         { field: 'commandIdentity', type: 'schemaVersion:1; complete verified producer + set/key/variant; cmdp_ + first 16 lowercase hex characters of SHA256 of canonical sorted-key UTF-8 JSON; excludes version/config/resource path', required: true },
         { field: 'normalizedTarget', type: 'dynamic set command-set.<set>:aw.command-set/commandSet; rendered package command-package.<key>:aw.command-package/commandPackage; reserved artifact ID prefixes', required: false },
         { field: 'scripts.artifacts.render', type: 'existing renderer declaration', required: 'any dynamic set or render:true package' },
+      ],
+    },
+    'native-tools': {
+      surface: 'native-tools',
+      entries: [
+        { field: 'nativeTools', type: 'host protocol definitions and controlled consumer bindings; requires aw.native-tools.v2', required: false },
+        { field: 'nativeTools.reader', type: './ plugin-relative .mjs file; default ./.aw/native-tool-reader.mjs; AW generates an offline reader before build', required: false },
+        { field: 'nativeTools.definitions', type: '1..32 definitions; unique case-sensitive key; every definition must be consumed', required: true },
+        { field: 'nativeTools.definitions[].key', type: 'Name: [A-Za-z][A-Za-z0-9_.-]{0,63}', required: true },
+        { field: 'nativeTools.definitions[].protocol', type: 'host protocol ID; current host supports aw.windows-job.v1', required: true },
+        { field: 'nativeTools.consumers', type: '1..128 consumers; unique kind/key', required: true },
+        { field: 'nativeTools.consumers[].kind', type: 'enum; only AW controlled launch boundaries', required: true, acceptedValues: ['managed-command-set', 'plugin-test'] },
+        { field: 'nativeTools.consumers[].key', type: 'declared managed command set; plugin-test supports node with declared tests', required: true },
+        { field: 'nativeTools.consumers[].tools', type: '1..32 bindings; unique referenced definition key', required: true },
+        { field: 'nativeTools.consumers[].tools[].key', type: 'declared nativeTools definition key', required: true },
+        { field: 'nativeTools.consumers[].tools[].platforms', type: 'non-empty unique enum[]; only win32 is supported', required: true, acceptedValues: ['win32'] },
+        { field: 'nativeTools.consumers[].tools[].policy', type: 'enum', required: true, acceptedValues: ['required', 'preferred'] },
+        { field: 'nativeTools.consumers[].tools[].fallback', type: 'portable backend Name; forbidden for required; same protocol contract tested by runner', required: 'preferred' },
       ],
     },
     artifacts: {

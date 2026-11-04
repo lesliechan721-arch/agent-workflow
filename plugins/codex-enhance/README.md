@@ -50,7 +50,7 @@ Oracle 可直接选择 oracleEngine=browser/api，界面推荐 browser；省略�
 
 当前 Windows 原生 Oracle 的文件选择不符合固定 v1 协议。内建 adapter 对非空文件选择在提交后端前返回 fileSelectionUnsupported；未指定文件的请求仍可运行。
 
-Codex 的 codexProfile 读取有效 CODEX_HOME 中的 `<name>.config.toml`，把支持字段转换为本次运行覆盖；未支持或无关字段提示后忽略，低层同名配置仍可能生效。转换不保留原生用户配置层身份，可能覆盖项目配置。可适配的 profile hooks 沿用已有逐项信任与禁用状态，不自动批准或写回配置。codexBypassHookTrust 缺省 false；显式 true 会让本次线程内已启用但未信任或内容已修改的普通 hook 执行，包括其它来源的适用 hook，仍遵守禁用与管理限制，不授予工具审批或沙箱绕过权限。字段范围和限制见 [Codex profile](skills/codex-subagent-guide/docs/codex.md#codex-profile-转换)。额外目录 addDirs（--add-dir）仍明确拒绝。
+Codex 的 codexProfile 读取有效 CODEX_HOME 中的 `<name>.config.toml`，把完整配置转换为本次运行覆盖；已确认线程生效的字段优先使用 RPC，其余使用启动 -c。明确无效或与 AW 控制冲突的配置报错，不再删除字段后继续。适配器不自动启用严格模式，普通未知字段与非法值仍按所选 Codex 的原生行为处理。过去被忽略的配置可能因此开始生效或报错。转换不保留原生用户配置层身份，可能覆盖项目配置。可适配的 profile hooks 沿用已有逐项信任与禁用状态，不自动批准或写回配置。codexBypassHookTrust 缺省 false；显式 true 会让本次线程内已启用但未信任或内容已修改的普通 hook 执行，包括其它来源的适用 hook，仍遵守禁用与管理限制，不授予工具审批或沙箱绕过权限。字段范围和限制见 [Codex profile](skills/codex-subagent-guide/docs/codex.md#codex-profile-转换)。额外目录 addDirs（--add-dir）仍明确拒绝。
 
 Codex 的 codexCliSource 可选 auto/cli/app，缺省 auto 先查 PATH，仅入口缺失时查 App；cli 只查 PATH，app 只查 App。已找到入口启动失败时不会换来源重试。App 发现面向 macOS 和 Windows，Linux 显式 app 拒绝；Windows 注册包发现和真实启动仍须 Windows 验收，不能从本机证据推断支持。
 

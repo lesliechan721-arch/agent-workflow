@@ -182,10 +182,6 @@ describe('build cache input and environment identity', () => {
       args: [
         path.resolve('/tmp/pnpm.cjs'),
         '--filter',
-        '@lesliechan721/aw-windows-job-win32-x64',
-        '--filter',
-        '@lesliechan721/aw-windows-job-win32-arm64',
-        '--filter',
         '@lesliechan721/agent-skill-eval',
         '--filter',
         '@lesliechan721/aw-plugin-core',
@@ -206,7 +202,7 @@ describe('build cache input and environment identity', () => {
     ));
 
     expect(stamp).toMatchObject({
-      schemaVersion: 9,
+      schemaVersion: 10,
       nodeVersion: process.version,
       nodeExecPath: path.resolve(process.execPath),
       nodeExecRealPath: await fs.realpath(process.execPath),
@@ -292,10 +288,6 @@ describe('build cache input and environment identity', () => {
       "fs.writeFileSync('packages/agent-skill-eval/dist/index.js', 'export {};\\n');",
       "fs.writeFileSync('packages/agent-skill-eval/dist/bin.js', 'export {};\\n');",
       "fs.writeFileSync('packages/agent-skill-eval/dist/schemas/digests.json', '{}\\n');",
-      "fs.mkdirSync('packages/aw-windows-job-win32-x64/dist', { recursive: true });",
-      "fs.mkdirSync('packages/aw-windows-job-win32-arm64/dist', { recursive: true });",
-      "fs.writeFileSync('packages/aw-windows-job-win32-x64/dist/aw-windows-job.exe', 'x64');",
-      "fs.writeFileSync('packages/aw-windows-job-win32-arm64/dist/aw-windows-job.exe', 'arm64');",
       "fs.mkdirSync('packages/plugin-core/dist', { recursive: true });",
       "fs.writeFileSync('packages/plugin-core/dist/index.js', 'export {};\\n');",
       "fs.mkdirSync('packages/cli/dist/scripts', { recursive: true });",

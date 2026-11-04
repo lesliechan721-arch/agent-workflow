@@ -1,28 +1,21 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import test from 'node:test';
+import { nativeTest as test } from './fixtures/native-test.mjs';
 import { promisify } from 'node:util';
 import { assertNoReparsePath, currentUserIdentity, protectPrivatePath, protectPrivatePaths, resolveSafeCommand, safeSpawn, verifyPrivatePath, verifyPrivatePaths, windowsOperation } from '../skills/codex-subagent-guide/scripts/runtime/platform.mjs';
-import { observeTree, ownsProcess, processTable, stopOwnedTree } from '../skills/codex-subagent-guide/scripts/runtime/processes.mjs';
-import { removeScratch } from '../skills/codex-subagent-guide/scripts/runtime/store.mjs';
+import { observeTree, ownsProcess, processIdentity, processTable, stopOwnedTree } from '../skills/codex-subagent-guide/scripts/runtime/processes.mjs';
+import { windowsJobExecutable, windowsNativeOperation } from '../skills/codex-subagent-guide/scripts/runtime/windows-native.mjs';
+import { createRun, removeScratch, storeContext } from '../skills/codex-subagent-guide/scripts/runtime/store.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
-// Only this test uses the static platform-module alias directly. Other moved
-// fixtures copy the complete resource source. Core does not scan .ps1 imports.
-const require = createRequire(import.meta.url);
-const platformEntry = require.resolve('../skills/codex-subagent-guide/scripts/runtime/platform.mjs');
-const helperSource = path.join(guideRuntimeScripts(import.meta.url), 'runtime/windows-job.ps1');
-const helperTarget = path.join(path.dirname(platformEntry), 'windows-job.ps1');
-if (helperSource !== helperTarget) await fs.copyFile(helperSource, helperTarget);
-
+const platformUrl = pathToFileURL(path.join(guideRuntimeScripts(import.meta.url), 'runtime/platform.mjs')).href;
 async function temporary(t, beforeRemove = async () => {}) {
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-subagent-platform-'));
   t.after(async () => { await beforeRemove(); await fs.rm(directory, { recursive: true, force: true }); });
@@ -156,8 +149,8 @@ test('native Windows package shim preserves argv and rejects injected batch text
   assert.equal(await fs.stat(path.join(directory, 'unwanted')).catch(() => null), null);
 });
 
-// Test Value Gate: the fixed Windows host must load native modules even when
-// the backend has custom module paths. The backend must retain those settings.
+// Test Value Gate: the native Job must preserve module-path values and absence
+// in the backend environment, without starting a PowerShell host.
 test('native Windows job preserves backend module paths and their absence', { skip: process.platform !== 'win32', timeout: 120000 }, async (t) => {
   const directory = await temporary(t);
   await protectPrivatePath(directory, 'directory');
@@ -179,9 +172,9 @@ test('native Windows job preserves backend module paths and their absence', { sk
   }
 });
 
-// Test Value Gate: a fresh plugin home has no host module-analysis cache. The
-// real identity, private ACL and Job boundary must initialize in that state.
-test('native Windows isolated home loads platform and job APIs without a host cache', { skip: process.platform !== 'win32', timeout: 120000 }, async (t) => {
+// Test Value Gate: a fresh plugin home must initialize the real identity,
+// private ACL and Job boundary without resources from another installation.
+test('native Windows isolated home uses its prepared tool for platform and Job APIs', { skip: process.platform !== 'win32', timeout: 120000 }, async (t) => {
   const directory = await temporary(t);
   const home = path.join(directory, 'home');
   const temp = path.join(directory, 'tmp');
@@ -199,6 +192,7 @@ test('native Windows isolated home loads platform and job APIs without a host ca
     ...Object.fromEntries(Object.entries(process.env).filter(([name]) => systemKeys.has(name.toLowerCase()))),
     HOME: home, USERPROFILE: home, HOMEDRIVE: drive, HOMEPATH: home.slice(drive.length),
     APPDATA: appData, LOCALAPPDATA: localAppData, TEMP: temp, TMP: temp,
+    AW_NATIVE_TOOL_CONTEXT: process.env.AW_NATIVE_TOOL_CONTEXT,
     AW_SUBAGENT_PROCESS_TOKEN: randomBytes(24).toString('hex'),
   };
   const safeCodes = [
@@ -248,7 +242,7 @@ test('native Windows isolated home loads platform and job APIs without a host ca
   ].join('\n');
   let receipt;
   try {
-    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', source, pathToFileURL(platformEntry).href, probe], {
+    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', source, platformUrl, probe], {
       cwd: directory, env: environment, shell: false, windowsHide: true,
       timeout: 90000, maxBuffer: 64 * 1024,
     });
@@ -352,8 +346,7 @@ test('POSIX shared group never claims complete stop from an empty sampled tree',
 // Native observers must not become task members and block scratch cleanup.
 test('POSIX stopped backend is confirmed while its private-group caller stays alive', { skip: process.platform === 'win32', timeout: 40000 }, async (t) => {
   const directory = await temporary(t);
-  const platformUrl = pathToFileURL(platformEntry).href;
-  const processesUrl = pathToFileURL(path.join(path.dirname(platformEntry), 'processes.mjs')).href;
+  const processesUrl = new URL('./processes.mjs', platformUrl).href;
   const code = `
     import { once } from 'node:events';
     import { safeSpawn } from ${JSON.stringify(platformUrl)};
@@ -378,4 +371,199 @@ test('POSIX stopped backend is confirmed while its private-group caller stays al
   assert.equal(result.stopped, true);
   assert.deepEqual(result.tracked, [result.backend]);
   assert.ok(result.excluded.includes(result.caller));
+});
+
+// Test Value Gate: independent Windows ACL inspection must confirm the owner,
+// protected DACL and distinct directory/file inheritance after native protection.
+test('native Windows ACL protection matches independent system ACL evidence', { skip: process.platform !== 'win32', timeout: 90000 }, async (t) => {
+  const directory = await temporary(t);
+  const file = path.join(directory, 'private.txt');
+  await fs.writeFile(file, 'private');
+  const owner = await currentUserIdentity();
+  const resources = [{ target: directory, kind: 'directory' }, { target: file, kind: 'file' }];
+  await protectPrivatePaths(resources);
+  const rows = await windowsOperation([
+    '$rows = @($data.resources | ForEach-Object {',
+    '  $acl = Get-Acl -LiteralPath $_.target',
+    '  $rules = @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | ForEach-Object {',
+    '    @{ sid=$_.IdentityReference.Value; inherited=$_.IsInherited; type=$_.AccessControlType.ToString(); mask=[int]$_.FileSystemRights; inheritance=[int]$_.InheritanceFlags; propagation=[int]$_.PropagationFlags }',
+    '  })',
+    '  @{ kind=$_.kind; owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value; protected=$acl.AreAccessRulesProtected; rules=$rules }',
+    '})',
+    'ConvertTo-Json -Depth 8 -InputObject $rows -Compress',
+  ].join('\n'), { resources });
+  for (const row of rows) {
+    assert.equal(row.owner, owner.sid);
+    assert.equal(row.protected, true);
+    assert.equal(row.rules.length, 1);
+    const [rule] = row.rules;
+    assert.deepEqual({ sid: rule.sid, inherited: rule.inherited, type: rule.type, inheritance: rule.inheritance, propagation: rule.propagation }, { sid: owner.sid, inherited: false, type: 'Allow', inheritance: row.kind === 'directory' ? 3 : 0, propagation: 0 });
+    assert.equal(rule.mask & 0x001f01ff, 0x001f01ff);
+  }
+  const sddl = await windowsOperation('(Get-Acl -LiteralPath $data.target).Sddl | ConvertTo-Json -Compress', { target: file });
+  for (const mutation of ['deny', 'empty', 'null', 'objectAce', 'owner']) await t.test(mutation, async (t) => {
+    try {
+      const state = await windowsOperation([
+        '$acl = [IO.File]::GetAccessControl($data.target)',
+        '$raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0)',
+        '$sid = [Security.Principal.SecurityIdentifier]::new($data.sid)',
+        'switch ($data.mutation) {',
+        '  "deny" { $raw.DiscretionaryAcl.InsertAce(0,[Security.AccessControl.CommonAce]::new([Security.AccessControl.AceFlags]::None,[Security.AccessControl.AceQualifier]::AccessDenied,2,$sid,$false,$null)) }',
+        '  "empty" { $raw.DiscretionaryAcl = [Security.AccessControl.RawAcl]::new(2,0) }',
+        '  "null" { $raw.DiscretionaryAcl = $null }',
+        '  "objectAce" { $raw.DiscretionaryAcl = [Security.AccessControl.RawAcl]::new(4,1); $raw.DiscretionaryAcl.InsertAce(0,[Security.AccessControl.ObjectAce]::new([Security.AccessControl.AceFlags]::None,[Security.AccessControl.AceQualifier]::AccessAllowed,2032127,$sid,[Security.AccessControl.ObjectAceFlags]::None,[Guid]::Empty,[Guid]::Empty,$false,$null)) }',
+        '  "owner" { $raw.Owner = [Security.Principal.SecurityIdentifier]::new("S-1-5-32-544") }',
+        '}',
+        '$bytes = New-Object byte[] $raw.BinaryLength; $raw.GetBinaryForm($bytes,0)',
+        '$acl.SetSecurityDescriptorBinaryForm($bytes)',
+        'try { [IO.File]::SetAccessControl($data.target,$acl) } catch { @{ supported=$false } | ConvertTo-Json -Compress; return }',
+        '$actual = [IO.File]::GetAccessControl($data.target)',
+        '$raw = [Security.AccessControl.RawSecurityDescriptor]::new($actual.GetSecurityDescriptorBinaryForm(),0)',
+        '@{ supported=$true; owner=$raw.Owner.Value; nullDacl=($null -eq $raw.DiscretionaryAcl); aceTypes=@($raw.DiscretionaryAcl | ForEach-Object { [int]$_.AceType }); count=$raw.DiscretionaryAcl.Count } | ConvertTo-Json -Depth 4 -Compress',
+      ].join('\n'), { target: file, sid: owner.sid, mutation });
+      if (!state.supported) { t.skip('The current Windows token cannot create this ACL fixture.'); return; }
+      if (mutation === 'null') assert.equal(state.nullDacl, true);
+      if (mutation === 'empty') { assert.equal(state.nullDacl, false); assert.equal(state.count, 0); }
+      if (mutation === 'deny') assert.ok(state.aceTypes.includes(1));
+      if (mutation === 'objectAce') assert.ok(state.aceTypes.includes(5));
+      if (mutation === 'owner') assert.notEqual(state.owner, owner.sid);
+      await assert.rejects(verifyPrivatePath(file, 'file', owner));
+    } finally {
+      await windowsOperation('$sections=[Security.AccessControl.AccessControlSections]::Access; if ($data.owner) { $sections=$sections -bor [Security.AccessControl.AccessControlSections]::Owner }; $acl=[Security.AccessControl.FileSecurity]::new(); $acl.SetSecurityDescriptorSddlForm($data.sddl,$sections); [IO.File]::SetAccessControl($data.target,$acl); $true | ConvertTo-Json -Compress', { target: file, sddl, owner: mutation === 'owner' });
+    }
+    assert.equal(await verifyPrivatePath(file, 'file', owner), true);
+  });
+});
+
+// Test Value Gate: persisted CIM identities and full-precision lock identities
+// must remain equal to independent Windows APIs, and mismatches cannot kill.
+test('native Windows process identities preserve CIM and full tick precision', { skip: process.platform !== 'win32', timeout: 60000 }, async (t) => {
+  const reference = await windowsOperation([
+    '$native = [Diagnostics.Process]::GetProcessById([int]$data.pid)',
+    '$item = Get-CimInstance Win32_Process -Filter ("ProcessId=" + [int]$data.pid)',
+    '@{ full=$native.StartTime.ToUniversalTime().Ticks.ToString(); cim=$item.CreationDate.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress',
+  ].join('\n'), { pid: process.pid });
+  assert.equal(await windowsNativeOperation('processStart', { pid: process.pid }), reference.full);
+  assert.equal((await processIdentity(process.pid)).started, reference.cim);
+  assert.equal((await processTable([process.pid])).find((row) => row.pid === process.pid).started, reference.cim);
+  const directory = await temporary(t);
+  const child = await safeSpawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)'], { cwd: directory, env: {}, stdio: 'ignore' });
+  const closed = once(child, 'close');
+  t.after(async () => { child.kill(); await closed; });
+  const identity = await processIdentity(child.pid);
+  const owner = await currentUserIdentity();
+  assert.equal(await windowsNativeOperation('processStop', { pid: child.pid, started: (BigInt(identity.started) + 10n).toString(), sid: owner.sid }), false);
+  await assert.rejects(windowsNativeOperation('processStop', { pid: child.pid, started: identity.started, sid: 'S-1-0-0' }), { code: 'platformOperationFailed' });
+  assert.equal((await processIdentity(child.pid)).started, identity.started);
+  assert.equal(await windowsNativeOperation('processStop', { pid: child.pid, started: identity.started, sid: owner.sid }), true);
+  await closed;
+  assert.equal(await processIdentity(child.pid), null);
+  assert.equal(await windowsNativeOperation('processStart', { pid: child.pid }), null);
+});
+
+// Test Value Gate: a native root publication must preserve every existing
+// destination, including when two publishers race to create the same root.
+test('native Windows root publication never overwrites a file or directory', { skip: process.platform !== 'win32', timeout: 60000 }, async (t) => {
+  const directory = await temporary(t);
+  for (const type of ['file', 'directory']) {
+    const source = path.join(directory, `source-${type}`);
+    const destination = path.join(directory, `destination-${type}`);
+    await fs.mkdir(source);
+    if (type === 'file') await fs.writeFile(destination, 'foreign');
+    else { await fs.mkdir(destination); await fs.writeFile(path.join(destination, 'foreign'), 'foreign'); }
+    await assert.rejects(windowsNativeOperation('rootPublish', { source, destination }), { code: 'platformOperationFailed' });
+    assert.equal(await fs.readFile(type === 'file' ? destination : path.join(destination, 'foreign'), 'utf8'), 'foreign');
+    assert.equal((await fs.lstat(source)).isDirectory(), true);
+  }
+  const destination = path.join(directory, 'race-root');
+  const sources = ['first', 'second'].map((name) => path.join(directory, name));
+  for (const source of sources) { await fs.mkdir(source); await fs.writeFile(path.join(source, 'winner'), path.basename(source)); }
+  const results = await Promise.allSettled(sources.map((source) => windowsNativeOperation('rootPublish', { source, destination })));
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  const winner = await fs.readFile(path.join(destination, 'winner'), 'utf8');
+  const loser = sources.find((source) => path.basename(source) !== winner);
+  assert.equal(await fs.readFile(path.join(loser, 'winner'), 'utf8'), path.basename(loser));
+});
+
+
+// Test Value Gate: creating a run must not initialize permissions on an existing
+// unsafe root or alter an occupied file, even when fresh resource ACLs can be set.
+test('native Windows run creation preserves occupied and unsafe roots', { skip: process.platform !== 'win32', timeout: 60000 }, async (t) => {
+  const directory = await temporary(t);
+  const identity = { sourceId: 'fixture', sourceIdentity: 'fixture-source', pluginId: 'fixture/codex-enhance', pluginName: 'codex-enhance',
+    pluginVersion: '1.0.0', platform: 'codex', scope: 'user', configScope: 'user', artifactId: 'guide', skillKey: 'codex-subagent-guide' };
+  for (const kind of ['file', 'directory']) {
+    const homeRoot = path.join(directory, kind);
+    await fs.mkdir(homeRoot);
+    const context = await storeContext({ homeRoot, sourceIdentity: identity });
+    let sentinel = context.root;
+    if (kind === 'directory') {
+      await fs.mkdir(context.root);
+      sentinel = path.join(context.root, 'preserve.txt');
+      await windowsOperation([
+        '$acl = Get-Acl -LiteralPath $data.target',
+        '$acl.SetAccessRuleProtection($false, $true)',
+        'Set-Acl -LiteralPath $data.target -AclObject $acl',
+        '$true | ConvertTo-Json -Compress',
+      ].join('\n'), { target: context.root });
+    }
+    await fs.writeFile(sentinel, 'preserve');
+    const readAcl = () => windowsOperation([
+      '$acl = Get-Acl -LiteralPath $data.target',
+      '$acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All) | ConvertTo-Json -Compress',
+    ].join('\n'), { target: context.root });
+    const before = await readAcl();
+    await assert.rejects(createRun(context, 'fixture', homeRoot, identity));
+    // Compare without printing SIDs from the security descriptor on failure.
+    assert.equal(await readAcl() === before, true);
+    assert.equal(await fs.readFile(sentinel, 'utf8'), 'preserve');
+    assert.deepEqual(await fs.readdir(homeRoot), ['.aw-subagent']);
+    if (kind === 'directory') assert.deepEqual(await fs.readdir(context.root), ['preserve.txt']);
+  }
+});
+
+// Test Value Gate: a second helper cannot adopt an existing Job, and failure
+// to publish a new private ready file cannot execute the suspended backend.
+test('native Windows Job rejects name collisions and occupied ready paths before execution', { skip: process.platform !== 'win32', timeout: 90000 }, async (t) => {
+  const directory = await temporary(t);
+  await protectPrivatePath(directory);
+  const helper = await windowsJobExecutable();
+  const owner = await currentUserIdentity();
+  const name = `Local\\aw-subagent-${randomBytes(16).toString('hex')}`;
+  async function launch(label, jobName, code, occupied = false) {
+    const configuration = path.join(directory, `${label}.json`);
+    const status = path.join(directory, `${label}-ready.json`);
+    if (occupied) await fs.writeFile(status, 'preserve');
+    await fs.writeFile(configuration, JSON.stringify({ schemaVersion: 1, executable: process.execPath, args: ['-e', code], parentPid: process.pid, name: jobName, status, sid: owner.sid }));
+    await protectPrivatePath(configuration, 'file');
+    const child = spawn(helper, ['--plugin-config', configuration], { cwd: directory, env: process.env, shell: false, windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });
+    child.stderr.resume();
+    const closed = once(child, 'close');
+    return { child, closed, status, configuration };
+  }
+  const first = await launch('first', name, 'process.stdin.resume();process.stdin.once("end",()=>process.exit(37));');
+  t.after(async () => { first.child.kill(); await first.closed; });
+  const deadline = Date.now() + 20000;
+  let ready;
+  while (!ready) {
+    try { ready = JSON.parse(await fs.readFile(first.status, 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
+    if (first.child.exitCode !== null || Date.now() >= deadline) assert.fail('The first native Job did not become ready.');
+    if (!ready) await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(ready.ready, true);
+  await verifyPrivatePath(first.status, 'file', owner);
+  assert.equal(await fs.lstat(first.configuration).catch(() => null), null);
+  const marker = path.join(directory, 'executed');
+  const backend = `require('node:fs').writeFileSync(${JSON.stringify(marker)},'unexpected');`;
+  const collision = await launch('collision', name, backend);
+  assert.deepEqual(await collision.closed, [250, null]);
+  assert.equal(await fs.lstat(collision.status).catch(() => null), null);
+  assert.equal(await fs.lstat(marker).catch(() => null), null);
+  const occupied = await launch('occupied', `Local\\aw-subagent-${randomBytes(16).toString('hex')}`, backend, true);
+  assert.deepEqual(await occupied.closed, [250, null]);
+  assert.equal(await fs.readFile(occupied.status, 'utf8'), 'preserve');
+  assert.equal(await fs.lstat(marker).catch(() => null), null);
+  first.child.stdin.end();
+  assert.deepEqual(await first.closed, [37, null]);
 });

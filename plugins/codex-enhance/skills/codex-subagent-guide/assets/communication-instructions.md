@@ -34,7 +34,7 @@ Send one message as text or from a UTF-8 file. Replace `MESSAGE_TEXT` or `MESSAG
 
 Use exactly one input form. For long messages, create a UTF-8 file with an available file write tool and use the file form. Do not place the same long text in a shell heredoc, echo, or command substitution. Relative file paths use the command's current directory.
 
-The permission covers this Node + communication script entry. Pipelines, wrappers, and combined commands may still require approval; preserve the selected permission mode on denial.
+The permission covers only this exact AW host and communication command ID. Keep the AW prefix, command ID, and private bridge binding unchanged. Pipelines, wrappers, and combined commands may still require approval; preserve the selected permission mode on denial.
 
 Standard input is not supported. `--text -` and a file path of `-` are rejected. To send exactly `-`, use a file that contains that character.
 <!-- /aw:command-argument -->

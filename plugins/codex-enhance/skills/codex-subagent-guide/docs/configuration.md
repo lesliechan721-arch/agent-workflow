@@ -11,10 +11,11 @@
 | [subagent.mjs](../scripts/subagent.mjs) | start/send/wait/result/stop 参数、安装 reader、英文文字输出和退出码。 |
 | [worker.mjs](../scripts/worker.mjs) | 本次持续执行和收尾；宿主须允许 start 返回后存活。 |
 | [plan.mjs](../scripts/runtime/plan.mjs) / [runner.mjs](../scripts/runtime/runner.mjs) | 精确选择 executor、入口、模式、输入和环境。 |
+| [managed-host.mjs](../scripts/runtime/managed-host.mjs) | 核验受保护 AW 主机，查询已安装命令及固定通信绑定。 |
 | [protocol.mjs](../scripts/runtime/protocol.mjs) | 严格 v5 JSONL、大小及状态合同。 |
 | [adapter-channel.mjs](../scripts/runtime/adapter-channel.mjs) | 子侧发送、显式收件和自动输入共用调度。 |
 | [message.mjs](../scripts/message.mjs) / [message-mcp.mjs](../scripts/message-mcp.mjs) | 脚本与 MCP 工具包装，不拥有另一份队列。 |
-| [processes.mjs](../scripts/runtime/processes.mjs) / [platform.mjs](../scripts/runtime/platform.mjs) | 本机安全启动、私有资源、进程归属和停止；Windows 使用同产物的 [windows-job.ps1](../scripts/runtime/windows-job.ps1) 持有本次原生 Job。 |
+| [processes.mjs](../scripts/runtime/processes.mjs) / [platform.mjs](../scripts/runtime/platform.mjs) | 本机安全启动、私有资源、进程归属和停止；Windows 使用同产物的 [原生 wrapper](../scripts/runtime/windows-native.mjs) 和当前架构的 `aw-windows-job.exe` 持有本次 Job。 |
 | [resolve-files.mjs](../scripts/resolve-files.mjs) | bundle 公共文件选择 v1；通用运行层不扫描材料。 |
 | [contracts.mjs](../scripts/runtime/contracts.mjs) / [files.mjs](../scripts/runtime/files.mjs) | 限值、路径、原子文件及安全诊断。 |
 | 内建 `adapters/*-v5.mjs` | Codex、Claude Code、Oracle、Antigravity 后端映射；真实支持范围分别验证。 |
@@ -75,6 +76,8 @@ renderer 只在 Guide 的 external-delegation 中生成执行器表，只显示 
 
 AW 在物化时注入安装态 JSON 和配置 reader（保留文件名 .aw-runtime-config.json、scripts/aw-runtime-config.mjs）；插件不伪造或覆盖保留资源。reader 从本产物返回 installedIdentity、获准的 effectiveValues（subagentCommands 和 subagentRetentionHours）和 resourceRoot，不读最新 store 或同名 sibling。保存未 apply 时新调用继续用旧安装资源，活跃调用也不重读配置换后端。缺失或损坏通过正常 sync/reinstall 恢复。
 
+Guide 用文本锁声明 Windows Job 工具，并将全部托管命令绑定为 Windows required 消费者。AW 在启动命令前取得并校验当前 Node 架构的工具，通过生成的 reader 注入已解析路径；插件不保存 PE、不下载工具，也不搜索 PATH 或 Eval package。缓存有效时可离线运行；缓存缺失且取得失败时，命令在业务副作用前停止，可通过 AW 的离线导入或显式预取恢复。后台 worker、adapter 和扫描器继承已解析上下文，嵌套 AW 只使用有效缓存。一次执行中不更换工具或 backend；升级、重装或删除 producer 前，先结束活跃任务。用户无需安装 Go，也无需增加 Guide 参数或配置项。
+
 ## 资料保留与恢复配置
 
 `subagentRetentionHours` 是 Guide 独立配置，单位小时，默认 24；允许 0 至 floor(Number.MAX_SAFE_INTEGER / 3,600,000) 的整数，0 表示永不过期且不扫描，负数、非整数和非法数值拒绝。命令开始读取一次最新物化生效值，前台过期判断和后台扫描共用；仅保存未 apply 不改变生效值。它是资料管理设置，不冻结在 run 的执行配置中。
@@ -99,13 +102,15 @@ Codex、Claude Code、Antigravity 的 `permissionMode` 可选 default / auto / f
 
 | 模式 | Codex app-server | Claude Code | Antigravity |
 | --- | --- | --- | --- |
-| default | 不增加权限覆盖 | 不增加权限参数 | 不增加权限参数 |
+| default | 保留全局权限配置 | 保留原权限模式 | 保留原权限模式 |
 | auto | 首次 thread/start.config 设置 approval_policy=on-request、approvals_reviewer=auto_review，保留有效沙箱和网络限制 | --permission-mode auto | --mode auto |
 | full-access | 首次 thread/start.config 设置 approval_policy=never、sandbox_mode=danger-full-access，等价 --dangerously-bypass-approvals-and-sandbox | --dangerously-skip-permissions | --dangerously-skip-permissions |
 
 default 保留用户 args、profile 及后端正常加载的用户、项目和管理配置；用户显式 full-access 不会被撤销。这是保留用户选择，不是 AW 默认提权。auto/full-access 高于 Codex profile 同类默认值，其它字段保留；后续轮次沿用同一线程配置，不写用户 Codex config。Codex --full-auto 的 on-request + workspace-write 不等于 auto_review；Claude --allow-dangerously-skip-permissions 只允许以后切换，不能证明启动时已进入完整权限。
 
-非 default 时，args 中重复控制本模式的显式参数在后端启动或 settings 写入前返回 `adapterArgumentConflict`，即使值相同也拒绝。Codex 包括审批策略、reviewer、full-auto、完整 bypass；full-access 另包括沙箱模式及别名，auto 可保留显式沙箱限制。短选项、--name=value、分离值及 -c 同类叶子都检查。Claude 包括 --permission-mode 和主动跳过审批入口；agy 包括 --mode、--dangerously-skip-permissions。原 model/effort 冲突规则不变。
+通信专用许可独立于全局模式：非完整权限时，Codex 为本次两个私有 MCP 工具注入 approval_mode=approve，Claude 合并精确工具 --allowedTools，agy 通过本次 --settings 注入独立通信命令 ID 的 allow，保留原 allow，不写用户 settings。communication=false 跳过专属许可；已从正常参数、profile 或可可靠取得的生效信息确认完整权限时，跳过额外授权和专属冲突预检，仍建立当前 bridge、提示及绑定校验。不能可靠确认时保留原模式并使用精确许可，不猜测完整权限。agy 每次启动/恢复另行校验稳定版本 >=1.4.10；版本不可用时在建桥前返回环境不可用，通信关闭和 full-access 也不跳过。各后端的识别来源、恢复限制与真实验收见 [Codex](codex.md)、[Claude Code](claude-code.md) 和 [Antigravity](antigravity.md)。
+
+非 default 时，args 中重复控制本模式的显式参数在后端启动或授权准备前返回 `adapterArgumentConflict`，即使值相同也拒绝。Codex 包括审批策略、reviewer、full-auto、完整 bypass；full-access 另包括沙箱模式及别名，auto 可保留显式沙箱限制。短选项、--name=value、分离值及 -c 同类叶子都检查。Claude 包括 --permission-mode 和主动跳过审批入口；agy 包括 --mode、--dangerously-skip-permissions。原 model/effort 冲突规则不变。
 
 权限模式、communication 和 codexBypassHookTrust 独立。关闭通讯仍应用权限模式；full-access 不启用 hook bypass，auto 不改变 hook 信任或禁用记录。Claude/agy 不额外关闭用户终端沙箱。完整权限不取得 OS 管理员权限；后端仍执行不可覆盖的管理限制、显式 Ask/Deny 和关键路径保护，拒绝时报告实际失败。
 
@@ -139,12 +144,12 @@ CLI 已传入 model 或 effort 时，args 不能再次设置同一后端控制�
 
 变量名为 `[A-Za-z_][A-Za-z0-9_]*`，值不得包含 NUL。env 只保存普通字面值，不能保存密钥。envFrom 只存来源名；解析后的秘密不进入安装资源、stdin JSON、执行器表。继承其余普通宿主环境及后端认证设置，最终环境通过 spawn.env 交给 adapter，再按实际后端接口使用。
 
-`AW_PLUGIN_CONTEXT`、`AW_PLUGIN_*` 作者上下文、`AW_SUBAGENT_*` 运行控制项不能借 env/envFrom 注入。custom-managed 还拒绝 AW_COMMAND_*、AW_AGENT_SKILL_EVAL_PROCESS_MARKER 和 AW_HOME/AW_CODEX_HOME/AW_CLAUDE_HOME 的目标或来源名，跨 OS 按 ASCII 大小写不敏感检查；普通 command/entrypoint custom 保留既有校验范围。本次私有目录、工具绑定与进程归属标记由运行层设置；现有 Eval 进程标记按原合同继承但不可覆盖。诊断脱敏已解析 envFrom 值及可识别凭据，不输出完整 env 或请求。受信任适配器可能读取宿主凭据，环境过滤不构成隔离。
+`AW_PLUGIN_CONTEXT`、`AW_PLUGIN_*` 作者上下文、`AW_SUBAGENT_*` 运行控制项和 `AW_NATIVE_*` 原生工具上下文不能借 env/envFrom 注入。AW_NATIVE_* 的目标和来源名在全部 adapter 中按 ASCII 大小写不敏感检查。custom-managed 还拒绝 AW_COMMAND_*、AW_AGENT_SKILL_EVAL_PROCESS_MARKER 和 AW_HOME/AW_CODEX_HOME/AW_CLAUDE_HOME 的目标或来源名，跨 OS 按 ASCII 大小写不敏感检查；普通 command/entrypoint custom 保留既有校验范围。本次私有目录、工具绑定与进程归属标记由运行层设置；现有 Eval 进程标记按原合同继承但不可覆盖。诊断脱敏已解析 envFrom 值及可识别凭据，不输出完整 env 或请求。受信任适配器可能读取宿主凭据，环境过滤不构成隔离。
 
 ## 内建后端的共同要求
 
 通信仅在本次工具与调度配置就绪后报告 enabled。恢复独立协商，真实 session 可用时及时发送 session 帧，不能只依赖最终 result.sessionId。不能可靠恢复原 session 和当前工具绑定时报告 unsupported 或实际失败，不降级新会话；详见 [session 合同](protocol.md#session恢复绑定)。普通父输入不隐含强制 interrupt；轮次边界和提交竞态由 adapter 处理。
 
-保留 cwd、模型、推理强度、配置、args、env/envFrom、认证、项目指令、hooks、插件、MCP、工具权限及审批。显式 args、model、effort 无法映射时在首次模型提交前报错；Codex profile 的忽略策略仅按 [Codex 实现](codex.md#codex-profile-转换) 的精确范围使用。不复制 Eval 的权限配置，不自动关闭工具；权限提升只按明确选择的 permissionMode 或 args，受后端管理策略及本次授权约束。
+保留 cwd、模型、推理强度、配置、args、env/envFrom、认证、项目指令、hooks、插件、MCP、工具权限及审批。显式 args、model、effort 无法映射时在首次模型提交前报错；Codex profile 省略已列明的界面和废弃设置，其余完整透传，已知无效或与 AW 控制冲突的配置报错；省略清单、阶段路由、路径和非严格校验边界见 [Codex 实现](codex.md#codex-profile-转换)。不复制 Eval 的权限配置，不自动关闭工具；权限提升只按明确选择的 permissionMode 或 args，受后端管理策略及本次授权约束。
 
 后端缺失、必要接口不支持、认证或模型错误按真实结果报告。实际版本可供诊断，精确版本字符串不证明资格。所有首版支持路径须有本次独立后端进程的实际退出证据；不以 adapter 退出代替。

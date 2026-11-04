@@ -198,6 +198,8 @@ export async function runPluginTestCommand(options: {
   workspaceRoot: string;
   workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom;
   pluginDirectory: string;
+  nativeMode?: string;
+  nativeContext?: string;
   json?: boolean;
   io: AuthoringCommandIo;
 }): Promise<number> {
@@ -207,7 +209,9 @@ export async function runPluginTestCommand(options: {
   if (!plugin) throw new Error(`Plugin directory is not part of this Catalog Workspace source: ${pluginRoot}`);
   let stdout = '';
   let stderr = '';
-  const exitCode = await runPluginScriptTests([plugin.manifest.name], {
+  const exitCode = await runPluginScriptTests([plugin.manifest.name, '--native-mode', options.nativeMode ?? 'fixture',
+    ...(options.nativeContext ? ['--native-context', options.nativeContext] : []),
+  ], {
     repoRoot: catalogWorkspace.workspaceRoot,
     stdout: (text) => { stdout += text; },
     stderr: (text) => { stderr += text; },

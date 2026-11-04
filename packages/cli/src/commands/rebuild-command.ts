@@ -1,3 +1,4 @@
+import { withNativeToolRemovalImpact } from '../utils/native-tool-review.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 
@@ -317,6 +318,19 @@ export interface PreApplyAuthorizationTarget {
   platform: PlatformName;
   scope: Scope;
   relation: 'requested' | 'direct' | 'transitive';
+}
+
+function assertNativeToolChangeAuthorization(
+  plan: OperationPlan,
+  options: RebuildCommandInvocation,
+): void {
+  if (!plan.actions.some((action) => (action.nativeToolChanges?.length ?? 0) > 0)
+    || options.commandOptions.yes === true) return;
+  if (options.runtime?.preApplyConfirmed === true && options.runtime.expectedPlanFingerprint) {
+    assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, plan);
+    return;
+  }
+  throw new Error('nativeToolAuthorizationRequired: Changing installed native tool declarations requires --yes or an accepted current Review.');
 }
 
 export interface RebuildCommandTestHooks {
@@ -1702,7 +1716,7 @@ async function previewOfflineOwnedComponents(options: {
       : []));
   if (options.evidence) {
     preview.offlineCleanupPlans = options.evidence;
-    preview.operationPlan = createOfflineCleanupOperationPlan(options.evidence);
+    preview.operationPlan = await withNativeToolRemovalImpact(createOfflineCleanupOperationPlan(options.evidence), options.env);
   }
   await options.onPreviewStage?.('dependencyPlan');
   return preview;
@@ -1723,7 +1737,8 @@ function createOfflineCleanupOperationPlan(
             pluginId: target.pluginId,
             platform: target.platform,
             scope: target.scope,
-            path: action.target,
+            path: action.kind === 'namespacedOwner' && path.basename(action.target) === SKILL_OWNER_MARKER
+              ? path.dirname(action.target) : action.target,
             ownerFingerprint: target.targetFingerprint,
           }]
         : action.activationScope === target.scope
@@ -2367,8 +2382,8 @@ export async function executeRemovedPluginOutputCleanup(options: {
     scope: entry.producer.scope,
   }));
   const withRetainedPackages = (result: RebuildCommandResult,
-    evidence: readonly OfflineCleanupTargetEvidence[] = []): RebuildCommandResult => {
-    result.operationPlan = createOfflineCleanupOperationPlan(evidence, undefined, [], retainedActions);
+    operationPlan: OperationPlan = createOfflineCleanupOperationPlan([], undefined, [], retainedActions)): RebuildCommandResult => {
+    result.operationPlan = operationPlan;
     const commandResults = [...new Map([
       ...retainedPackages.map(retainedManagedCommandPackageResult), ...(result.commandResults ?? []),
     ].map((entry) => [JSON.stringify(entry.producer), entry])).values()];
@@ -2419,6 +2434,11 @@ export async function executeRemovedPluginOutputCleanup(options: {
     ...(current.marketplaceName ? { marketplaceName: current.marketplaceName } : {}),
     nativeRegistration: entry.platform === 'codex',
   }));
+  const operationPlan = await withNativeToolRemovalImpact(
+    createOfflineCleanupOperationPlan(evidence, undefined, [], retainedActions), options.context.env);
+  if (options.runtime?.expectedPlanFingerprint) {
+    assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
+  }
   const result = options.runtime?.previewOperationPlan
     ? await previewOfflineOwnedComponents({
         targets,
@@ -2440,7 +2460,7 @@ export async function executeRemovedPluginOutputCleanup(options: {
     executeCleanupOperation: options.runtime?.executeCleanupOperation,
     removeObsoleteInstallationContracts: options.runtime?.removeObsoleteInstallationContracts,
   });
-  withRetainedPackages(result, evidence);
+  withRetainedPackages(result, operationPlan);
   const residual = [
     ...current.blockers.filter((blocker) => !blocker.includes('Config')),
     ...(current.nativeState === 'installed' || current.nativeState === 'unknown'
@@ -2714,7 +2734,7 @@ async function runRebuildCommandInSession(
       && cleanupSelectionErrors.length === 0
       && legacyLiveTargets.length === 0) {
       const result = mergeRebuildCommandResults([]);
-      const operationPlan = createOfflineCleanupOperationPlan([], { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings], retainedPackageActions);
+      const operationPlan = await withNativeToolRemovalImpact(createOfflineCleanupOperationPlan([], { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings], retainedPackageActions), runtimeEnv);
       if (options.runtime?.expectedPlanFingerprint) {
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
@@ -2820,7 +2840,7 @@ async function runRebuildCommandInSession(
         && candidate.platform === target.platform
         && candidate.scope === target.scope)
         ?? intentOnlyOfflineCleanupEvidence(target));
-      const operationPlan = createOfflineCleanupOperationPlan(forceEvidence, { scope: options.commandOptions.scope, view: cleanupRequirements! }, cleanupInventoryWarnings(cleanupInventory!, forceCleanupTargets), retainedPackageActions);
+      const operationPlan = await withNativeToolRemovalImpact(createOfflineCleanupOperationPlan(forceEvidence, { scope: options.commandOptions.scope, view: cleanupRequirements! }, cleanupInventoryWarnings(cleanupInventory!, forceCleanupTargets), retainedPackageActions), runtimeEnv);
       if (options.runtime?.expectedPlanFingerprint) {
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
@@ -2836,6 +2856,7 @@ async function runRebuildCommandInSession(
           operationPlan,
         };
       }
+      assertNativeToolChangeAuthorization(operationPlan, options);
       const forceResults = await Promise.all(forcePlan.targets.map(async (target) => {
         const integration = createRebuildIntegration({
           context: {
@@ -2929,7 +2950,7 @@ async function runRebuildCommandInSession(
     }
     if (cleanupTargets.length === 0) {
       const result = mergeRebuildCommandResults([]);
-      const operationPlan = createOfflineCleanupOperationPlan([], { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings], retainedPackageActions);
+      const operationPlan = await withNativeToolRemovalImpact(createOfflineCleanupOperationPlan([], { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, []), ...cleanupUnavailableWarnings], retainedPackageActions), runtimeEnv);
       if (options.runtime?.expectedPlanFingerprint) {
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
@@ -2969,7 +2990,7 @@ async function runRebuildCommandInSession(
       && candidate.platform === target.platform
       && candidate.scope === target.scope)
       ?? intentOnlyOfflineCleanupEvidence(target));
-    const operationPlan = createOfflineCleanupOperationPlan(evidence, { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, cleanupTargets), ...cleanupUnavailableWarnings], retainedPackageActions);
+    const operationPlan = await withNativeToolRemovalImpact(createOfflineCleanupOperationPlan(evidence, { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, cleanupTargets), ...cleanupUnavailableWarnings], retainedPackageActions), runtimeEnv);
     if (options.runtime?.expectedPlanFingerprint) {
       assertOperationPlanFingerprint(
         options.runtime.expectedPlanFingerprint,
@@ -2987,6 +3008,7 @@ async function runRebuildCommandInSession(
       previewResult.operationPlan = operationPlan;
       return previewResult;
     }
+    assertNativeToolChangeAuthorization(operationPlan, options);
     const cleanupResult = await cleanupOfflineOwnedComponents({
       targets: cleanupLiveTargets,
       evidence,
@@ -4611,7 +4633,7 @@ async function runRebuildCommandInSession(
         const preview = mergeRebuildCommandResults([]);
         preview.dependencyPlan = initialPlan;
         preview.nativeFootprints = preparedNativeFootprints([...previewPreparation.preparedTargets.values()].map((entry) => entry.target));
-        preview.operationPlan = createRebuildOperationPlan({
+        preview.operationPlan = await withNativeToolRemovalImpact(createRebuildOperationPlan({
           dependencyPlan: initialPlan,
           codexPlans: initialCodexPlans,
           targetActions: previewPreparation.targetActions,
@@ -4620,7 +4642,7 @@ async function runRebuildCommandInSession(
           requirements,
           scope: options.commandOptions.scope,
           configDigests: previewPreparation.configDigests,
-        });
+        }), runtimeEnv);
         if (initialCodexPlans.length > 0) preview.codexReconcilePlans = initialCodexPlans;
         if (initialCodexPlans.some((plan) => plan.sharedNativeActions.some((action) =>
           action.action === 'install'
@@ -4700,7 +4722,7 @@ async function runRebuildCommandInSession(
             || action.action === 'repair'));
         let lockedCodexPlans = provisionalLockedCodexPlans;
         let lockedPreparation = await prepareRenderedTargets(lockedPlan, lockedCodexPlans, true);
-        let lockedOperationPlan = createRebuildOperationPlan({
+        let lockedOperationPlan = await withNativeToolRemovalImpact(createRebuildOperationPlan({
           dependencyPlan: lockedPlan,
           codexPlans: lockedCodexPlans,
           targetActions: lockedPreparation.targetActions,
@@ -4709,7 +4731,7 @@ async function runRebuildCommandInSession(
           requirements,
           scope: options.commandOptions.scope,
           configDigests: lockedPreparation.configDigests,
-        });
+        }), runtimeEnv);
         if (options.runtime?.expectedPlanFingerprint) {
           try {
             assertOperationPlanFingerprint(
@@ -4723,6 +4745,7 @@ async function runRebuildCommandInSession(
             );
           }
         }
+        assertNativeToolChangeAuthorization(lockedOperationPlan, options);
         if (options.runtime?.directCli
           && options.commandOptions.yes !== true
           && lifecycleCommand) {
@@ -5003,7 +5026,7 @@ async function runRebuildCommandInSession(
           });
           lockedPreparation.integration.setNativeMarketplaceEligibleTargets(eligibleTargets);
         }
-        lockedOperationPlan = createRebuildOperationPlan({
+        lockedOperationPlan = await withNativeToolRemovalImpact(createRebuildOperationPlan({
           dependencyPlan: lockedPlan,
           codexPlans: lockedCodexPlans,
           targetActions: lockedPreparation.targetActions,
@@ -5012,13 +5035,14 @@ async function runRebuildCommandInSession(
           requirements,
           scope: options.commandOptions.scope,
           configDigests: lockedPreparation.configDigests,
-        });
+        }), runtimeEnv);
         if (options.runtime?.expectedPlanFingerprint) {
           assertOperationPlanFingerprint(
             options.runtime.expectedPlanFingerprint,
             lockedOperationPlan,
           );
         }
+        assertNativeToolChangeAuthorization(lockedOperationPlan, options);
         if (options.runtime?.directCli
           && options.commandOptions.yes !== true
           && lifecycleCommand

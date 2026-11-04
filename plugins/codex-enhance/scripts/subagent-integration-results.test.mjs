@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { nativeTest as test } from './fixtures/native-test.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
