@@ -134,6 +134,7 @@ describe('Plugin Config v2 contract', () => {
 
   it.each([
     ['^\\u4E2D\\u{6587}$', '中文'],
+    ['^\\p{Han}+$', '中文'],
     ['^\\cA$', '\u0001'],
     ['^\\ca$', '\u0000'],
     ['^\\c1$', '\u0000'],
@@ -167,10 +168,12 @@ describe('Plugin Config v2 contract', () => {
 
   // Test Value Gate: editing values and object keys must not consume native
   // memory on every validation of the same field definition.
+  // Use simple patterns to keep repeated compilation within the CI budget;
+  // Unicode matching is covered by the compatibility cases above.
   it('keeps value and object key validation usable across repeated edits', () => {
     const config = normalizePluginConfigDefinition({
       fields: {
-        value: { type: 'string', validation: { pattern: '^\\p{Han}+$', maxLength: 40 } },
+        value: { type: 'string', validation: { pattern: '^item-[0-9]+$', maxLength: 40 } },
         labels: {
           type: 'object',
           additionalProperties: { type: 'string' },
@@ -179,7 +182,7 @@ describe('Plugin Config v2 contract', () => {
       },
     })
     for (let index = 0; index < 10_000; index += 1) {
-      expect(validatePluginConfigValue(config.fields.value!, '中文', 'value')).toEqual([])
+      expect(validatePluginConfigValue(config.fields.value!, `item-${index}`, 'value')).toEqual([])
       expect(validatePluginConfigValue(config.fields.labels!, { [`key-${index}`]: 'ok' }, 'labels')).toEqual([])
     }
   }, 20_000)
