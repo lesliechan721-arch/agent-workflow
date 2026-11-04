@@ -1,10 +1,10 @@
 {
   "name": "codex-enhance",
-  "version": "0.2.0-beta.24",
-  "description": "在 Codex 中组织已授权的通用委派、只读技术第二意见和大范围事实调查。",
+  "version": "0.2.0-beta.25",
+  "description": "在 Codex 中组织只读技术第二意见和大范围事实调查。",
   "interface": {
     "displayName": "Codex Enhance",
-    "shortDescription": "Codex 通用委派、技术第二意见与只读事实调查",
+    "shortDescription": "Codex 技术第二意见与只读事实调查",
     "capabilities": [
       "Skills",
       "Agents"

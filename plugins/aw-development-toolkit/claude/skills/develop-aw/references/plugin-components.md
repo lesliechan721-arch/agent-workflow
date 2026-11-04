@@ -28,6 +28,8 @@ MCP/App 的凭据值不进入 Skill、日志或分发包。生命周期由实际
 
 配置 helper 只完成合同允许的辅助任务；输出应确定、可测试。不要用 helper 重建另一套配置状态或隐式安装依赖。
 
+需要从另一插件的对象数组选择标量 key 时，使用 v4 `valueRef.plugin`，并显式声明同 source 的直接安装依赖和 `aw.plugin-config-cross-plugin-value-ref.v1`。省略 plugin 仍是本地引用。provider 必须满足原有字段、uniqueBy、类型及非敏感约束；候选使用已保存配置，不读取另一插件的未保存草稿。字段与关联校验以当前 capability registry 和完整作者验证为准，不在 renderer 自建跨插件配置读取。
+
 ## 读取本次安装生效的配置
 
 `runtimeConfig` 声明在 `artifacts.targets[]` 的动态 Skill target 上，不是静态 Skill 或 manifest 顶层可直接追加的通用字段。已有该 target 时直接维护其声明；静态 Skill 出现这类需求时，先决定是否采用当前支持的动态 target。采用后按 renderer（`references/aw-artifact-renderer.md`） 实现请求与输出，正文静态不免除这些前提；未采用受支持的路径时，明确能力限制。

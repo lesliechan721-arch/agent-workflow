@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.61",
+  "catalogVersion": "0.1.0-beta.62",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "662a84a67ab33b263ea14138417d1d08c1302b0f"
+    "sourceHead": "e1968f3d480688c83dc4a58024041d52b8f7ff85"
   },
   "entries": [
     {
@@ -97,6 +97,58 @@
       "contentDigest": "sha256:9193daeb08db8155cecb3a89b0bd017194bc88d0e4e92fc1581ea0eb9dc64749"
     },
     {
+      "name": "agent-subagent",
+      "source": "./plugins/agent-subagent",
+      "description": "组织已授权的通用子代理委派、执行配置与外部执行。",
+      "interface": {
+        "displayName": "Agent Subagent",
+        "shortDescription": "通用子代理委派与执行配置",
+        "capabilities": [
+          "Skills",
+          "Agents"
+        ]
+      },
+      "category": "workflow",
+      "tags": [
+        "subagent",
+        "delegation",
+        "execution"
+      ],
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CODEX",
+          "CLAUDE"
+        ]
+      },
+      "version": "0.1.0-beta.1",
+      "dependencies": [],
+      "requires": {
+        "aw": {
+          "capabilities": [
+            "aw.dynamic-artifacts.v2",
+            "aw.installed-runtime-config.v2",
+            "aw.managed-commands.v1",
+            "aw.native-tools.v2",
+            "aw.plugin-build-config.v1",
+            "aw.plugin-config-array.v1",
+            "aw.plugin-config-summary.v1",
+            "aw.plugin-config-unique-by.v1",
+            "aw.plugin-config-value-ref.v1",
+            "aw.plugin-config.v2",
+            "aw.plugin-config.v3",
+            "aw.plugin-config.v4",
+            "aw.plugin-manifest.v3"
+          ]
+        }
+      },
+      "artifactDigest": "sha256:4ce5baece9cbfdb69d6d3b6cfdfd6f50160717dea19542d057f9a01134816175",
+      "manifestDigest": "sha256:d7f9d998b7815f3caf1191b7ad4bbf5babc3b8bfd933e555e97e2e70be5c3a08",
+      "contentDigest": "sha256:6bbe3d74a0161c65d62bf68090f1fd9e3693e68cf86f2ba824e0faff1b2ae2d6"
+    },
+    {
       "name": "aw-development-toolkit",
       "source": "./plugins/aw-development-toolkit",
       "description": "处理 AW 插件及 Skill 的来源、开发、验证与物化，维护 Catalog，并通过手动入口发布。",
@@ -117,7 +169,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.11",
+      "version": "0.1.0-beta.12",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -141,9 +193,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:35c713860ad21a6cb272d78807a4d065e0e16e435c81e4b8ade2370db95cec12",
-      "manifestDigest": "sha256:6a5342cc243d9a44166537148401a33f646c49096b65709b22fdd9261a8cb32d",
-      "contentDigest": "sha256:080a8e00e9c2273e2aaed2b871ec7486a2b3bd92a1b4f7dcbd69415e59040037"
+      "artifactDigest": "sha256:5da367ff3859e67b430b2b552bed3642a2e454a4b74eeab46f292c5362775ee5",
+      "manifestDigest": "sha256:ab07198a7b2d9b05e3b018240be07979564266da3b0635e5cb666a02b28a4a3d",
+      "contentDigest": "sha256:c58d6a4fc440b4fba168430a5bb3f0ef1b7800d892511a4ff27811f897a7b1e5"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -222,10 +274,10 @@
     {
       "name": "codex-enhance",
       "source": "./plugins/codex-enhance",
-      "description": "在 Codex 中组织已授权的通用委派、只读技术第二意见和大范围事实调查。",
+      "description": "在 Codex 中组织只读技术第二意见和大范围事实调查。",
       "interface": {
         "displayName": "Codex Enhance",
-        "shortDescription": "Codex 通用委派、技术第二意见与只读事实调查",
+        "shortDescription": "Codex 技术第二意见与只读事实调查",
         "capabilities": [
           "Skills",
           "Agents"
@@ -249,19 +301,17 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.24",
-      "dependencies": [],
+      "version": "0.2.0-beta.25",
+      "dependencies": [
+        "agent-subagent"
+      ],
       "requires": {
         "aw": {
           "capabilities": [
             "aw.dynamic-artifacts.v2",
-            "aw.installed-runtime-config.v2",
-            "aw.managed-commands.v1",
-            "aw.native-tools.v2",
-            "aw.plugin-build-config.v1",
             "aw.plugin-config-array.v1",
+            "aw.plugin-config-cross-plugin-value-ref.v1",
             "aw.plugin-config-summary.v1",
-            "aw.plugin-config-unique-by.v1",
             "aw.plugin-config-value-ref.v1",
             "aw.plugin-config.v2",
             "aw.plugin-config.v3",
@@ -270,9 +320,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:13e7ee92a3a4e94fe84370b0e225d2e5b7deba4242e9f99dede1521c877cf5f0",
-      "manifestDigest": "sha256:8507b311fde208226635d8d3a46669b17ec8e7be6e2a475ed11c8cfa923371e1",
-      "contentDigest": "sha256:b41ea75b41cd23dfefff72085ca18b8346b6b021f8d7318d6eb236d7eff1afbf"
+      "artifactDigest": "sha256:751d00d6cf9639d1978d3c5397a643d70a0690dd2fb2ed0b55b04521114b9c62",
+      "manifestDigest": "sha256:bbbf0c23237d612e0a131edfa526569fbcadcf2bc52fb4582c67bae4ec9e9caf",
+      "contentDigest": "sha256:82dc71b97347333726726a201c7dfbb49a402490929569b663eb45487e64ac4f"
     },
     {
       "name": "decision-kit",
