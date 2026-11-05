@@ -132,6 +132,61 @@ describe('Plugin Config v2 contract', () => {
       .toBe('maxLength')
   })
 
+  it.each([
+    ['^\\u4E2D\\u{6587}$', '中文'],
+    ['^\\p{Han}+$', '中文'],
+    ['^\\cA$', '\u0001'],
+    ['^\\ca$', '\u0000'],
+    ['^\\c1$', '\u0000'],
+    ['^\\c@$', '\u0000'],
+    ['^/path/a\\/b$', '/path/a/b'],
+    ['^\\\\u0041$', '\\u0041'],
+    ['^(?<word>中文)$', '中文'],
+    ['', 'any value'],
+  ])('preserves RE2 Unicode and escape matching for %s', (pattern, value) => {
+    const config = normalizePluginConfigDefinition({
+      fields: { value: { type: 'string', validation: { pattern, maxLength: 40 } } },
+    })
+    expect(validatePluginConfigValue(config.fields.value!, value, 'value')).toEqual([])
+  })
+
+  // Test Value Gate: repeated catalog reads must not exhaust the WASM heap,
+  // including reads of changing or invalid author-supplied patterns.
+  it('keeps pattern definition validation usable across repeated reads', () => {
+    for (let index = 0; index < 10_000; index += 1) {
+      const config = normalizePluginConfigDefinition({
+        fields: {
+          value: { type: 'string', validation: { pattern: `^(?<value>item-${index})$`, maxLength: 40 } },
+        },
+      })
+      expect(validatePluginConfigValue(config.fields.value!, `item-${index}`, 'value')).toEqual([])
+      expect(() => normalizePluginConfigDefinition({
+        fields: { value: { type: 'string', validation: { pattern: `(?=item-${index})`, maxLength: 40 } } },
+      })).toThrow('expected a valid RE2 regular expression')
+    }
+  }, 20_000)
+
+  // Test Value Gate: editing values and object keys must not consume native
+  // memory on every validation of the same field definition.
+  // Use simple patterns to keep repeated compilation within the CI budget;
+  // Unicode matching is covered by the compatibility cases above.
+  it('keeps value and object key validation usable across repeated edits', () => {
+    const config = normalizePluginConfigDefinition({
+      fields: {
+        value: { type: 'string', validation: { pattern: '^item-[0-9]+$', maxLength: 40 } },
+        labels: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          validation: { key: { pattern: '^key-[0-9]+$', maxLength: 40 } },
+        },
+      },
+    })
+    for (let index = 0; index < 10_000; index += 1) {
+      expect(validatePluginConfigValue(config.fields.value!, `item-${index}`, 'value')).toEqual([])
+      expect(validatePluginConfigValue(config.fields.labels!, { [`key-${index}`]: 'ok' }, 'labels')).toEqual([])
+    }
+  }, 20_000)
+
   it('rejects removed fields, arrays, null, and nested objects', () => {
     for (const field of [
       { type: 'enum', values: ['safe'] },

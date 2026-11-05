@@ -1,4 +1,4 @@
-import { RE2 } from 're2-wasm'
+import { ConfigPatternMemoryError, testConfigPattern } from './config-pattern.js'
 
 import type {
   PluginConfigAdditionalPropertiesField,
@@ -158,8 +158,9 @@ function normalizeStringValidation(
       throw new Error(`Invalid ${path}: maxLength is required when pattern is declared.`)
     }
     try {
-      new RE2(pattern, 'u')
-    } catch {
+      testConfigPattern(pattern)
+    } catch (error) {
+      if (error instanceof ConfigPatternMemoryError) throw error
       throw new Error(`Invalid ${path}.pattern: expected a valid RE2 regular expression.`)
     }
   }
@@ -269,7 +270,7 @@ function validateString(
   if (validation?.maxLength !== undefined && [...value].length > validation.maxLength) {
     issues.push(createIssue('maxLength', field, `Expected at most ${validation.maxLength} characters.`, property))
   }
-  if (validation?.pattern !== undefined && !new RE2(validation.pattern, 'u').test(value)) {
+  if (validation?.pattern !== undefined && !testConfigPattern(validation.pattern, value)) {
     issues.push(createIssue('pattern', field, `Expected a value that matches ${validation.pattern}.`, property))
   }
   if (validation?.format !== undefined && !stringFormatMatches(value, validation.format)) {

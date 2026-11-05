@@ -43,6 +43,48 @@ import {
 afterEach(() => cleanup());
 
 describe('ConsoleAppV4', () => {
+  // Test Value Gate: an engine memory failure must retain its diagnostic code
+  // and direct the user to restart, without offering source repair or reset.
+  it.each(['effective', 'user', 'project'] as const)(
+    'shows restart recovery when configuration validation runs out of memory in %s settings', async (scope) => {
+      const getConfigResetAvailability = vi.fn().mockResolvedValue({
+        exists: true,
+        state: 'ready',
+        targetKind: 'regularFile',
+        resettable: true,
+      });
+      const value = controller({
+        getConfigResetAvailability,
+        getConfigPage: vi.fn().mockRejectedValue(Object.assign(
+          new Error('private engine details /Users/private'),
+          { code: 'configValidationMemoryExhausted' },
+        )),
+      });
+      await value.load();
+      value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
+      value.beginConfigFlow('team-tools/review-gate');
+      value.replace({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope } });
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 40 }} />);
+      await nextTurn(5);
+      expect(value.snapshot.router.current.route).toMatchObject({
+        name: 'configUnavailable',
+        diagnosticCode: 'configValidationMemoryExhausted',
+        diagnosticStage: 'read-config',
+      });
+      expect(instance.lastFrame()).toContain('设置校验内存不足');
+      expect(instance.lastFrame()).toContain('重新启动 AW');
+      expect(instance.lastFrame()).toContain('已保存的设置保持不变');
+      expect(instance.lastFrame()).not.toContain('修复插件来源');
+      expect(instance.lastFrame()).not.toContain('重置');
+      expect(instance.lastFrame()).not.toContain('手动移动');
+      expect(getConfigResetAvailability).not.toHaveBeenCalled();
+      await focusAction(instance, '技术详情');
+      await input(instance, '\r');
+      expect(instance.lastFrame()).toContain('configValidationMemoryExhausted');
+      expect(instance.lastFrame()).not.toContain('/Users/private');
+    },
+  );
+
   it('renders config partial retry, reset Review, unavailable terminal state, and compact field viewport', async () => {
     const partialScreens = new Set<ConsoleV4ScreenId>();
     const partialReload = loadResult();

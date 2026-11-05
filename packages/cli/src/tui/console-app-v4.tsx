@@ -999,17 +999,21 @@ function configUnavailableDiagnostic(
   route: Extract<TuiRoute, { name: 'configUnavailable' }>,
 ): DiagnosticSummaryViewModel {
   const invalidLayer = (route.invalidStores?.length ?? 0) > 0;
+  const memoryExhausted = route.diagnosticCode === 'configValidationMemoryExhausted';
   const invalidLayerLabel = route.invalidStores?.map((store) =>
     store.scope === 'user' ? '个人默认' : '当前项目').join('、');
   return {
     severity: 'error',
-    title: invalidLayer ? '设置层无效，已阻止编辑' : '插件定义或来源不可用',
+    title: invalidLayer ? '设置层无效，已阻止编辑'
+      : memoryExhausted ? '设置校验内存不足' : '插件定义或来源不可用',
     userMessage: invalidLayer
       ? '高优先级设置层无效，不能静默使用较低层或默认值。'
+      : memoryExhausted ? '配置校验引擎的内存已耗尽，当前不能继续校验设置。'
       : '当前无法取得可信的字段定义，因此不能验证新值。',
     impact: [
       { state: 'blocked', message: invalidLayer
         ? `${invalidLayerLabel}设置层、普通 unset 和渲染都已阻止。`
+        : memoryExhausted ? '重新启动 AW 前，不能编辑这个插件的字段设置。'
         : '恢复可信字段定义前，不能编辑这个插件的字段设置。' },
       { state: 'preserved', message: invalidLayer
         ? '较低层或默认值只可作为预览；当前无效层仍保持不变。'
@@ -1017,6 +1021,7 @@ function configUnavailableDiagnostic(
     ],
     nextStep: invalidLayer
       ? '确认后重置整个目标设置层；不会创建备份。'
+      : memoryExhausted ? '退出并重新启动 AW，然后再次打开设置。'
       : configUnavailableCanRecoverSource(route)
         ? '重新检查来源，然后再次打开设置。'
         : '查看技术详情，确认字段定义不可用的原因。',
@@ -1031,6 +1036,7 @@ function configUnavailableDiagnostic(
       ],
       checks: invalidLayer
         ? ['只删除所选 user 或 project 设置层。', '重置后重新读取继承值和默认值。']
+        : memoryExhausted ? ['退出并重新启动 AW。', '若问题再次出现，升级 AW 后重试。']
         : ['恢复插件来源和可信插件定义。', '重新检查来源后再次打开设置。'],
     },
   };
@@ -2165,6 +2171,7 @@ export function ConsoleAppV4(props: {
 
   useEffect(() => {
     if (route.name !== 'configUnavailable'
+      || route.diagnosticCode === 'configValidationMemoryExhausted'
       || (!route.invalidStores?.length && !route.storedScopes?.length && !route.layer)) {
       setConfigResetAvailability({});
       return;
@@ -2195,6 +2202,7 @@ export function ConsoleAppV4(props: {
     props.controller,
     route.name,
     route.name === 'configUnavailable' ? route.pluginId : '',
+    route.name === 'configUnavailable' ? route.diagnosticCode : '',
     route.name === 'configUnavailable'
       ? route.invalidStores?.map((store) => `${store.scope}:${store.code}`).join('|') ?? ''
       : '',
@@ -7755,7 +7763,8 @@ export function ConsoleAppV4(props: {
     const canRecoverSource = configUnavailableCanRecoverSource(route);
     title = diagnostic.title;
     description = '';
-    const resetScopes = route.invalidStores?.map(({ scope }) => scope)
+    const resetScopes = route.diagnosticCode === 'configValidationMemoryExhausted' ? []
+      : route.invalidStores?.map(({ scope }) => scope)
       ?? route.storedScopes
       ?? (route.layer ? [route.layer.scope] : []);
     actions = [
