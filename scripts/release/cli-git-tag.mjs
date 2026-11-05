@@ -119,7 +119,8 @@ export async function ensureCliTag(version, sourceHead, options = {}) {
     }
     throw new Error(
       `CLI tag ${cliTagName(version)} push failed or its result is uncertain. ` +
-      'Run pnpm release -- --repair-cli-tag with the unchanged prepared release.',
+      'Run pnpm release -- --repair-cli-tag with the unchanged prepared release.\n' +
+      (error instanceof Error ? error.message : String(error)),
       { cause: error },
     );
   }

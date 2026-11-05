@@ -54,7 +54,7 @@ describe('CLI Git tag publisher', () => {
       readRemoteTag: async () => null,
       readLocalTag: async () => null,
       runGit,
-    })).rejects.toThrow('pnpm release -- --repair-cli-tag');
+    })).rejects.toThrow(/pnpm release -- --repair-cli-tag[\s\S]*connection closed/u);
   });
 
   it('matches all five published CLI packages against the prepared artifacts before repair', async () => {
