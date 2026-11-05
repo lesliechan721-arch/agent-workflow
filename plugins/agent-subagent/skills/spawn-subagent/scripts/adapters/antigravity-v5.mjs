@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { LIMITS, fail, identifier, object, text as validText } from '../runtime/contracts.mjs';
+import { LIMITS, fail, identifier, object, redact, text as validText } from '../runtime/contracts.mjs';
 import { adapterMain, backendLines, collaborationInput, deferred, negotiateExecutable } from './common.mjs';
 import { antigravityArguments, antigravityFullAccess } from './antigravity-arguments.mjs';
 import { watchPermissionFallback } from './permission-mode.mjs';
@@ -11,6 +11,26 @@ import { communicationCommand } from '../runtime/managed-host.mjs';
 export { antigravityArguments, checkAntigravityArguments } from './antigravity-arguments.mjs';
 
 const execFileAsync = promisify(execFile);
+
+function antigravityFailure(result, environment) {
+  let message = validText(result.error) && result.error.trim()
+    ? `Antigravity reported ERROR: ${result.error}`
+    : 'Antigravity reported ERROR without a valid error description.';
+  message = redact(message, environment);
+  // Leave room in the 640-byte display budget for the startup recovery hint.
+  const maximumBytes = 512;
+  if (Buffer.byteLength(message) > maximumBytes) {
+    const suffix = ' [truncated]';
+    let prefix = '', bytes = Buffer.byteLength(suffix);
+    for (const character of message) {
+      bytes += Buffer.byteLength(character);
+      if (bytes > maximumBytes) break;
+      prefix += character;
+    }
+    message = prefix + suffix;
+  }
+  return { state: 'failed', code: 'backendFailed', message };
+}
 
 async function checkAntigravityVersion(context, executable) {
   let stdout;
@@ -159,7 +179,8 @@ export async function executeAntigravity(context) {
     await context.onStop();
     return { state: 'failed', code: context.errorCode, text: '' };
   }
-  if (!sessionId || terminal || backend.exited) return { state: 'failed', code: terminal?.status === 'ERROR' ? 'backendFailed' : 'backendInitializationFailed', text: '' };
+  if (terminal?.status === 'ERROR') return { ...antigravityFailure(terminal, context.environment), text: '' };
+  if (!sessionId || terminal || backend.exited) return { state: 'failed', code: 'backendInitializationFailed', text: '' };
   await context.ready();
   if (!context.signal.aborted && !backend.exited) {
     firstSent = true;
@@ -179,7 +200,7 @@ export async function executeAntigravity(context) {
   const result = { text: response, ...(sessionId ? { sessionId } : {}) };
   if (context.signal.aborted) return { ...result, state: 'unknown', code: context.errorCode };
   if (!terminal) return { ...result, state: 'unknown', code: 'serviceTerminalUnconfirmed' };
-  if (terminal.status === 'ERROR') return { ...result, state: 'failed', code: 'backendFailed' };
+  if (terminal.status === 'ERROR') return { ...result, ...antigravityFailure(terminal, context.environment) };
   if (terminal.status === 'SUCCESS' && !response.trim() && deniedActions) return { ...result, state: 'failed', code: 'backendActionDenied' };
   if (terminal.status !== 'SUCCESS' || inputCount < 1 || acceptedCount !== inputCount || backend.exitCode !== 0 || !response.trim()) return { ...result, state: 'unknown', code: 'serviceTerminalConflict' };
   context.generationStarted = true;

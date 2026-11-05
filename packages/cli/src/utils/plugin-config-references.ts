@@ -14,7 +14,7 @@ import {
 
 import type { NormalizedPluginManifest, PluginMeta, Scope } from '../types.js';
 import { resolveWorkContext } from '../intent/work-context.js';
-import { resolveCatalogOperationContext } from './catalog-operation-context.js';
+import { resolveCatalogOperationContext, type CatalogOperationContext } from './catalog-operation-context.js';
 import { readCatalogSourcesConfigSnapshot } from './catalog-sources.js';
 import { readPluginManifest } from './manifest.js';
 import { formatPluginId } from './multi-source-catalog.js';
@@ -65,6 +65,7 @@ export async function resolvePluginConfigReferencePlugins(options: {
   sourceIdentity?: string;
   logicalIdentity?: string;
   plugins?: readonly PluginMeta[];
+  operationContext?: CatalogOperationContext;
   env?: NodeJS.ProcessEnv;
 }): Promise<PluginMeta[]> {
   if (options.plugins) {
@@ -76,10 +77,14 @@ export async function resolvePluginConfigReferencePlugins(options: {
     return selected;
   }
   if (!options.sourceId) return [];
-  const configured = await readCatalogSourcesConfigSnapshot(options.env);
-  if (!configured.config.sources.some((source) => source.id === options.sourceId)) return [];
-  const operation = await resolveCatalogOperationContext({ sourceIds: [options.sourceId], env: options.env });
-  const source = operation.catalog.sources[0]!.resolution!;
+  let operation = options.operationContext;
+  if (!operation) {
+    const configured = await readCatalogSourcesConfigSnapshot(options.env);
+    if (!configured.config.sources.some((source) => source.id === options.sourceId)) return [];
+    operation = await resolveCatalogOperationContext({ sourceIds: [options.sourceId], env: options.env });
+  }
+  const source = operation.catalog.sources.find((source) => source.sourceId === options.sourceId)?.resolution;
+  if (!source) throw new Error('operationPlanStale: the configuration reference source is unavailable.');
   if ((options.sourceIdentity && source.sourceIdentity !== options.sourceIdentity)
     || (options.logicalIdentity && source.logicalIdentity !== options.logicalIdentity)) {
     throw new Error('operationPlanStale: the configuration reference source identity changed.');
