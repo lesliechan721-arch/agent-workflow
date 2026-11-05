@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.62",
+  "catalogVersion": "0.1.0-beta.63",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "e1968f3d480688c83dc4a58024041d52b8f7ff85"
+    "sourceHead": "95344043d020d8d817f28ce1b2a970b7fd6b3a41"
   },
   "entries": [
     {
@@ -123,7 +123,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.1",
+      "version": "0.1.0-beta.2",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -144,9 +144,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:4ce5baece9cbfdb69d6d3b6cfdfd6f50160717dea19542d057f9a01134816175",
-      "manifestDigest": "sha256:d7f9d998b7815f3caf1191b7ad4bbf5babc3b8bfd933e555e97e2e70be5c3a08",
-      "contentDigest": "sha256:6bbe3d74a0161c65d62bf68090f1fd9e3693e68cf86f2ba824e0faff1b2ae2d6"
+      "artifactDigest": "sha256:af00ddb15432c099b212f9fe749fc7d281839caa6dd44f2c430fb9d4658db26a",
+      "manifestDigest": "sha256:94a494f0355415b5df66fae39b21e788dcc971e8a5fa9ac0ecf2c3032381aadb",
+      "contentDigest": "sha256:e7359569ef50e6ef6125d734e8638487579f4654f3f1a40b217de8f2b9b84a71"
     },
     {
       "name": "aw-development-toolkit",
