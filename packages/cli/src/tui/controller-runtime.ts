@@ -79,7 +79,7 @@ import {
   resetPluginConfigWithHelper,
 } from '../utils/plugin-config-write.js';
 import { analyzePluginConfigMutationImpact, discoverPluginConfigManagedCommandPackages, pluginConfigTargetRenderScopes, pluginSharedNativeConfigTargets } from '../utils/plugin-config-impact.js';
-import { collectPluginConfigReferenceEvidence, resolvePluginConfigReferenceConsumers, resolvePluginConfigReferencePlugins } from '../utils/plugin-config-references.js';
+import { collectPluginConfigReferenceEvidence, pluginConfigHasExternalReferences, resolvePluginConfigReferenceConsumers, resolvePluginConfigReferencePlugins } from '../utils/plugin-config-references.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import { createBatchIntentCompatiblePlanFingerprint } from '../commands/operation-plan.js';
@@ -323,12 +323,19 @@ export function configAffectedStatusTargets(
       .localeCompare(`${right.pluginId}\0${right.platform}\0${right.scope}`, 'en'));
 }
 
+function configNeedsReferencePlugins(plugin: PluginMeta): boolean {
+  return pluginConfigHasExternalReferences(plugin.manifest)
+    || Object.values(plugin.manifest.config?.fields ?? {})
+      .some((field) => field.type === 'array' && field.items.type === 'object');
+}
+
 async function configRetrySharedNativeRenderTargets(
   plugin: PluginMeta,
   targets: readonly { pluginName?: string; platform: PlatformName }[],
   env?: NodeJS.ProcessEnv,
+  referencePlugins?: readonly PluginMeta[],
 ): Promise<ReturnType<typeof pluginSharedNativeConfigTargets>> {
-  const plugins = await resolvePluginConfigReferenceConsumers({ plugin, env });
+  const plugins = await resolvePluginConfigReferenceConsumers({ plugin, env, plugins: referencePlugins });
   return plugins.flatMap((consumer) => pluginSharedNativeConfigTargets(consumer).filter((shared) =>
     targets.some((target) => (target.pluginName ?? plugin.manifest.name) === consumer.manifest.name
       && target.platform === (shared.platform ?? 'codex'))));
@@ -342,9 +349,11 @@ async function configRetryStoreDigest(options: {
   preApplyAuthorization: readonly { pluginName: string; scope: Scope }[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  plugins?: readonly PluginMeta[];
 }): Promise<string> {
   const plugins = await resolvePluginConfigReferencePlugins({ sourceId: options.plugin.sourceId,
-    sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, env: options.env });
+    sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity,
+    env: options.env, plugins: options.plugins });
   const byName = new Map([...plugins, options.plugin].map((plugin) => [plugin.manifest.name, plugin]));
   const profiles = [{ pluginName: options.plugin.manifest.name, scope: options.scope },
     ...options.targets.flatMap((target) => {
@@ -2602,13 +2611,28 @@ export function createTuiControllerDependencies(
       if (catalogOperation) catalogOperationByEvidence.set(evidence, catalogOperation);
       return evidence;
     }
-    const configReferencePluginIds = intent.kind === 'configSave'
+    const needsReferencePlugins = intent.kind === 'configSave'
+      && await withResolvedCatalogPlugin({
+        selector: intent.pluginId, cliVersion: packageInfo.version, env: context.env,
+        ...(catalogOperation ? { operationContext: catalogOperation } : {}),
+        ...(signal ? { signal } : {}),
+        consume: ({ plugin }) => configNeedsReferencePlugins(plugin),
+      });
+    const referencePlugins = needsReferencePlugins
+      ? await resolvePluginConfigReferencePlugins({
+          sourceId: parsePluginId(intent.pluginId).sourceId,
+          env: context.env,
+          operationContext: catalogOperation,
+        })
+      : undefined;
+    const configReferencePluginIds = intent.kind === 'configSave' && needsReferencePlugins
       ? await withResolvedCatalogPlugin({
           selector: intent.pluginId, cliVersion: packageInfo.version, env: context.env,
           ...(catalogOperation ? { operationContext: catalogOperation } : {}),
           ...(signal ? { signal } : {}),
-          consume: async ({ plugin }) => (await resolvePluginConfigReferenceConsumers({ plugin, env: context.env }))
-            .map((entry) => entry.pluginId ?? `${entry.sourceId}/${entry.manifest.name}`),
+          consume: async ({ plugin }) => (await resolvePluginConfigReferenceConsumers({
+            plugin, env: context.env, plugins: referencePlugins,
+          })).map((entry) => entry.pluginId ?? `${entry.sourceId}/${entry.manifest.name}`),
         })
       : [];
     if (preparation && intent.kind === 'configSave') {
@@ -2653,6 +2677,7 @@ export function createTuiControllerDependencies(
           }
           const impact = intent.retryApply ? undefined : await analyzePluginConfigMutationImpact({
             plugin,
+            referencePlugins,
             scope: intent.scope,
             cwd: context.cwd,
             env: context.env,
@@ -2668,7 +2693,7 @@ export function createTuiControllerDependencies(
             : impact!.affectedTargets;
           const commandPackages = impact?.affectedCommandPackages
             ?? (await discoverPluginConfigManagedCommandPackages({ plugin, scope: intent.scope,
-              cwd: context.cwd, env: context.env ?? process.env, platformTargets: affectedTargets })).packages;
+              cwd: context.cwd, env: context.env ?? process.env, platformTargets: affectedTargets, referencePlugins })).packages;
           const preApplyAuthorization = configIntentRequestsApply(intent)
             ? (await resolveConfigPreApplyAuthorization({
                 plugin,
@@ -2678,6 +2703,7 @@ export function createTuiControllerDependencies(
                 applyTargets: affectedTargets,
                 nativeCliRunner: context.nativeCliRunner,
                 rebuildRuntime: {
+                  referencePlugins,
                   catalogOperationContext: preparedCatalogOperation,
                   expectedGenerationSetDigest: preparedCatalogOperation.generationSetDigest,
                   inventoryCatalogSourceReferences: operationInventory,
@@ -2691,9 +2717,10 @@ export function createTuiControllerDependencies(
             commandPackages,
             preApplyAuthorization,
             retryStoreDigest: intent.retryApply ? await configRetryStoreDigest({ plugin, scope: intent.scope,
-              targets: affectedTargets, commandPackages, preApplyAuthorization, cwd: context.cwd, env: context.env }) : undefined,
+              targets: affectedTargets, commandPackages, preApplyAuthorization, cwd: context.cwd, env: context.env,
+              plugins: referencePlugins }) : undefined,
             sharedNativeRenderTargets: intent.retryApply
-              ? await configRetrySharedNativeRenderTargets(plugin, affectedTargets, context.env)
+              ? await configRetrySharedNativeRenderTargets(plugin, affectedTargets, context.env, referencePlugins)
               : impact!.sharedNativeRenderTargets,
           };
         },
@@ -2802,6 +2829,7 @@ export function createTuiControllerDependencies(
             const impact = intent.kind === 'configSave' && !intent.retryApply
               ? await analyzePluginConfigMutationImpact({
                   plugin,
+                  referencePlugins,
                   scope: intent.scope,
                   cwd: context.cwd,
                   env: context.env,
@@ -2823,6 +2851,7 @@ export function createTuiControllerDependencies(
               ?? (intent.kind === 'configSave' ? (await discoverPluginConfigManagedCommandPackages({
                 plugin, scope: intent.scope, cwd: context.cwd, env: context.env ?? process.env,
                 platformTargets: configImpactVisibleTargets(plugin.manifest.name, configVisibleTargets),
+                referencePlugins,
               })).packages : []);
             const preApplyAuthorization = intent.kind === 'configSave'
               && configIntentRequestsApply(intent)
@@ -2836,6 +2865,7 @@ export function createTuiControllerDependencies(
                     : impact!.affectedTargets,
                   nativeCliRunner: context.nativeCliRunner,
                   rebuildRuntime: {
+                    referencePlugins,
                     ...(catalogOperation ? { catalogOperationContext: catalogOperation } : {}),
                     ...(catalogOperation?.generationSetDigest
                       ? { expectedGenerationSetDigest: catalogOperation.generationSetDigest }
@@ -2852,11 +2882,11 @@ export function createTuiControllerDependencies(
               preApplyAuthorization,
               retryStoreDigest: intent.kind === 'configSave' && intent.retryApply
                 ? await configRetryStoreDigest({ plugin, scope: intent.scope, targets: affectedTargets,
-                  commandPackages, preApplyAuthorization, cwd: context.cwd, env: context.env }) : undefined,
+                  commandPackages, preApplyAuthorization, cwd: context.cwd, env: context.env, plugins: referencePlugins }) : undefined,
               sharedNativeRenderTargets: intent.kind === 'configSave'
                 ? intent.retryApply
                   ? await configRetrySharedNativeRenderTargets(plugin,
-                    configImpactVisibleTargets(plugin.manifest.name, configVisibleTargets), context.env)
+                    configImpactVisibleTargets(plugin.manifest.name, configVisibleTargets), context.env, referencePlugins)
                   : impact!.sharedNativeRenderTargets
                 : [],
             };
@@ -4300,6 +4330,13 @@ export function createTuiControllerDependencies(
                       freshSource,
                       sourceEvidenceForPlugin(source, plugin.manifest.name),
                     );
+                    const referencePlugins = configNeedsReferencePlugins(plugin) ? await resolvePluginConfigReferencePlugins({
+                      sourceId: plugin.sourceId,
+                      sourceIdentity: plugin.sourceIdentity,
+                      logicalIdentity: plugin.catalogLogicalIdentity,
+                      env: context.env,
+                      operationContext: groupCatalogOperation,
+                    }) : undefined;
                     const applyTargets = intent.apply
                       ? freshConfig.affectedTargets.map((target) => ({
                           pluginName: target.pluginName ?? plugin.manifest.name,
@@ -4316,6 +4353,7 @@ export function createTuiControllerDependencies(
                       nativeCliRunner: context.nativeCliRunner,
                       rebuildRuntime: {
                         ...context,
+                        referencePlugins,
                         awHomeMutationToken,
                         operationDiagnosticSink: (entries) => {
                           operationRebuildResults.push(...structuredClone(entries));
@@ -4428,6 +4466,13 @@ export function createTuiControllerDependencies(
                   currentSource,
                   sourceEvidenceForPlugin(source, plugin.manifest.name),
                 );
+                const referencePlugins = configNeedsReferencePlugins(plugin) ? await resolvePluginConfigReferencePlugins({
+                  sourceId: plugin.sourceId,
+                  sourceIdentity: plugin.sourceIdentity,
+                  logicalIdentity: plugin.catalogLogicalIdentity,
+                  env: context.env,
+                  operationContext: catalogOperation,
+                }) : undefined;
                 const applyTargets = intent.retryApply || intent.apply
                   ? currentEvidence.config?.affectedTargets.map((target) => ({
                       pluginName: target.pluginName ?? plugin.manifest.name,
@@ -4444,6 +4489,7 @@ export function createTuiControllerDependencies(
                         nativeCliRunner: context.nativeCliRunner,
                         rebuildRuntime: {
                           ...context,
+                          referencePlugins,
                           awHomeMutationToken,
                           operationDiagnosticSink,
                           ...(reviewedScriptTimeoutMs(intent) === undefined
@@ -4470,6 +4516,7 @@ export function createTuiControllerDependencies(
                       nativeCliRunner: context.nativeCliRunner,
                       rebuildRuntime: {
                         ...context,
+                        referencePlugins,
                         awHomeMutationToken,
                         operationDiagnosticSink,
                         ...(reviewedScriptTimeoutMs(intent) === undefined
