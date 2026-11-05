@@ -14,6 +14,7 @@ import { antigravityArguments, checkAntigravityArguments } from '../skills/spawn
 import { antigravityPermissionRules } from '../skills/spawn-subagent/scripts/adapters/antigravity-permissions.mjs';
 import { communicationEnvironment } from '../skills/spawn-subagent/scripts/runtime/managed-host.mjs';
 import { protectPrivatePath } from '../skills/spawn-subagent/scripts/runtime/platform.mjs';
+import { diagnostic, finalChunks } from '../skills/spawn-subagent/scripts/runtime/output.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
 const scripts = guideRuntimeScripts(import.meta.url);
@@ -45,7 +46,7 @@ test('Antigravity options preserve ordinary settings and reject control override
 // Test Value Gate: a copied installed adapter talks to a real, isolated backend
 // process. Only the external agy boundary is replaced; JSONL, input, exit and
 // owned-process cleanup use the production implementation.
-async function fixture(t, scenario = 'success') {
+async function fixture(t, scenario = 'success', error) {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-antigravity-'));
   const installed = path.join(root, 'installed');
   await fs.cp(scripts, installed, { recursive: true });
@@ -72,7 +73,9 @@ const args=process.argv.slice(2);
 const sessionSettings=args.includes('--settings')?JSON.parse(await fs.readFile(args[args.indexOf('--settings')+1],'utf8')):null;
 await capture({pid:process.pid,args,cwd:process.cwd(),home:process.env.HOME,sessionSettings});
 setTimeout(()=>process.exit(9),12000).unref();
-const init = () => emit({event:'init',conversation_id:'conversation-fixture',init:{tools:scenario==='missing command tool'?[]:['run_command'],...(scenario==='strict permissions'?{permission_mode:'strict'}:{})}});
+const init = () => scenario === 'initialization failure'
+ ? emit({event:'result',result:{status:'ERROR',response:'',num_turns:0,conversation_id:'',error:${JSON.stringify(error)}}})
+ : emit({event:'init',conversation_id:'conversation-fixture',init:{tools:scenario==='missing command tool'?[]:['run_command'],...(scenario==='strict permissions'?{permission_mode:'strict'}:{})}});
 if (scenario === 'init early') init(); else setTimeout(init, 25);
 const input = createInterface({input:process.stdin});
 input.on('line',async line=>{
@@ -109,6 +112,7 @@ input.on('line',async line=>{
  if (scenario === 'no terminal') return process.exit(0);
  const result={event:'result',result:{conversation_id:scenario==='session mismatch'?'other-conversation':'conversation-fixture',status:scenario==='failure'||scenario==='tool error failure'?'ERROR':'SUCCESS',response:['tool denied empty','tool denied invalid','tool error empty'].includes(scenario)?'':scenario==='auto discussion'?'Auto is not supported; continuing in the default mode.':${JSON.stringify(answer)},num_turns:scenario==='resumed'?7:scenario==='negative turns'?-1:scenario==='unsafe turns'?Number.MAX_SAFE_INTEGER+1:1}};
  if (scenario==='missing turns') delete result.result.num_turns;
+ result.result.error=${JSON.stringify(error)};
  if (scenario==='tool denied empty') result.result.denied_actions=[{action:'command',display_name:'RunCommand'}];
  if (scenario==='tool denied invalid') result.result.denied_actions={action:'command'};
  emit(result);
@@ -125,6 +129,7 @@ input.on('close',()=>setImmediate(()=>process.exit(scenario==='nonzero'?7:0)));
   const environment = {
     PATH: [bin, path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), HOME: home, TMPDIR: root,
     LANG: 'C.UTF-8', AW_SUBAGENT_PROCESS_TOKEN: randomBytes(24).toString('hex'), FIXTURE_CAPTURE: capture, FIXTURE_SCENARIO: scenario,
+    FIXTURE_API_KEY: 'fixture-private-api-key',
   };
   const commandId = 'cmdp_0123456789abcdef';
   const cliEntry = path.join(root, 'aw.mjs');
@@ -277,8 +282,65 @@ for (const scenario of ['missing acceptance', 'disconnect', 'no terminal', 'nonz
   if (scenario === 'missing acceptance') assert.equal(result.code, 'backendInputAcceptanceInvalid');
   if (scenario === 'nonzero') assert.equal(result.backendExitCode, 7);
   if (scenario === 'disconnect') assert.equal(result.generationStarted, null);
+  if (scenario === 'failure') assert.ok(result.message?.trim());
   assert.equal((await f.exit).code, 0);
   assert.equal((await f.captured()).filter((value) => value.input).length, 1);
+});
+
+// Test Value Gate: native ERROR details must reach the protocol consumer without
+// exposing credentials or exceeding its UTF-8 diagnostic budget. Exit 0 and a
+// response must not override the backend's ERROR status.
+for (const scenario of ['failure', 'initialization failure']) test(`Antigravity: ${scenario} preserves safe backend error details`, testOptions, async (t) => {
+  const f = await fixture(t, scenario, 'context summarization: invalid stream chunk: : keep-alive; key=fixture-private-api-key; authorization: Bearer private-bearer-value');
+  f.send(f.request);
+  const result = await f.waitFor('result');
+  assert.equal(result.state, 'failed');
+  assert.equal(result.code, 'backendFailed');
+  assert.match(result.message, /context summarization: invalid stream chunk: : keep-alive/);
+  assert.match(result.message, /\[redacted\]/);
+  assert.ok(!result.message.includes('fixture-private-api-key'));
+  assert.ok(!result.message.includes('private-bearer-value'));
+  if (scenario === 'failure') {
+    assert.equal(result.text, answer);
+    assert.equal(result.backendExitCode, 0);
+  } else assert.equal(result.generationStarted, false);
+  assert.equal((await f.exit).code, 0);
+});
+
+for (const scenario of ['failure', 'initialization failure']) test(`Antigravity: long ${scenario} errors remain visible after redaction`, testOptions, async (t) => {
+  const f = await fixture(t, scenario, 'fixture-private-api-key ' + '摘要失败😀'.repeat(1000));
+  f.send(f.request);
+  const result = await f.waitFor('result');
+  assert.equal(result.code, 'backendFailed');
+  assert.match(result.message, /摘要失败/);
+  assert.ok(!result.message.includes('fixture-private-api-key'));
+  assert.ok(!result.message.includes('\uFFFD'));
+  assert.ok(result.message.isWellFormed());
+  assert.ok(Buffer.byteLength(result.message) <= 512);
+  let report = '';
+  for await (const chunk of finalChunks({ handle: 'aw5-fixture', result, meta: {}, snapshot: { ready: true } }, [], false)) report += chunk;
+  assert.match(report, /摘要失败/);
+  assert.match(report, /\[truncated\]/);
+  assert.ok(!report.includes('diagnosticOmitted'));
+  assert.ok(!report.includes('fixture-private-api-key'));
+  if (scenario === 'initialization failure') {
+    const startup = diagnostic(result.code, `${result.message} Continue with this handle through wait, result, or stop.`, 'aw5-fixture');
+    assert.match(startup, /摘要失败/);
+    assert.match(startup, /\[truncated\]/);
+    assert.ok(!startup.includes('diagnosticOmitted'));
+  }
+  assert.equal((await f.exit).code, 0);
+});
+
+test('Antigravity: a non-text backend error keeps the failure diagnostic usable', testOptions, async (t) => {
+  const f = await fixture(t, 'failure', { nested: 'not an error description' });
+  f.send(f.request);
+  const result = await f.waitFor('result');
+  assert.equal(result.state, 'failed');
+  assert.equal(result.code, 'backendFailed');
+  assert.ok(result.message?.trim());
+  assert.ok(!result.message.includes('[object Object]'));
+  assert.equal((await f.exit).code, 0);
 });
 
 for (const reason of ['requested', 'deadline']) test(`Antigravity: ${reason} stops only the owned backend tree and preserves unknown remote status`, testOptions, async (t) => {

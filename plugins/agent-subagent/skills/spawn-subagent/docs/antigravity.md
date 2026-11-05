@@ -35,6 +35,8 @@ Guide 在现有 `spawn-subagent-skill` artifact 上声明静态 `guide-communica
 
 首条及后续输入均为 user NDJSON。活动轮不自动开始下一轮；父输入留在共享队列，已有 receive 优先。result 只结束当前轮；边界处同一输入只通过自动输入或 receive 其中一条路径消费，至多一个自动提交等待确认。stdin.write 成功只证明写管道，submitted 需要同一 conversation 中新增且可关联的 user_input/DONE；旧事件或重复 step 不作确认。写后断线且无确认保留 unknown，确定未接受才为 notSubmitted，不按回答猜测、不自动重发。该映射未获真实证据时不能发布自动交付能力。
 
+原生 result.status 为 ERROR 时，初始化失败和运行中失败均返回 backendFailed，并将有效文本 result.error 作为故障说明放入 message，由正常 wait/result 输出 diagnostic。说明先按现有凭据规则脱敏，再按 Unicode 字符边界限制为 512 UTF-8 字节，为启动回执的恢复提示预留展示预算，超长时标明截断；缺失或无效的 error 使用简短替代说明，不转交原始 stderr。恢复会话可能带出历史错误，该说明只表示后端报告的原因，不证明错误发生在本轮，也不以退出 0 或非空正文覆盖 ERROR。
+
 后端 num_turns 是会话累计统计，只验证其类型和非负安全整数，不与本次输入数比较。result 仍须有活动输入、无 pending、本次 acceptedCount=inputCount、正确会话及唯一终态；成功还需要至少一条输入、SUCCESS、退出 0 和非空正文。run 使用最后一个已确认成功轮次的完整 result.response，不默认拼接所有轮。后续轮失败时不能以旧回答宣布成功，可明确保留部分结果。关闭前分类已接受输入，停止子侧发送，发 closing，再关闭 stdin 并取得本进程退出及所属后代证据；迟到输入不开新轮，无待办则自然结束。关闭 stdin 不等于取消；stop/deadline 只处理可证明归属的进程树，不发 Claude control_request，不按进程名杀其它 agy 或共享服务。exit 0、部分正文或单轮 SUCCESS 均不足以证明 run 成功，停止或清理不明保留 unknown。
 
 ## 恢复与工具重绑
